@@ -1,0 +1,65 @@
+{
+  "name": "verboo-desktop",
+  "version": "0.1.0",
+  "description": "Independent desktop app for the Verboo Code CLI",
+  "author": "Gabriel Grasel de Moura",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/graseeel/verboo_app.git"
+  },
+  "homepage": "https://github.com/graseeel/verboo_app#readme",
+  "bugs": {
+    "url": "https://github.com/graseeel/verboo_app/issues"
+  },
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "tsc --noEmit && electron-vite build",
+    "preview": "electron-vite preview",
+    "package": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "@tesseract.js-data/eng": "^1.0.0",
+    "@tesseract.js-data/por": "^1.0.0",
+    "@verboo/code": "0.10.6",
+    "lucide-react": "1.22.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "sharp": "^0.35.2",
+    "slot-text": "^0.3.1",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.0.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.1.2",
+    "electron": "42.5.1",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "typescript": "6.0.3",
+    "vite": "7.3.0"
+  },
+  "build": {
+    "appId": "ai.verboo.code.desktop",
+    "productName": "Verboo Code",
+    "files": [
+      "out/**",
+      "assets/**",
+      "node_modules/**",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/branding/verboo.icns"
+    },
+    "directories": {
+      "buildResources": "assets/branding",
+      "output": "release"
+    }
+  }
+}

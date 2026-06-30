@@ -1,0 +1,137 @@
+.feedback-backdrop {
+  z-index: 230;
+}
+
+.feedback-modal {
+  display: grid;
+  gap: 16px;
+  width: min(620px, 100%);
+  max-height: min(760px, calc(100vh - 40px));
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-elevated) 96%, transparent);
+  box-shadow: var(--shadow);
+  overflow: auto;
+}
+
+.feedback-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.feedback-header > div {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.feedback-icon {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+  color: var(--accent-strong);
+}
+
+.feedback-header h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+
+.feedback-header p,
+.feedback-form label,
+.feedback-check {
+  color: var(--text-muted);
+}
+
+.feedback-header p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.feedback-form {
+  display: grid;
+  gap: 12px;
+}
+
+.feedback-form label {
+  display: grid;
+  gap: 7px;
+  font-weight: 650;
+}
+
+.feedback-form input,
+.feedback-form textarea,
+.feedback-form select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg) 76%, transparent);
+  color: var(--text);
+  outline: none;
+}
+
+.feedback-form input,
+.feedback-form select {
+  height: 38px;
+  padding: 0 11px;
+}
+
+.feedback-form textarea {
+  min-height: 132px;
+  padding: 10px 11px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.feedback-form input:focus,
+.feedback-form textarea:focus,
+.feedback-form select:focus {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
+}
+
+.feedback-check {
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: center;
+  gap: 9px !important;
+  font-weight: 560 !important;
+}
+
+.feedback-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.feedback-result {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 11px;
+  border: 1px solid color-mix(in srgb, var(--green) 34%, var(--border));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--green) 10%, transparent);
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.feedback-result.mailto,
+.feedback-result.warning {
+  border-color: color-mix(in srgb, var(--amber) 36%, var(--border));
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+  color: var(--amber);
+}
+
+.feedback-form .modal-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}

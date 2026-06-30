@@ -1,0 +1,115 @@
+@media (prefers-reduced-motion: reduce) {
+  .t-dropdown,
+  .t-modal,
+  .t-stagger-line,
+  .t-text-swap,
+  .page-surface,
+  .pet-sprite,
+  .pet-stage,
+  .pet-body,
+  .pet-prop,
+  .pet-prop--laptop span,
+  .pet-thought i,
+  .pet-success,
+  .pet-success path,
+  .pet-action-lines,
+  .pet-bubble,
+  .pet-slot-text,
+  .pet-scan-text {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+@media (max-width: 980px) {
+  :root {
+    --sidebar-width: 238px;
+  }
+
+  .profile-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-shell {
+    grid-template-columns: 190px minmax(0, 1fr);
+    gap: 20px;
+  }
+}
+
+@media (max-width: 720px) {
+  :root {
+    --sidebar-width: 0px;
+    --mac-traffic-width: 92px;
+  }
+
+  .topbar {
+    grid-template-columns: 1fr auto;
+  }
+
+  .app-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .app-sidebar {
+    display: none;
+  }
+
+  .workspace-path {
+    display: none;
+  }
+
+  .ghost-button {
+    display: none;
+  }
+
+  .login-actions,
+  .context-advice,
+  .api-login-row,
+  .api-key-form,
+  .settings-shell,
+  .settings-select-row {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-nav {
+    position: static;
+  }
+
+  .settings-select-row > svg {
+    display: none;
+  }
+
+  .composer-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .composer-tools,
+  .composer-tools.right {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .composer-pill {
+    max-width: 190px;
+  }
+
+  .access-menu,
+  .model-menu,
+  .project-picker-menu {
+    left: 0;
+    right: auto;
+    width: calc(100vw - 32px);
+  }
+
+  .project-create-menu {
+    left: 0;
+    bottom: auto;
+    top: calc(100% + 6px);
+  }
+
+  .profile-grid {
+    grid-template-columns: 1fr;
+  }
+
+}

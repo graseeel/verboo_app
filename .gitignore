@@ -1,0 +1,9 @@
+node_modules/
+out/
+release/
+supabase/.temp/
+supabase/.branches/
+docs/superpowers/
+.DS_Store
+npm-debug.log*
+/index.js

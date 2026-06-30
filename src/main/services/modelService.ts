@@ -1,0 +1,202 @@
+import { app } from 'electron'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import type { ModelDiscoveryResult, VerbooModel } from '../../shared/types'
+import { readCliOAuthAccessToken } from './cliCredentials'
+import type { CredentialsStore } from './credentialsStore'
+
+const VERBOO_ROUTER_MODELS_URL = 'https://code.verboo.ai/router/v1/models'
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000
+
+type ModelsCache = {
+  fetchedAt: number
+  models: VerbooModel[]
+}
+
+export class ModelService {
+  private readonly filePath = join(app.getPath('userData'), 'cache', 'models.json')
+
+  constructor(private readonly credentials: CredentialsStore) {}
+
+  async listModels(forceRefresh = false): Promise<ModelDiscoveryResult> {
+    const cached = await this.readCache()
+
+    const cliToken = await readCliOAuthAccessToken()
+    if (cliToken) {
+      try {
+        const models = await fetchModels(cliToken)
+        await this.writeCache({ fetchedAt: Date.now(), models })
+        return { models, source: 'cli', stale: false }
+      } catch (error) {
+        const message = modelErrorMessage(error)
+        if (cached) return { models: cached.models, source: 'cache', stale: true, error: message }
+      }
+    }
+
+    if (!forceRefresh && cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+      return { models: cached.models, source: 'cache', stale: false }
+    }
+
+    const apiKey = await this.credentials.getApiKey()
+    if (!apiKey) {
+      if (cached) {
+        return {
+          models: cached.models,
+          source: 'cache',
+          stale: true,
+          error: 'Entre com Verboo pelo CLI/app para atualizar os modelos da sua conta.',
+        }
+      }
+      return {
+        models: [],
+        source: 'none',
+        stale: false,
+        error: 'Entre com Verboo pelo CLI/app ou configure uma chave API.',
+      }
+    }
+
+    try {
+      const models = await fetchModels(apiKey)
+      await this.writeCache({ fetchedAt: Date.now(), models })
+      return { models, source: 'api-key', stale: false }
+    } catch (error) {
+      const message = modelErrorMessage(error)
+      if (cached) {
+        return { models: cached.models, source: 'cache', stale: true, error: message }
+      }
+      return { models: [], source: 'none', stale: false, error: message }
+    }
+  }
+
+  private async readCache(): Promise<ModelsCache | undefined> {
+    try {
+      const raw = await readFile(this.filePath, 'utf8')
+      return JSON.parse(raw) as ModelsCache
+    } catch {
+      return undefined
+    }
+  }
+
+  private async writeCache(cache: ModelsCache): Promise<void> {
+    await mkdir(dirname(this.filePath), { recursive: true })
+    await writeFile(this.filePath, JSON.stringify(cache, null, 2), 'utf8')
+  }
+}
+
+function modelErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  if (/401|expired token|invalid.*token/i.test(message)) {
+    return 'Sessao Verboo expirada. Entre novamente ou salve uma chave API valida.'
+  }
+  return message
+}
+
+async function fetchModels(token: string): Promise<VerbooModel[]> {
+  const response = await fetch(VERBOO_ROUTER_MODELS_URL, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '')
+    throw new Error(`HTTP ${response.status}${body ? `: ${body}` : ''}`)
+  }
+
+  const payload = await response.json()
+  return normalizeModels(payload)
+}
+
+function normalizeModels(payload: unknown): VerbooModel[] {
+  const data = isRecord(payload) && Array.isArray(payload.data) ? payload.data : Array.isArray(payload) ? payload : []
+  return data
+    .map(item => normalizeModel(item))
+    .filter((model): model is VerbooModel => Boolean(model))
+}
+
+function normalizeModel(item: unknown): VerbooModel | undefined {
+  if (!isRecord(item) || typeof item.id !== 'string') return undefined
+  const displayName =
+    stringValue(item.display_name) ??
+    stringValue(item.displayName) ??
+    stringValue(item.label) ??
+    item.id
+  const visionSupport = detectVisionSupport(item)
+
+  return {
+    id: item.id,
+    displayName,
+    contextWindow:
+      numberValue(item.context_window) ??
+      numberValue(item.contextWindow) ??
+      numberValue(item.context_length) ??
+      numberValue(item.max_input_tokens),
+    maxOutputTokens:
+      numberValue(item.max_output_tokens) ??
+      numberValue(item.maxOutputTokens) ??
+      numberValue(item.max_completion_tokens),
+    supportsVision: visionSupport.supportsVision,
+    visionSupportSource: visionSupport.source,
+    raw: item,
+  }
+}
+
+function detectVisionSupport(item: Record<string, unknown>): {
+  supportsVision?: boolean
+  source?: VerbooModel['visionSupportSource']
+} {
+  const direct =
+    booleanValue(item.supportsVision) ??
+    booleanValue(item.supports_vision) ??
+    booleanValue(item.vision)
+  if (direct !== undefined) return { supportsVision: direct, source: 'router' }
+
+  const capabilities = isRecord(item.capabilities) ? item.capabilities : undefined
+  const capabilityVision =
+    booleanValue(capabilities?.supportsVision) ??
+    booleanValue(capabilities?.supports_vision) ??
+    booleanValue(capabilities?.vision)
+  if (capabilityVision !== undefined) return { supportsVision: capabilityVision, source: 'raw-capabilities' }
+
+  const modalities = [
+    ...stringArray(item.input_modalities),
+    ...stringArray(item.inputModalities),
+    ...stringArray(item.modalities),
+    ...stringArray(capabilities?.input_modalities),
+    ...stringArray(capabilities?.inputModalities),
+    ...stringArray(capabilities?.modalities),
+  ].map(value => value.toLowerCase())
+  if (modalities.some(value => value === 'image' || value === 'vision')) {
+    return { supportsVision: true, source: 'raw-capabilities' }
+  }
+
+  const classifications = stringArray(item.classification).map(value => value.toLowerCase())
+  if (classifications.some(value => value.includes('vision') || value.includes('image'))) {
+    return { supportsVision: true, source: 'raw-capabilities' }
+  }
+
+  const id = `${item.id} ${stringValue(item.display_name) ?? ''} ${stringValue(item.displayName) ?? ''} ${stringValue(item.label) ?? ''}`.toLowerCase()
+  if (/\b(vision|vl|omni|multimodal)\b/.test(id) || id.includes('minimax-vision')) {
+    return { supportsVision: true, source: 'heuristic' }
+  }
+
+  return {}
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
