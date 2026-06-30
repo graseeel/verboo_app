@@ -115,6 +115,11 @@ export function LoginScreen({
             </a>
           </div>
 
+          <button className="secondary-action wide-action development-feedback-button" type="button" onClick={onOpenFeedback}>
+            <Bug size={17} />
+            Reportar problema
+          </button>
+
           <button className="primary-action wide-action" type="button" onClick={onAcceptNotice}>
             <CheckCircle2 size={18} />
             Entendi e quero continuar
