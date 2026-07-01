@@ -2,7 +2,7 @@ import { app } from 'electron'
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { ModelDiscoveryResult, VerbooModel } from '../../shared/types'
-import { readCliOAuthAccessToken } from './cliCredentials'
+import { getCliOAuthAccessToken, refreshCliOAuthAccessToken } from './cliCredentials'
 import type { CredentialsStore } from './credentialsStore'
 
 const VERBOO_ROUTER_MODELS_URL = 'https://code.verboo.ai/router/v1/models'
@@ -20,51 +20,60 @@ export class ModelService {
 
   async listModels(forceRefresh = false): Promise<ModelDiscoveryResult> {
     const cached = await this.readCache()
+    let liveError: unknown
 
-    const cliToken = await readCliOAuthAccessToken()
+    const cliToken = await getCliOAuthAccessToken()
     if (cliToken) {
       try {
         const models = await fetchModels(cliToken)
         await this.writeCache({ fetchedAt: Date.now(), models })
         return { models, source: 'cli', stale: false }
       } catch (error) {
-        const message = modelErrorMessage(error)
-        if (cached) return { models: cached.models, source: 'cache', stale: true, error: message }
+        liveError = error
+        if (isAuthFailure(error)) {
+          const refreshedToken = await refreshCliOAuthAccessToken()
+          if (refreshedToken) {
+            try {
+              const models = await fetchModels(refreshedToken)
+              await this.writeCache({ fetchedAt: Date.now(), models })
+              return { models, source: 'cli', stale: false }
+            } catch (retryError) {
+              liveError = retryError
+            }
+          }
+        }
       }
     }
 
-    if (!forceRefresh && cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+    if (!forceRefresh && !liveError && cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
       return { models: cached.models, source: 'cache', stale: false }
     }
 
     const apiKey = await this.credentials.getApiKey()
-    if (!apiKey) {
-      if (cached) {
-        return {
-          models: cached.models,
-          source: 'cache',
-          stale: true,
-          error: 'Entre com Verboo pelo CLI/app para atualizar os modelos da sua conta.',
-        }
-      }
-      return {
-        models: [],
-        source: 'none',
-        stale: false,
-        error: 'Entre com Verboo pelo CLI/app ou configure uma chave API.',
+    if (apiKey) {
+      try {
+        const models = await fetchModels(apiKey)
+        await this.writeCache({ fetchedAt: Date.now(), models })
+        return { models, source: 'api-key', stale: false }
+      } catch (error) {
+        liveError = error
       }
     }
 
-    try {
-      const models = await fetchModels(apiKey)
-      await this.writeCache({ fetchedAt: Date.now(), models })
-      return { models, source: 'api-key', stale: false }
-    } catch (error) {
-      const message = modelErrorMessage(error)
-      if (cached) {
-        return { models: cached.models, source: 'cache', stale: true, error: message }
+    if (cached) {
+      return {
+        models: cached.models,
+        source: 'cache',
+        stale: Boolean(liveError) || forceRefresh || Date.now() - cached.fetchedAt >= CACHE_TTL_MS,
+        error: liveError ? modelErrorMessage(liveError) : 'Entre com Verboo pelo CLI/app para atualizar os modelos da sua conta.',
       }
-      return { models: [], source: 'none', stale: false, error: message }
+    }
+
+    return {
+      models: [],
+      source: 'none',
+      stale: false,
+      error: liveError ? modelErrorMessage(liveError) : 'Entre com Verboo pelo CLI/app ou configure uma chave API.',
     }
   }
 
@@ -86,10 +95,15 @@ export class ModelService {
 
 function modelErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
-  if (/401|expired token|invalid.*token/i.test(message)) {
+  if (isAuthFailure(error)) {
     return 'Sessao Verboo expirada. Entre novamente ou salve uma chave API valida.'
   }
   return message
+}
+
+function isAuthFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /401|expired token|invalid.*token/i.test(message)
 }
 
 function scrubSensitive(text: string): string {

@@ -11,7 +11,8 @@ type TrayActions = {
 export class TrayStatusService {
   private tray: Tray | undefined
   private settings: UserSettings | undefined
-  private state: MenuBarState = { execution: 'idle', label: 'Pronto' }
+  private state: MenuBarState = { execution: 'idle', label: 'Ready' }
+  private ticker: ReturnType<typeof setInterval> | undefined
   private readonly iconPath = getTrayIconPath()
 
   constructor(private readonly actions: TrayActions) {}
@@ -19,21 +20,25 @@ export class TrayStatusService {
   configure(settings: UserSettings): void {
     this.settings = settings
     if (!settings.showInMenuBar) {
+      this.stopTicker()
       this.tray?.destroy()
       this.tray = undefined
       return
     }
     if (!this.tray) {
       const image = nativeImage.createFromPath(this.iconPath).resize({ width: 18, height: 18 })
+      image.setTemplateImage(false)
       this.tray = new Tray(image)
       this.tray.setToolTip('Verboo Code')
       this.tray.on('click', () => this.showWindow())
     }
+    this.syncTicker()
     this.render()
   }
 
   update(state: Partial<MenuBarState>): void {
     this.state = { ...this.state, ...state }
+    this.syncTicker()
     this.render()
   }
 
@@ -43,20 +48,20 @@ export class TrayStatusService {
     this.tray.setContextMenu(Menu.buildFromTemplate([
       { label: this.titleForState(), enabled: false },
       { type: 'separator' },
-      { label: this.state.email ? `Conectado: ${this.state.email}` : 'Conta nao conectada', enabled: false },
-      { label: `Modelo: ${this.state.modelDisplayName ?? this.state.modelId ?? 'nao selecionado'}`, enabled: false },
-      { label: `Contexto: ${formatContext(this.state.contextUsage, this.state.contextWindow)}`, enabled: false },
+      { label: this.state.email ? `Signed in: ${this.state.email}` : 'Not signed in', enabled: false },
+      { label: `Model: ${this.state.modelDisplayName ?? this.state.modelId ?? 'not selected'}`, enabled: false },
+      { label: `Context: ${formatContext(this.state.contextUsage, this.state.contextWindow)}`, enabled: false },
       this.state.workingDirectory
-        ? { label: `Projeto: ${basename(this.state.workingDirectory)}`, enabled: false }
-        : { label: 'Projeto: sem projeto', enabled: false },
+        ? { label: `Project: ${basename(this.state.workingDirectory)}`, enabled: false }
+        : { label: 'Project: no project', enabled: false },
       { type: 'separator' },
-      { label: 'Mostrar Verboo', click: () => this.showWindow() },
-      { label: 'Ocultar janela', click: () => this.hideWindow() },
-      { label: 'Interromper execucao', enabled: this.state.execution !== 'idle', click: () => this.actions.interrupt() },
-      { label: 'Atualizar modelos e perfil', click: () => this.actions.refreshData() },
-      { label: 'Abrir dashboard Verboo', click: () => shell.openExternal('https://code.verboo.ai/pt/dashboard') },
+      { label: 'Show Verboo', click: () => this.showWindow() },
+      { label: 'Hide Window', click: () => this.hideWindow() },
+      { label: 'Interrupt Run', enabled: this.state.execution !== 'idle', click: () => this.actions.interrupt() },
+      { label: 'Refresh Models and Profile', click: () => this.actions.refreshData() },
+      { label: 'Open Verboo Dashboard', click: () => shell.openExternal('https://code.verboo.ai/pt/dashboard') },
       { type: 'separator' },
-      { label: 'Sair', click: () => app.quit() },
+      { label: 'Quit', click: () => app.quit() },
     ]))
   }
 
@@ -78,21 +83,42 @@ export class TrayStatusService {
   private hideWindow(): void {
     this.actions.getWindow()?.hide()
   }
+
+  private syncTicker(): void {
+    const shouldTick = Boolean(
+      this.tray
+      && this.settings?.showInMenuBar
+      && this.state.startedAt
+      && this.state.execution !== 'idle'
+      && this.state.execution !== 'done'
+      && this.state.execution !== 'error',
+    )
+    if (shouldTick && !this.ticker) {
+      this.ticker = setInterval(() => this.render(), 1000)
+    }
+    if (!shouldTick) this.stopTicker()
+  }
+
+  private stopTicker(): void {
+    if (!this.ticker) return
+    clearInterval(this.ticker)
+    this.ticker = undefined
+  }
 }
 
 function getTrayIconPath(): string {
   return app.isPackaged
-    ? join(process.resourcesPath, 'assets', 'branding', 'verboo-mascot.png')
+    ? join(app.getAppPath(), 'assets', 'branding', 'verboo-mascot.png')
     : join(process.cwd(), 'assets', 'branding', 'verboo-mascot.png')
 }
 
 function labelForExecution(execution: MenuBarState['execution']): string {
-  if (execution === 'thinking') return 'pensando'
-  if (execution === 'tool') return 'executando'
-  if (execution === 'permission') return 'permissao'
-  if (execution === 'done') return 'concluido'
-  if (execution === 'error') return 'erro'
-  return 'pronto'
+  if (execution === 'thinking') return 'thinking'
+  if (execution === 'tool') return 'working'
+  if (execution === 'permission') return 'waiting'
+  if (execution === 'done') return 'done'
+  if (execution === 'error') return 'error'
+  return 'ready'
 }
 
 function formatElapsed(ms: number): string {
@@ -103,13 +129,13 @@ function formatElapsed(ms: number): string {
 }
 
 function formatContext(usage?: number, contextWindow?: number): string {
-  const total = contextWindow ? formatCompact(contextWindow) : 'indisponivel'
+  const total = contextWindow ? formatCompact(contextWindow) : 'unavailable'
   if (usage === undefined) return total
-  return `${Math.round(usage * 100)}% de ${total}`
+  return `${Math.round(usage * 100)}% of ${total}`
 }
 
 function formatCompact(value: number): string {
-  return Intl.NumberFormat('pt-BR', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
+  return Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
 }
 
 function basename(path: string): string {

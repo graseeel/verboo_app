@@ -14,6 +14,7 @@ import {
   RefreshCcw,
   RotateCcw,
   Shield,
+  ShieldCheck,
   Trash2,
   UserCog,
 } from 'lucide-react'
@@ -55,6 +56,7 @@ type SettingsViewProps = {
 
 const settingsTabs: Array<{ id: SettingsTab; label: string; icon: typeof Shield }> = [
   { id: 'permissions', label: 'Permissoes', icon: Shield },
+  { id: 'trustedCommands', label: 'Comandos confiaveis', icon: ShieldCheck },
   { id: 'app', label: 'App', icon: Computer },
   { id: 'notifications', label: 'Notificacoes', icon: Bell },
   { id: 'personalization', label: 'Personalizacao', icon: UserCog },
@@ -105,6 +107,8 @@ export function SettingsView({
   const [apiKey, setApiKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [customDraft, setCustomDraft] = useState(userSettings.customInstructions)
+  const [confirmingFullAccess, setConfirmingFullAccess] = useState(false)
+  const [fullAccessConfirmation, setFullAccessConfirmation] = useState('')
 
   useEffect(() => {
     setCustomDraft(userSettings.customInstructions)
@@ -122,6 +126,28 @@ export function SettingsView({
 
   async function saveCustomInstructions() {
     await onUserSettingsChange({ customInstructions: customDraft })
+  }
+
+  function requestAccessModeChange(mode: AccessMode) {
+    if (mode === 'full' && userSettings.defaultAccessMode !== 'full') {
+      setConfirmingFullAccess(true)
+      setFullAccessConfirmation('')
+      return
+    }
+
+    void onUserSettingsChange({ defaultAccessMode: mode })
+  }
+
+  function cancelFullAccessConfirmation() {
+    setConfirmingFullAccess(false)
+    setFullAccessConfirmation('')
+  }
+
+  function confirmFullAccess() {
+    if (fullAccessConfirmation !== 'ACESSO COMPLETO') return
+    void onUserSettingsChange({ defaultAccessMode: 'full' })
+    setConfirmingFullAccess(false)
+    setFullAccessConfirmation('')
   }
 
   return (
@@ -158,7 +184,7 @@ export function SettingsView({
                   key={option.id}
                   className={`access-setting ${userSettings.defaultAccessMode === option.id ? 'active' : ''} ${option.tone === 'danger' ? 'danger' : ''}`}
                   type="button"
-                  onClick={() => onUserSettingsChange({ defaultAccessMode: option.id })}
+                  onClick={() => requestAccessModeChange(option.id)}
                 >
                   <Shield size={18} />
                   <span>
@@ -169,6 +195,47 @@ export function SettingsView({
                 </button>
               ))}
             </div>
+          </section>
+        )}
+
+        {activeTab === 'trustedCommands' && (
+          <section className="settings-section-view">
+            <SettingsHeading
+              title="Comandos confiaveis"
+              subtitle="Gerencie comandos que voce marcou como Sempre permitir."
+            />
+            <section className="settings-panel trusted-command-panel">
+              {userSettings.trustedCommands.length === 0 ? (
+                <div className="trusted-command-empty">
+                  Nenhum comando confiavel salvo.
+                </div>
+              ) : (
+                <div className="trusted-command-list">
+                  {userSettings.trustedCommands.map(rule => (
+                    <article key={rule.id} className="trusted-command-row">
+                      <ShieldCheck size={16} />
+                      <span>
+                        <code>{rule.command}</code>
+                        <small>
+                          {rule.useCount} uso{rule.useCount === 1 ? '' : 's'}
+                          {' · '}
+                          salvo em {formatDate(rule.createdAt)}
+                        </small>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onUserSettingsChange({
+                          trustedCommands: userSettings.trustedCommands.filter(item => item.id !== rule.id),
+                        })}
+                      >
+                        <Trash2 size={14} />
+                        Excluir
+                      </button>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
           </section>
         )}
 
@@ -196,6 +263,12 @@ export function SettingsView({
                 </button>
               </div>
               {modelResult.error && <p className="settings-warning">{modelResult.error}</p>}
+              <SettingToggle
+                title="Continuar logado"
+                body="Usar a ultima validacao local quando a renovacao de modelos falhar temporariamente."
+                checked={userSettings.staySignedIn}
+                onChange={staySignedIn => onUserSettingsChange({ staySignedIn })}
+              />
               <button className="dashboard-link" type="button" onClick={onOpenDashboard}>
                 Abrir dashboard Verboo
               </button>
@@ -271,6 +344,41 @@ export function SettingsView({
                 checked={userSettings.preventSleepWhileRunning}
                 onChange={preventSleepWhileRunning => onUserSettingsChange({ preventSleepWhileRunning })}
               />
+            </section>
+
+            <section className="settings-panel">
+              <SettingToggle
+                title="Goal Mode (beta)"
+                body="Permite usar /goal para executar objetivos em loop autonomo com avaliacao entre turnos."
+                checked={userSettings.goalMode.enabled}
+                onChange={enabled => onUserSettingsChange({ goalMode: { ...userSettings.goalMode, enabled } })}
+              />
+              {userSettings.goalMode.enabled && (
+                <div className="settings-nested-group">
+                  <SettingNumericInput
+                    title="Turnos maximos"
+                    body="Numero maximo de turnos de execucao por objetivo."
+                    value={userSettings.goalMode.maxTurns}
+                    min={1}
+                    max={20}
+                    onChange={maxTurns => onUserSettingsChange({ goalMode: { ...userSettings.goalMode, maxTurns } })}
+                  />
+                  <SettingNumericInput
+                    title="Tempo maximo (minutos)"
+                    body="Tempo maximo total de execucao por objetivo."
+                    value={userSettings.goalMode.maxElapsedMinutes}
+                    min={1}
+                    max={240}
+                    onChange={maxElapsedMinutes => onUserSettingsChange({ goalMode: { ...userSettings.goalMode, maxElapsedMinutes } })}
+                  />
+                  <SettingToggle
+                    title="Auto-acesso entre turnos"
+                    body="Quando ativo, o modo goal alterna para acesso automatico durante continuacoes."
+                    checked={userSettings.goalMode.allowAutoAccess}
+                    onChange={allowAutoAccess => onUserSettingsChange({ goalMode: { ...userSettings.goalMode, allowAutoAccess } })}
+                  />
+                </div>
+              )}
             </section>
           </section>
         )}
@@ -410,6 +518,43 @@ export function SettingsView({
           </section>
         )}
       </div>
+
+      {confirmingFullAccess && (
+        <div className="modal-backdrop">
+          <div className="confirm-modal t-modal is-open" role="dialog" aria-modal="true">
+            <h2>Ativar Acesso completo como padrao</h2>
+            <p>
+              O Verboo Code podera iniciar novas conversas com acesso irrestrito a internet,
+              arquivos e comandos locais sem pedir aprovacao a cada acao.
+            </p>
+            <p className="danger-copy">
+              Isso pode expor codigo, documentos, segredos, tokens e chaves de API. Use como padrao
+              apenas em workspaces e ferramentas que voce confia.
+            </p>
+            <label>
+              Digite <strong>ACESSO COMPLETO</strong> para continuar.
+              <input
+                value={fullAccessConfirmation}
+                onChange={event => setFullAccessConfirmation(event.target.value)}
+                autoFocus
+              />
+            </label>
+            <div className="modal-actions">
+              <button type="button" onClick={cancelFullAccessConfirmation}>
+                Cancelar
+              </button>
+              <button
+                className="danger-button"
+                type="button"
+                disabled={fullAccessConfirmation !== 'ACESSO COMPLETO'}
+                onClick={confirmFullAccess}
+              >
+                Ativar Acesso completo
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -448,6 +593,39 @@ function SettingToggle({
         <span />
       </span>
     </button>
+  )
+}
+
+function SettingNumericInput({
+  title,
+  body,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  title: string
+  body: string
+  value: number
+  min: number
+  max: number
+  onChange: (value: number) => void
+}) {
+  return (
+    <div className="settings-toggle-row" style={{ cursor: 'default' }}>
+      <span>
+        <strong>{title}</strong>
+        <small>{body}</small>
+      </span>
+      <input
+        className="settings-numeric-input"
+        type="number"
+        min={min}
+        max={max}
+        value={value}
+        onChange={event => onChange(Number(event.target.value))}
+      />
+    </div>
   )
 }
 

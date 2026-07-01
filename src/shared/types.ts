@@ -1,7 +1,74 @@
+export type GoalStatus =
+  | 'active'
+  | 'paused'
+  | 'evaluating'
+  | 'continuing'
+  | 'blocked'
+  | 'completed'
+  | 'cancelled'
+  | 'budget_limited'
+
+export type GoalEvaluationResult = {
+  decision: 'complete' | 'continue' | 'blocked'
+  confidence: number
+  reason: string
+  evidence: string[]
+  missing: string[]
+  nextMessage?: string
+}
+
+export type AgentResultSnapshot = {
+  turnId: string
+  exitCode: number | null
+  sessionId?: string
+  stopReason?: string
+  isError?: boolean
+  usage?: TokenUsage
+  permissionDenials?: unknown[]
+  errors?: string[]
+  rawResult?: unknown
+}
+
+export type GoalState = {
+  id: string
+  objective: string
+  status: GoalStatus
+  createdAt: number
+  updatedAt: number
+  startedAt?: number
+  completedAt?: number
+  pausedAt?: number
+  pauseReason?: string
+  lastEvaluation?: GoalEvaluationResult
+  lastSessionId?: string
+  lastTurnId?: string
+  turnsRun: number
+  maxTurns: number
+  maxElapsedMs: number
+  maxInputTokens?: number
+  usedInputTokens: number
+  usedOutputTokens: number
+  accessMode: AccessMode
+  modelId?: string
+  modelDisplayName?: string
+  workingDirectory: string
+  skills: SkillSummary[]
+  noProgressCount: number
+  recentFingerprints: string[]
+}
+
+export type GoalEvaluationInput = {
+  goal: GoalState
+  conversationItems: TranscriptItem[]
+  latestResult?: AgentResultSnapshot
+  contextUsage?: ContextUsageSnapshot
+}
+
 export type AccessMode = 'approval' | 'auto' | 'full'
 export type ThemeMode = 'dark' | 'light'
 export type SettingsTab =
   | 'permissions'
+  | 'trustedCommands'
   | 'app'
   | 'notifications'
   | 'personalization'
@@ -9,6 +76,14 @@ export type SettingsTab =
   | 'archived'
 export type PersonalityMode = 'pragmatic' | 'concise' | 'explanatory'
 export type CompletionNotificationMode = 'always' | 'background' | 'never'
+
+export type TrustedCommandRule = {
+  id: string
+  command: string
+  createdAt: number
+  lastUsedAt?: number
+  useCount: number
+}
 
 export type SkillSource = 'project' | 'user' | 'legacy' | 'managed'
 
@@ -26,6 +101,9 @@ export type TranscriptItem = {
   role: 'user' | 'assistant' | 'tool' | 'system'
   text: string
   timestamp: number
+  kind?: 'message' | 'activity' | 'summary'
+  activityKind?: 'thinking' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool'
+  activityDetail?: string
   modelId?: string
   modelDisplayName?: string
   streaming?: boolean
@@ -47,13 +125,14 @@ export type StoredConversation = {
   title: string
   projectId?: string
   items: TranscriptItem[]
+  goal?: GoalState
   createdAt: number
   updatedAt: number
   archivedAt?: number
 }
 
 export type ChatStore = {
-  version: 1
+  version: 2
   projects: ChatProject[]
   conversations: StoredConversation[]
 }
@@ -79,15 +158,23 @@ export type UserSettings = {
   defaultAccessMode: AccessMode
   showInMenuBar: boolean
   showMenuBarText: boolean
+  staySignedIn: boolean
   preventSleepWhileRunning: boolean
   completionNotifications: CompletionNotificationMode
   permissionNotifications: boolean
   questionNotifications: boolean
   personality: PersonalityMode
   customInstructions: string
+  trustedCommands: TrustedCommandRule[]
   memoriesEnabled: boolean
   chroniclePreview: boolean
   ignoreToolChatsForMemory: boolean
+  goalMode: {
+    enabled: boolean
+    maxTurns: number
+    maxElapsedMinutes: number
+    allowAutoAccess: boolean
+  }
 }
 
 export type MenuBarState = {
@@ -245,6 +332,7 @@ export type AgentEvent =
   | { type: 'stdout'; turnId: string; text: string }
   | { type: 'stderr'; turnId: string; text: string }
   | { type: 'json'; turnId: string; payload: unknown }
+  | { type: 'result'; turnId: string; result: AgentResultSnapshot }
   | { type: 'error'; turnId: string; message: string }
   | { type: 'done'; turnId: string; exitCode: number | null }
 

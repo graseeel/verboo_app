@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron'
 import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { AccessMode, AgentEvent, AgentTurnRequest, AppConfig, FeedbackRequest, MenuBarState, UserSettings } from '../shared/types'
+import type { AccessMode, AgentEvent, AgentTurnRequest, AppConfig, FeedbackRequest, GoalEvaluationInput, GoalEvaluationResult, MenuBarState, UserSettings } from '../shared/types'
 import { accessModeConfig } from './security/accessModes'
 import { inspectAttachments } from './services/attachmentService'
 import { CredentialsStore } from './services/credentialsStore'
@@ -13,6 +13,7 @@ import { SkillsService } from './services/skillsService'
 import { TrayStatusService } from './services/trayStatusService'
 import { VerbooCliService } from './services/verbooCliService'
 import { VisionFallbackService } from './services/visionFallbackService'
+import { evaluateGoal } from './services/goalEvaluator'
 
 const credentials = new CredentialsStore()
 const models = new ModelService(credentials)
@@ -20,7 +21,7 @@ const profile = new ProfileService(credentials)
 const feedback = new FeedbackService()
 const userSettings = new SettingsService()
 const skills = new SkillsService()
-const cli = new VerbooCliService()
+const cli = new VerbooCliService(credentials)
 const visionFallback = new VisionFallbackService(models)
 const trayStatus = new TrayStatusService({
   getWindow: () => mainWindow,
@@ -154,6 +155,15 @@ function registerIpc(): void {
     return folder
   })
 
+  ipcMain.handle('goal:evaluate', async (_event, input: GoalEvaluationInput) => {
+    return evaluateGoal({
+      goal: input.goal,
+      conversationItems: input.conversationItems,
+      latestResult: input.latestResult,
+      workingDirectory: input.goal.workingDirectory,
+    })
+  })
+
   ipcMain.handle('files:pick', async () => {
     if (!mainWindow) return []
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -183,11 +193,11 @@ function registerIpc(): void {
     return result.canceled ? undefined : result.filePaths[0]
   })
 
-  ipcMain.handle('agent:send', async (_event, request: AgentTurnRequest) => {
+  ipcMain.handle('agent:send', async (_event, request: AgentTurnRequest, resumeSessionId?: string) => {
     const settings = await userSettings.getSettings()
     const safeRequest = await sanitizeAgentTurnRequest(request)
     const preparedRequest = await visionFallback.prepareRequest(safeRequest)
-    return cli.sendTurn(preparedRequest, event => handleAgentEvent(event, preparedRequest, settings), settings)
+    return cli.sendTurn(preparedRequest, event => handleAgentEvent(event, preparedRequest, settings), settings, resumeSessionId)
   })
 
   ipcMain.handle('agent:interrupt', () => {
@@ -226,12 +236,12 @@ function handleAgentEvent(event: AgentEvent, request: AgentTurnRequest, settings
   }
 
   if (event.type === 'started') {
-    trayStatus.update({ ...baseState, execution: 'thinking', label: 'pensando', startedAt: Date.now() })
+    trayStatus.update({ ...baseState, execution: 'thinking', label: 'thinking', startedAt: Date.now() })
     return
   }
 
   if (event.type === 'stdout') {
-    trayStatus.update({ ...baseState, execution: 'tool', label: 'respondendo' })
+    trayStatus.update({ ...baseState, execution: 'tool', label: 'responding' })
     return
   }
 
@@ -241,39 +251,39 @@ function handleAgentEvent(event: AgentEvent, request: AgentTurnRequest, settings
   }
 
   if (event.type === 'json') {
-    const kind = classifyRuntimePayload(event.payload)
-    if (kind === 'permission') {
-      trayStatus.update({ ...baseState, execution: 'permission', label: 'permissao' })
+    const status = describeRuntimeStatus(event.payload)
+    if (status?.kind === 'permission') {
+      trayStatus.update({ ...baseState, execution: 'permission', label: status.label })
       if (settings.permissionNotifications) showNotification('Verboo precisa de permissao', 'Revise a solicitacao no app.')
     }
-    if (kind === 'question') {
-      trayStatus.update({ ...baseState, execution: 'permission', label: 'pergunta' })
+    if (status?.kind === 'question') {
+      trayStatus.update({ ...baseState, execution: 'permission', label: status.label })
       if (settings.questionNotifications) showNotification('Verboo precisa de uma resposta', 'Volte ao app para continuar.')
     }
-    if (kind === 'tool') {
-      trayStatus.update({ ...baseState, execution: 'tool', label: 'ferramenta' })
+    if (status?.kind === 'tool') {
+      trayStatus.update({ ...baseState, execution: 'tool', label: status.label })
     }
     return
   }
 
   if (event.type === 'error') {
-    trayStatus.update({ ...baseState, execution: 'error', label: 'erro' })
+    trayStatus.update({ ...baseState, execution: 'error', label: 'error' })
     showCompletionNotification(settings, 'Verboo encontrou um erro', event.message)
     return
   }
 
   if (event.type === 'done') {
-    trayStatus.update({ ...baseState, execution: event.exitCode === 0 ? 'done' : 'error', label: event.exitCode === 0 ? 'concluido' : 'erro' })
+    trayStatus.update({ ...baseState, execution: event.exitCode === 0 ? 'done' : 'error', label: event.exitCode === 0 ? 'done' : 'error' })
     showCompletionNotification(
       settings,
       event.exitCode === 0 ? 'Verboo concluiu' : 'Verboo terminou com erro',
       basename(request.workingDirectory || app.getPath('home')),
     )
-    setTimeout(() => trayStatus.update({ ...baseState, execution: 'idle', label: 'pronto', startedAt: undefined }), 3500)
+    setTimeout(() => trayStatus.update({ ...baseState, execution: 'idle', label: 'ready', startedAt: undefined }), 3500)
   }
 }
 
-function classifyRuntimePayload(payload: unknown): 'permission' | 'question' | 'tool' | undefined {
+function describeRuntimeStatus(payload: unknown): { kind: 'permission' | 'question' | 'tool'; label: string } | undefined {
   if (!isRecord(payload)) return undefined
   const type = textValue(payload.type)
   const event = isRecord(payload.event) ? payload.event : undefined
@@ -281,10 +291,33 @@ function classifyRuntimePayload(payload: unknown): 'permission' | 'question' | '
   const block = isRecord(event?.content_block) ? event.content_block : undefined
   const blockType = textValue(block?.type)
   const text = `${type} ${eventType} ${blockType}`.toLowerCase()
-  if (text.includes('permission') || text.includes('action_required') || text.includes('tool_confirmation')) return 'permission'
-  if (text.includes('askuserquestion') || text.includes('question')) return 'question'
-  if (text.includes('tool_use') || text.includes('tool_result') || text.includes('tool')) return 'tool'
+  if (text.includes('permission') || text.includes('action_required') || text.includes('tool_confirmation')) return { kind: 'permission', label: 'permission' }
+  if (text.includes('askuserquestion') || text.includes('question')) return { kind: 'question', label: 'question' }
+  if (text.includes('tool_use') || text.includes('tool_result') || text.includes('tool')) {
+    return { kind: 'tool', label: labelForToolName(toolNameFromPayload(payload)) }
+  }
   return undefined
+}
+
+function toolNameFromPayload(payload: Record<string, unknown>): string | undefined {
+  const event = isRecord(payload.event) ? payload.event : undefined
+  const block = isRecord(event?.content_block) ? event.content_block : undefined
+  if (block) return textValue(block.name) || textValue(block.tool_name) || undefined
+
+  const message = isRecord(payload.message) ? payload.message : undefined
+  const content = Array.isArray(message?.content) ? message.content : undefined
+  const toolBlock = content?.find((item): item is Record<string, unknown> => isRecord(item) && textValue(item.type).toLowerCase().includes('tool_use'))
+  return toolBlock ? textValue(toolBlock.name) || textValue(toolBlock.tool_name) || undefined : undefined
+}
+
+function labelForToolName(toolName?: string): string {
+  const normalized = toolName?.toLowerCase()
+  if (normalized === 'read' || normalized === 'ls' || normalized === 'glob' || normalized === 'grep') return 'reading'
+  if (normalized === 'edit' || normalized === 'multiedit' || normalized === 'write' || normalized === 'notebookedit') return 'editing'
+  if (normalized === 'bash') return 'running'
+  if (normalized === 'websearch' || normalized === 'webfetch') return 'searching'
+  if (normalized === 'todowrite') return 'planning'
+  return 'tool'
 }
 
 function showCompletionNotification(settings: UserSettings, title: string, body: string): void {

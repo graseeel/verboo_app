@@ -7,15 +7,23 @@ export const defaultUserSettings: UserSettings = {
   defaultAccessMode: 'approval',
   showInMenuBar: true,
   showMenuBarText: true,
+  staySignedIn: true,
   preventSleepWhileRunning: true,
   completionNotifications: 'background',
   permissionNotifications: true,
   questionNotifications: true,
   personality: 'pragmatic',
   customInstructions: '',
+  trustedCommands: [],
   memoriesEnabled: false,
   chroniclePreview: false,
   ignoreToolChatsForMemory: true,
+  goalMode: {
+    enabled: true,
+    maxTurns: 3,
+    maxElapsedMinutes: 30,
+    allowAutoAccess: true,
+  },
 }
 
 export class SettingsService {
@@ -58,6 +66,7 @@ function normalizeSettings(value: unknown): UserSettings {
     defaultAccessMode: oneOf(record.defaultAccessMode, ['approval', 'auto', 'full'], defaultUserSettings.defaultAccessMode),
     showInMenuBar: booleanValue(record.showInMenuBar, defaultUserSettings.showInMenuBar),
     showMenuBarText: booleanValue(record.showMenuBarText, defaultUserSettings.showMenuBarText),
+    staySignedIn: booleanValue(record.staySignedIn, defaultUserSettings.staySignedIn),
     preventSleepWhileRunning: booleanValue(record.preventSleepWhileRunning, defaultUserSettings.preventSleepWhileRunning),
     completionNotifications: oneOf(
       record.completionNotifications,
@@ -68,9 +77,11 @@ function normalizeSettings(value: unknown): UserSettings {
     questionNotifications: booleanValue(record.questionNotifications, defaultUserSettings.questionNotifications),
     personality: oneOf(record.personality, ['pragmatic', 'concise', 'explanatory'], defaultUserSettings.personality),
     customInstructions: typeof record.customInstructions === 'string' ? record.customInstructions : '',
+    trustedCommands: normalizeTrustedCommands(record.trustedCommands),
     memoriesEnabled: booleanValue(record.memoriesEnabled, defaultUserSettings.memoriesEnabled),
     chroniclePreview: booleanValue(record.chroniclePreview, defaultUserSettings.chroniclePreview),
     ignoreToolChatsForMemory: booleanValue(record.ignoreToolChatsForMemory, defaultUserSettings.ignoreToolChatsForMemory),
+    goalMode: normalizeGoalMode(record.goalMode),
   }
 }
 
@@ -84,4 +95,39 @@ function booleanValue(value: unknown, fallback: boolean): boolean {
 
 function oneOf<const T extends string>(value: unknown, options: readonly T[], fallback: T): T {
   return typeof value === 'string' && options.includes(value as T) ? value as T : fallback
+}
+
+function normalizeTrustedCommands(value: unknown): UserSettings['trustedCommands'] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter(isRecord)
+    .map(item => {
+      const command = typeof item.command === 'string' ? item.command.trim() : ''
+      const id = typeof item.id === 'string' && item.id.trim() ? item.id : command
+      const createdAt = Number(item.createdAt)
+      const lastUsedAt = Number(item.lastUsedAt)
+      const useCount = Number(item.useCount)
+      return {
+        id,
+        command,
+        createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
+        lastUsedAt: Number.isFinite(lastUsedAt) ? lastUsedAt : undefined,
+        useCount: Number.isFinite(useCount) ? Math.max(0, Math.round(useCount)) : 0,
+      }
+    })
+    .filter(item => item.command)
+}
+
+function normalizeGoalMode(value: unknown): UserSettings['goalMode'] {
+  const record = isRecord(value) ? value : {}
+  return {
+    enabled: booleanValue(record.enabled, true),
+    maxTurns: clamp(Number(record.maxTurns) || 3, 1, 20),
+    maxElapsedMinutes: clamp(Number(record.maxElapsedMinutes) || 30, 1, 240),
+    allowAutoAccess: booleanValue(record.allowAutoAccess, true),
+  }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value))
 }

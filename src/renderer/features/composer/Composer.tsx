@@ -1,9 +1,12 @@
 import { ArrowUp, Paperclip, X } from 'lucide-react'
-import { type FormEvent, type KeyboardEvent, type ReactNode, useMemo, useState } from 'react'
+import { type FormEvent, type KeyboardEvent, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { AttachmentMeta, SkillSummary } from '../../../shared/types'
+import { isReservedSlashQuery, parseReservedSlashCommand, type ReservedSlashCommand } from './slashCommands'
 
 type ComposerProps = {
   disabled: boolean
+  busy?: boolean
+  queuedCount?: number
   skills: SkillSummary[]
   selectedSkills: SkillSummary[]
   attachments: AttachmentMeta[]
@@ -11,13 +14,15 @@ type ComposerProps = {
   onAttachFiles: () => void
   onRemoveAttachment: (path: string) => void
   onSubmit: (message: string) => void
-  onPetCommand: (command: string) => void
+  onGoalCommand: (command: Extract<ReservedSlashCommand, { kind: 'goal' }>) => void
   leftToolbar: ReactNode
   rightToolbar: ReactNode
 }
 
 export function Composer({
   disabled,
+  busy = false,
+  queuedCount = 0,
   skills,
   selectedSkills,
   attachments,
@@ -25,41 +30,75 @@ export function Composer({
   onAttachFiles,
   onRemoveAttachment,
   onSubmit,
-  onPetCommand,
+  onGoalCommand,
   leftToolbar,
   rightToolbar,
 }: ComposerProps) {
   const [value, setValue] = useState('')
   const [highlighted, setHighlighted] = useState(0)
-  const slashQuery = getSlashQuery(value)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const highlightRef = useRef<HTMLDivElement>(null)
+  const rawSlashQuery = getSlashQuery(value)
+  const slashQuery = rawSlashQuery !== undefined && !isReservedSlashQuery(value.trim())
+    ? rawSlashQuery
+    : undefined
   const matchingSkills = useMemo(() => {
     if (slashQuery === undefined) return []
     return rankSkills(skills, slashQuery).slice(0, 8)
   }, [skills, slashQuery])
+  const highlightedValue = useMemo(
+    () => renderHighlightedValue(value, skills),
+    [skills, value],
+  )
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+    textarea.style.height = 'auto'
+    textarea.style.height = `${textarea.scrollHeight}px`
+  }, [value])
 
   function submit(event: FormEvent) {
     event.preventDefault()
     const trimmed = value.trim()
     if (!trimmed) return
-    if (trimmed.startsWith('/pet')) {
-      onPetCommand(trimmed)
+
+    const reserved = parseReservedSlashCommand(trimmed)
+    if (reserved?.kind === 'goal') {
+      onGoalCommand(reserved)
       setValue('')
       return
     }
-    onSubmit(trimmed)
+
+    const message = stripSelectedSkillTokens(trimmed, selectedSkills).trim()
+    if (!message) return
+
+    onSubmit(message)
     setValue('')
+    onSelectedSkillsChange([])
   }
 
   function selectSkill(skill: SkillSummary) {
-    if (!selectedSkills.some(item => item.id === skill.id)) {
-      onSelectedSkillsChange([...selectedSkills, skill])
-    }
-    setValue(removeSlashQuery(value))
+    const nextValue = replaceSlashQueryWithSkill(value, skill)
+    setValue(nextValue)
+    syncSelectedSkills(nextValue)
     setHighlighted(0)
   }
 
+  function updateValue(nextValue: string) {
+    setValue(nextValue)
+    syncSelectedSkills(nextValue)
+  }
+
+  function syncSelectedSkills(nextValue: string) {
+    const nextSkillNames = extractSkillTokenNames(nextValue)
+    const nextSkills = skills.filter(skill => nextSkillNames.has(skill.name.toLowerCase()))
+    if (sameSkillIds(nextSkills, selectedSkills)) return
+    onSelectedSkillsChange(nextSkills)
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === 'Enter' && !event.shiftKey && value.trim().startsWith('/pet')) {
+    if (event.key === 'Enter' && !event.shiftKey && parseReservedSlashCommand(value.trim())) {
       submit(event)
       return
     }
@@ -81,7 +120,7 @@ export function Composer({
         return
       }
       if (event.key === 'Escape') {
-        setValue(removeSlashQuery(value))
+        updateValue(removeSlashQuery(value))
         return
       }
     }
@@ -93,6 +132,13 @@ export function Composer({
 
   return (
     <form className="composer" onSubmit={submit}>
+      {(busy || queuedCount > 0) && (
+        <div className="composer-queue-status" aria-live="polite">
+          {busy ? 'O agente esta trabalhando' : 'Pronto para enviar'}
+          {queuedCount > 0 && <span>{queuedCount} na fila</span>}
+        </div>
+      )}
+
       {slashQuery !== undefined && (
         <div className="skills-menu popover-panel t-dropdown is-open" data-origin="bottom-center">
           <div className="popover-title">Skills</div>
@@ -118,20 +164,8 @@ export function Composer({
         </div>
       )}
 
-      {(selectedSkills.length > 0 || attachments.length > 0) && (
+      {attachments.length > 0 && (
         <div className="selected-skills">
-          {selectedSkills.map(skill => (
-            <button
-              key={skill.id}
-              className="skill-chip"
-              type="button"
-              onClick={() => onSelectedSkillsChange(selectedSkills.filter(item => item.id !== skill.id))}
-              title={skill.description}
-            >
-              /{skill.name}
-              <X size={12} />
-            </button>
-          ))}
           {attachments.map(attachment => (
             <button
               key={attachment.path}
@@ -147,14 +181,24 @@ export function Composer({
         </div>
       )}
 
-      <textarea
-        value={value}
-        disabled={disabled}
-        onChange={event => setValue(event.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder="Peça ao Verboo ou digite / para usar skills"
-        rows={2}
-      />
+      <div className="composer-text-wrap">
+        <div ref={highlightRef} className="composer-highlight" aria-hidden="true">
+          {highlightedValue}
+          {value.endsWith('\n') ? '\u00a0' : null}
+        </div>
+        <textarea
+          ref={textareaRef}
+          value={value}
+          disabled={disabled}
+          onChange={event => updateValue(event.target.value)}
+          onKeyDown={handleKeyDown}
+          onScroll={event => {
+            if (highlightRef.current) highlightRef.current.scrollTop = event.currentTarget.scrollTop
+          }}
+          placeholder={busy ? 'Digite uma mensagem para entrar na fila' : 'Peça ao Verboo ou digite / para usar skills'}
+          rows={1}
+        />
+      </div>
 
       <div className="composer-toolbar">
         <div className="composer-tools left">
@@ -165,7 +209,12 @@ export function Composer({
         </div>
         <div className="composer-tools right">
           {rightToolbar}
-          <button className="send-button" type="submit" disabled={disabled || !value.trim()}>
+          <button
+            className="send-button"
+            type="submit"
+            disabled={disabled || !value.trim()}
+            title={busy ? 'Adicionar a fila' : 'Enviar'}
+          >
             <ArrowUp size={17} />
           </button>
         </div>
@@ -181,6 +230,65 @@ function getSlashQuery(value: string): string | undefined {
 
 function removeSlashQuery(value: string): string {
   return value.replace(/(?:^|\s)\/([A-Za-z0-9_-]*)$/, match => (match.startsWith(' ') ? ' ' : '')).trimStart()
+}
+
+function replaceSlashQueryWithSkill(value: string, skill: SkillSummary): string {
+  const token = `/${skill.name}`
+  if (getSlashQuery(value) === undefined) return `${value}${value.endsWith(' ') || !value ? '' : ' '}${token} `
+  return value.replace(/(?:^|\s)\/([A-Za-z0-9_-]*)$/, match => {
+    const prefix = match.startsWith(' ') ? ' ' : ''
+    return `${prefix}${token} `
+  })
+}
+
+function extractSkillTokenNames(value: string): Set<string> {
+  const names = new Set<string>()
+  for (const match of value.matchAll(/(?:^|\s)\/([A-Za-z0-9_-]+)/g)) {
+    names.add(match[1].toLowerCase())
+  }
+  return names
+}
+
+function stripSelectedSkillTokens(value: string, selectedSkills: SkillSummary[]): string {
+  if (!selectedSkills.length) return value
+  const selectedNames = new Set(selectedSkills.map(skill => skill.name.toLowerCase()))
+  return value
+    .replace(/(?:^|\s)\/([A-Za-z0-9_-]+)/g, (match, name: string) => (
+      selectedNames.has(name.toLowerCase()) ? (match.startsWith(' ') ? ' ' : '') : match
+    ))
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+}
+
+function sameSkillIds(left: SkillSummary[], right: SkillSummary[]): boolean {
+  if (left.length !== right.length) return false
+  const rightIds = new Set(right.map(skill => skill.id))
+  return left.every(skill => rightIds.has(skill.id))
+}
+
+function renderHighlightedValue(value: string, skills: SkillSummary[]): ReactNode[] {
+  if (!value) return []
+  const knownNames = new Set(skills.map(skill => skill.name.toLowerCase()))
+  const parts: ReactNode[] = []
+  let cursor = 0
+
+  for (const match of value.matchAll(/(?:^|\s)\/([A-Za-z0-9_-]+)/g)) {
+    const start = match.index ?? 0
+    const text = match[0]
+    const leadingSpace = text.startsWith(' ') ? ' ' : ''
+    const token = leadingSpace ? text.slice(1) : text
+    if (start > cursor) parts.push(value.slice(cursor, start))
+    if (leadingSpace) parts.push(leadingSpace)
+    parts.push(
+      <span key={`${start}:${token}`} className={knownNames.has(match[1].toLowerCase()) ? 'composer-skill-token' : undefined}>
+        {token}
+      </span>,
+    )
+    cursor = start + text.length
+  }
+
+  if (cursor < value.length) parts.push(value.slice(cursor))
+  return parts
 }
 
 function rankSkills(skills: SkillSummary[], query: string): SkillSummary[] {

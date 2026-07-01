@@ -2,11 +2,14 @@ import type { ChatStore, StoredConversation, TranscriptItem } from '../../shared
 
 export const CHAT_STORE_KEY = 'verboo:chat-store:v1'
 
+type LegacyChatStore = Omit<ChatStore, 'version'> & { version: 1 }
+type PersistedChatStore = ChatStore | LegacyChatStore
+
 export function readChatStore(): ChatStore {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(CHAT_STORE_KEY) ?? '') as unknown
-    if (!isChatStore(parsed)) return emptyChatStore()
-    return sanitizeChatStore(parsed)
+    if (!isPersistedChatStore(parsed)) return emptyChatStore()
+    return sanitizeChatStore(migrateChatStore(parsed))
   } catch {
     return emptyChatStore()
   }
@@ -18,7 +21,7 @@ export function persistChatStore(store: ChatStore): void {
 
 export function emptyChatStore(): ChatStore {
   return {
-    version: 1,
+    version: 2,
     projects: [],
     conversations: [],
   }
@@ -52,7 +55,7 @@ export function initialSystemMessage(): TranscriptItem {
   return {
     id: 'welcome',
     role: 'system',
-    text: 'Pronto para codar com Verboo. Use / para chamar skills e /pet para mostrar o mascote.',
+    text: 'Pronto para codar com Verboo. Use / para chamar skills.',
     timestamp: Date.now(),
   }
 }
@@ -77,15 +80,29 @@ export function archivedConversations(store: ChatStore): StoredConversation[] {
 }
 
 export function activeProjects(store: ChatStore): ChatStore['projects'] {
-  return store.projects
-    .filter(project => !project.archivedAt)
-    .sort((a, b) => b.updatedAt - a.updatedAt)
+  return store.projects.filter(project => !project.archivedAt)
 }
 
-function isChatStore(value: unknown): value is ChatStore {
+function isPersistedChatStore(value: unknown): value is PersistedChatStore {
   if (!value || typeof value !== 'object') return false
-  const candidate = value as Partial<ChatStore>
-  return candidate.version === 1 && Array.isArray(candidate.projects) && Array.isArray(candidate.conversations)
+  const candidate = value as Partial<PersistedChatStore>
+  return (
+    (candidate.version === 1 || candidate.version === 2) &&
+    Array.isArray(candidate.projects) &&
+    Array.isArray(candidate.conversations)
+  )
+}
+
+function migrateChatStore(store: PersistedChatStore): ChatStore {
+  if (store.version === 2) return store
+  return {
+    ...store,
+    version: 2,
+    conversations: store.conversations.map(conversation => ({
+      ...conversation,
+      goal: undefined,
+    })),
+  }
 }
 
 function sanitizeChatStore(store: ChatStore): ChatStore {

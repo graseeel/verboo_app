@@ -14,7 +14,7 @@ import {
   Trash2,
   UserRound,
 } from 'lucide-react'
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChatProject, CliAuthStatus, ProfileResult, StoredConversation } from '../../shared/types'
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss'
 import mascotUrl from '../../../assets/branding/verboo-mascot.png'
@@ -30,6 +30,7 @@ type AppSidebarProps = {
   selectedProjectId?: string
   profile: ProfileResult
   cliAuth: CliAuthStatus
+  compact?: boolean
   onSelectView: (view: AppView) => void
   onOpenSettings: () => void
   onOpenArchivedChats: () => void
@@ -54,6 +55,7 @@ export function AppSidebar({
   selectedProjectId,
   profile,
   cliAuth,
+  compact = false,
   onSelectView,
   onOpenSettings,
   onOpenArchivedChats,
@@ -87,6 +89,13 @@ export function AppSidebar({
   )
   const looseChats = filteredConversations.filter(conversation => !conversation.projectId)
 
+  useEffect(() => {
+    if (!compact) return
+    setSearchOpen(false)
+    setProfileMenuOpen(false)
+    setEditingProjectId(undefined)
+  }, [compact])
+
   function startProjectEdit(project: ChatProject) {
     setEditingProjectId(project.id)
     setProjectDraft(project.name)
@@ -99,16 +108,16 @@ export function AppSidebar({
   }
 
   return (
-    <aside className={`app-sidebar ${activeView === 'settings' ? 'is-dimmed' : ''}`}>
+    <aside className={`app-sidebar ${compact ? 'compact' : ''} ${activeView === 'settings' ? 'is-dimmed' : ''}`}>
       <div className="sidebar-scroll">
         <nav className="sidebar-primary" aria-label="Navegacao principal">
-          <button className="sidebar-action" type="button" onClick={() => onNewChat(selectedProjectId)}>
+          <button className="sidebar-action" type="button" onClick={() => onNewChat(selectedProjectId)} title="Novo chat">
             <MessageSquarePlus size={16} />
-            Novo chat
+            <span>Novo chat</span>
           </button>
-          <button className="sidebar-action" type="button" onClick={() => setSearchOpen(open => !open)}>
+          <button className="sidebar-action" type="button" onClick={() => setSearchOpen(open => !open)} title="Pesquisar">
             <Search size={16} />
-            Pesquisar
+            <span>Pesquisar</span>
           </button>
           {searchOpen && (
             <input

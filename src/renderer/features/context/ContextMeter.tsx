@@ -12,7 +12,8 @@ export function ContextMeter({ usage, contextWindow }: ContextMeterProps) {
     : usage?.usedTokens && maxTokens
       ? Math.max(0, Math.min(1, usage.usedTokens / maxTokens))
       : undefined
-  const percentLabel = bounded === undefined ? '--%' : `${Math.round(bounded * 100)}%`
+  const overLimit = Boolean(usage?.usedTokens && maxTokens && usage.usedTokens > maxTokens)
+  const percentLabel = bounded === undefined ? '--%' : overLimit ? '100%+' : `${Math.round(bounded * 100)}%`
   const usageLabel = usage?.usedTokens && maxTokens
     ? `${formatCompact(usage.usedTokens)}/${formatCompact(maxTokens)}`
     : maxTokens
@@ -21,13 +22,17 @@ export function ContextMeter({ usage, contextWindow }: ContextMeterProps) {
 
   return (
     <div
-      className="context-meter"
-      title={usage ? 'Uso real de contexto recebido do stream do CLI.' : 'Aguardando uso real de contexto do CLI.'}
+      className={`context-meter ${overLimit ? 'over-limit' : ''}`}
+      title={
+        overLimit
+          ? 'O CLI reportou uso acima da janela configurada. A janela enviada ao CLI e uma meta de autocompactacao, nao um limite duro garantido.'
+          : usage ? 'Uso real de contexto recebido do stream do CLI.' : 'Aguardando uso real de contexto do CLI.'
+      }
       aria-label={`Contexto ${percentLabel}`}
     >
       <span className="context-percent">{percentLabel}</span>
       <span className="context-bar" aria-hidden="true">
-        <span style={{ width: bounded === undefined ? '0%' : `${bounded * 100}%` }} />
+        <span style={{ transform: `scaleX(${bounded === undefined ? 0 : bounded})` }} />
       </span>
       <span>{usageLabel}</span>
     </div>

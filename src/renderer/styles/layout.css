@@ -2,9 +2,9 @@
   position: relative;
   z-index: 90;
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 0;
+  gap: 9px;
   min-height: var(--titlebar-height);
   padding: 0 18px 0 var(--mac-traffic-width);
   border-bottom: 1px solid var(--border);
@@ -30,6 +30,24 @@
 
 .topbar-mark {
   justify-self: start;
+}
+
+.topbar-sidebar-button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.topbar-sidebar-button:hover {
+  border-color: var(--border);
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent-soft) 42%, transparent);
 }
 
 .brand-text {
@@ -120,17 +138,54 @@
   background: var(--bg-soft);
 }
 
+.icon-button:focus-visible,
+.ghost-button:focus-visible,
+.composer-icon-button:focus-visible,
+.sidebar-action:focus-visible,
+.sidebar-item:focus-visible,
+.sidebar-mini-button:focus-visible,
+.project-toggle:focus-visible,
+.project-name-button:focus-visible,
+.conversation-main:focus-visible,
+.sidebar-row-actions button:focus-visible,
+.sidebar-account:focus-visible,
+.profile-menu button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.icon-button:not(:disabled):active,
+.ghost-button:not(:disabled):active,
+.composer-icon-button:not(:disabled):active,
+.sidebar-action:not(:disabled):active,
+.sidebar-item:not(:disabled):active,
+.sidebar-mini-button:not(:disabled):active,
+.project-toggle:not(:disabled):active,
+.project-name-button:not(:disabled):active,
+.conversation-main:not(:disabled):active,
+.sidebar-row-actions button:not(:disabled):active,
+.sidebar-account:not(:disabled):active,
+.profile-menu button:not(:disabled):active {
+  transform: scale(var(--press-scale));
+}
+
 .icon-button.tiny {
   width: 28px;
   height: 28px;
 }
 
 .app-layout {
+  position: relative;
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   overflow: hidden;
+  transition: grid-template-columns 180ms ease-out;
+}
+
+.app-layout.sidebar-hidden {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .app-sidebar {
@@ -147,6 +202,36 @@
     background-color 180ms ease-out,
     border-color 180ms ease-out,
     opacity 180ms ease-out;
+}
+
+.app-sidebar.compact {
+  padding: 18px 8px 14px;
+}
+
+.sidebar-resizer {
+  position: absolute;
+  z-index: 85;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--sidebar-width) - 3px);
+  width: 6px;
+  cursor: col-resize;
+}
+
+.sidebar-resizer::after {
+  position: absolute;
+  top: 18px;
+  bottom: 18px;
+  left: 2px;
+  width: 1px;
+  border-radius: 999px;
+  background: transparent;
+  content: "";
+  transition: background-color 150ms ease-out;
+}
+
+.sidebar-resizer:hover::after {
+  background: color-mix(in srgb, var(--accent) 56%, transparent);
 }
 
 .app-sidebar::after {
@@ -187,6 +272,10 @@
   transition:
     filter 180ms ease-out,
     opacity 180ms ease-out;
+}
+
+.app-sidebar.compact .sidebar-scroll {
+  padding-right: 0;
 }
 
 .sidebar-primary,
@@ -261,6 +350,39 @@
   padding: 0 10px;
 }
 
+.app-sidebar.compact .sidebar-action {
+  justify-content: center;
+  padding: 0;
+}
+
+.app-sidebar.compact .sidebar-action span,
+.app-sidebar.compact .sidebar-section-heading h2,
+.app-sidebar.compact .sidebar-section > h2,
+.app-sidebar.compact .sidebar-empty,
+.app-sidebar.compact .sidebar-search,
+.app-sidebar.compact .project-name-button,
+.app-sidebar.compact .project-name-input,
+.app-sidebar.compact .sidebar-row-actions,
+.app-sidebar.compact .project-chat-list,
+.app-sidebar.compact .conversation-main span,
+.app-sidebar.compact .conversation-main small,
+.app-sidebar.compact .account-brand strong,
+.app-sidebar.compact .account-brand small,
+.app-sidebar.compact .account-disclaimer,
+.app-sidebar.compact .account-profile > span:last-child,
+.app-sidebar.compact .profile-menu {
+  display: none;
+}
+
+.app-sidebar.compact .sidebar-section-heading {
+  justify-content: center;
+}
+
+.app-sidebar.compact .sidebar-mini-button {
+  width: 34px;
+  height: 34px;
+}
+
 .sidebar-item {
   width: 100%;
   padding: 0 9px;
@@ -298,6 +420,11 @@
   grid-template-columns: auto minmax(0, 1fr) auto;
 }
 
+.app-sidebar.compact .project-row,
+.app-sidebar.compact .conversation-row {
+  grid-template-columns: 1fr;
+}
+
 .project-row:hover,
 .project-row.active,
 .conversation-row:hover,
@@ -325,6 +452,16 @@
   align-items: center;
   gap: 5px;
   padding: 0 0 0 8px;
+}
+
+.app-sidebar.compact .project-toggle {
+  justify-content: center;
+  width: 100%;
+  padding: 0;
+}
+
+.app-sidebar.compact .project-toggle svg:first-child {
+  display: none;
 }
 
 .project-name-button {
@@ -360,6 +497,12 @@
   height: 34px;
   padding: 0 8px;
   text-align: left;
+}
+
+.app-sidebar.compact .conversation-main {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  padding: 0;
 }
 
 .conversation-main span {
@@ -458,6 +601,22 @@
   transition:
     background-color 150ms ease-out,
     color 150ms ease-out;
+}
+
+.app-sidebar.compact .sidebar-account {
+  justify-items: center;
+  padding: 8px 0;
+}
+
+.app-sidebar.compact .account-brand,
+.app-sidebar.compact .account-profile {
+  grid-template-columns: 1fr;
+  justify-items: center;
+}
+
+.app-sidebar.compact .account-avatar {
+  width: 32px;
+  height: 32px;
 }
 
 .sidebar-account:hover,

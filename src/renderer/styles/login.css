@@ -78,6 +78,42 @@
   margin: 22px 0 10px;
 }
 
+.login-remember {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: start;
+  margin-top: 18px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-soft) 72%, transparent);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.login-remember input {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.login-remember span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.login-remember strong {
+  font-size: 13px;
+}
+
+.login-remember small {
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
 .secondary-grid {
   margin-top: 10px;
 }
@@ -136,6 +172,28 @@
 .context-presets button:hover {
   border-color: var(--border-strong);
   background: color-mix(in srgb, var(--bg-soft) 78%, var(--accent-soft));
+}
+
+.primary-action:focus-visible,
+.secondary-action:focus-visible,
+.continue-link:focus-visible,
+.api-login-row button:focus-visible,
+.dashboard-link:focus-visible,
+.theme-toggle button:focus-visible,
+.context-presets button:focus-visible,
+.contact-list a:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.primary-action:not(:disabled):active,
+.secondary-action:not(:disabled):active,
+.continue-link:not(:disabled):active,
+.api-login-row button:not(:disabled):active,
+.dashboard-link:not(:disabled):active,
+.theme-toggle button:not(:disabled):active,
+.context-presets button:not(:disabled):active {
+  transform: scale(var(--press-scale));
 }
 
 .login-note,

@@ -3,21 +3,24 @@
   .t-modal,
   .t-stagger-line,
   .t-text-swap,
-  .page-surface,
-  .pet-sprite,
-  .pet-stage,
-  .pet-body,
-  .pet-prop,
-  .pet-prop--laptop span,
-  .pet-thought i,
-  .pet-success,
-  .pet-success path,
-  .pet-action-lines,
-  .pet-bubble,
-  .pet-slot-text,
-  .pet-scan-text {
+  .page-surface {
     animation: none !important;
     transition: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-dropdown.is-open,
+  .t-modal.is-open,
+  .pet-sprite.is-open {
+    opacity: 1;
+  }
+
+  .t-stagger-line,
+  .pet-slot-text {
+    opacity: 1;
+    transform: none;
+    filter: none;
   }
 }
 
@@ -40,17 +43,20 @@
   :root {
     --sidebar-width: 0px;
     --mac-traffic-width: 92px;
+    --composer-clearance: 226px;
   }
 
   .topbar {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: auto 1fr;
   }
 
   .app-layout {
+    --sidebar-width: 0px !important;
     grid-template-columns: 1fr;
   }
 
-  .app-sidebar {
+  .app-sidebar,
+  .sidebar-resizer {
     display: none;
   }
 
@@ -92,6 +98,20 @@
 
   .composer-pill {
     max-width: 190px;
+  }
+
+  .permission-approval-panel,
+  .trusted-command-row {
+    grid-template-columns: 1fr;
+  }
+
+  .permission-approval-icon {
+    display: none;
+  }
+
+  .permission-approval-actions {
+    justify-content: flex-end;
+    flex-wrap: wrap;
   }
 
   .access-menu,

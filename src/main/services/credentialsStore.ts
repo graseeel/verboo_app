@@ -13,9 +13,10 @@ export class CredentialsStore {
 
   async getStatus(): Promise<CredentialStatus> {
     const stored = await this.read()
+    const apiKey = this.decryptApiKey(stored)
     return {
-      hasApiKey: Boolean(stored.encryptedApiKey),
-      apiKeyHint: stored.apiKeyHint,
+      hasApiKey: Boolean(apiKey),
+      apiKeyHint: apiKey ? stored.apiKeyHint : undefined,
     }
   }
 
@@ -38,6 +39,10 @@ export class CredentialsStore {
 
   async getApiKey(): Promise<string | undefined> {
     const stored = await this.read()
+    return this.decryptApiKey(stored)
+  }
+
+  private decryptApiKey(stored: StoredCredentials): string | undefined {
     if (!stored.encryptedApiKey) return undefined
     try {
       return safeStorage.decryptString(Buffer.from(stored.encryptedApiKey, 'base64'))

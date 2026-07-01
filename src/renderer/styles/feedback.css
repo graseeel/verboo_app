@@ -135,3 +135,15 @@
   justify-content: center;
   gap: 7px;
 }
+
+.feedback-form input:focus-visible,
+.feedback-form textarea:focus-visible,
+.feedback-form select:focus-visible,
+.feedback-form .modal-actions button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.feedback-form .modal-actions button:not(:disabled):active {
+  transform: scale(var(--press-scale));
+}

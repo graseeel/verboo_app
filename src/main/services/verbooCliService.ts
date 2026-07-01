@@ -1,26 +1,36 @@
 import { app, powerSaveBlocker } from 'electron'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { type FileHandle, mkdtemp, open, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
-import type { AgentEvent, AgentTurnRequest, AttachmentMeta, CliAuthStatus, LoginResult, UserSettings } from '../../shared/types'
+import type { AgentEvent, AgentResultSnapshot, AgentTurnRequest, AttachmentMeta, CliAuthStatus, GoalEvaluationInput, GoalEvaluationResult, LoginResult, TokenUsage, UserSettings } from '../../shared/types'
 import { accessModeConfig } from '../security/accessModes'
 import { createImageBlock, type CliImageBlock } from './attachmentService'
+import { getCliOAuthAccessToken, refreshCliOAuthAccessToken } from './cliCredentials'
+import type { CredentialsStore } from './credentialsStore'
 
 type AgentEventHandler = (event: AgentEvent) => void
+type AuthTokenPipe = {
+  dir: string
+  handle: FileHandle
+  fd: number
+  envVar: 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR'
+}
 
 const require = createRequire(import.meta.url)
 const STRUCTURED_INPUT_WRAPPER = `
 const { spawn } = require('node:child_process');
 const { createReadStream } = require('node:fs');
 const [payloadPath, cliPath, ...cliArgs] = process.argv.slice(1);
+const authTokenFd = Number(process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR);
+const extraStdio = Number.isInteger(authTokenFd) && authTokenFd >= 3 ? [authTokenFd] : [];
 const child = spawn(process.execPath, [cliPath, ...cliArgs], {
   cwd: process.cwd(),
   env: process.env,
-  stdio: ['pipe', 'inherit', 'inherit'],
+  stdio: ['pipe', 'inherit', 'inherit', ...extraStdio],
 });
 const input = createReadStream(payloadPath);
 input.on('error', error => {
@@ -44,7 +54,9 @@ export class VerbooCliService {
   private activeProcess: ChildProcessWithoutNullStreams | undefined
   private powerBlockerId: number | undefined
 
-  async sendTurn(request: AgentTurnRequest, onEvent: AgentEventHandler, settings?: UserSettings): Promise<string> {
+  constructor(private readonly credentials?: CredentialsStore) {}
+
+  async sendTurn(request: AgentTurnRequest, onEvent: AgentEventHandler, settings?: UserSettings, resumeSessionId?: string): Promise<string> {
     const turnId = randomUUID()
     onEvent({ type: 'started', turnId })
     this.startPowerBlocker(settings)
@@ -72,6 +84,7 @@ export class VerbooCliService {
       'stream-json',
       '--verbose',
       '--include-partial-messages',
+      ...(resumeSessionId ? ['--resume', resumeSessionId] : []),
       ...(request.model ? ['--model', request.model] : []),
       ...accessModeConfig[request.accessMode].cliArgs,
     ]
@@ -84,25 +97,31 @@ export class VerbooCliService {
       childArgs = ['-e', STRUCTURED_INPUT_WRAPPER, payloadFile.path, cliPath, ...cliArgs]
     }
 
-    this.activeProcess = spawn(process.execPath, childArgs, {
+    const authTokenPipe = await createAuthTokenPipe(this.credentials)
+    const child = spawn(process.execPath, childArgs, {
       cwd: request.workingDirectory || app.getPath('home'),
       env: {
         ...process.env,
         ELECTRON_RUN_AS_NODE: '1',
+        ...(authTokenPipe ? { [authTokenPipe.envVar]: String(authTokenPipe.fd) } : {}),
         ...(request.contextWindow ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(request.contextWindow) } : {}),
       },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-
-    const child = this.activeProcess
+      stdio: authTokenPipe ? ['pipe', 'pipe', 'pipe', authTokenPipe.handle.fd] : ['pipe', 'pipe', 'pipe'],
+    }) as ChildProcessWithoutNullStreams
+    this.activeProcess = child
     child.stdin.end()
 
     let emittedStreamText = false
+    let resultSnapshot: AgentResultSnapshot | undefined
 
     createInterface({ input: child.stdout }).on('line', line => {
       const cleanLine = cleanTerminalText(line)
       const parsed = parseJsonLine(cleanLine)
       if (parsed) {
+        if (isResultPayload(parsed)) {
+          resultSnapshot = toAgentResultSnapshot(turnId, parsed)
+          onEvent({ type: 'result', turnId, result: resultSnapshot })
+        }
         onEvent({ type: 'json', turnId, payload: parsed })
         const text = extractText(parsed, emittedStreamText)
         if (isStreamTextPayload(parsed)) emittedStreamText = true
@@ -120,6 +139,7 @@ export class VerbooCliService {
     child.on('error', error => {
       this.stopPowerBlocker()
       void cleanupPayloadDir(payloadDir)
+      void cleanupAuthTokenPipe(authTokenPipe)
       onEvent({ type: 'error', turnId, message: error.message })
     })
 
@@ -127,6 +147,14 @@ export class VerbooCliService {
       if (this.activeProcess === child) this.activeProcess = undefined
       this.stopPowerBlocker()
       void cleanupPayloadDir(payloadDir)
+      void cleanupAuthTokenPipe(authTokenPipe)
+      if (resultSnapshot) {
+        onEvent({
+          type: 'result',
+          turnId,
+          result: { ...resultSnapshot, exitCode },
+        })
+      }
       onEvent({ type: 'done', turnId, exitCode })
     })
 
@@ -134,15 +162,7 @@ export class VerbooCliService {
   }
 
   startCliLogin(): Promise<LoginResult> {
-    return this.getAuthStatus().then(async currentStatus => {
-      if (currentStatus.loggedIn) {
-        return {
-          ok: true,
-          message: currentStatus.email ? `CLI autenticado como ${currentStatus.email}.` : 'CLI ja esta autenticado.',
-          status: currentStatus,
-        }
-      }
-
+    return Promise.resolve().then(async () => {
       const result = await this.runCli(['auth', 'login'], 180_000)
       const nextStatus = await this.getAuthStatus()
       const message = result.output || result.error || (nextStatus.loggedIn ? 'Login concluido.' : 'Login nao concluido.')
@@ -265,7 +285,31 @@ async function cleanupPayloadDir(dir?: string): Promise<void> {
   await rm(dir, { recursive: true, force: true }).catch(() => undefined)
 }
 
+async function createAuthTokenPipe(credentials?: CredentialsStore): Promise<AuthTokenPipe | undefined> {
+  const token = await refreshCliOAuthAccessToken() ?? await getCliOAuthAccessToken() ?? await credentials?.getApiKey()
+  if (!token) return undefined
+
+  const dir = await mkdtemp(join(tmpdir(), 'verboo-code-auth-'))
+  const path = join(dir, 'token')
+  await writeFile(path, token, { encoding: 'utf8', mode: 0o600 })
+  const handle = await open(path, 'r')
+  return { dir, handle, fd: 3, envVar: 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR' }
+}
+
+async function cleanupAuthTokenPipe(pipe?: AuthTokenPipe): Promise<void> {
+  if (!pipe) return
+  await pipe.handle.close().catch(() => undefined)
+  await rm(pipe.dir, { recursive: true, force: true }).catch(() => undefined)
+}
+
 function buildPrompt(request: AgentTurnRequest): string {
+  const appInstructions = [
+    'Responda no mesmo idioma do usuario; se o usuario escrever em portugues, use portugues do Brasil.',
+    'Estruture respostas longas com paragrafos curtos, listas e resumos finais quando isso ajudar a leitura.',
+    'Antes de usar ferramentas em tarefas de analise ou implementacao, escreva uma atualizacao breve sobre o que entendeu e o proximo passo.',
+    'Nao misture atualizacao, execucao e pedido de aprovacao no mesmo paragrafo. Primeiro escreva o que vai fazer em 1-2 frases; depois use ferramentas; se precisar de permissao, peca isso como uma solicitacao separada e objetiva.',
+    'Ao finalizar um turno, entregue uma resposta curta e operacional. Nao despeje listas completas de arquivos, comandos ou passos executados no texto principal; esses detalhes devem ficar no painel expansivel da interface quando existirem.',
+  ]
   const contextInstruction = request.contextWindow
     ? [`O app configurou a janela efetiva de autocompactacao em ${request.contextWindow} tokens para este modelo. Priorize informacao relevante dentro desse orcamento.`]
     : []
@@ -281,12 +325,13 @@ function buildPrompt(request: AgentTurnRequest): string {
   const attachmentLines = buildAttachmentLines(request.attachments)
 
   if (request.skills.length === 0) {
-    return [...contextInstruction, ...personalization, ...attachmentLines, request.message].join('\n\n')
+    return [...appInstructions, ...contextInstruction, ...personalization, ...attachmentLines, request.message].join('\n\n')
   }
 
   const skillLines = request.skills.map(skill => `- /${skill.name}: ${skill.description}`).join('\n')
   return [
     ...contextInstruction,
+    ...appInstructions,
     ...personalization,
     'Use as skills selecionadas para esta tarefa:',
     skillLines,
@@ -344,6 +389,9 @@ function extractText(payload: unknown, suppressAssistantSnapshot = false): strin
   }
   if (typeof payload.content === 'string') return cleanTerminalText(payload.content)
   if (typeof payload.text === 'string') return cleanTerminalText(payload.text)
+  if (payload.type === 'result' && !suppressAssistantSnapshot && typeof payload.result === 'string') {
+    return cleanTerminalText(payload.result)
+  }
   if (payload.type === 'assistant' && isRecord(payload.message)) {
     if (suppressAssistantSnapshot) return undefined
     const content = payload.message.content
@@ -381,6 +429,24 @@ function personalityLabel(value: NonNullable<AgentTurnRequest['personality']>): 
   return 'pragmatica, objetiva e orientada a execucao'
 }
 
+function isResultPayload(payload: unknown): payload is Record<string, unknown> {
+  return isRecord(payload) && payload.type === 'result'
+}
+
+function toAgentResultSnapshot(turnId: string, payload: Record<string, unknown>): AgentResultSnapshot {
+  return {
+    turnId,
+    exitCode: null,
+    sessionId: asOptionalString(payload.session_id),
+    stopReason: asOptionalString(payload.stop_reason),
+    isError: typeof payload.is_error === 'boolean' ? payload.is_error : undefined,
+    usage: isRecord(payload.usage) ? payload.usage as TokenUsage : undefined,
+    permissionDenials: Array.isArray(payload.permission_denials) ? payload.permission_denials : undefined,
+    errors: Array.isArray(payload.errors) ? payload.errors.filter((item): item is string => typeof item === 'string') : undefined,
+    rawResult: payload,
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null
 }
@@ -389,6 +455,9 @@ function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
+function asOptionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
 function asNullableString(value: unknown): string | null | undefined {
   if (value === null) return null
   return asString(value)

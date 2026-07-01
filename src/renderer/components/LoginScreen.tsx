@@ -12,11 +12,13 @@ type LoginScreenProps = {
   credentials: CredentialStatus
   cliAuth: CliAuthStatus
   modelResult: ModelDiscoveryResult
+  staySignedIn: boolean
   onStartLogin: () => Promise<LoginResult> | LoginResult
   onOpenDashboard: () => void
   onOpenSignup: () => void
   onCheckExistingAuth: () => Promise<boolean>
   onSaveApiKey: (apiKey: string) => Promise<boolean>
+  onStaySignedInChange: (staySignedIn: boolean) => Promise<void> | void
   onAcceptNotice: () => void
   onOpenFeedback: () => void
 }
@@ -28,11 +30,13 @@ export function LoginScreen({
   credentials,
   cliAuth,
   modelResult,
+  staySignedIn,
   onStartLogin,
   onOpenDashboard,
   onOpenSignup,
   onCheckExistingAuth,
   onSaveApiKey,
+  onStaySignedInChange,
   onAcceptNotice,
   onOpenFeedback,
 }: LoginScreenProps) {
@@ -144,6 +148,20 @@ export function LoginScreen({
             A validacao precisa retornar modelos disponiveis para o seu plano.
           </p>
         </div>
+
+        <label className="login-remember">
+          <input
+            type="checkbox"
+            checked={staySignedIn}
+            onChange={event => {
+              void onStaySignedInChange(event.target.checked)
+            }}
+          />
+          <span>
+            <strong>Continuar logado</strong>
+            <small>Usar a ultima validacao local quando a renovacao de modelos falhar temporariamente.</small>
+          </span>
+        </label>
 
         <div className="login-actions">
           <button className="primary-action" type="button" onClick={startLogin} disabled={checking}>
