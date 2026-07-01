@@ -14,8 +14,11 @@ import type {
   MenuBarState,
   ModelDiscoveryResult,
   ProfileResult,
+  ResearchSubagentResult,
+  ResearchSubagentsRunRequest,
   SkillSummary,
   UserSettings,
+  WorkspaceChangeSummary,
 } from '../shared/types'
 
 const api = {
@@ -39,11 +42,13 @@ const api = {
   toggleWindowZoom: () => ipcRenderer.invoke('window:toggle-zoom') as Promise<boolean>,
   listSkills: (workingDirectory: string) => ipcRenderer.invoke('skills:list', workingDirectory) as Promise<SkillSummary[]>,
   openUserSkillsFolder: () => ipcRenderer.invoke('skills:open-user-folder') as Promise<string>,
+  getWorkspaceChanges: (workingDirectory: string) => ipcRenderer.invoke('workspace:changes', workingDirectory) as Promise<WorkspaceChangeSummary>,
   evaluateGoal: (input: GoalEvaluationInput) => ipcRenderer.invoke('goal:evaluate', input) as Promise<{ evaluation: GoalEvaluationResult; userMessage?: string }>,
   pickFiles: () => ipcRenderer.invoke('files:pick') as Promise<AttachmentMeta[]>,
   pickFolder: () => ipcRenderer.invoke('files:pick-folder') as Promise<string | undefined>,
   createProjectFolder: () => ipcRenderer.invoke('files:create-project-folder') as Promise<string | undefined>,
   sendTurn: (request: AgentTurnRequest, resumeSessionId?: string) => ipcRenderer.invoke('agent:send', request, resumeSessionId) as Promise<string>,
+  runResearchSubagents: (request: ResearchSubagentsRunRequest) => ipcRenderer.invoke('research-subagents:run', request) as Promise<ResearchSubagentResult[]>,
   interrupt: () => ipcRenderer.invoke('agent:interrupt') as Promise<boolean>,
   onAgentEvent: (callback: (event: AgentEvent) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: AgentEvent) => callback(payload)

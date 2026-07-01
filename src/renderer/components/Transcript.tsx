@@ -1,6 +1,5 @@
-import { CheckCircle2, ChevronDown, Clock3, FileSearch, FileText, GitBranch, Pencil, Search, Terminal, Wrench } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Clock3, FileSearch, FileText, GitBranch, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { SlotText } from 'slot-text/react'
 import type { TranscriptItem } from '../../shared/types'
 
 type TranscriptProps = {
@@ -20,6 +19,7 @@ export function Transcript({ items }: TranscriptProps) {
           ? (
               <MessageArticle key={entry.item.id} item={entry.item}>
                 <ActivityPanel activities={entry.activities} summary={entry.summary} />
+                {entry.summary && <CompletionSummary summary={entry.summary} />}
               </MessageArticle>
             )
           : <MessageArticle key={entry.item.id} item={entry.item} />
@@ -43,8 +43,13 @@ function MessageArticle({ item, children }: { item: TranscriptItem; children?: R
         {item.kind === 'summary' && <CheckCircle2 size={14} strokeWidth={1.8} />}
         <span>{labelForItem(item)}</span>
         {item.streaming && (
-          <span className="streaming-dot">
-            <SlotText text="gerando" options={{ direction: 'up', duration: 180, stagger: 18 }} />
+          <span className="message-status-marker" role="status">
+            <span className="message-status-marker-icon" aria-hidden="true">
+              <LoaderCircle size={12} />
+            </span>
+            <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm" data-text="gerando">
+              gerando
+            </span>
           </span>
         )}
       </div>
@@ -89,6 +94,64 @@ function ActivityPanel({ activities, summary }: { activities: TranscriptItem[]; 
         </div>
       )}
     </details>
+  )
+}
+
+function CompletionSummary({ summary }: { summary: TranscriptItem }) {
+  const lines = summary.activityDetail
+    ?.split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    ?? []
+
+  if (lines.length === 0 && !summary.changeSummary?.totalFiles) return null
+
+  return (
+    <section className="turn-completion-summary" aria-label="Resumo do turno">
+      <div className="turn-completion-header">
+        <CheckCircle2 size={14} strokeWidth={1.8} />
+        <span>{summary.text}</span>
+      </div>
+      {lines.length > 0 && (
+        <div className="turn-completion-lines">
+          {lines.map(line => (
+            <p key={line}>{line}</p>
+          ))}
+        </div>
+      )}
+      {summary.changeSummary?.totalFiles ? <ChangeSummaryCard summary={summary.changeSummary} /> : null}
+    </section>
+  )
+}
+
+function ChangeSummaryCard({ summary }: { summary: NonNullable<TranscriptItem['changeSummary']> }) {
+  const visibleFiles = summary.files.slice(0, 3)
+  const hiddenCount = Math.max(0, summary.totalFiles - visibleFiles.length)
+
+  return (
+    <div className="change-summary-card">
+      <div className="change-summary-card-header">
+        <span>{summary.totalFiles} {summary.totalFiles === 1 ? 'arquivo alterado' : 'arquivos alterados'}</span>
+        <span className="change-summary-totals">
+          <span className="added">+{summary.additions}</span>
+          <span className="deleted">-{summary.deletions}</span>
+        </span>
+      </div>
+      <div className="change-summary-files">
+        {visibleFiles.map(file => (
+          <div key={file.path} className="change-summary-file">
+            <span title={file.path}>{compactPath(file.path)}</span>
+            <span className="change-summary-totals">
+              <span className="added">+{file.additions}</span>
+              <span className="deleted">-{file.deletions}</span>
+            </span>
+          </div>
+        ))}
+        {hiddenCount > 0 && (
+          <div className="change-summary-more">Ver mais {hiddenCount} {hiddenCount === 1 ? 'arquivo' : 'arquivos'}</div>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -248,4 +311,9 @@ function formatCount(count: number | undefined, singular: string, plural: string
 function joinParts(parts: string[]): string {
   if (parts.length <= 1) return parts[0] ?? ''
   return `${parts.slice(0, -1).join(', ')} e ${parts[parts.length - 1]}`
+}
+
+function compactPath(path: string): string {
+  if (path.length <= 58) return path
+  return `...${path.slice(-55)}`
 }

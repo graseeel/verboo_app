@@ -1,3 +1,4 @@
+import { AlertTriangle, Gauge } from 'lucide-react'
 import type { ContextUsageSnapshot } from '../../../shared/types'
 
 type ContextMeterProps = {
@@ -7,40 +8,45 @@ type ContextMeterProps = {
 
 export function ContextMeter({ usage, contextWindow }: ContextMeterProps) {
   const maxTokens = usage?.maxTokens ?? contextWindow
+  const usedTokens = usage?.usedTokens
+  const hasUsedTokens = usedTokens !== undefined
   const bounded = usage?.percentage !== undefined
     ? Math.max(0, Math.min(1, usage.percentage))
-    : usage?.usedTokens && maxTokens
-      ? Math.max(0, Math.min(1, usage.usedTokens / maxTokens))
+    : hasUsedTokens && maxTokens
+      ? Math.max(0, Math.min(1, usedTokens / maxTokens))
       : undefined
-  const overLimit = Boolean(usage?.usedTokens && maxTokens && usage.usedTokens > maxTokens)
+  const overLimit = Boolean(hasUsedTokens && maxTokens && usedTokens > maxTokens)
   const percentLabel = bounded === undefined ? '--%' : overLimit ? '100%+' : `${Math.round(bounded * 100)}%`
-  const usageLabel = usage?.usedTokens && maxTokens
-    ? `${formatCompact(usage.usedTokens)}/${formatCompact(maxTokens)}`
+  const usageLabel = hasUsedTokens && maxTokens
+    ? `${formatCompact(usedTokens)}/${formatCompact(maxTokens)}`
     : maxTokens
       ? `--/${formatCompact(maxTokens)}`
-      : 'contexto indisponivel'
+      : 'unavailable'
+  const title = overLimit
+    ? 'The CLI reported usage above the configured context window. This window is an auto-compact target, not a hard process limit.'
+    : usage ? 'Real context usage reported by the CLI stream.' : 'Waiting for context usage from the CLI stream.'
 
   return (
     <div
       className={`context-meter ${overLimit ? 'over-limit' : ''}`}
-      title={
-        overLimit
-          ? 'O CLI reportou uso acima da janela configurada. A janela enviada ao CLI e uma meta de autocompactacao, nao um limite duro garantido.'
-          : usage ? 'Uso real de contexto recebido do stream do CLI.' : 'Aguardando uso real de contexto do CLI.'
-      }
-      aria-label={`Contexto ${percentLabel}`}
+      title={title}
+      aria-label={`Context ${percentLabel}`}
     >
-      <span className="context-percent">{percentLabel}</span>
+      {overLimit ? <AlertTriangle className="context-meter-icon" size={15} /> : <Gauge className="context-meter-icon" size={15} />}
+      <span className="context-copy">
+        <strong>Context</strong>
+        <small>{usageLabel}</small>
+      </span>
       <span className="context-bar" aria-hidden="true">
         <span style={{ transform: `scaleX(${bounded === undefined ? 0 : bounded})` }} />
       </span>
-      <span>{usageLabel}</span>
+      <span className="context-percent">{percentLabel}</span>
     </div>
   )
 }
 
 function formatCompact(value: number): string {
-  return Intl.NumberFormat('pt-BR', {
+  return Intl.NumberFormat('en-US', {
     notation: 'compact',
     maximumFractionDigits: 1,
   }).format(value)

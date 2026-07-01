@@ -6,7 +6,6 @@ import { isReservedSlashQuery, parseReservedSlashCommand, type ReservedSlashComm
 type ComposerProps = {
   disabled: boolean
   busy?: boolean
-  queuedCount?: number
   skills: SkillSummary[]
   selectedSkills: SkillSummary[]
   attachments: AttachmentMeta[]
@@ -16,13 +15,13 @@ type ComposerProps = {
   onSubmit: (message: string) => void
   onGoalCommand: (command: Extract<ReservedSlashCommand, { kind: 'goal' }>) => void
   leftToolbar: ReactNode
+  centerToolbar?: ReactNode
   rightToolbar: ReactNode
 }
 
 export function Composer({
   disabled,
   busy = false,
-  queuedCount = 0,
   skills,
   selectedSkills,
   attachments,
@@ -32,6 +31,7 @@ export function Composer({
   onSubmit,
   onGoalCommand,
   leftToolbar,
+  centerToolbar,
   rightToolbar,
 }: ComposerProps) {
   const [value, setValue] = useState('')
@@ -132,13 +132,6 @@ export function Composer({
 
   return (
     <form className="composer" onSubmit={submit}>
-      {(busy || queuedCount > 0) && (
-        <div className="composer-queue-status" aria-live="polite">
-          {busy ? 'O agente esta trabalhando' : 'Pronto para enviar'}
-          {queuedCount > 0 && <span>{queuedCount} na fila</span>}
-        </div>
-      )}
-
       {slashQuery !== undefined && (
         <div className="skills-menu popover-panel t-dropdown is-open" data-origin="bottom-center">
           <div className="popover-title">Skills</div>
@@ -207,6 +200,7 @@ export function Composer({
           </button>
           {leftToolbar}
         </div>
+        {centerToolbar && <div className="composer-tools center">{centerToolbar}</div>}
         <div className="composer-tools right">
           {rightToolbar}
           <button

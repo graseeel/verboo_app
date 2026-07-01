@@ -20,7 +20,11 @@
   --titlebar-height: 56px;
   --mac-traffic-width: 104px;
   --sidebar-width: 292px;
-  --composer-clearance: 172px;
+  --composer-clearance: 156px;
+  --shimmer-duration: 4s;
+  --shimmer-spread: 7rem;
+  --shimmer-color: color-mix(in srgb, var(--accent-strong) 54%, white 46%);
+  --shimmer-base-color: color-mix(in srgb, var(--text-muted) 82%, var(--accent-strong));
   --dropdown-open-dur: 250ms;
   --dropdown-close-dur: 150ms;
   --dropdown-pre-scale: 0.97;
@@ -92,6 +96,62 @@ textarea {
 
 button {
   color: inherit;
+}
+
+.transcript .shimmer,
+.composer .shimmer {
+  --shimmer-angle: 90deg;
+  display: inline-block;
+  background-image: linear-gradient(
+    var(--shimmer-angle),
+    var(--shimmer-base-color) 0%,
+    var(--shimmer-base-color) 32%,
+    var(--shimmer-color) 50%,
+    var(--shimmer-base-color) 68%,
+    var(--shimmer-base-color) 100%
+  );
+  background-size: calc(100% + var(--shimmer-spread)) 100%;
+  background-position: 100% 0;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: var(--shimmer-base-color);
+  -webkit-text-fill-color: transparent;
+  animation: app-shimmer var(--shimmer-duration) linear infinite;
+}
+
+.transcript .shimmer-color-purple,
+.composer .shimmer-color-purple {
+  --shimmer-color: color-mix(in srgb, var(--accent-strong) 46%, white 54%);
+  --shimmer-base-color: color-mix(in srgb, var(--text-muted) 74%, var(--accent-strong));
+}
+
+.transcript .shimmer-spread-24,
+.composer .shimmer-spread-24 {
+  --shimmer-spread: calc(3ch + 96px);
+}
+
+.transcript .shimmer-duration-calm,
+.composer .shimmer-duration-calm {
+  --shimmer-duration: 4s;
+}
+
+@keyframes app-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: 0% 0; }
+}
+
+@keyframes marker-spin {
+  to { transform: rotate(360deg); }
+}
+
+@supports not (-webkit-background-clip: text) {
+  .transcript .shimmer,
+  .composer .shimmer {
+    background: none;
+    color: currentColor;
+    -webkit-text-fill-color: currentColor;
+  }
 }
 
 .app-shell {

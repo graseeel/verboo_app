@@ -1,6 +1,5 @@
-import { Check, Hand, ShieldAlert, TerminalSquare } from 'lucide-react'
+import { Check, Hand, Lock, ShieldAlert, TerminalSquare } from 'lucide-react'
 import { useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import type { AccessMode } from '../../../shared/types'
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss'
 
@@ -34,21 +33,21 @@ const options: AccessOption[] = [
 
 type AccessSelectorProps = {
   value: AccessMode
+  fullAccessEnabled: boolean
   onChange: (mode: AccessMode) => void
+  onRequestFullAccessSettings: () => void
 }
 
-export function AccessSelector({ value, onChange }: AccessSelectorProps) {
+export function AccessSelector({ value, fullAccessEnabled, onChange, onRequestFullAccessSettings }: AccessSelectorProps) {
   const [open, setOpen] = useState(false)
-  const [confirmingFull, setConfirmingFull] = useState(false)
-  const [confirmation, setConfirmation] = useState('')
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const current = options.find(option => option.id === value)!
   useOutsideDismiss(wrapRef, open, () => setOpen(false))
 
   function choose(option: AccessOption) {
-    if (option.id === 'full') {
-      setConfirmingFull(true)
+    if (option.id === 'full' && !fullAccessEnabled) {
       setOpen(false)
+      onRequestFullAccessSettings()
       return
     }
     onChange(option.id)
@@ -71,64 +70,27 @@ export function AccessSelector({ value, onChange }: AccessSelectorProps) {
 
           {options.map(option => {
             const Icon = option.icon
+            const isFullLocked = option.id === 'full' && !fullAccessEnabled
             return (
-              <button key={option.id} className="access-option" data-mode={option.id} type="button" onClick={() => choose(option)}>
-                <Icon size={22} />
+              <button
+                key={option.id}
+                className={`access-option ${isFullLocked ? 'access-option--locked' : ''}`}
+                data-mode={option.id}
+                type="button"
+                onClick={() => choose(option)}
+              >
+                {isFullLocked ? <Lock size={22} className="access-option__lock" /> : <Icon size={22} />}
                 <span>
                   <strong>{option.title}</strong>
-                  <small>{option.description}</small>
+                  <small>{isFullLocked ? 'Ative em Configuracoes > Permissoes para liberar este modo.' : option.description}</small>
                 </span>
-                {value === option.id && <Check size={20} />}
+                {value === option.id && !isFullLocked && <Check size={20} />}
               </button>
             )
           })}
         </div>
       )}
 
-      {confirmingFull && createPortal(
-        <div className="modal-backdrop">
-          <div className="confirm-modal t-modal is-open" role="dialog" aria-modal="true">
-            <h2>Ativar Acesso completo</h2>
-            <p>
-              O Verboo Code podera ler, criar, modificar e apagar arquivos em qualquer pasta acessivel pelo seu usuario,
-              executar comandos no shell, acessar a internet, iniciar ferramentas locais, usar servidores MCP/plugins/skills
-              e enviar conteudo necessario para provedores de IA configurados.
-            </p>
-            <p className="danger-copy">
-              Isso pode expor codigo, documentos, segredos, tokens e chaves de API. Ative apenas em workspaces e ferramentas que voce confia.
-            </p>
-            <label>
-              Digite <strong>ACESSO COMPLETO</strong> para continuar.
-              <input value={confirmation} onChange={event => setConfirmation(event.target.value)} autoFocus />
-            </label>
-            <div className="modal-actions">
-              <button
-                type="button"
-                onClick={() => {
-                  setConfirmingFull(false)
-                  setConfirmation('')
-                }}
-              >
-                Cancelar
-              </button>
-              <button
-                className="danger-button"
-                type="button"
-                disabled={confirmation !== 'ACESSO COMPLETO'}
-                onClick={() => {
-                  onChange('full')
-                  setConfirmingFull(false)
-                  setOpen(false)
-                  setConfirmation('')
-                }}
-              >
-                Ativar Acesso completo
-              </button>
-            </div>
-          </div>
-        </div>,
-        document.body,
-      )}
     </div>
   )
 }

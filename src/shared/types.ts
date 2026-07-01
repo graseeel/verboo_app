@@ -104,10 +104,25 @@ export type TranscriptItem = {
   kind?: 'message' | 'activity' | 'summary'
   activityKind?: 'thinking' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool'
   activityDetail?: string
+  changeSummary?: WorkspaceChangeSummary
   modelId?: string
   modelDisplayName?: string
   streaming?: boolean
   skills?: SkillSummary[]
+}
+
+export type WorkspaceChangeEntry = {
+  path: string
+  additions: number
+  deletions: number
+  status?: 'modified' | 'added' | 'deleted' | 'untracked'
+}
+
+export type WorkspaceChangeSummary = {
+  files: WorkspaceChangeEntry[]
+  totalFiles: number
+  additions: number
+  deletions: number
 }
 
 export type ChatProject = {
@@ -156,6 +171,8 @@ export type ModelDiscoveryResult = {
 
 export type UserSettings = {
   defaultAccessMode: AccessMode
+  fullAccessEnabled: boolean
+  lastSelectedModelId?: string
   showInMenuBar: boolean
   showMenuBarText: boolean
   staySignedIn: boolean
@@ -290,6 +307,37 @@ export type AgentTurnRequest = {
   personality?: PersonalityMode
   customInstructions?: string
   memoryContext?: string
+}
+
+export type ResearchSubagentRequest = {
+  id: string
+  index: number
+  total: number
+  topic: string
+  baseRequest: AgentTurnRequest
+}
+
+export type ResearchSubagentsRunRequest = {
+  count: number
+  requestedCount?: number
+  baseRequest: AgentTurnRequest
+}
+
+export type ResearchSubagentProgress = {
+  id: string
+  index: number
+  status: 'queued' | 'running' | 'complete' | 'failed'
+  summary: string
+  activity?: string
+}
+
+export type ResearchSubagentResult = {
+  id: string
+  index: number
+  status: 'complete' | 'failed'
+  summary: string
+  findings: string[]
+  sources: string[]
 }
 
 export type FeedbackCategory = 'bug' | 'feedback' | 'question'

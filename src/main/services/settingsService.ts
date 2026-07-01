@@ -5,6 +5,8 @@ import type { UserSettings } from '../../shared/types'
 
 export const defaultUserSettings: UserSettings = {
   defaultAccessMode: 'approval',
+  fullAccessEnabled: false,
+  lastSelectedModelId: undefined,
   showInMenuBar: true,
   showMenuBarText: true,
   staySignedIn: true,
@@ -63,7 +65,15 @@ export class SettingsService {
 function normalizeSettings(value: unknown): UserSettings {
   const record = isRecord(value) ? value : {}
   return {
-    defaultAccessMode: oneOf(record.defaultAccessMode, ['approval', 'auto', 'full'], defaultUserSettings.defaultAccessMode),
+    defaultAccessMode: normalizeAccessMode(
+      record.defaultAccessMode,
+      booleanValue(record.fullAccessEnabled, record.defaultAccessMode === 'full'),
+    ),
+    fullAccessEnabled: booleanValue(
+      record.fullAccessEnabled,
+      record.defaultAccessMode === 'full',
+    ),
+    lastSelectedModelId: normalizeOptionalString(record.lastSelectedModelId),
     showInMenuBar: booleanValue(record.showInMenuBar, defaultUserSettings.showInMenuBar),
     showMenuBarText: booleanValue(record.showMenuBarText, defaultUserSettings.showMenuBarText),
     staySignedIn: booleanValue(record.staySignedIn, defaultUserSettings.staySignedIn),
@@ -91,6 +101,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function booleanValue(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function normalizeAccessMode(value: unknown, enabled: boolean): UserSettings['defaultAccessMode'] {
+  const mode = oneOf(value, ['approval', 'auto', 'full'], defaultUserSettings.defaultAccessMode)
+  return mode === 'full' && !enabled ? 'approval' : mode
 }
 
 function oneOf<const T extends string>(value: unknown, options: readonly T[], fallback: T): T {

@@ -26,7 +26,7 @@ export function ModelSelector({ models, selectedModel, modelResult, onSelect, on
       <button className="composer-pill model-pill" style={selectedTone} type="button" onClick={() => setOpen(value => !value)}>
         <Cpu size={14} />
         {selected && <i className="model-color-dot" aria-hidden="true" />}
-        <span>{selected?.displayName ?? 'Modelo'}</span>
+        <span>{selected ? readableModelName(selected) : 'Model'}</span>
         <ChevronDown size={14} />
       </button>
 
@@ -64,7 +64,7 @@ export function ModelSelector({ models, selectedModel, modelResult, onSelect, on
                     }}
                   >
                     <span>
-                      <strong>{model.displayName}</strong>
+                      <strong>{readableModelName(model)}</strong>
                       <small>{model.id}{model.contextWindow ? ` · ${formatTokens(model.contextWindow)} ctx` : ''}</small>
                     </span>
                     {model.id === selectedModel && <Check size={15} />}
@@ -107,7 +107,29 @@ function groupModels(models: VerbooModel[]): Array<{ label: string; models: Verb
 }
 
 function formatTokens(tokens: number): string {
-  return Intl.NumberFormat('pt-BR', { notation: 'compact' }).format(tokens)
+  return Intl.NumberFormat('en-US', { notation: 'compact' }).format(tokens)
+}
+
+function readableModelName(model: VerbooModel): string {
+  const raw = model.displayName || model.id
+  const preset = raw.match(/^(.*?)\s*\(@preset\/([^)]+)\)\s*$/)
+  if (preset) {
+    const prefix = preset[1].trim()
+    const modelName = humanizeModelId(preset[2])
+    return prefix ? `${prefix} · ${modelName}` : modelName
+  }
+  return raw.replace(/@preset\//g, '').replace(/\s+/g, ' ').trim()
+}
+
+function humanizeModelId(modelId: string): string {
+  return modelId
+    .replace(/^@preset\//, '')
+    .replace(/glm4[-_]?7/i, 'GLM 4.7')
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map(part => (/^[a-z]+$/i.test(part) ? part[0].toUpperCase() + part.slice(1) : part.toUpperCase()))
+    .join(' ')
+    .replace(/\bV(\d+)\b/g, 'v$1')
 }
 
 function modelStatusMessage(result: ModelDiscoveryResult): string | undefined {

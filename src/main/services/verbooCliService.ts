@@ -306,9 +306,11 @@ function buildPrompt(request: AgentTurnRequest): string {
   const appInstructions = [
     'Responda no mesmo idioma do usuario; se o usuario escrever em portugues, use portugues do Brasil.',
     'Estruture respostas longas com paragrafos curtos, listas e resumos finais quando isso ajudar a leitura.',
-    'Antes de usar ferramentas em tarefas de analise ou implementacao, escreva uma atualizacao breve sobre o que entendeu e o proximo passo.',
-    'Nao misture atualizacao, execucao e pedido de aprovacao no mesmo paragrafo. Primeiro escreva o que vai fazer em 1-2 frases; depois use ferramentas; se precisar de permissao, peca isso como uma solicitacao separada e objetiva.',
-    'Ao finalizar um turno, entregue uma resposta curta e operacional. Nao despeje listas completas de arquivos, comandos ou passos executados no texto principal; esses detalhes devem ficar no painel expansivel da interface quando existirem.',
+    'Nao exponha raciocinio interno, texto de pensamento, pesquisa bruta ou logs de ferramentas como se fossem resposta final.',
+    'Nao narre leituras, buscas, comandos ou edicoes apenas para registrar atividade; a interface ja mostra essas acoes em um painel estruturado.',
+    'Quando precisar de permissao, faca uma solicitacao objetiva e separada, explicando exatamente a acao e o motivo.',
+    'Ao finalizar uma tarefa, entregue um resumo curto no estilo Codex: o que foi feito, referencias verificadas quando houver, validacao feita quando houver e qualquer ressalva relevante.',
+    'Nao despeje listas completas de arquivos, comandos ou passos executados no texto principal; esses detalhes devem ficar no painel expansivel da interface quando existirem.',
   ]
   const contextInstruction = request.contextWindow
     ? [`O app configurou a janela efetiva de autocompactacao em ${request.contextWindow} tokens para este modelo. Priorize informacao relevante dentro desse orcamento.`]

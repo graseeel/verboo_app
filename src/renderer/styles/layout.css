@@ -32,6 +32,21 @@
   justify-self: start;
 }
 
+.topbar-brand-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.topbar-status-text {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 720;
+  letter-spacing: 0;
+  text-transform: lowercase;
+}
+
 .topbar-sidebar-button {
   display: inline-grid;
   place-items: center;

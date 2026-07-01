@@ -1,18 +1,20 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron'
 import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { AccessMode, AgentEvent, AgentTurnRequest, AppConfig, FeedbackRequest, GoalEvaluationInput, GoalEvaluationResult, MenuBarState, UserSettings } from '../shared/types'
+import type { AccessMode, AgentEvent, AgentTurnRequest, AppConfig, FeedbackRequest, GoalEvaluationInput, GoalEvaluationResult, MenuBarState, ResearchSubagentsRunRequest, UserSettings } from '../shared/types'
 import { accessModeConfig } from './security/accessModes'
 import { inspectAttachments } from './services/attachmentService'
 import { CredentialsStore } from './services/credentialsStore'
 import { FeedbackService } from './services/feedbackService'
 import { ModelService } from './services/modelService'
 import { ProfileService } from './services/profileService'
+import { ResearchSubagentService } from './services/researchSubagentService'
 import { defaultUserSettings, SettingsService } from './services/settingsService'
 import { SkillsService } from './services/skillsService'
 import { TrayStatusService } from './services/trayStatusService'
 import { VerbooCliService } from './services/verbooCliService'
 import { VisionFallbackService } from './services/visionFallbackService'
+import { readWorkspaceChangeSummary } from './services/workspaceChangeService'
 import { evaluateGoal } from './services/goalEvaluator'
 
 const credentials = new CredentialsStore()
@@ -22,6 +24,7 @@ const feedback = new FeedbackService()
 const userSettings = new SettingsService()
 const skills = new SkillsService()
 const cli = new VerbooCliService(credentials)
+const researchSubagents = new ResearchSubagentService(credentials)
 const visionFallback = new VisionFallbackService(models)
 const trayStatus = new TrayStatusService({
   getWindow: () => mainWindow,
@@ -154,6 +157,7 @@ function registerIpc(): void {
     await shell.openPath(folder)
     return folder
   })
+  ipcMain.handle('workspace:changes', (_event, workingDirectory: string) => readWorkspaceChangeSummary(workingDirectory))
 
   ipcMain.handle('goal:evaluate', async (_event, input: GoalEvaluationInput) => {
     return evaluateGoal({
@@ -200,10 +204,34 @@ function registerIpc(): void {
     return cli.sendTurn(preparedRequest, event => handleAgentEvent(event, preparedRequest, settings), settings, resumeSessionId)
   })
 
+  ipcMain.handle('research-subagents:run', async (_event, request: ResearchSubagentsRunRequest) => {
+    const settings = await userSettings.getSettings()
+    const safeRequest = await sanitizeResearchSubagentsRunRequest(request)
+    return researchSubagents.runMany(safeRequest, settings)
+  })
+
   ipcMain.handle('agent:interrupt', () => {
     cli.interrupt()
     return true
   })
+}
+
+async function sanitizeResearchSubagentsRunRequest(request: ResearchSubagentsRunRequest): Promise<ResearchSubagentsRunRequest> {
+  const requestedAccessMode = request.baseRequest.accessMode === 'approval' ? 'approval' : 'auto'
+  const safeBaseRequest = await sanitizeAgentTurnRequest({
+    ...request.baseRequest,
+    accessMode: requestedAccessMode,
+    attachments: [],
+  })
+  return {
+    count: clamp(Math.round(Number(request.count) || 1), 1, 2),
+    requestedCount: Number.isFinite(Number(request.requestedCount)) ? Math.round(Number(request.requestedCount)) : undefined,
+    baseRequest: {
+      ...safeBaseRequest,
+      accessMode: requestedAccessMode,
+      attachments: [],
+    },
+  }
 }
 
 const VALID_ACCESS_MODES = new Set(Object.keys(accessModeConfig) as AccessMode[])
@@ -341,4 +369,8 @@ function textValue(value: unknown): string {
 
 function basename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value))
 }

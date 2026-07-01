@@ -3,9 +3,19 @@
   .t-modal,
   .t-stagger-line,
   .t-text-swap,
-  .page-surface {
+  .page-surface,
+  .transcript .shimmer,
+  .composer .shimmer,
+  .message-status-marker-icon svg {
     animation: none !important;
     transition: none !important;
+  }
+
+  .transcript .shimmer,
+  .composer .shimmer {
+    background: none !important;
+    color: currentColor !important;
+    -webkit-text-fill-color: currentColor !important;
   }
 }
 
@@ -43,7 +53,7 @@
   :root {
     --sidebar-width: 0px;
     --mac-traffic-width: 92px;
-    --composer-clearance: 226px;
+    --composer-clearance: 210px;
   }
 
   .topbar {
@@ -96,8 +106,18 @@
     justify-content: space-between;
   }
 
+  .composer-tools.center {
+    justify-content: flex-start;
+  }
+
   .composer-pill {
     max-width: 190px;
+  }
+
+  .context-meter {
+    grid-template-columns: auto minmax(52px, 1fr) 54px auto;
+    min-width: 0;
+    width: 100%;
   }
 
   .permission-approval-panel,

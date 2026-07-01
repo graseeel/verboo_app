@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
 import { ArrowDown, FolderClosed, ShieldCheck, Terminal, XCircle } from 'lucide-react'
 import type {
   AccessMode,
@@ -19,6 +19,7 @@ import type {
   MenuBarState,
   ModelDiscoveryResult,
   ProfileResult,
+  ResearchSubagentResult,
   SettingsTab,
   SkillSummary,
   StoredConversation,
@@ -26,6 +27,7 @@ import type {
   TranscriptItem,
   UserSettings,
   VerbooModel,
+  WorkspaceChangeSummary,
 } from '../shared/types'
 import { createGoalState, goalSystemMessage } from './features/goal/goalState'
 import { GoalStatusBar, type GoalStatusBarState } from './features/goal/GoalStatusBar'
@@ -44,6 +46,7 @@ import { ModelSelector } from './features/models/ModelSelector'
 import { ProfileView } from './features/profile/ProfileView'
 import { ProjectPicker } from './features/projects/ProjectPicker'
 import { SettingsView } from './features/settings/SettingsView'
+import mascotUrl from '../../assets/branding/verboo-mascot.png'
 import {
   activeProjects,
   archivedConversations,
@@ -68,8 +71,12 @@ const SIDEBAR_DEFAULT_WIDTH = 292
 const SIDEBAR_MIN_WIDTH = 220
 const SIDEBAR_MAX_WIDTH = 420
 const SIDEBAR_COMPACT_WIDTH = 72
+const BOTTOM_STICK_THRESHOLD = 72
+const SCROLL_SETTLE_MS = 360
 const DEFAULT_USER_SETTINGS: UserSettings = {
   defaultAccessMode: 'approval',
+  fullAccessEnabled: false,
+  lastSelectedModelId: undefined,
   showInMenuBar: true,
   showMenuBarText: true,
   staySignedIn: true,
@@ -102,6 +109,13 @@ type TurnActivity = {
   label: string
   detail?: string
   kind: NonNullable<TranscriptItem['activityKind']>
+}
+
+type ActiveSubagent = {
+  id: string
+  label: string
+  detail?: string
+  updatedAt: number
 }
 
 type QueuedFollowUp = {
@@ -169,6 +183,7 @@ export function App() {
   const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedFollowUp[]>([])
   const [pendingPermissionPrompt, setPendingPermissionPrompt] = useState<PendingPermissionPrompt | undefined>()
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
+  const [activeSubagents, setActiveSubagents] = useState<ActiveSubagent[]>([])
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshot | undefined>()
   const [goal, setGoal] = useState<GoalState | undefined>()
@@ -180,6 +195,8 @@ export function App() {
   const workspaceRef = useRef<HTMLElement | null>(null)
   const transcriptEndRef = useRef<HTMLDivElement | null>(null)
   const stickToBottomRef = useRef(true)
+  const autoScrollingRef = useRef(false)
+  const scrollSettleTimer = useRef<number | undefined>(undefined)
   const userSettingsRef = useRef(userSettings)
   const turnConversationIds = useRef<Record<string, string>>({})
   const turnModels = useRef<Record<string, { modelId?: string; modelDisplayName?: string }>>({})
@@ -197,6 +214,11 @@ export function App() {
   const turnCompletionDeferred = useRef<{ turnId: string; resolve: () => void; reject: (reason: unknown) => void } | undefined>(undefined)
   const turnAssistantText = useRef<Record<string, string>>({})
   const turnLastCommand = useRef<Record<string, string>>({})
+  const turnCommands = useRef<Record<string, string[]>>({})
+  const turnReferences = useRef<Record<string, string[]>>({})
+  const turnChangeBaselines = useRef<Record<string, WorkspaceChangeSummary | undefined>>({})
+  const turnWorkingDirectories = useRef<Record<string, string>>({})
+  const activeSubagentsRef = useRef<Record<string, ActiveSubagent>>({})
   const autoApprovalSent = useRef<Set<string>>(new Set())
 
   const activeConversation = useMemo(
@@ -216,6 +238,7 @@ export function App() {
   const visiblePermissionPrompt = pendingPermissionPrompt && pendingPermissionPrompt.conversationId === activeConversationId && !pendingPermissionPrompt.autoApprove
     ? pendingPermissionPrompt
     : undefined
+  const shouldShowLogin = !noticeAccepted || !entryUnlocked
   const effectiveSidebarWidth = sidebarMode === 'hidden'
     ? 0
     : sidebarMode === 'compact'
@@ -233,6 +256,7 @@ export function App() {
       ])
       if (cancelled) return
       setUserSettings(settings)
+      setSelectedModel(settings.lastSelectedModelId)
       setAccessMode(settings.defaultAccessMode)
       setConfig(nextConfig)
       setAccessMode(nextConfig.accessMode)
@@ -280,6 +304,12 @@ export function App() {
   }, [])
 
   useEffect(() => {
+    return () => {
+      if (scrollSettleTimer.current) window.clearTimeout(scrollSettleTimer.current)
+    }
+  }, [])
+
+  useEffect(() => {
     goalRef.current = goal
   }, [goal])
 
@@ -291,15 +321,31 @@ export function App() {
     userSettingsRef.current = userSettings
   }, [userSettings])
 
-  useEffect(() => {
-    if (activeView !== 'chat') return
-    if (!hasConversation) return
+  useLayoutEffect(() => {
+    if (shouldShowLogin || activeView !== 'chat' || !hasConversation || !workspaceRef.current) return undefined
+
+    stickToBottomRef.current = true
+    setShowJumpToLatest(false)
+    forceWorkspaceToBottom()
+    const frame = window.requestAnimationFrame(forceWorkspaceToBottom)
+    const timeout = window.setTimeout(forceWorkspaceToBottom, 180)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.clearTimeout(timeout)
+    }
+  }, [activeView, activeConversationId, hasConversation, shouldShowLogin])
+
+  useLayoutEffect(() => {
+    if (shouldShowLogin || activeView !== 'chat' || !hasConversation || !workspaceRef.current) return undefined
+
     if (!stickToBottomRef.current) {
       setShowJumpToLatest(true)
-      return
+      return undefined
     }
-    scrollToLatest('smooth')
-  }, [activeView, activeConversationId, hasConversation, latestItemSignature])
+
+    scrollToLatest(latestItem?.streaming ? 'auto' : 'smooth')
+    return undefined
+  }, [activeView, activeConversationId, hasConversation, latestItemSignature, shouldShowLogin])
 
   useEffect(() => {
     if (!pendingPermissionPrompt?.autoApprove) return
@@ -375,8 +421,7 @@ export function App() {
     const result = await window.verboo.listModels(forceRefresh)
     setModelResult(result)
     setSelectedModel(current => {
-      if (current && result.models.some(model => model.id === current)) return current
-      return result.models[0]?.id
+      return resolveSelectedModel(result.models, current, userSettingsRef.current.lastSelectedModelId)
     })
     return result
   }
@@ -466,8 +511,7 @@ export function App() {
       setCliAuth(cliStatus)
       setModelResult(modelDiscovery)
       setSelectedModel(current => {
-        if (current && modelDiscovery.models.some(model => model.id === current)) return current
-        return modelDiscovery.models[0]?.id
+        return resolveSelectedModel(modelDiscovery.models, current, userSettingsRef.current.lastSelectedModelId)
       })
 
       const unlocked = isVerifiedModelDiscovery(modelDiscovery)
@@ -516,6 +560,11 @@ export function App() {
     if (patch.staySignedIn === false) forgetRememberedAuthSession()
   }
 
+  function handleModelSelect(modelId: string) {
+    setSelectedModel(modelId)
+    void updateUserSettings({ lastSelectedModelId: modelId })
+  }
+
   async function updateStaySignedIn(staySignedIn: boolean) {
     await updateUserSettings({ staySignedIn })
   }
@@ -534,6 +583,10 @@ export function App() {
       turnActivityKeys.current[event.turnId] = new Set()
       turnActivityCounts.current[event.turnId] = {}
       turnTerminalErrors.current[event.turnId] = []
+      turnCommands.current[event.turnId] = []
+      turnReferences.current[event.turnId] = []
+      activeSubagentsRef.current = {}
+      setActiveSubagents([])
       setRunningTurnId(event.turnId)
       if (conversationId) {
         appendActivityItem(conversationId, event.turnId, {
@@ -590,9 +643,14 @@ export function App() {
         }
       }
       const activity = describeRuntimeActivity(event.payload)
+      if (activity?.kind === 'subagent') trackActiveSubagent(event.turnId, activity)
       if (conversationId && activity) {
         if (activity.kind === 'command' && activity.detail) {
           turnLastCommand.current[event.turnId] = activity.detail
+          appendTurnMetadata(turnCommands, event.turnId, activity.detail)
+        }
+        if (activity.kind === 'search' && activity.detail) {
+          appendTurnMetadata(turnReferences, event.turnId, activity.detail)
         }
         appendActivityItem(conversationId, event.turnId, activity)
       }
@@ -618,6 +676,7 @@ export function App() {
     if (event.type === 'error') {
       const conversationId = turnConversationIds.current[event.turnId]
       setRunningTurnId(undefined)
+      clearActiveSubagentsForTurn(event.turnId)
 
       // Reject goal turn completion promise on error
       if (turnCompletionDeferred.current?.turnId === event.turnId) {
@@ -634,19 +693,26 @@ export function App() {
         })
       }
       delete turnAssistantText.current[event.turnId]
-      delete turnLastCommand.current[event.turnId]
+      cleanupTurnState(event.turnId)
       return
     }
 
     if (event.type === 'done') {
       const conversationId = turnConversationIds.current[event.turnId]
       setRunningTurnId(undefined)
+      clearActiveSubagentsForTurn(event.turnId)
       if (conversationId && event.exitCode !== 0) {
         const failureMessage = buildCliFailureMessage(turnTerminalErrors.current[event.turnId])
         if (failureMessage) appendAssistantText(conversationId, event.turnId, failureMessage)
       }
       if (conversationId) finishAssistantMessage(conversationId, event.turnId)
-      if (conversationId) appendTurnSummary(conversationId, event.turnId, event.exitCode)
+      if (conversationId) {
+        void appendTurnSummary(conversationId, event.turnId, event.exitCode)
+          .finally(() => cleanupTurnState(event.turnId))
+          .catch(() => undefined)
+      } else {
+        cleanupTurnState(event.turnId)
+      }
 
       // Resolve goal turn completion promise if this turn was started by the goal scheduler
       if (turnCompletionDeferred.current?.turnId === event.turnId) {
@@ -654,14 +720,6 @@ export function App() {
         turnCompletionDeferred.current = undefined
       }
 
-      delete turnConversationIds.current[event.turnId]
-      delete turnStartedAt.current[event.turnId]
-      delete turnActivityKeys.current[event.turnId]
-      delete turnActivityCounts.current[event.turnId]
-      delete turnResultSnapshots.current[event.turnId]
-      delete turnTerminalErrors.current[event.turnId]
-      delete turnAssistantText.current[event.turnId]
-      delete turnLastCommand.current[event.turnId]
     }
   }
 
@@ -689,6 +747,7 @@ export function App() {
       return
     }
 
+    appendDowngradeActivity(conversationId)
     await runTurn(queued)
     setAttachedFiles([])
   }
@@ -709,7 +768,7 @@ export function App() {
         model: selectedModel,
         modelSupportsVision: Boolean(selectedModelInfo?.supportsVision),
         contextWindow: selectedContextWindow,
-        accessMode,
+        accessMode: accessMode === 'full' && !userSettings.fullAccessEnabled ? 'approval' : accessMode,
         workingDirectory: workingDirectoryForConversation(conversationId),
         skills: selectedSkills,
         attachments: attachedFiles,
@@ -745,11 +804,89 @@ export function App() {
     pendingConversationId.current = item.conversationId
     setContextUsage(undefined)
 
-    const turnId = await window.verboo.sendTurn(item.request)
+    const request = await prepareRequestWithResearchSubagents(item)
+    const turnId = await sendTrackedTurn(request)
     turnConversationIds.current[turnId] = item.conversationId
     turnModels.current[turnId] = item.turnModel
     tagAssistantMessage(item.conversationId, turnId, item.turnModel)
     if (pendingConversationId.current === item.conversationId) pendingConversationId.current = undefined
+  }
+
+  async function sendTrackedTurn(request: AgentTurnRequest, resumeSessionId?: string): Promise<string> {
+    const baseline = await snapshotWorkspaceChanges(request.workingDirectory)
+    const turnId = await window.verboo.sendTurn(request, resumeSessionId)
+    turnChangeBaselines.current[turnId] = baseline
+    turnWorkingDirectories.current[turnId] = request.workingDirectory
+    return turnId
+  }
+
+  async function prepareRequestWithResearchSubagents(item: QueuedFollowUp): Promise<AgentTurnRequest> {
+    const researchRequest = parseResearchSubagentRequest(item.message)
+    if (!researchRequest) return item.request
+
+    const agents = Array.from({ length: researchRequest.count }, (_, index): ActiveSubagent => ({
+      id: `research:${item.id}:${index + 1}`,
+      label: `Subagente ${index + 1}`,
+      detail: index === 0
+        ? 'Pesquisando codigo local e arquivos relevantes.'
+        : 'Pesquisando contexto complementar e validacao.',
+      updatedAt: Date.now() + index,
+    }))
+
+    activeSubagentsRef.current = Object.fromEntries(agents.map(agent => [agent.id, agent]))
+    setActiveSubagents(agents)
+
+    appendConversationItem(item.conversationId, {
+      id: `research:${item.id}:activity:1`,
+      role: 'tool',
+      kind: 'activity',
+      activityKind: 'subagent',
+      text: `${researchRequest.count} subagente${researchRequest.count === 1 ? '' : 's'} pesquisando`,
+      activityDetail: researchRequest.requestedCount > researchRequest.count
+        ? `Pedido limitado a ${researchRequest.count} subagentes de pesquisa.`
+        : 'Pesquisas somente leitura antes do turno principal.',
+      timestamp: Date.now(),
+    })
+
+    try {
+      const results = await window.verboo.runResearchSubagents({
+        count: researchRequest.count,
+        requestedCount: researchRequest.requestedCount,
+        baseRequest: item.request,
+      })
+
+      appendConversationItem(item.conversationId, {
+        id: `research:${item.id}:activity:2`,
+        role: 'tool',
+        kind: 'activity',
+        activityKind: 'subagent',
+        text: 'Pesquisa dos subagentes concluida',
+        activityDetail: formatResearchResultsForTranscript(results),
+        timestamp: Date.now(),
+      })
+
+      const researchContext = buildResearchResultsContext(results)
+      if (!researchContext) return item.request
+
+      return {
+        ...item.request,
+        memoryContext: [item.request.memoryContext, researchContext].filter(Boolean).join('\n\n'),
+      }
+    } catch (error) {
+      appendConversationItem(item.conversationId, {
+        id: `research:${item.id}:activity:2`,
+        role: 'tool',
+        kind: 'activity',
+        activityKind: 'subagent',
+        text: 'Pesquisa dos subagentes falhou',
+        activityDetail: error instanceof Error ? error.message : String(error),
+        timestamp: Date.now(),
+      })
+      return item.request
+    } finally {
+      activeSubagentsRef.current = {}
+      setActiveSubagents([])
+    }
   }
 
   function setQueuedFollowUpsList(updater: (current: QueuedFollowUp[]) => QueuedFollowUp[]) {
@@ -757,6 +894,18 @@ export function App() {
       const next = updater(current)
       queuedFollowUpsRef.current = next
       return next
+    })
+  }
+
+  function appendDowngradeActivity(conversationId: string) {
+    if (accessMode !== 'full' || userSettings.fullAccessEnabled) return
+    appendConversationItem(conversationId, {
+      id: `downgrade:${Date.now()}`,
+      role: 'tool',
+      kind: 'activity',
+      activityKind: 'permission',
+      text: 'Acesso completo nao esta ativado nas configuracoes. Usando Aprovar por mim.',
+      timestamp: Date.now(),
     })
   }
 
@@ -819,6 +968,7 @@ export function App() {
       enqueueFollowUp(followUp)
       return
     }
+    appendDowngradeActivity(prompt.conversationId)
     await runTurn(followUp)
   }
 
@@ -838,7 +988,7 @@ export function App() {
         model: selectedModel,
         modelSupportsVision: Boolean(selectedModelInfo?.supportsVision),
         contextWindow: selectedContextWindow,
-        accessMode,
+        accessMode: accessMode === 'full' && !userSettings.fullAccessEnabled ? 'approval' : accessMode,
         workingDirectory: workingDirectoryForConversation(conversationId),
         skills: [],
         attachments: [],
@@ -933,7 +1083,7 @@ export function App() {
 
       const goalState = createGoalState({
         objective: command.objective,
-        accessMode,
+        accessMode, // 'full' blocked above; safe to pass as-is
         modelId: selectedModel,
         modelDisplayName: selectedModelInfo?.displayName,
         workingDirectory: wd,
@@ -1019,12 +1169,14 @@ export function App() {
 
         setContextUsage(undefined)
 
-        const turnId = await window.verboo.sendTurn({
+        appendDowngradeActivity(conversationId)
+
+        const turnId = await sendTrackedTurn({
           message: nextMessage,
           model: selectedModel,
           modelSupportsVision: Boolean(selectedModelInfo?.supportsVision),
           contextWindow: selectedContextWindow,
-          accessMode,
+          accessMode: accessMode === 'full' && !userSettings.fullAccessEnabled ? 'approval' : accessMode,
           workingDirectory: currentGoal.workingDirectory,
           skills: currentGoal.skills,
           attachments: [],
@@ -1385,12 +1537,58 @@ export function App() {
     }))
   }
 
-  function appendTurnSummary(conversationId: string, turnId: string, exitCode: number | null) {
+  function trackActiveSubagent(turnId: string, activity: TurnActivity) {
+    const isStop = /stop|stopp|finish|complete|done|finaliz/i.test(`${activity.key} ${activity.label}`)
+    const identity = normalizeSubagentIdentity(activity)
+    const id = `${turnId}:subagent:${identity}`
+    if (isStop) {
+      const next = { ...activeSubagentsRef.current }
+      delete next[id]
+      activeSubagentsRef.current = next
+      setActiveSubagents(Object.values(next).sort((a, b) => a.updatedAt - b.updatedAt))
+      return
+    }
+
+    const next = {
+      id,
+      label: activity.detail || activity.label,
+      detail: activity.detail,
+      updatedAt: Date.now(),
+    }
+    activeSubagentsRef.current = {
+      ...activeSubagentsRef.current,
+      [id]: next,
+    }
+    setActiveSubagents(Object.values(activeSubagentsRef.current).sort((a, b) => a.updatedAt - b.updatedAt))
+  }
+
+  function clearActiveSubagentsForTurn(turnId: string) {
+    const next = Object.fromEntries(
+      Object.entries(activeSubagentsRef.current).filter(([id]) => !id.startsWith(`${turnId}:`)),
+    )
+    activeSubagentsRef.current = next
+    setActiveSubagents(Object.values(next).sort((a, b) => a.updatedAt - b.updatedAt))
+  }
+
+  function normalizeSubagentIdentity(activity: TurnActivity): string {
+    return (activity.detail || activity.label || activity.key)
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 96) || 'default'
+  }
+
+  async function appendTurnSummary(conversationId: string, turnId: string, exitCode: number | null) {
     const startedAt = turnStartedAt.current[turnId]
     const elapsed = startedAt ? formatElapsed(Date.now() - startedAt) : 'alguns segundos'
     const counts = turnActivityCounts.current[turnId] ?? {}
     const result = turnResultSnapshots.current[turnId]
-    const summaryLines = buildTurnSummaryLines(counts, result, exitCode)
+    const changeSummary = await buildTurnChangeSummary(turnId)
+    const summaryLines = buildTurnSummaryLines(counts, result, exitCode, {
+      validationCommands: validationCommandsForTurn(turnCommands.current[turnId] ?? []),
+      references: turnReferences.current[turnId] ?? [],
+      changeSummary,
+    })
 
     appendConversationItem(conversationId, {
       id: `${turnId}:summary`,
@@ -1398,8 +1596,44 @@ export function App() {
       kind: 'summary',
       text: `Trabalhou por ${elapsed}`,
       activityDetail: summaryLines.join('\n'),
+      changeSummary,
       timestamp: Date.now(),
     })
+  }
+
+  async function buildTurnChangeSummary(turnId: string): Promise<WorkspaceChangeSummary | undefined> {
+    const workingDirectory = turnWorkingDirectories.current[turnId]
+    const baseline = turnChangeBaselines.current[turnId]
+    if (!workingDirectory || !baseline) return undefined
+
+    const current = await snapshotWorkspaceChanges(workingDirectory)
+    if (!current) return undefined
+
+    const summary = diffWorkspaceChanges(baseline, current)
+    return summary.totalFiles > 0 ? summary : undefined
+  }
+
+  async function snapshotWorkspaceChanges(workingDirectory: string): Promise<WorkspaceChangeSummary | undefined> {
+    try {
+      return await window.verboo.getWorkspaceChanges(workingDirectory)
+    } catch {
+      return undefined
+    }
+  }
+
+  function cleanupTurnState(turnId: string) {
+    delete turnConversationIds.current[turnId]
+    delete turnStartedAt.current[turnId]
+    delete turnActivityKeys.current[turnId]
+    delete turnActivityCounts.current[turnId]
+    delete turnResultSnapshots.current[turnId]
+    delete turnTerminalErrors.current[turnId]
+    delete turnAssistantText.current[turnId]
+    delete turnLastCommand.current[turnId]
+    delete turnCommands.current[turnId]
+    delete turnReferences.current[turnId]
+    delete turnChangeBaselines.current[turnId]
+    delete turnWorkingDirectories.current[turnId]
   }
 
   function updateConversation(
@@ -1438,21 +1672,54 @@ export function App() {
     if (activeView !== 'chat') return
     const element = workspaceRef.current
     if (!element) return
-    const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight
-    const atBottom = distanceFromBottom < 96
-    stickToBottomRef.current = atBottom
-    setShowJumpToLatest(!atBottom && hasConversation)
+    const atBottom = isWorkspaceAtBottom(element)
+    if (atBottom) {
+      autoScrollingRef.current = false
+      stickToBottomRef.current = true
+      setShowJumpToLatest(false)
+      return
+    }
+    if (autoScrollingRef.current) return
+    stickToBottomRef.current = false
+    setShowJumpToLatest(hasConversation)
+  }
+
+  function forceWorkspaceToBottom() {
+    const element = workspaceRef.current
+    if (!element) return
+    if (scrollSettleTimer.current) window.clearTimeout(scrollSettleTimer.current)
+    autoScrollingRef.current = true
+    element.scrollTop = latestScrollTop(element)
+    stickToBottomRef.current = true
+    setShowJumpToLatest(false)
+    scrollSettleTimer.current = window.setTimeout(() => {
+      autoScrollingRef.current = false
+      if (!isWorkspaceAtBottom(element)) element.scrollTop = latestScrollTop(element)
+      stickToBottomRef.current = true
+      setShowJumpToLatest(false)
+    }, 0)
   }
 
   function scrollToLatest(behavior: ScrollBehavior = 'smooth') {
+    const element = workspaceRef.current
     stickToBottomRef.current = true
     setShowJumpToLatest(false)
+    if (!element) return
+    if (scrollSettleTimer.current) window.clearTimeout(scrollSettleTimer.current)
+    autoScrollingRef.current = true
     window.requestAnimationFrame(() => {
-      transcriptEndRef.current?.scrollIntoView({ block: 'end', behavior })
+      element.scrollTo({ top: latestScrollTop(element), behavior })
+      scrollSettleTimer.current = window.setTimeout(() => {
+        autoScrollingRef.current = false
+        if (!isWorkspaceAtBottom(element)) {
+          element.scrollTo({ top: latestScrollTop(element), behavior: 'auto' })
+        }
+        stickToBottomRef.current = true
+        setShowJumpToLatest(false)
+      }, behavior === 'smooth' ? SCROLL_SETTLE_MS : 0)
     })
   }
 
-  const shouldShowLogin = !noticeAccepted || !entryUnlocked
   const projectName = activeProject?.name ?? 'Sem projeto'
   const workspaceDirectory = activeProject?.path ?? config.workingDirectory
   const shownProjects = activeProjects(chatStore)
@@ -1488,9 +1755,11 @@ export function App() {
   ])
 
   useEffect(() => {
+    const subagentsRunning = activeSubagents.length > 0
     const state: Partial<MenuBarState> = {
-      execution: runningTurnId ? 'thinking' : 'idle',
-      label: runningTurnId ? 'working' : 'ready',
+      execution: runningTurnId ? subagentsRunning ? 'tool' : 'thinking' : 'idle',
+      label: runningTurnId ? subagentsRunning ? 'subagent' : 'working' : 'ready',
+      startedAt: runningTurnId ? turnStartedAt.current[runningTurnId] : undefined,
       modelId: selectedModel,
       modelDisplayName: selectedModelInfo?.displayName,
       contextWindow: selectedContextWindow,
@@ -1502,6 +1771,7 @@ export function App() {
     void window.verboo.updateMenuBar(state)
   }, [
     activeProject?.path,
+    activeSubagents.length,
     cliAuth.email,
     cliAuth.loggedIn,
     config.workingDirectory,
@@ -1547,7 +1817,11 @@ export function App() {
 
   return (
     <main className="app-shell" style={appLayoutStyle}>
-      <TopBar sidebarVisible={sidebarMode !== 'hidden'} onToggleSidebar={toggleSidebarVisibility} />
+      <TopBar
+        sidebarVisible={sidebarMode !== 'hidden'}
+        statusLabel={runningTurnId ? 'working' : 'ready'}
+        onToggleSidebar={toggleSidebarVisibility}
+      />
 
       <div
         className={`app-layout sidebar-${sidebarMode} ${activeView === 'settings' ? 'settings-open' : ''}`}
@@ -1682,9 +1956,19 @@ export function App() {
             onSubmit={sendMessage}
             onGoalCommand={handleGoalCommand}
             busy={Boolean(runningTurnId)}
-            queuedCount={queuedFollowUps.length}
             leftToolbar={
-              <AccessSelector value={accessMode} onChange={setAccessMode} />
+              <AccessSelector
+                value={accessMode}
+                fullAccessEnabled={userSettings.fullAccessEnabled}
+                onChange={setAccessMode}
+                onRequestFullAccessSettings={() => {
+                  setSettingsTab('permissions')
+                  setActiveView('settings')
+                }}
+              />
+            }
+            centerToolbar={
+              <SubagentIndicator agents={activeSubagents} />
             }
             rightToolbar={
               <>
@@ -1693,7 +1977,7 @@ export function App() {
                   models={modelResult.models}
                   selectedModel={selectedModel}
                   modelResult={modelResult}
-                  onSelect={setSelectedModel}
+                  onSelect={handleModelSelect}
                   onRefresh={() => refreshModels(true)}
                 />
               </>
@@ -1720,6 +2004,54 @@ export function App() {
         onSubmit={sendFeedback}
       />
     </main>
+  )
+}
+
+function SubagentIndicator({ agents }: { agents: ActiveSubagent[] }) {
+  const [open, setOpen] = useState(false)
+  if (agents.length === 0) return null
+  const label = agents.length === 1 ? 'subagente trabalhando' : 'subagentes trabalhando'
+
+  return (
+    <div className="subagent-indicator-wrap">
+      <button
+        className="subagent-indicator"
+        type="button"
+        onClick={() => setOpen(value => !value)}
+        aria-expanded={open}
+        title="Ver subagentes ativos"
+      >
+        <span className="subagent-mark" aria-hidden="true">
+          <img src={mascotUrl} alt="" />
+        </span>
+        <strong>{agents.length}</strong>
+        <span
+          className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm"
+          data-text={label}
+        >
+          {label}
+        </span>
+      </button>
+      {open && (
+        <div className="subagent-popover popover-panel t-dropdown is-open" data-origin="bottom-center">
+          <div className="popover-title">
+            <span>Subagentes ativos</span>
+            <small>{agents.length}</small>
+          </div>
+          <div className="subagent-list">
+            {agents.map((agent, index) => (
+              <div key={agent.id} className="subagent-row">
+                <span className="subagent-row-index">{index + 1}</span>
+                <span>
+                  <strong>{agent.label || `Subagente ${index + 1}`}</strong>
+                  <small>{agent.detail || 'Trabalhando em uma tarefa isolada.'}</small>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -1850,8 +2182,125 @@ function clampSidebarWidth(value: number): number {
   return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(value)))
 }
 
+function isWorkspaceAtBottom(element: HTMLElement): boolean {
+  return Math.abs(latestScrollTop(element) - element.scrollTop) <= BOTTOM_STICK_THRESHOLD
+}
+
+function latestScrollTop(element: HTMLElement): number {
+  const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight)
+  const transcript = element.querySelector<HTMLElement>('.transcript')
+  const dock = document.querySelector<HTMLElement>('.bottom-dock')
+  if (!transcript || !dock) return maxScrollTop
+
+  const transcriptBottom = transcript.getBoundingClientRect().bottom
+  const dockTop = dock.getBoundingClientRect().top
+  const target = element.scrollTop + transcriptBottom - (dockTop - 14)
+  return Math.min(maxScrollTop, Math.max(0, Math.round(target)))
+}
+
 function isVerifiedModelDiscovery(result: ModelDiscoveryResult): boolean {
   return !result.stale && result.models.length > 0 && (result.source === 'cli' || result.source === 'api-key')
+}
+
+function resolveSelectedModel(
+  models: VerbooModel[],
+  currentModelId?: string,
+  preferredModelId?: string,
+): string | undefined {
+  if (models.length === 0) return currentModelId
+  if (currentModelId && models.some(model => model.id === currentModelId)) return currentModelId
+  if (preferredModelId && models.some(model => model.id === preferredModelId)) return preferredModelId
+  return models[0]?.id
+}
+
+function parseResearchSubagentRequest(message: string): { count: number; requestedCount: number } | undefined {
+  const normalized = normalizeForSubagentParsing(message)
+  const explicitCount = normalized.match(/\b(\d+|um|uma|dois|duas|tres)\s+sub-?agentes?\b/)
+  if (explicitCount) {
+    const requestedCount = numberFromSubagentToken(explicitCount[1])
+    if (!requestedCount) return undefined
+    return {
+      requestedCount,
+      count: Math.min(Math.max(requestedCount, 1), 2),
+    }
+  }
+
+  if (!requestsResearchSubagents(normalized)) return undefined
+  const requestedCount = inferResearchSubagentCount(normalized)
+  return {
+    requestedCount,
+    count: requestedCount,
+  }
+}
+
+function numberFromSubagentToken(token: string): number | undefined {
+  const normalized = token.toLowerCase()
+  if (normalized === 'um' || normalized === 'uma') return 1
+  if (normalized === 'dois' || normalized === 'duas') return 2
+  if (normalized === 'tres' || normalized === 'três') return 3
+  const parsed = Number(normalized)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function normalizeForSubagentParsing(message: string): string {
+  return message
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+}
+
+function requestsResearchSubagents(normalizedMessage: string): boolean {
+  if (/\bnao\s+(?:use|usar|utilize|utilizar|rode|rodar|crie|criar|chame|chamar|acione|acionar).{0,40}\bsub-?agentes?\b/.test(normalizedMessage)) {
+    return false
+  }
+  return (
+    /\bsub-?agentes?\b/.test(normalizedMessage) ||
+    /\bagentes?\s+(?:de\s+)?pesquisa\b/.test(normalizedMessage) ||
+    /\bagentes?\s+pesquisadores?\b/.test(normalizedMessage)
+  )
+}
+
+function inferResearchSubagentCount(normalizedMessage: string): 1 | 2 {
+  const signals = [
+    /\bviabilidade\b/,
+    /\barquitetura\b/,
+    /\bsistema\b/,
+    /\bimplementar\b|\bimplementacao\b/,
+    /\brefatorar\b|\brefatoracao\b/,
+    /\bplanejamento\b|\bplano\b/,
+    /\bprojeto\b/,
+    /\binvestigar\b|\banalisar\b/,
+    /\bfrontend\b|\bbackend\b|\bintegracao\b/,
+    /\bseguranca\b|\bperformance\b/,
+  ].filter(pattern => pattern.test(normalizedMessage)).length
+  const asksForTwoAngles = /\bpesquisa\b.*\bviabilidade\b|\bviabilidade\b.*\bpesquisa\b/.test(normalizedMessage)
+  const broadRequest = normalizedMessage.length > 140
+  return signals >= 2 || asksForTwoAngles || broadRequest ? 2 : 1
+}
+
+function formatResearchResultsForTranscript(results: ResearchSubagentResult[]): string {
+  if (results.length === 0) return 'Nenhum resultado de pesquisa foi retornado.'
+  return results
+    .map(result => {
+      const status = result.status === 'complete' ? 'concluido' : 'falhou'
+      const sources = result.sources.length ? ` Fontes: ${result.sources.slice(0, 3).join('; ')}.` : ''
+      return `Subagente ${result.index} ${status}: ${result.summary}${sources}`
+    })
+    .join('\n')
+}
+
+function buildResearchResultsContext(results: ResearchSubagentResult[]): string {
+  if (results.length === 0) return ''
+  return [
+    'Pesquisas de subagentes somente leitura:',
+    '',
+    ...results.map(result => [
+      `Subagente ${result.index} (${result.status}):`,
+      `Resumo: ${result.summary}`,
+      result.findings.length ? `Achados:\n${result.findings.map(finding => `- ${finding}`).join('\n')}` : '',
+      result.sources.length ? `Fontes:\n${result.sources.map(source => `- ${source}`).join('\n')}` : '',
+    ].filter(Boolean).join('\n')),
+  ].join('\n\n')
 }
 
 function workspaceFolderName(path: string, projectName?: string): string {
@@ -1870,10 +2319,10 @@ function extractContextUsage(payload: unknown, maxTokens?: number): ContextUsage
   const usage = extractUsageObject(payload)
   if (!usage) return undefined
 
-  const inputTokens = numberValue(usage.input_tokens)
-  const outputTokens = numberValue(usage.output_tokens)
-  const cacheCreationTokens = numberValue(usage.cache_creation_input_tokens)
-  const cacheReadTokens = numberValue(usage.cache_read_input_tokens)
+  const inputTokens = numberValue(usage.input_tokens) ?? 0
+  const outputTokens = numberValue(usage.output_tokens) ?? 0
+  const cacheCreationTokens = numberValue(usage.cache_creation_input_tokens) ?? 0
+  const cacheReadTokens = numberValue(usage.cache_read_input_tokens) ?? 0
   const usedTokens = inputTokens + cacheCreationTokens + cacheReadTokens
   if (usedTokens <= 0) return undefined
 
@@ -2007,6 +2456,11 @@ function buildTurnSummaryLines(
   counts: Partial<Record<NonNullable<TranscriptItem['activityKind']>, number>>,
   result: AgentResultSnapshot | undefined,
   exitCode: number | null,
+  details?: {
+    validationCommands?: string[]
+    references?: string[]
+    changeSummary?: WorkspaceChangeSummary
+  },
 ): string[] {
   const actions = [
     actionCount(counts.read, 'leu/inspecionou arquivos'),
@@ -2020,9 +2474,78 @@ function buildTurnSummaryLines(
 
   const lines = actions.length ? [`Resumo: ${actions.join(', ')}.`] : []
 
+  if (details?.references?.length) {
+    lines.push(`Referencias verificadas: ${formatShortList(details.references)}.`)
+  }
+  if (details?.validationCommands?.length) {
+    lines.push(`Validacao feita: ${formatShortList(details.validationCommands)}.`)
+  }
+  if (details?.changeSummary?.totalFiles) {
+    lines.push(
+      `Arquivos alterados: ${details.changeSummary.totalFiles} (${formatSignedCount(details.changeSummary.additions, '+')} ${formatSignedCount(details.changeSummary.deletions, '-')}).`,
+    )
+  }
   if (result?.stopReason) lines.push(`Motivo de parada: ${result.stopReason}.`)
   if (exitCode !== 0) lines.push(`Processo terminou com codigo ${exitCode ?? 'desconhecido'}.`)
   return lines
+}
+
+function diffWorkspaceChanges(before: WorkspaceChangeSummary, after: WorkspaceChangeSummary): WorkspaceChangeSummary {
+  const beforeByPath = new Map(before.files.map(file => [file.path, file]))
+  const files = after.files.flatMap(file => {
+    const previous = beforeByPath.get(file.path)
+    if (!previous) return [file]
+
+    const additions = Math.max(0, file.additions - previous.additions)
+    const deletions = Math.max(0, file.deletions - previous.deletions)
+    if (additions === 0 && deletions === 0) return []
+    return [{
+      ...file,
+      additions,
+      deletions,
+    }]
+  })
+
+  return {
+    files,
+    totalFiles: files.length,
+    additions: files.reduce((total, file) => total + file.additions, 0),
+    deletions: files.reduce((total, file) => total + file.deletions, 0),
+  }
+}
+
+function appendTurnMetadata(
+  target: MutableRefObject<Record<string, string[]>>,
+  turnId: string,
+  value: string,
+) {
+  const trimmed = value.trim()
+  if (!trimmed) return
+  const current = target.current[turnId] ?? []
+  if (current.some(item => item.toLowerCase() === trimmed.toLowerCase())) return
+  target.current[turnId] = [...current, trimmed]
+}
+
+function validationCommandsForTurn(commands: string[]): string[] {
+  return commands.filter(command => {
+    const normalized = command.toLowerCase()
+    return (
+      /\b(npm|pnpm|yarn|bun)\s+(run\s+)?(build|test|lint|typecheck|check)\b/.test(normalized) ||
+      /\b(tsc|vitest|jest|playwright|electron-vite)\b/.test(normalized) ||
+      /\bgit\s+diff\s+--check\b/.test(normalized)
+    )
+  })
+}
+
+function formatShortList(values: string[]): string {
+  const unique = values.filter((value, index) => values.findIndex(item => item.toLowerCase() === value.toLowerCase()) === index)
+  const visible = unique.slice(0, 3)
+  const suffix = unique.length > visible.length ? ` e mais ${unique.length - visible.length}` : ''
+  return `${visible.join(', ')}${suffix}`
+}
+
+function formatSignedCount(value: number, sign: '+' | '-'): string {
+  return `${sign}${Math.max(0, value)}`
 }
 
 function buildCliFailureMessage(lines: string[] | undefined): string | undefined {

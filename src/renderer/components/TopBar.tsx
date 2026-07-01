@@ -1,12 +1,14 @@
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { SlotText } from 'slot-text/react'
 import mascotUrl from '../../../assets/branding/verboo-mascot.png'
 
 type TopBarProps = {
   sidebarVisible: boolean
+  statusLabel: string
   onToggleSidebar: () => void
 }
 
-export function TopBar({ sidebarVisible, onToggleSidebar }: TopBarProps) {
+export function TopBar({ sidebarVisible, statusLabel, onToggleSidebar }: TopBarProps) {
   return (
     <header className="topbar" onDoubleClick={() => window.verboo.toggleWindowZoom()}>
       <button
@@ -21,7 +23,12 @@ export function TopBar({ sidebarVisible, onToggleSidebar }: TopBarProps) {
       >
         {sidebarVisible ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
       </button>
-      <img className="topbar-mark" src={mascotUrl} alt="Verboo" />
+      <div className="topbar-brand-status" aria-label={`Verboo ${statusLabel}`}>
+        <img className="topbar-mark" src={mascotUrl} alt="Verboo" />
+        <span className="topbar-status-text">
+          <SlotText text={statusLabel} options={{ direction: 'up', duration: 180, stagger: 14, bounce: 0.2, interrupt: true }} />
+        </span>
+      </div>
     </header>
   )
 }

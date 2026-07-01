@@ -45,7 +45,7 @@
 }
 
 .feedback-header p,
-.feedback-form label,
+.feedback-description,
 .feedback-check {
   color: var(--text-muted);
 }
@@ -57,13 +57,23 @@
 
 .feedback-form {
   display: grid;
-  gap: 12px;
+  gap: 14px;
 }
 
-.feedback-form label {
+.feedback-field-group {
+  display: grid;
+  gap: 14px;
+}
+
+.feedback-field {
   display: grid;
   gap: 7px;
-  font-weight: 650;
+}
+
+.feedback-label {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 720;
 }
 
 .feedback-form input,
@@ -96,18 +106,54 @@
   border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
 }
 
+.feedback-field[data-invalid="true"] input,
+.feedback-field[data-invalid="true"] textarea {
+  border-color: color-mix(in srgb, var(--danger) 72%, var(--border));
+}
+
+.feedback-description,
+.feedback-error {
+  margin: -1px 0 0;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.feedback-error {
+  color: var(--danger);
+}
+
 .feedback-check {
-  display: flex !important;
-  grid-template-columns: none !important;
-  align-items: center;
-  gap: 9px !important;
-  font-weight: 560 !important;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg) 32%, transparent);
+  font-weight: 560;
 }
 
 .feedback-check input {
   width: 16px;
   height: 16px;
+  margin: 2px 0 0;
   accent-color: var(--accent);
+}
+
+.feedback-check span {
+  display: grid;
+  gap: 3px;
+}
+
+.feedback-check strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.feedback-check small {
+  color: var(--text-dim);
+  line-height: 1.35;
 }
 
 .feedback-result {

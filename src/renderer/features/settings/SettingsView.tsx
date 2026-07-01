@@ -107,8 +107,7 @@ export function SettingsView({
   const [apiKey, setApiKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [customDraft, setCustomDraft] = useState(userSettings.customInstructions)
-  const [confirmingFullAccess, setConfirmingFullAccess] = useState(false)
-  const [fullAccessConfirmation, setFullAccessConfirmation] = useState('')
+  const [confirmingFullAccess, setConfirmingFullAccess] = useState<'mode-selector' | 'capability' | false>(false)
 
   useEffect(() => {
     setCustomDraft(userSettings.customInstructions)
@@ -129,9 +128,8 @@ export function SettingsView({
   }
 
   function requestAccessModeChange(mode: AccessMode) {
-    if (mode === 'full' && userSettings.defaultAccessMode !== 'full') {
-      setConfirmingFullAccess(true)
-      setFullAccessConfirmation('')
+    if (mode === 'full' && !userSettings.fullAccessEnabled) {
+      setConfirmingFullAccess('mode-selector')
       return
     }
 
@@ -140,14 +138,15 @@ export function SettingsView({
 
   function cancelFullAccessConfirmation() {
     setConfirmingFullAccess(false)
-    setFullAccessConfirmation('')
   }
 
   function confirmFullAccess() {
-    if (fullAccessConfirmation !== 'ACESSO COMPLETO') return
-    void onUserSettingsChange({ defaultAccessMode: 'full' })
+    const patch: Partial<UserSettings> = { fullAccessEnabled: true }
+    if (confirmingFullAccess === 'mode-selector') {
+      patch.defaultAccessMode = 'full'
+    }
+    void onUserSettingsChange(patch)
     setConfirmingFullAccess(false)
-    setFullAccessConfirmation('')
   }
 
   return (
@@ -182,19 +181,41 @@ export function SettingsView({
               {accessOptions.map(option => (
                 <button
                   key={option.id}
-                  className={`access-setting ${userSettings.defaultAccessMode === option.id ? 'active' : ''} ${option.tone === 'danger' ? 'danger' : ''}`}
+                  className={`access-setting ${userSettings.defaultAccessMode === option.id ? 'active' : ''} ${option.tone === 'danger' ? 'danger' : ''} ${option.id === 'full' && !userSettings.fullAccessEnabled ? 'blocked' : ''}`}
                   type="button"
                   onClick={() => requestAccessModeChange(option.id)}
                 >
                   <Shield size={18} />
                   <span>
                     <strong>{option.title}</strong>
-                    <small>{option.body}</small>
+                    <small>{option.id === 'full' && !userSettings.fullAccessEnabled ? 'Ative em Permissoes para liberar este modo.' : option.body}</small>
                   </span>
                   {userSettings.defaultAccessMode === option.id && <Check size={18} />}
                 </button>
               ))}
             </div>
+
+            <section className="settings-panel settings-permission-card settings-permission-card--danger">
+              <div className="settings-permission-card-header">
+                <Shield size={18} />
+                <div>
+                  <strong>Acesso completo</strong>
+                  <p>Libera execucao irrestrita no workspace e comandos locais sem novas confirmacoes.</p>
+                </div>
+              </div>
+              <div className="settings-permission-card-status">
+                <span className={userSettings.fullAccessEnabled ? 'status-enabled' : 'status-blocked'}>
+                  {userSettings.fullAccessEnabled ? 'Ativado' : 'Bloqueado'}
+                </span>
+                <button
+                  type="button"
+                  disabled={userSettings.fullAccessEnabled}
+                  onClick={() => setConfirmingFullAccess('capability')}
+                >
+                  {userSettings.fullAccessEnabled ? 'Acesso completo ativado' : 'Ativar acesso completo'}
+                </button>
+              </div>
+            </section>
           </section>
         )}
 
@@ -522,23 +543,16 @@ export function SettingsView({
       {confirmingFullAccess && (
         <div className="modal-backdrop">
           <div className="confirm-modal t-modal is-open" role="dialog" aria-modal="true">
-            <h2>Ativar Acesso completo como padrao</h2>
-            <p>
-              O Verboo Code podera iniciar novas conversas com acesso irrestrito a internet,
-              arquivos e comandos locais sem pedir aprovacao a cada acao.
-            </p>
+            <h2>Ativar acesso completo</h2>
             <p className="danger-copy">
-              Isso pode expor codigo, documentos, segredos, tokens e chaves de API. Use como padrao
-              apenas em workspaces e ferramentas que voce confia.
+              Esta acao libera acesso irrestrito ao workspace. Leia os riscos abaixo antes de continuar.
             </p>
-            <label>
-              Digite <strong>ACESSO COMPLETO</strong> para continuar.
-              <input
-                value={fullAccessConfirmation}
-                onChange={event => setFullAccessConfirmation(event.target.value)}
-                autoFocus
-              />
-            </label>
+            <ul className="risk-list">
+              <li>O app podera ler, criar, modificar e apagar arquivos acessiveis ao usuario.</li>
+              <li>Comandos locais podem alterar o projeto e o ambiente.</li>
+              <li>Segredos, tokens e chaves podem ser expostos se o workspace os contiver.</li>
+              <li>Use apenas em workspaces confiaveis.</li>
+            </ul>
             <div className="modal-actions">
               <button type="button" onClick={cancelFullAccessConfirmation}>
                 Cancelar
@@ -546,10 +560,9 @@ export function SettingsView({
               <button
                 className="danger-button"
                 type="button"
-                disabled={fullAccessConfirmation !== 'ACESSO COMPLETO'}
                 onClick={confirmFullAccess}
               >
-                Ativar Acesso completo
+                Entendo e concordo
               </button>
             </div>
           </div>
