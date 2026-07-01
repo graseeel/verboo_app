@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { ModelDiscoveryResult, VerbooModel } from '../../shared/types'
 import { readCliOAuthAccessToken } from './cliCredentials'
@@ -78,8 +78,9 @@ export class ModelService {
   }
 
   private async writeCache(cache: ModelsCache): Promise<void> {
-    await mkdir(dirname(this.filePath), { recursive: true })
-    await writeFile(this.filePath, JSON.stringify(cache, null, 2), 'utf8')
+    await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 })
+    await writeFile(this.filePath, JSON.stringify(cache, null, 2), { encoding: 'utf8', mode: 0o600 })
+    await chmod(this.filePath, 0o600)
   }
 }
 
@@ -91,13 +92,19 @@ function modelErrorMessage(error: unknown): string {
   return message
 }
 
+function scrubSensitive(text: string): string {
+  return text
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/[A-Za-z0-9._-]{20,}/g, '[redacted]')
+}
+
 async function fetchModels(token: string): Promise<VerbooModel[]> {
   const response = await fetch(VERBOO_ROUTER_MODELS_URL, {
     headers: { Authorization: `Bearer ${token}` },
   })
 
   if (!response.ok) {
-    const body = await response.text().catch(() => '')
+    const body = scrubSensitive((await response.text().catch(() => '')).slice(0, 400)).slice(0, 200)
     throw new Error(`HTTP ${response.status}${body ? `: ${body}` : ''}`)
   }
 

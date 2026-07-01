@@ -1,5 +1,5 @@
 import { app, safeStorage } from 'electron'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { CredentialStatus } from '../../shared/types'
 
@@ -61,7 +61,8 @@ export class CredentialsStore {
   }
 
   private async write(value: StoredCredentials): Promise<void> {
-    await mkdir(dirname(this.filePath), { recursive: true })
-    await writeFile(this.filePath, JSON.stringify(value, null, 2), 'utf8')
+    await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 })
+    await writeFile(this.filePath, JSON.stringify(value, null, 2), { encoding: 'utf8', mode: 0o600 })
+    await chmod(this.filePath, 0o600)
   }
 }

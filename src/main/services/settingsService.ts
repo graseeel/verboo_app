@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { UserSettings } from '../../shared/types'
 
@@ -36,15 +36,17 @@ export class SettingsService {
   async updateSettings(patch: Partial<UserSettings>): Promise<UserSettings> {
     const current = await this.getSettings()
     const next = normalizeSettings({ ...current, ...patch })
-    await mkdir(dirname(this.filePath), { recursive: true })
-    await writeFile(this.filePath, JSON.stringify(next, null, 2), 'utf8')
+    await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 })
+    await writeFile(this.filePath, JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 })
+    await chmod(this.filePath, 0o600)
     this.cache = next
     return next
   }
 
   async resetSettings(): Promise<UserSettings> {
-    await mkdir(dirname(this.filePath), { recursive: true })
-    await writeFile(this.filePath, JSON.stringify(defaultUserSettings, null, 2), 'utf8')
+    await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 })
+    await writeFile(this.filePath, JSON.stringify(defaultUserSettings, null, 2), { encoding: 'utf8', mode: 0o600 })
+    await chmod(this.filePath, 0o600)
     this.cache = defaultUserSettings
     return defaultUserSettings
   }

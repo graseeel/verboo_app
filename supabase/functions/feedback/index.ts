@@ -19,6 +19,19 @@ type FeedbackInsertClient = {
   };
 };
 
+type FeedbackCountClient = {
+  from(table: string): {
+    select(columns: string, opts: { count: "exact"; head: true }): {
+      gte(column: string, value: string): PromiseLike<{ count: number | null; error: { message: string } | null }>;
+    };
+  };
+};
+
+// 32KB is generous headroom over the real payload shape (title<=160, description<=8000, contact<=160, small diagnostics object).
+const MAX_BODY_BYTES = 32 * 1024;
+// Real diagnostics payloads from the app are a few hundred chars; this is generous headroom.
+const MAX_DIAGNOSTICS_CHARS = 4000;
+
 const corsHeaders = {
   "access-control-allow-origin": "*",
   "access-control-allow-headers": "authorization, apikey, content-type",
@@ -36,6 +49,8 @@ export default {
     }
 
     const payload = await readPayload(req);
+    if (payload instanceof Response) return payload;
+
     const category = categoryValue(payload.category);
     const title = textValue(payload.title).slice(0, 160);
     const description = textValue(payload.description).slice(0, 8000);
@@ -44,9 +59,27 @@ export default {
       return json({ error: "invalid_feedback_payload" }, 400);
     }
 
-    const diagnostics = payload.includeDiagnostics === true && isRecord(payload.diagnostics)
-      ? payload.diagnostics
-      : {};
+    const hasDiagnostics = payload.includeDiagnostics === true && isRecord(payload.diagnostics);
+    if (hasDiagnostics && JSON.stringify(payload.diagnostics).length > MAX_DIAGNOSTICS_CHARS) {
+      return json({ error: "diagnostics_too_large" }, 400);
+    }
+    const diagnostics = hasDiagnostics ? payload.diagnostics : {};
+
+    // Coarse, global throttle across all callers (not per-IP — there's no IP column on this table).
+    try {
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const countClient = ctx.supabaseAdmin as unknown as FeedbackCountClient;
+      const { count, error: countError } = await countClient
+        .from("verboo_desktop_feedback")
+        .select("*", { count: "exact", head: true })
+        .gte("created_at", tenMinutesAgo);
+      if (countError) throw new Error(countError.message);
+      if ((count ?? 0) >= 50) {
+        return json({ error: "rate_limited" }, 429);
+      }
+    } catch (rateLimitError) {
+      console.error("feedback rate limit check failed:", rateLimitError);
+    }
 
     const feedbackClient = ctx.supabaseAdmin as unknown as FeedbackInsertClient;
     const { error } = await feedbackClient
@@ -64,16 +97,26 @@ export default {
       });
 
     if (error) {
-      return json({ error: "insert_failed", details: error.message }, 500);
+      console.error("feedback insert failed:", error.message);
+      return json({ error: "insert_failed" }, 500);
     }
 
     return json({ ok: true }, 200);
   }),
 };
 
-async function readPayload(req: Request): Promise<FeedbackPayload> {
+async function readPayload(req: Request): Promise<FeedbackPayload | Response> {
+  const contentLength = req.headers.get("content-length");
+  if (contentLength && Number(contentLength) > MAX_BODY_BYTES) {
+    return json({ error: "payload_too_large" }, 413);
+  }
+
   try {
-    const value = await req.json();
+    const text = await req.text();
+    if (text.length > MAX_BODY_BYTES) {
+      return json({ error: "payload_too_large" }, 413);
+    }
+    const value = JSON.parse(text);
     return isRecord(value) ? value : {};
   } catch {
     return {};

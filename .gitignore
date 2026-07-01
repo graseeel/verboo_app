@@ -7,3 +7,5 @@ docs/superpowers/
 .DS_Store
 npm-debug.log*
 /index.js
+.env
+.env.local

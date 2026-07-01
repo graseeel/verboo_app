@@ -1,6 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron'
+import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { AgentEvent, AgentTurnRequest, AppConfig, FeedbackRequest, MenuBarState, UserSettings } from '../shared/types'
+import type { AccessMode, AgentEvent, AgentTurnRequest, AppConfig, FeedbackRequest, MenuBarState, UserSettings } from '../shared/types'
+import { accessModeConfig } from './security/accessModes'
 import { inspectAttachments } from './services/attachmentService'
 import { CredentialsStore } from './services/credentialsStore'
 import { FeedbackService } from './services/feedbackService'
@@ -30,6 +32,7 @@ const VERBOO_SIGNUP_URL = 'https://code.verboo.ai/pt?ref=32d0ad85-a132-47cd-ae6d
 let mainWindow: BrowserWindow | undefined
 let isQuitting = false
 let latestSettings: UserSettings = defaultUserSettings
+const approvedAttachmentPaths = new Set<string>()
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -156,7 +159,10 @@ function registerIpc(): void {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile', 'multiSelections'],
     })
-    return result.canceled ? [] : inspectAttachments(result.filePaths)
+    if (result.canceled) return []
+    const attachments = await inspectAttachments(result.filePaths)
+    attachments.forEach(attachment => approvedAttachmentPaths.add(attachment.path))
+    return attachments
   })
 
   ipcMain.handle('files:pick-folder', async () => {
@@ -179,7 +185,8 @@ function registerIpc(): void {
 
   ipcMain.handle('agent:send', async (_event, request: AgentTurnRequest) => {
     const settings = await userSettings.getSettings()
-    const preparedRequest = await visionFallback.prepareRequest(request)
+    const safeRequest = await sanitizeAgentTurnRequest(request)
+    const preparedRequest = await visionFallback.prepareRequest(safeRequest)
     return cli.sendTurn(preparedRequest, event => handleAgentEvent(event, preparedRequest, settings), settings)
   })
 
@@ -187,6 +194,25 @@ function registerIpc(): void {
     cli.interrupt()
     return true
   })
+}
+
+const VALID_ACCESS_MODES = new Set(Object.keys(accessModeConfig) as AccessMode[])
+
+async function sanitizeAgentTurnRequest(request: AgentTurnRequest): Promise<AgentTurnRequest> {
+  const accessMode = VALID_ACCESS_MODES.has(request.accessMode) ? request.accessMode : 'approval'
+  const model = request.model && request.model.startsWith('-') ? undefined : request.model
+
+  let workingDirectory = request.workingDirectory
+  try {
+    const stats = await stat(workingDirectory)
+    if (!stats.isDirectory()) workingDirectory = app.getPath('home')
+  } catch {
+    workingDirectory = app.getPath('home')
+  }
+
+  const attachments = request.attachments?.filter(attachment => approvedAttachmentPaths.has(attachment.path))
+
+  return { ...request, accessMode, model, workingDirectory, attachments }
 }
 
 function handleAgentEvent(event: AgentEvent, request: AgentTurnRequest, settings: UserSettings): void {
