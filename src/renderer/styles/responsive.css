@@ -5,14 +5,12 @@
   .t-text-swap,
   .page-surface,
   .transcript .shimmer,
-  .composer .shimmer,
   .message-status-marker-icon svg {
     animation: none !important;
     transition: none !important;
   }
 
-  .transcript .shimmer,
-  .composer .shimmer {
+  .transcript .shimmer {
     background: none !important;
     color: currentColor !important;
     -webkit-text-fill-color: currentColor !important;
@@ -151,5 +149,20 @@
   .profile-grid {
     grid-template-columns: 1fr;
   }
+}
 
+@media (max-width: 900px) {
+  :root {
+    --terminal-width: 0px !important;
+    --subagents-panel-width: 0px !important;
+  }
+
+  .terminal-panel,
+  .research-subagent-panel {
+    display: none !important;
+  }
+
+  .topbar-terminal-button {
+    display: none !important;
+  }
 }

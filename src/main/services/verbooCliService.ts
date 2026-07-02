@@ -11,6 +11,7 @@ import { accessModeConfig } from '../security/accessModes'
 import { createImageBlock, type CliImageBlock } from './attachmentService'
 import { getCliOAuthAccessToken, refreshCliOAuthAccessToken } from './cliCredentials'
 import type { CredentialsStore } from './credentialsStore'
+import { createNodeRuntimeEnv, resolveExternalNodePath, resolveNodeRuntimePath } from './nodeRuntime'
 
 type AgentEventHandler = (event: AgentEvent) => void
 type AuthTokenPipe = {
@@ -24,10 +25,10 @@ const require = createRequire(import.meta.url)
 const STRUCTURED_INPUT_WRAPPER = `
 const { spawn } = require('node:child_process');
 const { createReadStream } = require('node:fs');
-const [payloadPath, cliPath, ...cliArgs] = process.argv.slice(1);
+const [payloadPath, nodePath, cliPath, ...cliArgs] = process.argv.slice(1);
 const authTokenFd = Number(process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR);
 const extraStdio = Number.isInteger(authTokenFd) && authTokenFd >= 3 ? [authTokenFd] : [];
-const child = spawn(process.execPath, [cliPath, ...cliArgs], {
+const child = spawn(nodePath, [cliPath, ...cliArgs], {
   cwd: process.cwd(),
   env: process.env,
   stdio: ['pipe', 'inherit', 'inherit', ...extraStdio],
@@ -61,6 +62,7 @@ export class VerbooCliService {
     onEvent({ type: 'started', turnId })
     this.startPowerBlocker(settings)
 
+    const nodePath = await resolveNodeRuntimePath()
     const cliPath = this.resolveCliPath()
     const prompt = buildPrompt(request)
     const inputBlocks = await buildStructuredInputBlocks(request, prompt)
@@ -94,18 +96,16 @@ export class VerbooCliService {
     if (usesStructuredInput && structuredPayload) {
       const payloadFile = await createStructuredPayloadFile(structuredPayload)
       payloadDir = payloadFile.dir
-      childArgs = ['-e', STRUCTURED_INPUT_WRAPPER, payloadFile.path, cliPath, ...cliArgs]
+      childArgs = ['-e', STRUCTURED_INPUT_WRAPPER, payloadFile.path, nodePath, cliPath, ...cliArgs]
     }
 
     const authTokenPipe = await createAuthTokenPipe(this.credentials)
-    const child = spawn(process.execPath, childArgs, {
+    const child = spawn(nodePath, childArgs, {
       cwd: request.workingDirectory || app.getPath('home'),
-      env: {
-        ...process.env,
-        ELECTRON_RUN_AS_NODE: '1',
+      env: createNodeRuntimeEnv({
         ...(authTokenPipe ? { [authTokenPipe.envVar]: String(authTokenPipe.fd) } : {}),
         ...(request.contextWindow ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(request.contextWindow) } : {}),
-      },
+      }),
       stdio: authTokenPipe ? ['pipe', 'pipe', 'pipe', authTokenPipe.handle.fd] : ['pipe', 'pipe', 'pipe'],
     }) as ChildProcessWithoutNullStreams
     this.activeProcess = child
@@ -165,7 +165,7 @@ export class VerbooCliService {
     return Promise.resolve().then(async () => {
       const result = await this.runCli(['auth', 'login'], 180_000)
       const nextStatus = await this.getAuthStatus()
-      const message = result.output || result.error || (nextStatus.loggedIn ? 'Login concluido.' : 'Login nao concluido.')
+      const message = result.output || result.error || (nextStatus.loggedIn ? 'Login concluído.' : 'Login não concluído.')
       return {
         ok: nextStatus.loggedIn || result.exitCode === 0,
         message,
@@ -179,15 +179,15 @@ export class VerbooCliService {
     const nextStatus = await this.getAuthStatus()
     return {
       ok: !nextStatus.loggedIn,
-      message: result.output || result.error || (!nextStatus.loggedIn ? 'Sessao Verboo encerrada.' : 'Nao foi possivel encerrar a sessao Verboo.'),
+      message: result.output || result.error || (!nextStatus.loggedIn ? 'Sessão Verboo encerrada.' : 'Não foi possível encerrar a sessão Verboo.'),
       status: nextStatus,
     }
   }
 
   async getAuthStatus(): Promise<CliAuthStatus> {
     const result = await this.runCli(['auth', 'status', '--json'], 12_000)
-    const parsed = parseJsonLine(result.output)
-    if (isRecord(parsed) && typeof parsed.loggedIn === 'boolean') {
+    const parsed = parseAuthStatusPayload(result.output)
+    if (parsed) {
       return {
         loggedIn: parsed.loggedIn,
         authMethod: asString(parsed.authMethod),
@@ -200,7 +200,7 @@ export class VerbooCliService {
     }
     return {
       loggedIn: false,
-      error: result.error || result.output || 'Nao foi possivel ler o status do CLI Verboo.',
+      error: result.error || result.output || 'Não foi possível ler o status do CLI Verboo.',
     }
   }
 
@@ -223,14 +223,17 @@ export class VerbooCliService {
 
   private resolveCliPath(): string {
     const packagePath = require.resolve('@verboo/code/package.json')
-    return join(dirname(packagePath), 'dist', 'cli.mjs')
+    const packageJson = require(packagePath) as { bin?: string | Record<string, string> }
+    const binPath = typeof packageJson.bin === 'string' ? packageJson.bin : packageJson.bin?.verboo
+    return resolveExternalNodePath(join(dirname(packagePath), binPath ?? 'dist/cli.mjs'))
   }
 
-  private runCli(args: string[], timeoutMs: number): Promise<{ exitCode: number | null; output: string; error: string }> {
+  private async runCli(args: string[], timeoutMs: number): Promise<{ exitCode: number | null; output: string; error: string }> {
+    const nodePath = await resolveNodeRuntimePath()
     const cliPath = this.resolveCliPath()
-    const child = spawn(process.execPath, [cliPath, ...args], {
+    const child = spawn(nodePath, [cliPath, ...args], {
       cwd: app.getPath('home'),
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      env: createNodeRuntimeEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 
@@ -304,24 +307,26 @@ async function cleanupAuthTokenPipe(pipe?: AuthTokenPipe): Promise<void> {
 
 function buildPrompt(request: AgentTurnRequest): string {
   const appInstructions = [
-    'Responda no mesmo idioma do usuario; se o usuario escrever em portugues, use portugues do Brasil.',
-    'Estruture respostas longas com paragrafos curtos, listas e resumos finais quando isso ajudar a leitura.',
-    'Nao exponha raciocinio interno, texto de pensamento, pesquisa bruta ou logs de ferramentas como se fossem resposta final.',
-    'Nao narre leituras, buscas, comandos ou edicoes apenas para registrar atividade; a interface ja mostra essas acoes em um painel estruturado.',
-    'Quando precisar de permissao, faca uma solicitacao objetiva e separada, explicando exatamente a acao e o motivo.',
-    'Ao finalizar uma tarefa, entregue um resumo curto no estilo Codex: o que foi feito, referencias verificadas quando houver, validacao feita quando houver e qualquer ressalva relevante.',
-    'Nao despeje listas completas de arquivos, comandos ou passos executados no texto principal; esses detalhes devem ficar no painel expansivel da interface quando existirem.',
+    'Responda no mesmo idioma do usuário; se o usuário escrever em português, use português do Brasil.',
+    'Estruture respostas longas com parágrafos curtos, listas e resumos finais quando isso ajudar a leitura.',
+    'Antes de usar ferramentas em uma tarefa nova, escreva uma frase curta em prosa normal dizendo o que você vai fazer.',
+    'Não exponha raciocínio interno, texto de pensamento, pesquisa bruta ou logs de ferramentas como se fossem resposta final.',
+    'Não narre leituras, buscas, comandos ou edições apenas para registrar atividade; a interface já mostra essas ações em um painel estruturado.',
+    'Durante a execução, escreva apenas atualizações úteis ao usuário; não cole sequências de tool calls, nomes internos de ferramentas ou progresso bruto no texto principal.',
+    'Quando precisar de permissão, faça uma solicitação objetiva e separada, explicando exatamente a ação e o motivo.',
+    'Ao finalizar uma tarefa, entregue um resumo curto no estilo Codex: o que foi feito, referências verificadas quando houver, validação feita quando houver e qualquer ressalva relevante.',
+    'Não despeje listas completas de arquivos, comandos ou passos executados no texto principal; esses detalhes devem ficar no painel expansível da interface quando existirem.',
   ]
   const contextInstruction = request.contextWindow
-    ? [`O app configurou a janela efetiva de autocompactacao em ${request.contextWindow} tokens para este modelo. Priorize informacao relevante dentro desse orcamento.`]
+    ? [`O app configurou a janela efetiva de autocompactação em ${request.contextWindow} tokens para este modelo. Priorize informação relevante dentro desse orçamento.`]
     : []
   const personalization = [
     request.personality ? `Personalidade preferida: ${personalityLabel(request.personality)}.` : '',
     request.customInstructions?.trim()
-      ? `Instrucoes personalizadas do usuario:\n${request.customInstructions.trim()}`
+      ? `Instruções personalizadas do usuário:\n${request.customInstructions.trim()}`
       : '',
     request.memoryContext?.trim()
-      ? `Memoria local relevante deste app:\n${request.memoryContext.trim()}`
+      ? `Memória local relevante deste app:\n${request.memoryContext.trim()}`
       : '',
   ].filter(Boolean)
   const attachmentLines = buildAttachmentLines(request.attachments)
@@ -382,6 +387,31 @@ function parseJsonLine(line: string): unknown | undefined {
   }
 }
 
+// `verboo auth status --json` prints its object pretty-printed across several
+// lines, and may also emit extra lines (update notices, warnings) around it. A
+// whole-output JSON.parse broke whenever any noise was present, making the app
+// read a logged-in user as logged out. Try, in order: the span from the first
+// `{` to the last `}` (handles noise wrapped around a multi-line object), the
+// whole output, then each individual line. First object with a boolean
+// `loggedIn` wins, so surrounding noise is ignored.
+function parseAuthStatusPayload(output: string): (Record<string, unknown> & { loggedIn: boolean }) | undefined {
+  const firstBrace = output.indexOf('{')
+  const lastBrace = output.lastIndexOf('}')
+  const candidates = [
+    firstBrace !== -1 && lastBrace > firstBrace ? output.slice(firstBrace, lastBrace + 1) : '',
+    output,
+    ...output.split(/\r?\n/),
+  ]
+  for (const candidate of candidates) {
+    if (!candidate.trim()) continue
+    const parsed = parseJsonLine(candidate)
+    if (isRecord(parsed) && typeof parsed.loggedIn === 'boolean') {
+      return parsed as Record<string, unknown> & { loggedIn: boolean }
+    }
+  }
+  return undefined
+}
+
 function extractText(payload: unknown, suppressAssistantSnapshot = false): string | undefined {
   if (!isRecord(payload)) return undefined
   if (payload.type === 'stream_event' && isRecord(payload.event)) {
@@ -428,7 +458,7 @@ function cleanTerminalText(value: string): string {
 function personalityLabel(value: NonNullable<AgentTurnRequest['personality']>): string {
   if (value === 'concise') return 'concisa e direta'
   if (value === 'explanatory') return 'explicativa, com contexto quando ajuda'
-  return 'pragmatica, objetiva e orientada a execucao'
+  return 'pragmática, objetiva e orientada a execução'
 }
 
 function isResultPayload(payload: unknown): payload is Record<string, unknown> {

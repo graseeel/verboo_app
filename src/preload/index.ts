@@ -10,6 +10,8 @@ import type {
   FeedbackResult,
   GoalEvaluationInput,
   GoalEvaluationResult,
+  LocalTerminalSession,
+  LocalTerminalStartRequest,
   LoginResult,
   MenuBarState,
   ModelDiscoveryResult,
@@ -17,6 +19,7 @@ import type {
   ResearchSubagentResult,
   ResearchSubagentsRunRequest,
   SkillSummary,
+  TerminalDataEvent,
   UserSettings,
   WorkspaceChangeSummary,
 } from '../shared/types'
@@ -49,6 +52,7 @@ const api = {
   createProjectFolder: () => ipcRenderer.invoke('files:create-project-folder') as Promise<string | undefined>,
   sendTurn: (request: AgentTurnRequest, resumeSessionId?: string) => ipcRenderer.invoke('agent:send', request, resumeSessionId) as Promise<string>,
   runResearchSubagents: (request: ResearchSubagentsRunRequest) => ipcRenderer.invoke('research-subagents:run', request) as Promise<ResearchSubagentResult[]>,
+  cancelResearchSubagents: (runId: string) => ipcRenderer.invoke('research-subagents:cancel', runId) as Promise<boolean>,
   interrupt: () => ipcRenderer.invoke('agent:interrupt') as Promise<boolean>,
   onAgentEvent: (callback: (event: AgentEvent) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: AgentEvent) => callback(payload)
@@ -62,6 +66,40 @@ const api = {
     ipcRenderer.on('app:refresh-data', listener)
     return () => {
       ipcRenderer.removeListener('app:refresh-data', listener)
+    }
+  },
+
+  // ── Terminal API ──────────────────────────────────────────────
+
+  terminalStart: (request: LocalTerminalStartRequest) => ipcRenderer.invoke('terminal:start', request) as Promise<LocalTerminalSession>,
+  terminalWrite: (sessionId: string, data: string) => ipcRenderer.invoke('terminal:write', sessionId, data) as Promise<boolean>,
+  terminalResize: (sessionId: string, cols: number, rows: number) => ipcRenderer.invoke('terminal:resize', sessionId, cols, rows) as Promise<boolean>,
+  terminalStop: (sessionId: string) => ipcRenderer.invoke('terminal:stop', sessionId) as Promise<boolean>,
+  terminalGetState: () => ipcRenderer.invoke('terminal:get-state') as Promise<LocalTerminalSession | undefined>,
+  clipboardReadText: () => ipcRenderer.invoke('clipboard:read-text') as Promise<string>,
+  clipboardWriteText: (text: string) => ipcRenderer.invoke('clipboard:write-text', text) as Promise<boolean>,
+
+  onTerminalData: (callback: (event: TerminalDataEvent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: TerminalDataEvent) => callback(payload)
+    ipcRenderer.on('terminal:data', listener)
+    return () => {
+      ipcRenderer.removeListener('terminal:data', listener)
+    }
+  },
+
+  onTerminalExit: (callback: (event: { sessionId: string }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { sessionId: string }) => callback(payload)
+    ipcRenderer.on('terminal:exit', listener)
+    return () => {
+      ipcRenderer.removeListener('terminal:exit', listener)
+    }
+  },
+
+  onTerminalError: (callback: (event: { sessionId: string; error: string }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { sessionId: string; error: string }) => callback(payload)
+    ipcRenderer.on('terminal:error', listener)
+    return () => {
+      ipcRenderer.removeListener('terminal:error', listener)
     }
   },
 }

@@ -13,6 +13,12 @@ const DEFAULT_OAUTH_SCOPES = [
   'user:file_upload',
 ]
 const TOKEN_REFRESH_SKEW_MS = 60_000
+// The CLI credential blob is arbitrary JSON (tokens, scopes, and whatever else
+// the CLI stores). 16KB was too tight and made large blobs fail to read with
+// ENOBUFS, which surfaced as "the app can't find my CLI session". Give it ample
+// room and a little more time in case the keychain is momentarily contended.
+const KEYCHAIN_MAX_BUFFER = 4 * 1024 * 1024
+const KEYCHAIN_TIMEOUT_MS = 10_000
 const execFileAsync = promisify(execFile)
 
 export type CliOAuthCredentials = {
@@ -32,7 +38,13 @@ export async function getCliOAuthAccessToken(): Promise<string | undefined> {
   const credentials = await readCliOAuthCredentials()
   if (!credentials) return undefined
   if (shouldRefresh(credentials)) {
-    return refreshCliOAuthAccessToken()
+    const refreshed = await refreshCliOAuthAccessToken()
+    if (refreshed) return refreshed
+    // Refresh failed (transient network/keychain hiccup). `shouldRefresh` fires a
+    // minute before expiry, so the current token is usually still valid — fall
+    // back to it instead of dropping the session over a momentary refresh failure.
+    if (!isExpired(credentials)) return credentials.accessToken
+    return undefined
   }
   return credentials.accessToken
 }
@@ -114,12 +126,12 @@ async function writeCliCredentialsBlob(blob: Record<string, unknown>): Promise<v
     KEYCHAIN_SERVICE,
     '-X',
     payload,
-  ], { timeout: 5_000, maxBuffer: 16_384 })
+  ], { timeout: KEYCHAIN_TIMEOUT_MS, maxBuffer: KEYCHAIN_MAX_BUFFER })
 }
 
 async function readKeychainPassword(args: string[]): Promise<string | undefined> {
   try {
-    const { stdout } = await execFileAsync('/usr/bin/security', args, { timeout: 5_000, maxBuffer: 16_384 })
+    const { stdout } = await execFileAsync('/usr/bin/security', args, { timeout: KEYCHAIN_TIMEOUT_MS, maxBuffer: KEYCHAIN_MAX_BUFFER })
     return stdout
   } catch (error) {
     if (process.env.VERBOO_DEBUG_KEYCHAIN === '1') {
@@ -184,6 +196,10 @@ function normalizeOAuthCredentials(value: unknown): CliOAuthCredentials | undefi
 
 function shouldRefresh(credentials: CliOAuthCredentials): boolean {
   return Boolean(credentials.refreshToken && credentials.expiresAt && Date.now() >= credentials.expiresAt - TOKEN_REFRESH_SKEW_MS)
+}
+
+function isExpired(credentials: CliOAuthCredentials): boolean {
+  return Boolean(credentials.expiresAt && Date.now() >= credentials.expiresAt)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

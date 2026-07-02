@@ -103,7 +103,7 @@ export function ProjectPicker({
                 }}
               >
                 <FolderPlus size={15} />
-                Comecar do zero
+                Começar do zero
               </button>
               <button
                 type="button"

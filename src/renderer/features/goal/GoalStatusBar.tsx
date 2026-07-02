@@ -52,21 +52,21 @@ export function GoalStatusBar({ status, onPause, onResume, onCancel, onClear }: 
       </div>
       <div className="goal-status-bar__actions">
         {(status.kind === 'active' || status.kind === 'continuing' || status.kind === 'evaluating') && (
-          <button className="goal-status-bar__btn" onClick={onPause} title="Pause">
+          <button className="goal-status-bar__btn" onClick={onPause} title="Pausar">
             <Pause size={14} />
           </button>
         )}
         {status.kind === 'completed' && (
-          <button className="goal-status-bar__btn goal-status-bar__btn--clear" onClick={onClear} title="Clear goal">
+          <button className="goal-status-bar__btn goal-status-bar__btn--clear" onClick={onClear} title="Limpar objetivo">
             <Square size={12} />
           </button>
         )}
         {(status.kind === 'stopped' || status.kind === 'budget_limited') && (
           <>
-            <button className="goal-status-bar__btn" onClick={onResume} title="Resume">
+            <button className="goal-status-bar__btn" onClick={onResume} title="Retomar">
               <Play size={14} />
             </button>
-            <button className="goal-status-bar__btn goal-status-bar__btn--clear" onClick={onClear} title="Clear goal">
+            <button className="goal-status-bar__btn goal-status-bar__btn--clear" onClick={onClear} title="Limpar objetivo">
               <Square size={12} />
             </button>
           </>

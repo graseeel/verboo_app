@@ -96,7 +96,7 @@ export class ModelService {
 function modelErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
   if (isAuthFailure(error)) {
-    return 'Sessao Verboo expirada. Entre novamente ou salve uma chave API valida.'
+    return 'Sessão Verboo expirada. Entre novamente ou salve uma chave de API válida.'
   }
   return message
 }

@@ -2,7 +2,7 @@
   position: relative;
   z-index: 90;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 9px;
   min-height: var(--titlebar-height);
@@ -94,7 +94,42 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  margin-left: auto;
   -webkit-app-region: no-drag;
+}
+
+.topbar-terminal-notice {
+  max-width: min(420px, 42vw);
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-terminal-button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.topbar-terminal-button:hover {
+  border-color: var(--border);
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent-soft) 42%, transparent);
+}
+
+.topbar-terminal-button.active {
+  color: var(--accent-strong);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 56%, transparent);
 }
 
 .topbar button,
@@ -192,7 +227,7 @@
 .app-layout {
   position: relative;
   display: grid;
-  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--terminal-width);
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -200,11 +235,38 @@
 }
 
 .app-layout.sidebar-hidden {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--terminal-width);
+}
+
+.workspace {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden auto;
+}
+
+.app-layout.sidebar-hidden .workspace {
+  grid-column: 1;
+}
+
+.research-subagent-panel {
+  grid-column: 3;
+}
+
+.terminal-panel {
+  grid-column: 4;
+}
+
+.app-layout.sidebar-hidden .research-subagent-panel {
+  grid-column: 2;
+}
+
+.app-layout.sidebar-hidden .terminal-panel {
+  grid-column: 3;
 }
 
 .app-sidebar {
   position: relative;
+  grid-column: 1;
   display: flex;
   flex-direction: column;
   height: 100%;

@@ -59,9 +59,9 @@ export function LoginScreen({
       const valid = await onSaveApiKey(trimmed)
       if (valid) {
         setApiKey('')
-        setStatusMessage('Chave API validada.')
+        setStatusMessage('Chave de API validada.')
       } else {
-        setStatusMessage('Nao foi possivel validar a chave API.')
+        setStatusMessage('Não foi possível validar a chave de API.')
       }
     } finally {
       setSaving(false)
@@ -69,9 +69,9 @@ export function LoginScreen({
   }
 
   async function checkExistingAuth() {
-    setStatusMessage('Verificando sessao local do Verboo...')
+    setStatusMessage('Verificando sessão local do Verboo...')
     const valid = await onCheckExistingAuth()
-    setStatusMessage(valid ? 'Sessao Verboo validada.' : 'Nenhuma sessao Verboo valida foi encontrada.')
+    setStatusMessage(valid ? 'Sessão Verboo validada.' : 'Nenhuma sessão Verboo válida foi encontrada.')
   }
 
   if (!noticeAccepted) {
@@ -85,10 +85,10 @@ export function LoginScreen({
 
           <div className="login-copy">
             <p className="login-eyebrow">Aviso importante</p>
-            <h1>Versao em desenvolvimento</h1>
+            <h1>Versão em desenvolvimento</h1>
             <p>
-              Este aplicativo esta em desenvolvimento e nao e uma versao oficial criada pela Verboo.
-              Ele usa sua conta, CLI ou chave API Verboo apenas para tentar reproduzir a experiencia
+              Este aplicativo está em desenvolvimento e não é uma versão oficial criada pela Verboo.
+              Ele usa sua conta, CLI ou chave de API Verboo apenas para tentar reproduzir a experiência
               desktop do Verboo Code.
             </p>
           </div>
@@ -98,8 +98,8 @@ export function LoginScreen({
             <div>
               <strong>Use sabendo que podem existir bugs ou falhas.</strong>
               <p>
-                Se encontrar qualquer problema, comportamento estranho ou falha de seguranca, fale
-                diretamente com Gabriel antes de distribuir ou depender deste app em trabalho critico.
+                Se encontrar qualquer problema, comportamento estranho ou falha de segurança, fale
+                diretamente com Gabriel antes de distribuir ou depender deste app em trabalho crítico.
               </p>
             </div>
           </div>
@@ -144,8 +144,8 @@ export function LoginScreen({
         <div className="login-copy">
           <h1>Entrar no Verboo Code</h1>
           <p>
-            O app fica bloqueado ate validar uma sessao real do CLI Verboo ou uma chave API valida.
-            A validacao precisa retornar modelos disponiveis para o seu plano.
+            O app fica bloqueado até validar uma sessão real do CLI Verboo ou uma chave de API válida.
+            A validação precisa retornar modelos disponíveis para o seu plano.
           </p>
         </div>
 
@@ -159,7 +159,7 @@ export function LoginScreen({
           />
           <span>
             <strong>Continuar logado</strong>
-            <small>Usar a ultima validacao local quando a renovacao de modelos falhar temporariamente.</small>
+            <small>Usar a última validação local quando a renovação de modelos falhar temporariamente.</small>
           </span>
         </label>
 
@@ -170,7 +170,7 @@ export function LoginScreen({
           </button>
           <button className="secondary-action" type="button" onClick={checkExistingAuth} disabled={checking}>
             <RefreshCw size={17} />
-            Ja autentiquei
+            Já autentiquei
           </button>
         </div>
 
@@ -190,7 +190,7 @@ export function LoginScreen({
         </div>
 
         {(statusMessage || checking) && (
-          <div className="login-note">{checking ? 'Validando credenciais e modelos disponiveis...' : statusMessage}</div>
+          <div className="login-note">{checking ? 'Validando credenciais e modelos disponíveis...' : statusMessage}</div>
         )}
 
         {(authError || modelResult.error) && (
@@ -200,14 +200,14 @@ export function LoginScreen({
         <form className="api-login-form" onSubmit={submitApiKey}>
           <label htmlFor="api-key">
             <KeyRound size={16} />
-            Chave API Verboo
+            Chave de API Verboo
           </label>
           <div className="api-login-row">
             <input
               id="api-key"
               value={apiKey}
               onChange={event => setApiKey(event.target.value)}
-              placeholder={credentials.hasApiKey ? `Configurada (${credentials.apiKeyHint})` : 'Cole sua chave API'}
+              placeholder={credentials.hasApiKey ? `Configurada (${credentials.apiKeyHint})` : 'Cole sua chave de API'}
               type="password"
             />
             <button type="submit" disabled={!apiKey.trim() || saving || checking}>
@@ -215,8 +215,8 @@ export function LoginScreen({
             </button>
           </div>
           <p>
-            A chave fica criptografada localmente. O app so libera o uso se ela conseguir listar os modelos
-            disponiveis na sua conta Verboo.
+            A chave fica criptografada localmente. O app só libera o uso se ela conseguir listar os modelos
+            disponíveis na sua conta Verboo.
           </p>
         </form>
       </section>

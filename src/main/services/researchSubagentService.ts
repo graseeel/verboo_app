@@ -14,10 +14,13 @@ const MAX_RESEARCH_SUBAGENTS = 2
 const DISALLOWED_RESEARCH_TOOLS = new Set(['edit', 'write', 'multiedit', 'multi_edit', 'notebookedit'])
 
 export class ResearchSubagentService {
+  private activeRuns = new Map<string, Set<VerbooCliService>>()
+
   constructor(private readonly credentials?: CredentialsStore) {}
 
   async runMany(payload: ResearchSubagentsRunRequest, settings?: UserSettings): Promise<ResearchSubagentResult[]> {
     const count = clamp(Math.round(payload.count || 1), 1, MAX_RESEARCH_SUBAGENTS)
+    const runId = payload.runId || randomUUID()
     const requests = Array.from({ length: count }, (_, index): ResearchSubagentRequest => ({
       id: randomUUID(),
       index: index + 1,
@@ -26,11 +29,26 @@ export class ResearchSubagentService {
       baseRequest: payload.baseRequest,
     }))
 
-    return Promise.all(requests.map(request => this.runOne(request, settings)))
+    this.activeRuns.set(runId, new Set())
+    try {
+      return await Promise.all(requests.map(request => this.runOne(runId, request, settings)))
+    } finally {
+      this.activeRuns.delete(runId)
+    }
   }
 
-  private async runOne(request: ResearchSubagentRequest, settings?: UserSettings): Promise<ResearchSubagentResult> {
+  cancel(runId: string): boolean {
+    const children = this.activeRuns.get(runId)
+    if (!children || children.size === 0) return false
+    for (const childCli of children) {
+      childCli.interrupt()
+    }
+    return true
+  }
+
+  private async runOne(runId: string, request: ResearchSubagentRequest, settings?: UserSettings): Promise<ResearchSubagentResult> {
     const childCli = new VerbooCliService(this.credentials)
+    this.activeRuns.get(runId)?.add(childCli)
     const output: string[] = []
     const sources = new Set<string>()
     let violation: string | undefined
@@ -47,6 +65,7 @@ export class ResearchSubagentService {
       const finish = (result: ResearchSubagentResult) => {
         if (settled) return
         settled = true
+        this.activeRuns.get(runId)?.delete(childCli)
         resolve(result)
       }
 
@@ -81,7 +100,7 @@ export class ResearchSubagentService {
 
           const text = cleanupOutput(output.join(''))
           if (event.exitCode !== 0) {
-            finish(failedResult(request, text || `Processo terminou com codigo ${event.exitCode ?? 'desconhecido'}.`, sources))
+            finish(failedResult(request, text || `Processo terminou com código ${event.exitCode ?? 'desconhecido'}.`, sources))
             return
           }
 
@@ -103,14 +122,14 @@ export class ResearchSubagentService {
 
 function buildResearchPrompt(request: ResearchSubagentRequest): string {
   return [
-    'Voce e um subagente de pesquisa do Verboo Code.',
-    'Sua funcao e somente investigar e resumir informacoes para o agente principal.',
+    'Você é um subagente de pesquisa do Verboo Code.',
+    'Sua função é somente investigar e resumir informações para o agente principal.',
     '',
-    'Regras obrigatorias:',
-    '- Nao edite arquivos.',
-    '- Nao crie arquivos.',
-    '- Nao apague arquivos.',
-    '- Nao rode comandos que alterem o filesystem.',
+    'Regras obrigatórias:',
+    '- Não edite arquivos.',
+    '- Não crie arquivos.',
+    '- Não apague arquivos.',
+    '- Não rode comandos que alterem o filesystem.',
     '- Use somente leitura, busca, listagem, pesquisa e resumo.',
     '- Responda com achados objetivos, fontes e riscos.',
     '',
@@ -124,8 +143,8 @@ function buildResearchPrompt(request: ResearchSubagentRequest): string {
 
 function researchTopicFor(index: number, total: number, message: string): string {
   if (total === 1) return `Pesquisar o pedido completo do usuario: ${snippet(message, 240)}`
-  if (index === 1) return 'Pesquisar o codigo local, arquivos relevantes, contratos e riscos de implementacao.'
-  return 'Pesquisar contexto complementar, documentacao, comportamento esperado e pontos de validacao.'
+  if (index === 1) return 'Pesquisar o código local, arquivos relevantes, contratos e riscos de implementação.'
+  return 'Pesquisar contexto complementar, documentação, comportamento esperado e pontos de validação.'
 }
 
 function researchAccessMode(accessMode: AgentTurnRequest['accessMode']): AgentTurnRequest['accessMode'] {

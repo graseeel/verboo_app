@@ -13,20 +13,20 @@ type AccessOption = {
 const options: AccessOption[] = [
   {
     id: 'approval',
-    title: 'Solicitar aprovacao',
-    description: 'Sempre pedir aprovacao para editar arquivos externos e usar a internet',
+    title: 'Solicitar aprovação',
+    description: 'Sempre pedir aprovação para editar arquivos externos e usar a internet',
     icon: Hand,
   },
   {
     id: 'auto',
     title: 'Aprovar por mim',
-    description: 'Solicitar aprovacao apenas para acoes detectadas como potencialmente inseguras',
+    description: 'Solicitar aprovação apenas para ações detectadas como potencialmente inseguras',
     icon: TerminalSquare,
   },
   {
     id: 'full',
-    title: 'Acesso completo',
-    description: 'Acesso irrestrito a internet e a qualquer arquivo no seu computador',
+    title: 'Modo livre',
+    description: 'Executar sem novas aprovações em workspaces confiáveis',
     icon: ShieldAlert,
   },
 ]
@@ -64,7 +64,7 @@ export function AccessSelector({ value, fullAccessEnabled, onChange, onRequestFu
       {open && (
         <div className="access-menu popover-panel t-dropdown is-open" data-origin="bottom-left">
           <div className="access-heading">
-            <span>Como as acoes do Verboo devem ser aprovadas?</span>
+            <span>Como as ações do Verboo devem ser aprovadas?</span>
             <a href="https://code.verboo.ai/pt" target="_blank" rel="noreferrer">Saiba mais</a>
           </div>
 
@@ -82,7 +82,7 @@ export function AccessSelector({ value, fullAccessEnabled, onChange, onRequestFu
                 {isFullLocked ? <Lock size={22} className="access-option__lock" /> : <Icon size={22} />}
                 <span>
                   <strong>{option.title}</strong>
-                  <small>{isFullLocked ? 'Ative em Configuracoes > Permissoes para liberar este modo.' : option.description}</small>
+                  <small>{isFullLocked ? 'Ative em Configurações > Permissões para liberar este modo.' : option.description}</small>
                 </span>
                 {value === option.id && !isFullLocked && <Check size={20} />}
               </button>

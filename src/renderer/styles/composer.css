@@ -1,13 +1,14 @@
 .bottom-dock {
   position: fixed;
   z-index: 120;
-  right: 0;
+  right: calc(var(--terminal-width) + var(--subagents-panel-width, 0px));
   left: var(--sidebar-width);
   bottom: 16px;
   display: grid;
   gap: 10px;
-  width: min(840px, calc(100vw - var(--sidebar-width) - 56px));
+  width: min(var(--chat-lane-width), calc(100vw - var(--sidebar-width) - var(--terminal-width) - var(--subagents-panel-width, 0px) - var(--chat-lane-gutter)));
   margin: 0 auto;
+  overflow: visible;
 }
 
 .bottom-dock.empty-mode {
@@ -21,10 +22,10 @@
   gap: 7px;
   padding: 8px;
   border: 1px solid var(--border-strong);
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(18px);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg-elevated) 96%, var(--bg));
+  box-shadow: 0 10px 28px color-mix(in srgb, black 28%, transparent);
+  backdrop-filter: blur(10px);
 }
 
 .permission-approval-panel {
@@ -34,10 +35,10 @@
   align-items: center;
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--amber) 38%, var(--border));
-  border-radius: 16px;
+  border-radius: 12px;
   background: color-mix(in srgb, var(--bg-elevated) 96%, transparent);
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(18px);
+  box-shadow: 0 10px 24px color-mix(in srgb, black 24%, transparent);
+  backdrop-filter: blur(10px);
 }
 
 .permission-approval-icon {
@@ -175,17 +176,26 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
 }
 
 .composer-tools {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 7px;
   min-width: 0;
 }
 
+.composer-tools.left {
+  flex: 1 1 190px;
+}
+
 .composer-tools.right {
+  flex: 1 1 300px;
+  justify-content: flex-end;
   margin-left: auto;
 }
 
@@ -198,6 +208,7 @@
 .composer-pill {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
   min-width: 0;
   height: 32px;
@@ -208,6 +219,12 @@
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.composer-pill svg {
+  flex: 0 0 auto;
 }
 
 .composer-pill span {
@@ -250,12 +267,14 @@
 }
 
 .access-pill.danger {
-  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
-  color: var(--accent-strong);
-  background: color-mix(in srgb, var(--accent-soft) 68%, transparent);
+  border-color: color-mix(in srgb, var(--amber) 44%, var(--border));
+  color: color-mix(in srgb, var(--amber) 82%, var(--text));
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
 }
 
 .model-pill {
+  width: 100%;
+  min-width: 0;
   max-width: 220px;
   border-color: var(--model-border, var(--border));
   background: var(--model-bg, transparent);
@@ -273,17 +292,16 @@
   max-width: 200px;
   height: 32px;
   padding: 0 10px 0 6px;
-  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
   border-radius: 999px;
-  background: color-mix(in srgb, #21123f 86%, transparent);
-  color: color-mix(in srgb, var(--accent-strong) 74%, white);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent);
+  background: color-mix(in srgb, var(--bg-soft) 74%, transparent);
+  color: color-mix(in srgb, var(--text-muted) 82%, var(--accent-strong));
   cursor: pointer;
 }
 
 .subagent-indicator:hover {
-  border-color: color-mix(in srgb, var(--accent) 64%, var(--border));
-  background: color-mix(in srgb, #27154c 92%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 44%, var(--bg-soft));
 }
 
 .subagent-mark {
@@ -291,8 +309,8 @@
   place-items: center;
   width: 22px;
   height: 22px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 .subagent-mark img {
@@ -307,17 +325,17 @@
   min-width: 18px;
   height: 18px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 34%, transparent);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
   color: var(--text);
   font-size: 11px;
   font-weight: 820;
 }
 
-.subagent-indicator .shimmer {
+.subagent-indicator-label {
   min-width: 0;
   overflow: hidden;
   font-size: 12px;
-  font-weight: 760;
+  font-weight: 680;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -396,6 +414,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 38px;
   width: 38px;
   height: 38px;
   border: 0;
@@ -419,8 +438,8 @@
   height: 24px;
   border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
   border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-soft) 58%, transparent);
+  color: color-mix(in srgb, var(--accent-strong) 82%, var(--text-muted));
   cursor: pointer;
   font-size: 12px;
 }
@@ -556,6 +575,7 @@
 
 .selector-wrap {
   position: relative;
+  min-width: 0;
 }
 
 .model-menu,
@@ -697,16 +717,35 @@
 
 .context-meter {
   display: inline-grid;
-  grid-template-columns: auto minmax(48px, auto) 54px auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  flex: 0 1 164px;
+  gap: 7px;
   height: 34px;
-  min-width: 178px;
-  padding: 0 9px;
+  min-width: 164px;
+  max-width: 190px;
+  padding: 0 7px 0 9px;
   border: 1px solid color-mix(in srgb, var(--border-strong) 76%, transparent);
   border-radius: 999px;
   background: color-mix(in srgb, var(--bg-soft) 48%, transparent);
   color: var(--text-muted);
+}
+
+@media (max-width: 1180px) {
+  .composer-tools.right {
+    flex-basis: 100%;
+    justify-content: space-between;
+    margin-left: 0;
+  }
+
+  .context-meter {
+    min-width: 142px;
+    max-width: 168px;
+  }
+
+  .model-pill {
+    max-width: 190px;
+  }
 }
 
 .context-meter-icon {
@@ -742,48 +781,39 @@
 }
 
 .context-meter.over-limit .context-meter-icon,
-.context-meter.over-limit .context-copy strong,
-.context-meter.over-limit .context-percent {
+.context-meter.over-limit .context-copy strong {
   color: var(--danger);
 }
 
-.context-meter.over-limit .context-bar {
-  border-color: color-mix(in srgb, var(--danger) 46%, transparent);
-}
-
-.context-meter.over-limit .context-bar span {
-  background: linear-gradient(90deg, var(--danger), color-mix(in srgb, var(--accent) 78%, var(--danger)));
-}
-
-.context-percent {
-  min-width: 34px;
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 760;
-  text-align: right;
-}
-
-.context-bar {
+.context-ring {
   position: relative;
-  width: 54px;
-  height: 8px;
-  border: 1px solid color-mix(in srgb, var(--text-muted) 20%, transparent);
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--bg) 64%, transparent);
-  overflow: hidden;
+  background:
+    radial-gradient(circle, color-mix(in srgb, var(--bg-elevated) 96%, black) 58%, transparent 60%),
+    conic-gradient(
+      var(--accent-strong) calc(var(--context-progress, 0) * 1turn),
+      color-mix(in srgb, var(--text-muted) 18%, transparent) 0
+    );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border-strong) 42%, transparent);
+  color: var(--text);
 }
 
-.context-bar span {
-  position: absolute;
-  inset: 0;
-  display: block;
-  width: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent), var(--cyan));
-  transform: scaleX(0);
-  transform-origin: left center;
-  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform;
+.context-ring span {
+  font-size: 9.5px;
+  font-weight: 820;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.context-meter.over-limit .context-ring {
+  background:
+    radial-gradient(circle, color-mix(in srgb, var(--bg-elevated) 96%, black) 58%, transparent 60%),
+    conic-gradient(var(--danger) 1turn, color-mix(in srgb, var(--danger) 16%, transparent) 0);
+  color: var(--danger);
 }
 
 .project-picker {
@@ -915,7 +945,7 @@
   place-items: center;
   padding: 24px;
   background: color-mix(in srgb, black 56%, transparent);
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(5px);
 }
 
 .confirm-modal {
@@ -927,9 +957,9 @@
   max-height: min(720px, calc(100vh - 48px));
   padding: 18px;
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: 12px;
   background: color-mix(in srgb, var(--bg-elevated) 96%, transparent);
-  box-shadow: var(--shadow);
+  box-shadow: 0 14px 36px color-mix(in srgb, black 30%, transparent);
   overflow: auto;
 }
 

@@ -20,7 +20,7 @@ export class ProfileService {
     if (!bearerToken) {
       return {
         status: 'unauthenticated',
-        error: 'Entre com Verboo pelo CLI/app ou configure uma chave API para carregar dados reais de perfil.',
+        error: 'Entre com Verboo pelo CLI/app ou configure uma chave de API para carregar dados reais de perfil.',
       }
     }
 
@@ -57,7 +57,7 @@ export class ProfileService {
     if (!me && !groups.length && !subscriptions.length && !summaries.length) {
       return {
         status: 'error',
-        error: 'Nao foi possivel carregar dados reais do Verboo com a credencial atual.',
+        error: 'Não foi possível carregar dados reais do Verboo com a credencial atual.',
       }
     }
 
@@ -98,7 +98,7 @@ function collectErrors(results: PromiseSettledResult<unknown>[]): string | undef
   const errors = results
     .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
     .map(result => result.reason instanceof Error ? result.reason.message : String(result.reason))
-  return errors.length ? `Alguns dados nao foram retornados pela API: ${Array.from(new Set(errors)).join(', ')}` : undefined
+  return errors.length ? `Alguns dados não foram retornados pela API: ${Array.from(new Set(errors)).join(', ')}` : undefined
 }
 
 function unwrapData(value: unknown): unknown {

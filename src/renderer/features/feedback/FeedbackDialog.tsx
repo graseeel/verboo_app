@@ -72,7 +72,7 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
             </span>
             <div>
               <h2 id="feedback-title">Ajuda e feedback</h2>
-              <p>Descreva o problema ou sugestao. Se o Supabase falhar, abriremos um e-mail preenchido.</p>
+              <p>Descreva o problema ou sugestão. Se o Supabase falhar, abriremos um e-mail preenchido.</p>
             </div>
           </div>
           <button type="button" className="icon-button" onClick={onClose} aria-label="Fechar feedback">
@@ -91,13 +91,13 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
               >
                 <option value="bug">Bug</option>
                 <option value="feedback">Feedback</option>
-                <option value="question">Duvida</option>
+                <option value="question">Dúvida</option>
               </select>
               <p className="feedback-description">Ajuda a direcionar o envio para o fluxo correto.</p>
             </div>
 
             <div className="feedback-field" data-invalid={Boolean(errors.title)}>
-              <label className="feedback-label" htmlFor="feedback-title-input">Titulo</label>
+              <label className="feedback-label" htmlFor="feedback-title-input">Título</label>
               <input
                 id="feedback-title-input"
                 value={title}
@@ -108,7 +108,7 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
                 aria-invalid={Boolean(errors.title)}
                 aria-describedby={errors.title ? 'feedback-title-error' : 'feedback-title-help'}
                 maxLength={160}
-                placeholder="Ex.: Login nao valida a sessao do CLI"
+                placeholder="Ex.: Login não valida a sessão do CLI"
               />
               {errors.title ? (
                 <p id="feedback-title-error" className="feedback-error">{errors.title}</p>
@@ -118,7 +118,7 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
             </div>
 
             <div className="feedback-field" data-invalid={Boolean(errors.description)}>
-              <label className="feedback-label" htmlFor="feedback-description-input">Descricao</label>
+              <label className="feedback-label" htmlFor="feedback-description-input">Descrição</label>
               <textarea
                 id="feedback-description-input"
                 value={description}
@@ -130,7 +130,7 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
                 aria-describedby={errors.description ? 'feedback-description-error' : 'feedback-description-help'}
                 maxLength={8000}
                 rows={6}
-                placeholder="O que aconteceu, o que voce esperava e como reproduzir."
+                placeholder="O que aconteceu, o que você esperava e como reproduzir."
               />
               {errors.description ? (
                 <p id="feedback-description-error" className="feedback-error">{errors.description}</p>
@@ -158,8 +158,8 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
                 onChange={event => setIncludeDiagnostics(event.target.checked)}
               />
               <span>
-                <strong>Incluir diagnosticos do app</strong>
-                <small>Inclui versao, plataforma e estado tecnico; nao envia transcript completo.</small>
+                <strong>Incluir diagnósticos do app</strong>
+                <small>Inclui versão, plataforma e estado técnico; não envia transcript completo.</small>
               </span>
             </label>
           </div>
@@ -195,11 +195,11 @@ function validateFeedback(title: string, description: string): FeedbackErrors {
   const errors: FeedbackErrors = {}
 
   if (title.trim().length < 3) {
-    errors.title = 'Informe um titulo com pelo menos 3 caracteres.'
+    errors.title = 'Informe um título com pelo menos 3 caracteres.'
   }
 
   if (description.trim().length < 12) {
-    errors.description = 'Descreva o problema ou sugestao com pelo menos 12 caracteres.'
+    errors.description = 'Descreva o problema ou sugestão com pelo menos 12 caracteres.'
   }
 
   return errors

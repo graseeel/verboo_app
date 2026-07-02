@@ -1,7 +1,9 @@
-import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } from 'electron'
 import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { AccessMode, AgentEvent, AgentTurnRequest, AppConfig, FeedbackRequest, GoalEvaluationInput, GoalEvaluationResult, MenuBarState, ResearchSubagentsRunRequest, UserSettings } from '../shared/types'
+import { LocalTerminalService } from './services/localTerminalService'
+import type { LocalTerminalStartRequest } from '../shared/types'
 import { accessModeConfig } from './security/accessModes'
 import { inspectAttachments } from './services/attachmentService'
 import { CredentialsStore } from './services/credentialsStore'
@@ -26,10 +28,23 @@ const skills = new SkillsService()
 const cli = new VerbooCliService(credentials)
 const researchSubagents = new ResearchSubagentService(credentials)
 const visionFallback = new VisionFallbackService(models)
+const terminalService = new LocalTerminalService()
+terminalService.setHandlers({
+  onData: (sessionId, data) => {
+    sendToRenderer('terminal:data', { sessionId, data })
+  },
+  onExit: (sessionId) => {
+    sendToRenderer('terminal:exit', { sessionId })
+  },
+  onError: (sessionId, error) => {
+    sendToRenderer('terminal:error', { sessionId, error })
+  },
+})
+
 const trayStatus = new TrayStatusService({
   getWindow: () => mainWindow,
   interrupt: () => cli.interrupt(),
-  refreshData: () => mainWindow?.webContents.send('app:refresh-data'),
+  refreshData: () => sendToRenderer('app:refresh-data'),
 })
 const VERBOO_SIGNUP_URL = 'https://code.verboo.ai/pt?ref=32d0ad85-a132-47cd-ae6d-b1f9c5e92228&utm_source=referral&utm_medium=whatsapp&utm_campaign=referral_program&utm_content=32d0ad85-a132-47cd-ae6d-b1f9c5e92228'
 
@@ -37,6 +52,13 @@ let mainWindow: BrowserWindow | undefined
 let isQuitting = false
 let latestSettings: UserSettings = defaultUserSettings
 const approvedAttachmentPaths = new Set<string>()
+
+function sendToRenderer(channel: string, payload?: unknown): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const { webContents } = mainWindow
+  if (webContents.isDestroyed()) return
+  webContents.send(channel, payload)
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -70,19 +92,35 @@ function createWindow(): void {
   }
 }
 
-app.whenReady().then(async () => {
-  registerIpc()
-  latestSettings = await userSettings.getSettings()
-  trayStatus.configure(latestSettings)
-  createWindow()
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+// Enforce a single running instance. Because closing the window only hides it
+// to the tray, launching the app again (dock, Spotlight) would otherwise spin up
+// a whole new ~300MB Electron process on top of the hidden one — they stack up
+// over a session. Instead, a second launch just reveals the existing window.
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
   })
-})
+
+  app.whenReady().then(async () => {
+    registerIpc()
+    latestSettings = await userSettings.getSettings()
+    trayStatus.configure(latestSettings)
+    createWindow()
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
+  })
+}
 
 app.on('before-quit', () => {
   isQuitting = true
+  terminalService.cleanupAll()
 })
 
 app.on('window-all-closed', () => {
@@ -94,6 +132,11 @@ function registerIpc(): void {
     workingDirectory: process.cwd() || app.getPath('home'),
     accessMode: (await userSettings.getSettings()).defaultAccessMode,
   }))
+  ipcMain.handle('clipboard:read-text', () => clipboard.readText())
+  ipcMain.handle('clipboard:write-text', (_event, text: string) => {
+    clipboard.writeText(text)
+    return true
+  })
 
   ipcMain.handle('auth:start-cli-login', async () => cli.startCliLogin())
   ipcMain.handle('auth:cli-status', async () => cli.getAuthStatus())
@@ -210,9 +253,35 @@ function registerIpc(): void {
     return researchSubagents.runMany(safeRequest, settings)
   })
 
+  ipcMain.handle('research-subagents:cancel', (_event, runId: string) => {
+    return researchSubagents.cancel(String(runId || ''))
+  })
+
   ipcMain.handle('agent:interrupt', () => {
     cli.interrupt()
     return true
+  })
+
+  // ── Terminal IPC ──────────────────────────────────────────────
+
+  ipcMain.handle('terminal:start', async (_event, request: LocalTerminalStartRequest) => {
+    return terminalService.start(request)
+  })
+
+  ipcMain.handle('terminal:write', async (_event, sessionId: string, data: string) => {
+    return terminalService.write(sessionId, data)
+  })
+
+  ipcMain.handle('terminal:resize', async (_event, sessionId: string, cols: number, rows: number) => {
+    return terminalService.resize(sessionId, cols, rows)
+  })
+
+  ipcMain.handle('terminal:stop', async (_event, sessionId: string) => {
+    return terminalService.stop(sessionId)
+  })
+
+  ipcMain.handle('terminal:get-state', async () => {
+    return terminalService.getState()
   })
 }
 
@@ -224,6 +293,7 @@ async function sanitizeResearchSubagentsRunRequest(request: ResearchSubagentsRun
     attachments: [],
   })
   return {
+    runId: typeof request.runId === 'string' ? request.runId.slice(0, 120) : undefined,
     count: clamp(Math.round(Number(request.count) || 1), 1, 2),
     requestedCount: Number.isFinite(Number(request.requestedCount)) ? Math.round(Number(request.requestedCount)) : undefined,
     baseRequest: {
@@ -254,7 +324,7 @@ async function sanitizeAgentTurnRequest(request: AgentTurnRequest): Promise<Agen
 }
 
 function handleAgentEvent(event: AgentEvent, request: AgentTurnRequest, settings: UserSettings): void {
-  mainWindow?.webContents.send('agent:event', event)
+  sendToRenderer('agent:event', event)
   const modelDisplayName = request.model
   const baseState: Partial<MenuBarState> = {
     modelId: request.model,
@@ -282,7 +352,7 @@ function handleAgentEvent(event: AgentEvent, request: AgentTurnRequest, settings
     const status = describeRuntimeStatus(event.payload)
     if (status?.kind === 'permission') {
       trayStatus.update({ ...baseState, execution: 'permission', label: status.label })
-      if (settings.permissionNotifications) showNotification('Verboo precisa de permissao', 'Revise a solicitacao no app.')
+      if (settings.permissionNotifications) showNotification('Verboo precisa de permissão', 'Revise a solicitação no app.')
     }
     if (status?.kind === 'question') {
       trayStatus.update({ ...baseState, execution: 'permission', label: status.label })

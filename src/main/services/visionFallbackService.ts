@@ -10,6 +10,7 @@ import { createWorker, PSM } from 'tesseract.js'
 import type { AgentTurnRequest, AttachmentMeta, VerbooModel } from '../../shared/types'
 import { createImageBlock } from './attachmentService'
 import type { ModelService } from './modelService'
+import { createNodeRuntimeEnv, resolveExternalNodePath, resolveNodeRuntimePath } from './nodeRuntime'
 
 const require = createRequire(import.meta.url)
 const MAX_OCR_CHARS = 12_000
@@ -21,14 +22,14 @@ const DEFAULT_VISION_HELPER_MODELS: VisionCandidate[] = [
   { id: 'pro/deepseek-v4-flash', displayName: 'Pro (deepseek-v4-flash)' },
 ]
 const VISION_HELPER_PROMPT = [
-  'Voce e um leitor visual auxiliar do Verboo Code.',
-  'Descreva a imagem para outro modelo responder ao usuario.',
-  'Responda em portugues, de forma objetiva, cobrindo:',
-  '- tipo de imagem: print, interface, documento, foto, grafico ou outro;',
-  '- texto visivel importante;',
+  'Você é um leitor visual auxiliar do Verboo Code.',
+  'Descreva a imagem para outro modelo responder ao usuário.',
+  'Responda em português, de forma objetiva, cobrindo:',
+  '- tipo de imagem: print, interface, documento, foto, gráfico ou outro;',
+  '- texto visível importante;',
   '- layout, elementos principais, cores e estado da interface quando houver;',
   '- qualquer incerteza relevante.',
-  'Nao use ferramentas de arquivo. Nao mencione que voce e um modelo auxiliar.',
+  'Não use ferramentas de arquivo. Não mencione que você é um modelo auxiliar.',
 ].join('\n')
 
 type TessdataPackage = {
@@ -122,7 +123,7 @@ async function describeImageWithVisionHelper(
   failedVisionModels: Set<string>,
 ): Promise<VisualDescription> {
   if (candidates.length === 0) {
-    throw new Error('Nenhum modelo vision auxiliar disponivel para esta conta.')
+    throw new Error('Nenhum modelo vision auxiliar disponível para esta conta.')
   }
 
   const errors: string[] = []
@@ -154,10 +155,11 @@ async function runVisionHelper(
 ): Promise<string> {
   const imageBlock = await createImageBlock(attachment)
   if (!imageBlock) {
-    throw new Error('Nao foi possivel preparar a imagem para o helper vision.')
+    throw new Error('Não foi possível preparar a imagem para o helper vision.')
   }
 
   const cliPath = resolveCliPath()
+  const nodePath = await resolveNodeRuntimePath()
   const payload = `${JSON.stringify({
     type: 'user',
     session_id: '',
@@ -172,7 +174,7 @@ async function runVisionHelper(
   })}\n`
 
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [
+    const child = spawn(nodePath, [
       cliPath,
       '--print',
       '--input-format',
@@ -190,7 +192,7 @@ async function runVisionHelper(
       '--no-session-persistence',
     ], {
       cwd: workingDirectory || app.getPath('home'),
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      env: createNodeRuntimeEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],
     })
 
@@ -253,7 +255,7 @@ async function runVisionHelper(
       const stderr = stderrLines.join('\n').trim()
       const stdout = stdoutLines.join('\n').trim()
       const detail = stderr || summarizeHelperOutput(stdout) || 'sem saida util'
-      finish(new Error(`Helper vision terminou sem descricao (codigo ${exitCode ?? 'desconhecido'}): ${detail}`))
+      finish(new Error(`Helper vision terminou sem descrição (código ${exitCode ?? 'desconhecido'}): ${detail}`))
     })
   })
 }
@@ -308,7 +310,7 @@ async function describeImageWithOcr(worker: OcrWorker, attachment: AttachmentMet
   const confidence = typeof result.data.confidence === 'number' ? Math.round(result.data.confidence) : undefined
 
   if (!text) {
-    throw new Error('Nao foi possivel extrair texto da imagem com OCR local.')
+    throw new Error('Não foi possível extrair texto da imagem com OCR local.')
   }
 
   return {
@@ -327,9 +329,9 @@ function withVisualContext(
 ): AgentTurnRequest {
   const lines = [
     'Contexto visual dos anexos:',
-    'O app analisou os anexos com um modelo vision auxiliar quando disponivel. Se o helper falhou, usou OCR local como fallback.',
-    'Use este contexto visual como apoio. Se o usuario pedir algo visual, responda com base nele.',
-    'Nao diga que houve falha de permissao ou falta de vision apenas porque a leitura visual foi convertida em texto. Cite incertezas somente quando a leitura estiver incompleta.',
+    'O app analisou os anexos com um modelo vision auxiliar quando disponível. Se o helper falhou, usou OCR local como fallback.',
+    'Use este contexto visual como apoio. Se o usuário pedir algo visual, responda com base nele.',
+    'Não diga que houve falha de permissão ou falta de vision apenas porque a leitura visual foi convertida em texto. Cite incertezas somente quando a leitura estiver incompleta.',
   ]
 
   descriptions.forEach((description, index) => {
@@ -386,12 +388,14 @@ function normalizeHelperText(value: string): string {
     .join('\n')
     .trim()
 
-  return text.length > MAX_HELPER_CHARS ? `${text.slice(0, MAX_HELPER_CHARS)}\n[Descricao visual truncada]` : text
+  return text.length > MAX_HELPER_CHARS ? `${text.slice(0, MAX_HELPER_CHARS)}\n[Descrição visual truncada]` : text
 }
 
 function resolveCliPath(): string {
   const packagePath = require.resolve('@verboo/code/package.json')
-  return join(dirname(packagePath), 'dist', 'cli.mjs')
+  const packageJson = require(packagePath) as { bin?: string | Record<string, string> }
+  const binPath = typeof packageJson.bin === 'string' ? packageJson.bin : packageJson.bin?.verboo
+  return resolveExternalNodePath(join(dirname(packagePath), binPath ?? 'dist/cli.mjs'))
 }
 
 function toVisionCandidate(model: VerbooModel): VisionCandidate {

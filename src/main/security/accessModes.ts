@@ -9,20 +9,20 @@ export type AccessModeConfig = {
 
 export const accessModeConfig: Record<AccessMode, AccessModeConfig> = {
   approval: {
-    title: 'Solicitar aprovacao',
-    description: 'Sempre pedir aprovacao para editar arquivos externos e usar a internet',
+    title: 'Solicitar aprovação',
+    description: 'Sempre pedir aprovação para editar arquivos externos e usar a internet',
     cliArgs: ['--permission-mode', 'default'],
     danger: 'low',
   },
   auto: {
     title: 'Aprovar por mim',
-    description: 'Solicitar aprovacao apenas para acoes detectadas como potencialmente inseguras',
+    description: 'Solicitar aprovação apenas para ações detectadas como potencialmente inseguras',
     cliArgs: ['--permission-mode', 'acceptEdits'],
     danger: 'medium',
   },
   full: {
-    title: 'Acesso completo',
-    description: 'Acesso irrestrito a internet e a qualquer arquivo no seu computador',
+    title: 'Modo livre',
+    description: 'Executar sem novas aprovações em workspaces confiáveis',
     cliArgs: [
       '--allow-dangerously-skip-permissions',
       '--dangerously-skip-permissions',

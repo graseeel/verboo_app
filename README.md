@@ -37,6 +37,16 @@ verboo
 
 You can authenticate through the CLI or configure a Verboo API key inside the app settings.
 
+The packaged app starts the embedded Verboo CLI through a real Node.js runtime.
+This avoids macOS opening a second `Verboo Code` Dock item when the assistant runs.
+When launched from Finder, the app looks for Node in common locations such as
+`/opt/homebrew/bin/node`, `/usr/local/bin/node`, `/usr/bin/node`, and `PATH`.
+If Node is installed elsewhere, start the app with:
+
+```bash
+VERBOO_NODE_PATH=/absolute/path/to/node open -a "Verboo Code"
+```
+
 ## Development
 
 ```bash

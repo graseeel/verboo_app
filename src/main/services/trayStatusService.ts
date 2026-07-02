@@ -13,6 +13,8 @@ export class TrayStatusService {
   private settings: UserSettings | undefined
   private state: MenuBarState = { execution: 'idle', label: 'Ready' }
   private ticker: ReturnType<typeof setInterval> | undefined
+  private renderThrottle: ReturnType<typeof setTimeout> | undefined
+  private lastRenderAt = 0
   private readonly iconPath = getTrayIconPath()
 
   constructor(private readonly actions: TrayActions) {}
@@ -21,6 +23,10 @@ export class TrayStatusService {
     this.settings = settings
     if (!settings.showInMenuBar) {
       this.stopTicker()
+      if (this.renderThrottle) {
+        clearTimeout(this.renderThrottle)
+        this.renderThrottle = undefined
+      }
       this.tray?.destroy()
       this.tray = undefined
       return
@@ -39,6 +45,30 @@ export class TrayStatusService {
   update(state: Partial<MenuBarState>): void {
     this.state = { ...this.state, ...state }
     this.syncTicker()
+    this.scheduleRender()
+  }
+
+  // Rapid updates (one per streamed token) previously rebuilt the whole native
+  // tray menu each time. Coalesce them to at most ~5x/second — the context menu
+  // is only seen when the user clicks the tray icon, so per-token rebuilds were
+  // pure waste on the main thread.
+  private scheduleRender(): void {
+    const elapsed = Date.now() - this.lastRenderAt
+    if (elapsed >= 180) {
+      this.renderNow()
+      return
+    }
+    if (!this.renderThrottle) {
+      this.renderThrottle = setTimeout(() => this.renderNow(), 180 - elapsed)
+    }
+  }
+
+  private renderNow(): void {
+    if (this.renderThrottle) {
+      clearTimeout(this.renderThrottle)
+      this.renderThrottle = undefined
+    }
+    this.lastRenderAt = Date.now()
     this.render()
   }
 

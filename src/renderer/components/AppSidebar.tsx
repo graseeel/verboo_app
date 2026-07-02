@@ -110,7 +110,7 @@ export function AppSidebar({
   return (
     <aside className={`app-sidebar ${compact ? 'compact' : ''} ${activeView === 'settings' ? 'is-dimmed' : ''}`}>
       <div className="sidebar-scroll">
-        <nav className="sidebar-primary" aria-label="Navegacao principal">
+        <nav className="sidebar-primary" aria-label="Navegação principal">
           <button className="sidebar-action" type="button" onClick={() => onNewChat(selectedProjectId)} title="Novo chat">
             <MessageSquarePlus size={16} />
             <span>Novo chat</span>
@@ -244,7 +244,7 @@ export function AppSidebar({
             </button>
             <button type="button" onClick={() => { onOpenSettings(); setProfileMenuOpen(false) }}>
               <Settings size={15} />
-              Configuracoes
+              Configurações
             </button>
             <button type="button" onClick={() => { onOpenArchivedChats(); setProfileMenuOpen(false) }}>
               <Archive size={15} />
@@ -252,7 +252,7 @@ export function AppSidebar({
             </button>
             <button type="button" onClick={() => { onOpenFeedback(); setProfileMenuOpen(false) }}>
               <Bug size={15} />
-              Ajuda / Feedback
+              Ajuda e feedback
             </button>
             <div className="profile-menu-separator" />
             <button type="button" onClick={() => { onLogout(); setProfileMenuOpen(false) }}>
@@ -272,12 +272,12 @@ export function AppSidebar({
             <strong>Verboo<span>:code</span></strong>
             <small>{`v${packageJson.version}`}</small>
           </span>
-          <small className="account-disclaimer">Build independente em desenvolvimento</small>
+          <small className="account-disclaimer">Versão independente em desenvolvimento</small>
           <span className="account-profile">
             <span className="account-avatar">{initials(profileName)}</span>
             <span>
               <strong>{profileName}</strong>
-              <small>{profile.plan?.name ?? (cliAuth.loggedIn ? 'CLI conectado' : profile.status === 'unauthenticated' ? 'Sem chave API' : 'Plano indisponivel')}</small>
+              <small>{profile.plan?.name ?? (cliAuth.loggedIn ? 'CLI conectado' : profile.status === 'unauthenticated' ? 'Sem chave de API' : 'Plano indisponível')}</small>
             </span>
           </span>
         </button>

@@ -1,5 +1,5 @@
 import { CheckCircle2, ChevronDown, Clock3, FileSearch, FileText, GitBranch, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { memo, useMemo, type ReactNode } from 'react'
 import type { TranscriptItem } from '../../shared/types'
 
 type TranscriptProps = {
@@ -9,8 +9,11 @@ type TranscriptProps = {
 const MAX_ACTIVITY_DETAIL_LINES = 8
 const MAX_SUMMARY_DETAIL_LINES = 3
 
-export function Transcript({ items }: TranscriptProps) {
-  const visibleItems = buildTranscriptEntries(items)
+export const Transcript = memo(function Transcript({ items }: TranscriptProps) {
+  // `items` is a new array reference only when the conversation actually changes,
+  // so this recomputes on real content changes but is skipped when the parent
+  // re-renders for unrelated reasons (context-usage ticks, subagent updates…).
+  const visibleItems = useMemo(() => buildTranscriptEntries(items), [items])
 
   return (
     <div className="transcript">
@@ -26,13 +29,13 @@ export function Transcript({ items }: TranscriptProps) {
       ))}
     </div>
   )
-}
+})
 
 type TranscriptEntry =
   | { kind: 'message'; item: TranscriptItem }
   | { kind: 'assistant-turn'; item: TranscriptItem; activities: TranscriptItem[]; summary?: TranscriptItem }
 
-function MessageArticle({ item, children }: { item: TranscriptItem; children?: ReactNode }) {
+const MessageArticle = memo(function MessageArticle({ item, children }: { item: TranscriptItem; children?: ReactNode }) {
   return (
     <article
       className={`message-row ${item.role} ${item.kind ?? 'message'}`}
@@ -69,7 +72,7 @@ function MessageArticle({ item, children }: { item: TranscriptItem; children?: R
       {children}
     </article>
   )
-}
+})
 
 function ActivityPanel({ activities, summary }: { activities: TranscriptItem[]; summary?: TranscriptItem }) {
   if (activities.length === 0 && !summary) return null
@@ -231,7 +234,7 @@ function labelForItem(item: TranscriptItem): string {
   }
   if (item.role === 'tool') return 'Ferramenta'
   if (item.role === 'system') return 'Sistema'
-  return 'Voce'
+  return 'Você'
 }
 
 function turnIdFromActivity(item: TranscriptItem): string | undefined {
@@ -251,7 +254,7 @@ function activityPanelTitle(activities: TranscriptItem[], summary?: TranscriptIt
     formatCount(counts.command, 'Executou comando', 'Executou comandos'),
     formatCount(counts.terminal, 'Leu terminal', 'Leu terminal'),
     formatCount(counts.subagent, 'Usou subagente', 'Usou subagentes'),
-    formatCount(counts.permission, 'Pediu permissao', 'Pediu permissoes'),
+    formatCount(counts.permission, 'Pediu permissão', 'Pediu permissões'),
     formatCount(counts.tool, 'Usou ferramenta', 'Usou ferramentas'),
   ].filter((part): part is string => Boolean(part))
 
@@ -276,7 +279,7 @@ function activityDetailLines(activities: TranscriptItem[], summary?: TranscriptI
   const hiddenCount = Math.max(0, activityLines.length - MAX_ACTIVITY_DETAIL_LINES)
   const visibleActivityLines = activityLines.slice(0, MAX_ACTIVITY_DETAIL_LINES)
   if (hiddenCount > 0) {
-    visibleActivityLines.push(`+${hiddenCount} acoes ocultas`)
+    visibleActivityLines.push(`+${hiddenCount} ações ocultas`)
   }
 
   const summaryLines = summary?.activityDetail

@@ -26,7 +26,7 @@ export function ModelSelector({ models, selectedModel, modelResult, onSelect, on
       <button className="composer-pill model-pill" style={selectedTone} type="button" onClick={() => setOpen(value => !value)}>
         <Cpu size={14} />
         {selected && <i className="model-color-dot" aria-hidden="true" />}
-        <span>{selected ? readableModelName(selected) : 'Model'}</span>
+        <span>{selected ? readableModelName(selected) : 'Modelo'}</span>
         <ChevronDown size={14} />
       </button>
 
@@ -47,7 +47,7 @@ export function ModelSelector({ models, selectedModel, modelResult, onSelect, on
           )}
 
           {models.length === 0 ? (
-            <div className="empty-menu">Nenhum modelo carregado. Entre com Verboo ou adicione uma chave API nas configuracoes.</div>
+            <div className="empty-menu">Nenhum modelo carregado. Entre com Verboo ou adicione uma chave de API nas configurações.</div>
           ) : (
             grouped.map(group => (
               <div key={group.label} className="model-group">
@@ -101,8 +101,8 @@ function groupModels(models: VerbooModel[]): Array<{ label: string; models: Verb
   const longContext = models.filter(model => (model.contextWindow ?? 0) >= 1_000_000)
   const regular = models.filter(model => !longContext.includes(model))
   return [
-    { label: 'Disponiveis', models: regular },
-    ...(longContext.length > 0 ? [{ label: 'Long context', models: longContext }] : []),
+    { label: 'Disponíveis', models: regular },
+    ...(longContext.length > 0 ? [{ label: 'Contexto longo', models: longContext }] : []),
   ].filter(group => group.models.length > 0)
 }
 
@@ -136,10 +136,10 @@ function modelStatusMessage(result: ModelDiscoveryResult): string | undefined {
   if (result.stale && result.models.length > 0) return 'Modelos salvos localmente.'
   if (!result.error) return result.stale ? 'Modelos em cache.' : undefined
   if (/401|expired token|invalid.*token/i.test(result.error)) {
-    return 'Sessao Verboo expirada. Entre novamente ou salve uma chave API valida.'
+    return 'Sessão Verboo expirada. Entre novamente ou salve uma chave de API válida.'
   }
   if (/network|fetch|timeout|tempo limite/i.test(result.error)) {
-    return 'Nao foi possivel atualizar os modelos agora.'
+    return 'Não foi possível atualizar os modelos agora.'
   }
-  return 'Nao foi possivel atualizar os modelos.'
+  return 'Não foi possível atualizar os modelos.'
 }

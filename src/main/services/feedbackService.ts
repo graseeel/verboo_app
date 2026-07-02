@@ -23,17 +23,17 @@ export class FeedbackService {
         return {
           ok: true,
           channel: 'mailto',
-          message: 'Nao foi possivel enviar pelo Supabase. Um e-mail preenchido foi aberto como fallback.',
+          message: 'Não foi possível enviar pelo Supabase. Um e-mail preenchido foi aberto como fallback.',
           error: message,
         }
       }
     }
 
-    await openMailto(normalized, 'VERBOO_FEEDBACK_ENDPOINT nao configurado.')
+    await openMailto(normalized, 'VERBOO_FEEDBACK_ENDPOINT não configurado.')
     return {
       ok: true,
       channel: 'mailto',
-      message: 'Supabase nao esta configurado neste build. Um e-mail preenchido foi aberto.',
+      message: 'Supabase não está configurado neste build. Um e-mail preenchido foi aberto.',
     }
   }
 }
@@ -64,13 +64,13 @@ async function openMailto(request: FeedbackRequest, fallbackReason: string): Pro
   const body = [
     request.description,
     '',
-    `Contato: ${request.contact || 'nao informado'}`,
+    `Contato: ${request.contact || 'não informado'}`,
     `Canal principal: ${fallbackReason}`,
     '',
     'Diagnosticos:',
     request.includeDiagnostics && request.diagnostics
       ? JSON.stringify(request.diagnostics, null, 2)
-      : 'nao incluidos',
+      : 'não incluídos',
   ].join('\n')
 
   const url = `mailto:${FEEDBACK_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
@@ -93,6 +93,6 @@ function normalizeRequest(request: FeedbackRequest): FeedbackRequest {
 
 function labelForCategory(category: FeedbackRequest['category']): string {
   if (category === 'bug') return 'Bug'
-  if (category === 'question') return 'Duvida'
+  if (category === 'question') return 'Dúvida'
   return 'Feedback'
 }

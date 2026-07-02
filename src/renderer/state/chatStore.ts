@@ -16,7 +16,13 @@ export function readChatStore(): ChatStore {
 }
 
 export function persistChatStore(store: ChatStore): void {
-  window.localStorage.setItem(CHAT_STORE_KEY, JSON.stringify(store))
+  try {
+    window.localStorage.setItem(CHAT_STORE_KEY, JSON.stringify(store))
+  } catch {
+    // localStorage can throw (quota exceeded on a very long history, or a
+    // restricted mode). Never let a persistence failure crash the app or an
+    // in-flight streaming turn — the store stays in memory regardless.
+  }
 }
 
 export function emptyChatStore(): ChatStore {
@@ -55,7 +61,7 @@ export function initialSystemMessage(): TranscriptItem {
   return {
     id: 'welcome',
     role: 'system',
-    text: 'Pronto para codar com Verboo. Use / para chamar skills.',
+    text: 'Pronto para codar com Verboo. Use / para chamar habilidades.',
     timestamp: Date.now(),
   }
 }

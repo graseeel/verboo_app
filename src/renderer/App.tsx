@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
-import { ArrowDown, FolderClosed, ShieldCheck, Terminal, XCircle } from 'lucide-react'
+import { ArrowDown, CheckCircle2, ChevronDown, ChevronRight, FolderClosed, GitBranch, LoaderCircle, ShieldCheck, Terminal, XCircle } from 'lucide-react'
 import type {
   AccessMode,
   AgentEvent,
@@ -34,6 +34,8 @@ import { GoalStatusBar, type GoalStatusBarState } from './features/goal/GoalStat
 import { runGoalCycle, type GoalSchedulerDelegate } from './features/goal/goalScheduler'
 import type { ReservedSlashCommand } from './features/composer/slashCommands'
 import { AppSidebar, type AppView } from './components/AppSidebar'
+import { useLocalTerminal } from './features/terminal/useLocalTerminal'
+import { LocalTerminalPanel } from './features/terminal/LocalTerminalPanel'
 import { EmptyChat } from './components/EmptyChat'
 import { LoginScreen } from './components/LoginScreen'
 import { TopBar } from './components/TopBar'
@@ -100,7 +102,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
 const EMPTY_LINES = [
   'Bom te ver por aqui.',
   'Vamos deixar esse projeto mais claro.',
-  'Qual parte merece atencao agora?',
+  'Qual parte merece atenção agora?',
   'Pronto para trabalhar com contexto de verdade.',
 ]
 
@@ -113,9 +115,71 @@ type TurnActivity = {
 
 type ActiveSubagent = {
   id: string
+  runId?: string
   label: string
   detail?: string
+  mission?: string
+  history?: ActiveSubagentHistoryItem[]
+  status: 'thinking' | 'reading' | 'searching' | 'done' | 'failed'
   updatedAt: number
+}
+
+type ActiveSubagentHistoryItem = {
+  id: string
+  label: string
+  text: string
+  timestamp: number
+}
+
+const SUBAGENT_NAMES = [
+  'Atlas',
+  'Nova',
+  'Orbit',
+  'Prism',
+  'Quill',
+  'Ember',
+  'Lumen',
+  'Cobalt',
+  'Vale',
+  'Sable',
+  'Mira',
+  'Solis',
+  'Argo',
+  'Pixel',
+  'Nimbo',
+  'Calyx',
+  'Rune',
+  'Vela',
+  'Koda',
+  'Onyx',
+  'Lyra',
+  'Juno',
+  'Aster',
+  'Vector',
+  'Quartz',
+  'Slate',
+  'Terra',
+  'Echo',
+  'Flux',
+  'Beacon',
+  'Verboo Nova',
+  'Verboo Trace',
+  'Verboo Lens',
+  'Verboo Pulse',
+  'Verboo Scout',
+  'North',
+  'Delta',
+  'Indigo',
+  'Radial',
+  'Meridian',
+]
+
+const SUBAGENT_STATUS_LABELS: Record<ActiveSubagent['status'], string> = {
+  thinking: 'pensando',
+  reading: 'lendo',
+  searching: 'pesquisando',
+  done: 'concluído',
+  failed: 'falhou',
 }
 
 type QueuedFollowUp = {
@@ -184,11 +248,14 @@ export function App() {
   const [pendingPermissionPrompt, setPendingPermissionPrompt] = useState<PendingPermissionPrompt | undefined>()
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
   const [activeSubagents, setActiveSubagents] = useState<ActiveSubagent[]>([])
+  const [selectedSubagentId, setSelectedSubagentId] = useState<string | undefined>()
+  const [subagentSummaryExpanded, setSubagentSummaryExpanded] = useState(false)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshot | undefined>()
   const [goal, setGoal] = useState<GoalState | undefined>()
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(initialSidebarPreference.current.mode)
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarPreference.current.width)
+  const terminal = useLocalTerminal()
   const goalRef = useRef(goal)
   const [goalBarStatus, setGoalBarStatus] = useState<GoalStatusBarState>({ kind: 'idle' })
   const [emptyLine] = useState(() => EMPTY_LINES[Math.floor(Math.random() * EMPTY_LINES.length)])
@@ -219,6 +286,7 @@ export function App() {
   const turnChangeBaselines = useRef<Record<string, WorkspaceChangeSummary | undefined>>({})
   const turnWorkingDirectories = useRef<Record<string, string>>({})
   const activeSubagentsRef = useRef<Record<string, ActiveSubagent>>({})
+  const pendingResearchSubagentsRef = useRef<ActiveSubagent[]>([])
   const autoApprovalSent = useRef<Set<string>>(new Set())
 
   const activeConversation = useMemo(
@@ -232,6 +300,7 @@ export function App() {
       : undefined
   const items = activeConversation?.items ?? [initialSystemMessage()]
   const conversationItemsRef = useRef<readonly TranscriptItem[]>(items)
+  const chatStoreRef = useRef(chatStore)
   const hasConversation = items.some(item => item.role === 'user' || item.role === 'assistant')
   const latestItem = items[items.length - 1]
   const latestItemSignature = `${latestItem?.id ?? ''}:${latestItem?.text.length ?? 0}:${latestItem?.streaming ? 1 : 0}`
@@ -244,7 +313,29 @@ export function App() {
     : sidebarMode === 'compact'
       ? SIDEBAR_COMPACT_WIDTH
       : sidebarWidth
-  const appLayoutStyle = { '--sidebar-width': `${effectiveSidebarWidth}px` } as CSSProperties
+  const workingSubagents = useMemo(() => activeSubagents.filter(isActiveSubagentWorking), [activeSubagents])
+  const selectedSubagent = selectedSubagentId
+    ? activeSubagents.find(agent => agent.id === selectedSubagentId)
+    : undefined
+  const showSubagentThreadPanel = activeView === 'chat' && Boolean(selectedSubagent) && !terminal.terminalOpen
+  const showSubagentSummary = activeView === 'chat' && workingSubagents.length > 0 && !terminal.terminalOpen
+  const appLayoutStyle = {
+    '--sidebar-width': `${effectiveSidebarWidth}px`,
+    '--subagents-panel-width': showSubagentThreadPanel ? '320px' : '0px',
+    '--terminal-width': terminal.terminalOpen ? `${terminal.terminalWidth}px` : '0px',
+  } as CSSProperties
+
+  useEffect(() => {
+    if (!selectedSubagentId) return
+    if (activeSubagents.some(agent => agent.id === selectedSubagentId)) return
+    setSelectedSubagentId(undefined)
+  }, [activeSubagents, selectedSubagentId])
+
+  useEffect(() => {
+    if (runningTurnId || workingSubagents.length > 0) return
+    setSelectedSubagentId(undefined)
+    setSubagentSummaryExpanded(false)
+  }, [runningTurnId, workingSubagents.length])
 
   useEffect(() => {
     let cancelled = false
@@ -316,6 +407,26 @@ export function App() {
   useEffect(() => {
     conversationItemsRef.current = items
   }, [items])
+
+  // Debounced persistence: mirror the store into a ref immediately, but only
+  // write to localStorage 400ms after changes settle. This collapses the burst
+  // of per-token updates during a streaming turn into a single write.
+  useEffect(() => {
+    chatStoreRef.current = chatStore
+    const timer = window.setTimeout(() => persistChatStore(chatStore), 400)
+    return () => window.clearTimeout(timer)
+  }, [chatStore])
+
+  // Guarantee the latest store is flushed when the window closes or the app
+  // unmounts, so debouncing never drops the final state.
+  useEffect(() => {
+    const flush = () => persistChatStore(chatStoreRef.current)
+    window.addEventListener('beforeunload', flush)
+    return () => {
+      window.removeEventListener('beforeunload', flush)
+      flush()
+    }
+  }, [])
 
   useEffect(() => {
     userSettingsRef.current = userSettings
@@ -523,7 +634,7 @@ export function App() {
       }
 
       const rememberedSession = allowRememberedSession ? readRememberedAuthSession() : undefined
-      if (rememberedSession && hasLocalAuthEvidence(credentialStatus, cliStatus)) {
+      if (rememberedSession && !isAuthoritativelySignedOut(credentialStatus, cliStatus)) {
         setEntryUnlocked(true)
         setAuthError(modelDiscovery.error ?? cliStatus.error)
         void refreshProfile()
@@ -531,7 +642,7 @@ export function App() {
       }
 
       if (!allowRememberedSession) forgetRememberedAuthSession()
-      setAuthError(modelDiscovery.error ?? cliStatus.error ?? 'Entre com Verboo pelo CLI ou salve uma chave API valida.')
+      setAuthError(modelDiscovery.error ?? cliStatus.error ?? 'Entre com Verboo pelo CLI ou salve uma chave de API válida.')
       return false
     } finally {
       setAuthChecking(false)
@@ -585,8 +696,12 @@ export function App() {
       turnTerminalErrors.current[event.turnId] = []
       turnCommands.current[event.turnId] = []
       turnReferences.current[event.turnId] = []
-      activeSubagentsRef.current = {}
-      setActiveSubagents([])
+      if (pendingResearchSubagentsRef.current.length > 0) {
+        attachPendingResearchSubagents(event.turnId)
+      } else if (!Object.keys(activeSubagentsRef.current).some(id => id.startsWith(`${event.turnId}:`))) {
+        activeSubagentsRef.current = {}
+        setActiveSubagents([])
+      }
       setRunningTurnId(event.turnId)
       if (conversationId) {
         appendActivityItem(conversationId, event.turnId, {
@@ -808,6 +923,7 @@ export function App() {
     const turnId = await sendTrackedTurn(request)
     turnConversationIds.current[turnId] = item.conversationId
     turnModels.current[turnId] = item.turnModel
+    attachPendingResearchSubagents(turnId)
     tagAssistantMessage(item.conversationId, turnId, item.turnModel)
     if (pendingConversationId.current === item.conversationId) pendingConversationId.current = undefined
   }
@@ -824,16 +940,39 @@ export function App() {
     const researchRequest = parseResearchSubagentRequest(item.message)
     if (!researchRequest) return item.request
 
-    const agents = Array.from({ length: researchRequest.count }, (_, index): ActiveSubagent => ({
-      id: `research:${item.id}:${index + 1}`,
-      label: `Subagente ${index + 1}`,
-      detail: index === 0
-        ? 'Pesquisando codigo local e arquivos relevantes.'
-        : 'Pesquisando contexto complementar e validacao.',
-      updatedAt: Date.now() + index,
-    }))
+    const runId = `research:${item.id}`
+    const agents = Array.from({ length: researchRequest.count }, (_, index): ActiveSubagent => {
+      const mission = index === 0
+        ? 'Pesquisar o código local, arquivos relevantes e riscos de implementação.'
+        : 'Pesquisar contexto complementar, validação e possíveis lacunas.'
+      const status = index === 0 ? 'reading' : 'searching'
+      return {
+        id: `research:${item.id}:${index + 1}`,
+        runId,
+        label: subagentNameFor(`${item.id}:${index}`, index),
+        detail: index === 0 ? 'Código local e arquivos relevantes.' : 'Contexto complementar e validação.',
+        mission,
+        history: [
+          {
+            id: `mission:${index + 1}`,
+            label: 'Missão recebida',
+            text: mission,
+            timestamp: Date.now() + index,
+          },
+          {
+            id: `status:${index + 1}:start`,
+            label: SUBAGENT_STATUS_LABELS[status],
+            text: index === 0 ? 'Lendo arquivos do projeto.' : 'Pesquisando contexto de apoio.',
+            timestamp: Date.now() + index + 1,
+          },
+        ],
+        status,
+        updatedAt: Date.now() + index,
+      }
+    })
 
     activeSubagentsRef.current = Object.fromEntries(agents.map(agent => [agent.id, agent]))
+    pendingResearchSubagentsRef.current = agents
     setActiveSubagents(agents)
 
     appendConversationItem(item.conversationId, {
@@ -850,6 +989,7 @@ export function App() {
 
     try {
       const results = await window.verboo.runResearchSubagents({
+        runId,
         count: researchRequest.count,
         requestedCount: researchRequest.requestedCount,
         baseRequest: item.request,
@@ -860,12 +1000,35 @@ export function App() {
         role: 'tool',
         kind: 'activity',
         activityKind: 'subagent',
-        text: 'Pesquisa dos subagentes concluida',
-        activityDetail: formatResearchResultsForTranscript(results),
+        text: 'Pesquisa dos subagentes concluída',
+        activityDetail: formatResearchResultsForTranscript(results, agents),
         timestamp: Date.now(),
       })
 
-      const researchContext = buildResearchResultsContext(results)
+      const finishedAgents = agents.map((agent, index) => {
+        const result = results[index]
+        const status = result?.status === 'complete' ? 'done' : 'failed'
+        const summary = result?.summary || (status === 'done' ? 'Pesquisa concluída.' : 'Pesquisa interrompida.')
+        return {
+          ...agent,
+          status,
+          detail: summary,
+          updatedAt: Date.now() + index,
+          history: [
+            ...(agent.history ?? []),
+            {
+              id: `result:${index + 1}`,
+              label: status === 'done' ? 'Pesquisa concluída' : 'Pesquisa falhou',
+              text: summary,
+              timestamp: Date.now() + index,
+            },
+          ],
+        } satisfies ActiveSubagent
+      })
+      const researchContext = buildResearchResultsContext(results, finishedAgents)
+      activeSubagentsRef.current = {}
+      pendingResearchSubagentsRef.current = []
+      setActiveSubagents([])
       if (!researchContext) return item.request
 
       return {
@@ -882,11 +1045,41 @@ export function App() {
         activityDetail: error instanceof Error ? error.message : String(error),
         timestamp: Date.now(),
       })
-      return item.request
-    } finally {
       activeSubagentsRef.current = {}
+      pendingResearchSubagentsRef.current = []
       setActiveSubagents([])
+      return item.request
     }
+  }
+
+  async function cancelResearchSubagent(agent: ActiveSubagent) {
+    const now = Date.now()
+    const runId = agent.runId
+    if (runId) await window.verboo.cancelResearchSubagents(runId)
+
+    const next = Object.fromEntries(Object.entries(activeSubagentsRef.current).map(([id, current]) => {
+      const sameRun = runId ? current.runId === runId : current.id === agent.id
+      if (!sameRun) return [id, current]
+      return [id, {
+        ...current,
+        status: 'failed',
+        detail: 'Pesquisa cancelada pelo usuário.',
+        updatedAt: now,
+        history: appendSubagentHistory(current.history, {
+          id: `${current.id}:cancelled:${now}`,
+          label: 'Pesquisa cancelada',
+          text: 'O subagente foi interrompido antes de concluir a pesquisa.',
+          timestamp: now,
+        }),
+      } satisfies ActiveSubagent]
+    }))
+
+    activeSubagentsRef.current = next
+    pendingResearchSubagentsRef.current = pendingResearchSubagentsRef.current.filter(current =>
+      runId ? current.runId !== runId : current.id !== agent.id,
+    )
+    setActiveSubagents(Object.values(next).sort((a, b) => a.updatedAt - b.updatedAt))
+    setSelectedSubagentId(undefined)
   }
 
   function setQueuedFollowUpsList(updater: (current: QueuedFollowUp[]) => QueuedFollowUp[]) {
@@ -904,7 +1097,7 @@ export function App() {
       role: 'tool',
       kind: 'activity',
       activityKind: 'permission',
-      text: 'Acesso completo nao esta ativado nas configuracoes. Usando Aprovar por mim.',
+      text: 'Modo livre não está ativado nas configurações. Usando Aprovar por mim.',
       timestamp: Date.now(),
     })
   }
@@ -953,8 +1146,8 @@ export function App() {
       kind: 'activity',
       activityKind: 'permission',
       text: approved
-        ? automatic ? 'Permissao aprovada automaticamente' : 'Permissao aprovada'
-        : 'Permissao negada',
+        ? automatic ? 'Permissão aprovada automaticamente' : 'Permissão aprovada'
+        : 'Permissão negada',
       activityDetail: prompt.command ?? prompt.detail,
       timestamp: Date.now(),
     })
@@ -1067,7 +1260,7 @@ export function App() {
       if (accessMode === 'full') {
         const conversationId = ensureActiveConversation()
         appendConversationItem(conversationId, goalSystemMessage(
-          'Goal automatico nao inicia com Acesso completo nesta versao beta. Troque para "Solicitar aprovacao" ou "Aprovar por mim" antes de comecar.'
+          'Goal automático não inicia com Modo livre nesta versão beta. Troque para "Solicitar aprovação" ou "Aprovar por mim" antes de começar.'
         ))
         return
       }
@@ -1471,7 +1664,7 @@ export function App() {
         ...conversation,
         items: hasAssistant
           ? conversation.items.map(item =>
-              item.id === turnId ? { ...item, text: item.text + text } : item,
+              item.id === turnId ? { ...item, text: mergeAssistantText(item.text, text) } : item,
             )
           : [
               ...conversation.items,
@@ -1541,18 +1734,40 @@ export function App() {
     const isStop = /stop|stopp|finish|complete|done|finaliz/i.test(`${activity.key} ${activity.label}`)
     const identity = normalizeSubagentIdentity(activity)
     const id = `${turnId}:subagent:${identity}`
+    const previous = activeSubagentsRef.current[id]
     if (isStop) {
-      const next = { ...activeSubagentsRef.current }
-      delete next[id]
-      activeSubagentsRef.current = next
-      setActiveSubagents(Object.values(next).sort((a, b) => a.updatedAt - b.updatedAt))
+      if (!previous) return
+      activeSubagentsRef.current = {
+        ...activeSubagentsRef.current,
+        [id]: {
+          ...previous,
+          status: 'done',
+          detail: 'Pesquisa concluída.',
+          updatedAt: Date.now(),
+          history: appendSubagentHistory(previous.history, {
+            id: `${id}:done:${Date.now()}`,
+            label: 'Pesquisa concluída',
+            text: activity.detail || 'Subagente finalizado.',
+            timestamp: Date.now(),
+          }),
+        },
+      }
+      setActiveSubagents(Object.values(activeSubagentsRef.current).sort((a, b) => a.updatedAt - b.updatedAt))
       return
     }
 
     const next = {
       id,
-      label: activity.detail || activity.label,
-      detail: activity.detail,
+      label: previous?.label ?? subagentNameFor(identity, Object.keys(activeSubagentsRef.current).length),
+      detail: compactSubagentDetail(activity),
+      mission: previous?.mission ?? 'Acompanhar a pesquisa delegada pelo agente principal.',
+      history: appendSubagentHistory(previous?.history, {
+        id: `${id}:activity:${Date.now()}`,
+        label: activity.label,
+        text: activity.detail || compactSubagentDetail(activity),
+        timestamp: Date.now(),
+      }),
+      status: subagentStatusForActivity(activity),
       updatedAt: Date.now(),
     }
     activeSubagentsRef.current = {
@@ -1562,10 +1777,30 @@ export function App() {
     setActiveSubagents(Object.values(activeSubagentsRef.current).sort((a, b) => a.updatedAt - b.updatedAt))
   }
 
+  function attachPendingResearchSubagents(turnId: string) {
+    if (pendingResearchSubagentsRef.current.length === 0) return
+    const attached = pendingResearchSubagentsRef.current
+      .filter(isActiveSubagentWorking)
+      .map((agent, index) => ({
+        ...agent,
+        id: `${turnId}:research:${index + 1}`,
+        updatedAt: agent.updatedAt + index,
+      }))
+    pendingResearchSubagentsRef.current = []
+    if (attached.length === 0) {
+      activeSubagentsRef.current = {}
+      setActiveSubagents([])
+      return
+    }
+    activeSubagentsRef.current = Object.fromEntries(attached.map(agent => [agent.id, agent]))
+    setActiveSubagents(attached)
+  }
+
   function clearActiveSubagentsForTurn(turnId: string) {
     const next = Object.fromEntries(
       Object.entries(activeSubagentsRef.current).filter(([id]) => !id.startsWith(`${turnId}:`)),
     )
+    pendingResearchSubagentsRef.current = []
     activeSubagentsRef.current = next
     setActiveSubagents(Object.values(next).sort((a, b) => a.updatedAt - b.updatedAt))
   }
@@ -1649,11 +1884,10 @@ export function App() {
   }
 
   function updateChatStore(updater: (store: ChatStore) => ChatStore) {
-    setChatStore(current => {
-      const next = updater(current)
-      persistChatStore(next)
-      return next
-    })
+    // Persistence is debounced (see the effect below). During streaming, state
+    // updates fire on every token delta; serializing the whole store to
+    // localStorage on each one was pegging the main thread and thrashing GC.
+    setChatStore(current => updater(current))
   }
 
   function isConversationRunning(conversationId: string): boolean {
@@ -1725,6 +1959,18 @@ export function App() {
   const shownProjects = activeProjects(chatStore)
   const shownConversations = visibleConversations(chatStore)
   const archivedChats = archivedConversations(chatStore)
+  useEffect(() => {
+    function handleTerminalShortcut(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'j') return
+      event.preventDefault()
+      event.stopPropagation()
+      void terminal.toggle(workspaceDirectory || '')
+    }
+
+    window.addEventListener('keydown', handleTerminalShortcut, { capture: true })
+    return () => window.removeEventListener('keydown', handleTerminalShortcut, { capture: true })
+  }, [terminal.toggle, workspaceDirectory])
+
   const feedbackDiagnostics = useMemo<FeedbackDiagnostics>(() => ({
     appVersion: packageJson.version,
     platform: navigator.platform,
@@ -1755,7 +2001,7 @@ export function App() {
   ])
 
   useEffect(() => {
-    const subagentsRunning = activeSubagents.length > 0
+    const subagentsRunning = workingSubagents.length > 0
     const state: Partial<MenuBarState> = {
       execution: runningTurnId ? subagentsRunning ? 'tool' : 'thinking' : 'idle',
       label: runningTurnId ? subagentsRunning ? 'subagent' : 'working' : 'ready',
@@ -1771,7 +2017,7 @@ export function App() {
     void window.verboo.updateMenuBar(state)
   }, [
     activeProject?.path,
-    activeSubagents.length,
+    workingSubagents.length,
     cliAuth.email,
     cliAuth.loggedIn,
     config.workingDirectory,
@@ -1819,12 +2065,15 @@ export function App() {
     <main className="app-shell" style={appLayoutStyle}>
       <TopBar
         sidebarVisible={sidebarMode !== 'hidden'}
-        statusLabel={runningTurnId ? 'working' : 'ready'}
+        statusLabel={runningTurnId ? 'trabalhando' : 'pronto'}
         onToggleSidebar={toggleSidebarVisibility}
+        terminalOpen={terminal.terminalOpen}
+        terminalUnavailableReason={terminal.terminalUnavailableReason}
+        onToggleTerminal={() => terminal.toggle(workspaceDirectory || '')}
       />
 
       <div
-        className={`app-layout sidebar-${sidebarMode} ${activeView === 'settings' ? 'settings-open' : ''}`}
+        className={`app-layout sidebar-${sidebarMode} ${activeView === 'settings' ? 'settings-open' : ''} ${terminal.terminalOpen ? 'terminal-open' : ''}`}
       >
         {sidebarMode !== 'hidden' && (
           <>
@@ -1920,6 +2169,29 @@ export function App() {
             <EmptyChat projectName={projectName || 'Sem projeto'} line={emptyLine} />
           )}
         </section>
+        {showSubagentThreadPanel && selectedSubagent && (
+          <ResearchSubagentPanel
+            agent={selectedSubagent}
+            onClose={() => setSelectedSubagentId(undefined)}
+            onCancel={cancelResearchSubagent}
+          />
+        )}
+        <LocalTerminalPanel
+          terminalOpen={terminal.terminalOpen}
+          terminalWidth={terminal.terminalWidth}
+          onSetWidth={terminal.setWidth}
+          onWrite={terminal.write}
+          onResize={terminal.resize}
+          onClose={terminal.close}
+          onStop={terminal.stop}
+          onRestartInProject={async () => terminal.restartInProject(workspaceDirectory || '')}
+          onTerminalData={terminal.onTerminalData}
+          onTerminalExit={terminal.onTerminalExit}
+          session={terminal.terminalSession}
+          workingDirectory={workspaceDirectory || ''}
+          minWidth={terminal.MIN_WIDTH}
+          maxWidth={terminal.MAX_WIDTH}
+        />
       </div>
       <GoalStatusBar
         status={goalBarStatus}
@@ -1929,14 +2201,22 @@ export function App() {
         onClear={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
       />
 
-      {activeView === 'chat' && showJumpToLatest && hasConversation && (
-        <button className="jump-to-latest" type="button" onClick={() => scrollToLatest('smooth')} title="Ir para a ultima mensagem">
-          <ArrowDown size={17} />
-        </button>
-      )}
-
       {activeView === 'chat' && (
         <div className={`bottom-dock ${hasConversation ? '' : 'empty-mode'}`}>
+          {showSubagentSummary && (
+            <SubagentSummaryCard
+              agents={workingSubagents}
+              expanded={subagentSummaryExpanded}
+              selectedAgentId={selectedSubagentId}
+              onToggleExpanded={() => setSubagentSummaryExpanded(current => !current)}
+              onSelectAgent={setSelectedSubagentId}
+            />
+          )}
+          {showJumpToLatest && hasConversation && (
+            <button className="jump-to-latest" type="button" onClick={() => scrollToLatest('smooth')} title="Ir para a última mensagem">
+              <ArrowDown size={17} />
+            </button>
+          )}
           {visiblePermissionPrompt && (
             <PermissionApprovalPanel
               prompt={visiblePermissionPrompt}
@@ -1966,9 +2246,6 @@ export function App() {
                   setActiveView('settings')
                 }}
               />
-            }
-            centerToolbar={
-              <SubagentIndicator agents={activeSubagents} />
             }
             rightToolbar={
               <>
@@ -2007,51 +2284,128 @@ export function App() {
   )
 }
 
-function SubagentIndicator({ agents }: { agents: ActiveSubagent[] }) {
-  const [open, setOpen] = useState(false)
+function SubagentSummaryCard({
+  agents,
+  expanded,
+  selectedAgentId,
+  onToggleExpanded,
+  onSelectAgent,
+}: {
+  agents: ActiveSubagent[]
+  expanded: boolean
+  selectedAgentId?: string
+  onToggleExpanded: () => void
+  onSelectAgent: (agentId: string) => void
+}) {
   if (agents.length === 0) return null
-  const label = agents.length === 1 ? 'subagente trabalhando' : 'subagentes trabalhando'
+  const title = String(agents.length)
 
   return (
-    <div className="subagent-indicator-wrap">
+    <section className={`subagent-summary-card ${expanded ? 'expanded' : ''}`} aria-label="Subagentes ativos">
       <button
-        className="subagent-indicator"
+        className="subagent-summary-header"
         type="button"
-        onClick={() => setOpen(value => !value)}
-        aria-expanded={open}
-        title="Ver subagentes ativos"
+        onClick={onToggleExpanded}
+        aria-expanded={expanded}
       >
-        <span className="subagent-mark" aria-hidden="true">
-          <img src={mascotUrl} alt="" />
+        <span className="subagent-summary-title">
+          <GitBranch size={14} />
+          Subagentes
         </span>
-        <strong>{agents.length}</strong>
-        <span
-          className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm"
-          data-text={label}
-        >
-          {label}
-        </span>
+        <span className="subagent-summary-count">{title}</span>
+        {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
       </button>
-      {open && (
-        <div className="subagent-popover popover-panel t-dropdown is-open" data-origin="bottom-center">
-          <div className="popover-title">
-            <span>Subagentes ativos</span>
-            <small>{agents.length}</small>
-          </div>
-          <div className="subagent-list">
-            {agents.map((agent, index) => (
-              <div key={agent.id} className="subagent-row">
-                <span className="subagent-row-index">{index + 1}</span>
-                <span>
-                  <strong>{agent.label || `Subagente ${index + 1}`}</strong>
-                  <small>{agent.detail || 'Trabalhando em uma tarefa isolada.'}</small>
+
+      {expanded && (
+        <div className="subagent-summary-list">
+          {agents.map(agent => {
+            const Icon = subagentStatusIcon(agent.status)
+            return (
+              <button
+                key={agent.id}
+                className={`subagent-summary-item ${agent.id === selectedAgentId ? 'selected' : ''}`}
+                data-status={agent.status}
+                type="button"
+                onClick={() => onSelectAgent(agent.id)}
+              >
+                <span className="subagent-summary-avatar" aria-hidden="true">
+                  <img src={mascotUrl} alt="" />
                 </span>
-              </div>
-            ))}
-          </div>
+                <strong>{agent.label}</strong>
+                <span className="subagent-summary-state">
+                  <Icon size={13} />
+                  {SUBAGENT_STATUS_LABELS[agent.status]}
+                </span>
+              </button>
+            )
+          })}
         </div>
       )}
-    </div>
+    </section>
+  )
+}
+
+function ResearchSubagentPanel({
+  agent,
+  onClose,
+  onCancel,
+}: {
+  agent: ActiveSubagent
+  onClose: () => void
+  onCancel: (agent: ActiveSubagent) => Promise<void>
+}) {
+  const Icon = subagentStatusIcon(agent.status)
+  const history = agent.history ?? []
+  const canCancel = isActiveSubagentWorking(agent)
+
+  return (
+    <aside className="research-subagent-panel" data-status={agent.status} aria-label={`Conversa com ${agent.label}`}>
+      <header className="research-subagent-header">
+        <div className="research-subagent-header-row">
+          <span className="research-subagent-tab">
+            <GitBranch size={14} />
+            <strong>{agent.label}</strong>
+          </span>
+          <button
+            type="button"
+            className="research-subagent-close ui-tooltip"
+            data-tooltip={canCancel ? 'Cancelar pesquisa' : 'Fechar painel'}
+            data-tooltip-align="end"
+            onClick={() => {
+              if (canCancel) {
+                void onCancel(agent)
+                return
+              }
+              onClose()
+            }}
+            aria-label={canCancel ? 'Cancelar pesquisa do subagente' : 'Fechar painel do subagente'}
+          >
+            <XCircle size={16} />
+          </button>
+        </div>
+        <span className="research-subagent-state">
+          <Icon size={13} />
+          {SUBAGENT_STATUS_LABELS[agent.status]}
+        </span>
+      </header>
+
+      <section className="research-subagent-thread" aria-label={`Histórico de ${agent.label}`}>
+        <div className="research-subagent-message mission">
+          <small>Missão</small>
+          <p>{agent.mission || agent.detail || 'Coletar contexto somente leitura para o agente principal.'}</p>
+        </div>
+        {history.map(item => (
+          <div key={item.id} className="research-subagent-message">
+            <small>{item.label}</small>
+            <p>{item.text}</p>
+          </div>
+        ))}
+      </section>
+
+      <footer className="research-subagent-footer">
+        Histórico somente leitura
+      </footer>
+    </aside>
   )
 }
 
@@ -2072,7 +2426,7 @@ function PermissionApprovalPanel({
         <Terminal size={16} />
       </div>
       <div className="permission-approval-copy">
-        <strong>Permitir esta acao?</strong>
+        <strong>Permitir esta ação?</strong>
         <p>{prompt.command ? 'O agente quer executar um comando antes de continuar.' : prompt.detail}</p>
         {prompt.command && <code>{prompt.command}</code>}
       </div>
@@ -2147,8 +2501,14 @@ function forgetRememberedAuthSession(): void {
   window.localStorage.removeItem(AUTH_SESSION_KEY)
 }
 
-function hasLocalAuthEvidence(credentials: CredentialStatus, cliAuth: CliAuthStatus): boolean {
-  return cliAuth.loggedIn || credentials.hasApiKey
+function isAuthoritativelySignedOut(credentials: CredentialStatus, cliAuth: CliAuthStatus): boolean {
+  // A remembered "stay signed in" session should survive transient failures to
+  // confirm live auth. Only drop it on positive proof of being signed out: no
+  // saved API key AND a *successful* CLI status check that reports loggedIn:false.
+  // When the status check itself failed it carries `error` — that's transient,
+  // not a logout, so keep the session instead of kicking the user out.
+  if (credentials.hasApiKey) return false
+  return cliAuth.loggedIn === false && !cliAuth.error
 }
 
 function readTheme(): ThemeMode {
@@ -2278,29 +2638,86 @@ function inferResearchSubagentCount(normalizedMessage: string): 1 | 2 {
   return signals >= 2 || asksForTwoAngles || broadRequest ? 2 : 1
 }
 
-function formatResearchResultsForTranscript(results: ResearchSubagentResult[]): string {
+function formatResearchResultsForTranscript(results: ResearchSubagentResult[], agents: ActiveSubagent[]): string {
   if (results.length === 0) return 'Nenhum resultado de pesquisa foi retornado.'
   return results
     .map(result => {
-      const status = result.status === 'complete' ? 'concluido' : 'falhou'
+      const agentName = agents[result.index - 1]?.label ?? `Subagente ${result.index}`
+      const status = result.status === 'complete' ? 'concluído' : 'falhou'
       const sources = result.sources.length ? ` Fontes: ${result.sources.slice(0, 3).join('; ')}.` : ''
-      return `Subagente ${result.index} ${status}: ${result.summary}${sources}`
+      return `${agentName} ${status}: ${result.summary}${sources}`
     })
     .join('\n')
 }
 
-function buildResearchResultsContext(results: ResearchSubagentResult[]): string {
+function buildResearchResultsContext(results: ResearchSubagentResult[], agents: ActiveSubagent[]): string {
   if (results.length === 0) return ''
   return [
     'Pesquisas de subagentes somente leitura:',
     '',
     ...results.map(result => [
-      `Subagente ${result.index} (${result.status}):`,
+      `${agents[result.index - 1]?.label ?? `Subagente ${result.index}`} (${result.status}):`,
       `Resumo: ${result.summary}`,
       result.findings.length ? `Achados:\n${result.findings.map(finding => `- ${finding}`).join('\n')}` : '',
       result.sources.length ? `Fontes:\n${result.sources.map(source => `- ${source}`).join('\n')}` : '',
     ].filter(Boolean).join('\n')),
   ].join('\n\n')
+}
+
+function subagentNameFor(seed: string, index: number): string {
+  let hash = 0
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = ((hash << 5) - hash + seed.charCodeAt(i)) | 0
+  }
+  const offset = Math.abs(hash + index * 7) % SUBAGENT_NAMES.length
+  return SUBAGENT_NAMES[offset]
+}
+
+function isActiveSubagentWorking(agent: ActiveSubagent): boolean {
+  return agent.status !== 'done' && agent.status !== 'failed'
+}
+
+function subagentStatusIcon(status: ActiveSubagent['status']) {
+  if (status === 'done') return CheckCircle2
+  if (status === 'failed') return XCircle
+  return LoaderCircle
+}
+
+function subagentStatusForActivity(activity: TurnActivity): ActiveSubagent['status'] {
+  const text = `${activity.key} ${activity.label} ${activity.detail ?? ''}`.toLowerCase()
+  if (/finish|complete|done|finaliz/.test(text)) return 'done'
+  if (/fail|erro|error/.test(text)) return 'failed'
+  if (/read|leu|lendo|file|arquivo/.test(text)) return 'reading'
+  if (/search|pesquis|grep|glob|internet/.test(text)) return 'searching'
+  return 'thinking'
+}
+
+function compactSubagentDetail(activity: TurnActivity): string {
+  const status = subagentStatusForActivity(activity)
+  if (status === 'reading') return 'Lendo arquivos e referências.'
+  if (status === 'searching') return 'Pesquisando contexto relevante.'
+  if (status === 'done') return 'Pesquisa concluída.'
+  if (status === 'failed') return 'Pesquisa interrompida.'
+  return 'Organizando o escopo da pesquisa.'
+}
+
+function appendSubagentHistory(
+  current: ActiveSubagentHistoryItem[] | undefined,
+  item: ActiveSubagentHistoryItem,
+): ActiveSubagentHistoryItem[] {
+  const next = [...(current ?? []), item]
+  return next.slice(-8)
+}
+
+function mergeAssistantText(current: string, incoming: string): string {
+  if (!current || !incoming) return current + incoming
+  const left = current.at(-1) ?? ''
+  const right = incoming[0] ?? ''
+  if (!left || !right || /\s/.test(left) || /\s/.test(right)) return current + incoming
+  if (left === '`' || right === '`' || left === '/' || right === '/') return current + incoming
+  if (/[.!?:;,)]/.test(left) && /[\p{L}\p{N}("'“]/u.test(right)) return `${current} ${incoming}`
+  if (/[\p{Ll}\p{N})]/u.test(left) && /[\p{Lu}]/u.test(right)) return `${current} ${incoming}`
+  return current + incoming
 }
 
 function workspaceFolderName(path: string, projectName?: string): string {
@@ -2468,17 +2885,17 @@ function buildTurnSummaryLines(
     actionCount(counts.command, 'executou comandos'),
     actionCount(counts.search, 'pesquisou na internet'),
     actionCount(counts.terminal, 'leu terminal'),
-    actionCount(counts.permission, 'pediu permissao/resposta'),
+    actionCount(counts.permission, 'pediu permissão/resposta'),
     actionCount(counts.tool, 'usou ferramentas'),
   ].filter(Boolean)
 
   const lines = actions.length ? [`Resumo: ${actions.join(', ')}.`] : []
 
   if (details?.references?.length) {
-    lines.push(`Referencias verificadas: ${formatShortList(details.references)}.`)
+    lines.push(`Referências verificadas: ${formatShortList(details.references)}.`)
   }
   if (details?.validationCommands?.length) {
-    lines.push(`Validacao feita: ${formatShortList(details.validationCommands)}.`)
+    lines.push(`Validação feita: ${formatShortList(details.validationCommands)}.`)
   }
   if (details?.changeSummary?.totalFiles) {
     lines.push(
@@ -2486,7 +2903,7 @@ function buildTurnSummaryLines(
     )
   }
   if (result?.stopReason) lines.push(`Motivo de parada: ${result.stopReason}.`)
-  if (exitCode !== 0) lines.push(`Processo terminou com codigo ${exitCode ?? 'desconhecido'}.`)
+  if (exitCode !== 0) lines.push(`Processo terminou com código ${exitCode ?? 'desconhecido'}.`)
   return lines
 }
 
@@ -2559,7 +2976,7 @@ function buildCliFailureMessage(lines: string[] | undefined): string | undefined
   )
   const visible = (important.length ? important : cleaned).slice(-4)
   if (visible.length === 0) return undefined
-  return `Nao consegui executar o agente.\n\n${visible.join('\n')}\n`
+  return `Não consegui executar o agente.\n\n${visible.join('\n')}\n`
 }
 
 function cleanCliFailureLine(line: string): string {
@@ -2593,7 +3010,7 @@ function detectPermissionRequest(text: string): string | undefined {
     const value = line.toLowerCase()
     return value.includes('aprovar') || value.includes('permitir') || value.includes('autoriza') || value.includes('can i run')
   })
-  return snippet(focusedLine ?? 'O agente pediu permissao para continuar.')
+  return snippet(focusedLine ?? 'O agente pediu permissão para continuar.')
 }
 
 function extractCommandFromPermissionText(text: string): string | undefined {
@@ -2611,16 +3028,16 @@ function buildPermissionFollowUpMessage(
 ): string {
   if (decision === 'deny') {
     return [
-      'Permissao negada.',
-      prompt.command ? `Nao execute este comando: ${prompt.command}` : '',
+      'Permissão negada.',
+      prompt.command ? `Não execute este comando: ${prompt.command}` : '',
       'Continue com uma alternativa segura ou explique o bloqueio de forma objetiva.',
     ].filter(Boolean).join('\n')
   }
 
   return [
-    automatic ? 'Permissao aprovada automaticamente por regra confiavel salva neste app.' : 'Permissao aprovada.',
+    automatic ? 'Permissão aprovada automaticamente por regra confiável salva neste app.' : 'Permissão aprovada.',
     prompt.command ? `Comando aprovado: ${prompt.command}` : '',
-    'Continue exatamente do ponto em que parou e execute apenas a acao aprovada antes de seguir.',
+    'Continue exatamente do ponto em que parou e execute apenas a ação aprovada antes de seguir.',
   ].filter(Boolean).join('\n')
 }
 

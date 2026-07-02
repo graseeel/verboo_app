@@ -134,9 +134,9 @@ export function Composer({
     <form className="composer" onSubmit={submit}>
       {slashQuery !== undefined && (
         <div className="skills-menu popover-panel t-dropdown is-open" data-origin="bottom-center">
-          <div className="popover-title">Skills</div>
+          <div className="popover-title">Habilidades</div>
           {matchingSkills.length === 0 ? (
-            <div className="empty-menu">Nenhuma skill encontrada.</div>
+            <div className="empty-menu">Nenhuma habilidade encontrada.</div>
           ) : (
             matchingSkills.map((skill, index) => (
               <button
@@ -188,7 +188,7 @@ export function Composer({
           onScroll={event => {
             if (highlightRef.current) highlightRef.current.scrollTop = event.currentTarget.scrollTop
           }}
-          placeholder={busy ? 'Digite uma mensagem para entrar na fila' : 'Peça ao Verboo ou digite / para usar skills'}
+          placeholder={busy ? 'Digite uma mensagem para entrar na fila' : 'Peça ao Verboo ou digite / para usar habilidades'}
           rows={1}
         />
       </div>
@@ -207,7 +207,7 @@ export function Composer({
             className="send-button"
             type="submit"
             disabled={disabled || !value.trim()}
-            title={busy ? 'Adicionar a fila' : 'Enviar'}
+            title={busy ? 'Adicionar à fila' : 'Enviar'}
           >
             <ArrowUp size={17} />
           </button>

@@ -55,30 +55,30 @@ type SettingsViewProps = {
 }
 
 const settingsTabs: Array<{ id: SettingsTab; label: string; icon: typeof Shield }> = [
-  { id: 'permissions', label: 'Permissoes', icon: Shield },
-  { id: 'trustedCommands', label: 'Comandos confiaveis', icon: ShieldCheck },
+  { id: 'permissions', label: 'Permissões', icon: Shield },
+  { id: 'trustedCommands', label: 'Comandos confiáveis', icon: ShieldCheck },
   { id: 'app', label: 'App', icon: Computer },
-  { id: 'notifications', label: 'Notificacoes', icon: Bell },
-  { id: 'personalization', label: 'Personalizacao', icon: UserCog },
-  { id: 'memory', label: 'Memoria', icon: Brain },
+  { id: 'notifications', label: 'Notificações', icon: Bell },
+  { id: 'personalization', label: 'Personalização', icon: UserCog },
+  { id: 'memory', label: 'Memória', icon: Brain },
   { id: 'archived', label: 'Chats arquivados', icon: Archive },
 ]
 
 const accessOptions: Array<{ id: AccessMode; title: string; body: string; tone?: 'danger' }> = [
   {
     id: 'approval',
-    title: 'Solicitar aprovacao',
-    body: 'Sempre pedir aprovacao para editar arquivos externos e usar internet.',
+    title: 'Solicitar aprovação',
+    body: 'Sempre pedir aprovação para editar arquivos externos e usar internet.',
   },
   {
     id: 'auto',
     title: 'Aprovar por mim',
-    body: 'Pedir aprovacao apenas para acoes detectadas como potencialmente inseguras.',
+    body: 'Pedir aprovação apenas para ações detectadas como potencialmente inseguras.',
   },
   {
     id: 'full',
-    title: 'Acesso completo',
-    body: 'Acesso irrestrito a internet, arquivos e comandos locais sem sua aprovacao.',
+    title: 'Modo livre',
+    body: 'Executar sem novas aprovações em workspaces confiáveis.',
     tone: 'danger',
   },
 ]
@@ -151,12 +151,12 @@ export function SettingsView({
 
   return (
     <div className="settings-shell page-surface">
-      <aside className="settings-nav" aria-label="Configuracoes">
+      <aside className="settings-nav" aria-label="Configurações">
         <button className="settings-back" type="button" onClick={onClose}>
           <ArrowLeft size={14} />
           Voltar ao app
         </button>
-        <div className="settings-nav-title">Configuracoes</div>
+        <div className="settings-nav-title">Configurações</div>
         {settingsTabs.map(tab => {
           const Icon = tab.icon
           return (
@@ -176,7 +176,7 @@ export function SettingsView({
       <div className="settings-content">
         {activeTab === 'permissions' && (
           <section className="settings-section-view">
-            <SettingsHeading title="Permissoes" subtitle="Defina como as acoes do Verboo devem ser aprovadas." />
+            <SettingsHeading title="Permissões" subtitle="Defina como as ações do Verboo devem ser aprovadas." />
             <div className="settings-panel access-settings-panel">
               {accessOptions.map(option => (
                 <button
@@ -188,7 +188,7 @@ export function SettingsView({
                   <Shield size={18} />
                   <span>
                     <strong>{option.title}</strong>
-                    <small>{option.id === 'full' && !userSettings.fullAccessEnabled ? 'Ative em Permissoes para liberar este modo.' : option.body}</small>
+                    <small>{option.id === 'full' && !userSettings.fullAccessEnabled ? 'Ative em Permissões para liberar este modo.' : option.body}</small>
                   </span>
                   {userSettings.defaultAccessMode === option.id && <Check size={18} />}
                 </button>
@@ -199,8 +199,8 @@ export function SettingsView({
               <div className="settings-permission-card-header">
                 <Shield size={18} />
                 <div>
-                  <strong>Acesso completo</strong>
-                  <p>Libera execucao irrestrita no workspace e comandos locais sem novas confirmacoes.</p>
+                  <strong>Modo livre</strong>
+                  <p>Libera execução irrestrita no workspace e comandos locais sem novas confirmações.</p>
                 </div>
               </div>
               <div className="settings-permission-card-status">
@@ -212,7 +212,7 @@ export function SettingsView({
                   disabled={userSettings.fullAccessEnabled}
                   onClick={() => setConfirmingFullAccess('capability')}
                 >
-                  {userSettings.fullAccessEnabled ? 'Acesso completo ativado' : 'Ativar acesso completo'}
+                  {userSettings.fullAccessEnabled ? 'Modo livre ativado' : 'Ativar modo livre'}
                 </button>
               </div>
             </section>
@@ -222,13 +222,13 @@ export function SettingsView({
         {activeTab === 'trustedCommands' && (
           <section className="settings-section-view">
             <SettingsHeading
-              title="Comandos confiaveis"
-              subtitle="Gerencie comandos que voce marcou como Sempre permitir."
+              title="Comandos confiáveis"
+              subtitle="Gerencie comandos que você marcou como Sempre permitir."
             />
             <section className="settings-panel trusted-command-panel">
               {userSettings.trustedCommands.length === 0 ? (
                 <div className="trusted-command-empty">
-                  Nenhum comando confiavel salvo.
+                  Nenhum comando confiável salvo.
                 </div>
               ) : (
                 <div className="trusted-command-list">
@@ -262,21 +262,21 @@ export function SettingsView({
 
         {activeTab === 'app' && (
           <section className="settings-section-view">
-            <SettingsHeading title="App" subtitle="Aparencia, MenuBar, modelos e janela de contexto." />
+            <SettingsHeading title="App" subtitle="Aparência, MenuBar, modelos e janela de contexto." />
 
             <section className="settings-panel">
               <div className="settings-row">
                 <KeyRound size={16} />
                 <div>
                   <strong>Chave API</strong>
-                  <p>{credentials.hasApiKey ? `Configurada (${credentials.apiKeyHint})` : 'Nao configurada. O login via CLI tambem e aceito.'}</p>
+                  <p>{credentials.hasApiKey ? `Configurada (${credentials.apiKeyHint})` : 'Não configurada. O login via CLI também é aceito.'}</p>
                 </div>
               </div>
               <div className="api-key-form">
                 <input
                   value={apiKey}
                   onChange={event => setApiKey(event.target.value)}
-                  placeholder="Cole sua chave API Verboo"
+                  placeholder="Cole sua chave de API Verboo"
                   type="password"
                 />
                 <button type="button" onClick={submitApiKey} disabled={!apiKey.trim() || saving}>
@@ -286,7 +286,7 @@ export function SettingsView({
               {modelResult.error && <p className="settings-warning">{modelResult.error}</p>}
               <SettingToggle
                 title="Continuar logado"
-                body="Usar a ultima validacao local quando a renovacao de modelos falhar temporariamente."
+                body="Usar a última validação local quando a renovação de modelos falhar temporariamente."
                 checked={userSettings.staySignedIn}
                 onChange={staySignedIn => onUserSettingsChange({ staySignedIn })}
               />
@@ -336,11 +336,11 @@ export function SettingsView({
               <div className="context-advice">
                 <div>
                   <strong>Aumentar</strong>
-                  <p>Mantem mais historico, arquivos e contexto do projeto. Pode ficar mais lento, gastar mais cota e misturar informacao irrelevante.</p>
+                  <p>Mantém mais histórico, arquivos e contexto do projeto. Pode ficar mais lento, gastar mais cota e misturar informação irrelevante.</p>
                 </div>
                 <div>
                   <strong>Diminuir</strong>
-                  <p>Costuma deixar a sessao mais focada e economica. Aumenta o risco do Verboo perder detalhes antigos ou precisar reler arquivos.</p>
+                  <p>Costuma deixar a sessão mais focada e econômica. Aumenta o risco do Verboo perder detalhes antigos ou precisar reler arquivos.</p>
                 </div>
               </div>
             </section>
@@ -354,14 +354,14 @@ export function SettingsView({
               />
               <SettingToggle
                 title="Expandir texto na MenuBar"
-                body="Mostrar status, tempo e modelo ao lado do icone do Verboo."
+                body="Mostrar status, tempo e modelo ao lado do ícone do Verboo."
                 checked={userSettings.showMenuBarText}
                 disabled={!userSettings.showInMenuBar}
                 onChange={showMenuBarText => onUserSettingsChange({ showMenuBarText })}
               />
               <SettingToggle
-                title="Impedir suspensao durante a execucao"
-                body="Mantem o computador ativo enquanto o Verboo executa um chat."
+                title="Impedir suspensão durante a execução"
+                body="Mantém o computador ativo enquanto o Verboo executa um chat."
                 checked={userSettings.preventSleepWhileRunning}
                 onChange={preventSleepWhileRunning => onUserSettingsChange({ preventSleepWhileRunning })}
               />
@@ -370,23 +370,23 @@ export function SettingsView({
             <section className="settings-panel">
               <SettingToggle
                 title="Goal Mode (beta)"
-                body="Permite usar /goal para executar objetivos em loop autonomo com avaliacao entre turnos."
+                body="Permite usar /goal para executar objetivos em loop autônomo com avaliação entre turnos."
                 checked={userSettings.goalMode.enabled}
                 onChange={enabled => onUserSettingsChange({ goalMode: { ...userSettings.goalMode, enabled } })}
               />
               {userSettings.goalMode.enabled && (
                 <div className="settings-nested-group">
                   <SettingNumericInput
-                    title="Turnos maximos"
-                    body="Numero maximo de turnos de execucao por objetivo."
+                    title="Turnos máximos"
+                    body="Número máximo de turnos de execução por objetivo."
                     value={userSettings.goalMode.maxTurns}
                     min={1}
                     max={20}
                     onChange={maxTurns => onUserSettingsChange({ goalMode: { ...userSettings.goalMode, maxTurns } })}
                   />
                   <SettingNumericInput
-                    title="Tempo maximo (minutos)"
-                    body="Tempo maximo total de execucao por objetivo."
+                    title="Tempo máximo (minutos)"
+                    body="Tempo máximo total de execução por objetivo."
                     value={userSettings.goalMode.maxElapsedMinutes}
                     min={1}
                     max={240}
@@ -394,7 +394,7 @@ export function SettingsView({
                   />
                   <SettingToggle
                     title="Auto-acesso entre turnos"
-                    body="Quando ativo, o modo goal alterna para acesso automatico durante continuacoes."
+                    body="Quando ativo, o modo goal alterna para acesso automático durante continuações."
                     checked={userSettings.goalMode.allowAutoAccess}
                     onChange={allowAutoAccess => onUserSettingsChange({ goalMode: { ...userSettings.goalMode, allowAutoAccess } })}
                   />
@@ -406,11 +406,11 @@ export function SettingsView({
 
         {activeTab === 'notifications' && (
           <section className="settings-section-view">
-            <SettingsHeading title="Notificacoes" subtitle="Controle quando o app deve chamar sua atencao." />
+            <SettingsHeading title="Notificações" subtitle="Controle quando o app deve chamar sua atenção." />
             <section className="settings-panel">
               <label className="settings-select-row">
                 <span>
-                  <strong>Notificacoes de conclusao</strong>
+                  <strong>Notificações de conclusão</strong>
                   <small>Defina quando o Verboo avisa que terminou.</small>
                 </span>
                 <select
@@ -424,13 +424,13 @@ export function SettingsView({
                 <ChevronDown size={15} />
               </label>
               <SettingToggle
-                title="Notificacoes de permissao"
-                body="Exibir alertas quando uma aprovacao for necessaria."
+                title="Notificações de permissão"
+                body="Exibir alertas quando uma aprovação for necessária."
                 checked={userSettings.permissionNotifications}
                 onChange={permissionNotifications => onUserSettingsChange({ permissionNotifications })}
               />
               <SettingToggle
-                title="Notificacoes de perguntas"
+                title="Notificações de perguntas"
                 body="Exibir alertas quando o Verboo precisar de uma resposta para continuar."
                 checked={userSettings.questionNotifications}
                 onChange={questionNotifications => onUserSettingsChange({ questionNotifications })}
@@ -441,18 +441,18 @@ export function SettingsView({
 
         {activeTab === 'personalization' && (
           <section className="settings-section-view">
-            <SettingsHeading title="Personalizacao" subtitle="Ajuste o tom padrao e instrucoes enviadas ao CLI." />
+            <SettingsHeading title="Personalização" subtitle="Ajuste o tom padrão e instruções enviadas ao CLI." />
             <section className="settings-panel">
               <label className="settings-select-row">
                 <span>
                   <strong>Personalidade</strong>
-                  <small>Tom padrao das respostas do Verboo.</small>
+                  <small>Tom padrão das respostas do Verboo.</small>
                 </span>
                 <select
                   value={userSettings.personality}
                   onChange={event => onUserSettingsChange({ personality: event.target.value as PersonalityMode })}
                 >
-                  <option value="pragmatic">Pragmatica</option>
+                  <option value="pragmatic">Pragmática</option>
                   <option value="concise">Concisa</option>
                   <option value="explanatory">Explicativa</option>
                 </select>
@@ -460,17 +460,17 @@ export function SettingsView({
               </label>
               <label className="custom-instructions-field">
                 <span>
-                  <strong>Instrucoes personalizadas</strong>
-                  <small>Esse texto e enviado como contexto extra para cada pedido.</small>
+                  <strong>Instruções personalizadas</strong>
+                  <small>Esse texto é enviado como contexto extra para cada pedido.</small>
                 </span>
                 <textarea
                   value={customDraft}
                   onChange={event => setCustomDraft(event.target.value)}
-                  placeholder="Ex.: priorize respostas curtas, cite arquivos alterados e rode testes quando possivel."
+                  placeholder="Ex.: priorize respostas curtas, cite arquivos alterados e rode testes quando possível."
                 />
               </label>
               <button type="button" onClick={saveCustomInstructions} disabled={customDraft === userSettings.customInstructions}>
-                Salvar instrucoes
+                Salvar instruções
               </button>
             </section>
           </section>
@@ -478,31 +478,31 @@ export function SettingsView({
 
         {activeTab === 'memory' && (
           <section className="settings-section-view">
-            <SettingsHeading title="Memoria" subtitle="Use historico local para dar continuidade entre conversas do mesmo projeto." />
+            <SettingsHeading title="Memória" subtitle="Use histórico local para dar continuidade entre conversas do mesmo projeto." />
             <section className="settings-panel">
               <SettingToggle
-                title="Ativar memorias"
-                body="Inclui resumos curtos de chats anteriores do mesmo projeto no proximo pedido."
+                title="Ativar memórias"
+                body="Inclui resumos curtos de chats anteriores do mesmo projeto no próximo pedido."
                 checked={userSettings.memoriesEnabled}
                 onChange={memoriesEnabled => onUserSettingsChange({ memoriesEnabled })}
               />
               <SettingToggle
-                title="Previa de pesquisa local"
-                body="Permite que o app considere titulos e mensagens recentes ao montar contexto local."
+                title="Prévia de pesquisa local"
+                body="Permite que o app considere títulos e mensagens recentes ao montar contexto local."
                 checked={userSettings.chroniclePreview}
                 disabled={!userSettings.memoriesEnabled}
                 onChange={chroniclePreview => onUserSettingsChange({ chroniclePreview })}
               />
               <SettingToggle
                 title="Ignorar chats com ferramentas"
-                body="Nao usar mensagens de ferramenta/terminal dentro do contexto de memoria."
+                body="Não usar mensagens de ferramenta/terminal dentro do contexto de memória."
                 checked={userSettings.ignoreToolChatsForMemory}
                 disabled={!userSettings.memoriesEnabled}
                 onChange={ignoreToolChatsForMemory => onUserSettingsChange({ ignoreToolChatsForMemory })}
               />
               <button className="danger-soft-button" type="button" onClick={onResetUserSettings}>
                 <RefreshCcw size={15} />
-                Redefinir preferencias do app
+                Redefinir preferências do app
               </button>
             </section>
           </section>
@@ -510,7 +510,7 @@ export function SettingsView({
 
         {activeTab === 'archived' && (
           <section className="settings-section-view">
-            <SettingsHeading title="Chats arquivados" subtitle="Restaure ou apague conversas que sairam da barra lateral." />
+            <SettingsHeading title="Chats arquivados" subtitle="Restaure ou apague conversas que saíram da barra lateral." />
             <section className="settings-panel archived-panel">
               {archivedConversations.length === 0 ? (
                 <div className="archived-empty">Nenhum chat arquivado.</div>
@@ -543,15 +543,15 @@ export function SettingsView({
       {confirmingFullAccess && (
         <div className="modal-backdrop">
           <div className="confirm-modal t-modal is-open" role="dialog" aria-modal="true">
-            <h2>Ativar acesso completo</h2>
+            <h2>Ativar modo livre</h2>
             <p className="danger-copy">
-              Esta acao libera acesso irrestrito ao workspace. Leia os riscos abaixo antes de continuar.
+              Esta ação libera acesso irrestrito ao workspace. Leia os riscos abaixo antes de continuar.
             </p>
             <ul className="risk-list">
-              <li>O app podera ler, criar, modificar e apagar arquivos acessiveis ao usuario.</li>
+              <li>O app poderá ler, criar, modificar e apagar arquivos acessíveis ao usuário.</li>
               <li>Comandos locais podem alterar o projeto e o ambiente.</li>
               <li>Segredos, tokens e chaves podem ser expostos se o workspace os contiver.</li>
-              <li>Use apenas em workspaces confiaveis.</li>
+              <li>Use apenas em workspaces confiáveis.</li>
             </ul>
             <div className="modal-actions">
               <button type="button" onClick={cancelFullAccessConfirmation}>

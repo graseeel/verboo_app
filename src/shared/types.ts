@@ -318,6 +318,7 @@ export type ResearchSubagentRequest = {
 }
 
 export type ResearchSubagentsRunRequest = {
+  runId?: string
   count: number
   requestedCount?: number
   baseRequest: AgentTurnRequest
@@ -388,4 +389,25 @@ export type AppConfig = {
   workingDirectory: string
   accessMode: AccessMode
   selectedModel?: string
+}
+
+// ── Terminal types ──────────────────────────────────────────────
+
+export type LocalTerminalSession = {
+  id: string
+  cwd: string
+  shell: string
+  createdAt: number
+  running: boolean
+}
+
+export type LocalTerminalStartRequest = {
+  cwd: string
+  cols: number
+  rows: number
+}
+
+export type TerminalDataEvent = {
+  sessionId: string
+  data: string
 }
