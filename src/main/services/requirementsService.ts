@@ -64,9 +64,9 @@ export async function validateRuntimeRequirements(): Promise<RequirementsResult>
   checks.push(checkArchitecture())
   checks.push(checkMacOsVersion())
   checks.push(await checkEmbeddedCli())
-  checks.push(await checkPackageResolution('node-pty/package.json', 'Terminal native module', true))
-  checks.push(await checkPackageResolution('sharp/package.json', 'Image processing module', true))
-  checks.push(await checkPackageResolution('tesseract.js/package.json', 'OCR module', true))
+  checks.push(await checkPackageRuntime('node-pty', 'Terminal native module', true))
+  checks.push(await checkPackageRuntime('sharp', 'Image processing module', true))
+  checks.push(await checkPackageRuntime('tesseract.js', 'OCR module', true))
   checks.push(await checkOptionalCommand('/usr/bin/git', ['--version'], 'Git command line tools'))
 
   const fatalMessages = checks
@@ -121,10 +121,11 @@ async function checkEmbeddedCli(): Promise<RequirementCheck> {
   }
 }
 
-async function checkPackageResolution(packageName: string, label: string, required: boolean): Promise<RequirementCheck> {
+async function checkPackageRuntime(packageName: string, label: string, required: boolean): Promise<RequirementCheck> {
   try {
     require.resolve(packageName)
-    return pass(packageName, label, required, 'Bundled dependency resolved.')
+    require(packageName)
+    return pass(packageName, label, required, 'Bundled dependency loaded.')
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     return required ? fail(packageName, label, required, message) : warn(packageName, label, required, message)
