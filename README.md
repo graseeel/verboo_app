@@ -21,30 +21,55 @@ Use this app as an experimental community/independent desktop build. Expect bugs
 - Provides project and chat organization similar to coding-assistant desktop apps.
 - Supports local skill discovery and multi-skill selection in the composer.
 - Supports image attachment handling, including a vision-helper fallback path when the selected model does not support vision.
-- Includes a draggable Verboo pet with command-driven visibility.
+- Includes a local terminal side panel for project commands.
 - Includes a feedback/report-bug flow backed by Supabase, with `mailto:` fallback.
 
 ## Requirements
 
-- macOS for the current desktop build.
-- Node.js and npm.
-- Verboo Code CLI from the official upstream project:
+- macOS 12.0 or newer.
+- Apple Silicon arm64 Mac. The current package targets MacBook Air M1 and newer.
+- Internet access and a valid Verboo session or API key.
+
+The packaged app is self-contained for normal use. It includes the Electron
+runtime, the embedded `@verboo/code` CLI, the local terminal module, and the
+image/OCR dependencies it needs to start.
+
+Node.js, npm, Homebrew, and a global `@verboo/code` CLI are not required to run
+the packaged app. If the user already has newer compatible versions of those
+tools, the app leaves them untouched.
+
+Git and Apple Command Line Tools are optional, but useful when the assistant
+works inside a real repository:
 
 ```bash
-npm i @verboo/code -g
-verboo
+git --version
+xcode-select -p
 ```
 
-You can authenticate through the CLI or configure a Verboo API key inside the app settings.
+On first launch per app version, Verboo Code runs a requirements check. It
+blocks only fatal package/platform problems: non-macOS, non-arm64, unsupported
+macOS version, missing embedded CLI, or missing bundled native modules. Optional
+tools such as Git are warnings only.
 
-The packaged app starts the embedded Verboo CLI through a real Node.js runtime.
-This avoids macOS opening a second `Verboo Code` Dock item when the assistant runs.
-When launched from Finder, the app looks for Node in common locations such as
-`/opt/homebrew/bin/node`, `/usr/local/bin/node`, `/usr/bin/node`, and `PATH`.
-If Node is installed elsewhere, start the app with:
+See [requirements/README.md](requirements/README.md) for the full runtime
+contract.
+
+### Internal Unsigned Builds
+
+Unsigned/ad-hoc builds are for internal testing. They can be blocked by
+Gatekeeper on another Mac with messages such as "damaged" or "cannot verify the
+developer". For public distribution, use Developer ID signing and notarization.
+
+For an internal build that you trust, you can run the preflight script:
 
 ```bash
-VERBOO_NODE_PATH=/absolute/path/to/node open -a "Verboo Code"
+scripts/requirements/macos-arm64-preflight.sh "/Applications/Verboo Code.app"
+```
+
+If macOS quarantine is blocking a trusted internal build:
+
+```bash
+scripts/requirements/macos-arm64-preflight.sh "/Applications/Verboo Code.app" --clear-quarantine
 ```
 
 ## Development
@@ -63,7 +88,7 @@ npm run build
 Package locally:
 
 ```bash
-npm run package
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run package
 ```
 
 ## Feedback Backend

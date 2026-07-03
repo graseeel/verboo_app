@@ -10,7 +10,7 @@ import { createWorker, PSM } from 'tesseract.js'
 import type { AgentTurnRequest, AttachmentMeta, VerbooModel } from '../../shared/types'
 import { createImageBlock } from './attachmentService'
 import type { ModelService } from './modelService'
-import { createNodeRuntimeEnv, resolveExternalNodePath, resolveNodeRuntimePath } from './nodeRuntime'
+import { createNodeRuntimeEnv, resolveNodeRuntimePath, resolvePackedJavaScriptEntryPath } from './nodeRuntime'
 
 const require = createRequire(import.meta.url)
 const MAX_OCR_CHARS = 12_000
@@ -395,7 +395,7 @@ function resolveCliPath(): string {
   const packagePath = require.resolve('@verboo/code/package.json')
   const packageJson = require(packagePath) as { bin?: string | Record<string, string> }
   const binPath = typeof packageJson.bin === 'string' ? packageJson.bin : packageJson.bin?.verboo
-  return resolveExternalNodePath(join(dirname(packagePath), binPath ?? 'dist/cli.mjs'))
+  return resolvePackedJavaScriptEntryPath(join(dirname(packagePath), binPath ?? 'dist/cli.mjs'))
 }
 
 function toVisionCandidate(model: VerbooModel): VisionCandidate {

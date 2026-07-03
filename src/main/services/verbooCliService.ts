@@ -11,7 +11,7 @@ import { accessModeConfig } from '../security/accessModes'
 import { createImageBlock, type CliImageBlock } from './attachmentService'
 import { getCliOAuthAccessToken, refreshCliOAuthAccessToken } from './cliCredentials'
 import type { CredentialsStore } from './credentialsStore'
-import { createNodeRuntimeEnv, resolveExternalNodePath, resolveNodeRuntimePath } from './nodeRuntime'
+import { createNodeRuntimeEnv, resolveNodeRuntimePath, resolvePackedJavaScriptEntryPath } from './nodeRuntime'
 
 type AgentEventHandler = (event: AgentEvent) => void
 type AuthTokenPipe = {
@@ -231,7 +231,7 @@ export class VerbooCliService {
     const packagePath = require.resolve('@verboo/code/package.json')
     const packageJson = require(packagePath) as { bin?: string | Record<string, string> }
     const binPath = typeof packageJson.bin === 'string' ? packageJson.bin : packageJson.bin?.verboo
-    return resolveExternalNodePath(join(dirname(packagePath), binPath ?? 'dist/cli.mjs'))
+    return resolvePackedJavaScriptEntryPath(join(dirname(packagePath), binPath ?? 'dist/cli.mjs'))
   }
 
   private async runCli(args: string[], timeoutMs: number): Promise<{ exitCode: number | null; output: string; error: string }> {

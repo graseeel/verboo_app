@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import type { AgentResultSnapshot, GoalEvaluationResult, GoalState, TranscriptItem } from '../../shared/types'
-import { createNodeRuntimeEnv, resolveExternalNodePath, resolveNodeRuntimePath } from './nodeRuntime'
+import { createNodeRuntimeEnv, resolveNodeRuntimePath, resolvePackedJavaScriptEntryPath } from './nodeRuntime'
 
 type EvaluateGoalInput = {
   goal: GoalState
@@ -129,7 +129,7 @@ function resolveCliPath(): string {
   const packagePath = require.resolve('@verboo/code/package.json')
   const packageJson = require(packagePath) as { bin?: string | Record<string, string> }
   const binPath = typeof packageJson.bin === 'string' ? packageJson.bin : packageJson.bin?.verboo
-  return resolveExternalNodePath(join(dirname(packagePath), binPath ?? 'dist/cli.mjs'))
+  return resolvePackedJavaScriptEntryPath(join(dirname(packagePath), binPath ?? 'dist/cli.mjs'))
 }
 
 async function runEvaluationCli(args: string[], workingDirectory: string, timeoutMs: number): Promise<string> {

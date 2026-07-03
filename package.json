@@ -53,6 +53,8 @@
     "files": [
       "out/**",
       "assets/**",
+      "requirements/**",
+      "scripts/requirements/**",
       "node_modules/**",
       "package.json"
     ],

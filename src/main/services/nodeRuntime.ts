@@ -6,8 +6,9 @@ let cachedNodePath: string | undefined
 let cachedIsElectron = false
 
 // Pure, dependency-injected core so the fallback logic is testable without
-// touching the real filesystem. Prefers a real system Node; when none exists,
-// falls back to the Electron binary running in Node mode.
+// touching the real filesystem. In development it can use a system Node; in a
+// packaged app it must use Electron's bundled Node so ESM can resolve packages
+// inside app.asar.
 export async function resolveNodeRuntime(
   candidates: string[],
   electronPath: string,
@@ -22,12 +23,9 @@ export async function resolveNodeRuntime(
 export async function resolveNodeRuntimePath(): Promise<string> {
   if (cachedNodePath) return cachedNodePath
 
-  // No system Node.js on this machine? Fall back to Electron's own bundled Node
-  // runtime (process.execPath run with ELECTRON_RUN_AS_NODE) so the app works
-  // for everyone — not just users who happen to have Node.js installed.
-  // Escape hatch: VERBOO_FORCE_ELECTRON_NODE=1 ignores any system Node and forces
-  // the bundled runtime (used to reproduce a "no Node installed" machine).
-  const candidates = process.env.VERBOO_FORCE_ELECTRON_NODE === '1' ? [] : nodeRuntimeCandidates()
+  // In packaged macOS builds, external Node cannot read app.asar. Prefer the
+  // bundled Electron runtime there; keep system Node available for local dev.
+  const candidates = shouldUseBundledElectronNode() ? [] : nodeRuntimeCandidates()
   const resolved = await resolveNodeRuntime(candidates, process.execPath, isExecutable)
   cachedNodePath = resolved.path
   cachedIsElectron = resolved.isElectron
@@ -57,6 +55,21 @@ export function resolveExternalNodePath(filePath: string): string {
 
   const unpackedPath = `${filePath.slice(0, asarIndex)}.asar.unpacked${sep}${filePath.slice(asarIndex + asarMarker.length)}`
   return existsSync(unpackedPath) ? unpackedPath : filePath
+}
+
+export function resolvePackedJavaScriptEntryPath(filePath: string): string {
+  const unpackedMarker = `.asar.unpacked${sep}`
+  const unpackedIndex = filePath.indexOf(unpackedMarker)
+  if (unpackedIndex === -1) return filePath
+
+  const packedPath = `${filePath.slice(0, unpackedIndex)}.asar${sep}${filePath.slice(unpackedIndex + unpackedMarker.length)}`
+  return existsSync(packedPath) ? packedPath : filePath
+}
+
+function shouldUseBundledElectronNode(): boolean {
+  if (process.env.VERBOO_FORCE_ELECTRON_NODE === '1') return true
+  if (process.env.VERBOO_FORCE_SYSTEM_NODE === '1') return false
+  return Boolean(process.versions.electron && !process.defaultApp)
 }
 
 function nodeRuntimeCandidates(): string[] {

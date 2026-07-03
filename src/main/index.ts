@@ -17,6 +17,7 @@ import { defaultUserSettings, SettingsService } from './services/settingsService
 import { SkillsService } from './services/skillsService'
 import { TrayStatusService } from './services/trayStatusService'
 import { VisionFallbackService } from './services/visionFallbackService'
+import { runFirstLaunchRequirementsCheck, shouldRunFirstLaunchRequirementsCheck } from './services/requirementsService'
 import { readWorkspaceBranchInfo, switchWorkspaceBranch } from './services/workspaceBranchService'
 import { readWorkspaceChangeSummary, readWorkspaceReviewMetadata } from './services/workspaceChangeService'
 import { readFileDiff, resolveRepoRoot, resolveSafePath, revertFile } from './services/fileReviewService'
@@ -114,6 +115,13 @@ if (!app.requestSingleInstanceLock()) {
     registerIpc()
     latestSettings = await userSettings.getSettings()
     trayStatus.configure(latestSettings)
+    if (await shouldRunFirstLaunchRequirementsCheck()) {
+      const requirements = await runFirstLaunchRequirementsCheck()
+      if (!requirements.ok) {
+        app.quit()
+        return
+      }
+    }
     createWindow()
 
     app.on('activate', () => {
