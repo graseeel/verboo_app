@@ -1,0 +1,206 @@
+.review-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  border-left: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-elevated) 62%, var(--bg));
+  overflow: hidden;
+}
+
+.review-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 3;
+}
+
+.review-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.review-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.review-header button {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.review-header button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text);
+}
+
+.review-header button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.review-count {
+  min-width: 34px;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-align: center;
+}
+
+.review-filename {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.review-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 0 28px;
+  font-family: 'SF Mono', Menlo, Monaco, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.review-empty {
+  padding: 24px 14px;
+  color: var(--text-dim);
+}
+
+.review-hunk-header {
+  padding: 5px 12px;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--bg-soft) 55%, transparent);
+}
+
+.review-line {
+  display: grid;
+  grid-template-columns: 42px 42px 18px minmax(0, 1fr);
+  white-space: pre;
+}
+
+.review-line-number,
+.review-line-sign {
+  color: var(--text-dim);
+  text-align: right;
+  user-select: none;
+}
+
+.review-line-sign {
+  text-align: center;
+}
+
+.review-line-text {
+  min-width: 0;
+  overflow: visible;
+  padding-right: 12px;
+}
+
+.review-line.add {
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+
+.review-line.add .review-line-sign {
+  color: var(--green);
+}
+
+.review-line.del {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.review-line.del .review-line-sign {
+  color: var(--danger);
+}
+
+.review-confirm-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: color-mix(in srgb, black 42%, transparent);
+}
+
+.review-confirm {
+  width: min(100%, 360px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  padding: 16px;
+  box-shadow: var(--shadow-lg);
+}
+
+.review-confirm h2 {
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: 15px;
+}
+
+.review-confirm p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.review-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.review-confirm-actions .secondary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-soft) 72%, transparent);
+  color: var(--text);
+  cursor: pointer;
+  padding: 0 12px;
+}
+
+.review-confirm-actions .primary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-soft) 72%, transparent);
+  color: var(--text);
+}
+
+.review-confirm-actions .primary-action.danger {
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--border));
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: color-mix(in srgb, var(--danger) 82%, var(--text));
+}

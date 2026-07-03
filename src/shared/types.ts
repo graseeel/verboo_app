@@ -104,6 +104,7 @@ export type TranscriptItem = {
   kind?: 'message' | 'activity' | 'summary'
   activityKind?: 'thinking' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool'
   activityDetail?: string
+  command?: CommandRun
   changeSummary?: WorkspaceChangeSummary
   modelId?: string
   modelDisplayName?: string
@@ -117,6 +118,18 @@ export type WorkspaceChangeEntry = {
   deletions: number
   status?: 'modified' | 'added' | 'deleted' | 'untracked'
 }
+
+export type TurnActionKind =
+  | 'read' | 'search' | 'edit' | 'create' | 'delete' | 'command'
+  | 'terminal' | 'permission' | 'agent-open' | 'agent-close' | 'tool'
+
+export type CommandRun = { input: string; output: string; status: 'success' | 'failure' | 'running' }
+
+export type TurnAction = { kind: TurnActionKind; label: string; detail?: string; command?: CommandRun }
+
+export type TurnBlock =
+  | { kind: 'text'; id: string; text: string; streaming: boolean }
+  | { kind: 'actions'; id: string; actions: TurnAction[] }
 
 export type WorkspaceChangeSummary = {
   files: WorkspaceChangeEntry[]
@@ -376,11 +389,24 @@ export type FeedbackResult = {
   error?: string
 }
 
+export type RuntimeStatus = {
+  kind: 'permission' | 'question' | 'tool'
+  label: string
+}
+
+export type RuntimeActivity = {
+  key: string
+  label: string
+  detail?: string
+  kind: NonNullable<TranscriptItem['activityKind']>
+  toolUseId?: string
+}
+
 export type AgentEvent =
   | { type: 'started'; turnId: string }
   | { type: 'stdout'; turnId: string; text: string }
   | { type: 'stderr'; turnId: string; text: string }
-  | { type: 'json'; turnId: string; payload: unknown }
+  | { type: 'json'; turnId: string; payload: unknown; runtimeStatus?: RuntimeStatus; runtimeActivity?: RuntimeActivity }
   | { type: 'result'; turnId: string; result: AgentResultSnapshot }
   | { type: 'error'; turnId: string; message: string }
   | { type: 'done'; turnId: string; exitCode: number | null }
@@ -389,6 +415,55 @@ export type AppConfig = {
   workingDirectory: string
   accessMode: AccessMode
   selectedModel?: string
+}
+
+// ── Review types ────────────────────────────────────────────────
+
+export type WorkspaceReviewScope = 'github-repo' | 'git-repo' | 'local-folder'
+
+export type WorkspaceReviewCapabilities = {
+  canDiff: boolean
+  canRevert: boolean
+  canOpenExternal: boolean
+}
+
+export type WorkspaceReviewMetadata = {
+  scope: WorkspaceReviewScope
+  title: string
+  subtitle: string
+  isGitRepository: boolean
+  isGitHubRepository: boolean
+  repositoryRoot?: string
+  capabilities: WorkspaceReviewCapabilities
+}
+
+export type FileDiffStatus = WorkspaceChangeEntry['status'] | 'added' | 'modified' | 'deleted' | 'untracked'
+
+export type FileDiffLine = {
+  kind: 'context' | 'add' | 'del'
+  oldLine?: number
+  newLine?: number
+  text: string
+}
+
+export type FileDiffHunk = {
+  header: string
+  oldStart: number
+  oldLines: number
+  newStart: number
+  newLines: number
+  lines: FileDiffLine[]
+}
+
+export type FileDiff = {
+  path: string
+  status: FileDiffStatus
+  additions: number
+  deletions: number
+  binary: boolean
+  truncated: boolean
+  hunks: FileDiffHunk[]
+  message?: string
 }
 
 // ── Terminal types ──────────────────────────────────────────────

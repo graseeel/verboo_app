@@ -1460,6 +1460,48 @@
   white-space: nowrap;
 }
 
+.change-summary-card-header small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 520;
+}
+
+/* Interactive states — card header acts as clickable button to open review */
+.change-summary-card-header[role="button"] {
+  cursor: pointer;
+}
+
+.change-summary-card-header[role="button"]:hover {
+  background: color-mix(in srgb, var(--accent-soft) 34%, transparent);
+}
+
+/* change-summary-file and change-summary-more are now <button> elements */
+button.change-summary-file,
+button.change-summary-more {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+  border-radius: 0;
+  font-family: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.change-summary-file:hover:not(:disabled),
+button.change-summary-more:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-soft) 22%, transparent);
+  color: var(--text);
+}
+
+button.change-summary-file:disabled,
+button.change-summary-more:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 .change-summary-more {
   justify-content: flex-start;
   color: var(--text-dim);

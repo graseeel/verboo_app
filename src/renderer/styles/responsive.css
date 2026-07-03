@@ -68,6 +68,11 @@
     display: none;
   }
 
+  .app-layout {
+    --review-width: 0px !important;
+    --terminal-width: 0px !important;
+  }
+
   .workspace-path {
     display: none;
   }

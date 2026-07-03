@@ -8,6 +8,8 @@ import type {
   CredentialStatus,
   FeedbackRequest,
   FeedbackResult,
+  FileDiff,
+  FileDiffStatus,
   GoalEvaluationInput,
   GoalEvaluationResult,
   LocalTerminalSession,
@@ -22,6 +24,7 @@ import type {
   TerminalDataEvent,
   UserSettings,
   WorkspaceChangeSummary,
+  WorkspaceReviewMetadata,
 } from '../shared/types'
 
 const api = {
@@ -78,6 +81,15 @@ const api = {
   terminalGetState: () => ipcRenderer.invoke('terminal:get-state') as Promise<LocalTerminalSession | undefined>,
   clipboardReadText: () => ipcRenderer.invoke('clipboard:read-text') as Promise<string>,
   clipboardWriteText: (text: string) => ipcRenderer.invoke('clipboard:write-text', text) as Promise<boolean>,
+
+  getWorkspaceReviewMetadata: (workingDirectory: string) =>
+    ipcRenderer.invoke('workspace:review-metadata', workingDirectory) as Promise<WorkspaceReviewMetadata>,
+  getFileDiff: (workingDirectory: string, filePath: string, status: FileDiffStatus) =>
+    ipcRenderer.invoke('workspace:file-diff', workingDirectory, filePath, status) as Promise<FileDiff>,
+  revertFile: (workingDirectory: string, filePath: string) =>
+    ipcRenderer.invoke('workspace:revert-file', workingDirectory, filePath) as Promise<{ ok: boolean; message?: string }>,
+  openExternalFile: (workingDirectory: string, filePath: string) =>
+    ipcRenderer.invoke('workspace:open-external', workingDirectory, filePath) as Promise<{ ok: boolean; message?: string }>,
 
   onTerminalData: (callback: (event: TerminalDataEvent) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: TerminalDataEvent) => callback(payload)

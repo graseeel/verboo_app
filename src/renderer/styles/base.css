@@ -22,6 +22,7 @@
   --sidebar-width: 292px;
   --terminal-width: 0px;
   --subagents-panel-width: 0px;
+  --review-width: 0px;
   /* Shared by the transcript lane and the composer so messages line up exactly
      with the composer edges (same max width, same centered axis). */
   --chat-lane-width: 840px;

@@ -6,7 +6,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
-import type { AgentEvent, AgentResultSnapshot, AgentTurnRequest, AttachmentMeta, CliAuthStatus, GoalEvaluationInput, GoalEvaluationResult, LoginResult, TokenUsage, UserSettings } from '../../shared/types'
+import type { AgentEvent, AgentResultSnapshot, AgentTurnRequest, AttachmentMeta, CliAuthStatus, GoalEvaluationInput, GoalEvaluationResult, LoginResult, RuntimeActivity, RuntimeStatus, TokenUsage, UserSettings } from '../../shared/types'
 import { accessModeConfig } from '../security/accessModes'
 import { createImageBlock, type CliImageBlock } from './attachmentService'
 import { getCliOAuthAccessToken, refreshCliOAuthAccessToken } from './cliCredentials'
@@ -122,7 +122,13 @@ export class VerbooCliService {
           resultSnapshot = toAgentResultSnapshot(turnId, parsed)
           onEvent({ type: 'result', turnId, result: resultSnapshot })
         }
-        onEvent({ type: 'json', turnId, payload: parsed })
+        onEvent({
+          type: 'json',
+          turnId,
+          payload: parsed,
+          runtimeStatus: runtimeStatusFromPayload(parsed),
+          runtimeActivity: runtimeActivityFromPayload(parsed),
+        })
         const text = extractText(parsed, emittedStreamText)
         if (isStreamTextPayload(parsed)) emittedStreamText = true
         if (text) onEvent({ type: 'stdout', turnId, text })
@@ -385,6 +391,155 @@ function parseJsonLine(line: string): unknown | undefined {
   } catch {
     return undefined
   }
+}
+
+function runtimeStatusFromPayload(payload: unknown): RuntimeStatus | undefined {
+  if (!isRecord(payload)) return undefined
+  const type = asString(payload.type) ?? ''
+  const event = isRecord(payload.event) ? payload.event : undefined
+  const eventType = asString(event?.type) ?? ''
+  const block = isRecord(event?.content_block) ? event.content_block : undefined
+  const blockType = asString(block?.type) ?? ''
+  const text = `${type} ${eventType} ${blockType}`.toLowerCase()
+
+  if (text.includes('permission') || text.includes('action_required') || text.includes('tool_confirmation')) {
+    return { kind: 'permission', label: 'permission' }
+  }
+  if (text.includes('askuserquestion') || text.includes('question')) {
+    return { kind: 'question', label: 'question' }
+  }
+  if (text.includes('tool_use') || text.includes('tool_result') || text.includes('tool')) {
+    return { kind: 'tool', label: labelForToolName(toolNameFromPayload(payload)) }
+  }
+
+  return undefined
+}
+
+function runtimeActivityFromPayload(payload: unknown): RuntimeActivity | undefined {
+  const subagent = subagentActivityFromPayload(payload)
+  if (subagent) return subagent
+
+  const block = extractToolBlock(payload)
+  if (!block) return undefined
+
+  const name = asString(block.name) || asString(block.tool_name)
+  if (!name) return undefined
+
+  const input = toolInput(block)
+  const id = asString(block.id)
+  const detail = detailForTool(name, input)
+  const activity = activityForTool(name)
+
+  return {
+    key: `${id || name}:${detail ?? ''}`,
+    label: activity.label,
+    detail,
+    kind: activity.kind,
+    toolUseId: id,
+  }
+}
+
+function toolNameFromPayload(payload: Record<string, unknown>): string | undefined {
+  const block = extractToolBlock(payload)
+  if (block) return asString(block.name) || asString(block.tool_name)
+
+  const message = isRecord(payload.message) ? payload.message : undefined
+  const content = Array.isArray(message?.content) ? message.content : undefined
+  const toolBlock = content?.find((item): item is Record<string, unknown> => isRecord(item) && (asString(item.type) ?? '').toLowerCase().includes('tool_use'))
+  return toolBlock ? asString(toolBlock.name) || asString(toolBlock.tool_name) : undefined
+}
+
+function labelForToolName(toolName?: string): string {
+  const normalized = toolName?.toLowerCase()
+  if (normalized === 'read' || normalized === 'ls' || normalized === 'glob' || normalized === 'grep') return 'reading'
+  if (normalized === 'edit' || normalized === 'multiedit' || normalized === 'write' || normalized === 'notebookedit') return 'editing'
+  if (normalized === 'bash') return 'running'
+  if (normalized === 'websearch' || normalized === 'webfetch') return 'searching'
+  if (normalized === 'todowrite') return 'planning'
+  return 'tool'
+}
+
+function extractToolBlock(payload: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(payload)) return undefined
+  if (isToolBlock(payload)) return payload
+
+  const event = isRecord(payload.event) ? payload.event : undefined
+  const contentBlock = isRecord(event?.content_block) ? event.content_block : undefined
+  if (isToolBlock(contentBlock)) return contentBlock
+
+  const message = isRecord(payload.message) ? payload.message : undefined
+  const content = Array.isArray(message?.content) ? message.content : undefined
+  return content?.find((block): block is Record<string, unknown> => isToolBlock(block))
+}
+
+function isToolBlock(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false
+  const type = (asString(value.type) ?? '').toLowerCase()
+  return type.includes('tool_use') || Boolean(asString(value.name) || asString(value.tool_name))
+}
+
+function activityForTool(toolName: string): Pick<RuntimeActivity, 'label' | 'kind'> {
+  const normalized = toolName.toLowerCase()
+  if (normalized === 'task') return { label: 'Subagente ativo', kind: 'subagent' }
+  if (normalized === 'read' || normalized === 'read_file') return { label: 'Leu arquivo', kind: 'read' }
+  if (normalized === 'ls' || normalized === 'glob' || normalized === 'grep' || normalized === 'search') return { label: 'Inspecionou arquivos', kind: 'read' }
+  if (normalized === 'edit' || normalized === 'multiedit' || normalized === 'multi_edit' || normalized === 'write' || normalized === 'notebookedit') {
+    return { label: 'Editou arquivo', kind: 'edit' }
+  }
+  if (normalized === 'bash' || normalized === 'shell' || normalized === 'exec_command') return { label: 'Executou comando', kind: 'command' }
+  if (normalized === 'websearch' || normalized === 'webfetch') return { label: 'Pesquisou na internet', kind: 'search' }
+  if (normalized === 'askuserquestion') return { label: 'Pediu resposta', kind: 'permission' }
+  if (normalized === 'todowrite') return { label: 'Atualizou tarefas', kind: 'tool' }
+  return { label: 'Usou ferramenta', kind: 'tool' }
+}
+
+function detailForTool(toolName: string, input?: Record<string, unknown>): string | undefined {
+  if (!input) return undefined
+  const normalized = toolName.toLowerCase()
+  if (normalized === 'task') return snippet(asString(input.description) || asString(input.subagent_type) || asString(input.prompt))
+  if (normalized === 'bash' || normalized === 'shell' || normalized === 'exec_command') return snippet(asString(input.command) || asString(input.cmd))
+  if (normalized === 'websearch') return snippet(asString(input.query))
+  if (normalized === 'webfetch') return snippet(asString(input.url))
+  if (normalized === 'grep') return snippet(asString(input.pattern) || asString(input.path))
+  if (normalized === 'glob') return snippet(asString(input.pattern))
+  if (normalized === 'ls') return snippet(asString(input.path))
+  if (normalized === 'askuserquestion') return snippet(asString(input.question))
+  return snippet(asString(input.file_path) || asString(input.filePath) || asString(input.path) || asString(input.notebook_path))
+}
+
+function toolInput(block: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (isRecord(block.input)) return block.input
+  if (isRecord(block.arguments)) return block.arguments
+  const inputJson = asString(block.input_json) || asString(block.arguments_json)
+  if (!inputJson) return undefined
+  try {
+    const parsed = JSON.parse(inputJson) as unknown
+    return isRecord(parsed) ? parsed : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function subagentActivityFromPayload(payload: unknown): RuntimeActivity | undefined {
+  if (!isRecord(payload)) return undefined
+  const event = isRecord(payload.event) ? payload.event : undefined
+  const eventType = asString(event?.type) || asString(payload.type) || ''
+  const normalized = eventType.toLowerCase()
+  if (!normalized.includes('subagent')) return undefined
+  const started = normalized.includes('start')
+  const stopped = normalized.includes('stop')
+  const label = started ? 'Subagente iniciado' : stopped ? 'Subagente finalizado' : 'Subagente ativo'
+  return {
+    key: `subagent:${eventType}`,
+    label,
+    detail: snippet(asString(payload.agentName) || asString(payload.agentType) || asString(event?.agentName) || asString(event?.agentType)),
+    kind: 'subagent',
+  }
+}
+
+function snippet(value?: string, maxLength = 360): string | undefined {
+  const text = value?.replace(/\s+/g, ' ').trim()
+  return text ? text.slice(0, maxLength) : undefined
 }
 
 // `verboo auth status --json` prints its object pretty-printed across several

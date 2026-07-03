@@ -1,12 +1,12 @@
 .bottom-dock {
   position: fixed;
   z-index: 120;
-  right: calc(var(--terminal-width) + var(--subagents-panel-width, 0px));
+  right: calc(var(--terminal-width) + var(--review-width) + var(--subagents-panel-width, 0px));
   left: var(--sidebar-width);
   bottom: 16px;
   display: grid;
   gap: 10px;
-  width: min(var(--chat-lane-width), calc(100vw - var(--sidebar-width) - var(--terminal-width) - var(--subagents-panel-width, 0px) - var(--chat-lane-gutter)));
+  width: min(var(--chat-lane-width), calc(100vw - var(--sidebar-width) - var(--terminal-width) - var(--review-width) - var(--subagents-panel-width, 0px) - var(--chat-lane-gutter)));
   margin: 0 auto;
   overflow: visible;
 }

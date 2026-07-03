@@ -46,8 +46,14 @@ export function LoginScreen({
 
   async function startLogin() {
     setStatusMessage('Abrindo login do Verboo pelo CLI...')
-    const result = await onStartLogin()
-    setStatusMessage(result.message)
+    try {
+      const result = await onStartLogin()
+      setStatusMessage(result.message)
+    } catch (error) {
+      // Never leave the button stuck on "Abrindo login…": surface the failure so
+      // the user can act on it instead of watching an infinite spinner.
+      setStatusMessage(error instanceof Error ? error.message : 'Falha ao iniciar o login pelo CLI.')
+    }
   }
 
   async function submitApiKey(event: FormEvent<HTMLFormElement>) {

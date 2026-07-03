@@ -7,16 +7,16 @@ import type {
   ResearchSubagentsRunRequest,
   UserSettings,
 } from '../../shared/types'
-import type { CredentialsStore } from './credentialsStore'
-import { VerbooCliService } from './verbooCliService'
+import type { AgentTurnExecutor } from '../runtime/agentRuntime'
 
 const MAX_RESEARCH_SUBAGENTS = 2
+const RESEARCH_SUBAGENT_TIMEOUT_MS = 90_000
 const DISALLOWED_RESEARCH_TOOLS = new Set(['edit', 'write', 'multiedit', 'multi_edit', 'notebookedit'])
 
 export class ResearchSubagentService {
-  private activeRuns = new Map<string, Set<VerbooCliService>>()
+  private activeRuns = new Map<string, Set<AgentTurnExecutor>>()
 
-  constructor(private readonly credentials?: CredentialsStore) {}
+  constructor(private readonly createTurnExecutor: () => AgentTurnExecutor) {}
 
   async runMany(payload: ResearchSubagentsRunRequest, settings?: UserSettings): Promise<ResearchSubagentResult[]> {
     const count = clamp(Math.round(payload.count || 1), 1, MAX_RESEARCH_SUBAGENTS)
@@ -40,36 +40,39 @@ export class ResearchSubagentService {
   cancel(runId: string): boolean {
     const children = this.activeRuns.get(runId)
     if (!children || children.size === 0) return false
-    for (const childCli of children) {
-      childCli.interrupt()
+    for (const childExecutor of children) {
+      childExecutor.interrupt()
     }
     return true
   }
 
   private async runOne(runId: string, request: ResearchSubagentRequest, settings?: UserSettings): Promise<ResearchSubagentResult> {
-    const childCli = new VerbooCliService(this.credentials)
-    this.activeRuns.get(runId)?.add(childCli)
+    const childExecutor = this.createTurnExecutor()
+    this.activeRuns.get(runId)?.add(childExecutor)
     const output: string[] = []
     const sources = new Set<string>()
     let violation: string | undefined
 
-    const childRequest: AgentTurnRequest = {
-      ...request.baseRequest,
-      message: buildResearchPrompt(request),
-      accessMode: researchAccessMode(request.baseRequest.accessMode),
-      attachments: [],
-    }
+    const childRequest = createResearchTurnRequest(request)
 
     return new Promise(resolve => {
       let settled = false
+      let timeout: ReturnType<typeof setTimeout> | undefined
+
       const finish = (result: ResearchSubagentResult) => {
         if (settled) return
         settled = true
-        this.activeRuns.get(runId)?.delete(childCli)
+        if (timeout) clearTimeout(timeout)
+        this.activeRuns.get(runId)?.delete(childExecutor)
         resolve(result)
       }
 
-      childCli.sendTurn(childRequest, event => {
+      timeout = setTimeout(() => {
+        childExecutor.interrupt()
+        finish(failedResult(request, 'Tempo limite do subagente de pesquisa excedido.', sources))
+      }, RESEARCH_SUBAGENT_TIMEOUT_MS)
+
+      childExecutor.sendTurn(childRequest, event => {
         if (event.type === 'stdout') {
           output.push(event.text)
           return
@@ -82,7 +85,7 @@ export class ResearchSubagentService {
           const nextViolation = detectReadOnlyViolation(event.payload)
           if (nextViolation && !violation) {
             violation = nextViolation
-            childCli.interrupt()
+            childExecutor.interrupt()
           }
           return
         }
@@ -120,6 +123,22 @@ export class ResearchSubagentService {
   }
 }
 
+function createResearchTurnRequest(request: ResearchSubagentRequest): AgentTurnRequest {
+  return {
+    message: buildResearchPrompt(request),
+    model: request.baseRequest.model,
+    modelSupportsVision: false,
+    contextWindow: request.baseRequest.contextWindow,
+    accessMode: researchAccessMode(),
+    workingDirectory: request.baseRequest.workingDirectory,
+    skills: [],
+    attachments: [],
+    personality: 'concise',
+    customInstructions: '',
+    memoryContext: undefined,
+  }
+}
+
 function buildResearchPrompt(request: ResearchSubagentRequest): string {
   return [
     'Você é um subagente de pesquisa do Verboo Code.',
@@ -147,8 +166,8 @@ function researchTopicFor(index: number, total: number, message: string): string
   return 'Pesquisar contexto complementar, documentação, comportamento esperado e pontos de validação.'
 }
 
-function researchAccessMode(accessMode: AgentTurnRequest['accessMode']): AgentTurnRequest['accessMode'] {
-  return accessMode === 'approval' ? 'approval' : 'auto'
+function researchAccessMode(): AgentTurnRequest['accessMode'] {
+  return 'approval'
 }
 
 function detectReadOnlyViolation(payload: unknown): string | undefined {

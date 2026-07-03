@@ -11,22 +11,25 @@ import { FeedbackService } from './services/feedbackService'
 import { ModelService } from './services/modelService'
 import { ProfileService } from './services/profileService'
 import { ResearchSubagentService } from './services/researchSubagentService'
+import { createAgentRuntime } from './runtime/runtimeFactory'
+import { VerbooApiClient } from './services/verbooApiClient'
 import { defaultUserSettings, SettingsService } from './services/settingsService'
 import { SkillsService } from './services/skillsService'
 import { TrayStatusService } from './services/trayStatusService'
-import { VerbooCliService } from './services/verbooCliService'
 import { VisionFallbackService } from './services/visionFallbackService'
-import { readWorkspaceChangeSummary } from './services/workspaceChangeService'
-import { evaluateGoal } from './services/goalEvaluator'
+import { readWorkspaceChangeSummary, readWorkspaceReviewMetadata } from './services/workspaceChangeService'
+import { readFileDiff, resolveRepoRoot, resolveSafePath, revertFile } from './services/fileReviewService'
+import type { FileDiffStatus } from '../shared/types'
 
 const credentials = new CredentialsStore()
-const models = new ModelService(credentials)
-const profile = new ProfileService(credentials)
+const apiClient = new VerbooApiClient(credentials)
+const models = new ModelService(apiClient)
+const profile = new ProfileService(apiClient)
 const feedback = new FeedbackService()
 const userSettings = new SettingsService()
 const skills = new SkillsService()
-const cli = new VerbooCliService(credentials)
-const researchSubagents = new ResearchSubagentService(credentials)
+const agentRuntime = createAgentRuntime({ credentials, modelService: models })
+const researchSubagents = new ResearchSubagentService(() => agentRuntime.createTurnExecutor())
 const visionFallback = new VisionFallbackService(models)
 const terminalService = new LocalTerminalService()
 terminalService.setHandlers({
@@ -43,7 +46,7 @@ terminalService.setHandlers({
 
 const trayStatus = new TrayStatusService({
   getWindow: () => mainWindow,
-  interrupt: () => cli.interrupt(),
+  interrupt: () => agentRuntime.interrupt(),
   refreshData: () => sendToRenderer('app:refresh-data'),
 })
 const VERBOO_SIGNUP_URL = 'https://code.verboo.ai/pt?ref=32d0ad85-a132-47cd-ae6d-b1f9c5e92228&utm_source=referral&utm_medium=whatsapp&utm_campaign=referral_program&utm_content=32d0ad85-a132-47cd-ae6d-b1f9c5e92228'
@@ -138,10 +141,10 @@ function registerIpc(): void {
     return true
   })
 
-  ipcMain.handle('auth:start-cli-login', async () => cli.startCliLogin())
-  ipcMain.handle('auth:cli-status', async () => cli.getAuthStatus())
+  ipcMain.handle('auth:start-cli-login', async () => agentRuntime.startLogin())
+  ipcMain.handle('auth:cli-status', async () => agentRuntime.getAuthStatus())
   ipcMain.handle('auth:logout', async () => {
-    const result = await cli.logout()
+    const result = await agentRuntime.logout()
     await credentials.clearApiKey()
     return result
   })
@@ -165,7 +168,7 @@ function registerIpc(): void {
   ipcMain.handle('credentials:set-api-key', (_event, apiKey: string) => credentials.setApiKey(apiKey))
   ipcMain.handle('credentials:clear-api-key', () => credentials.clearApiKey())
 
-  ipcMain.handle('models:list', (_event, forceRefresh?: boolean) => models.listModels(Boolean(forceRefresh)))
+  ipcMain.handle('models:list', (_event, forceRefresh?: boolean) => agentRuntime.listModels(Boolean(forceRefresh)))
   ipcMain.handle('profile:get', () => profile.getProfile())
   ipcMain.handle('feedback:send', (_event, request: FeedbackRequest) => feedback.sendFeedback(request))
   ipcMain.handle('settings:get', () => userSettings.getSettings())
@@ -202,13 +205,29 @@ function registerIpc(): void {
   })
   ipcMain.handle('workspace:changes', (_event, workingDirectory: string) => readWorkspaceChangeSummary(workingDirectory))
 
+  ipcMain.handle('workspace:review-metadata', (_event, workingDirectory: string) =>
+    readWorkspaceReviewMetadata(workingDirectory),
+  )
+
+  ipcMain.handle('workspace:file-diff', (_event, workingDirectory: string, filePath: string, status: FileDiffStatus) =>
+    readFileDiff(workingDirectory, filePath, status),
+  )
+
+  ipcMain.handle('workspace:revert-file', (_event, workingDirectory: string, filePath: string) =>
+    revertFile(workingDirectory, filePath),
+  )
+
+  ipcMain.handle('workspace:open-external', async (_event, workingDirectory: string, filePath: string) => {
+    const root = await resolveRepoRoot(workingDirectory)
+    if (!root) return { ok: false, message: 'Abrir arquivo exige um caminho seguro.' }
+    const target = resolveSafePath(root, filePath)
+    if (!target) return { ok: false, message: 'Caminho fora do repositório.' }
+    const error = await shell.openPath(target)
+    return { ok: error === '', message: error || undefined }
+  })
+
   ipcMain.handle('goal:evaluate', async (_event, input: GoalEvaluationInput) => {
-    return evaluateGoal({
-      goal: input.goal,
-      conversationItems: input.conversationItems,
-      latestResult: input.latestResult,
-      workingDirectory: input.goal.workingDirectory,
-    })
+    return agentRuntime.evaluateGoal(input)
   })
 
   ipcMain.handle('files:pick', async () => {
@@ -244,7 +263,7 @@ function registerIpc(): void {
     const settings = await userSettings.getSettings()
     const safeRequest = await sanitizeAgentTurnRequest(request)
     const preparedRequest = await visionFallback.prepareRequest(safeRequest)
-    return cli.sendTurn(preparedRequest, event => handleAgentEvent(event, preparedRequest, settings), settings, resumeSessionId)
+    return agentRuntime.sendTurn(preparedRequest, event => handleAgentEvent(event, preparedRequest, settings), settings, resumeSessionId)
   })
 
   ipcMain.handle('research-subagents:run', async (_event, request: ResearchSubagentsRunRequest) => {
@@ -258,7 +277,7 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('agent:interrupt', () => {
-    cli.interrupt()
+    agentRuntime.interrupt()
     return true
   })
 
@@ -286,7 +305,7 @@ function registerIpc(): void {
 }
 
 async function sanitizeResearchSubagentsRunRequest(request: ResearchSubagentsRunRequest): Promise<ResearchSubagentsRunRequest> {
-  const requestedAccessMode = request.baseRequest.accessMode === 'approval' ? 'approval' : 'auto'
+  const requestedAccessMode: AccessMode = 'approval'
   const safeBaseRequest = await sanitizeAgentTurnRequest({
     ...request.baseRequest,
     accessMode: requestedAccessMode,
@@ -349,7 +368,7 @@ function handleAgentEvent(event: AgentEvent, request: AgentTurnRequest, settings
   }
 
   if (event.type === 'json') {
-    const status = describeRuntimeStatus(event.payload)
+    const status = event.runtimeStatus
     if (status?.kind === 'permission') {
       trayStatus.update({ ...baseState, execution: 'permission', label: status.label })
       if (settings.permissionNotifications) showNotification('Verboo precisa de permissão', 'Revise a solicitação no app.')
@@ -381,43 +400,6 @@ function handleAgentEvent(event: AgentEvent, request: AgentTurnRequest, settings
   }
 }
 
-function describeRuntimeStatus(payload: unknown): { kind: 'permission' | 'question' | 'tool'; label: string } | undefined {
-  if (!isRecord(payload)) return undefined
-  const type = textValue(payload.type)
-  const event = isRecord(payload.event) ? payload.event : undefined
-  const eventType = textValue(event?.type)
-  const block = isRecord(event?.content_block) ? event.content_block : undefined
-  const blockType = textValue(block?.type)
-  const text = `${type} ${eventType} ${blockType}`.toLowerCase()
-  if (text.includes('permission') || text.includes('action_required') || text.includes('tool_confirmation')) return { kind: 'permission', label: 'permission' }
-  if (text.includes('askuserquestion') || text.includes('question')) return { kind: 'question', label: 'question' }
-  if (text.includes('tool_use') || text.includes('tool_result') || text.includes('tool')) {
-    return { kind: 'tool', label: labelForToolName(toolNameFromPayload(payload)) }
-  }
-  return undefined
-}
-
-function toolNameFromPayload(payload: Record<string, unknown>): string | undefined {
-  const event = isRecord(payload.event) ? payload.event : undefined
-  const block = isRecord(event?.content_block) ? event.content_block : undefined
-  if (block) return textValue(block.name) || textValue(block.tool_name) || undefined
-
-  const message = isRecord(payload.message) ? payload.message : undefined
-  const content = Array.isArray(message?.content) ? message.content : undefined
-  const toolBlock = content?.find((item): item is Record<string, unknown> => isRecord(item) && textValue(item.type).toLowerCase().includes('tool_use'))
-  return toolBlock ? textValue(toolBlock.name) || textValue(toolBlock.tool_name) || undefined : undefined
-}
-
-function labelForToolName(toolName?: string): string {
-  const normalized = toolName?.toLowerCase()
-  if (normalized === 'read' || normalized === 'ls' || normalized === 'glob' || normalized === 'grep') return 'reading'
-  if (normalized === 'edit' || normalized === 'multiedit' || normalized === 'write' || normalized === 'notebookedit') return 'editing'
-  if (normalized === 'bash') return 'running'
-  if (normalized === 'websearch' || normalized === 'webfetch') return 'searching'
-  if (normalized === 'todowrite') return 'planning'
-  return 'tool'
-}
-
 function showCompletionNotification(settings: UserSettings, title: string, body: string): void {
   if (settings.completionNotifications === 'never') return
   if (settings.completionNotifications === 'background' && mainWindow?.isFocused()) return
@@ -431,10 +413,6 @@ function showNotification(title: string, body: string): void {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
-}
-
-function textValue(value: unknown): string {
-  return typeof value === 'string' ? value : ''
 }
 
 function basename(path: string): string {

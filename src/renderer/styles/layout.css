@@ -227,7 +227,7 @@
 .app-layout {
   position: relative;
   display: grid;
-  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--terminal-width);
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--review-width) var(--terminal-width);
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -235,7 +235,7 @@
 }
 
 .app-layout.sidebar-hidden {
-  grid-template-columns: minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--terminal-width);
+  grid-template-columns: minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--review-width) var(--terminal-width);
 }
 
 .workspace {
@@ -252,16 +252,24 @@
   grid-column: 3;
 }
 
-.terminal-panel {
+.review-panel {
   grid-column: 4;
+}
+
+.terminal-panel {
+  grid-column: 5;
 }
 
 .app-layout.sidebar-hidden .research-subagent-panel {
   grid-column: 2;
 }
 
-.app-layout.sidebar-hidden .terminal-panel {
+.app-layout.sidebar-hidden .review-panel {
   grid-column: 3;
+}
+
+.app-layout.sidebar-hidden .terminal-panel {
+  grid-column: 4;
 }
 
 .app-sidebar {

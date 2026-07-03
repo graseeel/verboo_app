@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
 import { ArrowDown, CheckCircle2, ChevronDown, ChevronRight, FolderClosed, GitBranch, LoaderCircle, ShieldCheck, Terminal, XCircle } from 'lucide-react'
 import type {
   AccessMode,
@@ -9,6 +9,7 @@ import type {
   AttachmentMeta,
   ChatStore,
   CliAuthStatus,
+  CommandRun,
   ContextUsageSnapshot,
   CredentialStatus,
   FeedbackDiagnostics,
@@ -20,6 +21,7 @@ import type {
   ModelDiscoveryResult,
   ProfileResult,
   ResearchSubagentResult,
+  RuntimeActivity,
   SettingsTab,
   SkillSummary,
   StoredConversation,
@@ -27,7 +29,9 @@ import type {
   TranscriptItem,
   UserSettings,
   VerbooModel,
+  WorkspaceChangeEntry,
   WorkspaceChangeSummary,
+  WorkspaceReviewMetadata,
 } from '../shared/types'
 import { createGoalState, goalSystemMessage } from './features/goal/goalState'
 import { GoalStatusBar, type GoalStatusBarState } from './features/goal/GoalStatusBar'
@@ -36,6 +40,8 @@ import type { ReservedSlashCommand } from './features/composer/slashCommands'
 import { AppSidebar, type AppView } from './components/AppSidebar'
 import { useLocalTerminal } from './features/terminal/useLocalTerminal'
 import { LocalTerminalPanel } from './features/terminal/LocalTerminalPanel'
+import { ReviewPanel } from './features/review/ReviewPanel'
+import { useReviewPanel } from './features/review/useReviewPanel'
 import { EmptyChat } from './components/EmptyChat'
 import { LoginScreen } from './components/LoginScreen'
 import { TopBar } from './components/TopBar'
@@ -106,12 +112,7 @@ const EMPTY_LINES = [
   'Pronto para trabalhar com contexto de verdade.',
 ]
 
-type TurnActivity = {
-  key: string
-  label: string
-  detail?: string
-  kind: NonNullable<TranscriptItem['activityKind']>
-}
+type TurnActivity = RuntimeActivity
 
 type ActiveSubagent = {
   id: string
@@ -255,7 +256,9 @@ export function App() {
   const [goal, setGoal] = useState<GoalState | undefined>()
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(initialSidebarPreference.current.mode)
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarPreference.current.width)
+  const [reviewMetadata, setReviewMetadata] = useState<WorkspaceReviewMetadata | undefined>()
   const terminal = useLocalTerminal()
+  const review = useReviewPanel()
   const goalRef = useRef(goal)
   const [goalBarStatus, setGoalBarStatus] = useState<GoalStatusBarState>({ kind: 'idle' })
   const [emptyLine] = useState(() => EMPTY_LINES[Math.floor(Math.random() * EMPTY_LINES.length)])
@@ -285,9 +288,14 @@ export function App() {
   const turnReferences = useRef<Record<string, string[]>>({})
   const turnChangeBaselines = useRef<Record<string, WorkspaceChangeSummary | undefined>>({})
   const turnWorkingDirectories = useRef<Record<string, string>>({})
+  const turnTouchedFiles = useRef<Record<string, Set<string>>>({})
   const activeSubagentsRef = useRef<Record<string, ActiveSubagent>>({})
   const pendingResearchSubagentsRef = useRef<ActiveSubagent[]>([])
   const autoApprovalSent = useRef<Set<string>>(new Set())
+  const turnOpenTextSegment = useRef<Record<string, string | undefined>>({})
+  const turnTextSegmentCount = useRef<Record<string, number>>({})
+  const turnCommandItemIds = useRef<Record<string, Record<string, string>>>({})
+  const [thinkingTurnId, setThinkingTurnId] = useState<string | undefined>(undefined)
 
   const activeConversation = useMemo(
     () => chatStore.conversations.find(conversation => conversation.id === activeConversationId),
@@ -317,12 +325,13 @@ export function App() {
   const selectedSubagent = selectedSubagentId
     ? activeSubagents.find(agent => agent.id === selectedSubagentId)
     : undefined
-  const showSubagentThreadPanel = activeView === 'chat' && Boolean(selectedSubagent) && !terminal.terminalOpen
-  const showSubagentSummary = activeView === 'chat' && workingSubagents.length > 0 && !terminal.terminalOpen
+  const showSubagentThreadPanel = activeView === 'chat' && Boolean(selectedSubagent) && !terminal.terminalOpen && !review.reviewOpen
+  const showSubagentSummary = activeView === 'chat' && workingSubagents.length > 0 && !terminal.terminalOpen && !review.reviewOpen
   const appLayoutStyle = {
     '--sidebar-width': `${effectiveSidebarWidth}px`,
     '--subagents-panel-width': showSubagentThreadPanel ? '320px' : '0px',
     '--terminal-width': terminal.terminalOpen ? `${terminal.terminalWidth}px` : '0px',
+    '--review-width': review.reviewOpen ? `${review.reviewWidth}px` : '0px',
   } as CSSProperties
 
   useEffect(() => {
@@ -388,6 +397,12 @@ export function App() {
     const workingDirectory = activeProject?.path ?? config.workingDirectory
     if (!workingDirectory) return
     window.verboo.listSkills(workingDirectory).then(setSkills)
+  }, [config.workingDirectory, activeProject?.path])
+
+  useEffect(() => {
+    const workingDirectory = activeProject?.path ?? config.workingDirectory
+    if (!workingDirectory) return
+    window.verboo.getWorkspaceReviewMetadata(workingDirectory).then(setReviewMetadata)
   }, [config.workingDirectory, activeProject?.path])
 
   useEffect(() => {
@@ -703,12 +718,8 @@ export function App() {
         setActiveSubagents([])
       }
       setRunningTurnId(event.turnId)
+      setThinkingTurnId(event.turnId)
       if (conversationId) {
-        appendActivityItem(conversationId, event.turnId, {
-          key: 'turn:thinking',
-          label: 'Pensando',
-          kind: 'thinking',
-        })
         appendAssistantPlaceholder(conversationId, event.turnId)
       }
       return
@@ -716,6 +727,7 @@ export function App() {
 
     if (event.type === 'stdout') {
       const conversationId = turnConversationIds.current[event.turnId]
+      setThinkingTurnId(current => (current === event.turnId ? undefined : current))
       if (conversationId) {
         appendAssistantText(conversationId, event.turnId, event.text)
         trackPermissionPrompt(conversationId, event.turnId, event.text)
@@ -757,7 +769,7 @@ export function App() {
           })
         }
       }
-      const activity = describeRuntimeActivity(event.payload)
+      const activity = event.runtimeActivity
       if (activity?.kind === 'subagent') trackActiveSubagent(event.turnId, activity)
       if (conversationId && activity) {
         if (activity.kind === 'command' && activity.detail) {
@@ -767,7 +779,16 @@ export function App() {
         if (activity.kind === 'search' && activity.detail) {
           appendTurnMetadata(turnReferences, event.turnId, activity.detail)
         }
+        if (activity.kind === 'edit' && activity.detail) {
+          appendTouchedFile(event.turnId, activity.detail)
+        }
         appendActivityItem(conversationId, event.turnId, activity)
+      }
+      if (conversationId) {
+        for (const result of extractToolResults(event.payload)) {
+          const itemId = turnCommandItemIds.current[event.turnId]?.[result.toolUseId]
+          if (itemId) updateActivityCommand(conversationId, itemId, result.output, result.isError ? 'failure' : 'success')
+        }
       }
       return
     }
@@ -791,6 +812,7 @@ export function App() {
     if (event.type === 'error') {
       const conversationId = turnConversationIds.current[event.turnId]
       setRunningTurnId(undefined)
+      setThinkingTurnId(current => (current === event.turnId ? undefined : current))
       clearActiveSubagentsForTurn(event.turnId)
 
       // Reject goal turn completion promise on error
@@ -815,6 +837,7 @@ export function App() {
     if (event.type === 'done') {
       const conversationId = turnConversationIds.current[event.turnId]
       setRunningTurnId(undefined)
+      setThinkingTurnId(current => (current === event.turnId ? undefined : current))
       clearActiveSubagentsForTurn(event.turnId)
       if (conversationId && event.exitCode !== 0) {
         const failureMessage = buildCliFailureMessage(turnTerminalErrors.current[event.turnId])
@@ -1643,36 +1666,46 @@ export function App() {
 
   function appendAssistantPlaceholder(conversationId: string, turnId: string) {
     const turnModel = turnModels.current[turnId]
+    const segId = `${turnId}:text:1`
+    turnTextSegmentCount.current[turnId] = 1
+    turnOpenTextSegment.current[turnId] = segId
     updateConversation(conversationId, conversation => {
-      if (conversation.items.some(item => item.id === turnId)) return conversation
+      if (conversation.items.some(item => item.id === segId)) return conversation
       return {
         ...conversation,
         items: [
           ...conversation.items,
-          { id: turnId, role: 'assistant', text: '', timestamp: Date.now(), streaming: true, ...turnModel },
+          { id: segId, role: 'assistant', text: '', timestamp: Date.now(), streaming: true, ...turnModel },
         ],
         updatedAt: Date.now(),
       }
     })
   }
 
+  // Assistant text is stored as one item per burst-between-actions
+  // (`turnId:text:N`). The "open" segment is where new deltas land; it is closed
+  // whenever an activity happens (see appendActivityItem), so the next text opens
+  // a fresh segment — this is what interleaves message/action/message in order.
   function appendAssistantText(conversationId: string, turnId: string, text: string) {
     const turnModel = turnModels.current[turnId]
-    updateConversation(conversationId, conversation => {
-      const hasAssistant = conversation.items.some(item => item.id === turnId)
-      return {
+    const openId = turnOpenTextSegment.current[turnId]
+    if (!openId) {
+      const next = (turnTextSegmentCount.current[turnId] ?? 0) + 1
+      turnTextSegmentCount.current[turnId] = next
+      const segId = `${turnId}:text:${next}`
+      turnOpenTextSegment.current[turnId] = segId
+      updateConversation(conversationId, conversation => ({
         ...conversation,
-        items: hasAssistant
-          ? conversation.items.map(item =>
-              item.id === turnId ? { ...item, text: mergeAssistantText(item.text, text) } : item,
-            )
-          : [
-              ...conversation.items,
-              { id: turnId, role: 'assistant', text, timestamp: Date.now(), streaming: true, ...turnModel },
-            ],
+        items: [...conversation.items, { id: segId, role: 'assistant', text, timestamp: Date.now(), streaming: true, ...turnModel }],
         updatedAt: Date.now(),
-      }
-    })
+      }))
+      return
+    }
+    updateConversation(conversationId, conversation => ({
+      ...conversation,
+      items: conversation.items.map(item => item.id === openId ? { ...item, text: mergeAssistantText(item.text, text) } : item),
+      updatedAt: Date.now(),
+    }))
   }
 
   function tagAssistantMessage(
@@ -1693,7 +1726,7 @@ export function App() {
     updateConversation(conversationId, conversation => ({
       ...conversation,
       items: conversation.items.map(item =>
-        item.id === turnId ? { ...item, streaming: false } : item,
+        item.id === turnId || item.id.startsWith(`${turnId}:text:`) ? { ...item, streaming: false } : item,
       ),
       updatedAt: Date.now(),
     }))
@@ -1701,10 +1734,30 @@ export function App() {
   }
 
   function appendActivityItem(conversationId: string, turnId: string, activity: TurnActivity) {
+    // A command's tool_use often streams twice (once at block-start with no
+    // input, then with the real command). Dedupe by tool_use_id and backfill the
+    // input instead of creating a second phantom "Comando" row that never resolves.
+    if (activity.kind === 'command' && activity.toolUseId) {
+      const existingItemId = turnCommandItemIds.current[turnId]?.[activity.toolUseId]
+      if (existingItemId) {
+        if (activity.detail) {
+          const detail = activity.detail
+          updateConversation(conversationId, conversation => ({
+            ...conversation,
+            items: conversation.items.map(item => item.id === existingItemId
+              ? { ...item, activityDetail: detail, command: item.command ? { ...item.command, input: detail } : item.command }
+              : item),
+            updatedAt: Date.now(),
+          }))
+        }
+        return
+      }
+    }
     const keys = turnActivityKeys.current[turnId] ?? new Set<string>()
     turnActivityKeys.current[turnId] = keys
     if (keys.has(activity.key)) return
     keys.add(activity.key)
+    if (activity.kind !== 'thinking') turnOpenTextSegment.current[turnId] = undefined
 
     if (activity.kind !== 'thinking') {
       const counts = turnActivityCounts.current[turnId] ?? {}
@@ -1712,20 +1765,43 @@ export function App() {
       turnActivityCounts.current[turnId] = counts
     }
 
+    const itemId = `${turnId}:activity:${keys.size}`
+    const command: CommandRun | undefined = activity.kind === 'command'
+      ? { input: activity.detail ?? 'Comando', output: '', status: 'running' }
+      : undefined
+    if (command && activity.toolUseId) {
+      const map = turnCommandItemIds.current[turnId] ?? {}
+      map[activity.toolUseId] = itemId
+      turnCommandItemIds.current[turnId] = map
+    }
+
     updateConversation(conversationId, conversation => ({
       ...conversation,
       items: [
         ...conversation.items,
         {
-          id: `${turnId}:activity:${keys.size}`,
+          id: itemId,
           role: 'tool',
           kind: 'activity',
           activityKind: activity.kind,
           activityDetail: activity.detail,
+          command,
           text: activity.label,
           timestamp: Date.now(),
         },
       ],
+      updatedAt: Date.now(),
+    }))
+  }
+
+  // Fill in a command's real stdout + success/failure once its tool_result
+  // arrives (matched by tool_use_id → the activity item created above).
+  function updateActivityCommand(conversationId: string, itemId: string, output: string, status: CommandRun['status']) {
+    updateConversation(conversationId, conversation => ({
+      ...conversation,
+      items: conversation.items.map(item => item.id === itemId && item.command
+        ? { ...item, command: { ...item.command, output, status } }
+        : item),
       updatedAt: Date.now(),
     }))
   }
@@ -1841,6 +1917,19 @@ export function App() {
     const baseline = turnChangeBaselines.current[turnId]
     if (!workingDirectory || !baseline) return undefined
 
+    // Local-folder fallback: use touched files observed during the turn
+    if (baseline.totalFiles === 0) {
+      const metadata = await window.verboo.getWorkspaceReviewMetadata(workingDirectory).catch(() => undefined)
+      if (metadata?.scope === 'local-folder') {
+        const touched = turnTouchedFiles.current[turnId]
+        if (!touched || touched.size === 0) return undefined
+        const files = [...touched]
+          .sort((a, b) => a.localeCompare(b))
+          .map(path => ({ path, additions: 0, deletions: 0, status: 'modified' as const }))
+        return files.length > 0 ? { files, totalFiles: files.length, additions: 0, deletions: 0 } : undefined
+      }
+    }
+
     const current = await snapshotWorkspaceChanges(workingDirectory)
     if (!current) return undefined
 
@@ -1869,6 +1958,16 @@ export function App() {
     delete turnReferences.current[turnId]
     delete turnChangeBaselines.current[turnId]
     delete turnWorkingDirectories.current[turnId]
+    delete turnTouchedFiles.current[turnId]
+    delete turnOpenTextSegment.current[turnId]
+    delete turnTextSegmentCount.current[turnId]
+    delete turnCommandItemIds.current[turnId]
+  }
+
+  function appendTouchedFile(turnId: string, filePath: string) {
+    const current = turnTouchedFiles.current[turnId] ?? new Set<string>()
+    current.add(filePath)
+    turnTouchedFiles.current[turnId] = current
   }
 
   function updateConversation(
@@ -1959,17 +2058,37 @@ export function App() {
   const shownProjects = activeProjects(chatStore)
   const shownConversations = visibleConversations(chatStore)
   const archivedChats = archivedConversations(chatStore)
+
+  const handleToggleTerminal = useCallback((cwd: string) => {
+    review.close()
+    void terminal.toggle(cwd)
+  }, [review, terminal])
+
+  const handleOpenReview = useCallback((files: WorkspaceChangeEntry[], index: number) => {
+    const workingDirectory = activeProject?.path ?? config.workingDirectory ?? ''
+    if (!workingDirectory) return
+    terminal.close()
+    setSelectedSubagentId(undefined)
+    review.open(workingDirectory, files, index)
+  }, [activeProject?.path, config.workingDirectory, review, terminal])
+
+  async function refreshWorkspaceReview() {
+    if (!review.target) return
+    const summary = await window.verboo.getWorkspaceChanges(review.target.workingDirectory)
+    review.open(review.target.workingDirectory, summary.files, Math.min(review.target.index, Math.max(0, summary.files.length - 1)))
+  }
+
   useEffect(() => {
     function handleTerminalShortcut(event: KeyboardEvent) {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'j') return
       event.preventDefault()
       event.stopPropagation()
-      void terminal.toggle(workspaceDirectory || '')
+      handleToggleTerminal(workspaceDirectory || '')
     }
 
     window.addEventListener('keydown', handleTerminalShortcut, { capture: true })
     return () => window.removeEventListener('keydown', handleTerminalShortcut, { capture: true })
-  }, [terminal.toggle, workspaceDirectory])
+  }, [handleToggleTerminal, workspaceDirectory])
 
   const feedbackDiagnostics = useMemo<FeedbackDiagnostics>(() => ({
     appVersion: packageJson.version,
@@ -2069,11 +2188,11 @@ export function App() {
         onToggleSidebar={toggleSidebarVisibility}
         terminalOpen={terminal.terminalOpen}
         terminalUnavailableReason={terminal.terminalUnavailableReason}
-        onToggleTerminal={() => terminal.toggle(workspaceDirectory || '')}
+        onToggleTerminal={() => handleToggleTerminal(workspaceDirectory || '')}
       />
 
       <div
-        className={`app-layout sidebar-${sidebarMode} ${activeView === 'settings' ? 'settings-open' : ''} ${terminal.terminalOpen ? 'terminal-open' : ''}`}
+        className={`app-layout sidebar-${sidebarMode} ${activeView === 'settings' ? 'settings-open' : ''} ${terminal.terminalOpen ? 'terminal-open' : ''} ${review.reviewOpen ? 'review-open' : ''}`}
       >
         {sidebarMode !== 'hidden' && (
           <>
@@ -2162,7 +2281,7 @@ export function App() {
             />
           ) : hasConversation ? (
             <>
-              <Transcript items={items} />
+              <Transcript items={items} onOpenReview={handleOpenReview} reviewMetadata={reviewMetadata} thinkingTurnId={thinkingTurnId} />
               <div ref={transcriptEndRef} className="transcript-end" />
             </>
           ) : (
@@ -2191,6 +2310,18 @@ export function App() {
           workingDirectory={workspaceDirectory || ''}
           minWidth={terminal.MIN_WIDTH}
           maxWidth={terminal.MAX_WIDTH}
+        />
+        <ReviewPanel
+          open={review.reviewOpen}
+          width={review.reviewWidth}
+          target={review.target}
+          onSetWidth={review.setWidth}
+          onClose={review.close}
+          onNext={review.next}
+          onPrev={review.prev}
+          onReverted={refreshWorkspaceReview}
+          minWidth={review.MIN_WIDTH}
+          maxWidth={review.MAX_WIDTH}
         />
       </div>
       <GoalStatusBar
@@ -2767,108 +2898,6 @@ function extractUsageObject(payload: unknown): Record<string, unknown> | undefin
   return undefined
 }
 
-function describeRuntimeActivity(payload: unknown): TurnActivity | undefined {
-  const subagent = describeSubagentActivity(payload)
-  if (subagent) return subagent
-
-  const block = extractToolBlock(payload)
-  if (!block) return undefined
-
-  const name = textValue(block.name) || textValue(block.tool_name)
-  if (!name) return undefined
-
-  const input = toolInput(block)
-  const id = textValue(block.id)
-  const detail = detailForTool(name, input)
-  const activity = activityForTool(name)
-
-  return {
-    key: `${id || name}:${detail ?? ''}`,
-    label: activity.label,
-    detail,
-    kind: activity.kind,
-  }
-}
-
-function extractToolBlock(payload: unknown): Record<string, unknown> | undefined {
-  if (!isRecord(payload)) return undefined
-
-  if (isToolBlock(payload)) return payload
-
-  const event = isRecord(payload.event) ? payload.event : undefined
-  const contentBlock = isRecord(event?.content_block) ? event.content_block : undefined
-  if (isToolBlock(contentBlock)) return contentBlock
-
-  const message = isRecord(payload.message) ? payload.message : undefined
-  const content = Array.isArray(message?.content) ? message.content : undefined
-  return content?.find((block): block is Record<string, unknown> => isToolBlock(block))
-}
-
-function isToolBlock(value: unknown): value is Record<string, unknown> {
-  if (!isRecord(value)) return false
-  const type = textValue(value.type).toLowerCase()
-  return type.includes('tool_use') || Boolean(textValue(value.name) || textValue(value.tool_name))
-}
-
-function activityForTool(toolName: string): Pick<TurnActivity, 'label' | 'kind'> {
-  const normalized = toolName.toLowerCase()
-  if (normalized === 'task') return { label: 'Subagente ativo', kind: 'subagent' }
-  if (normalized === 'read' || normalized === 'read_file') return { label: 'Leu arquivo', kind: 'read' }
-  if (normalized === 'ls' || normalized === 'glob' || normalized === 'grep' || normalized === 'search') return { label: 'Inspecionou arquivos', kind: 'read' }
-  if (normalized === 'edit' || normalized === 'multiedit' || normalized === 'multi_edit' || normalized === 'write' || normalized === 'notebookedit') {
-    return { label: 'Editou arquivo', kind: 'edit' }
-  }
-  if (normalized === 'bash' || normalized === 'shell' || normalized === 'exec_command') return { label: 'Executou comando', kind: 'command' }
-  if (normalized === 'websearch' || normalized === 'webfetch') return { label: 'Pesquisou na internet', kind: 'search' }
-  if (normalized === 'askuserquestion') return { label: 'Pediu resposta', kind: 'permission' }
-  if (normalized === 'todowrite') return { label: 'Atualizou tarefas', kind: 'tool' }
-  return { label: 'Usou ferramenta', kind: 'tool' }
-}
-
-function detailForTool(toolName: string, input?: Record<string, unknown>): string | undefined {
-  if (!input) return undefined
-  const normalized = toolName.toLowerCase()
-  if (normalized === 'task') return snippet(textValue(input.description) || textValue(input.subagent_type) || textValue(input.prompt))
-  if (normalized === 'bash' || normalized === 'shell' || normalized === 'exec_command') return snippet(textValue(input.command) || textValue(input.cmd))
-  if (normalized === 'websearch') return snippet(textValue(input.query))
-  if (normalized === 'webfetch') return snippet(textValue(input.url))
-  if (normalized === 'grep') return snippet(textValue(input.pattern) || textValue(input.path))
-  if (normalized === 'glob') return snippet(textValue(input.pattern))
-  if (normalized === 'ls') return snippet(textValue(input.path))
-  if (normalized === 'askuserquestion') return snippet(textValue(input.question))
-  return snippet(textValue(input.file_path) || textValue(input.filePath) || textValue(input.path) || textValue(input.notebook_path))
-}
-
-function toolInput(block: Record<string, unknown>): Record<string, unknown> | undefined {
-  if (isRecord(block.input)) return block.input
-  if (isRecord(block.arguments)) return block.arguments
-  const inputJson = textValue(block.input_json) || textValue(block.arguments_json)
-  if (!inputJson) return undefined
-  try {
-    const parsed = JSON.parse(inputJson) as unknown
-    return isRecord(parsed) ? parsed : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function describeSubagentActivity(payload: unknown): TurnActivity | undefined {
-  if (!isRecord(payload)) return undefined
-  const event = isRecord(payload.event) ? payload.event : undefined
-  const eventType = textValue(event?.type) || textValue(payload.type)
-  const normalized = eventType.toLowerCase()
-  if (!normalized.includes('subagent')) return undefined
-  const started = normalized.includes('start')
-  const stopped = normalized.includes('stop')
-  const label = started ? 'Subagente iniciado' : stopped ? 'Subagente finalizado' : 'Subagente ativo'
-  return {
-    key: `subagent:${eventType}`,
-    label,
-    detail: snippet(textValue(payload.agentName) || textValue(payload.agentType) || textValue(event?.agentName) || textValue(event?.agentType)),
-    kind: 'subagent',
-  }
-}
-
 function buildTurnSummaryLines(
   counts: Partial<Record<NonNullable<TranscriptItem['activityKind']>, number>>,
   result: AgentResultSnapshot | undefined,
@@ -3079,6 +3108,38 @@ function numberValue(value: unknown): number {
 
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null
+}
+
+// Pull tool_result blocks out of a stream-json payload so a command's real
+// stdout and success/failure can be attached to its activity row.
+function extractToolResults(payload: unknown): Array<{ toolUseId: string; output: string; isError: boolean }> {
+  if (!isRecord(payload)) return []
+  const message = isRecord(payload.message) ? payload.message : undefined
+  const content = Array.isArray(message?.content)
+    ? message.content
+    : Array.isArray(payload.content) ? payload.content : undefined
+  if (!content) return []
+  const results: Array<{ toolUseId: string; output: string; isError: boolean }> = []
+  for (const block of content) {
+    if (!isRecord(block)) continue
+    if ((typeof block.type === 'string' ? block.type : '').toLowerCase() !== 'tool_result') continue
+    const toolUseId = typeof block.tool_use_id === 'string' ? block.tool_use_id : undefined
+    if (!toolUseId) continue
+    results.push({ toolUseId, output: toolResultText(block.content), isError: block.is_error === true })
+  }
+  return results
+}
+
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content.trim()
+  if (Array.isArray(content)) {
+    return content
+      .map(part => (isRecord(part) && typeof part.text === 'string') ? part.text : '')
+      .filter(Boolean)
+      .join('\n')
+      .trim()
+  }
+  return ''
 }
 
 function buildMemoryContext(

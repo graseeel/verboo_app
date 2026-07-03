@@ -5,18 +5,17 @@ import type {
   ProfileUsageSummary,
   ProfileUser,
 } from '../../shared/types'
-import { readCliOAuthAccessToken } from './cliCredentials'
-import type { CredentialsStore } from './credentialsStore'
+import type { VerbooApiClient } from './verbooApiClient'
 
 const API_BASE = 'https://code.verboo.ai/api'
 
 type JsonRecord = Record<string, unknown>
 
 export class ProfileService {
-  constructor(private readonly credentials: CredentialsStore) {}
+  constructor(private readonly api: VerbooApiClient) {}
 
   async getProfile(): Promise<ProfileResult> {
-    const bearerToken = await readCliOAuthAccessToken() ?? await this.credentials.getApiKey()
+    const bearerToken = await this.api.getBearerToken('cli-first')
     if (!bearerToken) {
       return {
         status: 'unauthenticated',
@@ -29,9 +28,9 @@ export class ProfileService {
     const usageQuery = `from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(now.toISOString())}&bucket=day`
 
     const [meResult, groupsResult, subscriptionsResult] = await Promise.allSettled([
-      this.request('/me', bearerToken),
-      this.request('/me/groups', bearerToken),
-      this.request('/me/subscriptions', bearerToken),
+      this.request('/me', bearerToken.value),
+      this.request('/me/groups', bearerToken.value),
+      this.request('/me/subscriptions', bearerToken.value),
     ])
 
     const me = valueFrom(meResult)
@@ -43,7 +42,7 @@ export class ProfileService {
       .filter((id): id is string => Boolean(id))
 
     const usageResults = await Promise.allSettled(
-      groupIds.map(groupId => this.request(`/me/groups/${groupId}/usage/summary?${usageQuery}`, bearerToken)),
+      groupIds.map(groupId => this.request(`/me/groups/${groupId}/usage/summary?${usageQuery}`, bearerToken.value)),
     )
 
     const summaries = usageResults.map(valueFrom).filter(Boolean)
@@ -74,18 +73,7 @@ export class ProfileService {
   }
 
   private async request(path: string, apiKey: string): Promise<unknown> {
-    const response = await fetch(`${API_BASE}${path}`, {
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-    })
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`)
-    }
-
-    const payload = await response.json() as unknown
+    const payload = await this.api.requestJson(`${API_BASE}${path}`, apiKey)
     return unwrapData(payload)
   }
 }

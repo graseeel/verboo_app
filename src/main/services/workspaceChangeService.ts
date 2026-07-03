@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import type { WorkspaceChangeEntry, WorkspaceChangeSummary } from '../../shared/types'
+import type { WorkspaceChangeEntry, WorkspaceChangeSummary, WorkspaceReviewMetadata } from '../../shared/types'
 
 const execFileAsync = promisify(execFile)
 const MAX_UNTRACKED_FILE_BYTES = 1_000_000
@@ -78,7 +78,7 @@ function summarizeEntries(files: WorkspaceChangeEntry[]): WorkspaceChangeSummary
   }
 }
 
-async function runGit(cwd: string, args: string[]): Promise<{ ok: true; stdout: string } | { ok: false }> {
+export async function runGit(cwd: string, args: string[]): Promise<{ ok: true; stdout: string } | { ok: false }> {
   try {
     const { stdout } = await execFileAsync('git', ['-C', cwd, ...args], {
       maxBuffer: 4 * 1024 * 1024,
@@ -113,5 +113,58 @@ function emptySummary(): WorkspaceChangeSummary {
     totalFiles: 0,
     additions: 0,
     deletions: 0,
+  }
+}
+
+export async function readWorkspaceReviewMetadata(workingDirectory: string): Promise<WorkspaceReviewMetadata> {
+  const rootResult = await runGit(workingDirectory, ['rev-parse', '--show-toplevel'])
+
+  if (!rootResult.ok) {
+    return {
+      scope: 'local-folder',
+      title: 'Arquivos com mudanças',
+      subtitle: 'Sem repositório Git',
+      isGitRepository: false,
+      isGitHubRepository: false,
+      capabilities: {
+        canDiff: false,
+        canRevert: false,
+        canOpenExternal: true,
+      },
+    }
+  }
+
+  const repositoryRoot = rootResult.stdout.trim()
+  const remoteResult = await runGit(repositoryRoot, ['remote', '-v'])
+  const isGitHubRepository = remoteResult.ok && /\bgithub\.com[:/]/i.test(remoteResult.stdout)
+
+  if (isGitHubRepository) {
+    return {
+      scope: 'github-repo',
+      title: 'Mudanças não commitadas',
+      subtitle: 'Arquivos diferentes do último commit',
+      isGitRepository: true,
+      isGitHubRepository: true,
+      repositoryRoot,
+      capabilities: {
+        canDiff: true,
+        canRevert: true,
+        canOpenExternal: true,
+      },
+    }
+  }
+
+  return {
+    scope: 'git-repo',
+    title: 'Mudanças no repositório',
+    subtitle: 'Arquivos diferentes do último commit',
+    isGitRepository: true,
+    isGitHubRepository: false,
+    repositoryRoot,
+    capabilities: {
+      canDiff: true,
+      canRevert: true,
+      canOpenExternal: true,
+    },
   }
 }

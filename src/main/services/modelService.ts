@@ -2,8 +2,7 @@ import { app } from 'electron'
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { ModelDiscoveryResult, VerbooModel } from '../../shared/types'
-import { getCliOAuthAccessToken, refreshCliOAuthAccessToken } from './cliCredentials'
-import type { CredentialsStore } from './credentialsStore'
+import type { VerbooApiClient } from './verbooApiClient'
 
 const VERBOO_ROUTER_MODELS_URL = 'https://code.verboo.ai/router/v1/models'
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
@@ -16,27 +15,27 @@ type ModelsCache = {
 export class ModelService {
   private readonly filePath = join(app.getPath('userData'), 'cache', 'models.json')
 
-  constructor(private readonly credentials: CredentialsStore) {}
+  constructor(private readonly api: VerbooApiClient) {}
 
   async listModels(forceRefresh = false): Promise<ModelDiscoveryResult> {
     const cached = await this.readCache()
     let liveError: unknown
 
-    const cliToken = await getCliOAuthAccessToken()
+    const cliToken = await this.api.getCliBearerToken()
     if (cliToken) {
       try {
-        const models = await fetchModels(cliToken)
+        const models = normalizeModels(await this.api.requestJson(VERBOO_ROUTER_MODELS_URL, cliToken.value))
         await this.writeCache({ fetchedAt: Date.now(), models })
-        return { models, source: 'cli', stale: false }
+        return { models, source: cliToken.source, stale: false }
       } catch (error) {
         liveError = error
         if (isAuthFailure(error)) {
-          const refreshedToken = await refreshCliOAuthAccessToken()
+          const refreshedToken = await this.api.refreshCliBearerToken()
           if (refreshedToken) {
             try {
-              const models = await fetchModels(refreshedToken)
+              const models = normalizeModels(await this.api.requestJson(VERBOO_ROUTER_MODELS_URL, refreshedToken.value))
               await this.writeCache({ fetchedAt: Date.now(), models })
-              return { models, source: 'cli', stale: false }
+              return { models, source: refreshedToken.source, stale: false }
             } catch (retryError) {
               liveError = retryError
             }
@@ -49,12 +48,12 @@ export class ModelService {
       return { models: cached.models, source: 'cache', stale: false }
     }
 
-    const apiKey = await this.credentials.getApiKey()
+    const apiKey = await this.api.getApiKeyBearerToken()
     if (apiKey) {
       try {
-        const models = await fetchModels(apiKey)
+        const models = normalizeModels(await this.api.requestJson(VERBOO_ROUTER_MODELS_URL, apiKey.value))
         await this.writeCache({ fetchedAt: Date.now(), models })
-        return { models, source: 'api-key', stale: false }
+        return { models, source: apiKey.source, stale: false }
       } catch (error) {
         liveError = error
       }
@@ -104,26 +103,6 @@ function modelErrorMessage(error: unknown): string {
 function isAuthFailure(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
   return /401|expired token|invalid.*token/i.test(message)
-}
-
-function scrubSensitive(text: string): string {
-  return text
-    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
-    .replace(/[A-Za-z0-9._-]{20,}/g, '[redacted]')
-}
-
-async function fetchModels(token: string): Promise<VerbooModel[]> {
-  const response = await fetch(VERBOO_ROUTER_MODELS_URL, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-
-  if (!response.ok) {
-    const body = scrubSensitive((await response.text().catch(() => '')).slice(0, 400)).slice(0, 200)
-    throw new Error(`HTTP ${response.status}${body ? `: ${body}` : ''}`)
-  }
-
-  const payload = await response.json()
-  return normalizeModels(payload)
 }
 
 function normalizeModels(payload: unknown): VerbooModel[] {
