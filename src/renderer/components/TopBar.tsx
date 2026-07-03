@@ -1,4 +1,4 @@
-import { PanelLeftClose, PanelLeftOpen, Terminal as TerminalIcon } from 'lucide-react'
+import { FileSearch, PanelLeftClose, PanelLeftOpen, Terminal as TerminalIcon } from 'lucide-react'
 import { SlotText } from 'slot-text/react'
 import mascotUrl from '../../../assets/branding/verboo-mascot.png'
 
@@ -9,6 +9,9 @@ type TopBarProps = {
   terminalOpen: boolean
   terminalUnavailableReason?: string
   onToggleTerminal: () => void
+  reviewOpen: boolean
+  reviewUnavailableReason?: string
+  onToggleReview: () => void
 }
 
 export function TopBar({
@@ -18,6 +21,9 @@ export function TopBar({
   terminalOpen,
   terminalUnavailableReason,
   onToggleTerminal,
+  reviewOpen,
+  reviewUnavailableReason,
+  onToggleReview,
 }: TopBarProps) {
   return (
     <header className="topbar" onDoubleClick={() => window.verboo.toggleWindowZoom()}>
@@ -40,9 +46,9 @@ export function TopBar({
         </span>
       </div>
       <div className="topbar-actions">
-        {terminalUnavailableReason && (
+        {(terminalUnavailableReason || reviewUnavailableReason) && (
           <span className="topbar-terminal-notice" role="status">
-            {terminalUnavailableReason}
+            {terminalUnavailableReason || reviewUnavailableReason}
           </span>
         )}
         <button
@@ -57,6 +63,19 @@ export function TopBar({
           aria-label={terminalOpen ? 'Close local terminal' : 'Open local terminal'}
         >
           <TerminalIcon size={15} />
+        </button>
+        <button
+          className={`topbar-terminal-button ui-tooltip ${reviewOpen ? 'active' : ''}`}
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            onToggleReview()
+          }}
+          data-tooltip={reviewOpen ? 'Ocultar revisão de arquivos' : 'Abrir revisão de arquivos'}
+          data-tooltip-align="end"
+          aria-label={reviewOpen ? 'Close file review' : 'Open file review'}
+        >
+          <FileSearch size={15} />
         </button>
       </div>
     </header>

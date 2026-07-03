@@ -29,6 +29,7 @@ import type {
   TranscriptItem,
   UserSettings,
   VerbooModel,
+  WorkspaceBranchInfo,
   WorkspaceChangeEntry,
   WorkspaceChangeSummary,
   WorkspaceReviewMetadata,
@@ -257,6 +258,8 @@ export function App() {
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(initialSidebarPreference.current.mode)
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarPreference.current.width)
   const [reviewMetadata, setReviewMetadata] = useState<WorkspaceReviewMetadata | undefined>()
+  const [branchInfo, setBranchInfo] = useState<WorkspaceBranchInfo | undefined>()
+  const [reviewUnavailableReason, setReviewUnavailableReason] = useState<string | undefined>()
   const terminal = useLocalTerminal()
   const review = useReviewPanel()
   const goalRef = useRef(goal)
@@ -401,9 +404,20 @@ export function App() {
 
   useEffect(() => {
     const workingDirectory = activeProject?.path ?? config.workingDirectory
-    if (!workingDirectory) return
-    window.verboo.getWorkspaceReviewMetadata(workingDirectory).then(setReviewMetadata)
+    if (!workingDirectory) {
+      setReviewMetadata(undefined)
+      setBranchInfo(undefined)
+      return
+    }
+    window.verboo.getWorkspaceReviewMetadata(workingDirectory).then(setReviewMetadata).catch(() => setReviewMetadata(undefined))
+    window.verboo.getWorkspaceBranches(workingDirectory).then(setBranchInfo).catch(() => setBranchInfo(undefined))
   }, [config.workingDirectory, activeProject?.path])
+
+  useEffect(() => {
+    if (!reviewUnavailableReason) return undefined
+    const timer = window.setTimeout(() => setReviewUnavailableReason(undefined), 3600)
+    return () => window.clearTimeout(timer)
+  }, [reviewUnavailableReason])
 
   useEffect(() => {
     return window.verboo.onAgentEvent(handleAgentEvent)
@@ -1280,14 +1294,6 @@ export function App() {
     }
 
     if (command.action === 'start' && command.objective) {
-      if (accessMode === 'full') {
-        const conversationId = ensureActiveConversation()
-        appendConversationItem(conversationId, goalSystemMessage(
-          'Goal automático não inicia com Modo livre nesta versão beta. Troque para "Solicitar aprovação" ou "Aprovar por mim" antes de começar.'
-        ))
-        return
-      }
-
       goalAbortRef.current?.abort()
 
       const conversationId = ensureActiveConversation()
@@ -1299,7 +1305,7 @@ export function App() {
 
       const goalState = createGoalState({
         objective: command.objective,
-        accessMode, // 'full' blocked above; safe to pass as-is
+        accessMode, // any mode, incl. 'full'; continueGoal downgrades to 'approval' unless full access is enabled in settings
         modelId: selectedModel,
         modelDisplayName: selectedModelInfo?.displayName,
         workingDirectory: wd,
@@ -2060,9 +2066,43 @@ export function App() {
   const archivedChats = archivedConversations(chatStore)
 
   const handleToggleTerminal = useCallback((cwd: string) => {
+    setReviewUnavailableReason(undefined)
     review.close()
     void terminal.toggle(cwd)
   }, [review, terminal])
+
+  const handleToggleReview = useCallback(async () => {
+    if (review.reviewOpen) {
+      review.close()
+      return
+    }
+
+    const workingDirectory = activeProject?.path ?? config.workingDirectory ?? ''
+    if (!workingDirectory) {
+      setReviewUnavailableReason('Abra uma pasta para revisar arquivos.')
+      return
+    }
+
+    const metadata = await window.verboo.getWorkspaceReviewMetadata(workingDirectory).catch(() => undefined)
+    if (metadata) setReviewMetadata(metadata)
+    const branches = await window.verboo.getWorkspaceBranches(workingDirectory).catch(() => undefined)
+    if (branches) setBranchInfo(branches)
+    if (metadata?.capabilities.canDiff === false) {
+      setReviewUnavailableReason('Revisão de diff exige um repositório Git.')
+      return
+    }
+
+    const summary = await window.verboo.getWorkspaceChanges(workingDirectory).catch(() => undefined)
+    if (!summary) {
+      setReviewUnavailableReason('Não foi possível carregar mudanças.')
+      return
+    }
+
+    setReviewUnavailableReason(undefined)
+    terminal.close()
+    setSelectedSubagentId(undefined)
+    review.open(workingDirectory, summary.files, 0)
+  }, [activeProject?.path, config.workingDirectory, review, terminal])
 
   const handleOpenReview = useCallback((files: WorkspaceChangeEntry[], index: number) => {
     const workingDirectory = activeProject?.path ?? config.workingDirectory ?? ''
@@ -2077,6 +2117,23 @@ export function App() {
     const summary = await window.verboo.getWorkspaceChanges(review.target.workingDirectory)
     review.open(review.target.workingDirectory, summary.files, Math.min(review.target.index, Math.max(0, summary.files.length - 1)))
   }
+
+  const handleSwitchReviewBranch = useCallback(async (branchName: string) => {
+    const workingDirectory = review.target?.workingDirectory ?? activeProject?.path ?? config.workingDirectory ?? ''
+    const result = await window.verboo.switchWorkspaceBranch(workingDirectory, branchName)
+    if (result.branchInfo) setBranchInfo(result.branchInfo)
+    if (!result.ok) return result
+
+    const [metadata, branches, summary] = await Promise.all([
+      window.verboo.getWorkspaceReviewMetadata(workingDirectory).catch(() => undefined),
+      window.verboo.getWorkspaceBranches(workingDirectory).catch(() => undefined),
+      window.verboo.getWorkspaceChanges(workingDirectory).catch(() => undefined),
+    ])
+    if (metadata) setReviewMetadata(metadata)
+    if (branches) setBranchInfo(branches)
+    if (summary) review.open(workingDirectory, summary.files, 0)
+    return { ...result, branchInfo: branches ?? result.branchInfo }
+  }, [activeProject?.path, config.workingDirectory, review])
 
   useEffect(() => {
     function handleTerminalShortcut(event: KeyboardEvent) {
@@ -2189,6 +2246,9 @@ export function App() {
         terminalOpen={terminal.terminalOpen}
         terminalUnavailableReason={terminal.terminalUnavailableReason}
         onToggleTerminal={() => handleToggleTerminal(workspaceDirectory || '')}
+        reviewOpen={review.reviewOpen}
+        reviewUnavailableReason={reviewUnavailableReason}
+        onToggleReview={handleToggleReview}
       />
 
       <div
@@ -2317,11 +2377,12 @@ export function App() {
           target={review.target}
           onSetWidth={review.setWidth}
           onClose={review.close}
-          onNext={review.next}
-          onPrev={review.prev}
           onReverted={refreshWorkspaceReview}
+          onSwitchBranch={handleSwitchReviewBranch}
           minWidth={review.MIN_WIDTH}
           maxWidth={review.MAX_WIDTH}
+          capabilities={reviewMetadata?.capabilities}
+          branchInfo={branchInfo}
         />
       </div>
       <GoalStatusBar

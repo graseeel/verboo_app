@@ -434,7 +434,32 @@ export type WorkspaceReviewMetadata = {
   isGitRepository: boolean
   isGitHubRepository: boolean
   repositoryRoot?: string
+  currentBranch?: string
+  upstreamBranch?: string
   capabilities: WorkspaceReviewCapabilities
+}
+
+export type WorkspaceBranch = {
+  name: string
+  current: boolean
+  remote: boolean
+  upstream?: string
+}
+
+export type WorkspaceBranchInfo = {
+  currentBranch?: string
+  upstreamBranch?: string
+  branches: WorkspaceBranch[]
+  canSwitch: boolean
+  dirty: boolean
+  dirtyFiles: string[]
+  message?: string
+}
+
+export type WorkspaceBranchSwitchResult = {
+  ok: boolean
+  message?: string
+  branchInfo?: WorkspaceBranchInfo
 }
 
 export type FileDiffStatus = WorkspaceChangeEntry['status'] | 'added' | 'modified' | 'deleted' | 'untracked'

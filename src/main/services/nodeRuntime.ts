@@ -25,9 +25,15 @@ export async function resolveNodeRuntimePath(): Promise<string> {
   // No system Node.js on this machine? Fall back to Electron's own bundled Node
   // runtime (process.execPath run with ELECTRON_RUN_AS_NODE) so the app works
   // for everyone — not just users who happen to have Node.js installed.
-  const resolved = await resolveNodeRuntime(nodeRuntimeCandidates(), process.execPath, isExecutable)
+  // Escape hatch: VERBOO_FORCE_ELECTRON_NODE=1 ignores any system Node and forces
+  // the bundled runtime (used to reproduce a "no Node installed" machine).
+  const candidates = process.env.VERBOO_FORCE_ELECTRON_NODE === '1' ? [] : nodeRuntimeCandidates()
+  const resolved = await resolveNodeRuntime(candidates, process.execPath, isExecutable)
   cachedNodePath = resolved.path
   cachedIsElectron = resolved.isElectron
+  if (process.env.VERBOO_DEBUG_NODE === '1') {
+    console.error(`[verboo:node] runtime=${resolved.isElectron ? 'electron-bundled' : resolved.path}`)
+  }
   return cachedNodePath
 }
 

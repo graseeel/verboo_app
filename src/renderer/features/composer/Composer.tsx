@@ -1,7 +1,22 @@
-import { ArrowUp, Paperclip, X } from 'lucide-react'
+import { ArrowUp, Paperclip, Target, X } from 'lucide-react'
 import { type FormEvent, type KeyboardEvent, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { AttachmentMeta, SkillSummary } from '../../../shared/types'
-import { isReservedSlashQuery, parseReservedSlashCommand, type ReservedSlashCommand } from './slashCommands'
+import { parseReservedSlashCommand, type ReservedSlashCommand } from './slashCommands'
+
+// Reserved slash commands surfaced in the "/" palette, exactly like the skills
+// below them. Selecting one fills its token so the user can type any arguments.
+type SlashCommand = { name: string; description: string }
+
+const SLASH_COMMANDS: SlashCommand[] = [
+  {
+    name: 'goal',
+    description: 'Defina um objetivo e o Verboo trabalha em ciclos autônomos até concluí-lo.',
+  },
+]
+
+type SlashMenuItem =
+  | { kind: 'command'; command: SlashCommand }
+  | { kind: 'skill'; skill: SkillSummary }
 
 type ComposerProps = {
   disabled: boolean
@@ -38,18 +53,25 @@ export function Composer({
   const [highlighted, setHighlighted] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const highlightRef = useRef<HTMLDivElement>(null)
-  const rawSlashQuery = getSlashQuery(value)
-  const slashQuery = rawSlashQuery !== undefined && !isReservedSlashQuery(value.trim())
-    ? rawSlashQuery
-    : undefined
+  const slashQuery = getSlashQuery(value)
+  const matchingCommands = useMemo(() => {
+    if (slashQuery === undefined) return []
+    return SLASH_COMMANDS.filter(command => matchesSlashCommand(command, slashQuery))
+  }, [slashQuery])
   const matchingSkills = useMemo(() => {
     if (slashQuery === undefined) return []
     return rankSkills(skills, slashQuery).slice(0, 8)
   }, [skills, slashQuery])
+  const menuItems = useMemo<SlashMenuItem[]>(() => [
+    ...matchingCommands.map(command => ({ kind: 'command' as const, command })),
+    ...matchingSkills.map(skill => ({ kind: 'skill' as const, skill })),
+  ], [matchingCommands, matchingSkills])
+  const activeIndex = menuItems.length ? Math.min(highlighted, menuItems.length - 1) : 0
   const highlightedValue = useMemo(
     () => renderHighlightedValue(value, skills),
     [skills, value],
   )
+  const goalModeActive = isGoalCommandDraft(value)
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current
@@ -78,8 +100,25 @@ export function Composer({
     onSelectedSkillsChange([])
   }
 
+  function selectMenuItem(item: SlashMenuItem) {
+    if (item.kind === 'command') {
+      selectCommand(item.command)
+      return
+    }
+    selectSkill(item.skill)
+  }
+
+  function selectCommand(command: SlashCommand) {
+    // Fill "/goal " and keep focus so the user can type the objective. The
+    // command runs on Enter once the menu has closed (see submit()).
+    const nextValue = replaceSlashQueryWithToken(value, `/${command.name} `)
+    setValue(nextValue)
+    setHighlighted(0)
+    textareaRef.current?.focus()
+  }
+
   function selectSkill(skill: SkillSummary) {
-    const nextValue = replaceSlashQueryWithSkill(value, skill)
+    const nextValue = replaceSlashQueryWithToken(value, `/${skill.name} `)
     setValue(nextValue)
     syncSelectedSkills(nextValue)
     setHighlighted(0)
@@ -98,25 +137,21 @@ export function Composer({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === 'Enter' && !event.shiftKey && parseReservedSlashCommand(value.trim())) {
-      submit(event)
-      return
-    }
-
-    if (slashQuery !== undefined && matchingSkills.length > 0) {
+    // While the "/" palette is open, the arrows/Enter/Escape drive it.
+    if (slashQuery !== undefined && menuItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
-        setHighlighted(index => (index + 1) % matchingSkills.length)
+        setHighlighted(index => (index + 1) % menuItems.length)
         return
       }
       if (event.key === 'ArrowUp') {
         event.preventDefault()
-        setHighlighted(index => (index - 1 + matchingSkills.length) % matchingSkills.length)
+        setHighlighted(index => (index - 1 + menuItems.length) % menuItems.length)
         return
       }
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault()
-        selectSkill(matchingSkills[highlighted] ?? matchingSkills[0])
+        selectMenuItem(menuItems[activeIndex] ?? menuItems[0])
         return
       }
       if (event.key === 'Escape') {
@@ -125,34 +160,48 @@ export function Composer({
       }
     }
 
+    // Palette closed: Enter submits — submit() runs reserved commands like /goal.
     if (event.key === 'Enter' && !event.shiftKey) {
       submit(event)
     }
   }
 
   return (
-    <form className="composer" onSubmit={submit}>
+    <form className="composer" data-command-mode={goalModeActive ? 'goal' : undefined} onSubmit={submit}>
       {slashQuery !== undefined && (
         <div className="skills-menu popover-panel t-dropdown is-open" data-origin="bottom-center">
-          <div className="popover-title">Habilidades</div>
-          {matchingSkills.length === 0 ? (
-            <div className="empty-menu">Nenhuma habilidade encontrada.</div>
+          {menuItems.length === 0 ? (
+            <div className="empty-menu">Nenhum comando ou habilidade encontrado.</div>
           ) : (
-            matchingSkills.map((skill, index) => (
-              <button
-                key={skill.id}
-                className={`skill-option ${index === highlighted ? 'highlighted' : ''}`}
-                type="button"
-                onMouseEnter={() => setHighlighted(index)}
-                onClick={() => selectSkill(skill)}
-              >
-                <span className="skill-name">/{skill.name}</span>
-                <span className="skill-description">{skill.description}</span>
-                <span className={`skill-source ${skill.trusted ? '' : 'untrusted'}`}>
-                  {skill.source}
-                </span>
-              </button>
-            ))
+            menuItems.map((item, index) =>
+              item.kind === 'command' ? (
+                <button
+                  key={`command:${item.command.name}`}
+                  className={`skill-option ${index === activeIndex ? 'highlighted' : ''}`}
+                  type="button"
+                  onMouseEnter={() => setHighlighted(index)}
+                  onClick={() => selectMenuItem(item)}
+                >
+                  <span className="skill-name">/{item.command.name}</span>
+                  <span className="skill-description">{item.command.description}</span>
+                  <span className="skill-source command">comando</span>
+                </button>
+              ) : (
+                <button
+                  key={`skill:${item.skill.id}`}
+                  className={`skill-option ${index === activeIndex ? 'highlighted' : ''}`}
+                  type="button"
+                  onMouseEnter={() => setHighlighted(index)}
+                  onClick={() => selectMenuItem(item)}
+                >
+                  <span className="skill-name">/{item.skill.name}</span>
+                  <span className="skill-description">{item.skill.description}</span>
+                  <span className={`skill-source ${item.skill.trusted ? '' : 'untrusted'}`}>
+                    {item.skill.source}
+                  </span>
+                </button>
+              ),
+            )
           )}
         </div>
       )}
@@ -171,6 +220,13 @@ export function Composer({
               <X size={12} />
             </button>
           ))}
+        </div>
+      )}
+
+      {goalModeActive && (
+        <div className="composer-goal-mode" aria-label="Comando goal ativo">
+          <Target size={13} />
+          <span>/goal</span>
         </div>
       )}
 
@@ -222,17 +278,30 @@ function getSlashQuery(value: string): string | undefined {
   return match ? match[1] : undefined
 }
 
+function isGoalCommandDraft(value: string): boolean {
+  return /^\s*\/goal(?:\s|$)/.test(value)
+}
+
 function removeSlashQuery(value: string): string {
   return value.replace(/(?:^|\s)\/([A-Za-z0-9_-]*)$/, match => (match.startsWith(' ') ? ' ' : '')).trimStart()
 }
 
-function replaceSlashQueryWithSkill(value: string, skill: SkillSummary): string {
-  const token = `/${skill.name}`
-  if (getSlashQuery(value) === undefined) return `${value}${value.endsWith(' ') || !value ? '' : ' '}${token} `
+function replaceSlashQueryWithToken(value: string, token: string): string {
+  if (getSlashQuery(value) === undefined) return `${value}${value.endsWith(' ') || !value ? '' : ' '}${token}`
   return value.replace(/(?:^|\s)\/([A-Za-z0-9_-]*)$/, match => {
     const prefix = match.startsWith(' ') ? ' ' : ''
-    return `${prefix}${token} `
+    return `${prefix}${token}`
   })
+}
+
+function matchesSlashCommand(command: SlashCommand, query: string): boolean {
+  if (!query) return true
+  const normalized = query.toLowerCase()
+  return (
+    command.name.toLowerCase().includes(normalized) ||
+    command.description.toLowerCase().includes(normalized) ||
+    fuzzyMatch(command.name.toLowerCase(), normalized)
+  )
 }
 
 function extractSkillTokenNames(value: string): Set<string> {
@@ -262,7 +331,10 @@ function sameSkillIds(left: SkillSummary[], right: SkillSummary[]): boolean {
 
 function renderHighlightedValue(value: string, skills: SkillSummary[]): ReactNode[] {
   if (!value) return []
-  const knownNames = new Set(skills.map(skill => skill.name.toLowerCase()))
+  const knownNames = new Set([
+    ...skills.map(skill => skill.name.toLowerCase()),
+    ...SLASH_COMMANDS.map(command => command.name.toLowerCase()),
+  ])
   const parts: ReactNode[] = []
   let cursor = 0
 

@@ -228,6 +228,7 @@
   position: relative;
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--review-width) var(--terminal-width);
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -240,6 +241,7 @@
 
 .workspace {
   grid-column: 2;
+  grid-row: 1;
   min-width: 0;
   overflow: hidden auto;
 }
@@ -250,14 +252,17 @@
 
 .research-subagent-panel {
   grid-column: 3;
+  grid-row: 1;
 }
 
 .review-panel {
   grid-column: 4;
+  grid-row: 1;
 }
 
 .terminal-panel {
   grid-column: 5;
+  grid-row: 1;
 }
 
 .app-layout.sidebar-hidden .research-subagent-panel {
@@ -275,6 +280,7 @@
 .app-sidebar {
   position: relative;
   grid-column: 1;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   height: 100%;

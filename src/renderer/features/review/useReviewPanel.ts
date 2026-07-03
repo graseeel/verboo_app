@@ -18,11 +18,10 @@ export function useReviewPanel() {
   const [target, setTarget] = useState<ReviewTarget | undefined>()
 
   const open = useCallback((workingDirectory: string, files: WorkspaceChangeEntry[], index: number) => {
-    if (files.length === 0) return
     setTarget({
       workingDirectory,
       files,
-      index: Math.max(0, Math.min(index, files.length - 1)),
+      index: files.length > 0 ? Math.max(0, Math.min(index, files.length - 1)) : 0,
     })
     setReviewOpen(true)
   }, [])

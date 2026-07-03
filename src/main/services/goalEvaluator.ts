@@ -1,4 +1,8 @@
-import type { AgentResultSnapshot, GoalEvaluationInput, GoalEvaluationResult, GoalState, TokenUsage, TranscriptItem } from '../../shared/types'
+import { spawn } from 'node:child_process'
+import { dirname, join } from 'node:path'
+import { createInterface } from 'node:readline'
+import type { AgentResultSnapshot, GoalEvaluationResult, GoalState, TranscriptItem } from '../../shared/types'
+import { createNodeRuntimeEnv, resolveExternalNodePath, resolveNodeRuntimePath } from './nodeRuntime'
 
 type EvaluateGoalInput = {
   goal: GoalState
@@ -18,9 +22,8 @@ export async function evaluateGoal(input: EvaluateGoalInput): Promise<EvaluateGo
   const recentItems = conversationItems.slice(-30)
 
   const evaluationPrompt = buildEvaluationPrompt(goal, recentItems, latestResult)
-  const cliPath = process.env.VERBOO_CLI_PATH ?? 'verboo'
 
-  return runGoalEvaluation(cliPath, evaluationPrompt, workingDirectory, goal)
+  return runGoalEvaluation(evaluationPrompt, workingDirectory)
 }
 
 function buildEvaluationPrompt(
@@ -84,22 +87,17 @@ function buildEvaluationPrompt(
 }
 
 async function runGoalEvaluation(
-  cliPath: string,
   prompt: string,
   workingDirectory: string,
-  goal: GoalState,
 ): Promise<EvaluateGoalOutput> {
-  const { execa } = await import('execa')
+  // Run the bundled Verboo CLI through the resolved Node runtime — exactly the
+  // path the rest of the app uses. Never assume a global `verboo` binary on
+  // PATH: it only exists on machines that happen to have installed one, so
+  // relying on it would break the goal evaluator for everyone else (and silently
+  // fall back to "continue" forever).
+  const stdout = await runEvaluationCli(['--print', prompt, '--output-format', 'json'], workingDirectory, 30_000)
 
-  const result = await execa(cliPath, ['--print', prompt, '--output-format', 'json'], {
-    cwd: workingDirectory,
-    timeout: 30_000,
-    reject: false,
-  })
-
-  const stdout = result.stdout ?? ''
-
-  const parsed = parseJsonFromOutput(stdout)
+  const parsed = extractEvaluationJson(stdout)
   if (!parsed || !isValidEvaluation(parsed)) {
     return {
       evaluation: {
@@ -114,8 +112,8 @@ async function runGoalEvaluation(
 
   const evaluation: GoalEvaluationResult = {
     decision: parsed.decision as GoalEvaluationResult['decision'],
-    confidence: parsed.confidence ?? 0,
-    reason: parsed.reason ?? '',
+    confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
+    reason: typeof parsed.reason === 'string' ? parsed.reason : '',
     evidence: Array.isArray(parsed.evidence) ? parsed.evidence.filter((e: unknown): e is string => typeof e === 'string') : [],
     missing: Array.isArray(parsed.missing) ? parsed.missing.filter((e: unknown): e is string => typeof e === 'string') : [],
     nextMessage: typeof parsed.nextMessage === 'string' ? parsed.nextMessage : undefined,
@@ -125,6 +123,57 @@ async function runGoalEvaluation(
     evaluation,
     userMessage: evaluation.decision === 'complete' ? undefined : evaluation.nextMessage,
   }
+}
+
+function resolveCliPath(): string {
+  const packagePath = require.resolve('@verboo/code/package.json')
+  const packageJson = require(packagePath) as { bin?: string | Record<string, string> }
+  const binPath = typeof packageJson.bin === 'string' ? packageJson.bin : packageJson.bin?.verboo
+  return resolveExternalNodePath(join(dirname(packagePath), binPath ?? 'dist/cli.mjs'))
+}
+
+async function runEvaluationCli(args: string[], workingDirectory: string, timeoutMs: number): Promise<string> {
+  const nodePath = await resolveNodeRuntimePath()
+  const cliPath = resolveCliPath()
+  const child = spawn(nodePath, [cliPath, ...args], {
+    cwd: workingDirectory,
+    env: createNodeRuntimeEnv(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  return new Promise<string>(resolve => {
+    const output: string[] = []
+    let settled = false
+    const finish = (value: string) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM')
+      finish(output.join('\n'))
+    }, timeoutMs)
+
+    createInterface({ input: child.stdout }).on('line', line => output.push(line))
+    child.on('error', () => finish(output.join('\n')))
+    child.on('close', () => finish(output.join('\n')))
+  })
+}
+
+// The CLI's --output-format json wraps the model reply in an envelope:
+//   {"type":"result", ..., "result":"<the model's text>", ...}
+// The evaluation JSON the model produced lives inside .result as a (stringified)
+// object, so parse the envelope first and pull it out. Fall back to reading the
+// top level directly in case the CLI ever emits the evaluation unwrapped.
+function extractEvaluationJson(stdout: string): Record<string, unknown> | undefined {
+  const envelope = parseFirstJsonObject(stdout)
+  if (envelope && typeof envelope.result === 'string') {
+    const inner = parseFirstJsonObject(envelope.result)
+    if (inner && typeof inner.decision === 'string') return inner
+  }
+  if (envelope && typeof envelope.decision === 'string') return envelope
+  return undefined
 }
 
 function isValidEvaluation(value: unknown): value is {
@@ -140,7 +189,7 @@ function isValidEvaluation(value: unknown): value is {
   return candidate.decision === 'complete' || candidate.decision === 'continue' || candidate.decision === 'blocked'
 }
 
-function parseJsonFromOutput(text: string): Record<string, unknown> | undefined {
+function parseFirstJsonObject(text: string): Record<string, unknown> | undefined {
   const jsonMatch = text.match(/\{[\s\S]*\}/)
   if (!jsonMatch) return undefined
   try {

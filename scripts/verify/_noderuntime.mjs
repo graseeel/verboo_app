@@ -12,9 +12,13 @@ async function resolveNodeRuntime(candidates, electronPath, check) {
 }
 async function resolveNodeRuntimePath() {
   if (cachedNodePath) return cachedNodePath;
-  const resolved = await resolveNodeRuntime(nodeRuntimeCandidates(), process.execPath, isExecutable);
+  const candidates = process.env.VERBOO_FORCE_ELECTRON_NODE === "1" ? [] : nodeRuntimeCandidates();
+  const resolved = await resolveNodeRuntime(candidates, process.execPath, isExecutable);
   cachedNodePath = resolved.path;
   cachedIsElectron = resolved.isElectron;
+  if (process.env.VERBOO_DEBUG_NODE === "1") {
+    console.error(`[verboo:node] runtime=${resolved.isElectron ? "electron-bundled" : resolved.path}`);
+  }
   return cachedNodePath;
 }
 function createNodeRuntimeEnv(extra = {}) {

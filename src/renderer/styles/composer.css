@@ -28,6 +28,13 @@
   backdrop-filter: blur(10px);
 }
 
+.composer[data-command-mode="goal"] {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border-strong));
+  box-shadow:
+    0 10px 28px color-mix(in srgb, black 28%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 .permission-approval-panel {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) auto;
@@ -120,6 +127,27 @@
   overflow: hidden;
 }
 
+.composer-goal-mode {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 6px;
+  height: 24px;
+  margin-left: 4px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: color-mix(in srgb, var(--accent-strong) 82%, var(--text-muted));
+  font-size: 12px;
+  font-weight: 720;
+  line-height: 1;
+}
+
+.composer-goal-mode svg {
+  flex: 0 0 auto;
+}
+
 .composer textarea,
 .composer-highlight {
   width: 100%;
@@ -164,9 +192,11 @@
 .composer-skill-token {
   display: inline;
   border-radius: 7px;
-  background: color-mix(in srgb, var(--accent-soft) 76%, transparent);
+  /* Clearly-visible purple highlight. The old accent-soft mix resolved to
+     ~10% opacity, so the skill token was almost imperceptible while typing. */
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
   color: transparent;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-soft) 76%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent);
   font-weight: inherit;
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
@@ -543,7 +573,7 @@
 .model-option:hover,
 .model-option.selected,
 .access-option:hover {
-  background: color-mix(in srgb, var(--accent-soft) 68%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .skill-name {
@@ -565,6 +595,11 @@
 
 .skill-source.untrusted {
   color: var(--amber);
+}
+
+.skill-source.command {
+  color: var(--accent-strong);
+  font-weight: 640;
 }
 
 .empty-menu {

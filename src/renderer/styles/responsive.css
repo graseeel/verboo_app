@@ -159,10 +159,12 @@
 @media (max-width: 900px) {
   :root {
     --terminal-width: 0px !important;
+    --review-width: 0px !important;
     --subagents-panel-width: 0px !important;
   }
 
   .terminal-panel,
+  .review-panel,
   .research-subagent-panel {
     display: none !important;
   }

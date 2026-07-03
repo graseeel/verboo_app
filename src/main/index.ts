@@ -17,6 +17,7 @@ import { defaultUserSettings, SettingsService } from './services/settingsService
 import { SkillsService } from './services/skillsService'
 import { TrayStatusService } from './services/trayStatusService'
 import { VisionFallbackService } from './services/visionFallbackService'
+import { readWorkspaceBranchInfo, switchWorkspaceBranch } from './services/workspaceBranchService'
 import { readWorkspaceChangeSummary, readWorkspaceReviewMetadata } from './services/workspaceChangeService'
 import { readFileDiff, resolveRepoRoot, resolveSafePath, revertFile } from './services/fileReviewService'
 import type { FileDiffStatus } from '../shared/types'
@@ -205,6 +206,12 @@ function registerIpc(): void {
   })
   ipcMain.handle('workspace:changes', (_event, workingDirectory: string) => readWorkspaceChangeSummary(workingDirectory))
 
+  ipcMain.handle('workspace:branches', (_event, workingDirectory: string) => readWorkspaceBranchInfo(workingDirectory))
+
+  ipcMain.handle('workspace:switch-branch', (_event, workingDirectory: string, branchName: string) =>
+    switchWorkspaceBranch(workingDirectory, branchName),
+  )
+
   ipcMain.handle('workspace:review-metadata', (_event, workingDirectory: string) =>
     readWorkspaceReviewMetadata(workingDirectory),
   )
@@ -218,10 +225,10 @@ function registerIpc(): void {
   )
 
   ipcMain.handle('workspace:open-external', async (_event, workingDirectory: string, filePath: string) => {
-    const root = await resolveRepoRoot(workingDirectory)
+    const root = await resolveRepoRoot(workingDirectory) ?? workingDirectory
     if (!root) return { ok: false, message: 'Abrir arquivo exige um caminho seguro.' }
     const target = resolveSafePath(root, filePath)
-    if (!target) return { ok: false, message: 'Caminho fora do repositório.' }
+    if (!target) return { ok: false, message: 'Caminho fora da pasta de trabalho.' }
     const error = await shell.openPath(target)
     return { ok: error === '', message: error || undefined }
   })

@@ -137,6 +137,8 @@ export async function readWorkspaceReviewMetadata(workingDirectory: string): Pro
   const repositoryRoot = rootResult.stdout.trim()
   const remoteResult = await runGit(repositoryRoot, ['remote', '-v'])
   const isGitHubRepository = remoteResult.ok && /\bgithub\.com[:/]/i.test(remoteResult.stdout)
+  const currentBranch = await readCurrentBranch(repositoryRoot)
+  const upstreamBranch = await readUpstreamBranch(repositoryRoot)
 
   if (isGitHubRepository) {
     return {
@@ -146,6 +148,8 @@ export async function readWorkspaceReviewMetadata(workingDirectory: string): Pro
       isGitRepository: true,
       isGitHubRepository: true,
       repositoryRoot,
+      currentBranch,
+      upstreamBranch,
       capabilities: {
         canDiff: true,
         canRevert: true,
@@ -161,10 +165,24 @@ export async function readWorkspaceReviewMetadata(workingDirectory: string): Pro
     isGitRepository: true,
     isGitHubRepository: false,
     repositoryRoot,
+    currentBranch,
+    upstreamBranch,
     capabilities: {
       canDiff: true,
       canRevert: true,
       canOpenExternal: true,
     },
   }
+}
+
+async function readCurrentBranch(root: string): Promise<string | undefined> {
+  const branchResult = await runGit(root, ['branch', '--show-current'])
+  if (branchResult.ok && branchResult.stdout.trim()) return branchResult.stdout.trim()
+  const detachedResult = await runGit(root, ['rev-parse', '--short', 'HEAD'])
+  return detachedResult.ok ? detachedResult.stdout.trim() || undefined : undefined
+}
+
+async function readUpstreamBranch(root: string): Promise<string | undefined> {
+  const result = await runGit(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
+  return result.ok ? result.stdout.trim() || undefined : undefined
 }

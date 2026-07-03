@@ -23,6 +23,8 @@ import type {
   SkillSummary,
   TerminalDataEvent,
   UserSettings,
+  WorkspaceBranchInfo,
+  WorkspaceBranchSwitchResult,
   WorkspaceChangeSummary,
   WorkspaceReviewMetadata,
 } from '../shared/types'
@@ -49,6 +51,10 @@ const api = {
   listSkills: (workingDirectory: string) => ipcRenderer.invoke('skills:list', workingDirectory) as Promise<SkillSummary[]>,
   openUserSkillsFolder: () => ipcRenderer.invoke('skills:open-user-folder') as Promise<string>,
   getWorkspaceChanges: (workingDirectory: string) => ipcRenderer.invoke('workspace:changes', workingDirectory) as Promise<WorkspaceChangeSummary>,
+  getWorkspaceBranches: (workingDirectory: string) =>
+    ipcRenderer.invoke('workspace:branches', workingDirectory) as Promise<WorkspaceBranchInfo>,
+  switchWorkspaceBranch: (workingDirectory: string, branchName: string) =>
+    ipcRenderer.invoke('workspace:switch-branch', workingDirectory, branchName) as Promise<WorkspaceBranchSwitchResult>,
   evaluateGoal: (input: GoalEvaluationInput) => ipcRenderer.invoke('goal:evaluate', input) as Promise<{ evaluation: GoalEvaluationResult; userMessage?: string }>,
   pickFiles: () => ipcRenderer.invoke('files:pick') as Promise<AttachmentMeta[]>,
   pickFolder: () => ipcRenderer.invoke('files:pick-folder') as Promise<string | undefined>,

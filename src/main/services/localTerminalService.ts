@@ -200,7 +200,7 @@ export class LocalTerminalService {
 
 function shellArgsFor(shell: string): string[] {
   const shellName = shell.split('/').at(-1) ?? shell
-  return shellName === 'zsh' ? ['-f', '-o', 'NO_PROMPT_SP', '-o', 'NO_PROMPT_CR'] : []
+  return shellName === 'zsh' ? ['-l', '-o', 'NO_PROMPT_SP', '-o', 'NO_PROMPT_CR'] : []
 }
 
 function sanitizeStartupTerminalData(data: string): string {

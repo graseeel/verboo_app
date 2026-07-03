@@ -1295,10 +1295,10 @@
 
 .message-skills span {
   padding: 3px 7px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
   border-radius: 999px;
-  color: color-mix(in srgb, var(--accent-strong) 78%, var(--text-muted));
-  background: color-mix(in srgb, var(--accent-soft) 54%, transparent);
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   font-size: 12px;
 }
 
@@ -1484,15 +1484,21 @@ button.change-summary-more {
   border: 0;
   border-top: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
   border-radius: 0;
+  /* Dark by default: recede into the elevated card so the rows read as part of
+     the app's dark surface, not as washed-out light bars. */
+  background: transparent;
   font-family: inherit;
   font-size: 12.5px;
   text-align: left;
   cursor: pointer;
+  transition: background-color 130ms ease-out, color 130ms ease-out;
 }
 
 button.change-summary-file:hover:not(:disabled),
 button.change-summary-more:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent-soft) 22%, transparent);
+  /* Gentle, clearly-visible purple wash on hover (the previous accent-soft mix
+     landed near 3% opacity — effectively invisible). */
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--text);
 }
 

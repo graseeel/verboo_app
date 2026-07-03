@@ -93,10 +93,13 @@ function TurnView({ entry, thinking, onOpenReview, reviewMetadata }: {
 }
 
 const MessageArticle = memo(function MessageArticle({ item, children }: { item: TranscriptItem; children?: ReactNode }) {
+  const visibleText = visibleTextForItem(item)
+
   return (
     <article
       className={`message-row ${item.role} ${item.kind ?? 'message'}`}
       data-activity={item.activityKind}
+      data-command={isInitialGoalUserItem(item) ? 'goal' : undefined}
     >
       <div className="message-meta">
         {item.kind === 'activity' && <ActivityIcon item={item} />}
@@ -123,13 +126,32 @@ const MessageArticle = memo(function MessageArticle({ item, children }: { item: 
       <div className={`message-text ${item.streaming ? 'streaming-text' : ''}`}>
         {item.kind === 'summary' && item.activityDetail
           ? item.activityDetail
-          : item.text || (item.streaming ? '...' : '')}
+          : visibleText || (item.streaming ? '...' : '')}
         {item.kind !== 'summary' && item.activityDetail && <span className="message-detail">{item.activityDetail}</span>}
       </div>
       {children}
     </article>
   )
 })
+
+function visibleTextForItem(item: TranscriptItem): string {
+  if (isInitialGoalUserItem(item)) return visibleInitialGoalCommand(item.text)
+  return item.text
+}
+
+function isInitialGoalUserItem(item: TranscriptItem): boolean {
+  return item.role === 'user' && item.id.startsWith('user:goal:')
+}
+
+function isInternalGoalContinuationItem(item: TranscriptItem): boolean {
+  return item.role === 'user' && item.id.startsWith('user:goal-continue:')
+}
+
+function visibleInitialGoalCommand(text: string): string {
+  const goalLine = text.match(/^## Goal:\s*(.+)$/m)
+  if (goalLine?.[1]) return `/goal ${goalLine[1].trim()}`
+  return text.trim().startsWith('/goal') ? text.trim() : `/goal ${text.trim()}`
+}
 
 function ActivityPanel({ activities, summary }: { activities: TranscriptItem[]; summary?: TranscriptItem }) {
   if (activities.length === 0 && !summary) return null
@@ -200,17 +222,19 @@ function changeSummarySubtitle(summary: NonNullable<TranscriptItem['changeSummar
 function ChangeSummaryCard({ summary, onOpenReview, reviewMetadata }: { summary: NonNullable<TranscriptItem['changeSummary']>; onOpenReview?: TranscriptProps['onOpenReview']; reviewMetadata?: WorkspaceReviewMetadata }) {
   const visibleFiles = summary.files.slice(0, 3)
   const hiddenCount = Math.max(0, summary.totalFiles - visibleFiles.length)
+  const canOpenReview = Boolean(onOpenReview && reviewMetadata?.capabilities.canDiff !== false)
 
   const handleClickFile = (index: number) => {
+    if (!canOpenReview) return
     onOpenReview?.(summary.files, index)
   }
 
   return (
     <div className="change-summary-card">
       <div className="change-summary-card-header"
-        role={onOpenReview ? 'button' : undefined}
-        tabIndex={onOpenReview ? 0 : undefined}
-        title={onOpenReview ? 'Abrir revisão' : ''}
+        role={canOpenReview ? 'button' : undefined}
+        tabIndex={canOpenReview ? 0 : undefined}
+        title={canOpenReview ? 'Abrir revisão' : ''}
         onClick={() => handleClickFile(0)}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClickFile(0) } }}
       >
@@ -229,7 +253,7 @@ function ChangeSummaryCard({ summary, onOpenReview, reviewMetadata }: { summary:
             key={file.path}
             type="button"
             className="change-summary-file"
-            disabled={!onOpenReview || reviewMetadata?.capabilities.canDiff === false}
+            disabled={!canOpenReview}
             onClick={() => handleClickFile(index)}
             title={file.path}
           >
@@ -244,7 +268,7 @@ function ChangeSummaryCard({ summary, onOpenReview, reviewMetadata }: { summary:
           <button
             type="button"
             className="change-summary-more"
-            disabled={!onOpenReview || reviewMetadata?.capabilities.canDiff === false}
+            disabled={!canOpenReview}
             onClick={() => handleClickFile(visibleFiles.length)}
           >Ver mais {hiddenCount} {hiddenCount === 1 ? 'arquivo' : 'arquivos'}</button>
         )}
@@ -294,6 +318,7 @@ function buildTranscriptEntries(items: TranscriptItem[]): TranscriptEntry[] {
   const entries: TranscriptEntry[] = []
   for (const item of items) {
     if (item.role === 'system' && item.kind !== 'summary') continue
+    if (isInternalGoalContinuationItem(item)) continue
     const turnId = turnIdOf(item)
     if (turnId && turns.has(turnId)) {
       if (emitted.has(turnId)) continue
