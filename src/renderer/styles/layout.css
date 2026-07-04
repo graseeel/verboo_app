@@ -232,11 +232,16 @@
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  transition: grid-template-columns 180ms ease-out;
+  /* Same spring-like ease as dropdowns/modals. The sidebar column animates by
+     its --sidebar-width value only (like the terminal/review panels) — the
+     column list itself never changes, so the whole layout glides. */
+  transition: grid-template-columns 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.app-layout.sidebar-hidden {
-  grid-template-columns: minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--review-width) var(--terminal-width);
+/* During a manual resize drag the panel must follow the pointer 1:1 —
+   any easing here reads as rubber-band lag. */
+.app-layout.is-resizing {
+  transition: none;
 }
 
 .workspace {
@@ -244,10 +249,6 @@
   grid-row: 1;
   min-width: 0;
   overflow: hidden auto;
-}
-
-.app-layout.sidebar-hidden .workspace {
-  grid-column: 1;
 }
 
 .research-subagent-panel {
@@ -265,18 +266,6 @@
   grid-row: 1;
 }
 
-.app-layout.sidebar-hidden .research-subagent-panel {
-  grid-column: 2;
-}
-
-.app-layout.sidebar-hidden .review-panel {
-  grid-column: 3;
-}
-
-.app-layout.sidebar-hidden .terminal-panel {
-  grid-column: 4;
-}
-
 .app-sidebar {
   position: relative;
   grid-column: 1;
@@ -290,9 +279,10 @@
   background: color-mix(in srgb, var(--bg-elevated) 58%, transparent);
   overflow: hidden;
   transition:
-    background-color 180ms ease-out,
-    border-color 180ms ease-out,
-    opacity 180ms ease-out;
+    background-color 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    padding 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .app-sidebar.compact {
@@ -446,6 +436,46 @@
   padding: 0;
 }
 
+/* Compact mode used to snap labels away with a bare display:none while the
+   width was still animating — that mismatch read as lag. The labels now fade
+   in sync with the width animation (display transitions via allow-discrete,
+   and @starting-style animates the reappearance). */
+.app-sidebar .sidebar-action span,
+.app-sidebar .sidebar-section-heading h2,
+.app-sidebar .sidebar-section > h2,
+.app-sidebar .sidebar-empty,
+.app-sidebar .sidebar-search,
+.app-sidebar .project-name-button,
+.app-sidebar .project-chat-list,
+.app-sidebar .conversation-main span,
+.app-sidebar .conversation-main small,
+.app-sidebar .account-brand strong,
+.app-sidebar .account-brand small,
+.app-sidebar .account-disclaimer,
+.app-sidebar .account-profile > span:last-child {
+  transition:
+    opacity 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    display 200ms allow-discrete;
+}
+
+@starting-style {
+  .app-sidebar .sidebar-action span,
+  .app-sidebar .sidebar-section-heading h2,
+  .app-sidebar .sidebar-section > h2,
+  .app-sidebar .sidebar-empty,
+  .app-sidebar .sidebar-search,
+  .app-sidebar .project-name-button,
+  .app-sidebar .project-chat-list,
+  .app-sidebar .conversation-main span,
+  .app-sidebar .conversation-main small,
+  .app-sidebar .account-brand strong,
+  .app-sidebar .account-brand small,
+  .app-sidebar .account-disclaimer,
+  .app-sidebar .account-profile > span:last-child {
+    opacity: 0;
+  }
+}
+
 .app-sidebar.compact .sidebar-action span,
 .app-sidebar.compact .sidebar-section-heading h2,
 .app-sidebar.compact .sidebar-section > h2,
@@ -463,6 +493,7 @@
 .app-sidebar.compact .account-profile > span:last-child,
 .app-sidebar.compact .profile-menu {
   display: none;
+  opacity: 0;
 }
 
 .app-sidebar.compact .sidebar-section-heading {
@@ -926,20 +957,33 @@
 .context-advice {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  gap: 20px;
+  padding-top: 2px;
 }
 
+/* Plain two-column helper text — the previous bordered boxes were cards
+   nested inside a card, which added chrome without meaning. */
 .context-advice div {
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--bg) 40%, transparent);
+  display: grid;
+  gap: 4px;
+  align-content: start;
+}
+
+.context-advice strong {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.context-advice p {
+  color: var(--text-dim);
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 
 .dashboard-link {
-  width: 100%;
-  min-height: 38px;
-  margin-top: 16px;
+  justify-self: start;
+  min-height: 34px;
+  padding: 0 14px;
 }
 
 .archived-panel {

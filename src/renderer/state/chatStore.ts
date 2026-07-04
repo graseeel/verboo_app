@@ -1,6 +1,8 @@
 import type { ChatStore, StoredConversation, TranscriptItem } from '../../shared/types'
 
 export const CHAT_STORE_KEY = 'verboo:chat-store:v1'
+export const DEFAULT_CONVERSATION_TITLE = 'Novo chat'
+export const DEFAULT_PROJECT_NAME = 'Projeto'
 
 type LegacyChatStore = Omit<ChatStore, 'version'> & { version: 1 }
 type PersistedChatStore = ChatStore | LegacyChatStore
@@ -37,7 +39,7 @@ export function createConversation(projectId?: string): StoredConversation {
   const now = Date.now()
   return {
     id: `chat:${crypto.randomUUID()}`,
-    title: 'Novo chat',
+    title: DEFAULT_CONVERSATION_TITLE,
     projectId,
     items: [initialSystemMessage()],
     createdAt: now,
@@ -49,7 +51,7 @@ export function createProject(path: string, name = basename(path)): ChatStore['p
   const now = Date.now()
   return {
     id: `project:${crypto.randomUUID()}`,
-    name: name || 'Projeto',
+    name: name || DEFAULT_PROJECT_NAME,
     path,
     collapsed: false,
     createdAt: now,
@@ -69,7 +71,7 @@ export function initialSystemMessage(): TranscriptItem {
 export function titleFromMessage(message: string): string {
   const firstLine = message.trim().split('\n')[0] ?? ''
   const compact = firstLine.replace(/\s+/g, ' ')
-  if (!compact) return 'Novo chat'
+  if (!compact) return DEFAULT_CONVERSATION_TITLE
   return compact.length > 42 ? `${compact.slice(0, 39)}...` : compact
 }
 

@@ -1,6 +1,7 @@
 import { FileSearch, PanelLeftClose, PanelLeftOpen, Terminal as TerminalIcon } from 'lucide-react'
 import { SlotText } from 'slot-text/react'
 import mascotUrl from '../../../assets/branding/verboo-mascot.png'
+import { useI18n } from '../i18n'
 
 type TopBarProps = {
   sidebarVisible: boolean
@@ -25,6 +26,8 @@ export function TopBar({
   reviewUnavailableReason,
   onToggleReview,
 }: TopBarProps) {
+  const { t } = useI18n()
+
   return (
     <header className="topbar" onDoubleClick={() => window.verboo.toggleWindowZoom()}>
       <button
@@ -34,8 +37,8 @@ export function TopBar({
           event.stopPropagation()
           onToggleSidebar()
         }}
-        data-tooltip={sidebarVisible ? 'Ocultar barra lateral' : 'Mostrar barra lateral'}
-        aria-label="Alternar barra lateral"
+        data-tooltip={sidebarVisible ? t('topbar.hideSidebar') : t('topbar.showSidebar')}
+        aria-label={t('topbar.toggleSidebar')}
       >
         {sidebarVisible ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
       </button>
@@ -58,9 +61,9 @@ export function TopBar({
             event.stopPropagation()
             onToggleTerminal()
           }}
-          data-tooltip={terminalOpen ? 'Ocultar terminal local' : 'Abrir terminal local'}
+          data-tooltip={terminalOpen ? t('topbar.hideTerminal') : t('topbar.openTerminal')}
           data-tooltip-align="end"
-          aria-label={terminalOpen ? 'Close local terminal' : 'Open local terminal'}
+          aria-label={terminalOpen ? t('topbar.hideTerminal') : t('topbar.openTerminal')}
         >
           <TerminalIcon size={15} />
         </button>
@@ -71,9 +74,9 @@ export function TopBar({
             event.stopPropagation()
             onToggleReview()
           }}
-          data-tooltip={reviewOpen ? 'Ocultar revisão de arquivos' : 'Abrir revisão de arquivos'}
+          data-tooltip={reviewOpen ? t('topbar.hideReview') : t('topbar.openReview')}
           data-tooltip-align="end"
-          aria-label={reviewOpen ? 'Close file review' : 'Open file review'}
+          aria-label={reviewOpen ? t('topbar.hideReview') : t('topbar.openReview')}
         >
           <FileSearch size={15} />
         </button>

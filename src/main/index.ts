@@ -256,6 +256,15 @@ function registerIpc(): void {
     return attachments
   })
 
+  ipcMain.handle('files:inspect', async (_event, paths: unknown) => {
+    const filePaths = Array.isArray(paths)
+      ? Array.from(new Set(paths.filter((path): path is string => typeof path === 'string' && path.length > 0))).slice(0, 30)
+      : []
+    const attachments = await inspectAttachments(filePaths)
+    attachments.forEach(attachment => approvedAttachmentPaths.add(attachment.path))
+    return attachments
+  })
+
   ipcMain.handle('files:pick-folder', async () => {
     if (!mainWindow) return undefined
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -277,6 +286,7 @@ function registerIpc(): void {
   ipcMain.handle('agent:send', async (_event, request: AgentTurnRequest, resumeSessionId?: string) => {
     const settings = await userSettings.getSettings()
     const safeRequest = await sanitizeAgentTurnRequest(request)
+    emitImagePreparationActivity(safeRequest, settings)
     const preparedRequest = await visionFallback.prepareRequest(safeRequest)
     return agentRuntime.sendTurn(preparedRequest, event => handleAgentEvent(event, preparedRequest, settings), settings, resumeSessionId)
   })
@@ -344,7 +354,7 @@ async function sanitizeAgentTurnRequest(request: AgentTurnRequest): Promise<Agen
   const accessMode = VALID_ACCESS_MODES.has(request.accessMode) ? request.accessMode : 'approval'
   const model = request.model && request.model.startsWith('-') ? undefined : request.model
 
-  let workingDirectory = request.workingDirectory
+  let workingDirectory = safeWorkingDirectoryCandidate(request.workingDirectory)
   try {
     const stats = await stat(workingDirectory)
     if (!stats.isDirectory()) workingDirectory = app.getPath('home')
@@ -355,6 +365,11 @@ async function sanitizeAgentTurnRequest(request: AgentTurnRequest): Promise<Agen
   const attachments = request.attachments?.filter(attachment => approvedAttachmentPaths.has(attachment.path))
 
   return { ...request, accessMode, model, workingDirectory, attachments }
+}
+
+function safeWorkingDirectoryCandidate(workingDirectory?: string): string {
+  const trimmed = workingDirectory?.trim()
+  return trimmed && trimmed !== '/' && trimmed !== '.' ? trimmed : app.getPath('home')
 }
 
 function handleAgentEvent(event: AgentEvent, request: AgentTurnRequest, settings: UserSettings): void {
@@ -386,21 +401,24 @@ function handleAgentEvent(event: AgentEvent, request: AgentTurnRequest, settings
     const status = event.runtimeStatus
     if (status?.kind === 'permission') {
       trayStatus.update({ ...baseState, execution: 'permission', label: status.label })
-      if (settings.permissionNotifications) showNotification('Verboo precisa de permissão', 'Revise a solicitação no app.')
+      if (settings.permissionNotifications) showNotificationText(settings, 'permission')
     }
     if (status?.kind === 'question') {
       trayStatus.update({ ...baseState, execution: 'permission', label: status.label })
-      if (settings.questionNotifications) showNotification('Verboo precisa de uma resposta', 'Volte ao app para continuar.')
+      if (settings.questionNotifications) showNotificationText(settings, 'question')
     }
     if (status?.kind === 'tool') {
       trayStatus.update({ ...baseState, execution: 'tool', label: status.label })
+    }
+    if (event.runtimeActivity?.kind === 'image') {
+      trayStatus.update({ ...baseState, execution: 'tool', label: 'reading image' })
     }
     return
   }
 
   if (event.type === 'error') {
     trayStatus.update({ ...baseState, execution: 'error', label: 'error' })
-    showCompletionNotification(settings, 'Verboo encontrou um erro', event.message)
+    showCompletionNotification(settings, notificationText(settings, 'error').title, event.message)
     return
   }
 
@@ -408,11 +426,35 @@ function handleAgentEvent(event: AgentEvent, request: AgentTurnRequest, settings
     trayStatus.update({ ...baseState, execution: event.exitCode === 0 ? 'done' : 'error', label: event.exitCode === 0 ? 'done' : 'error' })
     showCompletionNotification(
       settings,
-      event.exitCode === 0 ? 'Verboo concluiu' : 'Verboo terminou com erro',
+      notificationText(settings, event.exitCode === 0 ? 'done' : 'doneError').title,
       basename(request.workingDirectory || app.getPath('home')),
     )
     setTimeout(() => trayStatus.update({ ...baseState, execution: 'idle', label: 'ready', startedAt: undefined }), 3500)
   }
+}
+
+function emitImagePreparationActivity(request: AgentTurnRequest, settings: UserSettings): void {
+  const imageAttachments = request.attachments?.filter(attachment => attachment.kind === 'image') ?? []
+  if (imageAttachments.length === 0 || !request.turnId) return
+  const names = imageAttachments
+    .map(attachment => attachment.name || attachment.path.split(/[\\/]/).filter(Boolean).at(-1) || 'image')
+    .slice(0, 3)
+  const hiddenCount = Math.max(0, imageAttachments.length - names.length)
+  const detail = hiddenCount > 0 ? `${names.join(', ')} +${hiddenCount}` : names.join(', ')
+  handleAgentEvent({
+    type: 'json',
+    turnId: request.turnId,
+    payload: {
+      type: 'verboo_image_preparation',
+      image_count: imageAttachments.length,
+    },
+    runtimeActivity: {
+      key: `image-preparation:${imageAttachments.map(attachment => attachment.path).join('|')}`,
+      label: 'image_preparation',
+      detail,
+      kind: 'image',
+    },
+  }, request, settings)
 }
 
 function showCompletionNotification(settings: UserSettings, title: string, body: string): void {
@@ -424,6 +466,33 @@ function showCompletionNotification(settings: UserSettings, title: string, body:
 function showNotification(title: string, body: string): void {
   if (!Notification.isSupported()) return
   new Notification({ title, body }).show()
+}
+
+function showNotificationText(settings: UserSettings, key: 'permission' | 'question'): void {
+  const text = notificationText(settings, key)
+  showNotification(text.title, text.body)
+}
+
+function notificationText(settings: UserSettings, key: 'permission' | 'question' | 'error' | 'done' | 'doneError'): { title: string; body: string } {
+  const pt = settings.language === 'pt-BR'
+  const dictionary = {
+    permission: pt
+      ? { title: 'Verboo precisa de permissão', body: 'Revise a solicitação no app.' }
+      : { title: 'Verboo needs permission', body: 'Review the request in the app.' },
+    question: pt
+      ? { title: 'Verboo precisa de uma resposta', body: 'Volte ao app para continuar.' }
+      : { title: 'Verboo needs an answer', body: 'Return to the app to continue.' },
+    error: pt
+      ? { title: 'Verboo encontrou um erro', body: '' }
+      : { title: 'Verboo hit an error', body: '' },
+    done: pt
+      ? { title: 'Verboo concluiu', body: '' }
+      : { title: 'Verboo finished', body: '' },
+    doneError: pt
+      ? { title: 'Verboo terminou com erro', body: '' }
+      : { title: 'Verboo finished with an error', body: '' },
+  }
+  return dictionary[key]
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

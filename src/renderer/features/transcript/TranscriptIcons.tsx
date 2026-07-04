@@ -31,6 +31,8 @@ export function ActionIcon({ kind }: { kind: TurnActionKind }) {
       return <svg {...box}><path d="M4 5l3 3-3 3M9 11h3" /></svg>
     case 'terminal':
       return <svg {...box}><rect x="2.5" y="3.5" width="11" height="9" rx="1.5" /><path d="M5 7l2 1.5L5 10" /></svg>
+    case 'image':
+      return <svg {...box}><rect x="2.5" y="3.5" width="11" height="9" rx="1.5" /><circle cx="6" cy="6.5" r="1" /><path d="M4 11l2.5-2.5L8 10l1.5-1.5L12 11" /></svg>
     case 'permission':
       return <svg {...box}><rect x="4" y="7" width="8" height="6" rx="1" /><path d="M6 7V5.5a2 2 0 0 1 4 0V7" /></svg>
     case 'agent-open':

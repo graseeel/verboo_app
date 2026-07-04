@@ -1,8 +1,9 @@
 import type { TranscriptItem, TurnAction, TurnActionKind, TurnBlock } from '../../../shared/types'
+import type { Translator } from '../../i18n'
 
 const KIND_MAP: Record<string, TurnActionKind> = {
   read: 'read', search: 'search', edit: 'edit', command: 'command',
-  terminal: 'terminal', permission: 'permission', subagent: 'agent-open', tool: 'tool',
+  image: 'image', terminal: 'terminal', permission: 'permission', subagent: 'agent-open', tool: 'tool',
 }
 
 // Walks a turn's already-ordered items (text segments + activity items) into an
@@ -27,34 +28,46 @@ export function groupTurnBlocks(items: TranscriptItem[]): TurnBlock[] {
       continue
     }
     if (item.role === 'assistant') {
+      // Whitespace-only segments (the CLI emits "\n\n" between tool calls) render
+      // nothing but used to split the surrounding actions into separate blocks,
+      // producing a long stack of "Executou comandos" rows. Skip them so all
+      // actions between two real messages collapse into a single block.
+      if (!item.text.trim()) continue
       blocks.push({ kind: 'text', id: item.id, text: item.text, streaming: Boolean(item.streaming) })
     }
   }
   return blocks
 }
 
-const PLURAL: Partial<Record<TurnActionKind, [string, string]>> = {
-  read: ['Leu arquivo', 'Leu arquivos'],
-  search: ['Pesquisou', 'Pesquisou'],
-  edit: ['Editou arquivo', 'Editou arquivos'],
-  create: ['Criou arquivo', 'Criou arquivos'],
-  delete: ['Apagou arquivo', 'Apagou arquivos'],
-  command: ['Executou comando', 'Executou comandos'],
-  terminal: ['Leu terminal', 'Leu terminal'],
-  permission: ['Pediu permissão', 'Pediu permissões'],
-  'agent-open': ['Criou um agente', 'Criou agentes'],
-  'agent-close': ['Fechou um agente', 'Fechou agentes'],
-  tool: ['Usou ferramenta', 'Usou ferramentas'],
+const PLURAL_KEYS: Partial<Record<TurnActionKind, [string, string]>> = {
+  read: ['transcript.readOne', 'transcript.readMany'],
+  search: ['transcript.searchOne', 'transcript.searchMany'],
+  edit: ['transcript.editOne', 'transcript.editMany'],
+  create: ['transcript.createdOne', 'transcript.createdMany'],
+  delete: ['transcript.deletedOne', 'transcript.deletedMany'],
+  command: ['transcript.commandOne', 'transcript.commandMany'],
+  image: ['transcript.imageOne', 'transcript.imageMany'],
+  terminal: ['transcript.terminalOne', 'transcript.terminalMany'],
+  permission: ['transcript.permissionOne', 'transcript.permissionMany'],
+  'agent-open': ['transcript.agentOpenOne', 'transcript.agentOpenMany'],
+  'agent-close': ['transcript.agentCloseOne', 'transcript.agentCloseMany'],
+  tool: ['transcript.toolOne', 'transcript.toolMany'],
 }
 
-export function summarizeActions(actions: TurnAction[]): string {
+export function summarizeActions(actions: TurnAction[], t: Translator): string {
   const counts = new Map<TurnActionKind, number>()
   for (const a of actions) counts.set(a.kind, (counts.get(a.kind) ?? 0) + 1)
   const parts: string[] = []
   for (const [kind, n] of counts) {
-    const forms = PLURAL[kind] ?? ['Ação', 'Ações']
+    const forms = PLURAL_KEYS[kind] ?? ['transcript.actionOne', 'transcript.actionMany']
     parts.push(n === 1 ? forms[0] : `${forms[1]} (${n})`)
   }
-  if (parts.length <= 1) return parts[0] ?? 'Trabalhou'
-  return `${parts.slice(0, -1).join(', ')} e ${parts[parts.length - 1]}`
+  const labels = parts.map(part => {
+    const match = part.match(/^([^()]+)(?: \((\d+)\))?$/)
+    if (!match) return t(part)
+    const [, key, count] = match
+    return count ? `${t(key)} (${count})` : t(key)
+  })
+  if (labels.length <= 1) return labels[0] ?? t('transcript.worked')
+  return `${labels.slice(0, -1).join(', ')} ${t('transcript.and')} ${labels[labels.length - 1]}`
 }

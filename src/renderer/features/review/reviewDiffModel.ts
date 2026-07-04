@@ -1,4 +1,5 @@
 import type { FileDiff, FileDiffStatus, WorkspaceChangeEntry } from '../../../shared/types'
+import type { Translator } from '../../i18n'
 
 export type DiffState = {
   loading: boolean
@@ -22,8 +23,8 @@ export function emptyDiff(file: WorkspaceChangeEntry, message: string): FileDiff
   }
 }
 
-export function statusLabel(status: WorkspaceChangeEntry['status']): string {
-  if (status === 'added' || status === 'untracked') return 'novo'
-  if (status === 'deleted') return 'apagado'
-  return 'editado'
+export function statusLabel(status: WorkspaceChangeEntry['status'], t: Translator): string {
+  if (status === 'added' || status === 'untracked') return t('review.statusAdded')
+  if (status === 'deleted') return t('review.statusDeleted')
+  return t('review.statusModified')
 }

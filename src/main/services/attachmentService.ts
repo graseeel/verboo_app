@@ -63,6 +63,7 @@ async function inspectAttachment(path: string): Promise<AttachmentMeta | undefin
       stat(path),
       readHeader(path),
     ])
+    if (!fileStat.isFile()) return undefined
     const mediaType = detectImageMediaType(path, header)
     const image = mediaType ? nativeImage.createFromPath(path) : undefined
     const size = image && !image.isEmpty() ? image.getSize() : undefined

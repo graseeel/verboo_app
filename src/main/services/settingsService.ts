@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import type { UserSettings } from '../../shared/types'
 
 export const defaultUserSettings: UserSettings = {
+  language: 'en-US',
   defaultAccessMode: 'approval',
   fullAccessEnabled: false,
   lastSelectedModelId: undefined,
@@ -14,6 +15,7 @@ export const defaultUserSettings: UserSettings = {
   completionNotifications: 'background',
   permissionNotifications: true,
   questionNotifications: true,
+  responseEnhancementsEnabled: false,
   personality: 'pragmatic',
   customInstructions: '',
   trustedCommands: [],
@@ -65,6 +67,7 @@ export class SettingsService {
 function normalizeSettings(value: unknown): UserSettings {
   const record = isRecord(value) ? value : {}
   return {
+    language: oneOf(record.language, ['en-US', 'pt-BR'], defaultUserSettings.language),
     defaultAccessMode: normalizeAccessMode(
       record.defaultAccessMode,
       booleanValue(record.fullAccessEnabled, record.defaultAccessMode === 'full'),
@@ -85,6 +88,7 @@ function normalizeSettings(value: unknown): UserSettings {
     ),
     permissionNotifications: booleanValue(record.permissionNotifications, defaultUserSettings.permissionNotifications),
     questionNotifications: booleanValue(record.questionNotifications, defaultUserSettings.questionNotifications),
+    responseEnhancementsEnabled: booleanValue(record.responseEnhancementsEnabled, defaultUserSettings.responseEnhancementsEnabled),
     personality: oneOf(record.personality, ['pragmatic', 'concise', 'explanatory'], defaultUserSettings.personality),
     customInstructions: typeof record.customInstructions === 'string' ? record.customInstructions : '',
     trustedCommands: normalizeTrustedCommands(record.trustedCommands),

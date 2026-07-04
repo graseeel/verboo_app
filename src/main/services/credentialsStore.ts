@@ -13,10 +13,9 @@ export class CredentialsStore {
 
   async getStatus(): Promise<CredentialStatus> {
     const stored = await this.read()
-    const apiKey = this.decryptApiKey(stored)
     return {
-      hasApiKey: Boolean(apiKey),
-      apiKeyHint: apiKey ? stored.apiKeyHint : undefined,
+      hasApiKey: Boolean(stored.encryptedApiKey),
+      apiKeyHint: stored.encryptedApiKey ? stored.apiKeyHint : undefined,
     }
   }
 

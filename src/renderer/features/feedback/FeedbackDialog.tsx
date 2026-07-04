@@ -2,6 +2,7 @@ import { AlertTriangle, Bug, CheckCircle2, Mail, Send, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { FeedbackCategory, FeedbackDiagnostics, FeedbackRequest, FeedbackResult } from '../../../shared/types'
+import { useI18n } from '../../i18n'
 
 type FeedbackErrors = Partial<Record<'title' | 'description', string>>
 
@@ -14,6 +15,7 @@ type FeedbackDialogProps = {
 }
 
 export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onSubmit }: FeedbackDialogProps) {
+  const { t } = useI18n()
   const [category, setCategory] = useState<FeedbackCategory>('bug')
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -38,7 +40,7 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const nextErrors = validateFeedback(title, description)
+    const nextErrors = validateFeedback(title, description, t)
     setErrors(nextErrors)
     if (Object.keys(nextErrors).length > 0 || submitting) return
     setSubmitting(true)
@@ -71,11 +73,11 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
               <Bug size={18} />
             </span>
             <div>
-              <h2 id="feedback-title">Ajuda e feedback</h2>
-              <p>Descreva o problema ou sugestão. Se o Supabase falhar, abriremos um e-mail preenchido.</p>
+              <h2 id="feedback-title">{t('feedback.title')}</h2>
+              <p>{t('feedback.subtitle')}</p>
             </div>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Fechar feedback">
+          <button type="button" className="icon-button" onClick={onClose} aria-label={t('feedback.close')}>
             <X size={17} />
           </button>
         </header>
@@ -83,21 +85,21 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
         <form className="feedback-form" onSubmit={submit} noValidate>
           <div className="feedback-field-group">
             <div className="feedback-field">
-              <label className="feedback-label" htmlFor="feedback-category">Tipo</label>
+              <label className="feedback-label" htmlFor="feedback-category">{t('feedback.type')}</label>
               <select
                 id="feedback-category"
                 value={category}
                 onChange={event => setCategory(event.target.value as FeedbackCategory)}
               >
-                <option value="bug">Bug</option>
-                <option value="feedback">Feedback</option>
-                <option value="question">Dúvida</option>
+                <option value="bug">{t('feedback.bug')}</option>
+                <option value="feedback">{t('feedback.feedback')}</option>
+                <option value="question">{t('feedback.question')}</option>
               </select>
-              <p className="feedback-description">Ajuda a direcionar o envio para o fluxo correto.</p>
+              <p className="feedback-description">{t('feedback.typeHelp')}</p>
             </div>
 
             <div className="feedback-field" data-invalid={Boolean(errors.title)}>
-              <label className="feedback-label" htmlFor="feedback-title-input">Título</label>
+              <label className="feedback-label" htmlFor="feedback-title-input">{t('feedback.fieldTitle')}</label>
               <input
                 id="feedback-title-input"
                 value={title}
@@ -108,17 +110,17 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
                 aria-invalid={Boolean(errors.title)}
                 aria-describedby={errors.title ? 'feedback-title-error' : 'feedback-title-help'}
                 maxLength={160}
-                placeholder="Ex.: Login não valida a sessão do CLI"
+                placeholder={t('feedback.titlePlaceholder')}
               />
               {errors.title ? (
                 <p id="feedback-title-error" className="feedback-error">{errors.title}</p>
               ) : (
-                <p id="feedback-title-help" className="feedback-description">Use uma frase curta para identificar o problema.</p>
+                <p id="feedback-title-help" className="feedback-description">{t('feedback.titleHelp')}</p>
               )}
             </div>
 
             <div className="feedback-field" data-invalid={Boolean(errors.description)}>
-              <label className="feedback-label" htmlFor="feedback-description-input">Descrição</label>
+              <label className="feedback-label" htmlFor="feedback-description-input">{t('feedback.description')}</label>
               <textarea
                 id="feedback-description-input"
                 value={description}
@@ -130,25 +132,25 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
                 aria-describedby={errors.description ? 'feedback-description-error' : 'feedback-description-help'}
                 maxLength={8000}
                 rows={6}
-                placeholder="O que aconteceu, o que você esperava e como reproduzir."
+                placeholder={t('feedback.descriptionPlaceholder')}
               />
               {errors.description ? (
                 <p id="feedback-description-error" className="feedback-error">{errors.description}</p>
               ) : (
-                <p id="feedback-description-help" className="feedback-description">Inclua passos para reproduzir, resultado atual e resultado esperado.</p>
+                <p id="feedback-description-help" className="feedback-description">{t('feedback.descriptionHelp')}</p>
               )}
             </div>
 
             <div className="feedback-field">
-              <label className="feedback-label" htmlFor="feedback-contact-input">Contato para retorno</label>
+              <label className="feedback-label" htmlFor="feedback-contact-input">{t('feedback.contact')}</label>
               <input
                 id="feedback-contact-input"
                 value={contact}
                 onChange={event => setContact(event.target.value)}
                 maxLength={160}
-                placeholder="E-mail, X ou telefone"
+                placeholder={t('feedback.contactPlaceholder')}
               />
-              <p className="feedback-description">Opcional, usado apenas se precisarmos pedir mais detalhes.</p>
+              <p className="feedback-description">{t('feedback.contactHelp')}</p>
             </div>
 
             <label className="feedback-check">
@@ -158,8 +160,8 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
                 onChange={event => setIncludeDiagnostics(event.target.checked)}
               />
               <span>
-                <strong>Incluir diagnósticos do app</strong>
-                <small>Inclui versão, plataforma e estado técnico; não envia transcript completo.</small>
+                <strong>{t('feedback.includeDiagnostics')}</strong>
+                <small>{t('feedback.includeDiagnosticsHelp')}</small>
               </span>
             </label>
           </div>
@@ -167,22 +169,22 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
           {result && (
             <div className={`feedback-result ${result.channel}`}>
               {result.channel === 'supabase' ? <CheckCircle2 size={17} /> : <Mail size={17} />}
-              <span>{result.message}</span>
+              <span>{feedbackResultMessage(result, t)}</span>
             </div>
           )}
 
           {result?.error && (
             <div className="feedback-result warning">
               <AlertTriangle size={17} />
-              <span>{result.error}</span>
+              <span>{t('feedback.submitWarning')}</span>
             </div>
           )}
 
           <footer className="modal-actions">
-            <button type="button" onClick={onClose}>Cancelar</button>
+            <button type="button" onClick={onClose}>{t('common.cancel')}</button>
             <button className="danger-button" type="submit" disabled={submitting}>
               <Send size={16} />
-              {submitting ? 'Enviando' : 'Enviar'}
+              {submitting ? t('feedback.sending') : t('feedback.submit')}
             </button>
           </footer>
         </form>
@@ -191,16 +193,20 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
   )
 }
 
-function validateFeedback(title: string, description: string): FeedbackErrors {
+function validateFeedback(title: string, description: string, t: (key: string) => string): FeedbackErrors {
   const errors: FeedbackErrors = {}
 
   if (title.trim().length < 3) {
-    errors.title = 'Informe um título com pelo menos 3 caracteres.'
+    errors.title = t('feedback.titleError')
   }
 
   if (description.trim().length < 12) {
-    errors.description = 'Descreva o problema ou sugestão com pelo menos 12 caracteres.'
+    errors.description = t('feedback.descriptionError')
   }
 
   return errors
+}
+
+function feedbackResultMessage(result: FeedbackResult, t: (key: string) => string): string {
+  return result.channel === 'supabase' ? t('feedback.sentSupabase') : t('feedback.mailFallback')
 }

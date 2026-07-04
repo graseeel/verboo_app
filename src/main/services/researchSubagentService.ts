@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   AgentEvent,
   AgentTurnRequest,
+  LanguageCode,
   ResearchSubagentRequest,
   ResearchSubagentResult,
   ResearchSubagentsRunRequest,
@@ -21,11 +22,12 @@ export class ResearchSubagentService {
   async runMany(payload: ResearchSubagentsRunRequest, settings?: UserSettings): Promise<ResearchSubagentResult[]> {
     const count = clamp(Math.round(payload.count || 1), 1, MAX_RESEARCH_SUBAGENTS)
     const runId = payload.runId || randomUUID()
+    const language = payload.baseRequest.responseLanguage ?? 'en-US'
     const requests = Array.from({ length: count }, (_, index): ResearchSubagentRequest => ({
       id: randomUUID(),
       index: index + 1,
       total: count,
-      topic: researchTopicFor(index + 1, count, payload.baseRequest.message),
+      topic: researchTopicFor(index + 1, count, payload.baseRequest.message, language),
       baseRequest: payload.baseRequest,
     }))
 
@@ -69,7 +71,7 @@ export class ResearchSubagentService {
 
       timeout = setTimeout(() => {
         childExecutor.interrupt()
-        finish(failedResult(request, 'Tempo limite do subagente de pesquisa excedido.', sources))
+        finish(failedResult(request, timeoutMessage(request), sources))
       }, RESEARCH_SUBAGENT_TIMEOUT_MS)
 
       childExecutor.sendTurn(childRequest, event => {
@@ -82,7 +84,7 @@ export class ResearchSubagentService {
           const source = sourceFromToolPayload(event.payload)
           if (source) sources.add(source)
 
-          const nextViolation = detectReadOnlyViolation(event.payload)
+          const nextViolation = detectReadOnlyViolation(event.payload, requestLanguage(request))
           if (nextViolation && !violation) {
             violation = nextViolation
             childExecutor.interrupt()
@@ -103,7 +105,7 @@ export class ResearchSubagentService {
 
           const text = cleanupOutput(output.join(''))
           if (event.exitCode !== 0) {
-            finish(failedResult(request, text || `Processo terminou com código ${event.exitCode ?? 'desconhecido'}.`, sources))
+            finish(failedResult(request, text || exitCodeMessage(request, event.exitCode), sources))
             return
           }
 
@@ -111,7 +113,7 @@ export class ResearchSubagentService {
             id: request.id,
             index: request.index,
             status: 'complete',
-            summary: summarizeOutput(text),
+            summary: summarizeOutput(text, requestLanguage(request)),
             findings: extractFindings(text),
             sources: Array.from(sources).slice(0, 8),
           })
@@ -136,48 +138,96 @@ function createResearchTurnRequest(request: ResearchSubagentRequest): AgentTurnR
     personality: 'concise',
     customInstructions: '',
     memoryContext: undefined,
+    responseLanguage: request.baseRequest.responseLanguage,
   }
 }
 
 function buildResearchPrompt(request: ResearchSubagentRequest): string {
+  const language = requestLanguage(request)
+  if (language === 'pt-BR') {
+    return [
+      'Você é um subagente de pesquisa do Verboo Code.',
+      'Sua função é somente investigar e resumir informações para o agente principal.',
+      '',
+      'Regras obrigatórias:',
+      '- Não edite arquivos.',
+      '- Não crie arquivos.',
+      '- Não apague arquivos.',
+      '- Não rode comandos que alterem o filesystem.',
+      '- Use somente leitura, busca, listagem, pesquisa e resumo.',
+      '- Responda com achados objetivos, fontes e riscos.',
+      '',
+      `Subagente: ${request.index} de ${request.total}`,
+      `Foco desta pesquisa: ${request.topic}`,
+      '',
+      'Mensagem original do usuário:',
+      request.baseRequest.message,
+    ].join('\n')
+  }
+
   return [
-    'Você é um subagente de pesquisa do Verboo Code.',
-    'Sua função é somente investigar e resumir informações para o agente principal.',
+    'You are a Verboo Code research subagent.',
+    'Your role is only to investigate and summarize information for the main agent.',
     '',
-    'Regras obrigatórias:',
-    '- Não edite arquivos.',
-    '- Não crie arquivos.',
-    '- Não apague arquivos.',
-    '- Não rode comandos que alterem o filesystem.',
-    '- Use somente leitura, busca, listagem, pesquisa e resumo.',
-    '- Responda com achados objetivos, fontes e riscos.',
+    'Mandatory rules:',
+    '- Do not edit files.',
+    '- Do not create files.',
+    '- Do not delete files.',
+    '- Do not run commands that change the filesystem.',
+    '- Use only reading, search, listing, research, and summary.',
+    '- Answer with objective findings, sources, and risks.',
     '',
-    `Subagente: ${request.index} de ${request.total}`,
-    `Foco desta pesquisa: ${request.topic}`,
+    `Subagent: ${request.index} of ${request.total}`,
+    `Research focus: ${request.topic}`,
     '',
-    'Mensagem original do usuario:',
+    'Original user message:',
     request.baseRequest.message,
   ].join('\n')
 }
 
-function researchTopicFor(index: number, total: number, message: string): string {
-  if (total === 1) return `Pesquisar o pedido completo do usuario: ${snippet(message, 240)}`
-  if (index === 1) return 'Pesquisar o código local, arquivos relevantes, contratos e riscos de implementação.'
-  return 'Pesquisar contexto complementar, documentação, comportamento esperado e pontos de validação.'
+function researchTopicFor(index: number, total: number, message: string, language: LanguageCode): string {
+  if (language === 'pt-BR') {
+    if (total === 1) return `Pesquisar o pedido completo do usuário: ${snippet(message, 240)}`
+    if (index === 1) return 'Pesquisar o código local, arquivos relevantes, contratos e riscos de implementação.'
+    return 'Pesquisar contexto complementar, documentação, comportamento esperado e pontos de validação.'
+  }
+
+  if (total === 1) return `Research the full user request: ${snippet(message, 240)}`
+  if (index === 1) return 'Research local code, relevant files, contracts, and implementation risks.'
+  return 'Research complementary context, documentation, expected behavior, and validation points.'
+}
+
+function requestLanguage(request: ResearchSubagentRequest): LanguageCode {
+  return request.baseRequest.responseLanguage ?? 'en-US'
+}
+
+function timeoutMessage(request: ResearchSubagentRequest): string {
+  return requestLanguage(request) === 'pt-BR'
+    ? 'Tempo limite do subagente de pesquisa excedido.'
+    : 'Research subagent timed out.'
+}
+
+function exitCodeMessage(request: ResearchSubagentRequest, exitCode: number | null | undefined): string {
+  if (requestLanguage(request) === 'pt-BR') {
+    return `Processo terminou com código ${exitCode ?? 'desconhecido'}.`
+  }
+  return `Process exited with code ${exitCode ?? 'unknown'}.`
 }
 
 function researchAccessMode(): AgentTurnRequest['accessMode'] {
   return 'approval'
 }
 
-function detectReadOnlyViolation(payload: unknown): string | undefined {
+function detectReadOnlyViolation(payload: unknown, language: LanguageCode): string | undefined {
   const block = extractToolBlock(payload)
   if (!block) return undefined
 
   const toolName = textValue(block.name) || textValue(block.tool_name)
   const normalizedTool = toolName.toLowerCase()
   if (DISALLOWED_RESEARCH_TOOLS.has(normalizedTool)) {
-    return `Subagente tentou usar ferramenta de escrita: ${toolName}.`
+    return language === 'pt-BR'
+      ? `Subagente tentou usar ferramenta de escrita: ${toolName}.`
+      : `Subagent tried to use a write tool: ${toolName}.`
   }
 
   if (normalizedTool !== 'bash' && normalizedTool !== 'shell' && normalizedTool !== 'exec_command') {
@@ -187,7 +237,9 @@ function detectReadOnlyViolation(payload: unknown): string | undefined {
   const input = toolInput(block)
   const command = textValue(input?.command) || textValue(input?.cmd)
   if (!command || isReadOnlyShellCommand(command)) return undefined
-  return `Subagente tentou executar comando fora da lista read-only: ${command}.`
+  return language === 'pt-BR'
+    ? `Subagente tentou executar comando fora da lista somente leitura: ${command}.`
+    : `Subagent tried to run a command outside the read-only allowlist: ${command}.`
 }
 
 function isReadOnlyShellCommand(command: string): boolean {
@@ -235,18 +287,25 @@ function sourceFromToolPayload(payload: unknown): string | undefined {
 }
 
 function failedResult(request: ResearchSubagentRequest, reason: string, sources: Set<string>): ResearchSubagentResult {
+  const language = requestLanguage(request)
   return {
     id: request.id,
     index: request.index,
     status: 'failed',
-    summary: snippet(cleanupOutput(reason), 360) || 'Subagente falhou sem mensagem detalhada.',
+    summary: snippet(cleanupOutput(reason), 360) || (language === 'pt-BR'
+      ? 'Subagente falhou sem mensagem detalhada.'
+      : 'Subagent failed without a detailed message.'),
     findings: [],
     sources: Array.from(sources).slice(0, 8),
   }
 }
 
-function summarizeOutput(text: string): string {
-  if (!text) return 'Pesquisa concluida sem resumo textual.'
+function summarizeOutput(text: string, language: LanguageCode): string {
+  if (!text) {
+    return language === 'pt-BR'
+      ? 'Pesquisa concluída sem resumo textual.'
+      : 'Research completed without a text summary.'
+  }
   const paragraphs = text
     .split(/\n{2,}/)
     .map(line => line.trim())

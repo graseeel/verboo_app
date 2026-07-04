@@ -8,6 +8,12 @@ type TrayActions = {
   refreshData: () => void
 }
 
+// Alternating icon frames while the agent works: the mascot "breathes" by
+// swapping between slightly different sizes (the tray recenters each frame),
+// paired with a spinner glyph in the title.
+const ICON_FRAME_SIZES = [18, 17, 16, 17]
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
 export class TrayStatusService {
   private tray: Tray | undefined
   private settings: UserSettings | undefined
@@ -15,6 +21,8 @@ export class TrayStatusService {
   private ticker: ReturnType<typeof setInterval> | undefined
   private renderThrottle: ReturnType<typeof setTimeout> | undefined
   private lastRenderAt = 0
+  private frameIndex = 0
+  private iconFrames: Electron.NativeImage[] = []
   private readonly iconPath = getTrayIconPath()
 
   constructor(private readonly actions: TrayActions) {}
@@ -32,9 +40,13 @@ export class TrayStatusService {
       return
     }
     if (!this.tray) {
-      const image = nativeImage.createFromPath(this.iconPath).resize({ width: 18, height: 18 })
-      image.setTemplateImage(false)
-      this.tray = new Tray(image)
+      const source = nativeImage.createFromPath(this.iconPath)
+      this.iconFrames = ICON_FRAME_SIZES.map(size => {
+        const frame = source.resize({ width: size, height: size })
+        frame.setTemplateImage(false)
+        return frame
+      })
+      this.tray = new Tray(this.iconFrames[0])
       this.tray.setToolTip('Verboo Code')
       this.tray.on('click', () => this.showWindow())
     }
@@ -74,6 +86,13 @@ export class TrayStatusService {
 
   private render(): void {
     if (!this.tray || !this.settings?.showInMenuBar) return
+    if (this.isAnimating()) {
+      this.frameIndex = (this.frameIndex + 1) % (ICON_FRAME_SIZES.length * SPINNER_FRAMES.length)
+      this.tray.setImage(this.iconFrames[this.frameIndex % this.iconFrames.length])
+    } else if (this.iconFrames.length && this.frameIndex !== 0) {
+      this.frameIndex = 0
+      this.tray.setImage(this.iconFrames[0])
+    }
     this.tray.setTitle(this.settings.showMenuBarText ? this.titleForState() : '')
     this.tray.setContextMenu(Menu.buildFromTemplate([
       { label: this.titleForState(), enabled: false },
@@ -100,7 +119,14 @@ export class TrayStatusService {
       ? ` ${formatElapsed(Date.now() - this.state.startedAt)}`
       : ''
     const label = this.state.label ?? labelForExecution(this.state.execution)
-    return `Verboo ${label}${elapsed}`
+    const spinner = this.isAnimating() ? `${SPINNER_FRAMES[this.frameIndex % SPINNER_FRAMES.length]} ` : ''
+    return `${spinner}Verboo ${label}${elapsed}`
+  }
+
+  private isAnimating(): boolean {
+    return this.state.execution !== 'idle'
+      && this.state.execution !== 'done'
+      && this.state.execution !== 'error'
   }
 
   private showWindow(): void {
@@ -124,9 +150,18 @@ export class TrayStatusService {
       && this.state.execution !== 'error',
     )
     if (shouldTick && !this.ticker) {
-      this.ticker = setInterval(() => this.render(), 1000)
+      // 400ms drives the icon/spinner frames; the elapsed-time label simply
+      // updates a bit more often than before.
+      this.ticker = setInterval(() => this.render(), 400)
     }
-    if (!shouldTick) this.stopTicker()
+    if (!shouldTick) {
+      this.stopTicker()
+      // Rest the icon on its neutral frame when the run ends.
+      if (this.tray && this.iconFrames.length && this.frameIndex !== 0) {
+        this.frameIndex = 0
+        this.tray.setImage(this.iconFrames[0])
+      }
+    }
   }
 
   private stopTicker(): void {

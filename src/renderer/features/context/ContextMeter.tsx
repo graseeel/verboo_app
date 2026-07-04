@@ -1,6 +1,7 @@
 import { AlertTriangle, Gauge } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import type { ContextUsageSnapshot } from '../../../shared/types'
+import { formatCompactNumber, useI18n } from '../../i18n'
 
 type ContextMeterProps = {
   usage?: ContextUsageSnapshot
@@ -8,6 +9,7 @@ type ContextMeterProps = {
 }
 
 export function ContextMeter({ usage, contextWindow }: ContextMeterProps) {
+  const { language, t } = useI18n()
   const maxTokens = usage?.maxTokens ?? contextWindow
   const usedTokens = usage?.usedTokens
   const hasUsedTokens = usedTokens !== undefined
@@ -19,24 +21,24 @@ export function ContextMeter({ usage, contextWindow }: ContextMeterProps) {
   const overLimit = Boolean(hasUsedTokens && maxTokens && usedTokens > maxTokens)
   const percentLabel = bounded === undefined ? '--%' : overLimit ? '100%+' : `${Math.round(bounded * 100)}%`
   const usageLabel = hasUsedTokens && maxTokens
-    ? `${formatCompact(usedTokens)}/${formatCompact(maxTokens)}`
+    ? `${formatCompactNumber(usedTokens, language)}/${formatCompactNumber(maxTokens, language)}`
     : maxTokens
-      ? `janela ${formatCompact(maxTokens)}`
-      : 'sem janela'
+      ? t('context.window', { value: formatCompactNumber(maxTokens, language) })
+      : t('context.noWindow')
   const title = overLimit
-    ? 'O CLI reportou uso acima da janela de contexto configurada. Essa janela orienta a compactação automática, mas não é um limite rígido do processo.'
-    : usage ? 'Uso real de contexto reportado pelo stream do CLI.' : 'Aguardando uso de contexto do stream do CLI.'
+    ? t('context.overLimitTitle')
+    : usage ? t('context.usageTitle') : t('context.waitingTitle')
 
   return (
     <div
       className={`context-meter ${overLimit ? 'over-limit' : ''}`}
       title={title}
-      aria-label={`Contexto ${percentLabel}`}
+      aria-label={t('context.aria', { value: percentLabel })}
       style={{ '--context-progress': bounded ?? 0 } as CSSProperties}
     >
       {overLimit ? <AlertTriangle className="context-meter-icon" size={15} /> : <Gauge className="context-meter-icon" size={15} />}
       <span className="context-copy">
-        <strong>Contexto</strong>
+        <strong>{t('context.label')}</strong>
         <small>{usageLabel}</small>
       </span>
       <span className="context-ring" aria-hidden="true">
@@ -44,11 +46,4 @@ export function ContextMeter({ usage, contextWindow }: ContextMeterProps) {
       </span>
     </div>
   )
-}
-
-function formatCompact(value: number): string {
-  return Intl.NumberFormat('en-US', {
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).format(value)
 }

@@ -527,9 +527,13 @@
 }
 
 .settings-nested-group {
-  padding: 8px 0 4px 24px;
-  border-left: 2px solid var(--border);
-  margin-left: 4px;
+  /* Grid so the row buttons stretch to full width — as a block container the
+     buttons (inline-block) sized to their text, leaving the nested toggles
+     visibly misaligned from the panel's other controls. */
+  display: grid;
+  padding: 4px 0 0 16px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  margin-left: 6px;
 }
 
 .settings-nested-group .settings-toggle-row,
@@ -707,8 +711,42 @@
 }
 
 .settings-row {
-  align-items: flex-start;
+  /* Deterministic header grid: icon column + text column. Without an explicit
+     display, the svg/text alignment depended on inline flow and drifted
+     between cards. `auto` collapses cleanly when a card has no icon. */
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
   gap: 12px;
+}
+
+.settings-row > svg {
+  margin-top: 3px; /* optical alignment with the title cap height */
+  color: var(--accent-strong);
+}
+
+/* Variant with an inline control on the right (e.g. the language select):
+   title + description on the left, control vertically centered on the right. */
+.settings-row--control {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.settings-row--control > svg {
+  margin-top: 0;
+}
+
+/* Inside a settings card the panel title already names the field — the
+   selector's own icon+label would repeat it. */
+.settings-panel .language-selector__label {
+  display: none;
+}
+
+/* Primary action of a form card sits at the end of the reading flow,
+   right-aligned — full-width submit bars read as marketing CTAs here. */
+.settings-panel > .settings-primary-action {
+  justify-self: end;
+  min-width: 170px;
 }
 
 .settings-row strong,
@@ -781,6 +819,12 @@
   border: 1px solid var(--border);
   border-radius: 12px;
   background: color-mix(in srgb, var(--bg-elevated) 74%, transparent);
+  /* Off-screen messages skip layout/paint entirely. This is what makes the
+     sidebar/panel width animations fluid on long conversations: the grid
+     transition reflows only the visible rows each frame, not the whole
+     transcript history. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
 }
 
 .message-row.user {

@@ -1,12 +1,25 @@
 import type { FileDiff } from '../../../../shared/types'
+import { useI18n } from '../../../i18n'
 
 export function ReviewDiffBody({ loading, diff }: { loading: boolean; diff?: FileDiff }) {
-  if (loading) return <div className="review-empty compact">Carregando diff...</div>
-  if (!diff) return <div className="review-empty compact">Selecione um arquivo.</div>
-  if (diff.message) return <div className="review-empty compact">{diff.message}</div>
-  if (diff.truncated) return <div className="review-empty compact">Diff muito grande para exibir.</div>
-  if (diff.binary) return <div className="review-empty compact">Arquivo binário.</div>
-  if (diff.hunks.length === 0) return <div className="review-empty compact">Nenhuma mudança.</div>
+  const { t } = useI18n()
+
+  if (loading) {
+    return (
+      <div className="review-diff-skeleton" aria-label={t('review.loadingDiff')}>
+        <span className="skeleton" style={{ width: '42%' }} />
+        <span className="skeleton" style={{ width: '86%' }} />
+        <span className="skeleton" style={{ width: '71%' }} />
+        <span className="skeleton" style={{ width: '92%' }} />
+        <span className="skeleton" style={{ width: '58%' }} />
+      </div>
+    )
+  }
+  if (!diff) return <div className="review-empty compact">{t('review.selectFile')}</div>
+  if (diff.truncated) return <div className="review-empty compact">{t('review.diffTooLarge')}</div>
+  if (diff.message) return <div className="review-empty compact">{t('review.diffUnavailable')}</div>
+  if (diff.binary) return <div className="review-empty compact">{t('review.binaryFile')}</div>
+  if (diff.hunks.length === 0) return <div className="review-empty compact">{t('review.noChanges')}</div>
 
   return (
     <div className="review-body">

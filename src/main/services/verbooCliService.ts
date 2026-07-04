@@ -6,10 +6,10 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
-import type { AgentEvent, AgentResultSnapshot, AgentTurnRequest, AttachmentMeta, CliAuthStatus, GoalEvaluationInput, GoalEvaluationResult, LoginResult, RuntimeActivity, RuntimeStatus, TokenUsage, UserSettings } from '../../shared/types'
+import type { AgentEvent, AgentResultSnapshot, AgentTurnRequest, AttachmentMeta, CliAuthStatus, GoalEvaluationInput, GoalEvaluationResult, LanguageCode, LoginResult, RuntimeActivity, RuntimeStatus, TokenUsage, UserSettings } from '../../shared/types'
 import { accessModeConfig } from '../security/accessModes'
 import { createImageBlock, type CliImageBlock } from './attachmentService'
-import { getCliOAuthAccessToken, refreshCliOAuthAccessToken } from './cliCredentials'
+import { getCliOAuthAccessToken } from './cliCredentials'
 import type { CredentialsStore } from './credentialsStore'
 import { createNodeRuntimeEnv, resolveNodeRuntimePath, resolvePackedJavaScriptEntryPath } from './nodeRuntime'
 
@@ -58,7 +58,7 @@ export class VerbooCliService {
   constructor(private readonly credentials?: CredentialsStore) {}
 
   async sendTurn(request: AgentTurnRequest, onEvent: AgentEventHandler, settings?: UserSettings, resumeSessionId?: string): Promise<string> {
-    const turnId = randomUUID()
+    const turnId = request.turnId ?? randomUUID()
     onEvent({ type: 'started', turnId })
     this.startPowerBlocker(settings)
 
@@ -100,8 +100,9 @@ export class VerbooCliService {
     }
 
     const authTokenPipe = await createAuthTokenPipe(this.credentials)
+    const workingDirectory = safeRuntimeWorkingDirectory(request.workingDirectory)
     const child = spawn(nodePath, childArgs, {
-      cwd: request.workingDirectory || app.getPath('home'),
+      cwd: workingDirectory,
       env: createNodeRuntimeEnv({
         ...(authTokenPipe ? { [authTokenPipe.envVar]: String(authTokenPipe.fd) } : {}),
         ...(request.contextWindow ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(request.contextWindow) } : {}),
@@ -295,7 +296,7 @@ async function cleanupPayloadDir(dir?: string): Promise<void> {
 }
 
 async function createAuthTokenPipe(credentials?: CredentialsStore): Promise<AuthTokenPipe | undefined> {
-  const token = await refreshCliOAuthAccessToken() ?? await getCliOAuthAccessToken() ?? await credentials?.getApiKey()
+  const token = await credentials?.getApiKey() ?? await getCliOAuthAccessToken()
   if (!token) return undefined
 
   const dir = await mkdtemp(join(tmpdir(), 'verboo-code-auth-'))
@@ -312,46 +313,50 @@ async function cleanupAuthTokenPipe(pipe?: AuthTokenPipe): Promise<void> {
 }
 
 function buildPrompt(request: AgentTurnRequest): string {
-  const appInstructions = [
-    'Responda no mesmo idioma do usuário; se o usuário escrever em português, use português do Brasil.',
-    'Estruture respostas longas com parágrafos curtos, listas e resumos finais quando isso ajudar a leitura.',
-    'Antes de usar ferramentas em uma tarefa nova, escreva uma frase curta em prosa normal dizendo o que você vai fazer.',
-    'Não exponha raciocínio interno, texto de pensamento, pesquisa bruta ou logs de ferramentas como se fossem resposta final.',
-    'Não narre leituras, buscas, comandos ou edições apenas para registrar atividade; a interface já mostra essas ações em um painel estruturado.',
-    'Durante a execução, escreva apenas atualizações úteis ao usuário; não cole sequências de tool calls, nomes internos de ferramentas ou progresso bruto no texto principal.',
-    'Quando precisar de permissão, faça uma solicitação objetiva e separada, explicando exatamente a ação e o motivo.',
-    'Ao finalizar uma tarefa, entregue um resumo curto no estilo Codex: o que foi feito, referências verificadas quando houver, validação feita quando houver e qualquer ressalva relevante.',
-    'Não despeje listas completas de arquivos, comandos ou passos executados no texto principal; esses detalhes devem ficar no painel expansível da interface quando existirem.',
+  const language = request.responseLanguage ?? 'en-US'
+  const workingDirectory = safeRuntimeWorkingDirectory(request.workingDirectory)
+  const appInstructions = request.responseEnhancementsEnabled ? buildAppInstructions() : []
+  const workspaceLines = [
+    language === 'pt-BR'
+      ? `Diretório de trabalho atual: ${workingDirectory}`
+      : `Current working directory: ${workingDirectory}`,
   ]
-  const contextInstruction = request.contextWindow
-    ? [`O app configurou a janela efetiva de autocompactação em ${request.contextWindow} tokens para este modelo. Priorize informação relevante dentro desse orçamento.`]
-    : []
-  const personalization = [
-    request.personality ? `Personalidade preferida: ${personalityLabel(request.personality)}.` : '',
+  const personalization = request.responseEnhancementsEnabled ? [
+    request.personality ? (language === 'pt-BR'
+      ? `Personalidade preferida: ${personalityLabel(request.personality, language)}.`
+      : `Preferred personality: ${personalityLabel(request.personality, language)}.`) : '',
     request.customInstructions?.trim()
-      ? `Instruções personalizadas do usuário:\n${request.customInstructions.trim()}`
+      ? language === 'pt-BR'
+        ? `Instruções personalizadas do usuário:\n${request.customInstructions.trim()}`
+        : `User custom instructions:\n${request.customInstructions.trim()}`
       : '',
-    request.memoryContext?.trim()
-      ? `Memória local relevante deste app:\n${request.memoryContext.trim()}`
-      : '',
-  ].filter(Boolean)
-  const attachmentLines = buildAttachmentLines(request.attachments)
+  ].filter(Boolean) : []
+  const memoryLines = request.memoryContext?.trim()
+    ? [language === 'pt-BR'
+        ? `Memória local relevante deste app:\n${request.memoryContext.trim()}`
+        : `Relevant local app memory:\n${request.memoryContext.trim()}`]
+    : []
+  const attachmentLines = buildAttachmentLines(request.attachments, language)
 
-  if (request.skills.length === 0) {
-    return [...appInstructions, ...contextInstruction, ...personalization, ...attachmentLines, request.message].join('\n\n')
-  }
+  return [...appInstructions, ...workspaceLines, ...personalization, ...memoryLines, ...attachmentLines, request.message].join('\n\n')
+}
 
-  const skillLines = request.skills.map(skill => `- /${skill.name}: ${skill.description}`).join('\n')
+function safeRuntimeWorkingDirectory(workingDirectory?: string): string {
+  const trimmed = workingDirectory?.trim()
+  return trimmed && trimmed !== '/' && trimmed !== '.' ? trimmed : app.getPath('home')
+}
+
+function buildAppInstructions(): string[] {
   return [
-    ...contextInstruction,
-    ...appInstructions,
-    ...personalization,
-    'Use as skills selecionadas para esta tarefa:',
-    skillLines,
-    '',
-    ...attachmentLines,
-    request.message,
-  ].join('\n')
+    'Write long answers with short paragraphs, lists, and final summaries when that improves readability.',
+    'Before using tools on a new task, write one short normal-prose sentence explaining what you will do.',
+    'Do not expose internal reasoning, hidden thought text, raw research, or tool logs as final response prose.',
+    'Do not narrate reads, searches, commands, or edits only to record activity; the interface already shows those actions in a structured panel.',
+    'During execution, write only useful user-facing updates; do not paste tool-call sequences, internal tool names, or raw progress into the main text.',
+    'When you need permission, make a focused request explaining exactly which action is needed and why.',
+    'When finishing a task, provide a short Codex-style summary: what changed, references checked when applicable, validation done when applicable, and relevant caveats.',
+    'Do not dump full lists of files, commands, or executed steps into the main text; those details belong in the interface expandable panel when available.',
+  ]
 }
 
 async function buildStructuredInputBlocks(
@@ -373,10 +378,10 @@ async function buildStructuredInputBlocks(
   ]
 }
 
-function buildAttachmentLines(attachments?: AttachmentMeta[]): string[] {
+function buildAttachmentLines(attachments: AttachmentMeta[] | undefined, language: LanguageCode): string[] {
   if (!attachments?.length) return []
   return [
-    'Anexos selecionados:',
+    language === 'pt-BR' ? 'Anexos selecionados:' : 'Selected attachments:',
     attachments.map(attachment => {
       const dimensions = attachment.width && attachment.height ? `, ${attachment.width}x${attachment.height}` : ''
       const type = attachment.mediaType ? `${attachment.mediaType}${dimensions}` : `${attachment.kind}${dimensions}`
@@ -610,10 +615,16 @@ function cleanTerminalText(value: string): string {
     .replace(/\[\?2026[hl]/g, '')
 }
 
-function personalityLabel(value: NonNullable<AgentTurnRequest['personality']>): string {
-  if (value === 'concise') return 'concisa e direta'
-  if (value === 'explanatory') return 'explicativa, com contexto quando ajuda'
-  return 'pragmática, objetiva e orientada a execução'
+function personalityLabel(value: NonNullable<AgentTurnRequest['personality']>, language: LanguageCode): string {
+  if (language === 'pt-BR') {
+    if (value === 'concise') return 'concisa e direta'
+    if (value === 'explanatory') return 'explicativa, com contexto quando ajuda'
+    return 'pragmática, objetiva e orientada a execução'
+  }
+
+  if (value === 'concise') return 'concise and direct'
+  if (value === 'explanatory') return 'explanatory, with context when helpful'
+  return 'pragmatic, direct, and execution-oriented'
 }
 
 function isResultPayload(payload: unknown): payload is Record<string, unknown> {

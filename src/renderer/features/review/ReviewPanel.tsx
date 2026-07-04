@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import type { PointerEvent } from 'react'
-import { PanelRightClose } from 'lucide-react'
+import { FileCheck2, PanelRightClose } from 'lucide-react'
 import type {
   WorkspaceBranchInfo,
   WorkspaceBranchSwitchResult,
@@ -12,6 +12,7 @@ import { ReviewConfirmDialog } from './components/ReviewConfirmDialog'
 import { ReviewFileSection } from './components/ReviewFileSection'
 import { useReviewDiffs } from './hooks/useReviewDiffs'
 import type { ReviewTarget } from './useReviewPanel'
+import { useI18n } from '../../i18n'
 
 const DEFAULT_CAPABILITIES: WorkspaceReviewCapabilities = {
   canDiff: true,
@@ -34,6 +35,7 @@ type ReviewPanelProps = {
 }
 
 export function ReviewPanel(props: ReviewPanelProps) {
+  const { t } = useI18n()
   const {
     open,
     width,
@@ -54,6 +56,8 @@ export function ReviewPanel(props: ReviewPanelProps) {
     open,
     target,
     canDiff: capabilities.canDiff,
+    diffLoadFailedMessage: t('review.diffLoadFailed'),
+    diffUnavailableMessage: t('review.diffUnavailable'),
   })
 
   const revert = useCallback(async (file: WorkspaceChangeEntry) => {
@@ -73,12 +77,12 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const totalDeletions = files.reduce((total, file) => total + file.deletions, 0)
 
   return (
-    <aside className="review-panel" style={{ width }} aria-label="Revisão de arquivo">
+    <aside className="review-panel" style={{ width }} aria-label={t('review.panelAria')}>
       <div className="review-resizer" role="separator" aria-orientation="vertical" onPointerDown={startResize} />
       <header className="review-header">
         <div className="review-header-main">
-          <span className="review-title">Revisão</span>
-          <button type="button" onClick={onClose} aria-label="Fechar revisão">
+          <span className="review-title">{t('review.title')}</span>
+          <button type="button" onClick={onClose} aria-label={t('review.close')}>
             <PanelRightClose size={16} />
           </button>
         </div>
@@ -92,7 +96,11 @@ export function ReviewPanel(props: ReviewPanelProps) {
 
       <div className="review-file-list">
         {files.length === 0 ? (
-          <div className="review-empty">Nenhuma mudança neste branch.</div>
+          <div className="empty-state review-empty">
+            <span className="empty-state-icon" aria-hidden="true"><FileCheck2 size={17} /></span>
+            <span className="empty-state-title">{t('review.emptyTitle')}</span>
+            <span className="empty-state-hint">{t('review.empty')}</span>
+          </div>
         ) : files.map(file => {
           const expanded = expandedPaths.has(file.path)
           return (
@@ -130,12 +138,16 @@ function useResizeHandle(width: number, min: number, max: number, onSetWidth: (w
     event.preventDefault()
     const startX = event.clientX
     const startWidth = widthRef.current
+    // Track the pointer 1:1: the layout's grid transition must not ease the
+    // panel behind the drag (rubber-band feel).
+    document.querySelector('.app-layout')?.classList.add('is-resizing')
 
     const onMove = (moveEvent: globalThis.PointerEvent) => {
       onSetWidth(Math.max(min, Math.min(max, startWidth + startX - moveEvent.clientX)))
     }
 
     const onUp = () => {
+      document.querySelector('.app-layout')?.classList.remove('is-resizing')
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
     }

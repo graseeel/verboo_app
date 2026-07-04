@@ -1,18 +1,12 @@
 import { ArrowUp, Paperclip, Target, X } from 'lucide-react'
-import { type FormEvent, type KeyboardEvent, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { AttachmentMeta, SkillSummary } from '../../../shared/types'
+import { useI18n } from '../../i18n'
 import { parseReservedSlashCommand, type ReservedSlashCommand } from './slashCommands'
 
 // Reserved slash commands surfaced in the "/" palette, exactly like the skills
 // below them. Selecting one fills its token so the user can type any arguments.
 type SlashCommand = { name: string; description: string }
-
-const SLASH_COMMANDS: SlashCommand[] = [
-  {
-    name: 'goal',
-    description: 'Defina um objetivo e o Verboo trabalha em ciclos autônomos até concluí-lo.',
-  },
-]
 
 type SlashMenuItem =
   | { kind: 'command'; command: SlashCommand }
@@ -26,9 +20,11 @@ type ComposerProps = {
   attachments: AttachmentMeta[]
   onSelectedSkillsChange: (skills: SkillSummary[]) => void
   onAttachFiles: () => void
+  onDropFiles: (paths: string[], files: File[]) => void
   onRemoveAttachment: (path: string) => void
   onSubmit: (message: string) => void
   onGoalCommand: (command: Extract<ReservedSlashCommand, { kind: 'goal' }>) => void
+  onPetCommand: () => void
   leftToolbar: ReactNode
   centerToolbar?: ReactNode
   rightToolbar: ReactNode
@@ -42,22 +38,36 @@ export function Composer({
   attachments,
   onSelectedSkillsChange,
   onAttachFiles,
+  onDropFiles,
   onRemoveAttachment,
   onSubmit,
   onGoalCommand,
+  onPetCommand,
   leftToolbar,
   centerToolbar,
   rightToolbar,
 }: ComposerProps) {
+  const { t } = useI18n()
   const [value, setValue] = useState('')
   const [highlighted, setHighlighted] = useState(0)
+  const [dragDepth, setDragDepth] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const highlightRef = useRef<HTMLDivElement>(null)
   const slashQuery = getSlashQuery(value)
+  const slashCommands = useMemo<SlashCommand[]>(() => [
+    {
+      name: 'goal',
+      description: t('composer.goalDescription'),
+    },
+    {
+      name: 'pet',
+      description: t('composer.petDescription'),
+    },
+  ], [t])
   const matchingCommands = useMemo(() => {
     if (slashQuery === undefined) return []
-    return SLASH_COMMANDS.filter(command => matchesSlashCommand(command, slashQuery))
-  }, [slashQuery])
+    return slashCommands.filter(command => matchesSlashCommand(command, slashQuery))
+  }, [slashCommands, slashQuery])
   const matchingSkills = useMemo(() => {
     if (slashQuery === undefined) return []
     return rankSkills(skills, slashQuery).slice(0, 8)
@@ -68,10 +78,11 @@ export function Composer({
   ], [matchingCommands, matchingSkills])
   const activeIndex = menuItems.length ? Math.min(highlighted, menuItems.length - 1) : 0
   const highlightedValue = useMemo(
-    () => renderHighlightedValue(value, skills),
-    [skills, value],
+    () => renderHighlightedValue(value, skills, slashCommands),
+    [skills, slashCommands, value],
   )
   const goalModeActive = isGoalCommandDraft(value)
+  const dropActive = dragDepth > 0
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current
@@ -91,11 +102,13 @@ export function Composer({
       setValue('')
       return
     }
+    if (reserved?.kind === 'pet') {
+      onPetCommand()
+      setValue('')
+      return
+    }
 
-    const message = stripSelectedSkillTokens(trimmed, selectedSkills).trim()
-    if (!message) return
-
-    onSubmit(message)
+    onSubmit(trimmed)
     setValue('')
     onSelectedSkillsChange([])
   }
@@ -166,12 +179,62 @@ export function Composer({
     }
   }
 
+  function handleDragEnter(event: DragEvent<HTMLFormElement>) {
+    if (!dragEventHasFiles(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.dataTransfer.dropEffect = 'copy'
+    setDragDepth(depth => depth + 1)
+  }
+
+  function handleDragOver(event: DragEvent<HTMLFormElement>) {
+    if (!dragEventHasFiles(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLFormElement>) {
+    if (!dragEventHasFiles(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    setDragDepth(depth => Math.max(0, depth - 1))
+  }
+
+  function handleDrop(event: DragEvent<HTMLFormElement>) {
+    if (!dragEventHasFiles(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    setDragDepth(0)
+    if (disabled) return
+
+    const paths = getDroppedFilePaths(event.dataTransfer)
+    const files = Array.from(event.dataTransfer.files)
+    if (paths.length || files.length) onDropFiles(paths, files)
+  }
+
   return (
-    <form className="composer" data-command-mode={goalModeActive ? 'goal' : undefined} onSubmit={submit}>
+    <form
+      className="composer"
+      data-command-mode={goalModeActive ? 'goal' : undefined}
+      data-drop-active={dropActive ? 'true' : undefined}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      onSubmit={submit}
+    >
+      {dropActive && (
+        <div className="composer-drop-overlay" aria-hidden="true">
+          <span className="composer-drop-icon"><Paperclip size={18} /></span>
+          <strong>{t('composer.dropTitle')}</strong>
+          <small>{t('composer.dropBody')}</small>
+        </div>
+      )}
       {slashQuery !== undefined && (
         <div className="skills-menu popover-panel t-dropdown is-open" data-origin="bottom-center">
           {menuItems.length === 0 ? (
-            <div className="empty-menu">Nenhum comando ou habilidade encontrado.</div>
+            <div className="empty-menu">{t('composer.emptyMenu')}</div>
           ) : (
             menuItems.map((item, index) =>
               item.kind === 'command' ? (
@@ -184,7 +247,7 @@ export function Composer({
                 >
                   <span className="skill-name">/{item.command.name}</span>
                   <span className="skill-description">{item.command.description}</span>
-                  <span className="skill-source command">comando</span>
+                  <span className="skill-source command">{t('composer.command')}</span>
                 </button>
               ) : (
                 <button
@@ -224,7 +287,7 @@ export function Composer({
       )}
 
       {goalModeActive && (
-        <div className="composer-goal-mode" aria-label="Comando goal ativo">
+        <div className="composer-goal-mode" aria-label={t('composer.goalActive')}>
           <Target size={13} />
           <span>/goal</span>
         </div>
@@ -244,14 +307,14 @@ export function Composer({
           onScroll={event => {
             if (highlightRef.current) highlightRef.current.scrollTop = event.currentTarget.scrollTop
           }}
-          placeholder={busy ? 'Digite uma mensagem para entrar na fila' : 'Peça ao Verboo ou digite / para usar habilidades'}
+          placeholder={busy ? t('composer.placeholder.busy') : t('composer.placeholder.idle')}
           rows={1}
         />
       </div>
 
       <div className="composer-toolbar">
         <div className="composer-tools left">
-          <button className="composer-icon-button" type="button" title="Anexar arquivo" onClick={onAttachFiles}>
+          <button className="composer-icon-button" type="button" title={t('composer.attachFile')} onClick={onAttachFiles}>
             <Paperclip size={17} />
           </button>
           {leftToolbar}
@@ -263,7 +326,7 @@ export function Composer({
             className="send-button"
             type="submit"
             disabled={disabled || !value.trim()}
-            title={busy ? 'Adicionar à fila' : 'Enviar'}
+            title={busy ? t('composer.queue') : t('composer.send')}
           >
             <ArrowUp size={17} />
           </button>
@@ -273,8 +336,37 @@ export function Composer({
   )
 }
 
+function dragEventHasFiles(event: DragEvent<HTMLElement>): boolean {
+  return Array.from(event.dataTransfer.types).includes('Files')
+}
+
+function getDroppedFilePaths(dataTransfer: DataTransfer): string[] {
+  const paths = Array.from(dataTransfer.files)
+    .map(file => (file as File & { path?: string }).path)
+    .filter((path): path is string => Boolean(path))
+
+  if (paths.length) return Array.from(new Set(paths))
+
+  const uriList = dataTransfer.getData('text/uri-list')
+  if (!uriList) return []
+
+  return Array.from(new Set(uriList
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line && !line.startsWith('#'))
+    .map(line => {
+      try {
+        const url = new URL(line)
+        return url.protocol === 'file:' ? decodeURIComponent(url.pathname) : undefined
+      } catch {
+        return undefined
+      }
+    })
+    .filter((path): path is string => Boolean(path))))
+}
+
 function getSlashQuery(value: string): string | undefined {
-  const match = value.match(/(?:^|\s)\/([A-Za-z0-9_-]*)$/)
+  const match = value.match(/(?:^|\s)\/([A-Za-z0-9_:-]*)$/)
   return match ? match[1] : undefined
 }
 
@@ -283,12 +375,12 @@ function isGoalCommandDraft(value: string): boolean {
 }
 
 function removeSlashQuery(value: string): string {
-  return value.replace(/(?:^|\s)\/([A-Za-z0-9_-]*)$/, match => (match.startsWith(' ') ? ' ' : '')).trimStart()
+  return value.replace(/(?:^|\s)\/([A-Za-z0-9_:-]*)$/, match => (match.startsWith(' ') ? ' ' : '')).trimStart()
 }
 
 function replaceSlashQueryWithToken(value: string, token: string): string {
   if (getSlashQuery(value) === undefined) return `${value}${value.endsWith(' ') || !value ? '' : ' '}${token}`
-  return value.replace(/(?:^|\s)\/([A-Za-z0-9_-]*)$/, match => {
+  return value.replace(/(?:^|\s)\/([A-Za-z0-9_:-]*)$/, match => {
     const prefix = match.startsWith(' ') ? ' ' : ''
     return `${prefix}${token}`
   })
@@ -306,21 +398,10 @@ function matchesSlashCommand(command: SlashCommand, query: string): boolean {
 
 function extractSkillTokenNames(value: string): Set<string> {
   const names = new Set<string>()
-  for (const match of value.matchAll(/(?:^|\s)\/([A-Za-z0-9_-]+)/g)) {
+  for (const match of value.matchAll(/(?:^|\s)\/([A-Za-z0-9_:-]+)/g)) {
     names.add(match[1].toLowerCase())
   }
   return names
-}
-
-function stripSelectedSkillTokens(value: string, selectedSkills: SkillSummary[]): string {
-  if (!selectedSkills.length) return value
-  const selectedNames = new Set(selectedSkills.map(skill => skill.name.toLowerCase()))
-  return value
-    .replace(/(?:^|\s)\/([A-Za-z0-9_-]+)/g, (match, name: string) => (
-      selectedNames.has(name.toLowerCase()) ? (match.startsWith(' ') ? ' ' : '') : match
-    ))
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim()
 }
 
 function sameSkillIds(left: SkillSummary[], right: SkillSummary[]): boolean {
@@ -329,16 +410,16 @@ function sameSkillIds(left: SkillSummary[], right: SkillSummary[]): boolean {
   return left.every(skill => rightIds.has(skill.id))
 }
 
-function renderHighlightedValue(value: string, skills: SkillSummary[]): ReactNode[] {
+function renderHighlightedValue(value: string, skills: SkillSummary[], slashCommands: SlashCommand[]): ReactNode[] {
   if (!value) return []
   const knownNames = new Set([
     ...skills.map(skill => skill.name.toLowerCase()),
-    ...SLASH_COMMANDS.map(command => command.name.toLowerCase()),
+    ...slashCommands.map(command => command.name.toLowerCase()),
   ])
   const parts: ReactNode[] = []
   let cursor = 0
 
-  for (const match of value.matchAll(/(?:^|\s)\/([A-Za-z0-9_-]+)/g)) {
+  for (const match of value.matchAll(/(?:^|\s)\/([A-Za-z0-9_:-]+)/g)) {
     const start = match.index ?? 0
     const text = match[0]
     const leadingSpace = text.startsWith(' ') ? ' ' : ''

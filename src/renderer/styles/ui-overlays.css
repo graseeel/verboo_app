@@ -1,0 +1,483 @@
+/* ══════════════════════════════════════════════════════════════
+   Verboo pet
+   Fluidity rules: the float loop never restarts; states cross-fade
+   accessory layers and (at most) layer body animations whose
+   keyframes begin and end at a neutral transform. Transform/opacity
+   only — nothing here touches layout.
+   ══════════════════════════════════════════════════════════════ */
+
+.verboo-pet {
+  position: fixed;
+  z-index: 900;
+  width: var(--pet-size, 96px);
+  height: var(--pet-size, 96px);
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  opacity: 1;
+  transition: opacity 380ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.verboo-pet:active {
+  cursor: grabbing;
+}
+
+.verboo-pet.is-waking .pet-float {
+  animation:
+    pet-wake 640ms cubic-bezier(0.22, 1, 0.36, 1),
+    pet-float 3.6s ease-in-out 640ms infinite;
+}
+
+.verboo-pet.is-leaving {
+  opacity: 0;
+}
+
+.verboo-pet.is-leaving .pet-float {
+  transform: scale(0.72);
+  transition: transform 380ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.pet-float {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  animation: pet-float 3.6s ease-in-out infinite;
+  will-change: transform;
+}
+
+@keyframes pet-wake {
+  0% { transform: translateY(14px) scale(0.55); opacity: 0; filter: blur(5px); }
+  60% { opacity: 1; }
+  100% { transform: translateY(0) scale(1); opacity: 1; filter: blur(0); }
+}
+
+@keyframes pet-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(calc(var(--pet-size, 96px) * -0.07)); }
+}
+
+.pet-body {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  /* Persistent poses (tilts) transition smoothly between states. */
+  transition: transform 480ms cubic-bezier(0.22, 1, 0.36, 1), filter 300ms ease-out;
+}
+
+.pet-body img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 6px 14px color-mix(in srgb, var(--accent) 30%, transparent));
+  pointer-events: none;
+}
+
+/* Ground shadow, breathing in the same rhythm as the float. */
+.pet-shadow {
+  position: absolute;
+  left: 18%;
+  bottom: calc(var(--pet-size, 96px) * -0.12);
+  width: 64%;
+  height: calc(var(--pet-size, 96px) * 0.12);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 36%, black);
+  opacity: 0.3;
+  filter: blur(4px);
+  animation: pet-shadow 3.6s ease-in-out infinite;
+}
+
+@keyframes pet-shadow {
+  0%, 100% { transform: scaleX(1); opacity: 0.3; }
+  50% { transform: scaleX(0.82); opacity: 0.2; }
+}
+
+/* ── Accessory layers (cross-fade per state) ─────────────────── */
+
+.pet-prop {
+  position: absolute;
+  z-index: 3;
+  color: var(--accent-strong);
+  opacity: 0;
+  transform: translateY(6px) scale(0.86);
+  transition:
+    opacity 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 380ms cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+
+.pet-prop-think { top: -38%; right: -26%; width: 62%; height: 56%; }
+.pet-prop-edit { right: -30%; bottom: 4%; width: 56%; height: 56%; }
+.pet-prop-delete { left: -34%; bottom: -4%; width: 56%; height: 56%; }
+.pet-prop-laptop { left: -8%; bottom: -18%; width: 116%; height: 72%; z-index: 4; }
+.pet-prop-read { top: -20%; left: -26%; width: 52%; height: 52%; }
+.pet-prop-done { top: -26%; right: -16%; width: 44%; height: 44%; color: var(--green); }
+.pet-prop-error { top: -26%; right: -16%; width: 44%; height: 44%; color: var(--danger); }
+
+.verboo-pet[data-state='thinking'] .pet-prop-think,
+.verboo-pet[data-state='editing'] .pet-prop-edit,
+.verboo-pet[data-state='deleting'] .pet-prop-delete,
+.verboo-pet[data-state='command'] .pet-prop-laptop,
+.verboo-pet[data-state='reading'] .pet-prop-read,
+.verboo-pet[data-state='success'] .pet-prop-done,
+.verboo-pet[data-state='error'] .pet-prop-error {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+/* ── Per-state body poses (smooth transitions, float keeps going) */
+
+.verboo-pet[data-state='thinking'] .pet-body { transform: rotate(-7deg); }
+.verboo-pet[data-state='reading'] .pet-body { transform: rotate(5deg); }
+.verboo-pet[data-state='editing'] .pet-body { animation: pet-sway 1.9s ease-in-out infinite; }
+.verboo-pet[data-state='deleting'] .pet-body { animation: pet-toss 1.5s ease-in-out infinite; }
+.verboo-pet[data-state='command'] .pet-body { transform: rotate(3deg); animation: pet-type 640ms ease-in-out infinite; }
+.verboo-pet[data-state='success'] .pet-body { animation: pet-hop 700ms cubic-bezier(0.22, 1, 0.36, 1) 2; }
+.verboo-pet[data-state='error'] .pet-body { animation: pet-shake 480ms ease-in-out 2; filter: saturate(1.3) hue-rotate(-38deg); }
+
+/* All loops start and end at a neutral transform: entering/leaving a state
+   can never produce a visible jump on top of the float. */
+@keyframes pet-sway {
+  0%, 100% { transform: rotate(0deg); }
+  30% { transform: rotate(-4.5deg); }
+  70% { transform: rotate(4.5deg); }
+}
+
+@keyframes pet-toss {
+  0%, 100% { transform: rotate(0deg) translateX(0); }
+  35% { transform: rotate(-8deg) translateX(-4%); }
+  55% { transform: rotate(5deg) translateX(2%); }
+}
+
+@keyframes pet-type {
+  0%, 100% { transform: rotate(3deg) translateY(0); }
+  50% { transform: rotate(3.6deg) translateY(3.5%); }
+}
+
+@keyframes pet-hop {
+  0%, 100% { transform: translateY(0) scale(1); }
+  40% { transform: translateY(-14%) scale(1.05, 0.95); }
+  70% { transform: translateY(0) scale(0.97, 1.03); }
+}
+
+@keyframes pet-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-5%) rotate(-2deg); }
+  75% { transform: translateX(5%) rotate(2deg); }
+}
+
+/* ── Accessory micro-animations ──────────────────────────────── */
+
+.think-dot { animation: think-pulse 1.6s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+.think-dot-2 { animation-delay: 200ms; }
+.think-cloud { opacity: 0.2; }
+.think-question {
+  fill: var(--accent-strong);
+  animation: think-bob 1.6s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@keyframes think-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.55; }
+  50% { transform: scale(1.28); opacity: 1; }
+}
+
+@keyframes think-bob {
+  0%, 100% { transform: translateY(0) rotate(-4deg); }
+  50% { transform: translateY(-2.5px) rotate(5deg); }
+}
+
+.edit-pencil {
+  animation: edit-write 900ms ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: 80% 20%;
+}
+
+@keyframes edit-write {
+  0%, 100% { transform: rotate(0deg) translateX(0); }
+  50% { transform: rotate(6deg) translateX(2px); }
+}
+
+.edit-spark { animation: edit-spark 1.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.edit-spark-2 { animation-delay: 240ms; }
+.edit-spark-3 { animation-delay: 480ms; }
+
+@keyframes edit-spark {
+  0%, 100% { opacity: 0.2; transform: scale(0.7); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+.delete-bin { transform-box: fill-box; transform-origin: bottom center; animation: delete-wiggle 1.5s ease-in-out infinite; }
+.delete-lid { transform-box: fill-box; transform-origin: left center; animation: delete-lid 1.5s ease-in-out infinite; }
+.delete-scrap { animation: delete-fall 1.5s ease-in infinite; }
+.delete-scrap-2 { animation-delay: 320ms; }
+
+@keyframes delete-wiggle {
+  0%, 100% { transform: rotate(0deg); }
+  45% { transform: rotate(-3deg); }
+}
+
+@keyframes delete-lid {
+  0%, 30%, 100% { transform: rotate(0deg); }
+  45%, 70% { transform: rotate(-24deg); }
+}
+
+@keyframes delete-fall {
+  0%, 25% { opacity: 0; transform: translateY(-6px); }
+  45% { opacity: 1; }
+  80%, 100% { opacity: 0; transform: translateY(14px) rotate(60deg); }
+}
+
+/* Lid back facing the viewer (the mascot types on the far side). */
+.laptop-lid {
+  fill: color-mix(in srgb, var(--bg-soft) 46%, var(--accent-strong));
+  stroke: color-mix(in srgb, var(--accent-strong) 60%, transparent);
+  stroke-width: 1.2;
+}
+
+.laptop-logo {
+  fill: color-mix(in srgb, var(--accent-strong) 40%, var(--bg-soft));
+}
+
+/* Screen light spilling over the top edge of the lid, flickering softly. */
+.laptop-glow {
+  fill: color-mix(in srgb, var(--accent-strong) 72%, white);
+  opacity: 0.55;
+  animation: laptop-glow 1.4s ease-in-out infinite;
+}
+
+@keyframes laptop-glow {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+/* Code glyphs typed out behind the lid, rising and fading. */
+.laptop-glyph {
+  fill: var(--accent-strong);
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: laptop-glyph 2.1s ease-out infinite;
+}
+
+.laptop-glyph-2 { animation-delay: 700ms; }
+.laptop-glyph-3 { animation-delay: 1400ms; }
+
+@keyframes laptop-glyph {
+  0% { opacity: 0; transform: translateY(7px) scale(0.8); }
+  25% { opacity: 1; }
+  70% { opacity: 0.9; }
+  100% { opacity: 0; transform: translateY(-7px) scale(1.02); }
+}
+
+.read-lens {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: read-sweep 2.4s ease-in-out infinite;
+}
+
+@keyframes read-sweep {
+  0%, 100% { transform: translate(0, 0); }
+  35% { transform: translate(5px, 3px); }
+  70% { transform: translate(-3px, 5px); }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Toasts (sonner pattern)
+   ══════════════════════════════════════════════════════════════ */
+
+.toast-stack {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 1100;
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.toast {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  max-width: 340px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-elevated) 96%, transparent);
+  box-shadow: 0 10px 28px color-mix(in srgb, black 34%, transparent);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+  animation: toast-in 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.toast.is-leaving {
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 200ms ease-out, transform 200ms ease-out;
+}
+
+.toast-icon { display: inline-grid; place-items: center; }
+.toast--success .toast-icon { color: var(--green); }
+.toast--error .toast-icon { color: var(--danger); }
+.toast--info .toast-icon { color: var(--accent-strong); }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Command palette (cmd+K)
+   ══════════════════════════════════════════════════════════════ */
+
+.palette-backdrop {
+  align-items: start;
+  padding-top: 14vh;
+}
+
+.command-palette {
+  display: grid;
+  width: min(560px, calc(100vw - 48px));
+  max-height: 420px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-elevated) 97%, transparent);
+  box-shadow: 0 18px 48px color-mix(in srgb, black 40%, transparent);
+}
+
+.palette-input-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+.palette-input-row input {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.palette-input-row kbd {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 10.5px;
+}
+
+.palette-list {
+  overflow-y: auto;
+  display: grid;
+  gap: 2px;
+  padding: 7px;
+}
+
+.palette-group-label {
+  padding: 7px 9px 4px;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 720;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.palette-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13.5px;
+  text-align: left;
+}
+
+.palette-item.highlighted {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--text);
+}
+
+.palette-item-icon { display: inline-grid; place-items: center; color: var(--accent-strong); }
+
+.palette-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-empty {
+  padding: 18px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Context menu (right-click)
+   ══════════════════════════════════════════════════════════════ */
+
+.context-menu {
+  position: fixed;
+  z-index: 1050;
+  min-width: 190px;
+  display: grid;
+  gap: 2px;
+  padding: 5px;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+
+.context-menu-item:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text);
+}
+
+.context-menu-item.danger { color: color-mix(in srgb, var(--danger) 82%, var(--text)); }
+.context-menu-item.danger:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+
+.context-menu-icon { display: inline-grid; place-items: center; }
+
+/* ── Reduced motion: everything freezes gracefully ───────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-float,
+  .pet-shadow,
+  .pet-body,
+  .pet-prop,
+  .pet-prop * ,
+  .toast {
+    animation: none !important;
+    transition: none !important;
+  }
+}

@@ -1,4 +1,5 @@
 import type { WorkspaceChangeEntry } from '../../../../shared/types'
+import { useI18n } from '../../../i18n'
 
 type ReviewConfirmDialogProps = {
   file: WorkspaceChangeEntry
@@ -7,16 +8,18 @@ type ReviewConfirmDialogProps = {
 }
 
 export function ReviewConfirmDialog({ file, onCancel, onConfirm }: ReviewConfirmDialogProps) {
+  const { t } = useI18n()
+
   return (
     <div className="review-confirm-overlay" role="dialog" aria-modal="true">
       <div className="review-confirm">
-        <h2>Descartar mudanças?</h2>
+        <h2>{t('review.revertQuestion')}</h2>
         <p>{file.status === 'untracked'
-          ? `O arquivo novo "${file.path}" será removido do disco.`
-          : `As mudanças staged e unstaged de "${file.path}" serão descartadas.`}</p>
+          ? t('review.confirmRemoveNewFile', { path: file.path })
+          : t('review.confirmDiscardFile', { path: file.path })}</p>
         <div className="review-confirm-actions">
-          <button type="button" className="secondary-action" onClick={onCancel}>Cancelar</button>
-          <button type="button" className="primary-action danger" onClick={onConfirm}>Descartar</button>
+          <button type="button" className="secondary-action" onClick={onCancel}>{t('common.cancel')}</button>
+          <button type="button" className="primary-action danger" onClick={onConfirm}>{t('review.revert')}</button>
         </div>
       </div>
     </div>

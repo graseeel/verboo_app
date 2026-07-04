@@ -1,11 +1,14 @@
 import { AtSign, Bug, CheckCircle2, ExternalLink, KeyRound, LogIn, Mail, Phone, RefreshCw, ShieldAlert, UserPlus } from 'lucide-react'
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import type { CliAuthStatus, CredentialStatus, LoginResult, ModelDiscoveryResult } from '../../shared/types'
+import type { CliAuthStatus, CredentialStatus, LanguageCode, LoginResult, ModelDiscoveryResult } from '../../shared/types'
 import mascotUrl from '../../../assets/branding/verboo-mascot.png'
 import wordmarkUrl from '../../../assets/branding/verboo-wordmark.png'
+import { LanguageSelector } from '../features/language/LanguageSelector'
+import { useI18n } from '../i18n'
 
 type LoginScreenProps = {
+  language: LanguageCode
   noticeAccepted: boolean
   checking: boolean
   authError?: string
@@ -18,12 +21,14 @@ type LoginScreenProps = {
   onOpenSignup: () => void
   onCheckExistingAuth: () => Promise<boolean>
   onSaveApiKey: (apiKey: string) => Promise<boolean>
+  onLanguageChange: (language: LanguageCode) => Promise<void> | void
   onStaySignedInChange: (staySignedIn: boolean) => Promise<void> | void
   onAcceptNotice: () => void
   onOpenFeedback: () => void
 }
 
 export function LoginScreen({
+  language,
   noticeAccepted,
   checking,
   authError,
@@ -36,23 +41,25 @@ export function LoginScreen({
   onOpenSignup,
   onCheckExistingAuth,
   onSaveApiKey,
+  onLanguageChange,
   onStaySignedInChange,
   onAcceptNotice,
   onOpenFeedback,
 }: LoginScreenProps) {
+  const { t } = useI18n()
   const [apiKey, setApiKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [statusMessage, setStatusMessage] = useState<string | undefined>()
 
   async function startLogin() {
-    setStatusMessage('Abrindo login do Verboo pelo CLI...')
+    setStatusMessage(t('login.openingCli'))
     try {
       const result = await onStartLogin()
-      setStatusMessage(result.message)
-    } catch (error) {
-      // Never leave the button stuck on "Abrindo login…": surface the failure so
+      setStatusMessage(result.ok ? t('login.cliStarted') : t('login.cliStartFailed'))
+    } catch {
+      // Never leave the button stuck on "opening login": surface the failure so
       // the user can act on it instead of watching an infinite spinner.
-      setStatusMessage(error instanceof Error ? error.message : 'Falha ao iniciar o login pelo CLI.')
+      setStatusMessage(t('login.cliStartFailed'))
     }
   }
 
@@ -65,9 +72,9 @@ export function LoginScreen({
       const valid = await onSaveApiKey(trimmed)
       if (valid) {
         setApiKey('')
-        setStatusMessage('Chave de API validada.')
+        setStatusMessage(t('login.apiKeyValidated'))
       } else {
-        setStatusMessage('Não foi possível validar a chave de API.')
+        setStatusMessage(t('login.apiKeyInvalid'))
       }
     } finally {
       setSaving(false)
@@ -75,42 +82,38 @@ export function LoginScreen({
   }
 
   async function checkExistingAuth() {
-    setStatusMessage('Verificando sessão local do Verboo...')
+    setStatusMessage(t('login.checkingSession'))
     const valid = await onCheckExistingAuth()
-    setStatusMessage(valid ? 'Sessão Verboo validada.' : 'Nenhuma sessão Verboo válida foi encontrada.')
+    setStatusMessage(valid ? t('login.sessionValid') : t('login.sessionInvalid'))
   }
 
   if (!noticeAccepted) {
     return (
       <main className="login-screen">
-        <section className="login-panel development-panel" aria-label="Aviso de desenvolvimento">
+        <section className="login-panel development-panel" aria-label={t('login.developmentAria')}>
+          <div className="login-language-row">
+            <LanguageSelector value={language} onChange={next => void onLanguageChange(next)} compact />
+          </div>
           <div className="login-brand">
             <img className="login-mascot" src={mascotUrl} alt="" />
             <img className="login-wordmark" src={wordmarkUrl} alt="Verboo" />
           </div>
 
           <div className="login-copy">
-            <p className="login-eyebrow">Aviso importante</p>
-            <h1>Versão em desenvolvimento</h1>
-            <p>
-              Este aplicativo está em desenvolvimento e não é uma versão oficial criada pela Verboo.
-              Ele usa sua conta, CLI ou chave de API Verboo apenas para tentar reproduzir a experiência
-              desktop do Verboo Code.
-            </p>
+            <p className="login-eyebrow">{t('login.importantNotice')}</p>
+            <h1>{t('login.developmentTitle')}</h1>
+            <p>{t('login.developmentBody')}</p>
           </div>
 
           <div className="development-warning">
             <ShieldAlert size={20} />
             <div>
-              <strong>Use sabendo que podem existir bugs ou falhas.</strong>
-              <p>
-                Se encontrar qualquer problema, comportamento estranho ou falha de segurança, fale
-                diretamente com Gabriel antes de distribuir ou depender deste app em trabalho crítico.
-              </p>
+              <strong>{t('login.warningTitle')}</strong>
+              <p>{t('login.warningBody')}</p>
             </div>
           </div>
 
-          <div className="contact-list" aria-label="Contatos para suporte">
+          <div className="contact-list" aria-label={t('login.supportContacts')}>
             <a href="mailto:grasel.moura05@gmail.com">
               <Mail size={16} />
               grasel.moura05@gmail.com
@@ -127,12 +130,12 @@ export function LoginScreen({
 
           <button className="secondary-action wide-action development-feedback-button" type="button" onClick={onOpenFeedback}>
             <Bug size={17} />
-            Reportar problema
+            {t('login.reportIssue')}
           </button>
 
           <button className="primary-action wide-action" type="button" onClick={onAcceptNotice}>
             <CheckCircle2 size={18} />
-            Entendi e quero continuar
+            {t('login.acceptNotice')}
           </button>
         </section>
       </main>
@@ -141,18 +144,18 @@ export function LoginScreen({
 
   return (
     <main className="login-screen">
-      <section className="login-panel" aria-label="Entrar no Verboo Code">
+      <section className="login-panel" aria-label={t('login.mainAria')}>
+        <div className="login-language-row">
+          <LanguageSelector value={language} onChange={next => void onLanguageChange(next)} compact />
+        </div>
         <div className="login-brand">
           <img className="login-mascot" src={mascotUrl} alt="" />
           <img className="login-wordmark" src={wordmarkUrl} alt="Verboo" />
         </div>
 
         <div className="login-copy">
-          <h1>Entrar no Verboo Code</h1>
-          <p>
-            O app fica bloqueado até validar uma sessão real do CLI Verboo ou uma chave de API válida.
-            A validação precisa retornar modelos disponíveis para o seu plano.
-          </p>
+          <h1>{t('login.title')}</h1>
+          <p>{t('login.body')}</p>
         </div>
 
         <label className="login-remember">
@@ -164,39 +167,39 @@ export function LoginScreen({
             }}
           />
           <span>
-            <strong>Continuar logado</strong>
-            <small>Usar a última validação local quando a renovação de modelos falhar temporariamente.</small>
+            <strong>{t('login.staySignedIn')}</strong>
+            <small>{t('login.staySignedInHelp')}</small>
           </span>
         </label>
 
         <div className="login-actions">
           <button className="primary-action" type="button" onClick={startLogin} disabled={checking}>
             <LogIn size={18} />
-            Entrar pelo CLI
+            {t('login.cliLogin')}
           </button>
           <button className="secondary-action" type="button" onClick={checkExistingAuth} disabled={checking}>
             <RefreshCw size={17} />
-            Já autentiquei
+            {t('login.alreadyAuthenticated')}
           </button>
         </div>
 
         <div className="login-actions secondary-grid">
           <button className="secondary-action" type="button" onClick={onOpenSignup}>
             <UserPlus size={17} />
-            Criar conta ou assinar
+            {t('login.createAccount')}
           </button>
           <button className="secondary-action" type="button" onClick={onOpenDashboard}>
             <ExternalLink size={17} />
-            Abrir dashboard
+            {t('login.openDashboard')}
           </button>
           <button className="secondary-action login-feedback-button" type="button" onClick={onOpenFeedback}>
             <Bug size={17} />
-            Reportar problema
+            {t('login.reportIssue')}
           </button>
         </div>
 
         {(statusMessage || checking) && (
-          <div className="login-note">{checking ? 'Validando credenciais e modelos disponíveis...' : statusMessage}</div>
+          <div className="login-note">{checking ? t('login.checking') : statusMessage}</div>
         )}
 
         {(authError || modelResult.error) && (
@@ -206,24 +209,21 @@ export function LoginScreen({
         <form className="api-login-form" onSubmit={submitApiKey}>
           <label htmlFor="api-key">
             <KeyRound size={16} />
-            Chave de API Verboo
+            {t('login.apiKeyLabel')}
           </label>
           <div className="api-login-row">
             <input
               id="api-key"
               value={apiKey}
               onChange={event => setApiKey(event.target.value)}
-              placeholder={credentials.hasApiKey ? `Configurada (${credentials.apiKeyHint})` : 'Cole sua chave de API'}
+              placeholder={credentials.hasApiKey ? t('login.apiKeyConfigured', { hint: credentials.apiKeyHint }) : t('login.apiKeyPlaceholder')}
               type="password"
             />
             <button type="submit" disabled={!apiKey.trim() || saving || checking}>
-              {saving ? 'Validando' : 'Salvar'}
+              {saving ? t('common.validating') : t('common.save')}
             </button>
           </div>
-          <p>
-            A chave fica criptografada localmente. O app só libera o uso se ela conseguir listar os modelos
-            disponíveis na sua conta Verboo.
-          </p>
+          <p>{t('login.apiKeyHelp')}</p>
         </form>
       </section>
     </main>

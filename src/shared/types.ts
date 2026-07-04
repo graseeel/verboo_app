@@ -66,6 +66,7 @@ export type GoalEvaluationInput = {
 
 export type AccessMode = 'approval' | 'auto' | 'full'
 export type ThemeMode = 'dark' | 'light'
+export type LanguageCode = 'en-US' | 'pt-BR'
 export type SettingsTab =
   | 'permissions'
   | 'trustedCommands'
@@ -102,7 +103,7 @@ export type TranscriptItem = {
   text: string
   timestamp: number
   kind?: 'message' | 'activity' | 'summary'
-  activityKind?: 'thinking' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool'
+  activityKind?: 'thinking' | 'image' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool'
   activityDetail?: string
   command?: CommandRun
   changeSummary?: WorkspaceChangeSummary
@@ -121,7 +122,7 @@ export type WorkspaceChangeEntry = {
 
 export type TurnActionKind =
   | 'read' | 'search' | 'edit' | 'create' | 'delete' | 'command'
-  | 'terminal' | 'permission' | 'agent-open' | 'agent-close' | 'tool'
+  | 'image' | 'terminal' | 'permission' | 'agent-open' | 'agent-close' | 'tool'
 
 export type CommandRun = { input: string; output: string; status: 'success' | 'failure' | 'running' }
 
@@ -151,6 +152,7 @@ export type ChatProject = {
 export type StoredConversation = {
   id: string
   title: string
+  cliSessionId?: string
   projectId?: string
   items: TranscriptItem[]
   goal?: GoalState
@@ -183,6 +185,7 @@ export type ModelDiscoveryResult = {
 }
 
 export type UserSettings = {
+  language: LanguageCode
   defaultAccessMode: AccessMode
   fullAccessEnabled: boolean
   lastSelectedModelId?: string
@@ -193,6 +196,7 @@ export type UserSettings = {
   completionNotifications: CompletionNotificationMode
   permissionNotifications: boolean
   questionNotifications: boolean
+  responseEnhancementsEnabled: boolean
   personality: PersonalityMode
   customInstructions: string
   trustedCommands: TrustedCommandRule[]
@@ -309,14 +313,17 @@ export type AttachmentMeta = {
 }
 
 export type AgentTurnRequest = {
+  turnId?: string
   message: string
   model?: string
   modelSupportsVision?: boolean
   contextWindow?: number
+  responseLanguage?: LanguageCode
   accessMode: AccessMode
   workingDirectory: string
   skills: SkillSummary[]
   attachments?: AttachmentMeta[]
+  responseEnhancementsEnabled?: boolean
   personality?: PersonalityMode
   customInstructions?: string
   memoryContext?: string

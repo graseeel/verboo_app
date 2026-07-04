@@ -7,6 +7,7 @@ import {
   FolderPlus,
   LogOut,
   MessageSquare,
+  MessageSquareDashed,
   MessageSquarePlus,
   Pencil,
   Search,
@@ -15,8 +16,12 @@ import {
   UserRound,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
 import type { ChatProject, CliAuthStatus, ProfileResult, StoredConversation } from '../../shared/types'
+import { ContextMenu, type ContextMenuState } from './ContextMenu'
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss'
+import { useI18n } from '../i18n'
+import { DEFAULT_CONVERSATION_TITLE } from '../state/chatStore'
 import mascotUrl from '../../../assets/branding/verboo-mascot.png'
 import packageJson from '../../../package.json'
 
@@ -71,13 +76,15 @@ export function AppSidebar({
   onArchiveConversation,
   onDeleteConversation,
 }: AppSidebarProps) {
+  const { t } = useI18n()
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
   const [editingProjectId, setEditingProjectId] = useState<string | undefined>()
   const [projectDraft, setProjectDraft] = useState('')
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | undefined>()
   const profileMenuRef = useRef<HTMLDivElement | null>(null)
-  const profileName = profile.user?.name ?? profile.user?.email ?? cliAuth.email ?? 'Perfil Verboo'
+  const profileName = profile.user?.name ?? profile.user?.email ?? cliAuth.email ?? t('sidebar.profile')
   useOutsideDismiss(profileMenuRef, profileMenuOpen, () => setProfileMenuOpen(false))
   const filteredConversations = useMemo(
     () => filterConversations(conversations, query),
@@ -107,17 +114,44 @@ export function AppSidebar({
     setProjectDraft('')
   }
 
+  function openProjectContextMenu(event: ReactMouseEvent, project: ChatProject) {
+    event.preventDefault()
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      items: [
+        { key: 'new-chat', label: t('sidebar.newChatInProject'), icon: <MessageSquarePlus size={14} />, onSelect: () => onNewChat(project.id) },
+        { key: 'rename', label: t('sidebar.renameProject'), icon: <Pencil size={14} />, onSelect: () => startProjectEdit(project) },
+        { key: 'archive', label: t('sidebar.archiveProject'), icon: <Archive size={14} />, onSelect: () => onArchiveProject(project.id) },
+        { key: 'delete', label: t('sidebar.deleteProject'), icon: <Trash2 size={14} />, danger: true, onSelect: () => onDeleteProject(project.id) },
+      ],
+    })
+  }
+
+  function openConversationContextMenu(event: ReactMouseEvent, conversationId: string) {
+    event.preventDefault()
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      items: [
+        { key: 'open', label: t('common.open'), icon: <MessageSquare size={14} />, onSelect: () => onSelectConversation(conversationId) },
+        { key: 'archive', label: t('sidebar.archiveChat'), icon: <Archive size={14} />, onSelect: () => onArchiveConversation(conversationId) },
+        { key: 'delete', label: t('sidebar.deleteChat'), icon: <Trash2 size={14} />, danger: true, onSelect: () => onDeleteConversation(conversationId) },
+      ],
+    })
+  }
+
   return (
     <aside className={`app-sidebar ${compact ? 'compact' : ''} ${activeView === 'settings' ? 'is-dimmed' : ''}`}>
       <div className="sidebar-scroll">
-        <nav className="sidebar-primary" aria-label="Navegação principal">
-          <button className="sidebar-action" type="button" onClick={() => onNewChat(selectedProjectId)} title="Novo chat">
+        <nav className="sidebar-primary" aria-label={t('sidebar.nav')}>
+          <button className="sidebar-action" type="button" onClick={() => onNewChat(selectedProjectId)} title={t('sidebar.newChat')}>
             <MessageSquarePlus size={16} />
-            <span>Novo chat</span>
+            <span>{t('sidebar.newChat')}</span>
           </button>
-          <button className="sidebar-action" type="button" onClick={() => setSearchOpen(open => !open)} title="Pesquisar">
+          <button className="sidebar-action" type="button" onClick={() => setSearchOpen(open => !open)} title={t('sidebar.search')}>
             <Search size={16} />
-            <span>Pesquisar</span>
+            <span>{t('sidebar.search')}</span>
           </button>
           {searchOpen && (
             <input
@@ -125,28 +159,31 @@ export function AppSidebar({
               value={query}
               onChange={event => setQuery(event.target.value)}
               autoFocus
-              placeholder="Buscar chats e projetos"
-              aria-label="Buscar chats e projetos"
+              placeholder={t('sidebar.searchPlaceholder')}
+              aria-label={t('sidebar.searchPlaceholder')}
             />
           )}
         </nav>
 
         <section className="sidebar-section project-section">
           <div className="sidebar-section-heading">
-            <h2>Projetos</h2>
-            <button className="sidebar-mini-button" type="button" onClick={onOpenProject} title="Abrir pasta">
+            <h2>{t('sidebar.projects')}</h2>
+            <button className="sidebar-mini-button" type="button" onClick={onOpenProject} title={t('sidebar.openFolder')}>
               <FolderPlus size={14} />
             </button>
           </div>
 
           {filteredProjects.length === 0 ? (
-            <p className="sidebar-empty">Abra uma pasta para criar um projeto.</p>
+            <p className="sidebar-empty">{t('sidebar.noProjects')}</p>
           ) : (
             filteredProjects.map(project => {
               const projectChats = filteredConversations.filter(conversation => conversation.projectId === project.id)
               return (
                 <div key={project.id} className="sidebar-project">
-                  <div className={`project-row ${selectedProjectId === project.id ? 'active' : ''}`}>
+                  <div
+                    className={`project-row ${selectedProjectId === project.id ? 'active' : ''}`}
+                    onContextMenu={event => openProjectContextMenu(event, project)}
+                  >
                     <button
                       className="project-toggle"
                       type="button"
@@ -181,16 +218,16 @@ export function AppSidebar({
                     )}
 
                     <div className="sidebar-row-actions">
-                      <button type="button" onClick={() => onNewChat(project.id)} title="Novo chat neste projeto">
+                      <button type="button" onClick={() => onNewChat(project.id)} title={t('sidebar.newChatInProject')}>
                         <MessageSquarePlus size={13} />
                       </button>
-                      <button type="button" onClick={() => startProjectEdit(project)} title="Renomear projeto">
+                      <button type="button" onClick={() => startProjectEdit(project)} title={t('sidebar.renameProject')}>
                         <Pencil size={13} />
                       </button>
-                      <button type="button" onClick={() => onArchiveProject(project.id)} title="Arquivar projeto">
+                      <button type="button" onClick={() => onArchiveProject(project.id)} title={t('sidebar.archiveProject')}>
                         <Archive size={13} />
                       </button>
-                      <button type="button" onClick={() => onDeleteProject(project.id)} title="Apagar projeto">
+                      <button type="button" onClick={() => onDeleteProject(project.id)} title={t('sidebar.deleteProject')}>
                         <Trash2 size={13} />
                       </button>
                     </div>
@@ -206,6 +243,7 @@ export function AppSidebar({
                           onSelect={onSelectConversation}
                           onArchive={onArchiveConversation}
                           onDelete={onDeleteConversation}
+                          onContextMenu={openConversationContextMenu}
                         />
                       ))}
                     </div>
@@ -217,9 +255,13 @@ export function AppSidebar({
         </section>
 
         <section className="sidebar-section">
-          <h2>Chats</h2>
+          <h2>{t('sidebar.chats')}</h2>
           {looseChats.length === 0 ? (
-            <p className="sidebar-empty">Nenhum chat sem projeto.</p>
+            <div className="empty-state sidebar-empty">
+              <span className="empty-state-icon" aria-hidden="true"><MessageSquareDashed size={17} /></span>
+              <span className="empty-state-title">{t('sidebar.noLooseChats')}</span>
+              <span className="empty-state-hint">{t('sidebar.noLooseChatsHint')}</span>
+            </div>
           ) : (
             looseChats.map(conversation => (
               <ConversationRow
@@ -229,6 +271,7 @@ export function AppSidebar({
                 onSelect={onSelectConversation}
                 onArchive={onArchiveConversation}
                 onDelete={onDeleteConversation}
+                onContextMenu={openConversationContextMenu}
               />
             ))
           )}
@@ -240,24 +283,24 @@ export function AppSidebar({
           <div className="profile-menu popover-panel t-dropdown is-open" data-origin="bottom-left">
             <button type="button" onClick={() => { onSelectView('profile'); setProfileMenuOpen(false) }}>
               <UserRound size={15} />
-              Perfil
+              {t('sidebar.profile')}
             </button>
             <button type="button" onClick={() => { onOpenSettings(); setProfileMenuOpen(false) }}>
               <Settings size={15} />
-              Configurações
+              {t('sidebar.settings')}
             </button>
             <button type="button" onClick={() => { onOpenArchivedChats(); setProfileMenuOpen(false) }}>
               <Archive size={15} />
-              Chats arquivados
+              {t('sidebar.archivedChats')}
             </button>
             <button type="button" onClick={() => { onOpenFeedback(); setProfileMenuOpen(false) }}>
               <Bug size={15} />
-              Ajuda e feedback
+              {t('sidebar.helpFeedback')}
             </button>
             <div className="profile-menu-separator" />
             <button type="button" onClick={() => { onLogout(); setProfileMenuOpen(false) }}>
               <LogOut size={15} />
-              Sair
+              {t('sidebar.logout')}
             </button>
           </div>
         )}
@@ -272,16 +315,18 @@ export function AppSidebar({
             <strong>Verboo<span>:code</span></strong>
             <small>{`v${packageJson.version}`}</small>
           </span>
-          <small className="account-disclaimer">Versão independente em desenvolvimento</small>
+          <small className="account-disclaimer">{t('sidebar.devBuild')}</small>
           <span className="account-profile">
             <span className="account-avatar">{initials(profileName)}</span>
             <span>
               <strong>{profileName}</strong>
-              <small>{profile.plan?.name ?? (cliAuth.loggedIn ? 'CLI conectado' : profile.status === 'unauthenticated' ? 'Sem chave de API' : 'Plano indisponível')}</small>
+              <small>{profile.plan?.name ?? (cliAuth.loggedIn ? t('sidebar.cliConnected') : profile.status === 'unauthenticated' ? t('sidebar.noApiKey') : t('sidebar.planUnavailable'))}</small>
             </span>
           </span>
         </button>
       </footer>
+
+      <ContextMenu menu={contextMenu} onClose={() => setContextMenu(undefined)} />
     </aside>
   )
 }
@@ -292,21 +337,28 @@ type ConversationRowProps = {
   onSelect: (conversationId: string) => void
   onArchive: (conversationId: string) => void
   onDelete: (conversationId: string) => void
+  onContextMenu: (event: ReactMouseEvent, conversationId: string) => void
 }
 
-function ConversationRow({ conversation, active, onSelect, onArchive, onDelete }: ConversationRowProps) {
+function ConversationRow({ conversation, active, onSelect, onArchive, onDelete, onContextMenu }: ConversationRowProps) {
+  const { t } = useI18n()
+  const title = displayConversationTitle(conversation.title, t)
+
   return (
-    <div className={`conversation-row ${active ? 'active' : ''}`}>
+    <div
+      className={`conversation-row ${active ? 'active' : ''}`}
+      onContextMenu={event => onContextMenu(event, conversation.id)}
+    >
       <button type="button" className="conversation-main" onClick={() => onSelect(conversation.id)}>
         <MessageSquare size={14} />
-        <span>{conversation.title}</span>
-        <small>{relativeTime(conversation.updatedAt)}</small>
+        <span>{title}</span>
+        <small>{relativeTime(conversation.updatedAt, t)}</small>
       </button>
       <div className="sidebar-row-actions">
-        <button type="button" onClick={() => onArchive(conversation.id)} title="Arquivar chat">
+        <button type="button" onClick={() => onArchive(conversation.id)} title={t('sidebar.archiveChat')}>
           <Archive size={13} />
         </button>
-        <button type="button" onClick={() => onDelete(conversation.id)} title="Apagar chat">
+        <button type="button" onClick={() => onDelete(conversation.id)} title={t('sidebar.deleteChat')}>
           <Trash2 size={13} />
         </button>
       </div>
@@ -321,6 +373,10 @@ function filterConversations(conversations: StoredConversation[], query: string)
     .filter(conversation => !normalized || conversation.title.toLowerCase().includes(normalized))
 }
 
+function displayConversationTitle(title: string, t: (key: string) => string): string {
+  return title === DEFAULT_CONVERSATION_TITLE ? t('sidebar.newChat') : title
+}
+
 function filterProjects(projects: ChatProject[], conversations: StoredConversation[], query: string): ChatProject[] {
   const normalized = query.trim().toLowerCase()
   return projects
@@ -332,14 +388,14 @@ function filterProjects(projects: ChatProject[], conversations: StoredConversati
     })
 }
 
-function relativeTime(timestamp: number): string {
+function relativeTime(timestamp: number, t: (key: string, values?: Record<string, string | number | undefined>) => string): string {
   const diff = Math.max(0, Date.now() - timestamp)
   const minutes = Math.floor(diff / 60_000)
-  if (minutes < 1) return 'agora'
-  if (minutes < 60) return `${minutes} min`
+  if (minutes < 1) return t('sidebar.now')
+  if (minutes < 60) return t('sidebar.minutes', { count: minutes })
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} h`
-  return `${Math.floor(hours / 24)} d`
+  if (hours < 24) return t('sidebar.hours', { count: hours })
+  return t('sidebar.days', { count: Math.floor(hours / 24) })
 }
 
 function initials(value: string): string {

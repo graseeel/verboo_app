@@ -2,6 +2,7 @@ import { Check, FolderClosed, FolderPlus, Plus, Search, X } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 import type { ChatProject } from '../../../shared/types'
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss'
+import { useI18n } from '../../i18n'
 
 type ProjectPickerProps = {
   projects: ChatProject[]
@@ -20,6 +21,7 @@ export function ProjectPicker({
   onUseExistingFolder,
   onCreateProject,
 }: ProjectPickerProps) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
@@ -41,7 +43,7 @@ export function ProjectPicker({
     <div className="project-picker" ref={wrapRef}>
       <button className="project-pill" type="button" onClick={() => setOpen(value => !value)}>
         <FolderClosed size={15} />
-        <span>{selected?.name ?? 'Sem projeto'}</span>
+        <span>{selected?.name ?? t('project.none')}</span>
       </button>
 
       {open && (
@@ -52,7 +54,7 @@ export function ProjectPicker({
               value={query}
               onChange={event => setQuery(event.target.value)}
               autoFocus
-              placeholder="Pesquisar projetos"
+              placeholder={t('project.search')}
             />
           </label>
 
@@ -72,13 +74,13 @@ export function ProjectPicker({
                 {project.id === selectedProjectId && <Check size={14} />}
               </button>
             ))}
-            {filtered.length === 0 && <div className="project-empty">Nenhum projeto recente.</div>}
+            {filtered.length === 0 && <div className="project-empty">{t('project.noneRecent')}</div>}
           </div>
 
           <div className="project-picker-actions">
             <button className="project-action" type="button" onClick={() => setCreateOpen(value => !value)}>
               <Plus size={15} />
-              <span>Novo projeto</span>
+              <span>{t('project.new')}</span>
             </button>
             <button
               className="project-action"
@@ -89,7 +91,7 @@ export function ProjectPicker({
               }}
             >
               <X size={15} />
-              <span>Trabalhar sem projeto</span>
+              <span>{t('project.withoutProject')}</span>
             </button>
           </div>
 
@@ -103,7 +105,7 @@ export function ProjectPicker({
                 }}
               >
                 <FolderPlus size={15} />
-                Começar do zero
+                {t('project.startEmpty')}
               </button>
               <button
                 type="button"
@@ -113,7 +115,7 @@ export function ProjectPicker({
                 }}
               >
                 <FolderClosed size={15} />
-                Usar uma pasta existente
+                {t('project.useFolder')}
               </button>
             </div>
           )}

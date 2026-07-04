@@ -2,6 +2,7 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import 'slot-text/style.css'
 import { App } from './App'
+import { ToastProvider } from './components/Toast'
 import './styles/app.css'
 
 type ErrorBoundaryState = {
@@ -38,7 +39,9 @@ class ErrorBoundary extends React.Component<React.PropsWithChildren, ErrorBounda
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <App />
+      <ToastProvider>
+        <App />
+      </ToastProvider>
     </ErrorBoundary>
   </React.StrictMode>,
 )

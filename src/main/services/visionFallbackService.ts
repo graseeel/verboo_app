@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import sharp from 'sharp'
 import { createWorker, PSM } from 'tesseract.js'
-import type { AgentTurnRequest, AttachmentMeta, VerbooModel } from '../../shared/types'
+import type { AgentTurnRequest, AttachmentMeta, LanguageCode, VerbooModel } from '../../shared/types'
 import { createImageBlock } from './attachmentService'
 import type { ModelService } from './modelService'
 import { createNodeRuntimeEnv, resolveNodeRuntimePath, resolvePackedJavaScriptEntryPath } from './nodeRuntime'
@@ -21,17 +21,6 @@ const DEFAULT_VISION_HELPER_MODELS: VisionCandidate[] = [
   { id: 'pro/qwen3.6-27b', displayName: 'Pro (qwen3.6-27b)' },
   { id: 'pro/deepseek-v4-flash', displayName: 'Pro (deepseek-v4-flash)' },
 ]
-const VISION_HELPER_PROMPT = [
-  'Você é um leitor visual auxiliar do Verboo Code.',
-  'Descreva a imagem para outro modelo responder ao usuário.',
-  'Responda em português, de forma objetiva, cobrindo:',
-  '- tipo de imagem: print, interface, documento, foto, gráfico ou outro;',
-  '- texto visível importante;',
-  '- layout, elementos principais, cores e estado da interface quando houver;',
-  '- qualquer incerteza relevante.',
-  'Não use ferramentas de arquivo. Não mencione que você é um modelo auxiliar.',
-].join('\n')
-
 type TessdataPackage = {
   code: string
   langPath: string
@@ -65,11 +54,12 @@ export class VisionFallbackService {
     let worker: OcrWorker | undefined
     const failedVisionModels = new Set<string>()
     const visionCandidates = await this.resolveVisionCandidates(request.model)
+    const language = request.responseLanguage ?? 'en-US'
 
     try {
       for (const attachment of imageAttachments) {
         try {
-          descriptions.push(await describeImageWithVisionHelper(attachment, visionCandidates, request.workingDirectory, failedVisionModels))
+          descriptions.push(await describeImageWithVisionHelper(attachment, visionCandidates, request.workingDirectory, failedVisionModels, language))
           continue
         } catch (visionError) {
           const visionMessage = visionError instanceof Error ? visionError.message : String(visionError)
@@ -78,7 +68,9 @@ export class VisionFallbackService {
             descriptions.push(await describeImageWithOcr(worker, attachment))
           } catch (ocrError) {
             const ocrMessage = ocrError instanceof Error ? ocrError.message : String(ocrError)
-            failures.push(`${attachment.name}: helper vision falhou (${visionMessage}); OCR falhou (${ocrMessage})`)
+            failures.push(language === 'pt-BR'
+              ? `${attachment.name}: helper vision falhou (${visionMessage}); OCR falhou (${ocrMessage})`
+              : `${attachment.name}: vision helper failed (${visionMessage}); OCR failed (${ocrMessage})`)
           }
         }
       }
@@ -121,9 +113,12 @@ async function describeImageWithVisionHelper(
   candidates: VisionCandidate[],
   workingDirectory: string,
   failedVisionModels: Set<string>,
+  language: LanguageCode,
 ): Promise<VisualDescription> {
   if (candidates.length === 0) {
-    throw new Error('Nenhum modelo vision auxiliar disponível para esta conta.')
+    throw new Error(language === 'pt-BR'
+      ? 'Nenhum modelo vision auxiliar disponível para esta conta.'
+      : 'No auxiliary vision model is available for this account.')
   }
 
   const errors: string[] = []
@@ -131,7 +126,7 @@ async function describeImageWithVisionHelper(
   for (const candidate of candidates) {
     if (failedVisionModels.has(candidate.id)) continue
     try {
-      const text = await runVisionHelper(candidate, attachment, workingDirectory)
+      const text = await runVisionHelper(candidate, attachment, workingDirectory, language)
       return {
         attachment,
         text,
@@ -145,17 +140,22 @@ async function describeImageWithVisionHelper(
     }
   }
 
-  throw new Error(errors.join('; ') || 'Nenhum modelo vision auxiliar retornou descricao.')
+  throw new Error(errors.join('; ') || (language === 'pt-BR'
+    ? 'Nenhum modelo vision auxiliar retornou descrição.'
+    : 'No auxiliary vision model returned a description.'))
 }
 
 async function runVisionHelper(
   candidate: VisionCandidate,
   attachment: AttachmentMeta,
   workingDirectory: string,
+  language: LanguageCode,
 ): Promise<string> {
   const imageBlock = await createImageBlock(attachment)
   if (!imageBlock) {
-    throw new Error('Não foi possível preparar a imagem para o helper vision.')
+    throw new Error(language === 'pt-BR'
+      ? 'Não foi possível preparar a imagem para o helper vision.'
+      : 'Could not prepare the image for the vision helper.')
   }
 
   const cliPath = resolveCliPath()
@@ -166,7 +166,7 @@ async function runVisionHelper(
     message: {
       role: 'user',
       content: [
-        { type: 'text', text: VISION_HELPER_PROMPT },
+        { type: 'text', text: visionHelperPrompt(language) },
         imageBlock,
       ],
     },
@@ -327,26 +327,30 @@ function withVisualContext(
   descriptions: VisualDescription[],
   failures: string[],
 ): AgentTurnRequest {
-  const lines = [
-    'Contexto visual dos anexos:',
-    'O app analisou os anexos com um modelo vision auxiliar quando disponível. Se o helper falhou, usou OCR local como fallback.',
-    'Use este contexto visual como apoio. Se o usuário pedir algo visual, responda com base nele.',
-    'Não diga que houve falha de permissão ou falta de vision apenas porque a leitura visual foi convertida em texto. Cite incertezas somente quando a leitura estiver incompleta.',
-  ]
+  const language = request.responseLanguage ?? 'en-US'
+  const lines = visualContextHeader(language)
 
   descriptions.forEach((description, index) => {
     const { attachment } = description
-    const dimensions = attachment.width && attachment.height ? `${attachment.width}x${attachment.height}` : 'dimensoes desconhecidas'
+    const dimensions = attachment.width && attachment.height
+      ? `${attachment.width}x${attachment.height}`
+      : language === 'pt-BR' ? 'dimensões desconhecidas' : 'unknown dimensions'
     const sourceLine = description.mode === 'vision-helper'
-      ? `Leitura visual: modelo auxiliar ${description.sourceLabel}.`
+      ? language === 'pt-BR'
+        ? `Leitura visual: modelo auxiliar ${description.sourceLabel}.`
+        : `Visual reading: auxiliary model ${description.sourceLabel}.`
       : description.confidence === undefined
-        ? 'Leitura visual: OCR local.'
-        : `Leitura visual: OCR local com confianca aproximada ${description.confidence}%.`
+        ? language === 'pt-BR' ? 'Leitura visual: OCR local.' : 'Visual reading: local OCR.'
+        : language === 'pt-BR'
+          ? `Leitura visual: OCR local com confiança aproximada ${description.confidence}%.`
+          : `Visual reading: local OCR with approximate confidence ${description.confidence}%.`
     lines.push(
       '',
-      `[Imagem ${index + 1}: ${attachment.name}]`,
-      `Arquivo: ${attachment.path}`,
-      `Tipo: ${attachment.mediaType ?? attachment.kind}; dimensoes: ${dimensions}`,
+      language === 'pt-BR' ? `[Imagem ${index + 1}: ${attachment.name}]` : `[Image ${index + 1}: ${attachment.name}]`,
+      language === 'pt-BR' ? `Arquivo: ${attachment.path}` : `File: ${attachment.path}`,
+      language === 'pt-BR'
+        ? `Tipo: ${attachment.mediaType ?? attachment.kind}; dimensões: ${dimensions}`
+        : `Type: ${attachment.mediaType ?? attachment.kind}; dimensions: ${dimensions}`,
       sourceLine,
       description.text,
     )
@@ -355,7 +359,7 @@ function withVisualContext(
   if (failures.length > 0) {
     lines.push(
       '',
-      'Limites da leitura visual:',
+      language === 'pt-BR' ? 'Limites da leitura visual:' : 'Visual reading limits:',
       failures.join('\n'),
     )
   }
@@ -366,9 +370,53 @@ function withVisualContext(
 
   return {
     ...request,
-    message: `${lines.join('\n')}\n\nPedido original do usuario:\n${request.message}`,
+    message: `${lines.join('\n')}\n\n${language === 'pt-BR' ? 'Pedido original do usuário:' : 'Original user request:'}\n${request.message}`,
     attachments: request.attachments?.filter(attachment => !imagePaths.has(attachment.path)),
   }
+}
+
+function visionHelperPrompt(language: LanguageCode): string {
+  if (language === 'pt-BR') {
+    return [
+      'Você é um leitor visual auxiliar do Verboo Code.',
+      'Descreva a imagem para outro modelo responder ao usuário.',
+      'Responda em português do Brasil, de forma objetiva, cobrindo:',
+      '- tipo de imagem: print, interface, documento, foto, gráfico ou outro;',
+      '- texto visível importante;',
+      '- layout, elementos principais, cores e estado da interface quando houver;',
+      '- qualquer incerteza relevante.',
+      'Não use ferramentas de arquivo. Não mencione que você é um modelo auxiliar.',
+    ].join('\n')
+  }
+
+  return [
+    'You are an auxiliary visual reader for Verboo Code.',
+    'Describe the image so another model can answer the user.',
+    'Respond in English, objectively covering:',
+    '- image type: screenshot, interface, document, photo, chart, or other;',
+    '- important visible text;',
+    '- layout, main elements, colors, and interface state when relevant;',
+    '- any relevant uncertainty.',
+    'Do not use file tools. Do not mention that you are an auxiliary model.',
+  ].join('\n')
+}
+
+function visualContextHeader(language: LanguageCode): string[] {
+  if (language === 'pt-BR') {
+    return [
+      'Contexto visual dos anexos:',
+      'O app analisou os anexos com um modelo vision auxiliar quando disponível. Se o helper falhou, usou OCR local como fallback.',
+      'Use este contexto visual como apoio. Se o usuário pedir algo visual, responda com base nele.',
+      'Não diga que houve falha de permissão ou falta de vision apenas porque a leitura visual foi convertida em texto. Cite incertezas somente quando a leitura estiver incompleta.',
+    ]
+  }
+
+  return [
+    'Visual context from attachments:',
+    'The app analyzed attachments with an auxiliary vision model when available. If the helper failed, it used local OCR as fallback.',
+    'Use this visual context as support. If the user asks about something visual, answer based on it.',
+    'Do not say there was a permission or vision capability failure only because the visual reading was converted to text. Mention uncertainty only when the reading is incomplete.',
+  ]
 }
 
 function normalizeOcrText(value: string): string {

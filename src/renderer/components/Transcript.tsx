@@ -1,20 +1,22 @@
-import { CheckCircle2, ChevronDown, ChevronRight, Clock3, FileSearch, FileText, GitBranch, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
+import { CheckCircle2, ChevronDown, ChevronRight, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
 import { memo, useMemo, useState, type ReactNode } from 'react'
 import type { TranscriptItem, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
 import { StepFlow } from '../features/transcript/StepFlow'
 import { ThinkingIcon } from '../features/transcript/TranscriptIcons'
+import { useI18n, type Translator } from '../i18n'
 
 type TranscriptProps = {
   items: TranscriptItem[]
   onOpenReview?: (files: WorkspaceChangeEntry[], index: number) => void
   reviewMetadata?: WorkspaceReviewMetadata
   thinkingTurnId?: string
+  imageReadingTurnId?: string
 }
 
 const MAX_ACTIVITY_DETAIL_LINES = 8
 const MAX_SUMMARY_DETAIL_LINES = 3
 
-export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId }: TranscriptProps) {
+export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, imageReadingTurnId }: TranscriptProps) {
   // `items` is a new array reference only when the conversation actually changes,
   // so this recomputes on real content changes but is skipped when the parent
   // re-renders for unrelated reasons (context-usage ticks, subagent updates…).
@@ -24,7 +26,14 @@ export const Transcript = memo(function Transcript({ items, onOpenReview, review
     <div className="transcript">
       {visibleItems.map(entry => (
         entry.kind === 'assistant-turn'
-          ? <TurnView key={entry.turnId} entry={entry} thinking={thinkingTurnId === entry.turnId} onOpenReview={onOpenReview} reviewMetadata={reviewMetadata} />
+          ? <TurnView
+              key={entry.turnId}
+              entry={entry}
+              thinking={thinkingTurnId === entry.turnId}
+              readingImage={imageReadingTurnId === entry.turnId}
+              onOpenReview={onOpenReview}
+              reviewMetadata={reviewMetadata}
+            />
           : <MessageArticle key={entry.item.id} item={entry.item} />
       ))}
     </div>
@@ -35,12 +44,14 @@ type TranscriptEntry =
   | { kind: 'message'; item: TranscriptItem }
   | { kind: 'assistant-turn'; turnId: string; items: TranscriptItem[]; summary?: TranscriptItem }
 
-function TurnView({ entry, thinking, onOpenReview, reviewMetadata }: {
+function TurnView({ entry, thinking, readingImage, onOpenReview, reviewMetadata }: {
   entry: Extract<TranscriptEntry, { kind: 'assistant-turn' }>
   thinking: boolean
+  readingImage: boolean
   onOpenReview?: TranscriptProps['onOpenReview']
   reviewMetadata?: WorkspaceReviewMetadata
 }) {
+  const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
   const streaming = entry.items.some(item => item.streaming)
   const textItems = entry.items.filter(item => item.role === 'assistant' && item.text.trim().length > 0)
@@ -56,35 +67,39 @@ function TurnView({ entry, thinking, onOpenReview, reviewMetadata }: {
 
   return (
     <article className="message-row assistant turn-view">
+      {/* No "generating" badge here: while streaming, the thinking marker and
+          the active action row below already signal progress — two indicators
+          side-by-side read as noise. */}
       <div className="message-meta">
         <span>{label}</span>
-        {streaming && (
-          <span className="message-status-marker" role="status">
-            <span className="message-status-marker-icon" aria-hidden="true"><LoaderCircle size={12} /></span>
-            <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm" data-text="gerando">gerando</span>
-          </span>
-        )}
       </div>
 
       {!streaming && entry.items.length > 0 && (
         <button type="button" className="turn-collapsed" onClick={() => setExpanded(value => !value)}>
           <ChevronRight size={14} className={expanded ? 'is-open' : ''} />
-          <span>{summary?.text ?? 'Trabalhou'}</span>
+          <span>{summary?.text ?? t('transcript.worked')}</span>
         </button>
       )}
 
       {thinking && !hasText && (
-        <div className="step-thinking"><ThinkingIcon /> Pensando…</div>
+        <div className={`step-thinking ${readingImage ? 'is-reading-image' : ''}`} role="status">
+          <span className="step-marker-icon" aria-hidden="true">
+            {readingImage ? <ImageIcon size={14} strokeWidth={1.8} /> : <ThinkingIcon />}
+          </span>
+          <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm">
+            {readingImage ? t('transcript.imageReading') : t('transcript.thinking')}
+          </span>
+        </div>
       )}
 
-      {showFlow && <StepFlow items={entry.items} />}
+      {showFlow && <StepFlow items={entry.items} streaming={streaming} />}
 
       {!streaming && !expanded && finalText && (
         <div className="step-text turn-recap">{finalText}</div>
       )}
 
       {!streaming && summary?.changeSummary?.totalFiles ? (
-        <section className="turn-completion-summary" aria-label="Resumo do turno">
+        <section className="turn-completion-summary" aria-label={t('transcript.turnSummary')}>
           <ChangeSummaryCard summary={summary.changeSummary} onOpenReview={onOpenReview} reviewMetadata={reviewMetadata} />
         </section>
       ) : null}
@@ -93,6 +108,7 @@ function TurnView({ entry, thinking, onOpenReview, reviewMetadata }: {
 }
 
 const MessageArticle = memo(function MessageArticle({ item, children }: { item: TranscriptItem; children?: ReactNode }) {
+  const { t } = useI18n()
   const visibleText = visibleTextForItem(item)
 
   return (
@@ -104,14 +120,14 @@ const MessageArticle = memo(function MessageArticle({ item, children }: { item: 
       <div className="message-meta">
         {item.kind === 'activity' && <ActivityIcon item={item} />}
         {item.kind === 'summary' && <CheckCircle2 size={14} strokeWidth={1.8} />}
-        <span>{labelForItem(item)}</span>
+        <span>{labelForItem(item, t)}</span>
         {item.streaming && (
           <span className="message-status-marker" role="status">
             <span className="message-status-marker-icon" aria-hidden="true">
               <LoaderCircle size={12} />
             </span>
-            <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm" data-text="gerando">
-              gerando
+            <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm" data-text={t('transcript.generating')}>
+              {t('transcript.generating')}
             </span>
           </span>
         )}
@@ -126,7 +142,7 @@ const MessageArticle = memo(function MessageArticle({ item, children }: { item: 
       <div className={`message-text ${item.streaming ? 'streaming-text' : ''}`}>
         {item.kind === 'summary' && item.activityDetail
           ? item.activityDetail
-          : visibleText || (item.streaming ? '...' : '')}
+          : visibleText || (item.streaming ? t('transcript.thinking') : '')}
         {item.kind !== 'summary' && item.activityDetail && <span className="message-detail">{item.activityDetail}</span>}
       </div>
       {children}
@@ -154,10 +170,11 @@ function visibleInitialGoalCommand(text: string): string {
 }
 
 function ActivityPanel({ activities, summary }: { activities: TranscriptItem[]; summary?: TranscriptItem }) {
+  const { t } = useI18n()
   if (activities.length === 0 && !summary) return null
-  const detailLines = activityDetailLines(activities, summary)
+  const detailLines = activityDetailLines(activities, summary, t)
   const primaryActivity = activities.find(item => item.activityKind !== 'thinking') ?? activities[0]
-  const title = summary?.text ?? activityPanelTitle(activities, summary)
+  const title = summary?.text ?? activityPanelTitle(activities, summary, t)
 
   return (
     <details className="turn-activity-panel">
@@ -180,6 +197,7 @@ function ActivityPanel({ activities, summary }: { activities: TranscriptItem[]; 
 }
 
 function CompletionSummary({ summary, onOpenReview, reviewMetadata }: { summary: TranscriptItem; onOpenReview?: TranscriptProps['onOpenReview']; reviewMetadata?: WorkspaceReviewMetadata }) {
+  const { t } = useI18n()
   const lines = summary.activityDetail
     ?.split('\n')
     .map(line => line.trim())
@@ -189,7 +207,7 @@ function CompletionSummary({ summary, onOpenReview, reviewMetadata }: { summary:
   if (lines.length === 0 && !summary.changeSummary?.totalFiles) return null
 
   return (
-    <section className="turn-completion-summary" aria-label="Resumo do turno">
+    <section className="turn-completion-summary" aria-label={t('transcript.turnSummary')}>
       <div className="turn-completion-header">
         <CheckCircle2 size={14} strokeWidth={1.8} />
         <span>{summary.text}</span>
@@ -206,20 +224,21 @@ function CompletionSummary({ summary, onOpenReview, reviewMetadata }: { summary:
   )
 }
 
-function changeSummaryTitle(summary: NonNullable<TranscriptItem['changeSummary']>, metadata?: WorkspaceReviewMetadata): string {
-  if (metadata?.scope === 'github-repo') return 'Mudanças não commitadas'
-  if (metadata?.scope === 'git-repo') return 'Mudanças no repositório'
-  return `${summary.totalFiles} ${summary.totalFiles === 1 ? 'arquivo com mudança' : 'arquivos com mudanças'}`
+function changeSummaryTitle(summary: NonNullable<TranscriptItem['changeSummary']>, metadata: WorkspaceReviewMetadata | undefined, t: Translator): string {
+  if (metadata?.scope === 'github-repo') return t('transcript.uncommittedChanges')
+  if (metadata?.scope === 'git-repo') return t('transcript.repoChanges')
+  return `${summary.totalFiles} ${summary.totalFiles === 1 ? t('transcript.fileWithChange') : t('transcript.filesWithChanges')}`
 }
 
-function changeSummarySubtitle(summary: NonNullable<TranscriptItem['changeSummary']>, metadata?: WorkspaceReviewMetadata): string {
+function changeSummarySubtitle(summary: NonNullable<TranscriptItem['changeSummary']>, metadata: WorkspaceReviewMetadata | undefined, t: Translator): string {
   if (metadata?.scope === 'github-repo' || metadata?.scope === 'git-repo') {
-    return `${summary.totalFiles} ${summary.totalFiles === 1 ? 'arquivo com mudança' : 'arquivos com mudanças'}`
+    return `${summary.totalFiles} ${summary.totalFiles === 1 ? t('transcript.fileWithChange') : t('transcript.filesWithChanges')}`
   }
-  return metadata?.subtitle ?? 'Projeto local sem repositório'
+  return t('transcript.localProject')
 }
 
 function ChangeSummaryCard({ summary, onOpenReview, reviewMetadata }: { summary: NonNullable<TranscriptItem['changeSummary']>; onOpenReview?: TranscriptProps['onOpenReview']; reviewMetadata?: WorkspaceReviewMetadata }) {
+  const { t } = useI18n()
   const visibleFiles = summary.files.slice(0, 3)
   const hiddenCount = Math.max(0, summary.totalFiles - visibleFiles.length)
   const canOpenReview = Boolean(onOpenReview && reviewMetadata?.capabilities.canDiff !== false)
@@ -234,13 +253,13 @@ function ChangeSummaryCard({ summary, onOpenReview, reviewMetadata }: { summary:
       <div className="change-summary-card-header"
         role={canOpenReview ? 'button' : undefined}
         tabIndex={canOpenReview ? 0 : undefined}
-        title={canOpenReview ? 'Abrir revisão' : ''}
+        title={canOpenReview ? t('transcript.review') : ''}
         onClick={() => handleClickFile(0)}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClickFile(0) } }}
       >
         <span>
-          {changeSummaryTitle(summary, reviewMetadata)}
-          <small>{changeSummarySubtitle(summary, reviewMetadata)}</small>
+          {changeSummaryTitle(summary, reviewMetadata, t)}
+          <small>{changeSummarySubtitle(summary, reviewMetadata, t)}</small>
         </span>
         <span className="change-summary-totals">
           <span className="added">+{summary.additions}</span>
@@ -270,7 +289,7 @@ function ChangeSummaryCard({ summary, onOpenReview, reviewMetadata }: { summary:
             className="change-summary-more"
             disabled={!canOpenReview}
             onClick={() => handleClickFile(visibleFiles.length)}
-          >Ver mais {hiddenCount} {hiddenCount === 1 ? 'arquivo' : 'arquivos'}</button>
+          >{t('transcript.showMoreFiles', { count: hiddenCount, files: hiddenCount === 1 ? t('transcript.fileSingular') : t('transcript.filePlural') })}</button>
         )}
       </div>
     </div>
@@ -283,6 +302,7 @@ function ActivityIcon({ item }: { item: TranscriptItem }) {
   if (item.activityKind === 'search') return <Search size={14} strokeWidth={1.8} />
   if (item.activityKind === 'command') return <Terminal size={14} strokeWidth={1.8} />
   if (item.activityKind === 'terminal') return <Terminal size={14} strokeWidth={1.8} />
+  if (item.activityKind === 'image') return <ImageIcon size={14} strokeWidth={1.8} />
   if (item.activityKind === 'thinking') return <Clock3 size={14} strokeWidth={1.8} />
   if (item.activityKind === 'permission') return <FileSearch size={14} strokeWidth={1.8} />
   if (item.activityKind === 'subagent') return <GitBranch size={14} strokeWidth={1.8} />
@@ -333,15 +353,15 @@ function buildTranscriptEntries(items: TranscriptItem[]): TranscriptEntry[] {
   return entries
 }
 
-function labelForItem(item: TranscriptItem): string {
+function labelForItem(item: TranscriptItem, t: Translator): string {
   if (item.kind === 'activity') return item.text
   if (item.kind === 'summary') return item.text
   if (item.role === 'assistant') {
     return item.modelDisplayName ? `Verboo - ${item.modelDisplayName}` : 'Verboo'
   }
-  if (item.role === 'tool') return 'Ferramenta'
-  if (item.role === 'system') return 'Sistema'
-  return 'Você'
+  if (item.role === 'tool') return t('transcript.tool')
+  if (item.role === 'system') return t('transcript.system')
+  return t('transcript.you')
 }
 
 function turnIdFromActivity(item: TranscriptItem): string | undefined {
@@ -352,25 +372,26 @@ function turnIdFromSummary(item: TranscriptItem): string | undefined {
   return item.id.match(/^(.*):summary$/)?.[1]
 }
 
-function activityPanelTitle(activities: TranscriptItem[], summary?: TranscriptItem): string {
+function activityPanelTitle(activities: TranscriptItem[], summary: TranscriptItem | undefined, t: Translator): string {
   const counts = countActivities(activities)
   const parts = [
-    formatCount(counts.read, 'Leu arquivo', 'Leu arquivos'),
-    formatCount(counts.edit, 'Editou arquivo', 'Editou arquivos'),
-    formatCount(counts.search, 'Pesquisou', 'Pesquisou'),
-    formatCount(counts.command, 'Executou comando', 'Executou comandos'),
-    formatCount(counts.terminal, 'Leu terminal', 'Leu terminal'),
-    formatCount(counts.subagent, 'Usou subagente', 'Usou subagentes'),
-    formatCount(counts.permission, 'Pediu permissão', 'Pediu permissões'),
-    formatCount(counts.tool, 'Usou ferramenta', 'Usou ferramentas'),
+    formatCount(counts.image, t('transcript.imageOne'), t('transcript.imageMany')),
+    formatCount(counts.read, t('transcript.readOne'), t('transcript.readMany')),
+    formatCount(counts.edit, t('transcript.editOne'), t('transcript.editMany')),
+    formatCount(counts.search, t('transcript.searchOne'), t('transcript.searchMany')),
+    formatCount(counts.command, t('transcript.commandOne'), t('transcript.commandMany')),
+    formatCount(counts.terminal, t('transcript.terminalOne'), t('transcript.terminalMany')),
+    formatCount(counts.subagent, t('transcript.subagentOne'), t('transcript.subagentMany')),
+    formatCount(counts.permission, t('transcript.permissionOne'), t('transcript.permissionMany')),
+    formatCount(counts.tool, t('transcript.toolOne'), t('transcript.toolMany')),
   ].filter((part): part is string => Boolean(part))
 
-  if (parts.length > 0) return joinParts(parts)
-  return summary?.text ?? 'Atividade do agente'
+  if (parts.length > 0) return joinParts(parts, t)
+  return summary?.text ?? t('transcript.agentActivity')
 }
 
-function activityDetailLines(activities: TranscriptItem[], summary?: TranscriptItem): string[] {
-  const title = activityPanelTitle(activities)
+function activityDetailLines(activities: TranscriptItem[], summary: TranscriptItem | undefined, t: Translator): string[] {
+  const title = activityPanelTitle(activities, summary, t)
   const seen = new Set<string>()
   const activityLines: string[] = []
 
@@ -386,13 +407,13 @@ function activityDetailLines(activities: TranscriptItem[], summary?: TranscriptI
   const hiddenCount = Math.max(0, activityLines.length - MAX_ACTIVITY_DETAIL_LINES)
   const visibleActivityLines = activityLines.slice(0, MAX_ACTIVITY_DETAIL_LINES)
   if (hiddenCount > 0) {
-    visibleActivityLines.push(`+${hiddenCount} ações ocultas`)
+    visibleActivityLines.push(t('transcript.hiddenActions', { count: hiddenCount }))
   }
 
   const summaryLines = summary?.activityDetail
     ?.split('\n')
     .map(line => line.trim())
-    .filter(line => line && !line.startsWith('Resumo:') && line !== 'Motivo de parada: end_turn.')
+    .filter(line => line && !line.startsWith(t('transcript.summaryPrefix')) && line !== t('transcript.stopReason', { reason: 'end_turn' }))
     .slice(0, MAX_SUMMARY_DETAIL_LINES)
     ?? []
 
@@ -406,7 +427,7 @@ function activityDetailLines(activities: TranscriptItem[], summary?: TranscriptI
 function countActivities(activities: TranscriptItem[]): Partial<Record<NonNullable<TranscriptItem['activityKind']>, number>> {
   return activities.reduce<Partial<Record<NonNullable<TranscriptItem['activityKind']>, number>>>((counts, item) => {
     if (!item.activityKind || item.activityKind === 'thinking') return counts
-    if (!item.activityDetail && item.activityKind !== 'permission' && item.activityKind !== 'subagent') return counts
+    if (!item.activityDetail && item.activityKind !== 'permission' && item.activityKind !== 'subagent' && item.activityKind !== 'image') return counts
     counts[item.activityKind] = (counts[item.activityKind] ?? 0) + 1
     return counts
   }, {})
@@ -418,9 +439,9 @@ function formatCount(count: number | undefined, singular: string, plural: string
   return count === 1 ? singular : `${plural} (${count})`
 }
 
-function joinParts(parts: string[]): string {
+function joinParts(parts: string[], t: Translator): string {
   if (parts.length <= 1) return parts[0] ?? ''
-  return `${parts.slice(0, -1).join(', ')} e ${parts[parts.length - 1]}`
+  return `${parts.slice(0, -1).join(', ')} ${t('transcript.and')} ${parts[parts.length - 1]}`
 }
 
 function compactPath(path: string): string {

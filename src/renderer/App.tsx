@@ -17,6 +17,7 @@ import type {
   FeedbackResult,
   GoalEvaluationInput,
   GoalState,
+  LanguageCode,
   MenuBarState,
   ModelDiscoveryResult,
   ProfileResult,
@@ -39,6 +40,10 @@ import { GoalStatusBar, type GoalStatusBarState } from './features/goal/GoalStat
 import { runGoalCycle, type GoalSchedulerDelegate } from './features/goal/goalScheduler'
 import type { ReservedSlashCommand } from './features/composer/slashCommands'
 import { AppSidebar, type AppView } from './components/AppSidebar'
+import { CommandPalette, paletteIcons, type PaletteAction } from './components/CommandPalette'
+import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
+import { useToast } from './components/Toast'
+import { VerbooPet, PET_MIN_SIZE, PET_MAX_SIZE, type PetState } from './features/pet/VerbooPet'
 import { useLocalTerminal } from './features/terminal/useLocalTerminal'
 import { LocalTerminalPanel } from './features/terminal/LocalTerminalPanel'
 import { ReviewPanel } from './features/review/ReviewPanel'
@@ -56,7 +61,9 @@ import { ProfileView } from './features/profile/ProfileView'
 import { ProjectPicker } from './features/projects/ProjectPicker'
 import { SettingsView } from './features/settings/SettingsView'
 import mascotUrl from '../../assets/branding/verboo-mascot.png'
+import { I18nProvider, createTranslator, useI18n, type Translator } from './i18n'
 import {
+  DEFAULT_CONVERSATION_TITLE,
   activeProjects,
   archivedConversations,
   createConversation,
@@ -83,6 +90,7 @@ const SIDEBAR_COMPACT_WIDTH = 72
 const BOTTOM_STICK_THRESHOLD = 72
 const SCROLL_SETTLE_MS = 360
 const DEFAULT_USER_SETTINGS: UserSettings = {
+  language: 'en-US',
   defaultAccessMode: 'approval',
   fullAccessEnabled: false,
   lastSelectedModelId: undefined,
@@ -93,6 +101,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   completionNotifications: 'background',
   permissionNotifications: true,
   questionNotifications: true,
+  responseEnhancementsEnabled: false,
   personality: 'pragmatic',
   customInstructions: '',
   trustedCommands: [],
@@ -106,12 +115,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
     allowAutoAccess: true,
   },
 }
-const EMPTY_LINES = [
-  'Bom te ver por aqui.',
-  'Vamos deixar esse projeto mais claro.',
-  'Qual parte merece atenção agora?',
-  'Pronto para trabalhar com contexto de verdade.',
-]
+const EMPTY_LINE_KEYS = ['empty.line1', 'empty.line2', 'empty.line3', 'empty.line4'] as const
 
 type TurnActivity = RuntimeActivity
 
@@ -176,14 +180,6 @@ const SUBAGENT_NAMES = [
   'Meridian',
 ]
 
-const SUBAGENT_STATUS_LABELS: Record<ActiveSubagent['status'], string> = {
-  thinking: 'pensando',
-  reading: 'lendo',
-  searching: 'pesquisando',
-  done: 'concluído',
-  failed: 'falhou',
-}
-
 type QueuedFollowUp = {
   id: string
   conversationId: string
@@ -206,6 +202,15 @@ type PendingPermissionPrompt = {
 
 type PermissionDecision = 'allow' | 'deny' | 'always'
 type SidebarMode = 'expanded' | 'compact' | 'hidden'
+
+function isUsableWorkspaceDirectory(path?: string): path is string {
+  const trimmed = path?.trim()
+  return Boolean(trimmed && trimmed !== '/' && trimmed !== '.')
+}
+
+function firstUsableWorkspaceDirectory(...paths: Array<string | undefined>): string {
+  return paths.find(isUsableWorkspaceDirectory) ?? ''
+}
 
 export function App() {
   const initialSidebarPreference = useRef(readSidebarPreference())
@@ -248,6 +253,17 @@ export function App() {
   const [runningTurnId, setRunningTurnId] = useState<string | undefined>()
   const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedFollowUp[]>([])
   const [pendingPermissionPrompt, setPendingPermissionPrompt] = useState<PendingPermissionPrompt | undefined>()
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | undefined>()
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [petEnabled, setPetEnabled] = useState(() => window.localStorage.getItem('verboo:pet-enabled') === '1')
+  const [petSize, setPetSize] = useState(() => {
+    const stored = Number(window.localStorage.getItem('verboo:pet-size'))
+    return Number.isFinite(stored) && stored >= PET_MIN_SIZE && stored <= PET_MAX_SIZE ? stored : 104
+  })
+  const [petActivity, setPetActivity] = useState<{ kind: string; label: string } | undefined>()
+  const [petFlash, setPetFlash] = useState<'success' | 'error' | undefined>()
+  const petFlashTimer = useRef<number>(undefined)
+  const { toast } = useToast()
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
   const [activeSubagents, setActiveSubagents] = useState<ActiveSubagent[]>([])
   const [selectedSubagentId, setSelectedSubagentId] = useState<string | undefined>()
@@ -255,6 +271,7 @@ export function App() {
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshot | undefined>()
   const [goal, setGoal] = useState<GoalState | undefined>()
+  const [imageReadingTurnId, setImageReadingTurnId] = useState<string | undefined>()
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(initialSidebarPreference.current.mode)
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarPreference.current.width)
   const [reviewMetadata, setReviewMetadata] = useState<WorkspaceReviewMetadata | undefined>()
@@ -262,9 +279,10 @@ export function App() {
   const [reviewUnavailableReason, setReviewUnavailableReason] = useState<string | undefined>()
   const terminal = useLocalTerminal()
   const review = useReviewPanel()
+  const t = useMemo(() => createTranslator(userSettings.language), [userSettings.language])
   const goalRef = useRef(goal)
   const [goalBarStatus, setGoalBarStatus] = useState<GoalStatusBarState>({ kind: 'idle' })
-  const [emptyLine] = useState(() => EMPTY_LINES[Math.floor(Math.random() * EMPTY_LINES.length)])
+  const [emptyLineKey] = useState(() => EMPTY_LINE_KEYS[Math.floor(Math.random() * EMPTY_LINE_KEYS.length)])
   const workspaceRef = useRef<HTMLElement | null>(null)
   const transcriptEndRef = useRef<HTMLDivElement | null>(null)
   const stickToBottomRef = useRef(true)
@@ -309,10 +327,12 @@ export function App() {
     : selectedProjectId
       ? chatStore.projects.find(project => project.id === selectedProjectId)
       : undefined
+  const currentWorkspaceDirectory = firstUsableWorkspaceDirectory(activeProject?.path, config.workingDirectory)
   const items = activeConversation?.items ?? [initialSystemMessage()]
   const conversationItemsRef = useRef<readonly TranscriptItem[]>(items)
   const chatStoreRef = useRef(chatStore)
   const hasConversation = items.some(item => item.role === 'user' || item.role === 'assistant')
+  const emptyLine = t(emptyLineKey)
   const latestItem = items[items.length - 1]
   const latestItemSignature = `${latestItem?.id ?? ''}:${latestItem?.text.length ?? 0}:${latestItem?.streaming ? 1 : 0}`
   const visiblePermissionPrompt = pendingPermissionPrompt && pendingPermissionPrompt.conversationId === activeConversationId && !pendingPermissionPrompt.autoApprove
@@ -397,13 +417,13 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    const workingDirectory = activeProject?.path ?? config.workingDirectory
+    const workingDirectory = currentWorkspaceDirectory
     if (!workingDirectory) return
     window.verboo.listSkills(workingDirectory).then(setSkills)
-  }, [config.workingDirectory, activeProject?.path])
+  }, [currentWorkspaceDirectory])
 
   useEffect(() => {
-    const workingDirectory = activeProject?.path ?? config.workingDirectory
+    const workingDirectory = currentWorkspaceDirectory
     if (!workingDirectory) {
       setReviewMetadata(undefined)
       setBranchInfo(undefined)
@@ -411,7 +431,7 @@ export function App() {
     }
     window.verboo.getWorkspaceReviewMetadata(workingDirectory).then(setReviewMetadata).catch(() => setReviewMetadata(undefined))
     window.verboo.getWorkspaceBranches(workingDirectory).then(setBranchInfo).catch(() => setBranchInfo(undefined))
-  }, [config.workingDirectory, activeProject?.path])
+  }, [currentWorkspaceDirectory])
 
   useEffect(() => {
     if (!reviewUnavailableReason) return undefined
@@ -581,11 +601,16 @@ export function App() {
     const startWidth = sidebarMode === 'compact' ? SIDEBAR_COMPACT_WIDTH : sidebarWidth
     setSidebarMode('expanded')
 
+    // Track the pointer 1:1 during the drag — the grid transition must not
+    // ease the column behind the cursor (rubber-band feel).
+    document.querySelector('.app-layout')?.classList.add('is-resizing')
+
     function handlePointerMove(moveEvent: PointerEvent) {
       setSidebarWidth(clampSidebarWidth(startWidth + moveEvent.clientX - startX))
     }
 
     function stopResize() {
+      document.querySelector('.app-layout')?.classList.remove('is-resizing')
       window.removeEventListener('pointermove', handlePointerMove)
       window.removeEventListener('pointerup', stopResize)
     }
@@ -631,7 +656,7 @@ export function App() {
       forgetRememberedAuthSession()
       setEntryUnlocked(false)
       setActiveView('chat')
-      setAuthError(result.ok ? undefined : result.message)
+      setAuthError(result.ok ? undefined : t('login.logoutFailed'))
     } finally {
       setAuthChecking(false)
     }
@@ -665,13 +690,13 @@ export function App() {
       const rememberedSession = allowRememberedSession ? readRememberedAuthSession() : undefined
       if (rememberedSession && !isAuthoritativelySignedOut(credentialStatus, cliStatus)) {
         setEntryUnlocked(true)
-        setAuthError(modelDiscovery.error ?? cliStatus.error)
+        setAuthError(authAccessMessage(modelDiscovery.error, cliStatus.error, t))
         void refreshProfile()
         return true
       }
 
       if (!allowRememberedSession) forgetRememberedAuthSession()
-      setAuthError(modelDiscovery.error ?? cliStatus.error ?? 'Entre com Verboo pelo CLI ou salve uma chave de API válida.')
+      setAuthError(authAccessMessage(modelDiscovery.error, cliStatus.error, t))
       return false
     } finally {
       setAuthChecking(false)
@@ -700,6 +725,10 @@ export function App() {
     if (patch.staySignedIn === false) forgetRememberedAuthSession()
   }
 
+  async function updateLanguage(language: LanguageCode) {
+    await updateUserSettings({ language })
+  }
+
   function handleModelSelect(modelId: string) {
     setSelectedModel(modelId)
     void updateUserSettings({ lastSelectedModelId: modelId })
@@ -720,8 +749,8 @@ export function App() {
       const conversationId = turnConversationIds.current[event.turnId] ?? pendingConversationId.current
       if (conversationId) turnConversationIds.current[event.turnId] = conversationId
       turnStartedAt.current[event.turnId] = Date.now()
-      turnActivityKeys.current[event.turnId] = new Set()
-      turnActivityCounts.current[event.turnId] = {}
+      turnActivityKeys.current[event.turnId] ??= new Set()
+      turnActivityCounts.current[event.turnId] ??= {}
       turnTerminalErrors.current[event.turnId] = []
       turnCommands.current[event.turnId] = []
       turnReferences.current[event.turnId] = []
@@ -742,6 +771,7 @@ export function App() {
     if (event.type === 'stdout') {
       const conversationId = turnConversationIds.current[event.turnId]
       setThinkingTurnId(current => (current === event.turnId ? undefined : current))
+      setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
       if (conversationId) {
         appendAssistantText(conversationId, event.turnId, event.text)
         trackPermissionPrompt(conversationId, event.turnId, event.text)
@@ -761,7 +791,7 @@ export function App() {
       if (conversationId) {
         appendActivityItem(conversationId, event.turnId, {
           key: `stderr:${snippet(event.text)}`,
-          label: 'Leu terminal',
+          label: t('transcript.terminalOne'),
           detail: snippet(event.text),
           kind: 'terminal',
         })
@@ -770,20 +800,37 @@ export function App() {
     }
 
     if (event.type === 'json') {
-      const conversationId = turnConversationIds.current[event.turnId]
+      let conversationId = turnConversationIds.current[event.turnId]
+      if (!conversationId && event.runtimeActivity?.kind === 'image') {
+        const pendingId = pendingConversationId.current
+        if (pendingId) {
+          conversationId = pendingId
+          turnConversationIds.current[event.turnId] = conversationId
+          turnStartedAt.current[event.turnId] = Date.now()
+          setRunningTurnId(event.turnId)
+          setThinkingTurnId(event.turnId)
+          setImageReadingTurnId(event.turnId)
+        }
+      }
       const usage = extractContextUsage(event.payload, selectedContextWindowRef.current)
       if (usage) {
         setContextUsage(usage)
         if (conversationId && usage.maxTokens && usage.usedTokens > usage.maxTokens) {
           appendActivityItem(conversationId, event.turnId, {
             key: `context-over:${usage.maxTokens}`,
-            label: 'Contexto acima do limite configurado',
-            detail: `${formatCompactNumber(usage.usedTokens)} de ${formatCompactNumber(usage.maxTokens)} reportados pelo CLI.`,
+            label: t('context.overLimitLabel'),
+            detail: t('context.overLimitDetail', {
+              used: formatCompactNumber(usage.usedTokens, userSettings.language),
+              max: formatCompactNumber(usage.maxTokens, userSettings.language),
+            }),
             kind: 'context',
           })
         }
       }
       const activity = event.runtimeActivity
+      if (activity && activity.kind !== 'thinking') {
+        setPetActivity({ kind: activity.kind, label: `${activity.label} ${activity.detail ?? ''}` })
+      }
       if (activity?.kind === 'subagent') trackActiveSubagent(event.turnId, activity)
       if (conversationId && activity) {
         if (activity.kind === 'command' && activity.detail) {
@@ -810,6 +857,10 @@ export function App() {
     if (event.type === 'result') {
       turnResultSnapshots.current[event.turnId] = event.result
       if (event.result.sessionId) goalSessionId.current = event.result.sessionId
+      const conversationId = turnConversationIds.current[event.turnId]
+      if (conversationId && event.result.sessionId) {
+        updateConversationSession(conversationId, event.result.sessionId)
+      }
       if (event.result.usage) {
         setGoal(current => {
           if (!current) return current
@@ -827,7 +878,9 @@ export function App() {
       const conversationId = turnConversationIds.current[event.turnId]
       setRunningTurnId(undefined)
       setThinkingTurnId(current => (current === event.turnId ? undefined : current))
+      setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
       clearActiveSubagentsForTurn(event.turnId)
+      flashPet('error')
 
       // Reject goal turn completion promise on error
       if (turnCompletionDeferred.current?.turnId === event.turnId) {
@@ -852,9 +905,11 @@ export function App() {
       const conversationId = turnConversationIds.current[event.turnId]
       setRunningTurnId(undefined)
       setThinkingTurnId(current => (current === event.turnId ? undefined : current))
+      setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
       clearActiveSubagentsForTurn(event.turnId)
+      flashPet(event.exitCode === 0 ? 'success' : 'error')
       if (conversationId && event.exitCode !== 0) {
-        const failureMessage = buildCliFailureMessage(turnTerminalErrors.current[event.turnId])
+        const failureMessage = buildCliFailureMessage(turnTerminalErrors.current[event.turnId], t)
         if (failureMessage) appendAssistantText(conversationId, event.turnId, failureMessage)
       }
       if (conversationId) finishAssistantMessage(conversationId, event.turnId)
@@ -909,6 +964,7 @@ export function App() {
       modelId: selectedModel,
       modelDisplayName: selectedModelInfo?.displayName ?? selectedModel,
     }
+    const responseLanguage = inferResponseLanguage(message, conversationLanguageFallback(conversationId))
 
     return {
       id: `queue:${crypto.randomUUID()}`,
@@ -920,15 +976,28 @@ export function App() {
         model: selectedModel,
         modelSupportsVision: Boolean(selectedModelInfo?.supportsVision),
         contextWindow: selectedContextWindow,
+        responseLanguage,
         accessMode: accessMode === 'full' && !userSettings.fullAccessEnabled ? 'approval' : accessMode,
         workingDirectory: workingDirectoryForConversation(conversationId),
         skills: selectedSkills,
         attachments: attachedFiles,
+        responseEnhancementsEnabled: userSettings.responseEnhancementsEnabled,
         personality: userSettings.personality,
         customInstructions: userSettings.customInstructions,
         memoryContext: buildMemoryContext(chatStore, conversationId, userSettings),
       },
     }
+  }
+
+  function conversationLanguageFallback(conversationId: string): LanguageCode {
+    const conversation = chatStoreRef.current.conversations.find(item => item.id === conversationId)
+    const messages = [...(conversation?.items ?? [])].reverse()
+    for (const item of messages) {
+      if (item.role !== 'user') continue
+      const detected = detectResponseLanguage(item.text)
+      if (detected) return detected
+    }
+    return userSettingsRef.current.language
   }
 
   function enqueueFollowUp(item: QueuedFollowUp) {
@@ -938,8 +1007,8 @@ export function App() {
       role: 'tool',
       kind: 'activity',
       activityKind: 'queued',
-      text: 'Mensagem na fila',
-      activityDetail: 'Sera enviada automaticamente quando o turno atual terminar.',
+      text: t('transcript.queuedTitle'),
+      activityDetail: t('transcript.queuedDetail'),
       timestamp: Date.now(),
     })
   }
@@ -957,7 +1026,7 @@ export function App() {
     setContextUsage(undefined)
 
     const request = await prepareRequestWithResearchSubagents(item)
-    const turnId = await sendTrackedTurn(request)
+    const turnId = await sendTrackedTurn(request, conversationCliSessionId(item.conversationId))
     turnConversationIds.current[turnId] = item.conversationId
     turnModels.current[turnId] = item.turnModel
     attachPendingResearchSubagents(turnId)
@@ -967,7 +1036,8 @@ export function App() {
 
   async function sendTrackedTurn(request: AgentTurnRequest, resumeSessionId?: string): Promise<string> {
     const baseline = await snapshotWorkspaceChanges(request.workingDirectory)
-    const turnId = await window.verboo.sendTurn(request, resumeSessionId)
+    const clientTurnId = request.turnId ?? crypto.randomUUID()
+    const turnId = await window.verboo.sendTurn({ ...request, turnId: clientTurnId }, resumeSessionId)
     turnChangeBaselines.current[turnId] = baseline
     turnWorkingDirectories.current[turnId] = request.workingDirectory
     return turnId
@@ -980,26 +1050,26 @@ export function App() {
     const runId = `research:${item.id}`
     const agents = Array.from({ length: researchRequest.count }, (_, index): ActiveSubagent => {
       const mission = index === 0
-        ? 'Pesquisar o código local, arquivos relevantes e riscos de implementação.'
-        : 'Pesquisar contexto complementar, validação e possíveis lacunas.'
+        ? t('subagent.localMission')
+        : t('subagent.complementaryMission')
       const status = index === 0 ? 'reading' : 'searching'
       return {
         id: `research:${item.id}:${index + 1}`,
         runId,
         label: subagentNameFor(`${item.id}:${index}`, index),
-        detail: index === 0 ? 'Código local e arquivos relevantes.' : 'Contexto complementar e validação.',
+        detail: index === 0 ? t('subagent.localDetail') : t('subagent.complementaryDetail'),
         mission,
         history: [
           {
             id: `mission:${index + 1}`,
-            label: 'Missão recebida',
+            label: t('subagent.missionReceived'),
             text: mission,
             timestamp: Date.now() + index,
           },
           {
             id: `status:${index + 1}:start`,
-            label: SUBAGENT_STATUS_LABELS[status],
-            text: index === 0 ? 'Lendo arquivos do projeto.' : 'Pesquisando contexto de apoio.',
+            label: subagentStatusLabel(status, t),
+            text: index === 0 ? t('subagent.readingProject') : t('subagent.searchingSupport'),
             timestamp: Date.now() + index + 1,
           },
         ],
@@ -1017,10 +1087,13 @@ export function App() {
       role: 'tool',
       kind: 'activity',
       activityKind: 'subagent',
-      text: `${researchRequest.count} subagente${researchRequest.count === 1 ? '' : 's'} pesquisando`,
+      text: t('subagent.researching', {
+        count: researchRequest.count,
+        label: t(researchRequest.count === 1 ? 'subagent.single' : 'subagent.plural'),
+      }),
       activityDetail: researchRequest.requestedCount > researchRequest.count
-        ? `Pedido limitado a ${researchRequest.count} subagentes de pesquisa.`
-        : 'Pesquisas somente leitura antes do turno principal.',
+        ? t('subagent.limited', { count: researchRequest.count })
+        : t('subagent.readOnlyBeforeTurn'),
       timestamp: Date.now(),
     })
 
@@ -1037,15 +1110,15 @@ export function App() {
         role: 'tool',
         kind: 'activity',
         activityKind: 'subagent',
-        text: 'Pesquisa dos subagentes concluída',
-        activityDetail: formatResearchResultsForTranscript(results, agents),
+        text: t('subagent.completed'),
+        activityDetail: formatResearchResultsForTranscript(results, agents, t),
         timestamp: Date.now(),
       })
 
       const finishedAgents = agents.map((agent, index) => {
         const result = results[index]
         const status = result?.status === 'complete' ? 'done' : 'failed'
-        const summary = result?.summary || (status === 'done' ? 'Pesquisa concluída.' : 'Pesquisa interrompida.')
+        const summary = result?.summary || (status === 'done' ? t('subagent.done') : t('subagent.failed'))
         return {
           ...agent,
           status,
@@ -1055,14 +1128,14 @@ export function App() {
             ...(agent.history ?? []),
             {
               id: `result:${index + 1}`,
-              label: status === 'done' ? 'Pesquisa concluída' : 'Pesquisa falhou',
+              label: subagentStatusLabel(status, t),
               text: summary,
               timestamp: Date.now() + index,
             },
           ],
         } satisfies ActiveSubagent
       })
-      const researchContext = buildResearchResultsContext(results, finishedAgents)
+      const researchContext = buildResearchResultsContext(results, finishedAgents, t)
       activeSubagentsRef.current = {}
       pendingResearchSubagentsRef.current = []
       setActiveSubagents([])
@@ -1078,7 +1151,7 @@ export function App() {
         role: 'tool',
         kind: 'activity',
         activityKind: 'subagent',
-        text: 'Pesquisa dos subagentes falhou',
+        text: t('subagent.failed'),
         activityDetail: error instanceof Error ? error.message : String(error),
         timestamp: Date.now(),
       })
@@ -1100,12 +1173,12 @@ export function App() {
       return [id, {
         ...current,
         status: 'failed',
-        detail: 'Pesquisa cancelada pelo usuário.',
+        detail: t('subagent.cancelledDetail'),
         updatedAt: now,
         history: appendSubagentHistory(current.history, {
           id: `${current.id}:cancelled:${now}`,
-          label: 'Pesquisa cancelada',
-          text: 'O subagente foi interrompido antes de concluir a pesquisa.',
+          label: t('subagent.cancelledLabel'),
+          text: t('subagent.cancelledText'),
           timestamp: now,
         }),
       } satisfies ActiveSubagent]
@@ -1134,7 +1207,7 @@ export function App() {
       role: 'tool',
       kind: 'activity',
       activityKind: 'permission',
-      text: 'Modo livre não está ativado nas configurações. Usando Aprovar por mim.',
+      text: t('transcript.fullModeFallback'),
       timestamp: Date.now(),
     })
   }
@@ -1183,14 +1256,18 @@ export function App() {
       kind: 'activity',
       activityKind: 'permission',
       text: approved
-        ? automatic ? 'Permissão aprovada automaticamente' : 'Permissão aprovada'
-        : 'Permissão negada',
+        ? automatic ? t('permissionPrompt.approvedAutomatic') : t('permissionPrompt.approved')
+        : t('permissionPrompt.denied'),
       activityDetail: prompt.command ?? prompt.detail,
       timestamp: Date.now(),
     })
 
-    const message = buildPermissionFollowUpMessage(prompt, decision, automatic)
-    const followUp = createPermissionFollowUp(prompt.conversationId, message)
+    const responseLanguage = inferResponseLanguage(
+      turnAssistantText.current[prompt.turnId] ?? prompt.detail,
+      conversationLanguageFallback(prompt.conversationId),
+    )
+    const message = buildPermissionFollowUpMessage(prompt, decision, automatic, responseLanguage)
+    const followUp = createPermissionFollowUp(prompt.conversationId, message, responseLanguage)
     stickToBottomRef.current = true
     setShowJumpToLatest(false)
 
@@ -1202,7 +1279,7 @@ export function App() {
     await runTurn(followUp)
   }
 
-  function createPermissionFollowUp(conversationId: string, message: string): QueuedFollowUp {
+  function createPermissionFollowUp(conversationId: string, message: string, responseLanguage: LanguageCode): QueuedFollowUp {
     const turnModel = {
       modelId: selectedModel,
       modelDisplayName: selectedModelInfo?.displayName ?? selectedModel,
@@ -1218,10 +1295,12 @@ export function App() {
         model: selectedModel,
         modelSupportsVision: Boolean(selectedModelInfo?.supportsVision),
         contextWindow: selectedContextWindow,
+        responseLanguage,
         accessMode: accessMode === 'full' && !userSettings.fullAccessEnabled ? 'approval' : accessMode,
         workingDirectory: workingDirectoryForConversation(conversationId),
         skills: [],
         attachments: [],
+        responseEnhancementsEnabled: userSettings.responseEnhancementsEnabled,
         personality: userSettings.personality,
         customInstructions: userSettings.customInstructions,
         memoryContext: buildMemoryContext(chatStore, conversationId, userSettings),
@@ -1261,6 +1340,65 @@ export function App() {
     ))
     await updateUserSettings({ trustedCommands: next })
   }
+
+  function flashPet(kind: 'success' | 'error') {
+    setPetActivity(undefined)
+    setPetFlash(kind)
+    window.clearTimeout(petFlashTimer.current)
+    petFlashTimer.current = window.setTimeout(() => setPetFlash(undefined), 2600)
+  }
+
+  // The pet mirrors what the agent is doing. Deletion has no dedicated
+  // activity kind, so it is inferred from the action label/command text.
+  const petState: PetState = useMemo(() => {
+    if (petFlash) return petFlash
+    if (!runningTurnId) return 'idle'
+    const kind = petActivity?.kind
+    const label = petActivity?.label ?? ''
+    const deleting = /\b(rm|del|delete|remove|unlink)\b|apag|remov|exclu/i.test(label)
+    if (kind === 'command' || kind === 'terminal') return deleting ? 'deleting' : 'command'
+    if (kind === 'edit') return deleting ? 'deleting' : 'editing'
+    if (kind === 'read' || kind === 'search') return 'reading'
+    return 'thinking'
+  }, [petFlash, runningTurnId, petActivity])
+
+  function togglePet() {
+    setPetEnabled(current => {
+      const next = !current
+      window.localStorage.setItem('verboo:pet-enabled', next ? '1' : '0')
+      return next
+    })
+  }
+
+  function updatePetSize(size: number) {
+    const clamped = Math.round(Math.max(PET_MIN_SIZE, Math.min(PET_MAX_SIZE, size)))
+    setPetSize(clamped)
+    window.localStorage.setItem('verboo:pet-size', String(clamped))
+  }
+
+  useEffect(() => {
+    function handlePaletteShortcut(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setPaletteOpen(current => !current)
+      }
+    }
+    window.addEventListener('keydown', handlePaletteShortcut)
+    return () => window.removeEventListener('keydown', handlePaletteShortcut)
+  }, [])
+
+  // Actions only dereference their handlers when clicked (after render), so
+  // referencing callbacks declared later in the component is safe here.
+  const paletteActions: PaletteAction[] = useMemo(() => [
+    { key: 'new-chat', label: t('palette.newChat'), icon: paletteIcons.newChat, run: () => { setActiveView('chat'); newChat() } },
+    { key: 'settings', label: t('palette.openSettings'), icon: paletteIcons.settings, run: () => setActiveView('settings') },
+    { key: 'theme', label: t('palette.toggleTheme'), icon: paletteIcons.theme, run: () => setTheme(current => current === 'dark' ? 'light' : 'dark') },
+    { key: 'terminal', label: t('palette.toggleTerminal'), icon: paletteIcons.terminal, run: () => handleToggleTerminal(currentWorkspaceDirectory) },
+    { key: 'review', label: t('palette.toggleReview'), icon: paletteIcons.review, run: () => { void handleToggleReview() } },
+    { key: 'sidebar', label: t('palette.toggleSidebar'), icon: paletteIcons.sidebar, run: toggleSidebarVisibility },
+    { key: 'pet', label: t('palette.togglePet'), icon: paletteIcons.pet, run: togglePet },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ], [t, currentWorkspaceDirectory])
 
   function handleGoalCommand(command: Extract<ReservedSlashCommand, { kind: 'goal' }>) {
     if (command.action === 'show') {
@@ -1393,15 +1531,18 @@ export function App() {
 
         appendDowngradeActivity(conversationId)
 
+        const goalLanguage = inferResponseLanguage(currentGoal.objective, conversationLanguageFallback(conversationId))
         const turnId = await sendTrackedTurn({
           message: nextMessage,
           model: selectedModel,
           modelSupportsVision: Boolean(selectedModelInfo?.supportsVision),
           contextWindow: selectedContextWindow,
+          responseLanguage: inferResponseLanguage(nextMessage, goalLanguage),
           accessMode: accessMode === 'full' && !userSettings.fullAccessEnabled ? 'approval' : accessMode,
           workingDirectory: currentGoal.workingDirectory,
           skills: currentGoal.skills,
           attachments: [],
+          responseEnhancementsEnabled: userSettings.responseEnhancementsEnabled,
           personality: userSettings.personality,
           customInstructions: userSettings.customInstructions,
           memoryContext: buildMemoryContext(chatStore, conversationId, userSettings),
@@ -1487,6 +1628,19 @@ export function App() {
   async function attachFiles() {
     const attachments = await window.verboo.pickFiles()
     if (!attachments.length) return
+    appendAttachments(attachments)
+  }
+
+  async function attachDroppedFiles(paths: string[], files: File[]) {
+    if (!paths.length && !files.length) return
+    const attachments = paths.length
+      ? await window.verboo.inspectFiles(paths)
+      : await window.verboo.inspectDroppedFiles(files)
+    if (!attachments.length) return
+    appendAttachments(attachments)
+  }
+
+  function appendAttachments(attachments: AttachmentMeta[]) {
     setAttachedFiles(current => {
       const byPath = new Map(current.map(attachment => [attachment.path, attachment]))
       for (const attachment of attachments) byPath.set(attachment.path, attachment)
@@ -1613,16 +1767,35 @@ export function App() {
 
   function deleteConversation(conversationId: string) {
     if (isConversationRunning(conversationId)) return
-    if (!window.confirm('Apagar este chat permanentemente?')) return
-    updateChatStore(store => ({
-      ...store,
-      conversations: store.conversations.filter(conversation => conversation.id !== conversationId),
-    }))
-    if (activeConversationId === conversationId) setActiveConversationId(undefined)
+    setConfirmRequest({
+      title: t('confirm.deleteChatTitle'),
+      description: t('confirm.deleteChatBody'),
+      confirmLabel: t('common.delete'),
+      danger: true,
+      onConfirm: () => {
+        updateChatStore(store => ({
+          ...store,
+          conversations: store.conversations.filter(conversation => conversation.id !== conversationId),
+        }))
+        if (activeConversationId === conversationId) setActiveConversationId(undefined)
+        toast(t('toast.chatDeleted'), 'info')
+      },
+    })
   }
 
   function archiveProject(projectId: string) {
-    if (!window.confirm('Arquivar este projeto e seus chats?')) return
+    setConfirmRequest({
+      title: t('confirm.archiveProjectTitle'),
+      description: t('confirm.archiveProjectBody'),
+      confirmLabel: t('confirm.archiveProjectAction'),
+      onConfirm: () => {
+        performArchiveProject(projectId)
+        toast(t('toast.projectArchived'), 'info')
+      },
+    })
+  }
+
+  function performArchiveProject(projectId: string) {
     const now = Date.now()
     updateChatStore(store => ({
       ...store,
@@ -1640,16 +1813,24 @@ export function App() {
   }
 
   function deleteProject(projectId: string) {
-    if (!window.confirm('Apagar este projeto e todos os chats dele permanentemente?')) return
-    updateChatStore(store => ({
-      ...store,
-      projects: store.projects.filter(project => project.id !== projectId),
-      conversations: store.conversations.filter(conversation => conversation.projectId !== projectId),
-    }))
-    if (activeProject?.id === projectId) {
-      setActiveConversationId(undefined)
-      setSelectedProjectId(undefined)
-    }
+    setConfirmRequest({
+      title: t('confirm.deleteProjectTitle'),
+      description: t('confirm.deleteProjectBody'),
+      confirmLabel: t('common.delete'),
+      danger: true,
+      onConfirm: () => {
+        updateChatStore(store => ({
+          ...store,
+          projects: store.projects.filter(project => project.id !== projectId),
+          conversations: store.conversations.filter(conversation => conversation.projectId !== projectId),
+        }))
+        if (activeProject?.id === projectId) {
+          setActiveConversationId(undefined)
+          setSelectedProjectId(undefined)
+        }
+        toast(t('toast.projectDeleted'), 'info')
+      },
+    })
   }
 
   function ensureActiveConversation(): string {
@@ -1664,10 +1845,25 @@ export function App() {
   function appendConversationItem(conversationId: string, item: TranscriptItem, title?: string) {
     updateConversation(conversationId, conversation => ({
       ...conversation,
-      title: conversation.title === 'Novo chat' && title ? title : conversation.title,
+      title: conversation.title === DEFAULT_CONVERSATION_TITLE && title ? title : conversation.title,
       items: [...conversation.items, item],
       updatedAt: Date.now(),
     }))
+  }
+
+  function conversationCliSessionId(conversationId: string): string | undefined {
+    return chatStoreRef.current.conversations.find(conversation => conversation.id === conversationId)?.cliSessionId
+  }
+
+  function updateConversationSession(conversationId: string, cliSessionId: string) {
+    updateConversation(conversationId, conversation => {
+      if (conversation.cliSessionId === cliSessionId) return conversation
+      return {
+        ...conversation,
+        cliSessionId,
+        updatedAt: Date.now(),
+      }
+    })
   }
 
   function appendAssistantPlaceholder(conversationId: string, turnId: string) {
@@ -1773,7 +1969,7 @@ export function App() {
 
     const itemId = `${turnId}:activity:${keys.size}`
     const command: CommandRun | undefined = activity.kind === 'command'
-      ? { input: activity.detail ?? 'Comando', output: '', status: 'running' }
+      ? { input: activity.detail ?? t('composer.command'), output: '', status: 'running' }
       : undefined
     if (command && activity.toolUseId) {
       const map = turnCommandItemIds.current[turnId] ?? {}
@@ -1792,7 +1988,7 @@ export function App() {
           activityKind: activity.kind,
           activityDetail: activity.detail,
           command,
-          text: activity.label,
+          text: activityDisplayLabel(activity, t),
           timestamp: Date.now(),
         },
       ],
@@ -1824,12 +2020,12 @@ export function App() {
         [id]: {
           ...previous,
           status: 'done',
-          detail: 'Pesquisa concluída.',
+          detail: t('subagent.completed'),
           updatedAt: Date.now(),
           history: appendSubagentHistory(previous.history, {
             id: `${id}:done:${Date.now()}`,
-            label: 'Pesquisa concluída',
-            text: activity.detail || 'Subagente finalizado.',
+            label: t('subagent.completed'),
+            text: activity.detail || t('subagent.completed'),
             timestamp: Date.now(),
           }),
         },
@@ -1841,12 +2037,12 @@ export function App() {
     const next = {
       id,
       label: previous?.label ?? subagentNameFor(identity, Object.keys(activeSubagentsRef.current).length),
-      detail: compactSubagentDetail(activity),
-      mission: previous?.mission ?? 'Acompanhar a pesquisa delegada pelo agente principal.',
+      detail: compactSubagentDetail(activity, t),
+      mission: previous?.mission ?? t('subagent.readOnlyBeforeTurn'),
       history: appendSubagentHistory(previous?.history, {
         id: `${id}:activity:${Date.now()}`,
-        label: activity.label,
-        text: activity.detail || compactSubagentDetail(activity),
+        label: activityDisplayLabel(activity, t),
+        text: activity.detail || compactSubagentDetail(activity, t),
         timestamp: Date.now(),
       }),
       status: subagentStatusForActivity(activity),
@@ -1897,11 +2093,11 @@ export function App() {
 
   async function appendTurnSummary(conversationId: string, turnId: string, exitCode: number | null) {
     const startedAt = turnStartedAt.current[turnId]
-    const elapsed = startedAt ? formatElapsed(Date.now() - startedAt) : 'alguns segundos'
+    const elapsed = startedAt ? formatElapsed(Date.now() - startedAt) : t('transcript.someSeconds')
     const counts = turnActivityCounts.current[turnId] ?? {}
     const result = turnResultSnapshots.current[turnId]
     const changeSummary = await buildTurnChangeSummary(turnId)
-    const summaryLines = buildTurnSummaryLines(counts, result, exitCode, {
+    const summaryLines = buildTurnSummaryLines(counts, result, exitCode, t, {
       validationCommands: validationCommandsForTurn(turnCommands.current[turnId] ?? []),
       references: turnReferences.current[turnId] ?? [],
       changeSummary,
@@ -1911,7 +2107,7 @@ export function App() {
       id: `${turnId}:summary`,
       role: 'system',
       kind: 'summary',
-      text: `Trabalhou por ${elapsed}`,
+      text: t('transcript.workedFor', { elapsed }),
       activityDetail: summaryLines.join('\n'),
       changeSummary,
       timestamp: Date.now(),
@@ -2001,10 +2197,18 @@ export function App() {
 
   function workingDirectoryForConversation(conversationId: string): string {
     const conversation = chatStore.conversations.find(item => item.id === conversationId)
-    const project = conversation?.projectId
+    const conversationProject = conversation?.projectId
       ? chatStore.projects.find(item => item.id === conversation.projectId)
       : undefined
-    return project?.path ?? config.workingDirectory
+    const selectedProject = selectedProjectId
+      ? chatStore.projects.find(item => item.id === selectedProjectId && !item.archivedAt)
+      : undefined
+    return firstUsableWorkspaceDirectory(
+      conversationProject?.path,
+      selectedProject?.path,
+      activeProject?.path,
+      config.workingDirectory,
+    )
   }
 
   function handleWorkspaceScroll() {
@@ -2059,8 +2263,8 @@ export function App() {
     })
   }
 
-  const projectName = activeProject?.name ?? 'Sem projeto'
-  const workspaceDirectory = activeProject?.path ?? config.workingDirectory
+  const projectName = activeProject?.name ?? t('project.none')
+  const workspaceDirectory = currentWorkspaceDirectory
   const shownProjects = activeProjects(chatStore)
   const shownConversations = visibleConversations(chatStore)
   const archivedChats = archivedConversations(chatStore)
@@ -2077,9 +2281,9 @@ export function App() {
       return
     }
 
-    const workingDirectory = activeProject?.path ?? config.workingDirectory ?? ''
+    const workingDirectory = currentWorkspaceDirectory
     if (!workingDirectory) {
-      setReviewUnavailableReason('Abra uma pasta para revisar arquivos.')
+      setReviewUnavailableReason(t('review.openFolderRequired'))
       return
     }
 
@@ -2088,13 +2292,13 @@ export function App() {
     const branches = await window.verboo.getWorkspaceBranches(workingDirectory).catch(() => undefined)
     if (branches) setBranchInfo(branches)
     if (metadata?.capabilities.canDiff === false) {
-      setReviewUnavailableReason('Revisão de diff exige um repositório Git.')
+      setReviewUnavailableReason(t('review.gitRequired'))
       return
     }
 
     const summary = await window.verboo.getWorkspaceChanges(workingDirectory).catch(() => undefined)
     if (!summary) {
-      setReviewUnavailableReason('Não foi possível carregar mudanças.')
+      setReviewUnavailableReason(t('review.loadChangesFailed'))
       return
     }
 
@@ -2102,15 +2306,15 @@ export function App() {
     terminal.close()
     setSelectedSubagentId(undefined)
     review.open(workingDirectory, summary.files, 0)
-  }, [activeProject?.path, config.workingDirectory, review, terminal])
+  }, [currentWorkspaceDirectory, review, terminal, t])
 
   const handleOpenReview = useCallback((files: WorkspaceChangeEntry[], index: number) => {
-    const workingDirectory = activeProject?.path ?? config.workingDirectory ?? ''
+    const workingDirectory = currentWorkspaceDirectory
     if (!workingDirectory) return
     terminal.close()
     setSelectedSubagentId(undefined)
     review.open(workingDirectory, files, index)
-  }, [activeProject?.path, config.workingDirectory, review, terminal])
+  }, [currentWorkspaceDirectory, review, terminal])
 
   async function refreshWorkspaceReview() {
     if (!review.target) return
@@ -2119,7 +2323,7 @@ export function App() {
   }
 
   const handleSwitchReviewBranch = useCallback(async (branchName: string) => {
-    const workingDirectory = review.target?.workingDirectory ?? activeProject?.path ?? config.workingDirectory ?? ''
+    const workingDirectory = review.target?.workingDirectory ?? currentWorkspaceDirectory
     const result = await window.verboo.switchWorkspaceBranch(workingDirectory, branchName)
     if (result.branchInfo) setBranchInfo(result.branchInfo)
     if (!result.ok) return result
@@ -2133,7 +2337,7 @@ export function App() {
     if (branches) setBranchInfo(branches)
     if (summary) review.open(workingDirectory, summary.files, 0)
     return { ...result, branchInfo: branches ?? result.branchInfo }
-  }, [activeProject?.path, config.workingDirectory, review])
+  }, [currentWorkspaceDirectory, review])
 
   useEffect(() => {
     function handleTerminalShortcut(event: KeyboardEvent) {
@@ -2186,17 +2390,16 @@ export function App() {
       modelDisplayName: selectedModelInfo?.displayName,
       contextWindow: selectedContextWindow,
       contextUsage: contextUsage?.percentage,
-      workingDirectory: activeProject?.path ?? config.workingDirectory,
+      workingDirectory: currentWorkspaceDirectory,
       loggedIn: cliAuth.loggedIn || credentials.hasApiKey,
       email: cliAuth.email ?? profile.user?.email,
     }
     void window.verboo.updateMenuBar(state)
   }, [
-    activeProject?.path,
+    currentWorkspaceDirectory,
     workingSubagents.length,
     cliAuth.email,
     cliAuth.loggedIn,
-    config.workingDirectory,
     contextUsage?.percentage,
     credentials.hasApiKey,
     profile.user?.email,
@@ -2208,8 +2411,9 @@ export function App() {
 
   if (shouldShowLogin) {
     return (
-      <>
+      <I18nProvider language={userSettings.language}>
         <LoginScreen
+          language={userSettings.language}
           noticeAccepted={noticeAccepted}
           checking={authChecking}
           authError={authError}
@@ -2222,6 +2426,7 @@ export function App() {
           onOpenSignup={() => window.verboo.openSignup()}
           onCheckExistingAuth={() => validateAccess(true)}
           onSaveApiKey={saveApiKey}
+          onLanguageChange={updateLanguage}
           onStaySignedInChange={updateStaySignedIn}
           onAcceptNotice={acceptDevelopmentNotice}
           onOpenFeedback={() => setFeedbackOpen(true)}
@@ -2233,15 +2438,16 @@ export function App() {
           onClose={() => setFeedbackOpen(false)}
           onSubmit={sendFeedback}
         />
-      </>
+      </I18nProvider>
     )
   }
 
   return (
+    <I18nProvider language={userSettings.language}>
     <main className="app-shell" style={appLayoutStyle}>
       <TopBar
         sidebarVisible={sidebarMode !== 'hidden'}
-        statusLabel={runningTurnId ? 'trabalhando' : 'pronto'}
+        statusLabel={runningTurnId ? t('topbar.statusWorking') : t('topbar.statusReady')}
         onToggleSidebar={toggleSidebarVisibility}
         terminalOpen={terminal.terminalOpen}
         terminalUnavailableReason={terminal.terminalUnavailableReason}
@@ -2290,7 +2496,7 @@ export function App() {
               className="sidebar-resizer"
               role="separator"
               aria-orientation="vertical"
-              title="Arraste para redimensionar. Duplo clique para compactar."
+              title={t('workspace.resizeSidebar')}
               onPointerDown={startSidebarResize}
               onDoubleClick={toggleSidebarCompact}
             />
@@ -2303,9 +2509,9 @@ export function App() {
           onScroll={handleWorkspaceScroll}
         >
           {activeView === 'chat' && (
-            <div className="workspace-folder-badge" title={workspaceDirectory || 'Sem projeto aberto'}>
+            <div className="workspace-folder-badge" title={workspaceDirectory || t('workspace.noProjectOpen')}>
               <FolderClosed size={14} />
-              <span>{workspaceFolderName(workspaceDirectory, activeProject?.name)}</span>
+              <span>{workspaceFolderName(workspaceDirectory, activeProject?.name, t('project.none'))}</span>
             </div>
           )}
           {activeView === 'profile' ? (
@@ -2325,6 +2531,10 @@ export function App() {
               theme={theme}
               activeTab={settingsTab}
               userSettings={userSettings}
+              petEnabled={petEnabled}
+              petSize={petSize}
+              onPetToggle={togglePet}
+              onPetSizeChange={updatePetSize}
               archivedConversations={archivedChats}
               onOpenDashboard={() => window.verboo.openDashboard()}
               onSaveApiKey={async apiKey => {
@@ -2341,11 +2551,17 @@ export function App() {
             />
           ) : hasConversation ? (
             <>
-              <Transcript items={items} onOpenReview={handleOpenReview} reviewMetadata={reviewMetadata} thinkingTurnId={thinkingTurnId} />
+              <Transcript
+                items={items}
+                onOpenReview={handleOpenReview}
+                reviewMetadata={reviewMetadata}
+                thinkingTurnId={thinkingTurnId}
+                imageReadingTurnId={imageReadingTurnId}
+              />
               <div ref={transcriptEndRef} className="transcript-end" />
             </>
           ) : (
-            <EmptyChat projectName={projectName || 'Sem projeto'} line={emptyLine} />
+            <EmptyChat projectName={projectName || t('project.none')} line={emptyLine} />
           )}
         </section>
         {showSubagentThreadPanel && selectedSubagent && (
@@ -2405,7 +2621,7 @@ export function App() {
             />
           )}
           {showJumpToLatest && hasConversation && (
-            <button className="jump-to-latest" type="button" onClick={() => scrollToLatest('smooth')} title="Ir para a última mensagem">
+            <button className="jump-to-latest" type="button" onClick={() => scrollToLatest('smooth')} title={t('workspace.jumpToLatest')}>
               <ArrowDown size={17} />
             </button>
           )}
@@ -2424,9 +2640,11 @@ export function App() {
             attachments={attachedFiles}
             onSelectedSkillsChange={setSelectedSkills}
             onAttachFiles={attachFiles}
+            onDropFiles={attachDroppedFiles}
             onRemoveAttachment={path => setAttachedFiles(current => current.filter(item => item.path !== path))}
             onSubmit={sendMessage}
             onGoalCommand={handleGoalCommand}
+            onPetCommand={togglePet}
             busy={Boolean(runningTurnId)}
             leftToolbar={
               <AccessSelector
@@ -2445,6 +2663,7 @@ export function App() {
                 <ModelSelector
                   models={modelResult.models}
                   selectedModel={selectedModel}
+                  hasConversationHistory={hasConversation}
                   modelResult={modelResult}
                   onSelect={handleModelSelect}
                   onRefresh={() => refreshModels(true)}
@@ -2472,7 +2691,23 @@ export function App() {
         onClose={() => setFeedbackOpen(false)}
         onSubmit={sendFeedback}
       />
+
+      <ConfirmDialog request={confirmRequest} onClose={() => setConfirmRequest(undefined)} />
+
+      <CommandPalette
+        open={paletteOpen}
+        conversations={chatStore.conversations}
+        actions={paletteActions}
+        onSelectConversation={conversationId => {
+          setActiveView('chat')
+          setActiveConversationId(conversationId)
+        }}
+        onClose={() => setPaletteOpen(false)}
+      />
+
+      <VerbooPet visible={petEnabled} state={petState} size={petSize} onSizeChange={updatePetSize} />
     </main>
+    </I18nProvider>
   )
 }
 
@@ -2489,11 +2724,12 @@ function SubagentSummaryCard({
   onToggleExpanded: () => void
   onSelectAgent: (agentId: string) => void
 }) {
+  const { t } = useI18n()
   if (agents.length === 0) return null
   const title = String(agents.length)
 
   return (
-    <section className={`subagent-summary-card ${expanded ? 'expanded' : ''}`} aria-label="Subagentes ativos">
+    <section className={`subagent-summary-card ${expanded ? 'expanded' : ''}`} aria-label={t('subagent.activeAria')}>
       <button
         className="subagent-summary-header"
         type="button"
@@ -2502,7 +2738,7 @@ function SubagentSummaryCard({
       >
         <span className="subagent-summary-title">
           <GitBranch size={14} />
-          Subagentes
+          {t('subagent.summaryTitle')}
         </span>
         <span className="subagent-summary-count">{title}</span>
         {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
@@ -2526,7 +2762,7 @@ function SubagentSummaryCard({
                 <strong>{agent.label}</strong>
                 <span className="subagent-summary-state">
                   <Icon size={13} />
-                  {SUBAGENT_STATUS_LABELS[agent.status]}
+                  {subagentStatusLabel(agent.status, t)}
                 </span>
               </button>
             )
@@ -2546,12 +2782,13 @@ function ResearchSubagentPanel({
   onClose: () => void
   onCancel: (agent: ActiveSubagent) => Promise<void>
 }) {
+  const { t } = useI18n()
   const Icon = subagentStatusIcon(agent.status)
   const history = agent.history ?? []
   const canCancel = isActiveSubagentWorking(agent)
 
   return (
-    <aside className="research-subagent-panel" data-status={agent.status} aria-label={`Conversa com ${agent.label}`}>
+    <aside className="research-subagent-panel" data-status={agent.status} aria-label={t('subagent.threadAria', { name: agent.label })}>
       <header className="research-subagent-header">
         <div className="research-subagent-header-row">
           <span className="research-subagent-tab">
@@ -2561,7 +2798,7 @@ function ResearchSubagentPanel({
           <button
             type="button"
             className="research-subagent-close ui-tooltip"
-            data-tooltip={canCancel ? 'Cancelar pesquisa' : 'Fechar painel'}
+            data-tooltip={canCancel ? t('subagent.cancelSearch') : t('subagent.closePanel')}
             data-tooltip-align="end"
             onClick={() => {
               if (canCancel) {
@@ -2570,21 +2807,21 @@ function ResearchSubagentPanel({
               }
               onClose()
             }}
-            aria-label={canCancel ? 'Cancelar pesquisa do subagente' : 'Fechar painel do subagente'}
+            aria-label={canCancel ? t('subagent.cancelAria') : t('subagent.closeAria')}
           >
             <XCircle size={16} />
           </button>
         </div>
         <span className="research-subagent-state">
           <Icon size={13} />
-          {SUBAGENT_STATUS_LABELS[agent.status]}
+          {subagentStatusLabel(agent.status, t)}
         </span>
       </header>
 
-      <section className="research-subagent-thread" aria-label={`Histórico de ${agent.label}`}>
+      <section className="research-subagent-thread" aria-label={t('subagent.historyAria', { name: agent.label })}>
         <div className="research-subagent-message mission">
-          <small>Missão</small>
-          <p>{agent.mission || agent.detail || 'Coletar contexto somente leitura para o agente principal.'}</p>
+          <small>{t('subagent.mission')}</small>
+          <p>{agent.mission || agent.detail || t('subagent.defaultMission')}</p>
         </div>
         {history.map(item => (
           <div key={item.id} className="research-subagent-message">
@@ -2595,7 +2832,7 @@ function ResearchSubagentPanel({
       </section>
 
       <footer className="research-subagent-footer">
-        Histórico somente leitura
+        {t('subagent.readOnlyHistory')}
       </footer>
     </aside>
   )
@@ -2612,29 +2849,30 @@ function PermissionApprovalPanel({
   onDeny: () => void
   onAlwaysAllow: () => void
 }) {
+  const { t } = useI18n()
   return (
     <section className="permission-approval-panel" aria-live="polite">
       <div className="permission-approval-icon">
         <Terminal size={16} />
       </div>
       <div className="permission-approval-copy">
-        <strong>Permitir esta ação?</strong>
-        <p>{prompt.command ? 'O agente quer executar um comando antes de continuar.' : prompt.detail}</p>
+        <strong>{t('permissionPrompt.title')}</strong>
+        <p>{prompt.command ? t('permissionPrompt.commandBody') : prompt.detail}</p>
         {prompt.command && <code>{prompt.command}</code>}
       </div>
       <div className="permission-approval-actions">
         <button type="button" onClick={onDeny}>
           <XCircle size={15} />
-          Negar
+          {t('permissionPrompt.deny')}
         </button>
         {prompt.command && (
           <button className="trust" type="button" onClick={onAlwaysAllow}>
             <ShieldCheck size={15} />
-            Sempre permitir
+            {t('permissionPrompt.alwaysAllow')}
           </button>
         )}
         <button className="primary" type="button" onClick={onAllow}>
-          Permitir
+          {t('permissionPrompt.allow')}
         </button>
       </div>
     </section>
@@ -2754,6 +2992,17 @@ function isVerifiedModelDiscovery(result: ModelDiscoveryResult): boolean {
   return !result.stale && result.models.length > 0 && (result.source === 'cli' || result.source === 'api-key')
 }
 
+function authAccessMessage(modelError: string | undefined, cliError: string | undefined, t: Translator): string {
+  const error = modelError ?? cliError
+  if (/401|expired token|invalid.*token/i.test(error ?? '')) {
+    return t('model.expired')
+  }
+  if (/network|fetch|timeout|tempo limite/i.test(error ?? '')) {
+    return t('model.networkError')
+  }
+  return t('login.sessionInvalid')
+}
+
 function resolveSelectedModel(
   models: VerbooModel[],
   currentModelId?: string,
@@ -2830,30 +3079,46 @@ function inferResearchSubagentCount(normalizedMessage: string): 1 | 2 {
   return signals >= 2 || asksForTwoAngles || broadRequest ? 2 : 1
 }
 
-function formatResearchResultsForTranscript(results: ResearchSubagentResult[], agents: ActiveSubagent[]): string {
-  if (results.length === 0) return 'Nenhum resultado de pesquisa foi retornado.'
+function formatResearchResultsForTranscript(
+  results: ResearchSubagentResult[],
+  agents: ActiveSubagent[],
+  t: Translator,
+): string {
+  if (results.length === 0) return t('subagent.noResults')
   return results
     .map(result => {
       const agentName = agents[result.index - 1]?.label ?? `Subagente ${result.index}`
-      const status = result.status === 'complete' ? 'concluído' : 'falhou'
-      const sources = result.sources.length ? ` Fontes: ${result.sources.slice(0, 3).join('; ')}.` : ''
+      const status = result.status === 'complete' ? t('subagent.resultComplete') : t('subagent.resultFailed')
+      const sources = result.sources.length ? ` ${t('subagent.sources')}: ${result.sources.slice(0, 3).join('; ')}.` : ''
       return `${agentName} ${status}: ${result.summary}${sources}`
     })
     .join('\n')
 }
 
-function buildResearchResultsContext(results: ResearchSubagentResult[], agents: ActiveSubagent[]): string {
+function buildResearchResultsContext(
+  results: ResearchSubagentResult[],
+  agents: ActiveSubagent[],
+  t: Translator,
+): string {
   if (results.length === 0) return ''
   return [
-    'Pesquisas de subagentes somente leitura:',
+    t('subagent.resultsContextTitle'),
     '',
     ...results.map(result => [
       `${agents[result.index - 1]?.label ?? `Subagente ${result.index}`} (${result.status}):`,
-      `Resumo: ${result.summary}`,
-      result.findings.length ? `Achados:\n${result.findings.map(finding => `- ${finding}`).join('\n')}` : '',
-      result.sources.length ? `Fontes:\n${result.sources.map(source => `- ${source}`).join('\n')}` : '',
+      `${t('subagent.summary')}: ${result.summary}`,
+      result.findings.length ? `${t('subagent.findings')}:\n${result.findings.map(finding => `- ${finding}`).join('\n')}` : '',
+      result.sources.length ? `${t('subagent.sources')}:\n${result.sources.map(source => `- ${source}`).join('\n')}` : '',
     ].filter(Boolean).join('\n')),
   ].join('\n\n')
+}
+
+function subagentStatusLabel(status: ActiveSubagent['status'], t: Translator): string {
+  if (status === 'reading') return t('subagent.reading')
+  if (status === 'searching') return t('subagent.searching')
+  if (status === 'done') return t('subagent.done')
+  if (status === 'failed') return t('subagent.failed')
+  return t('subagent.thinking')
 }
 
 function subagentNameFor(seed: string, index: number): string {
@@ -2884,13 +3149,28 @@ function subagentStatusForActivity(activity: TurnActivity): ActiveSubagent['stat
   return 'thinking'
 }
 
-function compactSubagentDetail(activity: TurnActivity): string {
+function compactSubagentDetail(activity: TurnActivity, t: Translator): string {
   const status = subagentStatusForActivity(activity)
-  if (status === 'reading') return 'Lendo arquivos e referências.'
-  if (status === 'searching') return 'Pesquisando contexto relevante.'
-  if (status === 'done') return 'Pesquisa concluída.'
-  if (status === 'failed') return 'Pesquisa interrompida.'
-  return 'Organizando o escopo da pesquisa.'
+  if (status === 'reading') return t('subagent.readingProject')
+  if (status === 'searching') return t('subagent.searchingSupport')
+  if (status === 'done') return t('subagent.completed')
+  if (status === 'failed') return t('subagent.cancelledText')
+  return t('subagent.defaultMission')
+}
+
+function activityDisplayLabel(activity: TurnActivity, t: Translator): string {
+  if (activity.kind === 'read') return t('transcript.readOne')
+  if (activity.kind === 'edit') return t('transcript.editOne')
+  if (activity.kind === 'search') return t('transcript.searchOne')
+  if (activity.kind === 'command') return t('transcript.commandOne')
+  if (activity.kind === 'terminal') return t('transcript.terminalOne')
+  if (activity.kind === 'image') return t('transcript.imageOne')
+  if (activity.kind === 'permission') return t('transcript.permissionOne')
+  if (activity.kind === 'subagent') return t('transcript.subagentOne')
+  if (activity.kind === 'context') return activity.label
+  if (activity.kind === 'queued') return activity.label
+  if (activity.kind === 'thinking') return t('transcript.thinking')
+  return t('transcript.toolOne')
 }
 
 function appendSubagentHistory(
@@ -2912,10 +3192,10 @@ function mergeAssistantText(current: string, incoming: string): string {
   return current + incoming
 }
 
-function workspaceFolderName(path: string, projectName?: string): string {
+function workspaceFolderName(path: string, projectName?: string, fallback = 'No project'): string {
   if (projectName?.trim()) return projectName.trim()
   const trimmed = path.trim()
-  if (!trimmed) return 'Sem projeto'
+  if (!trimmed) return fallback
   return trimmed.split(/[\\/]/).filter(Boolean).at(-1) ?? trimmed
 }
 
@@ -2963,6 +3243,7 @@ function buildTurnSummaryLines(
   counts: Partial<Record<NonNullable<TranscriptItem['activityKind']>, number>>,
   result: AgentResultSnapshot | undefined,
   exitCode: number | null,
+  t: Translator,
   details?: {
     validationCommands?: string[]
     references?: string[]
@@ -2970,30 +3251,34 @@ function buildTurnSummaryLines(
   },
 ): string[] {
   const actions = [
-    actionCount(counts.read, 'leu/inspecionou arquivos'),
-    actionCount(counts.edit, 'editou arquivos'),
-    actionCount(counts.command, 'executou comandos'),
-    actionCount(counts.search, 'pesquisou na internet'),
-    actionCount(counts.terminal, 'leu terminal'),
-    actionCount(counts.permission, 'pediu permissão/resposta'),
-    actionCount(counts.tool, 'usou ferramentas'),
+    actionCount(counts.read, t('transcript.readInspectedFiles')),
+    actionCount(counts.edit, t('transcript.editedFiles')),
+    actionCount(counts.command, t('transcript.ranCommands')),
+    actionCount(counts.search, t('transcript.searchInternet')),
+    actionCount(counts.terminal, t('transcript.readTerminal')),
+    actionCount(counts.permission, t('transcript.askedPermission')),
+    actionCount(counts.tool, t('transcript.usedTools')),
   ].filter(Boolean)
 
-  const lines = actions.length ? [`Resumo: ${actions.join(', ')}.`] : []
+  const lines = actions.length ? [`${t('transcript.summaryPrefix')} ${actions.join(', ')}.`] : []
 
   if (details?.references?.length) {
-    lines.push(`Referências verificadas: ${formatShortList(details.references)}.`)
+    lines.push(t('transcript.referencesChecked', { items: formatShortList(details.references, t) }))
   }
   if (details?.validationCommands?.length) {
-    lines.push(`Validação feita: ${formatShortList(details.validationCommands)}.`)
+    lines.push(t('transcript.validationDone', { items: formatShortList(details.validationCommands, t) }))
   }
   if (details?.changeSummary?.totalFiles) {
-    lines.push(
-      `Arquivos alterados: ${details.changeSummary.totalFiles} (${formatSignedCount(details.changeSummary.additions, '+')} ${formatSignedCount(details.changeSummary.deletions, '-')}).`,
-    )
+    lines.push(t('transcript.changedFiles', {
+      count: details.changeSummary.totalFiles,
+      additions: formatSignedCount(details.changeSummary.additions, '+'),
+      deletions: formatSignedCount(details.changeSummary.deletions, '-'),
+    }))
   }
-  if (result?.stopReason) lines.push(`Motivo de parada: ${result.stopReason}.`)
-  if (exitCode !== 0) lines.push(`Processo terminou com código ${exitCode ?? 'desconhecido'}.`)
+  if (result?.stopReason) lines.push(t('transcript.stopReason', { reason: result.stopReason }))
+  if (exitCode !== 0) {
+    lines.push(exitCode === null ? t('transcript.processUnknown') : t('transcript.exitCode', { code: exitCode }))
+  }
   return lines
 }
 
@@ -3044,10 +3329,10 @@ function validationCommandsForTurn(commands: string[]): string[] {
   })
 }
 
-function formatShortList(values: string[]): string {
+function formatShortList(values: string[], t: Translator): string {
   const unique = values.filter((value, index) => values.findIndex(item => item.toLowerCase() === value.toLowerCase()) === index)
   const visible = unique.slice(0, 3)
-  const suffix = unique.length > visible.length ? ` e mais ${unique.length - visible.length}` : ''
+  const suffix = unique.length > visible.length ? ` ${t('transcript.moreItems', { count: unique.length - visible.length })}` : ''
   return `${visible.join(', ')}${suffix}`
 }
 
@@ -3055,7 +3340,7 @@ function formatSignedCount(value: number, sign: '+' | '-'): string {
   return `${sign}${Math.max(0, value)}`
 }
 
-function buildCliFailureMessage(lines: string[] | undefined): string | undefined {
+function buildCliFailureMessage(lines: string[] | undefined, t: Translator): string | undefined {
   const cleaned = (lines ?? [])
     .flatMap(line => line.split(/\r?\n/))
     .map(line => cleanCliFailureLine(line))
@@ -3066,7 +3351,7 @@ function buildCliFailureMessage(lines: string[] | undefined): string | undefined
   )
   const visible = (important.length ? important : cleaned).slice(-4)
   if (visible.length === 0) return undefined
-  return `Não consegui executar o agente.\n\n${visible.join('\n')}\n`
+  return `${t('transcript.cliFailureTitle')}\n\n${visible.join('\n')}\n`
 }
 
 function cleanCliFailureLine(line: string): string {
@@ -3100,7 +3385,10 @@ function detectPermissionRequest(text: string): string | undefined {
     const value = line.toLowerCase()
     return value.includes('aprovar') || value.includes('permitir') || value.includes('autoriza') || value.includes('can i run')
   })
-  return snippet(focusedLine ?? 'O agente pediu permissão para continuar.')
+  const fallback = inferResponseLanguage(text, 'en-US') === 'pt-BR'
+    ? 'O agente pediu permissão para continuar.'
+    : 'The agent asked for permission to continue.'
+  return snippet(focusedLine ?? fallback)
 }
 
 function extractCommandFromPermissionText(text: string): string | undefined {
@@ -3115,20 +3403,35 @@ function buildPermissionFollowUpMessage(
   prompt: PendingPermissionPrompt,
   decision: PermissionDecision,
   automatic: boolean,
+  language: LanguageCode,
 ): string {
+  const denied = language === 'en-US'
+    ? [
+        'Permission denied.',
+        prompt.command ? `Do not run this command: ${prompt.command}` : '',
+        'Continue with a safe alternative or explain the blocker clearly.',
+      ]
+    : [
+        'Permissão negada.',
+        prompt.command ? `Não execute este comando: ${prompt.command}` : '',
+        'Continue com uma alternativa segura ou explique o bloqueio de forma objetiva.',
+      ]
+  const approved = language === 'en-US'
+    ? [
+        automatic ? 'Permission approved automatically by a trusted rule saved in this app.' : 'Permission approved.',
+        prompt.command ? `Approved command: ${prompt.command}` : '',
+        'Continue exactly where you stopped and run only the approved action before moving on.',
+      ]
+    : [
+        automatic ? 'Permissão aprovada automaticamente por regra confiável salva neste app.' : 'Permissão aprovada.',
+        prompt.command ? `Comando aprovado: ${prompt.command}` : '',
+        'Continue exatamente do ponto em que parou e execute apenas a ação aprovada antes de seguir.',
+      ]
   if (decision === 'deny') {
-    return [
-      'Permissão negada.',
-      prompt.command ? `Não execute este comando: ${prompt.command}` : '',
-      'Continue com uma alternativa segura ou explique o bloqueio de forma objetiva.',
-    ].filter(Boolean).join('\n')
+    return denied.filter(Boolean).join('\n')
   }
 
-  return [
-    automatic ? 'Permissão aprovada automaticamente por regra confiável salva neste app.' : 'Permissão aprovada.',
-    prompt.command ? `Comando aprovado: ${prompt.command}` : '',
-    'Continue exatamente do ponto em que parou e execute apenas a ação aprovada antes de seguir.',
-  ].filter(Boolean).join('\n')
+  return approved.filter(Boolean).join('\n')
 }
 
 function normalizeCommand(command: string): string {
@@ -3152,8 +3455,28 @@ function formatElapsed(ms: number): string {
   return minutes > 0 ? `${minutes}m ${rest}s` : `${seconds}s`
 }
 
-function formatCompactNumber(value: number): string {
-  return Intl.NumberFormat('pt-BR', {
+function inferResponseLanguage(text: string, fallback: LanguageCode = 'en-US'): LanguageCode {
+  return detectResponseLanguage(text) ?? fallback
+}
+
+function detectResponseLanguage(text: string): LanguageCode | undefined {
+  const normalized = text.toLowerCase()
+  const portugueseSignals = [
+    /[áàâãéêíóôõúç]/i,
+    /\b(o|a|os|as|um|uma|de|do|da|dos|das|para|por|com|sem|que|não|nao|você|voce|olá|ola|oi|teste|testar|quero|preciso|precisa|pode|faça|faca|mude|mudança|mudanca|arrume|verifique|corrija|implemente|adicione|remova|leia|crie|rode|execute|obrigado|obrigada|pronto)\b/i,
+  ]
+  const englishSignals = [
+    /\b(the|and|or|to|from|with|without|please|hello|hi|test|ready|done|fix|check|verify|implement|add|remove|update|create|read|write|run|execute|open|package|build|thanks)\b/i,
+  ]
+  const ptScore = portugueseSignals.reduce((score, pattern) => score + (pattern.test(normalized) ? 1 : 0), 0)
+  const enScore = englishSignals.reduce((score, pattern) => score + (pattern.test(normalized) ? 1 : 0), 0)
+  if (ptScore > enScore) return 'pt-BR'
+  if (enScore > ptScore) return 'en-US'
+  return undefined
+}
+
+function formatCompactNumber(value: number, language: LanguageCode): string {
+  return Intl.NumberFormat(language, {
     notation: 'compact',
     maximumFractionDigits: 1,
   }).format(value)

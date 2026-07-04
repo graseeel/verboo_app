@@ -7,9 +7,17 @@ type UseReviewDiffsArgs = {
   open: boolean
   target?: ReviewTarget
   canDiff: boolean
+  diffLoadFailedMessage: string
+  diffUnavailableMessage: string
 }
 
-export function useReviewDiffs({ open, target, canDiff }: UseReviewDiffsArgs) {
+export function useReviewDiffs({
+  open,
+  target,
+  canDiff,
+  diffLoadFailedMessage,
+  diffUnavailableMessage,
+}: UseReviewDiffsArgs) {
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
   const [diffs, setDiffs] = useState<Record<string, DiffState>>({})
   const files = target?.files ?? []
@@ -52,7 +60,7 @@ export function useReviewDiffs({ open, target, canDiff }: UseReviewDiffsArgs) {
               ...current,
               [key]: {
                 loading: false,
-                diff: emptyDiff(file, 'Não foi possível carregar o diff.'),
+                diff: emptyDiff(file, diffLoadFailedMessage),
               },
             }))
           }
@@ -62,7 +70,7 @@ export function useReviewDiffs({ open, target, canDiff }: UseReviewDiffsArgs) {
     return () => {
       cancelled = true
     }
-  }, [canDiff, expandedPaths, fileSignature, files, open, target?.workingDirectory])
+  }, [canDiff, diffLoadFailedMessage, expandedPaths, fileSignature, files, open, target?.workingDirectory])
 
   const toggleFile = useCallback((path: string) => {
     setExpandedPaths(current => {
@@ -77,9 +85,9 @@ export function useReviewDiffs({ open, target, canDiff }: UseReviewDiffsArgs) {
     if (canDiff) return diffs[diffCacheKey(file)]
     return {
       loading: false,
-      diff: emptyDiff(file, 'Diff indisponível para esta pasta.'),
+      diff: emptyDiff(file, diffUnavailableMessage),
     }
-  }, [canDiff, diffs])
+  }, [canDiff, diffUnavailableMessage, diffs])
 
   return { expandedPaths, toggleFile, diffStateForFile }
 }

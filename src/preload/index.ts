@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AgentEvent,
   AgentTurnRequest,
@@ -57,6 +57,13 @@ const api = {
     ipcRenderer.invoke('workspace:switch-branch', workingDirectory, branchName) as Promise<WorkspaceBranchSwitchResult>,
   evaluateGoal: (input: GoalEvaluationInput) => ipcRenderer.invoke('goal:evaluate', input) as Promise<{ evaluation: GoalEvaluationResult; userMessage?: string }>,
   pickFiles: () => ipcRenderer.invoke('files:pick') as Promise<AttachmentMeta[]>,
+  inspectFiles: (paths: string[]) => ipcRenderer.invoke('files:inspect', paths) as Promise<AttachmentMeta[]>,
+  inspectDroppedFiles: (files: File[]) => {
+    const paths = files
+      .map(file => webUtils.getPathForFile(file))
+      .filter(path => path.length > 0)
+    return ipcRenderer.invoke('files:inspect', paths) as Promise<AttachmentMeta[]>
+  },
   pickFolder: () => ipcRenderer.invoke('files:pick-folder') as Promise<string | undefined>,
   createProjectFolder: () => ipcRenderer.invoke('files:create-project-folder') as Promise<string | undefined>,
   sendTurn: (request: AgentTurnRequest, resumeSessionId?: string) => ipcRenderer.invoke('agent:send', request, resumeSessionId) as Promise<string>,

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, Check, ChevronDown, GitBranch, Search } from 'lucide-react'
 import type { WorkspaceBranchInfo, WorkspaceBranchSwitchResult } from '../../../../shared/types'
+import { useI18n } from '../../../i18n'
 
 type ReviewBranchControlsProps = {
   branchInfo?: WorkspaceBranchInfo
@@ -15,6 +16,7 @@ export function ReviewBranchControls({
   totalDeletions,
   onSwitchBranch,
 }: ReviewBranchControlsProps) {
+  const { t } = useI18n()
   const [branchMenuOpen, setBranchMenuOpen] = useState(false)
   const [branchQuery, setBranchQuery] = useState('')
   const [branchMessage, setBranchMessage] = useState<string | undefined>()
@@ -31,12 +33,12 @@ export function ReviewBranchControls({
     setBranchMessage(undefined)
     try {
       const result = await onSwitchBranch(branchName)
-      setBranchMessage(result.ok ? undefined : result.message || 'Não foi possível trocar de branch.')
+      setBranchMessage(result.ok ? undefined : t('review.switchBranchFailed'))
       if (result.ok) setBranchMenuOpen(false)
     } finally {
       setSwitchingBranch(undefined)
     }
-  }, [onSwitchBranch])
+  }, [onSwitchBranch, t])
 
   useEffect(() => {
     if (!branchMenuOpen) return
@@ -68,7 +70,7 @@ export function ReviewBranchControls({
             disabled={!branchInfo?.branches.length}
           >
             <GitBranch size={14} />
-            <span>Branch</span>
+            <span>{t('review.branch')}</span>
             <ChevronDown size={14} />
           </button>
           {branchMenuOpen ? (
@@ -78,15 +80,15 @@ export function ReviewBranchControls({
                 <input
                   value={branchQuery}
                   onChange={event => setBranchQuery(event.target.value)}
-                  placeholder="Buscar branches"
+                  placeholder={t('review.branchSearch')}
                   autoFocus
                 />
               </label>
-              <div className="review-branch-menu-title">Branches locais</div>
+              <div className="review-branch-menu-title">{t('review.localBranches')}</div>
               {branchInfo?.dirty ? (
                 <div className="review-branch-warning">
                   <AlertCircle size={13} />
-                  <span>Há mudanças locais. Commit, stash ou descarte antes de trocar.</span>
+                  <span>{t('review.localChangesWarning')}</span>
                 </div>
               ) : null}
               <div className="review-branch-list">
@@ -104,13 +106,13 @@ export function ReviewBranchControls({
                     {branch.current ? <Check size={14} /> : null}
                   </button>
                 ))}
-                {filteredBranches.length === 0 ? <div className="review-empty compact">Nenhuma branch encontrada.</div> : null}
+                {filteredBranches.length === 0 ? <div className="review-empty compact">{t('review.noBranches')}</div> : null}
               </div>
             </div>
           ) : null}
         </div>
         <div className="review-branch-copy">
-          <span>{branchInfo?.currentBranch ?? 'sem branch'}</span>
+          <span>{branchInfo?.currentBranch ?? t('review.noBranch')}</span>
           {branchInfo?.upstreamBranch ? <small>{branchInfo.upstreamBranch}</small> : null}
         </div>
         <span className="review-total add">+{totalAdditions}</span>

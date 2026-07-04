@@ -1,7 +1,8 @@
 import { Check, Hand, Lock, ShieldAlert, TerminalSquare } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { AccessMode } from '../../../shared/types'
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss'
+import { useI18n } from '../../i18n'
 
 type AccessOption = {
   id: AccessMode
@@ -9,27 +10,6 @@ type AccessOption = {
   description: string
   icon: typeof Hand
 }
-
-const options: AccessOption[] = [
-  {
-    id: 'approval',
-    title: 'Solicitar aprovação',
-    description: 'Sempre pedir aprovação para editar arquivos externos e usar a internet',
-    icon: Hand,
-  },
-  {
-    id: 'auto',
-    title: 'Aprovar por mim',
-    description: 'Solicitar aprovação apenas para ações detectadas como potencialmente inseguras',
-    icon: TerminalSquare,
-  },
-  {
-    id: 'full',
-    title: 'Modo livre',
-    description: 'Executar sem novas aprovações em workspaces confiáveis',
-    icon: ShieldAlert,
-  },
-]
 
 type AccessSelectorProps = {
   value: AccessMode
@@ -39,8 +19,29 @@ type AccessSelectorProps = {
 }
 
 export function AccessSelector({ value, fullAccessEnabled, onChange, onRequestFullAccessSettings }: AccessSelectorProps) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement | null>(null)
+  const options = useMemo<AccessOption[]>(() => [
+    {
+      id: 'approval',
+      title: t('access.approval.title'),
+      description: t('access.approval.description'),
+      icon: Hand,
+    },
+    {
+      id: 'auto',
+      title: t('access.auto.title'),
+      description: t('access.auto.description'),
+      icon: TerminalSquare,
+    },
+    {
+      id: 'full',
+      title: t('access.full.title'),
+      description: t('access.full.description'),
+      icon: ShieldAlert,
+    },
+  ], [t])
   const current = options.find(option => option.id === value)!
   useOutsideDismiss(wrapRef, open, () => setOpen(false))
 
@@ -64,8 +65,8 @@ export function AccessSelector({ value, fullAccessEnabled, onChange, onRequestFu
       {open && (
         <div className="access-menu popover-panel t-dropdown is-open" data-origin="bottom-left">
           <div className="access-heading">
-            <span>Como as ações do Verboo devem ser aprovadas?</span>
-            <a href="https://code.verboo.ai/pt" target="_blank" rel="noreferrer">Saiba mais</a>
+            <span>{t('access.heading')}</span>
+            <a href="https://code.verboo.ai/pt" target="_blank" rel="noreferrer">{t('access.learnMore')}</a>
           </div>
 
           {options.map(option => {
@@ -82,7 +83,7 @@ export function AccessSelector({ value, fullAccessEnabled, onChange, onRequestFu
                 {isFullLocked ? <Lock size={22} className="access-option__lock" /> : <Icon size={22} />}
                 <span>
                   <strong>{option.title}</strong>
-                  <small>{isFullLocked ? 'Ative em Configurações > Permissões para liberar este modo.' : option.description}</small>
+                  <small>{isFullLocked ? t('access.fullLocked') : option.description}</small>
                 </span>
                 {value === option.id && !isFullLocked && <Check size={20} />}
               </button>

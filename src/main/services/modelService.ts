@@ -21,6 +21,21 @@ export class ModelService {
     const cached = await this.readCache()
     let liveError: unknown
 
+    if (!forceRefresh && cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+      return { models: cached.models, source: 'cache', stale: false }
+    }
+
+    const apiKey = await this.api.getApiKeyBearerToken()
+    if (apiKey) {
+      try {
+        const models = normalizeModels(await this.api.requestJson(VERBOO_ROUTER_MODELS_URL, apiKey.value))
+        await this.writeCache({ fetchedAt: Date.now(), models })
+        return { models, source: apiKey.source, stale: false }
+      } catch (error) {
+        liveError = error
+      }
+    }
+
     const cliToken = await this.api.getCliBearerToken()
     if (cliToken) {
       try {
@@ -41,21 +56,6 @@ export class ModelService {
             }
           }
         }
-      }
-    }
-
-    if (!forceRefresh && !liveError && cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-      return { models: cached.models, source: 'cache', stale: false }
-    }
-
-    const apiKey = await this.api.getApiKeyBearerToken()
-    if (apiKey) {
-      try {
-        const models = normalizeModels(await this.api.requestJson(VERBOO_ROUTER_MODELS_URL, apiKey.value))
-        await this.writeCache({ fetchedAt: Date.now(), models })
-        return { models, source: apiKey.source, stale: false }
-      } catch (error) {
-        liveError = error
       }
     }
 

@@ -1,7 +1,8 @@
 export type ReservedSlashCommand =
   | { kind: 'goal'; action: 'show' | 'start' | 'pause' | 'resume' | 'clear'; objective?: string; raw: string }
+  | { kind: 'pet'; raw: string }
 
-const RESERVED_COMMANDS = new Set(['goal'])
+const RESERVED_COMMANDS = new Set(['goal', 'pet'])
 
 export function parseReservedSlashCommand(value: string): ReservedSlashCommand | undefined {
   const raw = value.trim()
@@ -10,6 +11,7 @@ export function parseReservedSlashCommand(value: string): ReservedSlashCommand |
   const [command = '', ...parts] = raw.slice(1).split(/\s+/)
   const rest = raw.slice(command.length + 1).trim()
 
+  if (command === 'pet' && !rest) return { kind: 'pet', raw }
   if (command !== 'goal') return undefined
   if (!rest) return { kind: 'goal', action: 'show', raw }
   if (rest === 'pause') return { kind: 'goal', action: 'pause', raw }

@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import { PanelRightClose, RefreshCw, Square, TerminalSquare } from 'lucide-react'
 import type { LocalTerminalSession } from '../../../shared/types'
+import { useI18n } from '../../i18n'
 
 type LocalTerminalPanelProps = {
   terminalOpen: boolean
@@ -38,6 +39,7 @@ export function LocalTerminalPanel({
   minWidth,
   maxWidth,
 }: LocalTerminalPanelProps) {
+  const { t } = useI18n()
   const terminalRef = useRef<HTMLDivElement | null>(null)
   const xtermRef = useRef<Terminal | undefined>(undefined)
   const fitAddonRef = useRef<FitAddon | undefined>(undefined)
@@ -219,11 +221,11 @@ export function LocalTerminalPanel({
 
     const cleanup = onTerminalExit(() => {
       // Show termination notice
-      xtermRef.current?.writeln('\r\n\x1b[90m━━━ Terminal session ended ━━━\x1b[0m')
+      xtermRef.current?.writeln(`\r\n\x1b[90m━━━ ${t('terminal.ended')} ━━━\x1b[0m`)
     })
 
     return cleanup
-  }, [onTerminalExit])
+  }, [onTerminalExit, t])
 
   // Fit terminal on mount and when width changes
   useEffect(() => {
@@ -275,13 +277,19 @@ export function LocalTerminalPanel({
 
     const startX = event.clientX
     const startWidth = terminalWidth
+    // Resizes must track the pointer 1:1 — the layout's grid transition would
+    // otherwise chase every move with an eased animation (rubber-band feel).
+    document.querySelector('.app-layout')?.classList.add('is-resizing')
 
     function handlePointerMove(moveEvent: PointerEvent) {
-      const delta = startX - moveEvent.clientX // negative if dragging right
-      onSetWidth(startWidth - delta)
+      // The panel sits on the right edge, so dragging LEFT (clientX decreases)
+      // must GROW it. The previous sign flipped this: dragging left shrank
+      // (clamped at min, so "nothing happened") and dragging right closed.
+      onSetWidth(startWidth + (startX - moveEvent.clientX))
     }
 
     function stopResize() {
+      document.querySelector('.app-layout')?.classList.remove('is-resizing')
       window.removeEventListener('pointermove', handlePointerMove)
       window.removeEventListener('pointerup', stopResize)
     }
@@ -331,10 +339,10 @@ export function LocalTerminalPanel({
       <header className="terminal-header">
         <span className="terminal-title">
           <TerminalSquare size={13} />
-          Local terminal
+          {t('terminal.title')}
         </span>
         <span className="terminal-cwd" title={displayDirectory}>
-          {workspaceFolderName(displayDirectory)}
+          {workspaceFolderName(displayDirectory) || t('terminal.noSession')}
         </span>
         <div className="terminal-actions">
           <button
@@ -342,9 +350,9 @@ export function LocalTerminalPanel({
             className="terminal-action ui-tooltip"
             onClick={handleRestart}
             disabled={restarting}
-            data-tooltip="Reiniciar terminal"
+            data-tooltip={t('terminal.restart')}
             data-tooltip-align="end"
-            aria-label="Reiniciar terminal no projeto atual"
+            aria-label={t('terminal.restartAria')}
           >
             <RefreshCw size={13} />
           </button>
@@ -352,9 +360,9 @@ export function LocalTerminalPanel({
             type="button"
             className="terminal-action ui-tooltip"
             onClick={handleStop}
-            data-tooltip="Parar sessão"
+            data-tooltip={t('terminal.stop')}
             data-tooltip-align="end"
-            aria-label="Parar terminal"
+            aria-label={t('terminal.stopAria')}
           >
             <Square size={12} />
           </button>
@@ -362,9 +370,9 @@ export function LocalTerminalPanel({
             type="button"
             className="terminal-action ui-tooltip"
             onClick={onClose}
-            data-tooltip="Ocultar painel"
+            data-tooltip={t('terminal.hide')}
             data-tooltip-align="end"
-            aria-label="Ocultar terminal"
+            aria-label={t('terminal.hideAria')}
           >
             <PanelRightClose size={13} />
           </button>
@@ -377,7 +385,7 @@ export function LocalTerminalPanel({
 }
 
 function workspaceFolderName(path: string): string {
-  if (!path) return 'No session'
+  if (!path) return ''
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
 }
 

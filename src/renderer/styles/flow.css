@@ -8,8 +8,21 @@
   display: inline-flex; align-items: center; gap: 7px;
   color: var(--text-muted); font-size: 13px;
 }
+.step-thinking .step-marker-icon {
+  display: inline-grid; place-items: center;
+  color: var(--accent-strong);
+  animation: marker-pulse 1.8s ease-in-out infinite;
+}
 .step-thinking svg { animation: step-spin 1.4s linear infinite; }
+.step-thinking.is-reading-image svg { animation: none; }
 @keyframes step-spin { to { transform: rotate(360deg); } }
+
+/* Active action row (last block while the turn streams): the icon pulses
+   purple and the label shimmers; both freeze when the turn completes. */
+.step-actions.is-active .step-actions-icon {
+  color: var(--accent-strong);
+  animation: marker-pulse 1.8s ease-in-out infinite;
+}
 
 .step-actions { display: flex; flex-direction: column; }
 .step-actions-row {

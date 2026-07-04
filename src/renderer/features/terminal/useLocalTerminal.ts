@@ -4,8 +4,12 @@ import type { LocalTerminalSession, LocalTerminalStartRequest, TerminalDataEvent
 const TERMINAL_WIDTH_KEY = 'verboo:terminal-width'
 const TERMINAL_DEFAULT_WIDTH = 420
 const TERMINAL_MIN_WIDTH = 340
-const TERMINAL_MAX_WIDTH = 620
-const CHAT_MIN_WIDTH = 560
+// 760 gives large displays real room; the dynamic viewport clamp below still
+// protects smaller windows. Reserving 560px for the chat lane made the
+// expandable range ~zero on common window sizes — 480px keeps the composer
+// comfortable while letting the terminal actually grow.
+const TERMINAL_MAX_WIDTH = 760
+const CHAT_MIN_WIDTH = 480
 const SAFE_GUTTER = 28
 const TERMINAL_UNAVAILABLE_MESSAGE = 'Aumente a largura da janela ou oculte a barra lateral para abrir o terminal.'
 
@@ -230,10 +234,8 @@ function persistTerminalWidth(width: number): number {
 }
 
 function getEffectiveSidebarWidth(): number {
-  const layout = document.querySelector<HTMLElement>('.app-layout')
-  if (!layout) return 0
-  if (layout.classList.contains('sidebar-hidden')) return 0
-
+  // The hidden state is expressed purely by --sidebar-width: 0 (the measured
+  // rect below already reflects it) — there is no dedicated CSS class for it.
   const sidebar = document.querySelector<HTMLElement>('.app-sidebar')
   if (!sidebar) return 0
   const style = window.getComputedStyle(sidebar)

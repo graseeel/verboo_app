@@ -1,4 +1,5 @@
 import { Pause, Play, Square, Target } from 'lucide-react'
+import { useI18n, type Translator } from '../../i18n'
 
 export type GoalStatusBarState =
   | { kind: 'idle' }
@@ -18,6 +19,8 @@ type GoalStatusBarProps = {
 }
 
 export function GoalStatusBar({ status, onPause, onResume, onCancel, onClear }: GoalStatusBarProps) {
+  const { t } = useI18n()
+
   if (status.kind === 'idle') return null
 
   const icon =
@@ -29,13 +32,15 @@ export function GoalStatusBar({ status, onPause, onResume, onCancel, onClear }: 
           ? 'complete'
           : 'stopped'
 
-  const label = statusLabel(status, icon)
+  const label = statusLabel(status, icon, t)
 
   return (
     <div className="goal-status-bar" data-kind={status.kind}>
       <div className="goal-status-bar__body">
         <Target size={14} className="goal-status-bar__objective-icon" />
-        <span className="goal-status-bar__label">{label}</span>
+        <span className={`goal-status-bar__label ${icon === 'running' || icon === 'evaluating' ? 'shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm' : ''}`}>
+          {label}
+        </span>
         {status.kind === 'active' || status.kind === 'continuing' || status.kind === 'evaluating' ? (
           <>
             <span className="goal-status-bar__turn-count">
@@ -52,21 +57,21 @@ export function GoalStatusBar({ status, onPause, onResume, onCancel, onClear }: 
       </div>
       <div className="goal-status-bar__actions">
         {(status.kind === 'active' || status.kind === 'continuing' || status.kind === 'evaluating') && (
-          <button className="goal-status-bar__btn" onClick={onPause} title="Pausar">
+          <button className="goal-status-bar__btn" onClick={onPause} title={t('goal.pause')}>
             <Pause size={14} />
           </button>
         )}
         {status.kind === 'completed' && (
-          <button className="goal-status-bar__btn goal-status-bar__btn--clear" onClick={onClear} title="Limpar objetivo">
+          <button className="goal-status-bar__btn goal-status-bar__btn--clear" onClick={onClear} title={t('goal.clear')}>
             <Square size={12} />
           </button>
         )}
         {(status.kind === 'stopped' || status.kind === 'budget_limited') && (
           <>
-            <button className="goal-status-bar__btn" onClick={onResume} title="Retomar">
+            <button className="goal-status-bar__btn" onClick={onResume} title={t('goal.resume')}>
               <Play size={14} />
             </button>
-            <button className="goal-status-bar__btn goal-status-bar__btn--clear" onClick={onClear} title="Limpar objetivo">
+            <button className="goal-status-bar__btn goal-status-bar__btn--clear" onClick={onClear} title={t('goal.clear')}>
               <Square size={12} />
             </button>
           </>
@@ -76,11 +81,11 @@ export function GoalStatusBar({ status, onPause, onResume, onCancel, onClear }: 
   )
 }
 
-function statusLabel(status: GoalStatusBarState, icon: string): string {
-  const prefix = icon === 'complete' ? 'Objetivo completo' :
-    icon === 'evaluating' ? 'Avaliando objetivo' :
-    icon === 'stopped' ? 'Objetivo parado' :
-    icon === 'running' ? 'Executando objetivo' : ''
+function statusLabel(status: GoalStatusBarState, icon: string, t: Translator): string {
+  const prefix = icon === 'complete' ? t('goal.completed') :
+    icon === 'evaluating' ? t('goal.evaluating') :
+    icon === 'stopped' ? t('goal.stopped') :
+    icon === 'running' ? t('goal.running') : ''
 
   let rest = ''
   if (status.kind === 'active' || status.kind === 'continuing' || status.kind === 'evaluating') {
@@ -88,12 +93,21 @@ function statusLabel(status: GoalStatusBarState, icon: string): string {
   } else if (status.kind === 'completed') {
     rest = truncate(status.objective, 60)
   } else if (status.kind === 'stopped') {
-    rest = status.reason
+    rest = translateGoalReason(status.reason, t)
   } else if (status.kind === 'budget_limited') {
-    rest = status.reason
+    rest = translateGoalReason(status.reason, t)
   }
 
   return `${prefix}: ${rest}`
+}
+
+function translateGoalReason(reason: string, t: Translator): string {
+  if (reason.startsWith('Max turns reached')) return t('goal.reason.maxTurns')
+  if (reason === 'Max time elapsed') return t('goal.reason.maxTime')
+  if (reason === 'Detected possible loop (repeated output fingerprints)') return t('goal.reason.loop')
+  if (reason === 'Goal is blocked') return t('goal.reason.blocked')
+  if (reason === 'Evaluator did not provide next instruction') return t('goal.reason.noInstruction')
+  return reason
 }
 
 function truncate(text: string, max: number): string {

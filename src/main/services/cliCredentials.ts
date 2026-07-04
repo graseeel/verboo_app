@@ -21,6 +21,10 @@ const KEYCHAIN_MAX_BUFFER = 4 * 1024 * 1024
 const KEYCHAIN_TIMEOUT_MS = 10_000
 const execFileAsync = promisify(execFile)
 
+let cachedCliOAuthCredentials: CliOAuthCredentials | undefined
+let readCliOAuthCredentialsPromise: Promise<CliOAuthCredentials | undefined> | undefined
+let refreshCliOAuthAccessTokenPromise: Promise<string | undefined> | undefined
+
 export type CliOAuthCredentials = {
   accessToken: string
   refreshToken?: string | null
@@ -50,32 +54,58 @@ export async function getCliOAuthAccessToken(): Promise<string | undefined> {
 }
 
 export async function refreshCliOAuthAccessToken(): Promise<string | undefined> {
+  if (refreshCliOAuthAccessTokenPromise) return refreshCliOAuthAccessTokenPromise
+  refreshCliOAuthAccessTokenPromise = refreshCliOAuthAccessTokenOnce().finally(() => {
+    refreshCliOAuthAccessTokenPromise = undefined
+  })
+  return refreshCliOAuthAccessTokenPromise
+}
+
+async function refreshCliOAuthAccessTokenOnce(): Promise<string | undefined> {
   const blob = await readCliCredentialsBlob()
-  const credentials = normalizeOAuthCredentials(blob?.verbooOauth)
-  if (!blob || !credentials?.refreshToken) return undefined
+  const credentials = normalizeOAuthCredentials(blob?.verbooOauth) ?? cachedCliOAuthCredentials
+  if (!credentials?.refreshToken) return undefined
 
   try {
     const refreshed = await refreshOAuthCredentials(credentials)
-    await writeCliCredentialsBlob({
-      ...blob,
-      verbooOauth: {
-        accessToken: refreshed.accessToken,
-        refreshToken: refreshed.refreshToken ?? credentials.refreshToken,
-        expiresAt: refreshed.expiresAt,
-        scopes: refreshed.scopes ?? credentials.scopes,
-        subscriptionType: refreshed.subscriptionType ?? credentials.subscriptionType ?? null,
-        rateLimitTier: refreshed.rateLimitTier ?? credentials.rateLimitTier ?? null,
-      },
-    })
-    return refreshed.accessToken
+    const nextCredentials = {
+      accessToken: refreshed.accessToken,
+      refreshToken: refreshed.refreshToken ?? credentials.refreshToken,
+      expiresAt: refreshed.expiresAt,
+      scopes: refreshed.scopes ?? credentials.scopes,
+      subscriptionType: refreshed.subscriptionType ?? credentials.subscriptionType ?? null,
+      rateLimitTier: refreshed.rateLimitTier ?? credentials.rateLimitTier ?? null,
+    }
+    cachedCliOAuthCredentials = nextCredentials
+
+    if (blob) {
+      await writeCliCredentialsBlob({
+        ...blob,
+        verbooOauth: nextCredentials,
+      })
+    }
+    return nextCredentials.accessToken
   } catch {
     return undefined
   }
 }
 
 async function readCliOAuthCredentials(): Promise<CliOAuthCredentials | undefined> {
+  if (cachedCliOAuthCredentials && !isExpired(cachedCliOAuthCredentials)) {
+    return cachedCliOAuthCredentials
+  }
+  if (readCliOAuthCredentialsPromise) return readCliOAuthCredentialsPromise
+  readCliOAuthCredentialsPromise = readCliOAuthCredentialsFromKeychain().finally(() => {
+    readCliOAuthCredentialsPromise = undefined
+  })
+  return readCliOAuthCredentialsPromise
+}
+
+async function readCliOAuthCredentialsFromKeychain(): Promise<CliOAuthCredentials | undefined> {
   const blob = await readCliCredentialsBlob()
-  return normalizeOAuthCredentials(blob?.verbooOauth)
+  const credentials = normalizeOAuthCredentials(blob?.verbooOauth)
+  if (credentials) cachedCliOAuthCredentials = credentials
+  return credentials
 }
 
 async function readCliCredentialsBlob(): Promise<Record<string, unknown> | undefined> {

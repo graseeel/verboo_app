@@ -23,8 +23,11 @@
   z-index: 85;
   top: 0;
   bottom: 0;
-  left: -3px;
-  width: 6px;
+  /* The panel clips at overflow:hidden, so any part of the handle placed
+     outside the edge (left: -3px) was cut away — the real hit area was ~3px,
+     nearly impossible to grab. Keep the whole 10px handle inside the panel. */
+  left: 0;
+  width: 10px;
   cursor: col-resize;
 }
 
@@ -32,15 +35,16 @@
   position: absolute;
   top: 18px;
   bottom: 18px;
-  left: 2px;
-  width: 1px;
+  left: 1px;
+  width: 2px;
   border-radius: 999px;
   background: transparent;
   content: "";
   transition: background-color 150ms ease-out;
 }
 
-.terminal-resizer:hover::after {
+.terminal-resizer:hover::after,
+.terminal-resizer:active::after {
   background: color-mix(in srgb, var(--accent) 56%, transparent);
 }
 

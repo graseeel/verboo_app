@@ -3,22 +3,25 @@ import { useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { ModelDiscoveryResult, VerbooModel } from '../../../shared/types'
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss'
+import { formatCompactNumber, useI18n } from '../../i18n'
 
 type ModelSelectorProps = {
   models: VerbooModel[]
   selectedModel?: string
+  hasConversationHistory?: boolean
   modelResult: ModelDiscoveryResult
   onSelect: (modelId: string) => void
   onRefresh: () => void
 }
 
-export function ModelSelector({ models, selectedModel, modelResult, onSelect, onRefresh }: ModelSelectorProps) {
+export function ModelSelector({ models, selectedModel, hasConversationHistory = false, modelResult, onSelect, onRefresh }: ModelSelectorProps) {
+  const { language, t } = useI18n()
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const selected = models.find(model => model.id === selectedModel)
-  const grouped = useMemo(() => groupModels(models), [models])
+  const grouped = useMemo(() => groupModels(models, t), [models, t])
   const selectedTone = selected ? modelToneStyle(selected.id) : undefined
-  const statusMessage = modelStatusMessage(modelResult)
+  const statusMessage = modelStatusMessage(modelResult, t)
   useOutsideDismiss(wrapRef, open, () => setOpen(false))
 
   return (
@@ -26,15 +29,15 @@ export function ModelSelector({ models, selectedModel, modelResult, onSelect, on
       <button className="composer-pill model-pill" style={selectedTone} type="button" onClick={() => setOpen(value => !value)}>
         <Cpu size={14} />
         {selected && <i className="model-color-dot" aria-hidden="true" />}
-        <span>{selected ? readableModelName(selected) : 'Modelo'}</span>
+        <span>{selected ? readableModelName(selected) : t('model.label')}</span>
         <ChevronDown size={14} />
       </button>
 
       {open && (
         <div className="model-menu popover-panel t-dropdown is-open" data-origin="bottom-right">
           <div className="popover-title">
-            <span>Modelo</span>
-            <button className="icon-button tiny" type="button" onClick={onRefresh} title="Atualizar">
+            <span>{t('model.label')}</span>
+            <button className="icon-button tiny" type="button" onClick={onRefresh} title={t('model.refresh')}>
               <RefreshCw size={13} />
             </button>
           </div>
@@ -42,12 +45,18 @@ export function ModelSelector({ models, selectedModel, modelResult, onSelect, on
           {statusMessage && (
             <div className={`model-menu-status ${modelResult.stale && models.length > 0 ? 'subtle' : ''}`}>
               <span>{statusMessage}</span>
-              {modelResult.stale && models.length > 0 && <small>Usando modelos salvos localmente.</small>}
+              {modelResult.stale && models.length > 0 && <small>{t('model.usingSaved')}</small>}
+            </div>
+          )}
+
+          {hasConversationHistory && (
+            <div className="model-menu-hint">
+              {t('model.switchWarning')}
             </div>
           )}
 
           {models.length === 0 ? (
-            <div className="empty-menu">Nenhum modelo carregado. Entre com Verboo ou adicione uma chave de API nas configurações.</div>
+            <div className="empty-menu">{t('model.empty')}</div>
           ) : (
             grouped.map(group => (
               <div key={group.label} className="model-group">
@@ -65,7 +74,7 @@ export function ModelSelector({ models, selectedModel, modelResult, onSelect, on
                   >
                     <span>
                       <strong>{readableModelName(model)}</strong>
-                      <small>{model.id}{model.contextWindow ? ` · ${formatTokens(model.contextWindow)} ctx` : ''}</small>
+                      <small>{model.id}{model.contextWindow ? ` · ${formatCompactNumber(model.contextWindow, language)} ${t('model.contextSuffix')}` : ''}</small>
                     </span>
                     {model.id === selectedModel && <Check size={15} />}
                   </button>
@@ -97,17 +106,13 @@ function hashString(value: string): number {
   return hash
 }
 
-function groupModels(models: VerbooModel[]): Array<{ label: string; models: VerbooModel[] }> {
+function groupModels(models: VerbooModel[], t: (key: string) => string): Array<{ label: string; models: VerbooModel[] }> {
   const longContext = models.filter(model => (model.contextWindow ?? 0) >= 1_000_000)
   const regular = models.filter(model => !longContext.includes(model))
   return [
-    { label: 'Disponíveis', models: regular },
-    ...(longContext.length > 0 ? [{ label: 'Contexto longo', models: longContext }] : []),
+    { label: t('model.group.available'), models: regular },
+    ...(longContext.length > 0 ? [{ label: t('model.group.longContext'), models: longContext }] : []),
   ].filter(group => group.models.length > 0)
-}
-
-function formatTokens(tokens: number): string {
-  return Intl.NumberFormat('en-US', { notation: 'compact' }).format(tokens)
 }
 
 function readableModelName(model: VerbooModel): string {
@@ -132,14 +137,14 @@ function humanizeModelId(modelId: string): string {
     .replace(/\bV(\d+)\b/g, 'v$1')
 }
 
-function modelStatusMessage(result: ModelDiscoveryResult): string | undefined {
-  if (result.stale && result.models.length > 0) return 'Modelos salvos localmente.'
-  if (!result.error) return result.stale ? 'Modelos em cache.' : undefined
+function modelStatusMessage(result: ModelDiscoveryResult, t: (key: string) => string): string | undefined {
+  if (result.stale && result.models.length > 0) return t('model.savedLocal')
+  if (!result.error) return result.stale ? t('model.cache') : undefined
   if (/401|expired token|invalid.*token/i.test(result.error)) {
-    return 'Sessão Verboo expirada. Entre novamente ou salve uma chave de API válida.'
+    return t('model.expired')
   }
   if (/network|fetch|timeout|tempo limite/i.test(result.error)) {
-    return 'Não foi possível atualizar os modelos agora.'
+    return t('model.networkError')
   }
-  return 'Não foi possível atualizar os modelos.'
+  return t('model.genericError')
 }

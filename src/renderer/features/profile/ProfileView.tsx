@@ -1,6 +1,7 @@
 import { ArrowUpRight, RefreshCw, ShieldCheck } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import type { ProfileActivityDay, ProfileResult } from '../../../shared/types'
+import { formatStandardNumber, useI18n, type Translator } from '../../i18n'
 
 type ProfileViewProps = {
   profile: ProfileResult
@@ -10,6 +11,7 @@ type ProfileViewProps = {
 }
 
 export function ProfileView({ profile, loading, onRefresh, onManagePlan }: ProfileViewProps) {
+  const { language, t } = useI18n()
   const summary = profile.summary
   const activity = profile.activity ?? []
 
@@ -17,40 +19,40 @@ export function ProfileView({ profile, loading, onRefresh, onManagePlan }: Profi
     <div className="profile-view page-surface">
       <header className="view-heading">
         <div>
-          <h1>Perfil</h1>
-          <p>Atividade, consumo e plano carregados diretamente da conta Verboo.</p>
+          <h1>{t('profile.title')}</h1>
+          <p>{t('profile.subtitle')}</p>
         </div>
         <button className="ghost-button" type="button" onClick={onRefresh} disabled={loading}>
           <RefreshCw size={15} />
-          {loading ? 'Atualizando' : 'Atualizar'}
+          {loading ? t('profile.refreshing') : t('common.refresh')}
         </button>
       </header>
 
       {profile.status !== 'ready' && (
         <section className="profile-warning">
           <ShieldCheck size={17} />
-          <span>{profile.error ?? 'Entre com Verboo ou adicione sua chave de API nas configurações para carregar dados reais.'}</span>
+          <span>{t('profile.warning')}</span>
         </section>
       )}
 
       {profile.error && profile.status === 'ready' && (
         <section className="profile-warning subtle">
-          <span>{profile.error}</span>
+          <span>{t('profile.partialWarning')}</span>
         </section>
       )}
 
       <section className="profile-grid">
-        <MetricCard label="Tokens totais" value={formatOptional(summary?.totalTokens)} />
-        <MetricCard label="Entrada" value={formatOptional(summary?.tokensInTotal)} />
-        <MetricCard label="Saída" value={formatOptional(summary?.tokensOutTotal)} />
-        <MetricCard label="Requisições" value={formatOptional(summary?.reqTotal)} />
+        <MetricCard label={t('profile.totalTokens')} value={formatOptional(summary?.totalTokens, language, t)} />
+        <MetricCard label={t('profile.input')} value={formatOptional(summary?.tokensInTotal, language, t)} />
+        <MetricCard label={t('profile.output')} value={formatOptional(summary?.tokensOutTotal, language, t)} />
+        <MetricCard label={t('profile.requests')} value={formatOptional(summary?.reqTotal, language, t)} />
       </section>
 
       <section className="profile-panel">
         <div className="panel-heading">
           <div>
-            <h2>Dias de atividade</h2>
-            <p>{activity.length ? `${profile.activeDays ?? 0} dias ativos retornados pela API` : 'Dados de atividade indisponíveis'}</p>
+            <h2>{t('profile.activityDays')}</h2>
+            <p>{activity.length ? t('profile.activeDays', { count: profile.activeDays ?? 0 }) : t('profile.activityUnavailable')}</p>
           </div>
         </div>
         <ActivityHeatmap days={activity} />
@@ -58,15 +60,15 @@ export function ProfileView({ profile, loading, onRefresh, onManagePlan }: Profi
 
       <section className="profile-panel plan-panel">
         <div>
-          <h2>{profile.plan?.name ?? 'Plano indisponível'}</h2>
-          <p>{profile.plan?.status ? `Status: ${profile.plan.status}` : 'O plano será exibido quando a API retornar a assinatura atual.'}</p>
+          <h2>{profile.plan?.name ?? t('profile.planUnavailable')}</h2>
+          <p>{profile.plan?.status ? t('profile.planStatus', { status: profile.plan.status }) : t('profile.planPending')}</p>
           {profile.plan?.priceLabel && <strong>{profile.plan.priceLabel}</strong>}
           {profile.plan?.models?.length && (
             <p className="plan-models">{profile.plan.models.slice(0, 8).join(', ')}</p>
           )}
         </div>
         <button className="primary-action" type="button" onClick={onManagePlan}>
-          Gerenciar plano
+          {t('profile.managePlan')}
           <ArrowUpRight size={15} />
         </button>
       </section>
@@ -84,18 +86,19 @@ function MetricCard({ label, value }: { label: string; value: string }) {
 }
 
 function ActivityHeatmap({ days }: { days: ProfileActivityDay[] }) {
+  const { language, t } = useI18n()
   if (!days.length) {
-    return <div className="heatmap-empty">Nenhum valor real retornado para este período.</div>
+    return <div className="heatmap-empty">{t('profile.heatmapEmpty')}</div>
   }
 
   const max = Math.max(...days.map(day => day.count), 1)
   return (
-    <div className="heatmap" aria-label="Atividade por dia">
+    <div className="heatmap" aria-label={t('profile.heatmapAria')}>
       {days.slice(-365).map(day => (
         <span
           key={day.date}
           className="heatmap-cell"
-          title={`${day.date}: ${formatOptional(day.count)} requisições`}
+          title={`${day.date}: ${t('profile.requestsCount', { count: formatOptional(day.count, language, t) })}`}
           style={{ '--intensity': String(Math.max(0.12, day.count / max)) } as CSSProperties}
         />
       ))}
@@ -103,10 +106,7 @@ function ActivityHeatmap({ days }: { days: ProfileActivityDay[] }) {
   )
 }
 
-function formatOptional(value: number | undefined): string {
-  if (value === undefined) return 'Indisponível'
-  return Intl.NumberFormat('pt-BR', {
-    notation: value >= 100_000 ? 'compact' : 'standard',
-    maximumFractionDigits: 1,
-  }).format(value)
+function formatOptional(value: number | undefined, language: 'en-US' | 'pt-BR', t: Translator): string {
+  if (value === undefined) return t('profile.unavailable')
+  return formatStandardNumber(value, language)
 }
