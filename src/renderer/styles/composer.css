@@ -734,13 +734,89 @@
 }
 
 .model-option {
-  display: flex;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px;
+  gap: 10px;
+  padding: 9px 10px;
   border: 1px solid transparent;
   border-radius: var(--radius);
+}
+
+.model-option-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-soft) 62%, transparent);
+}
+
+.model-option-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.model-option-text small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-option-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-weight: 720;
+  letter-spacing: 0.02em;
+}
+
+.model-option-check {
+  color: var(--accent-strong);
+}
+
+.model-option.highlighted {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.model-pill-icon {
+  display: inline-grid;
+  place-items: center;
+}
+
+.model-search {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin: 0 4px 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg) 46%, transparent);
+  color: var(--text-dim);
+}
+
+.model-search input {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
 }
 
 .model-option.selected {

@@ -175,6 +175,8 @@ const enUS: Record<string, string> = {
   'settings.petSizeBody': 'Base size in pixels. You can also hold Alt and drag the pet itself.',
 
   'model.label': 'Model',
+  'model.searchPlaceholder': 'Search models...',
+  'model.visionBadge': 'Supports images',
   'model.refresh': 'Refresh',
   'model.savedLocal': 'Models saved locally.',
   'model.usingSaved': 'Using locally saved models.',
@@ -688,6 +690,8 @@ const ptBR: Record<string, string> = {
   'settings.petSizeBody': 'Tamanho base em pixels. Você também pode segurar Alt e arrastar o próprio pet.',
 
   'model.label': 'Modelo',
+  'model.searchPlaceholder': 'Buscar modelos...',
+  'model.visionBadge': 'Suporta imagens',
   'model.refresh': 'Atualizar',
   'model.savedLocal': 'Modelos salvos localmente.',
   'model.usingSaved': 'Usando modelos salvos localmente.',

@@ -1,9 +1,12 @@
-import { Check, ChevronDown, Cpu, RefreshCw } from 'lucide-react'
-import { useMemo, useRef, useState } from 'react'
+import { Check, ChevronDown, Eye, RefreshCw, Search } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { ModelDiscoveryResult, VerbooModel } from '../../../shared/types'
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss'
 import { formatCompactNumber, useI18n } from '../../i18n'
+import { ModelIcon } from './ModelIcon'
+
+const SEARCH_THRESHOLD = 6
 
 type ModelSelectorProps = {
   models: VerbooModel[]
@@ -17,18 +20,61 @@ type ModelSelectorProps = {
 export function ModelSelector({ models, selectedModel, hasConversationHistory = false, modelResult, onSelect, onRefresh }: ModelSelectorProps) {
   const { language, t } = useI18n()
   const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [highlighted, setHighlighted] = useState(0)
   const wrapRef = useRef<HTMLDivElement | null>(null)
+  const searchRef = useRef<HTMLInputElement | null>(null)
   const selected = models.find(model => model.id === selectedModel)
-  const grouped = useMemo(() => groupModels(models, t), [models, t])
+  const showSearch = models.length > SEARCH_THRESHOLD
+  const filtered = useMemo(() => {
+    const normalized = query.trim().toLowerCase()
+    if (!normalized) return models
+    return models.filter(model =>
+      model.id.toLowerCase().includes(normalized)
+      || readableModelName(model).toLowerCase().includes(normalized),
+    )
+  }, [models, query])
+  const grouped = useMemo(() => groupModels(filtered, t), [filtered, t])
+  const flat = useMemo(() => grouped.flatMap(group => group.models), [grouped])
+  const activeIndex = flat.length ? Math.min(highlighted, flat.length - 1) : 0
   const selectedTone = selected ? modelToneStyle(selected.id) : undefined
   const statusMessage = modelStatusMessage(modelResult, t)
   useOutsideDismiss(wrapRef, open, () => setOpen(false))
 
+  useEffect(() => {
+    if (!open) return
+    setQuery('')
+    setHighlighted(Math.max(0, flat.findIndex(model => model.id === selectedModel)))
+    searchRef.current?.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  function choose(model: VerbooModel) {
+    onSelect(model.id)
+    setOpen(false)
+  }
+
+  function handleSearchKeyDown(event: React.KeyboardEvent) {
+    if (event.key === 'Escape') { setOpen(false); return }
+    if (!flat.length) return
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      setHighlighted(index => (index + 1) % flat.length)
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      setHighlighted(index => (index - 1 + flat.length) % flat.length)
+    } else if (event.key === 'Enter') {
+      event.preventDefault()
+      choose(flat[activeIndex])
+    }
+  }
+
   return (
     <div className="selector-wrap" ref={wrapRef}>
       <button className="composer-pill model-pill" style={selectedTone} type="button" onClick={() => setOpen(value => !value)}>
-        <Cpu size={14} />
-        {selected && <i className="model-color-dot" aria-hidden="true" />}
+        <span className="model-pill-icon" aria-hidden="true">
+          {selected ? <ModelIcon modelId={selected.id} displayName={selected.displayName} size={15} /> : <ModelIcon modelId="" size={15} />}
+        </span>
         <span>{selected ? readableModelName(selected) : t('model.label')}</span>
         <ChevronDown size={14} />
       </button>
@@ -41,6 +87,19 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
               <RefreshCw size={13} />
             </button>
           </div>
+
+          {showSearch && (
+            <div className="model-search">
+              <Search size={13} aria-hidden="true" />
+              <input
+                ref={searchRef}
+                value={query}
+                placeholder={t('model.searchPlaceholder')}
+                onChange={event => { setQuery(event.target.value); setHighlighted(0) }}
+                onKeyDown={handleSearchKeyDown}
+              />
+            </div>
+          )}
 
           {statusMessage && (
             <div className={`model-menu-status ${modelResult.stale && models.length > 0 ? 'subtle' : ''}`}>
@@ -55,30 +114,46 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
             </div>
           )}
 
-          {models.length === 0 ? (
+          {flat.length === 0 ? (
             <div className="empty-menu">{t('model.empty')}</div>
           ) : (
             grouped.map(group => (
               <div key={group.label} className="model-group">
                 <div className="group-label">{group.label}</div>
-                {group.models.map(model => (
-                  <button
-                    key={model.id}
-                    className={`model-option ${model.id === selectedModel ? 'selected' : ''}`}
-                    style={modelToneStyle(model.id)}
-                    type="button"
-                    onClick={() => {
-                      onSelect(model.id)
-                      setOpen(false)
-                    }}
-                  >
-                    <span>
-                      <strong>{readableModelName(model)}</strong>
-                      <small>{model.id}{model.contextWindow ? ` · ${formatCompactNumber(model.contextWindow, language)} ${t('model.contextSuffix')}` : ''}</small>
-                    </span>
-                    {model.id === selectedModel && <Check size={15} />}
-                  </button>
-                ))}
+                {group.models.map(model => {
+                  const index = flat.indexOf(model)
+                  return (
+                    <button
+                      key={model.id}
+                      className={`model-option ${model.id === selectedModel ? 'selected' : ''} ${index === activeIndex ? 'highlighted' : ''}`}
+                      style={modelToneStyle(model.id)}
+                      type="button"
+                      onMouseEnter={() => setHighlighted(index)}
+                      onClick={() => choose(model)}
+                    >
+                      <span className="model-option-icon" aria-hidden="true">
+                        <ModelIcon modelId={model.id} displayName={model.displayName} size={18} />
+                      </span>
+                      <span className="model-option-text">
+                        <strong>{readableModelName(model)}</strong>
+                        <small>{model.id}</small>
+                      </span>
+                      <span className="model-option-meta">
+                        {model.supportsVision && (
+                          <span className="model-badge" title={t('model.visionBadge')}>
+                            <Eye size={11} />
+                          </span>
+                        )}
+                        {model.contextWindow && (
+                          <span className="model-badge">
+                            {formatCompactNumber(model.contextWindow, language)}
+                          </span>
+                        )}
+                        {model.id === selectedModel && <Check size={15} className="model-option-check" />}
+                      </span>
+                    </button>
+                  )
+                })}
               </div>
             ))
           )}

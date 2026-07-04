@@ -23,6 +23,7 @@
     "dist": "npm run build && electron-builder"
   },
   "dependencies": {
+    "@lobehub/icons": "^5.10.1",
     "@tesseract.js-data/eng": "^1.0.0",
     "@tesseract.js-data/por": "^1.0.0",
     "@verboo/code": "0.10.6",
