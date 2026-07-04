@@ -25,8 +25,9 @@
 
 .verboo-pet.is-waking .pet-float {
   animation:
-    pet-wake 640ms cubic-bezier(0.22, 1, 0.36, 1),
-    pet-float 3.6s ease-in-out 640ms infinite;
+    pet-wake 760ms cubic-bezier(0.22, 1, 0.36, 1),
+    pet-float 3.6s ease-in-out 760ms infinite,
+    pet-glow 4.2s ease-in-out infinite;
 }
 
 .verboo-pet.is-leaving {
@@ -34,21 +35,35 @@
 }
 
 .verboo-pet.is-leaving .pet-float {
-  transform: scale(0.72);
-  transition: transform 380ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform: translateY(10px) scale(0.7);
+  transition: transform 400ms cubic-bezier(0.5, 0, 0.75, 0.4);
 }
 
 .pet-float {
   position: relative;
   width: 100%;
   height: 100%;
-  animation: pet-float 3.6s ease-in-out infinite;
-  will-change: transform;
+  /* The breathing aura lives here (with the levitation) because this layer is
+     never re-declared by states — its phase can't jump on a state change. */
+  animation:
+    pet-float 3.6s ease-in-out infinite,
+    pet-glow 4.2s ease-in-out infinite;
+  will-change: transform, filter;
+}
+
+/* Slow drift on a different period than the vertical float: the two loops
+   compose into a Lissajous-like orbit that never repeats exactly — the
+   hovering reads as alive rather than metronomic. */
+.pet-sway {
+  width: 100%;
+  height: 100%;
+  animation: pet-sway 5.4s ease-in-out infinite;
 }
 
 @keyframes pet-wake {
-  0% { transform: translateY(14px) scale(0.55); opacity: 0; filter: blur(5px); }
-  60% { opacity: 1; }
+  0% { transform: translateY(18px) scale(0.5); opacity: 0; filter: blur(6px); }
+  55% { opacity: 1; filter: blur(0); }
+  74% { transform: translateY(-4px) scale(1.06); }
   100% { transform: translateY(0) scale(1); opacity: 1; filter: blur(0); }
 }
 
@@ -57,21 +72,33 @@
   50% { transform: translateY(calc(var(--pet-size, 96px) * -0.07)); }
 }
 
+@keyframes pet-sway {
+  0%, 100% { transform: translateX(-1.5%) rotate(-1.6deg); }
+  50% { transform: translateX(1.5%) rotate(1.6deg); }
+}
+
 .pet-body {
   position: relative;
   z-index: 2;
   width: 100%;
   height: 100%;
-  /* Persistent poses (tilts) transition smoothly between states. */
-  transition: transform 480ms cubic-bezier(0.22, 1, 0.36, 1), filter 300ms ease-out;
+  /* Poses live here as TRANSITIONS only (no animations), so every state
+     change eases into its tilt — loops run one layer down, on the img. */
+  transition: transform 520ms cubic-bezier(0.34, 1.3, 0.5, 1), filter 320ms ease-out;
 }
 
 .pet-body img {
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: contain;
-  filter: drop-shadow(0 6px 14px color-mix(in srgb, var(--accent) 30%, transparent));
   pointer-events: none;
+}
+
+/* The aura breathes with the hover. */
+@keyframes pet-glow {
+  0%, 100% { filter: drop-shadow(0 6px 14px color-mix(in srgb, var(--accent) 26%, transparent)); }
+  50% { filter: drop-shadow(0 10px 22px color-mix(in srgb, var(--accent) 46%, transparent)); }
 }
 
 /* Ground shadow, breathing in the same rhythm as the float. */
@@ -100,20 +127,22 @@
   z-index: 3;
   color: var(--accent-strong);
   opacity: 0;
-  transform: translateY(6px) scale(0.86);
+  transform: translateY(8px) scale(0.7);
+  /* Springy pop-in (slight overshoot), gentle ease-out on the way back. */
   transition:
-    opacity 300ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 380ms cubic-bezier(0.22, 1, 0.36, 1);
+    opacity 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 460ms cubic-bezier(0.34, 1.42, 0.5, 1);
   pointer-events: none;
 }
 
-.pet-prop-think { top: -38%; right: -26%; width: 62%; height: 56%; }
-.pet-prop-edit { right: -30%; bottom: 4%; width: 56%; height: 56%; }
-.pet-prop-delete { left: -34%; bottom: -4%; width: 56%; height: 56%; }
-.pet-prop-laptop { left: -8%; bottom: -18%; width: 116%; height: 72%; z-index: 4; }
-.pet-prop-read { top: -20%; left: -26%; width: 52%; height: 52%; }
-.pet-prop-done { top: -26%; right: -16%; width: 44%; height: 44%; color: var(--green); }
-.pet-prop-error { top: -26%; right: -16%; width: 44%; height: 44%; color: var(--danger); }
+/* Each accessory grows out of the point where it "attaches" to the mascot. */
+.pet-prop-think { top: -38%; right: -26%; width: 62%; height: 56%; transform-origin: 12% 92%; }
+.pet-prop-edit { right: -30%; bottom: 4%; width: 56%; height: 56%; transform-origin: 8% 80%; }
+.pet-prop-delete { left: -34%; bottom: -4%; width: 56%; height: 56%; transform-origin: 88% 84%; }
+.pet-prop-laptop { left: -8%; bottom: -18%; width: 116%; height: 72%; z-index: 4; transform-origin: 50% 90%; }
+.pet-prop-read { top: -20%; left: -26%; width: 52%; height: 52%; transform-origin: 86% 86%; }
+.pet-prop-done { top: -26%; right: -16%; width: 44%; height: 44%; color: var(--green); transform-origin: 30% 90%; }
+.pet-prop-error { top: -26%; right: -16%; width: 44%; height: 44%; color: var(--danger); transform-origin: 30% 90%; }
 
 .verboo-pet[data-state='thinking'] .pet-prop-think,
 .verboo-pet[data-state='editing'] .pet-prop-edit,
@@ -126,45 +155,86 @@
   transform: translateY(0) scale(1);
 }
 
-/* ── Per-state body poses (smooth transitions, float keeps going) */
+/* ── Per-state poses: pure transitions on .pet-body, so entering ANY state
+      eases into its tilt (the spring curve gives a tiny natural overshoot). */
 
-.verboo-pet[data-state='thinking'] .pet-body { transform: rotate(-7deg); }
+.verboo-pet[data-state='thinking'] .pet-body { transform: rotate(-7deg) translateY(-2%); }
 .verboo-pet[data-state='reading'] .pet-body { transform: rotate(5deg); }
-.verboo-pet[data-state='editing'] .pet-body { animation: pet-sway 1.9s ease-in-out infinite; }
-.verboo-pet[data-state='deleting'] .pet-body { animation: pet-toss 1.5s ease-in-out infinite; }
-.verboo-pet[data-state='command'] .pet-body { transform: rotate(3deg); animation: pet-type 640ms ease-in-out infinite; }
-.verboo-pet[data-state='success'] .pet-body { animation: pet-hop 700ms cubic-bezier(0.22, 1, 0.36, 1) 2; }
-.verboo-pet[data-state='error'] .pet-body { animation: pet-shake 480ms ease-in-out 2; filter: saturate(1.3) hue-rotate(-38deg); }
+.verboo-pet[data-state='editing'] .pet-body { transform: rotate(2deg); }
+.verboo-pet[data-state='deleting'] .pet-body { transform: rotate(-3deg) translateX(-2%); }
+.verboo-pet[data-state='command'] .pet-body { transform: rotate(3deg) translateY(2%); }
+.verboo-pet[data-state='error'] .pet-body { filter: saturate(1.3) hue-rotate(-38deg); }
 
-/* All loops start and end at a neutral transform: entering/leaving a state
-   can never produce a visible jump on top of the float. */
-@keyframes pet-sway {
-  0%, 100% { transform: rotate(0deg); }
-  30% { transform: rotate(-4.5deg); }
-  70% { transform: rotate(4.5deg); }
+/* ── Per-state loops: run on the img (one layer below the pose), composed
+      with the breathing glow. Every loop starts and ends at a neutral
+      transform, so starting/stopping one can never produce a jump. */
+
+.verboo-pet[data-state='editing'] .pet-body img {
+  animation: pet-scribble 1.7s ease-in-out infinite;
 }
 
+.verboo-pet[data-state='deleting'] .pet-body img {
+  animation: pet-toss 1.5s ease-in-out infinite;
+}
+
+.verboo-pet[data-state='command'] .pet-body img {
+  animation: pet-type 620ms ease-in-out infinite;
+}
+
+.verboo-pet[data-state='thinking'] .pet-body img {
+  animation: pet-ponder 3.2s ease-in-out infinite;
+}
+
+.verboo-pet[data-state='success'] .pet-body img {
+  animation: pet-hop 760ms cubic-bezier(0.34, 1.3, 0.5, 1) 2;
+}
+
+.verboo-pet[data-state='error'] .pet-body img {
+  animation: pet-shake 460ms ease-in-out 2;
+}
+
+/* Writing wiggle: quick little strokes with pauses, like a hand scribbling. */
+@keyframes pet-scribble {
+  0%, 100% { transform: rotate(0deg); }
+  12% { transform: rotate(-2.6deg) translateY(1%); }
+  24% { transform: rotate(1.8deg); }
+  36% { transform: rotate(-2.2deg) translateY(0.8%); }
+  48% { transform: rotate(0.8deg); }
+  62% { transform: rotate(0deg); }
+}
+
+/* Toss: wind up toward the bin, flick, settle. */
 @keyframes pet-toss {
   0%, 100% { transform: rotate(0deg) translateX(0); }
-  35% { transform: rotate(-8deg) translateX(-4%); }
-  55% { transform: rotate(5deg) translateX(2%); }
+  30% { transform: rotate(-6deg) translateX(-4%); }
+  46% { transform: rotate(4deg) translateX(2.5%); }
+  60% { transform: rotate(-1deg) translateX(0); }
 }
 
+/* Typing: fast, small vertical taps with a squash hint. */
 @keyframes pet-type {
-  0%, 100% { transform: rotate(3deg) translateY(0); }
-  50% { transform: rotate(3.6deg) translateY(3.5%); }
+  0%, 100% { transform: translateY(0) scale(1, 1); }
+  50% { transform: translateY(3%) scale(1.015, 0.985); }
+}
+
+/* Pondering: slow weight shift while thinking. */
+@keyframes pet-ponder {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(2.4deg) translateY(1.2%); }
 }
 
 @keyframes pet-hop {
   0%, 100% { transform: translateY(0) scale(1); }
-  40% { transform: translateY(-14%) scale(1.05, 0.95); }
-  70% { transform: translateY(0) scale(0.97, 1.03); }
+  35% { transform: translateY(-16%) scale(1.06, 0.94); }
+  62% { transform: translateY(1%) scale(0.96, 1.05); }
+  80% { transform: translateY(-3%) scale(1.01, 0.99); }
 }
 
 @keyframes pet-shake {
   0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-5%) rotate(-2deg); }
-  75% { transform: translateX(5%) rotate(2deg); }
+  20% { transform: translateX(-5%) rotate(-2deg); }
+  55% { transform: translateX(4.5%) rotate(1.8deg); }
+  80% { transform: translateX(-2%) rotate(-0.8deg); }
 }
 
 /* ── Accessory micro-animations ──────────────────────────────── */
@@ -472,12 +542,18 @@
 
 @media (prefers-reduced-motion: reduce) {
   .pet-float,
+  .pet-sway,
   .pet-shadow,
   .pet-body,
+  .pet-body img,
   .pet-prop,
   .pet-prop * ,
   .toast {
     animation: none !important;
     transition: none !important;
+  }
+
+  .pet-prop {
+    transform: none;
   }
 }

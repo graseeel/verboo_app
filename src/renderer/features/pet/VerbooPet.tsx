@@ -125,7 +125,13 @@ export function VerbooPet({ visible, state, size, onSizeChange }: VerbooPetProps
       onPointerUp={endGesture}
       onPointerCancel={endGesture}
     >
+      {/* Layered motion: float (levitation, never stops) → sway (slow drift,
+          never stops) → body (pose TRANSITIONS between states) → img (state
+          LOOPS with neutral start/end keyframes). Loops living on the img
+          keep CSS animations from overriding the body's pose transition, so
+          every state change glides instead of snapping. */}
       <div className="pet-float">
+        <div className="pet-sway">
         <div className="pet-body">
           <img src={mascotUrl} alt={t('pet.title')} draggable={false} />
         </div>
@@ -204,6 +210,7 @@ export function VerbooPet({ visible, state, size, onSizeChange }: VerbooPetProps
             <line x1="16" y1="12" x2="16" y2="20" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" />
             <circle cx="16" cy="24" r="1.8" fill="currentColor" />
           </svg>
+        </div>
         </div>
       </div>
       <div className="pet-shadow" aria-hidden="true" />
