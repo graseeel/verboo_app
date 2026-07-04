@@ -101,6 +101,14 @@ Both commands force unsigned packaging for this independent build and run a
 preflight that stops early if a previous `release/mac-arm64/Verboo Code.app`
 is still open or a previous Verboo Code DMG is still mounted.
 
+### GitHub Releases
+
+Tagged releases can be built and published by GitHub Actions. The workflow builds
+the macOS arm64 DMG/ZIP artifacts and publishes the updater metadata file
+`latest-mac.yml`.
+
+See [docs/release-github-actions.md](docs/release-github-actions.md).
+
 ## Feedback Backend
 
 Feedback is sent to a Supabase Edge Function when configured:
@@ -224,6 +232,14 @@ Os dois comandos forçam empacotamento sem assinatura para este build
 independente e rodam um preflight que para cedo se um
 `release/mac-arm64/Verboo Code.app` anterior ainda estiver aberto ou se um DMG
 anterior do Verboo Code ainda estiver montado.
+
+### GitHub Releases
+
+Releases versionadas podem ser construídas e publicadas pelo GitHub Actions. O
+workflow gera os artefatos macOS arm64 em DMG/ZIP e publica o arquivo de
+metadados `latest-mac.yml` usado pelo updater.
+
+Veja [docs/release-github-actions.md](docs/release-github-actions.md).
 
 ### Backend de feedback
 

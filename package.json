@@ -22,7 +22,10 @@
     "package": "npm run package:unsigned",
     "package:unsigned": "node scripts/package-preflight.mjs --dir && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
     "dist": "npm run dist:unsigned",
-    "dist:unsigned": "node scripts/package-preflight.mjs --dist && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder"
+    "dist:unsigned": "node scripts/package-preflight.mjs --dist && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
+    "release:mac:github": "node scripts/package-preflight.mjs --dist && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish always",
+    "release:mac:local": "node scripts/package-preflight.mjs --dist && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish never",
+    "verify:update-release": "node scripts/verify/update-release-assets.mjs"
   },
   "dependencies": {
     "@lobehub/icons": "^5.10.1",
@@ -31,6 +34,7 @@
     "@verboo/code": "0.10.6",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "electron-updater": "^6.8.9",
     "lucide-react": "1.22.0",
     "node-pty": "^1.1.0",
     "react": "19.2.7",
@@ -53,6 +57,15 @@
   "build": {
     "appId": "ai.verboo.code.desktop",
     "productName": "Verboo Code",
+    "artifactName": "Verboo-Code-${version}-${arch}.${ext}",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "graseeel",
+        "repo": "verboo_app",
+        "releaseType": "release"
+      }
+    ],
     "files": [
       "out/**",
       "assets/**",
@@ -68,7 +81,21 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "icon": "assets/branding/verboo.icns"
+      "icon": "assets/branding/verboo.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ]
     },
     "dmg": {
       "title": "Verboo Code ${version}",
