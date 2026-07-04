@@ -30,23 +30,6 @@ if (!metadata.includes(`version: ${version}`)) {
   fail(`latest-mac.yml does not contain version: ${version}`)
 }
 
-const dmgFiles = releaseFiles.filter((file) => file.endsWith('.dmg') && file.includes(version))
-const zipFiles = releaseFiles.filter((file) => file.endsWith('.zip') && file.includes(version))
-
-if (dmgFiles.length === 0) {
-  fail('no DMG artifact was generated')
-}
-
-if (zipFiles.length === 0) {
-  fail('no ZIP artifact was generated; macOS auto-update requires the ZIP metadata')
-}
-
-for (const file of [...dmgFiles, ...zipFiles]) {
-  if (/\s/.test(file)) {
-    fail(`${file} contains whitespace; release artifact names must stay URL-friendly`)
-  }
-}
-
 const referencedFiles = [...metadata.matchAll(/(?:url|path):\s*"?([^"\n]+)"?/g)]
   .map((match) => match[1].trim())
   .filter((value) => !value.startsWith('http://') && !value.startsWith('https://'))
@@ -58,6 +41,24 @@ if (referencedFiles.length === 0) {
 
 for (const file of referencedFiles) {
   assertFile(path.join(releaseDir, file), `artifact referenced by latest-mac.yml (${file})`)
+  if (!file.includes(version)) {
+    fail(`${file} is referenced by latest-mac.yml but does not include package version ${version}`)
+  }
+  if (/\s/.test(file)) {
+    fail(`${file} is referenced by latest-mac.yml but contains whitespace`)
+  }
+}
+
+const cleanVersionedFiles = releaseFiles.filter((file) => file.includes(version) && !/\s/.test(file))
+const dmgFiles = cleanVersionedFiles.filter((file) => file.endsWith('.dmg'))
+const zipFiles = cleanVersionedFiles.filter((file) => file.endsWith('.zip'))
+
+if (dmgFiles.length === 0) {
+  fail('no URL-friendly DMG artifact was generated for the current version')
+}
+
+if (zipFiles.length === 0) {
+  fail('no URL-friendly ZIP artifact was generated for the current version; macOS auto-update requires the ZIP metadata')
 }
 
 console.log('Update release verification passed.')
