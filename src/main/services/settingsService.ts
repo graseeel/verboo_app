@@ -28,6 +28,11 @@ export const defaultUserSettings: UserSettings = {
     maxElapsedMinutes: 30,
     allowAutoAccess: true,
   },
+  updates: {
+    channel: 'stable',
+    autoCheck: true,
+    autoDownload: false,
+  },
 }
 
 export class SettingsService {
@@ -96,6 +101,7 @@ function normalizeSettings(value: unknown): UserSettings {
     chroniclePreview: booleanValue(record.chroniclePreview, defaultUserSettings.chroniclePreview),
     ignoreToolChatsForMemory: booleanValue(record.ignoreToolChatsForMemory, defaultUserSettings.ignoreToolChatsForMemory),
     goalMode: normalizeGoalMode(record.goalMode),
+    updates: normalizeUpdateSettings(record.updates),
   }
 }
 
@@ -153,4 +159,13 @@ function normalizeGoalMode(value: unknown): UserSettings['goalMode'] {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
+}
+
+function normalizeUpdateSettings(value: unknown): UserSettings['updates'] {
+  const record = isRecord(value) ? value : {}
+  return {
+    channel: oneOf(record.channel, ['stable', 'beta'], defaultUserSettings.updates.channel),
+    autoCheck: booleanValue(record.autoCheck, defaultUserSettings.updates.autoCheck),
+    autoDownload: booleanValue(record.autoDownload, defaultUserSettings.updates.autoDownload),
+  }
 }

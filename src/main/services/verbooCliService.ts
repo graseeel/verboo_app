@@ -456,6 +456,7 @@ function toolNameFromPayload(payload: Record<string, unknown>): string | undefin
 
 function labelForToolName(toolName?: string): string {
   const normalized = toolName?.toLowerCase()
+  if (normalized && isSubagentToolName(normalized)) return 'subagent'
   if (normalized === 'read' || normalized === 'ls' || normalized === 'glob' || normalized === 'grep') return 'reading'
   if (normalized === 'edit' || normalized === 'multiedit' || normalized === 'write' || normalized === 'notebookedit') return 'editing'
   if (normalized === 'bash') return 'running'
@@ -485,7 +486,7 @@ function isToolBlock(value: unknown): value is Record<string, unknown> {
 
 function activityForTool(toolName: string): Pick<RuntimeActivity, 'label' | 'kind'> {
   const normalized = toolName.toLowerCase()
-  if (normalized === 'task') return { label: 'Subagente ativo', kind: 'subagent' }
+  if (isSubagentToolName(normalized)) return { label: 'Subagente ativo', kind: 'subagent' }
   if (normalized === 'read' || normalized === 'read_file') return { label: 'Leu arquivo', kind: 'read' }
   if (normalized === 'ls' || normalized === 'glob' || normalized === 'grep' || normalized === 'search') return { label: 'Inspecionou arquivos', kind: 'read' }
   if (normalized === 'edit' || normalized === 'multiedit' || normalized === 'multi_edit' || normalized === 'write' || normalized === 'notebookedit') {
@@ -501,7 +502,15 @@ function activityForTool(toolName: string): Pick<RuntimeActivity, 'label' | 'kin
 function detailForTool(toolName: string, input?: Record<string, unknown>): string | undefined {
   if (!input) return undefined
   const normalized = toolName.toLowerCase()
-  if (normalized === 'task') return snippet(asString(input.description) || asString(input.subagent_type) || asString(input.prompt))
+  if (isSubagentToolName(normalized)) {
+    return snippet(
+      asString(input.description)
+        || asString(input.subagent_type)
+        || asString(input.prompt)
+        || asString(input.task)
+        || asString(input.message),
+    )
+  }
   if (normalized === 'bash' || normalized === 'shell' || normalized === 'exec_command') return snippet(asString(input.command) || asString(input.cmd))
   if (normalized === 'websearch') return snippet(asString(input.query))
   if (normalized === 'webfetch') return snippet(asString(input.url))
@@ -510,6 +519,18 @@ function detailForTool(toolName: string, input?: Record<string, unknown>): strin
   if (normalized === 'ls') return snippet(asString(input.path))
   if (normalized === 'askuserquestion') return snippet(asString(input.question))
   return snippet(asString(input.file_path) || asString(input.filePath) || asString(input.path) || asString(input.notebook_path))
+}
+
+function isSubagentToolName(toolName: string): boolean {
+  const compact = toolName.toLowerCase().replace(/[-_\s]/g, '')
+  // Recent CLI versions dispatch subagents through a tool named "Agent"
+  // (verified in the stream-json capture); older ones used "Task".
+  return compact === 'task'
+    || compact === 'agent'
+    || compact.includes('subagent')
+    || compact.includes('agenttask')
+    || compact.includes('dispatchagent')
+    || compact.includes('researchagent')
 }
 
 function toolInput(block: Record<string, unknown>): Record<string, unknown> | undefined {

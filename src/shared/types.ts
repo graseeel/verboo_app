@@ -74,6 +74,7 @@ export type SettingsTab =
   | 'notifications'
   | 'personalization'
   | 'memory'
+  | 'updates'
   | 'archived'
 export type PersonalityMode = 'pragmatic' | 'concise' | 'explanatory'
 export type CompletionNotificationMode = 'always' | 'background' | 'never'
@@ -209,6 +210,7 @@ export type UserSettings = {
     maxElapsedMinutes: number
     allowAutoAccess: boolean
   }
+  updates: UpdateSettings
 }
 
 export type MenuBarState = {
@@ -237,6 +239,15 @@ export type ContextUsageSnapshot = {
   percentage?: number
   inputTokens?: number
   outputTokens?: number
+  source: 'cli-usage'
+  updatedAt: number
+}
+
+export type TokenRateSnapshot = {
+  outputTokens: number
+  totalTokens: number
+  tokensPerSecond?: number
+  requestsPerMinute?: number
   source: 'cli-usage'
   updatedAt: number
 }
@@ -347,9 +358,14 @@ export type ResearchSubagentsRunRequest = {
 export type ResearchSubagentProgress = {
   id: string
   index: number
-  status: 'queued' | 'running' | 'complete' | 'failed'
+  total?: number
+  runId?: string
+  status: 'queued' | 'running' | 'reading' | 'searching' | 'complete' | 'failed'
   summary: string
   activity?: string
+  detail?: string
+  mission?: string
+  label?: string
 }
 
 export type ResearchSubagentResult = {
@@ -415,6 +431,7 @@ export type AgentEvent =
   | { type: 'stderr'; turnId: string; text: string }
   | { type: 'json'; turnId: string; payload: unknown; runtimeStatus?: RuntimeStatus; runtimeActivity?: RuntimeActivity }
   | { type: 'result'; turnId: string; result: AgentResultSnapshot }
+  | { type: 'subagent-progress'; progress: ResearchSubagentProgress }
   | { type: 'error'; turnId: string; message: string }
   | { type: 'done'; turnId: string; exitCode: number | null }
 
@@ -496,6 +513,43 @@ export type FileDiff = {
   truncated: boolean
   hunks: FileDiffHunk[]
   message?: string
+}
+
+// ── Update types ────────────────────────────────────────────────
+
+export type UpdateChannel = 'stable' | 'beta'
+
+export type UpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'not-available'
+  | 'available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+  | 'unsupported'
+
+export type UpdateSnapshot = {
+  status: UpdateStatus
+  channel: UpdateChannel
+  currentVersion: string
+  availableVersion?: string
+  releaseName?: string
+  releaseDate?: string
+  releaseNotes?: string
+  percent?: number
+  transferredBytes?: number
+  totalBytes?: number
+  bytesPerSecond?: number
+  lastCheckedAt?: number
+  downloadedAt?: number
+  error?: string
+}
+
+export type UpdateSettings = {
+  channel: UpdateChannel
+  autoCheck: boolean
+  autoDownload: boolean
 }
 
 // ── Terminal types ──────────────────────────────────────────────

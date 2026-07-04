@@ -16,6 +16,7 @@ import { VerbooApiClient } from './services/verbooApiClient'
 import { defaultUserSettings, SettingsService } from './services/settingsService'
 import { SkillsService } from './services/skillsService'
 import { TrayStatusService } from './services/trayStatusService'
+import { UpdateService } from './services/updateService'
 import { VisionFallbackService } from './services/visionFallbackService'
 import { runFirstLaunchRequirementsCheck, shouldRunFirstLaunchRequirementsCheck } from './services/requirementsService'
 import { readWorkspaceBranchInfo, switchWorkspaceBranch } from './services/workspaceBranchService'
@@ -50,6 +51,9 @@ const trayStatus = new TrayStatusService({
   getWindow: () => mainWindow,
   interrupt: () => agentRuntime.interrupt(),
   refreshData: () => sendToRenderer('app:refresh-data'),
+})
+const updates = new UpdateService(snapshot => {
+  sendToRenderer('updates:status', snapshot)
 })
 const VERBOO_SIGNUP_URL = 'https://code.verboo.ai/pt?ref=32d0ad85-a132-47cd-ae6d-b1f9c5e92228&utm_source=referral&utm_medium=whatsapp&utm_campaign=referral_program&utm_content=32d0ad85-a132-47cd-ae6d-b1f9c5e92228'
 
@@ -115,6 +119,7 @@ if (!app.requestSingleInstanceLock()) {
     registerIpc()
     latestSettings = await userSettings.getSettings()
     trayStatus.configure(latestSettings)
+    updates.configure(latestSettings.updates)
     if (await shouldRunFirstLaunchRequirementsCheck()) {
       const requirements = await runFirstLaunchRequirementsCheck()
       if (!requirements.ok) {
@@ -123,6 +128,12 @@ if (!app.requestSingleInstanceLock()) {
       }
     }
     createWindow()
+
+    if (latestSettings.updates.autoCheck) {
+      setTimeout(() => {
+        void updates.checkForUpdates(false)
+      }, 6_000)
+    }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -133,6 +144,7 @@ if (!app.requestSingleInstanceLock()) {
 app.on('before-quit', () => {
   isQuitting = true
   terminalService.cleanupAll()
+  updates.dispose()
 })
 
 app.on('window-all-closed', () => {
@@ -185,12 +197,14 @@ function registerIpc(): void {
     const settings = await userSettings.updateSettings(patch)
     latestSettings = settings
     trayStatus.configure(settings)
+    updates.configure(settings.updates)
     return settings
   })
   ipcMain.handle('settings:reset', async () => {
     const settings = await userSettings.resetSettings()
     latestSettings = settings
     trayStatus.configure(settings)
+    updates.configure(settings.updates)
     return settings
   })
   ipcMain.handle('window:toggle-zoom', () => {
@@ -294,7 +308,9 @@ function registerIpc(): void {
   ipcMain.handle('research-subagents:run', async (_event, request: ResearchSubagentsRunRequest) => {
     const settings = await userSettings.getSettings()
     const safeRequest = await sanitizeResearchSubagentsRunRequest(request)
-    return researchSubagents.runMany(safeRequest, settings)
+    return researchSubagents.runMany(safeRequest, settings, progress => {
+      sendToRenderer('agent:event', { type: 'subagent-progress', progress })
+    })
   })
 
   ipcMain.handle('research-subagents:cancel', (_event, runId: string) => {
@@ -303,6 +319,16 @@ function registerIpc(): void {
 
   ipcMain.handle('agent:interrupt', () => {
     agentRuntime.interrupt()
+    return true
+  })
+
+  // ── Terminal IPC ──────────────────────────────────────────────
+
+  ipcMain.handle('updates:get-status', () => updates.getSnapshot())
+  ipcMain.handle('updates:check', (_event, userInitiated?: boolean) => updates.checkForUpdates(Boolean(userInitiated)))
+  ipcMain.handle('updates:download', () => updates.downloadUpdate())
+  ipcMain.handle('updates:install', () => {
+    updates.quitAndInstall()
     return true
   })
 

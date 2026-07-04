@@ -71,6 +71,16 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
 
+      # Future signed distribution:
+      # Add these secrets after Apple Developer enrollment:
+      # - APPLE_ID
+      # - APPLE_APP_SPECIFIC_PASSWORD
+      # - APPLE_TEAM_ID
+      # - CSC_LINK
+      # - CSC_KEY_PASSWORD
+      # Then remove CSC_IDENTITY_AUTO_DISCOVERY=false and enable hardened runtime
+      # plus notarization in electron-builder config.
+
       - name: Build and publish GitHub release artifacts
         run: npm run release:mac:github
 

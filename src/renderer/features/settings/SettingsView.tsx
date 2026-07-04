@@ -6,6 +6,7 @@ import {
   Check,
   ChevronDown,
   Computer,
+  Download,
   Ghost,
   KeyRound,
   Languages,
@@ -30,6 +31,8 @@ import type {
   SettingsTab,
   StoredConversation,
   ThemeMode,
+  UpdateSettings,
+  UpdateSnapshot,
   UserSettings,
   VerbooModel,
 } from '../../../shared/types'
@@ -50,6 +53,7 @@ type SettingsViewProps = {
   archivedConversations: StoredConversation[]
   petEnabled: boolean
   petSize: number
+  updateSnapshot?: UpdateSnapshot
   onPetToggle: () => void
   onPetSizeChange: (size: number) => void
   onOpenDashboard: () => void
@@ -61,6 +65,9 @@ type SettingsViewProps = {
   onResetUserSettings: () => Promise<void>
   onRestoreConversation: (conversationId: string) => void
   onDeleteConversation: (conversationId: string) => void
+  onCheckForUpdates: (userInitiated?: boolean) => Promise<UpdateSnapshot>
+  onDownloadUpdate: () => Promise<UpdateSnapshot>
+  onInstallUpdate: () => Promise<void>
   onClose: () => void
 }
 
@@ -76,6 +83,7 @@ export function SettingsView({
   archivedConversations,
   petEnabled,
   petSize,
+  updateSnapshot,
   onPetToggle,
   onPetSizeChange,
   onOpenDashboard,
@@ -87,6 +95,9 @@ export function SettingsView({
   onResetUserSettings,
   onRestoreConversation,
   onDeleteConversation,
+  onCheckForUpdates,
+  onDownloadUpdate,
+  onInstallUpdate,
   onClose,
 }: SettingsViewProps) {
   const { language, t } = useI18n()
@@ -102,6 +113,7 @@ export function SettingsView({
     { id: 'notifications', label: t('settings.notifications'), icon: Bell },
     { id: 'personalization', label: t('settings.personalization'), icon: UserCog },
     { id: 'memory', label: t('settings.memory'), icon: Brain },
+    { id: 'updates', label: t('updates.title'), icon: Download },
     { id: 'archived', label: t('settings.archived'), icon: Archive },
   ]
   const accessOptions: Array<{ id: AccessMode; title: string; body: string; tone?: 'danger' }> = [
@@ -588,6 +600,84 @@ export function SettingsView({
           </section>
         )}
 
+        {activeTab === 'updates' && (
+          <section>
+            <SettingsHeading title={t('updates.title')} subtitle={t('updates.channelBody')} />
+            <div className="settings-panel">
+              <SettingToggle
+                title={t('updates.autoCheck')}
+                body={t('updates.autoCheckBody')}
+                checked={userSettings.updates.autoCheck}
+                onChange={checked => onUserSettingsChange({ updates: { ...userSettings.updates, autoCheck: checked } })}
+              />
+              <SettingToggle
+                title={t('updates.autoDownload')}
+                body={t('updates.autoDownloadBody')}
+                checked={userSettings.updates.autoDownload}
+                onChange={checked => onUserSettingsChange({ updates: { ...userSettings.updates, autoDownload: checked } })}
+              />
+              <div className="settings-field">
+                <label className="settings-label">{t('updates.channel')}</label>
+                <p className="settings-hint">{t('updates.channelBody')}</p>
+                <div className="settings-choice-row">
+                  <ChoiceChip
+                    selected={userSettings.updates.channel === 'stable'}
+                    onClick={() => onUserSettingsChange({ updates: { ...userSettings.updates, channel: 'stable' } })}
+                  >
+                    {t('updates.stable')}
+                  </ChoiceChip>
+                  <ChoiceChip
+                    selected={userSettings.updates.channel === 'beta'}
+                    onClick={() => onUserSettingsChange({ updates: { ...userSettings.updates, channel: 'beta' } })}
+                  >
+                    {t('updates.beta')}
+                  </ChoiceChip>
+                </div>
+              </div>
+              <div className="settings-field" style={{ border: 0, marginBottom: 0 }}>
+                <div className="settings-action-row">
+                  <button
+                    className="button button-sm button-secondary"
+                    onClick={() => onCheckForUpdates(true)}
+                    disabled={updateSnapshot?.status === 'checking'}
+                  >
+                    {updateSnapshot?.status === 'checking' ? t('updates.checking') : t('updates.check')}
+                  </button>
+                  {updateSnapshot?.status === 'available' && updateSnapshot.channel === userSettings.updates.channel && (
+                    <button className="button button-sm" onClick={() => onDownloadUpdate()}>
+                      {t('updates.download')}
+                    </button>
+                  )}
+                  {updateSnapshot?.status === 'downloaded' && (
+                    <button className="button button-sm button-primary" onClick={() => onInstallUpdate()}>
+                      {t('updates.restart')}
+                    </button>
+                  )}
+                </div>
+                {updateSnapshot && updateSnapshot.status !== 'idle' && updateSnapshot.status !== 'unsupported' && (
+                  <p className="settings-hint" style={{ marginTop: 8, marginBottom: 2 }}>
+                    {updateSummary(updateSnapshot, t)}
+                  </p>
+                )}
+                {updateSnapshot?.status === 'downloading' && updateSnapshot.percent != null && (
+                  <div className="update-progress" style={{ marginTop: 6 }}>
+                    <span style={{ width: `${updateSnapshot.percent}%` }} />
+                  </div>
+                )}
+                {updateSnapshot?.error && (
+                  <p className="settings-hint" style={{ marginTop: 6, color: 'var(--text-danger)' }}>
+                    {updateSnapshot.error}
+                  </p>
+                )}
+                {updateSnapshot?.status === 'unsupported' && (
+                  <p className="settings-hint" style={{ marginTop: 8 }}>
+                    {t('updates.unsupported')}
+                  </p>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
         {activeTab === 'archived' && (
           <section className="settings-section-view">
             <SettingsHeading title={t('settings.archived')} subtitle={t('settings.archivedSubtitle')} />
@@ -650,6 +740,25 @@ export function SettingsView({
       )}
     </div>
   )
+}
+
+function updateSummary(snapshot: UpdateSnapshot, t: (key: string, vars?: Record<string, string | number | undefined>) => string): string {
+  switch (snapshot.status) {
+    case 'checking':
+      return t('updates.statusChecking')
+    case 'not-available':
+      return t('updates.statusCurrent', { version: snapshot.currentVersion })
+    case 'available':
+      return t('updates.statusAvailable', { version: snapshot.availableVersion })
+    case 'downloading':
+      return t('updates.statusDownloading', { percent: Math.round(snapshot.percent ?? 0) })
+    case 'downloaded':
+      return t('updates.statusDownloaded', { version: snapshot.availableVersion })
+    case 'error':
+      return t('updates.statusError')
+    default:
+      return t('updates.statusUnknown')
+  }
 }
 
 function displayConversationTitle(title: string, t: (key: string) => string): string {
@@ -723,6 +832,18 @@ function SettingNumericInput({
         onChange={event => onChange(Number(event.target.value))}
       />
     </div>
+  )
+}
+
+function ChoiceChip({ selected, onClick, children }: { selected: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      className={`choice-chip ${selected ? 'active' : ''}`}
+      onClick={onClick}
+    >
+      {children}
+    </button>
   )
 }
 

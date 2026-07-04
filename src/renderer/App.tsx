@@ -21,13 +21,17 @@ import type {
   MenuBarState,
   ModelDiscoveryResult,
   ProfileResult,
+  ResearchSubagentProgress,
   ResearchSubagentResult,
   RuntimeActivity,
   SettingsTab,
   SkillSummary,
   StoredConversation,
   ThemeMode,
+  TokenRateSnapshot,
+  TokenUsage,
   TranscriptItem,
+  UpdateSnapshot,
   UserSettings,
   VerbooModel,
   WorkspaceBranchInfo,
@@ -55,6 +59,7 @@ import { Transcript } from './components/Transcript'
 import { AccessSelector } from './features/access/AccessSelector'
 import { Composer } from './features/composer/Composer'
 import { ContextMeter } from './features/context/ContextMeter'
+import { TokenRateMeter } from './features/context/TokenRateMeter'
 import { FeedbackDialog } from './features/feedback/FeedbackDialog'
 import { ModelSelector } from './features/models/ModelSelector'
 import { ProfileView } from './features/profile/ProfileView'
@@ -114,6 +119,11 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
     maxElapsedMinutes: 30,
     allowAutoAccess: true,
   },
+  updates: {
+    channel: 'stable',
+    autoCheck: true,
+    autoDownload: false,
+  },
 }
 const EMPTY_LINE_KEYS = ['empty.line1', 'empty.line2', 'empty.line3', 'empty.line4'] as const
 
@@ -135,6 +145,15 @@ type ActiveSubagentHistoryItem = {
   label: string
   text: string
   timestamp: number
+}
+
+type TokenRateSample = {
+  firstAt: number
+  lastAt: number
+  lastOutputTokens: number
+  smoothedRate?: number
+  requestCount: number
+  requestsPerMinute?: number
 }
 
 const SUBAGENT_NAMES = [
@@ -242,6 +261,7 @@ export function App() {
     readContextWindows,
   )
   const [skills, setSkills] = useState<SkillSummary[]>([])
+  const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | undefined>(undefined)
   const [selectedSkills, setSelectedSkills] = useState<SkillSummary[]>([])
   const [attachedFiles, setAttachedFiles] = useState<AttachmentMeta[]>([])
   const [accessMode, setAccessMode] = useState<AccessMode>('approval')
@@ -267,6 +287,9 @@ export function App() {
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
   const [activeSubagents, setActiveSubagents] = useState<ActiveSubagent[]>([])
   const [selectedSubagentId, setSelectedSubagentId] = useState<string | undefined>()
+  // Once the user closes the subagent panel, activity updates must not force
+  // it back open — it only reopens by explicit click or on a fresh turn.
+  const subagentPanelDismissed = useRef(false)
   const [subagentSummaryExpanded, setSubagentSummaryExpanded] = useState(false)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshot | undefined>()
@@ -280,6 +303,7 @@ export function App() {
   const terminal = useLocalTerminal()
   const review = useReviewPanel()
   const t = useMemo(() => createTranslator(userSettings.language), [userSettings.language])
+  const [tokenRate, setTokenRate] = useState<TokenRateSnapshot | undefined>()
   const goalRef = useRef(goal)
   const [goalBarStatus, setGoalBarStatus] = useState<GoalStatusBarState>({ kind: 'idle' })
   const [emptyLineKey] = useState(() => EMPTY_LINE_KEYS[Math.floor(Math.random() * EMPTY_LINE_KEYS.length)])
@@ -298,6 +322,13 @@ export function App() {
   const lastEscapeAt = useRef(0)
   const selectedContextWindowRef = useRef<number | undefined>(undefined)
   const turnStartedAt = useRef<Record<string, number>>({})
+  const turnTokenRates = useRef<Record<string, TokenRateSample>>({})
+  const turnLiveRates = useRef<Record<string, {
+    samples: Array<{ at: number; chars: number }>
+    charsSinceUsage: number
+    tokensPerChar: number
+    lastEmit: number
+  }>>({})
   const turnActivityKeys = useRef<Record<string, Set<string>>>({})
   const turnActivityCounts = useRef<Record<string, Partial<Record<NonNullable<TranscriptItem['activityKind']>, number>>>>({})
   const turnResultSnapshots = useRef<Record<string, AgentResultSnapshot>>({})
@@ -316,6 +347,7 @@ export function App() {
   const turnOpenTextSegment = useRef<Record<string, string | undefined>>({})
   const turnTextSegmentCount = useRef<Record<string, number>>({})
   const turnCommandItemIds = useRef<Record<string, Record<string, string>>>({})
+  const turnSubagentToolIds = useRef<Record<string, Record<string, string>>>({})
   const [thinkingTurnId, setThinkingTurnId] = useState<string | undefined>(undefined)
 
   const activeConversation = useMemo(
@@ -364,10 +396,11 @@ export function App() {
   }, [activeSubagents, selectedSubagentId])
 
   useEffect(() => {
-    if (runningTurnId || workingSubagents.length > 0) return
+    const hasResearchSubagents = activeSubagents.some(agent => agent.id.startsWith('research:'))
+    if (runningTurnId || workingSubagents.length > 0 || hasResearchSubagents) return
     setSelectedSubagentId(undefined)
     setSubagentSummaryExpanded(false)
-  }, [runningTurnId, workingSubagents.length])
+  }, [activeSubagents, runningTurnId, workingSubagents.length])
 
   useEffect(() => {
     let cancelled = false
@@ -442,6 +475,25 @@ export function App() {
   useEffect(() => {
     return window.verboo.onAgentEvent(handleAgentEvent)
   }, [])
+
+  useEffect(() => {
+    let mounted = true
+    void window.verboo.getUpdateStatus().then(snapshot => {
+      if (mounted) setUpdateSnapshot(snapshot)
+    })
+    const unsubscribe = window.verboo.onUpdateStatus(snapshot => {
+      setUpdateSnapshot(snapshot)
+      if (snapshot.status === 'downloaded') {
+        toast(t('updates.readyToast'))
+      }
+      // Errors surface inside Settings > Updates only — raw updater failures
+      // (e.g. background checks on dev builds) as toasts were pure noise.
+    })
+    return () => {
+      mounted = false
+      unsubscribe()
+    }
+  }, [t, toast])
 
   useEffect(() => {
     return () => {
@@ -744,19 +796,146 @@ export function App() {
     setAccessMode(next.defaultAccessMode)
   }
 
+  async function onCheckForUpdates(userInitiated = true) {
+    return window.verboo.checkForUpdates(userInitiated)
+  }
+
+  async function onDownloadUpdate() {
+    return window.verboo.downloadUpdate()
+  }
+
+  async function onInstallUpdate() {
+    await window.verboo.installUpdate()
+  }
+
+  function beginTokenRateTracking(turnId: string) {
+    const now = Date.now()
+    turnTokenRates.current[turnId] = { firstAt: now, lastAt: now, lastOutputTokens: 0, requestCount: 1 }
+    setTokenRate(undefined)
+  }
+
+  // Real usage only arrives ONCE per request (in the final message_delta), so
+  // a usage-driven meter reads "--" during generation. Live tk/s comes from
+  // counting streamed text/thinking deltas (chars → tokens) over a sliding
+  // window, calibrated against the real token count whenever usage lands.
+  function trackLiveTokenRate(turnId: string, payload: unknown) {
+    const text = streamDeltaText(payload)
+    if (!text) return
+    const now = Date.now()
+    const state = (turnLiveRates.current[turnId] ??= {
+      samples: [],
+      charsSinceUsage: 0,
+      // Measured against real usage on captured streams (all delta kinds
+      // counted): ~0.31 tokens/char; per-request calibration refines it live.
+      tokensPerChar: 0.31,
+      lastEmit: 0,
+    })
+    state.samples.push({ at: now, chars: text.length })
+    state.charsSinceUsage += text.length
+    const cutoff = now - 4000
+    while (state.samples.length > 0 && state.samples[0].at < cutoff) state.samples.shift()
+
+    // Throttle renders; the meter does not need more than ~3 updates/second.
+    if (now - state.lastEmit < 320 || state.samples.length < 2) return
+    state.lastEmit = now
+    const windowChars = state.samples.reduce((sum, sample) => sum + sample.chars, 0)
+    const windowSeconds = Math.max(0.4, (now - state.samples[0].at) / 1000)
+    const tokensPerSecond = (windowChars * state.tokensPerChar) / windowSeconds
+    setTokenRate(previous => ({
+      outputTokens: previous?.outputTokens ?? 0,
+      totalTokens: previous?.totalTokens ?? 0,
+      tokensPerSecond,
+      requestsPerMinute: previous?.requestsPerMinute,
+      source: 'cli-usage',
+      updatedAt: now,
+    }))
+  }
+
+  function updateTokenRateFromPayload(turnId: string, payload: unknown) {
+    const usage = extractTokenUsage(payload)
+    if (!usage) return
+
+    // Calibrate the live chars→tokens estimate with the request's real count.
+    const liveState = turnLiveRates.current[turnId]
+    if (liveState && liveState.charsSinceUsage > 80 && usage.output_tokens) {
+      const measured = usage.output_tokens / liveState.charsSinceUsage
+      if (Number.isFinite(measured)) {
+        liveState.tokensPerChar = Math.min(0.6, Math.max(0.1, measured))
+      }
+      liveState.charsSinceUsage = 0
+    }
+
+    const inputTokens = usage.input_tokens ?? 0
+    const outputTokens = usage.output_tokens ?? 0
+    const cacheCreationTokens = usage.cache_creation_input_tokens ?? 0
+    const cacheReadTokens = usage.cache_read_input_tokens ?? 0
+    const totalTokens = inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens
+    if (totalTokens <= 0) return
+
+    const now = Date.now()
+    const sample = turnTokenRates.current[turnId] ?? {
+      firstAt: turnStartedAt.current[turnId] ?? now,
+      lastAt: turnStartedAt.current[turnId] ?? now,
+      lastOutputTokens: 0,
+      requestCount: 1,
+    }
+    const resetSample = outputTokens < sample.lastOutputTokens
+    const nextRequestCount = resetSample ? sample.requestCount + 1 : Math.max(1, sample.requestCount)
+    const requestWindowStart = sample.firstAt
+    const elapsedMinutes = Math.max((now - requestWindowStart) / 60000, 1 / 60)
+    const requestsPerMinute = nextRequestCount / elapsedMinutes
+    const deltaTokens = resetSample ? 0 : outputTokens - sample.lastOutputTokens
+    const elapsedSeconds = Math.max(0, (now - sample.lastAt) / 1000)
+    const shouldUpdateRate = deltaTokens > 0 && elapsedSeconds >= 0.15
+    let tokensPerSecond = resetSample ? undefined : sample.smoothedRate
+
+    if (shouldUpdateRate) {
+      const instantRate = deltaTokens / elapsedSeconds
+      tokensPerSecond = sample.smoothedRate === undefined
+        ? instantRate
+        : (sample.smoothedRate * 0.68) + (instantRate * 0.32)
+    }
+
+    turnTokenRates.current[turnId] = {
+      firstAt: requestWindowStart,
+      lastAt: shouldUpdateRate || resetSample ? now : sample.lastAt,
+      lastOutputTokens: shouldUpdateRate || resetSample ? outputTokens : sample.lastOutputTokens,
+      smoothedRate: tokensPerSecond,
+      requestCount: nextRequestCount,
+      requestsPerMinute,
+    }
+
+    setTokenRate({
+      outputTokens,
+      totalTokens,
+      tokensPerSecond,
+      requestsPerMinute,
+      source: 'cli-usage',
+      updatedAt: now,
+    })
+  }
+
   function handleAgentEvent(event: AgentEvent) {
+    if (event.type === 'subagent-progress') {
+      updateResearchSubagentProgress(event.progress)
+      return
+    }
+
     if (event.type === 'started') {
       const conversationId = turnConversationIds.current[event.turnId] ?? pendingConversationId.current
       if (conversationId) turnConversationIds.current[event.turnId] = conversationId
       turnStartedAt.current[event.turnId] = Date.now()
+      beginTokenRateTracking(event.turnId)
+      subagentPanelDismissed.current = false
       turnActivityKeys.current[event.turnId] ??= new Set()
       turnActivityCounts.current[event.turnId] ??= {}
       turnTerminalErrors.current[event.turnId] = []
       turnCommands.current[event.turnId] = []
       turnReferences.current[event.turnId] = []
+      const hasResearchSubagents = Object.keys(activeSubagentsRef.current).some(id => id.startsWith('research:'))
       if (pendingResearchSubagentsRef.current.length > 0) {
         attachPendingResearchSubagents(event.turnId)
-      } else if (!Object.keys(activeSubagentsRef.current).some(id => id.startsWith(`${event.turnId}:`))) {
+      } else if (!hasResearchSubagents && !Object.keys(activeSubagentsRef.current).some(id => id.startsWith(`${event.turnId}:`))) {
         activeSubagentsRef.current = {}
         setActiveSubagents([])
       }
@@ -807,11 +986,15 @@ export function App() {
           conversationId = pendingId
           turnConversationIds.current[event.turnId] = conversationId
           turnStartedAt.current[event.turnId] = Date.now()
+          beginTokenRateTracking(event.turnId)
           setRunningTurnId(event.turnId)
           setThinkingTurnId(event.turnId)
           setImageReadingTurnId(event.turnId)
         }
       }
+      trackLiveTokenRate(event.turnId, event.payload)
+      updateTokenRateFromPayload(event.turnId, event.payload)
+      routeSubagentChildEvent(event.turnId, event.payload)
       const usage = extractContextUsage(event.payload, selectedContextWindowRef.current)
       if (usage) {
         setContextUsage(usage)
@@ -849,6 +1032,7 @@ export function App() {
         for (const result of extractToolResults(event.payload)) {
           const itemId = turnCommandItemIds.current[event.turnId]?.[result.toolUseId]
           if (itemId) updateActivityCommand(conversationId, itemId, result.output, result.isError ? 'failure' : 'success')
+          updateSubagentResult(event.turnId, result)
         }
       }
       return
@@ -877,6 +1061,7 @@ export function App() {
     if (event.type === 'error') {
       const conversationId = turnConversationIds.current[event.turnId]
       setRunningTurnId(undefined)
+      setTokenRate(undefined)
       setThinkingTurnId(current => (current === event.turnId ? undefined : current))
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
       clearActiveSubagentsForTurn(event.turnId)
@@ -904,6 +1089,7 @@ export function App() {
     if (event.type === 'done') {
       const conversationId = turnConversationIds.current[event.turnId]
       setRunningTurnId(undefined)
+      setTokenRate(undefined)
       setThinkingTurnId(current => (current === event.turnId ? undefined : current))
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
       clearActiveSubagentsForTurn(event.turnId)
@@ -1024,6 +1210,7 @@ export function App() {
   async function runTurn(item: QueuedFollowUp) {
     pendingConversationId.current = item.conversationId
     setContextUsage(undefined)
+    setTokenRate(undefined)
 
     const request = await prepareRequestWithResearchSubagents(item)
     const turnId = await sendTrackedTurn(request, conversationCliSessionId(item.conversationId))
@@ -1081,6 +1268,7 @@ export function App() {
     activeSubagentsRef.current = Object.fromEntries(agents.map(agent => [agent.id, agent]))
     pendingResearchSubagentsRef.current = agents
     setActiveSubagents(agents)
+    autoSelectSubagent(agents[0]?.id)
 
     appendConversationItem(item.conversationId, {
       id: `research:${item.id}:activity:1`,
@@ -1136,9 +1324,10 @@ export function App() {
         } satisfies ActiveSubagent
       })
       const researchContext = buildResearchResultsContext(results, finishedAgents, t)
-      activeSubagentsRef.current = {}
-      pendingResearchSubagentsRef.current = []
-      setActiveSubagents([])
+      activeSubagentsRef.current = Object.fromEntries(finishedAgents.map(agent => [agent.id, agent]))
+      pendingResearchSubagentsRef.current = finishedAgents
+      setActiveSubagents(finishedAgents)
+      autoSelectSubagent(finishedAgents[0]?.id)
       if (!researchContext) return item.request
 
       return {
@@ -1155,9 +1344,24 @@ export function App() {
         activityDetail: error instanceof Error ? error.message : String(error),
         timestamp: Date.now(),
       })
-      activeSubagentsRef.current = {}
-      pendingResearchSubagentsRef.current = []
-      setActiveSubagents([])
+      const now = Date.now()
+      const detail = error instanceof Error ? error.message : String(error)
+      const failedAgents = agents.map((agent, index) => ({
+        ...agent,
+        status: 'failed',
+        detail,
+        updatedAt: now + index,
+        history: appendSubagentHistory(agent.history, {
+          id: `failed:${index + 1}:${now}`,
+          label: t('subagent.failed'),
+          text: detail,
+          timestamp: now + index,
+        }),
+      } satisfies ActiveSubagent))
+      activeSubagentsRef.current = Object.fromEntries(failedAgents.map(agent => [agent.id, agent]))
+      pendingResearchSubagentsRef.current = failedAgents
+      setActiveSubagents(failedAgents)
+      autoSelectSubagent(failedAgents[0]?.id)
       return item.request
     }
   }
@@ -2008,6 +2212,110 @@ export function App() {
     }))
   }
 
+  function autoSelectSubagent(id: string | undefined) {
+    if (!id || subagentPanelDismissed.current) return
+    autoSelectSubagent(id)
+  }
+
+  // Child events of a running subagent arrive tagged with parent_tool_use_id.
+  // They carry the whole exchange: the orchestrator's prompt (user message),
+  // the agent's own text and tool calls (assistant messages). Routing them
+  // into the subagent history turns the side panel into a real conversation —
+  // model asks, agent works, agent answers.
+  function routeSubagentChildEvent(turnId: string, payload: unknown) {
+    if (!isRecord(payload) || typeof payload.parent_tool_use_id !== 'string') return
+    const subagentId = turnSubagentToolIds.current[turnId]?.[payload.parent_tool_use_id]
+    if (!subagentId) return
+    const previous = activeSubagentsRef.current[subagentId]
+    if (!previous) return
+    const message = isRecord(payload.message) ? payload.message : undefined
+    if (!message || !Array.isArray(message.content)) return
+
+    const now = Date.now()
+    let next = previous
+    for (const block of message.content) {
+      if (!isRecord(block)) continue
+      const text = typeof block.text === 'string' ? block.text.trim() : ''
+      if (payload.type === 'user' && block.type === 'text' && text) {
+        next = {
+          ...next,
+          mission: text,
+          updatedAt: now,
+          history: appendSubagentHistory(next.history, {
+            id: `${subagentId}:prompt:${now}`,
+            label: t('subagent.missionReceived'),
+            text,
+            timestamp: now,
+          }),
+        }
+      } else if (payload.type === 'assistant' && block.type === 'text' && text) {
+        next = {
+          ...next,
+          detail: snippet(text),
+          updatedAt: now,
+          history: appendSubagentHistory(next.history, {
+            id: `${subagentId}:say:${now}:${next.history?.length ?? 0}`,
+            label: next.label,
+            text,
+            timestamp: now,
+          }),
+        }
+      } else if (payload.type === 'assistant' && block.type === 'tool_use' && typeof block.name === 'string') {
+        const input = isRecord(block.input) ? block.input : undefined
+        const inputDetail = typeof input?.command === 'string'
+          ? input.command
+          : typeof input?.file_path === 'string'
+            ? input.file_path
+            : typeof input?.query === 'string' ? input.query : ''
+        next = {
+          ...next,
+          detail: snippet(`${block.name} ${inputDetail}`.trim()),
+          updatedAt: now,
+          history: appendSubagentHistory(next.history, {
+            id: `${subagentId}:tool:${now}:${next.history?.length ?? 0}`,
+            label: block.name,
+            text: snippet(inputDetail) || block.name,
+            timestamp: now,
+          }),
+        }
+      }
+    }
+
+    if (next === previous) return
+    activeSubagentsRef.current = { ...activeSubagentsRef.current, [subagentId]: next }
+    setActiveSubagents(Object.values(activeSubagentsRef.current).sort((a, b) => a.updatedAt - b.updatedAt))
+  }
+
+  function updateSubagentResult(turnId: string, result: { toolUseId: string; output: string; isError: boolean }) {
+    const subagentId = turnSubagentToolIds.current[turnId]?.[result.toolUseId]
+    if (!subagentId) return
+    const previous = activeSubagentsRef.current[subagentId]
+    if (!previous) return
+
+    const now = Date.now()
+    const text = snippet(result.output) || (result.isError ? t('subagent.failed') : t('subagent.completed'))
+    const status: ActiveSubagent['status'] = result.isError ? 'failed' : 'done'
+    const next: ActiveSubagent = {
+      ...previous,
+      status,
+      detail: text,
+      updatedAt: now,
+      history: appendSubagentHistory(previous.history, {
+        id: `${subagentId}:result:${now}`,
+        label: result.isError ? t('subagent.failed') : t('subagent.completed'),
+        text,
+        timestamp: now,
+      }),
+    }
+
+    activeSubagentsRef.current = {
+      ...activeSubagentsRef.current,
+      [subagentId]: next,
+    }
+    setActiveSubagents(Object.values(activeSubagentsRef.current).sort((a, b) => a.updatedAt - b.updatedAt))
+    autoSelectSubagent(subagentId)
+  }
+
   function trackActiveSubagent(turnId: string, activity: TurnActivity) {
     const isStop = /stop|stopp|finish|complete|done|finaliz/i.test(`${activity.key} ${activity.label}`)
     const identity = normalizeSubagentIdentity(activity)
@@ -2034,36 +2342,94 @@ export function App() {
       return
     }
 
+    if (activity.toolUseId) {
+      const map = turnSubagentToolIds.current[turnId] ?? {}
+      map[activity.toolUseId] = id
+      turnSubagentToolIds.current[turnId] = map
+    }
+
+    const now = Date.now()
+    const mission = previous?.mission ?? activity.detail ?? t('subagent.readOnlyBeforeTurn')
+    const history = appendSubagentHistory(
+      previous?.history ?? (activity.detail ? [{
+        id: `${id}:mission:${now}`,
+        label: t('subagent.missionReceived'),
+        text: activity.detail,
+        timestamp: now,
+      }] : undefined),
+      {
+        id: `${id}:activity:${now}`,
+        label: activityDisplayLabel(activity, t),
+        text: activity.detail || compactSubagentDetail(activity, t),
+        timestamp: now,
+      },
+    )
+
     const next = {
       id,
       label: previous?.label ?? subagentNameFor(identity, Object.keys(activeSubagentsRef.current).length),
       detail: compactSubagentDetail(activity, t),
-      mission: previous?.mission ?? t('subagent.readOnlyBeforeTurn'),
-      history: appendSubagentHistory(previous?.history, {
-        id: `${id}:activity:${Date.now()}`,
-        label: activityDisplayLabel(activity, t),
-        text: activity.detail || compactSubagentDetail(activity, t),
-        timestamp: Date.now(),
-      }),
+      mission,
+      history,
       status: subagentStatusForActivity(activity),
-      updatedAt: Date.now(),
+      updatedAt: now,
     }
     activeSubagentsRef.current = {
       ...activeSubagentsRef.current,
       [id]: next,
     }
     setActiveSubagents(Object.values(activeSubagentsRef.current).sort((a, b) => a.updatedAt - b.updatedAt))
+    autoSelectSubagent(id)
+  }
+
+  function updateResearchSubagentProgress(progress: ResearchSubagentProgress) {
+    const previous = activeSubagentsRef.current[progress.id]
+    const now = Date.now()
+    const status = subagentStatusForResearchProgress(progress)
+    const label = progress.label
+      ?? previous?.label
+      ?? subagentNameFor(`${progress.runId ?? progress.id}:${progress.index}`, progress.index - 1)
+    const mission = progress.mission ?? previous?.mission ?? progress.summary ?? t('subagent.defaultMission')
+    const detail = progress.detail ?? progress.activity ?? progress.summary ?? previous?.detail
+    const next: ActiveSubagent = {
+      ...(previous ?? {}),
+      id: progress.id,
+      runId: progress.runId ?? previous?.runId,
+      label,
+      mission,
+      detail,
+      status,
+      updatedAt: now,
+      history: appendSubagentHistory(previous?.history, {
+        id: `${progress.id}:${progress.status}:${now}`,
+        label: subagentStatusLabel(status, t),
+        text: detail || mission,
+        timestamp: now,
+      }),
+    }
+
+    activeSubagentsRef.current = {
+      ...activeSubagentsRef.current,
+      [progress.id]: next,
+    }
+    pendingResearchSubagentsRef.current = pendingResearchSubagentsRef.current.map(agent =>
+      agent.id === progress.id ? next : agent,
+    )
+    setActiveSubagents(Object.values(activeSubagentsRef.current).sort((a, b) => a.updatedAt - b.updatedAt))
+    autoSelectSubagent(progress.id)
   }
 
   function attachPendingResearchSubagents(turnId: string) {
     if (pendingResearchSubagentsRef.current.length === 0) return
-    const attached = pendingResearchSubagentsRef.current
-      .filter(isActiveSubagentWorking)
-      .map((agent, index) => ({
-        ...agent,
-        id: `${turnId}:research:${index + 1}`,
-        updatedAt: agent.updatedAt + index,
-      }))
+    const pending = pendingResearchSubagentsRef.current
+    const selectedIndex = selectedSubagentId
+      ? Math.max(0, pending.findIndex(agent => agent.id === selectedSubagentId))
+      : 0
+    const attached = pending.map((agent, index) => ({
+      ...agent,
+      id: `${turnId}:research:${index + 1}`,
+      updatedAt: agent.updatedAt + index,
+    }))
     pendingResearchSubagentsRef.current = []
     if (attached.length === 0) {
       activeSubagentsRef.current = {}
@@ -2072,6 +2438,7 @@ export function App() {
     }
     activeSubagentsRef.current = Object.fromEntries(attached.map(agent => [agent.id, agent]))
     setActiveSubagents(attached)
+    setSelectedSubagentId(attached[selectedIndex]?.id)
   }
 
   function clearActiveSubagentsForTurn(turnId: string) {
@@ -2150,6 +2517,8 @@ export function App() {
   function cleanupTurnState(turnId: string) {
     delete turnConversationIds.current[turnId]
     delete turnStartedAt.current[turnId]
+    delete turnTokenRates.current[turnId]
+    delete turnLiveRates.current[turnId]
     delete turnActivityKeys.current[turnId]
     delete turnActivityCounts.current[turnId]
     delete turnResultSnapshots.current[turnId]
@@ -2164,6 +2533,7 @@ export function App() {
     delete turnOpenTextSegment.current[turnId]
     delete turnTextSegmentCount.current[turnId]
     delete turnCommandItemIds.current[turnId]
+    delete turnSubagentToolIds.current[turnId]
   }
 
   function appendTouchedFile(turnId: string, filePath: string) {
@@ -2547,6 +2917,10 @@ export function App() {
               onResetUserSettings={resetUserSettings}
               onRestoreConversation={restoreConversation}
               onDeleteConversation={deleteConversation}
+              updateSnapshot={updateSnapshot}
+              onCheckForUpdates={onCheckForUpdates}
+              onDownloadUpdate={onDownloadUpdate}
+              onInstallUpdate={onInstallUpdate}
               onClose={() => setActiveView('chat')}
             />
           ) : hasConversation ? (
@@ -2567,7 +2941,10 @@ export function App() {
         {showSubagentThreadPanel && selectedSubagent && (
           <ResearchSubagentPanel
             agent={selectedSubagent}
-            onClose={() => setSelectedSubagentId(undefined)}
+            onClose={() => {
+              subagentPanelDismissed.current = true
+              setSelectedSubagentId(undefined)
+            }}
             onCancel={cancelResearchSubagent}
           />
         )}
@@ -2617,7 +2994,10 @@ export function App() {
               expanded={subagentSummaryExpanded}
               selectedAgentId={selectedSubagentId}
               onToggleExpanded={() => setSubagentSummaryExpanded(current => !current)}
-              onSelectAgent={setSelectedSubagentId}
+              onSelectAgent={agentId => {
+                subagentPanelDismissed.current = false
+                setSelectedSubagentId(current => (current === agentId ? undefined : agentId))
+              }}
             />
           )}
           {showJumpToLatest && hasConversation && (
@@ -2659,6 +3039,7 @@ export function App() {
             }
             rightToolbar={
               <>
+                <TokenRateMeter rate={tokenRate} active={Boolean(runningTurnId)} />
                 <ContextMeter usage={contextUsage} contextWindow={selectedContextWindow} />
                 <ModelSelector
                   models={modelResult.models}
@@ -3149,6 +3530,18 @@ function subagentStatusForActivity(activity: TurnActivity): ActiveSubagent['stat
   return 'thinking'
 }
 
+function subagentStatusForResearchProgress(progress: ResearchSubagentProgress): ActiveSubagent['status'] {
+  if (progress.status === 'complete') return 'done'
+  if (progress.status === 'failed') return 'failed'
+  if (progress.status === 'reading') return 'reading'
+  if (progress.status === 'searching') return 'searching'
+
+  const text = `${progress.summary} ${progress.activity ?? ''} ${progress.detail ?? ''}`.toLowerCase()
+  if (/read|leu|lendo|file|arquivo/.test(text)) return 'reading'
+  if (/search|pesquis|grep|glob|internet/.test(text)) return 'searching'
+  return 'thinking'
+}
+
 function compactSubagentDetail(activity: TurnActivity, t: Translator): string {
   const status = subagentStatusForActivity(activity)
   if (status === 'reading') return t('subagent.readingProject')
@@ -3224,6 +3617,46 @@ function extractContextUsage(payload: unknown, maxTokens?: number): ContextUsage
     source: 'cli-usage',
     updatedAt: Date.now(),
   }
+}
+
+function extractTokenUsage(payload: unknown): TokenUsage | undefined {
+  const usage = extractUsageObject(payload)
+  if (!usage) return undefined
+
+  const inputTokens = numberValue(usage.input_tokens)
+  const outputTokens = numberValue(usage.output_tokens)
+  const cacheCreationTokens = numberValue(usage.cache_creation_input_tokens)
+  const cacheReadTokens = numberValue(usage.cache_read_input_tokens)
+
+  if (
+    inputTokens === undefined
+    && outputTokens === undefined
+    && cacheCreationTokens === undefined
+    && cacheReadTokens === undefined
+  ) {
+    return undefined
+  }
+
+  return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_creation_input_tokens: cacheCreationTokens,
+    cache_read_input_tokens: cacheReadTokens,
+  }
+}
+
+// Streamed content of a delta — assistant text, thinking, or tool-call JSON.
+// All three consume output tokens: measured against real usage, counting all
+// of them lands at ~0.31 tokens/char, while ignoring the tool JSON undercounts
+// tool-heavy phases by 30-50%.
+function streamDeltaText(payload: unknown): string | undefined {
+  if (!isRecord(payload) || payload.type !== 'stream_event' || !isRecord(payload.event)) return undefined
+  const delta = isRecord(payload.event.delta) ? payload.event.delta : undefined
+  if (!delta) return undefined
+  if (delta.type === 'text_delta' && typeof delta.text === 'string') return delta.text
+  if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') return delta.thinking
+  if (delta.type === 'input_json_delta' && typeof delta.partial_json === 'string') return delta.partial_json
+  return undefined
 }
 
 function extractUsageObject(payload: unknown): Record<string, unknown> | undefined {

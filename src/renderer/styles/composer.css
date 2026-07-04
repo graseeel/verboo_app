@@ -266,7 +266,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
   min-width: 0;
 }
@@ -274,17 +274,17 @@
 .composer-tools {
   display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 7px;
   min-width: 0;
 }
 
 .composer-tools.left {
-  flex: 1 1 190px;
+  flex: 0 1 auto;
 }
 
 .composer-tools.right {
-  flex: 1 1 300px;
+  flex: 1 1 auto;
   justify-content: flex-end;
   margin-left: auto;
 }
@@ -363,8 +363,9 @@
 }
 
 .model-pill {
-  width: 100%;
-  min-width: 0;
+  flex: 0 1 190px;
+  width: auto;
+  min-width: 132px;
   max-width: 220px;
   border-color: var(--model-border, var(--border));
   background: var(--model-bg, transparent);
@@ -893,6 +894,59 @@
   color: var(--text-muted);
 }
 
+.token-rate-meter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  gap: 5px;
+  height: 34px;
+  min-width: 128px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 72%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-soft) 42%, transparent);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.token-rate-meter.active {
+  border-color: color-mix(in srgb, var(--accent-strong) 44%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 42%, transparent);
+  color: var(--text);
+}
+
+.token-rate-icon {
+  flex: 0 0 auto;
+  color: var(--accent-strong);
+}
+
+.token-rate-copy {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  line-height: 1;
+}
+
+.token-rate-divider {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 14px;
+  background: color-mix(in srgb, var(--border-strong) 62%, transparent);
+}
+
+.token-rate-copy strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 780;
+}
+
+.token-rate-copy small {
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-weight: 720;
+}
+
 .context-meter {
   display: inline-grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -911,18 +965,33 @@
 
 @media (max-width: 1180px) {
   .composer-tools.right {
-    flex-basis: 100%;
-    justify-content: space-between;
-    margin-left: 0;
+    flex: 1 1 auto;
+    justify-content: flex-end;
+    margin-left: auto;
+  }
+
+  .token-rate-meter {
+    gap: 4px;
+    min-width: 104px;
+    padding-inline: 7px;
+  }
+
+  .token-rate-icon {
+    display: none;
+  }
+
+  .token-rate-copy small {
+    font-size: 9.5px;
   }
 
   .context-meter {
-    min-width: 142px;
-    max-width: 168px;
+    min-width: 132px;
+    max-width: 154px;
   }
 
   .model-pill {
-    max-width: 190px;
+    min-width: 126px;
+    max-width: 172px;
   }
 }
 

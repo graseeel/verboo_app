@@ -107,6 +107,11 @@ Tagged releases can be built and published by GitHub Actions. The workflow build
 the macOS arm64 DMG/ZIP artifacts and publishes the updater metadata file
 `latest-mac.yml`.
 
+> **macOS signing status:** Current builds are ad-hoc signed. They can be tested
+> locally, but macOS Gatekeeper and update installation are significantly more
+> reliable after Developer ID signing and notarization. The updater code is
+> designed to keep working when signing is enabled later.
+
 See [docs/release-github-actions.md](docs/release-github-actions.md).
 
 ## Feedback Backend
@@ -238,6 +243,12 @@ anterior do Verboo Code ainda estiver montado.
 Releases versionadas podem ser construídas e publicadas pelo GitHub Actions. O
 workflow gera os artefatos macOS arm64 em DMG/ZIP e publica o arquivo de
 metadados `latest-mac.yml` usado pelo updater.
+
+> **Status de assinatura macOS:** Os builds atuais são assinados como ad-hoc.
+> Eles funcionam para teste local, mas o Gatekeeper e a instalação de
+> atualizações são significativamente mais confiáveis após assinatura Developer
+> ID e notarização. O código do updater foi projetado para continuar funcionando
+> quando a assinatura for ativada.
 
 Veja [docs/release-github-actions.md](docs/release-github-actions.md).
 

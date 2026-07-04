@@ -22,6 +22,7 @@ import type {
   ResearchSubagentsRunRequest,
   SkillSummary,
   TerminalDataEvent,
+  UpdateSnapshot,
   UserSettings,
   WorkspaceBranchInfo,
   WorkspaceBranchSwitchResult,
@@ -86,6 +87,18 @@ const api = {
   },
 
   // ── Terminal API ──────────────────────────────────────────────
+
+  getUpdateStatus: () => ipcRenderer.invoke('updates:get-status') as Promise<UpdateSnapshot>,
+  checkForUpdates: (userInitiated = false) => ipcRenderer.invoke('updates:check', userInitiated) as Promise<UpdateSnapshot>,
+  downloadUpdate: () => ipcRenderer.invoke('updates:download') as Promise<UpdateSnapshot>,
+  installUpdate: () => ipcRenderer.invoke('updates:install') as Promise<boolean>,
+  onUpdateStatus: (callback: (snapshot: UpdateSnapshot) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: UpdateSnapshot) => callback(payload)
+    ipcRenderer.on('updates:status', listener)
+    return () => {
+      ipcRenderer.removeListener('updates:status', listener)
+    }
+  },
 
   terminalStart: (request: LocalTerminalStartRequest) => ipcRenderer.invoke('terminal:start', request) as Promise<LocalTerminalSession>,
   terminalWrite: (sessionId: string, data: string) => ipcRenderer.invoke('terminal:write', sessionId, data) as Promise<boolean>,

@@ -3,6 +3,7 @@ import type {
   AgentEvent,
   AgentTurnRequest,
   LanguageCode,
+  ResearchSubagentProgress,
   ResearchSubagentRequest,
   ResearchSubagentResult,
   ResearchSubagentsRunRequest,
@@ -14,17 +15,23 @@ const MAX_RESEARCH_SUBAGENTS = 2
 const RESEARCH_SUBAGENT_TIMEOUT_MS = 90_000
 const DISALLOWED_RESEARCH_TOOLS = new Set(['edit', 'write', 'multiedit', 'multi_edit', 'notebookedit'])
 
+type ResearchSubagentProgressHandler = (progress: ResearchSubagentProgress) => void
+
 export class ResearchSubagentService {
   private activeRuns = new Map<string, Set<AgentTurnExecutor>>()
 
   constructor(private readonly createTurnExecutor: () => AgentTurnExecutor) {}
 
-  async runMany(payload: ResearchSubagentsRunRequest, settings?: UserSettings): Promise<ResearchSubagentResult[]> {
+  async runMany(
+    payload: ResearchSubagentsRunRequest,
+    settings?: UserSettings,
+    onProgress?: ResearchSubagentProgressHandler,
+  ): Promise<ResearchSubagentResult[]> {
     const count = clamp(Math.round(payload.count || 1), 1, MAX_RESEARCH_SUBAGENTS)
     const runId = payload.runId || randomUUID()
     const language = payload.baseRequest.responseLanguage ?? 'en-US'
     const requests = Array.from({ length: count }, (_, index): ResearchSubagentRequest => ({
-      id: randomUUID(),
+      id: `${runId}:${index + 1}`,
       index: index + 1,
       total: count,
       topic: researchTopicFor(index + 1, count, payload.baseRequest.message, language),
@@ -33,7 +40,10 @@ export class ResearchSubagentService {
 
     this.activeRuns.set(runId, new Set())
     try {
-      return await Promise.all(requests.map(request => this.runOne(runId, request, settings)))
+      for (const request of requests) {
+        emitProgress(onProgress, runId, request, 'queued', request.topic, request.topic)
+      }
+      return await Promise.all(requests.map(request => this.runOne(runId, request, settings, onProgress)))
     } finally {
       this.activeRuns.delete(runId)
     }
@@ -48,12 +58,18 @@ export class ResearchSubagentService {
     return true
   }
 
-  private async runOne(runId: string, request: ResearchSubagentRequest, settings?: UserSettings): Promise<ResearchSubagentResult> {
+  private async runOne(
+    runId: string,
+    request: ResearchSubagentRequest,
+    settings?: UserSettings,
+    onProgress?: ResearchSubagentProgressHandler,
+  ): Promise<ResearchSubagentResult> {
     const childExecutor = this.createTurnExecutor()
     this.activeRuns.get(runId)?.add(childExecutor)
     const output: string[] = []
     const sources = new Set<string>()
     let violation: string | undefined
+    let lastProgressAt = 0
 
     const childRequest = createResearchTurnRequest(request)
 
@@ -66,7 +82,26 @@ export class ResearchSubagentService {
         settled = true
         if (timeout) clearTimeout(timeout)
         this.activeRuns.get(runId)?.delete(childExecutor)
+        emitProgress(
+          onProgress,
+          runId,
+          request,
+          result.status === 'complete' ? 'complete' : 'failed',
+          result.summary,
+          result.summary,
+        )
         resolve(result)
+      }
+
+      const emitActivity = (
+        status: ResearchSubagentProgress['status'],
+        summary: string,
+        detail?: string,
+      ) => {
+        const now = Date.now()
+        if (status === 'running' && now - lastProgressAt < 700) return
+        lastProgressAt = now
+        emitProgress(onProgress, runId, request, status, summary, detail)
       }
 
       timeout = setTimeout(() => {
@@ -74,15 +109,23 @@ export class ResearchSubagentService {
         finish(failedResult(request, timeoutMessage(request), sources))
       }, RESEARCH_SUBAGENT_TIMEOUT_MS)
 
+      emitActivity('running', request.topic, request.topic)
+
       childExecutor.sendTurn(childRequest, event => {
         if (event.type === 'stdout') {
           output.push(event.text)
+          const text = snippet(cleanupOutput(event.text), 180)
+          if (text) emitActivity('running', request.topic, text)
           return
         }
 
         if (event.type === 'json') {
           const source = sourceFromToolPayload(event.payload)
           if (source) sources.add(source)
+          const detail = progressDetailForEvent(event, source)
+          if (detail) {
+            emitActivity(progressStatusForActivityKind(event.runtimeActivity?.kind), request.topic, detail)
+          }
 
           const nextViolation = detectReadOnlyViolation(event.payload, requestLanguage(request))
           if (nextViolation && !violation) {
@@ -123,6 +166,38 @@ export class ResearchSubagentService {
       })
     })
   }
+}
+
+function emitProgress(
+  onProgress: ResearchSubagentProgressHandler | undefined,
+  runId: string,
+  request: ResearchSubagentRequest,
+  status: ResearchSubagentProgress['status'],
+  summary: string,
+  detail?: string,
+) {
+  onProgress?.({
+    id: request.id,
+    runId,
+    index: request.index,
+    total: request.total,
+    status,
+    summary,
+    activity: detail,
+    detail,
+    mission: request.topic,
+  })
+}
+
+function progressDetailForEvent(event: AgentEvent, source?: string): string | undefined {
+  if (event.type !== 'json') return undefined
+  return event.runtimeActivity?.detail || event.runtimeActivity?.label || source
+}
+
+function progressStatusForActivityKind(kind?: string): ResearchSubagentProgress['status'] {
+  if (kind === 'read' || kind === 'terminal') return 'reading'
+  if (kind === 'search') return 'searching'
+  return 'running'
 }
 
 function createResearchTurnRequest(request: ResearchSubagentRequest): AgentTurnRequest {
