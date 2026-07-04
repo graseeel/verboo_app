@@ -88,8 +88,18 @@ npm run build
 Package locally:
 
 ```bash
-CSC_IDENTITY_AUTO_DISCOVERY=false npm run package
+npm run package
 ```
+
+Create the unsigned internal DMG/ZIP release:
+
+```bash
+npm run dist
+```
+
+Both commands force unsigned packaging for this independent build and run a
+preflight that stops early if a previous `release/mac-arm64/Verboo Code.app`
+is still open or a previous Verboo Code DMG is still mounted.
 
 ## Feedback Backend
 
@@ -201,8 +211,19 @@ npm run build
 Empacotamento local sem assinatura:
 
 ```bash
-CSC_IDENTITY_AUTO_DISCOVERY=false npm run package
+npm run package
 ```
+
+Gerar DMG/ZIP interno sem assinatura:
+
+```bash
+npm run dist
+```
+
+Os dois comandos forçam empacotamento sem assinatura para este build
+independente e rodam um preflight que para cedo se um
+`release/mac-arm64/Verboo Code.app` anterior ainda estiver aberto ou se um DMG
+anterior do Verboo Code ainda estiver montado.
 
 ### Backend de feedback
 

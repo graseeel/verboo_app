@@ -19,8 +19,10 @@
     "dev": "electron-vite dev",
     "build": "tsc --noEmit && electron-vite build",
     "preview": "electron-vite preview",
-    "package": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder"
+    "package": "npm run package:unsigned",
+    "package:unsigned": "node scripts/package-preflight.mjs --dir && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
+    "dist": "npm run dist:unsigned",
+    "dist:unsigned": "node scripts/package-preflight.mjs --dist && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder"
   },
   "dependencies": {
     "@lobehub/icons": "^5.10.1",
