@@ -48,6 +48,8 @@ import { CommandPalette, paletteIcons, type PaletteAction } from './components/C
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { useToast } from './components/Toast'
 import { VerbooPet, PET_MIN_SIZE, PET_MAX_SIZE, type PetState } from './features/pet/VerbooPet'
+import { QuestionWizard, type ModelQuestion, type QuestionAnswer, type QuestionPromptState } from './features/questions/QuestionWizard'
+import { MessageCircleQuestion } from 'lucide-react'
 import { useLocalTerminal } from './features/terminal/useLocalTerminal'
 import { LocalTerminalPanel } from './features/terminal/LocalTerminalPanel'
 import { ReviewPanel } from './features/review/ReviewPanel'
@@ -275,6 +277,10 @@ export function App() {
   const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedFollowUp[]>([])
   const [pendingPermissionPrompt, setPendingPermissionPrompt] = useState<PendingPermissionPrompt | undefined>()
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | undefined>()
+  const [questionPrompt, setQuestionPrompt] = useState<QuestionPromptState | undefined>()
+  const [questionWizardOpen, setQuestionWizardOpen] = useState(false)
+  const questionPromptRef = useRef<QuestionPromptState | undefined>(undefined)
+  const turnQuestions = useRef<Record<string, ModelQuestion[]>>({})
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [petEnabled, setPetEnabled] = useState(() => window.localStorage.getItem('verboo:pet-enabled') === '1')
   const [petSize, setPetSize] = useState(() => {
@@ -997,6 +1003,7 @@ export function App() {
       trackLiveTokenRate(event.turnId, event.payload)
       updateTokenRateFromPayload(event.turnId, event.payload)
       routeSubagentChildEvent(event.turnId, event.payload)
+      collectModelQuestions(event.turnId, event.payload)
       const usage = extractContextUsage(event.payload, selectedContextWindowRef.current)
       if (usage) {
         setContextUsage(usage)
@@ -1096,6 +1103,7 @@ export function App() {
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
       clearActiveSubagentsForTurn(event.turnId)
       flashPet(event.exitCode === 0 ? 'success' : 'error')
+      presentTurnQuestions(event.turnId, conversationId)
       if (conversationId && event.exitCode !== 0) {
         const failureMessage = buildCliFailureMessage(turnTerminalErrors.current[event.turnId], t)
         if (failureMessage) appendAssistantText(conversationId, event.turnId, failureMessage)
@@ -1545,6 +1553,106 @@ export function App() {
         : rule
     ))
     await updateUserSettings({ trustedCommands: next })
+  }
+
+  // Model questions can arrive two ways: the structured AskUserQuestion tool
+  // (headless CLI fails it with "Answer questions?", so the model never gets
+  // answers on its own) or plain numbered questions in the final text. The
+  // wizard turns both into an answerable step-by-step flow whose answers go
+  // back as a follow-up message — same mechanism the permission panel uses.
+  function collectModelQuestions(turnId: string, payload: unknown) {
+    if (!isRecord(payload) || payload.type !== 'assistant') return
+    const message = isRecord(payload.message) ? payload.message : undefined
+    if (!message || !Array.isArray(message.content)) return
+    for (const block of message.content) {
+      if (!isRecord(block) || block.type !== 'tool_use' || block.name !== 'AskUserQuestion') continue
+      const input = isRecord(block.input) ? block.input : undefined
+      if (!input || !Array.isArray(input.questions)) continue
+      const questions: ModelQuestion[] = []
+      for (const raw of input.questions) {
+        if (!isRecord(raw) || typeof raw.question !== 'string') continue
+        const options = Array.isArray(raw.options)
+          ? raw.options.flatMap(option => isRecord(option) && typeof option.label === 'string'
+            ? [{ label: option.label, description: typeof option.description === 'string' ? option.description : undefined }]
+            : [])
+          : []
+        questions.push({
+          header: typeof raw.header === 'string' ? raw.header : undefined,
+          question: raw.question,
+          multiSelect: raw.multiSelect === true,
+          options,
+        })
+      }
+      if (questions.length > 0) {
+        const firstCapture = !turnQuestions.current[turnId]?.length
+        turnQuestions.current[turnId] = [...(turnQuestions.current[turnId] ?? []), ...questions]
+        if (firstCapture) {
+          // The headless CLI fails AskUserQuestion instantly, and the model
+          // tends to retry it in a loop, burning minutes and tokens. Open the
+          // wizard right away and interrupt the turn — the answers come back
+          // as the next message.
+          presentTurnQuestions(turnId, turnConversationIds.current[turnId])
+          void window.verboo.interrupt()
+        }
+      }
+    }
+  }
+
+  function presentTurnQuestions(turnId: string, conversationId: string | undefined) {
+    if (!conversationId) return
+    // Already presented for this turn (wizard opened mid-turn on tool capture).
+    if (questionPromptRef.current?.turnId === turnId) return
+    let questions = turnQuestions.current[turnId]
+    let autoOpen = true
+    if (!questions || questions.length === 0) {
+      // Text heuristic: two or more numbered lines ending in a question mark
+      // in the turn's final message. Confident enough for a chip, not for a
+      // modal that steals focus.
+      questions = detectTextQuestions(turnAssistantText.current[turnId] ?? '')
+      autoOpen = false
+    }
+    if (!questions || questions.length === 0) return
+    delete turnQuestions.current[turnId]
+    const nextPrompt: QuestionPromptState = {
+      conversationId,
+      turnId,
+      questions,
+      answers: questions.map(() => ({ selected: [], custom: '' })),
+    }
+    questionPromptRef.current = nextPrompt
+    setQuestionPrompt(nextPrompt)
+    setQuestionWizardOpen(autoOpen)
+  }
+
+  async function submitQuestionAnswers() {
+    // Read through the ref: the wizard auto-advances 170ms after the last
+    // click, and the state captured by its render closure can miss that
+    // final answer (it shipped "(no answer)" for the last question).
+    const prompt = questionPromptRef.current
+    if (!prompt) return
+    questionPromptRef.current = undefined
+    setQuestionPrompt(undefined)
+    setQuestionWizardOpen(false)
+
+    const lines = prompt.questions.map((question, index) => {
+      const answer = prompt.answers[index]
+      const parts = [
+        ...(answer?.selected ?? []),
+        ...(answer?.custom.trim() ? [answer.custom.trim()] : []),
+      ]
+      const label = question.header ? `${question.header} — ${question.question}` : question.question
+      return `${index + 1}. ${label}\n→ ${parts.length > 0 ? parts.join('; ') : t('questions.noAnswer')}`
+    })
+    const message = `${t('questions.answersIntro')}\n\n${lines.join('\n\n')}`
+    const responseLanguage = conversationLanguageFallback(prompt.conversationId)
+    const followUp = createPermissionFollowUp(prompt.conversationId, message, responseLanguage)
+    stickToBottomRef.current = true
+    if (runningTurnId) {
+      enqueueFollowUp(followUp)
+      return
+    }
+    appendDowngradeActivity(prompt.conversationId)
+    await runTurn(followUp)
   }
 
   function flashPet(kind: 'success' | 'error') {
@@ -2516,6 +2624,7 @@ export function App() {
     delete turnStartedAt.current[turnId]
     delete turnTokenRates.current[turnId]
     delete turnLiveRates.current[turnId]
+    delete turnQuestions.current[turnId]
     delete turnActivityKeys.current[turnId]
     delete turnActivityCounts.current[turnId]
     delete turnResultSnapshots.current[turnId]
@@ -3001,6 +3110,28 @@ export function App() {
             <button className="jump-to-latest" type="button" onClick={() => scrollToLatest('smooth')} title={t('workspace.jumpToLatest')}>
               <ArrowDown size={17} />
             </button>
+          )}
+          {questionPrompt && questionPrompt.conversationId === activeConversationId && (
+            questionWizardOpen ? (
+              <QuestionWizard
+                prompt={questionPrompt}
+                onAnswersChange={answers => {
+                  if (questionPromptRef.current) {
+                    questionPromptRef.current = { ...questionPromptRef.current, answers }
+                  }
+                  setQuestionPrompt(current => current ? { ...current, answers } : current)
+                }}
+                onSubmit={() => { void submitQuestionAnswers() }}
+                onDismiss={() => setQuestionWizardOpen(false)}
+              />
+            ) : (
+              <button type="button" className="question-chip" onClick={() => setQuestionWizardOpen(true)}>
+                <MessageCircleQuestion size={15} aria-hidden="true" />
+                {questionPrompt.questions.length === 1
+                  ? t('questions.chipOne')
+                  : t('questions.chip', { count: questionPrompt.questions.length })}
+              </button>
+            )
           )}
           {visiblePermissionPrompt && (
             <PermissionApprovalPanel
@@ -3640,6 +3771,21 @@ function extractTokenUsage(payload: unknown): TokenUsage | undefined {
     cache_creation_input_tokens: cacheCreationTokens,
     cache_read_input_tokens: cacheReadTokens,
   }
+}
+
+// Plain-text fallback: the model often ends a turn with a numbered list of
+// questions ("1. ...? 2. ...?"). Two or more numbered lines containing a
+// question mark is confident enough to offer the wizard via chip.
+function detectTextQuestions(text: string): ModelQuestion[] {
+  const questions: ModelQuestion[] = []
+  for (const line of text.split('\n')) {
+    const match = line.match(/^\s*(?:\d+)[.)]\s+(.{8,})$/)
+    if (!match) continue
+    const body = match[1].replace(/\*\*/g, '').trim()
+    if (!body.includes('?')) continue
+    questions.push({ question: body, options: [], multiSelect: false })
+  }
+  return questions.length >= 2 ? questions : []
 }
 
 // Streamed content of a delta — assistant text, thinking, or tool-call JSON.

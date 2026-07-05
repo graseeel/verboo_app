@@ -149,6 +149,25 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
 
+      - name: Diagnose native modules (Windows)
+        shell: pwsh
+        run: |
+          Write-Host "=== node-pty prebuilds ==="
+          if (Test-Path "node_modules/node-pty/prebuilds/win32-x64") {
+            Get-ChildItem "node_modules/node-pty/prebuilds/win32-x64" | Format-Table Name, Length
+          } else {
+            Write-Error "node-pty win32-x64 prebuilds MISSING"
+            exit 1
+          }
+          Write-Host "=== sharp native modules ==="
+          Get-ChildItem "node_modules/@img" -ErrorAction SilentlyContinue | Format-Table Name
+          if (-not (Test-Path "node_modules/@img/sharp-win32-x64")) {
+            Write-Error "@img/sharp-win32-x64 MISSING"
+            exit 1
+          }
+          Write-Host "=== Electron version ==="
+          node -e "console.log('electron:', require('electron/package.json').version, 'abi:', require('electron/package.json').abi || 'unknown')"
+
       - name: Build and publish GitHub release artifacts
         run: npm run release:win:github
 
@@ -161,6 +180,7 @@ jobs:
           name: Verboo-Code-${{ steps.release.outputs.tag }}-windows-x64
           path: |
             release/*.exe
+            release/*.zip
             release/latest.yml
           if-no-files-found: error
 
