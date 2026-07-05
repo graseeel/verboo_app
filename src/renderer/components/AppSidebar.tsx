@@ -5,6 +5,7 @@ import {
   ChevronRight,
   FolderClosed,
   FolderPlus,
+  Loader2,
   LogOut,
   MessageSquare,
   MessageSquareDashed,
@@ -32,6 +33,7 @@ type AppSidebarProps = {
   projects: ChatProject[]
   conversations: StoredConversation[]
   activeConversationId?: string
+  runningConversationIds?: Set<string>
   selectedProjectId?: string
   profile: ProfileResult
   cliAuth: CliAuthStatus
@@ -50,6 +52,7 @@ type AppSidebarProps = {
   onDeleteProject: (projectId: string) => void
   onArchiveConversation: (conversationId: string) => void
   onDeleteConversation: (conversationId: string) => void
+  onRenameConversation: (conversationId: string, title: string) => void
 }
 
 export function AppSidebar({
@@ -58,6 +61,7 @@ export function AppSidebar({
   conversations,
   activeConversationId,
   selectedProjectId,
+  runningConversationIds,
   profile,
   cliAuth,
   compact = false,
@@ -75,6 +79,7 @@ export function AppSidebar({
   onDeleteProject,
   onArchiveConversation,
   onDeleteConversation,
+  onRenameConversation,
 }: AppSidebarProps) {
   const { t } = useI18n()
   const [searchOpen, setSearchOpen] = useState(false)
@@ -82,6 +87,8 @@ export function AppSidebar({
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
   const [editingProjectId, setEditingProjectId] = useState<string | undefined>()
   const [projectDraft, setProjectDraft] = useState('')
+  const [editingConversationId, setEditingConversationId] = useState<string | undefined>()
+  const [conversationDraft, setConversationDraft] = useState('')
   const [contextMenu, setContextMenu] = useState<ContextMenuState | undefined>()
   const profileMenuRef = useRef<HTMLDivElement | null>(null)
   const profileName = profile.user?.name ?? profile.user?.email ?? cliAuth.email ?? t('sidebar.profile')
@@ -128,15 +135,28 @@ export function AppSidebar({
     })
   }
 
-  function openConversationContextMenu(event: ReactMouseEvent, conversationId: string) {
+  function startConversationEdit(conversation: StoredConversation) {
+    setEditingConversationId(conversation.id)
+    setConversationDraft(conversation.title === DEFAULT_CONVERSATION_TITLE ? '' : conversation.title)
+  }
+
+  function commitConversationEdit(conversation: StoredConversation) {
+    const trimmed = conversationDraft.trim()
+    if (trimmed) onRenameConversation(conversation.id, trimmed)
+    setEditingConversationId(undefined)
+    setConversationDraft('')
+  }
+
+  function openConversationContextMenu(event: ReactMouseEvent, conversation: StoredConversation) {
     event.preventDefault()
     setContextMenu({
       x: event.clientX,
       y: event.clientY,
       items: [
-        { key: 'open', label: t('common.open'), icon: <MessageSquare size={14} />, onSelect: () => onSelectConversation(conversationId) },
-        { key: 'archive', label: t('sidebar.archiveChat'), icon: <Archive size={14} />, onSelect: () => onArchiveConversation(conversationId) },
-        { key: 'delete', label: t('sidebar.deleteChat'), icon: <Trash2 size={14} />, danger: true, onSelect: () => onDeleteConversation(conversationId) },
+        { key: 'open', label: t('common.open'), icon: <MessageSquare size={14} />, onSelect: () => onSelectConversation(conversation.id) },
+        { key: 'rename', label: t('sidebar.renameChat'), icon: <Pencil size={14} />, onSelect: () => startConversationEdit(conversation) },
+        { key: 'archive', label: t('sidebar.archiveChat'), icon: <Archive size={14} />, onSelect: () => onArchiveConversation(conversation.id) },
+        { key: 'delete', label: t('sidebar.deleteChat'), icon: <Trash2 size={14} />, danger: true, onSelect: () => onDeleteConversation(conversation.id) },
       ],
     })
   }
@@ -240,6 +260,12 @@ export function AppSidebar({
                           key={conversation.id}
                           conversation={conversation}
                           active={conversation.id === activeConversationId && activeView === 'chat'}
+                          running={runningConversationIds?.has(conversation.id)}
+                          editing={editingConversationId === conversation.id}
+                          draft={conversationDraft}
+                          onDraftChange={setConversationDraft}
+                          onCommitEdit={() => commitConversationEdit(conversation)}
+                          onCancelEdit={() => { setEditingConversationId(undefined); setConversationDraft('') }}
                           onSelect={onSelectConversation}
                           onArchive={onArchiveConversation}
                           onDelete={onDeleteConversation}
@@ -268,6 +294,12 @@ export function AppSidebar({
                 key={conversation.id}
                 conversation={conversation}
                 active={conversation.id === activeConversationId && activeView === 'chat'}
+                running={runningConversationIds?.has(conversation.id)}
+                editing={editingConversationId === conversation.id}
+                draft={conversationDraft}
+                onDraftChange={setConversationDraft}
+                onCommitEdit={() => commitConversationEdit(conversation)}
+                onCancelEdit={() => { setEditingConversationId(undefined); setConversationDraft('') }}
                 onSelect={onSelectConversation}
                 onArchive={onArchiveConversation}
                 onDelete={onDeleteConversation}
@@ -334,26 +366,46 @@ export function AppSidebar({
 type ConversationRowProps = {
   conversation: StoredConversation
   active: boolean
+  running?: boolean
+  editing?: boolean
+  draft?: string
+  onDraftChange?: (value: string) => void
+  onCommitEdit?: () => void
+  onCancelEdit?: () => void
   onSelect: (conversationId: string) => void
   onArchive: (conversationId: string) => void
   onDelete: (conversationId: string) => void
-  onContextMenu: (event: ReactMouseEvent, conversationId: string) => void
+  onContextMenu: (event: ReactMouseEvent, conversation: StoredConversation) => void
 }
 
-function ConversationRow({ conversation, active, onSelect, onArchive, onDelete, onContextMenu }: ConversationRowProps) {
+function ConversationRow({ conversation, active, running, editing, draft, onDraftChange, onCommitEdit, onCancelEdit, onSelect, onArchive, onDelete, onContextMenu }: ConversationRowProps) {
   const { t } = useI18n()
   const title = displayConversationTitle(conversation.title, t)
 
   return (
     <div
-      className={`conversation-row ${active ? 'active' : ''}`}
-      onContextMenu={event => onContextMenu(event, conversation.id)}
+      className={`conversation-row ${active ? 'active' : ''} ${running ? 'running' : ''}`}
+      onContextMenu={event => onContextMenu(event, conversation)}
     >
-      <button type="button" className="conversation-main" onClick={() => onSelect(conversation.id)}>
-        <MessageSquare size={14} />
-        <span>{title}</span>
-        <small>{relativeTime(conversation.updatedAt, t)}</small>
-      </button>
+      {editing ? (
+        <input
+          className="conversation-name-input"
+          value={draft ?? ''}
+          onChange={event => onDraftChange?.(event.target.value)}
+          onBlur={() => onCommitEdit?.()}
+          onKeyDown={event => {
+            if (event.key === 'Enter') onCommitEdit?.()
+            if (event.key === 'Escape') onCancelEdit?.()
+          }}
+          autoFocus
+        />
+      ) : (
+        <button type="button" className="conversation-main" onClick={() => onSelect(conversation.id)}>
+          {running ? <Loader2 size={14} className="spin-icon" /> : <MessageSquare size={14} />}
+          <span>{title}</span>
+          <small>{relativeTime(conversation.updatedAt, t)}</small>
+        </button>
+      )}
       <div className="sidebar-row-actions">
         <button type="button" onClick={() => onArchive(conversation.id)} title={t('sidebar.archiveChat')}>
           <Archive size={13} />

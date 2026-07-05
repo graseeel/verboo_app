@@ -17,6 +17,8 @@ import { defaultUserSettings, SettingsService } from './services/settingsService
 import { SkillsService } from './services/skillsService'
 import { TrayStatusService } from './services/trayStatusService'
 import { UpdateService } from './services/updateService'
+import { SessionPool } from './services/sessionPool'
+import { StaleFileDetector } from './services/staleFileDetector'
 import { VisionFallbackService } from './services/visionFallbackService'
 import { runFirstLaunchRequirementsCheck, shouldRunFirstLaunchRequirementsCheck } from './services/requirementsService'
 import { readWorkspaceBranchInfo, switchWorkspaceBranch } from './services/workspaceBranchService'
@@ -55,6 +57,8 @@ const trayStatus = new TrayStatusService({
 const updates = new UpdateService(snapshot => {
   sendToRenderer('updates:status', snapshot)
 })
+const sessionPool = new SessionPool(credentials)
+const staleFileDetector = new StaleFileDetector()
 const VERBOO_SIGNUP_URL = 'https://code.verboo.ai/pt?ref=32d0ad85-a132-47cd-ae6d-b1f9c5e92228&utm_source=referral&utm_medium=whatsapp&utm_campaign=referral_program&utm_content=32d0ad85-a132-47cd-ae6d-b1f9c5e92228'
 
 let mainWindow: BrowserWindow | undefined
@@ -146,6 +150,8 @@ app.on('before-quit', () => {
   isQuitting = true
   terminalService.cleanupAll()
   updates.dispose()
+  sessionPool.dispose()
+  staleFileDetector.dispose()
 })
 
 app.on('window-all-closed', () => {
@@ -200,6 +206,19 @@ function registerIpc(): void {
     latestSettings = settings
     trayStatus.configure(settings)
     updates.configure(settings.updates)
+    // On macOS, the first Notification.show() call triggers the system
+    // permission prompt. Fire a silent one when the user enables any
+    // notification setting so the OS prompt appears before a real
+    // notification would otherwise be silently dropped.
+    const enabling = (patch.permissionNotifications || patch.questionNotifications)
+      || (patch.completionNotifications && patch.completionNotifications !== 'never')
+    if (enabling && process.platform === 'darwin' && Notification.isSupported()) {
+      try {
+        new Notification({ title: 'Verboo', body: '', silent: true }).show()
+      } catch {
+        // Ignore — permission flow is best-effort.
+      }
+    }
     return settings
   })
   ipcMain.handle('settings:reset', async () => {
@@ -304,7 +323,14 @@ function registerIpc(): void {
     const safeRequest = await sanitizeAgentTurnRequest(request)
     emitImagePreparationActivity(safeRequest, settings)
     const preparedRequest = await visionFallback.prepareRequest(safeRequest)
-    return agentRuntime.sendTurn(preparedRequest, event => handleAgentEvent(event, preparedRequest, settings), settings, resumeSessionId)
+    const conversationId = preparedRequest.conversationId
+    return sessionPool.startTurn(
+      conversationId,
+      preparedRequest,
+      (event: AgentEvent) => handleAgentEvent(event, preparedRequest, settings),
+      settings,
+      resumeSessionId,
+    )
   })
 
   ipcMain.handle('research-subagents:run', async (_event, request: ResearchSubagentsRunRequest) => {
@@ -319,8 +345,8 @@ function registerIpc(): void {
     return researchSubagents.cancel(String(runId || ''))
   })
 
-  ipcMain.handle('agent:interrupt', () => {
-    agentRuntime.interrupt()
+  ipcMain.handle('agent:interrupt', (_event, conversationId?: string) => {
+    sessionPool.interrupt(conversationId)
     return true
   })
 
@@ -441,6 +467,7 @@ function handleAgentEvent(event: AgentEvent, request: AgentTurnRequest, settings
     if (event.runtimeActivity?.kind === 'image') {
       trayStatus.update({ ...baseState, execution: 'tool', label: 'reading image' })
     }
+    void detectStaleFileAccess(event, request, settings)
     return
   }
 
@@ -459,6 +486,44 @@ function handleAgentEvent(event: AgentEvent, request: AgentTurnRequest, settings
     )
     setTimeout(() => trayStatus.update({ ...baseState, execution: 'idle', label: 'ready', startedAt: undefined }), 3500)
   }
+}
+
+function detectStaleFileAccess(event: AgentEvent, request: AgentTurnRequest, _settings: UserSettings): void {
+  if (event.type !== 'json' || !event.runtimeActivity) return
+  const activity = event.runtimeActivity
+  const filePath = filePathFromJsonPayload(event.payload)
+  if (!filePath || !event.conversationId) return
+
+  if (activity.kind === 'read') {
+    void staleFileDetector.recordRead(event.conversationId, filePath)
+  } else if (activity.kind === 'edit') {
+    void staleFileDetector.isStale(event.conversationId, filePath).then(stale => {
+      if (stale) {
+        sendToRenderer('agent:event', {
+          type: 'stderr',
+          turnId: event.turnId,
+          conversationId: event.conversationId,
+          text: `[Stale File Warning] "${filePath}" was modified by another conversation since the last read. The file may have changed. Consider re-reading before editing.\n`,
+        } satisfies AgentEvent)
+      }
+    })
+    void staleFileDetector.recordWrite(event.conversationId, filePath)
+  }
+}
+
+function filePathFromJsonPayload(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') return undefined
+  const record = payload as Record<string, unknown>
+  if (typeof record.file_path === 'string') return record.file_path
+  if (typeof record.filePath === 'string') return record.filePath
+  if (typeof record.path === 'string') return record.path
+  if (typeof record.input === 'object' && record.input) {
+    const input = record.input as Record<string, unknown>
+    if (typeof input.file_path === 'string') return input.file_path
+    if (typeof input.filePath === 'string') return input.filePath
+    if (typeof input.path === 'string') return input.path
+  }
+  return undefined
 }
 
 function emitImagePreparationActivity(request: AgentTurnRequest, settings: UserSettings): void {
@@ -511,14 +576,14 @@ function notificationText(settings: UserSettings, key: 'permission' | 'question'
       ? { title: 'Verboo precisa de uma resposta', body: 'Volte ao app para continuar.' }
       : { title: 'Verboo needs an answer', body: 'Return to the app to continue.' },
     error: pt
-      ? { title: 'Verboo encontrou um erro', body: '' }
-      : { title: 'Verboo hit an error', body: '' },
+      ? { title: 'Verboo encontrou um erro', body: 'Toque para ver os detalhes.' }
+      : { title: 'Verboo hit an error', body: 'Tap to see the details.' },
     done: pt
-      ? { title: 'Verboo concluiu', body: '' }
-      : { title: 'Verboo finished', body: '' },
+      ? { title: 'Verboo concluiu', body: 'Toque para ver a resposta.' }
+      : { title: 'Verboo finished', body: 'Tap to see the response.' },
     doneError: pt
-      ? { title: 'Verboo terminou com erro', body: '' }
-      : { title: 'Verboo finished with an error', body: '' },
+      ? { title: 'Verboo terminou com erro', body: 'Toque para ver os detalhes.' }
+      : { title: 'Verboo finished with an error', body: 'Tap to see the details.' },
   }
   return dictionary[key]
 }

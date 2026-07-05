@@ -623,6 +623,7 @@ export function SettingsView({
                   <ChoiceChip
                     selected={userSettings.updates.channel === 'stable'}
                     onClick={() => onUserSettingsChange({ updates: { ...userSettings.updates, channel: 'stable' } })}
+                    disabled
                   >
                     {t('updates.stable')}
                   </ChoiceChip>
@@ -633,6 +634,9 @@ export function SettingsView({
                     {t('updates.beta')}
                   </ChoiceChip>
                 </div>
+                <p className="settings-hint" style={{ marginTop: 6, color: 'var(--text-muted)' }}>
+                  {t('updates.stableDisabled')}
+                </p>
               </div>
               <div className="settings-field" style={{ border: 0, marginBottom: 0 }}>
                 <div className="settings-action-row">
@@ -835,12 +839,14 @@ function SettingNumericInput({
   )
 }
 
-function ChoiceChip({ selected, onClick, children }: { selected: boolean; onClick: () => void; children: React.ReactNode }) {
+function ChoiceChip({ selected, onClick, children, disabled }: { selected: boolean; onClick: () => void; children: React.ReactNode; disabled?: boolean }) {
   return (
     <button
       type="button"
       className={`choice-chip ${selected ? 'active' : ''}`}
       onClick={onClick}
+      disabled={disabled}
+      title={disabled ? 'disabled' : undefined}
     >
       {children}
     </button>

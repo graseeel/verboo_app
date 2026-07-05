@@ -202,6 +202,7 @@ function progressStatusForActivityKind(kind?: string): ResearchSubagentProgress[
 
 function createResearchTurnRequest(request: ResearchSubagentRequest): AgentTurnRequest {
   return {
+    conversationId: `research:${request.id}`,
     message: buildResearchPrompt(request),
     model: request.baseRequest.model,
     modelSupportsVision: false,

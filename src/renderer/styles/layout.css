@@ -483,6 +483,7 @@
 .app-sidebar.compact .sidebar-search,
 .app-sidebar.compact .project-name-button,
 .app-sidebar.compact .project-name-input,
+.app-sidebar.compact .conversation-name-input,
 .app-sidebar.compact .sidebar-row-actions,
 .app-sidebar.compact .project-chat-list,
 .app-sidebar.compact .conversation-main span,
@@ -596,6 +597,18 @@
 
 .project-name-input {
   min-width: 0;
+  height: 28px;
+  border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--border));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg) 68%, transparent);
+  color: var(--text);
+  padding: 0 7px;
+  outline: none;
+}
+
+.conversation-name-input {
+  min-width: 0;
+  flex: 1;
   height: 28px;
   border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--border));
   border-radius: var(--radius);

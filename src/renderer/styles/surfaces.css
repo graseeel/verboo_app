@@ -1272,6 +1272,59 @@
   color: var(--accent-strong);
 }
 
+.queued-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-elevated));
+}
+
+.queued-actions-detail {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.queued-actions-buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.queued-action-button {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.queued-action-button:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
+  border-color: var(--accent);
+}
+
+.queued-action-button.direct-button {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.queued-action-button.direct-button:hover {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg-elevated));
+}
+
+.queued-action-button.wait-button {
+  color: var(--text-muted);
+}
+
 .message-row.activity[data-activity="context"] .message-meta {
   color: var(--danger);
 }
@@ -1626,6 +1679,12 @@ button.change-summary-more:disabled {
   color: var(--accent-strong);
 }
 
+.choice-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .update-progress {
   height: 6px;
   overflow: hidden;
@@ -1639,4 +1698,59 @@ button.change-summary-more:disabled {
   border-radius: inherit;
   background: linear-gradient(90deg, var(--accent), var(--accent-strong));
   transition: width 160ms ease;
+}
+
+.spin-icon {
+  animation: spin 1s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin-icon {
+    animation: none;
+  }
+}
+
+.performance-warning-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  margin-bottom: 8px;
+  border-radius: var(--radius);
+  background: color-mix(in oklab, var(--accent) 8%, var(--surface));
+  border: 1px solid color-mix(in oklab, var(--accent) 25%, var(--border));
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.performance-warning-banner > span {
+  flex: 1;
+}
+
+.performance-warning-dismiss {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 120ms, color 120ms;
+}
+
+.performance-warning-dismiss:hover {
+  background: color-mix(in oklab, var(--text-muted) 12%, transparent);
+  color: var(--text);
 }

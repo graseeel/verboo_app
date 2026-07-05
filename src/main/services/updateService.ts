@@ -17,14 +17,14 @@ const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 export class UpdateService {
   private settings: UpdateSettings = {
-    channel: 'stable',
+    channel: 'beta',
     autoCheck: true,
     autoDownload: false,
   }
 
   private snapshot: UpdateSnapshot = {
     status: app.isPackaged ? 'idle' : 'unsupported',
-    channel: 'stable',
+    channel: 'beta',
     currentVersion: packageJson.version,
   }
 

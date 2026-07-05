@@ -17,6 +17,13 @@
 .step-thinking.is-reading-image svg { animation: none; }
 @keyframes step-spin { to { transform: rotate(360deg); } }
 
+.thinking-snippet {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Active action row (last block while the turn streams): the icon pulses
    purple and the label shimmers; both freeze when the turn completes. */
 .step-actions.is-active .step-actions-icon {

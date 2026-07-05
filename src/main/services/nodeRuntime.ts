@@ -38,6 +38,19 @@ export async function resolveNodeRuntimePath(): Promise<string> {
 
 export function createNodeRuntimeEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, ...extra }
+  // Packaged Electron apps launch with a minimal PATH that omits common tool
+  // directories (Homebrew, Scoop, Cargo, user-local bins, etc.). Without
+  // these, CLI child processes can't find `gh`, `rg`, `node`, or other tools
+  // the user has installed. Augment PATH with platform-specific defaults.
+  const extraPaths = platformSpecificPathEntries()
+  if (extraPaths.length > 0) {
+    const currentPath = env.PATH ?? ''
+    const existing = new Set(currentPath.split(delimiter).filter(Boolean))
+    const additions = extraPaths.filter(p => !existing.has(p))
+    if (additions.length > 0) {
+      env.PATH = [...additions, ...currentPath.split(delimiter).filter(Boolean)].join(delimiter)
+    }
+  }
   if (cachedIsElectron) {
     // The runtime is the Electron binary — it only behaves as Node with this
     // flag set, and the CLI's own child processes (spawned via process.execPath)
@@ -47,6 +60,58 @@ export function createNodeRuntimeEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.Proc
     delete env.ELECTRON_RUN_AS_NODE
   }
   return env
+}
+
+// Common tool directories per platform. These are appended to PATH (after the
+// existing entries) so user-installed tools like `gh`, `rg`, `cargo`, `node`
+// are discoverable by CLI child processes spawned from the packaged app.
+function platformSpecificPathEntries(): string[] {
+  const home = homedir()
+  const currentPlatform = platform()
+
+  if (currentPlatform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local')
+    const programFiles = process.env.PROGRAMFILES ?? 'C:\\Program Files'
+    const programFilesX86 = process.env['PROGRAMFILES(X86)'] ?? 'C:\\Program Files (x86)'
+    return [
+      join(localAppData, 'Programs', 'Git', 'bin'),
+      join(localAppData, 'Programs', 'Git', 'cmd'),
+      join(localAppData, 'GitHubCli'),
+      join(programFiles, 'Git', 'cmd'),
+      join(programFiles, 'GitHub CLI'),
+      join(programFilesX86, 'GitHub CLI'),
+      join(home, '.local', 'bin'),
+      join(home, 'scoop', 'shims'),
+      join(home, '.cargo', 'bin'),
+      join(localAppData, 'fnm_multishells'),
+      join(localAppData, 'Volta', 'bin'),
+      join(home, 'AppData', 'Roaming', 'nvm'),
+      join(home, 'AppData', 'Local', 'Microsoft', 'WindowsApps'),
+    ]
+  }
+
+  if (currentPlatform === 'darwin') {
+    return [
+      '/opt/homebrew/bin',
+      '/opt/homebrew/sbin',
+      '/usr/local/bin',
+      '/usr/local/sbin',
+      join(home, '.local', 'bin'),
+      join(home, '.cargo', 'bin'),
+    ]
+  }
+
+  if (currentPlatform === 'linux') {
+    return [
+      '/usr/local/bin',
+      '/usr/local/sbin',
+      '/snap/bin',
+      join(home, '.local', 'bin'),
+      join(home, '.cargo', 'bin'),
+    ]
+  }
+
+  return []
 }
 
 export function resolveExternalNodePath(filePath: string): string {

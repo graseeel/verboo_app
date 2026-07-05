@@ -1,5 +1,5 @@
 import { CheckCircle2, ChevronDown, ChevronRight, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
-import { memo, useMemo, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { TranscriptItem, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
 import { StepFlow } from '../features/transcript/StepFlow'
 import { ThinkingIcon } from '../features/transcript/TranscriptIcons'
@@ -7,16 +7,20 @@ import { useI18n, type Translator } from '../i18n'
 
 type TranscriptProps = {
   items: TranscriptItem[]
+  conversationId?: string
   onOpenReview?: (files: WorkspaceChangeEntry[], index: number) => void
   reviewMetadata?: WorkspaceReviewMetadata
   thinkingTurnId?: string
+  thinkingSnippets?: string[]
+  compactingTurnId?: string
   imageReadingTurnId?: string
+  onInterject?: (conversationId: string, queueItemId: string) => void
 }
 
 const MAX_ACTIVITY_DETAIL_LINES = 8
 const MAX_SUMMARY_DETAIL_LINES = 3
 
-export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, imageReadingTurnId }: TranscriptProps) {
+export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, imageReadingTurnId, conversationId, onInterject }: TranscriptProps) {
   // `items` is a new array reference only when the conversation actually changes,
   // so this recomputes on real content changes but is skipped when the parent
   // re-renders for unrelated reasons (context-usage ticks, subagent updates…).
@@ -30,11 +34,13 @@ export const Transcript = memo(function Transcript({ items, onOpenReview, review
               key={entry.turnId}
               entry={entry}
               thinking={thinkingTurnId === entry.turnId}
+              thinkingSnippets={thinkingSnippets}
+              compacting={compactingTurnId === entry.turnId}
               readingImage={imageReadingTurnId === entry.turnId}
               onOpenReview={onOpenReview}
               reviewMetadata={reviewMetadata}
             />
-          : <MessageArticle key={entry.item.id} item={entry.item} />
+          : <MessageArticle key={entry.item.id} item={entry.item} conversationId={conversationId} onInterject={onInterject} />
       ))}
     </div>
   )
@@ -44,9 +50,38 @@ type TranscriptEntry =
   | { kind: 'message'; item: TranscriptItem }
   | { kind: 'assistant-turn'; turnId: string; items: TranscriptItem[]; summary?: TranscriptItem }
 
-function TurnView({ entry, thinking, readingImage, onOpenReview, reviewMetadata }: {
+// Rotates through real model thinking snippets every ~4s, like ChatGPT.
+// New snippets are appended to the end; the timer cycles through them in
+// order. No reset-to-latest — that would skip earlier thoughts.
+function ThinkingRotator({ snippets }: { snippets: string[] }) {
+  const [index, setIndex] = useState(0)
+  // Clamp index when snippets shrink (turn ended/cleared) so we never read
+  // out of bounds. When new snippets arrive, the index stays where it is so
+  // the user can finish reading the current one before rotation continues.
+  useEffect(() => {
+    if (snippets.length === 0) return
+    if (index >= snippets.length) setIndex(snippets.length - 1)
+  }, [snippets.length, index])
+  useEffect(() => {
+    if (snippets.length <= 1) return
+    const timer = setInterval(() => {
+      setIndex(prev => (prev + 1) % snippets.length)
+    }, 4000)
+    return () => clearInterval(timer)
+  }, [snippets.length])
+  const text = snippets[index] ?? snippets[snippets.length - 1] ?? ''
+  return (
+    <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm thinking-snippet" title={text}>
+      {text}
+    </span>
+  )
+}
+
+function TurnView({ entry, thinking, thinkingSnippets, compacting, readingImage, onOpenReview, reviewMetadata }: {
   entry: Extract<TranscriptEntry, { kind: 'assistant-turn' }>
   thinking: boolean
+  thinkingSnippets?: string[]
+  compacting: boolean
   readingImage: boolean
   onOpenReview?: TranscriptProps['onOpenReview']
   reviewMetadata?: WorkspaceReviewMetadata
@@ -72,6 +107,16 @@ function TurnView({ entry, thinking, readingImage, onOpenReview, reviewMetadata 
           side-by-side read as noise. */}
       <div className="message-meta">
         <span>{label}</span>
+        {compacting && (
+          <span className="message-status-marker compaction-marker" role="status">
+            <span className="message-status-marker-icon" aria-hidden="true">
+              <LoaderCircle size={12} />
+            </span>
+            <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm" data-text={t('transcript.compacting')}>
+              {t('transcript.compacting')}
+            </span>
+          </span>
+        )}
       </div>
 
       {!streaming && entry.items.length > 0 && (
@@ -86,9 +131,17 @@ function TurnView({ entry, thinking, readingImage, onOpenReview, reviewMetadata 
           <span className="step-marker-icon" aria-hidden="true">
             {readingImage ? <ImageIcon size={14} strokeWidth={1.8} /> : <ThinkingIcon />}
           </span>
-          <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm">
-            {readingImage ? t('transcript.imageReading') : t('transcript.thinking')}
-          </span>
+          {readingImage ? (
+            <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm">
+              {t('transcript.imageReading')}
+            </span>
+          ) : thinkingSnippets && thinkingSnippets.length > 0 ? (
+            <ThinkingRotator snippets={thinkingSnippets} />
+          ) : (
+            <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm">
+              {t('transcript.thinking')}
+            </span>
+          )}
         </div>
       )}
 
@@ -107,9 +160,15 @@ function TurnView({ entry, thinking, readingImage, onOpenReview, reviewMetadata 
   )
 }
 
-const MessageArticle = memo(function MessageArticle({ item, children }: { item: TranscriptItem; children?: ReactNode }) {
+const MessageArticle = memo(function MessageArticle({ item, conversationId, onInterject, children }: { item: TranscriptItem; conversationId?: string; children?: ReactNode; onInterject?: TranscriptProps['onInterject'] }) {
   const { t } = useI18n()
   const visibleText = visibleTextForItem(item)
+  const [interjectDismissed, setInterjectDismissed] = useState(false)
+  // Extract the original queue item id from the queued activity marker id,
+  // which is stored as `${queueItemId}:queued` when created in App.tsx.
+  const queueItemId = item.activityKind === 'queued' && item.id.endsWith(':queued')
+    ? item.id.slice(0, -':queued'.length)
+    : undefined
 
   return (
     <article
@@ -145,6 +204,19 @@ const MessageArticle = memo(function MessageArticle({ item, children }: { item: 
           : visibleText || (item.streaming ? t('transcript.thinking') : '')}
         {item.kind !== 'summary' && item.activityDetail && <span className="message-detail">{item.activityDetail}</span>}
       </div>
+      {item.activityKind === 'queued' && !interjectDismissed && onInterject && queueItemId && conversationId && (
+        <div className="queued-actions">
+          <span className="queued-actions-detail">{t('transcript.interjectDetail')}</span>
+          <div className="queued-actions-buttons">
+            <button className="queued-action-button direct-button" type="button" onClick={() => onInterject(conversationId, queueItemId)}>
+              {t('transcript.interjectNow')}
+            </button>
+            <button className="queued-action-button wait-button" type="button" onClick={() => setInterjectDismissed(true)}>
+              {t('transcript.interjectWait')}
+            </button>
+          </div>
+        </div>
+      )}
       {children}
     </article>
   )

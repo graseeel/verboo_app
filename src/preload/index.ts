@@ -70,7 +70,7 @@ const api = {
   sendTurn: (request: AgentTurnRequest, resumeSessionId?: string) => ipcRenderer.invoke('agent:send', request, resumeSessionId) as Promise<string>,
   runResearchSubagents: (request: ResearchSubagentsRunRequest) => ipcRenderer.invoke('research-subagents:run', request) as Promise<ResearchSubagentResult[]>,
   cancelResearchSubagents: (runId: string) => ipcRenderer.invoke('research-subagents:cancel', runId) as Promise<boolean>,
-  interrupt: () => ipcRenderer.invoke('agent:interrupt') as Promise<boolean>,
+  interrupt: (conversationId?: string) => ipcRenderer.invoke('agent:interrupt', conversationId) as Promise<boolean>,
   onAgentEvent: (callback: (event: AgentEvent) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: AgentEvent) => callback(payload)
     ipcRenderer.on('agent:event', listener)

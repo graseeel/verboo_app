@@ -15,6 +15,10 @@ type SlashMenuItem =
 type ComposerProps = {
   disabled: boolean
   busy?: boolean
+  /** Controlled value — if provided, the component uses this as its text value */
+  value?: string
+  /** Controlled onChange — required when value is provided */
+  onValueChange?: (value: string) => void
   skills: SkillSummary[]
   selectedSkills: SkillSummary[]
   attachments: AttachmentMeta[]
@@ -33,6 +37,8 @@ type ComposerProps = {
 export function Composer({
   disabled,
   busy = false,
+  value: externalValue,
+  onValueChange,
   skills,
   selectedSkills,
   attachments,
@@ -48,7 +54,9 @@ export function Composer({
   rightToolbar,
 }: ComposerProps) {
   const { t } = useI18n()
-  const [value, setValue] = useState('')
+  const [internalValue, setInternalValue] = useState('')
+  const value = externalValue ?? internalValue
+  const setValue = onValueChange ?? setInternalValue
   const [highlighted, setHighlighted] = useState(0)
   const [dragDepth, setDragDepth] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)

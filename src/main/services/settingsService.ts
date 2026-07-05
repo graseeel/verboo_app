@@ -29,7 +29,7 @@ export const defaultUserSettings: UserSettings = {
     allowAutoAccess: true,
   },
   updates: {
-    channel: 'stable',
+    channel: 'beta',
     autoCheck: true,
     autoDownload: false,
   },
@@ -162,10 +162,10 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function normalizeUpdateSettings(value: unknown): UserSettings['updates'] {
-  const record = isRecord(value) ? value : {}
+  // Force beta channel, auto-check, and auto-download for all users
   return {
-    channel: oneOf(record.channel, ['stable', 'beta'], defaultUserSettings.updates.channel),
-    autoCheck: booleanValue(record.autoCheck, defaultUserSettings.updates.autoCheck),
-    autoDownload: booleanValue(record.autoDownload, defaultUserSettings.updates.autoDownload),
+    channel: 'beta',
+    autoCheck: true,
+    autoDownload: true,
   }
 }

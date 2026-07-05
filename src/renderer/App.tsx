@@ -274,7 +274,14 @@ export function App() {
   })
   const [selectedProjectId, setSelectedProjectId] = useState<string | undefined>()
   const [runningTurnId, setRunningTurnId] = useState<string | undefined>()
+  const [runningConversations, setRunningConversations] = useState<Set<string>>(() => new Set())
+  const [performanceWarningDismissed, setPerformanceWarningDismissed] = useState(false)
   const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedFollowUp[]>([])
+  // Per-conversation composer drafts (in-memory). Survives chat switches and
+  // settings navigation so each chat keeps its own composer text.
+  const composerDrafts = useRef<Record<string, string>>({})
+  const [composerValue, setComposerValue] = useState('')
+  const prevConversationIdRef = useRef<string | undefined>(undefined)
   const [pendingPermissionPrompt, setPendingPermissionPrompt] = useState<PendingPermissionPrompt | undefined>()
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | undefined>()
   const [questionPrompt, setQuestionPrompt] = useState<QuestionPromptState | undefined>()
@@ -341,6 +348,13 @@ export function App() {
   const turnResultSnapshots = useRef<Record<string, AgentResultSnapshot>>({})
   const turnTerminalErrors = useRef<Record<string, string[]>>({})
   const turnCompletionDeferred = useRef<{ turnId: string; resolve: () => void; reject: (reason: unknown) => void } | undefined>(undefined)
+  // Resolves when a specific turn ends (done/error) — used by interjectMessage
+  // to await the interrupted turn before sending the next message. Separate
+  // from turnCompletionDeferred (used by goal scheduler) to avoid conflicts.
+  const interjectDeferred = useRef<{ turnId: string; resolve: () => void } | undefined>(undefined)
+  const turnThinkingText = useRef<Record<string, string>>({})
+  const turnThinkingSnippets = useRef<Record<string, string[]>>({})
+  const [thinkingSnippets, setThinkingSnippets] = useState<string[]>([])
   const turnAssistantText = useRef<Record<string, string>>({})
   const turnLastCommand = useRef<Record<string, string>>({})
   const turnCommands = useRef<Record<string, string[]>>({})
@@ -356,6 +370,7 @@ export function App() {
   const turnCommandItemIds = useRef<Record<string, Record<string, string>>>({})
   const turnSubagentToolIds = useRef<Record<string, Record<string, string>>>({})
   const [thinkingTurnId, setThinkingTurnId] = useState<string | undefined>(undefined)
+  const [compactingTurnId, setCompactingTurnId] = useState<string | undefined>(undefined)
 
   const activeConversation = useMemo(
     () => chatStore.conversations.find(conversation => conversation.id === activeConversationId),
@@ -623,7 +638,12 @@ export function App() {
       if (now - lastEscapeAt.current <= 1300) {
         lastEscapeAt.current = 0
         goalAbortRef.current?.abort()
-        void window.verboo.interrupt()
+        // Pass activeConversationId so only the active chat stops (Bug 4).
+        // Guard: when activeConversationId is undefined (new chat with no
+        // active session), interrupt(undefined) would stop ALL sessions.
+        if (activeConversationId) {
+          void window.verboo.interrupt(activeConversationId)
+        }
         return
       }
       lastEscapeAt.current = now
@@ -631,7 +651,24 @@ export function App() {
 
     window.addEventListener('keydown', handleEscapeInterrupt, { capture: true })
     return () => window.removeEventListener('keydown', handleEscapeInterrupt, { capture: true })
-  }, [runningTurnId])
+  }, [runningTurnId, activeConversationId])
+
+  // Save the outgoing conversation's composer draft and restore the incoming
+  // conversation's draft whenever the active conversation changes. Uses a
+  // sentinel key for the "new chat" state (activeConversationId === undefined)
+  // so drafts are preserved when switching between unsaved new chats and
+  // existing conversations, and only writes composerValue when the key
+  // actually changes (avoids clearing the composer on unrelated re-renders).
+  useEffect(() => {
+    const NEW_CHAT_KEY = '__new__'
+    const previousKey = prevConversationIdRef.current ?? NEW_CHAT_KEY
+    const nextKey = activeConversationId ?? NEW_CHAT_KEY
+    if (previousKey !== nextKey) {
+      composerDrafts.current[previousKey] = composerValue
+      setComposerValue(composerDrafts.current[nextKey] ?? '')
+    }
+    prevConversationIdRef.current = activeConversationId
+  }, [activeConversationId])
 
   useEffect(() => {
     setContextUsage(undefined)
@@ -818,7 +855,11 @@ export function App() {
 
   function beginTokenRateTracking(turnId: string) {
     const now = Date.now()
-    turnTokenRates.current[turnId] = { firstAt: now, lastAt: now, lastOutputTokens: 0, requestCount: 1 }
+    // requestCount starts at 0 so RPM doesn't show a phantom "1 request" on
+    // the first sample. RPM stays 0 during the first turn (no prior output to
+    // compare for resetSample detection) and becomes meaningful once a second
+    // request starts and output tokens reset.
+    turnTokenRates.current[turnId] = { firstAt: now, lastAt: now, lastOutputTokens: 0, requestCount: 0 }
     setTokenRate(undefined)
   }
 
@@ -826,6 +867,31 @@ export function App() {
   // a usage-driven meter reads "--" during generation. Live tk/s comes from
   // counting streamed text/thinking deltas (chars → tokens) over a sliding
   // window, calibrated against the real token count whenever usage lands.
+  // Capture thinking_delta text from stream_event payloads, accumulated per-turn
+  // and split into sentence-boundary snippets for the real-time rotating display.
+  function collectThinkingText(turnId: string, payload: unknown): void {
+    if (!isRecord(payload) || payload.type !== 'stream_event' || !isRecord(payload.event)) return
+    const delta = isRecord(payload.event.delta) ? payload.event.delta : undefined
+    if (!delta || delta.type !== 'thinking_delta' || typeof delta.thinking !== 'string') return
+    const text = delta.thinking
+    const accumulated = (turnThinkingText.current[turnId] ?? '') + text
+    turnThinkingText.current[turnId] = accumulated
+    // Split by sentence boundaries, then group into pairs so each snippet
+    // is at least 2 sentences — fewer, meatier chunks the user can actually
+    // read before the timer rotates to the next one.
+    const sentences = accumulated
+      .split(/(?<=[.!?])\s+/)
+      .map(s => s.trim())
+      .filter(s => s.length > 0)
+    const pairs: string[] = []
+    for (let i = 0; i < sentences.length; i += 2) {
+      const pair = [sentences[i], sentences[i + 1]].filter(Boolean).join(' ')
+      if (pair.length > 4) pairs.push(pair)
+    }
+    turnThinkingSnippets.current[turnId] = pairs
+    setThinkingSnippets([...pairs])
+  }
+
   function trackLiveTokenRate(turnId: string, payload: unknown) {
     const text = streamDeltaText(payload)
     if (!text) return
@@ -885,10 +951,10 @@ export function App() {
       firstAt: turnStartedAt.current[turnId] ?? now,
       lastAt: turnStartedAt.current[turnId] ?? now,
       lastOutputTokens: 0,
-      requestCount: 1,
+      requestCount: 0,
     }
     const resetSample = outputTokens < sample.lastOutputTokens
-    const nextRequestCount = resetSample ? sample.requestCount + 1 : Math.max(1, sample.requestCount)
+    const nextRequestCount = resetSample ? sample.requestCount + 1 : Math.max(0, sample.requestCount)
     const requestWindowStart = sample.firstAt
     const elapsedMinutes = Math.max((now - requestWindowStart) / 60000, 1 / 60)
     const requestsPerMinute = nextRequestCount / elapsedMinutes
@@ -950,6 +1016,7 @@ export function App() {
       setRunningTurnId(event.turnId)
       setThinkingTurnId(event.turnId)
       if (conversationId) {
+        setRunningConversations(prev => new Set(prev).add(conversationId))
         appendAssistantPlaceholder(conversationId, event.turnId)
       }
       return
@@ -958,6 +1025,7 @@ export function App() {
     if (event.type === 'stdout') {
       const conversationId = turnConversationIds.current[event.turnId]
       setThinkingTurnId(current => (current === event.turnId ? undefined : current))
+      setThinkingSnippets([])
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
       if (conversationId) {
         appendAssistantText(conversationId, event.turnId, event.text)
@@ -1002,6 +1070,8 @@ export function App() {
       }
       trackLiveTokenRate(event.turnId, event.payload)
       updateTokenRateFromPayload(event.turnId, event.payload)
+      // Capture thinking_delta text for real-time rotating snippet display
+      collectThinkingText(event.turnId, event.payload)
       routeSubagentChildEvent(event.turnId, event.payload)
       collectModelQuestions(event.turnId, event.payload)
       const usage = extractContextUsage(event.payload, selectedContextWindowRef.current)
@@ -1020,9 +1090,15 @@ export function App() {
         }
       }
       const activity = event.runtimeActivity
-      if (activity && activity.kind !== 'thinking') {
+      if (activity && activity.kind !== 'thinking' && activity.kind !== 'compacting') {
         setPetActivity({ kind: activity.kind, label: `${activity.label} ${activity.detail ?? ''}` })
       }
+      if (activity?.kind === 'compacting') {
+        setCompactingTurnId(event.turnId)
+        return
+      }
+      // Clear compaction marker when any other activity arrives for this turn
+      setCompactingTurnId(current => (current === event.turnId ? undefined : current))
       if (activity?.kind === 'subagent') trackActiveSubagent(event.turnId, activity)
       if (conversationId && activity) {
         if (activity.kind === 'command' && activity.detail) {
@@ -1070,8 +1146,11 @@ export function App() {
     if (event.type === 'error') {
       const conversationId = turnConversationIds.current[event.turnId]
       setRunningTurnId(undefined)
+      setRunningConversations(prev => { const next = new Set(prev); next.delete(conversationId); return next })
       setTokenRate(undefined)
       setThinkingTurnId(current => (current === event.turnId ? undefined : current))
+      setThinkingSnippets([])
+      setCompactingTurnId(current => (current === event.turnId ? undefined : current))
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
       clearActiveSubagentsForTurn(event.turnId)
       flashPet('error')
@@ -1081,12 +1160,21 @@ export function App() {
         turnCompletionDeferred.current.reject(new Error(event.message))
         turnCompletionDeferred.current = undefined
       }
+      if (interjectDeferred.current?.turnId === event.turnId) {
+        interjectDeferred.current.resolve()
+        interjectDeferred.current = undefined
+      }
 
       if (conversationId) {
+        const lowerMessage = event.message.toLowerCase()
+        const isContextOverflow = lowerMessage.includes('context')
+          && (lowerMessage.includes('exceed') || lowerMessage.includes('too long') || lowerMessage.includes('maximum'))
         appendConversationItem(conversationId, {
           id: `${event.turnId}:error`,
           role: 'system',
-          text: event.message,
+          text: isContextOverflow
+            ? `${t('context.overflowDetected')}\n\n${event.message}`
+            : event.message,
           timestamp: Date.now(),
         })
       }
@@ -1098,8 +1186,11 @@ export function App() {
     if (event.type === 'done') {
       const conversationId = turnConversationIds.current[event.turnId]
       setRunningTurnId(undefined)
+      setRunningConversations(prev => { const next = new Set(prev); next.delete(conversationId); return next })
       setTokenRate(undefined)
       setThinkingTurnId(current => (current === event.turnId ? undefined : current))
+      setThinkingSnippets([])
+      setCompactingTurnId(current => (current === event.turnId ? undefined : current))
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
       clearActiveSubagentsForTurn(event.turnId)
       flashPet(event.exitCode === 0 ? 'success' : 'error')
@@ -1121,6 +1212,11 @@ export function App() {
       if (turnCompletionDeferred.current?.turnId === event.turnId) {
         turnCompletionDeferred.current.resolve()
         turnCompletionDeferred.current = undefined
+      }
+      // Resolve interject promise if one is pending for this turn
+      if (interjectDeferred.current?.turnId === event.turnId) {
+        interjectDeferred.current.resolve()
+        interjectDeferred.current = undefined
       }
 
     }
@@ -1144,7 +1240,7 @@ export function App() {
       skills: selectedSkills,
     }, titleFromMessage(trimmed))
 
-    if (runningTurnId) {
+    if (isConversationRunning(conversationId)) {
       enqueueFollowUp(queued)
       setAttachedFiles([])
       return
@@ -1153,6 +1249,10 @@ export function App() {
     appendDowngradeActivity(conversationId)
     await runTurn(queued)
     setAttachedFiles([])
+  }
+
+  function isConversationRunning(conversationId: string): boolean {
+    return Object.values(turnConversationIds.current).includes(conversationId)
   }
 
   function createQueuedFollowUp(conversationId: string, message: string): QueuedFollowUp {
@@ -1168,6 +1268,7 @@ export function App() {
       message,
       turnModel,
       request: {
+        conversationId,
         message,
         model: selectedModel,
         modelSupportsVision: Boolean(selectedModelInfo?.supportsVision),
@@ -1215,6 +1316,45 @@ export function App() {
     if (!next) return
     setQueuedFollowUpsList(() => rest)
     await runTurn(next)
+  }
+
+  // Interject a queued message: interrupt the current turn, wait for it to
+  // end, then send the message with the conversation's sessionId so the model
+  // resumes with the new input as context. The model sees the interjection
+  // in its history and can pivot or continue as it sees fit.
+  async function interjectMessage(conversationId: string, queueItemId: string) {
+    if (interjectDeferred.current) return // already interjecting
+    const item = queuedFollowUpsRef.current.find(q => q.id === queueItemId)
+    if (!item) return
+
+    // Find the active turnId for this conversation
+    const activeTurnEntry = Object.entries(turnConversationIds.current).find(([, convId]) => convId === conversationId)
+    const currentTurnId = activeTurnEntry?.[0]
+
+    // Remove from queue and remove the queued activity from transcript
+    setQueuedFollowUpsList(current => current.filter(q => q.id !== queueItemId))
+    updateConversation(conversationId, conversation => ({
+      ...conversation,
+      items: conversation.items.filter(i => i.id !== `${queueItemId}:queued`),
+      updatedAt: Date.now(),
+    }))
+
+    if (!currentTurnId) {
+      // No active turn for this conversation — just send normally
+      appendDowngradeActivity(conversationId)
+      await runTurn(item)
+      return
+    }
+
+    // Wait for the current turn to end (interrupt triggers done/error event)
+    await new Promise<void>(resolve => {
+      interjectDeferred.current = { turnId: currentTurnId, resolve }
+      window.verboo.interrupt(conversationId)
+    })
+
+    // Now send the interjected message with the conversation's sessionId
+    appendDowngradeActivity(conversationId)
+    await runTurn(item)
   }
 
   async function runTurn(item: QueuedFollowUp) {
@@ -1485,7 +1625,7 @@ export function App() {
     stickToBottomRef.current = true
     setShowJumpToLatest(false)
 
-    if (runningTurnId) {
+    if (isConversationRunning(prompt.conversationId)) {
       enqueueFollowUp(followUp)
       return
     }
@@ -1505,6 +1645,7 @@ export function App() {
       message,
       turnModel,
       request: {
+        conversationId,
         message,
         model: selectedModel,
         modelSupportsVision: Boolean(selectedModelInfo?.supportsVision),
@@ -1647,7 +1788,7 @@ export function App() {
     const responseLanguage = conversationLanguageFallback(prompt.conversationId)
     const followUp = createPermissionFollowUp(prompt.conversationId, message, responseLanguage)
     stickToBottomRef.current = true
-    if (runningTurnId) {
+    if (isConversationRunning(prompt.conversationId)) {
       enqueueFollowUp(followUp)
       return
     }
@@ -1847,6 +1988,7 @@ export function App() {
 
         const goalLanguage = inferResponseLanguage(currentGoal.objective, conversationLanguageFallback(conversationId))
         const turnId = await sendTrackedTurn({
+          conversationId,
           message: nextMessage,
           model: selectedModel,
           modelSupportsVision: Boolean(selectedModelInfo?.supportsVision),
@@ -2046,6 +2188,17 @@ export function App() {
       ...store,
       projects: store.projects.map(project =>
         project.id === projectId ? { ...project, name: trimmed, updatedAt: Date.now() } : project,
+      ),
+    }))
+  }
+
+  function renameConversation(conversationId: string, title: string) {
+    const trimmed = title.trim()
+    if (!trimmed) return
+    updateChatStore(store => ({
+      ...store,
+      conversations: store.conversations.map(conversation =>
+        conversation.id === conversationId ? { ...conversation, title: trimmed, updatedAt: Date.now() } : conversation,
       ),
     }))
   }
@@ -2667,10 +2820,6 @@ export function App() {
     setChatStore(current => updater(current))
   }
 
-  function isConversationRunning(conversationId: string): boolean {
-    return Object.values(turnConversationIds.current).includes(conversationId)
-  }
-
   function workingDirectoryForConversation(conversationId: string): string {
     const conversation = chatStore.conversations.find(item => item.id === conversationId)
     const conversationProject = conversation?.projectId
@@ -2944,6 +3093,7 @@ export function App() {
               conversations={shownConversations}
               activeConversationId={activeConversationId}
               selectedProjectId={selectedProjectId}
+              runningConversationIds={runningConversations}
               profile={profile}
               cliAuth={cliAuth}
               compact={sidebarMode === 'compact'}
@@ -2967,6 +3117,7 @@ export function App() {
               onDeleteProject={deleteProject}
               onArchiveConversation={archiveConversation}
               onDeleteConversation={deleteConversation}
+              onRenameConversation={renameConversation}
             />
             <div
               className="sidebar-resizer"
@@ -3033,10 +3184,14 @@ export function App() {
             <>
               <Transcript
                 items={items}
+                conversationId={activeConversationId}
                 onOpenReview={handleOpenReview}
                 reviewMetadata={reviewMetadata}
                 thinkingTurnId={thinkingTurnId}
+                thinkingSnippets={thinkingSnippets}
+                compactingTurnId={compactingTurnId}
                 imageReadingTurnId={imageReadingTurnId}
+                onInterject={interjectMessage}
               />
               <div ref={transcriptEndRef} className="transcript-end" />
             </>
@@ -3094,6 +3249,19 @@ export function App() {
 
       {activeView === 'chat' && (
         <div className={`bottom-dock ${hasConversation ? '' : 'empty-mode'}`}>
+          {runningConversations.size >= 2 && !performanceWarningDismissed && (
+            <div className="performance-warning-banner">
+              <span>{t('performance.multiChatWarning')}</span>
+              <button
+                type="button"
+                className="performance-warning-dismiss"
+                onClick={() => setPerformanceWarningDismissed(true)}
+                aria-label={t('common.close')}
+              >
+                ×
+              </button>
+            </div>
+          )}
           {showSubagentSummary && (
             <SubagentSummaryCard
               agents={workingSubagents}
@@ -3153,7 +3321,9 @@ export function App() {
             onSubmit={sendMessage}
             onGoalCommand={handleGoalCommand}
             onPetCommand={togglePet}
-            busy={Boolean(runningTurnId)}
+            value={composerValue}
+            onValueChange={setComposerValue}
+            busy={activeConversationId ? runningConversations.has(activeConversationId) : false}
             leftToolbar={
               <AccessSelector
                 value={accessMode}

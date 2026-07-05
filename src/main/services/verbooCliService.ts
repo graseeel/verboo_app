@@ -64,7 +64,7 @@ export class VerbooCliService {
 
     const nodePath = await resolveNodeRuntimePath()
     const cliPath = this.resolveCliPath()
-    const prompt = buildPrompt(request)
+    const prompt = buildPrompt(request, !!resumeSessionId)
     const inputBlocks = await buildStructuredInputBlocks(request, prompt)
     const usesStructuredInput = inputBlocks.length > 0
     const structuredPayload = usesStructuredInput
@@ -101,11 +101,18 @@ export class VerbooCliService {
 
     const authTokenPipe = await createAuthTokenPipe(this.credentials)
     const workingDirectory = safeRuntimeWorkingDirectory(request.workingDirectory)
+    // Use 90% of the configured context window as the auto-compact threshold.
+    // This gives the CLI a 10% buffer to compact before hitting the API's hard
+    // limit, preventing "context length exceeded" errors that would otherwise
+    // kill the turn without recovery.
+    const compactThreshold = request.contextWindow
+      ? Math.round(request.contextWindow * 0.9)
+      : undefined
     const child = spawn(nodePath, childArgs, {
       cwd: workingDirectory,
       env: createNodeRuntimeEnv({
         ...(authTokenPipe ? { [authTokenPipe.envVar]: String(authTokenPipe.fd) } : {}),
-        ...(request.contextWindow ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(request.contextWindow) } : {}),
+        ...(compactThreshold ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(compactThreshold) } : {}),
       }),
       stdio: authTokenPipe ? ['pipe', 'pipe', 'pipe', authTokenPipe.handle.fd] : ['pipe', 'pipe', 'pipe'],
     }) as ChildProcessWithoutNullStreams
@@ -312,9 +319,22 @@ async function cleanupAuthTokenPipe(pipe?: AuthTokenPipe): Promise<void> {
   await rm(pipe.dir, { recursive: true, force: true }).catch(() => undefined)
 }
 
-function buildPrompt(request: AgentTurnRequest): string {
+function buildPrompt(request: AgentTurnRequest, isResume: boolean): string {
   const language = request.responseLanguage ?? 'en-US'
   const workingDirectory = safeRuntimeWorkingDirectory(request.workingDirectory)
+  // On resume, the app instructions, personality, custom instructions, memory,
+  // and skills are already in the conversation history from the first turn.
+  // Re-sending them would compound context usage on every subsequent turn.
+  // Only send the working directory (in case it changed) and the new message.
+  if (isResume) {
+    const workspaceLines = [
+      language === 'pt-BR'
+        ? `Diretório de trabalho atual: ${workingDirectory}`
+        : `Current working directory: ${workingDirectory}`,
+    ]
+    const attachmentLines = buildAttachmentLines(request.attachments, language)
+    return [...workspaceLines, ...attachmentLines, request.message].join('\n\n')
+  }
   const appInstructions = request.responseEnhancementsEnabled ? buildAppInstructions() : []
   const workspaceLines = [
     language === 'pt-BR'
@@ -433,6 +453,16 @@ function runtimeStatusFromPayload(payload: unknown): RuntimeStatus | undefined {
 function runtimeActivityFromPayload(payload: unknown): RuntimeActivity | undefined {
   const subagent = subagentActivityFromPayload(payload)
   if (subagent) return subagent
+
+  // Detect context compaction delta events from the CLI. These are emitted
+  // as stream_event deltas with type "compaction_delta" when the CLI auto-
+  // compacts the conversation to fit within the context window.
+  if (isRecord(payload) && payload.type === 'stream_event' && isRecord(payload.event)) {
+    const delta = isRecord(payload.event.delta) ? payload.event.delta : undefined
+    if (delta && (delta.type === 'compaction_delta' || delta.type === 'compaction')) {
+      return { key: 'compaction', label: 'Compacting context...', detail: undefined, kind: 'compacting' }
+    }
+  }
 
   const block = extractToolBlock(payload)
   if (!block) return undefined

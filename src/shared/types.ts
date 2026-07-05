@@ -104,7 +104,7 @@ export type TranscriptItem = {
   text: string
   timestamp: number
   kind?: 'message' | 'activity' | 'summary'
-  activityKind?: 'thinking' | 'image' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool'
+  activityKind?: 'thinking' | 'image' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool' | 'compacting'
   activityDetail?: string
   command?: CommandRun
   changeSummary?: WorkspaceChangeSummary
@@ -325,6 +325,7 @@ export type AttachmentMeta = {
 
 export type AgentTurnRequest = {
   turnId?: string
+  conversationId: string
   message: string
   model?: string
   modelSupportsVision?: boolean
@@ -426,14 +427,14 @@ export type RuntimeActivity = {
 }
 
 export type AgentEvent =
-  | { type: 'started'; turnId: string }
-  | { type: 'stdout'; turnId: string; text: string }
-  | { type: 'stderr'; turnId: string; text: string }
-  | { type: 'json'; turnId: string; payload: unknown; runtimeStatus?: RuntimeStatus; runtimeActivity?: RuntimeActivity }
-  | { type: 'result'; turnId: string; result: AgentResultSnapshot }
+  | { type: 'started'; turnId: string; conversationId?: string }
+  | { type: 'stdout'; turnId: string; conversationId?: string; text: string }
+  | { type: 'stderr'; turnId: string; conversationId?: string; text: string }
+  | { type: 'json'; turnId: string; conversationId?: string; payload: unknown; runtimeStatus?: RuntimeStatus; runtimeActivity?: RuntimeActivity }
+  | { type: 'result'; turnId: string; conversationId?: string; result: AgentResultSnapshot }
   | { type: 'subagent-progress'; progress: ResearchSubagentProgress }
-  | { type: 'error'; turnId: string; message: string }
-  | { type: 'done'; turnId: string; exitCode: number | null }
+  | { type: 'error'; turnId: string; conversationId?: string; message: string }
+  | { type: 'done'; turnId: string; conversationId?: string; exitCode: number | null }
 
 export type AppConfig = {
   workingDirectory: string
