@@ -47,7 +47,7 @@ jobs:
             TAG="${GITHUB_REF_NAME}"
           fi
 
-          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
             echo "Release tag must look like v0.1.5. Got: ${TAG}" >&2
             exit 1
           fi
@@ -125,7 +125,7 @@ jobs:
             TAG="${GITHUB_REF_NAME}"
           fi
 
-          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
             echo "Release tag must look like v0.1.5. Got: ${TAG}" >&2
             exit 1
           fi
@@ -192,7 +192,7 @@ jobs:
             TAG="${GITHUB_REF_NAME}"
           fi
 
-          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
             echo "Release tag must look like v0.1.5. Got: ${TAG}" >&2
             exit 1
           fi
