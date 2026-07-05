@@ -498,6 +498,10 @@ const enUS: Record<string, string> = {
   'updates.statusDownloading': 'Downloading update: {percent}%.',
   'updates.statusDownloaded': 'Version {version} is ready to install.',
   'updates.statusError': 'Could not check for updates.',
+  'updates.popupTitle': 'Update available',
+  'updates.popupBody': 'Version {version} is ready to download.',
+  'updates.downloadNow': 'Download & Install',
+  'updates.later': 'Later',
 
   'performance.multiChatWarning': 'Multiple active chats consume more resources. Request rate and memory usage increase proportionally to the number of conversations running in parallel.',
 
@@ -1065,6 +1069,10 @@ const ptBR: Record<string, string> = {
   'updates.statusDownloading': 'Baixando atualização: {percent}%.',
   'updates.statusDownloaded': 'A versão {version} está pronta para instalar.',
   'updates.statusError': 'Não foi possível verificar atualizações.',
+  'updates.popupTitle': 'Atualização disponível',
+  'updates.popupBody': 'A versão {version} está pronta para baixar.',
+  'updates.downloadNow': 'Baixar e instalar',
+  'updates.later': 'Mais tarde',
 
   'performance.multiChatWarning': 'Múltiplos chats ativos consomem mais recursos. A taxa de requisições e o uso de memória aumentam proporcionalmente ao número de conversas rodando em paralelo.',
 

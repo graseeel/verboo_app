@@ -58,6 +58,7 @@ import { EmptyChat } from './components/EmptyChat'
 import { LoginScreen } from './components/LoginScreen'
 import { TopBar } from './components/TopBar'
 import { Transcript } from './components/Transcript'
+import { UpdateBanner } from './components/UpdateBanner'
 import { AccessSelector } from './features/access/AccessSelector'
 import { Composer } from './features/composer/Composer'
 import { ContextMeter } from './features/context/ContextMeter'
@@ -265,6 +266,7 @@ export function App() {
   )
   const [skills, setSkills] = useState<SkillSummary[]>([])
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | undefined>(undefined)
+  const [dismissedVersion, setDismissedVersion] = useState<string | undefined>(undefined)
   const [selectedSkills, setSelectedSkills] = useState<SkillSummary[]>([])
   const [attachedFiles, setAttachedFiles] = useState<AttachmentMeta[]>([])
   const [accessMode, setAccessMode] = useState<AccessMode>('approval')
@@ -3385,6 +3387,17 @@ export function App() {
       />
 
       <VerbooPet visible={petEnabled} state={petState} size={petSize} onSizeChange={updatePetSize} />
+
+      {updateSnapshot && updateSnapshot.status === 'available'
+        && updateSnapshot.availableVersion
+        && updateSnapshot.availableVersion !== dismissedVersion
+        && (
+          <UpdateBanner
+            snapshot={updateSnapshot}
+            onDownload={() => { void onDownloadUpdate() }}
+            onDismiss={() => setDismissedVersion(updateSnapshot.availableVersion)}
+          />
+        )}
     </main>
     </I18nProvider>
   )
