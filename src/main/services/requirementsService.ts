@@ -80,18 +80,20 @@ function checkPlatform(): RequirementCheck {
   if (process.platform === 'darwin') {
     return pass('platform', 'Operating system', true, 'macOS detected.')
   }
-  return fail('platform', 'Operating system', true, 'This build currently supports macOS only.')
+  return warn('platform', 'Operating system', false, `Non-macOS platform detected (${process.platform}). Some features may behave differently.`)
 }
 
 function checkArchitecture(): RequirementCheck {
   if (process.arch === 'arm64') {
     return pass('architecture', 'CPU architecture', true, 'Apple Silicon arm64 detected.')
   }
-  return fail('architecture', 'CPU architecture', true, 'This build supports Apple Silicon arm64 Macs only.')
+  return warn('architecture', 'CPU architecture', false, `Non-arm64 CPU detected (${process.arch}). The app should still work, but has been optimized for arm64.`)
 }
 
 function checkMacOsVersion(): RequirementCheck {
-  if (process.platform !== 'darwin') return fail('macos-version', 'macOS version', true, 'macOS version unavailable.')
+  if (process.platform !== 'darwin') {
+    return pass('macos-version', 'macOS version', false, `Platform is ${process.platform} — skipping macOS version check.`)
+  }
 
   const version = readMacOsVersion()
   const major = Number(version.split('.')[0])
@@ -197,15 +199,16 @@ function requirementsMarkerPath(): string {
 }
 
 async function showRequirementsFailure(result: RequirementsResult): Promise<void> {
+  const platform = process.platform === 'darwin' ? 'Mac' : process.platform === 'win32' ? 'Windows' : process.platform === 'linux' ? 'Linux' : process.platform
   await dialog.showMessageBox({
     type: 'error',
     title: 'Verboo Code cannot start',
-    message: 'This Verboo Code build is not ready to run on this Mac.',
+    message: `Verboo Code could not satisfy startup requirements on ${platform}.`,
     detail: [
       'Required checks failed:',
       ...result.fatalMessages.map(message => `- ${message}`),
       '',
-      'Install the Apple Silicon build again. Node.js, npm, and a global Verboo CLI are not required for the packaged app.',
+      'Verify your installation. Node.js, npm, and a global Verboo CLI are not required for the packaged app.',
     ].join('\n'),
   })
 }

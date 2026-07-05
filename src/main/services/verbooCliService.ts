@@ -6,7 +6,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
-import type { AgentEvent, AgentResultSnapshot, AgentTurnRequest, AttachmentMeta, CliAuthStatus, GoalEvaluationInput, GoalEvaluationResult, LanguageCode, LoginResult, RuntimeActivity, RuntimeStatus, TokenUsage, UserSettings } from '../../shared/types'
+import type { AgentEvent, AgentResultSnapshot, AgentTurnRequest, AttachmentMeta, CliAuthStatus, GoalEvaluationInput, GoalEvaluationResult, LanguageCode, LoginResult, RuntimeActivity, RuntimeStatus, SkillSummary, TokenUsage, UserSettings } from '../../shared/types'
 import { accessModeConfig } from '../security/accessModes'
 import { createImageBlock, type CliImageBlock } from './attachmentService'
 import { getCliOAuthAccessToken } from './cliCredentials'
@@ -336,9 +336,10 @@ function buildPrompt(request: AgentTurnRequest): string {
         ? `Memória local relevante deste app:\n${request.memoryContext.trim()}`
         : `Relevant local app memory:\n${request.memoryContext.trim()}`]
     : []
+  const skillLines = buildSkillLines(request.skills, language)
   const attachmentLines = buildAttachmentLines(request.attachments, language)
 
-  return [...appInstructions, ...workspaceLines, ...personalization, ...memoryLines, ...attachmentLines, request.message].join('\n\n')
+  return [...appInstructions, ...workspaceLines, ...personalization, ...memoryLines, ...skillLines, ...attachmentLines, request.message].join('\n\n')
 }
 
 function safeRuntimeWorkingDirectory(workingDirectory?: string): string {
@@ -375,6 +376,15 @@ async function buildStructuredInputBlocks(
   return [
     { type: 'text', text: prompt },
     ...imageBlocks,
+  ]
+}
+
+function buildSkillLines(skills: SkillSummary[] | undefined, language: LanguageCode): string[] {
+  if (!skills?.length) return []
+  const lines = skills.map(skill => `- Use skill "${skill.name}" — ${skill.path}`)
+  return [
+    language === 'pt-BR' ? 'Skills disponíveis:' : 'Available skills:',
+    ...lines,
   ]
 }
 

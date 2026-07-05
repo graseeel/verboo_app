@@ -70,6 +70,7 @@ function sendToRenderer(channel: string, payload?: unknown): void {
 }
 
 function createWindow(): void {
+  const isMac = process.platform === 'darwin'
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
@@ -77,8 +78,8 @@ function createWindow(): void {
     minHeight: 640,
     title: 'Verboo Code',
     backgroundColor: '#050508',
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 16, y: 16 },
+    titleBarStyle: isMac ? 'hiddenInset' : 'default',
+    ...(isMac ? { trafficLightPosition: { x: 16, y: 16 } } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,
@@ -155,6 +156,7 @@ function registerIpc(): void {
   ipcMain.handle('config:get', async (): Promise<AppConfig> => ({
     workingDirectory: process.cwd() || app.getPath('home'),
     accessMode: (await userSettings.getSettings()).defaultAccessMode,
+    platform: process.platform,
   }))
   ipcMain.handle('clipboard:read-text', () => clipboard.readText())
   ipcMain.handle('clipboard:write-text', (_event, text: string) => {

@@ -438,6 +438,7 @@ export type AgentEvent =
 export type AppConfig = {
   workingDirectory: string
   accessMode: AccessMode
+  platform: NodeJS.Platform
   selectedModel?: string
 }
 

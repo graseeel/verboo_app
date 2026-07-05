@@ -1,8 +1,23 @@
 # Verboo Code Desktop
 
-Verboo Code Desktop is an independent desktop client for working with the Verboo Code CLI from a focused app interface. It wraps the CLI-oriented workflow with project navigation, chat history, model selection, skill selection, permission controls, profile views, feedback reporting, and a macOS-friendly desktop shell.
+Verboo Code Desktop is an independent desktop client for working with the Verboo Code CLI from a focused app interface. It wraps the CLI-oriented workflow with project navigation, chat history, model selection, skill selection, permission controls, profile views, feedback reporting, and a desktop shell that runs on macOS, Windows, and Linux.
 
 Official CLI upstream: [verbeux-ai/code](https://github.com/verbeux-ai/code).
+
+## Platform Support
+
+| Platform | Architecture | Status | Installer |
+|----------|--------------|--------|-----------|
+| macOS | arm64 (Apple Silicon) | Stable | DMG, ZIP |
+| Windows | x64 | Beta | NSIS `.exe` |
+| Linux | x64 | Beta | AppImage, `.deb` |
+
+The packaged app is self-contained for normal use on all three platforms. It
+includes the Electron runtime, the embedded `@verboo/code` CLI, the local
+terminal module, and the image/OCR dependencies it needs to start.
+
+For per-platform setup, known issues, and troubleshooting, see
+[SETUP.md](SETUP.md).
 
 ## Independent Build Notice
 
@@ -26,8 +41,10 @@ Use this app as an experimental community/independent desktop build. Expect bugs
 
 ## Requirements
 
-- macOS 12.0 or newer.
-- Apple Silicon arm64 Mac. The current package targets MacBook Air M1 and newer.
+- A supported desktop platform:
+  - macOS 12.0 or newer (Apple Silicon arm64)
+  - Windows 10 1809 or newer (x64)
+  - Linux x64 with glibc 2.28+ (Ubuntu 20.04+, Debian 11+, Fedora 35+)
 - Internet access and a valid Verboo session or API key.
 
 The packaged app is self-contained for normal use. It includes the Electron
@@ -38,18 +55,11 @@ Node.js, npm, Homebrew, and a global `@verboo/code` CLI are not required to run
 the packaged app. If the user already has newer compatible versions of those
 tools, the app leaves them untouched.
 
-Git and Apple Command Line Tools are optional, but useful when the assistant
-works inside a real repository:
-
-```bash
-git --version
-xcode-select -p
-```
+Git is optional, but useful when the assistant works inside a real repository.
 
 On first launch per app version, Verboo Code runs a requirements check. It
-blocks only fatal package/platform problems: non-macOS, non-arm64, unsupported
-macOS version, missing embedded CLI, or missing bundled native modules. Optional
-tools such as Git are warnings only.
+blocks only fatal package/platform problems: missing embedded CLI, or missing
+bundled native modules. Optional tools such as Git are warnings only.
 
 See [requirements/README.md](requirements/README.md) for the full runtime
 contract.
@@ -103,9 +113,14 @@ is still open or a previous Verboo Code DMG is still mounted.
 
 ### GitHub Releases
 
-Tagged releases can be built and published by GitHub Actions. The workflow builds
-the macOS arm64 DMG/ZIP artifacts and publishes the updater metadata file
-`latest-mac.yml`.
+Tagged releases can be built and published by GitHub Actions. The workflow runs
+three parallel jobs and publishes:
+
+- macOS arm64: DMG, ZIP, `latest-mac.yml`
+- Windows x64: NSIS `.exe`, `latest.yml`
+- Linux x64: AppImage, `.deb`, `latest-linux.yml`
+
+`electron-updater` auto-detects the correct platform asset on update.
 
 > **macOS signing status:** Current builds are ad-hoc signed. They can be tested
 > locally, but macOS Gatekeeper and update installation are significantly more

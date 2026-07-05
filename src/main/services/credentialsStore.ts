@@ -3,9 +3,12 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { CredentialStatus } from '../../shared/types'
 
+type CredentialEncoding = 'safeStorage' | 'plaintext'
+
 type StoredCredentials = {
   encryptedApiKey?: string
   apiKeyHint?: string
+  encoding?: CredentialEncoding
 }
 
 export class CredentialsStore {
@@ -25,9 +28,17 @@ export class CredentialsStore {
       throw new Error('A chave API esta vazia.')
     }
 
-    const encrypted = safeStorage.encryptString(clean).toString('base64')
     const hint = this.createHint(clean)
-    await this.write({ encryptedApiKey: encrypted, apiKeyHint: hint })
+    if (safeStorage.isEncryptionAvailable()) {
+      const encrypted = safeStorage.encryptString(clean).toString('base64')
+      await this.write({ encryptedApiKey: encrypted, apiKeyHint: hint, encoding: 'safeStorage' })
+    } else {
+      // Fallback: store as plaintext when OS-native keychain is unavailable
+      // (e.g. headless Linux without libsecret, WSL without keyring integration).
+      // The file is still mode 0600 inside userData, so access is limited to
+      // the current user.
+      await this.write({ encryptedApiKey: clean, apiKeyHint: hint, encoding: 'plaintext' })
+    }
     return { hasApiKey: true, apiKeyHint: hint }
   }
 
@@ -43,6 +54,9 @@ export class CredentialsStore {
 
   private decryptApiKey(stored: StoredCredentials): string | undefined {
     if (!stored.encryptedApiKey) return undefined
+    if (stored.encoding === 'plaintext') {
+      return stored.encryptedApiKey
+    }
     try {
       return safeStorage.decryptString(Buffer.from(stored.encryptedApiKey, 'base64'))
     } catch {

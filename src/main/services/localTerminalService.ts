@@ -1,11 +1,23 @@
 import { randomUUID } from 'node:crypto'
 import { stat } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { homedir, platform } from 'node:os'
 import { normalize } from 'node:path'
 import type { IPty } from 'node-pty'
 import type { LocalTerminalSession, LocalTerminalStartRequest } from '../../shared/types'
 
-const DEFAULT_SHELL = process.env.SHELL || '/bin/zsh'
+const DEFAULT_SHELL = resolveDefaultShell()
+
+function resolveDefaultShell(): string {
+  const currentPlatform = platform()
+  if (currentPlatform === 'win32') {
+    return (
+      process.env.SHELL ||
+      process.env.COMSPEC ||
+      'powershell.exe'
+    )
+  }
+  return process.env.SHELL || (currentPlatform === 'linux' ? '/bin/bash' : '/bin/zsh')
+}
 
 type ActiveSession = {
   pty: IPty
@@ -52,9 +64,7 @@ export class LocalTerminalService {
         ...process.env,
         TERM: 'xterm-256color',
         TERM_PROGRAM: 'verboo-terminal',
-        PROMPT_EOL_MARK: '',
-        PROMPT: '%n@%m %1~ %# ',
-        RPROMPT: '',
+        ...shellEnvFor(shell),
       },
     })
 
@@ -199,8 +209,33 @@ export class LocalTerminalService {
 }
 
 function shellArgsFor(shell: string): string[] {
-  const shellName = shell.split('/').at(-1) ?? shell
-  return shellName === 'zsh' ? ['-l', '-o', 'NO_PROMPT_SP', '-o', 'NO_PROMPT_CR'] : []
+  const shellName = shellNameOf(shell)
+  if (shellName === 'zsh') return ['-l', '-o', 'NO_PROMPT_SP', '-o', 'NO_PROMPT_CR']
+  if (shellName === 'bash') return ['-l']
+  if (shellName === 'pwsh' || shellName === 'powershell') return ['-NoLogo']
+  return []
+}
+
+function shellEnvFor(shell: string): NodeJS.ProcessEnv {
+  const shellName = shellNameOf(shell)
+  if (shellName === 'zsh') {
+    return {
+      PROMPT_EOL_MARK: '',
+      PROMPT: '%n@%m %1~ %# ',
+      RPROMPT: '',
+    }
+  }
+  if (shellName === 'bash') {
+    return {
+      PS1: '\\u@\\h \\w \\$ ',
+    }
+  }
+  return {}
+}
+
+function shellNameOf(shell: string): string {
+  const base = shell.split(/[\\/]/).at(-1) ?? shell
+  return base.toLowerCase().replace(/\.exe$/, '')
 }
 
 function sanitizeStartupTerminalData(data: string): string {

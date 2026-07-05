@@ -96,3 +96,143 @@ jobs:
             release/*.zip
             release/latest-mac.yml
           if-no-files-found: error
+
+  windows-x64:
+    name: Build and publish Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+            git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}"
+            git checkout "refs/tags/${TAG}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must look like v0.1.5. Got: ${TAG}" >&2
+            exit 1
+          fi
+
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify package version matches tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e "const pkg = require('./package.json'); const tag = process.env.RELEASE_TAG; if ('v' + pkg.version !== tag) { console.error('package.json version ' + pkg.version + ' does not match tag ' + tag); process.exit(1); }"
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+
+      - name: Build and publish GitHub release artifacts
+        run: npm run release:win:github
+
+      - name: Verify generated update metadata
+        run: npm run verify:update-release
+
+      - name: Upload CI artifact copy
+        uses: actions/upload-artifact@v4
+        with:
+          name: Verboo-Code-${{ steps.release.outputs.tag }}-windows-x64
+          path: |
+            release/*.exe
+            release/latest.yml
+          if-no-files-found: error
+
+  linux-x64:
+    name: Build and publish Linux x64
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+            git fetch origin "refs/tags/${TAG}:refs/tags/${TAG}"
+            git checkout "refs/tags/${TAG}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must look like v0.1.5. Got: ${TAG}" >&2
+            exit 1
+          fi
+
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: npm
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev libx11-dev libxkbfile-dev libgbm-dev libasound2-dev
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify package version matches tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e "const pkg = require('./package.json'); const tag = process.env.RELEASE_TAG; if ('v' + pkg.version !== tag) { console.error('package.json version ' + pkg.version + ' does not match tag ' + tag); process.exit(1); }"
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+
+      - name: Build and publish GitHub release artifacts
+        run: npm run release:linux:github
+
+      - name: Verify generated update metadata
+        run: npm run verify:update-release
+
+      - name: Upload CI artifact copy
+        uses: actions/upload-artifact@v4
+        with:
+          name: Verboo-Code-${{ steps.release.outputs.tag }}-linux-x64
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/latest-linux.yml
+          if-no-files-found: error

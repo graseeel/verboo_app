@@ -1,6 +1,9 @@
+import { app, safeStorage } from 'electron'
 import { execFile } from 'node:child_process'
 import { userInfo } from 'node:os'
 import { promisify } from 'node:util'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 
 const KEYCHAIN_SERVICE = 'Verboo Code-credentials'
 const OAUTH_TOKEN_URL = 'https://code.verboo.ai/oauth/token'
@@ -109,54 +112,95 @@ async function readCliOAuthCredentialsFromKeychain(): Promise<CliOAuthCredential
 }
 
 async function readCliCredentialsBlob(): Promise<Record<string, unknown> | undefined> {
-  if (process.platform !== 'darwin') return undefined
+  // macOS — read from system Keychain via /usr/bin/security
+  if (process.platform === 'darwin') {
+    const account = process.env.USER || userInfo().username
 
-  const account = process.env.USER || userInfo().username
+    try {
+      let stdout = account
+        ? await readKeychainPassword([
+            'find-generic-password',
+            '-a',
+            account,
+            '-w',
+            '-s',
+            KEYCHAIN_SERVICE,
+          ])
+        : undefined
 
-  try {
-    let stdout = account
-      ? await readKeychainPassword([
-          'find-generic-password',
-          '-a',
-          account,
-          '-w',
-          '-s',
-          KEYCHAIN_SERVICE,
-        ])
-      : undefined
+      stdout ??= await readKeychainPassword([
+        'find-generic-password',
+        '-w',
+        '-s',
+        KEYCHAIN_SERVICE,
+      ])
 
-    stdout ??= await readKeychainPassword([
-      'find-generic-password',
-      '-w',
+      if (!stdout) return undefined
+
+      const parsed = JSON.parse(stdout.trim()) as unknown
+      if (!isRecord(parsed)) return undefined
+      return parsed
+    } catch {
+      return undefined
+    }
+  }
+
+  // Windows & Linux — read encrypted blob from userData
+  return readCliCredentialsFile()
+}
+
+async function writeCliCredentialsBlob(blob: Record<string, unknown>): Promise<void> {
+  // macOS — write to system Keychain via /usr/bin/security
+  if (process.platform === 'darwin') {
+    const account = process.env.USER || userInfo().username
+    const payload = Buffer.from(JSON.stringify(blob), 'utf8').toString('hex')
+    await execFileAsync('/usr/bin/security', [
+      'add-generic-password',
+      '-U',
+      '-a',
+      account,
       '-s',
       KEYCHAIN_SERVICE,
-    ])
+      '-X',
+      payload,
+    ], { timeout: KEYCHAIN_TIMEOUT_MS, maxBuffer: KEYCHAIN_MAX_BUFFER })
+    return
+  }
 
-    if (!stdout) return undefined
+  // Windows & Linux — write encrypted blob to userData
+  await writeCliCredentialsFile(blob)
+}
 
-    const parsed = JSON.parse(stdout.trim()) as unknown
-    if (!isRecord(parsed)) return undefined
-    return parsed
+const CLI_CREDENTIALS_FILE = join(app.getPath('userData'), 'secure', 'cli-credentials.json')
+
+async function readCliCredentialsFile(): Promise<Record<string, unknown> | undefined> {
+  try {
+    const raw = await readFile(CLI_CREDENTIALS_FILE, 'utf8')
+    const parsed = JSON.parse(raw.trim()) as { data: string; encoding: string }
+
+    if (parsed.encoding === 'safeStorage') {
+      const decrypted = safeStorage.decryptString(Buffer.from(parsed.data, 'base64'))
+      return JSON.parse(decrypted) as Record<string, unknown>
+    }
+
+    // Fallback (plaintext, mode 0600) — no safeStorage available
+    const decoded = Buffer.from(parsed.data, 'base64').toString('utf8')
+    return JSON.parse(decoded) as Record<string, unknown>
   } catch {
     return undefined
   }
 }
 
-async function writeCliCredentialsBlob(blob: Record<string, unknown>): Promise<void> {
-  if (process.platform !== 'darwin') return
+async function writeCliCredentialsFile(blob: Record<string, unknown>): Promise<void> {
+  const payload = JSON.stringify(blob)
+  const encoding = safeStorage.isEncryptionAvailable() ? 'safeStorage' : 'plaintext'
 
-  const account = process.env.USER || userInfo().username
-  const payload = Buffer.from(JSON.stringify(blob), 'utf8').toString('hex')
-  await execFileAsync('/usr/bin/security', [
-    'add-generic-password',
-    '-U',
-    '-a',
-    account,
-    '-s',
-    KEYCHAIN_SERVICE,
-    '-X',
-    payload,
-  ], { timeout: KEYCHAIN_TIMEOUT_MS, maxBuffer: KEYCHAIN_MAX_BUFFER })
+  const data = encoding === 'safeStorage'
+    ? safeStorage.encryptString(payload).toString('base64')
+    : Buffer.from(payload, 'utf8').toString('base64')
+
+  await mkdir(dirname(CLI_CREDENTIALS_FILE), { recursive: true, mode: 0o700 })
+  await writeFile(CLI_CREDENTIALS_FILE, JSON.stringify({ data, encoding }), { encoding: 'utf8', mode: 0o600 })
 }
 
 async function readKeychainPassword(args: string[]): Promise<string | undefined> {

@@ -1,6 +1,7 @@
 import { constants, existsSync } from 'node:fs'
 import { access } from 'node:fs/promises'
 import { delimiter, join, sep } from 'node:path'
+import { homedir, platform } from 'node:os'
 
 let cachedNodePath: string | undefined
 let cachedIsElectron = false
@@ -83,15 +84,47 @@ function nodeRuntimeCandidates(): string[] {
   const pathCandidates = (process.env.PATH ?? '')
     .split(delimiter)
     .filter(Boolean)
-    .map(pathDir => join(pathDir, 'node'))
+    .map(pathDir => join(pathDir, platform() === 'win32' ? 'node.exe' : 'node'))
+
+  const platformCandidates = platformSpecificNodeCandidates()
 
   return uniquePaths([
     ...envCandidates,
-    '/opt/homebrew/bin/node',
-    '/usr/local/bin/node',
-    '/usr/bin/node',
+    ...platformCandidates,
     ...pathCandidates,
   ])
+}
+
+function platformSpecificNodeCandidates(): string[] {
+  const home = homedir()
+  const currentPlatform = platform()
+
+  if (currentPlatform === 'win32') {
+    const programFiles = process.env.PROGRAMFILES ?? 'C:\\Program Files'
+    const programFilesX86 = process.env['PROGRAMFILES(X86)'] ?? 'C:\\Program Files (x86)'
+    const localAppData = process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local')
+    return [
+      join(programFiles, 'nodejs', 'node.exe'),
+      join(programFilesX86, 'nodejs', 'node.exe'),
+      join(localAppData, 'fnm_multishells', 'node.exe'),
+      join(localAppData, 'Volta', 'bin', 'node.exe'),
+      join(home, 'scoop', 'apps', 'nodejs', 'current', 'node.exe'),
+      join(home, 'AppData', 'Roaming', 'nvm', 'node.exe'),
+    ]
+  }
+
+  if (currentPlatform === 'linux' || currentPlatform === 'darwin') {
+    return [
+      '/opt/homebrew/bin/node',
+      '/usr/local/bin/node',
+      '/usr/bin/node',
+      join(home, '.local', 'share', 'fnm', 'aliases', 'default', 'bin', 'node'),
+      join(home, '.volta', 'bin', 'node'),
+      join(home, '.nvm', 'versions', 'node', 'current', 'bin', 'node'),
+    ]
+  }
+
+  return []
 }
 
 function uniquePaths(paths: Array<string | undefined>): string[] {

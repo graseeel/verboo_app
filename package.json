@@ -1,7 +1,7 @@
 {
   "name": "verboo-desktop",
   "version": "0.1.5",
-  "description": "Independent desktop app for the Verboo Code CLI",
+  "description": "Multi-platform desktop app for the Verboo Code CLI (macOS, Windows, Linux)",
   "author": "Gabriel Grasel de Moura",
   "license": "MIT",
   "repository": {
@@ -25,6 +25,10 @@
     "dist:unsigned": "node scripts/package-preflight.mjs --dist && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
     "release:mac:github": "node scripts/package-preflight.mjs --dist && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish always",
     "release:mac:local": "node scripts/package-preflight.mjs --dist && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish never",
+    "release:win:github": "node scripts/package-preflight.mjs --dist && npm run build && electron-builder --win --publish always",
+    "release:win:local": "node scripts/package-preflight.mjs --dist && npm run build && electron-builder --win --publish never",
+    "release:linux:github": "node scripts/package-preflight.mjs --dist && npm run build && electron-builder --linux --publish always",
+    "release:linux:local": "node scripts/package-preflight.mjs --dist && npm run build && electron-builder --linux --publish never",
     "verify:update-release": "node scripts/verify/update-release-assets.mjs"
   },
   "dependencies": {
@@ -57,7 +61,7 @@
   "build": {
     "appId": "ai.verboo.code.desktop",
     "productName": "Verboo Code",
-    "artifactName": "Verboo-Code-${version}-${arch}.${ext}",
+    "artifactName": "Verboo-Code-${os}-${version}-${arch}.${ext}",
     "publish": [
       {
         "provider": "github",
@@ -77,7 +81,10 @@
     "asarUnpack": [
       "node_modules/@verboo/code/**",
       "node_modules/@anthropic-ai/sandbox-runtime/**",
-      "node_modules/@vscode/ripgrep-darwin-arm64/**"
+      "node_modules/@vscode/ripgrep*/**",
+      "node_modules/node-pty/prebuilds/**",
+      "node_modules/node-pty/build/**",
+      "node_modules/@img/sharp*/**"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
@@ -93,6 +100,43 @@
           "target": "zip",
           "arch": [
             "arm64"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "icon": "assets/branding/verboo.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/branding/verboo.ico",
+      "uninstallerIcon": "assets/branding/verboo.ico",
+      "installerHeaderIcon": "assets/branding/verboo.ico"
+    },
+    "linux": {
+      "icon": "assets/branding/verboo.png",
+      "category": "Development",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
           ]
         }
       ]

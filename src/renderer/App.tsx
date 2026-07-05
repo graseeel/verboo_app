@@ -236,6 +236,7 @@ export function App() {
   const [config, setConfig] = useState<AppConfig>({
     workingDirectory: '',
     accessMode: 'approval',
+    platform: 'darwin',
   })
   const [credentials, setCredentials] = useState<CredentialStatus>({ hasApiKey: false })
   const [cliAuth, setCliAuth] = useState<CliAuthStatus>({ loggedIn: false })
@@ -416,6 +417,7 @@ export function App() {
       setAccessMode(settings.defaultAccessMode)
       setConfig(nextConfig)
       setAccessMode(nextConfig.accessMode)
+      document.documentElement.dataset.platform = nextConfig.platform
       if (settings.staySignedIn && readRememberedAuthSession()) {
         setEntryUnlocked(true)
       }
@@ -1656,7 +1658,7 @@ export function App() {
 
       appendConversationItem(conversationId, goalSystemMessage(`Objetivo iniciado: ${command.objective}`))
 
-      const message = buildGoalStartMessage(command.objective, selectedSkills, wd)
+      const message = buildGoalStartMessage(command.objective, wd)
       appendConversationItem(conversationId, {
         id: `user:goal:${Date.now()}`,
         role: 'user',
@@ -1800,11 +1802,7 @@ export function App() {
     await runGoalCycle(delegate)
   }
 
-  function buildGoalStartMessage(objective: string, skills: SkillSummary[], workingDirectory: string): string {
-    const skillLines = skills.length
-      ? skills.map(skill => `- Use skill "${skill.name}" (${skill.path})`).join('\n')
-      : ''
-
+  function buildGoalStartMessage(objective: string, workingDirectory: string): string {
     return [
       `## Goal: ${objective}`,
       '',
@@ -1812,7 +1810,6 @@ export function App() {
       'Complete the objective step by step. Do NOT ask for confirmation for each step.',
       'When you believe the objective is complete, summarize what was done.',
       '',
-      skillLines ? `Skills available:\n${skillLines}\n` : '',
       `Working directory: ${workingDirectory}`,
     ].filter(Boolean).join('\n')
   }
