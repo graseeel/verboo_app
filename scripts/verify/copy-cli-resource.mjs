@@ -4,8 +4,13 @@
 //
 // Run automatically by `build:tauri` before `cargo tauri build`.
 // Skips silently if the source CLI is not installed (dev-only builds).
+//
+// The copy is made executable (0755) and given a shebang so the OS can
+// exec it directly via `#!/usr/bin/env node`. Without this, the bundled
+// file is mode 0644 with no shebang and `cli_path::resolve()` correctly
+// falls through to the PATH-installed `verboo`.
 
-import { copyFile, mkdir, stat, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdir, stat, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,5 +35,14 @@ if (sourceSize < 1024) {
   process.exit(1);
 }
 
-await copyFile(source, target);
-console.log(`[copy-cli-resource] Copied ${sourceSize} bytes → ${target}`);
+// Read source, prepend shebang if missing, write to target.
+const sourceBytes = await readFile(source);
+const SHEBANG = "#!/usr/bin/env node\n";
+const hasShebang = sourceBytes.length >= 2 && sourceBytes[0] === 0x23 && sourceBytes[1] === 0x21;
+const outBytes = hasShebang ? sourceBytes : Buffer.concat([Buffer.from(SHEBANG, "utf8"), sourceBytes]);
+await writeFile(target, outBytes);
+
+// chmod +x so the OS can exec it directly.
+await chmod(target, 0o755);
+
+console.log(`[copy-cli-resource] Copied ${outBytes.length} bytes → ${target} (mode 0755, shebang: ${hasShebang ? "preserved" : "added"})`);

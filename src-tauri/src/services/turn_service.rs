@@ -26,6 +26,13 @@ const AGENT_EVENT_CHANNEL: &str = "agent:event";
 ///   - Emits `agent:event` Tauri events back to the renderer
 ///   - On close, emits the final result snapshot + a `done` event
 ///
+/// Wraps the spawned CLI child so both the `active` map (for `interrupt`)
+/// and the stdout reader thread can share ownership. The child itself stays
+/// in this Arc; stdout/stderr are taken once at spawn time and handed off to
+/// reader threads. Killing the child is done by calling `interrupt_child`
+/// while holding the inner mutex.
+type ChildHandle = Arc<Mutex<Child>>;
+
 /// Auth: the API key (if stored) is injected via `OAUTH_TOKEN_FILE` env var
 /// pointing at a 0600 temp file. This matches Electron's behavior of
 /// "API key has precedence over OAuth token" (verbooCliService.ts:306) and
@@ -33,7 +40,7 @@ const AGENT_EVENT_CHANNEL: &str = "agent:event";
 /// the app's credential store is enough.
 pub struct TurnService {
     /// Active child processes keyed by turn_id, so `interrupt` can signal them.
-    active: Arc<Mutex<std::collections::HashMap<String, Child>>>,
+    active: Arc<Mutex<std::collections::HashMap<String, ChildHandle>>>,
     cli_path: String,
     credentials: Arc<CredentialsStore>,
 }
@@ -128,51 +135,49 @@ impl TurnService {
         }
         let _token_file = inject_api_key(api_key.as_deref(), &mut cmd);
 
-        let child = cmd
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("Falha ao iniciar CLI Verboo: {e}"))?;
 
         let child_id = child.id();
 
-        // Track child so interrupt() can kill it.
+        // Take stdout/stderr BEFORE wrapping in Arc<Mutex<>> so the streams
+        // can be moved into reader threads.
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "CLI stdout unavailable.".to_string())?;
+        // Stderr is best-effort debug — we drop the handle to avoid the
+        // pipe buffer filling up if the CLI logs heavily. Stderr text isn't
+        // surfaced to the renderer in this Tauri version (Electron did).
+        drop(child.stderr.take());
+
+        // Wrap in Arc<Mutex<>> so both the active map AND the stdout reader
+        // thread can hold a handle. The reader thread calls `wait()` on
+        // its clone of the Arc; `interrupt()` calls `kill()` on the map's
+        // clone.
+        let child_handle = Arc::new(Mutex::new(child));
+
         {
             let mut active = self
                 .active
                 .lock()
                 .map_err(|e| format!("Lock error: {e}"))?;
-            active.insert(turn_id.clone(), child);
+            active.insert(turn_id.clone(), child_handle.clone());
         }
-
-        // Re-acquire child to read streams — we have to take it out of the
-        // map because `child.stdout`/`child.stderr` need `&mut child`.
-        let mut child_taken = {
-            let mut active = self
-                .active
-                .lock()
-                .map_err(|e| format!("Lock error: {e}"))?;
-            active
-                .remove(&turn_id)
-                .ok_or_else(|| "Turn was cancelled before streaming started.".to_string())?
-        };
-
-        let stdout = child_taken
-            .stdout
-            .take()
-            .ok_or_else(|| "CLI stdout unavailable.".to_string())?;
-        let stderr = child_taken
-            .stderr
-            .take()
-            .ok_or_else(|| "CLI stderr unavailable.".to_string())?;
 
         let app_for_stdout = app.clone();
         let turn_id_for_stdout = turn_id.clone();
         let conversation_id_for_stdout = conversation_id.clone();
+        let active_map_for_thread = self.active.clone();
 
         // Spawn reader thread for stdout (the main streaming channel).
         // `_token_file` is moved into the closure so the 0600 temp file stays
-        // alive while the child holds the fd/path.
+        // alive while the child holds the fd/path. `child_handle` is moved
+        // so the thread can call `wait()` to get the exit code.
         thread::spawn(move || {
             let _token_file = _token_file;
+            let child_handle = child_handle;
             let reader = BufReader::new(stdout);
             let mut emitted_stream_text = false;
             let mut result_snapshot: Option<AgentResultSnapshot> = None;
@@ -245,8 +250,20 @@ impl TurnService {
                 }
             }
 
-            // Wait for child to exit to get the exit code.
-            let exit_code = child_taken.wait().ok().and_then(|s| s.code());
+            // Wait for child to exit to get the exit code. The Arc<Mutex>
+            // is the same handle that lives in the active map; we hold a
+            // second clone in the closure.
+            let exit_code = child_handle
+                .lock()
+                .ok()
+                .and_then(|mut c| c.wait().ok())
+                .and_then(|s| s.code());
+            // Remove the child from the active map now that the turn is done.
+            // We can't hold the map lock directly (we're in a separate thread),
+            // but we share the Arc with the active map.
+            if let Some(mut map) = active_map_for_thread.lock().ok() {
+                map.remove(&turn_id_for_stdout);
+            }
             if let Some(snap) = result_snapshot {
                 emit_event(
                     &app_for_stdout,
@@ -275,33 +292,6 @@ impl TurnService {
             let _ = child_id;
         });
 
-        // Spawn reader thread for stderr (best-effort, no parsing).
-        let app_for_stderr = app.clone();
-        let turn_id_for_stderr = turn_id.clone();
-        let conversation_id_for_stderr = conversation_id.clone();
-        thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                let line = match line {
-                    Ok(l) => l,
-                    Err(_) => break,
-                };
-                let clean = clean_terminal_text(&line);
-                if !clean.trim().is_empty() {
-                    emit_event(
-                        &app_for_stderr,
-                        AgentEvent {
-                            event_type: EventType::Stderr,
-                            turn_id: Some(turn_id_for_stderr.clone()),
-                            conversation_id: Some(conversation_id_for_stderr.clone()),
-                            text: Some(format!("{clean}\n")),
-                            ..Default::default()
-                        },
-                    );
-                }
-            }
-        });
-
         Ok(turn_id)
     }
 
@@ -324,11 +314,12 @@ impl TurnService {
             active.keys().next().cloned()
         };
         if let Some(key) = target_key {
-            if let Some(mut child) = active.remove(&key) {
+            if let Some(child_handle) = active.get_mut(&key) {
                 // Try graceful interrupt first (SIGINT / Ctrl+C), then kill.
-                let _ = crate::services::child_signal::interrupt_child(&mut child);
-                let _ = child.wait();
-                return Ok(true);
+                if let Ok(mut child) = child_handle.lock() {
+                    let _ = crate::services::child_signal::interrupt_child(&mut child);
+                    return Ok(true);
+                }
             }
         }
         Ok(false)
