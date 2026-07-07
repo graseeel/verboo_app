@@ -80,8 +80,19 @@ fn get_cli_auth_status(cli: tauri::State<'_, CliService>) -> Result<CliAuthStatu
 }
 
 #[tauri::command]
-fn logout(cli: tauri::State<'_, CliService>) -> Result<LoginResult, String> {
-    cli.logout()
+fn logout(
+    cli: tauri::State<'_, CliService>,
+    credentials: tauri::State<'_, CredentialsStore>,
+) -> Result<LoginResult, String> {
+    // Logout must clear BOTH credentials — the CLI's OAuth session AND the
+    // app's stored API key. Otherwise the user "comes back logged in" after
+    // logout because the API key persists in the keychain. Mirrors
+    // Electron's `logout()` + `clearApiKey()` (cliCredentials.ts + auth.ts).
+    let result = cli.logout();
+    // Always attempt to clear the API key, even if CLI logout failed — the
+    // user's intent is to log out, so we shouldn't leave half a session.
+    let _ = credentials.clear_api_key();
+    result
 }
 
 #[tauri::command]
@@ -133,10 +144,14 @@ fn clear_api_key(
 fn list_models(
     force_refresh: bool,
     model_service: tauri::State<'_, ModelService>,
-    credentials: tauri::State<'_, CredentialsStore>,
+    _credentials: tauri::State<'_, CredentialsStore>,
 ) -> Result<ModelDiscoveryResult, String> {
-    let api_key = credentials.get_api_key().ok().flatten();
-    model_service.list_models(api_key.as_deref(), force_refresh)
+    // Resolve CLI OAuth token first (with refresh), fall back to API key.
+    // The CLI token gives models with `display_name` (rich names); the API
+    // key gives models without `display_name` (raw ids like "glm-5.2").
+    let credentials_fresh = CredentialsStore::new();
+    let token = crate::services::auth_token::resolve_token(&credentials_fresh);
+    model_service.list_models(token.as_deref(), force_refresh)
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -145,15 +160,25 @@ fn list_models(
 
 #[tauri::command]
 async fn get_profile(
-    credentials: tauri::State<'_, CredentialsStore>,
+    _credentials: tauri::State<'_, CredentialsStore>,
 ) -> Result<ProfileResult, String> {
-    // Read the API key from the OS keyring. The keyring call is blocking
-    // but fast (<10ms typical); we don't bother with spawn_blocking here.
-    let api_key = credentials.get_api_key()?;
+    // Resolve the bearer token (CLI OAuth first, API key fallback) on a
+    // blocking thread — the CLI token read may hit the keychain, and the
+    // refresh may POST to /oauth/token. The `_credentials` parameter
+    // is unused at runtime (we instantiate a fresh `CredentialsStore`
+    // inside the spawned task so it can cross the await boundary), but
+    // we still declare it so Tauri's command resolver continues to find
+    // the dependency in the state graph.
+    let credentials_clone = CredentialsStore::new();
+    let token = tokio::task::spawn_blocking(move || {
+        crate::services::auth_token::resolve_token(&credentials_clone)
+    })
+    .await
+    .map_err(|e| format!("Falha ao resolver token: {e}"))?;
     let svc = ProfileService::new();
     // Run the HTTP fetches on a blocking thread — reqwest::blocking panics
     // if called from an async runtime.
-    let result = tokio::task::spawn_blocking(move || svc.get_profile(api_key.as_deref()))
+    let result = tokio::task::spawn_blocking(move || svc.get_profile(token.as_deref()))
         .await
         .map_err(|e| format!("Falha ao carregar perfil: {e}"))?;
     Ok(result)
@@ -360,11 +385,14 @@ fn open_external_file(
 #[tauri::command]
 fn evaluate_goal(
     input: GoalEvaluationInput,
-    credentials: tauri::State<'_, CredentialsStore>,
+    _credentials: tauri::State<'_, CredentialsStore>,
 ) -> Result<EvaluationResult, String> {
-    let api_key = credentials.get_api_key()?;
+    // CLI token first (with refresh), API key fallback — same resolver as
+    // turns/profile/models.
+    let credentials_fresh = CredentialsStore::new();
+    let token = crate::services::auth_token::resolve_token(&credentials_fresh);
     Ok(
-        crate::services::goal_evaluator::GoalEvaluator::evaluate(input, api_key.as_deref())
+        crate::services::goal_evaluator::GoalEvaluator::evaluate(input, token.as_deref())
             .into(),
     )
 }

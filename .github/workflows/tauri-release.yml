@@ -155,6 +155,10 @@ jobs:
         run: cargo +1.89.0 install tauri-cli --version "^2.0.0" --locked
 
       - name: Build Tauri bundle
+        env:
+          # Clear RUSTFLAGS so cargo-tauri's default flags don't break proc-macro
+          # linking (ctor-proc-macro "can't find crate" error on Rust 1.89).
+          RUSTFLAGS: ""
         run: cargo +1.89.0 tauri build --target ${{ matrix.target }}
 
       - name: Upload artifacts

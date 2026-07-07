@@ -170,11 +170,16 @@ fn run_evaluation_cli(
     timeout: Duration,
     api_key: Option<&str>,
 ) -> Result<String, String> {
-    let cli = resolve_cli_path()?;
+    let _ = resolve_cli_path()?; // ensures CLI is findable (used for error messages)
     let started = Instant::now();
-    let mut cmd = Command::new(&cli);
-    cmd.args(["--print", prompt, "--output-format", "json"])
-        .current_dir(working_directory)
+    let spawn = crate::services::cli_spawn::CliSpawn::new([
+        "--print",
+        prompt,
+        "--output-format",
+        "json",
+    ]);
+    let mut cmd = spawn.command;
+    cmd.current_dir(working_directory)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

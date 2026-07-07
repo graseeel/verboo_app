@@ -4,9 +4,9 @@
   "version": "0.3.0-beta.1",
   "identifier": "ai.verboo.code.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev:renderer",
+    "beforeDevCommand": "cd .. && npm run dev:renderer",
     "devUrl": "http://localhost:5183",
-    "beforeBuildCommand": "npm run build:renderer",
+    "beforeBuildCommand": "cd .. && npm run build:renderer",
     "frontendDist": "../dist-renderer"
   },
   "app": {
@@ -38,7 +38,7 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/cli.mjs"
+      "resources/cli-package/"
     ],
     "macOS": {
       "minimumSystemVersion": "12.0"

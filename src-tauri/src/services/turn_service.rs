@@ -10,7 +10,7 @@ use crate::models::types::{
     AttachmentKind, EventType, LanguageCode, PersonalityMode, RuntimeActivity, RuntimeStatus,
     RuntimeStatusKind,
 };
-use crate::services::auth_token::inject_api_key;
+use crate::services::auth_token::{inject_api_key, resolve_token};
 use crate::services::credentials_store::CredentialsStore;
 
 const AGENT_EVENT_CHANNEL: &str = "agent:event";
@@ -41,7 +41,6 @@ type ChildHandle = Arc<Mutex<Child>>;
 pub struct TurnService {
     /// Active child processes keyed by turn_id, so `interrupt` can signal them.
     active: Arc<Mutex<std::collections::HashMap<String, ChildHandle>>>,
-    cli_path: String,
     credentials: Arc<CredentialsStore>,
 }
 
@@ -49,7 +48,6 @@ impl TurnService {
     pub fn new(credentials: Arc<CredentialsStore>) -> Self {
         Self {
             active: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            cli_path: resolve_cli_path(),
             credentials,
         }
     }
@@ -115,14 +113,18 @@ impl TurnService {
 
         let working_directory = safe_runtime_working_directory(&request.working_directory);
 
-        let api_key = self
-            .credentials
-            .get_api_key()
-            .map_err(|e| format!("Falha ao ler API key: {e}"))?;
+        // Resolve the bearer token (CLI OAuth first with refresh, API key
+        // fallback). The CLI token gives full account access; the API key
+        // is the fallback for users who haven't done `verboo auth login`.
+        let token = resolve_token(&self.credentials);
 
-        let mut cmd = Command::new(&self.cli_path);
-        cmd.args(&args)
-            .current_dir(&working_directory)
+        // Build the CLI spawn. CliSpawn picks the best runtime:
+        //   - `<node> <bundled-cli.mjs>` (self-contained — option B of doc 03)
+        //   - `<node> <VERBOO_CLI_PATH>` (dev)
+        //   - `verboo` global on PATH (last-resort fallback)
+        let spawn = crate::services::cli_spawn::CliSpawn::new(&args);
+        let mut cmd = spawn.command;
+        cmd.current_dir(&working_directory)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -133,7 +135,7 @@ impl TurnService {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(crate::services::child_signal::process_creation_flags());
         }
-        let _token_file = inject_api_key(api_key.as_deref(), &mut cmd);
+        let _token_file = inject_api_key(token.as_deref(), &mut cmd);
 
         let mut child = cmd
             .spawn()
@@ -338,6 +340,7 @@ fn emit_event(app: &AppHandle, event: AgentEvent) {
 
 /// Resolve the `verboo` CLI path: env override first, then PATH.
 /// Follow-up: bundled CLI via Node sidecar for packaged builds.
+#[allow(dead_code)]
 fn resolve_cli_path() -> String {
     crate::services::cli_path::resolve().unwrap_or_else(|| "verboo".to_string())
 }

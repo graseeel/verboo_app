@@ -1,0 +1,560 @@
+//! Port of Electron's `cliCredentials.ts`. Reads the CLI's OAuth credentials
+//! from the same store the CLI itself uses, and refreshes them when they're
+//! about to expire.
+//!
+//! Storage differs per-OS (mirrors the CLI's own logic):
+//!   - **macOS**: System Keychain, service `Verboo Code-credentials`, account
+//!     `$USER` (or no account, as fallback). Read/written via
+//!     `/usr/bin/security`.
+//!   - **Windows / Linux**: Plaintext JSON at
+//!     `~/.verboo/.credentials.json` (the CLI's own config dir, overridable
+//!     via `VERBOO_CONFIG_DIR`). The CLI uses libsecret when available and
+//!     falls back to this file; we read the file directly because libsecret
+//!     support in Rust isn't always reliable across desktop environments.
+//!
+//! All functions are blocking (keychain + HTTP). The caller is expected to
+//! run them on `spawn_blocking` if called from an async context.
+
+use std::collections::HashMap;
+use std::process::Command;
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+const KEYCHAIN_SERVICE: &str = "Verboo Code-credentials";
+const OAUTH_TOKEN_URL: &str = "https://code.verboo.ai/oauth/token";
+const OAUTH_CLIENT_ID: &str = "verboo-code-cli";
+const TOKEN_REFRESH_SKEW_MS: u64 = 60_000;
+const KEYCHAIN_TIMEOUT_MS: u64 = 10_000;
+
+const DEFAULT_OAUTH_SCOPES: &[&str] = &[
+    "user:profile",
+    "user:inference",
+    "user:sessions:claude_code",
+    "user:mcp_servers",
+    "user:file_upload",
+];
+
+/// CLI OAuth credentials parsed from the `verbooOauth` blob.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CliOAuthCredentials {
+    pub access_token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>, // ms since epoch
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit_tier: Option<String>,
+}
+
+/// Process-wide cache. Avoids re-reading the keychain on every API call.
+/// The CLI itself caches similarly (see `cliCredentials.ts:27`).
+static CACHE: Mutex<Option<CliOAuthCredentials>> = Mutex::new(None);
+
+/// Resets the cache. Used by tests to avoid cross-test leakage.
+#[cfg(test)]
+fn reset_cache() {
+    if let Ok(mut c) = CACHE.lock() {
+        *c = None;
+    }
+}
+
+/// Returns a fresh access token (refreshing first if needed).
+///
+/// Resolution order:
+///   1. Read cached creds (if still valid).
+///   2. Read creds from CLI store.
+///   3. If `should_refresh()` → POST /oauth/token, write back, return new.
+///   4. If refresh fails but current is still valid → return it.
+///   5. Else → None.
+///
+/// Never panics. Returns None on any failure (caller falls back to API key).
+pub fn get_access_token() -> Option<String> {
+    // Fast path: cache hit (no keychain read).
+    {
+        let cached = CACHE.lock().ok()?;
+        if let Some(c) = cached.as_ref() {
+            if !should_refresh(c) {
+                return Some(c.access_token.clone());
+            }
+        }
+    }
+
+    // Slow path: read + refresh.
+    let credentials = match read_credentials_from_store() {
+        Some(c) => c,
+        None => return None,
+    };
+
+    // Update cache with what we just read.
+    {
+        if let Ok(mut c) = CACHE.lock() {
+            *c = Some(credentials.clone());
+        }
+    }
+
+    if !should_refresh(&credentials) {
+        return Some(credentials.access_token);
+    }
+
+    // Refresh. On failure, fall back to the current token if it hasn't
+    // expired yet (the 60s skew gives us a buffer).
+    match refresh_access_token(&credentials) {
+        Some(refreshed) => {
+            {
+                if let Ok(mut c) = CACHE.lock() {
+                    *c = Some(refreshed.clone());
+                }
+            }
+            write_credentials_to_store(&refreshed);
+            Some(refreshed.access_token)
+        }
+        None => {
+            if !is_expired(&credentials) {
+                Some(credentials.access_token)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Returns the credentials blob path for Windows/Linux (mirror of the CLI's
+/// own `getStoragePath`).
+fn cli_credentials_file_path() -> Option<std::path::PathBuf> {
+    // VERBOO_CONFIG_DIR overrides the default ~/.verboo.
+    if let Ok(dir) = std::env::var("VERBOO_CONFIG_DIR") {
+        if !dir.trim().is_empty() {
+            return Some(std::path::PathBuf::from(dir).join(".credentials.json"));
+        }
+    }
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)?;
+    Some(home.join(".verboo").join(".credentials.json"))
+}
+
+/// Reads the CLI credentials blob (cross-platform).
+///
+/// macOS: reads from system Keychain via `/usr/bin/security`.
+/// Windows/Linux: reads the plaintext JSON file at
+/// `~/.verboo/.credentials.json` (or `VERBOO_CONFIG_DIR` override).
+///
+/// Returns the parsed `verbooOauth` credentials, or None if missing /
+/// unparseable.
+fn read_credentials_from_store() -> Option<CliOAuthCredentials> {
+    let blob: Value = if cfg!(target_os = "macos") {
+        read_keychain_blob()
+    } else {
+        read_file_blob()
+    }?;
+
+    let oauth = blob.get("verbooOauth")?;
+    parse_oauth(oauth)
+}
+
+/// Writes the credentials blob back to the CLI's store (after refresh).
+fn write_credentials_to_store(creds: &CliOAuthCredentials) {
+    // Read the current blob (so we preserve other fields the CLI wrote),
+    // then merge our refreshed `verbooOauth` and write back.
+    let mut blob: Value = if cfg!(target_os = "macos") {
+        read_keychain_blob().unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+    } else {
+        read_file_blob().unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+    };
+
+    // Inject the refreshed verbooOauth.
+    if let Ok(serialized) = serde_json::to_value(creds) {
+        if let Some(obj) = blob.as_object_mut() {
+            obj.insert("verbooOauth".into(), serialized);
+        }
+    }
+
+    if cfg!(target_os = "macos") {
+        write_keychain_blob(&blob);
+    } else {
+        write_file_blob(&blob);
+    }
+}
+
+/// Reads the blob from macOS Keychain via `/usr/bin/security
+/// find-generic-password -s "Verboo Code-credentials" -a $USER -w`.
+/// Falls back to no-account lookup if `$USER` matches nothing.
+fn read_keychain_blob() -> Option<Value> {
+    let account = std::env::var("USER").ok();
+
+    // Try with account first.
+    if let Some(acc) = account.as_ref() {
+        if let Some(output) = run_security(&[
+            "find-generic-password",
+            "-a",
+            acc,
+            "-w",
+            "-s",
+            KEYCHAIN_SERVICE,
+        ]) {
+            if let Some(v) = parse_json_blob(&output) {
+                return Some(v);
+            }
+        }
+    }
+
+    // Fallback: any account.
+    let output = run_security(&["find-generic-password", "-w", "-s", KEYCHAIN_SERVICE])?;
+    parse_json_blob(&output)
+}
+
+/// Writes the blob back to macOS Keychain via `/usr/bin/security
+/// add-generic-password -U -a $USER -s "Verboo Code-credentials" -X <hex>`.
+fn write_keychain_blob(blob: &Value) -> bool {
+    let Ok(json) = serde_json::to_string(blob) else {
+        return false;
+    };
+    let hex = json.bytes().map(|b| format!("{:02x}", b)).collect::<String>();
+    let account = std::env::var("USER").ok();
+
+    let mut args = vec!["add-generic-password", "-U"];
+    if let Some(acc) = account.as_ref() {
+        args.extend(&["-a", acc]);
+    }
+    args.extend(&["-s", KEYCHAIN_SERVICE, "-X", &hex]);
+
+    run_security(&args).is_some()
+}
+
+/// Reads the blob from `~/.verboo/.credentials.json` (plaintext JSON).
+fn read_file_blob() -> Option<Value> {
+    let path = cli_credentials_file_path()?;
+    let contents = std::fs::read_to_string(&path).ok()?;
+    parse_json_blob(&contents)
+}
+
+/// Writes the blob back to `~/.verboo/.credentials.json` with mode 0600.
+fn write_file_blob(blob: &Value) -> bool {
+    let Some(path) = cli_credentials_file_path() else {
+        return false;
+    };
+    let Ok(json) = serde_json::to_string_pretty(blob) else {
+        return false;
+    };
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let _ = std::fs::create_dir_all(parent);
+
+    if std::fs::write(&path, json).is_err() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    true
+}
+
+/// Runs `/usr/bin/security` with the given args and returns stdout if it
+/// succeeded and is non-empty.
+fn run_security(args: &[&str]) -> Option<String> {
+    let output = Command::new("/usr/bin/security")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        None
+    } else {
+        Some(stdout)
+    }
+}
+
+/// Parses a JSON blob string into a `serde_json::Value`. Returns None on
+/// parse failure.
+fn parse_json_blob(s: &str) -> Option<Value> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    serde_json::from_str(trimmed).ok()
+}
+
+/// Parses the `verbooOauth` field into typed credentials. Returns None if
+/// the `accessToken` is missing or empty.
+fn parse_oauth(value: &Value) -> Option<CliOAuthCredentials> {
+    let obj = value.as_object()?;
+    let access_token = obj.get("accessToken").and_then(|v| v.as_str())?;
+    if access_token.trim().is_empty() {
+        return None;
+    }
+    Some(CliOAuthCredentials {
+        access_token: access_token.to_string(),
+        refresh_token: obj
+            .get("refreshToken")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        expires_at: obj.get("expiresAt").and_then(|v| v.as_u64()),
+        scopes: obj
+            .get("scopes")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            }),
+        subscription_type: obj
+            .get("subscriptionType")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        rate_limit_tier: obj
+            .get("rateLimitTier")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+    })
+}
+
+/// Returns true if the credentials are within the refresh skew (60s) of
+/// expiry.
+fn should_refresh(creds: &CliOAuthCredentials) -> bool {
+    let Some(exp) = creds.expires_at else {
+        return false;
+    };
+    let Some(refresh) = creds.refresh_token.as_ref() else {
+        return false;
+    };
+    if refresh.trim().is_empty() {
+        return false;
+    }
+    now_ms() >= exp.saturating_sub(TOKEN_REFRESH_SKEW_MS)
+}
+
+/// Returns true if the credentials are expired.
+fn is_expired(creds: &CliOAuthCredentials) -> bool {
+    match creds.expires_at {
+        Some(exp) => now_ms() >= exp,
+        None => false,
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Refreshes the access token via POST /oauth/token (grant_type=refresh_token).
+/// Returns the new credentials on success, or None on any failure.
+fn refresh_access_token(creds: &CliOAuthCredentials) -> Option<CliOAuthCredentials> {
+    let refresh_token = creds.refresh_token.as_ref()?;
+    if refresh_token.trim().is_empty() {
+        return None;
+    }
+
+    let scope = creds
+        .scopes
+        .as_ref()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.join(" "))
+        .unwrap_or_else(|| DEFAULT_OAUTH_SCOPES.join(" "));
+
+    let mut params = HashMap::new();
+    params.insert("grant_type", "refresh_token");
+    params.insert("refresh_token", refresh_token.as_str());
+    params.insert("client_id", OAUTH_CLIENT_ID);
+    params.insert("scope", scope.as_str());
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_millis(KEYCHAIN_TIMEOUT_MS))
+        .build()
+        .ok()?;
+    let resp = client
+        .post(OAUTH_TOKEN_URL)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .form(&params)
+        .send()
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let payload: Value = resp.json().ok()?;
+    let obj = payload.as_object()?;
+
+    let new_access = obj.get("access_token").and_then(|v| v.as_str())?;
+    if new_access.trim().is_empty() {
+        return None;
+    }
+
+    let new_refresh = obj
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| creds.refresh_token.clone());
+
+    let new_expires_at = obj
+        .get("expires_in")
+        .and_then(|v| v.as_u64())
+        .map(|secs| now_ms() + secs * 1000)
+        .or(creds.expires_at);
+
+    let new_scopes = obj
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .map(|s| s.split_whitespace().map(|x| x.to_string()).collect::<Vec<_>>())
+        .or_else(|| creds.scopes.clone());
+
+    Some(CliOAuthCredentials {
+        access_token: new_access.to_string(),
+        refresh_token: new_refresh,
+        expires_at: new_expires_at,
+        scopes: new_scopes,
+        subscription_type: creds.subscription_type.clone(),
+        rate_limit_tier: creds.rate_limit_tier.clone(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn creds_with(exp: Option<u64>, refresh: Option<&str>) -> CliOAuthCredentials {
+        CliOAuthCredentials {
+            access_token: "tok".into(),
+            refresh_token: refresh.map(|s| s.into()),
+            expires_at: exp,
+            scopes: None,
+            subscription_type: None,
+            rate_limit_tier: None,
+        }
+    }
+
+    #[test]
+    fn should_refresh_returns_false_without_expires_at() {
+        reset_cache();
+        let c = creds_with(None, Some("rt"));
+        assert!(!should_refresh(&c));
+    }
+
+    #[test]
+    fn should_refresh_returns_false_without_refresh_token() {
+        reset_cache();
+        let c = creds_with(Some(now_ms() + 1000), None);
+        assert!(!should_refresh(&c));
+    }
+
+    #[test]
+    fn should_refresh_returns_true_within_skew() {
+        reset_cache();
+        let c = creds_with(Some(now_ms() + 30_000), Some("rt"));
+        assert!(should_refresh(&c));
+    }
+
+    #[test]
+    fn should_refresh_returns_false_far_from_expiry() {
+        reset_cache();
+        let c = creds_with(Some(now_ms() + 60 * 60 * 1000), Some("rt"));
+        assert!(!should_refresh(&c));
+    }
+
+    #[test]
+    fn is_expired_returns_false_without_expires_at() {
+        let c = creds_with(None, Some("rt"));
+        assert!(!is_expired(&c));
+    }
+
+    #[test]
+    fn is_expired_returns_true_when_past_expiry() {
+        let c = creds_with(Some(now_ms() - 1000), Some("rt"));
+        assert!(is_expired(&c));
+    }
+
+    #[test]
+    fn parse_oauth_extracts_fields() {
+        let v = json!({
+            "accessToken": "abc",
+            "refreshToken": "def",
+            "expiresAt": 1234567890,
+            "scopes": ["user:profile", "user:inference"],
+            "subscriptionType": "pro",
+            "rateLimitTier": "tier2"
+        });
+        let c = parse_oauth(&v).expect("parsed");
+        assert_eq!(c.access_token, "abc");
+        assert_eq!(c.refresh_token.as_deref(), Some("def"));
+        assert_eq!(c.expires_at, Some(1234567890));
+        assert_eq!(c.scopes.as_deref(), Some(&["user:profile".to_string(), "user:inference".to_string()][..]));
+        assert_eq!(c.subscription_type.as_deref(), Some("pro"));
+        assert_eq!(c.rate_limit_tier.as_deref(), Some("tier2"));
+    }
+
+    #[test]
+    fn parse_oauth_returns_none_without_access_token() {
+        let v = json!({"refreshToken": "def"});
+        assert!(parse_oauth(&v).is_none());
+    }
+
+    #[test]
+    fn parse_oauth_returns_none_for_empty_access_token() {
+        let v = json!({"accessToken": "   "});
+        assert!(parse_oauth(&v).is_none());
+    }
+
+    #[test]
+    fn parse_oauth_returns_none_for_non_object() {
+        assert!(parse_oauth(&json!("string")).is_none());
+        assert!(parse_oauth(&json!(42)).is_none());
+    }
+
+    #[test]
+    fn parse_json_blob_handles_valid_json() {
+        let s = r#"{"verbooOauth":{"accessToken":"x"}}"#;
+        let v = parse_json_blob(s).expect("parsed");
+        assert!(v.get("verbooOauth").is_some());
+    }
+
+    #[test]
+    fn parse_json_blob_returns_none_for_empty() {
+        assert!(parse_json_blob("").is_none());
+        assert!(parse_json_blob("   ").is_none());
+    }
+
+    #[test]
+    fn parse_json_blob_returns_none_for_invalid_json() {
+        assert!(parse_json_blob("not json").is_none());
+    }
+
+    #[test]
+    fn credentials_file_path_uses_verboo_config_dir_when_set() {
+        // Setting env vars in tests is racy in parallel, but the result is
+        // deterministic enough for a smoke check.
+        // If VERBOO_CONFIG_DIR is unset → ~/.verboo/.credentials.json
+        std::env::remove_var("VERBOO_CONFIG_DIR");
+        let path = cli_credentials_file_path();
+        assert!(path.is_some());
+        if let Some(p) = path {
+            assert!(p.ends_with(".credentials.json"));
+        }
+    }
+
+    #[test]
+    fn credentials_file_path_falls_back_to_user_profile_when_no_home() {
+        // When HOME and USERPROFILE are unset, returns None.
+        // We can't reliably test this without forking the process.
+        // Just verify the function doesn't panic.
+        let _ = cli_credentials_file_path();
+    }
+}

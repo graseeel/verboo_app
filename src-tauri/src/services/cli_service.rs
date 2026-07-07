@@ -27,10 +27,11 @@ impl CliService {
 
     /// Runs `verboo auth status --json` and parses the result.
     pub fn get_auth_status(&self) -> Result<CliAuthStatus, String> {
-        let cli = Self::resolve_cli_path()
-            .ok_or_else(|| "CLI Verboo não encontrado.".to_string())?;
-        let output = Command::new(&cli)
-            .args(["auth", "status", "--json"])
+        // Use CliSpawn (resolves Node + bundled cli.mjs / VERBOO_CLI_PATH /
+        // global verboo) instead of spawning `verboo` by name directly.
+        let spawn = crate::services::cli_spawn::CliSpawn::new(["auth", "status", "--json"]);
+        let mut cmd = spawn.command;
+        let output = cmd
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -66,10 +67,9 @@ impl CliService {
 
     /// Runs `verboo auth login` (interactive — opens browser, waits for callback).
     pub fn start_cli_login(&self) -> Result<LoginResult, String> {
-        let cli = Self::resolve_cli_path()
-            .ok_or_else(|| "CLI Verboo não encontrado.".to_string())?;
-        let output = Command::new(&cli)
-            .args(["auth", "login"])
+        let spawn = crate::services::cli_spawn::CliSpawn::new(["auth", "login"]);
+        let mut cmd = spawn.command;
+        let output = cmd
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -109,10 +109,9 @@ impl CliService {
 
     /// Runs `verboo auth logout`.
     pub fn logout(&self) -> Result<LoginResult, String> {
-        let cli = Self::resolve_cli_path()
-            .ok_or_else(|| "CLI Verboo não encontrado.".to_string())?;
-        let output = Command::new(&cli)
-            .args(["auth", "logout"])
+        let spawn = crate::services::cli_spawn::CliSpawn::new(["auth", "logout"]);
+        let mut cmd = spawn.command;
+        let output = cmd
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
