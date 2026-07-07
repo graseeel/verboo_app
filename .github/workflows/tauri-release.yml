@@ -1,0 +1,229 @@
+name: Tauri Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "v*.*.*-beta.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, for example v0.3.0-beta.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+# Avoid concurrent releases racing on the same tag.
+concurrency:
+  group: tauri-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # Single source of truth for the tag + prerelease flag. Each per-platform
+  # job downstream depends on this to avoid repeating the resolution logic.
+  # ─────────────────────────────────────────────────────────────────────
+  resolve-tag:
+    name: Resolve release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      is_prerelease: ${{ steps.release.outputs.is_prerelease }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::No tag resolved"
+            exit 1
+          fi
+          # Strip optional leading "v" for SemVer comparisons.
+          VERSION="${TAG#v}"
+          # Prerelease if the version matches x.y.z-<channel>.<n>
+          if [[ "$VERSION" =~ -(beta|alpha|rc)\.[0-9]+$ ]]; then
+            IS_PRE="true"
+          else
+            IS_PRE="false"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Per-platform builds. Each job:
+  #   1. Installs Rust 1.89.0 (pinned per team memory — proc-macro ABI fix)
+  #   2. Installs Node + npm ci
+  #   3. Runs `cargo tauri build` to produce the platform-specific bundle
+  #   4. Uploads artifacts + publishes a GitHub release entry
+  # ─────────────────────────────────────────────────────────────────────
+  build-tauri:
+    name: Build Tauri (${{ matrix.os }} / ${{ matrix.target }})
+    needs: resolve-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            label: macOS-arm64
+            artifact_glob: |
+              src-tauri/target/release/bundle/macos/*.app
+              src-tauri/target/release/bundle/dmg/*.dmg
+          - os: macos-15
+            target: x86_64-apple-darwin
+            label: macOS-x64
+            artifact_glob: |
+              src-tauri/target/release/bundle/macos/*.app
+              src-tauri/target/release/bundle/dmg/*.dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: Windows-x64
+            artifact_glob: |
+              src-tauri/target/release/bundle/nsis/*.exe
+              src-tauri/target/release/bundle/msi/*.msi
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: Linux-x64
+            artifact_glob: |
+              src-tauri/target/release/bundle/appimage/*.AppImage
+              src-tauri/target/release/bundle/deb/*.deb
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Disable code signing by default — secrets can opt-in later.
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      # Prevent Rust 1.95 (system default) from breaking tauri-cli proc-macros.
+      RUSTUP_TOOLCHAIN: "1.89.0"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust 1.89.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.89.0"
+          targets: ${{ matrix.target }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Install tauri-cli
+        run: cargo +1.89.0 install tauri-cli --version "^2.0.0" --locked
+
+      - name: Build Tauri bundle
+        run: cargo +1.89.0 tauri build --target ${{ matrix.target }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-bundle-${{ matrix.label }}
+          path: ${{ matrix.artifact_glob }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.resolve-tag.outputs.tag }}"
+          # Use gh release to upload all matching files. --clobber re-uploads
+          # if the file already exists from a previous run of this job.
+          FILES=$(ls ${{ matrix.artifact_glob }} 2>/dev/null || true)
+          if [ -z "$FILES" ]; then
+            echo "::error::No bundle artifacts found to upload"
+            exit 1
+          fi
+          # Create the release if missing (only on tag push).
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            FLAGS="--title $TAG --notes \"Tauri build $TAG\""
+            if [ "${{ needs.resolve-tag.outputs.is_prerelease }}" = "true" ]; then
+              FLAGS="$FLAGS --prerelease"
+            fi
+            eval "gh release create $TAG $FLAGS"
+          fi
+          gh release upload "$TAG" $FILES --clobber
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Aggregate `latest.json` for the Tauri updater. One file per platform
+  # (latest-mac.yml, latest.yml, latest-linux.yml) so the existing Electron
+  # release assets don't collide.
+  # ─────────────────────────────────────────────────────────────────────
+  publish-updates-manifest:
+    name: Publish Tauri update manifests
+    needs: [resolve-tag, build-tauri]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tauri-bundle-*
+          merge-multiple: true
+          path: bundles
+
+      - name: Generate update manifests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve-tag.outputs.tag }}
+          VERSION: ${{ needs.resolve-tag.outputs.version }}
+          IS_PRE: ${{ needs.resolve-tag.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+          node scripts/verify/generate-tauri-update-manifest.mjs \
+            --tag "$TAG" \
+            --version "$VERSION" \
+            --prerelease "$IS_PRE" \
+            --bundles-dir bundles \
+            --output update-manifests
+
+      - name: Upload manifests to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.resolve-tag.outputs.tag }}"
+          for f in update-manifests/*.json; do
+            gh release upload "$TAG" "$f" --clobber
+          done

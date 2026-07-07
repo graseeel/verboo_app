@@ -1,0 +1,17 @@
+pub mod cli_service;
+pub mod credentials_store;
+pub mod feedback_service;
+pub mod file_service;
+pub mod git_service;
+pub mod goal_evaluator;
+pub mod lifecycle_service;
+pub mod model_service;
+pub mod notification_service;
+pub mod research_subagent_service;
+pub mod settings_store;
+pub mod skills_service;
+pub mod stale_file_detector;
+pub mod terminal_service;
+pub mod tray_service;
+pub mod turn_service;
+pub mod update_service;

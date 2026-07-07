@@ -32,10 +32,22 @@
     "release:win:local": "node scripts/package-preflight.mjs --dist && npm run build && electron-builder --win --publish never",
     "release:linux:github": "node scripts/package-preflight.mjs --dist && npm run build && electron-builder --linux --publish always",
     "release:linux:local": "node scripts/package-preflight.mjs --dist && npm run build && electron-builder --linux --publish never",
-    "verify:update-release": "node scripts/verify/update-release-assets.mjs"
+    "verify:update-release": "node scripts/verify/update-release-assets.mjs",
+    "dev:renderer": "vite",
+    "build:renderer": "vite build",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:icon": "tauri icon"
   },
   "dependencies": {
     "@lobehub/icons": "^5.10.1",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-notification": "^2.3.3",
+    "@tauri-apps/plugin-opener": "^2.5.4",
+    "@tauri-apps/plugin-shell": "^2.3.5",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "@tesseract.js-data/eng": "^1.0.0",
     "@tesseract.js-data/por": "^1.0.0",
     "@verboo/code": "0.10.6",
@@ -51,6 +63,7 @@
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
     "@types/node": "26.0.1",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
