@@ -149,10 +149,24 @@ impl TurnService {
             .stdout
             .take()
             .ok_or_else(|| "CLI stdout unavailable.".to_string())?;
-        // Stderr is best-effort debug — we drop the handle to avoid the
-        // pipe buffer filling up if the CLI logs heavily. Stderr text isn't
-        // surfaced to the renderer in this Tauri version (Electron did).
-        drop(child.stderr.take());
+        // Capture stderr on its own thread (draining the pipe so it can't
+        // fill and block the child). We surface it if the turn ends with no
+        // output — otherwise CLI errors (bad auth, missing deps) were
+        // invisible: the user saw "Worked for 0s" with no explanation.
+        let stderr_buf = Arc::new(Mutex::new(String::new()));
+        let stderr_handle = child.stderr.take().map(|se| {
+            let buf = stderr_buf.clone();
+            thread::spawn(move || {
+                let reader = BufReader::new(se);
+                for line in reader.lines().map_while(Result::ok) {
+                    eprintln!("[verboo-cli stderr] {line}");
+                    if let Ok(mut b) = buf.lock() {
+                        b.push_str(&line);
+                        b.push('\n');
+                    }
+                }
+            })
+        });
 
         // Wrap in Arc<Mutex<>> so both the active map AND the stdout reader
         // thread can hold a handle. The reader thread calls `wait()` on
@@ -260,11 +274,36 @@ impl TurnService {
                 .ok()
                 .and_then(|mut c| c.wait().ok())
                 .and_then(|s| s.code());
+            // Drain any remaining stderr now that the child has exited.
+            if let Some(h) = stderr_handle {
+                let _ = h.join();
+            }
             // Remove the child from the active map now that the turn is done.
             // We can't hold the map lock directly (we're in a separate thread),
             // but we share the Arc with the active map.
             if let Some(mut map) = active_map_for_thread.lock().ok() {
                 map.remove(&turn_id_for_stdout);
+            }
+            // If the turn produced no streamed text and exited abnormally,
+            // surface the CLI's stderr so the failure isn't invisible (this is
+            // what turned bad auth / missing deps into a silent "Worked for 0s").
+            if !emitted_stream_text && exit_code != Some(0) {
+                let err = stderr_buf
+                    .lock()
+                    .ok()
+                    .map(|b| b.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "O CLI Verboo encerrou sem produzir resposta.".to_string());
+                emit_event(
+                    &app_for_stdout,
+                    AgentEvent {
+                        event_type: EventType::Stdout,
+                        turn_id: Some(turn_id_for_stdout.clone()),
+                        conversation_id: Some(conversation_id_for_stdout.clone()),
+                        text: Some(format!("⚠️ CLI Verboo: {err}\n")),
+                        ..Default::default()
+                    },
+                );
             }
             if let Some(snap) = result_snapshot {
                 emit_event(

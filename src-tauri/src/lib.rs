@@ -83,6 +83,7 @@ fn get_cli_auth_status(cli: tauri::State<'_, CliService>) -> Result<CliAuthStatu
 fn logout(
     cli: tauri::State<'_, CliService>,
     credentials: tauri::State<'_, CredentialsStore>,
+    model_service: tauri::State<'_, ModelService>,
 ) -> Result<LoginResult, String> {
     // Logout must clear BOTH credentials — the CLI's OAuth session AND the
     // app's stored API key. Otherwise the user "comes back logged in" after
@@ -92,6 +93,10 @@ fn logout(
     // Always attempt to clear the API key, even if CLI logout failed — the
     // user's intent is to log out, so we shouldn't leave half a session.
     let _ = credentials.clear_api_key();
+    // Also drop the model cache (B3): otherwise a follow-up "I already
+    // authenticated" re-unlocks the app from stale cached models even though
+    // there are no credentials left.
+    model_service.clear_cache();
     result
 }
 

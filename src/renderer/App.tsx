@@ -444,7 +444,17 @@ export function App() {
       if (settings.staySignedIn && readRememberedAuthSession()) {
         setEntryUnlocked(true)
       }
-      void validateAccess(!settings.staySignedIn, settings.staySignedIn)
+      void (async () => {
+        const ok = await validateAccess(!settings.staySignedIn, settings.staySignedIn)
+        // Cold-start hardening (B1): on a fresh launch the first keychain read
+        // / CLI-token refresh can lose a race and report "no session". Retry
+        // once with a forced refresh before leaving the user on the login
+        // screen. validateAccess already no-ops the UI if it succeeds.
+        if (!ok && !cancelled) {
+          await new Promise(resolve => setTimeout(resolve, 700))
+          if (!cancelled) await validateAccess(true, settings.staySignedIn)
+        }
+      })()
     }
 
     void loadStartupState()
@@ -3111,6 +3121,7 @@ export function App() {
               onOpenFeedback={() => setFeedbackOpen(true)}
               onLogout={logout}
               onNewChat={newChat}
+              onToggleSidebar={toggleSidebarVisibility}
               onOpenProject={openProjectFolder}
               onSelectConversation={selectConversation}
               onToggleProject={toggleProject}

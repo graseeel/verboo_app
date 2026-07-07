@@ -150,6 +150,12 @@ impl ModelService {
         std::fs::write(self.cache_path(), data).map_err(|e| e.to_string())?;
         Ok(())
     }
+
+    /// Removes the on-disk model cache. Called on logout so a subsequent
+    /// validation can't unlock the app from stale cached models (B3).
+    pub fn clear_cache(&self) {
+        let _ = std::fs::remove_file(self.cache_path());
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

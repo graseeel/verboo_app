@@ -10,6 +10,7 @@ import {
   MessageSquare,
   MessageSquareDashed,
   MessageSquarePlus,
+  PanelLeftClose,
   Pencil,
   Search,
   Settings,
@@ -44,6 +45,7 @@ type AppSidebarProps = {
   onOpenFeedback: () => void
   onLogout: () => void
   onNewChat: (projectId?: string) => void
+  onToggleSidebar: () => void
   onOpenProject: () => void
   onSelectConversation: (conversationId: string) => void
   onToggleProject: (projectId: string) => void
@@ -71,6 +73,7 @@ export function AppSidebar({
   onOpenFeedback,
   onLogout,
   onNewChat,
+  onToggleSidebar,
   onOpenProject,
   onSelectConversation,
   onToggleProject,
@@ -165,10 +168,21 @@ export function AppSidebar({
     <aside className={`app-sidebar ${compact ? 'compact' : ''} ${activeView === 'settings' ? 'is-dimmed' : ''}`}>
       <div className="sidebar-scroll">
         <nav className="sidebar-primary" aria-label={t('sidebar.nav')}>
-          <button className="sidebar-action" type="button" onClick={() => onNewChat(selectedProjectId)} title={t('sidebar.newChat')}>
-            <MessageSquarePlus size={16} />
-            <span>{t('sidebar.newChat')}</span>
-          </button>
+          <div className="sidebar-newchat-row">
+            <button className="sidebar-action" type="button" onClick={() => onNewChat(selectedProjectId)} title={t('sidebar.newChat')}>
+              <MessageSquarePlus size={16} />
+              <span>{t('sidebar.newChat')}</span>
+            </button>
+            <button
+              className="sidebar-collapse-button ui-tooltip"
+              type="button"
+              onClick={onToggleSidebar}
+              data-tooltip={t('topbar.hideSidebar')}
+              aria-label={t('topbar.hideSidebar')}
+            >
+              <PanelLeftClose size={16} />
+            </button>
+          </div>
           <button className="sidebar-action" type="button" onClick={() => setSearchOpen(open => !open)} title={t('sidebar.search')}>
             <Search size={16} />
             <span>{t('sidebar.search')}</span>

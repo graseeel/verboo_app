@@ -1,4 +1,4 @@
-import { FileSearch, PanelLeftClose, PanelLeftOpen, Terminal as TerminalIcon } from 'lucide-react'
+import { FileSearch, PanelLeftOpen, Terminal as TerminalIcon } from 'lucide-react'
 import { SlotText } from 'slot-text/react'
 import mascotUrl from '../../../assets/branding/verboo-mascot.png'
 import { useI18n } from '../i18n'
@@ -34,18 +34,23 @@ export function TopBar({
       data-tauri-drag-region=""
       onDoubleClick={() => window.verboo.toggleWindowZoom()}
     >
-      <button
-        className="topbar-sidebar-button ui-tooltip"
-        type="button"
-        onClick={event => {
-          event.stopPropagation()
-          onToggleSidebar()
-        }}
-        data-tooltip={sidebarVisible ? t('topbar.hideSidebar') : t('topbar.showSidebar')}
-        aria-label={t('topbar.toggleSidebar')}
-      >
-        {sidebarVisible ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
-      </button>
+      {/* When the sidebar is collapsed, show a reopen button here. When it's
+          open, the collapse button lives next to "New chat" inside the sidebar
+          (see AppSidebar) — keeps it off the traffic-light area. */}
+      {!sidebarVisible && (
+        <button
+          className="topbar-sidebar-button ui-tooltip"
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            onToggleSidebar()
+          }}
+          data-tooltip={t('topbar.showSidebar')}
+          aria-label={t('topbar.toggleSidebar')}
+        >
+          <PanelLeftOpen size={15} />
+        </button>
+      )}
       <div
         className="topbar-brand-status"
         data-tauri-drag-region=""

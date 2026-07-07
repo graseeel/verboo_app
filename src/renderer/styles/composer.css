@@ -319,6 +319,10 @@
 
 .composer-pill span {
   overflow: hidden;
+  /* The pill sets line-height: 1, which clips descenders (the "g" in
+     "glm-5.2") because overflow: hidden crops anything below the tight line
+     box. Give the label a roomier line box so descenders render fully. */
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

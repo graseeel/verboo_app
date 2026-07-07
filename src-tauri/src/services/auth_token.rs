@@ -1,7 +1,3 @@
-use std::fs::Permissions;
-use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
 use std::process::Command;
 
 use crate::services::cli_credentials;
@@ -33,48 +29,37 @@ pub fn resolve_token(credentials: &CredentialsStore) -> Option<String> {
     credentials.get_api_key().ok().flatten()
 }
 
-/// Injects a bearer token (CLI OAuth or API key) into a CLI spawn so the
-/// turn can authenticate.
+/// Injects a bearer token (CLI OAuth token or API key) into a CLI spawn so the
+/// headless turn can authenticate.
 ///
-/// Electron's equivalent writes the key to a temp file and passes it to the
-/// CLI via fd 3 with `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR=3`. Tauri's
-/// `std::process::Command` doesn't easily support passing a custom fd, so we
-/// use the CLI's supported `OAUTH_TOKEN_FILE` environment variable instead.
-/// The temp file is created with mode 0600 and deleted as soon as the child
-/// is spawned (the OS keeps the handle alive until the process exits).
+/// The CLI reads the bearer token from the `CLAUDE_CODE_OAUTH_TOKEN`
+/// environment variable in headless mode (verified against `@verboo/code`
+/// v0.10.x — a live `--print` turn authenticates with it and streams).
 ///
-/// If `token` is `None`, the command is returned unchanged; the CLI will
-/// fall back to its own credential store or fail auth.
-pub fn inject_api_key(token: Option<&str>, command: &mut Command) -> Option<TokenTempFile> {
+/// NOTE: an earlier version set `OAUTH_TOKEN_FILE` (a file path). That env var
+/// does **not** exist in the CLI, so injection silently did nothing and every
+/// headless turn failed with "Não autenticado". The CLI's file-based variant
+/// is `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR` (an fd number — what Electron
+/// used); the direct value env var is simpler and cross-platform. The token is
+/// a short-lived (~10 min) access token; passing it via the child environment
+/// is acceptable for a local desktop app (a future hardening could switch to
+/// the fd descriptor to keep it out of `ps` output).
+///
+/// If `token` is `None`/empty the command is left unchanged and the CLI fails
+/// auth (which the caller surfaces).
+pub fn inject_api_key(token: Option<&str>, command: &mut Command) -> Option<TokenGuard> {
     let key = token?;
     if key.trim().is_empty() {
         return None;
     }
-
-    let mut temp = tempfile::NamedTempFile::new().ok()?;
-    temp.write_all(key.as_bytes()).ok()?;
-    temp.flush().ok()?;
-
-    // Restrict to owner-read/write only (0600).
-    let perms = Permissions::from_mode(0o600);
-    let _ = temp.as_file().set_permissions(perms);
-
-    let path: PathBuf = temp.path().to_path_buf();
-    let keep = TokenTempFile { _temp: temp };
-
-    command.env("OAUTH_TOKEN_FILE", &path);
-    // Also set the env var the CLI documents as a direct bearer fallback.
-    command.env("CLAUDE_CODE_OAUTH_TOKEN_FILE", &path);
-
-    Some(keep)
+    command.env("CLAUDE_CODE_OAUTH_TOKEN", key);
+    Some(TokenGuard)
 }
 
-/// Holds the temp file alive until the owning caller drops it. Dropping
-/// schedules deletion; because the child process already inherited the fd,
-/// the file remains readable on Unix until the child closes it.
-pub struct TokenTempFile {
-    _temp: tempfile::NamedTempFile,
-}
+/// Marker returned by [`inject_api_key`], kept for API symmetry with the
+/// previous temp-file implementation. Callers hold it for the child's
+/// lifetime; it now owns no resource (the token travels in the child env).
+pub struct TokenGuard;
 
 #[cfg(test)]
 mod tests {

@@ -290,35 +290,41 @@ fn parse_json_blob(s: &str) -> Option<Value> {
     serde_json::from_str(trimmed).ok()
 }
 
-/// Parses the `verbooOauth` field into typed credentials. Returns None if
-/// the `accessToken` is missing or empty.
+/// Looks up a key trying multiple spellings. The current CLI (v0.10.x) writes
+/// the `verbooOauth` blob in **snake_case** (`access_token`, `refresh_token`,
+/// `expires_at`); older builds used camelCase. We try snake_case first, then
+/// camelCase, so both are accepted.
+fn field<'a>(obj: &'a serde_json::Map<String, Value>, names: &[&str]) -> Option<&'a Value> {
+    names.iter().find_map(|n| obj.get(*n))
+}
+
+/// Parses the `verbooOauth` field into typed credentials. Returns None if the
+/// access token is missing or empty. Accepts both snake_case (current CLI) and
+/// camelCase (legacy) key spellings.
 fn parse_oauth(value: &Value) -> Option<CliOAuthCredentials> {
     let obj = value.as_object()?;
-    let access_token = obj.get("accessToken").and_then(|v| v.as_str())?;
+    let access_token = field(obj, &["access_token", "accessToken"])
+        .and_then(|v| v.as_str())?;
     if access_token.trim().is_empty() {
         return None;
     }
     Some(CliOAuthCredentials {
         access_token: access_token.to_string(),
-        refresh_token: obj
-            .get("refreshToken")
+        refresh_token: field(obj, &["refresh_token", "refreshToken"])
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        expires_at: obj.get("expiresAt").and_then(|v| v.as_u64()),
-        scopes: obj
-            .get("scopes")
+        expires_at: field(obj, &["expires_at", "expiresAt"]).and_then(|v| v.as_u64()),
+        scopes: field(obj, &["scopes"])
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str().map(|s| s.to_string()))
                     .collect()
             }),
-        subscription_type: obj
-            .get("subscriptionType")
+        subscription_type: field(obj, &["subscription_type", "subscriptionType"])
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        rate_limit_tier: obj
-            .get("rateLimitTier")
+        rate_limit_tier: field(obj, &["rate_limit_tier", "rateLimitTier"])
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
     })

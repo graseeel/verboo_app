@@ -16,6 +16,7 @@ import { cp, mkdir, stat, rm, readFile, writeFile, chmod } from "node:fs/promise
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..", "..");
@@ -46,16 +47,58 @@ if (cliMjsStat.size < 1024 * 1024) {
   process.exit(1);
 }
 
-// Copy the full package tree (preserves node_modules/ for ESM resolution).
-// `cp` with `recursive: true` + `force: true` mirrors `cp -R`.
-await cp(source, targetDir, {
-  recursive: true,
-  force: true,
-  // Skip symlinks pointing outside the package (rare but safe).
-  // We DON'T use `preserveTimestamps` because that can break build caches.
-});
+// 1. Copy the @verboo/code package itself (dist/, package.json, any nested
+//    node_modules) into cli-package/.
+await cp(source, targetDir, { recursive: true, force: true });
 
-// Prepend shebang to cli.mjs so it can be exec'd directly if needed.
+// 2. Copy the FULL production dependency closure. npm hoists @verboo/code's
+//    hundreds of transitive deps to the ROOT node_modules, so copying only the
+//    package (step 1) misses them and the CLI crashes with ERR_MODULE_NOT_FOUND
+//    (e.g. `@aws-sdk/client-bedrock-runtime`). BFS the closure from package.json
+//    and copy each dep from the hoisted root node_modules into the bundle.
+const rootModules = join(root, "node_modules");
+const bundleModules = join(targetDir, "node_modules");
+
+async function readPkgJson(dir) {
+  try {
+    return JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+const rootPkg = await readPkgJson(source);
+const seen = new Set();
+const queue = Object.keys({
+  ...(rootPkg?.dependencies ?? {}),
+  ...(rootPkg?.optionalDependencies ?? {}),
+});
+const closure = [];
+while (queue.length) {
+  const name = queue.shift();
+  if (seen.has(name)) continue;
+  seen.add(name);
+  const pj = await readPkgJson(join(rootModules, ...name.split("/")));
+  if (!pj) continue; // optional/peer dep not installed — skip
+  closure.push(name);
+  for (const d of Object.keys({
+    ...(pj.dependencies ?? {}),
+    ...(pj.optionalDependencies ?? {}),
+  })) {
+    if (!seen.has(d)) queue.push(d);
+  }
+}
+
+await mkdir(bundleModules, { recursive: true });
+for (const name of closure) {
+  const src = join(rootModules, ...name.split("/"));
+  const dst = join(bundleModules, ...name.split("/"));
+  await mkdir(dirname(dst), { recursive: true });
+  await cp(src, dst, { recursive: true, force: true });
+}
+console.log(`[copy-cli-resource] Copied ${closure.length} dependency packages into the bundle.`);
+
+// 3. Prepend shebang to cli.mjs so it can be exec'd directly if needed.
 const cliMjsPath = join(targetDir, "dist", "cli.mjs");
 const SHEBANG = "#!/usr/bin/env node\n";
 if (existsSync(cliMjsPath)) {
@@ -67,10 +110,27 @@ if (existsSync(cliMjsPath)) {
   await chmod(cliMjsPath, 0o755);
 }
 
-// Compute the total size of the copied tree.
+// 4. VERIFY the bundle actually runs. Safety net: if any dep is missing,
+//    `node cli.mjs --version` throws ERR_MODULE_NOT_FOUND and we FAIL the build
+//    loudly instead of shipping a silently-broken CLI (the exact bug we hit).
+try {
+  const out = execFileSync(process.execPath, [cliMjsPath, "--version"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 30000,
+  });
+  console.log(`[copy-cli-resource] ✓ Bundled CLI runs: ${out.trim()}`);
+} catch (err) {
+  const detail = (err.stderr || err.message || "").toString().split("\n").slice(0, 8).join("\n");
+  console.error(`[copy-cli-resource] ✗ FATAL: bundled CLI failed to run — dependency closure incomplete:`);
+  console.error(detail);
+  process.exit(1);
+}
+
+// 5. Report the total size.
 const totalSize = await dirSize(targetDir);
 const totalMB = (totalSize / 1024 / 1024).toFixed(1);
-console.log(`[copy-cli-resource] Copied @verboo/code → ${targetDir} (${totalMB} MB)`);
+console.log(`[copy-cli-resource] Bundled @verboo/code → ${targetDir} (${totalMB} MB)`);
 
 async function dirSize(dir) {
   let total = 0;
