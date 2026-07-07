@@ -1,6 +1,7 @@
 import { CheckCircle2, ChevronDown, ChevronRight, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { TranscriptItem, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
+import { MarkdownMessage } from '../features/transcript/MarkdownMessage'
 import { StepFlow } from '../features/transcript/StepFlow'
 import { ThinkingIcon } from '../features/transcript/TranscriptIcons'
 import { useI18n, type Translator } from '../i18n'
@@ -148,7 +149,7 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, readingImage,
       {showFlow && <StepFlow items={entry.items} streaming={streaming} />}
 
       {!streaming && !expanded && finalText && (
-        <div className="step-text turn-recap">{finalText}</div>
+        <div className="step-text turn-recap"><MarkdownMessage text={finalText} /></div>
       )}
 
       {!streaming && summary?.changeSummary?.totalFiles ? (
@@ -199,9 +200,13 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onIn
         </div>
       )}
       <div className={`message-text ${item.streaming ? 'streaming-text' : ''}`}>
-        {item.kind === 'summary' && item.activityDetail
-          ? item.activityDetail
-          : visibleText || (item.streaming ? t('transcript.thinking') : '')}
+        {item.kind === 'summary' && item.activityDetail ? (
+          item.activityDetail
+        ) : visibleText ? (
+          <MarkdownMessage text={visibleText} />
+        ) : (
+          item.streaming ? t('transcript.thinking') : ''
+        )}
         {item.kind !== 'summary' && item.activityDetail && <span className="message-detail">{item.activityDetail}</span>}
       </div>
       {item.activityKind === 'queued' && !interjectDismissed && onInterject && queueItemId && conversationId && (

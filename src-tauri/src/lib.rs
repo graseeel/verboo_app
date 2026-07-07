@@ -269,6 +269,45 @@ fn toggle_window_zoom(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Pre-renders the Verboo mascot into the tray "breathing" frames, mirroring
+/// Electron's `trayStatusService`. The mascot PNG is embedded via
+/// `include_bytes!` so it always resolves — a relative `std::fs::read` fails
+/// in the packaged `.app` (CWD is `/`).
+///
+/// **Every frame is the SAME pixel size** (44×44); the "breathing" is done by
+/// pulsing the mascot's *opacity*, not its size. This is the fix for the
+/// menu-bar "shaking": macOS trims the transparent padding of a status-item
+/// image, so a size-based breathe changed the icon's *visible* width every
+/// frame and the title text jittered (worst on external non-Retina monitors).
+/// A constant-size, constant-shape icon has a constant trimmed width → the
+/// text never moves, while the mascot still visibly "breathes" via a fade.
+///
+/// Returns 3 frames indexed [0]=neutral/idle (opaque), [1], [2]=faintest.
+/// Empty vec on decode failure (caller falls back to no tray).
+fn render_mascot_frames() -> Vec<tauri::image::Image<'static>> {
+    const MASCOT_PNG: &[u8] = include_bytes!("../icons/verboo-mascot.png");
+    const SIZE: u32 = 44; // constant size (22pt @2×) → constant width → no jitter
+    const ALPHAS: [f32; 3] = [1.0, 0.80, 0.62]; // opacity pulse = the breathing
+    let Ok(source) = image::load_from_memory(MASCOT_PNG) else {
+        return Vec::new();
+    };
+    let base = source
+        .resize_exact(SIZE, SIZE, image::imageops::FilterType::Lanczos3)
+        .to_rgba8();
+    ALPHAS
+        .iter()
+        .map(|&alpha| {
+            let mut frame = base.clone();
+            if alpha < 1.0 {
+                for pixel in frame.pixels_mut() {
+                    pixel[3] = (pixel[3] as f32 * alpha).round() as u8;
+                }
+            }
+            tauri::image::Image::new_owned(frame.into_raw(), SIZE, SIZE)
+        })
+        .collect()
+}
+
 // ════════════════════════════════════════════════════════════════════
 // Skills
 // ════════════════════════════════════════════════════════════════════
@@ -748,29 +787,32 @@ pub fn run() {
             // The tray icon shows the Verboo logo on Win/Linux and the animated
             // title on macOS (which puts a text title next to the icon). Matches
             // Electron's trayStatusService.
-            let tray_icon_bytes = std::fs::read("icons/32x32.png").ok();
-            let tray = if let Some(bytes) = tray_icon_bytes {
-                let image = tauri::image::Image::from_bytes(&bytes)
-                    .expect("32x32.png must be valid PNG");
+            // Colored mascot frames (breathing animation), embedded so they
+            // resolve in the packaged app. Mirrors Electron's tray.
+            let mascot_frames = render_mascot_frames();
+            let tray = if !mascot_frames.is_empty() {
                 tauri::tray::TrayIconBuilder::with_id("verboo-main")
-                    .icon(image)
-                    .icon_as_template(true)
+                    .icon(mascot_frames[0].clone())
+                    .icon_as_template(false) // colored mascot, like Electron
                     .tooltip("Verboo Code")
                     .build(app)
                     .ok()
             } else {
                 None
             };
-            // Drive the tray tick loop (~250ms) so spinner animation + 3.5s
-            // auto-reset happen automatically. Runs on a background thread so
-            // it doesn't compete with the UI.
+            // Drive the tray tick loop (~250ms): advances the spinner text AND
+            // the "breathing" mascot icon (set_icon per frame), + 3.5s
+            // auto-reset. Background thread so it doesn't compete with the UI.
+            // Mirrors Electron's trayStatusService ticker.
             if let Some(tray_icon) = tray.clone() {
                 let tray_service = app
                     .state::<crate::services::tray_service::TrayService>()
                     .inner()
                     .handle();
+                let frames = mascot_frames;
                 std::thread::spawn(move || {
                     let mut last_tick = std::time::Instant::now();
+                    let mut last_icon_size = 18usize;
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(250));
                         let now = std::time::Instant::now();
@@ -778,7 +820,7 @@ pub fn run() {
                         if tray_service.should_reset() {
                             tray_service.reset_to_idle();
                         }
-                        // Tick the spinner frame.
+                        // Tick the spinner frame + refresh the title text.
                         if tray_service.tick() || last_tick.elapsed() >= std::time::Duration::from_millis(1000) {
                             last_tick = now;
                             let title = tray_service.title();
@@ -786,6 +828,22 @@ pub fn run() {
                             #[cfg(target_os = "macos")]
                             {
                                 let _ = tray_icon.set_title(Some(title.as_str()));
+                            }
+                        }
+                        // Breathing mascot: swap the icon frame when its size
+                        // changes (18 = neutral/idle, 17/16 = the pulse).
+                        if !frames.is_empty() {
+                            let size = tray_service.icon_frame();
+                            if size != last_icon_size {
+                                last_icon_size = size;
+                                let idx = match size {
+                                    17 => 1,
+                                    16 => 2,
+                                    _ => 0,
+                                };
+                                if let Some(frame) = frames.get(idx) {
+                                    let _ = tray_icon.set_icon(Some(frame.clone()));
+                                }
                             }
                         }
                     }

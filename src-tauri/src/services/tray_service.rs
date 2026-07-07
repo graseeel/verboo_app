@@ -62,7 +62,7 @@ impl TrayExecution {
         };
         let elapsed_str = match (self, elapsed_secs) {
             (Self::Thinking | Self::Tool | Self::Permission, Some(secs)) if secs > 0 => {
-                format!(" {secs}s")
+                format!(" {}", format_elapsed(secs))
             }
             _ => String::new(),
         };
@@ -197,7 +197,7 @@ impl TrayService {
             (TrayExecution::Thinking | TrayExecution::Tool | TrayExecution::Permission, Some(secs))
                 if secs > 0 =>
             {
-                format!(" {secs}s")
+                format!(" {}", format_elapsed(secs))
             }
             _ => String::new(),
         };
@@ -271,6 +271,22 @@ impl TrayService {
 impl Default for TrayService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Formats an elapsed duration the way Electron's tray did: seconds roll up
+/// into minutes at 60s, and minutes into hours at 60m. e.g. `45s`, `1m 5s`,
+/// `1h 3m`.
+fn format_elapsed(total_secs: u64) -> String {
+    let hours = total_secs / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    let seconds = total_secs % 60;
+    if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds}s")
+    } else {
+        format!("{seconds}s")
     }
 }
 

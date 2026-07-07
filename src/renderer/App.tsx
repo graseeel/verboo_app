@@ -373,6 +373,13 @@ export function App() {
   const turnSubagentToolIds = useRef<Record<string, Record<string, string>>>({})
   const [thinkingTurnId, setThinkingTurnId] = useState<string | undefined>(undefined)
   const [compactingTurnId, setCompactingTurnId] = useState<string | undefined>(undefined)
+  // Conversations currently auto-recovering from a context overflow (see the
+  // 'error' handler). Guards against an infinite compact→overflow→compact loop.
+  const overflowRecovering = useRef<Set<string>>(new Set())
+  // Latest menu-bar state, re-pushed on a heartbeat so the tray never sticks
+  // (async updateMenuBar invokes can arrive out of order — a lagging
+  // 'thinking' landing after the 'idle' would freeze the menubar counter).
+  const menuBarStateRef = useRef<Partial<MenuBarState>>({})
 
   const activeConversation = useMemo(
     () => chatStore.conversations.find(conversation => conversation.id === activeConversationId),
@@ -1177,26 +1184,57 @@ export function App() {
         interjectDeferred.current = undefined
       }
 
+      const lowerMessage = event.message.toLowerCase()
+      const isContextOverflow =
+        lowerMessage.includes('too many tokens')
+        || (lowerMessage.includes('context')
+          && (lowerMessage.includes('exceed')
+            || lowerMessage.includes('too long')
+            || lowerMessage.includes('maximum')
+            || lowerMessage.includes('window')))
+      // Context overflow auto-recovery: in headless (--print) mode the CLI errors
+      // on an API-level overflow instead of compacting, so the conversation would
+      // "die" and the user had to send "continue" by hand. Recover once by firing
+      // a "continue" turn — the CLI then auto-compacts (threshold now exceeded)
+      // and resumes the task. Guarded per-conversation so a still-too-big context
+      // surfaces the error instead of looping.
+      const willAutoRecover = Boolean(
+        conversationId && isContextOverflow && !overflowRecovering.current.has(conversationId),
+      )
       if (conversationId) {
-        const lowerMessage = event.message.toLowerCase()
-        const isContextOverflow = lowerMessage.includes('context')
-          && (lowerMessage.includes('exceed') || lowerMessage.includes('too long') || lowerMessage.includes('maximum'))
-        appendConversationItem(conversationId, {
-          id: `${event.turnId}:error`,
-          role: 'system',
-          text: isContextOverflow
-            ? `${t('context.overflowDetected')}\n\n${event.message}`
-            : event.message,
-          timestamp: Date.now(),
-        })
+        if (willAutoRecover) {
+          overflowRecovering.current.add(conversationId)
+          appendConversationItem(conversationId, {
+            id: `${event.turnId}:compacting`,
+            role: 'system',
+            text: t('context.autoCompacting'),
+            timestamp: Date.now(),
+          })
+        } else {
+          overflowRecovering.current.delete(conversationId)
+          appendConversationItem(conversationId, {
+            id: `${event.turnId}:error`,
+            role: 'system',
+            text: isContextOverflow
+              ? `${t('context.overflowDetected')}\n\n${event.message}`
+              : event.message,
+            timestamp: Date.now(),
+          })
+        }
       }
       delete turnAssistantText.current[event.turnId]
       cleanupTurnState(event.turnId)
+      if (willAutoRecover && conversationId) {
+        void runTurn(createQueuedFollowUp(conversationId, 'continue'))
+      }
       return
     }
 
     if (event.type === 'done') {
       const conversationId = turnConversationIds.current[event.turnId]
+      // A turn finished cleanly → clear any overflow-recovery guard so a future
+      // overflow in this conversation can auto-recover again.
+      if (conversationId) overflowRecovering.current.delete(conversationId)
       setRunningTurnId(undefined)
       setRunningConversations(prev => { const next = new Set(prev); next.delete(conversationId); return next })
       setTokenRate(undefined)
@@ -3031,6 +3069,7 @@ export function App() {
       loggedIn: cliAuth.loggedIn || credentials.hasApiKey,
       email: cliAuth.email ?? profile.user?.email,
     }
+    menuBarStateRef.current = state
     void window.verboo.updateMenuBar(state)
   }, [
     currentWorkspaceDirectory,
@@ -3045,6 +3084,41 @@ export function App() {
     selectedModel,
     selectedModelInfo?.displayName,
   ])
+
+  // Heartbeat: re-push the current menu-bar state every 2.5s so the tray
+  // self-corrects if an async updateMenuBar landed out of order (the stuck
+  // counter bug — a lagging 'thinking' arriving after 'idle' froze the tray).
+  // Cheap: just an IPC ping with the already-computed state.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      void window.verboo.updateMenuBar(menuBarStateRef.current)
+    }, 2500)
+    return () => window.clearInterval(id)
+  }, [])
+
+  // Reserve exactly the composer's real height at the bottom of the scroll
+  // lane so the last message never slides under the fixed composer dock. The
+  // dock height varies (multi-line input, attachments, queued-message banner),
+  // so a static `--composer-clearance` left content hidden underneath. Measure
+  // it live and drive the CSS var. (dock sits at bottom:16 + a ~24px gap.)
+  useEffect(() => {
+    if (shouldShowLogin) return
+    const dock = document.querySelector<HTMLElement>('.bottom-dock')
+    if (!dock) return
+    const apply = () => {
+      document.documentElement.style.setProperty(
+        '--composer-clearance',
+        `${dock.offsetHeight + 40}px`,
+      )
+    }
+    apply()
+    const observer = new ResizeObserver(apply)
+    observer.observe(dock)
+    return () => {
+      observer.disconnect()
+      document.documentElement.style.removeProperty('--composer-clearance')
+    }
+  }, [shouldShowLogin, activeView, hasConversation])
 
   if (shouldShowLogin) {
     return (
