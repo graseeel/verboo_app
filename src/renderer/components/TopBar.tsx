@@ -29,7 +29,11 @@ export function TopBar({
   const { t } = useI18n()
 
   return (
-    <header className="topbar" onDoubleClick={() => window.verboo.toggleWindowZoom()}>
+    <header
+      className="topbar"
+      data-tauri-drag-region=""
+      onDoubleClick={() => window.verboo.toggleWindowZoom()}
+    >
       <button
         className="topbar-sidebar-button ui-tooltip"
         type="button"
@@ -42,7 +46,11 @@ export function TopBar({
       >
         {sidebarVisible ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
       </button>
-      <div className="topbar-brand-status" aria-label={`Verboo ${statusLabel}`}>
+      <div
+        className="topbar-brand-status"
+        data-tauri-drag-region=""
+        aria-label={`Verboo ${statusLabel}`}
+      >
         <img className="topbar-mark" src={mascotUrl} alt="Verboo" />
         <span className="topbar-status-text">
           <SlotText text={statusLabel} options={{ direction: 'up', duration: 180, stagger: 14, bounce: 0.2, interrupt: true }} />

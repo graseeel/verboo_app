@@ -20,3 +20,6 @@ dist-renderer/
 src-tauri/target/
 src-tauri/gen/
 src-tauri/*.rlib
+
+# Tauri bundled CLI resource (copied by copy-cli-resource.mjs from node_modules)
+src-tauri/resources/

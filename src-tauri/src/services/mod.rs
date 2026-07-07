@@ -1,3 +1,6 @@
+pub mod auth_token;
+pub mod child_signal;
+pub mod cli_path;
 pub mod cli_service;
 pub mod credentials_store;
 pub mod feedback_service;
@@ -7,6 +10,7 @@ pub mod goal_evaluator;
 pub mod lifecycle_service;
 pub mod model_service;
 pub mod notification_service;
+pub mod profile_service;
 pub mod research_subagent_service;
 pub mod settings_store;
 pub mod skills_service;

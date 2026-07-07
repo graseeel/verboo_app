@@ -34,9 +34,10 @@
     "release:linux:local": "node scripts/package-preflight.mjs --dist && npm run build && electron-builder --linux --publish never",
     "verify:update-release": "node scripts/verify/update-release-assets.mjs",
     "dev:renderer": "vite",
-    "build:renderer": "vite build",
+    "build:renderer": "tsc --noEmit && vite build",
+    "build:tauri-deps": "node scripts/verify/copy-cli-resource.mjs && npm run build:renderer",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build",
+    "tauri:build": "npm run build:tauri-deps && cargo +1.89.0 tauri build",
     "tauri:icon": "tauri icon"
   },
   "dependencies": {

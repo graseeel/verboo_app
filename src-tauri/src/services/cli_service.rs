@@ -22,14 +22,7 @@ impl CliService {
 
     /// Returns the path to the `verboo` CLI executable, if findable.
     fn resolve_cli_path() -> Option<String> {
-        if let Ok(path) = std::env::var("VERBOO_CLI_PATH") {
-            if !path.trim().is_empty() {
-                return Some(path);
-            }
-        }
-        // Probe PATH. `which` is not portable; instead we let the OS resolve
-        // `verboo` by name when spawning.
-        Some("verboo".to_string())
+        crate::services::cli_path::resolve().or_else(|| Some("verboo".to_string()))
     }
 
     /// Runs `verboo auth status --json` and parses the result.

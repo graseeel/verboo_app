@@ -63,15 +63,24 @@ function onEvent<T>(channel: string, cb: (payload: T) => void): () => void {
 // ── Drag-drop cache ─────────────────────────────────────────────
 // Tauri's WebView has onDragDropEvent; we cache the last dropped paths
 // so inspectDroppedFiles() can consume them (matching Electron webUtils).
+// NOTE: the 'over' variant has no `paths` — only 'drop' and 'enter' do.
 let _droppedPaths: string[] = []
 
-void getCurrentWebview().onDragDropEvent((event) => {
-  if (event.payload.type === 'drop' || event.payload.type === 'over') {
-    _droppedPaths = event.payload.paths ?? []
-  } else if (event.payload.type === 'leave') {
-    _droppedPaths = []
-  }
-})
+// ── Tauri-only guard (P1) ───────────────────────────────────────
+// In Electron, `__TAURI_INTERNALS__` is absent — the shim must be a no-op
+// so it doesn't overwrite the preload's `window.verboo` or call missing APIs.
+const IS_TAURI =
+  typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
+if (IS_TAURI) {
+  void getCurrentWebview().onDragDropEvent((event) => {
+    if (event.payload.type === 'drop' || event.payload.type === 'enter') {
+      _droppedPaths = event.payload.paths ?? []
+    } else if (event.payload.type === 'leave') {
+      _droppedPaths = []
+    }
+  })
+}
 
 // ── The API object (matches preload/index.ts VerbooDesktopApi) ──
 const api = {
@@ -206,7 +215,10 @@ const api = {
     onEvent<{ sessionId: string; error: string }>('terminal:error', callback),
 }
 
-// ── Expose on window ───────────────────────────────────────────
-;(window as unknown as Record<string, unknown>).verboo = api
+// ── Expose on window (Tauri only) ──────────────────────────────
+// In Electron, the preload script owns `window.verboo` — don't overwrite it.
+if (IS_TAURI) {
+  ;(window as unknown as Record<string, unknown>).verboo = api
+}
 
 export type VerbooDesktopApi = typeof api

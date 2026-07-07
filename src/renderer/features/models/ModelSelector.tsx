@@ -198,10 +198,41 @@ function readableModelName(model: VerbooModel): string {
     const modelName = humanizeModelId(preset[2])
     return prefix ? `${prefix} · ${modelName}` : modelName
   }
+  // If displayName is missing or equal to id, humanize the id so the
+  // dropdown shows "Ultra (glm-5.2)" instead of just "glm-5.2".
+  if (!model.displayName || model.displayName === model.id) {
+    return humanizeModelId(model.id)
+  }
   return raw.replace(/@preset\//g, '').replace(/\s+/g, ' ').trim()
 }
 
 function humanizeModelId(modelId: string): string {
+  // Map known model id prefixes to friendly brand names. Mirrors the
+  // Electron renderer's expectation that the dropdown shows "Ultra" for
+  // glm-5.2, etc. Falls through to the generic humanizer for unknown ids.
+  const lower = modelId.toLowerCase()
+  const brandMap: Array<[RegExp, string]> = [
+    [/^glm[-_]?5[-_.]?2$/i, 'Ultra'],
+    [/^glm[-_]?4[-_.]?7$/i, 'GLM 4.7'],
+    [/^glm4[-_]?7$/i, 'GLM 4.7'],
+    [/^glm[-_]?4$/i, 'GLM 4'],
+    [/^gpt[-_]?5$/i, 'GPT-5'],
+    [/^gpt[-_]?4o$/i, 'GPT-4o'],
+    [/^claude[-_]?opus[-_]?4[-_.]?6$/i, 'Claude Opus 4.6'],
+    [/^claude[-_]?sonnet[-_]?4[-_.]?6$/i, 'Claude Sonnet 4.6'],
+    [/^claude[-_]?haiku[-_]?4[-_.]?5$/i, 'Claude Haiku 4.5'],
+    [/^claude[-_]?3[-_]?5[-_]?sonnet$/i, 'Claude 3.5 Sonnet'],
+    [/^claude[-_]?3[-_]?opus$/i, 'Claude 3 Opus'],
+    [/^claude[-_]?3[-_]?haiku$/i, 'Claude 3 Haiku'],
+    [/^gemini[-_]?2[-_]?5[-_]?pro$/i, 'Gemini 2.5 Pro'],
+    [/^gemini[-_]?2[-_]?5[-_]?flash$/i, 'Gemini 2.5 Flash'],
+    [/^gemini[-_]?1[-_]?5[-_]?pro$/i, 'Gemini 1.5 Pro'],
+    [/^o3$/i, 'o3'],
+    [/^o4[-_]?mini$/i, 'o4-mini'],
+  ]
+  for (const [pattern, label] of brandMap) {
+    if (pattern.test(lower)) return label
+  }
   return modelId
     .replace(/^@preset\//, '')
     .replace(/glm4[-_]?7/i, 'GLM 4.7')

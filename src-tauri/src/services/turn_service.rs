@@ -10,6 +10,8 @@ use crate::models::types::{
     AttachmentKind, EventType, LanguageCode, PersonalityMode, RuntimeActivity, RuntimeStatus,
     RuntimeStatusKind,
 };
+use crate::services::auth_token::inject_api_key;
+use crate::services::credentials_store::CredentialsStore;
 
 const AGENT_EVENT_CHANNEL: &str = "agent:event";
 
@@ -24,21 +26,24 @@ const AGENT_EVENT_CHANNEL: &str = "agent:event";
 ///   - Emits `agent:event` Tauri events back to the renderer
 ///   - On close, emits the final result snapshot + a `done` event
 ///
-/// Auth token handling: rather than the fd 3 pipe trick Electron uses, we
-/// rely on the CLI's own credential store (populated by Fase 2 `verboo auth
-/// login`). Adding fd 3 is a follow-up if needed for accounts where the GUI
-/// and CLI must use separate credentials.
+/// Auth: the API key (if stored) is injected via `OAUTH_TOKEN_FILE` env var
+/// pointing at a 0600 temp file. This matches Electron's behavior of
+/// "API key has precedence over OAuth token" (verbooCliService.ts:306) and
+/// means the user never has to run `verboo auth login` — saving the key in
+/// the app's credential store is enough.
 pub struct TurnService {
     /// Active child processes keyed by turn_id, so `interrupt` can signal them.
     active: Arc<Mutex<std::collections::HashMap<String, Child>>>,
     cli_path: String,
+    credentials: Arc<CredentialsStore>,
 }
 
 impl TurnService {
-    pub fn new() -> Self {
+    pub fn new(credentials: Arc<CredentialsStore>) -> Self {
         Self {
             active: Arc::new(Mutex::new(std::collections::HashMap::new())),
             cli_path: resolve_cli_path(),
+            credentials,
         }
     }
 
@@ -103,12 +108,27 @@ impl TurnService {
 
         let working_directory = safe_runtime_working_directory(&request.working_directory);
 
-        let child = Command::new(&self.cli_path)
-            .args(&args)
+        let api_key = self
+            .credentials
+            .get_api_key()
+            .map_err(|e| format!("Falha ao ler API key: {e}"))?;
+
+        let mut cmd = Command::new(&self.cli_path);
+        cmd.args(&args)
             .current_dir(&working_directory)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        // On Windows, create the child in its own process group so
+        // `GenerateConsoleCtrlEvent` can target it for graceful interrupt.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(crate::services::child_signal::process_creation_flags());
+        }
+        let _token_file = inject_api_key(api_key.as_deref(), &mut cmd);
+
+        let child = cmd
             .spawn()
             .map_err(|e| format!("Falha ao iniciar CLI Verboo: {e}"))?;
 
@@ -149,7 +169,10 @@ impl TurnService {
         let conversation_id_for_stdout = conversation_id.clone();
 
         // Spawn reader thread for stdout (the main streaming channel).
+        // `_token_file` is moved into the closure so the 0600 temp file stays
+        // alive while the child holds the fd/path.
         thread::spawn(move || {
+            let _token_file = _token_file;
             let reader = BufReader::new(stdout);
             let mut emitted_stream_text = false;
             let mut result_snapshot: Option<AgentResultSnapshot> = None;
@@ -282,9 +305,10 @@ impl TurnService {
         Ok(turn_id)
     }
 
-    /// Interrupt a running turn by turn_id. Sends SIGINT (or the Windows
-    /// equivalent) to the child process. Returns true if a child was found
-    /// and signaled, false if the turn wasn't running anymore.
+    /// Interrupt a running turn by turn_id. Sends SIGINT on Unix, Ctrl+C
+    /// (GenerateConsoleCtrlEvent) on Windows, falling back to kill(). Returns
+    /// true if a child was found and signaled, false if the turn wasn't
+    /// running anymore.
     pub fn interrupt(&self, conversation_id: Option<String>) -> Result<bool, String> {
         let mut active = self.active.lock().map_err(|e| e.to_string())?;
         // For now we match by turn_id == conversation_id OR any active turn
@@ -301,9 +325,8 @@ impl TurnService {
         };
         if let Some(key) = target_key {
             if let Some(mut child) = active.remove(&key) {
-                // kill sends SIGTERM on Unix, TerminateProcess on Windows.
-                // The CLI translates either into a graceful interrupt.
-                let _ = child.kill();
+                // Try graceful interrupt first (SIGINT / Ctrl+C), then kill.
+                let _ = crate::services::child_signal::interrupt_child(&mut child);
                 let _ = child.wait();
                 return Ok(true);
             }
@@ -314,7 +337,7 @@ impl TurnService {
 
 impl Default for TurnService {
     fn default() -> Self {
-        Self::new()
+        Self::new(std::sync::Arc::new(CredentialsStore::new()))
     }
 }
 
@@ -325,12 +348,7 @@ fn emit_event(app: &AppHandle, event: AgentEvent) {
 /// Resolve the `verboo` CLI path: env override first, then PATH.
 /// Follow-up: bundled CLI via Node sidecar for packaged builds.
 fn resolve_cli_path() -> String {
-    if let Ok(path) = std::env::var("VERBOO_CLI_PATH") {
-        if !path.trim().is_empty() {
-            return path;
-        }
-    }
-    "verboo".to_string()
+    crate::services::cli_path::resolve().unwrap_or_else(|| "verboo".to_string())
 }
 
 /// Build the user prompt that goes to the CLI. Mirrors Electron's

@@ -7,6 +7,7 @@ use models::types::*;
 use services::cli_service::CliService;
 use services::credentials_store::CredentialsStore;
 use services::model_service::ModelService;
+use services::profile_service::ProfileService;
 use services::settings_store::SettingsStore;
 use services::terminal_service::TerminalService;
 use services::turn_service::TurnService;
@@ -143,17 +144,19 @@ fn list_models(
 // ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
-fn get_profile() -> Result<ProfileResult, String> {
-    Ok(ProfileResult {
-        status: ProfileStatus::Unauthenticated,
-        fetched_at: None,
-        user: None,
-        plan: None,
-        summary: None,
-        activity: None,
-        active_days: None,
-        error: None,
-    })
+async fn get_profile(
+    credentials: tauri::State<'_, CredentialsStore>,
+) -> Result<ProfileResult, String> {
+    // Read the API key from the OS keyring. The keyring call is blocking
+    // but fast (<10ms typical); we don't bother with spawn_blocking here.
+    let api_key = credentials.get_api_key()?;
+    let svc = ProfileService::new();
+    // Run the HTTP fetches on a blocking thread — reqwest::blocking panics
+    // if called from an async runtime.
+    let result = tokio::task::spawn_blocking(move || svc.get_profile(api_key.as_deref()))
+        .await
+        .map_err(|e| format!("Falha ao carregar perfil: {e}"))?;
+    Ok(result)
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -355,8 +358,15 @@ fn open_external_file(
 // ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
-fn evaluate_goal(input: GoalEvaluationInput) -> Result<EvaluationResult, String> {
-    Ok(crate::services::goal_evaluator::GoalEvaluator::evaluate(input).into())
+fn evaluate_goal(
+    input: GoalEvaluationInput,
+    credentials: tauri::State<'_, CredentialsStore>,
+) -> Result<EvaluationResult, String> {
+    let api_key = credentials.get_api_key()?;
+    Ok(
+        crate::services::goal_evaluator::GoalEvaluator::evaluate(input, api_key.as_deref())
+            .into(),
+    )
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -675,13 +685,16 @@ pub fn run() {
             let settings_store = SettingsStore::new(app_data_dir.clone());
             app.manage(settings_store);
             // CredentialsStore — OS-native keyring for API key & OAuth tokens
+            // Two instances: one for tauri::State (renderer commands), one
+            // Arc-shared with TurnService so it can inject the key into spawns.
+            // Both see the same OS keyring, so this is safe.
             app.manage(CredentialsStore::new());
             // CliService — spawns `verboo` CLI for auth/turns/models
             app.manage(CliService::new());
             // ModelService — fetches models from Verboo Router API with disk cache
             app.manage(ModelService::new(app_data_dir.clone()));
             // TurnService — spawns `verboo` CLI for agent turns with streaming
-            app.manage(TurnService::new());
+            app.manage(TurnService::new(std::sync::Arc::new(CredentialsStore::new())));
             // TerminalService — PTY for the local terminal panel
             app.manage(TerminalService::new());
             // TrayService — owns the menubar state machine (icon/title animation)

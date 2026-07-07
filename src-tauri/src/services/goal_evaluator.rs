@@ -5,6 +5,7 @@ use crate::models::types::{
     AgentResultSnapshot, GoalDecision, GoalEvaluationInput, GoalEvaluationResult, GoalState,
     TranscriptItem,
 };
+use crate::services::auth_token::inject_api_key;
 
 /// Result of a single goal evaluation call. Mirrors the Electron type and the
 /// local `EvaluationResult` in `lib.rs` (camelCase serialized).
@@ -28,7 +29,11 @@ impl GoalEvaluator {
     /// Builds the evaluation prompt and runs the CLI. Defaults to `continue`
     /// on any error or unparseable output so the agent keeps going instead of
     /// silently halting.
-    pub fn evaluate(input: GoalEvaluationInput) -> EvaluationResult {
+    ///
+    /// `api_key` is the user's stored Verboo API key (if any). When present,
+    /// it's injected via `OAUTH_TOKEN_FILE` so the evaluator subprocess
+    /// authenticates without a separate `verboo auth login`.
+    pub fn evaluate(input: GoalEvaluationInput, api_key: Option<&str>) -> EvaluationResult {
         let recent_items: Vec<TranscriptItem> = input
             .conversation_items
             .iter()
@@ -44,6 +49,7 @@ impl GoalEvaluator {
             &prompt,
             &input.goal.working_directory,
             Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+            api_key,
         ) {
             Ok(s) => s,
             Err(_) => return Self::fallback_continue("CLI falhou ao responder."),
@@ -162,15 +168,18 @@ fn run_evaluation_cli(
     prompt: &str,
     working_directory: &str,
     timeout: Duration,
+    api_key: Option<&str>,
 ) -> Result<String, String> {
     let cli = resolve_cli_path()?;
     let started = Instant::now();
-    let mut child = Command::new(&cli)
-        .args(["--print", prompt, "--output-format", "json"])
+    let mut cmd = Command::new(&cli);
+    cmd.args(["--print", prompt, "--output-format", "json"])
         .current_dir(working_directory)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    let _token_file = inject_api_key(api_key, &mut cmd);
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("Falha ao spawn CLI: {e}"))?;
 
@@ -199,13 +208,7 @@ fn run_evaluation_cli(
 ///   1. `VERBOO_CLI_PATH` env var
 ///   2. `verboo` on PATH (OS resolves)
 fn resolve_cli_path() -> Result<String, String> {
-    if let Ok(path) = std::env::var("VERBOO_CLI_PATH") {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
-        }
-    }
-    Ok("verboo".into())
+    Ok(crate::services::cli_path::resolve().unwrap_or_else(|| "verboo".to_string()))
 }
 
 /// Pulls the evaluation JSON out of the CLI's stdout. The CLI wraps the

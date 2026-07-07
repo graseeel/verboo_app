@@ -110,6 +110,9 @@ jobs:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
       # Prevent Rust 1.95 (system default) from breaking tauri-cli proc-macros.
       RUSTUP_TOOLCHAIN: "1.89.0"
+      # Clear RUSTFLAGS so cargo-tauri's default flags don't break proc-macro
+      # linking (ctor-proc-macro "can't find crate" error on Rust 1.89).
+      RUSTFLAGS: ""
 
     steps:
       - name: Checkout repository
@@ -144,6 +147,9 @@ jobs:
 
       - name: Install npm dependencies
         run: npm ci
+
+      - name: Copy bundled CLI (cli.mjs) into resources
+        run: node scripts/verify/copy-cli-resource.mjs
 
       - name: Install tauri-cli
         run: cargo +1.89.0 install tauri-cli --version "^2.0.0" --locked

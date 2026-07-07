@@ -37,6 +37,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": [
+      "resources/cli.mjs"
+    ],
     "macOS": {
       "minimumSystemVersion": "12.0"
     },

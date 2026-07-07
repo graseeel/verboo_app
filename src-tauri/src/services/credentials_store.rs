@@ -42,6 +42,14 @@ impl CredentialsStore {
         if clean.is_empty() {
             return Err("A chave API está vazia.".into());
         }
+        // Reject obviously invalid inputs that aren't API keys at all — e.g.
+        // a URL the user pasted by mistake, or an OAuth token. This avoids
+        // saving a "key" that then blocks the CLI OAuth fallback (the CLI
+        // sees `OAUTH_TOKEN_FILE` set, tries to use it, fails auth, and
+        // never falls back to its own credential store).
+        if let Err(msg) = validate_api_key_format(clean) {
+            return Err(msg);
+        }
         let entry = Entry::new(SERVICE_NAME, ACCOUNT_NAME)
             .map_err(|e| format!("Falha ao acessar credential store: {e}"))?;
         entry
@@ -91,6 +99,26 @@ impl Default for CredentialsStore {
     }
 }
 
+/// Verifies the API key is not a URL and starts with the Verboo key prefix.
+fn validate_api_key_format(key: &str) -> Result<(), String> {
+    if key.starts_with("http://") || key.starts_with("https://") {
+        return Err(
+            "Isso parece ser um link/endereço, não uma chave API Verboo. Copie e cole a chave que começa com 'vbk_'."
+                .into(),
+        );
+    }
+    if !key.starts_with("vbk_") {
+        return Err(
+            "Chave API inválida. As chaves Verboo começam com 'vbk_'."
+                .into(),
+        );
+    }
+    if key.len() < 16 {
+        return Err("Chave API muito curta. Verifique se a chave foi copiada por completo.".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,5 +135,26 @@ mod tests {
             CredentialsStore::create_hint("sk-ant-api03-long-key-1234567890"),
             "sk-a...7890"
         );
+    }
+
+    #[test]
+    fn validate_accepts_verboo_prefix() {
+        assert!(validate_api_key_format("vbk_test_key_long_enough").is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_url() {
+        assert!(validate_api_key_format("https://example.com/something").is_err());
+        assert!(validate_api_key_format("http://localhost:3000").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_non_verboo_prefix() {
+        assert!(validate_api_key_format("sk-ant-api03-abc123").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_too_short() {
+        assert!(validate_api_key_format("vbk_abc").is_err());
     }
 }
