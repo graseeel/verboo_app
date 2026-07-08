@@ -52,6 +52,7 @@ import { QuestionWizard, type ModelQuestion, type QuestionAnswer, type QuestionP
 import { MessageCircleQuestion } from 'lucide-react'
 import { useLocalTerminal } from './features/terminal/useLocalTerminal'
 import { LocalTerminalPanel } from './features/terminal/LocalTerminalPanel'
+import { useTheme } from './features/theme/useTheme'
 import { ReviewPanel } from './features/review/ReviewPanel'
 import { useReviewPanel } from './features/review/useReviewPanel'
 import { EmptyChat } from './components/EmptyChat'
@@ -90,7 +91,6 @@ const DEVELOPMENT_NOTICE_KEY = 'verboo:development-notice-accepted'
 const AUTH_SESSION_KEY = 'verboo:last-verified-auth'
 const AUTH_SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 const CONTEXT_WINDOWS_KEY = 'verboo:context-windows-by-model'
-const THEME_KEY = 'verboo:theme'
 const SIDEBAR_PREF_KEY = 'verboo:sidebar-preference'
 const SIDEBAR_DEFAULT_WIDTH = 292
 const SIDEBAR_MIN_WIDTH = 220
@@ -246,7 +246,7 @@ export function App() {
   const [entryUnlocked, setEntryUnlocked] = useState(false)
   const [authChecking, setAuthChecking] = useState(true)
   const [authError, setAuthError] = useState<string | undefined>()
-  const [theme, setTheme] = useState<ThemeMode>(readTheme)
+  const { theme, setTheme } = useTheme()
   const [modelResult, setModelResult] = useState<ModelDiscoveryResult>({
     models: defaultModels,
     source: 'none',
@@ -461,11 +461,6 @@ export function App() {
       cancelled = true
     }
   }, [])
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme
-    window.localStorage.setItem(THEME_KEY, theme)
-  }, [theme])
 
   useEffect(() => {
     saveSidebarPreference({ mode: sidebarMode, width: sidebarWidth })
@@ -3667,10 +3662,6 @@ function isAuthoritativelySignedOut(credentials: CredentialStatus, cliAuth: CliA
   // not a logout, so keep the session instead of kicking the user out.
   if (credentials.hasApiKey) return false
   return cliAuth.loggedIn === false && !cliAuth.error
-}
-
-function readTheme(): ThemeMode {
-  return window.localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark'
 }
 
 function readSidebarPreference(): { mode: SidebarMode; width: number } {
