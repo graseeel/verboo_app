@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
-import { ArrowDown, CheckCircle2, ChevronDown, ChevronRight, FolderClosed, GitBranch, LoaderCircle, ShieldCheck, Terminal, XCircle } from 'lucide-react'
+import { ArrowDown, CheckCircle2, ChevronDown, ChevronRight, FolderClosed, GitBranch, LoaderCircle, XCircle } from 'lucide-react'
 import type {
   AccessMode,
   AgentEvent,
@@ -60,6 +60,7 @@ import { TopBar } from './components/TopBar'
 import { Transcript } from './components/Transcript'
 import { UpdateBanner } from './components/UpdateBanner'
 import { AccessSelector } from './features/access/AccessSelector'
+import { PermissionApprovalPanel, type PendingPermissionPrompt } from './features/permission/PermissionApprovalPanel'
 import { Composer } from './features/composer/Composer'
 import { ContextMeter } from './features/context/ContextMeter'
 import { TokenRateMeter } from './features/context/TokenRateMeter'
@@ -211,15 +212,6 @@ type QueuedFollowUp = {
     modelId?: string
     modelDisplayName?: string
   }
-}
-
-type PendingPermissionPrompt = {
-  id: string
-  turnId: string
-  conversationId: string
-  command?: string
-  detail: string
-  autoApprove: boolean
 }
 
 type PermissionDecision = 'allow' | 'deny' | 'always'
@@ -3612,47 +3604,6 @@ function ResearchSubagentPanel({
         {t('subagent.readOnlyHistory')}
       </footer>
     </aside>
-  )
-}
-
-function PermissionApprovalPanel({
-  prompt,
-  onAllow,
-  onDeny,
-  onAlwaysAllow,
-}: {
-  prompt: PendingPermissionPrompt
-  onAllow: () => void
-  onDeny: () => void
-  onAlwaysAllow: () => void
-}) {
-  const { t } = useI18n()
-  return (
-    <section className="permission-approval-panel" aria-live="polite">
-      <div className="permission-approval-icon">
-        <Terminal size={16} />
-      </div>
-      <div className="permission-approval-copy">
-        <strong>{t('permissionPrompt.title')}</strong>
-        <p>{prompt.command ? t('permissionPrompt.commandBody') : prompt.detail}</p>
-        {prompt.command && <code>{prompt.command}</code>}
-      </div>
-      <div className="permission-approval-actions">
-        <button type="button" onClick={onDeny}>
-          <XCircle size={15} />
-          {t('permissionPrompt.deny')}
-        </button>
-        {prompt.command && (
-          <button className="trust" type="button" onClick={onAlwaysAllow}>
-            <ShieldCheck size={15} />
-            {t('permissionPrompt.alwaysAllow')}
-          </button>
-        )}
-        <button className="primary" type="button" onClick={onAllow}>
-          {t('permissionPrompt.allow')}
-        </button>
-      </div>
-    </section>
   )
 }
 
