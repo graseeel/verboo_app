@@ -12,11 +12,68 @@
 // Run automatically by `build:tauri-deps` before `cargo tauri build`.
 // Skips silently if the source package is not installed (dev-only builds).
 
-import { cp, mkdir, stat, rm, readFile, writeFile, chmod } from "node:fs/promises";
+import { cp, mkdir, stat, rm, rename, readFile, writeFile, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+
+// FS errors that are typically transient under iCloud's file provider:
+// the provider re-materializes "dataless" files mid-rmdir, so a single
+// recursive rm can trip ENOTEMPTY/EBUSY. Retry these with backoff.
+const TRANSIENT_FS_ERRORS = new Set([
+  "ENOTEMPTY",
+  "EBUSY",
+  "ENOTDIR",
+  "EPERM",
+  "EACCES",
+]);
+
+// robustRm: rm(path, { recursive, force }) with bounded retry for transient
+// FS errors (iCloud re-materialization). If retries exhaust, fall back to
+// renaming path to a sibling .trash-<n> dir (best-effort cleanup, never
+// aborts the build). Happy path (rm succeeds on first try) is unchanged.
+async function robustRm(path) {
+  const MAX_ATTEMPTS = 5;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      await rm(path, { recursive: true, force: true });
+      return; // success
+    } catch (err) {
+      lastErr = err;
+      if (!TRANSIENT_FS_ERRORS.has(err.code)) throw err; // non-transient: propagate
+      if (attempt === MAX_ATTEMPTS) break;
+      // Backoff: 100, 200, 400, 500 ms (capped at 500).
+      const delay = Math.min(100 * 2 ** (attempt - 1), 500);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  // Retries exhausted on a transient error: rename to a .trash-<n> sibling
+  // and let the build proceed. Best-effort cleanup; never aborts the build.
+  const base = `${path}.trash`;
+  let trashPath = `${base}-0`;
+  let counter = 0;
+  while (existsSync(trashPath)) {
+    counter++;
+    trashPath = `${base}-${counter}`;
+  }
+  try {
+    await rename(path, trashPath);
+    console.warn(`[copy-cli-resource] Retries exhausted; moved ${path} → ${trashPath} (best-effort cleanup).`);
+    // Best-effort: try to delete the trash dir in the background. Don't await.
+    rm(trashPath, { recursive: true, force: true }).catch(() => {
+      /* swallow — best-effort */
+    });
+  } catch (renameErr) {
+    // Rename also failed (e.g. EXDEV cross-device, or path already gone).
+    // If the target no longer exists, treat as success (nothing to remove).
+    if (renameErr.code === "ENOENT") return;
+    // Otherwise surface the original FS error (more informative than the
+    // rename failure) so the build fails with the real root cause.
+    throw lastErr;
+  }
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..", "..");
@@ -37,7 +94,10 @@ if (!existsSync(sourceCliMjs)) {
 }
 
 // Clean previous copy (so updates to @verboo/code are reflected).
-await rm(targetDir, { recursive: true, force: true });
+// Use robustRm: iCloud's file provider can re-materialize "dataless" files
+// mid-rmdir, tripping ENOTEMPTY/EBUSY on a single rm. Retries + rename-to-trash
+// fallback keep the build reliable without aborting on transient FS races.
+await robustRm(targetDir);
 await mkdir(targetDir, { recursive: true });
 
 // Sanity check: cli.mjs should be at least 1MB (it's a bundled 20MB file).
