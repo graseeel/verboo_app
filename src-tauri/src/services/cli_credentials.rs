@@ -437,6 +437,17 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    // Process-wide test mutex. The production code stores CLI OAuth creds in a
+    // global static CACHE (matching the CLI's own caching). In `cargo test` the
+    // tests run in parallel by default, so two tests mutating or asserting on
+    // the cache race with each other and become flaky. We serialize the whole
+    // module instead of weakening the assertions.
+    //
+    // This is a TEST-ONLY isolation artifact — it does NOT hide a production
+    // bug. In production there is exactly one process cache and callers are
+    // expected to be concurrent; the Mutex inside CACHE protects that.
+    static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn creds_with(exp: Option<u64>, refresh: Option<&str>) -> CliOAuthCredentials {
         CliOAuthCredentials {
             access_token: "tok".into(),
@@ -450,6 +461,7 @@ mod tests {
 
     #[test]
     fn should_refresh_returns_false_without_expires_at() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         reset_cache();
         let c = creds_with(None, Some("rt"));
         assert!(!should_refresh(&c));
@@ -457,6 +469,7 @@ mod tests {
 
     #[test]
     fn should_refresh_returns_false_without_refresh_token() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         reset_cache();
         let c = creds_with(Some(now_ms() + 1000), None);
         assert!(!should_refresh(&c));
@@ -464,6 +477,7 @@ mod tests {
 
     #[test]
     fn should_refresh_returns_true_within_skew() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         reset_cache();
         let c = creds_with(Some(now_ms() + 30_000), Some("rt"));
         assert!(should_refresh(&c));
@@ -471,6 +485,7 @@ mod tests {
 
     #[test]
     fn should_refresh_returns_false_far_from_expiry() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         reset_cache();
         let c = creds_with(Some(now_ms() + 60 * 60 * 1000), Some("rt"));
         assert!(!should_refresh(&c));
@@ -478,18 +493,21 @@ mod tests {
 
     #[test]
     fn is_expired_returns_false_without_expires_at() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         let c = creds_with(None, Some("rt"));
         assert!(!is_expired(&c));
     }
 
     #[test]
     fn is_expired_returns_true_when_past_expiry() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         let c = creds_with(Some(now_ms() - 1000), Some("rt"));
         assert!(is_expired(&c));
     }
 
     #[test]
     fn parse_oauth_extracts_fields() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         let v = json!({
             "accessToken": "abc",
             "refreshToken": "def",
@@ -509,24 +527,28 @@ mod tests {
 
     #[test]
     fn parse_oauth_returns_none_without_access_token() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         let v = json!({"refreshToken": "def"});
         assert!(parse_oauth(&v).is_none());
     }
 
     #[test]
     fn parse_oauth_returns_none_for_empty_access_token() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         let v = json!({"accessToken": "   "});
         assert!(parse_oauth(&v).is_none());
     }
 
     #[test]
     fn parse_oauth_returns_none_for_non_object() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         assert!(parse_oauth(&json!("string")).is_none());
         assert!(parse_oauth(&json!(42)).is_none());
     }
 
     #[test]
     fn parse_json_blob_handles_valid_json() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         let s = r#"{"verbooOauth":{"accessToken":"x"}}"#;
         let v = parse_json_blob(s).expect("parsed");
         assert!(v.get("verbooOauth").is_some());
@@ -534,17 +556,20 @@ mod tests {
 
     #[test]
     fn parse_json_blob_returns_none_for_empty() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         assert!(parse_json_blob("").is_none());
         assert!(parse_json_blob("   ").is_none());
     }
 
     #[test]
     fn parse_json_blob_returns_none_for_invalid_json() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         assert!(parse_json_blob("not json").is_none());
     }
 
     #[test]
     fn credentials_file_path_uses_verboo_config_dir_when_set() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         // Setting env vars in tests is racy in parallel, but the result is
         // deterministic enough for a smoke check.
         // If VERBOO_CONFIG_DIR is unset → ~/.verboo/.credentials.json
@@ -558,6 +583,7 @@ mod tests {
 
     #[test]
     fn credentials_file_path_falls_back_to_user_profile_when_no_home() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         // When HOME and USERPROFILE are unset, returns None.
         // We can't reliably test this without forking the process.
         // Just verify the function doesn't panic.
@@ -591,6 +617,7 @@ mod tests {
     /// reading the store would silently regress the bug.
     #[test]
     fn cold_launch_cache_miss_still_resolves_from_store() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         reset_cache();
 
         // Simulate a cold cache (just reset) and verify the fast path
@@ -623,6 +650,7 @@ mod tests {
     ///  race again.
     #[test]
     fn cold_launch_cache_hit_returns_cached_token_without_reread() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         reset_cache();
 
         // Populate the cache directly (simulating a successful first read).
@@ -666,6 +694,7 @@ mod tests {
     /// the access_token is still usable.
     #[test]
     fn cold_launch_unrefreshable_token_still_returned_when_not_expired() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         reset_cache();
 
         // Token expires in 30s (within the 60s refresh skew) but has no
@@ -709,6 +738,7 @@ mod tests {
     /// holding the lock).
     #[test]
     fn cold_launch_cache_lock_released_after_fast_path() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         reset_cache();
 
         // Acquire the cache lock from outside get_access_token, then
