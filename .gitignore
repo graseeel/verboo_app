@@ -23,3 +23,6 @@ src-tauri/*.rlib
 
 # Tauri bundled CLI resource (copied by copy-cli-resource.mjs from node_modules)
 src-tauri/resources/
+
+# Maestri orchestration directory (local agent roles/config — not part of the app)
+.maestri/
