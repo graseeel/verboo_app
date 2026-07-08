@@ -1,7 +1,19 @@
 .turn-view { display: flex; flex-direction: column; gap: 8px; }
 
 .step-flow { display: flex; flex-direction: column; gap: 10px; }
-.step-text { color: var(--text); line-height: 1.65; white-space: pre-wrap; }
+/* Long tokens (URLs, inline-code, hashes) must wrap inside their parent
+   grid track — the assistant row uses `display: grid` with implicit
+   `min-width: auto`, so without `min-width: 0` and `overflow-wrap: anywhere`
+   the child track grows past `.message-row`'s `overflow: hidden` and the
+   right edge gets silently clipped. Keep `white-space: pre-wrap` so
+   intentional newlines and indentation from the model are preserved. */
+.step-text {
+  color: var(--text);
+  line-height: 1.65;
+  white-space: pre-wrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .turn-recap { margin-top: 4px; }
 
 .step-thinking {

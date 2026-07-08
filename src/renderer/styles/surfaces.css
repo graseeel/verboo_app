@@ -844,6 +844,11 @@
   padding: 3px 0 5px;
   border-color: transparent;
   background: transparent;
+  /* Grid tracks default to `min-width: auto`, which lets a long unbreakable
+     child (URL, inline code, hash) push the track past the row's
+     `overflow: hidden` and clip silently. Force tracks to shrink-to-fit so
+     `overflow-wrap: anywhere` on descendants can actually break long tokens. */
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .message-row.tool {

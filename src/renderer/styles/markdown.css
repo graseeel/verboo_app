@@ -8,6 +8,14 @@
   line-height: 1.5;
   color: inherit;
   word-break: break-word;
+  /* Belt-and-braces with `word-break` above: `overflow-wrap: anywhere`
+     gives the renderer permission to break *inside* an otherwise
+     unbreakable run (URL, inline `<code>`, hash) even if the surrounding
+     text has no break opportunity. Without this, `.message-row` clips. */
+  overflow-wrap: anywhere;
+  /* Allow this flex/grid item to shrink below its intrinsic content width
+     so descendant text wrapping can take effect inside grid parents. */
+  min-width: 0;
 }
 
 /* Collapse outer margins so the message bubble padding owns the spacing. */

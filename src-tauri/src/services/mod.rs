@@ -10,6 +10,8 @@ pub mod file_service;
 pub mod git_service;
 pub mod goal_evaluator;
 pub mod lifecycle_service;
+#[cfg(test)]
+pub mod markdown_wrap_contract;
 pub mod model_service;
 pub mod node_runtime;
 pub mod notification_service;

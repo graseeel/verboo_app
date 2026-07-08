@@ -4,9 +4,9 @@
   "version": "0.3.0-beta.1",
   "identifier": "ai.verboo.code.desktop",
   "build": {
-    "beforeDevCommand": "cd .. && npm run dev:renderer",
+    "beforeDevCommand": "npm run dev:renderer",
     "devUrl": "http://localhost:5183",
-    "beforeBuildCommand": "cd .. && npm run build:renderer",
+    "beforeBuildCommand": "npm run build:renderer",
     "frontendDist": "../dist-renderer"
   },
   "app": {
