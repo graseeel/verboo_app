@@ -769,6 +769,10 @@ pub fn run() {
                 .expect("app data dir must be available");
             let _ = std::fs::create_dir_all(&app_data_dir);
             let settings_store = SettingsStore::new(app_data_dir.clone());
+            // Clone BEFORE moving into `app.manage` so the same store can be
+            // shared with TurnService (which reads `prevent_sleep_while_running`
+            // at turn start). Both clones read/write the same `settings.json`.
+            let settings_store_for_turn = settings_store.clone();
             app.manage(settings_store);
             // CredentialsStore — OS-native keyring for API key & OAuth tokens
             // Two instances: one for tauri::State (renderer commands), one
@@ -780,7 +784,7 @@ pub fn run() {
             // ModelService — fetches models from Verboo Router API with disk cache
             app.manage(ModelService::new(app_data_dir.clone()));
             // TurnService — spawns `verboo` CLI for agent turns with streaming
-            app.manage(TurnService::new(std::sync::Arc::new(CredentialsStore::new())));
+            app.manage(TurnService::new(std::sync::Arc::new(CredentialsStore::new())).with_settings(std::sync::Arc::new(settings_store_for_turn)));
             // ResearchSubagentRunner — spawns read-only CLI turns for research
             // subagents. Shares a CredentialsStore (Arc) so it can resolve the
             // bearer token (CLI OAuth first, API key fallback) the same way

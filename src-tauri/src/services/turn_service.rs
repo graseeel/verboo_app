@@ -8,10 +8,12 @@ use tauri::{AppHandle, Emitter};
 use crate::models::types::{
     access_mode_cli_args, AgentEvent, AgentResultSnapshot, AgentTurnRequest, AttachmentMeta,
     AttachmentKind, EventType, LanguageCode, PersonalityMode, RuntimeActivity, RuntimeStatus,
-    RuntimeStatusKind,
+    RuntimeStatusKind, UserSettings,
 };
 use crate::services::auth_token::{inject_api_key, resolve_token};
 use crate::services::credentials_store::CredentialsStore;
+use crate::services::prevent_sleep::PreventSleepGuard;
+use crate::services::settings_store::SettingsStore;
 
 const AGENT_EVENT_CHANNEL: &str = "agent:event";
 
@@ -42,6 +44,9 @@ pub struct TurnService {
     /// Active child processes keyed by turn_id, so `interrupt` can signal them.
     active: Arc<Mutex<std::collections::HashMap<String, ChildHandle>>>,
     credentials: Arc<CredentialsStore>,
+    /// Optional settings store for reading `prevent_sleep_while_running`.
+    /// When `None`, sleep prevention is disabled (used in tests).
+    settings: Option<Arc<SettingsStore>>,
 }
 
 impl TurnService {
@@ -49,7 +54,15 @@ impl TurnService {
         Self {
             active: Arc::new(Mutex::new(std::collections::HashMap::new())),
             credentials,
+            settings: None,
         }
+    }
+
+    /// Sets the settings store used to read `prevent_sleep_while_running`.
+    /// Called from `lib.rs` setup after the `SettingsStore` is created.
+    pub fn with_settings(mut self, settings: Arc<SettingsStore>) -> Self {
+        self.settings = Some(settings);
+        self
     }
 
     /// Spawn an agent turn. Returns the turn_id (existing or newly generated).
@@ -117,6 +130,17 @@ impl TurnService {
         // fallback). The CLI token gives full account access; the API key
         // is the fallback for users who haven't done `verboo auth login`.
         let token = resolve_token(&self.credentials);
+
+        // Prevent sleep while the turn is running, honoring the user's
+        // setting. The guard is moved into the stdout reader thread and
+        // released automatically when the thread exits.
+        let sleep_guard = match self.settings.as_ref() {
+            Some(store) => store
+                .get()
+                .map(|settings| PreventSleepGuard::start(&settings))
+                .unwrap_or_else(|_| PreventSleepGuard::start(&UserSettings::default())),
+            None => PreventSleepGuard::start(&UserSettings::default()),
+        };
 
         // Build the CLI spawn. CliSpawn picks the best runtime:
         //   - `<node> <bundled-cli.mjs>` (self-contained — option B of doc 03)
@@ -188,11 +212,14 @@ impl TurnService {
         let active_map_for_thread = self.active.clone();
 
         // Spawn reader thread for stdout (the main streaming channel).
+        // `_sleep_guard` is moved into the closure and held alive for the
+        // duration of the turn; dropping it releases the OS sleep assertion.
         // `_token_file` is moved into the closure so the 0600 temp file stays
         // alive while the child holds the fd/path. `child_handle` is moved
         // so the thread can call `wait()` to get the exit code.
         thread::spawn(move || {
             let _token_file = _token_file;
+            let _sleep_guard = sleep_guard;
             let child_handle = child_handle;
             let reader = BufReader::new(stdout);
             let mut emitted_stream_text = false;
