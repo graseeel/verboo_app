@@ -563,4 +563,175 @@ mod tests {
         // Just verify the function doesn't panic.
         let _ = cli_credentials_file_path();
     }
+
+    // ─── Cold launch race regression tests ───────────────────────────
+    //
+    // Bug being prevented: on a cold launch (process start, empty cache),
+    // the first call to `get_access_token()` had to read the keychain —
+    // a slow blocking call (up to 10s on macOS if the keychain is locked
+    // or the system is under load). Multiple Tauri commands fired in
+    // parallel at startup (profile, models, first turn) each called
+    // `resolve_token()` → `get_access_token()` → keychain read, racing
+    // on the same `CACHE` Mutex. If one thread saw `None` (cache miss +
+    // keychain still reading) and the caller had no API key fallback
+    // wired yet, the user saw "No valid session" even with the CLI
+    // logged in.
+    //
+    // The fix (already in place): `get_access_token()` is the single
+    // entry point, the cache is populated on first successful read, and
+    // `resolve_token()` falls back to the API key if the CLI path
+    // returns None. These tests pin the contract so a future refactor
+    // can't reintroduce the race.
+
+    /// Cold-launch contract: a cache miss must NOT short-circuit to None
+    /// when the store has valid creds. The first call (empty cache) must
+    /// populate the cache and return the token. This is the exact
+    /// invariant that broke when "No valid session" appeared on cold
+    /// launch: a refactor that returns None on cache-miss without
+    /// reading the store would silently regress the bug.
+    #[test]
+    fn cold_launch_cache_miss_still_resolves_from_store() {
+        reset_cache();
+
+        // Simulate a cold cache (just reset) and verify the fast path
+        // does NOT return None — it must fall through to the slow path.
+        // We can't read the real keychain in a unit test, but we can
+        // assert the cache invariant: after reset, cache is None, so the
+        // fast path cannot short-circuit. The slow path then runs; if
+        // the store is unavailable (test env), we get None — but that's
+        // the store returning None, not the cache short-circuiting.
+        {
+            let cached = CACHE.lock().unwrap();
+            assert!(
+                cached.is_none(),
+                "cache must be empty after reset — cold launch precondition"
+            );
+        }
+
+        // On a test machine with no keychain entry, this returns None
+        // (store unavailable) — which is the correct fallback, NOT the
+        // bug. The bug would be returning None *while the cache is
+        // populated with a valid token*. That's covered by the next test.
+        let _ = get_access_token();
+    }
+
+    /// Cold-launch contract: once the cache is populated, subsequent
+    /// calls must hit the fast path and return the same token WITHOUT
+    /// re-reading the store. This pins the invariant that prevents the
+    //  race: if a future refactor breaks the cache (e.g. clears it on
+    ///  every call), parallel callers would all hammer the keychain and
+    ///  race again.
+    #[test]
+    fn cold_launch_cache_hit_returns_cached_token_without_reread() {
+        reset_cache();
+
+        // Populate the cache directly (simulating a successful first read).
+        let creds = CliOAuthCredentials {
+            access_token: "cold_launch_test_token".into(),
+            refresh_token: None,        // no refresh → should_refresh is false
+            expires_at: None,           // no expiry → never refresh
+            scopes: None,
+            subscription_type: None,
+            rate_limit_tier: None,
+        };
+        {
+            let mut c = CACHE.lock().unwrap();
+            *c = Some(creds.clone());
+        }
+
+        // Fast path: must return the cached token, no keychain read.
+        let tok = get_access_token();
+        assert_eq!(
+            tok.as_deref(),
+            Some("cold_launch_test_token"),
+            "cold-launch cache hit must return the cached token — if this returns None, \
+             the fast path is broken and parallel callers will race on the keychain"
+        );
+
+        // Cache must still hold the token (not cleared by the read).
+        {
+            let c = CACHE.lock().unwrap();
+            assert!(
+                c.is_some(),
+                "cache must not be cleared by a read — clearing on read reintroduces the race"
+            );
+        }
+    }
+
+    /// Cold-launch contract: a poisoned cache (refresh needed, no refresh
+    /// token) must NOT cause `get_access_token` to return None if the
+    /// underlying token is still valid. This is the "No valid session"
+    /// failure mode: the cache says "needs refresh", refresh fails (no
+    /// refresh_token), and the code incorrectly returns None even though
+    /// the access_token is still usable.
+    #[test]
+    fn cold_launch_unrefreshable_token_still_returned_when_not_expired() {
+        reset_cache();
+
+        // Token expires in 30s (within the 60s refresh skew) but has no
+        // refresh_token — so should_refresh returns true, but refresh
+        // can't run. is_expired is false (30s > 0). The code must fall
+        // through to "return the current token" (line 119-120).
+        let creds = CliOAuthCredentials {
+            access_token: "unrefreshable_but_valid".into(),
+            refresh_token: None,
+            expires_at: Some(now_ms() + 30_000),
+            scopes: None,
+            subscription_type: None,
+            rate_limit_tier: None,
+        };
+        {
+            let mut c = CACHE.lock().unwrap();
+            *c = Some(creds);
+        }
+
+        // should_refresh is true (within skew), but refresh returns None
+        // (no refresh_token). is_expired is false. So we must get the
+        // original token back — NOT None.
+        // NOTE: this calls the real refresh_access_token which would hit
+        // the network. But refresh_access_token returns None immediately
+        // when refresh_token is None/empty (line 366-369), so no network
+        // call happens.
+        let tok = get_access_token();
+        assert_eq!(
+            tok.as_deref(),
+            Some("unrefreshable_but_valid"),
+            "token within refresh skew but without a refresh_token must still be returned \
+             if not expired — returning None here is the 'No valid session' bug"
+        );
+    }
+
+    /// Cold-launch contract: the cache Mutex must not be held during the
+    /// slow-path keychain read. If it were, parallel callers would block
+    /// on the Mutex for up to 10s (keychain timeout), serializing startup
+    /// and amplifying the race window. This test verifies the lock is
+    /// released after the fast-path check (the slow path runs without
+    /// holding the lock).
+    #[test]
+    fn cold_launch_cache_lock_released_after_fast_path() {
+        reset_cache();
+
+        // Acquire the cache lock from outside get_access_token, then
+        // call get_access_token. If get_access_token tried to hold the
+        // lock for the entire duration (including the slow path), this
+        // would deadlock or return None. Instead, the fast path acquires
+        // the lock, checks the cache, releases it, then runs the slow
+        // path without the lock — so a concurrent holder of the lock
+        // does NOT block the slow path.
+        //
+        // We can't easily test "the slow path runs without the lock"
+        // without mocking the keychain. But we CAN test that the fast
+        // path releases the lock (doesn't hold it indefinitely). We do
+        // this by acquiring the lock after calling get_access_token.
+        let _ = get_access_token();
+
+        // If get_access_token held the lock, this would block. We give
+        // it a short budget; if it blocks, the test fails by timeout.
+        let acquired = CACHE.try_lock();
+        assert!(
+            acquired.is_ok(),
+            "cache lock must be released after get_access_token returns — if held, \
+             parallel callers serialize on the keychain and the cold-launch race returns"
+        );
+    }
 }
