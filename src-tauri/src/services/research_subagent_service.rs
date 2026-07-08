@@ -87,6 +87,13 @@ impl ResearchSubagentService {
         build_research_prompt(request)
     }
 
+    /// Returns the language for a subagent request. Mirrors `requestLanguage`
+    /// (researchSubagentService.ts:276). Exposed as an associated method so the
+    /// runner can call `ResearchSubagentService::request_language(&req)`.
+    pub fn request_language(request: &ResearchSubagentRequest) -> LanguageCode {
+        request_language(request)
+    }
+
     /// Inspects an event payload for a tool-call that violates the read-only
     /// constraint. Returns a human-readable reason if violated, else None.
     /// Mirrors `detectReadOnlyViolation` (researchSubagentService.ts:297).
@@ -218,7 +225,7 @@ fn research_topic_for(
     "Research complementary context, documentation, expected behavior, and validation points.".into()
 }
 
-fn request_language(request: &ResearchSubagentRequest) -> LanguageCode {
+pub fn request_language(request: &ResearchSubagentRequest) -> LanguageCode {
     request
         .base_request
         .response_language

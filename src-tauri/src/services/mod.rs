@@ -16,6 +16,7 @@ pub mod model_service;
 pub mod node_runtime;
 pub mod notification_service;
 pub mod profile_service;
+pub mod research_subagent_runner;
 pub mod research_subagent_service;
 pub mod settings_store;
 pub mod skills_service;

@@ -101,18 +101,32 @@ fn logout(
 }
 
 #[tauri::command]
-fn open_dashboard(_app: tauri::AppHandle) -> Result<bool, String> {
-    Ok(false)
+fn open_dashboard(app: tauri::AppHandle) -> Result<bool, String> {
+    open_external_url(&app, "https://code.verboo.ai/pt/dashboard")
 }
 
 #[tauri::command]
-fn open_subscriptions() -> Result<bool, String> {
-    Ok(false)
+fn open_subscriptions(app: tauri::AppHandle) -> Result<bool, String> {
+    open_external_url(&app, "https://code.verboo.ai/pt/subscriptions")
 }
 
 #[tauri::command]
-fn open_signup() -> Result<bool, String> {
-    Ok(false)
+fn open_signup(app: tauri::AppHandle) -> Result<bool, String> {
+    // Mirrors Electron's VERBOO_SIGNUP_URL (src/main/index.ts:62).
+    open_external_url(
+        &app,
+        "https://code.verboo.ai/pt?ref=32d0ad85-a132-47cd-ae6d-b1f9c5e92228&utm_source=referral&utm_medium=whatsapp&utm_campaign=referral_program&utm_content=32d0ad85-a132-47cd-ae6d-b1f9c5e92228",
+    )
+}
+
+/// Opens `url` in the user's default browser. Mirrors Electron's
+/// `shell.openExternal` (src/main/index.ts:181-194). Returns true on success.
+fn open_external_url(app: &tauri::AppHandle, url: &str) -> Result<bool, String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map(|()| true)
+        .map_err(|e| format!("Falha ao abrir URL: {e}"))
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -524,27 +538,20 @@ fn send_turn(
 }
 
 #[tauri::command]
-fn run_research_subagents(
+async fn run_research_subagents(
     request: ResearchSubagentsRunRequest,
+    app: tauri::AppHandle,
+    runner: tauri::State<'_, crate::services::research_subagent_runner::ResearchSubagentRunner>,
 ) -> Result<Vec<ResearchSubagentResult>, String> {
-    // Build the per-subagent requests; the actual CLI dispatch is wired in a
-    // later phase when the runtime port lands. For now we return one empty
-    // result per requested subagent so the renderer can render the queue.
-    let requests = crate::services::research_subagent_service::ResearchSubagentService::build_requests(&request);
-    Ok(requests
-        .iter()
-        .map(|r| crate::services::research_subagent_service::ResearchSubagentService::failed_result(
-            r,
-            "Runtime integration pending — subagent execution lands in a later phase.",
-            &std::collections::HashSet::new(),
-        ))
-        .collect())
+    runner.run_many(app, request).await
 }
 
 #[tauri::command]
-fn cancel_research_subagents(_run_id: String) -> Result<bool, String> {
-    // No active runs to cancel until runtime lands.
-    Ok(false)
+fn cancel_research_subagents(
+    run_id: String,
+    runner: tauri::State<'_, crate::services::research_subagent_runner::ResearchSubagentRunner>,
+) -> Result<bool, String> {
+    runner.cancel_run(&run_id)
 }
 
 #[tauri::command]
@@ -774,6 +781,13 @@ pub fn run() {
             app.manage(ModelService::new(app_data_dir.clone()));
             // TurnService — spawns `verboo` CLI for agent turns with streaming
             app.manage(TurnService::new(std::sync::Arc::new(CredentialsStore::new())));
+            // ResearchSubagentRunner — spawns read-only CLI turns for research
+            // subagents. Shares a CredentialsStore (Arc) so it can resolve the
+            // bearer token (CLI OAuth first, API key fallback) the same way
+            // TurnService does.
+            app.manage(crate::services::research_subagent_runner::ResearchSubagentRunner::new(
+                std::sync::Arc::new(CredentialsStore::new()),
+            ));
             // TerminalService — PTY for the local terminal panel
             app.manage(TerminalService::new());
             // TrayService — owns the menubar state machine (icon/title animation)

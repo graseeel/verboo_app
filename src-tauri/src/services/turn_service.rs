@@ -391,6 +391,13 @@ fn resolve_cli_path() -> String {
 /// On resume, only send working directory + message (rest is already in
 /// the resumed session history).
 fn build_prompt(request: &AgentTurnRequest, is_resume: bool) -> String {
+    build_prompt_internal(request, is_resume)
+}
+
+/// Same as [`build_prompt`], exposed as `pub(crate)` so the research-subagent
+/// runner (services/research_subagent_runner.rs) can compose the same prompt
+/// format without duplicating the logic.
+pub(crate) fn build_prompt_internal(request: &AgentTurnRequest, is_resume: bool) -> String {
     let language = request
         .response_language
         .unwrap_or(LanguageCode::EnUs);
@@ -584,6 +591,13 @@ fn personality_label(value: &PersonalityMode, language: LanguageCode) -> &'stati
 /// Strip ANSI escape sequences + DECSET 2026 (in-band mode switch that
 /// breaks JSON parsing). Mirrors Electron's `cleanTerminalText`.
 pub fn clean_terminal_text(value: &str) -> String {
+    // Body unchanged — promoted to `pub` so the research-subagent runner
+    // (services/research_subagent_runner.rs) can reuse the exact same
+    // cleaning logic that the main turn stream uses.
+    clean_terminal_text_impl(value)
+}
+
+fn clean_terminal_text_impl(value: &str) -> String {
     let ansi_stripped = strip_ansi(value);
     ansi_stripped
         .replace('\u{001b}', "")
@@ -922,7 +936,7 @@ fn label_for_tool_name(tool_name: &str) -> &'static str {
     }
 }
 
-fn extract_tool_block(payload: &serde_json::Value) -> Option<serde_json::Map<String, serde_json::Value>> {
+pub(crate) fn extract_tool_block(payload: &serde_json::Value) -> Option<serde_json::Map<String, serde_json::Value>> {
     if !payload.is_object() {
         return None;
     }
