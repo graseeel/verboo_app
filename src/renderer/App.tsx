@@ -3424,7 +3424,7 @@ export function App() {
             }
             rightToolbar={
               <>
-                <TokenRateMeter rate={tokenRate} active={Boolean(runningTurnId)} />
+                <TokenRateMeter rate={tokenRate} active={Boolean(runningTurnId)} concurrentRequests={profile.plan?.concurrentRequests} />
                 <ContextMeter usage={contextUsage} contextWindow={selectedContextWindow} />
                 <ModelSelector
                   models={modelResult.models}

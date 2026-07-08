@@ -262,9 +262,16 @@ fn update_menu_bar(
 
 #[tauri::command]
 fn toggle_window_zoom(app: tauri::AppHandle) -> Result<bool, String> {
+    // Double-clicking the titlebar should "zoom" (maximize in place) like the
+    // standard macOS title-bar double-click — NOT enter native fullscreen,
+    // which moves the app to its own dedicated Space. maximize()/unmaximize()
+    // fills the current screen without creating a new Space.
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window
-            .set_fullscreen(!window.is_fullscreen().unwrap_or(false));
+        if window.is_maximized().unwrap_or(false) {
+            let _ = window.unmaximize();
+        } else {
+            let _ = window.maximize();
+        }
     }
     Ok(true)
 }

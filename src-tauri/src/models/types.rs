@@ -356,6 +356,10 @@ pub struct ProfilePlan {
     pub status: Option<String>,
     pub price_label: Option<String>,
     pub models: Option<Vec<String>>,
+    /// Concurrent-request limit for the plan (from `/me/subscriptions`
+    /// `group.concurrentRequests`). The service now limits by concurrency
+    /// rather than requests-per-minute. Real value, refreshed with the profile.
+    pub concurrent_requests: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -292,6 +292,7 @@ export type ProfilePlan = {
   status?: string
   priceLabel?: string
   models?: string[]
+  concurrentRequests?: number
 }
 
 export type ProfileUser = {

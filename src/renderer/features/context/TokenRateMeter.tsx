@@ -5,14 +5,16 @@ import { formatCompactNumber, useI18n } from '../../i18n'
 type TokenRateMeterProps = {
   active: boolean
   rate?: TokenRateSnapshot
+  /** Plan concurrent-request limit from the account (real value, live-refreshed
+      with the profile). The service now limits by concurrency, not req/min. */
+  concurrentRequests?: number
 }
 
-export function TokenRateMeter({ active, rate }: TokenRateMeterProps) {
+export function TokenRateMeter({ active, rate, concurrentRequests }: TokenRateMeterProps) {
   const { language, t } = useI18n()
   const tokenValue = rate?.tokensPerSecond
   const tokenLabel = tokenValue === undefined ? '--' : formatCompactNumber(tokenValue, language)
-  const requestValue = rate?.requestsPerMinute
-  const requestLabel = requestValue === undefined ? '--' : formatCompactNumber(requestValue, language)
+  const concurrentLabel = concurrentRequests === undefined ? '--' : formatCompactNumber(concurrentRequests, language)
   const title = active ? t('tokens.rateActiveTitle') : t('tokens.rateIdleTitle')
 
   return (
@@ -20,7 +22,7 @@ export function TokenRateMeter({ active, rate }: TokenRateMeterProps) {
       className={`token-rate-meter ${active ? 'active' : ''}`}
       title={title}
       aria-label={t('tokens.rateAria', {
-        value: `${tokenLabel} ${t('tokens.rateUnit')}, ${requestLabel} ${t('tokens.requestsUnit')}`,
+        value: `${tokenLabel} ${t('tokens.rateUnit')}, ${concurrentLabel} ${t('tokens.concurrentUnit')}`,
       })}
     >
       <Activity className="token-rate-icon" size={15} />
@@ -30,8 +32,8 @@ export function TokenRateMeter({ active, rate }: TokenRateMeterProps) {
       </span>
       <span className="token-rate-divider" aria-hidden="true" />
       <span className="token-rate-copy">
-        <strong>{requestLabel}</strong>
-        <small>{t('tokens.requestsUnit')}</small>
+        <strong>{concurrentLabel}</strong>
+        <small>{t('tokens.concurrentUnit')}</small>
       </span>
     </div>
   )

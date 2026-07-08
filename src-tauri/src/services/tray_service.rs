@@ -174,17 +174,11 @@ impl TrayService {
     /// spinner glyph + elapsed seconds. Computed from the current frame
     /// index and `last_change_at` timestamp.
     pub fn title(&self) -> String {
-        let (exec, label, frame, last_change) = match self.state.lock() {
-            Ok(s) => (
-                s.execution,
-                s.label.clone(),
-                s.frame_index,
-                s.last_change_at,
-            ),
+        let (exec, label, last_change) = match self.state.lock() {
+            Ok(s) => (s.execution, s.label.clone(), s.last_change_at),
             Err(_) => return "Verboo ready".into(),
         };
         let elapsed_secs = last_change.map(|t| t.elapsed().as_secs());
-        let spinner = exec.spinner_frame(frame);
         let state_label = match exec {
             TrayExecution::Idle => label.as_deref().unwrap_or("ready"),
             TrayExecution::Thinking => "thinking",
@@ -201,11 +195,12 @@ impl TrayService {
             }
             _ => String::new(),
         };
-        if spinner.is_empty() {
-            format!("Verboo {state_label}{elapsed_str}")
-        } else {
-            format!("{spinner}Verboo {state_label}{elapsed_str}")
-        }
+        // No braille spinner in the title: the "working" animation lives in the
+        // pulsing mascot icon. The spinner glyphs render at slightly different
+        // widths in the menu-bar font, so cycling them every 250ms jittered the
+        // whole title. The elapsed text only grows when the unit rolls over
+        // (s → m → h), never per frame — so the width is stable.
+        format!("Verboo {state_label}{elapsed_str}")
     }
 
     /// Returns the spinner glyph for the current frame. Empty string if

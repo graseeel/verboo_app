@@ -389,6 +389,11 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  /* Explicitly hide horizontal overflow. With only `overflow-y: auto` set,
+     CSS computes `overflow-x: visible` as `auto`, which showed a horizontal
+     scrollbar whenever a chat/project row was a touch too wide. Rows already
+     truncate with ellipsis, so there is nothing to scroll to horizontally. */
+  overflow-x: hidden;
   padding-right: 2px;
   transition:
     filter 180ms ease-out,

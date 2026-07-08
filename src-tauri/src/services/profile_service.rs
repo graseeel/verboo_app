@@ -255,6 +255,16 @@ fn normalize_plan(
             .or_else(|| group.and_then(|g| string_value(g.get("status")))),
         price_label: price_cents.map(format_brl_from_cents),
         models,
+        concurrent_requests: active_sub
+            .and_then(|s| s.get("group"))
+            .and_then(|g| number_value(g.get("concurrentRequests")))
+            .or_else(|| group.and_then(|g| number_value(g.get("concurrentRequests"))))
+            .or_else(|| {
+                plan_record
+                    .as_ref()
+                    .and_then(|p| number_value(p.get("concurrentRequests")))
+            })
+            .map(|n| n as u32),
     })
 }
 
