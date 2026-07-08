@@ -26,3 +26,6 @@ src-tauri/resources/
 
 # Maestri orchestration directory (local agent roles/config — not part of the app)
 .maestri/
+
+# Tauri Cargo config (has hardcoded local target-dir — must not be committed)
+src-tauri/.cargo/

@@ -35,7 +35,7 @@
     "verify:update-release": "node scripts/verify/update-release-assets.mjs",
     "dev:renderer": "vite",
     "build:renderer": "tsc --noEmit && vite build",
-    "build:tauri-deps": "node scripts/verify/copy-cli-resource.mjs && npm run build:renderer",
+    "build:tauri-deps": "node scripts/verify/dedup-cli-package.mjs && node scripts/verify/copy-cli-resource.mjs && npm run build:renderer",
     "tauri:dev": "tauri dev",
     "tauri:build": "npm run build:tauri-deps && cargo +1.89.0 tauri build",
     "tauri:icon": "tauri icon",
