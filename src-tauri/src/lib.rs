@@ -270,26 +270,6 @@ fn update_menu_bar(
     Ok(true)
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Window
-// ════════════════════════════════════════════════════════════════════
-
-#[tauri::command]
-fn toggle_window_zoom(app: tauri::AppHandle) -> Result<bool, String> {
-    // Double-clicking the titlebar should "zoom" (maximize in place) like the
-    // standard macOS title-bar double-click — NOT enter native fullscreen,
-    // which moves the app to its own dedicated Space. maximize()/unmaximize()
-    // fills the current screen without creating a new Space.
-    if let Some(window) = app.get_webview_window("main") {
-        if window.is_maximized().unwrap_or(false) {
-            let _ = window.unmaximize();
-        } else {
-            let _ = window.maximize();
-        }
-    }
-    Ok(true)
-}
-
 /// Pre-renders the Verboo mascot into the tray "breathing" frames, mirroring
 /// Electron's `trayStatusService`. The mascot PNG is embedded via
 /// `include_bytes!` so it always resolves — a relative `std::fs::read` fails
@@ -948,8 +928,6 @@ pub fn run() {
             reset_user_settings,
             // Menu bar
             update_menu_bar,
-            // Window
-            toggle_window_zoom,
             // Skills
             list_skills,
             open_user_skills_folder,

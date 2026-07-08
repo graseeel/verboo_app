@@ -122,7 +122,13 @@ const api = {
     invoke<boolean>('update_menu_bar', { state }),
 
   // ── Window ──────────────────────────────────────────────────
-  toggleWindowZoom: () => invoke<boolean>('toggle_window_zoom'),
+  // Tauri's bundled drag.js (auto-injected when data-tauri-drag-region is
+  // present) already toggles maximize on titlebar double-click via the
+  // native `plugin:window|internal_toggle_maximize`. Invoking our own
+  // `toggle_window_zoom` command on top of it would fire two handlers for
+  // the same gesture and corrupt the window frame. Intentional no-op on
+  // the Tauri path; the Electron preload still owns its own handler.
+  toggleWindowZoom: () => Promise.resolve(true),
 
   // ── Skills ──────────────────────────────────────────────────
   listSkills: (workingDirectory: string) =>
