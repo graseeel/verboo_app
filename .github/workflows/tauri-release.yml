@@ -138,7 +138,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
             librsvg2-dev \
             patchelf \
             libssl-dev \
@@ -148,8 +147,14 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Copy bundled CLI (cli.mjs) into resources
-        run: node scripts/verify/copy-cli-resource.mjs
+      - name: Build renderer + bundle CLI (build:tauri-deps)
+        # Mirrors local `npm run tauri:build` deps prep:
+        #   1. dedup-cli-package.mjs  — strip iCloud conflict copies
+        #   2. copy-cli-resource.mjs — copy cli.mjs + cli-package/ to src-tauri/resources/
+        #   3. build:renderer        — tsc --noEmit + vite build → dist-renderer/
+        # beforeBuildCommand is intentionally empty in tauri.conf.json (commit 30fd235)
+        # to avoid a double vite build locally, so CI must build the renderer here.
+        run: npm run build:tauri-deps
 
       - name: Install tauri-cli
         run: cargo +1.89.0 install tauri-cli --version "^2.0.0" --locked
