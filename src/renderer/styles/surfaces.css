@@ -778,7 +778,10 @@
   display: grid;
   align-items: start;
   align-content: end;
-  gap: 14px;
+  /* 30px: messages need real air between turns, not a hair gap. 18px still
+     read as "stacked"; 30px gives the rhythm of a designed chat surface
+     without sparseness. */
+  gap: 30px;
   width: min(var(--chat-lane-width), 100%);
   min-height: calc(100vh - var(--titlebar-height) - var(--composer-clearance) - 88px);
   margin: 0 auto;
@@ -788,15 +791,22 @@
   height: 18px;
 }
 
+/* Floating scroll-to-bottom control — small circle only (not the message composer). */
 .jump-to-latest {
   position: absolute;
   z-index: 4;
-  right: 8px;
+  /* Center above the composer; do not stretch. */
+  left: 50%;
+  right: auto;
   bottom: calc(100% + 8px);
+  transform: translateX(-50%);
   display: inline-grid;
   place-items: center;
   width: 34px;
   height: 34px;
+  min-width: 34px;
+  max-width: 34px;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
@@ -804,6 +814,7 @@
   box-shadow: var(--shadow);
   cursor: pointer;
   backdrop-filter: blur(14px);
+  flex: none;
 }
 
 .jump-to-latest:hover {
@@ -844,6 +855,11 @@
   padding: 3px 0 5px;
   border-color: transparent;
   background: transparent;
+  /* Grid tracks default to `min-width: auto`, which lets a long unbreakable
+     child (URL, inline code, hash) push the track past the row's
+     `overflow: hidden` and clip silently. Force tracks to shrink-to-fit so
+     `overflow-wrap: anywhere` on descendants can actually break long tokens. */
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .message-row.tool {

@@ -13,10 +13,13 @@ npm, Homebrew, or a globally installed `@verboo/code` CLI to launch the app.
 
 ## Required Inside The App Bundle
 
-- Electron runtime.
-- Embedded `@verboo/code` CLI.
-- Native terminal module through `node-pty`.
-- Local terminal UI through `@xterm/xterm`.
+The Tauri bundle ships:
+
+- The Rust backend (`src-tauri/`) compiled into the native binary.
+- The system WebView (WKWebView on macOS) for the frontend — no bundled Chromium.
+- The embedded `cli-package` (the Verboo CLI plus its Node dependency closure) under `src-tauri/resources/cli-package/`.
+- The local terminal module through the Rust `portable-pty` crate (Tauri terminal sidecar).
+- The local terminal UI through `@xterm/xterm`.
 - Image/OCR support through `sharp` and `tesseract.js`.
 
 ## Optional User Tools
@@ -30,12 +33,12 @@ newer compatible dependency, leave it intact.
 
 ## First Launch
 
-On first launch per app version, the main process validates:
+On first launch per app version, the Rust backend validates:
 
 - macOS platform.
 - arm64 CPU architecture.
 - minimum macOS version.
-- embedded Verboo CLI availability via the bundled Electron Node runtime.
+- embedded Verboo CLI availability (the `cli-package` resource is present and runnable on the system Node runtime).
 - required bundled native packages.
 
 Fatal failures show a blocking dialog and the app exits. Optional tool gaps are

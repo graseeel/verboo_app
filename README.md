@@ -2,19 +2,24 @@
 
 Verboo Code Desktop is an independent desktop client for working with the Verboo Code CLI from a focused app interface. It wraps the CLI-oriented workflow with project navigation, chat history, model selection, skill selection, permission controls, profile views, feedback reporting, and a desktop shell that runs on macOS, Windows, and Linux.
 
+The desktop shell is built with **Tauri v2** (Rust backend + system WebView frontend) and ships a bundled `cli-package` sidecar so the app is self-contained on a clean machine.
+
 Official CLI upstream: [verbeux-ai/code](https://github.com/verbeux-ai/code).
 
 ## Platform Support
 
 | Platform | Architecture | Status | Installer |
 |----------|--------------|--------|-----------|
-| macOS | arm64 (Apple Silicon) | Stable | DMG, ZIP |
-| Windows | x64 | Beta | NSIS `.exe` |
+| macOS | arm64 (Apple Silicon) | Stable | DMG, `.app` |
+| macOS | x64 (Intel) | Beta | DMG, `.app` |
+| Windows | x64 | Beta | NSIS `.exe`, MSI |
 | Linux | x64 | Beta | AppImage, `.deb` |
 
-The packaged app is self-contained for normal use on all three platforms. It
-includes the Electron runtime, the embedded `@verboo/code` CLI, the local
-terminal module, and the image/OCR dependencies it needs to start.
+The packaged app is self-contained for normal use on all three platforms. The
+Tauri bundle ships the Rust backend, the embedded `cli-package` (the Verboo CLI
+plus its Node dependency closure), and the image/OCR dependencies it needs to
+start. On macOS and Linux the bundled CLI runs on the system Node runtime; on
+Windows the installer ships the Node sidecar.
 
 For per-platform setup, known issues, and troubleshooting, see
 [SETUP.md](SETUP.md).
@@ -29,7 +34,7 @@ Use this app as an experimental community/independent desktop build. Expect bugs
 
 ## What It Does
 
-- Runs the local `@verboo/code` CLI from an Electron desktop app.
+- Runs the bundled Verboo CLI (`cli-package` sidecar) from a Tauri v2 desktop app with a Rust backend.
 - Detects Verboo CLI authentication or a valid Verboo API key before unlocking the app.
 - Lists models available to the authenticated Verboo account when possible.
 - Supports model selection and per-model context-window configuration.
@@ -42,14 +47,14 @@ Use this app as an experimental community/independent desktop build. Expect bugs
 ## Requirements
 
 - A supported desktop platform:
-  - macOS 12.0 or newer (Apple Silicon arm64)
+  - macOS 12.0 or newer (Apple Silicon arm64, Intel x64)
   - Windows 10 1809 or newer (x64)
   - Linux x64 with glibc 2.28+ (Ubuntu 20.04+, Debian 11+, Fedora 35+)
 - Internet access and a valid Verboo session or API key.
 
-The packaged app is self-contained for normal use. It includes the Electron
-runtime, the embedded `@verboo/code` CLI, the local terminal module, and the
-image/OCR dependencies it needs to start.
+The packaged app is self-contained for normal use. The Tauri bundle ships the
+Rust backend, the embedded `cli-package` (Verboo CLI + Node dependency closure),
+and the image/OCR dependencies it needs to start.
 
 Node.js, npm, Homebrew, and a global `@verboo/code` CLI are not required to run
 the packaged app. If the user already has newer compatible versions of those
@@ -86,48 +91,47 @@ scripts/requirements/macos-arm64-preflight.sh "/Applications/Verboo Code.app" --
 
 ```bash
 npm install
-npm run dev
+npm run tauri:dev
 ```
 
-Build:
+Build the renderer (TypeScript check + Vite bundle):
 
 ```bash
-npm run build
+npm run build:renderer
 ```
 
-Package locally:
+Build the full Tauri bundle (renderer + Rust + cli-package copy):
 
 ```bash
-npm run package
+npm run tauri:build
 ```
 
-Create the unsigned internal DMG/ZIP release:
-
-```bash
-npm run dist
-```
-
-Both commands force unsigned packaging for this independent build and run a
-preflight that stops early if a previous `release/mac-arm64/Verboo Code.app`
-is still open or a previous Verboo Code DMG is still mounted.
+The `tauri:build` script runs `build:tauri-deps` (dedup the cli-package, copy
+it into `src-tauri/resources/cli-package/`, and build the renderer) and then
+`cargo +1.89.0 tauri build`. The resulting `.app`/`.dmg`/`.exe`/`.AppImage`
+artifacts land in `src-tauri/target/release/bundle/`.
 
 ### GitHub Releases
 
-Tagged releases can be built and published by GitHub Actions. The workflow runs
-three parallel jobs and publishes:
+Tagged releases are built and published by GitHub Actions in
+`.github/workflows/tauri-release.yml`. The workflow runs a 4-target matrix and
+publishes:
 
-- macOS arm64: DMG, ZIP, `latest-mac.yml`
-- Windows x64: NSIS `.exe`, `latest.yml`
-- Linux x64: AppImage, `.deb`, `latest-linux.yml`
+- macOS arm64: `.app`, `.dmg`
+- macOS x64: `.app`, `.dmg`
+- Windows x64: NSIS `.exe`, `.msi`
+- Linux x64: `.AppImage`, `.deb`
 
-`electron-updater` auto-detects the correct platform asset on update.
+The Tauri updater downloads a per-release `latest.json` manifest and verifies
+each update bundle against the public key in `src-tauri/tauri.conf.json`.
 
 > **macOS signing status:** Current builds are ad-hoc signed. They can be tested
 > locally, but macOS Gatekeeper and update installation are significantly more
 > reliable after Developer ID signing and notarization. The updater code is
 > designed to keep working when signing is enabled later.
 
-See [docs/release-github-actions.md](docs/release-github-actions.md).
+See [docs/release-github-actions.md](docs/release-github-actions.md) and
+[docs/updater-signing.md](docs/updater-signing.md).
 
 ## Feedback Backend
 
@@ -146,7 +150,7 @@ See [docs/feedback-supabase.md](docs/feedback-supabase.md).
 
 - Do not commit real Verboo API keys.
 - Do not commit Supabase service-role keys.
-- API keys saved in the app are encrypted locally with Electron `safeStorage`.
+- API keys saved in the app are encrypted locally with the OS credential store (macOS Keychain, Windows DPAPI, Linux libsecret) via the Tauri keyring plugin.
 - Feedback diagnostics intentionally avoid sending full chat transcripts.
 - Full-access mode can allow broad local machine access through the underlying CLI and should be treated as a high-trust mode.
 
@@ -164,6 +168,8 @@ See [docs/open-source-review.md](docs/open-source-review.md) for the current ope
 
 Verboo Code Desktop é um cliente desktop independente para trabalhar com o CLI do Verboo Code em uma interface focada. Ele envolve o fluxo orientado por CLI com navegação de projetos, histórico de chats, seleção de modelos, seleção de habilidades, controles de permissão, perfil, envio de feedback e uma experiência desktop amigável para macOS.
 
+O shell desktop é construído com **Tauri v2** (backend Rust + WebView nativo do sistema) e embarca um sidecar `cli-package` para o app ser autossuficiente numa máquina limpa.
+
 CLI oficial usado como upstream: [verbeux-ai/code](https://github.com/verbeux-ai/code).
 
 ### Aviso de build independente
@@ -176,7 +182,7 @@ Use este app como um build experimental independente/comunitário. Espere bugs, 
 
 ### O que ele faz
 
-- Executa o CLI `@verboo/code` embutido a partir de um app Electron.
+- Executa o CLI Verboo embutido (sidecar `cli-package`) a partir de um app Tauri v2 com backend Rust.
 - Detecta autenticação do CLI Verboo ou uma chave de API Verboo válida antes de liberar o app.
 - Lista os modelos disponíveis para a conta autenticada quando possível.
 - Suporta seleção de modelo e configuração de janela de contexto por modelo.
@@ -189,10 +195,10 @@ Use este app como um build experimental independente/comunitário. Espere bugs, 
 ### Requisitos
 
 - macOS 12.0 ou mais recente.
-- Mac Apple Silicon arm64. O pacote atual mira MacBook Air M1 ou mais recente.
+- Mac Apple Silicon arm64 (build Intel x64 disponível como beta).
 - Acesso à internet e uma sessão Verboo válida ou chave de API.
 
-O app empacotado é autossuficiente para uso normal. Ele inclui o runtime Electron, o CLI `@verboo/code` embutido, o módulo de terminal local e as dependências de imagem/OCR necessárias para iniciar.
+O app empacotado é autossuficiente para uso normal. O bundle Tauri embarca o backend Rust, o `cli-package` (CLI Verboo + closure de dependências Node) e as dependências de imagem/OCR necessárias para iniciar.
 
 Node.js, npm, Homebrew e um CLI global `@verboo/code` não são necessários para executar o app empacotado. Se o usuário já tiver versões mais recentes compatíveis dessas ferramentas, o app não altera essas instalações.
 
@@ -227,37 +233,39 @@ scripts/requirements/macos-arm64-preflight.sh "/Applications/Verboo Code.app" --
 
 ```bash
 npm install
-npm run dev
+npm run tauri:dev
 ```
 
-Build:
+Build do renderer (checagem TypeScript + bundle Vite):
 
 ```bash
-npm run build
+npm run build:renderer
 ```
 
-Empacotamento local sem assinatura:
+Build do bundle Tauri completo (renderer + Rust + cópia do cli-package):
 
 ```bash
-npm run package
+npm run tauri:build
 ```
 
-Gerar DMG/ZIP interno sem assinatura:
-
-```bash
-npm run dist
-```
-
-Os dois comandos forçam empacotamento sem assinatura para este build
-independente e rodam um preflight que para cedo se um
-`release/mac-arm64/Verboo Code.app` anterior ainda estiver aberto ou se um DMG
-anterior do Verboo Code ainda estiver montado.
+O script `tauri:build` roda `build:tauri-deps` (dedup do cli-package, cópia
+para `src-tauri/resources/cli-package/` e build do renderer) e depois
+`cargo +1.89.0 tauri build`. Os artefatos `.app`/`.dmg`/`.exe`/`.AppImage`
+ficam em `src-tauri/target/release/bundle/`.
 
 ### GitHub Releases
 
-Releases versionadas podem ser construídas e publicadas pelo GitHub Actions. O
-workflow gera os artefatos macOS arm64 em DMG/ZIP e publica o arquivo de
-metadados `latest-mac.yml` usado pelo updater.
+Releases versionadas são construídas e publicadas pelo GitHub Actions em
+`.github/workflows/tauri-release.yml`. O workflow roda uma matriz de 4 alvos e
+publica:
+
+- macOS arm64: `.app`, `.dmg`
+- macOS x64: `.app`, `.dmg`
+- Windows x64: NSIS `.exe`, `.msi`
+- Linux x64: `.AppImage`, `.deb`
+
+O updater do Tauri baixa um manifesto `latest.json` por release e verifica cada
+bundle de atualização contra a chave pública em `src-tauri/tauri.conf.json`.
 
 > **Status de assinatura macOS:** Os builds atuais são assinados como ad-hoc.
 > Eles funcionam para teste local, mas o Gatekeeper e a instalação de
@@ -265,7 +273,8 @@ metadados `latest-mac.yml` usado pelo updater.
 > ID e notarização. O código do updater foi projetado para continuar funcionando
 > quando a assinatura for ativada.
 
-Veja [docs/release-github-actions.md](docs/release-github-actions.md).
+Veja [docs/release-github-actions.md](docs/release-github-actions.md) e
+[docs/updater-signing.md](docs/updater-signing.md).
 
 ### Backend de feedback
 
@@ -284,7 +293,7 @@ Veja [docs/feedback-supabase.md](docs/feedback-supabase.md).
 
 - Não faça commit de chaves reais da API Verboo.
 - Não faça commit de chaves Supabase service-role.
-- Chaves de API salvas no app são criptografadas localmente com Electron `safeStorage`.
+- Chaves de API salvas no app são criptografadas localmente com o credential store do sistema (Keychain no macOS, DPAPI no Windows, libsecret no Linux) via o plugin Tauri keyring.
 - Diagnósticos de feedback evitam enviar o transcript completo do chat.
 - Modo livre pode permitir acesso amplo à máquina local através do CLI subjacente e deve ser tratado como modo de alta confiança.
 

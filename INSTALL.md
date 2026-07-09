@@ -1,7 +1,7 @@
 # Instalação — Verboo Code (macOS Apple Silicon)
 
-O Verboo Code é um app **independente** para Macs com chip **Apple Silicon (M1 ou superior)**.
-Você **não** precisa ter Node.js, npm nem o CLI do Verboo instalados — o app já vem completo.
+O Verboo Code é um app **independente** para Macs com chip **Apple Silicon (M1 ou superior)**, construído com Tauri v2 (backend Rust + WebView nativo do sistema).
+Você **não** precisa ter Node.js, npm nem o CLI do Verboo instalados — o app já vem completo com o `cli-package` sidecar embutido.
 
 ## Requisitos
 
@@ -39,7 +39,7 @@ Se ainda aparecer "danificado", use o método do `xattr` acima — é o mais con
 
 - ❌ Node.js / npm
 - ❌ CLI global do Verboo (`verboo`)
-- ✅ Runtime, CLI e módulos nativos já vêm embutidos no app.
+- ✅ O bundle Tauri já vem com o backend Rust, o `cli-package` (CLI Verboo + dependências Node) e os módulos nativos embutidos.
 
 ## Primeiro uso
 

@@ -25,9 +25,17 @@
   --review-width: 0px;
   /* Shared by the transcript lane and the composer so messages line up exactly
      with the composer edges (same max width, same centered axis). */
+  /* Shared width for transcript + composer so both share one vertical axis. */
   --chat-lane-width: 840px;
-  --chat-lane-gutter: 56px;
-  --composer-clearance: 156px;
+  /* Composer is intentionally wider than the transcript lane so the input
+     field's outer edges extend past message bubbles — compensates for the
+     composer's internal padding + border that otherwise makes it read as
+     narrower than the messages it sits under. Transcript width is INTACT. */
+  --composer-lane-width: calc(var(--chat-lane-width) + 48px);
+  /* Horizontal inset inside the dock area so composer width tracks the
+     padded transcript column (slightly roomier than 56px → wider composer). */
+  --chat-lane-gutter: 40px;
+  --composer-clearance: 168px;
   --shimmer-duration: 4s;
   --shimmer-spread: 7rem;
   --shimmer-color: color-mix(in srgb, var(--accent-strong) 54%, white 46%);
@@ -434,4 +442,57 @@ button {
 .fatal-render-error span {
   color: var(--text-muted);
   line-height: 1.5;
+}
+
+/* ── Checkbox normalization (D4) ─────────────────────────────────
+   WebKit (WKWebView on macOS) and Chromium (Electron) render native
+   checkboxes differently. We replace the native box with a custom one
+   so the appearance is identical across both runtimes. The SVG check
+   is drawn via background-image so no extra DOM is needed. */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  cursor: pointer;
+  display: inline-grid;
+  place-content: center;
+  transition: background-color 120ms ease, border-color 120ms ease;
+  flex-shrink: 0;
+}
+
+input[type="checkbox"]::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  transform: scale(0);
+  transition: transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+  background-color: var(--text);
+  /* Draw a checkmark using clip-path on a rotated square. */
+  clip-path: polygon(14% 44%, 0 60%, 50% 100%, 100% 16%, 86% 0, 38% 62%);
+}
+
+input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+input[type="checkbox"]:checked::before {
+  transform: scale(1);
+  background-color: white;
+}
+
+input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }

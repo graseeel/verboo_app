@@ -48,15 +48,20 @@ export function ProfileView({ profile, loading, onRefresh, onManagePlan }: Profi
         <MetricCard label={t('profile.requests')} value={formatOptional(summary?.reqTotal, language, t)} />
       </section>
 
-      <section className="profile-panel">
-        <div className="panel-heading">
-          <div>
-            <h2>{t('profile.activityDays')}</h2>
-            <p>{activity.length ? t('profile.activeDays', { count: profile.activeDays ?? 0 }) : t('profile.activityUnavailable')}</p>
+      {/* Only show the activity panel when the account API actually returns a
+          per-day breakdown. The usage/summary endpoint often returns totals
+          only, and an empty "no real value" heatmap looked broken (B2). */}
+      {activity.length > 0 && (
+        <section className="profile-panel">
+          <div className="panel-heading">
+            <div>
+              <h2>{t('profile.activityDays')}</h2>
+              <p>{t('profile.activeDays', { count: profile.activeDays ?? 0 })}</p>
+            </div>
           </div>
-        </div>
-        <ActivityHeatmap days={activity} />
-      </section>
+          <ActivityHeatmap days={activity} />
+        </section>
+      )}
 
       <section className="profile-panel plan-panel">
         <div>

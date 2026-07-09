@@ -24,7 +24,7 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
 $npmVersion = (npm --version)
 Write-Host "  npm: $npmVersion"
 
-# 3. Verify git is available (electron-builder uses it for version detection)
+# 3. Verify git is available (Tauri build uses it for version detection)
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
   Write-Warning 'git is not installed or not on PATH. Some build features may not work.'
 } else {

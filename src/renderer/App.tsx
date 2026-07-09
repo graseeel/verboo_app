@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
-import { ArrowDown, CheckCircle2, ChevronDown, ChevronRight, FolderClosed, GitBranch, LoaderCircle, ShieldCheck, Terminal, XCircle } from 'lucide-react'
+import { ArrowDown, CheckCircle2, ChevronDown, ChevronRight, FolderClosed, GitBranch, LoaderCircle, XCircle } from 'lucide-react'
 import type {
   AccessMode,
   AgentEvent,
@@ -52,6 +52,7 @@ import { QuestionWizard, type ModelQuestion, type QuestionAnswer, type QuestionP
 import { MessageCircleQuestion } from 'lucide-react'
 import { useLocalTerminal } from './features/terminal/useLocalTerminal'
 import { LocalTerminalPanel } from './features/terminal/LocalTerminalPanel'
+import { useTheme } from './features/theme/useTheme'
 import { ReviewPanel } from './features/review/ReviewPanel'
 import { useReviewPanel } from './features/review/useReviewPanel'
 import { EmptyChat } from './components/EmptyChat'
@@ -60,6 +61,7 @@ import { TopBar } from './components/TopBar'
 import { Transcript } from './components/Transcript'
 import { UpdateBanner } from './components/UpdateBanner'
 import { AccessSelector } from './features/access/AccessSelector'
+import { PermissionApprovalPanel, type PendingPermissionPrompt } from './features/permission/PermissionApprovalPanel'
 import { Composer } from './features/composer/Composer'
 import { ContextMeter } from './features/context/ContextMeter'
 import { TokenRateMeter } from './features/context/TokenRateMeter'
@@ -89,7 +91,6 @@ const DEVELOPMENT_NOTICE_KEY = 'verboo:development-notice-accepted'
 const AUTH_SESSION_KEY = 'verboo:last-verified-auth'
 const AUTH_SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 const CONTEXT_WINDOWS_KEY = 'verboo:context-windows-by-model'
-const THEME_KEY = 'verboo:theme'
 const SIDEBAR_PREF_KEY = 'verboo:sidebar-preference'
 const SIDEBAR_DEFAULT_WIDTH = 292
 const SIDEBAR_MIN_WIDTH = 220
@@ -213,15 +214,6 @@ type QueuedFollowUp = {
   }
 }
 
-type PendingPermissionPrompt = {
-  id: string
-  turnId: string
-  conversationId: string
-  command?: string
-  detail: string
-  autoApprove: boolean
-}
-
 type PermissionDecision = 'allow' | 'deny' | 'always'
 type SidebarMode = 'expanded' | 'compact' | 'hidden'
 
@@ -236,6 +228,7 @@ function firstUsableWorkspaceDirectory(...paths: Array<string | undefined>): str
 
 export function App() {
   const initialSidebarPreference = useRef(readSidebarPreference())
+  const defaultWorkingDirectoryRef = useRef('')
   const [config, setConfig] = useState<AppConfig>({
     workingDirectory: '',
     accessMode: 'approval',
@@ -254,7 +247,7 @@ export function App() {
   const [entryUnlocked, setEntryUnlocked] = useState(false)
   const [authChecking, setAuthChecking] = useState(true)
   const [authError, setAuthError] = useState<string | undefined>()
-  const [theme, setTheme] = useState<ThemeMode>(readTheme)
+  const { theme, setTheme } = useTheme()
   const [modelResult, setModelResult] = useState<ModelDiscoveryResult>({
     models: defaultModels,
     source: 'none',
@@ -364,6 +357,12 @@ export function App() {
   const turnChangeBaselines = useRef<Record<string, WorkspaceChangeSummary | undefined>>({})
   const turnWorkingDirectories = useRef<Record<string, string>>({})
   const turnTouchedFiles = useRef<Record<string, Set<string>>>({})
+  /** One-shot recovery when CLI rejects a stale --resume session id. */
+  const turnRetryPayload = useRef<Record<string, {
+    conversationId: string
+    message: string
+    alreadyRetriedWithoutSession: boolean
+  }>>({})
   const activeSubagentsRef = useRef<Record<string, ActiveSubagent>>({})
   const pendingResearchSubagentsRef = useRef<ActiveSubagent[]>([])
   const autoApprovalSent = useRef<Set<string>>(new Set())
@@ -373,6 +372,13 @@ export function App() {
   const turnSubagentToolIds = useRef<Record<string, Record<string, string>>>({})
   const [thinkingTurnId, setThinkingTurnId] = useState<string | undefined>(undefined)
   const [compactingTurnId, setCompactingTurnId] = useState<string | undefined>(undefined)
+  // Conversations currently auto-recovering from a context overflow (see the
+  // 'error' handler). Guards against an infinite compact→overflow→compact loop.
+  const overflowRecovering = useRef<Set<string>>(new Set())
+  // Latest menu-bar state, re-pushed on a heartbeat so the tray never sticks
+  // (async updateMenuBar invokes can arrive out of order — a lagging
+  // 'thinking' landing after the 'idle' would freeze the menubar counter).
+  const menuBarStateRef = useRef<Partial<MenuBarState>>({})
 
   const activeConversation = useMemo(
     () => chatStore.conversations.find(conversation => conversation.id === activeConversationId),
@@ -430,9 +436,10 @@ export function App() {
     let cancelled = false
 
     async function loadStartupState() {
-      const [settings, nextConfig] = await Promise.all([
+      const [settings, nextConfig, defaultWDSettings] = await Promise.all([
         window.verboo.getUserSettings(),
         window.verboo.getConfig(),
+        window.verboo.getDefaultWorkingDirectory().then(wd => { defaultWorkingDirectoryRef.current = wd; return wd }),
       ])
       if (cancelled) return
       setUserSettings(settings)
@@ -444,7 +451,17 @@ export function App() {
       if (settings.staySignedIn && readRememberedAuthSession()) {
         setEntryUnlocked(true)
       }
-      void validateAccess(!settings.staySignedIn, settings.staySignedIn)
+      void (async () => {
+        const ok = await validateAccess(!settings.staySignedIn, settings.staySignedIn)
+        // Cold-start hardening (B1): on a fresh launch the first keychain read
+        // / CLI-token refresh can lose a race and report "no session". Retry
+        // once with a forced refresh before leaving the user on the login
+        // screen. validateAccess already no-ops the UI if it succeeds.
+        if (!ok && !cancelled) {
+          await new Promise(resolve => setTimeout(resolve, 700))
+          if (!cancelled) await validateAccess(true, settings.staySignedIn)
+        }
+      })()
     }
 
     void loadStartupState()
@@ -452,11 +469,6 @@ export function App() {
       cancelled = true
     }
   }, [])
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme
-    window.localStorage.setItem(THEME_KEY, theme)
-  }, [theme])
 
   useEffect(() => {
     saveSidebarPreference({ mode: sidebarMode, width: sidebarWidth })
@@ -1156,6 +1168,10 @@ export function App() {
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
       clearActiveSubagentsForTurn(event.turnId)
       flashPet('error')
+      // Persist accumulated thinking text BEFORE cleanup so it survives
+      // the turn end and is available to groupTurnBlocks. The live ref
+      // is intentionally NOT cleared (data contract).
+      if (conversationId) commitTurnThinking(conversationId, event.turnId)
 
       // Reject goal turn completion promise on error
       if (turnCompletionDeferred.current?.turnId === event.turnId) {
@@ -1167,26 +1183,57 @@ export function App() {
         interjectDeferred.current = undefined
       }
 
+      const lowerMessage = event.message.toLowerCase()
+      const isContextOverflow =
+        lowerMessage.includes('too many tokens')
+        || (lowerMessage.includes('context')
+          && (lowerMessage.includes('exceed')
+            || lowerMessage.includes('too long')
+            || lowerMessage.includes('maximum')
+            || lowerMessage.includes('window')))
+      // Context overflow auto-recovery: in headless (--print) mode the CLI errors
+      // on an API-level overflow instead of compacting, so the conversation would
+      // "die" and the user had to send "continue" by hand. Recover once by firing
+      // a "continue" turn — the CLI then auto-compacts (threshold now exceeded)
+      // and resumes the task. Guarded per-conversation so a still-too-big context
+      // surfaces the error instead of looping.
+      const willAutoRecover = Boolean(
+        conversationId && isContextOverflow && !overflowRecovering.current.has(conversationId),
+      )
       if (conversationId) {
-        const lowerMessage = event.message.toLowerCase()
-        const isContextOverflow = lowerMessage.includes('context')
-          && (lowerMessage.includes('exceed') || lowerMessage.includes('too long') || lowerMessage.includes('maximum'))
-        appendConversationItem(conversationId, {
-          id: `${event.turnId}:error`,
-          role: 'system',
-          text: isContextOverflow
-            ? `${t('context.overflowDetected')}\n\n${event.message}`
-            : event.message,
-          timestamp: Date.now(),
-        })
+        if (willAutoRecover) {
+          overflowRecovering.current.add(conversationId)
+          appendConversationItem(conversationId, {
+            id: `${event.turnId}:compacting`,
+            role: 'system',
+            text: t('context.autoCompacting'),
+            timestamp: Date.now(),
+          })
+        } else {
+          overflowRecovering.current.delete(conversationId)
+          appendConversationItem(conversationId, {
+            id: `${event.turnId}:error`,
+            role: 'system',
+            text: isContextOverflow
+              ? `${t('context.overflowDetected')}\n\n${event.message}`
+              : event.message,
+            timestamp: Date.now(),
+          })
+        }
       }
       delete turnAssistantText.current[event.turnId]
       cleanupTurnState(event.turnId)
+      if (willAutoRecover && conversationId) {
+        void runTurn(createQueuedFollowUp(conversationId, 'continue'))
+      }
       return
     }
 
     if (event.type === 'done') {
       const conversationId = turnConversationIds.current[event.turnId]
+      // A turn finished cleanly → clear any overflow-recovery guard so a future
+      // overflow in this conversation can auto-recover again.
+      if (conversationId) overflowRecovering.current.delete(conversationId)
       setRunningTurnId(undefined)
       setRunningConversations(prev => { const next = new Set(prev); next.delete(conversationId); return next })
       setTokenRate(undefined)
@@ -1196,7 +1243,52 @@ export function App() {
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
       clearActiveSubagentsForTurn(event.turnId)
       flashPet(event.exitCode === 0 ? 'success' : 'error')
+      // Persist accumulated thinking text BEFORE the assistant message is
+      // finalized so the block lands in chronological order in the
+      // transcript. The live ref is intentionally NOT cleared (data contract).
+      if (conversationId) commitTurnThinking(conversationId, event.turnId)
       presentTurnQuestions(event.turnId, conversationId)
+      // Stale CLI session: clear stored id and retry once without --resume.
+      // Do this BEFORE appending failure text / finishing the message so the
+      // user never sees a flash of "No conversation found with session ID".
+      const retryMeta = turnRetryPayload.current[event.turnId]
+      const assistantBlob = `${turnAssistantText.current[event.turnId] ?? ''}\n${(turnTerminalErrors.current[event.turnId] ?? []).join('\n')}`
+      const sessionGone = /no conversation found with session/i.test(assistantBlob)
+        || (/session id[:\s]/i.test(assistantBlob) && /not found|não encontrad/i.test(assistantBlob))
+      const shouldRetrySession = Boolean(
+        conversationId
+        && event.exitCode !== 0
+        && sessionGone
+        && retryMeta
+        && !retryMeta.alreadyRetriedWithoutSession
+        && retryMeta.message.trim(),
+      )
+      if (shouldRetrySession && conversationId && retryMeta) {
+        clearConversationSession(conversationId)
+        const message = retryMeta.message
+        // Drop the failed turn's transcript items (error banner + empty shell)
+        // so only the successful retry remains visible.
+        removeTurnTranscriptItems(conversationId, event.turnId)
+        delete turnRetryPayload.current[event.turnId]
+        if (turnCompletionDeferred.current?.turnId === event.turnId) {
+          turnCompletionDeferred.current.resolve()
+          turnCompletionDeferred.current = undefined
+        }
+        if (interjectDeferred.current?.turnId === event.turnId) {
+          interjectDeferred.current.resolve()
+          interjectDeferred.current = undefined
+        }
+        // presentTurnQuestions (above) may have staged a question wizard for
+        // the dead turnId; clear it so the retry doesn't inherit stale state.
+        if (questionPromptRef.current?.turnId === event.turnId) {
+          questionPromptRef.current = undefined
+          setQuestionPrompt(undefined)
+          setQuestionWizardOpen(false)
+        }
+        cleanupTurnState(event.turnId)
+        void runTurn(createQueuedFollowUp(conversationId, message), { skipResume: true })
+        return
+      }
       if (conversationId && event.exitCode !== 0) {
         const failureMessage = buildCliFailureMessage(turnTerminalErrors.current[event.turnId], t)
         if (failureMessage) appendAssistantText(conversationId, event.turnId, failureMessage)
@@ -1209,6 +1301,7 @@ export function App() {
       } else {
         cleanupTurnState(event.turnId)
       }
+      delete turnRetryPayload.current[event.turnId]
 
       // Resolve goal turn completion promise if this turn was started by the goal scheduler
       if (turnCompletionDeferred.current?.turnId === event.turnId) {
@@ -1359,15 +1452,22 @@ export function App() {
     await runTurn(item)
   }
 
-  async function runTurn(item: QueuedFollowUp) {
+  async function runTurn(item: QueuedFollowUp, options?: { skipResume?: boolean }) {
     pendingConversationId.current = item.conversationId
     setContextUsage(undefined)
     setTokenRate(undefined)
 
     const request = await prepareRequestWithResearchSubagents(item)
-    const turnId = await sendTrackedTurn(request, conversationCliSessionId(item.conversationId))
+    const resumeId = options?.skipResume ? undefined : conversationCliSessionId(item.conversationId)
+    const turnId = await sendTrackedTurn(request, resumeId)
     turnConversationIds.current[turnId] = item.conversationId
     turnModels.current[turnId] = item.turnModel
+    // Track last user text for one-shot session-resume recovery.
+    turnRetryPayload.current[turnId] = {
+      conversationId: item.conversationId,
+      message: item.message,
+      alreadyRetriedWithoutSession: Boolean(options?.skipResume),
+    }
     attachPendingResearchSubagents(turnId)
     tagAssistantMessage(item.conversationId, turnId, item.turnModel)
     if (pendingConversationId.current === item.conversationId) pendingConversationId.current = undefined
@@ -2330,6 +2430,17 @@ export function App() {
     })
   }
 
+  function clearConversationSession(conversationId: string) {
+    updateConversation(conversationId, conversation => {
+      if (!conversation.cliSessionId) return conversation
+      return {
+        ...conversation,
+        cliSessionId: undefined,
+        updatedAt: Date.now(),
+      }
+    })
+  }
+
   function appendAssistantPlaceholder(conversationId: string, turnId: string) {
     const turnModel = turnModels.current[turnId]
     const segId = `${turnId}:text:1`
@@ -2399,6 +2510,20 @@ export function App() {
     delete turnModels.current[turnId]
   }
 
+  /** Remove all transcript rows belonging to a turn (text segments, thinking, etc.). */
+  function removeTurnTranscriptItems(conversationId: string, turnId: string) {
+    updateConversation(conversationId, conversation => ({
+      ...conversation,
+      items: conversation.items.filter(item =>
+        item.id !== turnId
+        && !item.id.startsWith(`${turnId}:`),
+      ),
+      updatedAt: Date.now(),
+    }))
+    delete turnAssistantText.current[turnId]
+    delete turnModels.current[turnId]
+  }
+
   function appendActivityItem(conversationId: string, turnId: string, activity: TurnActivity) {
     // A command's tool_use often streams twice (once at block-start with no
     // input, then with the real command). Dedupe by tool_use_id and backfill the
@@ -2458,6 +2583,50 @@ export function App() {
       ],
       updatedAt: Date.now(),
     }))
+  }
+
+  // Commits the accumulated thinking text for a turn into a PERSISTENT
+  // TranscriptItem so it survives re-renders and reloads and is available
+  // to groupTurnBlocks (which emits the { kind: 'thinking' } block). Called
+  // at end-of-turn (done / error). Idempotent — safe to call from both
+  // handlers. Per the data contract, the live ref
+  // (turnThinkingText.current[turnId]) is intentionally NOT cleared so the
+  // text remains available to the pipeline; persistence is carried by the
+  // TranscriptItem itself (chatStore serializes the whole conversation).
+  function commitTurnThinking(conversationId: string, turnId: string) {
+    const fullText = turnThinkingText.current[turnId]?.trim()
+    if (!fullText) return
+    const thinkingItemId = `${turnId}:thinking`
+    updateConversation(conversationId, conversation => {
+      if (conversation.items.some(item => item.id === thinkingItemId)) return conversation
+      const thinkingItem: TranscriptItem = {
+        id: thinkingItemId,
+        role: 'tool',
+        kind: 'activity',
+        activityKind: 'thinking',
+        text: fullText,
+        timestamp: Date.now(),
+      }
+      // Insert before the first turn-scoped item (placeholder / activity /
+      // text segment) so the block reflects chronological order:
+      // user msg → thinking → assistant text → actions → summary.
+      // If no turn-scoped item exists yet, append at the end.
+      const firstTurnIndex = conversation.items.findIndex(item => item.id.startsWith(`${turnId}:`))
+      if (firstTurnIndex === -1) {
+        return {
+          ...conversation,
+          items: [...conversation.items, thinkingItem],
+          updatedAt: Date.now(),
+        }
+      }
+      const nextItems = [...conversation.items]
+      nextItems.splice(firstTurnIndex, 0, thinkingItem)
+      return {
+        ...conversation,
+        items: nextItems,
+        updatedAt: Date.now(),
+      }
+    })
   }
 
   // Fill in a command's real stdout + success/failure once its tool_result
@@ -2830,12 +2999,15 @@ export function App() {
     const selectedProject = selectedProjectId
       ? chatStore.projects.find(item => item.id === selectedProjectId && !item.archivedAt)
       : undefined
-    return firstUsableWorkspaceDirectory(
+    const wd = firstUsableWorkspaceDirectory(
       conversationProject?.path,
       selectedProject?.path,
       activeProject?.path,
       config.workingDirectory,
     )
+    // When no project is open, fall back to the host's default working
+    // directory (e.g. $HOME) instead of sending an empty string.
+    return wd || defaultWorkingDirectoryRef.current || ''
   }
 
   function handleWorkspaceScroll() {
@@ -3021,6 +3193,7 @@ export function App() {
       loggedIn: cliAuth.loggedIn || credentials.hasApiKey,
       email: cliAuth.email ?? profile.user?.email,
     }
+    menuBarStateRef.current = state
     void window.verboo.updateMenuBar(state)
   }, [
     currentWorkspaceDirectory,
@@ -3035,6 +3208,41 @@ export function App() {
     selectedModel,
     selectedModelInfo?.displayName,
   ])
+
+  // Heartbeat: re-push the current menu-bar state every 2.5s so the tray
+  // self-corrects if an async updateMenuBar landed out of order (the stuck
+  // counter bug — a lagging 'thinking' arriving after 'idle' froze the tray).
+  // Cheap: just an IPC ping with the already-computed state.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      void window.verboo.updateMenuBar(menuBarStateRef.current)
+    }, 2500)
+    return () => window.clearInterval(id)
+  }, [])
+
+  // Reserve exactly the composer's real height at the bottom of the scroll
+  // lane so the last message never slides under the fixed composer dock. The
+  // dock height varies (multi-line input, attachments, queued-message banner),
+  // so a static `--composer-clearance` left content hidden underneath. Measure
+  // it live and drive the CSS var. (dock sits at bottom:16 + a ~24px gap.)
+  useEffect(() => {
+    if (shouldShowLogin) return
+    const dock = document.querySelector<HTMLElement>('.bottom-dock')
+    if (!dock) return
+    const apply = () => {
+      document.documentElement.style.setProperty(
+        '--composer-clearance',
+        `${dock.offsetHeight + 40}px`,
+      )
+    }
+    apply()
+    const observer = new ResizeObserver(apply)
+    observer.observe(dock)
+    return () => {
+      observer.disconnect()
+      document.documentElement.style.removeProperty('--composer-clearance')
+    }
+  }, [shouldShowLogin, activeView, hasConversation])
 
   if (shouldShowLogin) {
     return (
@@ -3111,6 +3319,7 @@ export function App() {
               onOpenFeedback={() => setFeedbackOpen(true)}
               onLogout={logout}
               onNewChat={newChat}
+              onToggleSidebar={toggleSidebarVisibility}
               onOpenProject={openProjectFolder}
               onSelectConversation={selectConversation}
               onToggleProject={toggleProject}
@@ -3530,47 +3739,6 @@ function ResearchSubagentPanel({
   )
 }
 
-function PermissionApprovalPanel({
-  prompt,
-  onAllow,
-  onDeny,
-  onAlwaysAllow,
-}: {
-  prompt: PendingPermissionPrompt
-  onAllow: () => void
-  onDeny: () => void
-  onAlwaysAllow: () => void
-}) {
-  const { t } = useI18n()
-  return (
-    <section className="permission-approval-panel" aria-live="polite">
-      <div className="permission-approval-icon">
-        <Terminal size={16} />
-      </div>
-      <div className="permission-approval-copy">
-        <strong>{t('permissionPrompt.title')}</strong>
-        <p>{prompt.command ? t('permissionPrompt.commandBody') : prompt.detail}</p>
-        {prompt.command && <code>{prompt.command}</code>}
-      </div>
-      <div className="permission-approval-actions">
-        <button type="button" onClick={onDeny}>
-          <XCircle size={15} />
-          {t('permissionPrompt.deny')}
-        </button>
-        {prompt.command && (
-          <button className="trust" type="button" onClick={onAlwaysAllow}>
-            <ShieldCheck size={15} />
-            {t('permissionPrompt.alwaysAllow')}
-          </button>
-        )}
-        <button className="primary" type="button" onClick={onAllow}>
-          {t('permissionPrompt.allow')}
-        </button>
-      </div>
-    </section>
-  )
-}
-
 function readContextWindows(): Record<string, number> {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(CONTEXT_WINDOWS_KEY) ?? '{}') as unknown
@@ -3631,10 +3799,6 @@ function isAuthoritativelySignedOut(credentials: CredentialStatus, cliAuth: CliA
   // not a logout, so keep the session instead of kicking the user out.
   if (credentials.hasApiKey) return false
   return cliAuth.loggedIn === false && !cliAuth.error
-}
-
-function readTheme(): ThemeMode {
-  return window.localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark'
 }
 
 function readSidebarPreference(): { mode: SidebarMode; width: number } {

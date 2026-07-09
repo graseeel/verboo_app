@@ -21,7 +21,7 @@ The app can be published as an open-source repository if the following boundarie
 | Official-status disclaimer | Ready | README states this is independent and not official. |
 | Secrets in source | Ready | No service-role key or real API key is committed. `.env.example` uses placeholders. |
 | Supabase service role | Ready | Service-role usage is isolated to the Edge Function runtime via `ctx.supabaseAdmin`; no service-role key is shipped in the app. |
-| User credentials | Ready | Verboo API keys are stored locally through Electron `safeStorage`. |
+| User credentials | Ready | Verboo API keys are stored locally through the OS credential store (macOS Keychain, Windows DPAPI, Linux libsecret) via the Tauri keyring plugin. |
 | Feedback diagnostics | Ready | Feedback payload avoids full chat transcript by default. |
 | Generated artifacts | Ready | `node_modules`, `out`, `release`, `.DS_Store`, Supabase temp files, and root generated bundle are ignored. |
 | Upstream relationship | Ready | README links to `verbeux-ai/code` as the official CLI upstream and keeps this app positioned as an independent desktop build. |

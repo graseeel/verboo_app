@@ -1,14 +1,60 @@
 .bottom-dock {
   position: fixed;
   z-index: 120;
+  /* Fill the main column (same box as .workspace), then center children at
+     --chat-lane-width. Horizontal padding MUST match .workspace (28px) so the
+     composer left/right edges align with message bubbles (impeccable layout). */
   right: calc(var(--terminal-width) + var(--review-width) + var(--subagents-panel-width, 0px));
   left: var(--sidebar-width);
   bottom: 16px;
   display: grid;
   gap: 10px;
-  width: min(var(--chat-lane-width), calc(100vw - var(--sidebar-width) - var(--terminal-width) - var(--review-width) - var(--subagents-panel-width, 0px) - var(--chat-lane-gutter)));
-  margin: 0 auto;
+  width: auto;
+  max-width: none;
+  margin: 0;
+  padding: 0 28px;
   overflow: visible;
+  box-sizing: border-box;
+}
+
+/*
+ * Lane width applies ONLY to the chat message composer (and other full-width
+ * dock panels) — NOT to chrome controls like `.jump-to-latest`.
+ *
+ * Regression (2026-07): `.bottom-dock > *` stretched the scroll-to-bottom
+ * arrow into a full-lane pill. The user asked to align the *composer*
+ * (textarea that sends messages to the model) with the transcript column;
+ * the jump button must stay a small circular control (34×34).
+ *
+ * The composer uses --composer-lane-width (wider than --chat-lane-width) so
+ * its outer edges extend past message bubbles — the transcript width is
+ * INTACT. Other dock panels keep the shared lane width.
+ */
+.bottom-dock > .composer {
+  width: min(var(--composer-lane-width), 100%);
+  max-width: 100%;
+  margin-inline: auto;
+  box-sizing: border-box;
+}
+
+.bottom-dock > .permission-approval-panel,
+.bottom-dock > .question-wizard,
+.bottom-dock > .question-chip,
+.bottom-dock > .subagent-summary-card {
+  width: min(var(--chat-lane-width), 100%);
+  max-width: 100%;
+  margin-inline: auto;
+  box-sizing: border-box;
+}
+
+/* Explicit: jump-to-latest is NOT a composer. Never inherit lane width. */
+.bottom-dock > .jump-to-latest {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  max-width: 34px;
+  margin-inline: auto;
+  box-sizing: border-box;
 }
 
 .bottom-dock.empty-mode {
@@ -19,13 +65,18 @@
 .composer {
   position: relative;
   display: grid;
-  gap: 7px;
-  padding: 8px;
+  gap: 8px;
+  /* Slightly roomier than 8px so placeholder + toolbar never kiss the border
+     (impeccable: no text overflow). */
+  padding: 10px 12px;
+  min-width: 0;
   border: 1px solid var(--border-strong);
   border-radius: 14px;
   background: color-mix(in srgb, var(--bg-elevated) 96%, var(--bg));
   box-shadow: 0 10px 28px color-mix(in srgb, black 28%, transparent);
   backdrop-filter: blur(10px);
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .composer[data-command-mode="goal"] {
@@ -181,7 +232,8 @@
 
 .composer-text-wrap {
   position: relative;
-  min-height: 38px;
+  min-width: 0;
+  min-height: 40px;
   max-height: 180px;
   overflow: hidden;
 }
@@ -210,13 +262,17 @@
 .composer textarea,
 .composer-highlight {
   width: 100%;
-  min-height: 38px;
+  min-width: 0;
+  min-height: 40px;
   max-height: 180px;
-  padding: 3px 8px;
+  padding: 6px 10px;
   font: inherit;
-  line-height: 1.42;
+  font-size: 14px;
+  line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  word-break: break-word;
+  box-sizing: border-box;
 }
 
 .composer textarea {
@@ -228,6 +284,7 @@
   background: transparent;
   color: var(--text);
   caret-color: var(--text);
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
@@ -237,6 +294,11 @@
 
 .composer textarea::placeholder {
   color: var(--text-dim);
+  opacity: 1;
+  /* Keep long pt-BR placeholder inside the field */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .composer-highlight {
@@ -319,6 +381,10 @@
 
 .composer-pill span {
   overflow: hidden;
+  /* The pill sets line-height: 1, which clips descenders (the "g" in
+     "glm-5.2") because overflow: hidden crops anything below the tight line
+     box. Give the label a roomier line box so descenders render fully. */
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

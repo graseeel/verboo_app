@@ -8,12 +8,27 @@ const KIND_MAP: Record<string, TurnActionKind> = {
 
 // Walks a turn's already-ordered items (text segments + activity items) into an
 // ordered list of blocks. Consecutive activity items collapse into one 'actions'
-// block; text items become 'text' blocks. Thinking items are ignored (transient).
+// block; text items become 'text' blocks. Thinking items become 'thinking' blocks
+// (persisted by the backend at end-of-turn with the full reasoning text) so the
+// renderer can show a collapsible disclosure instead of a transient shimmer.
 export function groupTurnBlocks(items: TranscriptItem[]): TurnBlock[] {
   const blocks: TurnBlock[] = []
   for (const item of items) {
     if (item.kind === 'activity') {
-      if (item.activityKind === 'thinking') continue
+      if (item.activityKind === 'thinking') {
+        // Skip empty thinking items (no reasoning text to show). The backend
+        // commits a single persistent thinking item at end-of-turn with the
+        // full accumulated text; transient streaming thinking items have empty
+        // text and are already represented by the live ThinkingRotator.
+        if (!item.text.trim()) continue
+        blocks.push({
+          kind: 'thinking',
+          id: item.id,
+          text: item.text,
+          streaming: Boolean(item.streaming),
+        })
+        continue
+      }
       const action: TurnAction = {
         kind: KIND_MAP[item.activityKind ?? 'tool'] ?? 'tool',
         label: item.text,

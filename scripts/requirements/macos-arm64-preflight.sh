@@ -53,7 +53,7 @@ else
   print_fail "App bundle not found: $APP_PATH"
 fi
 
-APP_BINARY="$APP_PATH/Contents/MacOS/Verboo Code"
+APP_BINARY="$APP_PATH/Contents/MacOS/verboo-desktop"
 if [[ -x "$APP_BINARY" ]]; then
   print_pass "App executable found."
   if file "$APP_BINARY" | grep -q 'arm64'; then
@@ -65,19 +65,29 @@ else
   print_fail "App executable not found or not executable."
 fi
 
-CLI_PATH="$APP_PATH/Contents/Resources/app.asar.unpacked/node_modules/@verboo/code/bin/verboo"
+# Tauri bundles the CLI as a resource under
+# Contents/Resources/resources/cli-package/dist/cli.mjs (copied by
+# scripts/verify/copy-cli-resource.mjs at build time). The app spawns it via
+# system Node — it does NOT use ELECTRON_RUN_AS_NODE (that was Electron-only).
+CLI_PATH="$APP_PATH/Contents/Resources/resources/cli-package/dist/cli.mjs"
 if [[ -f "$CLI_PATH" ]]; then
-  print_pass "Embedded Verboo CLI entrypoint found in app.asar.unpacked."
+  print_pass "Embedded Verboo CLI entrypoint found: $CLI_PATH"
 else
-  CLI_PATH="$APP_PATH/Contents/Resources/app.asar/node_modules/@verboo/code/bin/verboo"
-  print_warn "Embedded CLI was not visible in app.asar.unpacked; trying app.asar runtime path."
+  print_fail "Embedded Verboo CLI not found at expected Tauri resource path: $CLI_PATH"
 fi
 
-if [[ -x "$APP_BINARY" ]]; then
-  if CLI_VERSION="$(ELECTRON_RUN_AS_NODE=1 "$APP_BINARY" "$CLI_PATH" --version 2>&1)"; then
-    print_pass "Embedded Verboo CLI runs: $CLI_VERSION"
+# Verify the bundled CLI actually runs under system Node. The Tauri app binary
+# is Rust, not Electron, so ELECTRON_RUN_AS_NODE does not apply. We require a
+# system Node on PATH (the same runtime the app uses at startup).
+if [[ -f "$CLI_PATH" ]]; then
+  if command -v node >/dev/null 2>&1; then
+    if CLI_VERSION="$(node "$CLI_PATH" --version 2>&1)"; then
+      print_pass "Embedded Verboo CLI runs: $CLI_VERSION"
+    else
+      print_fail "Embedded Verboo CLI failed: $CLI_VERSION"
+    fi
   else
-    print_fail "Embedded Verboo CLI failed: $CLI_VERSION"
+    print_warn "System Node not on PATH; cannot verify embedded CLI runs. The app requires Node at runtime."
   fi
 fi
 
@@ -117,9 +127,9 @@ else
 fi
 
 if command -v node >/dev/null 2>&1; then
-  print_pass "User Node is present but not required: $(node --version)"
+  print_pass "System Node is present: $(node --version)"
 else
-  print_pass "User Node is absent; packaged app does not require it."
+  print_warn "System Node is absent. The packaged Tauri app requires Node on PATH to run the embedded CLI."
 fi
 
 if command -v verboo >/dev/null 2>&1; then

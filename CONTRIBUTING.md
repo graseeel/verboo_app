@@ -10,13 +10,13 @@ This is an independent, non-official desktop build. Contributions should preserv
 
 ```bash
 npm install
-npm run dev
+npm run tauri:dev
 ```
 
 Before submitting changes:
 
 ```bash
-npm run build
+npm run build:renderer
 deno check --config supabase/functions/feedback/deno.json supabase/functions/feedback/index.ts
 deno lint --config supabase/functions/feedback/deno.json supabase/functions/feedback/index.ts
 ```
@@ -33,4 +33,4 @@ deno lint --config supabase/functions/feedback/deno.json supabase/functions/feed
 
 The feedback backend lives in `supabase/functions/feedback` and writes to the table created by `supabase/migrations/20260630221150_create_feedback_reports.sql`.
 
-The app must keep `SUPABASE_SERVICE_ROLE_KEY` out of Electron code. The service role belongs only in Supabase Edge Function runtime configuration.
+The app must keep `SUPABASE_SERVICE_ROLE_KEY` out of the desktop app (Tauri/Rust) code. The service role belongs only in Supabase Edge Function runtime configuration.

@@ -24,7 +24,7 @@ scripts/requirements/macos-arm64-preflight.sh "/Applications/Verboo Code.app"
 
 ### Known Issues
 - Unsigned builds may be blocked by Gatekeeper. Use `--clear-quarantine` flag or Developer ID signing for distribution.
-- Terminal integration uses bundled node-pty prebuild for `darwin-arm64`.
+- Terminal integration uses the Rust-side `portable-pty` crate (Tauri terminal sidecar) for `darwin-arm64`.
 
 ---
 
@@ -55,8 +55,8 @@ scripts/requirements/win-x64-preflight.ps1
 ```
 
 ### Known Issues
-- `safeStorage` uses Windows DPAPI — credentials are machine-specific and bound to the user account.
-- Node.js detection searches `%PROGRAMFILES%\nodejs`, nvm-windows, fnm, and Volta paths.
+- Credentials are encrypted with Windows DPAPI via the Tauri keyring plugin — credentials are machine-specific and bound to the user account.
+- Node.js detection searches `%PROGRAMFILES%\nodejs`, nvm-windows, fnm, and Volta paths to run the bundled `cli-package` sidecar.
 - Terminal defaults to `powershell.exe`. If you have PowerShell Core installed, set `$env:SHELL` to `pwsh.exe` for an improved experience.
 - WSL users: GUI requires WSLg (Windows 11) or a third-party X server. The terminal panel works with WSL bash if `wsl.exe` is found.
 
@@ -92,12 +92,12 @@ scripts/requirements/linux-x64-preflight.sh
 ```
 
 ### Known Issues
-- `safeStorage` requires `libsecret-1` to be installed. Without it, credentials fall back to plaintext storage (file is still `chmod 600` inside `userData`).
+- Credential encryption requires `libsecret-1` to be installed (used by the Tauri keyring plugin). Without it, credentials fall back to plaintext storage (file is still `chmod 600` inside the app data directory).
 - To install libsecret on Debian/Ubuntu: `sudo apt-get install libsecret-1-dev`
 - To install libsecret on Fedora: `sudo dnf install libsecret-devel`
 - Terminal defaults to `$SHELL` or `/bin/bash`. Zsh works if installed.
 - The app titlebar uses the native window manager decorations. If your WM uses CSD (client-side decorations), window controls may look different than macOS hiddenInset.
-- Electron on Wayland: set `ELECTRON_OZONE_PLATFORM_HINT=wayland` for native Wayland support. XWayland fallback works by default.
+- Tauri uses the system WebKitGTK on Linux. For native Wayland support, ensure `webkit2gtk` is built with Wayland support (default on modern distros). XWayland fallback works by default.
 
 ---
 
@@ -105,19 +105,19 @@ scripts/requirements/linux-x64-preflight.sh
 
 | OS | Backend | Fallback |
 |----|---------|----------|
-| macOS | Keychain (`/usr/bin/security`) | — |
-| Windows | DPAPI (`safeStorage.encryptString`) | — |
-| Linux | libsecret (`safeStorage.encryptString`) | Plaintext file (mode 0600) |
+| macOS | Keychain (via Tauri keyring plugin) | — |
+| Windows | DPAPI (via Tauri keyring plugin) | — |
+| Linux | libsecret (via Tauri keyring plugin) | Plaintext file (mode 0600) |
 
 ## Cross-Platform Icons
 
 | Platform | Format | File |
 |----------|--------|------|
-| macOS | `.icns` | `assets/branding/verboo.icns` |
-| Windows | `.ico` | `assets/branding/verboo.ico` |
-| Linux | `.png` | `assets/branding/verboo.png` |
+| macOS | `.icns` | `src-tauri/icons/icon.icns` |
+| Windows | `.ico` | `src-tauri/icons/icon.ico` |
+| Linux | `.png` | `src-tauri/icons/32x32.png`, `128x128.png`, `128x128@2x.png` |
 
-If you build on a platform where the icon file is missing, electron-builder will warn but still produce a package with a default icon.
+If you build on a platform where the icon file is missing, `cargo tauri build` will warn but still produce a bundle with a default icon.
 
 ## Cross-Platform Build Recipes
 
@@ -125,20 +125,18 @@ If you build on a platform where the icon file is missing, electron-builder will
 # Install dependencies (any platform)
 npm install
 
-# Development mode (any platform)
-npm run dev
+# Development mode (any platform) — starts Vite + cargo tauri dev
+npm run tauri:dev
 
-# Build (any platform)
-npm run build
+# Build the renderer only (TypeScript check + Vite bundle)
+npm run build:renderer
 
-# Package for the current platform
-npm run package
+# Build the full Tauri bundle for the current platform
+# (renderer + Rust + cli-package copy + cargo tauri build)
+npm run tauri:build
 
-# Create distributable for the current platform
-npm run dist
-
-# Platform-specific release scripts
-npm run release:mac:local   # macOS DMG + ZIP (unsigned)
-npm run release:win:local   # Windows NSIS .exe
-npm run release:linux:local # Linux AppImage + .deb
+# Run frontend unit tests
+npm test
 ```
+
+For cross-platform builds, push a tag and let the GitHub Actions matrix build each target — see [docs/release-github-actions.md](docs/release-github-actions.md).
