@@ -78,30 +78,32 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # With `cargo tauri build --target <triple>`, bundles land under
+          # src-tauri/target/<triple>/release/bundle/ — NOT target/release/bundle/.
           - os: macos-15
             target: aarch64-apple-darwin
             label: macOS-arm64
             artifact_glob: |
-              src-tauri/target/release/bundle/macos/*.app
-              src-tauri/target/release/bundle/dmg/*.dmg
+              src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
+              src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           - os: macos-15
             target: x86_64-apple-darwin
             label: macOS-x64
             artifact_glob: |
-              src-tauri/target/release/bundle/macos/*.app
-              src-tauri/target/release/bundle/dmg/*.dmg
+              src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
+              src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             label: Windows-x64
             artifact_glob: |
-              src-tauri/target/release/bundle/nsis/*.exe
-              src-tauri/target/release/bundle/msi/*.msi
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             label: Linux-x64
             artifact_glob: |
-              src-tauri/target/release/bundle/appimage/*.AppImage
-              src-tauri/target/release/bundle/deb/*.deb
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -166,6 +168,19 @@ jobs:
           RUSTFLAGS: ""
         run: cargo +1.89.0 tauri build --target ${{ matrix.target }}
 
+      - name: List bundle tree (debug)
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          echo "Bundle dirs under src-tauri/target:"
+          find src-tauri/target -type d -name bundle 2>/dev/null | head -40
+          echo "Candidate installers:"
+          find src-tauri/target -type f \( \
+            -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' -o \
+            -name '*.exe' -o -name '*.msi' -o -name '*.app' \) 2>/dev/null | head -50
+          true
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -180,22 +195,36 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ needs.resolve-tag.outputs.tag }}"
-          # Use gh release to upload all matching files. --clobber re-uploads
-          # if the file already exists from a previous run of this job.
-          FILES=$(ls ${{ matrix.artifact_glob }} 2>/dev/null || true)
-          if [ -z "$FILES" ]; then
-            echo "::error::No bundle artifacts found to upload"
+          TARGET="${{ matrix.target }}"
+          BUNDLE_ROOT="src-tauri/target/${TARGET}/release/bundle"
+          if [ ! -d "$BUNDLE_ROOT" ]; then
+            echo "::error::Bundle root missing: $BUNDLE_ROOT"
+            find src-tauri/target -type d -name bundle 2>/dev/null | head -20 || true
             exit 1
           fi
-          # Create the release if missing (only on tag push).
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            FLAGS="--title $TAG --notes \"Tauri build $TAG\""
-            if [ "${{ needs.resolve-tag.outputs.is_prerelease }}" = "true" ]; then
-              FLAGS="$FLAGS --prerelease"
-            fi
-            eval "gh release create $TAG $FLAGS"
+          # Collect installers (skip raw .app directory trees — prefer dmg).
+          mapfile -t FILES < <(
+            find "$BUNDLE_ROOT" -type f \( \
+              -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' -o \
+              -name '*.exe' -o -name '*.msi' -o -name '*.rpm' -o -name '*.zip' \
+            \) 2>/dev/null | sort -u
+          )
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "::error::No installer files under $BUNDLE_ROOT"
+            find "$BUNDLE_ROOT" -maxdepth 3 -type f 2>/dev/null | head -50 || true
+            exit 1
           fi
-          gh release upload "$TAG" $FILES --clobber
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            CREATE_FLAGS=(--title "Verboo Code ${TAG#v}" --notes "Tauri build $TAG")
+            if [ "${{ needs.resolve-tag.outputs.is_prerelease }}" = "true" ]; then
+              CREATE_FLAGS+=(--prerelease)
+            fi
+            gh release create "$TAG" "${CREATE_FLAGS[@]}"
+          fi
+          for f in "${FILES[@]}"; do
+            echo "Uploading $f"
+            gh release upload "$TAG" "$f" --clobber
+          done
 
   # ─────────────────────────────────────────────────────────────────────
   # Aggregate `latest.json` for the Tauri updater. One file per platform
