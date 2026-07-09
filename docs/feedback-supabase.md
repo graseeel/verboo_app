@@ -10,7 +10,7 @@ fallback to `grasel.moura05@gmail.com`.
 
 ## Security
 
-- Never put `SUPABASE_SERVICE_ROLE_KEY` in the Electron app.
+- Never put `SUPABASE_SERVICE_ROLE_KEY` in the desktop app (Tauri/Rust).
 - The service role must stay only in the Supabase Edge Function runtime.
 - The `public.verboo_desktop_feedback` table has RLS enabled and no grants for `anon` or `authenticated`.
 - The `supabase/functions/feedback` function writes through `ctx.supabaseAdmin`.

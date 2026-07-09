@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // Generates Tauri updater manifests (`latest-*.json` and `latest*.json`)
-// from a directory of build artifacts. Mirrors Electron's
-// `update-release-assets.mjs` but produces the Tauri-shaped manifests that
-// `tauri-plugin-updater` reads at runtime.
+// from a directory of build artifacts. Produces the Tauri-shaped manifests
+// that `tauri-plugin-updater` reads at runtime.
 //
 // Usage:
 //   node scripts/verify/generate-tauri-update-manifest.mjs \

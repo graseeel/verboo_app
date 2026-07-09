@@ -1,6 +1,7 @@
 node_modules/
 out/
 release/
+build/
 supabase/.temp/
 supabase/.branches/
 docs/superpowers/
