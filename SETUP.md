@@ -24,7 +24,7 @@ scripts/requirements/macos-arm64-preflight.sh "/Applications/Verboo Code.app"
 
 ### Known Issues
 - Unsigned builds may be blocked by Gatekeeper. Use `--clear-quarantine` flag or Developer ID signing for distribution.
-- Terminal integration uses the bundled `node-pty` native module for `darwin-arm64`.
+- Terminal integration uses the Rust-side `portable-pty` crate (Tauri terminal sidecar) for `darwin-arm64`.
 
 ---
 
