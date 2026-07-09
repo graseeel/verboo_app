@@ -18,7 +18,7 @@ The Tauri bundle ships:
 - The Rust backend (`src-tauri/`) compiled into the native binary.
 - The system WebView (WKWebView on macOS) for the frontend — no bundled Chromium.
 - The embedded `cli-package` (the Verboo CLI plus its Node dependency closure) under `src-tauri/resources/cli-package/`.
-- The local terminal module through `node-pty`.
+- The local terminal module through the Rust `portable-pty` crate (Tauri terminal sidecar).
 - The local terminal UI through `@xterm/xterm`.
 - Image/OCR support through `sharp` and `tesseract.js`.
 

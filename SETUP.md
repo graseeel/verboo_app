@@ -139,4 +139,4 @@ npm run tauri:build
 npm test
 ```
 
-For cross-platform builds, push a tag and let the GitHub Actions matrix build each target — see [docs/release-github-actions.md](release-github-actions.md).
+For cross-platform builds, push a tag and let the GitHub Actions matrix build each target — see [docs/release-github-actions.md](docs/release-github-actions.md).
