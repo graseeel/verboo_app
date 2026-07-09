@@ -1,6 +1,6 @@
 .turn-view { display: flex; flex-direction: column; gap: 8px; }
 
-.step-flow { display: flex; flex-direction: column; gap: 10px; }
+.step-flow { display: flex; flex-direction: column; gap: 8px; }
 /* Long tokens (URLs, inline-code, hashes) must wrap inside their parent
    grid track — the assistant row uses `display: grid` with implicit
    `min-width: auto`, so without `min-width: 0` and `overflow-wrap: anywhere`
@@ -9,12 +9,16 @@
    intentional newlines and indentation from the model are preserved. */
 .step-text {
   color: var(--text);
-  line-height: 1.65;
+  line-height: 1.5;
   white-space: pre-wrap;
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.turn-recap { margin-top: 4px; }
+/* When step-text contains a MarkdownMessage (HTML block), pre-wrap conflicts
+   with the block layout and causes odd gaps. The markdown-body inside manages
+   its own whitespace. */
+.step-text:has(.markdown-body) { white-space: normal; }
+.turn-recap { margin-top: 2px; }
 
 .step-thinking {
   display: inline-flex; align-items: center; gap: 7px;
@@ -86,3 +90,21 @@
 }
 .turn-collapsed svg { transition: transform 140ms ease; }
 .turn-collapsed svg.is-open { transform: rotate(90deg); }
+
+/* Persisted reasoning body — reused by ReasoningContent inside the "Worked"
+   expansion. Renders markdown via MarkdownMessage (instead of plain text),
+   so the .markdown-body inside inherits muted color and tighter spacing. */
+.thinking-disclosure-body {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 2px 0 1px 17px;
+}
+/* Reasoning markdown is intentionally muted — it previews how the model
+   reached the conclusion and should not compete with the final answer. */
+.thinking-disclosure-body .markdown-body {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.thinking-disclosure-body .markdown-body p { margin: 0 0 0.2em; }
+.thinking-disclosure-body .markdown-body ul,
+.thinking-disclosure-body .markdown-body ol { margin: 0 0 0.15em; }

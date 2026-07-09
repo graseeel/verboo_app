@@ -17,22 +17,7 @@
   },
   "private": true,
   "type": "module",
-  "main": "out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "tsc --noEmit && electron-vite build",
-    "preview": "electron-vite preview",
-    "package": "npm run package:unsigned",
-    "package:unsigned": "node scripts/package-preflight.mjs --dir && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
-    "dist": "npm run dist:unsigned",
-    "dist:unsigned": "node scripts/package-preflight.mjs --dist && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
-    "release:mac:github": "node scripts/package-preflight.mjs --dist && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish always",
-    "release:mac:local": "node scripts/package-preflight.mjs --dist && npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish never",
-    "release:win:github": "node scripts/package-preflight.mjs --dist && npm run build && electron-builder --win --publish always",
-    "release:win:local": "node scripts/package-preflight.mjs --dist && npm run build && electron-builder --win --publish never",
-    "release:linux:github": "node scripts/package-preflight.mjs --dist && npm run build && electron-builder --linux --publish always",
-    "release:linux:local": "node scripts/package-preflight.mjs --dist && npm run build && electron-builder --linux --publish never",
-    "verify:update-release": "node scripts/verify/update-release-assets.mjs",
     "dev:renderer": "vite",
     "build:renderer": "tsc --noEmit && vite build",
     "build:tauri-deps": "node scripts/verify/dedup-cli-package.mjs && node scripts/verify/copy-cli-resource.mjs && npm run build:renderer",
@@ -56,7 +41,6 @@
     "@verboo/code": "0.10.6",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
-    "electron-updater": "^6.8.9",
     "highlight.js": "^11.11.1",
     "lucide-react": "1.22.0",
     "node-pty": "^1.1.0",
@@ -79,134 +63,9 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.1.2",
     "@vitest/ui": "^4.1.10",
-    "electron": "42.5.1",
-    "electron-builder": "26.15.3",
-    "electron-vite": "5.0.0",
     "jsdom": "^29.1.1",
     "typescript": "6.0.3",
     "vite": "7.3.0",
     "vitest": "^4.1.10"
-  },
-  "build": {
-    "appId": "ai.verboo.code.desktop",
-    "productName": "Verboo Code",
-    "artifactName": "Verboo-Code-${os}-${version}-${arch}.${ext}",
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "graseeel",
-        "repo": "verboo_app",
-        "releaseType": "release"
-      }
-    ],
-    "files": [
-      "out/**",
-      "assets/**",
-      "requirements/**",
-      "scripts/requirements/**",
-      "node_modules/**",
-      "package.json"
-    ],
-    "asarUnpack": [
-      "node_modules/@verboo/code/**",
-      "node_modules/@anthropic-ai/sandbox-runtime/**",
-      "node_modules/@vscode/ripgrep*/**",
-      "node_modules/node-pty/prebuilds/**",
-      "node_modules/node-pty/build/**",
-      "node_modules/@img/sharp*/**"
-    ],
-    "mac": {
-      "category": "public.app-category.developer-tools",
-      "icon": "assets/branding/verboo.icns",
-      "extendInfo": {
-        "NSUserNotificationAlertStyle": "alert"
-      },
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "arm64"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "arm64"
-          ]
-        }
-      ]
-    },
-    "win": {
-      "icon": "assets/branding/verboo.ico",
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "x64"
-          ]
-        }
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "installerIcon": "assets/branding/verboo.ico",
-      "uninstallerIcon": "assets/branding/verboo.ico",
-      "installerHeaderIcon": "assets/branding/verboo.ico"
-    },
-    "linux": {
-      "icon": "assets/branding/verboo.png",
-      "category": "Development",
-      "maintainer": "Gabriel Grasel de Moura <graseeel@users.noreply.github.com>",
-      "target": [
-        {
-          "target": "AppImage",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "deb",
-          "arch": [
-            "x64"
-          ]
-        }
-      ]
-    },
-    "dmg": {
-      "title": "Verboo Code ${version}",
-      "background": "assets/branding/dmg-background.png",
-      "icon": "assets/branding/verboo.icns",
-      "iconSize": 96,
-      "iconTextSize": 13,
-      "window": {
-        "width": 720,
-        "height": 460
-      },
-      "contents": [
-        {
-          "x": 205,
-          "y": 250,
-          "type": "file"
-        },
-        {
-          "x": 515,
-          "y": 250,
-          "type": "link",
-          "path": "/Applications"
-        }
-      ]
-    },
-    "directories": {
-      "buildResources": "assets/branding",
-      "output": "release"
-    }
   }
 }

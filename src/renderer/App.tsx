@@ -228,6 +228,7 @@ function firstUsableWorkspaceDirectory(...paths: Array<string | undefined>): str
 
 export function App() {
   const initialSidebarPreference = useRef(readSidebarPreference())
+  const defaultWorkingDirectoryRef = useRef('')
   const [config, setConfig] = useState<AppConfig>({
     workingDirectory: '',
     accessMode: 'approval',
@@ -356,6 +357,12 @@ export function App() {
   const turnChangeBaselines = useRef<Record<string, WorkspaceChangeSummary | undefined>>({})
   const turnWorkingDirectories = useRef<Record<string, string>>({})
   const turnTouchedFiles = useRef<Record<string, Set<string>>>({})
+  /** One-shot recovery when CLI rejects a stale --resume session id. */
+  const turnRetryPayload = useRef<Record<string, {
+    conversationId: string
+    message: string
+    alreadyRetriedWithoutSession: boolean
+  }>>({})
   const activeSubagentsRef = useRef<Record<string, ActiveSubagent>>({})
   const pendingResearchSubagentsRef = useRef<ActiveSubagent[]>([])
   const autoApprovalSent = useRef<Set<string>>(new Set())
@@ -429,9 +436,10 @@ export function App() {
     let cancelled = false
 
     async function loadStartupState() {
-      const [settings, nextConfig] = await Promise.all([
+      const [settings, nextConfig, defaultWDSettings] = await Promise.all([
         window.verboo.getUserSettings(),
         window.verboo.getConfig(),
+        window.verboo.getDefaultWorkingDirectory().then(wd => { defaultWorkingDirectoryRef.current = wd; return wd }),
       ])
       if (cancelled) return
       setUserSettings(settings)
@@ -1160,6 +1168,10 @@ export function App() {
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
       clearActiveSubagentsForTurn(event.turnId)
       flashPet('error')
+      // Persist accumulated thinking text BEFORE cleanup so it survives
+      // the turn end and is available to groupTurnBlocks. The live ref
+      // is intentionally NOT cleared (data contract).
+      if (conversationId) commitTurnThinking(conversationId, event.turnId)
 
       // Reject goal turn completion promise on error
       if (turnCompletionDeferred.current?.turnId === event.turnId) {
@@ -1231,7 +1243,52 @@ export function App() {
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
       clearActiveSubagentsForTurn(event.turnId)
       flashPet(event.exitCode === 0 ? 'success' : 'error')
+      // Persist accumulated thinking text BEFORE the assistant message is
+      // finalized so the block lands in chronological order in the
+      // transcript. The live ref is intentionally NOT cleared (data contract).
+      if (conversationId) commitTurnThinking(conversationId, event.turnId)
       presentTurnQuestions(event.turnId, conversationId)
+      // Stale CLI session: clear stored id and retry once without --resume.
+      // Do this BEFORE appending failure text / finishing the message so the
+      // user never sees a flash of "No conversation found with session ID".
+      const retryMeta = turnRetryPayload.current[event.turnId]
+      const assistantBlob = `${turnAssistantText.current[event.turnId] ?? ''}\n${(turnTerminalErrors.current[event.turnId] ?? []).join('\n')}`
+      const sessionGone = /no conversation found with session/i.test(assistantBlob)
+        || (/session id[:\s]/i.test(assistantBlob) && /not found|não encontrad/i.test(assistantBlob))
+      const shouldRetrySession = Boolean(
+        conversationId
+        && event.exitCode !== 0
+        && sessionGone
+        && retryMeta
+        && !retryMeta.alreadyRetriedWithoutSession
+        && retryMeta.message.trim(),
+      )
+      if (shouldRetrySession && conversationId && retryMeta) {
+        clearConversationSession(conversationId)
+        const message = retryMeta.message
+        // Drop the failed turn's transcript items (error banner + empty shell)
+        // so only the successful retry remains visible.
+        removeTurnTranscriptItems(conversationId, event.turnId)
+        delete turnRetryPayload.current[event.turnId]
+        if (turnCompletionDeferred.current?.turnId === event.turnId) {
+          turnCompletionDeferred.current.resolve()
+          turnCompletionDeferred.current = undefined
+        }
+        if (interjectDeferred.current?.turnId === event.turnId) {
+          interjectDeferred.current.resolve()
+          interjectDeferred.current = undefined
+        }
+        // presentTurnQuestions (above) may have staged a question wizard for
+        // the dead turnId; clear it so the retry doesn't inherit stale state.
+        if (questionPromptRef.current?.turnId === event.turnId) {
+          questionPromptRef.current = undefined
+          setQuestionPrompt(undefined)
+          setQuestionWizardOpen(false)
+        }
+        cleanupTurnState(event.turnId)
+        void runTurn(createQueuedFollowUp(conversationId, message), { skipResume: true })
+        return
+      }
       if (conversationId && event.exitCode !== 0) {
         const failureMessage = buildCliFailureMessage(turnTerminalErrors.current[event.turnId], t)
         if (failureMessage) appendAssistantText(conversationId, event.turnId, failureMessage)
@@ -1244,6 +1301,7 @@ export function App() {
       } else {
         cleanupTurnState(event.turnId)
       }
+      delete turnRetryPayload.current[event.turnId]
 
       // Resolve goal turn completion promise if this turn was started by the goal scheduler
       if (turnCompletionDeferred.current?.turnId === event.turnId) {
@@ -1394,15 +1452,22 @@ export function App() {
     await runTurn(item)
   }
 
-  async function runTurn(item: QueuedFollowUp) {
+  async function runTurn(item: QueuedFollowUp, options?: { skipResume?: boolean }) {
     pendingConversationId.current = item.conversationId
     setContextUsage(undefined)
     setTokenRate(undefined)
 
     const request = await prepareRequestWithResearchSubagents(item)
-    const turnId = await sendTrackedTurn(request, conversationCliSessionId(item.conversationId))
+    const resumeId = options?.skipResume ? undefined : conversationCliSessionId(item.conversationId)
+    const turnId = await sendTrackedTurn(request, resumeId)
     turnConversationIds.current[turnId] = item.conversationId
     turnModels.current[turnId] = item.turnModel
+    // Track last user text for one-shot session-resume recovery.
+    turnRetryPayload.current[turnId] = {
+      conversationId: item.conversationId,
+      message: item.message,
+      alreadyRetriedWithoutSession: Boolean(options?.skipResume),
+    }
     attachPendingResearchSubagents(turnId)
     tagAssistantMessage(item.conversationId, turnId, item.turnModel)
     if (pendingConversationId.current === item.conversationId) pendingConversationId.current = undefined
@@ -2365,6 +2430,17 @@ export function App() {
     })
   }
 
+  function clearConversationSession(conversationId: string) {
+    updateConversation(conversationId, conversation => {
+      if (!conversation.cliSessionId) return conversation
+      return {
+        ...conversation,
+        cliSessionId: undefined,
+        updatedAt: Date.now(),
+      }
+    })
+  }
+
   function appendAssistantPlaceholder(conversationId: string, turnId: string) {
     const turnModel = turnModels.current[turnId]
     const segId = `${turnId}:text:1`
@@ -2434,6 +2510,20 @@ export function App() {
     delete turnModels.current[turnId]
   }
 
+  /** Remove all transcript rows belonging to a turn (text segments, thinking, etc.). */
+  function removeTurnTranscriptItems(conversationId: string, turnId: string) {
+    updateConversation(conversationId, conversation => ({
+      ...conversation,
+      items: conversation.items.filter(item =>
+        item.id !== turnId
+        && !item.id.startsWith(`${turnId}:`),
+      ),
+      updatedAt: Date.now(),
+    }))
+    delete turnAssistantText.current[turnId]
+    delete turnModels.current[turnId]
+  }
+
   function appendActivityItem(conversationId: string, turnId: string, activity: TurnActivity) {
     // A command's tool_use often streams twice (once at block-start with no
     // input, then with the real command). Dedupe by tool_use_id and backfill the
@@ -2493,6 +2583,50 @@ export function App() {
       ],
       updatedAt: Date.now(),
     }))
+  }
+
+  // Commits the accumulated thinking text for a turn into a PERSISTENT
+  // TranscriptItem so it survives re-renders and reloads and is available
+  // to groupTurnBlocks (which emits the { kind: 'thinking' } block). Called
+  // at end-of-turn (done / error). Idempotent — safe to call from both
+  // handlers. Per the data contract, the live ref
+  // (turnThinkingText.current[turnId]) is intentionally NOT cleared so the
+  // text remains available to the pipeline; persistence is carried by the
+  // TranscriptItem itself (chatStore serializes the whole conversation).
+  function commitTurnThinking(conversationId: string, turnId: string) {
+    const fullText = turnThinkingText.current[turnId]?.trim()
+    if (!fullText) return
+    const thinkingItemId = `${turnId}:thinking`
+    updateConversation(conversationId, conversation => {
+      if (conversation.items.some(item => item.id === thinkingItemId)) return conversation
+      const thinkingItem: TranscriptItem = {
+        id: thinkingItemId,
+        role: 'tool',
+        kind: 'activity',
+        activityKind: 'thinking',
+        text: fullText,
+        timestamp: Date.now(),
+      }
+      // Insert before the first turn-scoped item (placeholder / activity /
+      // text segment) so the block reflects chronological order:
+      // user msg → thinking → assistant text → actions → summary.
+      // If no turn-scoped item exists yet, append at the end.
+      const firstTurnIndex = conversation.items.findIndex(item => item.id.startsWith(`${turnId}:`))
+      if (firstTurnIndex === -1) {
+        return {
+          ...conversation,
+          items: [...conversation.items, thinkingItem],
+          updatedAt: Date.now(),
+        }
+      }
+      const nextItems = [...conversation.items]
+      nextItems.splice(firstTurnIndex, 0, thinkingItem)
+      return {
+        ...conversation,
+        items: nextItems,
+        updatedAt: Date.now(),
+      }
+    })
   }
 
   // Fill in a command's real stdout + success/failure once its tool_result
@@ -2865,12 +2999,15 @@ export function App() {
     const selectedProject = selectedProjectId
       ? chatStore.projects.find(item => item.id === selectedProjectId && !item.archivedAt)
       : undefined
-    return firstUsableWorkspaceDirectory(
+    const wd = firstUsableWorkspaceDirectory(
       conversationProject?.path,
       selectedProject?.path,
       activeProject?.path,
       config.workingDirectory,
     )
+    // When no project is open, fall back to the host's default working
+    // directory (e.g. $HOME) instead of sending an empty string.
+    return wd || defaultWorkingDirectoryRef.current || ''
   }
 
   function handleWorkspaceScroll() {
@@ -3411,7 +3548,7 @@ export function App() {
             }
             rightToolbar={
               <>
-                <TokenRateMeter rate={tokenRate} active={Boolean(runningTurnId)} concurrentRequests={profile.plan?.concurrentRequests} />
+                <TokenRateMeter rate={tokenRate} active={Boolean(runningTurnId)} />
                 <ContextMeter usage={contextUsage} contextWindow={selectedContextWindow} />
                 <ModelSelector
                   models={modelResult.models}

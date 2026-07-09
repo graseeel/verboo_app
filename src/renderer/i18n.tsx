@@ -215,7 +215,7 @@ const enUS: Record<string, string> = {
   'context.aria': 'Context {value}',
   'context.overLimitLabel': 'Context above configured limit',
   'context.overLimitDetail': '{used} of {max} reported by the CLI.',
-  'tokens.rateUnit': 'tk/s',
+  'tokens.rateUnit': 'tok/s',
   'tokens.requestsUnit': 'req/min',
   'tokens.concurrentUnit': 'concurrent',
   'tokens.rateActiveTitle': 'Output tokens per second calculated from CLI usage updates.',
@@ -289,6 +289,7 @@ const enUS: Record<string, string> = {
 
   'transcript.generating': 'generating',
   'transcript.thinking': 'Thinking...',
+  'transcript.thoughtLabel': 'Reasoning',
   'transcript.compacting': 'Compacting context...',
   'transcript.imageReading': 'Reading image...',
   'transcript.worked': 'Worked',
@@ -788,7 +789,7 @@ const ptBR: Record<string, string> = {
   'context.aria': 'Contexto {value}',
   'context.overLimitLabel': 'Contexto acima do limite configurado',
   'context.overLimitDetail': '{used} de {max} reportados pelo CLI.',
-  'tokens.rateUnit': 'tk/s',
+  'tokens.rateUnit': 'tok/s',
   'tokens.requestsUnit': 'req/min',
   'tokens.concurrentUnit': 'concurrent',
   'tokens.rateActiveTitle': 'Tokens de saída por segundo calculados pelas atualizações de uso do CLI.',
@@ -862,6 +863,7 @@ const ptBR: Record<string, string> = {
 
   'transcript.generating': 'gerando',
   'transcript.thinking': 'Pensando...',
+  'transcript.thoughtLabel': 'Raciocínio',
   'transcript.compacting': 'Compactando contexto...',
   'transcript.imageReading': 'Lendo imagem...',
   'transcript.worked': 'Trabalhou',

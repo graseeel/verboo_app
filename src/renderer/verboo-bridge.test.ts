@@ -150,6 +150,8 @@ describe('verboo-bridge — API shape', () => {
       'toggleWindowZoom',
       'listSkills',
       'openUserSkillsFolder',
+      'getDefaultWorkingDirectory',
+      'getBundledCliVersion',
     ] as const
     for (const name of required) {
       expect(typeof (api as Record<string, unknown> | undefined)?.[name]).toBe('function')

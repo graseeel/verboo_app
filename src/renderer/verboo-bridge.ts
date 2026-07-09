@@ -135,6 +135,10 @@ const api = {
     invoke<SkillSummary[]>('list_skills', { workingDirectory }),
   openUserSkillsFolder: () => invoke<string>('open_user_skills_folder'),
 
+  // ── Defaults ────────────────────────────────────────────────
+  getDefaultWorkingDirectory: () => invoke<string>('get_default_working_directory'),
+  getBundledCliVersion: () => invoke<string>('get_bundled_cli_version'),
+
   // ── Workspace ───────────────────────────────────────────────
   getWorkspaceChanges: (workingDirectory: string) =>
     invoke<WorkspaceChangeSummary>('get_workspace_changes', { workingDirectory }),

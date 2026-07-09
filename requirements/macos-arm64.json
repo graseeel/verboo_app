@@ -8,12 +8,6 @@
   },
   "bundledRuntime": [
     {
-      "name": "Electron runtime",
-      "version": "42.5.1",
-      "required": true,
-      "source": "package.json devDependencies.electron"
-    },
-    {
       "name": "@verboo/code",
       "version": "0.10.6",
       "required": true,
@@ -60,7 +54,7 @@
     {
       "name": "Node.js",
       "required": false,
-      "reason": "The packaged app uses the Electron-bundled Node runtime. User-installed Node is left untouched."
+      "reason": "The packaged app resolves a system Node runtime (Homebrew/nvm/PATH) to run the embedded CLI. User-installed Node is left untouched."
     },
     {
       "name": "Global @verboo/code CLI",

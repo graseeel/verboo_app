@@ -38,7 +38,13 @@ const DEFAULT_OAUTH_SCOPES: &[&str] = &[
 ];
 
 /// CLI OAuth credentials parsed from the `verbooOauth` blob.
+///
+/// **Wire format is camelCase** (`accessToken`, `refreshToken`, …) — that is
+/// what the `@verboo/code` CLI reads (`oauthData?.accessToken`). Serializing
+/// snake_case here used to rewrite the Keychain after Desktop refresh and made
+/// the CLI look "logged out" / "apagado" without deleting the binary.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct CliOAuthCredentials {
     pub access_token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,7 +55,8 @@ pub struct CliOAuthCredentials {
     pub scopes: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// CLI field name is `rateLimitTier` (plural).
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "rateLimitTier")]
     pub rate_limit_tier: Option<String>,
 }
 
@@ -128,7 +135,6 @@ pub fn get_access_token() -> Option<String> {
 /// Returns the credentials blob path for Windows/Linux (mirror of the CLI's
 /// own `getStoragePath`).
 fn cli_credentials_file_path() -> Option<std::path::PathBuf> {
-    // VERBOO_CONFIG_DIR overrides the default ~/.verboo.
     if let Ok(dir) = std::env::var("VERBOO_CONFIG_DIR") {
         if !dir.trim().is_empty() {
             return Some(std::path::PathBuf::from(dir).join(".credentials.json"));
@@ -169,7 +175,7 @@ fn write_credentials_to_store(creds: &CliOAuthCredentials) {
         read_file_blob().unwrap_or_else(|| Value::Object(serde_json::Map::new()))
     };
 
-    // Inject the refreshed verbooOauth.
+    // Always write camelCase so the CLI (`accessToken`) keeps working.
     if let Ok(serialized) = serde_json::to_value(creds) {
         if let Some(obj) = blob.as_object_mut() {
             obj.insert("verbooOauth".into(), serialized);
@@ -185,47 +191,56 @@ fn write_credentials_to_store(creds: &CliOAuthCredentials) {
 
 /// Reads the blob from macOS Keychain via `/usr/bin/security
 /// find-generic-password -s "Verboo Code-credentials" -a $USER -w`.
-/// Falls back to no-account lookup if `$USER` matches nothing.
+///
+/// **Never** reads without `-a`: the Desktop also stores a plain `vbk_…` API
+/// key under the same service with account `api-key`. A no-account lookup
+/// returns that first and is not OAuth JSON.
 fn read_keychain_blob() -> Option<Value> {
-    let account = std::env::var("USER").ok();
+    let account = std::env::var("USER")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| std::env::var("LOGNAME").ok().filter(|s| !s.trim().is_empty()))?;
 
-    // Try with account first.
-    if let Some(acc) = account.as_ref() {
-        if let Some(output) = run_security(&[
-            "find-generic-password",
-            "-a",
-            acc,
-            "-w",
-            "-s",
-            KEYCHAIN_SERVICE,
-        ]) {
-            if let Some(v) = parse_json_blob(&output) {
-                return Some(v);
-            }
-        }
-    }
-
-    // Fallback: any account.
-    let output = run_security(&["find-generic-password", "-w", "-s", KEYCHAIN_SERVICE])?;
+    let output = run_security(&[
+        "find-generic-password",
+        "-a",
+        &account,
+        "-w",
+        "-s",
+        KEYCHAIN_SERVICE,
+    ])?;
     parse_json_blob(&output)
 }
 
 /// Writes the blob back to macOS Keychain via `/usr/bin/security
 /// add-generic-password -U -a $USER -s "Verboo Code-credentials" -X <hex>`.
+///
+/// Always scopes to `$USER`/`$LOGNAME` so we never update the Desktop
+/// `api-key` Keychain item that shares this service name.
 fn write_keychain_blob(blob: &Value) -> bool {
     let Ok(json) = serde_json::to_string(blob) else {
         return false;
     };
     let hex = json.bytes().map(|b| format!("{:02x}", b)).collect::<String>();
-    let account = std::env::var("USER").ok();
+    let Some(account) = std::env::var("USER")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| std::env::var("LOGNAME").ok().filter(|s| !s.trim().is_empty()))
+    else {
+        return false;
+    };
 
-    let mut args = vec!["add-generic-password", "-U"];
-    if let Some(acc) = account.as_ref() {
-        args.extend(&["-a", acc]);
-    }
-    args.extend(&["-s", KEYCHAIN_SERVICE, "-X", &hex]);
-
-    run_security(&args).is_some()
+    run_security(&[
+        "add-generic-password",
+        "-U",
+        "-a",
+        &account,
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-X",
+        &hex,
+    ])
+    .is_some()
 }
 
 /// Reads the blob from `~/.verboo/.credentials.json` (plaintext JSON).
@@ -290,30 +305,28 @@ fn parse_json_blob(s: &str) -> Option<Value> {
     serde_json::from_str(trimmed).ok()
 }
 
-/// Looks up a key trying multiple spellings. The current CLI (v0.10.x) writes
-/// the `verbooOauth` blob in **snake_case** (`access_token`, `refresh_token`,
-/// `expires_at`); older builds used camelCase. We try snake_case first, then
-/// camelCase, so both are accepted.
+/// Looks up a key trying multiple spellings. The CLI writes **camelCase**
+/// (`accessToken`); a prior Desktop bug wrote snake_case. Accept both on read.
 fn field<'a>(obj: &'a serde_json::Map<String, Value>, names: &[&str]) -> Option<&'a Value> {
     names.iter().find_map(|n| obj.get(*n))
 }
 
 /// Parses the `verbooOauth` field into typed credentials. Returns None if the
-/// access token is missing or empty. Accepts both snake_case (current CLI) and
-/// camelCase (legacy) key spellings.
+/// access token is missing or empty. Accepts camelCase (CLI) and snake_case
+/// (legacy Desktop write) spellings.
 fn parse_oauth(value: &Value) -> Option<CliOAuthCredentials> {
     let obj = value.as_object()?;
-    let access_token = field(obj, &["access_token", "accessToken"])
+    let access_token = field(obj, &["accessToken", "access_token"])
         .and_then(|v| v.as_str())?;
     if access_token.trim().is_empty() {
         return None;
     }
     Some(CliOAuthCredentials {
         access_token: access_token.to_string(),
-        refresh_token: field(obj, &["refresh_token", "refreshToken"])
+        refresh_token: field(obj, &["refreshToken", "refresh_token"])
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        expires_at: field(obj, &["expires_at", "expiresAt"]).and_then(|v| v.as_u64()),
+        expires_at: field(obj, &["expiresAt", "expires_at"]).and_then(|v| v.as_u64()),
         scopes: field(obj, &["scopes"])
             .and_then(|v| v.as_array())
             .map(|arr| {
@@ -321,10 +334,10 @@ fn parse_oauth(value: &Value) -> Option<CliOAuthCredentials> {
                     .filter_map(|v| v.as_str().map(|s| s.to_string()))
                     .collect()
             }),
-        subscription_type: field(obj, &["subscription_type", "subscriptionType"])
+        subscription_type: field(obj, &["subscriptionType", "subscription_type"])
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        rate_limit_tier: field(obj, &["rate_limit_tier", "rateLimitTier"])
+        rate_limit_tier: field(obj, &["rateLimitTier", "rate_limit_tier", "rateLimitTier"])
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
     })
@@ -565,6 +578,40 @@ mod tests {
     fn parse_json_blob_returns_none_for_invalid_json() {
         let _guard = TEST_MUTEX.lock().unwrap();
         assert!(parse_json_blob("not json").is_none());
+    }
+
+    #[test]
+    fn serialize_oauth_writes_camel_case_for_cli() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        let c = CliOAuthCredentials {
+            access_token: "tok".into(),
+            refresh_token: Some("rt".into()),
+            expires_at: Some(99),
+            scopes: Some(vec!["user:profile".into()]),
+            subscription_type: Some("pro".into()),
+            rate_limit_tier: Some("tier2".into()),
+        };
+        let v = serde_json::to_value(&c).expect("serialize");
+        let obj = v.as_object().expect("object");
+        assert!(obj.contains_key("accessToken"), "CLI requires accessToken, got {obj:?}");
+        assert!(!obj.contains_key("access_token"), "must not write snake_case access_token");
+        assert!(obj.contains_key("refreshToken"));
+        assert!(obj.contains_key("expiresAt"));
+        assert_eq!(obj.get("accessToken").and_then(|x| x.as_str()), Some("tok"));
+    }
+
+    #[test]
+    fn parse_oauth_accepts_legacy_snake_case() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        let v = json!({
+            "access_token": "abc",
+            "refresh_token": "def",
+            "expires_at": 123u64,
+        });
+        let c = parse_oauth(&v).expect("parsed snake_case");
+        assert_eq!(c.access_token, "abc");
+        assert_eq!(c.refresh_token.as_deref(), Some("def"));
+        assert_eq!(c.expires_at, Some(123));
     }
 
     #[test]

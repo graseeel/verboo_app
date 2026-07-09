@@ -170,6 +170,27 @@ if (existsSync(cliMjsPath)) {
   await chmod(cliMjsPath, 0o755);
 }
 
+// 3b. NEVER let the bundled Desktop CLI rewrite the user's global install.
+// Headless `--print` calls startBackgroundHousekeeping → autoUpdateCliInBackground
+// which runs `npm install -g @verboo/code` when baked version < npm latest.
+// That path ignores DISABLE_AUTOUPDATER (≤0.10.7). Patch the bundled copy only
+// (not the user's global CLI) so chat never mutates /opt/homebrew/bin/verboo.
+if (existsSync(cliMjsPath)) {
+  let cliText = await readFile(cliMjsPath, "utf8");
+  const needle = "async function autoUpdateCliInBackground() {";
+  const guard =
+    "async function autoUpdateCliInBackground() {\n  // Desktop bundle: never mutate global/user CLI installs.\n  return;";
+  if (cliText.includes(needle) && !cliText.includes("Desktop bundle: never mutate global/user CLI installs")) {
+    cliText = cliText.replace(needle, guard);
+    await writeFile(cliMjsPath, cliText, "utf8");
+    console.log(`[copy-cli-resource] ✓ Disabled headless autoUpdateCliInBackground in bundled CLI`);
+  } else if (!cliText.includes(needle)) {
+    console.warn(
+      `[copy-cli-resource] WARN: autoUpdateCliInBackground not found — headless global npm install may still run`,
+    );
+  }
+}
+
 // 4. VERIFY the bundle actually runs. Safety net: if any dep is missing,
 //    `node cli.mjs --version` throws ERR_MODULE_NOT_FOUND and we FAIL the build
 //    loudly instead of shipping a silently-broken CLI (the exact bug we hit).

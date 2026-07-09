@@ -326,6 +326,24 @@ fn open_user_skills_folder() -> Result<String, String> {
     Ok(path.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn get_default_working_directory() -> String {
+    // Falls back to $HOME. Used by the renderer when no project is open
+    // (workingDirectoryForConversation returns ''). Multi-user safe — no
+    // dev-machine paths.
+    dirs::home_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| "/".to_string())
+}
+
+/// Returns the version of the bundled `@verboo/code` package (cli-package).
+/// Returns `"unknown"` if the package.json can't be read (e.g., in dev
+/// without a full bundle, or after a broken install).
+#[tauri::command]
+fn get_bundled_cli_version() -> String {
+    crate::services::cli_spawn::bundled_cli_version().unwrap_or_else(|| "unknown".to_string())
+}
+
 // ════════════════════════════════════════════════════════════════════
 // Workspace
 // ════════════════════════════════════════════════════════════════════
@@ -931,6 +949,9 @@ pub fn run() {
             // Skills
             list_skills,
             open_user_skills_folder,
+            // Defaults
+            get_default_working_directory,
+            get_bundled_cli_version,
             // Workspace
             get_workspace_changes,
             get_workspace_branches,

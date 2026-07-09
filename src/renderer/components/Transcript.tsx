@@ -2,7 +2,7 @@ import { CheckCircle2, ChevronDown, ChevronRight, Clock3, FileSearch, FileText, 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { TranscriptItem, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
 import { MarkdownMessage } from '../features/transcript/MarkdownMessage'
-import { StepFlow } from '../features/transcript/StepFlow'
+import { StepFlow, ReasoningContent, findPersistedThinking } from '../features/transcript/StepFlow'
 import { ThinkingIcon } from '../features/transcript/TranscriptIcons'
 import { useI18n, type Translator } from '../i18n'
 
@@ -100,6 +100,10 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, readingImage,
   const label = modelItem?.modelDisplayName ? `Verboo - ${modelItem.modelDisplayName}` : 'Verboo'
   const summary = entry.summary
   const showFlow = streaming || expanded
+  // Persisted thinking block (committed by backend at end-of-turn with the
+  // full reasoning text). Rendered inside showFlow so it appears within the
+  // "Worked" expansion, not as a separate disclosure.
+  const persistedThinking = findPersistedThinking(entry.items)
 
   return (
     <article className="message-row assistant turn-view">
@@ -146,7 +150,7 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, readingImage,
         </div>
       )}
 
-      {showFlow && <StepFlow items={entry.items} streaming={streaming} />}
+      {showFlow && <>{persistedThinking && <ReasoningContent text={persistedThinking.text} />}<StepFlow items={entry.items} streaming={streaming} /></>}
 
       {!streaming && !expanded && finalText && (
         <div className="step-text turn-recap"><MarkdownMessage text={finalText} /></div>
@@ -394,7 +398,7 @@ function turnIdFromText(item: TranscriptItem): string | undefined {
 // segments; legacy persisted turns used a bare `turnId` assistant item, so fall
 // back to the id itself for backward compatibility.
 function turnIdOf(item: TranscriptItem): string | undefined {
-  if (item.kind === 'activity') return turnIdFromActivity(item)
+  if (item.kind === 'activity') return turnIdFromActivity(item) ?? turnIdFromThinking(item)
   if (item.kind === 'summary') return turnIdFromSummary(item)
   if (item.role === 'assistant') return turnIdFromText(item) ?? item.id
   return undefined
@@ -443,6 +447,10 @@ function labelForItem(item: TranscriptItem, t: Translator): string {
 
 function turnIdFromActivity(item: TranscriptItem): string | undefined {
   return item.id.match(/^(.*):activity:\d+$/)?.[1]
+}
+
+function turnIdFromThinking(item: TranscriptItem): string | undefined {
+  return item.id.match(/^(.*):thinking$/)?.[1]
 }
 
 function turnIdFromSummary(item: TranscriptItem): string | undefined {

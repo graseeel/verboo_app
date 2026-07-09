@@ -7,15 +7,22 @@ use crate::models::types::CredentialStatus;
 ///   - Windows: Credential Manager (windows-native)
 ///   - Linux: libsecret (sync-secret-service)
 ///
-/// Service name matches the Electron app's keychain service for CLI OAuth
-/// (`Verboo Code-credentials`), but uses a distinct account (`api-key`) so
-/// both can coexist without collision.
+/// Uses a **Desktop-specific** service name so we never share a Keychain
+/// service with the CLI OAuth blob (`Verboo Code-credentials` / account
+/// `$USER`). A previous shared-service design let no-account lookups return
+/// the plain `vbk_…` key instead of OAuth JSON.
+///
+/// Legacy reads still fall back to the old service+account so existing users
+/// keep their API key without re-entry.
 ///
 /// On Linux, `keyring` v3 requires the `sync-secret-service` feature to be
 /// enabled at build time. The Cargo.toml conditionally enables the right
 /// platform backend.
-const SERVICE_NAME: &str = "Verboo Code-credentials";
+const SERVICE_NAME: &str = "Verboo Code Desktop-api-key";
 const ACCOUNT_NAME: &str = "api-key";
+/// Pre-migration location (shared service with CLI OAuth — do not write here).
+const LEGACY_SERVICE_NAME: &str = "Verboo Code-credentials";
+const LEGACY_ACCOUNT_NAME: &str = "api-key";
 
 pub struct CredentialsStore;
 
@@ -55,6 +62,8 @@ impl CredentialsStore {
         entry
             .set_password(clean)
             .map_err(|e| format!("Falha ao salvar API key: {e}"))?;
+        // Drop legacy shared-service item so CLI OAuth service stays clean.
+        Self::delete_legacy_entry();
         Ok(CredentialStatus {
             has_api_key: true,
             api_key_hint: Some(Self::create_hint(clean)),
@@ -66,6 +75,7 @@ impl CredentialsStore {
             .map_err(|e| format!("Falha ao acessar credential store: {e}"))?;
         // `delete_credential` returns Ok(()) even if the entry doesn't exist.
         let _ = entry.delete_credential();
+        Self::delete_legacy_entry();
         Ok(CredentialStatus {
             has_api_key: false,
             api_key_hint: None,
@@ -77,10 +87,32 @@ impl CredentialsStore {
         let entry = Entry::new(SERVICE_NAME, ACCOUNT_NAME)
             .map_err(|e| format!("Falha ao acessar credential store: {e}"))?;
         match entry.get_password() {
-            Ok(s) if !s.is_empty() => Ok(Some(s)),
-            Ok(_) => Ok(None),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(format!("Falha ao ler API key: {e}")),
+            Ok(s) if !s.is_empty() => return Ok(Some(s)),
+            Ok(_) => {}
+            Err(keyring::Error::NoEntry) => {}
+            Err(e) => return Err(format!("Falha ao ler API key: {e}")),
+        }
+
+        // Migrate once from the old shared Keychain service.
+        if let Some(legacy) = Self::read_legacy_api_key() {
+            let _ = entry.set_password(&legacy);
+            Self::delete_legacy_entry();
+            return Ok(Some(legacy));
+        }
+        Ok(None)
+    }
+
+    fn read_legacy_api_key() -> Option<String> {
+        let entry = Entry::new(LEGACY_SERVICE_NAME, LEGACY_ACCOUNT_NAME).ok()?;
+        match entry.get_password() {
+            Ok(s) if !s.is_empty() && s.starts_with("vbk_") => Some(s),
+            _ => None,
+        }
+    }
+
+    fn delete_legacy_entry() {
+        if let Ok(entry) = Entry::new(LEGACY_SERVICE_NAME, LEGACY_ACCOUNT_NAME) {
+            let _ = entry.delete_credential();
         }
     }
 

@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import type { TranscriptItem, TurnAction } from '../../../shared/types'
+import type { TranscriptItem, TurnAction, TurnBlock } from '../../../shared/types'
 import { useI18n } from '../../i18n'
 import { groupTurnBlocks, summarizeActions } from './turnBlocks'
 import { ActionIcon } from './TranscriptIcons'
 import { CommandBlock } from './CommandBlock'
+import { MarkdownMessage } from './MarkdownMessage'
 import mascotUrl from '../../../../assets/branding/verboo-mascot.png'
 
 export function StepFlow({ items, streaming = false }: { items: TranscriptItem[]; streaming?: boolean }) {
@@ -14,9 +15,42 @@ export function StepFlow({ items, streaming = false }: { items: TranscriptItem[]
   const activeBlockId = streaming && lastBlock?.kind === 'actions' ? lastBlock.id : undefined
   return (
     <div className="step-flow">
-      {blocks.map(block => block.kind === 'text'
-        ? (block.text ? <div key={block.id} className={`step-text ${block.streaming ? 'streaming-text' : ''}`}>{block.text}</div> : null)
-        : <ActionRow key={block.id} actions={block.actions} active={block.id === activeBlockId} />)}
+      {blocks.map(block => {
+        if (block.kind === 'text') {
+          return block.text
+            ? <div key={block.id} className={`step-text ${block.streaming ? 'streaming-text' : ''}`}><MarkdownMessage text={block.text} /></div>
+            : null
+        }
+        if (block.kind === 'thinking') {
+          // Thinking blocks are rendered by ReasoningContent in Transcript.tsx
+          // (inside showFlow) so they appear within the "Worked" expansion.
+          return null
+        }
+        return <ActionRow key={block.id} actions={block.actions} active={block.id === activeBlockId} />
+      })}
+    </div>
+  )
+}
+
+// Extract the persisted thinking block (if any) from a turn's items. Used by
+// Transcript.tsx to render the reasoning content inside showFlow.
+export function findPersistedThinking(items: TranscriptItem[]): Extract<TurnBlock, { kind: 'thinking' }> | undefined {
+  const blocks = groupTurnBlocks(items)
+  return blocks.find((b): b is Extract<TurnBlock, { kind: 'thinking' }> => b.kind === 'thinking')
+}
+
+// Reasoning body — the heading + text rendered inline inside the "Worked"
+// expansion, without a separate toggle. The parent (Transcript.tsx TurnView)
+// controls visibility via its showFlow state.
+export function ReasoningContent({ text }: { text: string }) {
+  // The model sometimes emits its own section heading ("Raciocínio" /
+  // "Reasoning") inside the reasoning text. Strip it so the user doesn't see
+  // a duplicate label now that we removed the UI heading.
+  const clean = text.replace(/^\s*(#*\s*)?(RACIOC[IÍ]NIO|Reasoning|Raciocínio)\s*$/im, '').trim()
+  if (!clean) return null
+  return (
+    <div className="thinking-disclosure-body">
+      <MarkdownMessage text={clean} />
     </div>
   )
 }

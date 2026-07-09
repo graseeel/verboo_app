@@ -147,6 +147,8 @@ impl TurnService {
         //   - `<node> <VERBOO_CLI_PATH>` (dev)
         //   - `verboo` global on PATH (last-resort fallback)
         let spawn = crate::services::cli_spawn::CliSpawn::new(&args);
+        let runtime_label = spawn.runtime.to_string();
+        let working_dir_label = working_directory.clone();
         let mut cmd = spawn.command;
         cmd.current_dir(&working_directory)
             .stdin(Stdio::null())
@@ -160,6 +162,7 @@ impl TurnService {
             cmd.creation_flags(crate::services::child_signal::process_creation_flags());
         }
         let _token_file = inject_api_key(token.as_deref(), &mut cmd);
+        crate::services::auth_token::augment_identity_env(&mut cmd);
 
         let mut child = cmd
             .spawn()
@@ -221,6 +224,8 @@ impl TurnService {
             let _token_file = _token_file;
             let _sleep_guard = sleep_guard;
             let child_handle = child_handle;
+            let runtime_label = runtime_label;
+            let working_dir_label = working_dir_label;
             let reader = BufReader::new(stdout);
             let mut emitted_stream_text = false;
             let mut result_snapshot: Option<AgentResultSnapshot> = None;
@@ -312,15 +317,43 @@ impl TurnService {
                 map.remove(&turn_id_for_stdout);
             }
             // If the turn produced no streamed text and exited abnormally,
-            // surface the CLI's stderr so the failure isn't invisible (this is
-            // what turned bad auth / missing deps into a silent "Worked for 0s").
+            // surface the CLI's stderr / error result so the failure isn't
+            // invisible (this is what turned bad auth / missing deps into a
+            // silent "Worked for 0s").
             if !emitted_stream_text && exit_code != Some(0) {
-                let err = stderr_buf
+                let exit_display = match exit_code {
+                    Some(code) => format!("exit={code}"),
+                    None => "signal".to_string(),
+                };
+                let diagnosis = format!(
+                    "({exit_display}, runtime={runtime_label}, cwd={working_dir_label})"
+                );
+                let stderr_text = stderr_buf
                     .lock()
                     .ok()
                     .map(|b| b.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| "O CLI Verboo encerrou sem produzir resposta.".to_string());
+                    .filter(|s| !s.is_empty());
+                // Prefer structured error from the CLI result payload when present.
+                let result_err = result_snapshot.as_ref().and_then(|snap| {
+                    if snap.is_error.unwrap_or(false) {
+                        snap.errors
+                            .as_ref()
+                            .map(|errs| errs.join("\n"))
+                            .filter(|s| !s.trim().is_empty())
+                    } else {
+                        None
+                    }
+                });
+                let err = match (stderr_text, result_err) {
+                    (Some(stderr), Some(result)) => {
+                        format!("{stderr}\n{result}\n{diagnosis}")
+                    }
+                    (Some(stderr), None) => format!("{stderr}\n{diagnosis}"),
+                    (None, Some(result)) => format!("{result}\n{diagnosis}"),
+                    (None, None) => format!(
+                        "O CLI Verboo encerrou sem produzir resposta. {diagnosis}"
+                    ),
+                };
                 emit_event(
                     &app_for_stdout,
                     AgentEvent {

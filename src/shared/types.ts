@@ -131,6 +131,7 @@ export type TurnAction = { kind: TurnActionKind; label: string; detail?: string;
 
 export type TurnBlock =
   | { kind: 'text'; id: string; text: string; streaming: boolean }
+  | { kind: 'thinking'; id: string; text: string; streaming: boolean }
   | { kind: 'actions'; id: string; actions: TurnAction[] }
 
 export type WorkspaceChangeSummary = {

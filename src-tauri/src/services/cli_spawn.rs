@@ -13,6 +13,8 @@
 //! If neither (1) nor (2) resolves, returns a `verboo` global command and
 //! lets the OS handle PATH. This matches the pre-PASSO-2 behavior.
 
+use std::fmt;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -35,6 +37,30 @@ pub enum CliRuntime {
     EnvNode { node_path: PathBuf, cli_mjs_path: PathBuf },
     /// Spawned `verboo` by name — OS resolves PATH. Last-resort fallback.
     GlobalVerboo,
+}
+
+impl fmt::Display for CliRuntime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CliRuntime::BundledNode { node_path, cli_mjs_path } => {
+                write!(
+                    f,
+                    "bundled-node(node={}, cli={})",
+                    node_path.display(),
+                    cli_mjs_path.display()
+                )
+            }
+            CliRuntime::EnvNode { node_path, cli_mjs_path } => {
+                write!(
+                    f,
+                    "env-node(node={}, cli={})",
+                    node_path.display(),
+                    cli_mjs_path.display()
+                )
+            }
+            CliRuntime::GlobalVerboo => f.write_str("global-verboo(PATH)"),
+        }
+    }
 }
 
 impl CliSpawn {
@@ -61,6 +87,7 @@ impl CliSpawn {
                         command.arg(a);
                     }
                     augment_path_env(&mut command);
+                    protect_user_cli_env(&mut command);
                     return CliSpawn {
                         command,
                         runtime: CliRuntime::EnvNode { node_path, cli_mjs_path: cli_mjs },
@@ -78,6 +105,7 @@ impl CliSpawn {
                     command.arg(a);
                 }
                 augment_path_env(&mut command);
+                protect_user_cli_env(&mut command);
                 return CliSpawn {
                     command,
                     runtime: CliRuntime::BundledNode { node_path, cli_mjs_path: cli_mjs },
@@ -91,6 +119,7 @@ impl CliSpawn {
             command.arg(a);
         }
         augment_path_env(&mut command);
+        protect_user_cli_env(&mut command);
         CliSpawn {
             command,
             runtime: CliRuntime::GlobalVerboo,
@@ -129,6 +158,22 @@ fn find_bundled_cli_mjs() -> Option<PathBuf> {
     None
 }
 
+/// Reads the version string from the bundled `cli-package/package.json`.
+/// Returns `None` if the bundled package is not found or can't be parsed
+/// (e.g., development environments where only cli.mjs is available).
+pub fn bundled_cli_version() -> Option<String> {
+    let cli_mjs = find_bundled_cli_mjs()?;
+    // cli-mjs is at <package>/dist/cli.mjs → parent/dist/ → parent/
+    let pkg_dir = cli_mjs.parent()?.parent()?;
+    let pkg_json = pkg_dir.join("package.json");
+    if !pkg_json.exists() {
+        return None;
+    }
+    let text = fs::read_to_string(pkg_json).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value.get("version")?.as_str().map(|s| s.to_string())
+}
+
 /// Augments the spawned child's PATH with platform-specific tool directories
 /// (Homebrew, Cargo, nvm, etc.). The packaged .app doesn't inherit a useful
 /// PATH from the launcher, so children need this help. Mirrors Electron's
@@ -148,6 +193,20 @@ fn augment_path_env(command: &mut Command) {
 
     let new_path = std::env::join_paths(entries.iter()).unwrap_or(existing);
     command.env("PATH", new_path);
+}
+
+/// Policy: Desktop must **never** mutate the user's global `@verboo/code` install.
+///
+/// The headless `--print` path starts `autoUpdateCliInBackground()`, which can
+/// run `npm install -g @verboo/code` mid-chat when the baked version is older
+/// than npm `latest`. That rewrites `/opt/homebrew/bin/verboo` and looks like
+/// the CLI was "apagado".
+///
+/// `DISABLE_AUTOUPDATER=1` is honored by the interactive AutoUpdater. The
+/// headless background path (≤0.10.7) still ignores it — the bundled
+/// `cli-package` is also patched at build time in `copy-cli-resource.mjs`.
+fn protect_user_cli_env(command: &mut Command) {
+    command.env("DISABLE_AUTOUPDATER", "1");
 }
 
 #[cfg(test)]
@@ -174,5 +233,23 @@ mod tests {
         let a = CliRuntime::GlobalVerboo;
         let b = CliRuntime::GlobalVerboo;
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn display_runtime_global_verboo() {
+        let r = CliRuntime::GlobalVerboo;
+        assert_eq!(r.to_string(), "global-verboo(PATH)");
+    }
+
+    #[test]
+    fn display_runtime_bundled_node() {
+        let r = CliRuntime::BundledNode {
+            node_path: PathBuf::from("/usr/local/bin/node"),
+            cli_mjs_path: PathBuf::from("/app/Resources/cli.mjs"),
+        };
+        let s = r.to_string();
+        assert!(s.contains("bundled-node"));
+        assert!(s.contains("/usr/local/bin/node"));
+        assert!(s.contains("/app/Resources/cli.mjs"));
     }
 }

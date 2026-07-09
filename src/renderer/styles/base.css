@@ -25,9 +25,17 @@
   --review-width: 0px;
   /* Shared by the transcript lane and the composer so messages line up exactly
      with the composer edges (same max width, same centered axis). */
+  /* Shared width for transcript + composer so both share one vertical axis. */
   --chat-lane-width: 840px;
-  --chat-lane-gutter: 56px;
-  --composer-clearance: 156px;
+  /* Composer is intentionally wider than the transcript lane so the input
+     field's outer edges extend past message bubbles — compensates for the
+     composer's internal padding + border that otherwise makes it read as
+     narrower than the messages it sits under. Transcript width is INTACT. */
+  --composer-lane-width: calc(var(--chat-lane-width) + 48px);
+  /* Horizontal inset inside the dock area so composer width tracks the
+     padded transcript column (slightly roomier than 56px → wider composer). */
+  --chat-lane-gutter: 40px;
+  --composer-clearance: 168px;
   --shimmer-duration: 4s;
   --shimmer-spread: 7rem;
   --shimmer-color: color-mix(in srgb, var(--accent-strong) 54%, white 46%);
