@@ -202,26 +202,37 @@ jobs:
             find src-tauri/target -type d -name bundle 2>/dev/null | head -20 || true
             exit 1
           fi
-          # Collect installers (skip raw .app directory trees — prefer dmg).
-          mapfile -t FILES < <(
+          # Collect installers (skip raw .app trees — prefer dmg/zip).
+          # Use portable bash (macOS runners ship bash 3.2 — no mapfile).
+          FILES=$(
             find "$BUNDLE_ROOT" -type f \( \
               -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' -o \
               -name '*.exe' -o -name '*.msi' -o -name '*.rpm' -o -name '*.zip' \
             \) 2>/dev/null | sort -u
           )
-          if [ "${#FILES[@]}" -eq 0 ]; then
+          if [ -z "$FILES" ]; then
             echo "::error::No installer files under $BUNDLE_ROOT"
             find "$BUNDLE_ROOT" -maxdepth 3 -type f 2>/dev/null | head -50 || true
             exit 1
           fi
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            CREATE_FLAGS=(--title "Verboo Code ${TAG#v}" --notes "Tauri build $TAG")
-            if [ "${{ needs.resolve-tag.outputs.is_prerelease }}" = "true" ]; then
-              CREATE_FLAGS+=(--prerelease)
+          if ! command -v gh >/dev/null 2>&1; then
+            # Ensure GitHub CLI is available for release upload.
+            if [ "$(uname -s)" = "Darwin" ]; then
+              brew install gh
+            else
+              echo "::error::gh CLI not found"
+              exit 1
             fi
-            gh release create "$TAG" "${CREATE_FLAGS[@]}"
           fi
-          for f in "${FILES[@]}"; do
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            if [ "${{ needs.resolve-tag.outputs.is_prerelease }}" = "true" ]; then
+              gh release create "$TAG" --title "Verboo Code ${TAG#v}" --prerelease --notes "Tauri build $TAG"
+            else
+              gh release create "$TAG" --title "Verboo Code ${TAG#v}" --notes "Tauri build $TAG"
+            fi
+          fi
+          echo "$FILES" | while IFS= read -r f; do
+            [ -z "$f" ] && continue
             echo "Uploading $f"
             gh release upload "$TAG" "$f" --clobber
           done
