@@ -1,8 +1,8 @@
 import { Check, ChevronDown, Eye, RefreshCw, Search } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import type { ModelDiscoveryResult, VerbooModel } from '../../../shared/types'
-import { useOutsideDismiss } from '../../hooks/useOutsideDismiss'
 import { formatCompactNumber, useI18n } from '../../i18n'
 import { ModelIcon } from './ModelIcon'
 
@@ -22,7 +22,10 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [highlighted, setHighlighted] = useState(0)
+  const [menuPos, setMenuPos] = useState<{ bottom: number; right: number } | null>(null)
   const wrapRef = useRef<HTMLDivElement | null>(null)
+  const pillRef = useRef<HTMLButtonElement | null>(null)
+  const menuRef = useRef<HTMLDivElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
   const selected = models.find(model => model.id === selectedModel)
   const showSearch = models.length > SEARCH_THRESHOLD
@@ -39,7 +42,26 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
   const activeIndex = flat.length ? Math.min(highlighted, flat.length - 1) : 0
   const selectedTone = selected ? modelToneStyle(selected.id) : undefined
   const statusMessage = modelStatusMessage(modelResult, t)
-  useOutsideDismiss(wrapRef, open, () => setOpen(false))
+  // Portal sits outside wrapRef — treat pill + menu as the dismiss boundary.
+  useEffect(() => {
+    if (!open) return
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (wrapRef.current?.contains(target)) return
+      if (menuRef.current?.contains(target)) return
+      setOpen(false)
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('pointerdown', handlePointerDown, true)
+    document.addEventListener('keydown', handleKeyDown, true)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true)
+      document.removeEventListener('keydown', handleKeyDown, true)
+    }
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -47,6 +69,31 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
     setHighlighted(Math.max(0, flat.findIndex(model => model.id === selectedModel)))
     searchRef.current?.focus()
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  // Portal to document.body so `.composer { overflow: hidden }` cannot clip the
+  // upward menu into a micro-pill. Anchor ABOVE the pill (CSS `bottom` + `right`).
+  useLayoutEffect(() => {
+    if (!open) {
+      setMenuPos(null)
+      return
+    }
+    const pill = pillRef.current
+    if (!pill) return
+    const compute = () => {
+      const rect = pill.getBoundingClientRect()
+      setMenuPos({
+        bottom: window.innerHeight - rect.top + 10,
+        right: Math.max(8, window.innerWidth - rect.right),
+      })
+    }
+    compute()
+    window.addEventListener('resize', compute)
+    window.addEventListener('scroll', compute, true)
+    return () => {
+      window.removeEventListener('resize', compute)
+      window.removeEventListener('scroll', compute, true)
+    }
   }, [open])
 
   function choose(model: VerbooModel) {
@@ -71,7 +118,7 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
 
   return (
     <div className="selector-wrap" ref={wrapRef}>
-      <button className="composer-pill model-pill" style={selectedTone} type="button" onClick={() => setOpen(value => !value)}>
+      <button ref={pillRef} className="composer-pill model-pill" style={selectedTone} type="button" onClick={() => setOpen(value => !value)}>
         <span className="model-pill-icon" aria-hidden="true">
           {selected ? <ModelIcon modelId={selected.id} displayName={selected.displayName} size={15} /> : <ModelIcon modelId="" size={15} />}
         </span>
@@ -79,8 +126,19 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
         <ChevronDown size={14} />
       </button>
 
-      {open && (
-        <div className="model-menu popover-panel t-dropdown is-open" data-origin="bottom-right">
+      {open && menuPos && createPortal(
+        <div
+          ref={menuRef}
+          className="model-menu popover-panel t-dropdown is-open model-menu-portal"
+          data-origin="bottom-right"
+          style={{
+            position: 'fixed',
+            bottom: `${menuPos.bottom}px`,
+            right: `${menuPos.right}px`,
+            top: 'auto',
+            left: 'auto',
+          }}
+        >
           <div className="popover-title">
             <span>{t('model.label')}</span>
             <button className="icon-button tiny" type="button" onClick={onRefresh} title={t('model.refresh')}>
@@ -157,7 +215,8 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
               </div>
             ))
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )

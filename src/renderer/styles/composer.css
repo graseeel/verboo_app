@@ -745,9 +745,21 @@
   bottom: calc(100% + 10px);
   right: 0;
   width: min(420px, calc(100vw - 32px));
+  min-width: min(360px, calc(100vw - 32px));
   max-height: 460px;
   overflow: auto;
   padding: 8px;
+}
+
+/* Portaled above the composer so overflow:hidden cannot shrink the menu. */
+.model-menu.model-menu-portal {
+  z-index: 10000;
+  width: min(420px, calc(100vw - 24px));
+  min-width: min(360px, calc(100vw - 24px));
+  max-height: min(460px, calc(100vh - 120px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .access-menu {

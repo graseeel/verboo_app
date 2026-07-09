@@ -246,15 +246,49 @@ fn get_user_settings(store: tauri::State<'_, SettingsStore>) -> Result<UserSetti
 fn update_user_settings(
     patch: serde_json::Value,
     store: tauri::State<'_, SettingsStore>,
+    tray: tauri::State<'_, crate::services::tray_service::TrayService>,
+    updates: tauri::State<'_, crate::services::update_service::UpdateService>,
+    app: tauri::AppHandle,
 ) -> Result<UserSettings, String> {
-    store.update(patch)
+    let next = store.update(patch)?;
+    apply_runtime_settings(&next, &tray, &updates, &app);
+    Ok(next)
 }
 
 #[tauri::command]
 fn reset_user_settings(
     store: tauri::State<'_, SettingsStore>,
+    tray: tauri::State<'_, crate::services::tray_service::TrayService>,
+    updates: tauri::State<'_, crate::services::update_service::UpdateService>,
+    app: tauri::AppHandle,
 ) -> Result<UserSettings, String> {
-    store.reset()
+    let next = store.reset()?;
+    // Reset must also re-apply side effects (tray visible again, update flags).
+    apply_runtime_settings(&next, &tray, &updates, &app);
+    Ok(next)
+}
+
+/// Push settings into live runtime services (tray visibility/title + updater).
+fn apply_runtime_settings(
+    next: &UserSettings,
+    tray: &crate::services::tray_service::TrayService,
+    updates: &crate::services::update_service::UpdateService,
+    app: &tauri::AppHandle,
+) {
+    tray.configure(next);
+    let _ = updates.configure(next.updates.clone());
+    if let Some(icon) = app.tray_by_id("verboo-main") {
+        let _ = icon.set_visible(next.show_in_menu_bar);
+        #[cfg(target_os = "macos")]
+        {
+            if next.show_in_menu_bar && next.show_menu_bar_text {
+                let title = tray.title();
+                let _ = icon.set_title(Some(title.as_str()));
+            } else {
+                let _ = icon.set_title(Some(""));
+            }
+        }
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -268,6 +302,36 @@ fn update_menu_bar(
 ) -> Result<bool, String> {
     let (_exec, _label) = tray.update_menu_bar(state);
     Ok(true)
+}
+
+/// Force the tray to Idle. Called by the renderer on turn `done` / `error` /
+/// abort so a lagging `thinking` event (or the 2.5s heartbeat re-pushing a
+/// stale `menuBarStateRef`) can never resurrect a completed turn's timer.
+#[tauri::command]
+fn force_idle_menu_bar(
+    tray: tauri::State<'_, crate::services::tray_service::TrayService>,
+) -> Result<bool, String> {
+    tray.force_idle();
+    Ok(true)
+}
+
+/// Heartbeat query: returns the current execution state so the renderer can
+/// stop re-pushing a stale `menuBarStateRef` every 2.5s (which was the root
+/// cause of the "timer never stops" bug). If the state has been active for
+/// more than 5 minutes without a renderer push, the Rust side auto-resets
+/// to Idle. Returns the (possibly freshly-reset) execution string.
+#[tauri::command]
+fn heartbeat_menu_bar(
+    tray: tauri::State<'_, crate::services::tray_service::TrayService>,
+) -> Result<String, String> {
+    Ok(match tray.heartbeat() {
+        crate::services::tray_service::TrayExecution::Idle => "idle",
+        crate::services::tray_service::TrayExecution::Thinking => "thinking",
+        crate::services::tray_service::TrayExecution::Tool => "tool",
+        crate::services::tray_service::TrayExecution::Permission => "permission",
+        crate::services::tray_service::TrayExecution::Done => "done",
+        crate::services::tray_service::TrayExecution::Error => "error",
+    }.to_string())
 }
 
 /// Pre-renders the Verboo mascot into the tray "breathing" frames, mirroring
@@ -827,6 +891,19 @@ pub fn run() {
             // the "breathing" mascot icon (set_icon per frame), + 3.5s
             // auto-reset. Background thread so it doesn't compete with the UI.
             // Mirrors Electron's trayStatusService ticker.
+            // Load initial settings so show_in_menu_bar + update toggles are
+            // respected from first paint (not only after the user flips them).
+            if let Ok(settings) = app.state::<SettingsStore>().get() {
+                app.state::<crate::services::tray_service::TrayService>()
+                    .configure(&settings);
+                let _ = app
+                    .state::<crate::services::update_service::UpdateService>()
+                    .configure(settings.updates.clone());
+                if let Some(ref icon) = tray {
+                    let _ = icon.set_visible(settings.show_in_menu_bar);
+                }
+            }
+
             if let Some(tray_icon) = tray.clone() {
                 let tray_service = app
                     .state::<crate::services::tray_service::TrayService>()
@@ -835,35 +912,42 @@ pub fn run() {
                 let frames = mascot_frames;
                 std::thread::spawn(move || {
                     let mut last_tick = std::time::Instant::now();
-                    let mut last_icon_size = 18usize;
+                    let mut last_icon_idx = 0usize;
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(250));
-                        let now = std::time::Instant::now();
                         // Auto-reset on Done/Error after 3.5s.
                         if tray_service.should_reset() {
                             tray_service.reset_to_idle();
                         }
-                        // Tick the spinner frame + refresh the title text.
-                        if tray_service.tick() || last_tick.elapsed() >= std::time::Duration::from_millis(1000) {
-                            last_tick = now;
-                            let title = tray_service.title();
-                            // macOS-only: shows text next to the icon. No-op elsewhere.
+                        // Honor settings: hide tray entirely when disabled.
+                        let enabled = tray_service.is_enabled();
+                        let _ = tray_icon.set_visible(enabled);
+                        if !enabled {
+                            continue;
+                        }
+                        // Advance breathing frame (icon only — no title thrash).
+                        let _ = tray_service.tick();
+                        // Refresh title at most once per second, and only when
+                        // the string actually changed (elapsed unit rollover).
+                        if last_tick.elapsed() >= std::time::Duration::from_millis(1000) {
+                            last_tick = std::time::Instant::now();
                             #[cfg(target_os = "macos")]
                             {
-                                let _ = tray_icon.set_title(Some(title.as_str()));
+                                if let Some(title) = tray_service.take_title_if_changed() {
+                                    let _ = tray_icon.set_title(Some(title.as_str()));
+                                }
                             }
                         }
-                        // Breathing mascot: swap the icon frame when its size
-                        // changes (18 = neutral/idle, 17/16 = the pulse).
+                        // Breathing mascot: constant-size frames, swap by index.
                         if !frames.is_empty() {
                             let size = tray_service.icon_frame();
-                            if size != last_icon_size {
-                                last_icon_size = size;
-                                let idx = match size {
-                                    17 => 1,
-                                    16 => 2,
-                                    _ => 0,
-                                };
+                            let idx = match size {
+                                17 => 1,
+                                16 => 2,
+                                _ => 0,
+                            };
+                            if idx != last_icon_idx {
+                                last_icon_idx = idx;
                                 if let Some(frame) = frames.get(idx) {
                                     let _ = tray_icon.set_icon(Some(frame.clone()));
                                 }
@@ -946,6 +1030,8 @@ pub fn run() {
             reset_user_settings,
             // Menu bar
             update_menu_bar,
+            force_idle_menu_bar,
+            heartbeat_menu_bar,
             // Skills
             list_skills,
             open_user_skills_folder,

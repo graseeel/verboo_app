@@ -105,21 +105,30 @@ pub struct TrayService {
 #[derive(Debug, Clone)]
 struct State {
     enabled: bool,
+    show_text: bool,
     execution: TrayExecution,
     label: Option<String>,
     last_change_at: Option<Instant>,
+    last_pushed_at: Option<Instant>,
     frame_index: usize,
+    /// Last title string pushed to the OS — skip set_title when unchanged
+    /// (prevents menu-bar text jitter when the ticker fires every 250ms).
+    last_title: Option<String>,
 }
 
 impl TrayService {
     pub fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(State {
-                enabled: false,
+                // Default true until settings are applied at startup (matches UI default).
+                enabled: true,
+                show_text: true,
                 execution: TrayExecution::Idle,
                 label: None,
                 last_change_at: None,
+                last_pushed_at: None,
                 frame_index: 0,
+                last_title: None,
             })),
         }
     }
@@ -134,6 +143,9 @@ impl TrayService {
     pub fn configure(&self, settings: &UserSettings) {
         if let Ok(mut state) = self.state.lock() {
             state.enabled = settings.show_in_menu_bar;
+            state.show_text = settings.show_menu_bar_text;
+            // Force title recompute after settings change.
+            state.last_title = None;
         }
     }
 
@@ -142,6 +154,14 @@ impl TrayService {
         self.state
             .lock()
             .map(|s| s.enabled)
+            .unwrap_or(false)
+    }
+
+    /// Whether the macOS status-item title text should be shown.
+    pub fn show_text(&self) -> bool {
+        self.state
+            .lock()
+            .map(|s| s.show_text && s.enabled)
             .unwrap_or(false)
     }
 
@@ -155,11 +175,40 @@ impl TrayService {
                 state.execution = new_exec;
                 state.last_change_at = Some(Instant::now());
                 state.frame_index = 0;
+                state.last_title = None;
+            } else if new_exec == TrayExecution::Idle {
+                // Always re-anchor idle so a stuck timer cannot keep counting
+                // after the renderer has already reported idle.
+                state.last_change_at = Some(Instant::now());
             }
+            state.last_pushed_at = Some(Instant::now());
+            // Prefer an explicit idle label; while active keep the state name
+            // (ignore model/context fields — they were thrashing the title).
             state.label = mb_state.label.clone();
             return (state.execution, state.label.clone());
         }
         (TrayExecution::Idle, None)
+    }
+
+    /// Returns `Some(title)` only when the title string changed since the last
+    /// call — callers should skip `set_title` when this returns `None`.
+    pub fn take_title_if_changed(&self) -> Option<String> {
+        let next = self.title();
+        let Ok(mut state) = self.state.lock() else {
+            return Some(next);
+        };
+        if !state.enabled || !state.show_text {
+            if state.last_title.as_deref() == Some("") {
+                return None;
+            }
+            state.last_title = Some(String::new());
+            return Some(String::new());
+        }
+        if state.last_title.as_ref() == Some(&next) {
+            return None;
+        }
+        state.last_title = Some(next.clone());
+        Some(next)
     }
 
     /// Returns the current execution state.
@@ -259,6 +308,44 @@ impl TrayService {
             state.execution = TrayExecution::Idle;
             state.last_change_at = Some(Instant::now());
             state.frame_index = 0;
+            state.last_title = None;
+        }
+    }
+
+    /// Force the tray to Idle unconditionally. Idempotent — safe to call
+    /// multiple times. Used by the renderer on turn `done` / `error` / abort
+    /// so a lagging `thinking` event can never resurrect a dead timer.
+    pub fn force_idle(&self) {
+        self.reset_to_idle();
+    }
+
+    /// Heartbeat query: returns the current execution state. If the state
+    /// has been active (`Thinking|Tool|Permission`) for more than
+    /// `STALE_THRESHOLD` without a renderer push, auto-resets to Idle and
+    /// returns Idle. The renderer should call this on its 2.5s heartbeat
+    /// instead of re-pushing a stale `menuBarStateRef` (which could resurrect
+    /// a completed turn's timer).
+    pub fn heartbeat(&self) -> TrayExecution {
+        const STALE_THRESHOLD: Duration = Duration::from_secs(300);
+        if let Ok(mut state) = self.state.lock() {
+            let is_active = matches!(
+                state.execution,
+                TrayExecution::Thinking | TrayExecution::Tool | TrayExecution::Permission
+            );
+            let stale = is_active
+                && state
+                    .last_pushed_at
+                    .map(|t| t.elapsed() >= STALE_THRESHOLD)
+                    .unwrap_or(false);
+            if stale {
+                state.execution = TrayExecution::Idle;
+                state.last_change_at = Some(Instant::now());
+                state.frame_index = 0;
+                state.last_title = None;
+            }
+            state.execution
+        } else {
+            TrayExecution::Idle
         }
     }
 }
@@ -442,6 +529,10 @@ mod tests {
     #[test]
     fn configure_enables_tray_when_setting_true() {
         let service = TrayService::new();
+        // Default is enabled (matches UI default) until settings load.
+        assert!(service.is_enabled());
+        // Round-trip: off then on again must stick.
+        service.configure(&settings(false));
         assert!(!service.is_enabled());
         service.configure(&settings(true));
         assert!(service.is_enabled());
@@ -525,5 +616,118 @@ mod tests {
         let service = TrayService::new();
         service.update_menu_bar(menu_bar("idle"));
         assert_eq!(service.title(), "Verboo ready");
+    }
+
+    #[test]
+    fn force_idle_is_idempotent() {
+        // Regression for BUG 2b: force_idle must clear the timer no matter
+        // what state the tray was in, and must be safe to call multiple times.
+        let service = TrayService::new();
+        service.update_menu_bar(menu_bar("thinking"));
+        service.force_idle();
+        assert_eq!(service.execution(), TrayExecution::Idle);
+        // Second call is a no-op (already idle) — must not panic.
+        service.force_idle();
+        service.force_idle();
+        assert_eq!(service.execution(), TrayExecution::Idle);
+    }
+
+    #[test]
+    fn force_idle_clears_title_so_next_render_pushes() {
+        // force_idle must reset last_title so the next tick re-pushes the
+        // idle title (otherwise the stale "thinking 5s" stays on screen).
+        let service = TrayService::new();
+        service.update_menu_bar(menu_bar("thinking"));
+        // Simulate the tick loop capturing the title.
+        let _ = service.title();
+        let _ = service.take_title_if_changed();
+        service.force_idle();
+        // After force_idle, take_title_if_changed must return Some (the idle
+        // title) so the caller re-pushes it to the OS.
+        let next = service.take_title_if_changed();
+        assert!(next.is_some());
+        assert_eq!(next.unwrap(), "Verboo ready");
+    }
+
+    #[test]
+    fn heartbeat_returns_idle_when_idle() {
+        let service = TrayService::new();
+        service.update_menu_bar(menu_bar("idle"));
+        assert_eq!(service.heartbeat(), TrayExecution::Idle);
+    }
+
+    #[test]
+    fn heartbeat_auto_resets_stale_active_state() {
+        // Regression for BUG 2b: if the tray has been "thinking" for >5min
+        // without a renderer push, the heartbeat must auto-reset to idle so
+        // the timer cannot count forever after a completed turn.
+        let service = TrayService::new();
+        service.update_menu_bar(menu_bar("thinking"));
+        // Backdate last_pushed_at to simulate 6 minutes without a push.
+        {
+            let mut state = service.state.lock().unwrap();
+            state.last_pushed_at = Some(Instant::now() - Duration::from_secs(360));
+        }
+        let exec = service.heartbeat();
+        assert_eq!(exec, TrayExecution::Idle);
+        // State must be persisted — a subsequent heartbeat also returns Idle.
+        assert_eq!(service.heartbeat(), TrayExecution::Idle);
+    }
+
+    #[test]
+    fn heartbeat_does_not_reset_fresh_active_state() {
+        // A genuinely active turn (pushed recently) must not be reset.
+        let service = TrayService::new();
+        service.update_menu_bar(menu_bar("thinking"));
+        // No backdating — last_pushed_at is ~now.
+        assert_eq!(service.heartbeat(), TrayExecution::Thinking);
+    }
+
+    #[test]
+    fn heartbeat_auto_reset_clears_title_for_repush() {
+        let service = TrayService::new();
+        service.update_menu_bar(menu_bar("thinking"));
+        let _ = service.take_title_if_changed(); // capture "thinking" title
+        {
+            let mut state = service.state.lock().unwrap();
+            state.last_pushed_at = Some(Instant::now() - Duration::from_secs(360));
+        }
+        let _ = service.heartbeat();
+        // After auto-reset, the idle title must be available for re-push.
+        let next = service.take_title_if_changed();
+        assert!(next.is_some());
+        assert_eq!(next.unwrap(), "Verboo ready");
+    }
+
+    #[test]
+    fn configure_sets_show_text_from_settings() {
+        // Regression for BUG 3b: show_menu_bar_text must be honored.
+        let service = TrayService::new();
+        let mut s = settings(true);
+        s.show_menu_bar_text = false;
+        service.configure(&s);
+        assert!(service.is_enabled());
+        assert!(!service.show_text());
+        s.show_menu_bar_text = true;
+        service.configure(&s);
+        assert!(service.show_text());
+    }
+
+    #[test]
+    fn take_title_if_changed_suppresses_repeats() {
+        // Regression for BUG 2a: the tick loop must NOT call set_title when
+        // the string hasn't changed (prevents menu-bar jitter every 250ms).
+        let service = TrayService::new();
+        service.update_menu_bar(menu_bar("idle"));
+        let first = service.take_title_if_changed();
+        assert!(first.is_some()); // initial push
+        // Immediately again — string unchanged, must return None.
+        let second = service.take_title_if_changed();
+        assert!(second.is_none());
+        // After a state change, a new title must be returned.
+        service.update_menu_bar(menu_bar("error"));
+        let third = service.take_title_if_changed();
+        assert!(third.is_some());
+        assert_eq!(third.unwrap(), "Verboo error");
     }
 }

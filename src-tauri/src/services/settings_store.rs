@@ -156,11 +156,14 @@ impl SettingsStore {
                 max_elapsed_minutes: s.goal_mode.max_elapsed_minutes.clamp(1, 240),
                 allow_auto_access: s.goal_mode.allow_auto_access,
             },
-            // Mirror Electron's normalizeUpdateSettings: force beta + auto.
+            // Channel is locked to beta while stable builds are not published
+            // (Settings UI disables the stable chip). auto_check / auto_download
+            // MUST honor the user's toggle — forcing them true made the Updates
+            // toggles look broken (UI flipped, next get() snapped back on).
             updates: crate::models::types::UpdateSettings {
                 channel: crate::models::types::UpdateChannel::Beta,
-                auto_check: true,
-                auto_download: true,
+                auto_check: s.updates.auto_check,
+                auto_download: s.updates.auto_download,
             },
         }
     }
@@ -285,5 +288,42 @@ mod tests {
         let patch = json!("not-an-object");
         let result = store.update(patch);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn update_auto_check_toggle_is_honored() {
+        // Regression: normalize used to force auto_check/auto_download true,
+        // so the Settings → Updates toggles could never turn off.
+        let store = temp_store();
+        let updated = store
+            .update(json!({
+                "updates": { "autoCheck": false, "autoDownload": false }
+            }))
+            .unwrap();
+        assert!(!updated.updates.auto_check);
+        assert!(!updated.updates.auto_download);
+        // Channel still forced to beta (stable not published yet).
+        assert_eq!(
+            updated.updates.channel,
+            crate::models::types::UpdateChannel::Beta
+        );
+        // Re-read from disk/cache must keep the user's choice.
+        let again = store.get().unwrap();
+        assert!(!again.updates.auto_check);
+        assert!(!again.updates.auto_download);
+    }
+
+    #[test]
+    fn update_show_in_menu_bar_toggle_is_honored() {
+        let store = temp_store();
+        let updated = store
+            .update(json!({ "showInMenuBar": false }))
+            .unwrap();
+        assert!(!updated.show_in_menu_bar);
+        assert!(!store.get().unwrap().show_in_menu_bar);
+        let restored = store
+            .update(json!({ "showInMenuBar": true }))
+            .unwrap();
+        assert!(restored.show_in_menu_bar);
     }
 }

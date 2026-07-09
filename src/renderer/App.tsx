@@ -1162,6 +1162,9 @@ export function App() {
       setRunningTurnId(undefined)
       setRunningConversations(prev => { const next = new Set(prev); next.delete(conversationId); return next })
       setTokenRate(undefined)
+      // Force the tray to idle so a lagging 'thinking' event can never
+      // resurrect the timer after the turn has errored out.
+      void window.verboo.forceIdleMenuBar()
       setThinkingTurnId(current => (current === event.turnId ? undefined : current))
       setThinkingSnippets([])
       setCompactingTurnId(current => (current === event.turnId ? undefined : current))
@@ -1237,6 +1240,9 @@ export function App() {
       setRunningTurnId(undefined)
       setRunningConversations(prev => { const next = new Set(prev); next.delete(conversationId); return next })
       setTokenRate(undefined)
+      // Force the tray to idle so a lagging 'thinking' event can never
+      // resurrect the timer after the turn has completed.
+      void window.verboo.forceIdleMenuBar()
       setThinkingTurnId(current => (current === event.turnId ? undefined : current))
       setThinkingSnippets([])
       setCompactingTurnId(current => (current === event.turnId ? undefined : current))
@@ -1970,6 +1976,11 @@ export function App() {
     }
 
     if (command.action === 'resume') {
+      if (!userSettings.goalMode.enabled) {
+        const conversationId = ensureActiveConversation()
+        appendConversationItem(conversationId, goalSystemMessage(t('settings.goalModeBody')))
+        return
+      }
       setGoal(current => {
         if (!current || (current.status !== 'paused' && current.status !== 'blocked' && current.status !== 'budget_limited')) return current
         const resumed: GoalState = { ...current, status: 'active', noProgressCount: 0 }
@@ -1989,6 +2000,13 @@ export function App() {
     }
 
     if (command.action === 'start' && command.objective) {
+      if (!userSettings.goalMode.enabled) {
+        const conversationId = ensureActiveConversation()
+        appendConversationItem(conversationId, goalSystemMessage(
+          `${t('settings.goalMode')}: ${t('settings.goalModeBody')}`,
+        ))
+        return
+      }
       goalAbortRef.current?.abort()
 
       const conversationId = ensureActiveConversation()
@@ -1998,13 +2016,21 @@ export function App() {
       setGoalBarStatus({ kind: 'idle' })
       goalSessionId.current = undefined
 
+      // Prefer settings when auto-access is on: use 'auto' for the goal loop so
+      // continuations don't stop on every shell/file permission prompt.
+      const goalAccessMode = userSettings.goalMode.allowAutoAccess
+        ? (accessMode === 'full' && userSettings.fullAccessEnabled ? 'full' as const : 'auto' as const)
+        : accessMode
+
       const goalState = createGoalState({
         objective: command.objective,
-        accessMode, // any mode, incl. 'full'; continueGoal downgrades to 'approval' unless full access is enabled in settings
+        accessMode: goalAccessMode, // continueGoal downgrades 'full' unless full access is enabled
         modelId: selectedModel,
         modelDisplayName: selectedModelInfo?.displayName,
         workingDirectory: wd,
         skills: selectedSkills,
+        maxTurns: userSettings.goalMode.maxTurns,
+        maxElapsedMinutes: userSettings.goalMode.maxElapsedMinutes,
       })
 
       appendConversationItem(conversationId, goalSystemMessage(`Objetivo iniciado: ${command.objective}`))
@@ -2089,6 +2115,12 @@ export function App() {
         appendDowngradeActivity(conversationId)
 
         const goalLanguage = inferResponseLanguage(currentGoal.objective, conversationLanguageFallback(conversationId))
+        // Continuations honor goal.accessMode (set from allowAutoAccess at start)
+        // and still refuse full access when the user has not unlocked it.
+        const continueAccess =
+          currentGoal.accessMode === 'full' && !userSettings.fullAccessEnabled
+            ? 'approval'
+            : currentGoal.accessMode
         const turnId = await sendTrackedTurn({
           conversationId,
           message: nextMessage,
@@ -2096,7 +2128,7 @@ export function App() {
           modelSupportsVision: Boolean(selectedModelInfo?.supportsVision),
           contextWindow: selectedContextWindow,
           responseLanguage: inferResponseLanguage(nextMessage, goalLanguage),
-          accessMode: accessMode === 'full' && !userSettings.fullAccessEnabled ? 'approval' : accessMode,
+          accessMode: continueAccess,
           workingDirectory: currentGoal.workingDirectory,
           skills: currentGoal.skills,
           attachments: [],
@@ -2144,6 +2176,11 @@ export function App() {
       },
       abortTurn: () => {
         void window.verboo.interrupt()
+        // Force the tray to idle immediately — don't wait for the CLI to
+        // acknowledge the interrupt (it may be stuck reading stdout and
+        // never emit the 'done' event). Prevents the timer from counting
+        // forever after the user clicks abort.
+        void window.verboo.forceIdleMenuBar()
       },
       onStatusChange: setGoalBarStatus,
       onLog: (message) => {
@@ -3209,13 +3246,17 @@ export function App() {
     selectedModelInfo?.displayName,
   ])
 
-  // Heartbeat: re-push the current menu-bar state every 2.5s so the tray
-  // self-corrects if an async updateMenuBar landed out of order (the stuck
-  // counter bug — a lagging 'thinking' arriving after 'idle' froze the tray).
-  // Cheap: just an IPC ping with the already-computed state.
+  // Heartbeat: query the Rust tray state every 2.5s so the tray self-corrects
+  // if an async updateMenuBar landed out of order (the stuck counter bug — a
+  // lagging 'thinking' arriving after 'idle' froze the tray). We do NOT re-push
+  // menuBarStateRef here anymore — re-pushing a stale ref was the root cause of
+  // the "timer never stops" bug (a completed turn's ref could still hold
+  // execution:'thinking' and the heartbeat would resurrect it). Rust is the
+  // source of truth; if the state has been active for >5min without a renderer
+  // push, Rust auto-resets to idle.
   useEffect(() => {
     const id = window.setInterval(() => {
-      void window.verboo.updateMenuBar(menuBarStateRef.current)
+      void window.verboo.heartbeatMenuBar()
     }, 2500)
     return () => window.clearInterval(id)
   }, [])

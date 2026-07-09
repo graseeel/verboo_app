@@ -1,6 +1,6 @@
 [package]
 name = "verboo-desktop"
-version = "0.4.0-beta.1"
+version = "0.4.0-beta.2"
 description = "Verboo Code Desktop (Tauri v2)"
 authors = ["Gabriel Grasel de Moura <graseeel@users.noreply.github.com>"]
 license = "MIT"

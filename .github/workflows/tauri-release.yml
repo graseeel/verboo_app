@@ -95,15 +95,16 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             label: Windows-x64
+            # NSIS only — MSI fails on SemVer prerelease tags (hyphen in version).
             artifact_glob: |
               src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
-              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             label: Linux-x64
             artifact_glob: |
               src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
               src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -181,29 +182,30 @@ jobs:
             -name '*.exe' -o -name '*.msi' -o -name '*.app' \) 2>/dev/null | head -50
           true
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: tauri-bundle-${{ matrix.label }}
-          path: ${{ matrix.artifact_glob }}
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Publish to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+      # Rename installers so GitHub Release downloads read as plain English:
+      #   Verboo-Code-<ver>-macOS-Apple-Silicon.dmg
+      #   Verboo-Code-<ver>-macOS-Intel.dmg
+      #   Verboo-Code-<ver>-Windows-x64-Setup.exe
+      #   Verboo-Code-<ver>-Linux-x64.{AppImage,deb,rpm}
+      # (Tauri's default names like *_aarch64.dmg / *_x64.dmg are easy to mix up.)
+      - name: Rename installers (human-readable)
+        id: rename
         shell: bash
         run: |
           set -euo pipefail
           TAG="${{ needs.resolve-tag.outputs.tag }}"
+          VERSION="${TAG#v}"
           TARGET="${{ matrix.target }}"
           BUNDLE_ROOT="src-tauri/target/${TARGET}/release/bundle"
+          OUT="release-assets"
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
           if [ ! -d "$BUNDLE_ROOT" ]; then
             echo "::error::Bundle root missing: $BUNDLE_ROOT"
             find src-tauri/target -type d -name bundle 2>/dev/null | head -20 || true
             exit 1
           fi
-          # Collect installers (skip raw .app trees — prefer dmg/zip).
-          # Use portable bash (macOS runners ship bash 3.2 — no mapfile).
+          # Portable bash 3.2 (macOS runners) — no mapfile / process substitution.
           FILES=$(
             find "$BUNDLE_ROOT" -type f \( \
               -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' -o \
@@ -215,8 +217,86 @@ jobs:
             find "$BUNDLE_ROOT" -maxdepth 3 -type f 2>/dev/null | head -50 || true
             exit 1
           fi
+          friendly_name() {
+            # $1 = source path, prints destination basename
+            local src="$1"
+            local base
+            base=$(basename "$src")
+            local lower
+            lower=$(echo "$base" | tr '[:upper:]' '[:lower:]')
+            case "$TARGET" in
+              aarch64-apple-darwin)
+                if echo "$lower" | grep -q '\.dmg$'; then
+                  echo "Verboo-Code-${VERSION}-macOS-Apple-Silicon.dmg"
+                elif echo "$lower" | grep -q '\.zip$'; then
+                  echo "Verboo-Code-${VERSION}-macOS-Apple-Silicon.zip"
+                else
+                  echo "Verboo-Code-${VERSION}-macOS-Apple-Silicon-${base}"
+                fi
+                ;;
+              x86_64-apple-darwin)
+                if echo "$lower" | grep -q '\.dmg$'; then
+                  echo "Verboo-Code-${VERSION}-macOS-Intel.dmg"
+                elif echo "$lower" | grep -q '\.zip$'; then
+                  echo "Verboo-Code-${VERSION}-macOS-Intel.zip"
+                else
+                  echo "Verboo-Code-${VERSION}-macOS-Intel-${base}"
+                fi
+                ;;
+              x86_64-pc-windows-msvc)
+                if echo "$lower" | grep -q '\.msi$'; then
+                  echo "Verboo-Code-${VERSION}-Windows-x64.msi"
+                else
+                  echo "Verboo-Code-${VERSION}-Windows-x64-Setup.exe"
+                fi
+                ;;
+              x86_64-unknown-linux-gnu)
+                if echo "$lower" | grep -q '\.appimage$'; then
+                  echo "Verboo-Code-${VERSION}-Linux-x64.AppImage"
+                elif echo "$lower" | grep -q '\.deb$'; then
+                  echo "Verboo-Code-${VERSION}-Linux-x64.deb"
+                elif echo "$lower" | grep -q '\.rpm$'; then
+                  echo "Verboo-Code-${VERSION}-Linux-x64.rpm"
+                else
+                  echo "Verboo-Code-${VERSION}-Linux-x64-${base}"
+                fi
+                ;;
+              *)
+                echo "Verboo-Code-${VERSION}-${TARGET}-${base}"
+                ;;
+            esac
+          }
+          echo "$FILES" | while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            name=$(friendly_name "$f")
+            echo "Rename: $(basename "$f") → $name"
+            cp -f "$f" "$OUT/$name"
+          done
+          echo "Prepared assets:"
+          ls -la "$OUT"
+          echo "dir=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Verboo-Code-${{ needs.resolve-tag.outputs.version }}-${{ matrix.label }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.resolve-tag.outputs.tag }}"
+          VERSION="${{ needs.resolve-tag.outputs.version }}"
+          OUT="release-assets"
+          if [ ! -d "$OUT" ] || [ -z "$(ls -A "$OUT" 2>/dev/null || true)" ]; then
+            echo "::error::No renamed assets in $OUT"
+            exit 1
+          fi
           if ! command -v gh >/dev/null 2>&1; then
-            # Ensure GitHub CLI is available for release upload.
             if [ "$(uname -s)" = "Darwin" ]; then
               brew install gh
             else
@@ -224,15 +304,37 @@ jobs:
               exit 1
             fi
           fi
+          # Write notes via printf (no heredoc — macOS bash 3.2 + YAML indent is fragile).
+          NOTES_FILE="${RUNNER_TEMP:-/tmp}/release-notes-${VERSION}.md"
+          {
+            printf '%s\n' "## Verboo Code ${VERSION}"
+            printf '%s\n' ""
+            printf '%s\n' "Hotfix on Tauri: model picker size, menu bar timer/jitter, and settings toggles (menu bar hide, updates, goal mode)."
+            printf '%s\n' ""
+            printf '%s\n' "### Download the right file"
+            printf '%s\n' ""
+            printf '%s\n' "| Your computer | Download |"
+            printf '%s\n' "|---|---|"
+            printf '%s\n' "| **macOS Apple Silicon** (M1 / M2 / M3 / M4) | \`Verboo-Code-${VERSION}-macOS-Apple-Silicon.dmg\` |"
+            printf '%s\n' "| **macOS Intel** | \`Verboo-Code-${VERSION}-macOS-Intel.dmg\` |"
+            printf '%s\n' "| **Windows 10/11 (64-bit)** | \`Verboo-Code-${VERSION}-Windows-x64-Setup.exe\` |"
+            printf '%s\n' "| **Linux (AppImage, any distro)** | \`Verboo-Code-${VERSION}-Linux-x64.AppImage\` |"
+            printf '%s\n' "| **Linux Debian/Ubuntu** | \`Verboo-Code-${VERSION}-Linux-x64.deb\` |"
+            printf '%s\n' "| **Linux Fedora/RHEL** | \`Verboo-Code-${VERSION}-Linux-x64.rpm\` |"
+            printf '%s\n' ""
+            printf '%s\n' "> Tip: on a Mac, **Apple menu → About This Mac**. If the chip says Apple M…, pick **Apple Silicon**."
+            printf '%s\n' ""
+            printf '%s\n' "Assets appear as each platform build finishes."
+          } > "$NOTES_FILE"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             if [ "${{ needs.resolve-tag.outputs.is_prerelease }}" = "true" ]; then
-              gh release create "$TAG" --title "Verboo Code ${TAG#v}" --prerelease --notes "Tauri build $TAG"
+              gh release create "$TAG" --title "Verboo Code ${VERSION}" --prerelease --notes-file "$NOTES_FILE"
             else
-              gh release create "$TAG" --title "Verboo Code ${TAG#v}" --notes "Tauri build $TAG"
+              gh release create "$TAG" --title "Verboo Code ${VERSION}" --notes-file "$NOTES_FILE"
             fi
           fi
-          echo "$FILES" | while IFS= read -r f; do
-            [ -z "$f" ] && continue
+          for f in "$OUT"/*; do
+            [ -f "$f" ] || continue
             echo "Uploading $f"
             gh release upload "$TAG" "$f" --clobber
           done
@@ -254,7 +356,8 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: tauri-bundle-*
+          # Matches Verboo-Code-<version>-<macOS-arm64|macOS-x64|Windows-x64|Linux-x64>
+          pattern: Verboo-Code-*
           merge-multiple: true
           path: bundles
 

@@ -120,6 +120,14 @@ const api = {
   // ── Menu bar ────────────────────────────────────────────────
   updateMenuBar: (state: Partial<MenuBarState>) =>
     invoke<boolean>('update_menu_bar', { state }),
+  // Force the tray to idle — called on turn done/error/abort so a lagging
+  // 'thinking' event (or the heartbeat re-pushing a stale ref) can never
+  // resurrect a completed turn's timer.
+  forceIdleMenuBar: () => invoke<boolean>('force_idle_menu_bar'),
+  // Heartbeat query — returns the current execution state so the renderer
+  // can stop re-pushing a stale menuBarStateRef every 2.5s. If the state has
+  // been active for >5min without a renderer push, Rust auto-resets to idle.
+  heartbeatMenuBar: () => invoke<string>('heartbeat_menu_bar'),
 
   // ── Window ──────────────────────────────────────────────────
   // Tauri's bundled drag.js (auto-injected when data-tauri-drag-region is

@@ -5745,7 +5745,7 @@ dependencies = [
 
 [[package]]
 name = "verboo-desktop"
-version = "0.3.0-beta.1"
+version = "0.4.0-beta.2"
 dependencies = [
  "chrono",
  "ctor 1.0.8",

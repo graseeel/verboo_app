@@ -147,6 +147,8 @@ describe('verboo-bridge — API shape', () => {
       'updateUserSettings',
       'resetUserSettings',
       'updateMenuBar',
+      'forceIdleMenuBar',
+      'heartbeatMenuBar',
       'toggleWindowZoom',
       'listSkills',
       'openUserSkillsFolder',
