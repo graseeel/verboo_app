@@ -1,7 +1,8 @@
-import { ArrowUpRight, Camera, RefreshCw, RotateCcw, ShieldCheck } from 'lucide-react'
-import type { CSSProperties } from 'react'
+import { ArrowUpRight, Camera, Loader2, RefreshCw, RotateCcw, ShieldCheck, X } from 'lucide-react'
+import { type CSSProperties, useState } from 'react'
 import type { AvatarSettings, ProfileActivityDay, ProfileResult } from '../../../shared/types'
 import { formatStandardNumber, useI18n, type Translator } from '../../i18n'
+import { useToast } from '../../components/Toast'
 import { AvatarIcon } from '../../components/AvatarIcon'
 import { AVATAR_PALETTE, AVATAR_PRESETS, renderPreset } from './avatarPresets'
 
@@ -16,8 +17,12 @@ type ProfileViewProps = {
 
 export function ProfileView({ profile, loading, avatarSettings, onRefresh, onManagePlan, onUpdateAvatar }: ProfileViewProps) {
   const { language, t } = useI18n()
+  const { toast } = useToast()
   const summary = profile.summary
   const activity = profile.activity ?? []
+  // ── Upload state ──────────────────────────────────────────
+  const [pendingFile, setPendingFile] = useState<{ file: File; previewUrl: string } | undefined>()
+  const [isSaving, setIsSaving] = useState(false)
 
   return (
     <div className="profile-view page-surface">
@@ -49,37 +54,90 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
       <section className="profile-panel avatar-editor-panel">
         <div className="avatar-editor-main">
           <div className="avatar-editor-preview">
-            <AvatarIcon settings={avatarSettings} name={profile.user?.name ?? profile.plan?.name ?? ''} size={56} />
+            {pendingFile ? (
+              <span className="avatar-outer avatar-upload" style={{ width: 56, height: 56, minWidth: 56, minHeight: 56, borderRadius: 999, overflow: 'hidden', display: 'flex' }}>
+                <img src={pendingFile.previewUrl} alt="" className="avatar-img" />
+              </span>
+            ) : (
+              <AvatarIcon settings={avatarSettings} name={profile.user?.name ?? profile.plan?.name ?? ''} size={56} />
+            )}
           </div>
           <div className="avatar-editor-upload">
-            <label className="avatar-editor-upload-btn">
-              <Camera size={14} />
-              <span>{t('settings.avatarUpload')}</span>
-              <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only"
-                onChange={async e => {
-                  const file = e.target.files?.[0]
-                  if (!file) return
-                  if (file.size > 10 * 1024 * 1024) return
-                  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) return
-                  const img = await createImageBitmap(file)
-                  const size = Math.min(img.width, img.height)
-                  const canvas = document.createElement('canvas')
-                  canvas.width = 120; canvas.height = 120
-                  const ctx = canvas.getContext('2d')!
-                  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high'
-                  ctx.drawImage(img, (img.width - size) / 2, (img.height - size) / 2, size, size, 0, 0, 120, 120)
-                  const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, file.type, 0.92))
-                  if (!blob) return
-                  const base64 = await new Promise<string>(r => {
-                    const fr = new FileReader()
-                    fr.onload = () => r((fr.result as string).split(',')[1])
-                    fr.readAsDataURL(blob!)
-                  })
-                  const path = await window.verboo.saveAvatarBlob(base64, file.type)
-                  onUpdateAvatar({ kind: 'upload', uploadPath: path })
-                }}
-              />
-            </label>
+            {pendingFile ? (
+              <div className="avatar-editor-actions">
+                <button type="button" className="ghost-button" disabled={isSaving} onClick={async () => {
+                  setIsSaving(true)
+                  try {
+                    console.log('[avatar] step 1: processing file', pendingFile.file.name, pendingFile.file.type, pendingFile.file.size)
+                    const img = await createImageBitmap(pendingFile.file)
+                    console.log('[avatar] step 2: createImageBitmap OK', img.width, 'x', img.height)
+                    const cropSize = Math.min(img.width, img.height)
+                    const canvas = document.createElement('canvas')
+                    canvas.width = 120; canvas.height = 120
+                    const ctx = canvas.getContext('2d')!
+                    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high'
+                    ctx.drawImage(img, (img.width - cropSize) / 2, (img.height - cropSize) / 2, cropSize, cropSize, 0, 0, 120, 120)
+                    console.log('[avatar] step 3: canvas draw OK')
+                    const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/jpeg', 0.92))
+                    if (!blob) throw new Error('canvas.toBlob returned null')
+                    console.log('[avatar] step 4: toBlob OK', blob.size, 'bytes')
+                    const base64 = await new Promise<string>(r => {
+                      const fr = new FileReader()
+                      fr.onload = () => r((fr.result as string).split(',')[1])
+                      fr.readAsDataURL(blob!)
+                    })
+                    console.log('[avatar] step 5: base64 OK, length:', base64.length)
+                    const path = await window.verboo.saveAvatarBlob(base64, 'image/jpeg')
+                    console.log('[avatar] step 6: saveAvatarBlob returned:', path)
+                    URL.revokeObjectURL(pendingFile.previewUrl)
+                    setPendingFile(undefined)
+                    onUpdateAvatar({ kind: 'upload', uploadPath: path })
+                    console.log('[avatar] step 7: avatar applied')
+                    toast(t('settings.avatarUploadSuccess'))
+                  } catch (err) {
+                    console.error('[avatar] FAILED at step:', err)
+                    toast(t('settings.avatarUploadErrorGeneric'))
+                  } finally {
+                    setIsSaving(false)
+                  }
+                }}>
+                  {isSaving ? <Loader2 size={14} className="spinner" /> : <Camera size={14} />}
+                  {isSaving ? t('common.saving') : t('common.save')}
+                </button>
+                <button type="button" className="avatar-editor-cancel" disabled={isSaving} onClick={() => {
+                  URL.revokeObjectURL(pendingFile.previewUrl)
+                  setPendingFile(undefined)
+                }}>
+                  <X size={14} />
+                </button>
+              </div>
+            ) : (
+              <label className="avatar-editor-upload-btn">
+                <Camera size={14} />
+                <span>{t('settings.avatarUpload')}</span>
+                <input type="file" accept=".png,.jpg,.jpeg" className="sr-only"
+                  onChange={e => {
+                    const file = e.target.files?.[0]
+                    if (!file) return
+                    console.log('[avatar] file picked:', file.name, file.type, file.size)
+                    // Validate MIME — accept only image/png and image/jpeg.
+                    if (!['image/png', 'image/jpeg'].includes(file.type)) {
+                      console.warn('[avatar] rejected format:', file.type, file.name)
+                      toast(t('settings.avatarUploadErrorType'))
+                      return
+                    }
+                    if (file.size > 10 * 1024 * 1024) {
+                      console.warn('[avatar] rejected size:', file.size)
+                      toast(t('settings.avatarUploadErrorSize'))
+                      return
+                    }
+                    const previewUrl = URL.createObjectURL(file)
+                    setPendingFile({ file, previewUrl })
+                    console.log('[avatar] preview set:', previewUrl)
+                  }}
+                />
+              </label>
+            )}
           </div>
         </div>
 

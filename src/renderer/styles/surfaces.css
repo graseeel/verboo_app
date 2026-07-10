@@ -339,6 +339,17 @@
   background: var(--bg-soft); color: var(--text); font-size: 12px; cursor: pointer;
 }
 .avatar-editor-upload-btn:hover { background: var(--bg-hover); }
+.avatar-editor-actions {
+  display: flex; align-items: center; gap: 6px;
+}
+.avatar-editor-cancel {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; padding: 0;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: transparent; color: var(--text-muted); cursor: pointer;
+}
+.avatar-editor-cancel:hover { border-color: var(--border-strong); color: var(--danger); background: var(--bg-soft); }
+.avatar-editor-cancel:disabled { opacity: 0.4; pointer-events: none; }
 
 .avatar-editor-colors {
   display: flex; gap: 6px; flex-wrap: wrap;
