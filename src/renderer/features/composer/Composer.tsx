@@ -1,7 +1,8 @@
-import { ArrowUp, Paperclip, Target, X } from 'lucide-react'
+import { ArrowUp, Layers, Paperclip, Target, X } from 'lucide-react'
 import { type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { AttachmentMeta, SkillSummary } from '../../../shared/types'
 import { useI18n } from '../../i18n'
+import { QueuePanel } from '../queue/QueuePanel'
 import { parseReservedSlashCommand, type ReservedSlashCommand } from './slashCommands'
 
 // Reserved slash commands surfaced in the "/" palette, exactly like the skills
@@ -34,6 +35,10 @@ type ComposerProps = {
   leftToolbar: ReactNode
   centerToolbar?: ReactNode
   rightToolbar: ReactNode
+  /** Queued follow-ups awaiting to be sent to the model */
+  queue?: { id: string; message: string }[]
+  onQueueSendNow?: (queueItemId: string) => void
+  onQueueEdit?: (queueItemId: string, newText: string) => void
 }
 
 export function Composer({
@@ -56,6 +61,9 @@ export function Composer({
   leftToolbar,
   centerToolbar,
   rightToolbar,
+  queue,
+  onQueueSendNow,
+  onQueueEdit,
 }: ComposerProps) {
   const { t } = useI18n()
   const [internalValue, setInternalValue] = useState('')
@@ -63,6 +71,7 @@ export function Composer({
   const setValue = onValueChange ?? setInternalValue
   const [highlighted, setHighlighted] = useState(0)
   const [dragDepth, setDragDepth] = useState(0)
+  const [queuePanelOpen, setQueuePanelOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   // Tauri native drag-drop: the webview fires 'enter'/'over'/'drop'/'leave'
@@ -255,7 +264,16 @@ export function Composer({
     if (paths.length || files.length) onDropFiles(paths, files)
   }
 
-  return (
+  return (<>
+    {queue && queue.length > 0 && queuePanelOpen && (
+      <QueuePanel
+        items={queue}
+        conversationId={queue[0]?.id}
+        onSendNow={(_, id) => onQueueSendNow?.(id)}
+        onEditQueued={onQueueEdit ?? (() => {})}
+        onClose={() => setQueuePanelOpen(false)}
+      />
+    )}
     <form
       className="composer"
       data-command-mode={goalModeActive ? 'goal' : undefined}
@@ -397,6 +415,12 @@ export function Composer({
         {centerToolbar && <div className="composer-tools center">{centerToolbar}</div>}
         <div className="composer-tools right">
           {rightToolbar}
+          {queue && queue.length > 0 && !queuePanelOpen && (
+            <button type="button" className="composer-queue-badge" onClick={() => setQueuePanelOpen(true)} title={t('queue.show')}>
+              <Layers size={14} />
+              <span>{queue.length}</span>
+            </button>
+          )}
           <button
             className="send-button"
             type="submit"
@@ -408,6 +432,7 @@ export function Composer({
         </div>
       </div>
     </form>
+  </>
   )
 }
 

@@ -1,4 +1,4 @@
-import { Check, CheckCircle2, ChevronDown, ChevronRight, Clipboard, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, LoaderCircle, Pencil, Search, SendHorizontal, Terminal, Wrench } from 'lucide-react'
+import { Check, CheckCircle2, ChevronDown, ChevronRight, Clipboard, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { TranscriptItem, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
 import { MarkdownMessage } from '../features/transcript/MarkdownMessage'
@@ -15,7 +15,6 @@ type TranscriptProps = {
   thinkingSnippets?: string[]
   compactingTurnId?: string
   imageReadingTurnId?: string
-  onSendNow?: (conversationId: string, queueItemId: string) => void
   onInterject?: (conversationId: string, queueItemId: string) => void
   onEditQueued?: (queueItemId: string, newText: string) => void
   onEditSent?: (conversationId: string, itemId: string, newText: string) => void
@@ -24,7 +23,7 @@ type TranscriptProps = {
 const MAX_ACTIVITY_DETAIL_LINES = 8
 const MAX_SUMMARY_DETAIL_LINES = 3
 
-export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, imageReadingTurnId, conversationId, onSendNow, onInterject, onEditQueued, onEditSent }: TranscriptProps) {
+export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, imageReadingTurnId, conversationId, onInterject, onEditQueued, onEditSent }: TranscriptProps) {
   // `items` is a new array reference only when the conversation actually changes,
   // so this recomputes on real content changes but is skipped when the parent
   // re-renders for unrelated reasons (context-usage ticks, subagent updates…).
@@ -44,7 +43,7 @@ export const Transcript = memo(function Transcript({ items, onOpenReview, review
               onOpenReview={onOpenReview}
               reviewMetadata={reviewMetadata}
             />
-          : <MessageArticle key={entry.item.id} item={entry.item} conversationId={conversationId} onSendNow={onSendNow} onInterject={onInterject} onCopy={() => {}} onEditQueued={onEditQueued} onEditSent={onEditSent} />
+          : <MessageArticle key={entry.item.id} item={entry.item} conversationId={conversationId} onInterject={onInterject} onCopy={() => {}} onEditQueued={onEditQueued} onEditSent={onEditSent} />
       ))}
     </div>
   )
@@ -167,14 +166,13 @@ export type MessageArticleProps = {
   item: TranscriptItem
   conversationId?: string
   children?: ReactNode
-  onSendNow?: (conversationId: string, queueItemId: string) => void
   onInterject?: TranscriptProps['onInterject']
   onCopy?: (text: string) => void
   onEditQueued?: (queueItemId: string, newText: string) => void
   onEditSent?: (conversationId: string, itemId: string, newText: string) => void
 }
 
-const MessageArticle = memo(function MessageArticle({ item, conversationId, onSendNow, onInterject, onCopy, onEditQueued, onEditSent, children }: MessageArticleProps) {
+const MessageArticle = memo(function MessageArticle({ item, conversationId, onInterject, onCopy, onEditQueued, onEditSent, children }: MessageArticleProps) {
   const { t } = useI18n()
   const visibleText = visibleTextForItem(item)
   const [editMode, setEditMode] = useState(false)
@@ -224,73 +222,66 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onSe
   }
 
   return (<>
-    <article
-      className={`message-row ${item.role} ${item.kind ?? 'message'}`}
-      data-activity={item.activityKind}
-      data-command={isInitialGoalUserItem(item) ? 'goal' : undefined}
-    >
-      <div className="message-meta">
-        {item.kind === 'activity' && <ActivityIcon item={item} />}
-        {item.kind === 'summary' && <CheckCircle2 size={14} strokeWidth={1.8} />}
-        <span>{labelForItem(item, t)}</span>
-        {item.streaming && (
-          <span className="message-status-marker" role="status">
-            <span className="message-status-marker-icon" aria-hidden="true"><LoaderCircle size={12} /></span>
-            <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm" data-text={t('transcript.generating')}>{t('transcript.generating')}</span>
-          </span>
-        )}
-      </div>
-
-      {item.attachments?.length ? (
-        <div className="message-attachments">
-          {item.attachments.map(att => {
-            const isImage = att.kind === 'image'
-            return (
-              <button key={att.path} type="button" className={`message-attachment-chip ${isImage ? 'message-attachment-image' : 'message-attachment-file'}`}
-                onClick={() => window.verboo?.openExternalFile?.('', att.path)} title={att.path}>
-                {isImage ? <img src={window.verboo?.fileUrl?.(att.path) ?? ''} alt="" className="message-attachment-thumb" loading="lazy" />
-                  : <span className="message-attachment-icon" aria-hidden="true"><FileText size={14} /></span>}
-                <span className="message-attachment-name">{att.name}</span>
-              </button>
-            )
-          })}
+    <div className={`msg-wrap ${isUserMessage ? 'msg-wrap-right' : ''}`}>
+      <article
+        className={`message-row ${item.role} ${item.kind ?? 'message'}`}
+        data-activity={item.activityKind}
+        data-command={isInitialGoalUserItem(item) ? 'goal' : undefined}
+      >
+        <div className="message-meta">
+          {item.kind === 'activity' && <ActivityIcon item={item} />}
+          {item.kind === 'summary' && <CheckCircle2 size={14} strokeWidth={1.8} />}
+          <span>{labelForItem(item, t)}</span>
+          {item.streaming && (
+            <span className="message-status-marker" role="status">
+              <span className="message-status-marker-icon" aria-hidden="true"><LoaderCircle size={12} /></span>
+              <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm" data-text={t('transcript.generating')}>{t('transcript.generating')}</span>
+            </span>
+          )}
         </div>
-      ) : null}
 
-      {item.skills && item.skills.length > 0 && (
-        <div className="message-skills">{item.skills.map(s => <span key={s.id}>/{s.name}</span>)}</div>
-      )}
+        {item.attachments?.length ? (
+          <div className="message-attachments">
+            {item.attachments.map(att => {
+              const isImage = att.kind === 'image'
+              return (
+                <button key={att.path} type="button" className={`message-attachment-chip ${isImage ? 'message-attachment-image' : 'message-attachment-file'}`}
+                  onClick={() => window.verboo?.openExternalFile?.('', att.path)} title={att.path}>
+                  {isImage ? <img src={window.verboo?.fileUrl?.(att.path) ?? ''} alt="" className="message-attachment-thumb" loading="lazy" />
+                    : <span className="message-attachment-icon" aria-hidden="true"><FileText size={14} /></span>}
+                  <span className="message-attachment-name">{att.name}</span>
+                </button>
+              )
+            })}
+          </div>
+        ) : null}
 
-      <div className={`message-text ${item.streaming ? 'streaming-text' : ''}`}>
-        {item.kind === 'summary' && item.activityDetail ? item.activityDetail
-          : visibleText ? <MarkdownMessage text={visibleText} />
-          : item.streaming ? t('transcript.thinking') : ''}
-        {item.kind !== 'summary' && item.activityDetail && <span className="message-detail">{item.activityDetail}</span>}
-      </div>
+        {item.skills && item.skills.length > 0 && (
+          <div className="message-skills">{item.skills.map(s => <span key={s.id}>/{s.name}</span>)}</div>
+        )}
 
-      {children}
-    </article>
+        <div className={`message-text ${item.streaming ? 'streaming-text' : ''}`}>
+          {item.kind === 'summary' && item.activityDetail ? item.activityDetail
+            : visibleText ? <MarkdownMessage text={visibleText} />
+            : item.streaming ? t('transcript.thinking') : ''}
+          {item.kind !== 'summary' && item.activityDetail && <span className="message-detail">{item.activityDetail}</span>}
+        </div>
 
-    {(isUserMessage || isQueued) && !item.streaming && (
-      <div className={`message-actions ${isUserMessage ? 'message-actions-right' : ''}`}>
-        {isQueued && onSendNow && conversationId && queueItemId && (
-          <button type="button" className="msg-action" onClick={() => onSendNow(conversationId, queueItemId)} title={t('transcript.sendNow')}>
-            <SendHorizontal size={14} />
+        {children}
+      </article>
+
+      {/* Actions only for sent user messages — queue lives in composer now */}
+      {isUserMessage && !item.streaming && (
+        <div className="message-actions message-actions-right">
+          <button type="button" className="msg-action" onClick={handleCopy} title={t('transcript.copyText')}>
+            {copyFlash ? <Check size={14} /> : <Clipboard size={14} />}
           </button>
-        )}
-        {isQueued && (
-          <span className="msg-action msg-action-indicator" title={t('transcript.queuedWaiting')}>
-            <Clock3 size={14} />
-          </span>
-        )}
-        <button type="button" className="msg-action" onClick={handleCopy} title={t('transcript.copyText')}>
-          {copyFlash ? <Check size={14} /> : <Clipboard size={14} />}
-        </button>
-        <button type="button" className="msg-action" onClick={() => { setEditText(visibleText || item.text); setEditMode(true) }} title={t('transcript.editMessage')}>
-          <Pencil size={14} />
-        </button>
-      </div>
-    )}
+          <button type="button" className="msg-action" onClick={() => { setEditText(visibleText || item.text); setEditMode(true) }} title={t('transcript.editMessage')}>
+            <Pencil size={14} />
+          </button>
+        </div>
+      )}
+    </div>
   </>
   )
 })

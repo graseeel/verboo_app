@@ -3828,7 +3828,6 @@ export function App() {
                 thinkingSnippets={thinkingSnippets}
                 compactingTurnId={compactingTurnId}
                 imageReadingTurnId={imageReadingTurnId}
-                onSendNow={sendNow}
                 onEditQueued={editQueuedItem}
                 onEditSent={editSentMessage}
               />
@@ -3980,6 +3979,9 @@ export function App() {
             }}
             onSubmit={sendMessage}
             onGoalCommand={handleGoalCommand}
+            queue={queuedFollowUpsRef.current}
+            onQueueSendNow={queueItemId => sendNow(activeConversationId ?? '', queueItemId)}
+            onQueueEdit={editQueuedItem}
             onPetCommand={togglePet}
             value={composerValue}
             onValueChange={setComposerValue}

@@ -1353,15 +1353,16 @@
 }
 
 /* ── Message action icons (hover-reveal, 16px) ────────────── */
+/* Wrapper around message bubble + actions. Keeps the inline-flex tight so
+   the bubble sits at its natural width; hover on wrapper reveals actions. */
+.msg-wrap { display: inline-flex; flex-direction: column; }
+.msg-wrap-right { align-items: flex-end; }
+
 .message-actions {
-  display: flex; gap: 2px; margin-top: 2px;
-  justify-self: start;
-  opacity: 0; transition: opacity 0.15s ease;
+  display: flex; gap: 2px; margin-top: 1px;
+  opacity: 0; transition: opacity 0.1s ease;
 }
-.message-actions-right { justify-self: end; }
-/* parent hover reveals actions — the sibling <article> is the hover target */
-.message-row.user:hover + .message-actions,
-.message-row.tool:hover + .message-actions { opacity: 1; }
+.msg-wrap:hover .message-actions { opacity: 1; }
 .message-actions:focus-within { opacity: 1; }
 
 .msg-action {
@@ -1372,9 +1373,6 @@
   cursor: pointer;
 }
 .msg-action:hover { background: var(--bg-hover); color: var(--text); }
-/* Non-interactive indicator (clock icon for "waiting in queue") */
-.msg-action-indicator { pointer-events: none; opacity: 0.5; }
-.msg-action-indicator:hover { background: transparent; color: var(--text-dim); }
 
 /* ── Inline edit mode ─────────────────────────────────────── */
 .message-edit-textarea {
