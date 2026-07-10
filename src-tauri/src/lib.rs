@@ -491,6 +491,68 @@ fn approve_skill(
     store.update(serde_json::to_value(&current).map_err(|e| e.to_string())?)
 }
 
+/// Fires an OS notification when a background turn completes.
+///
+/// The renderer calls this in the `done`/`error` handler when:
+/// - The conversation that finished is NOT the active conversation (user
+///   switched away or is in another chat), OR
+/// - The app window is not focused (minimized or in background).
+///
+/// The backend checks the user's `completion_notifications` setting:
+/// - `never` → no notification
+/// - `background` → fire only when window is NOT focused
+/// - `always` → fire unconditionally
+///
+/// Uses `notification_service::fire_notification()` for the decision + i18n
+/// text, and `tauri_plugin_notification::NotificationExt` for the OS toast.
+#[tauri::command]
+fn fire_completion_notification(
+    exit_code: i32,
+    conversation_id: String,
+    is_active_conversation: bool,
+    store: tauri::State<'_, SettingsStore>,
+    app: tauri::AppHandle,
+) -> Result<bool, String> {
+    use tauri_plugin_notification::NotificationExt;
+
+    let settings = store.get()?;
+    // Check if the main window is focused.
+    let window_focused = app
+        .get_webview_window("main")
+        .map(|w| w.is_focused().unwrap_or(false))
+        .unwrap_or(false);
+
+    // If the conversation is active AND the window is focused, don't notify
+    // — the user is already looking at it.
+    if is_active_conversation && window_focused {
+        return Ok(false);
+    }
+
+    let kind = if exit_code == 0 {
+        crate::services::notification_service::NotificationKind::Done
+    } else {
+        crate::services::notification_service::NotificationKind::DoneError
+    };
+
+    let notification = crate::services::notification_service::fire_notification(
+        &settings,
+        kind,
+        window_focused,
+    );
+
+    if let Some(text) = notification {
+        app.notification()
+            .builder()
+            .title(&text.title)
+            .body(&text.body)
+            .show()
+            .map_err(|e| format!("show notification: {e}"))?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 #[tauri::command]
 fn get_default_working_directory() -> String {
     // Falls back to $HOME. Used by the renderer when no project is open
@@ -1217,6 +1279,8 @@ pub fn run() {
             // Skill approval gating (item 1.8)
             check_skill_approval,
             approve_skill,
+            // Background turn completion notification (item 1.5)
+            fire_completion_notification,
             // Defaults
             get_default_working_directory,
             get_bundled_cli_version,

@@ -171,6 +171,19 @@ const api = {
   // Persists "Always Allow" for an untrusted skill path.
   approveSkill: (path: string) =>
     invoke<UserSettings>('approve_skill', { path }),
+  // Fires an OS notification when a background turn completes. Called in
+  // the `done`/`error` handler when the conversation is not active or the
+  // window is not focused. Returns true if a notification was shown.
+  fireCompletionNotification: (
+    exitCode: number,
+    conversationId: string,
+    isActiveConversation: boolean,
+  ) =>
+    invoke<boolean>('fire_completion_notification', {
+      exitCode,
+      conversationId,
+      isActiveConversation,
+    }),
 
   // ── Defaults ────────────────────────────────────────────────
   getDefaultWorkingDirectory: () => invoke<string>('get_default_working_directory'),

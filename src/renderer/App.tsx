@@ -348,6 +348,10 @@ export function App() {
   const turnConversationIds = useRef<Record<string, string>>({})
   const turnModels = useRef<Record<string, { modelId?: string; modelDisplayName?: string }>>({})
   const pendingConversationId = useRef<string | undefined>(undefined)
+  // Ref mirror of activeConversationId so the agent event handler (which has
+  // a stale closure via useEffect []) can read the current value when a
+  // turn completes — used to decide whether to fire a background notification.
+  const activeConversationIdRef = useRef<string | undefined>(undefined)
   const goalSessionId = useRef<string | undefined>(undefined)
   const goalAbortRef = useRef<AbortController | undefined>(undefined)
   const queuedFollowUpsRef = useRef<QueuedFollowUp[]>([])
@@ -709,6 +713,7 @@ export function App() {
       setComposerValue(composerDrafts.current[nextKey] ?? '')
     }
     prevConversationIdRef.current = activeConversationId
+    activeConversationIdRef.current = activeConversationId
   }, [activeConversationId])
 
   useEffect(() => {
@@ -1207,6 +1212,15 @@ export function App() {
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
       clearActiveSubagentsForTurn(event.turnId)
       flashPet('error')
+      // Fire OS notification for background error completion too.
+      if (conversationId) {
+        const isActive = conversationId === activeConversationIdRef.current
+        void window.verboo.fireCompletionNotification(
+          1,
+          conversationId,
+          isActive,
+        )
+      }
       // Persist accumulated thinking text BEFORE cleanup so it survives
       // the turn end and is available to groupTurnBlocks. The live ref
       // is intentionally NOT cleared (data contract).
@@ -1285,6 +1299,17 @@ export function App() {
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
       clearActiveSubagentsForTurn(event.turnId)
       flashPet(event.exitCode === 0 ? 'success' : 'error')
+      // Fire OS notification when the turn completed in a background
+      // conversation (not the active one) or the window is not focused.
+      // The backend checks the user's completion_notifications setting.
+      if (conversationId) {
+        const isActive = conversationId === activeConversationIdRef.current
+        void window.verboo.fireCompletionNotification(
+          event.exitCode ?? 0,
+          conversationId,
+          isActive,
+        )
+      }
       // Persist accumulated thinking text BEFORE the assistant message is
       // finalized so the block lands in chronological order in the
       // transcript. The live ref is intentionally NOT cleared (data contract).
