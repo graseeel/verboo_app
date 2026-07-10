@@ -69,7 +69,7 @@ import type { ExtractionStatus, VisionFallbackConsent, VisionFallbackState } fro
 import { recognizeImage } from './features/ocr/ocrService'
 import { Composer } from './features/composer/Composer'
 import { ContextMeter } from './features/context/ContextMeter'
-import { ContextPanel } from './features/context/ContextPanel'
+import { ContextPanel, estimateTotalContextTokens } from './features/context/ContextPanel'
 import { TokenRateMeter } from './features/context/TokenRateMeter'
 import { FeedbackDialog } from './features/feedback/FeedbackDialog'
 import { ModelSelector } from './features/models/ModelSelector'
@@ -98,6 +98,7 @@ const DEVELOPMENT_NOTICE_KEY = 'verboo:development-notice-accepted'
 const AUTH_SESSION_KEY = 'verboo:last-verified-auth'
 const AUTH_SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 const CONTEXT_WINDOWS_KEY = 'verboo:context-windows-by-model'
+const REPORTED_CONTEXT_WINDOWS_KEY = 'verboo:reported-context-windows'
 const SIDEBAR_PREF_KEY = 'verboo:sidebar-preference'
 const SIDEBAR_DEFAULT_WIDTH = 292
 const SIDEBAR_MIN_WIDTH = 220
@@ -236,16 +237,27 @@ function firstUsableWorkspaceDirectory(...paths: Array<string | undefined>): str
   return paths.find(isUsableWorkspaceDirectory) ?? ''
 }
 
-function ContextPanelPortal({ pos, onClose, children }: { pos: { bottom: number; right: number }; onClose: () => void; children: React.ReactNode }) {
+function ContextPanelPortal({ pos, onClose, children }: { pos: { top: number; right: number }; onClose: () => void; children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement>(null)
+  // Mount closed, then open on the next frame so the t-dropdown scale/opacity
+  // transition plays — the panel grows out of the meter in the composer.
+  const [open, setOpen] = useState(false)
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setOpen(true))
+    return () => cancelAnimationFrame(frame)
+  }, [])
   useOutsideDismiss(ref, true, onClose)
   return (
-    <div ref={ref} className="context-meter-popover-wrapper" style={{
-      position: 'fixed',
-      top: `${pos.bottom + 4}px`,
-      right: `${window.innerWidth - pos.right}px`,
-      bottom: 'auto', left: 'auto',
-    }}>
+    <div ref={ref} className={`context-meter-popover-wrapper t-dropdown ${open ? 'is-open' : ''}`}
+      data-origin="bottom-right"
+      style={{
+        position: 'fixed',
+        // Anchored ABOVE the meter (the meter sits in the composer at the
+        // bottom of the window — opening downward pushes it off-screen).
+        bottom: `${window.innerHeight - pos.top + 8}px`,
+        right: `${window.innerWidth - pos.right}px`,
+        top: 'auto', left: 'auto',
+      }}>
       {children}
     </div>
   )
@@ -343,7 +355,13 @@ export function App() {
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshot | undefined>()
   const [contextPanelOpen, setContextPanelOpen] = useState(false)
-  const [contextMeterPos, setContextMeterPos] = useState<{ bottom: number; right: number } | undefined>()
+  const [contextMeterPos, setContextMeterPos] = useState<{ top: number; right: number } | undefined>()
+  // Context windows the CLI itself reported via result.modelUsage — the Verboo
+  // Router omits contextWindow from model discovery, so this is often the only
+  // authoritative source. Persisted so the meter works from app launch.
+  const [reportedContextWindows, setReportedContextWindows] = useState<Record<string, number>>(
+    readReportedContextWindows,
+  )
   const contextMeterRef = useRef<HTMLButtonElement>(null)
   const [goal, setGoal] = useState<GoalState | undefined>()
   const [imageReadingTurnId, setImageReadingTurnId] = useState<string | undefined>()
@@ -686,6 +704,7 @@ export function App() {
     [modelResult.models, selectedModel],
   )
   const maxContextWindow = selectedModelInfo?.contextWindow
+    ?? (selectedModel ? reportedContextWindows[selectedModel] : undefined)
   const selectedContextWindow = selectedModel && maxContextWindow
     ? clampContextWindow(contextWindowsByModel[selectedModel] ?? maxContextWindow, maxContextWindow)
     : undefined
@@ -693,6 +712,22 @@ export function App() {
   useEffect(() => {
     selectedContextWindowRef.current = selectedContextWindow
   }, [selectedContextWindow])
+
+  // The Verboo Router reports all-zero usage on every event, so real
+  // cli-usage snapshots never arrive. Fall back to the same local estimate
+  // the ContextPanel breakdown uses so the meter shows a live percentage.
+  const estimatedContextUsage = useMemo<ContextUsageSnapshot | undefined>(() => {
+    if (!selectedContextWindow) return undefined
+    const usedTokens = estimateTotalContextTokens(items, attachedFiles, selectedSkills, queuedFollowUps)
+    return {
+      usedTokens,
+      maxTokens: selectedContextWindow,
+      percentage: Math.min(1, usedTokens / selectedContextWindow),
+      source: 'estimated',
+      updatedAt: Date.now(),
+    }
+  }, [items, attachedFiles, selectedSkills, queuedFollowUps, selectedContextWindow])
+  const effectiveContextUsage = contextUsage ?? estimatedContextUsage
 
   useEffect(() => {
     if (runningTurnId || queuedFollowUps.length === 0) return
@@ -1152,6 +1187,16 @@ export function App() {
       collectThinkingText(event.turnId, event.payload)
       routeSubagentChildEvent(event.turnId, event.payload)
       collectModelQuestions(event.turnId, event.payload)
+      const reportedWindows = extractReportedContextWindows(event.payload)
+      if (reportedWindows) {
+        setReportedContextWindows(current => {
+          const changed = Object.entries(reportedWindows).some(([model, win]) => current[model] !== win)
+          if (!changed) return current
+          const next = { ...current, ...reportedWindows }
+          persistReportedContextWindows(next)
+          return next
+        })
+      }
       const usage = extractContextUsage(event.payload, selectedContextWindowRef.current)
       if (usage) {
         setContextUsage(usage)
@@ -3536,7 +3581,7 @@ export function App() {
     modelSource: modelResult.source,
     accessMode,
     contextWindow: selectedContextWindow,
-    contextUsage,
+    contextUsage: effectiveContextUsage,
     authMethod: cliAuth.authMethod,
     cliLoggedIn: cliAuth.loggedIn,
     hasApiKey: credentials.hasApiKey,
@@ -3545,7 +3590,7 @@ export function App() {
     activeView,
     cliAuth.authMethod,
     cliAuth.loggedIn,
-    contextUsage,
+    effectiveContextUsage,
     credentials.hasApiKey,
     modelResult.source,
     projectName,
@@ -3563,7 +3608,7 @@ export function App() {
       modelId: selectedModel,
       modelDisplayName: selectedModelInfo?.displayName,
       contextWindow: selectedContextWindow,
-      contextUsage: contextUsage?.percentage,
+      contextUsage: effectiveContextUsage?.percentage,
       workingDirectory: currentWorkspaceDirectory,
       loggedIn: cliAuth.loggedIn || credentials.hasApiKey,
       email: cliAuth.email ?? profile.user?.email,
@@ -3575,7 +3620,7 @@ export function App() {
     workingSubagents.length,
     cliAuth.email,
     cliAuth.loggedIn,
-    contextUsage?.percentage,
+    effectiveContextUsage?.percentage,
     credentials.hasApiKey,
     profile.user?.email,
     runningTurnId,
@@ -3958,17 +4003,17 @@ export function App() {
               <>
                 <TokenRateMeter rate={tokenRate} active={Boolean(runningTurnId)} />
                 <span ref={contextMeterRef}>
-                  <ContextMeter usage={contextUsage} contextWindow={selectedContextWindow} onClick={() => {
+                  <ContextMeter usage={effectiveContextUsage} contextWindow={selectedContextWindow} onClick={() => {
                     if (!contextMeterRef.current) return
                     const rect = contextMeterRef.current.getBoundingClientRect()
-                    setContextMeterPos({ bottom: rect.bottom, right: rect.right })
+                    setContextMeterPos({ top: rect.top, right: rect.right })
                     setContextPanelOpen(o => !o)
                   }} />
                 </span>
                 {contextPanelOpen && contextMeterPos && createPortal(
                   <ContextPanelPortal pos={contextMeterPos} onClose={() => setContextPanelOpen(false)}>
                     <ContextPanel
-                      usage={contextUsage}
+                      usage={effectiveContextUsage}
                       maxWindow={selectedContextWindow}
                       items={conversationItemsRef.current}
                       attachments={attachedFiles}
@@ -4180,6 +4225,40 @@ function readContextWindows(): Record<string, number> {
   } catch {
     return {}
   }
+}
+
+function readReportedContextWindows(): Record<string, number> {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(REPORTED_CONTEXT_WINDOWS_KEY) ?? '{}') as unknown
+    if (!parsed || typeof parsed !== 'object') return {}
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, value]) => typeof value === 'number' && Number.isFinite(value) && value > 0),
+    ) as Record<string, number>
+  } catch {
+    return {}
+  }
+}
+
+function persistReportedContextWindows(windows: Record<string, number>): void {
+  try {
+    window.localStorage.setItem(REPORTED_CONTEXT_WINDOWS_KEY, JSON.stringify(windows))
+  } catch {
+    // best-effort cache; the next result event repopulates it
+  }
+}
+
+/// Pulls per-model `contextWindow` out of a result payload's `modelUsage`
+/// map — the only place the Verboo Router reveals the window size (model
+/// discovery omits it and usage objects arrive all-zero).
+function extractReportedContextWindows(payload: unknown): Record<string, number> | undefined {
+  if (!isRecord(payload) || payload.type !== 'result' || !isRecord(payload.modelUsage)) return undefined
+  const windows: Record<string, number> = {}
+  for (const [model, value] of Object.entries(payload.modelUsage)) {
+    if (!isRecord(value)) continue
+    const win = numberValueOptional(value.contextWindow)
+    if (win !== undefined && win > 0) windows[model] = win
+  }
+  return Object.keys(windows).length > 0 ? windows : undefined
 }
 
 function readRememberedAuthSession(): { verifiedAt: number } | undefined {

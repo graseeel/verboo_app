@@ -294,7 +294,12 @@ export type ContextUsageSnapshot = {
   percentage?: number
   inputTokens?: number
   outputTokens?: number
-  source: 'cli-usage'
+  /**
+   * 'cli-usage' — real numbers reported by the CLI stream.
+   * 'estimated' — local chars/4 estimate; used when the router reports
+   * all-zero usage and no context_window object.
+   */
+  source: 'cli-usage' | 'estimated'
   updatedAt: number
 }
 

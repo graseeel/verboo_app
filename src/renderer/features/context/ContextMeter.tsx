@@ -20,7 +20,9 @@ export function ContextMeter({ usage, contextWindow, onClick }: ContextMeterProp
       ? Math.max(0, Math.min(1, usedTokens / maxTokens))
       : undefined
   const overLimit = Boolean(hasUsedTokens && maxTokens && usedTokens > maxTokens)
-  const percentLabel = bounded === undefined ? '--%' : overLimit ? '100%+' : `${Math.round(bounded * 100)}%`
+  // '~' marks a local estimate — shown when the router reports no real usage.
+  const estimatePrefix = usage?.source === 'estimated' ? '~' : ''
+  const percentLabel = bounded === undefined ? '--%' : overLimit ? '100%+' : `${estimatePrefix}${Math.round(bounded * 100)}%`
   const usageLabel = hasUsedTokens && maxTokens
     ? `${formatCompactNumber(usedTokens, language)}/${formatCompactNumber(maxTokens, language)}`
     : maxTokens

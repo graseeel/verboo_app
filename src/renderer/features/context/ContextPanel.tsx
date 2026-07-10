@@ -24,6 +24,29 @@ function estimateTokens(text: string): number {
   return Math.round(text.length / CHARS_PER_TOKEN)
 }
 
+/**
+ * Total estimated tokens for everything the next turn carries — the same
+ * math the panel's per-section breakdown uses, exported so the ContextMeter
+ * can show a live percentage when the CLI reports no real usage (the Verboo
+ * Router sends all-zero usage objects).
+ */
+export function estimateTotalContextTokens(
+  items: readonly TranscriptItem[],
+  attachments: AttachmentMeta[],
+  skills: SkillSummary[],
+  queue: QueuedFollowUp[],
+): number {
+  const itemTokens = items
+    .filter(i => i.role === 'user' || i.role === 'assistant')
+    .reduce((sum, i) => sum + estimateTokens(i.text), 0)
+  const attachTokens = attachments
+    .filter(a => a.extractedText)
+    .reduce((sum, a) => sum + estimateTokens(a.extractedText!), 0)
+  const skillTokens = skills.reduce((sum, s) => sum + estimateTokens(s.name + (s.description ?? '')), 0)
+  const queueTokens = queue.reduce((sum, q) => sum + estimateTokens(q.message), 0)
+  return itemTokens + attachTokens + skillTokens + queueTokens
+}
+
 export type ContextSection = {
   key: string
   icon: React.ReactNode
