@@ -41,7 +41,8 @@
 .bottom-dock > .question-wizard,
 .bottom-dock > .question-chip,
 .bottom-dock > .subagent-summary-card,
-.bottom-dock > .vision-fallback-panel {
+.bottom-dock > .vision-fallback-panel,
+.bottom-dock > .skill-approval-panel {
   width: min(var(--chat-lane-width), 100%);
   max-width: 100%;
   margin-inline: auto;
@@ -186,6 +187,45 @@
 }
 .vision-fallback-actions button:hover { background: var(--bg-hover); }
 .vision-fallback-never {
+  color: color-mix(in srgb, var(--danger) 90%, var(--text)) !important;
+  border-color: color-mix(in srgb, var(--danger) 50%, var(--border)) !important;
+}
+
+/* ── Skill approval panel ─────────────────────────────────── */
+.skill-approval-panel {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--amber) 38%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-elevated) 96%, transparent);
+  box-shadow: 0 10px 24px color-mix(in srgb, black 24%, transparent);
+  backdrop-filter: blur(10px);
+}
+.skill-approval-header {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 600; color: var(--amber);
+}
+.skill-approval-skills {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.skill-approval-item {
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--bg-soft) 60%, transparent);
+  border-radius: 6px;
+}
+.skill-approval-name { font-size: 13px; font-weight: 600; color: var(--text); }
+.skill-approval-path { font-size: 11px; color: var(--text-dim); word-break: break-all; }
+.skill-approval-description {
+  margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.5;
+}
+.skill-approval-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.skill-approval-actions button {
+  padding: 6px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-soft); color: var(--text); font-size: 12px; cursor: pointer;
+}
+.skill-approval-actions button:hover { background: var(--bg-hover); }
+.skill-approval-cancel {
   color: color-mix(in srgb, var(--danger) 90%, var(--text)) !important;
   border-color: color-mix(in srgb, var(--danger) 50%, var(--border)) !important;
 }

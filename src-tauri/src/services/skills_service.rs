@@ -22,6 +22,48 @@ impl SkillsService {
         dedupe_skills(all)
     }
 
+    /// Filters skills to only those approved for injection into the prompt.
+    ///
+    /// **Trusted criteria** (defined in `skill_roots`):
+    /// - User roots (`~/.verboo/skills`, `~/.agents/skills`) → `trusted: true`
+    /// - Legacy roots (`~/.claude/skills`, `~/.codex/skills`) → `trusted: true`
+    /// - Project roots (`<cwd>/.verboo/skills`, etc.) → `trusted: false`
+    ///
+    /// **Gating policy**:
+    /// - Trusted skills pass through directly (no approval needed).
+    /// - Untrusted skills pass only if their path is in `approved_paths`
+    ///   (persisted from the user's "Always Allow" decision).
+    /// - Untrusted skills NOT in `approved_paths` are filtered out — the
+    ///   renderer must prompt the user for approval before injecting them.
+    ///
+    /// This is non-breaking: trusted skills (the common case — user-installed)
+    /// continue to work without any gate. Only project-root skills are gated,
+    /// and only until the user approves them once.
+    pub fn filter_approved_skills(
+        skills: &[SkillSummary],
+        approved_paths: &[String],
+    ) -> Vec<SkillSummary> {
+        skills
+            .iter()
+            .filter(|s| s.trusted || approved_paths.contains(&s.path))
+            .cloned()
+            .collect()
+    }
+
+    /// Returns the untrusted skills that need approval (not yet in the
+    /// approved list). The renderer uses this to show the permission panel
+    /// for each unapproved skill.
+    pub fn pending_approval_skills(
+        skills: &[SkillSummary],
+        approved_paths: &[String],
+    ) -> Vec<SkillSummary> {
+        skills
+            .iter()
+            .filter(|s| !s.trusted && !approved_paths.contains(&s.path))
+            .cloned()
+            .collect()
+    }
+
     /// Ensures the user skills folder exists and returns its path.
     /// Mirrors `openUserSkillsFolder`. Creates `~/.verboo/skills/` if missing.
     pub fn open_user_skills_folder() -> Result<PathBuf, String> {
@@ -505,5 +547,129 @@ mod tests {
         assert_eq!(result.unwrap(), expected);
         // Directory should now exist.
         assert!(expected.is_dir());
+    }
+
+    // ── Skill approval gating tests (item 1.8) ──────────────────────
+
+    fn make_skill(id: &str, path: &str, trusted: bool) -> SkillSummary {
+        SkillSummary {
+            id: id.into(),
+            name: id.into(),
+            description: "test".into(),
+            path: path.into(),
+            source: if trusted {
+                SkillSource::User
+            } else {
+                SkillSource::Project
+            },
+            trusted,
+        }
+    }
+
+    #[test]
+    fn filter_approved_skills_trusted_passes_directly() {
+        // Trusted skills (user/legacy roots) pass through without approval.
+        let skills = vec![
+            make_skill("user-skill", "/home/.verboo/skills/user/SKILL.md", true),
+            make_skill("legacy-skill", "/home/.claude/skills/legacy/SKILL.md", true),
+        ];
+        let approved: Vec<String> = vec![];
+        let result = SkillsService::filter_approved_skills(&skills, &approved);
+        assert_eq!(result.len(), 2, "trusted skills should pass directly");
+    }
+
+    #[test]
+    fn filter_approved_skills_untrusted_blocked_without_approval() {
+        // Untrusted skills (project roots) are filtered out if not approved.
+        let skills = vec![
+            make_skill("project-skill", "/proj/.verboo/skills/proj/SKILL.md", false),
+        ];
+        let approved: Vec<String> = vec![];
+        let result = SkillsService::filter_approved_skills(&skills, &approved);
+        assert!(
+            result.is_empty(),
+            "untrusted skill without approval should be filtered out"
+        );
+    }
+
+    #[test]
+    fn filter_approved_skills_untrusted_passes_with_approval() {
+        // Untrusted skill passes if its path is in the approved list.
+        let skills = vec![
+            make_skill("project-skill", "/proj/.verboo/skills/proj/SKILL.md", false),
+        ];
+        let approved = vec!["/proj/.verboo/skills/proj/SKILL.md".to_string()];
+        let result = SkillsService::filter_approved_skills(&skills, &approved);
+        assert_eq!(result.len(), 1, "approved untrusted skill should pass");
+    }
+
+    #[test]
+    fn filter_approved_skills_mixed() {
+        // Mix of trusted + untrusted + approved + unapproved.
+        let skills = vec![
+            make_skill("user-skill", "/home/.verboo/skills/user/SKILL.md", true),
+            make_skill("proj-approved", "/proj/.verboo/skills/approved/SKILL.md", false),
+            make_skill("proj-unapproved", "/proj/.verboo/skills/unapproved/SKILL.md", false),
+        ];
+        let approved = vec!["/proj/.verboo/skills/approved/SKILL.md".to_string()];
+        let result = SkillsService::filter_approved_skills(&skills, &approved);
+        assert_eq!(result.len(), 2, "trusted + approved should pass");
+        // The unapproved project skill should be filtered out.
+        assert!(
+            !result.iter().any(|s| s.id == "proj-unapproved"),
+            "unapproved project skill should be filtered out"
+        );
+    }
+
+    #[test]
+    fn pending_approval_skills_returns_only_untrusted_unapproved() {
+        let skills = vec![
+            make_skill("user-skill", "/home/.verboo/skills/user/SKILL.md", true),
+            make_skill("proj-approved", "/proj/.verboo/skills/approved/SKILL.md", false),
+            make_skill("proj-unapproved", "/proj/.verboo/skills/unapproved/SKILL.md", false),
+        ];
+        let approved = vec!["/proj/.verboo/skills/approved/SKILL.md".to_string()];
+        let pending = SkillsService::pending_approval_skills(&skills, &approved);
+        assert_eq!(pending.len(), 1, "only untrusted + unapproved should be pending");
+        assert_eq!(pending[0].id, "proj-unapproved");
+    }
+
+    #[test]
+    fn pending_approval_skills_empty_when_all_trusted() {
+        let skills = vec![
+            make_skill("user-skill", "/home/.verboo/skills/user/SKILL.md", true),
+        ];
+        let pending = SkillsService::pending_approval_skills(&skills, &[]);
+        assert!(pending.is_empty(), "trusted skills should not be pending");
+    }
+
+    #[test]
+    fn pending_approval_skills_empty_when_all_approved() {
+        let skills = vec![
+            make_skill("proj-skill", "/proj/.verboo/skills/proj/SKILL.md", false),
+        ];
+        let approved = vec!["/proj/.verboo/skills/proj/SKILL.md".to_string()];
+        let pending = SkillsService::pending_approval_skills(&skills, &approved);
+        assert!(pending.is_empty(), "approved skills should not be pending");
+    }
+
+    #[test]
+    fn filter_approved_skills_empty_input() {
+        let result = SkillsService::filter_approved_skills(&[], &[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn filter_approved_skills_path_must_match_exactly() {
+        // A different path should not approve a skill.
+        let skills = vec![
+            make_skill("proj-skill", "/proj/.verboo/skills/proj/SKILL.md", false),
+        ];
+        let approved = vec!["/different/path/SKILL.md".to_string()];
+        let result = SkillsService::filter_approved_skills(&skills, &approved);
+        assert!(
+            result.is_empty(),
+            "wrong path should not approve the skill"
+        );
     }
 }

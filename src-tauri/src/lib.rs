@@ -457,6 +457,40 @@ fn open_user_skills_folder() -> Result<String, String> {
     Ok(path.to_string_lossy().to_string())
 }
 
+/// Returns the untrusted skills (from a list) that need approval before
+/// injection into the prompt. The renderer calls this before sending a turn
+/// with skills — if the result is non-empty, it shows the permission panel
+/// for each unapproved skill.
+///
+/// Reuses the existing `PermissionApprovalPanel` mechanism — the renderer
+/// shows the same panel it uses for command permissions, with the skill
+/// name + path as the detail.
+#[tauri::command]
+fn check_skill_approval(
+    skills: Vec<SkillSummary>,
+    store: tauri::State<'_, SettingsStore>,
+) -> Result<Vec<SkillSummary>, String> {
+    let settings = store.get()?;
+    Ok(crate::services::skills_service::SkillsService::pending_approval_skills(
+        &skills,
+        &settings.trusted_skills,
+    ))
+}
+
+/// Persists a "Always Allow" decision for an untrusted skill. After this,
+/// the skill passes `filter_approved_skills` without prompting.
+#[tauri::command]
+fn approve_skill(
+    path: String,
+    store: tauri::State<'_, SettingsStore>,
+) -> Result<UserSettings, String> {
+    let mut current = store.get()?;
+    if !current.trusted_skills.contains(&path) {
+        current.trusted_skills.push(path);
+    }
+    store.update(serde_json::to_value(&current).map_err(|e| e.to_string())?)
+}
+
 #[tauri::command]
 fn get_default_working_directory() -> String {
     // Falls back to $HOME. Used by the renderer when no project is open
@@ -1146,6 +1180,9 @@ pub fn run() {
             // Skills
             list_skills,
             open_user_skills_folder,
+            // Skill approval gating (item 1.8)
+            check_skill_approval,
+            approve_skill,
             // Defaults
             get_default_working_directory,
             get_bundled_cli_version,

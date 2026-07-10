@@ -412,6 +412,7 @@ mod tests {
                 auto_download: false,
             },
             vision_fallback_consent: crate::models::types::VisionFallbackConsent::Ask,
+            trusted_skills: Vec::new(),
         }
     }
 

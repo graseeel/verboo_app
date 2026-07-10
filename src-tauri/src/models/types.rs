@@ -478,6 +478,12 @@ pub struct UserSettings {
     /// describe images when the selected model can't see). Default: Ask.
     #[serde(default)]
     pub vision_fallback_consent: VisionFallbackConsent,
+    /// Paths of untrusted skills (project-root skills) the user has approved
+    /// with "Always Allow". Trusted skills (user/legacy roots) don't need
+    /// approval — they pass through directly. This list persists the user's
+    /// decision so they're only prompted once per untrusted skill.
+    #[serde(default)]
+    pub trusted_skills: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1033,6 +1039,7 @@ impl Default for UserSettings {
                 auto_download: false,
             },
             vision_fallback_consent: VisionFallbackConsent::Ask,
+            trusted_skills: Vec::new(),
         }
     }
 }

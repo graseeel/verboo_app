@@ -230,6 +230,10 @@ export type UserSettings = {
   // Consent for vision fallback (spawn a vision-capable model to describe
   // images when the selected model can't see). Default: 'ask'.
   visionFallbackConsent: VisionFallbackConsent
+  // Paths of untrusted skills (project-root skills) the user has approved
+  // with "Always Allow". Trusted skills (user/legacy roots) don't need
+  // approval — they pass through directly.
+  trustedSkills: string[]
 }
 
 /// User consent for the vision fallback feature.

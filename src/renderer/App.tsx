@@ -63,6 +63,7 @@ import { UpdateBanner } from './components/UpdateBanner'
 import { AccessSelector } from './features/access/AccessSelector'
 import { PermissionApprovalPanel, type PendingPermissionPrompt } from './features/permission/PermissionApprovalPanel'
 import { VisionFallbackModal } from './features/vision/VisionFallbackModal'
+import { SkillApprovalPanel } from './features/skills/SkillApprovalPanel'
 import type { ExtractionStatus, VisionFallbackConsent, VisionFallbackState } from '../shared/types'
 import { recognizeImage } from './features/ocr/ocrService'
 import { Composer } from './features/composer/Composer'
@@ -132,6 +133,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
     autoDownload: false,
   },
   visionFallbackConsent: 'ask',
+  trustedSkills: [],
 }
 const EMPTY_LINE_KEYS = ['empty.line1', 'empty.line2', 'empty.line3', 'empty.line4'] as const
 
@@ -296,6 +298,11 @@ export function App() {
   // fn is called by the modal with the user's choice; awaiting code continues.
   const [visionFallbackState, setVisionFallbackState] = useState<VisionFallbackState | undefined>()
   const visionFallbackResolveRef = useRef<(value: { allowOnce: boolean } | { persist: VisionFallbackConsent }) => void>(undefined)
+
+  // Skill approval — deferred promise pattern matching vision fallback.
+  // Set when sendMessage encounters unapproved project-root skills.
+  const [pendingSkillApproval, setPendingSkillApproval] = useState<SkillSummary[] | undefined>()
+  const skillApprovalResolveRef = useRef<(value: { allowOnce: boolean } | { trust: string } | { cancel: true }) => void>(undefined)
   const turnQuestions = useRef<Record<string, ModelQuestion[]>>({})
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [petEnabled, setPetEnabled] = useState(() => window.localStorage.getItem('verboo:pet-enabled') === '1')
@@ -1402,6 +1409,31 @@ export function App() {
         Promise.allSettled(pendingOcr),
         new Promise<void>(resolve => setTimeout(resolve, 15_000)),
       ])
+    }
+
+    // ── Skill approval gate ───────────────────────────────────
+    if (selectedSkills.length) {
+      const unapproved = await window.verboo.checkSkillApproval(selectedSkills)
+      if (unapproved.length) {
+        const choice = await new Promise<{ allowOnce: boolean } | { trust: string } | { cancel: true }>(resolve => {
+          skillApprovalResolveRef.current = resolve
+          setPendingSkillApproval(unapproved)
+        })
+        setPendingSkillApproval(undefined)
+        skillApprovalResolveRef.current = undefined
+
+        if ('cancel' in choice) {
+          // Remove the unapproved skills from the selection and warn the user.
+          const unapprovedIds = new Set(unapproved.map(s => s.id))
+          setSelectedSkills(current => current.filter(s => !unapprovedIds.has(s.id)))
+          toast(t('skillApproval.skippedWarning'))
+        } else if ('trust' in choice) {
+          // Persist trust and keep the skill for this turn.
+          void window.verboo.approveSkill(choice.trust).catch(() => {})
+          // Keep all selected skills — the backend already approved this one.
+        }
+        // 'allowOnce' → keep all selected skills, no persistence needed.
+      }
     }
 
     const queued = createQueuedFollowUp(conversationId, trimmed)
@@ -3798,6 +3830,14 @@ export function App() {
               state={visionFallbackState}
               onRespond={choice => {
                 visionFallbackResolveRef.current?.(choice)
+              }}
+            />
+          )}
+          {pendingSkillApproval && skillApprovalResolveRef.current && (
+            <SkillApprovalPanel
+              skills={pendingSkillApproval}
+              onRespond={choice => {
+                skillApprovalResolveRef.current?.(choice)
               }}
             />
           )}

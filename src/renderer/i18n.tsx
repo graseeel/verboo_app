@@ -400,6 +400,15 @@ const enUS: Record<string, string> = {
   'ocr.processing': 'Running OCR…',
   'ocr.extracted': 'Text extracted via OCR',
 
+  'skillApproval.title': 'Skill from this project',
+  'skillApproval.titleMultiple': 'Skills from this project',
+  'skillApproval.description': 'This skill comes from the current project directory. Review it before allowing access to your code and terminal.',
+  'skillApproval.allowOnce': 'Allow this time',
+  'skillApproval.allowOnceAll': 'Allow all this time',
+  'skillApproval.alwaysTrust': 'Always trust',
+  'skillApproval.cancel': 'Cancel',
+  'skillApproval.skippedWarning': 'One or more skills were not approved and were skipped.',
+
   'settings.navAria': 'Settings',
   'settings.back': 'Back to app',
   'settings.title': 'Settings',
@@ -991,6 +1000,15 @@ const ptBR: Record<string, string> = {
 
   'ocr.processing': 'Executando OCR…',
   'ocr.extracted': 'Texto extraído via OCR',
+
+  'skillApproval.title': 'Skill deste projeto',
+  'skillApproval.titleMultiple': 'Skills deste projeto',
+  'skillApproval.description': 'Esta skill é do diretório do projeto atual. Revise antes de permitir acesso ao seu código e terminal.',
+  'skillApproval.allowOnce': 'Permitir esta vez',
+  'skillApproval.allowOnceAll': 'Permitir todas esta vez',
+  'skillApproval.alwaysTrust': 'Confiar sempre',
+  'skillApproval.cancel': 'Cancelar',
+  'skillApproval.skippedWarning': 'Uma ou mais skills não foram aprovadas e foram ignoradas.',
 
   'settings.navAria': 'Configurações',
   'settings.back': 'Voltar ao app',
