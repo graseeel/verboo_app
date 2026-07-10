@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   Bell,
   Brain,
+  Camera,
   Check,
   ChevronDown,
   Computer,
@@ -38,6 +39,8 @@ import type {
 } from '../../../shared/types'
 import { LanguageSelector } from '../language/LanguageSelector'
 import { useToast } from '../../components/Toast'
+import { AVATAR_PALETTE, AVATAR_PRESETS, renderPreset } from '../profile/avatarPresets'
+import { AvatarIcon } from '../../components/AvatarIcon'
 import { formatCompactNumber, formatDateTime, useI18n } from '../../i18n'
 import { DEFAULT_CONVERSATION_TITLE } from '../../state/chatStore'
 
@@ -549,6 +552,123 @@ export function SettingsView({
                 </select>
                 <ChevronDown size={15} />
               </label>
+
+              {/* ── Avatar section ────────────────────────── */}
+              <div className="settings-avatar-section">
+                <strong>{t('settings.avatarTitle')}</strong>
+                <small className="settings-avatar-body">{t('settings.avatarBody')}</small>
+                <div className="settings-avatar-options">
+                  {/* Upload */}
+                  <label className="settings-avatar-upload-label">
+                    <Camera size={16} />
+                    <span>{t('settings.avatarUpload')}</span>
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      className="sr-only"
+                      onChange={async e => {
+                        const file = e.target.files?.[0]
+                        if (!file) return
+                        try {
+                          // Validate size: max 10 MB.
+                          if (file.size > 10 * 1024 * 1024) {
+                            toast(t('settings.avatarUploadErrorSize'), 'error')
+                            return
+                          }
+                          // Validate MIME.
+                          if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+                            toast(t('settings.avatarUploadErrorType'), 'error')
+                            return
+                          }
+
+                          // Load image into a bitmap for canvas processing.
+                          const img = await createImageBitmap(file)
+                          const size = Math.min(img.width, img.height)
+                          const sx = (img.width - size) / 2
+                          const sy = (img.height - size) / 2
+                          // Target: ~3.5x of the 34px display size → 120px.
+                          const canvasSize = 120
+                          const canvas = document.createElement('canvas')
+                          canvas.width = canvasSize
+                          canvas.height = canvasSize
+                          const ctx = canvas.getContext('2d')!
+                          // Crop center square and scale down in one draw.
+                          ctx.imageSmoothingEnabled = true
+                          ctx.imageSmoothingQuality = 'high'
+                          ctx.drawImage(img, sx, sy, size, size, 0, 0, canvasSize, canvasSize)
+
+                          const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, file.type, 0.92))
+                          if (!blob) throw new Error('canvas toBlob returned null')
+                          const base64 = await new Promise<string>(resolve => {
+                            const r = new FileReader()
+                            r.onload = () => resolve((r.result as string).split(',')[1])
+                            r.readAsDataURL(blob)
+                          })
+                          const path = await window.verboo.saveAvatarBlob(base64, file.type)
+                          onUserSettingsChange({ avatar: { kind: 'upload', uploadPath: path } })
+                          toast(t('settings.avatarUploadSuccess'))
+                        } catch (err) {
+                          toast(t('settings.avatarUploadErrorGeneric'), 'error')
+                          console.warn('avatar upload failed:', err)
+                        }
+                      }}
+                    />
+                  </label>
+
+                  {/* Preset grid */}
+                  <details className="settings-avatar-presets">
+                    <summary>{t('settings.avatarChoosePreset')}</summary>
+                    <div className="settings-avatar-preset-grid">
+                      {/* Color picker */}
+                      <div className="settings-avatar-colors">
+                        {AVATAR_PALETTE.map(color => (
+                          <button
+                            key={color}
+                            type="button"
+                            className={`settings-avatar-color ${(userSettings.avatar?.presetColor ?? '#6B7280') === color ? 'is-active' : ''}`}
+                            style={{ backgroundColor: color }}
+                            onClick={() => onUserSettingsChange({
+                              avatar: { ...userSettings.avatar ?? { kind: 'preset' }, kind: 'preset', presetColor: color }
+                            })}
+                            aria-label={color}
+                          />
+                        ))}
+                      </div>
+                      {/* Icon grid */}
+                      <div className="settings-avatar-icon-grid">
+                        {Object.entries(AVATAR_PRESETS).map(([id, preset]) => (
+                          <button
+                            key={id}
+                            type="button"
+                            className={`settings-avatar-icon ${userSettings.avatar?.presetId === id ? 'is-active' : ''}`}
+                            onClick={() => onUserSettingsChange({
+                              avatar: {
+                                kind: 'preset',
+                                presetId: id,
+                                presetColor: userSettings.avatar?.presetColor ?? '#6B7280',
+                              }
+                            })}
+                            title={t(preset.labelKey)}
+                          >
+                            {renderPreset(id, userSettings.avatar?.presetColor ?? '#6B7280')}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </details>
+
+                  {/* Reset to initials */}
+                  <button
+                    type="button"
+                    className="settings-avatar-reset"
+                    onClick={() => onUserSettingsChange({ avatar: { kind: 'initials' } })}
+                  >
+                    <RotateCcw size={14} />
+                    {t('settings.avatarReset')}
+                  </button>
+                </div>
+              </div>
+
               <label className="custom-instructions-field">
                 <span>
                   <strong>{t('settings.customInstructions')}</strong>

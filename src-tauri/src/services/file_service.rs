@@ -407,6 +407,82 @@ pub fn inspect_attachment(path: &str) -> Option<AttachmentMeta> {
 /// would exhaust memory or fill the disk with temp files).
 pub const MAX_PASTED_IMAGE_BYTES: usize = 15 * 1024 * 1024;
 
+/// Maximum decoded size for an avatar image (10 MB). Avatars are small
+/// profile pictures — 10MB is generous (a typical JPEG avatar is 50-500KB).
+/// Larger uploads are rejected to prevent disk/memory abuse.
+pub const MAX_AVATAR_BYTES: usize = 10 * 1024 * 1024;
+
+/// MIME types accepted for avatar uploads. Maps MIME → file extension.
+const AVATAR_MIME_EXTENSIONS: &[(&str, &str)] = &[
+    ("image/png", "png"),
+    ("image/jpeg", "jpg"),
+    ("image/jpg", "jpg"),
+    ("image/webp", "webp"),
+];
+
+/// Validates a MIME type and returns the corresponding file extension.
+/// Returns `None` for unsupported MIME types.
+fn avatar_extension_for_mime(mime: &str) -> Option<&'static str> {
+    AVATAR_MIME_EXTENSIONS
+        .iter()
+        .find(|(m, _)| *m == mime.to_lowercase().as_str())
+        .map(|(_, ext)| *ext)
+}
+
+/// Saves an avatar image (decoded base64 bytes) to the app data directory.
+///
+/// The avatar is saved as `avatar.<ext>` (e.g. `avatar.png`). If a previous
+/// avatar exists with a different extension (e.g. switching from PNG to
+/// JPEG), the old file is removed to avoid accumulating stale files.
+///
+/// Used by the `save_avatar_blob` Tauri command for profile picture uploads.
+///
+/// Returns the absolute path of the saved file, or an error string.
+pub fn save_avatar_blob_core(
+    bytes: &[u8],
+    mime: &str,
+    app_data_dir: &Path,
+) -> Result<std::path::PathBuf, String> {
+    if bytes.is_empty() {
+        return Err("avatar image is empty".to_string());
+    }
+    if bytes.len() > MAX_AVATAR_BYTES {
+        let mb = bytes.len() / (1024 * 1024);
+        return Err(format!(
+            "avatar too large: {mb}MB (max {}MB)",
+            MAX_AVATAR_BYTES / (1024 * 1024)
+        ));
+    }
+
+    let ext = avatar_extension_for_mime(mime).ok_or_else(|| {
+        format!(
+            "unsupported avatar MIME type: {mime} (accepted: image/png, image/jpeg, image/webp)"
+        )
+    })?;
+
+    // Ensure app data dir exists.
+    std::fs::create_dir_all(app_data_dir).map_err(|e| format!("create app_data_dir: {e}"))?;
+
+    // Remove old avatars with different extensions to avoid accumulating
+    // stale files (e.g. switching from PNG to JPEG should delete avatar.png).
+    for (_, old_ext) in AVATAR_MIME_EXTENSIONS {
+        if *old_ext == ext {
+            continue;
+        }
+        let old_path = app_data_dir.join(format!("avatar.{old_ext}"));
+        if old_path.exists() {
+            let _ = std::fs::remove_file(&old_path);
+        }
+    }
+
+    // Write the new avatar.
+    let target_path = app_data_dir.join(format!("avatar.{ext}"));
+    std::fs::write(&target_path, bytes)
+        .map_err(|e| format!("write avatar file: {e}"))?;
+
+    Ok(target_path)
+}
+
 /// Writes a pasted image (decoded base64 bytes) to a temp file in the given
 /// directory and inspects it via `inspect_attachment`. Used by the
 /// `inspect_pasted_image` Tauri command for clipboard paste (screenshots).
@@ -1200,6 +1276,153 @@ mod tests {
         // Both files should exist.
         assert!(std::path::Path::new(&meta1.path).exists());
         assert!(std::path::Path::new(&meta2.path).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Avatar blob tests (save_avatar_blob command) ───────────────
+
+    #[test]
+    fn save_avatar_blob_png_saves_and_returns_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "verboo-test-avatar-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let png = minimal_png_bytes();
+        let path = save_avatar_blob_core(&png, "image/png", &dir).unwrap();
+        assert!(path.ends_with("avatar.png"), "got: {}", path.display());
+        assert!(path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_avatar_blob_jpeg_saves_with_jpg_extension() {
+        let dir = std::env::temp_dir().join(format!(
+            "verboo-test-avatar-jpg-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // Use PNG bytes but with JPEG MIME — extension comes from MIME.
+        let png = minimal_png_bytes();
+        let path = save_avatar_blob_core(&png, "image/jpeg", &dir).unwrap();
+        assert!(path.ends_with("avatar.jpg"), "got: {}", path.display());
+        assert!(path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_avatar_blob_webp_saves_with_webp_extension() {
+        let dir = std::env::temp_dir().join(format!(
+            "verboo-test-avatar-webp-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let bytes = vec![0u8; 100]; // fake webp bytes
+        let path = save_avatar_blob_core(&bytes, "image/webp", &dir).unwrap();
+        assert!(path.ends_with("avatar.webp"), "got: {}", path.display());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_avatar_blob_rejects_empty_bytes() {
+        let dir = std::env::temp_dir().join("verboo-test-avatar-empty");
+        let result = save_avatar_blob_core(&[], "image/png", &dir);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_avatar_blob_rejects_invalid_mime() {
+        let dir = std::env::temp_dir().join("verboo-test-avatar-mime");
+        let bytes = vec![0u8; 100];
+        let result = save_avatar_blob_core(&bytes, "image/gif", &dir);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("unsupported"), "got: {err}");
+        assert!(err.contains("image/gif"), "should mention the rejected MIME");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_avatar_blob_rejects_oversized() {
+        let dir = std::env::temp_dir().join("verboo-test-avatar-big");
+        let oversized = vec![0u8; MAX_AVATAR_BYTES + 1];
+        let result = save_avatar_blob_core(&oversized, "image/png", &dir);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("too large"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_avatar_blob_removes_old_extension() {
+        // Save PNG, then save JPEG — the old avatar.png should be removed.
+        let dir = std::env::temp_dir().join(format!(
+            "verboo-test-avatar-cleanup-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let png = minimal_png_bytes();
+
+        // Save PNG first.
+        let png_path = save_avatar_blob_core(&png, "image/png", &dir).unwrap();
+        assert!(png_path.ends_with("avatar.png"));
+        assert!(png_path.exists());
+
+        // Save JPEG — should remove avatar.png.
+        let jpg_path = save_avatar_blob_core(&png, "image/jpeg", &dir).unwrap();
+        assert!(jpg_path.ends_with("avatar.jpg"));
+        assert!(jpg_path.exists());
+        assert!(
+            !png_path.exists(),
+            "old avatar.png should be removed after switching to JPEG"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_avatar_blob_overwrites_same_extension() {
+        // Saving a new avatar with the same MIME should overwrite, not error.
+        let dir = std::env::temp_dir().join(format!(
+            "verboo-test-avatar-overwrite-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let png1 = minimal_png_bytes();
+        let path1 = save_avatar_blob_core(&png1, "image/png", &dir).unwrap();
+
+        let png2 = vec![0xFF; 200]; // different content
+        let path2 = save_avatar_blob_core(&png2, "image/png", &dir).unwrap();
+
+        // Same path, overwritten content.
+        assert_eq!(path1, path2, "same extension should overwrite same path");
+        assert!(path2.exists());
+        // Content should be the new bytes.
+        let saved = std::fs::read(&path2).unwrap();
+        assert_eq!(saved, png2, "content should be overwritten");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_avatar_blob_mime_case_insensitive() {
+        // MIME types should be matched case-insensitively.
+        let dir = std::env::temp_dir().join("verboo-test-avatar-case");
+        let bytes = vec![0u8; 100];
+        let path = save_avatar_blob_core(&bytes, "IMAGE/PNG", &dir).unwrap();
+        assert!(path.ends_with("avatar.png"), "got: {}", path.display());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

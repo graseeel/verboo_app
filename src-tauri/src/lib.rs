@@ -693,6 +693,40 @@ fn inspect_pasted_image(
     Ok(vec![meta])
 }
 
+/// Saves an avatar image (base64-encoded) to the app data directory.
+///
+/// The avatar is saved as `avatar.<ext>` (e.g. `avatar.png`). If a previous
+/// avatar exists with a different extension, the old file is removed.
+///
+/// Accepted MIME types: `image/png`, `image/jpeg`, `image/webp`.
+/// Maximum size: 10MB decoded.
+///
+/// Returns the absolute path of the saved file. The renderer stores this
+/// path in `UserSettings.avatar.uploadPath`.
+#[tauri::command]
+fn save_avatar_blob(
+    base64: String,
+    mime: String,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    use base64::Engine;
+
+    // Decode base64. Reject if invalid.
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64.trim())
+        .map_err(|e| format!("invalid base64: {e}"))?;
+
+    // Resolve app_data_dir.
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("resolve app_data_dir: {e}"))?;
+
+    // Delegate to the testable core function.
+    let path = services::file_service::save_avatar_blob_core(&bytes, &mime, &app_data_dir)?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
@@ -1200,6 +1234,7 @@ pub fn run() {
             pick_files,
             inspect_files,
             inspect_pasted_image,
+            save_avatar_blob,
             pick_folder,
             create_project_folder,
             // Agent

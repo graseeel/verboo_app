@@ -213,6 +213,11 @@ const api = {
   // Convert a local file path to a webview-accessible URL for <img> src.
   fileUrl: (path: string) => convertFileSrc(path),
   createProjectFolder: () => invoke<string | undefined>('create_project_folder'),
+  // Save an avatar image (base64) to the app data dir. Returns the absolute
+  // path of the saved file. Accepted MIME: image/png, image/jpeg, image/webp.
+  // Max 10MB. Old avatars with different extensions are removed.
+  saveAvatarBlob: (base64: string, mime: string) =>
+    invoke<string>('save_avatar_blob', { base64, mime }),
 
   // ── Agent ───────────────────────────────────────────────────
   sendTurn: (request: AgentTurnRequest, resumeSessionId?: string) =>

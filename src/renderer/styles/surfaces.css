@@ -1386,6 +1386,42 @@
   background: color-mix(in srgb, var(--green) 7%, var(--bg-elevated));
 }
 
+/* ── Settings — Avatar picker ─────────────────────────────── */
+.settings-avatar-section { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.settings-avatar-body { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.settings-avatar-options { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 4px; }
+.settings-avatar-upload-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-soft); color: var(--text); font-size: 12px; cursor: pointer;
+}
+.settings-avatar-upload-label:hover { background: var(--bg-hover); }
+.settings-avatar-presets { width: 100%; }
+.settings-avatar-presets summary { cursor: pointer; font-size: 12px; color: var(--accent-strong); padding: 4px 0; }
+.settings-avatar-preset-grid { display: flex; flex-direction: column; gap: 8px; padding: 8px 0; }
+.settings-avatar-colors { display: flex; gap: 6px; flex-wrap: wrap; }
+.settings-avatar-color {
+  width: 28px; height: 28px; border-radius: 999px; border: 2px solid transparent;
+  cursor: pointer; transition: border-color 0.15s;
+}
+.settings-avatar-color:hover { border-color: var(--text-muted); }
+.settings-avatar-color.is-active { border-color: var(--text); }
+.settings-avatar-icon-grid { display: flex; gap: 6px; flex-wrap: wrap; }
+.settings-avatar-icon {
+  width: 36px; height: 36px; display: grid; place-items: center;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: transparent; cursor: pointer;
+  font-size: 20px;
+}
+.settings-avatar-icon:hover { background: var(--bg-hover); }
+.settings-avatar-icon.is-active { border-color: var(--accent-strong); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.settings-avatar-reset {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 6px 10px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--text-muted); font-size: 11px; cursor: pointer;
+}
+.settings-avatar-reset:hover { background: var(--bg-hover); color: var(--danger); }
+
 .message-row.summary {
   width: min(860px, calc(100% - 44px));
   border-color: color-mix(in srgb, var(--green) 28%, var(--border));

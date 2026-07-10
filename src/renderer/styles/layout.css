@@ -862,10 +862,16 @@
   height: 34px;
   border-radius: 999px;
   background: linear-gradient(135deg, var(--accent), var(--accent-strong));
-  color: white;
-  font-size: 12px;
-  font-weight: 760;
+  overflow: hidden;
 }
+
+/* AvatarIcon variants — inner content fills the parent circle */
+.avatar-icon { display: contents; }
+.avatar-initials { font-size: 14px; font-weight: 700; color: white; }
+.avatar-preset { width: 100%; height: 100%; display: grid; place-items: center; }
+.avatar-preset svg { width: 60%; height: 60%; display: block; }
+.avatar-upload { width: 100%; height: 100%; display: grid; }
+.avatar-upload .avatar-img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 .sidebar-account strong,
 .sidebar-account small {

@@ -19,7 +19,8 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
-import type { ChatProject, CliAuthStatus, ProfileResult, StoredConversation } from '../../shared/types'
+import type { ChatProject, CliAuthStatus, ProfileResult, StoredConversation, AvatarSettings } from '../../shared/types'
+import { AvatarIcon } from './AvatarIcon'
 import { ContextMenu, type ContextMenuState } from './ContextMenu'
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss'
 import { useI18n } from '../i18n'
@@ -55,6 +56,7 @@ type AppSidebarProps = {
   onArchiveConversation: (conversationId: string) => void
   onDeleteConversation: (conversationId: string) => void
   onRenameConversation: (conversationId: string, title: string) => void
+  avatarSettings?: AvatarSettings
 }
 
 export function AppSidebar({
@@ -83,6 +85,7 @@ export function AppSidebar({
   onArchiveConversation,
   onDeleteConversation,
   onRenameConversation,
+  avatarSettings,
 }: AppSidebarProps) {
   const { t } = useI18n()
   const [searchOpen, setSearchOpen] = useState(false)
@@ -363,7 +366,7 @@ export function AppSidebar({
           </span>
           <small className="account-disclaimer">{t('sidebar.devBuild')}</small>
           <span className="account-profile">
-            <span className="account-avatar">{initials(profileName)}</span>
+            <AvatarIcon settings={avatarSettings} name={profileName} className="account-avatar" />
             <span>
               <strong>{profileName}</strong>
               <small>{profile.plan?.name ?? (cliAuth.loggedIn ? t('sidebar.cliConnected') : profile.status === 'unauthenticated' ? t('sidebar.noApiKey') : t('sidebar.planUnavailable'))}</small>
@@ -464,8 +467,3 @@ function relativeTime(timestamp: number, t: (key: string, values?: Record<string
   return t('sidebar.days', { count: Math.floor(hours / 24) })
 }
 
-function initials(value: string): string {
-  const parts = value.split(/\s+/).filter(Boolean)
-  if (!parts.length) return 'V'
-  return parts.slice(0, 2).map(part => part[0]?.toUpperCase()).join('')
-}

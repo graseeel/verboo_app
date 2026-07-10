@@ -234,6 +234,19 @@ export type UserSettings = {
   // with "Always Allow". Trusted skills (user/legacy roots) don't need
   // approval — they pass through directly.
   trustedSkills: string[]
+  // Avatar configuration: how the user's profile picture is rendered.
+  avatar?: AvatarSettings
+}
+
+/// Profile avatar configuration.
+/// kind='initials' → show the user's initials (default, no storage needed).
+/// kind='preset'   → render one of the 50 built-in SVG icons (presetId + color).
+/// kind='upload'   → show a user-uploaded photo (uploadPath saved by backend).
+export type AvatarSettings = {
+  kind: 'initials' | 'preset' | 'upload'
+  presetId?: string
+  presetColor?: string
+  uploadPath?: string
 }
 
 /// User consent for the vision fallback feature.

@@ -3609,6 +3609,7 @@ export function App() {
               runningConversationIds={runningConversations}
               profile={profile}
               cliAuth={cliAuth}
+              avatarSettings={userSettings.avatar}
               compact={sidebarMode === 'compact'}
               onSelectView={setActiveView}
               onOpenSettings={() => {
