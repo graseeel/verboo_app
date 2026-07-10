@@ -267,6 +267,9 @@ export function App() {
   const [selectedSkills, setSelectedSkills] = useState<SkillSummary[]>([])
   const [attachedFiles, setAttachedFiles] = useState<AttachmentMeta[]>([])
   const [ocrProcessingPaths, setOcrProcessingPaths] = useState<string[]>([])
+  // Refs keyed by image path, resolved when OCR completes or fails.
+  // Used by sendMessage to await pending OCR before sending.
+  const ocrCompletionsRef = useRef<Record<string, { resolve: () => void; promise: Promise<void> }>>({})
   const [accessMode, setAccessMode] = useState<AccessMode>('approval')
   const [chatStore, setChatStore] = useState<ChatStore>(readChatStore)
   const [activeConversationId, setActiveConversationId] = useState<string | undefined>(() => {
@@ -1386,6 +1389,21 @@ export function App() {
       }
     }
 
+    // ── OCR race gate ────────────────────────────────────────
+    // Wait for pending OCR to finish (up to 15s) so images already in
+    // the process don't go unread. Non-blocking for attachments that
+    // haven't started OCR yet.
+    const pendingOcr = attachedFiles
+      .filter(f => f.kind === 'image' && !f.extractedText)
+      .map(f => ocrCompletionsRef.current[f.path]?.promise)
+      .filter(Boolean) as Promise<void>[]
+    if (pendingOcr.length) {
+      await Promise.race([
+        Promise.allSettled(pendingOcr),
+        new Promise<void>(resolve => setTimeout(resolve, 15_000)),
+      ])
+    }
+
     const queued = createQueuedFollowUp(conversationId, trimmed)
     setActiveView('chat')
     stickToBottomRef.current = true
@@ -2344,17 +2362,46 @@ export function App() {
         setOcrProcessingPaths(current => current.filter(p => p !== att.path))
         continue
       }
-      recognizeImage(imageUrl).then(result => {
-        setOcrProcessingPaths(current => current.filter(p => p !== att.path))
-        if (!result) return
-        const status: ExtractionStatus = result.isEmpty ? 'warning' : 'extracted'
-        setAttachedFiles(current =>
-          current.map(a => a.path === att.path
-            ? { ...a, extractedText: result.text, extractionStatus: status }
-            : a
+      // Create a deferred promise so sendMessage can await OCR completion.
+      let _resolve: () => void
+      const promise = new Promise<void>(resolve => { _resolve = resolve })
+      ocrCompletionsRef.current[att.path] = { resolve: _resolve!, promise }
+
+      recognizeImage(imageUrl)
+        .then(result => {
+          ocrCompletionsRef.current[att.path]?.resolve()
+          delete ocrCompletionsRef.current[att.path]
+          setOcrProcessingPaths(current => current.filter(p => p !== att.path))
+          if (!result) {
+            // Worker failed (missing traineddata / CSP block) — mark warning.
+            setAttachedFiles(current =>
+              current.map(a => a.path === att.path
+                ? { ...a, extractionStatus: 'warning' as ExtractionStatus }
+                : a
+              )
+            )
+            return
+          }
+          const status: ExtractionStatus = result.isEmpty ? 'warning' : 'extracted'
+          setAttachedFiles(current =>
+            current.map(a => a.path === att.path
+              ? { ...a, extractedText: result.text, extractionStatus: status }
+              : a
+            )
           )
-        )
-      })
+        })
+        .catch(() => {
+          // Unhandled rejection — worker crashed.
+          ocrCompletionsRef.current[att.path]?.resolve()
+          delete ocrCompletionsRef.current[att.path]
+          setOcrProcessingPaths(current => current.filter(p => p !== att.path))
+          setAttachedFiles(current =>
+            current.map(a => a.path === att.path
+              ? { ...a, extractionStatus: 'warning' as ExtractionStatus }
+              : a
+            )
+          )
+        })
     }
   }
 

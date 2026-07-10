@@ -25,15 +25,11 @@ const WORKER_PATH = `${ASSET_BASE}worker.min.js`
 const CORE_PATH = `${ASSET_BASE}tesseract-core-simd-lstm.js`
 
 /**
- * Where to look for .traineddata files. In production these should be in
- * the app data directory (downloaded by a Rust command into a known path).
- * For now we point at jsdelivr — CSP blocks this by default; the first OCR
- * call will fail gracefully and the user is told to configure assets.
- *
- * The path config here is overridden at runtime if the backend provides a
- * local traineddata directory via `getVisionFallbackState` or similar.
+ * Local traineddata directory — served from `dist-renderer/tessdata/` via the
+ * Vite public directory. Files are downloaded at build time by the
+ * `fetch:tessdata` script (eng.traineddata + por.traineddata).
  */
-const DEFAULT_LANG_PATH = 'https://cdn.jsdelivr.net/npm/@tesseract.js-data'
+const DEFAULT_LANG_PATH = '/tessdata/'
 
 /** Languages to load */
 const LANGS = 'eng+por'

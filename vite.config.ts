@@ -7,6 +7,7 @@ const rendererRoot = resolve(__dirname, 'src/renderer')
 export default defineConfig({
   root: rendererRoot,
   plugins: [react()],
+  assetsInclude: ['**/*.traineddata', '**/*.traineddata.gz'],
   server: {
     port: 5183,
     strictPort: true,

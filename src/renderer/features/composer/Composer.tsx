@@ -349,7 +349,9 @@ export function Composer({
                   <span className="attachment-badge attachment-badge-amber">{t('composer.attachmentWarningStatus')}</span>
                 )}
                 {isExtracted && (
-                  <span className="attachment-badge attachment-badge-ok">{t('composer.attachmentTextExtracted')}</span>
+                  <span className="attachment-badge attachment-badge-ok">
+                    {isImage ? t('ocr.extracted') : t('composer.attachmentTextExtracted')}
+                  </span>
                 )}
                 <X size={12} />
               </button>
