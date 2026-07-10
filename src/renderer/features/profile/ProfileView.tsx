@@ -91,7 +91,9 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
                     console.log('[avatar] step 6: saveAvatarBlob returned:', path)
                     URL.revokeObjectURL(pendingFile.previewUrl)
                     setPendingFile(undefined)
-                    onUpdateAvatar({ kind: 'upload', uploadPath: path })
+                    // uploadVersion busts cache — backend uses fixed avatar.ext name
+                    // so path alone never changes between uploads.
+                    onUpdateAvatar({ kind: 'upload', uploadPath: path, uploadVersion: Date.now() })
                     console.log('[avatar] step 7: avatar applied')
                     toast(t('settings.avatarUploadSuccess'))
                   } catch (err) {

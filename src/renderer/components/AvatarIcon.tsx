@@ -32,12 +32,20 @@ function initials(name: string): string {
 
 export function AvatarIcon({ settings, name, size = 34, className = '' }: AvatarIconProps) {
   const kind = settings?.kind ?? 'initials'
-  // Upload img error state → fall back to initials
-  const [imgFailed, setImgFailed] = useState(false)
+  // The backend saves every avatar as avatar.ext (fixed name), so uploadPath
+  // never changes between uploads. We derive a compound imageId from
+  // path + version — this busts the browser/webview cache and lets a failed
+  // load retry after a new upload (failedId !== new imageId).
+  const imageId = settings?.uploadPath
+    ? `${settings.uploadPath}::v${settings.uploadVersion ?? 0}`
+    : undefined
+  const [failedId, setFailedId] = useState<string | undefined>()
 
   // ── Uploaded photo (with fallback) ─────────────────────────
-  if (kind === 'upload' && settings?.uploadPath && !imgFailed) {
-    const url = window.verboo?.fileUrl?.(settings.uploadPath) ?? ''
+  if (kind === 'upload' && settings?.uploadPath && imageId && failedId !== imageId) {
+    const uploadPath = settings.uploadPath
+    const uploadVer = settings.uploadVersion ?? 0
+    const url = (window.verboo?.fileUrl?.(uploadPath) ?? '') + `?v=${uploadVer}`
     const fontSize = Math.round(size * 0.42)
     return (
       <span
@@ -46,10 +54,11 @@ export function AvatarIcon({ settings, name, size = 34, className = '' }: Avatar
       >
         {url ? (
           <img
+            key={imageId}
             src={url}
             alt=""
             className="avatar-img"
-            onError={() => setImgFailed(true)}
+            onError={() => setFailedId(imageId)}
           />
         ) : (
           <span className="avatar-inner-text">{initials(name)}</span>

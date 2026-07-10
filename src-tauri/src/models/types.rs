@@ -198,6 +198,12 @@ pub struct AvatarSettings {
     pub preset_color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upload_path: Option<String>,
+    /// Monotonic version bumped on each upload. The backend uses a fixed
+    /// filename (avatar.ext) so the path never changes — `upload_version`
+    /// busts the cache and ensures retry after a previous load failure.
+    /// Mirrors the TS `uploadVersion` field (src/shared/types.ts:253).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload_version: Option<u64>,
 }
 
 impl Default for AvatarSettings {
@@ -207,6 +213,7 @@ impl Default for AvatarSettings {
             preset_id: None,
             preset_color: None,
             upload_path: None,
+            upload_version: None,
         }
     }
 }
@@ -1237,5 +1244,93 @@ mod tests {
         let json = serde_json::to_string(&event).expect("serialize");
         assert!(json.contains("\"type\":\"started\""));
         assert!(!json.contains("eventType"));
+    }
+
+    // ── AvatarSettings round-trip tests ──────────────────────────────
+
+    #[test]
+    fn avatar_settings_upload_version_round_trip() {
+        // Prove that uploadVersion survives a serialize → deserialize cycle.
+        // Before the fix, the Rust struct had no upload_version field, so the
+        // TS uploadVersion was silently discarded during settings round-trip.
+        let avatar = AvatarSettings {
+            kind: AvatarKind::Upload,
+            preset_id: None,
+            preset_color: None,
+            upload_path: Some("/appdata/avatar.png".into()),
+            upload_version: Some(1234567890),
+        };
+        let json = serde_json::to_string(&avatar).expect("serialize");
+        // Wire format must be camelCase (uploadVersion, not upload_version).
+        assert!(
+            json.contains("\"uploadVersion\":1234567890"),
+            "expected camelCase uploadVersion in JSON, got: {json}"
+        );
+        let back: AvatarSettings = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, avatar, "round-trip must be lossless");
+        assert_eq!(back.upload_version, Some(1234567890));
+    }
+
+    #[test]
+    fn avatar_settings_upload_version_absent_defaults_to_none() {
+        // Old JSON (without uploadVersion) must deserialize to None —
+        // backward compatible with settings.json from previous versions.
+        let json = r#"{"kind":"upload","uploadPath":"/appdata/avatar.png"}"#;
+        let avatar: AvatarSettings = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(avatar.kind, AvatarKind::Upload);
+        assert_eq!(avatar.upload_path.as_deref(), Some("/appdata/avatar.png"));
+        assert_eq!(avatar.upload_version, None, "absent field must default to None");
+    }
+
+    #[test]
+    fn avatar_settings_upload_version_skipped_when_none() {
+        // When upload_version is None, it must NOT appear in the serialized
+        // JSON (skip_serializing_if = Option::is_none). This keeps the wire
+        // format clean and matches the TS optional field.
+        let avatar = AvatarSettings {
+            kind: AvatarKind::Initials,
+            preset_id: None,
+            preset_color: None,
+            upload_path: None,
+            upload_version: None,
+        };
+        let json = serde_json::to_string(&avatar).expect("serialize");
+        assert!(
+            !json.contains("uploadVersion"),
+            "None upload_version must be skipped, got: {json}"
+        );
+        assert!(
+            !json.contains("uploadPath"),
+            "None upload_path must be skipped, got: {json}"
+        );
+    }
+
+    #[test]
+    fn avatar_settings_in_user_settings_round_trip() {
+        // Full UserSettings round-trip with avatar.uploadVersion set —
+        // proves the version survives the settings store cycle.
+        let mut settings = UserSettings::default();
+        settings.avatar = Some(AvatarSettings {
+            kind: AvatarKind::Upload,
+            preset_id: None,
+            preset_color: None,
+            upload_path: Some("/appdata/avatar.webp".into()),
+            upload_version: Some(99),
+        });
+        let json = serde_json::to_string(&settings).expect("serialize");
+        assert!(
+            json.contains("\"uploadVersion\":99"),
+            "uploadVersion must be in the serialized UserSettings, got: {json}"
+        );
+        let back: UserSettings = serde_json::from_str(&json).expect("deserialize");
+        // UserSettings doesn't derive PartialEq, so check the avatar fields.
+        let back_avatar = back.avatar.expect("avatar must survive round-trip");
+        assert_eq!(back_avatar.kind, AvatarKind::Upload);
+        assert_eq!(back_avatar.upload_path.as_deref(), Some("/appdata/avatar.webp"));
+        assert_eq!(
+            back_avatar.upload_version,
+            Some(99),
+            "uploadVersion must survive round-trip"
+        );
     }
 }

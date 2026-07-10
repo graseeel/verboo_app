@@ -247,6 +247,10 @@ export type AvatarSettings = {
   presetId?: string
   presetColor?: string
   uploadPath?: string
+  // Monotonic version bumped on each upload. The backend uses a fixed filename
+  // (avatar.ext) so path never changes — version busts the cache and ensures
+  // retry after a previous load failure.
+  uploadVersion?: number
 }
 
 /// User consent for the vision fallback feature.
