@@ -1354,10 +1354,14 @@
 
 /* ── Message action icons (hover-reveal, 16px) ────────────── */
 .message-actions {
-  display: flex; gap: 2px; margin-top: 4px;
+  display: flex; gap: 2px; margin-top: 2px;
+  justify-self: start;
   opacity: 0; transition: opacity 0.15s ease;
 }
-.message-row:hover .message-actions { opacity: 1; }
+.message-actions-right { justify-self: end; }
+/* parent hover reveals actions — the sibling <article> is the hover target */
+.message-row.user:hover + .message-actions,
+.message-row.tool:hover + .message-actions { opacity: 1; }
 .message-actions:focus-within { opacity: 1; }
 
 .msg-action {

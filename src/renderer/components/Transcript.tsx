@@ -209,7 +209,7 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onSe
 
   // Inline edit UI
   if (editMode) {
-    return (
+    return (<>
       <article className={`message-row ${item.role} ${item.kind ?? 'message'}`} data-activity={item.activityKind}>
         <div className="message-meta"><span>{isQueued ? t('transcript.editQueued') : t('transcript.editMessage')}</span></div>
         <textarea className="message-edit-textarea" value={editText} onChange={e => setEditText(e.target.value)} autoFocus />
@@ -219,10 +219,11 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onSe
         </div>
         {children}
       </article>
+    </>
     )
   }
 
-  return (
+  return (<>
     <article
       className={`message-row ${item.role} ${item.kind ?? 'message'}`}
       data-activity={item.activityKind}
@@ -267,31 +268,30 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onSe
         {item.kind !== 'summary' && item.activityDetail && <span className="message-detail">{item.activityDetail}</span>}
       </div>
 
-      {/* ── Action icons ──────────────────────────────────── */}
-      {(isUserMessage || isQueued) && !item.streaming && (
-        <div className="message-actions">
-          {isQueued && onSendNow && conversationId && queueItemId && (
-            <button type="button" className="msg-action" onClick={() => onSendNow(conversationId, queueItemId)} title={t('transcript.sendNow')}>
-              <SendHorizontal size={14} />
-            </button>
-          )}
-          {/* Manter na fila — clock icon shows the item is waiting */}
-          {isQueued && (
-            <span className="msg-action msg-action-indicator" title={t('transcript.queuedWaiting')}>
-              <Clock3 size={14} />
-            </span>
-          )}
-          <button type="button" className="msg-action" onClick={handleCopy} title={t('transcript.copyText')}>
-            {copyFlash ? <Check size={14} /> : <Clipboard size={14} />}
-          </button>
-          <button type="button" className="msg-action" onClick={() => { setEditText(visibleText || item.text); setEditMode(true) }} title={t('transcript.editMessage')}>
-            <Pencil size={14} />
-          </button>
-        </div>
-      )}
-
       {children}
     </article>
+
+    {(isUserMessage || isQueued) && !item.streaming && (
+      <div className={`message-actions ${isUserMessage ? 'message-actions-right' : ''}`}>
+        {isQueued && onSendNow && conversationId && queueItemId && (
+          <button type="button" className="msg-action" onClick={() => onSendNow(conversationId, queueItemId)} title={t('transcript.sendNow')}>
+            <SendHorizontal size={14} />
+          </button>
+        )}
+        {isQueued && (
+          <span className="msg-action msg-action-indicator" title={t('transcript.queuedWaiting')}>
+            <Clock3 size={14} />
+          </span>
+        )}
+        <button type="button" className="msg-action" onClick={handleCopy} title={t('transcript.copyText')}>
+          {copyFlash ? <Check size={14} /> : <Clipboard size={14} />}
+        </button>
+        <button type="button" className="msg-action" onClick={() => { setEditText(visibleText || item.text); setEditMode(true) }} title={t('transcript.editMessage')}>
+          <Pencil size={14} />
+        </button>
+      </div>
+    )}
+  </>
   )
 })
 
