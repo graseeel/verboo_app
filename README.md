@@ -6,6 +6,15 @@ The desktop shell is built with **Tauri v2** (Rust backend + system WebView fron
 
 Official CLI upstream: [verbeux-ai/code](https://github.com/verbeux-ai/code).
 
+## Screenshots
+
+| | |
+|:---:|:---:|
+| ![Tela inicial do Verboo Code Desktop](docs/screenshots/welcome.png) | ![Composer do Verboo Code com prompt digitado](docs/screenshots/composer.png) |
+| **Tela inicial**<br>Projetos recentes e início rápido | **Composer**<br>Prompt digitado pronto para envio |
+| ![Resposta em markdown com painel de revisão e medidor de contexto a 33%](docs/screenshots/chat-response.png) | ![Painel de composição do contexto aberto com breakdown de mensagens, anexos e habilidades](docs/screenshots/context-panel.png) |
+| **Resposta em markdown**<br>Painel de revisão e medidor de contexto (33%) | **Composição do contexto**<br>Breakdown de mensagens, anexos, habilidades e fila |
+
 ## Platform Support
 
 | Platform | Architecture | Status | Installer |
