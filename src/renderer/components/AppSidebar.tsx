@@ -1,7 +1,6 @@
 import {
   Archive,
   Bug,
-  Camera,
   ChevronDown,
   ChevronRight,
   FolderClosed,
@@ -13,7 +12,6 @@ import {
   MessageSquarePlus,
   PanelLeftClose,
   Pencil,
-  RotateCcw,
   Search,
   Settings,
   Trash2,
@@ -23,7 +21,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import type { ChatProject, CliAuthStatus, ProfileResult, StoredConversation, AvatarSettings } from '../../shared/types'
 import { AvatarIcon } from './AvatarIcon'
-import { AVATAR_PALETTE, AVATAR_PRESETS, renderPreset } from '../features/profile/avatarPresets'
 import { ContextMenu, type ContextMenuState } from './ContextMenu'
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss'
 import { useI18n } from '../i18n'
@@ -60,8 +57,6 @@ type AppSidebarProps = {
   onDeleteConversation: (conversationId: string) => void
   onRenameConversation: (conversationId: string, title: string) => void
   avatarSettings?: AvatarSettings
-  onUpdateAvatarSettings?: (settings: AvatarSettings) => void
-  onSaveAvatarUpload?: () => Promise<string | undefined>
 }
 
 export function AppSidebar({
@@ -91,7 +86,6 @@ export function AppSidebar({
   onDeleteConversation,
   onRenameConversation,
   avatarSettings,
-  onUpdateAvatarSettings,
 }: AppSidebarProps) {
   const { t } = useI18n()
   const [searchOpen, setSearchOpen] = useState(false)
@@ -352,76 +346,6 @@ export function AppSidebar({
               <Bug size={15} />
               {t('sidebar.helpFeedback')}
             </button>
-            <div className="profile-menu-separator" />
-
-            {/* ── Avatar settings ────────────────────── */}
-            {onUpdateAvatarSettings && (
-              <div className="profile-avatar-section">
-                <div className="profile-avatar-preview">
-                  <AvatarIcon settings={avatarSettings} name={profileName} className="account-avatar" />
-                  <label className="profile-avatar-upload" title={t('settings.avatarUpload')}>
-                    <Camera size={12} />
-                    <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only"
-                      onChange={async e => {
-                        const file = e.target.files?.[0]
-                        if (!file) return
-                        if (file.size > 10 * 1024 * 1024) return
-                        if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) return
-                        const img = await createImageBitmap(file)
-                        const size = Math.min(img.width, img.height)
-                        const sx = (img.width - size) / 2
-                        const sy = (img.height - size) / 2
-                        const canvas = document.createElement('canvas')
-                        canvas.width = 120; canvas.height = 120
-                        const ctx = canvas.getContext('2d')!
-                        ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high'
-                        ctx.drawImage(img, sx, sy, size, size, 0, 0, 120, 120)
-                        const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, file.type, 0.92))
-                        if (!blob) return
-                        const base64 = await new Promise<string>(r => {
-                          const fr = new FileReader()
-                          fr.onload = () => r((fr.result as string).split(',')[1])
-                          fr.readAsDataURL(blob!)
-                        })
-                        const path = await window.verboo.saveAvatarBlob(base64, file.type)
-                        onUpdateAvatarSettings({ kind: 'upload', uploadPath: path })
-                      }}
-                    />
-                  </label>
-                </div>
-
-                <div className="profile-avatar-colors">
-                  {AVATAR_PALETTE.map(color => (
-                    <button key={color} type="button"
-                      className={`profile-color-swatch ${(avatarSettings?.presetColor ?? '#6B7280') === color ? 'is-active' : ''}`}
-                      style={{ backgroundColor: color }}
-                      onClick={() => onUpdateAvatarSettings({ kind: 'preset', presetId: avatarSettings?.presetId ?? 'cat', presetColor: color })}
-                      aria-label={color}
-                    />
-                  ))}
-                </div>
-
-                <div className="profile-avatar-icons">
-                  {Object.entries(AVATAR_PRESETS).slice(0, 12).map(([id, preset]) => (
-                    <button key={id} type="button"
-                      className={`profile-icon-btn ${avatarSettings?.presetId === id ? 'is-active' : ''}`}
-                      onClick={() => onUpdateAvatarSettings({ kind: 'preset', presetId: id, presetColor: avatarSettings?.presetColor ?? '#6B7280' })}
-                      title={t(preset.labelKey)}
-                    >
-                      {renderPreset(id, avatarSettings?.presetColor ?? '#6B7280')}
-                    </button>
-                  ))}
-                </div>
-
-                {(avatarSettings && avatarSettings.kind !== 'initials') && (
-                  <button type="button" className="profile-avatar-reset" onClick={() => onUpdateAvatarSettings({ kind: 'initials' })}>
-                    <RotateCcw size={11} />
-                    {t('settings.avatarReset')}
-                  </button>
-                )}
-              </div>
-            )}
-
             <div className="profile-menu-separator" />
             <button type="button" onClick={() => { onLogout(); setProfileMenuOpen(false) }}>
               <LogOut size={15} />

@@ -3669,7 +3669,6 @@ export function App() {
               profile={profile}
               cliAuth={cliAuth}
               avatarSettings={userSettings.avatar}
-              onUpdateAvatarSettings={avatar => updateUserSettings({ avatar })}
               compact={sidebarMode === 'compact'}
               onSelectView={setActiveView}
               onOpenSettings={() => {
@@ -3720,8 +3719,10 @@ export function App() {
             <ProfileView
               profile={profile}
               loading={profileLoading}
+              avatarSettings={userSettings.avatar}
               onRefresh={refreshProfile}
               onManagePlan={() => window.verboo.openSubscriptions()}
+              onUpdateAvatar={avatar => updateUserSettings({ avatar })}
             />
           ) : activeView === 'settings' ? (
             <SettingsView

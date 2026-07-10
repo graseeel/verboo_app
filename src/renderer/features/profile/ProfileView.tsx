@@ -1,16 +1,20 @@
-import { ArrowUpRight, RefreshCw, ShieldCheck } from 'lucide-react'
+import { ArrowUpRight, Camera, RefreshCw, RotateCcw, ShieldCheck } from 'lucide-react'
 import type { CSSProperties } from 'react'
-import type { ProfileActivityDay, ProfileResult } from '../../../shared/types'
+import type { AvatarSettings, ProfileActivityDay, ProfileResult } from '../../../shared/types'
 import { formatStandardNumber, useI18n, type Translator } from '../../i18n'
+import { AvatarIcon } from '../../components/AvatarIcon'
+import { AVATAR_PALETTE, AVATAR_PRESETS, renderPreset } from './avatarPresets'
 
 type ProfileViewProps = {
   profile: ProfileResult
   loading: boolean
+  avatarSettings?: AvatarSettings
   onRefresh: () => void
   onManagePlan: () => void
+  onUpdateAvatar: (settings: AvatarSettings) => void
 }
 
-export function ProfileView({ profile, loading, onRefresh, onManagePlan }: ProfileViewProps) {
+export function ProfileView({ profile, loading, avatarSettings, onRefresh, onManagePlan, onUpdateAvatar }: ProfileViewProps) {
   const { language, t } = useI18n()
   const summary = profile.summary
   const activity = profile.activity ?? []
@@ -40,6 +44,75 @@ export function ProfileView({ profile, loading, onRefresh, onManagePlan }: Profi
           <span>{t('profile.partialWarning')}</span>
         </section>
       )}
+
+      {/* ── Avatar section ──────────────────────────────────── */}
+      <section className="profile-panel avatar-editor-panel">
+        <div className="avatar-editor-main">
+          <div className="avatar-editor-preview">
+            <AvatarIcon settings={avatarSettings} name={profile.user?.name ?? profile.plan?.name ?? ''} />
+          </div>
+          <div className="avatar-editor-upload">
+            <label className="avatar-editor-upload-btn">
+              <Camera size={14} />
+              <span>{t('settings.avatarUpload')}</span>
+              <input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only"
+                onChange={async e => {
+                  const file = e.target.files?.[0]
+                  if (!file) return
+                  if (file.size > 10 * 1024 * 1024) return
+                  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) return
+                  const img = await createImageBitmap(file)
+                  const size = Math.min(img.width, img.height)
+                  const canvas = document.createElement('canvas')
+                  canvas.width = 120; canvas.height = 120
+                  const ctx = canvas.getContext('2d')!
+                  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high'
+                  ctx.drawImage(img, (img.width - size) / 2, (img.height - size) / 2, size, size, 0, 0, 120, 120)
+                  const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, file.type, 0.92))
+                  if (!blob) return
+                  const base64 = await new Promise<string>(r => {
+                    const fr = new FileReader()
+                    fr.onload = () => r((fr.result as string).split(',')[1])
+                    fr.readAsDataURL(blob!)
+                  })
+                  const path = await window.verboo.saveAvatarBlob(base64, file.type)
+                  onUpdateAvatar({ kind: 'upload', uploadPath: path })
+                }}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="avatar-editor-colors">
+          {AVATAR_PALETTE.map(color => (
+            <button key={color} type="button"
+              className={`avatar-editor-swatch ${(avatarSettings?.presetColor ?? '#6B7280') === color ? 'is-active' : ''}`}
+              style={{ backgroundColor: color }}
+              onClick={() => onUpdateAvatar({ kind: 'preset', presetId: avatarSettings?.presetId ?? 'cat', presetColor: color })}
+              aria-label={color}
+            />
+          ))}
+        </div>
+
+        <div className="avatar-editor-grid">
+          {Object.entries(AVATAR_PRESETS).slice(0, 24).map(([id, preset]) => (
+            <button key={id} type="button"
+              className={`avatar-editor-icon ${avatarSettings?.presetId === id ? 'is-active' : ''}`}
+              onClick={() => onUpdateAvatar({ kind: 'preset', presetId: id, presetColor: avatarSettings?.presetColor ?? '#6B7280' })}
+              title={t(preset.labelKey)}
+            >
+              {renderPreset(id, avatarSettings?.presetColor ?? '#6B7280')}
+            </button>
+          ))}
+        </div>
+
+        {(avatarSettings && avatarSettings.kind !== 'initials') && (
+          <button type="button" className="avatar-editor-reset" onClick={() => onUpdateAvatar({ kind: 'initials' })}>
+            <RotateCcw size={12} />
+            {t('settings.avatarReset')}
+          </button>
+        )}
+      </section>
 
       <section className="profile-grid">
         <MetricCard label={t('profile.totalTokens')} value={formatOptional(summary?.totalTokens, language, t)} />
