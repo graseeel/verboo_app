@@ -1415,6 +1415,41 @@
   font-size: 12px;
 }
 
+/* Attachments row inside a user message — chips for files, thumbnails for
+   images. Wraps naturally when there are multiple attachments. */
+.message-attachments {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin: 0 0 4px;
+}
+.message-row.user .message-attachments { justify-content: flex-end; }
+.message-attachment-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 8px 3px 4px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-soft) 60%, transparent);
+  color: var(--text-muted); font-size: 12px; cursor: pointer;
+  max-width: 220px; overflow: hidden;
+}
+.message-attachment-chip:hover {
+  background: color-mix(in srgb, var(--bg-hover) 60%, transparent);
+}
+.message-attachment-chip.message-attachment-image {
+  padding: 2px 8px 2px 2px;
+}
+.message-attachment-thumb {
+  width: 28px; height: 28px; border-radius: 4px; object-fit: cover;
+  flex-shrink: 0;
+}
+.message-attachment-icon {
+  display: inline-grid; place-items: center;
+  width: 22px; height: 22px; border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  flex-shrink: 0;
+}
+.message-attachment-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 .message-text {
   margin: 0;
   max-width: 100%;

@@ -411,6 +411,7 @@ mod tests {
                 auto_check: true,
                 auto_download: false,
             },
+            vision_fallback_consent: crate::models::types::VisionFallbackConsent::Ask,
         }
     }
 

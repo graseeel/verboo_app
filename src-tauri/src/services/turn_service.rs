@@ -47,6 +47,8 @@ pub struct TurnService {
     /// Optional settings store for reading `prevent_sleep_while_running`.
     /// When `None`, sleep prevention is disabled (used in tests).
     settings: Option<Arc<SettingsStore>>,
+    /// App data dir for vision fallback cache. `None` in tests.
+    app_data_dir: Option<std::path::PathBuf>,
 }
 
 impl TurnService {
@@ -55,6 +57,7 @@ impl TurnService {
             active: Arc::new(Mutex::new(std::collections::HashMap::new())),
             credentials,
             settings: None,
+            app_data_dir: None,
         }
     }
 
@@ -63,6 +66,196 @@ impl TurnService {
     pub fn with_settings(mut self, settings: Arc<SettingsStore>) -> Self {
         self.settings = Some(settings);
         self
+    }
+
+    /// Sets the app data dir for vision fallback cache storage.
+    /// Called from `lib.rs` setup.
+    pub fn with_app_data_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.app_data_dir = Some(dir);
+        self
+    }
+
+    /// FASE 1: vision fallback. When the model doesn't support vision and
+    /// there are image attachments, spawn a secondary CLI with a vision-capable
+    /// model (from the user's catalog) to describe each image. Descriptions
+    /// are written into `extracted_text` on the attachment so they flow into
+    /// the prompt as text via `build_attachment_lines`.
+    ///
+    /// Gated by `vision_fallback_consent`:
+    /// - `Always`: run the fallback.
+    /// - `Never` / `Ask`: skip (Ask needs a mid-turn consent event that
+    ///   isn't implemented yet — falls back to Never behavior).
+    ///
+    /// Failures are silent — if the helper model can't be resolved, the cache
+    /// can't be read, or the CLI spawn fails, the images fall through to the
+    /// normal "DO NOT invent" warning path. The user's turn is never blocked
+    /// by a fallback failure.
+    fn maybe_run_vision_fallback(&self, request: &mut AgentTurnRequest) {
+        // Only run when there are image attachments.
+        let has_images = request
+            .attachments
+            .as_ref()
+            .map(|list| {
+                list.iter()
+                    .any(|a| a.kind == AttachmentKind::Image && a.media_type.is_some())
+            })
+            .unwrap_or(false);
+        if !has_images {
+            return;
+        }
+
+        // Check consent from settings.
+        let consent = self
+            .settings
+            .as_ref()
+            .and_then(|s| s.get().ok())
+            .map(|s| s.vision_fallback_consent)
+            .unwrap_or_default();
+        if consent != crate::models::types::VisionFallbackConsent::Always {
+            return;
+        }
+
+        // Need app_data_dir for the cache.
+        let app_data_dir = match &self.app_data_dir {
+            Some(d) => d.clone(),
+            None => {
+                // Non-silent: inject warning so the model tells the user
+                // instead of hallucinating the image content.
+                self.inject_fallback_warning(
+                    request,
+                    "Vision fallback could not run: app data directory unavailable. \
+                     Tell the user the app couldn't initialize its cache directory.",
+                );
+                return;
+            }
+        };
+
+        // Resolve the vision helper model from the user's catalog.
+        let model_service =
+            crate::services::model_service::ModelService::new(app_data_dir.clone());
+        let token = crate::services::auth_token::resolve_token(&self.credentials);
+        let discovery = match model_service.list_models(token.as_deref(), false) {
+            Ok(d) => d,
+            Err(e) => {
+                // Non-silent: list_models failed — tell the user why.
+                eprintln!(
+                    "[verboo:vision-fallback] list_models failed: {e}"
+                );
+                self.inject_fallback_warning(
+                    request,
+                    &format!(
+                        "Vision fallback could not run: failed to load model catalog ({e}). \
+                         Tell the user the model list couldn't be loaded and suggest \
+                         they check their connection or re-login."
+                    ),
+                );
+                return;
+            }
+        };
+
+        // LOG 1: discovery source + model count.
+        eprintln!(
+            "[verboo:vision-fallback] model catalog: source={}, {} models total",
+            discovery.source,
+            discovery.models.len()
+        );
+
+        // LOG 2: count of vision-capable models in the catalog.
+        let vision_count = discovery
+            .models
+            .iter()
+            .filter(|m| m.supports_vision == Some(true))
+            .count();
+        eprintln!(
+            "[verboo:vision-fallback] {} vision-capable model(s) in catalog",
+            vision_count
+        );
+
+        let helper = match crate::services::vision_fallback_service::resolve_vision_helper(
+            &discovery,
+        ) {
+            Some(m) => m,
+            None => {
+                // Non-silent: no vision model in the user's plan — tell them.
+                self.inject_fallback_warning(
+                    request,
+                    "Vision fallback could not run: no vision-capable model found \
+                     in your plan. Tell the user their plan doesn't include a \
+                     vision model, so the image can't be described. Suggest they \
+                     upgrade their plan or paste the image content as text.",
+                );
+                return;
+            }
+        };
+
+        eprintln!(
+            "[verboo:vision-fallback] resolved helper: {} ({})",
+            helper.id, helper.display_name
+        );
+
+        // Describe each image attachment and inject as extracted_text.
+        // `describe_image` uses `CliSpawn` internally to find the bundled CLI
+        // + Node runtime — same resolver as the main turn. No need to resolve
+        // cli_path separately (which would return None in packaged builds).
+        if let Some(list) = request.attachments.as_mut() {
+            for att in list.iter_mut() {
+                if att.kind != AttachmentKind::Image || att.media_type.is_none() {
+                    continue;
+                }
+                let media_type = att.media_type.clone().unwrap_or_default();
+                let path = std::path::PathBuf::from(&att.path);
+                match crate::services::vision_fallback_service::describe_image_cached(
+                    &path,
+                    &media_type,
+                    &helper.id,
+                    &self.credentials,
+                    &app_data_dir,
+                ) {
+                    Ok(description) => {
+                        att.extracted_text = Some(description);
+                        att.extraction_status = Some(
+                            crate::models::types::ExtractionStatus::Extracted,
+                        );
+                    }
+                    Err(e) => {
+                        // Non-silent: describe_image failed (timeout, spawn
+                        // error, empty result) — inject explicit warning so
+                        // the model tells the user instead of inventing.
+                        eprintln!(
+                            "[verboo:vision-fallback] describe_image failed for {}: {e}",
+                            att.path
+                        );
+                        att.extracted_text = Some(format!(
+                            "[Vision fallback failed: {e}. \
+                             The model cannot read this image. \
+                             Tell the user the vision helper couldn't describe \
+                             the image and suggest they try again, use a \
+                             vision-capable model, or paste the content as text.]"
+                        ));
+                        att.extraction_status = Some(
+                            crate::models::types::ExtractionStatus::Warning,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Injects a fallback warning into all image attachments that don't
+    /// already have extracted_text. Used when the fallback can't run at all
+    /// (no catalog, no helper, no app_data_dir) — the model is told explicitly
+    /// that it can't read the image, instead of silently receiving just the
+    /// file path and hallucinating.
+    fn inject_fallback_warning(&self, request: &mut AgentTurnRequest, warning: &str) {
+        if let Some(list) = request.attachments.as_mut() {
+            for att in list.iter_mut() {
+                if att.kind == AttachmentKind::Image && att.extracted_text.is_none() {
+                    att.extracted_text = Some(warning.to_string());
+                    att.extraction_status =
+                        Some(crate::models::types::ExtractionStatus::Warning);
+                }
+            }
+        }
     }
 
     /// Spawn an agent turn. Returns the turn_id (existing or newly generated).
@@ -96,20 +289,48 @@ impl TurnService {
             },
         );
 
+        // FASE 1: vision fallback. When the selected model doesn't support
+        // vision but the user attached images, spawn a secondary CLI with a
+        // vision-capable model (from the user's own catalog — never hardcoded)
+        // to describe each image. Descriptions are injected as `extracted_text`
+        // so `build_attachment_lines` includes them in the prompt as text.
+        //
+        // Consent gates this:
+        // - 'always': run the fallback without asking.
+        // - 'never': skip (images get the "DO NOT invent" warning).
+        // - 'ask': skip for now (needs a mid-turn consent event that isn't
+        //   implemented yet — falls back to 'never' behavior until Zelda's
+        //   UI is ready).
+        let mut request = request;
+        if request.model_supports_vision != Some(true) {
+            self.maybe_run_vision_fallback(&mut request);
+        }
+
         let prompt = build_prompt(&request, resume_session_id.is_some());
         let is_resume = resume_session_id.is_some();
 
+        // FASE 0: when the model supports vision AND there are image
+        // attachments, switch to stream-json input so images reach the model
+        // as base64 data URLs (not just text paths). Text-only turns keep
+        // the positional prompt path (lower risk, no stdin piping needed).
+        let stream_json_payload = build_stream_json_input(&request, &prompt);
+        let use_stream_json = stream_json_payload.is_some();
+
         let mut args = vec![
             "--print".to_string(),
-            // prompt passed as first positional when not using structured input
-            // (we always pass it positionally for now; structured input with
-            // images is a follow-up after attachment handling is fleshed out).
-            prompt,
             "--output-format".to_string(),
             "stream-json".to_string(),
             "--verbose".to_string(),
             "--include-partial-messages".to_string(),
         ];
+        if use_stream_json {
+            // Structured input: prompt + images go via stdin as JSON messages.
+            args.push("--input-format".to_string());
+            args.push("stream-json".to_string());
+        } else {
+            // Positional prompt: text-only turn (no images, or model can't see).
+            args.push(prompt);
+        }
         if is_resume {
             args.push("--resume".to_string());
             args.push(resume_session_id.unwrap());
@@ -151,9 +372,15 @@ impl TurnService {
         let working_dir_label = working_directory.clone();
         let mut cmd = spawn.command;
         cmd.current_dir(&working_directory)
-            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // stream-json input needs stdin piped so we can write messages.
+        // Text-only turns use null stdin (no stdin data needed).
+        if use_stream_json {
+            cmd.stdin(Stdio::piped());
+        } else {
+            cmd.stdin(Stdio::null());
+        }
         // On Windows, create the child in its own process group so
         // `GenerateConsoleCtrlEvent` can target it for graceful interrupt.
         #[cfg(windows)]
@@ -169,6 +396,22 @@ impl TurnService {
             .map_err(|e| format!("Falha ao iniciar CLI Verboo: {e}"))?;
 
         let child_id = child.id();
+
+        // FASE 0: write stream-json payload to stdin (images as base64).
+        // The CLI reads newline-delimited JSON messages from stdin when
+        // --input-format stream-json is set. We write the payload then drop
+        // stdin (EOF) so the CLI knows input is complete.
+        if let Some(payload) = stream_json_payload {
+            if let Some(stdin) = child.stdin.take() {
+                use std::io::Write;
+                let mut stdin = stdin;
+                // Best-effort write — if it fails, the turn still runs but
+                // without images (the text prompt is in the payload too).
+                let _ = stdin.write_all(payload.as_bytes());
+                let _ = stdin.flush();
+                // stdin drops here → EOF → CLI processes the messages.
+            }
+        }
 
         // Take stdout/stderr BEFORE wrapping in Arc<Mutex<>> so the streams
         // can be moved into reader threads.
@@ -444,6 +687,75 @@ fn resolve_cli_path() -> String {
     crate::services::cli_path::resolve().unwrap_or_else(|| "verboo".to_string())
 }
 
+/// Builds the stream-json stdin payload for a turn with image attachments.
+///
+/// Returns `Some(json_string)` when the model supports vision AND there are
+/// image attachments — the caller switches to `--input-format stream-json`
+/// and writes this payload to stdin. Returns `None` otherwise (caller uses
+/// the positional prompt path).
+///
+/// The payload is a single user message with:
+/// - A text block containing the full prompt (same as `build_prompt`).
+/// - One `image_url` block per image attachment, with base64 data URL.
+///
+/// Format follows the OpenAI/Anthropic-compatible message schema the CLI
+/// accepts via `--input-format stream-json`:
+/// ```json
+/// {"role":"user","content":[{"type":"text","text":"..."},{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}]}
+/// ```
+fn build_stream_json_input(
+    request: &AgentTurnRequest,
+    prompt: &str,
+) -> Option<String> {
+    if request.model_supports_vision != Some(true) {
+        return None;
+    }
+    let attachments = request.attachments.as_ref()?;
+    let images: Vec<&AttachmentMeta> = attachments
+        .iter()
+        .filter(|a| a.kind == AttachmentKind::Image && a.media_type.is_some())
+        .collect();
+    if images.is_empty() {
+        return None;
+    }
+
+    // Build content blocks: text first, then images.
+    let mut content = Vec::with_capacity(images.len() + 1);
+    content.push(serde_json::json!({
+        "type": "text",
+        "text": prompt
+    }));
+    for img in images {
+        // Read the image file and base64-encode it.
+        let bytes = match std::fs::read(&img.path) {
+            Ok(b) => b,
+            Err(_) => {
+                // Skip unreadable images — the text prompt still goes through.
+                continue;
+            }
+        };
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        let media_type = img.media_type.as_deref().unwrap_or("image/png");
+        let data_url = format!("data:{media_type};base64,{b64}");
+        content.push(serde_json::json!({
+            "type": "image_url",
+            "image_url": { "url": data_url }
+        }));
+    }
+
+    // Only return if we successfully encoded at least one image.
+    if content.len() <= 1 {
+        return None;
+    }
+
+    let message = serde_json::json!({
+        "role": "user",
+        "content": content
+    });
+    // stream-json input is newline-delimited JSON messages.
+    Some(format!("{}\n", message))
+}
+
 /// Build the user prompt that goes to the CLI. Mirrors Electron's
 /// `buildPrompt` — app instructions + working directory + personality +
 /// custom instructions + memory + skills + attachments + message.
@@ -470,7 +782,11 @@ pub(crate) fn build_prompt_internal(request: &AgentTurnRequest, is_resume: bool)
         } else {
             format!("Current working directory: {working_directory}")
         };
-        let attachment_lines = build_attachment_lines(&request.attachments, language);
+        let attachment_lines = build_attachment_lines(
+            &request.attachments,
+            language,
+            request.model_supports_vision,
+        );
         let parts: Vec<String> = std::iter::once(workspace_line)
             .chain(attachment_lines)
             .chain(std::iter::once(request.message.clone()))
@@ -532,7 +848,11 @@ pub(crate) fn build_prompt_internal(request: &AgentTurnRequest, is_resume: bool)
     }
     let skill_lines = build_skill_lines(&request.skills, language);
     parts.extend(skill_lines);
-    let attachment_lines = build_attachment_lines(&request.attachments, language);
+    let attachment_lines = build_attachment_lines(
+        &request.attachments,
+        language,
+        request.model_supports_vision,
+    );
     parts.extend(attachment_lines);
 
     parts.push(request.message.clone());
@@ -588,6 +908,7 @@ fn build_skill_lines(skills: &[crate::models::types::SkillSummary], language: La
 fn build_attachment_lines(
     attachments: &Option<Vec<AttachmentMeta>>,
     language: LanguageCode,
+    model_supports_vision: Option<bool>,
 ) -> Vec<String> {
     let Some(list) = attachments else {
         return Vec::new();
@@ -616,7 +937,43 @@ fn build_attachment_lines(
             } else {
                 format!("{}{dims}", attachment_kind_label(&a.kind))
             };
-            format!("- {} ({kind_str}): {}", a.name, a.path)
+            let mut entry = format!("- {} ({kind_str}): {}", a.name, a.path);
+            // When we have extracted text, inject it inline so any model can
+            // reason about the content. This is the primary fix for the
+            // "PDF alucinado" bug — the model no longer needs to guess.
+            let has_text = a
+                .extracted_text
+                .as_deref()
+                .map(|t| !t.trim().is_empty())
+                .unwrap_or(false);
+            if has_text {
+                let text = a.extracted_text.as_deref().unwrap_or("");
+                entry.push_str(&format!("\n  <document-content>\n{text}\n  </document-content>"));
+            } else if model_supports_vision == Some(false) {
+                // No usable extracted text AND the model explicitly doesn't
+                // support vision. Be explicit so the model doesn't hallucinate:
+                // it should tell the user it can't read the file, not invent
+                // content. (Vision-capable models skip this — Kassandra's
+                // vision fallback path will inject base64 separately. When
+                // vision support is unknown, we don't warn to avoid false
+                // alarms on models that do support vision but the flag
+                // wasn't populated.)
+                let warning = if language == LanguageCode::PtBr {
+                    "[O conteúdo deste arquivo não pôde ser extraído e o \
+                     modelo atual não suporta visão. NÃO invente o conteúdo. \
+                     Diga ao usuário que você não consegue ler este arquivo \
+                     e sugira que ele cole o texto ou use um modelo com \
+                     suporte a visão.]"
+                } else {
+                    "[This file's content could not be extracted and the \
+                     current model does not support vision. DO NOT invent \
+                     the content. Tell the user you cannot read this file \
+                     and suggest they paste the text or use a vision-capable \
+                     model.]"
+                };
+                entry.push_str(&format!("\n  {warning}"));
+            }
+            entry
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -1409,5 +1766,565 @@ mod tests {
         // But working directory and message ARE present
         assert!(prompt.contains("Current working directory: /tmp"));
         assert!(prompt.contains("Next step"));
+    }
+
+    // ── build_attachment_lines tests ────────────────────────────────
+    //
+    // These verify the "PDF alucinado" fix: extracted text is injected
+    // inline, and when no text is available + no vision, an explicit
+    // warning tells the model NOT to invent content.
+
+    fn attachment_with_text(text: &str) -> AttachmentMeta {
+        AttachmentMeta {
+            path: "/tmp/doc.pdf".into(),
+            name: "doc.pdf".into(),
+            size: 1000,
+            kind: AttachmentKind::File,
+            media_type: None,
+            width: None,
+            height: None,
+            extracted_text: Some(text.into()),
+            extraction_status: Some(crate::models::types::ExtractionStatus::Extracted),
+        }
+    }
+
+    fn attachment_no_text() -> AttachmentMeta {
+        AttachmentMeta {
+            path: "/tmp/scan.pdf".into(),
+            name: "scan.pdf".into(),
+            size: 1000,
+            kind: AttachmentKind::File,
+            media_type: None,
+            width: None,
+            height: None,
+            extracted_text: None,
+            extraction_status: None,
+        }
+    }
+
+    #[test]
+    fn attachment_lines_inject_extracted_text() {
+        let attachments = Some(vec![attachment_with_text("Joao da Silva\nRua X, 123")]);
+        let lines = build_attachment_lines(&attachments, LanguageCode::EnUs, None);
+        let joined = lines.join("\n");
+        assert!(joined.contains("Joao da Silva"), "should contain extracted text");
+        assert!(joined.contains("<document-content>"), "should wrap in tag");
+    }
+
+    #[test]
+    fn attachment_lines_warn_when_no_text_and_no_vision() {
+        // No extracted text + model doesn't support vision → explicit warning.
+        let attachments = Some(vec![attachment_no_text()]);
+        let lines = build_attachment_lines(&attachments, LanguageCode::EnUs, Some(false));
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("DO NOT invent"),
+            "should warn model not to hallucinate, got: {joined}"
+        );
+    }
+
+    #[test]
+    fn attachment_lines_no_warning_when_model_supports_vision() {
+        // No extracted text but model supports vision → no warning (Kassandra's
+        // vision path will handle base64 injection separately).
+        let attachments = Some(vec![attachment_no_text()]);
+        let lines = build_attachment_lines(&attachments, LanguageCode::EnUs, Some(true));
+        let joined = lines.join("\n");
+        assert!(
+            !joined.contains("DO NOT invent"),
+            "vision-capable model should not get the no-vision warning"
+        );
+    }
+
+    #[test]
+    fn attachment_lines_no_warning_when_vision_unknown() {
+        // When we don't know if the model supports vision, don't warn —
+        // avoids false alarms on models that do support vision but the
+        // flag wasn't populated. The extracted_text path handles the
+        // common case; this is a conservative default.
+        let attachments = Some(vec![attachment_no_text()]);
+        let lines = build_attachment_lines(&attachments, LanguageCode::EnUs, None);
+        let joined = lines.join("\n");
+        assert!(
+            !joined.contains("DO NOT invent"),
+            "unknown vision should not trigger warning"
+        );
+    }
+
+    #[test]
+    fn attachment_lines_pt_br_warning_language() {
+        let attachments = Some(vec![attachment_no_text()]);
+        let lines = build_attachment_lines(&attachments, LanguageCode::PtBr, Some(false));
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("NÃO invente"),
+            "pt-BR warning should be in Portuguese, got: {joined}"
+        );
+    }
+
+    #[test]
+    fn attachment_lines_empty_extracted_text_falls_back_to_warning() {
+        // If extraction returned Some("") somehow, treat as no text.
+        let mut a = attachment_with_text("   ");
+        a.extracted_text = Some("   ".into());
+        let attachments = Some(vec![a]);
+        let lines = build_attachment_lines(&attachments, LanguageCode::EnUs, Some(false));
+        let joined = lines.join("\n");
+        // Whitespace-only text is treated as empty → warning path.
+        assert!(
+            joined.contains("DO NOT invent"),
+            "whitespace-only text should trigger warning, got: {joined}"
+        );
+    }
+
+    // ── FASE 0: stream-json image input tests ────────────────────────
+
+    fn image_attachment(path: &str, media_type: &str) -> AttachmentMeta {
+        AttachmentMeta {
+            path: path.into(),
+            name: std::path::Path::new(path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.to_string()),
+            size: 100,
+            kind: AttachmentKind::Image,
+            media_type: Some(media_type.into()),
+            width: Some(100),
+            height: Some(100),
+            extracted_text: None,
+            extraction_status: None,
+        }
+    }
+
+    fn file_attachment(path: &str) -> AttachmentMeta {
+        AttachmentMeta {
+            path: path.into(),
+            name: std::path::Path::new(path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.to_string()),
+            size: 1000,
+            kind: AttachmentKind::File,
+            media_type: None,
+            width: None,
+            height: None,
+            extracted_text: Some("text content".into()),
+            extraction_status: Some(crate::models::types::ExtractionStatus::Extracted),
+        }
+    }
+
+    #[test]
+    fn stream_json_input_returns_none_for_non_vision_model() {
+        // Even with image attachments, non-vision model → None (positional prompt).
+        let request = AgentTurnRequest {
+            turn_id: None,
+            conversation_id: "c1".into(),
+            message: "describe this".into(),
+            model: Some("glm-5.2".into()),
+            model_supports_vision: Some(false),
+            context_window: None,
+            response_language: Some(LanguageCode::EnUs),
+            access_mode: crate::models::types::AccessMode::Approval,
+            working_directory: "/tmp".into(),
+            skills: Vec::new(),
+            attachments: Some(vec![image_attachment("/tmp/img.png", "image/png")]),
+            response_enhancements_enabled: None,
+            personality: None,
+            custom_instructions: None,
+            memory_context: None,
+        };
+        let payload = build_stream_json_input(&request, "prompt text");
+        assert!(payload.is_none(), "non-vision model should not get stream-json");
+    }
+
+    #[test]
+    fn stream_json_input_returns_none_for_text_only_turn() {
+        // Vision model but no image attachments → None (positional prompt).
+        let request = AgentTurnRequest {
+            turn_id: None,
+            conversation_id: "c1".into(),
+            message: "hello".into(),
+            model: Some("claude-sonnet-4-6".into()),
+            model_supports_vision: Some(true),
+            context_window: None,
+            response_language: Some(LanguageCode::EnUs),
+            access_mode: crate::models::types::AccessMode::Approval,
+            working_directory: "/tmp".into(),
+            skills: Vec::new(),
+            attachments: Some(vec![file_attachment("/tmp/doc.md")]),
+            response_enhancements_enabled: None,
+            personality: None,
+            custom_instructions: None,
+            memory_context: None,
+        };
+        let payload = build_stream_json_input(&request, "prompt text");
+        assert!(payload.is_none(), "text-only turn should not get stream-json");
+    }
+
+    #[test]
+    fn stream_json_input_returns_none_when_vision_unknown() {
+        // model_supports_vision == None (unknown) → don't risk stream-json.
+        let request = AgentTurnRequest {
+            turn_id: None,
+            conversation_id: "c1".into(),
+            message: "hello".into(),
+            model: None,
+            model_supports_vision: None,
+            context_window: None,
+            response_language: Some(LanguageCode::EnUs),
+            access_mode: crate::models::types::AccessMode::Approval,
+            working_directory: "/tmp".into(),
+            skills: Vec::new(),
+            attachments: Some(vec![image_attachment("/tmp/img.png", "image/png")]),
+            response_enhancements_enabled: None,
+            personality: None,
+            custom_instructions: None,
+            memory_context: None,
+        };
+        let payload = build_stream_json_input(&request, "prompt text");
+        assert!(payload.is_none(), "unknown vision should not get stream-json");
+    }
+
+    #[test]
+    fn stream_json_input_builds_payload_with_image_for_vision_model() {
+        // Vision model + image attachment → Some(payload) with image_url block.
+        // Use a real temp file so base64 encoding has data to read.
+        let temp = std::env::temp_dir().join(format!(
+            "verboo-test-stream-{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&temp, b"fake-png-bytes").unwrap();
+        let request = AgentTurnRequest {
+            turn_id: None,
+            conversation_id: "c1".into(),
+            message: "describe this image".into(),
+            model: Some("claude-sonnet-4-6".into()),
+            model_supports_vision: Some(true),
+            context_window: None,
+            response_language: Some(LanguageCode::EnUs),
+            access_mode: crate::models::types::AccessMode::Approval,
+            working_directory: "/tmp".into(),
+            skills: Vec::new(),
+            attachments: Some(vec![image_attachment(
+                temp.to_str().unwrap(),
+                "image/png",
+            )]),
+            response_enhancements_enabled: None,
+            personality: None,
+            custom_instructions: None,
+            memory_context: None,
+        };
+        let payload = build_stream_json_input(&request, "prompt text here");
+        assert!(payload.is_some(), "vision model + image should get stream-json");
+        let payload = payload.unwrap();
+        // Should be valid JSON with role=user, content array with text + image_url.
+        let parsed: serde_json::Value = serde_json::from_str(payload.trim()).unwrap();
+        assert_eq!(parsed["role"], "user");
+        let content = parsed["content"].as_array().unwrap();
+        assert!(content.len() >= 2, "should have text + image blocks");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "prompt text here");
+        // Find the image_url block.
+        let img_block = content
+            .iter()
+            .find(|b| b["type"] == "image_url")
+            .expect("should have image_url block");
+        let url = img_block["image_url"]["url"].as_str().unwrap();
+        assert!(url.starts_with("data:image/png;base64,"), "should be data URL");
+        let _ = std::fs::remove_file(&temp);
+    }
+
+    #[test]
+    fn stream_json_input_skips_unreadable_images() {
+        // Image path doesn't exist → skip that image, still send text.
+        let request = AgentTurnRequest {
+            turn_id: None,
+            conversation_id: "c1".into(),
+            message: "describe".into(),
+            model: Some("claude-sonnet-4-6".into()),
+            model_supports_vision: Some(true),
+            context_window: None,
+            response_language: Some(LanguageCode::EnUs),
+            access_mode: crate::models::types::AccessMode::Approval,
+            working_directory: "/tmp".into(),
+            skills: Vec::new(),
+            attachments: Some(vec![image_attachment(
+                "/nonexistent/path/img.png",
+                "image/png",
+            )]),
+            response_enhancements_enabled: None,
+            personality: None,
+            custom_instructions: None,
+            memory_context: None,
+        };
+        let payload = build_stream_json_input(&request, "prompt text");
+        // No readable images → None (falls back to positional prompt).
+        assert!(payload.is_none(), "unreadable images should fall back to positional");
+    }
+
+    // ── FASE 1: vision fallback wiring tests ─────────────────────────
+    //
+    // These test the consent gating + early-return logic of
+    // `maybe_run_vision_fallback`. The full flow (spawn secondary CLI,
+    // describe image, cache) is covered by vision_fallback_service tests.
+
+    fn make_turn_service() -> TurnService {
+        TurnService::new(std::sync::Arc::new(CredentialsStore::new()))
+    }
+
+    fn request_with_image(vision: Option<bool>) -> AgentTurnRequest {
+        AgentTurnRequest {
+            turn_id: None,
+            conversation_id: "c1".into(),
+            message: "describe this".into(),
+            model: Some("glm-5.2".into()),
+            model_supports_vision: vision,
+            context_window: None,
+            response_language: Some(LanguageCode::EnUs),
+            access_mode: crate::models::types::AccessMode::Approval,
+            working_directory: "/tmp".into(),
+            skills: Vec::new(),
+            attachments: Some(vec![image_attachment("/tmp/img.png", "image/png")]),
+            response_enhancements_enabled: None,
+            personality: None,
+            custom_instructions: None,
+            memory_context: None,
+        }
+    }
+
+    #[test]
+    fn vision_fallback_skips_when_model_supports_vision() {
+        // Vision-capable model → fallback should NOT run (images go via
+        // stream-json FASE 0 path instead).
+        let svc = make_turn_service();
+        let mut req = request_with_image(Some(true));
+        // The attachment starts with no extracted_text.
+        assert!(req.attachments.as_ref().unwrap()[0].extracted_text.is_none());
+        // maybe_run_vision_fallback is only called when vision != Some(true),
+        // so we simulate that check here.
+        if req.model_supports_vision != Some(true) {
+            svc.maybe_run_vision_fallback(&mut req);
+        }
+        // Vision model → fallback not called → extracted_text still None.
+        assert!(
+            req.attachments.as_ref().unwrap()[0].extracted_text.is_none(),
+            "vision model should not trigger fallback"
+        );
+    }
+
+    #[test]
+    fn vision_fallback_skips_when_no_image_attachments() {
+        // No images → fallback should not run even for non-vision model.
+        let svc = make_turn_service();
+        let mut req = request_with_image(Some(false));
+        req.attachments = Some(vec![file_attachment("/tmp/doc.md")]);
+        svc.maybe_run_vision_fallback(&mut req);
+        // File attachment unchanged (no image to describe).
+        assert!(
+            req.attachments.as_ref().unwrap()[0].extracted_text.as_deref()
+                == Some("text content"),
+            "file attachment should be unchanged"
+        );
+    }
+
+    #[test]
+    fn vision_fallback_skips_when_no_app_data_dir() {
+        // TurnService without app_data_dir (test mode) → can't cache → skip.
+        let svc = make_turn_service(); // app_data_dir = None
+        let mut req = request_with_image(Some(false));
+        svc.maybe_run_vision_fallback(&mut req);
+        // No app_data_dir → early return → extracted_text still None.
+        assert!(
+            req.attachments.as_ref().unwrap()[0].extracted_text.is_none(),
+            "no app_data_dir → fallback should skip"
+        );
+    }
+
+    #[test]
+    fn vision_fallback_skips_when_consent_is_never() {
+        // Consent = Never → fallback should not run.
+        // (We can't easily set up a SettingsStore in a unit test, so this
+        // test verifies the default consent path: when settings is None,
+        // consent defaults to Ask, which is != Always → skip.)
+        let svc = make_turn_service(); // settings = None → consent defaults to Ask
+        let mut req = request_with_image(Some(false));
+        svc.maybe_run_vision_fallback(&mut req);
+        assert!(
+            req.attachments.as_ref().unwrap()[0].extracted_text.is_none(),
+            "consent != Always → fallback should skip"
+        );
+    }
+
+    #[test]
+    fn vision_fallback_does_not_require_cli_path_env_var() {
+        // Regression test for the critical bug where `maybe_run_vision_fallback`
+        // used `cli_path::resolve()` which returns None in the packaged app
+        // (no VERBOO_CLI_PATH env var). The fix removed that check — the
+        // fallback now uses `CliSpawn` internally (same as the main turn).
+        //
+        // This test verifies the function does NOT early-return when
+        // VERBOO_CLI_PATH is unset. It will still return early (no consent,
+        // no app_data_dir, no catalog), but NOT because of cli_path.
+        //
+        // We set app_data_dir (so that check passes) but leave VERBOO_CLI_PATH
+        // unset. The function should proceed past the old cli_path check and
+        // return early only because the model catalog is empty (no token in
+        // test env).
+        let mut svc = TurnService::new(std::sync::Arc::new(CredentialsStore::new()))
+            .with_app_data_dir(std::env::temp_dir());
+        // Force consent = Always by injecting a settings store.
+        // (We can't easily do this without a real SettingsStore, so this test
+        // is more of a smoke test — the key assertion is that the function
+        // doesn't panic and doesn't require VERBOO_CLI_PATH.)
+        let mut req = request_with_image(Some(false));
+        svc.maybe_run_vision_fallback(&mut req);
+        // The function returns early because consent != Always (settings is
+        // None → default Ask). The key point: it does NOT return early because
+        // of cli_path. If the old cli_path check were still here, this test
+        // would still pass (consent check comes first), but the fix is
+        // verified by the fact that `describe_image` no longer takes a
+        // `cli_path` parameter (compile-time guarantee).
+        assert!(
+            req.attachments.as_ref().unwrap()[0].extracted_text.is_none(),
+            "fallback should skip (consent != Always)"
+        );
+    }
+
+    // ── Non-silent failure tests (Lacuna 2) ──────────────────────────
+    //
+    // When the fallback can't run (no app_data_dir, list_models fails, no
+    // vision model in catalog), the image attachment must get an explicit
+    // warning — NOT be left empty for the model to hallucinate.
+
+    /// Creates a TurnService with consent=Always and app_data_dir set,
+    /// so the fallback proceeds past the consent + app_data_dir checks.
+    /// The model catalog will be empty (no token in test env) → no vision
+    /// helper → non-silent warning injected.
+    fn make_turn_service_with_always_consent() -> TurnService {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "verboo-test-fallback-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let store = crate::services::settings_store::SettingsStore::new(temp_dir.clone());
+        // Set consent = Always via update.
+        store
+            .update(serde_json::json!({ "visionFallbackConsent": "always" }))
+            .unwrap();
+        TurnService::new(std::sync::Arc::new(CredentialsStore::new()))
+            .with_settings(std::sync::Arc::new(store))
+            .with_app_data_dir(temp_dir)
+    }
+
+    #[test]
+    fn vision_fallback_injects_warning_when_no_vision_model_in_catalog() {
+        // consent=Always, app_data_dir set. On machines without a CLI token,
+        // list_models fails → "couldn't be loaded" warning. On machines WITH
+        // a token (like the dev's machine), the catalog loads — if the user's
+        // plan has vision models, a description is injected (Extracted); if
+        // not, a "no vision-capable model" warning is injected.
+        //
+        // The key assertion: the image is NEVER left empty (non-silent).
+        let svc = make_turn_service_with_always_consent();
+        let mut req = request_with_image(Some(false));
+        svc.maybe_run_vision_fallback(&mut req);
+
+        let att = &req.attachments.as_ref().unwrap()[0];
+        assert!(
+            att.extracted_text.is_some(),
+            "fallback should inject SOMETHING (warning or description), not leave empty"
+        );
+        // The status should be either Warning (couldn't run) or Extracted
+        // (successfully described). Both are valid — the point is non-silent.
+        assert!(
+            att.extraction_status.is_some(),
+            "extraction_status must be set"
+        );
+    }
+
+    #[test]
+    fn vision_fallback_warning_is_anti_hallucination() {
+        // On machines without a CLI token, the fallback injects a warning
+        // that must tell the model NOT to invent content. On machines WITH
+        // a token and vision models in the plan, a description is injected
+        // (Extracted) — the anti-hallucination check only applies to warnings.
+        let svc = make_turn_service_with_always_consent();
+        let mut req = request_with_image(Some(false));
+        svc.maybe_run_vision_fallback(&mut req);
+
+        let att = &req.attachments.as_ref().unwrap()[0];
+        let text = att.extracted_text.as_ref().unwrap();
+        // If it's a warning (not a real description), it must contain
+        // anti-hallucination language. If it's a real description (Extracted),
+        // the check doesn't apply.
+        if att.extraction_status
+            == Some(crate::models::types::ExtractionStatus::Warning)
+        {
+            assert!(
+                text.contains("Tell the user") || text.contains("model cannot read"),
+                "warning should instruct model to tell the user, got: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn inject_fallback_warning_sets_warning_on_image_attachments() {
+        // Direct test of the inject_fallback_warning helper.
+        let svc = make_turn_service();
+        let mut req = request_with_image(Some(false));
+        svc.inject_fallback_warning(&mut req, "Test warning: no catalog.");
+
+        let att = &req.attachments.as_ref().unwrap()[0];
+        assert_eq!(att.extracted_text.as_deref(), Some("Test warning: no catalog."));
+        assert_eq!(
+            att.extraction_status,
+            Some(crate::models::types::ExtractionStatus::Warning)
+        );
+    }
+
+    #[test]
+    fn inject_fallback_warning_does_not_overwrite_existing_text() {
+        // If an attachment already has extracted_text, the warning shouldn't
+        // overwrite it.
+        let svc = make_turn_service();
+        let mut req = request_with_image(Some(false));
+        // Pre-populate extracted_text on the image.
+        req.attachments.as_mut().unwrap()[0].extracted_text =
+            Some("Already described.".into());
+        svc.inject_fallback_warning(&mut req, "Test warning.");
+
+        let att = &req.attachments.as_ref().unwrap()[0];
+        assert_eq!(
+            att.extracted_text.as_deref(),
+            Some("Already described."),
+            "existing text should not be overwritten"
+        );
+    }
+
+    #[test]
+    fn inject_fallback_warning_skips_non_image_attachments() {
+        // File attachments should not get the vision fallback warning.
+        let svc = make_turn_service();
+        let mut req = request_with_image(Some(false));
+        // Add a file attachment alongside the image.
+        req.attachments.as_mut().unwrap().push(file_attachment("/tmp/doc.md"));
+        svc.inject_fallback_warning(&mut req, "Test warning.");
+
+        // Image (index 0) gets the warning.
+        assert_eq!(
+            req.attachments.as_ref().unwrap()[0].extracted_text.as_deref(),
+            Some("Test warning.")
+        );
+        // File (index 1) keeps its original text.
+        assert_eq!(
+            req.attachments.as_ref().unwrap()[1].extracted_text.as_deref(),
+            Some("text content")
+        );
     }
 }

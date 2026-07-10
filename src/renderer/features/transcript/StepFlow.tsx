@@ -22,9 +22,7 @@ export function StepFlow({ items, streaming = false }: { items: TranscriptItem[]
             : null
         }
         if (block.kind === 'thinking') {
-          // Thinking blocks are rendered by ReasoningContent in Transcript.tsx
-          // (inside showFlow) so they appear within the "Worked" expansion.
-          return null
+          return <ReasoningContent key={block.id} text={block.text} />
         }
         return <ActionRow key={block.id} actions={block.actions} active={block.id === activeBlockId} />
       })}
@@ -39,13 +37,11 @@ export function findPersistedThinking(items: TranscriptItem[]): Extract<TurnBloc
   return blocks.find((b): b is Extract<TurnBlock, { kind: 'thinking' }> => b.kind === 'thinking')
 }
 
-// Reasoning body — the heading + text rendered inline inside the "Worked"
-// expansion, without a separate toggle. The parent (Transcript.tsx TurnView)
-// controls visibility via its showFlow state.
-export function ReasoningContent({ text }: { text: string }) {
-  // The model sometimes emits its own section heading ("Raciocínio" /
-  // "Reasoning") inside the reasoning text. Strip it so the user doesn't see
-  // a duplicate label now that we removed the UI heading.
+// Reasoning block — markdown text rendered inline inside the "Worked for Xs"
+// expansion, in the correct chronological position (before the actions it
+// generated). No separate toggle: visibility follows the parent switch.
+function ReasoningContent({ text }: { text: string }) {
+  // Strip self-emitted heading so the user doesn't see a duplicate label.
   const clean = text.replace(/^\s*(#*\s*)?(RACIOC[IÍ]NIO|Reasoning|Raciocínio)\s*$/im, '').trim()
   if (!clean) return null
   return (
@@ -58,25 +54,28 @@ export function ReasoningContent({ text }: { text: string }) {
 function ActionRow({ actions, active = false }: { actions: TurnAction[]; active?: boolean }) {
   const [open, setOpen] = useState(false)
   const { t } = useI18n()
-  const commands = actions.filter(a => a.command)
-  const details = actions.filter(a => a.detail && !a.command)
-  const expandable = commands.length > 0 || details.length > 0
   const isAgent = actions[0].kind === 'agent-open' || actions[0].kind === 'agent-close'
+  const hasAnyContent = actions.some(a => a.command || a.detail || a.toolOutput)
   return (
     <div className={`step-actions ${active ? 'is-active' : ''}`}>
-      <button type="button" className="step-actions-row" onClick={() => expandable && setOpen(v => !v)} disabled={!expandable}>
+      <button type="button" className="step-actions-row" onClick={() => hasAnyContent && setOpen(v => !v)} disabled={!hasAnyContent}>
         <span className="step-actions-icon">
           {isAgent ? <img className="step-actions-avatar" src={mascotUrl} alt="" /> : <ActionIcon kind={actions[0].kind} />}
         </span>
         <span className={`step-actions-label ${active ? 'shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm' : ''}`}>
           {summarizeActions(actions, t)}
         </span>
-        {expandable && <span className={`step-actions-chevron ${open ? 'is-open' : ''}`} aria-hidden="true" />}
+        {hasAnyContent && <span className={`step-actions-chevron ${open ? 'is-open' : ''}`} aria-hidden="true" />}
       </button>
       {open && (
         <div className="step-actions-detail">
-          {commands.map((a, i) => a.command ? <CommandBlock key={`c${i}`} run={a.command} /> : null)}
-          {details.map((a, i) => <div key={`d${i}`} className="step-actions-detail-line">{a.detail}</div>)}
+          {actions.map((a, i) => (
+            <div key={`a${i}`} className="step-actions-per-action">
+              {a.command ? <CommandBlock run={a.command} /> : null}
+              {a.detail && !a.command ? <div className="step-actions-detail-line">{a.detail}</div> : null}
+              {a.toolOutput ? <div className="step-actions-detail-line step-actions-tool-output">{a.toolOutput}</div> : null}
+            </div>
+          ))}
         </div>
       )}
     </div>

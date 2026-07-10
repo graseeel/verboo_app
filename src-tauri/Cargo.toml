@@ -1,6 +1,6 @@
 [package]
 name = "verboo-desktop"
-version = "0.4.0-beta.2"
+version = "0.4.2-beta"
 description = "Verboo Code Desktop (Tauri v2)"
 authors = ["Gabriel Grasel de Moura <graseeel@users.noreply.github.com>"]
 license = "MIT"
@@ -65,6 +65,14 @@ uuid = { version = "1", features = ["v4"] }
 image = "0.25"
 dirs = "6"
 tempfile = "3"
+# Pure-Rust PDF text extraction. Used by file_service to extract readable
+# text from attached PDFs so any model (vision or not) can reason about
+# the content instead of hallucinating from a metadata-only tool_result.
+pdf-extract = "0.12"
+# Base64 encoding for image attachments sent via stream-json stdin (FASE 0)
+# and SHA-256 hashing for vision fallback cache (FASE 1).
+base64 = "0.22"
+sha2 = "0.10"
 # Force ctor to 1.0.x. ctor 0.8 (pulled transitively by tauri-utils) depends
 # on ctor-proc-macro as a separate crate, which fails to link in release
 # builds with "can't find crate for ctor_proc_macro" on Rust 1.89 + tauri

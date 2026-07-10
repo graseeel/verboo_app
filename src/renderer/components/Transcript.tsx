@@ -2,7 +2,7 @@ import { CheckCircle2, ChevronDown, ChevronRight, Clock3, FileSearch, FileText, 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { TranscriptItem, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
 import { MarkdownMessage } from '../features/transcript/MarkdownMessage'
-import { StepFlow, ReasoningContent, findPersistedThinking } from '../features/transcript/StepFlow'
+import { StepFlow } from '../features/transcript/StepFlow'
 import { ThinkingIcon } from '../features/transcript/TranscriptIcons'
 import { useI18n, type Translator } from '../i18n'
 
@@ -100,11 +100,6 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, readingImage,
   const label = modelItem?.modelDisplayName ? `Verboo - ${modelItem.modelDisplayName}` : 'Verboo'
   const summary = entry.summary
   const showFlow = streaming || expanded
-  // Persisted thinking block (committed by backend at end-of-turn with the
-  // full reasoning text). Rendered inside showFlow so it appears within the
-  // "Worked" expansion, not as a separate disclosure.
-  const persistedThinking = findPersistedThinking(entry.items)
-
   return (
     <article className="message-row assistant turn-view">
       {/* No "generating" badge here: while streaming, the thinking marker and
@@ -150,7 +145,7 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, readingImage,
         </div>
       )}
 
-      {showFlow && <>{persistedThinking && <ReasoningContent text={persistedThinking.text} />}<StepFlow items={entry.items} streaming={streaming} /></>}
+      {showFlow && <StepFlow items={entry.items} streaming={streaming} />}
 
       {!streaming && !expanded && finalText && (
         <div className="step-text turn-recap"><MarkdownMessage text={finalText} /></div>
@@ -196,6 +191,32 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onIn
           </span>
         )}
       </div>
+      {item.attachments && item.attachments.length > 0 && (
+        <div className="message-attachments">
+          {item.attachments.map(att => {
+            const isImage = att.kind === 'image'
+            const thumbUrl = isImage ? window.verboo?.fileUrl?.(att.path) ?? '' : ''
+            return (
+              <button
+                key={att.path}
+                type="button"
+                className={`message-attachment-chip ${isImage ? 'message-attachment-image' : 'message-attachment-file'}`}
+                onClick={() => window.verboo?.openExternalFile?.('', att.path)}
+                title={att.path}
+              >
+                {isImage && thumbUrl ? (
+                  <img src={thumbUrl} alt="" className="message-attachment-thumb" loading="lazy" />
+                ) : (
+                  <span className="message-attachment-icon" aria-hidden="true">
+                    {isImage ? <ImageIcon size={14} /> : <FileText size={14} />}
+                  </span>
+                )}
+                <span className="message-attachment-name">{att.name}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
       {item.skills && item.skills.length > 0 && (
         <div className="message-skills">
           {item.skills.map(skill => (

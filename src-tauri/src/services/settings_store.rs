@@ -165,6 +165,7 @@ impl SettingsStore {
                 auto_check: s.updates.auto_check,
                 auto_download: s.updates.auto_download,
             },
+            vision_fallback_consent: s.vision_fallback_consent.clone(),
         }
     }
 }

@@ -64,9 +64,21 @@
 }
 .step-actions-chevron.is-open { transform: rotate(45deg); }
 .step-actions-detail { margin: 4px 0 4px 24px; display: flex; flex-direction: column; gap: 4px; }
+/* Per-action wrapper: pairs detail + toolOutput from the same action vertically,
+   separated from adjacent actions by a gap so the user can see which output
+   belongs to which action. */
+.step-actions-per-action { display: flex; flex-direction: column; gap: 2px; }
+.step-actions-per-action + .step-actions-per-action { margin-top: 6px; }
 .step-actions-detail-line {
   font-family: 'SF Mono', Menlo, Monaco, monospace; font-size: 12px; color: var(--text-dim);
   overflow-wrap: anywhere;
+}
+/* Tool_result output (Read/Edit/Search/etc) — same monospace look as command
+   detail, but with a muted left border so it reads as "result", not "command". */
+.step-actions-detail-line.step-actions-tool-output {
+  white-space: pre-wrap;
+  border-left: 2px solid var(--border);
+  padding: 2px 0 2px 8px;
 }
 
 .cmd-block {
@@ -91,13 +103,14 @@
 .turn-collapsed svg { transition: transform 140ms ease; }
 .turn-collapsed svg.is-open { transform: rotate(90deg); }
 
-/* Persisted reasoning body — reused by ReasoningContent inside the "Worked"
-   expansion. Renders markdown via MarkdownMessage (instead of plain text),
-   so the .markdown-body inside inherits muted color and tighter spacing. */
+/* Persisted reasoning body — rendered inline inside StepFlow (the "Worked for
+   Xs" expansion), before the actions it generated. No separate toggle: the
+   reasoning text appears whenever the user expands the turn. */
 .thinking-disclosure-body {
   display: flex; flex-direction: column; gap: 2px;
   padding: 2px 0 1px 17px;
 }
+
 /* Reasoning markdown is intentionally muted — it previews how the model
    reached the conclusion and should not compete with the final answer. */
 .thinking-disclosure-body .markdown-body {

@@ -126,6 +126,47 @@ pub enum AttachmentKind {
     File,
 }
 
+/// Outcome of attempting text extraction on an attachment.
+///
+/// - `Extracted`: real text was extracted and is in `extracted_text`.
+/// - `Warning`: extraction was attempted but produced no usable text
+///   (scanned PDF, corrupt file, too large). `extracted_text` holds a
+///   human-readable warning string that is still injected into the prompt
+///   so the model is told explicitly not to hallucinate.
+/// - `None`: no extraction was attempted (non-PDF file, or image —
+///   vision path handles these separately).
+///
+/// Frontend uses this to distinguish "model has real content" from
+/// "model received a warning" without parsing the warning string.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ExtractionStatus {
+    Extracted,
+    Warning,
+}
+
+/// User consent for the vision fallback feature. When the user's selected
+/// model doesn't support vision but they attach an image, the app can
+/// spawn a secondary CLI with a vision-capable model (from the user's own
+/// catalog) to describe the image and inject the description as text.
+///
+/// - `Ask`: prompt the user before each fallback (default — safest).
+/// - `Always`: always run the fallback without asking.
+/// - `Never`: never run the fallback; images are ignored with a warning.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum VisionFallbackConsent {
+    Ask,
+    Always,
+    Never,
+}
+
+impl Default for VisionFallbackConsent {
+    fn default() -> Self {
+        Self::Ask
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum FeedbackCategory {
@@ -433,6 +474,10 @@ pub struct UserSettings {
     pub ignore_tool_chats_for_memory: bool,
     pub goal_mode: GoalModeSettings,
     pub updates: UpdateSettings,
+    /// Consent for vision fallback (spawn a vision-capable model to
+    /// describe images when the selected model can't see). Default: Ask.
+    #[serde(default)]
+    pub vision_fallback_consent: VisionFallbackConsent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -471,6 +516,17 @@ pub struct AttachmentMeta {
     pub media_type: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// Text extracted from the file at attach time (e.g. PDF text layer).
+    /// When present, this is injected into the prompt so any model — vision
+    /// or not — can reason about the content. Absence means no extraction
+    /// was attempted or the file is only usable via vision (image/PDF-as-image).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extracted_text: Option<String>,
+    /// Whether `extracted_text` holds real content (`Extracted`) or a
+    /// warning string (`Warning` — scanned/corrupt/too-large). Absent
+    /// when no extraction was attempted (non-PDF, image).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extraction_status: Option<ExtractionStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -976,6 +1032,7 @@ impl Default for UserSettings {
                 auto_check: true,
                 auto_download: false,
             },
+            vision_fallback_consent: VisionFallbackConsent::Ask,
         }
     }
 }

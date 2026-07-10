@@ -107,11 +107,18 @@ export type TranscriptItem = {
   activityKind?: 'thinking' | 'image' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool' | 'compacting'
   activityDetail?: string
   command?: CommandRun
+  // Captured tool_result output for non-command activities (read/edit/search/etc).
+  // Truncated at capture time to keep persistence small. Commands keep their
+  // output in `command.output` instead.
+  toolOutput?: string
   changeSummary?: WorkspaceChangeSummary
   modelId?: string
   modelDisplayName?: string
   streaming?: boolean
   skills?: SkillSummary[]
+  // Attachments sent with this message — thumbnail metadata only (paths,
+  // names, kinds), no base64 blobs. Survives conversation reload.
+  attachments?: Pick<AttachmentMeta, 'path' | 'name' | 'kind' | 'size' | 'mediaType'>[]
 }
 
 export type WorkspaceChangeEntry = {
@@ -127,7 +134,15 @@ export type TurnActionKind =
 
 export type CommandRun = { input: string; output: string; status: 'success' | 'failure' | 'running' }
 
-export type TurnAction = { kind: TurnActionKind; label: string; detail?: string; command?: CommandRun }
+export type TurnAction = {
+  kind: TurnActionKind
+  label: string
+  detail?: string
+  command?: CommandRun
+  // Truncated tool_result output for non-command actions. Surfaced inside the
+  // expanded ActionRow so the user can see what a Read/Edit/Search returned.
+  toolOutput?: string
+}
 
 export type TurnBlock =
   | { kind: 'text'; id: string; text: string; streaming: boolean }
@@ -212,6 +227,24 @@ export type UserSettings = {
     allowAutoAccess: boolean
   }
   updates: UpdateSettings
+  // Consent for vision fallback (spawn a vision-capable model to describe
+  // images when the selected model can't see). Default: 'ask'.
+  visionFallbackConsent: VisionFallbackConsent
+}
+
+/// User consent for the vision fallback feature.
+/// - 'ask': prompt the user before each fallback (default — safest).
+/// - 'always': always run the fallback without asking.
+/// - 'never': never run the fallback; images are ignored with a warning.
+export type VisionFallbackConsent = 'ask' | 'always' | 'never'
+
+/// State returned by `getVisionFallbackState` for Zelda's settings UI.
+export type VisionFallbackState = {
+  consent: VisionFallbackConsent
+  helperModel?: {
+    id: string
+    displayName: string
+  }
 }
 
 export type MenuBarState = {
@@ -315,6 +348,12 @@ export type ProfileResult = {
 
 export type AttachmentKind = 'image' | 'file'
 
+// Outcome of attempting text extraction on an attachment.
+// - 'extracted': extractedText holds real content the model can reason about.
+// - 'warning': extractedText holds a warning string (scanned/corrupt/too-large).
+// Absent when no extraction was attempted (non-PDF, image).
+export type ExtractionStatus = 'extracted' | 'warning'
+
 export type AttachmentMeta = {
   path: string
   name: string
@@ -323,6 +362,15 @@ export type AttachmentMeta = {
   mediaType?: string
   width?: number
   height?: number
+  // Text extracted from the file at attach time (e.g. PDF text layer).
+  // When present, this is injected into the prompt so any model — vision
+  // or not — can reason about the content. Absence means no extraction
+  // was attempted or the file is only usable via vision (image/PDF-as-image).
+  extractedText?: string
+  // Whether extractedText holds real content ('extracted') or a warning
+  // string ('warning'). Frontend uses this to distinguish "model has real
+  // content" from "model received a warning" without parsing the string.
+  extractionStatus?: ExtractionStatus
 }
 
 export type AgentTurnRequest = {

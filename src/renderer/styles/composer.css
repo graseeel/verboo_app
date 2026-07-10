@@ -40,7 +40,8 @@
 .bottom-dock > .permission-approval-panel,
 .bottom-dock > .question-wizard,
 .bottom-dock > .question-chip,
-.bottom-dock > .subagent-summary-card {
+.bottom-dock > .subagent-summary-card,
+.bottom-dock > .vision-fallback-panel {
   width: min(var(--chat-lane-width), 100%);
   max-width: 100%;
   margin-inline: auto;
@@ -156,6 +157,37 @@
   background: color-mix(in srgb, var(--bg-elevated) 96%, transparent);
   box-shadow: 0 10px 24px color-mix(in srgb, black 24%, transparent);
   backdrop-filter: blur(10px);
+}
+
+/* Vision fallback consent panel — shown inside bottom-dock when the user's
+   selected model lacks vision and there are image attachments. */
+.vision-fallback-panel {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-elevated) 96%, transparent);
+  box-shadow: 0 10px 24px color-mix(in srgb, black 24%, transparent);
+  backdrop-filter: blur(10px);
+}
+.vision-fallback-header {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 600; color: var(--accent-strong);
+}
+.vision-fallback-description {
+  margin: 0; font-size: 13px; color: var(--text-muted); line-height: 1.5;
+}
+.vision-fallback-actions {
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.vision-fallback-actions button {
+  padding: 6px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-soft); color: var(--text); font-size: 12px; cursor: pointer;
+}
+.vision-fallback-actions button:hover { background: var(--bg-hover); }
+.vision-fallback-never {
+  color: color-mix(in srgb, var(--danger) 90%, var(--text)) !important;
+  border-color: color-mix(in srgb, var(--danger) 50%, var(--border)) !important;
 }
 
 .permission-approval-icon {
@@ -605,6 +637,43 @@
   border-color: var(--border);
   background: color-mix(in srgb, var(--bg-soft) 76%, transparent);
   color: var(--text-muted);
+}
+/* File has no extractable text and isn't an image — the model won't read it.
+   Warning border instead of the neutral attachment-chip color so the user
+   isn't surprised by silent failure. */
+.attachment-unreadable {
+  border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
+}
+/* Backend (Ezio) tried to extract text but got a warning (scanned, corrupt,
+   or too large). Amber border to distinguish from hard-unreadable (red). */
+.attachment-warning {
+  border-color: color-mix(in srgb, var(--amber) 50%, var(--border));
+}
+/* Small badge label inside an attachment chip, shown for warnings or
+   confirmations. Inline so it doesn't wrap to a new line. */
+.attachment-badge {
+  display: inline-block;
+  font-size: 10px;
+  line-height: 1.2;
+  padding: 0 5px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.attachment-badge-warn {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  color: color-mix(in srgb, var(--danger) 80%, var(--text-muted));
+}
+.attachment-badge-ok {
+  background: color-mix(in srgb, var(--green) 18%, transparent);
+  color: color-mix(in srgb, var(--green) 80%, var(--text-muted));
+}
+.attachment-badge-amber {
+  background: color-mix(in srgb, var(--amber) 18%, transparent);
+  color: color-mix(in srgb, var(--amber) 80%, var(--text-muted));
+}
+.attachment-badge-ocr {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .popover-panel {

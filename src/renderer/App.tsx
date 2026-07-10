@@ -62,6 +62,9 @@ import { Transcript } from './components/Transcript'
 import { UpdateBanner } from './components/UpdateBanner'
 import { AccessSelector } from './features/access/AccessSelector'
 import { PermissionApprovalPanel, type PendingPermissionPrompt } from './features/permission/PermissionApprovalPanel'
+import { VisionFallbackModal } from './features/vision/VisionFallbackModal'
+import type { ExtractionStatus, VisionFallbackConsent, VisionFallbackState } from '../shared/types'
+import { recognizeImage } from './features/ocr/ocrService'
 import { Composer } from './features/composer/Composer'
 import { ContextMeter } from './features/context/ContextMeter'
 import { TokenRateMeter } from './features/context/TokenRateMeter'
@@ -128,6 +131,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
     autoCheck: true,
     autoDownload: false,
   },
+  visionFallbackConsent: 'ask',
 }
 const EMPTY_LINE_KEYS = ['empty.line1', 'empty.line2', 'empty.line3', 'empty.line4'] as const
 
@@ -262,6 +266,7 @@ export function App() {
   const [dismissedVersion, setDismissedVersion] = useState<string | undefined>(undefined)
   const [selectedSkills, setSelectedSkills] = useState<SkillSummary[]>([])
   const [attachedFiles, setAttachedFiles] = useState<AttachmentMeta[]>([])
+  const [ocrProcessingPaths, setOcrProcessingPaths] = useState<string[]>([])
   const [accessMode, setAccessMode] = useState<AccessMode>('approval')
   const [chatStore, setChatStore] = useState<ChatStore>(readChatStore)
   const [activeConversationId, setActiveConversationId] = useState<string | undefined>(() => {
@@ -282,6 +287,12 @@ export function App() {
   const [questionPrompt, setQuestionPrompt] = useState<QuestionPromptState | undefined>()
   const [questionWizardOpen, setQuestionWizardOpen] = useState(false)
   const questionPromptRef = useRef<QuestionPromptState | undefined>(undefined)
+
+  // Vision fallback consent — deferred promise pattern like interject.
+  // When set, the VisionFallbackModal is rendered as an overlay. The resolve
+  // fn is called by the modal with the user's choice; awaiting code continues.
+  const [visionFallbackState, setVisionFallbackState] = useState<VisionFallbackState | undefined>()
+  const visionFallbackResolveRef = useRef<(value: { allowOnce: boolean } | { persist: VisionFallbackConsent }) => void>(undefined)
   const turnQuestions = useRef<Record<string, ModelQuestion[]>>({})
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [petEnabled, setPetEnabled] = useState(() => window.localStorage.getItem('verboo:pet-enabled') === '1')
@@ -369,6 +380,10 @@ export function App() {
   const turnOpenTextSegment = useRef<Record<string, string | undefined>>({})
   const turnTextSegmentCount = useRef<Record<string, number>>({})
   const turnCommandItemIds = useRef<Record<string, Record<string, string>>>({})
+  // tool_use_id → activity itemId, for ALL activity kinds (read/edit/search/etc).
+  // Commands go into turnCommandItemIds (legacy); this map covers the rest so
+  // extractToolResults can attach real output to their activity rows.
+  const turnToolUseItemIds = useRef<Record<string, Record<string, string>>>({})
   const turnSubagentToolIds = useRef<Record<string, Record<string, string>>>({})
   const [thinkingTurnId, setThinkingTurnId] = useState<string | undefined>(undefined)
   const [compactingTurnId, setCompactingTurnId] = useState<string | undefined>(undefined)
@@ -1129,8 +1144,17 @@ export function App() {
       }
       if (conversationId) {
         for (const result of extractToolResults(event.payload)) {
-          const itemId = turnCommandItemIds.current[event.turnId]?.[result.toolUseId]
-          if (itemId) updateActivityCommand(conversationId, itemId, result.output, result.isError ? 'failure' : 'success')
+          const commandItemId = turnCommandItemIds.current[event.turnId]?.[result.toolUseId]
+          if (commandItemId) {
+            updateActivityCommand(conversationId, commandItemId, result.output, result.isError ? 'failure' : 'success')
+          } else {
+            // Non-command activity (Read/Edit/Search/etc): attach the real
+            // tool_result output so the collapsible ActionRow can show it.
+            const toolItemId = turnToolUseItemIds.current[event.turnId]?.[result.toolUseId]
+            if (toolItemId) {
+              updateActivityToolOutput(conversationId, toolItemId, result.output, result.isError)
+            }
+          }
           updateSubagentResult(event.turnId, result)
         }
       }
@@ -1327,6 +1351,41 @@ export function App() {
     const trimmed = message.trim()
     if (!trimmed) return
     const conversationId = ensureActiveConversation()
+
+    // ── Vision fallback consent check ──
+    const hasImages = attachedFiles.some(f => f.kind === 'image')
+    const modelNeedsFallback = hasImages && !selectedModelInfo?.supportsVision
+    if (modelNeedsFallback) {
+      const consent = userSettings.visionFallbackConsent
+      if (consent === 'never') {
+        // Strip images silently — the user opted out.
+        setAttachedFiles(current => current.filter(f => f.kind !== 'image'))
+      } else if (consent === 'ask') {
+        // Show consent modal — wait for user choice.
+        const fbState: VisionFallbackState = await window.verboo.getVisionFallbackState()
+        const choice = await new Promise<{ allowOnce: boolean } | { persist: VisionFallbackConsent }>(resolve => {
+          visionFallbackResolveRef.current = resolve
+          setVisionFallbackState(fbState)
+        })
+        setVisionFallbackState(undefined)
+        visionFallbackResolveRef.current = undefined
+
+        if ('persist' in choice) {
+          // Persist the user's choice and apply it immediately.
+          setUserSettings(current => {
+            const next = { ...current, visionFallbackConsent: choice.persist }
+            void window.verboo.updateUserSettings(next).catch(() => {})
+            return next
+          })
+          toast(t('vision.consentUpdated'))
+          if (choice.persist === 'never') {
+            setAttachedFiles(current => current.filter(f => f.kind !== 'image'))
+          }
+        }
+        // 'allowOnce' → proceed with images attached (existing behavior).
+      }
+    }
+
     const queued = createQueuedFollowUp(conversationId, trimmed)
     setActiveView('chat')
     stickToBottomRef.current = true
@@ -1339,6 +1398,9 @@ export function App() {
       text: trimmed,
       timestamp: Date.now(),
       skills: selectedSkills,
+      // Persist a slim version of attachments — just path/name/kind — so the
+      // transcript can render chips/thumbnails on reload without base64 bloat.
+      attachments: attachedFiles.length ? attachedFiles.map(slimMeta) : undefined,
     }, titleFromMessage(trimmed))
 
     if (isConversationRunning(conversationId)) {
@@ -2230,12 +2292,70 @@ export function App() {
     appendAttachments(attachments)
   }
 
+  // Paste handler: same pipeline as attachDroppedFiles, but also handles raw
+  // image blobs (screenshots) that have no filesystem path. Those are read as
+  // base64 and sent to the backend via pasteImageBlob for temp-file creation.
+  async function attachPastedFiles(paths: string[], files: File[]) {
+    if (!paths.length && !files.length) return
+    let attachments: AttachmentMeta[] = []
+    if (paths.length) {
+      attachments = await window.verboo.inspectFiles(paths)
+    } else {
+      // Separate image blobs (no path) from regular files.
+      const blobs = files.filter(f => !(f as File & { path?: string }).path && f.type.startsWith('image/'))
+      const withPath = files.filter(f => (f as File & { path?: string }).path)
+      if (withPath.length) {
+        const p = withPath.map(f => (f as File & { path: string }).path)
+        attachments = await window.verboo.inspectFiles(p)
+      }
+      for (const blob of blobs) {
+        const reader = new FileReader()
+        const base64 = await new Promise<string>(resolve => {
+          reader.onload = () => resolve((reader.result as string).split(',')[1])
+          reader.readAsDataURL(blob)
+        })
+        const name = `pasted-${Date.now()}.${blob.type.split('/')[1] || 'png'}`
+        const meta = await window.verboo.pasteImageBlob(base64, name)
+        attachments.push(...meta)
+      }
+    }
+    if (!attachments.length) return
+    appendAttachments(attachments)
+  }
+
   function appendAttachments(attachments: AttachmentMeta[]) {
     setAttachedFiles(current => {
       const byPath = new Map(current.map(attachment => [attachment.path, attachment]))
       for (const attachment of attachments) byPath.set(attachment.path, attachment)
       return Array.from(byPath.values())
     })
+    // Kick off local OCR for images where the backend didn't return extracted
+    // text. Runs async (lazy worker) — chips update in-place when done.
+    runOcrForAttachments(attachments)
+  }
+
+  function runOcrForAttachments(attachments: AttachmentMeta[]) {
+    const toProcess = attachments.filter(att => att.kind === 'image' && !att.extractedText)
+    if (!toProcess.length) return
+    setOcrProcessingPaths(current => [...current, ...toProcess.map(a => a.path)])
+    for (const att of toProcess) {
+      const imageUrl = window.verboo?.fileUrl?.(att.path)
+      if (!imageUrl) {
+        setOcrProcessingPaths(current => current.filter(p => p !== att.path))
+        continue
+      }
+      recognizeImage(imageUrl).then(result => {
+        setOcrProcessingPaths(current => current.filter(p => p !== att.path))
+        if (!result) return
+        const status: ExtractionStatus = result.isEmpty ? 'warning' : 'extracted'
+        setAttachedFiles(current =>
+          current.map(a => a.path === att.path
+            ? { ...a, extractedText: result.text, extractionStatus: status }
+            : a
+          )
+        )
+      })
+    }
   }
 
   async function openProjectFolder() {
@@ -2602,6 +2722,13 @@ export function App() {
       map[activity.toolUseId] = itemId
       turnCommandItemIds.current[turnId] = map
     }
+    // Track the tool_use_id on every activity kind — not just commands — so a
+    // later tool_result (Read/Edit/Search/etc) can attach its real output here.
+    if (!command && activity.toolUseId) {
+      const map = turnToolUseItemIds.current[turnId] ?? {}
+      map[activity.toolUseId] = itemId
+      turnToolUseItemIds.current[turnId] = map
+    }
 
     updateConversation(conversationId, conversation => ({
       ...conversation,
@@ -2673,6 +2800,21 @@ export function App() {
       ...conversation,
       items: conversation.items.map(item => item.id === itemId && item.command
         ? { ...item, command: { ...item.command, output, status } }
+        : item),
+      updatedAt: Date.now(),
+    }))
+  }
+
+  // Attach a tool_result's output to a non-command activity item (Read/Edit/
+  // Search/etc) so the user can expand the row and see what came back. The
+  // output is truncated at capture time so the persisted store stays small
+  // (long file dumps, big grep results, etc).
+  function updateActivityToolOutput(conversationId: string, itemId: string, output: string, isError: boolean) {
+    const truncated = truncateToolOutput(output, isError)
+    updateConversation(conversationId, conversation => ({
+      ...conversation,
+      items: conversation.items.map(item => item.id === itemId
+        ? { ...item, toolOutput: truncated }
         : item),
       updatedAt: Date.now(),
     }))
@@ -3000,6 +3142,7 @@ export function App() {
     delete turnOpenTextSegment.current[turnId]
     delete turnTextSegmentCount.current[turnId]
     delete turnCommandItemIds.current[turnId]
+    delete turnToolUseItemIds.current[turnId]
     delete turnSubagentToolIds.current[turnId]
   }
 
@@ -3561,15 +3704,28 @@ export function App() {
               onAlwaysAllow={() => respondToPermissionPrompt(visiblePermissionPrompt, 'always')}
             />
           )}
+          {visionFallbackState && visionFallbackResolveRef.current && (
+            <VisionFallbackModal
+              state={visionFallbackState}
+              onRespond={choice => {
+                visionFallbackResolveRef.current?.(choice)
+              }}
+            />
+          )}
           <Composer
             disabled={false}
             skills={skills}
             selectedSkills={selectedSkills}
             attachments={attachedFiles}
+            ocrProcessingPaths={ocrProcessingPaths}
             onSelectedSkillsChange={setSelectedSkills}
             onAttachFiles={attachFiles}
             onDropFiles={attachDroppedFiles}
-            onRemoveAttachment={path => setAttachedFiles(current => current.filter(item => item.path !== path))}
+            onPasteFiles={attachPastedFiles}
+            onRemoveAttachment={path => {
+              setAttachedFiles(current => current.filter(item => item.path !== path))
+              setOcrProcessingPaths(current => current.filter(p => p !== path))
+            }}
             onSubmit={sendMessage}
             onGoalCommand={handleGoalCommand}
             onPetCommand={togglePet}
@@ -4318,8 +4474,31 @@ function buildCliFailureMessage(lines: string[] | undefined, t: Translator): str
   return `${t('transcript.cliFailureTitle')}\n\n${visible.join('\n')}\n`
 }
 
+// Strip non-essential fields from AttachmentMeta before persisting in a
+// TranscriptItem. Keeps path/name/kind (enough for chips + thumbnails) and
+// drops extractedText/extractionStatus which can be re-derived on re-attach.
+function slimMeta(a: AttachmentMeta): Pick<AttachmentMeta, 'path' | 'name' | 'kind' | 'size' | 'mediaType'> {
+  return { path: a.path, name: a.name, kind: a.kind, size: a.size, mediaType: a.mediaType }
+}
+
 function cleanCliFailureLine(line: string): string {
   return line.replace(/\x1B\[[0-9;]*m/g, '').trim()
+}
+
+// Truncate tool_result output before persisting it on a TranscriptItem. Keeps
+// the store small while preserving the most useful part (head of the output,
+// where the signal is). ANSI escape sequences are stripped first (same regex
+// as chatStore.stripTerminalControl) so the rendered detail is clean text.
+const TOOL_OUTPUT_MAX = 2000
+const TOOL_OUTPUT_MAX_ERROR = 3200
+function truncateToolOutput(output: string, isError: boolean): string {
+  const cleaned = output.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '').replace(/\u001b/g, '')
+  const trimmed = cleaned.trim()
+  const max = isError ? TOOL_OUTPUT_MAX_ERROR : TOOL_OUTPUT_MAX
+  if (trimmed.length <= max) return trimmed
+  const head = trimmed.slice(0, max)
+  const omitted = trimmed.length - max
+  return `${head}\n\n[… ${omitted} more characters truncated]`
 }
 
 function detectPermissionRequest(text: string): string | undefined {

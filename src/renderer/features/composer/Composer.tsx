@@ -1,5 +1,5 @@
 import { ArrowUp, Paperclip, Target, X } from 'lucide-react'
-import { type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { AttachmentMeta, SkillSummary } from '../../../shared/types'
 import { useI18n } from '../../i18n'
 import { parseReservedSlashCommand, type ReservedSlashCommand } from './slashCommands'
@@ -22,11 +22,13 @@ type ComposerProps = {
   skills: SkillSummary[]
   selectedSkills: SkillSummary[]
   attachments: AttachmentMeta[]
+  ocrProcessingPaths?: string[]
   onSelectedSkillsChange: (skills: SkillSummary[]) => void
   onAttachFiles: () => void
   onDropFiles: (paths: string[], files: File[]) => void
   onRemoveAttachment: (path: string) => void
   onSubmit: (message: string) => void
+  onPasteFiles: (paths: string[], files: File[]) => void
   onGoalCommand: (command: Extract<ReservedSlashCommand, { kind: 'goal' }>) => void
   onPetCommand: () => void
   leftToolbar: ReactNode
@@ -42,11 +44,13 @@ export function Composer({
   skills,
   selectedSkills,
   attachments,
+  ocrProcessingPaths = [],
   onSelectedSkillsChange,
   onAttachFiles,
   onDropFiles,
   onRemoveAttachment,
   onSubmit,
+  onPasteFiles,
   onGoalCommand,
   onPetCommand,
   leftToolbar,
@@ -60,6 +64,27 @@ export function Composer({
   const [highlighted, setHighlighted] = useState(0)
   const [dragDepth, setDragDepth] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Tauri native drag-drop: the webview fires 'enter'/'over'/'drop'/'leave'
+  // via onDragDropEvent (not HTML5 events) for Finder→app drops. The bridge
+  // relays them as DOM CustomEvents so this effect controls the overlay.
+  useEffect(() => {
+    function onTauriDrag(e: Event) {
+      const detail = (e as CustomEvent).detail as { type: string; paths: string[] }
+      if (detail.type === 'enter' || detail.type === 'over') {
+        setDragDepth(d => d + 1)
+      } else if (detail.type === 'leave') {
+        setDragDepth(d => Math.max(0, d - 1))
+      } else if (detail.type === 'drop') {
+        setDragDepth(0)
+        if (!disabled && detail.paths.length) {
+          onDropFiles(detail.paths, [])
+        }
+      }
+    }
+    window.addEventListener('verboo:drag-event', onTauriDrag)
+    return () => window.removeEventListener('verboo:drag-event', onTauriDrag)
+  }, [disabled, onDropFiles])
   const highlightRef = useRef<HTMLDivElement>(null)
   const slashQuery = getSlashQuery(value)
   const slashCommands = useMemo<SlashCommand[]>(() => [
@@ -187,6 +212,15 @@ export function Composer({
     }
   }
 
+  function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    // Files pasted from Finder appear in clipboardData.files with real paths.
+    const files = Array.from(event.clipboardData.files)
+    const paths = files
+      .map(f => (f as File & { path?: string }).path)
+      .filter((p): p is string => Boolean(p))
+    if (paths.length || files.length) onPasteFiles(paths, files)
+  }
+
   function handleDragEnter(event: DragEvent<HTMLFormElement>) {
     if (!dragEventHasFiles(event)) return
     event.preventDefault()
@@ -279,18 +313,48 @@ export function Composer({
 
       {attachments.length > 0 && (
         <div className="selected-skills">
-          {attachments.map(attachment => (
-            <button
-              key={attachment.path}
-              className="skill-chip attachment-chip"
-              type="button"
-              onClick={() => onRemoveAttachment(attachment.path)}
-              title={attachment.path}
-            >
-              {attachment.name}
-              <X size={12} />
-            </button>
-          ))}
+          {attachments.map(attachment => {
+            const isImage = attachment.kind === 'image'
+            const status = attachment.extractionStatus
+            const isOcrProcessing = ocrProcessingPaths.includes(attachment.path)
+            // No extractionStatus + no extractedText + not image → definitively
+            // unreadable (backends that don't set extractionStatus yet).
+            const isUnreadable = !isImage && !attachment.extractedText && !status && !isOcrProcessing
+            // extractionStatus 'extracted' or legacy extractedText → content is real.
+            const isExtracted = status === 'extracted' || (!status && Boolean(attachment.extractedText))
+            // extractionStatus 'warning' → Ezio found the file but couldn't
+            // read it (scanned/corrupt/too-large); extractedText holds a warning.
+            const isWarning = status === 'warning' && !isOcrProcessing
+            return (
+              <button
+                key={attachment.path}
+                className={`skill-chip attachment-chip${isUnreadable ? ' attachment-unreadable' : ''}${isWarning ? ' attachment-warning' : ''}${isOcrProcessing ? ' attachment-ocr' : ''}${isImage ? ' attachment-image' : ''}`}
+                type="button"
+                onClick={() => onRemoveAttachment(attachment.path)}
+                title={
+                  isUnreadable ? `${attachment.path}\n${t('composer.attachmentUnreadable')}` :
+                  isWarning ? `${attachment.path}\n${t('composer.attachmentWarningStatus')}` :
+                  isOcrProcessing ? `${attachment.path}\n${t('ocr.processing')}` :
+                  attachment.path
+                }
+              >
+                {attachment.name}
+                {isOcrProcessing && (
+                  <span className="attachment-badge attachment-badge-ocr">{t('ocr.processing')}</span>
+                )}
+                {isUnreadable && (
+                  <span className="attachment-badge attachment-badge-warn">{t('composer.attachmentUnreadable')}</span>
+                )}
+                {isWarning && (
+                  <span className="attachment-badge attachment-badge-amber">{t('composer.attachmentWarningStatus')}</span>
+                )}
+                {isExtracted && (
+                  <span className="attachment-badge attachment-badge-ok">{t('composer.attachmentTextExtracted')}</span>
+                )}
+                <X size={12} />
+              </button>
+            )
+          })}
         </div>
       )}
 
@@ -312,6 +376,7 @@ export function Composer({
           disabled={disabled}
           onChange={event => updateValue(event.target.value)}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           onScroll={event => {
             if (highlightRef.current) highlightRef.current.scrollTop = event.currentTarget.scrollTop
           }}

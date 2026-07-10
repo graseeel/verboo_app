@@ -11,7 +11,7 @@
  * @see plans/03-contrato-ipc.md — the exact 47+6 contract
  */
 
-import { invoke } from '@tauri-apps/api/core'
+import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 
@@ -40,6 +40,8 @@ import type {
   TerminalDataEvent,
   UpdateSnapshot,
   UserSettings,
+  VisionFallbackConsent,
+  VisionFallbackState,
   WorkspaceBranchInfo,
   WorkspaceBranchSwitchResult,
   WorkspaceChangeSummary,
@@ -79,8 +81,19 @@ if (IS_TAURI) {
     } else if (event.payload.type === 'leave') {
       _droppedPaths = []
     }
+    // Dispatch DOM events so React (Composer) can control the drop overlay
+    // and handle the drop without importing @tauri-apps/webview directly.
+    window.dispatchEvent(new CustomEvent('verboo:drag-event', {
+      detail: {
+        type: event.payload.type,
+        paths: event.payload.type === 'drop' || event.payload.type === 'enter'
+          ? (event.payload.paths ?? [])
+          : [],
+      },
+    }))
   })
 }
+
 
 // ── The API object (matches preload/index.ts VerbooDesktopApi) ──
 const api = {
@@ -116,6 +129,14 @@ const api = {
   updateUserSettings: (patch: Partial<UserSettings>) =>
     invoke<UserSettings>('update_user_settings', { patch }),
   resetUserSettings: () => invoke<UserSettings>('reset_user_settings'),
+
+  // ── Vision fallback (FASE 1) ───────────────────────────────────
+  // Returns current consent + preview of which model would be picked.
+  getVisionFallbackState: () =>
+    invoke<VisionFallbackState>('get_vision_fallback_state'),
+  // Sets consent (always/ask/never). Zelda's UI calls this on toggle.
+  setVisionFallbackConsent: (consent: VisionFallbackConsent) =>
+    invoke<UserSettings>('set_vision_fallback_consent', { consent }),
 
   // ── Menu bar ────────────────────────────────────────────────
   updateMenuBar: (state: Partial<MenuBarState>) =>
@@ -169,7 +190,20 @@ const api = {
     _droppedPaths = []
     return invoke<AttachmentMeta[]>('inspect_files', { paths })
   },
+  // Paste a raw image blob (screenshot) from clipboard. Reads base64 data,
+  // writes it to a temp file via the backend, returns an AttachmentMeta.
+  // Backend command may not be available yet — returns empty gracefully.
+  pasteImageBlob: async (base64: string, filename: string): Promise<AttachmentMeta[]> => {
+    try {
+      return await invoke<AttachmentMeta[]>('inspect_pasted_image', { base64, filename })
+    } catch {
+      console.warn('paste blob not yet supported — backend command inspect_pasted_image not registered')
+      return []
+    }
+  },
   pickFolder: () => invoke<string | undefined>('pick_folder'),
+  // Convert a local file path to a webview-accessible URL for <img> src.
+  fileUrl: (path: string) => convertFileSrc(path),
   createProjectFolder: () => invoke<string | undefined>('create_project_folder'),
 
   // ── Agent ───────────────────────────────────────────────────

@@ -36,6 +36,7 @@ export function groupTurnBlocks(items: TranscriptItem[]): TurnBlock[] {
         command: item.command ?? (item.activityKind === 'command'
           ? { input: item.activityDetail ?? item.text, output: '', status: 'success' }
           : undefined),
+        toolOutput: item.toolOutput,
       }
       const last = blocks[blocks.length - 1]
       if (last && last.kind === 'actions') last.actions.push(action)

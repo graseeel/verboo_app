@@ -373,9 +373,17 @@ mod tests {
 
     #[test]
     fn vision_detection_no_match() {
-        let obj = json!({"id": "claude-sonnet-4"});
+        // Models without any vision indicator should return None.
+        // The Router API returns these fields for plan models — no vision
+        // metadata, so detection returns None. Availability comes exclusively
+        // from the Router response at runtime, NOT from a static vendor list.
+        let obj = json!({"id": "deepseek-v4-flash"});
         let (vision, _) = detect_vision_support(obj.as_object().unwrap());
-        assert_eq!(vision, None);
+        assert_eq!(vision, None, "deepseek has no vision indicator");
+
+        let obj = json!({"id": "ultra/glm-5.2"});
+        let (vision, _) = detect_vision_support(obj.as_object().unwrap());
+        assert_eq!(vision, None, "glm has no vision indicator");
     }
 
     #[test]

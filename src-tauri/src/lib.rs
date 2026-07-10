@@ -268,6 +268,73 @@ fn reset_user_settings(
     Ok(next)
 }
 
+/// Returns the current vision fallback consent + a preview of which model
+/// would be picked as the helper. Zelda's UI calls this to render the
+/// settings panel (consent toggle + "will use: <model>" label).
+///
+/// Async + uses `spawn_blocking` for the model list fetch (which does a
+/// blocking HTTP call). This prevents the command from blocking the main
+/// thread on cold start when the cache is empty.
+///
+/// If the catalog can't be loaded (no token, network error), `helperModel`
+/// is `null` — the renderer shows a fallback label. The user can still
+/// proceed; the fallback will try again at turn time.
+#[tauri::command]
+async fn get_vision_fallback_state(
+    store: tauri::State<'_, SettingsStore>,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    let settings = store.get()?;
+    let consent = serde_json::to_value(&settings.vision_fallback_consent)
+        .map_err(|e| e.to_string())?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+
+    // Run the blocking model list fetch on a background thread.
+    let app_data_dir_clone = app_data_dir.clone();
+    let helper_preview = tauri::async_runtime::spawn_blocking(move || {
+        let model_service =
+            crate::services::model_service::ModelService::new(app_data_dir_clone);
+        let credentials_fresh = CredentialsStore::new();
+        let token = crate::services::auth_token::resolve_token(&credentials_fresh);
+        // force_refresh=false: try cache first (fast), fall back to API.
+        // If cache is empty and API fails, returns empty vec — helperModel
+        // will be null, which is fine (the modal shows a fallback label).
+        model_service
+            .list_models(token.as_deref(), false)
+            .ok()
+            .and_then(|discovery| {
+                crate::services::vision_fallback_service::resolve_vision_helper(&discovery)
+                    .map(|m| {
+                        serde_json::json!({
+                            "id": m.id,
+                            "displayName": m.display_name,
+                        })
+                    })
+            })
+    })
+    .await
+    .map_err(|e| format!("join: {e}"))?;
+
+    Ok(serde_json::json!({
+        "consent": consent,
+        "helperModel": helper_preview,
+    }))
+}
+
+/// Sets the vision fallback consent (always/ask/never). Zelda's UI calls
+/// this when the user toggles the consent setting.
+#[tauri::command]
+fn set_vision_fallback_consent(
+    consent: crate::models::types::VisionFallbackConsent,
+    store: tauri::State<'_, SettingsStore>,
+) -> Result<UserSettings, String> {
+    let patch = serde_json::json!({ "visionFallbackConsent": consent });
+    store.update(patch)
+}
+
 /// Push settings into live runtime services (tray visibility/title + updater).
 fn apply_runtime_settings(
     next: &UserSettings,
@@ -549,6 +616,47 @@ async fn pick_files(app: tauri::AppHandle) -> Result<Vec<AttachmentMeta>, String
 #[tauri::command]
 fn inspect_files(paths: Vec<String>) -> Result<Vec<AttachmentMeta>, String> {
     Ok(services::file_service::inspect_files(&paths))
+}
+
+/// Inspects a pasted image (from clipboard base64) and returns its
+/// AttachmentMeta. Used by the renderer when the user pastes a screenshot
+/// (Ctrl+V / Cmd+V) — the renderer has the base64 from the clipboard API,
+/// and this command writes it to a safe temp file and reuses the existing
+/// `inspect_attachment` pipeline.
+///
+/// The temp file is written to `app_data_dir/pasted_images/` with a unique
+/// name (timestamp + nanos) to avoid collisions. The extension is derived
+/// from the filename (e.g. "screenshot.png" → ".png").
+///
+/// Returns a vec (not a single AttachmentMeta) to match the `inspect_files`
+/// contract so the renderer can treat both paths uniformly.
+#[tauri::command]
+fn inspect_pasted_image(
+    base64: String,
+    filename: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<AttachmentMeta>, String> {
+    use base64::Engine;
+
+    // Decode base64. Reject if invalid.
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64.trim())
+        .map_err(|e| format!("invalid base64: {e}"))?;
+
+    // Resolve app_data_dir for the temp file.
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("resolve app_data_dir: {e}"))?;
+    let pasted_dir = app_data_dir.join("pasted_images");
+
+    // Delegate to the testable core function.
+    let meta = services::file_service::write_pasted_image_and_inspect(
+        &bytes,
+        &filename,
+        &pasted_dir,
+    )?;
+    Ok(vec![meta])
 }
 
 #[tauri::command]
@@ -846,7 +954,7 @@ pub fn run() {
             // ModelService — fetches models from Verboo Router API with disk cache
             app.manage(ModelService::new(app_data_dir.clone()));
             // TurnService — spawns `verboo` CLI for agent turns with streaming
-            app.manage(TurnService::new(std::sync::Arc::new(CredentialsStore::new())).with_settings(std::sync::Arc::new(settings_store_for_turn)));
+            app.manage(TurnService::new(std::sync::Arc::new(CredentialsStore::new())).with_settings(std::sync::Arc::new(settings_store_for_turn)).with_app_data_dir(app_data_dir.clone()));
             // ResearchSubagentRunner — spawns read-only CLI turns for research
             // subagents. Shares a CredentialsStore (Arc) so it can resolve the
             // bearer token (CLI OAuth first, API key fallback) the same way
@@ -1028,6 +1136,9 @@ pub fn run() {
             get_user_settings,
             update_user_settings,
             reset_user_settings,
+            // Vision fallback (FASE 1)
+            get_vision_fallback_state,
+            set_vision_fallback_consent,
             // Menu bar
             update_menu_bar,
             force_idle_menu_bar,
@@ -1051,6 +1162,7 @@ pub fn run() {
             // Files
             pick_files,
             inspect_files,
+            inspect_pasted_image,
             pick_folder,
             create_project_folder,
             // Agent
