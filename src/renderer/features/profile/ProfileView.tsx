@@ -49,7 +49,7 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
       <section className="profile-panel avatar-editor-panel">
         <div className="avatar-editor-main">
           <div className="avatar-editor-preview">
-            <AvatarIcon settings={avatarSettings} name={profile.user?.name ?? profile.plan?.name ?? ''} />
+            <AvatarIcon settings={avatarSettings} name={profile.user?.name ?? profile.plan?.name ?? ''} size={56} />
           </div>
           <div className="avatar-editor-upload">
             <label className="avatar-editor-upload-btn">

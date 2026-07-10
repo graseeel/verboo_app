@@ -30,7 +30,7 @@ tauri-build = { version = "2", features = [] }
 # regenerates tauri-macros with a different metadata hash — and the
 # regenerated dylib is corrupted on Rust 1.89+ ("mis-aligned LINKEDIT
 # string pool" on dlopen).
-tauri = { version = "2", features = ["tray-icon", "image-png", "custom-protocol"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "custom-protocol", "protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
