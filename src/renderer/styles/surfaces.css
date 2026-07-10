@@ -1385,16 +1385,16 @@
 .message-edit-actions {
   display: flex; gap: 6px;
 }
-.queued-action-inline {
+.message-edit-btn {
   padding: 4px 10px; border-radius: 6px;
   font-size: 12px; cursor: pointer; border: 1px solid var(--border);
 }
-.queued-action-inline.save {
+.message-edit-btn.save {
   background: var(--accent-strong); color: white; border-color: var(--accent-strong);
 }
-.queued-action-inline.save:disabled { opacity: 0.4; }
-.queued-action-inline.cancel { background: transparent; color: var(--text-muted); }
-.queued-action-inline.cancel:hover { background: var(--bg-soft); }
+.message-edit-btn.save:disabled { opacity: 0.4; }
+.message-edit-btn.cancel { background: transparent; color: var(--text-muted); }
+.message-edit-btn.cancel:hover { background: var(--bg-soft); }
 
 .message-row.activity[data-activity="context"] .message-meta {
   color: var(--danger);

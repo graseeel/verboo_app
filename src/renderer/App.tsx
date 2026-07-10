@@ -1571,15 +1571,6 @@ export function App() {
 
   function enqueueFollowUp(item: QueuedFollowUp) {
     setQueuedFollowUpsList(current => [...current, item])
-    appendConversationItem(item.conversationId, {
-      id: `${item.id}:queued`,
-      role: 'tool',
-      kind: 'activity',
-      activityKind: 'queued',
-      text: t('transcript.queuedTitle'),
-      activityDetail: t('transcript.queuedDetail'),
-      timestamp: Date.now(),
-    })
   }
 
   async function flushQueuedFollowUps() {
@@ -1603,11 +1594,10 @@ export function App() {
     const activeTurnEntry = Object.entries(turnConversationIds.current).find(([, convId]) => convId === conversationId)
     const currentTurnId = activeTurnEntry?.[0]
 
-    // Remove from queue and remove the queued activity from transcript
+    // Remove from queue
     setQueuedFollowUpsList(current => current.filter(q => q.id !== queueItemId))
     updateConversation(conversationId, conversation => ({
       ...conversation,
-      items: conversation.items.filter(i => i.id !== `${queueItemId}:queued`),
       updatedAt: Date.now(),
     }))
 
@@ -1633,11 +1623,6 @@ export function App() {
     const item = queuedFollowUpsRef.current.find(q => q.id === queueItemId)
     if (!item) return
     setQueuedFollowUpsList(current => current.filter(q => q.id !== queueItemId))
-    updateConversation(item.conversationId, conversation => ({
-      ...conversation,
-      items: conversation.items.filter(i => i.id !== `${queueItemId}:queued`),
-      updatedAt: Date.now(),
-    }))
   }
 
   function moveQueuedItem(queueItemId: string, direction: -1 | 1) {
@@ -1651,36 +1636,10 @@ export function App() {
       ;[next[idx], next[target]] = [next[target], next[idx]]
       return next
     })
-    // Swap transcript items so the visual order matches the queue order.
-    const item = queuedFollowUpsRef.current.find(q => q.id === queueItemId)
-    if (!item) return
-    const targetId = direction === -1
-      ? queuedFollowUpsRef.current[queuedFollowUpsRef.current.findIndex(q => q.id === queueItemId) - 1]?.id
-      : queuedFollowUpsRef.current[queuedFollowUpsRef.current.findIndex(q => q.id === queueItemId) + 1]?.id
-    if (!targetId) return
-    updateConversation(item.conversationId, conversation => {
-      const ids = conversation.items.map(i => i.id)
-      const aIdx = ids.indexOf(`${queueItemId}:queued`)
-      const bIdx = ids.indexOf(`${targetId}:queued`)
-      if (aIdx === -1 || bIdx === -1) return conversation
-      const next = [...conversation.items]
-      ;[next[aIdx], next[bIdx]] = [next[bIdx], next[aIdx]]
-      return { ...conversation, items: next, updatedAt: Date.now() }
-    })
   }
 
   function editQueuedItem(queueItemId: string, newText: string) {
     setQueuedFollowUpsList(current => current.map(q => q.id === queueItemId ? { ...q, message: newText } : q))
-    // Update the transcript display text for the queued activity row.
-    const item = queuedFollowUpsRef.current.find(q => q.id === queueItemId)
-    if (!item) return
-    updateConversation(item.conversationId, conversation => ({
-      ...conversation,
-      items: conversation.items.map(i =>
-        i.id === `${queueItemId}:queued` ? { ...i, text: newText, activityDetail: newText } : i
-      ),
-      updatedAt: Date.now(),
-    }))
   }
 
   // Edit a user's sent message: update the transcript text, remove all
@@ -1717,9 +1676,6 @@ export function App() {
       // Nothing running — send now.
       queuedFollowUpsRef.current = current.filter(q => q.id !== queueItemId)
       setQueuedFollowUpsList(() => queuedFollowUpsRef.current)
-      updateConversation(conversationId, conv => ({
-        ...conv, items: conv.items.filter(i => i.id !== `${queueItemId}:queued`), updatedAt: Date.now(),
-      }))
       runTurn(item)
     } else {
       // Turn active — move to front.
@@ -3820,7 +3776,8 @@ export function App() {
           ) : hasConversation ? (
             <>
               <Transcript
-                items={items}
+                // Filter out queued activity items — they live in the composer panel now.
+                items={items.filter(i => i.activityKind !== 'queued')}
                 conversationId={activeConversationId}
                 onOpenReview={handleOpenReview}
                 reviewMetadata={reviewMetadata}
@@ -3828,7 +3785,6 @@ export function App() {
                 thinkingSnippets={thinkingSnippets}
                 compactingTurnId={compactingTurnId}
                 imageReadingTurnId={imageReadingTurnId}
-                onEditQueued={editQueuedItem}
                 onEditSent={editSentMessage}
               />
               <div ref={transcriptEndRef} className="transcript-end" />
@@ -3982,6 +3938,7 @@ export function App() {
             queue={queuedFollowUpsRef.current}
             onQueueSendNow={queueItemId => sendNow(activeConversationId ?? '', queueItemId)}
             onQueueEdit={editQueuedItem}
+            onQueueRemove={removeQueuedItem}
             onPetCommand={togglePet}
             value={composerValue}
             onValueChange={setComposerValue}
@@ -4510,7 +4467,6 @@ function activityDisplayLabel(activity: TurnActivity, t: Translator): string {
   if (activity.kind === 'permission') return t('transcript.permissionOne')
   if (activity.kind === 'subagent') return t('transcript.subagentOne')
   if (activity.kind === 'context') return activity.label
-  if (activity.kind === 'queued') return activity.label
   if (activity.kind === 'thinking') return t('transcript.thinking')
   return t('transcript.toolOne')
 }

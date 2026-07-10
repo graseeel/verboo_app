@@ -1,4 +1,4 @@
-import { ArrowUp, Layers, Paperclip, Target, X } from 'lucide-react'
+import { ArrowUp, Paperclip, Target, X } from 'lucide-react'
 import { type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { AttachmentMeta, SkillSummary } from '../../../shared/types'
 import { useI18n } from '../../i18n'
@@ -39,6 +39,7 @@ type ComposerProps = {
   queue?: { id: string; message: string }[]
   onQueueSendNow?: (queueItemId: string) => void
   onQueueEdit?: (queueItemId: string, newText: string) => void
+  onQueueRemove?: (queueItemId: string) => void
 }
 
 export function Composer({
@@ -64,6 +65,7 @@ export function Composer({
   queue,
   onQueueSendNow,
   onQueueEdit,
+  onQueueRemove,
 }: ComposerProps) {
   const { t } = useI18n()
   const [internalValue, setInternalValue] = useState('')
@@ -71,7 +73,6 @@ export function Composer({
   const setValue = onValueChange ?? setInternalValue
   const [highlighted, setHighlighted] = useState(0)
   const [dragDepth, setDragDepth] = useState(0)
-  const [queuePanelOpen, setQueuePanelOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   // Tauri native drag-drop: the webview fires 'enter'/'over'/'drop'/'leave'
@@ -265,13 +266,13 @@ export function Composer({
   }
 
   return (<>
-    {queue && queue.length > 0 && queuePanelOpen && (
+    {queue && queue.length > 0 && (
       <QueuePanel
         items={queue}
         conversationId={queue[0]?.id}
         onSendNow={(_, id) => onQueueSendNow?.(id)}
         onEditQueued={onQueueEdit ?? (() => {})}
-        onClose={() => setQueuePanelOpen(false)}
+        onRemoveItem={id => onQueueRemove?.(id)}
       />
     )}
     <form
@@ -415,12 +416,6 @@ export function Composer({
         {centerToolbar && <div className="composer-tools center">{centerToolbar}</div>}
         <div className="composer-tools right">
           {rightToolbar}
-          {queue && queue.length > 0 && !queuePanelOpen && (
-            <button type="button" className="composer-queue-badge" onClick={() => setQueuePanelOpen(true)} title={t('queue.show')}>
-              <Layers size={14} />
-              <span>{queue.length}</span>
-            </button>
-          )}
           <button
             className="send-button"
             type="submit"

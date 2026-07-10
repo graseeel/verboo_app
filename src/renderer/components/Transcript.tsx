@@ -15,15 +15,13 @@ type TranscriptProps = {
   thinkingSnippets?: string[]
   compactingTurnId?: string
   imageReadingTurnId?: string
-  onInterject?: (conversationId: string, queueItemId: string) => void
-  onEditQueued?: (queueItemId: string, newText: string) => void
   onEditSent?: (conversationId: string, itemId: string, newText: string) => void
 }
 
 const MAX_ACTIVITY_DETAIL_LINES = 8
 const MAX_SUMMARY_DETAIL_LINES = 3
 
-export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, imageReadingTurnId, conversationId, onInterject, onEditQueued, onEditSent }: TranscriptProps) {
+export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, imageReadingTurnId, conversationId, onEditSent }: TranscriptProps) {
   // `items` is a new array reference only when the conversation actually changes,
   // so this recomputes on real content changes but is skipped when the parent
   // re-renders for unrelated reasons (context-usage ticks, subagent updates…).
@@ -43,7 +41,7 @@ export const Transcript = memo(function Transcript({ items, onOpenReview, review
               onOpenReview={onOpenReview}
               reviewMetadata={reviewMetadata}
             />
-          : <MessageArticle key={entry.item.id} item={entry.item} conversationId={conversationId} onInterject={onInterject} onCopy={() => {}} onEditQueued={onEditQueued} onEditSent={onEditSent} />
+          : <MessageArticle key={entry.item.id} item={entry.item} conversationId={conversationId} onCopy={() => {}} onEditSent={onEditSent} />
       ))}
     </div>
   )
@@ -166,23 +164,16 @@ export type MessageArticleProps = {
   item: TranscriptItem
   conversationId?: string
   children?: ReactNode
-  onInterject?: TranscriptProps['onInterject']
   onCopy?: (text: string) => void
-  onEditQueued?: (queueItemId: string, newText: string) => void
   onEditSent?: (conversationId: string, itemId: string, newText: string) => void
 }
 
-const MessageArticle = memo(function MessageArticle({ item, conversationId, onInterject, onCopy, onEditQueued, onEditSent, children }: MessageArticleProps) {
+const MessageArticle = memo(function MessageArticle({ item, conversationId, onCopy, onEditSent, children }: MessageArticleProps) {
   const { t } = useI18n()
   const visibleText = visibleTextForItem(item)
   const [editMode, setEditMode] = useState(false)
   const [editText, setEditText] = useState(visibleText)
   const [copyFlash, setCopyFlash] = useState(false)
-  // Extract queue item id from queued activity markers (stored as `${id}:queued`).
-  const queueItemId = item.activityKind === 'queued' && item.id.endsWith(':queued')
-    ? item.id.slice(0, -':queued'.length)
-    : undefined
-  const isQueued = Boolean(queueItemId)
   const isUserMessage = item.role === 'user' && item.kind !== 'activity' && item.kind !== 'summary'
 
   function handleCopy() {
@@ -197,9 +188,7 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onIn
   function handleSaveEdit() {
     const newText = editText.trim()
     if (!newText) return
-    if (isQueued && queueItemId && onEditQueued) {
-      onEditQueued(queueItemId, newText)
-    } else if (isUserMessage && conversationId && onEditSent) {
+    if (isUserMessage && conversationId && onEditSent) {
       onEditSent(conversationId, item.id, newText)
     }
     setEditMode(false)
@@ -209,11 +198,11 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onIn
   if (editMode) {
     return (<>
       <article className={`message-row ${item.role} ${item.kind ?? 'message'}`} data-activity={item.activityKind}>
-        <div className="message-meta"><span>{isQueued ? t('transcript.editQueued') : t('transcript.editMessage')}</span></div>
+        <div className="message-meta"><span>{t('transcript.editMessage')}</span></div>
         <textarea className="message-edit-textarea" value={editText} onChange={e => setEditText(e.target.value)} autoFocus />
         <div className="message-edit-actions">
-          <button type="button" className="queued-action-inline save" onClick={handleSaveEdit} disabled={!editText.trim()}>{t('common.save')}</button>
-          <button type="button" className="queued-action-inline cancel" onClick={() => setEditMode(false)}>{t('common.cancel')}</button>
+          <button type="button" className="message-edit-btn save" onClick={handleSaveEdit} disabled={!editText.trim()}>{t('common.save')}</button>
+          <button type="button" className="message-edit-btn cancel" onClick={() => setEditMode(false)}>{t('common.cancel')}</button>
         </div>
         {children}
       </article>

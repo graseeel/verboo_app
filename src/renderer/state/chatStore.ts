@@ -118,10 +118,12 @@ function sanitizeChatStore(store: ChatStore): ChatStore {
     ...store,
     conversations: store.conversations.map(conversation => ({
       ...conversation,
-      items: conversation.items.map(item => ({
-        ...item,
-        text: stripTerminalControl(item.text),
-      })),
+      items: conversation.items
+        .filter(item => !item.id.endsWith(':queued'))
+        .map(item => ({
+          ...item,
+          text: stripTerminalControl(item.text),
+        })),
     })),
   }
 }

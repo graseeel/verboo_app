@@ -30,7 +30,8 @@
  * its outer edges extend past message bubbles — the transcript width is
  * INTACT. Other dock panels keep the shared lane width.
  */
-.bottom-dock > .composer {
+.bottom-dock > .composer,
+.bottom-dock > .queue-panel {
   width: min(var(--composer-lane-width), 100%);
   max-width: 100%;
   margin-inline: auto;
@@ -1315,76 +1316,60 @@
 .context-panel-action:hover { background: var(--bg-hover); }
 .context-panel-action-warn { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
 
-/* ── Queue panel (above composer) ──────────────────────────── */
+/* ── Queue panel — integrated into composer top edge ──────── */
 .queue-panel {
-  display: flex; flex-direction: column; gap: 6px;
-  padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--bg-elevated) 96%, transparent);
-  margin-bottom: 6px;
-  max-height: 240px;
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-bottom: none; /* merges visually with composer below */
+  border-radius: 14px 14px 0 0;
+  background: var(--bg);
+  max-height: 180px;
   overflow-y: auto;
 }
-.queue-panel-header {
-  display: flex; justify-content: space-between; align-items: center;
-}
-.queue-panel-header strong { font-size: 13px; color: var(--text); }
-.queue-panel-close {
-  display: grid; place-items: center;
-  width: 24px; height: 24px; border: 0; border-radius: 5px;
-  background: transparent; color: var(--text-muted); cursor: pointer;
-}
-.queue-panel-close:hover { background: var(--bg-soft); }
-.queue-panel-items { display: flex; flex-direction: column; gap: 4px; }
-.queue-panel-item {
+.queue-item {
   display: flex; align-items: center; gap: 6px;
-  padding: 6px 8px;
-  border: 1px solid var(--border); border-radius: 7px;
-  background: color-mix(in srgb, var(--bg-soft) 50%, transparent);
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-soft) 60%, transparent);
 }
-.queue-panel-index {
-  flex-shrink: 0; font-size: 11px; color: var(--text-dim); min-width: 20px;
+.queue-item-index {
+  flex-shrink: 0; font-size: 11px; color: var(--text-dim); min-width: 18px;
 }
-.queue-panel-text {
+.queue-item-text {
   flex: 1; font-size: 12px; color: var(--text); line-height: 1.4;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.queue-panel-actions {
+.queue-item-actions {
   display: flex; gap: 1px; flex-shrink: 0;
 }
-.queue-panel-action {
+.queue-item-btn {
   display: grid; place-items: center;
   width: 26px; height: 26px; border: 0; border-radius: 5px;
-  background: transparent; color: var(--text-muted); cursor: pointer;
+  background: transparent; color: var(--text-dim); cursor: pointer;
 }
-.queue-panel-action:hover { background: var(--bg-hover); color: var(--accent-strong); }
-.queue-panel-edit-textarea {
-  width: 100%; min-height: 38px; padding: 4px 6px;
-  border: 1px solid var(--border-strong); border-radius: 5px;
-  background: var(--bg-soft); color: var(--text);
-  font-family: inherit; font-size: 12px; line-height: 1.4; resize: vertical;
-}
-.queue-panel-edit-actions { display: flex; gap: 4px; margin-top: 4px; }
-.queue-panel-btn {
-  padding: 3px 8px; border-radius: 5px; font-size: 11px; cursor: pointer;
-  border: 1px solid var(--border); background: transparent; color: var(--text-muted);
-}
-.queue-panel-btn-primary {
-  background: var(--accent-strong); color: white; border-color: var(--accent-strong);
-}
-.queue-panel-btn-primary:disabled { opacity: 0.4; }
-.queue-panel-btn:hover { background: var(--bg-hover); }
+.queue-item-btn:hover { background: var(--bg-hover); color: var(--text); }
+.queue-item-btn-primary:hover { color: var(--accent-strong); }
+.queue-item-btn-remove:hover { color: var(--danger); }
 
-/* ── Queue badge in composer toolbar ──────────────────────── */
-.composer-queue-badge {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 4px 8px; border: 1px solid var(--border); border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--accent-strong); font-size: 11px; cursor: pointer;
-  white-space: nowrap;
+/* Inline edit — matches composer input styling */
+.queue-item-edit { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.queue-edit-input {
+  width: 100%; padding: 5px 8px; border: 1px solid var(--border-strong); border-radius: 8px;
+  background: var(--bg-soft); color: var(--text);
+  font-family: inherit; font-size: 12px; line-height: 1.5; resize: none;
+  min-height: 28px;
 }
-.composer-queue-badge:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.queue-edit-input:focus { outline: none; border-color: var(--accent); }
+.queue-edit-actions { display: flex; gap: 4px; }
+
+/* Reuse app button system — defined here for portability */
+.btn { padding: 5px 10px; border-radius: 7px; font-size: 12px; cursor: pointer; border: 1px solid var(--border); background: transparent; color: var(--text); }
+.btn-sm { padding: 3px 8px; font-size: 11px; border-radius: 6px; }
+.btn-primary { background: var(--accent-strong); color: white; border-color: var(--accent-strong); }
+.btn-primary:disabled { opacity: 0.4; }
+.btn-ghost { background: transparent; color: var(--text-muted); border-color: transparent; }
+.btn-ghost:hover { background: var(--bg-soft); }
 
 .project-picker {
   position: relative;
