@@ -6,9 +6,10 @@ import { formatCompactNumber, useI18n } from '../../i18n'
 type ContextMeterProps = {
   usage?: ContextUsageSnapshot
   contextWindow?: number
+  onClick?: () => void
 }
 
-export function ContextMeter({ usage, contextWindow }: ContextMeterProps) {
+export function ContextMeter({ usage, contextWindow, onClick }: ContextMeterProps) {
   const { language, t } = useI18n()
   const maxTokens = usage?.maxTokens ?? contextWindow
   const usedTokens = usage?.usedTokens
@@ -30,10 +31,11 @@ export function ContextMeter({ usage, contextWindow }: ContextMeterProps) {
     : usage ? t('context.usageTitle') : t('context.waitingTitle')
 
   return (
-    <div
+    <button type="button"
       className={`context-meter ${overLimit ? 'over-limit' : ''}`}
       title={title}
       aria-label={t('context.aria', { value: percentLabel })}
+      onClick={onClick}
       style={{ '--context-progress': bounded ?? 0 } as CSSProperties}
     >
       {overLimit ? <AlertTriangle className="context-meter-icon" size={15} /> : <Gauge className="context-meter-icon" size={15} />}
@@ -44,6 +46,6 @@ export function ContextMeter({ usage, contextWindow }: ContextMeterProps) {
       <span className="context-ring" aria-hidden="true">
         <span>{percentLabel}</span>
       </span>
-    </div>
+    </button>
   )
 }

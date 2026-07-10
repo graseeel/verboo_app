@@ -68,6 +68,7 @@ import type { ExtractionStatus, VisionFallbackConsent, VisionFallbackState } fro
 import { recognizeImage } from './features/ocr/ocrService'
 import { Composer } from './features/composer/Composer'
 import { ContextMeter } from './features/context/ContextMeter'
+import { ContextPanel } from './features/context/ContextPanel'
 import { TokenRateMeter } from './features/context/TokenRateMeter'
 import { FeedbackDialog } from './features/feedback/FeedbackDialog'
 import { ModelSelector } from './features/models/ModelSelector'
@@ -323,6 +324,7 @@ export function App() {
   const [subagentSummaryExpanded, setSubagentSummaryExpanded] = useState(false)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshot | undefined>()
+  const [contextPanelOpen, setContextPanelOpen] = useState(false)
   const [goal, setGoal] = useState<GoalState | undefined>()
   const [imageReadingTurnId, setImageReadingTurnId] = useState<string | undefined>()
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(initialSidebarPreference.current.mode)
@@ -3876,7 +3878,22 @@ export function App() {
             rightToolbar={
               <>
                 <TokenRateMeter rate={tokenRate} active={Boolean(runningTurnId)} />
-                <ContextMeter usage={contextUsage} contextWindow={selectedContextWindow} />
+                <ContextMeter usage={contextUsage} contextWindow={selectedContextWindow} onClick={() => setContextPanelOpen(o => !o)} />
+                {contextPanelOpen && (
+                  <div className="context-meter-popover-wrapper">
+                    <ContextPanel
+                      usage={contextUsage}
+                      maxWindow={selectedContextWindow}
+                      items={conversationItemsRef.current}
+                      attachments={attachedFiles}
+                      skills={selectedSkills}
+                      queue={queuedFollowUpsRef.current}
+                      onClearAttachments={() => setAttachedFiles([])}
+                      onClearSkills={() => setSelectedSkills([])}
+                      onClose={() => setContextPanelOpen(false)}
+                    />
+                  </div>
+                )}
                 <ModelSelector
                   models={modelResult.models}
                   selectedModel={selectedModel}
