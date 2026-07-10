@@ -1538,6 +1538,46 @@ export function App() {
     await runTurn(item)
   }
 
+  function removeQueuedItem(queueItemId: string) {
+    const item = queuedFollowUpsRef.current.find(q => q.id === queueItemId)
+    if (!item) return
+    setQueuedFollowUpsList(current => current.filter(q => q.id !== queueItemId))
+    updateConversation(item.conversationId, conversation => ({
+      ...conversation,
+      items: conversation.items.filter(i => i.id !== `${queueItemId}:queued`),
+      updatedAt: Date.now(),
+    }))
+  }
+
+  function moveQueuedItem(queueItemId: string, direction: -1 | 1) {
+    setQueuedFollowUpsList(current => {
+      const idx = current.findIndex(q => q.id === queueItemId)
+      if (idx === -1) return current
+      const target = idx + direction
+      if (target < 0 || target >= current.length) return current
+      const next = [...current]
+      // Swap elements in the queue array.
+      ;[next[idx], next[target]] = [next[target], next[idx]]
+      return next
+    })
+    // Swap transcript items so the visual order matches the queue order.
+    const item = queuedFollowUpsRef.current.find(q => q.id === queueItemId)
+    if (!item) return
+    const targetId = direction === -1
+      ? queuedFollowUpsRef.current[queuedFollowUpsRef.current.findIndex(q => q.id === queueItemId) - 1]?.id
+      : queuedFollowUpsRef.current[queuedFollowUpsRef.current.findIndex(q => q.id === queueItemId) + 1]?.id
+    if (!targetId) return
+    updateConversation(item.conversationId, conversation => {
+      const ids = conversation.items.map(i => i.id)
+      const aIdx = ids.indexOf(`${queueItemId}:queued`)
+      const bIdx = ids.indexOf(`${targetId}:queued`)
+      if (aIdx === -1 || bIdx === -1) return conversation
+      const next = [...conversation.items]
+      ;[next[aIdx], next[bIdx]] = [next[bIdx], next[aIdx]]
+      return { ...conversation, items: next, updatedAt: Date.now() }
+    })
+  }
+
   async function runTurn(item: QueuedFollowUp, options?: { skipResume?: boolean }) {
     pendingConversationId.current = item.conversationId
     setContextUsage(undefined)
@@ -3634,6 +3674,8 @@ export function App() {
                 compactingTurnId={compactingTurnId}
                 imageReadingTurnId={imageReadingTurnId}
                 onInterject={interjectMessage}
+                onRemoveQueuedItem={removeQueuedItem}
+                onMoveQueuedItem={moveQueuedItem}
               />
               <div ref={transcriptEndRef} className="transcript-end" />
             </>

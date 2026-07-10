@@ -1341,6 +1341,36 @@
   color: var(--text-muted);
 }
 
+/* Icon-only reorder/remove buttons — smaller, transparent by default,
+   visible on hover/group-focus of the queued item. */
+.queued-action-button.move-up-button,
+.queued-action-button.move-down-button,
+.queued-action-button.remove-button {
+  display: inline-grid; place-items: center;
+  width: 26px; height: 26px; padding: 0;
+  border-radius: 6px; border: none;
+  background: transparent; color: var(--text-muted);
+  cursor: pointer; opacity: 0.4;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+.queued-actions:hover .queued-action-button.move-up-button,
+.queued-actions:hover .queued-action-button.move-down-button,
+.queued-actions:hover .queued-action-button.remove-button,
+.queued-action-button.move-up-button:focus-visible,
+.queued-action-button.move-down-button:focus-visible,
+.queued-action-button.remove-button:focus-visible {
+  opacity: 1;
+}
+.queued-action-button.move-up-button:hover,
+.queued-action-button.move-down-button:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-strong);
+}
+.queued-action-button.remove-button:hover {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
 .message-row.activity[data-activity="context"] .message-meta {
   color: var(--danger);
 }

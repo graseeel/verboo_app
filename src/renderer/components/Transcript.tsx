@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronDown, ChevronRight, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
+import { CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, LoaderCircle, Pencil, Search, Terminal, Wrench, X } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { TranscriptItem, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
 import { MarkdownMessage } from '../features/transcript/MarkdownMessage'
@@ -16,12 +16,14 @@ type TranscriptProps = {
   compactingTurnId?: string
   imageReadingTurnId?: string
   onInterject?: (conversationId: string, queueItemId: string) => void
+  onRemoveQueuedItem?: (queueItemId: string) => void
+  onMoveQueuedItem?: (queueItemId: string, direction: -1 | 1) => void
 }
 
 const MAX_ACTIVITY_DETAIL_LINES = 8
 const MAX_SUMMARY_DETAIL_LINES = 3
 
-export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, imageReadingTurnId, conversationId, onInterject }: TranscriptProps) {
+export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, imageReadingTurnId, conversationId, onInterject, onRemoveQueuedItem, onMoveQueuedItem }: TranscriptProps) {
   // `items` is a new array reference only when the conversation actually changes,
   // so this recomputes on real content changes but is skipped when the parent
   // re-renders for unrelated reasons (context-usage ticks, subagent updates…).
@@ -41,7 +43,7 @@ export const Transcript = memo(function Transcript({ items, onOpenReview, review
               onOpenReview={onOpenReview}
               reviewMetadata={reviewMetadata}
             />
-          : <MessageArticle key={entry.item.id} item={entry.item} conversationId={conversationId} onInterject={onInterject} />
+          : <MessageArticle key={entry.item.id} item={entry.item} conversationId={conversationId} onInterject={onInterject} onRemoveQueuedItem={onRemoveQueuedItem} onMoveQueuedItem={onMoveQueuedItem} />
       ))}
     </div>
   )
@@ -160,7 +162,7 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, readingImage,
   )
 }
 
-const MessageArticle = memo(function MessageArticle({ item, conversationId, onInterject, children }: { item: TranscriptItem; conversationId?: string; children?: ReactNode; onInterject?: TranscriptProps['onInterject'] }) {
+const MessageArticle = memo(function MessageArticle({ item, conversationId, onInterject, onRemoveQueuedItem, onMoveQueuedItem, children }: { item: TranscriptItem; conversationId?: string; children?: ReactNode; onInterject?: TranscriptProps['onInterject']; onRemoveQueuedItem?: TranscriptProps['onRemoveQueuedItem']; onMoveQueuedItem?: TranscriptProps['onMoveQueuedItem'] }) {
   const { t } = useI18n()
   const visibleText = visibleTextForItem(item)
   const [interjectDismissed, setInterjectDismissed] = useState(false)
@@ -238,12 +240,27 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onIn
         <div className="queued-actions">
           <span className="queued-actions-detail">{t('transcript.interjectDetail')}</span>
           <div className="queued-actions-buttons">
-            <button className="queued-action-button direct-button" type="button" onClick={() => onInterject(conversationId, queueItemId)}>
+            <button className="queued-action-button direct-button" type="button" onClick={() => onInterject(conversationId, queueItemId)} title={t('transcript.interjectNow')}>
               {t('transcript.interjectNow')}
             </button>
-            <button className="queued-action-button wait-button" type="button" onClick={() => setInterjectDismissed(true)}>
+            <button className="queued-action-button wait-button" type="button" onClick={() => setInterjectDismissed(true)} title={t('transcript.interjectWait')}>
               {t('transcript.interjectWait')}
             </button>
+            {onMoveQueuedItem && (
+              <button className="queued-action-button move-up-button" type="button" onClick={() => onMoveQueuedItem(queueItemId, -1)} aria-label={t('transcript.moveUp')} title={t('transcript.moveUp')}>
+                <ChevronUp size={14} />
+              </button>
+            )}
+            {onMoveQueuedItem && (
+              <button className="queued-action-button move-down-button" type="button" onClick={() => onMoveQueuedItem(queueItemId, 1)} aria-label={t('transcript.moveDown')} title={t('transcript.moveDown')}>
+                <ChevronDown size={14} />
+              </button>
+            )}
+            {onRemoveQueuedItem && (
+              <button className="queued-action-button remove-button" type="button" onClick={() => onRemoveQueuedItem(queueItemId)} aria-label={t('transcript.removeQueued')} title={t('transcript.removeQueued')}>
+                <X size={14} />
+              </button>
+            )}
           </div>
         </div>
       )}
