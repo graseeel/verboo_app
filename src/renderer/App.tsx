@@ -237,7 +237,12 @@ function firstUsableWorkspaceDirectory(...paths: Array<string | undefined>): str
   return paths.find(isUsableWorkspaceDirectory) ?? ''
 }
 
-function ContextPanelPortal({ pos, onClose, children }: { pos: { top: number; right: number }; onClose: () => void; children: React.ReactNode }) {
+function ContextPanelPortal({ pos, onClose, ignoreRefs, children }: {
+  pos: { top: number; right: number }
+  onClose: () => void
+  ignoreRefs?: React.RefObject<HTMLElement | null>[]
+  children: React.ReactNode
+}) {
   const ref = useRef<HTMLDivElement>(null)
   // Mount closed, then open on the next frame so the t-dropdown scale/opacity
   // transition plays — the panel grows out of the meter in the composer.
@@ -246,7 +251,7 @@ function ContextPanelPortal({ pos, onClose, children }: { pos: { top: number; ri
     const frame = requestAnimationFrame(() => setOpen(true))
     return () => cancelAnimationFrame(frame)
   }, [])
-  useOutsideDismiss(ref, true, onClose)
+  useOutsideDismiss(ref, true, onClose, ignoreRefs)
   return (
     <div ref={ref} className={`context-meter-popover-wrapper t-dropdown ${open ? 'is-open' : ''}`}
       data-origin="bottom-right"
@@ -4021,7 +4026,7 @@ export function App() {
                   }} />
                 </span>
                 {contextPanelOpen && contextMeterPos && createPortal(
-                  <ContextPanelPortal pos={contextMeterPos} onClose={() => setContextPanelOpen(false)}>
+                  <ContextPanelPortal pos={contextMeterPos} onClose={() => setContextPanelOpen(false)} ignoreRefs={[contextMeterRef]}>
                     <ContextPanel
                       usage={effectiveContextUsage}
                       maxWindow={selectedContextWindow}

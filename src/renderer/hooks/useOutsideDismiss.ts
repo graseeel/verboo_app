@@ -5,6 +5,11 @@ export function useOutsideDismiss<T extends HTMLElement>(
   ref: RefObject<T | null>,
   open: boolean,
   onDismiss: () => void,
+  /** Node(s) whose pointerdown should NOT trigger dismiss. Use when the
+   *  trigger element sits outside the dismissed panel — e.g. a button that
+   *  toggles a popover. Without this, the pointerdown fires dismiss before
+   *  the click toggles the panel back open (race condition). */
+  ignoreRefs?: RefObject<HTMLElement | null>[],
 ) {
   useEffect(() => {
     if (!open) return
@@ -13,6 +18,9 @@ export function useOutsideDismiss<T extends HTMLElement>(
       const target = event.target
       if (!(target instanceof Node)) return
       if (ref.current?.contains(target)) return
+      // If the pointer landed on any ignored node, let the click handler
+      // decide open/close without interference.
+      if (ignoreRefs?.some(r => r.current?.contains(target))) return
       onDismiss()
     }
 
@@ -26,5 +34,5 @@ export function useOutsideDismiss<T extends HTMLElement>(
       document.removeEventListener('pointerdown', handlePointerDown, true)
       document.removeEventListener('keydown', handleKeyDown, true)
     }
-  }, [open, onDismiss, ref])
+  }, [open, onDismiss, ref, ignoreRefs])
 }
