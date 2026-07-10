@@ -18,6 +18,22 @@ if (!('matchMedia' in window)) {
   })
 }
 
+// jsdom does not implement localStorage in Node.js (needs
+// --localstorage-file). Stub it so chatStore unit tests can round-trip.
+const storage: Record<string, string> = {}
+Object.defineProperty(window, 'localStorage', {
+  configurable: true,
+  value: {
+    getItem: (key: string): string | null => storage[key] ?? null,
+    setItem: (key: string, value: string): void => { storage[key] = value },
+    removeItem: (key: string): void => { delete storage[key] },
+    clear: (): void => { for (const k in storage) delete storage[k] },
+    get length() { return Object.keys(storage).length },
+    key: (index: number): string | null => Object.keys(storage)[index] ?? null,
+  },
+  writable: true,
+})
+
 // jsdom lacks IntersectionObserver — stub it so hooks that observe elements
 // don't throw during render.
 if (!('IntersectionObserver' in window)) {

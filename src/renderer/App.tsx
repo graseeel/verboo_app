@@ -1262,6 +1262,11 @@ export function App() {
       if (conversationId && event.result.sessionId) {
         updateConversationSession(conversationId, event.result.sessionId)
       }
+      // Stable sidebar ordering: bump lastTurnEndedAt when the turn result
+      // arrives (streaming tokens alone no longer reshuffle the sidebar).
+      if (conversationId) {
+        updateConversation(conversationId, c => ({ ...c, lastTurnEndedAt: Date.now() }))
+      }
       if (event.result.usage) {
         setGoal(current => {
           if (!current) return current
@@ -1277,6 +1282,11 @@ export function App() {
 
     if (event.type === 'error') {
       const conversationId = turnConversationIds.current[event.turnId]
+      // Bump lastTurnEndedAt on error too — a turn concluded even when it
+      // errored, and the sidebar should reflect the updated order.
+      if (conversationId) {
+        updateConversation(conversationId, c => ({ ...c, lastTurnEndedAt: Date.now() }))
+      }
       setRunningTurnId(undefined)
       setRunningConversations(prev => { const next = new Set(prev); next.delete(conversationId); return next })
       setTokenRate(undefined)

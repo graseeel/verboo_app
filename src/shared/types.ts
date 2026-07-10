@@ -175,6 +175,11 @@ export type StoredConversation = {
   goal?: GoalState
   createdAt: number
   updatedAt: number
+  /** Last time a turn *finished* in this conversation (result / error).
+   *  Bumped only on turn conclusion, NOT on streaming tokens. Used for stable
+   *  sidebar ordering: when absent (legacy data) the sort falls back to
+   *  updatedAt. Guaranteed to be present on new conversations (=== createdAt). */
+  lastTurnEndedAt?: number
   archivedAt?: number
 }
 

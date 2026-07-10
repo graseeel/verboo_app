@@ -44,6 +44,7 @@ export function createConversation(projectId?: string): StoredConversation {
     items: [initialSystemMessage()],
     createdAt: now,
     updatedAt: now,
+    lastTurnEndedAt: now,
   }
 }
 
@@ -78,7 +79,7 @@ export function titleFromMessage(message: string): string {
 export function visibleConversations(store: ChatStore): StoredConversation[] {
   return store.conversations
     .filter(conversation => !conversation.archivedAt)
-    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .sort((a, b) => (b.lastTurnEndedAt ?? b.updatedAt) - (a.lastTurnEndedAt ?? a.updatedAt))
 }
 
 export function archivedConversations(store: ChatStore): StoredConversation[] {
@@ -113,18 +114,29 @@ function migrateChatStore(store: PersistedChatStore): ChatStore {
   }
 }
 
+/** Ensure a conversation has `lastTurnEndedAt` set (legacy migration).
+ *  Conversations persisted before the field existed may lack it; the sort
+ *  in visibleConversations falls back to updatedAt, but by filling it here
+ *  we guarantee the invariant that all persisted conversations have the field. */
+export function sanitizeConversation(conversation: StoredConversation): StoredConversation {
+  if (conversation.lastTurnEndedAt !== undefined) return conversation
+  return { ...conversation, lastTurnEndedAt: conversation.updatedAt }
+}
+
 function sanitizeChatStore(store: ChatStore): ChatStore {
   return {
     ...store,
-    conversations: store.conversations.map(conversation => ({
-      ...conversation,
-      items: conversation.items
-        .filter(item => !item.id.endsWith(':queued'))
-        .map(item => ({
-          ...item,
-          text: stripTerminalControl(item.text),
-        })),
-    })),
+    conversations: store.conversations.map(conversation =>
+      sanitizeConversation({
+        ...conversation,
+        items: conversation.items
+          .filter(item => !item.id.endsWith(':queued'))
+          .map(item => ({
+            ...item,
+            text: stripTerminalControl(item.text),
+          })),
+      }),
+    ),
   }
 }
 
