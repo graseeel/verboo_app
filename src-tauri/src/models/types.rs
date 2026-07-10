@@ -167,6 +167,50 @@ impl Default for VisionFallbackConsent {
     }
 }
 
+/// Avatar configuration: how the user's profile picture is rendered.
+/// Mirrors the TS `AvatarSettings` type (src/shared/types.ts:245).
+///
+/// - `Initials` → show the user's initials (default, no storage needed).
+/// - `Preset` → render one of the built-in SVG icons (preset_id + preset_color).
+/// - `Upload` → show a user-uploaded photo (upload_path saved by `save_avatar_blob`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum AvatarKind {
+    Initials,
+    Preset,
+    Upload,
+}
+
+impl Default for AvatarKind {
+    fn default() -> Self {
+        Self::Initials
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AvatarSettings {
+    #[serde(default)]
+    pub kind: AvatarKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload_path: Option<String>,
+}
+
+impl Default for AvatarSettings {
+    fn default() -> Self {
+        Self {
+            kind: AvatarKind::Initials,
+            preset_id: None,
+            preset_color: None,
+            upload_path: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum FeedbackCategory {
@@ -484,6 +528,13 @@ pub struct UserSettings {
     /// decision so they're only prompted once per untrusted skill.
     #[serde(default)]
     pub trusted_skills: Vec<String>,
+    /// Avatar configuration: how the user's profile picture is rendered.
+    /// `None` (absent in settings.json) → defaults to initials. The renderer
+    /// also mirrors this to localStorage as a redundancy, but this is the
+    /// source of truth — `update_user_settings` returns settings WITH this
+    /// field so the avatar doesn't reset on reload.
+    #[serde(default)]
+    pub avatar: Option<AvatarSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1040,6 +1091,7 @@ impl Default for UserSettings {
             },
             vision_fallback_consent: VisionFallbackConsent::Ask,
             trusted_skills: Vec::new(),
+            avatar: None,
         }
     }
 }

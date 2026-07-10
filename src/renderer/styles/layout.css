@@ -921,6 +921,50 @@
   background: var(--border);
 }
 
+/* ── Profile popover avatar section ────────────────────────── */
+.profile-avatar-section {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 6px 8px 8px;
+}
+.profile-avatar-preview {
+  display: flex; align-items: center; gap: 10px;
+}
+.profile-avatar-upload {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: transparent; color: var(--text-muted); font-size: 11px; cursor: pointer;
+}
+.profile-avatar-upload:hover { background: var(--bg-soft); }
+.profile-avatar-colors {
+  display: flex; gap: 5px; flex-wrap: wrap;
+}
+.profile-color-swatch {
+  width: 22px; height: 22px; border-radius: 999px;
+  border: 2px solid transparent; cursor: pointer; transition: border-color 0.1s;
+}
+.profile-color-swatch:hover { border-color: var(--text-muted); }
+.profile-color-swatch.is-active { border-color: var(--text); }
+.profile-avatar-icons {
+  display: flex; gap: 4px; flex-wrap: wrap;
+}
+.profile-icon-btn {
+  width: 34px; height: 34px; display: grid; place-items: center;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: transparent; cursor: pointer; font-size: 18px;
+}
+.profile-icon-btn:hover { background: var(--bg-hover); }
+.profile-icon-btn.is-active {
+  border-color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.profile-avatar-reset {
+  display: inline-flex; align-items: center; gap: 4px;
+  border: 0; background: transparent;
+  color: var(--text-dim); font-size: 11px; cursor: pointer;
+  align-self: flex-start;
+}
+.profile-avatar-reset:hover { color: var(--danger); }
+
 .settings-header {
   display: flex;
   align-items: flex-start;

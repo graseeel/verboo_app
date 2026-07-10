@@ -167,6 +167,7 @@ impl SettingsStore {
             },
             vision_fallback_consent: s.vision_fallback_consent.clone(),
             trusted_skills: s.trusted_skills.clone(),
+            avatar: s.avatar.clone(),
         }
     }
 }

@@ -522,9 +522,15 @@ fn fire_completion_notification(
         .map(|w| w.is_focused().unwrap_or(false))
         .unwrap_or(false);
 
+    eprintln!(
+        "[verboo:notification] fire_completion_notification: exit_code={exit_code}, conv={conversation_id}, is_active={is_active_conversation}, window_focused={window_focused}, mode={:?}",
+        settings.completion_notifications
+    );
+
     // If the conversation is active AND the window is focused, don't notify
     // — the user is already looking at it.
     if is_active_conversation && window_focused {
+        eprintln!("[verboo:notification] skipping: user is looking at this conversation");
         return Ok(false);
     }
 
@@ -538,17 +544,26 @@ fn fire_completion_notification(
         &settings,
         kind,
         window_focused,
+        is_active_conversation,
     );
 
     if let Some(text) = notification {
+        eprintln!(
+            "[verboo:notification] firing OS notification: title={:?}, body={:?}",
+            text.title, text.body
+        );
         app.notification()
             .builder()
             .title(&text.title)
             .body(&text.body)
             .show()
-            .map_err(|e| format!("show notification: {e}"))?;
+            .map_err(|e| {
+                eprintln!("[verboo:notification] show() failed: {e}");
+                format!("show notification: {e}")
+            })?;
         Ok(true)
     } else {
+        eprintln!("[verboo:notification] suppressed by settings (mode={:?})", settings.completion_notifications);
         Ok(false)
     }
 }
@@ -1069,6 +1084,25 @@ pub fn run() {
                 .expect("app data dir must be available");
             let _ = std::fs::create_dir_all(&app_data_dir);
             let settings_store = SettingsStore::new(app_data_dir.clone());
+
+            // Request macOS notification permission. On macOS, notifications
+            // are blocked by default until the app requests permission. This
+            // is a no-op on Windows/Linux (permission is granted at install).
+            // Must happen before any notification is shown, otherwise the OS
+            // silently drops them.
+            {
+                use tauri_plugin_notification::NotificationExt;
+                match app.notification().request_permission() {
+                    Ok(state) => eprintln!(
+                        "[verboo:notification] permission state: {:?}",
+                        state
+                    ),
+                    Err(e) => eprintln!(
+                        "[verboo:notification] request_permission failed: {e}"
+                    ),
+                }
+            }
+
             // Clone BEFORE moving into `app.manage` so the same store can be
             // shared with TurnService (which reads `prevent_sleep_while_running`
             // at turn start). Both clones read/write the same `settings.json`.

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { ArrowDown, CheckCircle2, ChevronDown, ChevronRight, FolderClosed, GitBranch, LoaderCircle, XCircle } from 'lucide-react'
 import type {
   AccessMode,
@@ -76,6 +77,7 @@ import { ProfileView } from './features/profile/ProfileView'
 import { ProjectPicker } from './features/projects/ProjectPicker'
 import { SettingsView } from './features/settings/SettingsView'
 import mascotUrl from '../../assets/branding/verboo-mascot.png'
+import { useOutsideDismiss } from './hooks/useOutsideDismiss'
 import { I18nProvider, createTranslator, useI18n, type Translator } from './i18n'
 import {
   DEFAULT_CONVERSATION_TITLE,
@@ -135,6 +137,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   },
   visionFallbackConsent: 'ask',
   trustedSkills: [],
+  avatar: undefined,
 }
 const EMPTY_LINE_KEYS = ['empty.line1', 'empty.line2', 'empty.line3', 'empty.line4'] as const
 
@@ -233,6 +236,21 @@ function firstUsableWorkspaceDirectory(...paths: Array<string | undefined>): str
   return paths.find(isUsableWorkspaceDirectory) ?? ''
 }
 
+function ContextPanelPortal({ pos, onClose, children }: { pos: { bottom: number; right: number }; onClose: () => void; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useOutsideDismiss(ref, true, onClose)
+  return (
+    <div ref={ref} className="context-meter-popover-wrapper" style={{
+      position: 'fixed',
+      top: `${pos.bottom + 4}px`,
+      right: `${window.innerWidth - pos.right}px`,
+      bottom: 'auto', left: 'auto',
+    }}>
+      {children}
+    </div>
+  )
+}
+
 export function App() {
   const initialSidebarPreference = useRef(readSidebarPreference())
   const defaultWorkingDirectoryRef = useRef('')
@@ -325,6 +343,8 @@ export function App() {
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshot | undefined>()
   const [contextPanelOpen, setContextPanelOpen] = useState(false)
+  const [contextMeterPos, setContextMeterPos] = useState<{ bottom: number; right: number } | undefined>()
+  const contextMeterRef = useRef<HTMLButtonElement>(null)
   const [goal, setGoal] = useState<GoalState | undefined>()
   const [imageReadingTurnId, setImageReadingTurnId] = useState<string | undefined>()
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(initialSidebarPreference.current.mode)
@@ -473,6 +493,11 @@ export function App() {
         window.verboo.getDefaultWorkingDirectory().then(wd => { defaultWorkingDirectoryRef.current = wd; return wd }),
       ])
       if (cancelled) return
+      // Merge locally-persisted avatar (the Rust backend may not have it yet).
+      try {
+        const ls = localStorage.getItem('verboo:avatar-settings')
+        if (ls) settings.avatar = JSON.parse(ls)
+      } catch { /* ignore parse errors */ }
       setUserSettings(settings)
       setSelectedModel(settings.lastSelectedModelId)
       setAccessMode(settings.defaultAccessMode)
@@ -862,7 +887,14 @@ export function App() {
   }
 
   async function updateUserSettings(patch: Partial<UserSettings>) {
+    // Persist avatar locally as fallback (the Rust backend may not have the
+    // AvatarSettings field yet — note: coordinate with Ezio).
+    if (patch.avatar) {
+      try { localStorage.setItem('verboo:avatar-settings', JSON.stringify(patch.avatar)) } catch { /* quota */ }
+    }
     const next = await window.verboo.updateUserSettings(patch)
+    // Merge locally-persisted avatar back if the backend dropped it.
+    if (!next.avatar && patch.avatar) next.avatar = patch.avatar
     setUserSettings(next)
     if (patch.defaultAccessMode) setAccessMode(next.defaultAccessMode)
     if (patch.staySignedIn === false) forgetRememberedAuthSession()
@@ -3637,6 +3669,7 @@ export function App() {
               profile={profile}
               cliAuth={cliAuth}
               avatarSettings={userSettings.avatar}
+              onUpdateAvatarSettings={avatar => updateUserSettings({ avatar })}
               compact={sidebarMode === 'compact'}
               onSelectView={setActiveView}
               onOpenSettings={() => {
@@ -3903,9 +3936,16 @@ export function App() {
             rightToolbar={
               <>
                 <TokenRateMeter rate={tokenRate} active={Boolean(runningTurnId)} />
-                <ContextMeter usage={contextUsage} contextWindow={selectedContextWindow} onClick={() => setContextPanelOpen(o => !o)} />
-                {contextPanelOpen && (
-                  <div className="context-meter-popover-wrapper">
+                <span ref={contextMeterRef}>
+                  <ContextMeter usage={contextUsage} contextWindow={selectedContextWindow} onClick={() => {
+                    if (!contextMeterRef.current) return
+                    const rect = contextMeterRef.current.getBoundingClientRect()
+                    setContextMeterPos({ bottom: rect.bottom, right: rect.right })
+                    setContextPanelOpen(o => !o)
+                  }} />
+                </span>
+                {contextPanelOpen && contextMeterPos && createPortal(
+                  <ContextPanelPortal pos={contextMeterPos} onClose={() => setContextPanelOpen(false)}>
                     <ContextPanel
                       usage={contextUsage}
                       maxWindow={selectedContextWindow}
@@ -3917,7 +3957,8 @@ export function App() {
                       onClearSkills={() => setSelectedSkills([])}
                       onClose={() => setContextPanelOpen(false)}
                     />
-                  </div>
+                  </ContextPanelPortal>,
+                  document.body
                 )}
                 <ModelSelector
                   models={modelResult.models}
@@ -4442,6 +4483,52 @@ function clampContextWindow(value: number, max: number): number {
 }
 
 function extractContextUsage(payload: unknown, maxTokens?: number): ContextUsageSnapshot | undefined {
+  // Prefer the CLI's pre-calculated context_window object when available.
+  // This is the authoritative source — the CLI accounts for its own context
+  // management (system prompt, output reservation, compaction) which the
+  // raw API usage tokens don't reflect. Using the CLI's numbers ensures the
+  // meter matches what the CLI itself displays.
+  const ctxWindow = extractContextWindowObject(payload)
+  if (ctxWindow) {
+    const cliUsedPercentage = numberValueOptional(ctxWindow.used_percentage)
+    const cliWindowSize = numberValueOptional(ctxWindow.context_window_size)
+    const cliTotalInput = numberValueOptional(ctxWindow.total_input_tokens)
+    const cliTotalOutput = numberValueOptional(ctxWindow.total_output_tokens)
+    const effectiveMax = cliWindowSize ?? maxTokens
+    // If the CLI gives us a used_percentage (0-100), use it directly.
+    if (cliUsedPercentage !== undefined) {
+      const percentage = Math.max(0, Math.min(1, cliUsedPercentage / 100))
+      const usedTokens = effectiveMax
+        ? Math.round(percentage * effectiveMax)
+        : cliTotalInput ?? 0
+      return {
+        usedTokens,
+        maxTokens: effectiveMax,
+        percentage,
+        inputTokens: cliTotalInput,
+        outputTokens: cliTotalOutput,
+        source: 'cli-usage',
+        updatedAt: Date.now(),
+      }
+    }
+    // If the CLI gives us total_input_tokens + context_window_size, compute
+    // from those (more accurate than raw API usage because the CLI tracks
+    // cumulative input across the whole conversation).
+    if (cliTotalInput !== undefined && effectiveMax !== undefined && effectiveMax > 0) {
+      const percentage = Math.max(0, Math.min(1, cliTotalInput / effectiveMax))
+      return {
+        usedTokens: cliTotalInput,
+        maxTokens: effectiveMax,
+        percentage,
+        inputTokens: cliTotalInput,
+        outputTokens: cliTotalOutput,
+        source: 'cli-usage',
+        updatedAt: Date.now(),
+      }
+    }
+  }
+
+  // Fallback: compute from raw API usage tokens (input + cache).
   const usage = extractUsageObject(payload)
   if (!usage) return undefined
 
@@ -4461,6 +4548,19 @@ function extractContextUsage(payload: unknown, maxTokens?: number): ContextUsage
     source: 'cli-usage',
     updatedAt: Date.now(),
   }
+}
+
+/// Extracts the CLI's `context_window` object from a stream-json payload.
+/// The CLI emits this with pre-calculated `used_percentage`,
+/// `remaining_percentage`, `context_window_size`, `total_input_tokens`,
+/// and `total_output_tokens`. This is the authoritative context usage.
+function extractContextWindowObject(payload: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(payload)) return undefined
+  if (isRecord(payload.context_window)) return payload.context_window
+  if (payload.type === 'stream_event' && isRecord(payload.event)) {
+    if (isRecord(payload.event.context_window)) return payload.event.context_window
+  }
+  return undefined
 }
 
 function extractTokenUsage(payload: unknown): TokenUsage | undefined {
@@ -4803,6 +4903,13 @@ function textValue(value: unknown): string {
 
 function numberValue(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+/// Like `numberValue` but returns `undefined` for missing/non-number fields.
+/// Used in fallback chains where we need to distinguish "field present" from
+/// "field absent" (e.g. context_window.used_percentage might be absent).
+function numberValueOptional(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

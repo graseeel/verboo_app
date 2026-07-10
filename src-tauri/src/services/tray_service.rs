@@ -413,6 +413,7 @@ mod tests {
             },
             vision_fallback_consent: crate::models::types::VisionFallbackConsent::Ask,
             trusted_skills: Vec::new(),
+            avatar: None,
         }
     }
 
