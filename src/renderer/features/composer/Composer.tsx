@@ -265,16 +265,7 @@ export function Composer({
     if (paths.length || files.length) onDropFiles(paths, files)
   }
 
-  return (<>
-    {queue && queue.length > 0 && (
-      <QueuePanel
-        items={queue}
-        conversationId={queue[0]?.id}
-        onSendNow={(_, id) => onQueueSendNow?.(id)}
-        onEditQueued={onQueueEdit ?? (() => {})}
-        onRemoveItem={id => onQueueRemove?.(id)}
-      />
-    )}
+  return (
     <form
       className="composer"
       data-command-mode={goalModeActive ? 'goal' : undefined}
@@ -285,6 +276,22 @@ export function Composer({
       onDrop={handleDrop}
       onSubmit={submit}
     >
+      {/* Queue lives INSIDE the composer shell so it is always exactly the
+          composer's size; the reveal wrapper animates it growing out of the
+          composer's top edge. */}
+      {queue && queue.length > 0 && (
+        <div className="queue-reveal">
+          <div className="queue-reveal-inner">
+            <QueuePanel
+              items={queue}
+              conversationId={queue[0]?.id}
+              onSendNow={(_, id) => onQueueSendNow?.(id)}
+              onEditQueued={onQueueEdit ?? (() => {})}
+              onRemoveItem={id => onQueueRemove?.(id)}
+            />
+          </div>
+        </div>
+      )}
       {dropActive && (
         <div className="composer-drop-overlay" aria-hidden="true">
           <span className="composer-drop-icon"><Paperclip size={18} /></span>
@@ -427,7 +434,6 @@ export function Composer({
         </div>
       </div>
     </form>
-  </>
   )
 }
 

@@ -30,8 +30,7 @@
  * its outer edges extend past message bubbles — the transcript width is
  * INTACT. Other dock panels keep the shared lane width.
  */
-.bottom-dock > .composer,
-.bottom-dock > .queue-panel {
+.bottom-dock > .composer {
   width: min(var(--composer-lane-width), 100%);
   max-width: 100%;
   margin-inline: auto;
@@ -1316,16 +1315,49 @@
 .context-panel-action:hover { background: var(--bg-hover); }
 .context-panel-action-warn { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
 
-/* ── Queue panel — integrated into composer top edge ──────── */
+/* ── Queue panel — lives INSIDE the composer shell ─────────────
+   Rendered as the composer form's first child, so it is exactly the
+   composer's size by construction: the negative margins bleed it to the
+   composer's border on all three sides and the composer's own border
+   wraps it. `.queue-reveal` animates the whole section growing out of
+   the composer's top edge when the first item is queued. */
+.queue-reveal {
+  display: grid;
+  grid-template-rows: 1fr;
+  margin: -10px -12px 0; /* cancel .composer padding: full-bleed to its edges */
+}
+.queue-reveal-inner {
+  min-height: 0;
+  overflow: hidden;
+}
 .queue-panel {
   display: flex; flex-direction: column; gap: 3px;
   padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-bottom: none; /* merges visually with composer below */
-  border-radius: 14px 14px 0 0;
-  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 55%, var(--bg-elevated));
   max-height: 180px;
   overflow-y: auto;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Height grows via the grid-track trick (0fr → 1fr) so the composer
+     visibly expands upward instead of jumping. */
+  .queue-reveal {
+    animation: queue-reveal-in 240ms var(--dropdown-ease);
+  }
+  .queue-item {
+    animation: queue-item-in 200ms var(--dropdown-ease) backwards;
+  }
+}
+
+@keyframes queue-reveal-in {
+  from { grid-template-rows: 0fr; opacity: 0; }
+  to   { grid-template-rows: 1fr; opacity: 1; }
+}
+
+@keyframes queue-item-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 .queue-item {
   display: flex; align-items: center; gap: 6px;
