@@ -1669,6 +1669,67 @@ export function App() {
     })
   }
 
+  function editQueuedItem(queueItemId: string, newText: string) {
+    setQueuedFollowUpsList(current => current.map(q => q.id === queueItemId ? { ...q, message: newText } : q))
+    // Update the transcript display text for the queued activity row.
+    const item = queuedFollowUpsRef.current.find(q => q.id === queueItemId)
+    if (!item) return
+    updateConversation(item.conversationId, conversation => ({
+      ...conversation,
+      items: conversation.items.map(i =>
+        i.id === `${queueItemId}:queued` ? { ...i, text: newText, activityDetail: newText } : i
+      ),
+      updatedAt: Date.now(),
+    }))
+  }
+
+  // Edit a user's sent message: update the transcript text, remove all
+  // assistant-turn items that followed it, and queue a new turn with the
+  // edited text so the model re-responds.
+  function editSentMessage(conversationId: string, itemId: string, newText: string) {
+    updateConversation(conversationId, conversation => {
+      const idx = conversation.items.findIndex(i => i.id === itemId)
+      if (idx === -1) return conversation
+      // Update the user message text.
+      const items = conversation.items.map(i =>
+        i.id === itemId ? { ...i, text: newText } : i
+      )
+      // Remove assistant-turn items that follow (until the next user message).
+      const nextUserIdx = items.findIndex((i, ii) => ii > idx && i.role === 'user')
+      const removeEnd = nextUserIdx === -1 ? items.length : nextUserIdx
+      const kept = [...items.slice(0, idx + 1), ...items.slice(removeEnd)]
+      return { ...conversation, items: kept, updatedAt: Date.now() }
+    })
+    // Queue a new turn with the edited text.
+    const queued = createQueuedFollowUp(conversationId, newText)
+    enqueueFollowUp(queued)
+  }
+
+  // "Direcionar agora": move item to front of queue. If no turn is running,
+  // remove from queue and send now. If a turn IS running, the item becomes
+  // first in queue — next flush (after the turn) picks it up.
+  function sendNow(conversationId: string, queueItemId: string) {
+    const current = queuedFollowUpsRef.current
+    const idx = current.findIndex(q => q.id === queueItemId)
+    if (idx === -1) return
+    const item = current[idx]
+    if (!runningTurnId) {
+      // Nothing running — send now.
+      queuedFollowUpsRef.current = current.filter(q => q.id !== queueItemId)
+      setQueuedFollowUpsList(() => queuedFollowUpsRef.current)
+      updateConversation(conversationId, conv => ({
+        ...conv, items: conv.items.filter(i => i.id !== `${queueItemId}:queued`), updatedAt: Date.now(),
+      }))
+      runTurn(item)
+    } else {
+      // Turn active — move to front.
+      const next = current.filter(q => q.id !== queueItemId)
+      next.unshift(item)
+      queuedFollowUpsRef.current = next
+      setQueuedFollowUpsList(() => next)
+    }
+  }
+
   async function runTurn(item: QueuedFollowUp, options?: { skipResume?: boolean }) {
     pendingConversationId.current = item.conversationId
     setContextUsage(undefined)
@@ -3767,9 +3828,9 @@ export function App() {
                 thinkingSnippets={thinkingSnippets}
                 compactingTurnId={compactingTurnId}
                 imageReadingTurnId={imageReadingTurnId}
-                onInterject={interjectMessage}
-                onRemoveQueuedItem={removeQueuedItem}
-                onMoveQueuedItem={moveQueuedItem}
+                onSendNow={sendNow}
+                onEditQueued={editQueuedItem}
+                onEditSent={editSentMessage}
               />
               <div ref={transcriptEndRef} className="transcript-end" />
             </>

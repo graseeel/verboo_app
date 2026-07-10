@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, LoaderCircle, Pencil, Search, Terminal, Wrench, X } from 'lucide-react'
+import { Check, CheckCircle2, ChevronDown, ChevronRight, Clipboard, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, LoaderCircle, Pencil, Search, SendHorizontal, Terminal, Wrench } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { TranscriptItem, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
 import { MarkdownMessage } from '../features/transcript/MarkdownMessage'
@@ -15,15 +15,16 @@ type TranscriptProps = {
   thinkingSnippets?: string[]
   compactingTurnId?: string
   imageReadingTurnId?: string
+  onSendNow?: (conversationId: string, queueItemId: string) => void
   onInterject?: (conversationId: string, queueItemId: string) => void
-  onRemoveQueuedItem?: (queueItemId: string) => void
-  onMoveQueuedItem?: (queueItemId: string, direction: -1 | 1) => void
+  onEditQueued?: (queueItemId: string, newText: string) => void
+  onEditSent?: (conversationId: string, itemId: string, newText: string) => void
 }
 
 const MAX_ACTIVITY_DETAIL_LINES = 8
 const MAX_SUMMARY_DETAIL_LINES = 3
 
-export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, imageReadingTurnId, conversationId, onInterject, onRemoveQueuedItem, onMoveQueuedItem }: TranscriptProps) {
+export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, imageReadingTurnId, conversationId, onSendNow, onInterject, onEditQueued, onEditSent }: TranscriptProps) {
   // `items` is a new array reference only when the conversation actually changes,
   // so this recomputes on real content changes but is skipped when the parent
   // re-renders for unrelated reasons (context-usage ticks, subagent updates…).
@@ -43,7 +44,7 @@ export const Transcript = memo(function Transcript({ items, onOpenReview, review
               onOpenReview={onOpenReview}
               reviewMetadata={reviewMetadata}
             />
-          : <MessageArticle key={entry.item.id} item={entry.item} conversationId={conversationId} onInterject={onInterject} onRemoveQueuedItem={onRemoveQueuedItem} onMoveQueuedItem={onMoveQueuedItem} />
+          : <MessageArticle key={entry.item.id} item={entry.item} conversationId={conversationId} onSendNow={onSendNow} onInterject={onInterject} onCopy={() => {}} onEditQueued={onEditQueued} onEditSent={onEditSent} />
       ))}
     </div>
   )
@@ -162,15 +163,64 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, readingImage,
   )
 }
 
-const MessageArticle = memo(function MessageArticle({ item, conversationId, onInterject, onRemoveQueuedItem, onMoveQueuedItem, children }: { item: TranscriptItem; conversationId?: string; children?: ReactNode; onInterject?: TranscriptProps['onInterject']; onRemoveQueuedItem?: TranscriptProps['onRemoveQueuedItem']; onMoveQueuedItem?: TranscriptProps['onMoveQueuedItem'] }) {
+export type MessageArticleProps = {
+  item: TranscriptItem
+  conversationId?: string
+  children?: ReactNode
+  onSendNow?: (conversationId: string, queueItemId: string) => void
+  onInterject?: TranscriptProps['onInterject']
+  onCopy?: (text: string) => void
+  onEditQueued?: (queueItemId: string, newText: string) => void
+  onEditSent?: (conversationId: string, itemId: string, newText: string) => void
+}
+
+const MessageArticle = memo(function MessageArticle({ item, conversationId, onSendNow, onInterject, onCopy, onEditQueued, onEditSent, children }: MessageArticleProps) {
   const { t } = useI18n()
   const visibleText = visibleTextForItem(item)
-  const [interjectDismissed, setInterjectDismissed] = useState(false)
-  // Extract the original queue item id from the queued activity marker id,
-  // which is stored as `${queueItemId}:queued` when created in App.tsx.
+  const [editMode, setEditMode] = useState(false)
+  const [editText, setEditText] = useState(visibleText)
+  const [copyFlash, setCopyFlash] = useState(false)
+  // Extract queue item id from queued activity markers (stored as `${id}:queued`).
   const queueItemId = item.activityKind === 'queued' && item.id.endsWith(':queued')
     ? item.id.slice(0, -':queued'.length)
     : undefined
+  const isQueued = Boolean(queueItemId)
+  const isUserMessage = item.role === 'user' && item.kind !== 'activity' && item.kind !== 'summary'
+
+  function handleCopy() {
+    const text = visibleText || item.text
+    if (!text) return
+    navigator.clipboard.writeText(text).then(() => {
+      setCopyFlash(true)
+      setTimeout(() => setCopyFlash(false), 1200)
+    }).catch(() => {})
+  }
+
+  function handleSaveEdit() {
+    const newText = editText.trim()
+    if (!newText) return
+    if (isQueued && queueItemId && onEditQueued) {
+      onEditQueued(queueItemId, newText)
+    } else if (isUserMessage && conversationId && onEditSent) {
+      onEditSent(conversationId, item.id, newText)
+    }
+    setEditMode(false)
+  }
+
+  // Inline edit UI
+  if (editMode) {
+    return (
+      <article className={`message-row ${item.role} ${item.kind ?? 'message'}`} data-activity={item.activityKind}>
+        <div className="message-meta"><span>{isQueued ? t('transcript.editQueued') : t('transcript.editMessage')}</span></div>
+        <textarea className="message-edit-textarea" value={editText} onChange={e => setEditText(e.target.value)} autoFocus />
+        <div className="message-edit-actions">
+          <button type="button" className="queued-action-inline save" onClick={handleSaveEdit} disabled={!editText.trim()}>{t('common.save')}</button>
+          <button type="button" className="queued-action-inline cancel" onClick={() => setEditMode(false)}>{t('common.cancel')}</button>
+        </div>
+        {children}
+      </article>
+    )
+  }
 
   return (
     <article
@@ -184,86 +234,62 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onIn
         <span>{labelForItem(item, t)}</span>
         {item.streaming && (
           <span className="message-status-marker" role="status">
-            <span className="message-status-marker-icon" aria-hidden="true">
-              <LoaderCircle size={12} />
-            </span>
-            <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm" data-text={t('transcript.generating')}>
-              {t('transcript.generating')}
-            </span>
+            <span className="message-status-marker-icon" aria-hidden="true"><LoaderCircle size={12} /></span>
+            <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm" data-text={t('transcript.generating')}>{t('transcript.generating')}</span>
           </span>
         )}
       </div>
-      {item.attachments && item.attachments.length > 0 && (
+
+      {item.attachments?.length ? (
         <div className="message-attachments">
           {item.attachments.map(att => {
             const isImage = att.kind === 'image'
-            const thumbUrl = isImage ? window.verboo?.fileUrl?.(att.path) ?? '' : ''
             return (
-              <button
-                key={att.path}
-                type="button"
-                className={`message-attachment-chip ${isImage ? 'message-attachment-image' : 'message-attachment-file'}`}
-                onClick={() => window.verboo?.openExternalFile?.('', att.path)}
-                title={att.path}
-              >
-                {isImage && thumbUrl ? (
-                  <img src={thumbUrl} alt="" className="message-attachment-thumb" loading="lazy" />
-                ) : (
-                  <span className="message-attachment-icon" aria-hidden="true">
-                    {isImage ? <ImageIcon size={14} /> : <FileText size={14} />}
-                  </span>
-                )}
+              <button key={att.path} type="button" className={`message-attachment-chip ${isImage ? 'message-attachment-image' : 'message-attachment-file'}`}
+                onClick={() => window.verboo?.openExternalFile?.('', att.path)} title={att.path}>
+                {isImage ? <img src={window.verboo?.fileUrl?.(att.path) ?? ''} alt="" className="message-attachment-thumb" loading="lazy" />
+                  : <span className="message-attachment-icon" aria-hidden="true"><FileText size={14} /></span>}
                 <span className="message-attachment-name">{att.name}</span>
               </button>
             )
           })}
         </div>
-      )}
+      ) : null}
+
       {item.skills && item.skills.length > 0 && (
-        <div className="message-skills">
-          {item.skills.map(skill => (
-            <span key={skill.id}>/{skill.name}</span>
-          ))}
-        </div>
+        <div className="message-skills">{item.skills.map(s => <span key={s.id}>/{s.name}</span>)}</div>
       )}
+
       <div className={`message-text ${item.streaming ? 'streaming-text' : ''}`}>
-        {item.kind === 'summary' && item.activityDetail ? (
-          item.activityDetail
-        ) : visibleText ? (
-          <MarkdownMessage text={visibleText} />
-        ) : (
-          item.streaming ? t('transcript.thinking') : ''
-        )}
+        {item.kind === 'summary' && item.activityDetail ? item.activityDetail
+          : visibleText ? <MarkdownMessage text={visibleText} />
+          : item.streaming ? t('transcript.thinking') : ''}
         {item.kind !== 'summary' && item.activityDetail && <span className="message-detail">{item.activityDetail}</span>}
       </div>
-      {item.activityKind === 'queued' && !interjectDismissed && onInterject && queueItemId && conversationId && (
-        <div className="queued-actions">
-          <span className="queued-actions-detail">{t('transcript.interjectDetail')}</span>
-          <div className="queued-actions-buttons">
-            <button className="queued-action-button direct-button" type="button" onClick={() => onInterject(conversationId, queueItemId)} title={t('transcript.interjectNow')}>
-              {t('transcript.interjectNow')}
+
+      {/* ── Action icons ──────────────────────────────────── */}
+      {(isUserMessage || isQueued) && !item.streaming && (
+        <div className="message-actions">
+          {isQueued && onSendNow && conversationId && queueItemId && (
+            <button type="button" className="msg-action" onClick={() => onSendNow(conversationId, queueItemId)} title={t('transcript.sendNow')}>
+              <SendHorizontal size={14} />
             </button>
-            <button className="queued-action-button wait-button" type="button" onClick={() => setInterjectDismissed(true)} title={t('transcript.interjectWait')}>
-              {t('transcript.interjectWait')}
-            </button>
-            {onMoveQueuedItem && (
-              <button className="queued-action-button move-up-button" type="button" onClick={() => onMoveQueuedItem(queueItemId, -1)} aria-label={t('transcript.moveUp')} title={t('transcript.moveUp')}>
-                <ChevronUp size={14} />
-              </button>
-            )}
-            {onMoveQueuedItem && (
-              <button className="queued-action-button move-down-button" type="button" onClick={() => onMoveQueuedItem(queueItemId, 1)} aria-label={t('transcript.moveDown')} title={t('transcript.moveDown')}>
-                <ChevronDown size={14} />
-              </button>
-            )}
-            {onRemoveQueuedItem && (
-              <button className="queued-action-button remove-button" type="button" onClick={() => onRemoveQueuedItem(queueItemId)} aria-label={t('transcript.removeQueued')} title={t('transcript.removeQueued')}>
-                <X size={14} />
-              </button>
-            )}
-          </div>
+          )}
+          {/* Manter na fila — clock icon shows the item is waiting */}
+          {isQueued && (
+            <span className="msg-action msg-action-indicator" title={t('transcript.queuedWaiting')}>
+              <Clock3 size={14} />
+            </span>
+          )}
+          <button type="button" className="msg-action" onClick={handleCopy} title={t('transcript.copyText')}>
+            {copyFlash ? <Check size={14} /> : <Clipboard size={14} />}
+          </button>
+          <button type="button" className="msg-action" onClick={() => { setEditText(visibleText || item.text); setEditMode(true) }} title={t('transcript.editMessage')}>
+            <Pencil size={14} />
+          </button>
         </div>
       )}
+
       {children}
     </article>
   )

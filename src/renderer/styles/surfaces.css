@@ -1352,88 +1352,47 @@
   color: var(--accent-strong);
 }
 
-.queued-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--accent) 6%, var(--bg-elevated));
+/* ── Message action icons (hover-reveal, 16px) ────────────── */
+.message-actions {
+  display: flex; gap: 2px; margin-top: 4px;
+  opacity: 0; transition: opacity 0.15s ease;
 }
+.message-row:hover .message-actions { opacity: 1; }
+.message-actions:focus-within { opacity: 1; }
 
-.queued-actions-detail {
-  font-size: 12px;
-  color: var(--text-muted);
-  line-height: 1.4;
-}
-
-.queued-actions-buttons {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.queued-action-button {
-  font-size: 12px;
-  font-weight: 500;
-  padding: 6px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  color: var(--text);
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-
-.queued-action-button:hover {
-  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
-  border-color: var(--accent);
-}
-
-.queued-action-button.direct-button {
-  border-color: var(--accent);
-  color: var(--accent-strong);
-}
-
-.queued-action-button.direct-button:hover {
-  background: color-mix(in srgb, var(--accent) 18%, var(--bg-elevated));
-}
-
-.queued-action-button.wait-button {
-  color: var(--text-muted);
-}
-
-/* Icon-only reorder/remove buttons — smaller, transparent by default,
-   visible on hover/group-focus of the queued item. */
-.queued-action-button.move-up-button,
-.queued-action-button.move-down-button,
-.queued-action-button.remove-button {
+.msg-action {
   display: inline-grid; place-items: center;
   width: 26px; height: 26px; padding: 0;
-  border-radius: 6px; border: none;
-  background: transparent; color: var(--text-muted);
-  cursor: pointer; opacity: 0.4;
-  transition: opacity 0.15s ease, background 0.15s ease;
+  border: none; border-radius: 5px;
+  background: transparent; color: var(--text-dim);
+  cursor: pointer;
 }
-.queued-actions:hover .queued-action-button.move-up-button,
-.queued-actions:hover .queued-action-button.move-down-button,
-.queued-actions:hover .queued-action-button.remove-button,
-.queued-action-button.move-up-button:focus-visible,
-.queued-action-button.move-down-button:focus-visible,
-.queued-action-button.remove-button:focus-visible {
-  opacity: 1;
+.msg-action:hover { background: var(--bg-hover); color: var(--text); }
+/* Non-interactive indicator (clock icon for "waiting in queue") */
+.msg-action-indicator { pointer-events: none; opacity: 0.5; }
+.msg-action-indicator:hover { background: transparent; color: var(--text-dim); }
+
+/* ── Inline edit mode ─────────────────────────────────────── */
+.message-edit-textarea {
+  width: 100%; min-height: 50px; margin: 4px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius);
+  background: var(--bg-soft); color: var(--text);
+  font-family: inherit; font-size: 13px; line-height: 1.5; resize: vertical;
 }
-.queued-action-button.move-up-button:hover,
-.queued-action-button.move-down-button:hover {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  color: var(--accent-strong);
+.message-edit-actions {
+  display: flex; gap: 6px;
 }
-.queued-action-button.remove-button:hover {
-  background: color-mix(in srgb, var(--danger) 14%, transparent);
-  color: var(--danger);
+.queued-action-inline {
+  padding: 4px 10px; border-radius: 6px;
+  font-size: 12px; cursor: pointer; border: 1px solid var(--border);
 }
+.queued-action-inline.save {
+  background: var(--accent-strong); color: white; border-color: var(--accent-strong);
+}
+.queued-action-inline.save:disabled { opacity: 0.4; }
+.queued-action-inline.cancel { background: transparent; color: var(--text-muted); }
+.queued-action-inline.cancel:hover { background: var(--bg-soft); }
 
 .message-row.activity[data-activity="context"] .message-meta {
   color: var(--danger);
