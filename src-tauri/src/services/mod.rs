@@ -27,3 +27,4 @@ pub mod tray_service;
 pub mod turn_service;
 pub mod update_service;
 pub mod vision_fallback_service;
+pub mod workspace_files_service;

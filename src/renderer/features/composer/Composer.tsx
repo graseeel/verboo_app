@@ -1,9 +1,11 @@
 import { ArrowUp, Paperclip, Target, X } from 'lucide-react'
-import { type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { AttachmentMeta, SkillSummary } from '../../../shared/types'
 import { useI18n } from '../../i18n'
 import { QueuePanel } from '../queue/QueuePanel'
 import { parseReservedSlashCommand, type ReservedSlashCommand } from './slashCommands'
+import { getAtQuery, removeAtQuery, replaceAtQueryWithToken, rankFiles, extractAtTokens } from './atMention'
 
 // Reserved slash commands surfaced in the "/" palette, exactly like the skills
 // below them. Selecting one fills its token so the user can type any arguments.
@@ -35,6 +37,9 @@ type ComposerProps = {
   leftToolbar: ReactNode
   centerToolbar?: ReactNode
   rightToolbar: ReactNode
+  /** Working directory for the @-mention file palette. Falls back to empty
+   *  string (no files) when unset / first render before config loads. */
+  workingDirectory?: string
   /** Queued follow-ups awaiting to be sent to the model */
   queue?: { id: string; message: string }[]
   onQueueSendNow?: (queueItemId: string) => void
@@ -62,6 +67,7 @@ export function Composer({
   leftToolbar,
   centerToolbar,
   rightToolbar,
+  workingDirectory = '',
   queue,
   onQueueSendNow,
   onQueueEdit,
@@ -72,8 +78,14 @@ export function Composer({
   const value = externalValue ?? internalValue
   const setValue = onValueChange ?? setInternalValue
   const [highlighted, setHighlighted] = useState(0)
+  const [atHighlighted, setAtHighlighted] = useState(0)
   const [dragDepth, setDragDepth] = useState(0)
+  const [palettePos, setPalettePos] = useState<{ bottom: number; left: number; width: number } | null>(null)
+  const [atLoading, setAtLoading] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const formRef = useRef<HTMLFormElement>(null)
+  const slashMenuRef = useRef<HTMLDivElement>(null)
+  const atMenuRef = useRef<HTMLDivElement>(null)
 
   // Tauri native drag-drop: the webview fires 'enter'/'over'/'drop'/'leave'
   // via onDragDropEvent (not HTML5 events) for Finder→app drops. The bridge
@@ -127,6 +139,67 @@ export function Composer({
   const goalModeActive = isGoalCommandDraft(value)
   const dropActive = dragDepth > 0
 
+  // ── @-mention file palette ──────────────────────────────────────────────
+  const atQuery = getAtQuery(value)
+  const [cachedFiles, setCachedFiles] = useState<string[]>([])
+  const atSessionRef = useRef(false)
+
+  // Fetch file list on initial @ of each palette session; clear on close.
+  useEffect(() => {
+    if (atQuery !== undefined && !atSessionRef.current) {
+      atSessionRef.current = true
+      setCachedFiles([])
+      setAtHighlighted(0)
+      setAtLoading(true)
+      const listFn = (window.verboo as any)?.listWorkspaceFiles
+      if (listFn) {
+        listFn(workingDirectory || '')
+          .then((files: string[]) => setCachedFiles(files))
+          .catch(() => setCachedFiles([]))
+          .finally(() => setAtLoading(false))
+      } else {
+        setCachedFiles([])
+        setAtLoading(false)
+      }
+    }
+    if (atQuery === undefined) {
+      atSessionRef.current = false
+      setAtLoading(false)
+    }
+  }, [atQuery, workingDirectory])
+  const matchingFiles = useMemo(() => {
+    if (atQuery === undefined) return []
+    return rankFiles(cachedFiles, atQuery).slice(0, 8)
+  }, [cachedFiles, atQuery])
+  const atActiveIndex = matchingFiles.length ? Math.min(atHighlighted, matchingFiles.length - 1) : 0
+  const paletteOpen = slashQuery !== undefined || atQuery !== undefined
+
+  // Portal menus ABOVE the composer — `.composer { overflow: hidden }` clips
+  // in-flow absolute menus (queue reveal needs that overflow). Same pattern as ModelSelector.
+  useLayoutEffect(() => {
+    if (!paletteOpen) {
+      setPalettePos(null)
+      return
+    }
+    const form = formRef.current
+    if (!form) return
+    const compute = () => {
+      const rect = form.getBoundingClientRect()
+      setPalettePos({
+        bottom: window.innerHeight - rect.top + 10,
+        left: Math.max(8, rect.left),
+        width: Math.max(200, rect.width),
+      })
+    }
+    compute()
+    window.addEventListener('resize', compute)
+    window.addEventListener('scroll', compute, true)
+    return () => {
+      window.removeEventListener('resize', compute)
+      window.removeEventListener('scroll', compute, true)
+    }
+  }, [paletteOpen, value, queue?.length])
+
   useLayoutEffect(() => {
     const textarea = textareaRef.current
     if (!textarea) return
@@ -164,6 +237,13 @@ export function Composer({
     selectSkill(item.skill)
   }
 
+  function selectAtFile(path: string) {
+    const nextValue = replaceAtQueryWithToken(value, `@${path} `)
+    setValue(nextValue)
+    setAtHighlighted(0)
+    textareaRef.current?.focus()
+  }
+
   function selectCommand(command: SlashCommand) {
     // Fill "/goal " and keep focus so the user can type the objective. The
     // command runs on Enter once the menu has closed (see submit()).
@@ -193,6 +273,30 @@ export function Composer({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    // @-palette open: arrows, Enter/Tab, Escape drive the file palette.
+    if (atQuery !== undefined && matchingFiles.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        setAtHighlighted(index => (index + 1) % matchingFiles.length)
+        return
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        setAtHighlighted(index => (index - 1 + matchingFiles.length) % matchingFiles.length)
+        return
+      }
+      if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+        event.preventDefault()
+        selectAtFile(matchingFiles[atActiveIndex] ?? matchingFiles[0])
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        updateValue(removeAtQuery(value))
+        return
+      }
+    }
+
     // While the "/" palette is open, the arrows/Enter/Escape drive it.
     if (slashQuery !== undefined && menuItems.length > 0) {
       if (event.key === 'ArrowDown') {
@@ -265,8 +369,20 @@ export function Composer({
     if (paths.length || files.length) onDropFiles(paths, files)
   }
 
+  const paletteStyle: CSSProperties | undefined = palettePos
+    ? {
+        position: 'fixed',
+        bottom: `${palettePos.bottom}px`,
+        left: `${palettePos.left}px`,
+        width: `${palettePos.width}px`,
+        right: 'auto',
+        top: 'auto',
+      }
+    : undefined
+
   return (
     <form
+      ref={formRef}
       className="composer"
       data-command-mode={goalModeActive ? 'goal' : undefined}
       data-drop-active={dropActive ? 'true' : undefined}
@@ -299,8 +415,13 @@ export function Composer({
           <small>{t('composer.dropBody')}</small>
         </div>
       )}
-      {slashQuery !== undefined && (
-        <div className="skills-menu popover-panel t-dropdown is-open" data-origin="bottom-center">
+      {slashQuery !== undefined && palettePos && createPortal(
+        <div
+          ref={slashMenuRef}
+          className="skills-menu skills-menu-portal popover-panel t-dropdown is-open"
+          data-origin="bottom-center"
+          style={paletteStyle}
+        >
           {menuItems.length === 0 ? (
             <div className="empty-menu">{t('composer.emptyMenu')}</div>
           ) : (
@@ -334,7 +455,40 @@ export function Composer({
               ),
             )
           )}
-        </div>
+        </div>,
+        document.body,
+      )}
+      {atQuery !== undefined && palettePos && createPortal(
+        <div
+          ref={atMenuRef}
+          className="skills-menu skills-menu-portal popover-panel t-dropdown is-open"
+          data-origin="bottom-center"
+          style={paletteStyle}
+        >
+          {atLoading ? (
+            <div className="empty-menu">{t('composer.fileMenuLoading')}</div>
+          ) : matchingFiles.length === 0 ? (
+            <div className="empty-menu">{t('composer.emptyFileMenu')}</div>
+          ) : (
+            matchingFiles.map((file, index) => {
+              const basename = file.split('/').pop() ?? file
+              return (
+                <button
+                  key={file}
+                  className={`skill-option ${index === atActiveIndex ? 'highlighted' : ''}`}
+                  type="button"
+                  onMouseEnter={() => setAtHighlighted(index)}
+                  onClick={() => selectAtFile(file)}
+                >
+                  <span className="skill-name">@{basename}</span>
+                  <span className="skill-description">{file}</span>
+                  <span className="skill-source command">{t('composer.file')}</span>
+                </button>
+              )
+            })
+          )}
+        </div>,
+        document.body,
       )}
 
       {attachments.length > 0 && (
@@ -520,15 +674,24 @@ function renderHighlightedValue(value: string, skills: SkillSummary[], slashComm
   const parts: ReactNode[] = []
   let cursor = 0
 
-  for (const match of value.matchAll(/(?:^|\s)\/([A-Za-z0-9_:-]+)/g)) {
+  // Match both /slash tokens and @file tokens in a single pass.
+  // Group 1 = /slash name, Group 2 = @file path.
+  for (const match of value.matchAll(/(?:^|\s)(?:\/([A-Za-z0-9_:-]+)|@([^\s]+))/g)) {
     const start = match.index ?? 0
     const text = match[0]
     const leadingSpace = text.startsWith(' ') ? ' ' : ''
     const token = leadingSpace ? text.slice(1) : text
     if (start > cursor) parts.push(value.slice(cursor, start))
     if (leadingSpace) parts.push(leadingSpace)
+
+    const slashName = match[1]
+    const atPath = match[2]
+    const isKnown = slashName ? knownNames.has(slashName.toLowerCase()) : false
+    // @-path tokens are always highlighted (file references).
+    const shouldHighlight = isKnown || atPath !== undefined
+
     parts.push(
-      <span key={`${start}:${token}`} className={knownNames.has(match[1].toLowerCase()) ? 'composer-skill-token' : undefined}>
+      <span key={`${start}:${token}`} className={shouldHighlight ? 'composer-skill-token' : undefined}>
         {token}
       </span>,
     )

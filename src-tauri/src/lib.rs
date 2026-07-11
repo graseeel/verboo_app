@@ -578,6 +578,32 @@ fn get_default_working_directory() -> String {
         .unwrap_or_else(|| "/".to_string())
 }
 
+
+// ════════════════════════════════════════════════════════════════════
+// @-mention file listing (quick-win #1)
+// ════════════════════════════════════════════════════════════════════
+
+/// Lists files in `working_directory` for `@`-mention autocomplete.
+///
+/// Strategy: `git ls-files --cached --others --exclude-standard -z` when
+/// the directory is inside a git repo (respects `.gitignore`); bounded
+/// directory walk otherwise (depth 6, cap MAX_ENTRIES, skips noisy build
+/// dirs). Output is RELATIVE paths (POSIX-style, sorted, capped at 5000).
+///
+/// The renderer always receives relative paths; absolute paths outside the
+/// workspace are never exposed.
+///
+/// Async + `spawn_blocking` because the service does filesystem I/O and may
+/// spawn `git` (must not block the Tauri async runtime).
+#[tauri::command]
+async fn list_workspace_files(working_directory: String) -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(move || {
+        services::workspace_files_service::list_workspace_files(&working_directory)
+    })
+    .await
+    .map_err(|e| format!("Falha ao listar arquivos do workspace: {e}"))?
+}
+
 /// Returns the version of the bundled `@verboo/code` package (cli-package).
 /// Returns `"unknown"` if the package.json can't be read (e.g., in dev
 /// without a full bundle, or after a broken install).
@@ -1335,6 +1361,8 @@ pub fn run() {
             save_avatar_blob,
             pick_folder,
             create_project_folder,
+            // @-mention file listing (quick-win #1)
+            list_workspace_files,
             // Agent
             send_turn,
             run_research_subagents,

@@ -774,6 +774,22 @@
   padding: 8px;
 }
 
+/* Portaled above the composer — `.composer { overflow: hidden }` would clip
+   the in-flow absolute menu (`bottom: calc(100% + 10px)`), so the popover
+   must escape that container. The portal attaches to `document.body` with
+   `position: fixed`, so position/bottom/left/width are set inline by the
+   consumer (same pattern as `.model-menu-portal`). Drop the in-flow
+   `left/right: 0` so the inline style wins cleanly. */
+.skills-menu.skills-menu-portal {
+  z-index: 10000;
+  left: auto;
+  right: auto;
+  max-height: min(340px, calc(100vh - 120px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
 .popover-title {
   display: flex;
   align-items: center;

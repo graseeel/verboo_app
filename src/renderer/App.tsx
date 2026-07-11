@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ForwardedRef, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { ArrowDown, CheckCircle2, ChevronDown, ChevronRight, FolderClosed, GitBranch, LoaderCircle, XCircle } from 'lucide-react'
 import type {
@@ -237,23 +237,66 @@ function firstUsableWorkspaceDirectory(...paths: Array<string | undefined>): str
   return paths.find(isUsableWorkspaceDirectory) ?? ''
 }
 
-function ContextPanelPortal({ pos, onClose, ignoreRefs, children }: {
+// Imperative handle returned from ContextPanelPortal to its parent. Parent
+// (App.tsx) uses it to trigger an animated close from the meter toggle and
+// from the ContextPanel's own close button — without that, those handlers
+// would unmount the portal instantly instead of letting the close-dur
+// transition play.
+export type ContextPanelHandle = {
+  requestClose: () => void
+}
+
+const ContextPanelPortal = forwardRef<ContextPanelHandle, {
   pos: { top: number; right: number }
   onClose: () => void
   ignoreRefs?: React.RefObject<HTMLElement | null>[]
   children: React.ReactNode
-}) {
-  const ref = useRef<HTMLDivElement>(null)
+}>(function ContextPanelPortal({ pos, onClose, ignoreRefs, children }, ref) {
+  const divRef = useRef<HTMLDivElement>(null)
   // Mount closed, then open on the next frame so the t-dropdown scale/opacity
   // transition plays — the panel grows out of the meter in the composer.
   const [open, setOpen] = useState(false)
+  const [closing, setClosing] = useState(false)
   useEffect(() => {
     const frame = requestAnimationFrame(() => setOpen(true))
     return () => cancelAnimationFrame(frame)
   }, [])
-  useOutsideDismiss(ref, true, onClose, ignoreRefs)
+
+  // Single source of truth for animated close. Sets is-closing (CSS picks
+  // the close-dur transition), then waits for the opacity/transform
+  // transition to end. Falls back to a 200ms safety timeout in case the
+  // browser never fires transitionend (e.g. display:none mid-transition).
+  // Only then does it call the parent's onClose, which unmounts the portal.
+  const handleClose = useCallback(() => {
+    if (closing) return
+    setClosing(true)
+    const el = divRef.current
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      onClose()
+    }
+    const onEnd = (event: TransitionEvent) => {
+      if (event.target !== el) return
+      if (event.propertyName !== 'opacity' && event.propertyName !== 'transform') return
+      el?.removeEventListener('transitionend', onEnd)
+      finish()
+    }
+    el?.addEventListener('transitionend', onEnd)
+    setTimeout(finish, 200)
+  }, [closing, onClose])
+
+  // Imperative API for parent (meter toggle + ContextPanel close button).
+  useImperativeHandle(ref, () => ({ requestClose: handleClose }), [handleClose])
+  useOutsideDismiss(divRef, true, handleClose, ignoreRefs)
   return (
-    <div ref={ref} className={`context-meter-popover-wrapper t-dropdown ${open ? 'is-open' : ''}`}
+    <div ref={divRef}
+      className={
+        closing
+          ? 'context-meter-popover-wrapper t-dropdown is-closing'
+          : `context-meter-popover-wrapper t-dropdown ${open ? 'is-open' : ''}`
+      }
       data-origin="bottom-right"
       style={{
         position: 'fixed',
@@ -266,7 +309,7 @@ function ContextPanelPortal({ pos, onClose, ignoreRefs, children }: {
       {children}
     </div>
   )
-}
+})
 
 export function App() {
   const initialSidebarPreference = useRef(readSidebarPreference())
@@ -368,6 +411,10 @@ export function App() {
     readReportedContextWindows,
   )
   const contextMeterRef = useRef<HTMLButtonElement>(null)
+  // Imperative handle for the ContextPanel popover so the meter toggle and the
+  // ContextPanel's own ✕ button trigger the animated close (otherwise they
+  // would unmount the popover instantly and skip the close-dur transition).
+  const contextPanelRef = useRef<ContextPanelHandle>(null)
   const [goal, setGoal] = useState<GoalState | undefined>()
   const [imageReadingTurnId, setImageReadingTurnId] = useState<string | undefined>()
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(initialSidebarPreference.current.mode)
@@ -3981,6 +4028,7 @@ export function App() {
           )}
           <Composer
             disabled={false}
+            workingDirectory={config.workingDirectory}
             skills={skills}
             selectedSkills={selectedSkills}
             attachments={attachedFiles}
@@ -4020,13 +4068,23 @@ export function App() {
                 <span ref={contextMeterRef}>
                   <ContextMeter usage={effectiveContextUsage} contextWindow={selectedContextWindow} onClick={() => {
                     if (!contextMeterRef.current) return
+                    if (contextPanelOpen) {
+                      // Animated close: play close-dur transition before unmounting.
+                      contextPanelRef.current?.requestClose()
+                      return
+                    }
                     const rect = contextMeterRef.current.getBoundingClientRect()
                     setContextMeterPos({ top: rect.top, right: rect.right })
-                    setContextPanelOpen(o => !o)
+                    setContextPanelOpen(true)
                   }} />
                 </span>
                 {contextPanelOpen && contextMeterPos && createPortal(
-                  <ContextPanelPortal pos={contextMeterPos} onClose={() => setContextPanelOpen(false)} ignoreRefs={[contextMeterRef]}>
+                  <ContextPanelPortal
+                    ref={contextPanelRef}
+                    pos={contextMeterPos}
+                    onClose={() => setContextPanelOpen(false)}
+                    ignoreRefs={[contextMeterRef]}
+                  >
                     <ContextPanel
                       usage={effectiveContextUsage}
                       maxWindow={selectedContextWindow}
@@ -4036,7 +4094,7 @@ export function App() {
                       queue={queuedFollowUpsRef.current}
                       onClearAttachments={() => setAttachedFiles([])}
                       onClearSkills={() => setSelectedSkills([])}
-                      onClose={() => setContextPanelOpen(false)}
+                      onClose={() => contextPanelRef.current?.requestClose()}
                     />
                   </ContextPanelPortal>,
                   document.body

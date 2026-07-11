@@ -202,6 +202,13 @@ const api = {
   evaluateGoal: (input: GoalEvaluationInput) =>
     invoke<{ evaluation: GoalEvaluationResult; userMessage?: string }>('evaluate_goal', { input }),
 
+  // ── @-mention file listing (quick-win #1) ──────────────────
+  // Returns RELATIVE paths (POSIX, sorted, cap 5000) for the given
+  // working_directory. Uses `git ls-files` when the workspace is a git
+  // repo (respects .gitignore); bounded walk otherwise.
+  listWorkspaceFiles: (workingDirectory: string) =>
+    invoke<string[]>('list_workspace_files', { workingDirectory }),
+
   // ── Files ───────────────────────────────────────────────────
   pickFiles: () => invoke<AttachmentMeta[]>('pick_files'),
   inspectFiles: (paths: string[]) => invoke<AttachmentMeta[]>('inspect_files', { paths }),
