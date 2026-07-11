@@ -8,6 +8,7 @@ type ReviewBranchControlsProps = {
   totalAdditions: number
   totalDeletions: number
   onSwitchBranch: (branchName: string) => Promise<WorkspaceBranchSwitchResult>
+  children?: React.ReactNode
 }
 
 export function ReviewBranchControls({
@@ -15,6 +16,7 @@ export function ReviewBranchControls({
   totalAdditions,
   totalDeletions,
   onSwitchBranch,
+  children,
 }: ReviewBranchControlsProps) {
   const { t } = useI18n()
   const [branchMenuOpen, setBranchMenuOpen] = useState(false)
@@ -117,6 +119,7 @@ export function ReviewBranchControls({
         </div>
         <span className="review-total add">+{totalAdditions}</span>
         <span className="review-total del">-{totalDeletions}</span>
+        {children}
       </div>
       {branchMessage ? <div className="review-branch-message">{branchMessage}</div> : null}
     </>

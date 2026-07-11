@@ -49,6 +49,7 @@ import type {
   WorkspaceChangeSummary,
   WorkspaceCommitResult,
   WorkspacePullRequestResult,
+  WorkspacePushResult,
   WorkspaceReviewMetadata,
 } from '../shared/types'
 
@@ -211,6 +212,8 @@ const api = {
       title,
       body,
     }),
+  pushWorkspaceChanges: (workingDirectory: string) =>
+    invoke<WorkspacePushResult>('push_workspace_changes', { workingDirectory }),
   evaluateGoal: (input: GoalEvaluationInput) =>
     invoke<{ evaluation: GoalEvaluationResult; userMessage?: string }>('evaluate_goal', { input }),
 

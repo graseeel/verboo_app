@@ -922,6 +922,7 @@ pub struct WorkspaceReviewCapabilities {
     pub can_open_external: bool,
     pub can_commit: bool,
     pub can_create_pr: bool,
+    pub can_push: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -952,6 +953,27 @@ pub struct WorkspaceReviewMetadata {
     pub current_branch: Option<String>,
     pub upstream_branch: Option<String>,
     pub capabilities: WorkspaceReviewCapabilities,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ahead_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behind_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_upstream: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_remote: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_commit_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_commit_subject: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspacePushResult {
+    pub ok: bool,
+    pub remote: Option<String>,
+    pub branch: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

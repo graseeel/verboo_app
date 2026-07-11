@@ -3971,6 +3971,7 @@ export function App() {
           minWidth={review.MIN_WIDTH}
           maxWidth={review.MAX_WIDTH}
           capabilities={reviewMetadata?.capabilities}
+          metadata={reviewMetadata}
           branchInfo={branchInfo}
         />
       </div>

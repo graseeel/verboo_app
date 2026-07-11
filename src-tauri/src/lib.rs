@@ -723,6 +723,17 @@ async fn create_workspace_pull_request(
 }
 
 #[tauri::command]
+async fn push_workspace_changes(
+    working_directory: String,
+) -> Result<WorkspacePushResult, String> {
+    tokio::task::spawn_blocking(move || {
+        services::git_service::push_workspace_changes(&working_directory)
+    })
+    .await
+    .map_err(|e| format!("Falha ao fazer push: {e}"))
+}
+
+#[tauri::command]
 fn get_file_diff(
     working_directory: String,
     file_path: String,
@@ -1427,6 +1438,7 @@ pub fn run() {
             get_workspace_review_metadata,
             commit_workspace_changes,
             create_workspace_pull_request,
+            push_workspace_changes,
             get_file_diff,
             revert_file,
             open_external_file,

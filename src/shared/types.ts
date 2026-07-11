@@ -570,6 +570,7 @@ export type WorkspaceReviewCapabilities = {
   canRevert: boolean
   canOpenExternal: boolean
   canCommit: boolean
+  canPush: boolean
   canCreatePr: boolean
 }
 
@@ -585,6 +586,13 @@ export type WorkspacePullRequestResult = {
   error?: string
 }
 
+export type WorkspacePushResult = {
+  ok: boolean
+  remote?: string
+  branch?: string
+  error?: string
+}
+
 export type WorkspaceReviewMetadata = {
   scope: WorkspaceReviewScope
   title: string
@@ -595,6 +603,12 @@ export type WorkspaceReviewMetadata = {
   currentBranch?: string
   upstreamBranch?: string
   capabilities: WorkspaceReviewCapabilities
+  aheadCount?: number
+  behindCount?: number
+  hasUpstream?: boolean
+  hasRemote?: boolean
+  lastCommitHash?: string
+  lastCommitSubject?: string
 }
 
 export type WorkspaceBranch = {

@@ -543,3 +543,196 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
+
+/* Publish action pills — live INSIDE the branch row (same flex line).
+   Matches Codex density: three compact buttons with icons. The wrapper
+   flex-span is pushed to the right side of the row via margin-left:auto
+   so they sit next to +/- stats but before the outer row edge. */
+.review-publish-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* Icon-only publish buttons — must override .review-header button { width:26px }
+   which clips any content beyond the hit box. Use `!important` to guarantee the
+   icon-only 28×28 assertion wins without restyling every other header button. */
+.review-header .review-publish-button {
+  display: inline-grid !important;
+  place-items: center;
+  width: 28px !important;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg-elevated) 60%, transparent);
+  color: var(--text-muted);
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.review-header .review-publish-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-elevated));
+}
+
+.review-header .review-publish-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.review-header .review-publish-button svg {
+  display: block;
+  pointer-events: none;
+}
+
+/* Empty state for the file list when there are no changes and git has
+   publish capabilities — kept quiet, not the "nothing pending" copy. */
+.review-publish-empty {
+  display: grid;
+  gap: 4px;
+  padding: 8px 14px 12px;
+}
+
+.review-publish-empty-title {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.review-publish-empty-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+/* Modals for commit/push and PR — portal to body, fade+scale anim.
+   Emil-style: opacity 0 + scale 0.98 → 1, 180ms ease-out.
+   Reduced-motion: opacity only (no scale). */
+.review-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, black 38%, transparent);
+  animation: review-modal-fade-in 160ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .review-modal-backdrop {
+    animation: review-modal-fade-in 120ms ease-out;
+  }
+}
+
+@keyframes review-modal-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.review-modal {
+  display: grid;
+  gap: 12px;
+  width: min(100%, 460px);
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-elevated);
+  box-shadow: 0 8px 30px color-mix(in srgb, black 22%, transparent);
+  animation: review-modal-scale-in 180ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .review-modal {
+    animation: none;
+  }
+}
+
+@keyframes review-modal-scale-in {
+  from { opacity: 0; transform: scale(0.98); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.review-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.review-modal-head strong {
+  font-size: 15px;
+  color: var(--text);
+}
+
+.review-modal-input {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  color: var(--text);
+}
+
+.review-modal-textarea {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: var(--font-mono, ui-monospace, 'SFMono-Regular', Menlo, monospace);
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  color: var(--text);
+  resize: vertical;
+}
+
+.review-modal-muted-line {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+.review-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.review-modal-actions .primary-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text);
+  cursor: pointer;
+  padding: 0 14px;
+  font-weight: 600;
+}
+
+.review-modal-actions .primary-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.review-modal-actions .primary-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.review-modal-actions .review-modal-tertiary {
+  background: color-mix(in srgb, var(--bg-elevated) 100%, transparent);
+  border-color: var(--border);
+  font-weight: 500;
+}

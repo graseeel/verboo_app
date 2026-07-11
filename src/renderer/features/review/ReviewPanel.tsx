@@ -1,11 +1,13 @@
 import { useCallback, useRef, useState } from 'react'
 import type { PointerEvent } from 'react'
-import { FileCheck2, GitMerge, PanelRightClose } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { FileCheck2, GitCommitHorizontal, GitPullRequest, PanelRightClose, Upload, X } from 'lucide-react'
 import type {
   WorkspaceBranchInfo,
   WorkspaceBranchSwitchResult,
   WorkspaceChangeEntry,
   WorkspaceReviewCapabilities,
+  WorkspaceReviewMetadata,
 } from '../../../shared/types'
 import { ReviewBranchControls } from './components/ReviewBranchControls'
 import { ReviewConfirmDialog } from './components/ReviewConfirmDialog'
@@ -20,6 +22,7 @@ const DEFAULT_CAPABILITIES: WorkspaceReviewCapabilities = {
   canRevert: true,
   canOpenExternal: true,
   canCommit: false,
+  canPush: false,
   canCreatePr: false,
 }
 
@@ -37,6 +40,7 @@ type ReviewPanelProps = {
   maxWidth: number
   capabilities?: WorkspaceReviewCapabilities
   branchInfo?: WorkspaceBranchInfo
+  metadata?: WorkspaceReviewMetadata
 }
 
 export function ReviewPanel(props: ReviewPanelProps) {
@@ -52,8 +56,14 @@ export function ReviewPanel(props: ReviewPanelProps) {
     minWidth,
     maxWidth,
     branchInfo,
+    metadata,
   } = props
   const capabilities = props.capabilities ?? DEFAULT_CAPABILITIES
+  const meta = metadata
+  const hasUpstream = meta?.hasUpstream
+  const hasRemote = meta?.hasRemote
+  const aheadCount = meta?.aheadCount ?? 0
+  const lastCommitSubject = meta?.lastCommitSubject
   const startResize = useResizeHandle(width, minWidth, maxWidth, onSetWidth)
   const [confirmingFile, setConfirmingFile] = useState<WorkspaceChangeEntry | undefined>()
   const files = target?.files ?? []
@@ -83,35 +93,74 @@ export function ReviewPanel(props: ReviewPanelProps) {
   // don't ship a parallel `onCommitted` callback.
   const { toast } = useToast()
   const [commitMessage, setCommitMessage] = useState('')
+  const [commitBody, setCommitBody] = useState('')
   const [prTitle, setPrTitle] = useState('')
-  const [busy, setBusy] = useState<'idle' | 'commit' | 'pr'>('idle')
+  const [busy, setBusy] = useState<'idle' | 'commit' | 'push' | 'pr'>('idle')
+  const [commitModalOpen, setCommitModalOpen] = useState(false)
+  const [prModalOpen, setPrModalOpen] = useState(false)
+  const modalBackdropRef = useRef<HTMLDivElement>(null)
 
-  const commitDisabled = !capabilities.canCommit
-    || files.length === 0
-    || busy !== 'idle'
-    || commitMessage.trim().length === 0
+  const canPublish = capabilities.canCommit || capabilities.canPush || capabilities.canCreatePr
+  const hasFiles = files.length > 0
+  const commitButtonDisabled = !capabilities.canCommit || !hasFiles || busy !== 'idle' || commitMessage.trim().length === 0
+  const pushEnabled = capabilities.canPush && busy === 'idle' && !hasFiles && (!hasUpstream || aheadCount > 0)
+  const prDisabled = !capabilities.canCreatePr || busy !== 'idle' || hasFiles
 
-  const prDisabled = !capabilities.canCreatePr
-    || busy !== 'idle'
+  function buildFullCommitMessage(title: string, body?: string): string {
+    const trimmedTitle = title.trim()
+    const trimmedBody = body?.trim()
+    return trimmedBody ? `${trimmedTitle}\n\n${trimmedBody}` : trimmedTitle
+  }
+
+  function openCommitModal() { setCommitModalOpen(true); setCommitMessage(''); setCommitBody('') }
+  function closeCommitModal() { setCommitModalOpen(false) }
+  function openPrModal() { setPrModalOpen(true) }
+  function closePrModal() { setPrModalOpen(false) }
+
+  async function commitAndPush() {
+    if (!target || (!hasFiles && !capabilities.canPush)) return
+    if (!hasFiles) { await pushDirect(); return }
+    const message = buildFullCommitMessage(commitMessage, commitBody)
+    setBusy('commit')
+    try {
+      const r = await window.verboo.commitWorkspaceChanges(target.workingDirectory, message)
+      if (!r.ok) { toast(t('review.commitFailed', { message: r.error ?? 'unknown' }), 'error'); setBusy('idle'); return }
+      setCommitMessage(''); setCommitBody('')
+      toast(t('review.commitSuccess', { hash: r.commitHash ?? '' }))
+      onReverted()
+    } catch (err) {
+      toast(t('review.commitFailed', { message: err instanceof Error ? err.message : String(err) }), 'error')
+      setBusy('idle'); return
+    }
+    // Commit succeeded — tree is clean; push regardless of stale hasFiles
+    if (!capabilities.canPush) { setBusy('idle'); return }
+    await pushDirect()
+  }
+
+  async function pushDirect() {
+    if (!target || !capabilities.canPush) return
+    setBusy('push')
+    try {
+      const r = await window.verboo.pushWorkspaceChanges(target.workingDirectory)
+      if (!r.ok) { toast(t('review.pushFailed', { message: r.error ?? 'unknown' }), 'error'); setBusy('idle'); return }
+      toast(t('review.pushSuccess'))
+      onReverted()
+    } catch (err) {
+      toast(t('review.pushFailed', { message: err instanceof Error ? err.message : String(err) }), 'error')
+    }
+    setBusy('idle')
+  }
 
   async function commit() {
-    if (!target || commitDisabled) {
-      if (!target) return
-      toast(t('review.commitEmptyMessage'))
-      return
-    }
-    const message = commitMessage.trim()
-    if (!message) {
-      toast(t('review.commitEmptyMessage'))
-      return
-    }
+    if (!target || !hasFiles) return
+    const message = buildFullCommitMessage(commitMessage, commitBody)
     setBusy('commit')
     try {
       const result = await window.verboo.commitWorkspaceChanges(target.workingDirectory, message)
       if (result.ok) {
         setCommitMessage('')
+        setCommitBody('')
         toast(t('review.commitSuccess', { hash: result.commitHash ?? '' }))
-        // Refresh the file list — reusing the revert refresh pathway.
         onReverted()
       } else {
         toast(t('review.commitFailed', { message: result.error ?? 'unknown' }), 'error')
@@ -122,6 +171,8 @@ export function ReviewPanel(props: ReviewPanelProps) {
       setBusy('idle')
     }
   }
+
+  async function push() { await pushDirect() }
 
   async function openPr() {
     if (!target || prDisabled) return
@@ -166,7 +217,43 @@ export function ReviewPanel(props: ReviewPanelProps) {
           totalAdditions={totalAdditions}
           totalDeletions={totalDeletions}
           onSwitchBranch={onSwitchBranch}
-        />
+        >
+          {canPublish && (
+            <span className="review-publish-actions">
+              <button
+                type="button"
+                className="review-publish-button ui-tooltip"
+                onClick={openCommitModal}
+                disabled={!capabilities.canCommit && !capabilities.canPush}
+                data-tooltip={t('review.publishButtonHint')}
+                aria-label={t('review.publishButtonHint')}
+              >
+                <GitCommitHorizontal size={14} />
+              </button>
+              <button
+                type="button"
+                className="review-publish-button ui-tooltip"
+                onClick={push}
+                disabled={!capabilities.canPush || hasFiles}
+                data-tooltip={!capabilities.canPush || !hasFiles ? t('review.publishButtonHint') : t('review.pushCleanTreeRequired')}
+                aria-label={!capabilities.canPush || !hasFiles ? t('review.pushButton') : t('review.pushCleanTreeRequired')}
+              >
+                <Upload size={14} />
+              </button>
+              {capabilities.canCreatePr && (
+                <button
+                  type="button"
+                  className="review-publish-button ui-tooltip"
+                  onClick={openPrModal}
+                  data-tooltip={t('review.prButton')}
+                  aria-label={t('review.prButton')}
+                >
+                  <GitPullRequest size={14} />
+                </button>
+              )}
+            </span>
+          )}
+        </ReviewBranchControls>
       </header>
 
       <div className="review-file-list">
@@ -202,55 +289,117 @@ export function ReviewPanel(props: ReviewPanelProps) {
         />
       ) : null}
 
-      {(capabilities.canCommit || capabilities.canCreatePr) && (
-        <footer className="review-actions">
-          {capabilities.canCommit && files.length > 0 && (
-            <section className="review-action-section">
-              <header className="review-action-section-head">{t('review.commitSection')}</header>
-              <textarea
-                className="review-action-input review-action-textarea"
-                value={commitMessage}
-                onChange={event => setCommitMessage(event.target.value)}
-                placeholder={t('review.commitPlaceholder')}
-                rows={3}
-                disabled={busy !== 'idle'}
-                spellCheck
-              />
+      {/* Commit / Push modal */}
+      {commitModalOpen && createPortal(
+        <div className="review-modal-backdrop" ref={modalBackdropRef}
+          onClick={e => { if (e.target === modalBackdropRef.current) closeCommitModal() }}
+          onKeyDown={e => { if (e.key === 'Escape') closeCommitModal() }}
+          role="dialog" aria-modal="true" aria-label={t('review.commitSection')}
+        >
+          <div className="review-modal">
+            <header className="review-modal-head">
+              <strong>{t('review.commitSection')}</strong>
+              <button type="button" className="ghost-button" onClick={closeCommitModal} aria-label={t('common.close')}>
+                <X size={15} />
+              </button>
+            </header>
+            <input
+              className="review-modal-input"
+              type="text"
+              value={commitMessage}
+              onChange={e => setCommitMessage(e.target.value)}
+              placeholder={t('review.commitPlaceholder')}
+              autoFocus
+            />
+            <textarea
+              className="review-modal-textarea"
+              value={commitBody}
+              onChange={e => setCommitBody(e.target.value)}
+              placeholder={t('review.commitBodyPlaceholder')}
+              rows={4}
+            />
+            {!hasFiles && lastCommitSubject && (
+              <div className="review-modal-muted-line">latest: {lastCommitSubject}</div>
+            )}
+            {hasFiles && capabilities.canPush && (
+              <small className="review-action-hint">{t('review.pushCleanTreeRequired')}</small>
+            )}
+            <div className="review-modal-actions">
               <button
                 type="button"
                 className="primary-action"
-                disabled={commitDisabled}
+                disabled={!commitButtonDisabled}
                 onClick={commit}
               >
-                {busy === 'commit' ? t('review.commitButtonBusy') : t('review.commitButton')}
+                <GitCommitHorizontal size={14} />
+                <span>{busy === 'commit' ? t('review.commitButtonBusy') : t('review.commitButton')}</span>
               </button>
-            </section>
-          )}
-          {capabilities.canCreatePr && (
-            <section className="review-action-section">
-              <header className="review-action-section-head">{t('review.prSection')}</header>
-              <input
-                className="review-action-input"
-                type="text"
-                value={prTitle}
-                onChange={event => setPrTitle(event.target.value)}
-                placeholder={t('review.prTitlePlaceholder')}
-                disabled={busy !== 'idle'}
-                spellCheck
-              />
-              <small className="review-action-hint">{t('review.prTitleHint')}</small>
+              {capabilities.canPush && (
+                <button
+                  type="button"
+                  className="primary-action"
+                  disabled={!commitButtonDisabled}
+                  onClick={commitAndPush}
+                >
+                  <GitCommitHorizontal size={14} />
+                  <Upload size={14} />
+                  <span>{busy === 'commit' || busy === 'push' ? t('review.commitButtonBusy') : t('review.commitAndPush')}</span>
+                </button>
+              )}
+              {capabilities.canPush && !hasFiles && (
+                <button
+                  type="button"
+                  className="primary-action review-modal-tertiary"
+                  disabled={!pushEnabled}
+                  onClick={push}
+                >
+                  <Upload size={14} />
+                  <span>{busy === 'push' ? t('review.pushButtonBusy') : t('review.pushButton')}</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* PR modal */}
+      {prModalOpen && createPortal(
+        <div className="review-modal-backdrop"
+          onClick={e => { if (e.target === modalBackdropRef.current) closePrModal() }}
+          onKeyDown={e => { if (e.key === 'Escape') closePrModal() }}
+          role="dialog" aria-modal="true" aria-label={t('review.prSection')}
+        >
+          <div className="review-modal">
+            <header className="review-modal-head">
+              <strong>{t('review.prSection')}</strong>
+              <button type="button" className="ghost-button" onClick={closePrModal} aria-label={t('common.close')}>
+                <X size={15} />
+              </button>
+            </header>
+            <input
+              className="review-modal-input"
+              type="text"
+              value={prTitle}
+              onChange={e => setPrTitle(e.target.value)}
+              placeholder={t('review.prTitlePlaceholder')}
+              autoFocus
+            />
+            <small className="review-action-hint">{t('review.prTitleHint')}</small>
+            <div className="review-modal-actions">
               <button
                 type="button"
                 className="primary-action"
                 disabled={prDisabled}
-                onClick={openPr}
+                onClick={() => { openPr().then(() => closePrModal()) }}
               >
-                <GitMerge size={14} />
+                <GitPullRequest size={14} />
                 <span>{busy === 'pr' ? t('review.prButtonBusy') : t('review.prButton')}</span>
               </button>
-            </section>
-          )}
-        </footer>
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
     </aside>
   )

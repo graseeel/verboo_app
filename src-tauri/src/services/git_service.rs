@@ -4,8 +4,8 @@ use std::process::Command;
 use crate::models::types::{
     DiffLineKind, FileDiff, FileDiffHunk, FileDiffLine, FileDiffStatus, WorkspaceBranch,
     WorkspaceBranchInfo, WorkspaceBranchSwitchResult, WorkspaceChangeEntry, WorkspaceChangeSummary,
-    WorkspaceCommitResult, WorkspacePullRequestResult, WorkspaceReviewCapabilities,
-    WorkspaceReviewMetadata, WorkspaceReviewScope,
+    WorkspaceCommitResult, WorkspacePullRequestResult, WorkspacePushResult,
+    WorkspaceReviewCapabilities, WorkspaceReviewMetadata, WorkspaceReviewScope,
 };
 
 const MAX_UNTRACKED_FILE_BYTES: u64 = 1_000_000;
@@ -302,16 +302,37 @@ pub fn read_workspace_review_metadata(working_directory: &str) -> WorkspaceRevie
                 can_open_external: true,
                 can_commit: false,
                 can_create_pr: false,
+                can_push: false,
             },
+            ahead_count: None,
+            behind_count: None,
+            has_upstream: None,
+            has_remote: None,
+            last_commit_hash: None,
+            last_commit_subject: None,
         };
     };
 
     let repository_root = root.to_string_lossy().to_string();
     let remote_result = run_git(&root, &["remote", "-v"]);
+    let has_remote = remote_result.ok
+        && !remote_result.stdout.trim().is_empty();
     let is_github = remote_result.ok
         && regex_like_contains_github(&remote_result.stdout);
     let current_branch = read_current_branch(&root);
     let upstream_branch = read_upstream_branch(&root);
+    let has_upstream = upstream_branch.is_some();
+
+    // Compute ahead/behind counts relative to upstream. When there's no
+    // upstream, `ahead_count` stays None (FE treats this as "needs first
+    // push" when `has_remote` is true).
+    let (ahead_count, behind_count) = if has_upstream {
+        read_ahead_behind(&root)
+    } else {
+        (None, None)
+    };
+
+    let (last_commit_hash, last_commit_subject) = read_last_commit(&root);
 
     if is_github {
         WorkspaceReviewMetadata {
@@ -329,7 +350,14 @@ pub fn read_workspace_review_metadata(working_directory: &str) -> WorkspaceRevie
                 can_open_external: true,
                 can_commit: true,
                 can_create_pr: is_gh_available(),
+                can_push: has_remote,
             },
+            ahead_count,
+            behind_count,
+            has_upstream: Some(has_upstream),
+            has_remote: Some(has_remote),
+            last_commit_hash,
+            last_commit_subject,
         }
     } else {
         WorkspaceReviewMetadata {
@@ -347,8 +375,103 @@ pub fn read_workspace_review_metadata(working_directory: &str) -> WorkspaceRevie
                 can_open_external: true,
                 can_commit: true,
                 can_create_pr: false,
+                can_push: has_remote,
             },
+            ahead_count,
+            behind_count,
+            has_upstream: Some(has_upstream),
+            has_remote: Some(has_remote),
+            last_commit_hash,
+            last_commit_subject,
         }
+    }
+}
+
+/// Reads ahead/behind counts relative to upstream via
+/// `git rev-list --left-right --count @{u}...HEAD`.
+/// Returns (ahead, behind) where ahead = commits on HEAD not on upstream,
+/// behind = commits on upstream not on HEAD. Returns (None, None) on error.
+fn read_ahead_behind(root: &Path) -> (Option<u32>, Option<u32>) {
+    let result = run_git(
+        root,
+        &[
+            "rev-list",
+            "--left-right",
+            "--count",
+            "@{u}...HEAD",
+        ],
+    );
+    if !result.ok {
+        return (None, None);
+    }
+    let trimmed = result.stdout.trim();
+    // Output format: "<behind>\t<ahead>"
+    let mut parts = trimmed.split_whitespace();
+    let behind = parts.next().and_then(|s| s.parse::<u32>().ok());
+    let ahead = parts.next().and_then(|s| s.parse::<u32>().ok());
+    (ahead, behind)
+}
+
+/// Reads the last commit's short hash and subject via
+/// `git log -1 --format=%h|%s`.
+fn read_last_commit(root: &Path) -> (Option<String>, Option<String>) {
+    let result = run_git(root, &["log", "-1", "--format=%h|%s"]);
+    if !result.ok {
+        return (None, None);
+    }
+    let trimmed = result.stdout.trim();
+    if trimmed.is_empty() {
+        return (None, None);
+    }
+    // Split on the first `|` only — commit subjects can contain `|`.
+    if let Some(idx) = trimmed.find('|') {
+        let hash = trimmed[..idx].to_string();
+        let subject = trimmed[idx + 1..].to_string();
+        (Some(hash), Some(subject))
+    } else {
+        (Some(trimmed.to_string()), None)
+    }
+}
+
+/// Pushes the current branch to its upstream (or sets upstream with
+/// `git push -u origin HEAD` when no upstream exists). Cross-platform —
+/// `run_git` uses `Command::new("git")` with args, no shell.
+pub fn push_workspace_changes(working_directory: &str) -> WorkspacePushResult {
+    let Some(root) = resolve_repo_root(working_directory) else {
+        return WorkspacePushResult {
+            ok: false,
+            remote: None,
+            branch: None,
+            error: Some("Push exige um repositório Git.".into()),
+        };
+    };
+
+    let has_upstream = read_upstream_branch(&root).is_some();
+    let push_args: Vec<&str> = if has_upstream {
+        vec!["push"]
+    } else {
+        vec!["push", "-u", "origin", "HEAD"]
+    };
+
+    let result = run_git(&root, &push_args);
+    if !result.ok {
+        return WorkspacePushResult {
+            ok: false,
+            remote: Some("origin".into()),
+            branch: read_current_branch(&root),
+            error: Some(command_error(
+                &result.stdout,
+                &result.stderr,
+                "Não foi possível fazer push.",
+            )),
+        };
+    }
+
+    WorkspacePushResult {
+        ok: true,
+        remote: Some("origin".into()),
+        branch: read_current_branch(&root),
+        error: None,
     }
 }
 
@@ -1215,6 +1338,35 @@ mod tests {
             .ok
         );
         repo
+    }
+
+    #[test]
+    fn read_last_commit_parses_hash_and_subject() {
+        let repo = init_test_repo();
+        std::fs::write(repo.path().join("file.txt"), "hello\n").unwrap();
+        let _ = commit_workspace_changes(repo.path().to_str().unwrap(), "Fix bug | with pipe");
+        let (hash, subject) = read_last_commit(repo.path());
+        assert!(hash.is_some(), "hash should be present");
+        assert_eq!(subject.as_deref(), Some("Fix bug | with pipe"));
+    }
+
+    #[test]
+    fn read_ahead_behind_returns_none_without_upstream() {
+        // Fresh repo with no upstream — ahead/behind should be None.
+        let repo = init_test_repo();
+        std::fs::write(repo.path().join("file.txt"), "hello\n").unwrap();
+        let _ = commit_workspace_changes(repo.path().to_str().unwrap(), "Initial");
+        let (ahead, behind) = read_ahead_behind(repo.path());
+        assert_eq!(ahead, None);
+        assert_eq!(behind, None);
+    }
+
+    #[test]
+    fn push_workspace_changes_errors_without_git_repo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = push_workspace_changes(tmp.path().to_str().unwrap());
+        assert!(!result.ok);
+        assert!(result.error.unwrap().contains("repositório"));
     }
 
     #[test]
