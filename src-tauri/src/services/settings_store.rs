@@ -147,6 +147,7 @@ impl SettingsStore {
             personality: s.personality.clone(),
             custom_instructions: s.custom_instructions.clone(),
             trusted_commands: s.trusted_commands.clone(),
+            custom_slash_commands: s.custom_slash_commands.clone(),
             memories_enabled: s.memories_enabled,
             chronicle_preview: s.chronicle_preview,
             ignore_tool_chats_for_memory: s.ignore_tool_chats_for_memory,

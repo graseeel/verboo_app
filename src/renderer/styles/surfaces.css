@@ -300,6 +300,155 @@
   font-size: 13px;
 }
 
+/* Custom slash commands manager (QW3) — quiet, PRODUCT.md, mono body preview.
+   Inline form replaces the card during create/edit; ConfirmDialog handles
+   destructive removal. */
+.custom-commands-panel {
+  gap: 16px;
+}
+
+.custom-commands-empty {
+  padding: 32px 24px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-elevated) 60%, transparent);
+  color: var(--text-dim);
+  text-align: center;
+  font-size: 13px;
+}
+
+.custom-commands-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.custom-commands-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-elevated) 50%, transparent);
+}
+
+.custom-commands-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.custom-commands-name {
+  font-family: var(--font-mono, ui-monospace, 'SFMono-Regular', Menlo, monospace);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.custom-commands-description {
+  font-size: 12px;
+  color: var(--text-dim);
+  flex: 1;
+  min-width: 0;
+}
+
+.custom-commands-body {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: var(--font-mono, ui-monospace, 'SFMono-Regular', Menlo, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  border-radius: 6px;
+  color: var(--text);
+  max-height: 160px;
+  overflow: auto;
+}
+
+.custom-commands-body.is-empty {
+  color: var(--text-dim);
+  background: transparent;
+  padding: 4px 0;
+  font-style: italic;
+}
+
+.custom-commands-card-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.custom-commands-form {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 4%, var(--bg-elevated));
+}
+
+.custom-commands-field {
+  display: grid;
+  gap: 6px;
+}
+
+.custom-commands-field span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.custom-commands-field small {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.custom-commands-input {
+  width: 100%;
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  color: var(--text);
+}
+
+.custom-commands-textarea {
+  font-family: var(--font-mono, ui-monospace, 'SFMono-Regular', Menlo, monospace);
+  resize: vertical;
+  min-height: 110px;
+  white-space: pre;
+}
+
+.custom-commands-error {
+  margin: 0;
+  font-size: 12px;
+  color: color-mix(in srgb, #c14545 75%, var(--text));
+  background: color-mix(in srgb, #c14545 8%, transparent);
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+
+.custom-commands-form-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+/* Slash palette badge for custom commands — distinct accent-on-tint so users
+   can quickly tell which are theirs vs the built-in /goal and /pet. */
+.skill-source.custom {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
 .metric-card,
 .profile-panel,
 .settings-panel,

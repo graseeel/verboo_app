@@ -142,6 +142,7 @@ mod tests {
             personality: PersonalityMode::Pragmatic,
             custom_instructions: String::new(),
             trusted_commands: Vec::new(),
+            custom_slash_commands: Vec::new(),
             memories_enabled: false,
             chronicle_preview: false,
             ignore_tool_chats_for_memory: true,

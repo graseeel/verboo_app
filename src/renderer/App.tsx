@@ -122,6 +122,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   personality: 'pragmatic',
   customInstructions: '',
   trustedCommands: [],
+  customSlashCommands: [],
   memoriesEnabled: false,
   chroniclePreview: false,
   ignoreToolChatsForMemory: true,
@@ -4031,6 +4032,7 @@ export function App() {
             disabled={false}
             workingDirectory={config.workingDirectory}
             skills={skills}
+            customSlashCommands={userSettings.customSlashCommands}
             selectedSkills={selectedSkills}
             attachments={attachedFiles}
             ocrProcessingPaths={ocrProcessingPaths}

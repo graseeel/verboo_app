@@ -20,6 +20,7 @@ import {
   RotateCcw,
   Shield,
   ShieldCheck,
+  Sparkles,
   Trash2,
   UserCog,
 } from 'lucide-react'
@@ -39,6 +40,7 @@ import type {
   VerbooModel,
 } from '../../../shared/types'
 import { ProjectInstructionsEditor } from './ProjectInstructionsEditor'
+import { CustomCommandsManager } from './CustomCommandsManager'
 import { LanguageSelector } from '../language/LanguageSelector'
 import { useToast } from '../../components/Toast'
 import { AVATAR_PALETTE, AVATAR_PRESETS, renderPreset } from '../profile/avatarPresets'
@@ -116,6 +118,7 @@ export function SettingsView({
   const settingsTabs: Array<{ id: SettingsTab; label: string; icon: typeof Shield }> = [
     { id: 'permissions', label: t('settings.permissions'), icon: Shield },
     { id: 'trustedCommands', label: t('settings.trustedCommands'), icon: ShieldCheck },
+    { id: 'customCommands', label: t('settings.customCommands'), icon: Sparkles },
     { id: 'app', label: t('settings.app'), icon: Computer },
     { id: 'notifications', label: t('settings.notifications'), icon: Bell },
     { id: 'personalization', label: t('settings.personalization'), icon: UserCog },
@@ -580,6 +583,19 @@ export function SettingsView({
                 {t('settings.saveInstructions')}
               </button>
             </section>
+          </section>
+        )}
+
+        {activeTab === 'customCommands' && (
+          <section className="settings-section-view">
+            <SettingsHeading
+              title={t('settings.customCommands')}
+              subtitle={t('settings.customCommandsSubtitle')}
+            />
+            <CustomCommandsManager
+              commands={userSettings.customSlashCommands}
+              onSave={customSlashCommands => onUserSettingsChange({ customSlashCommands })}
+            />
           </section>
         )}
 

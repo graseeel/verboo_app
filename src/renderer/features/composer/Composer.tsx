@@ -1,10 +1,15 @@
 import { ArrowUp, Mic, MicOff, Paperclip, Target, X } from 'lucide-react'
 import { type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { AttachmentMeta, SkillSummary } from '../../../shared/types'
+import type { AttachmentMeta, CustomSlashCommand, SkillSummary } from '../../../shared/types'
 import { useI18n } from '../../i18n'
 import { QueuePanel } from '../queue/QueuePanel'
 import { parseReservedSlashCommand, type ReservedSlashCommand } from './slashCommands'
+import {
+  getCustomCommandLabel,
+  getCustomCommandToken,
+  rankCustomCommands,
+} from './customSlashCommands'
 import { createVoiceInput, composeVoiceAppend, detectSupport, type VoiceInputHandle } from './voiceInput'
 import { getAtQuery, removeAtQuery, replaceAtQueryWithToken, rankFiles, extractAtTokens } from './atMention'
 
@@ -15,6 +20,7 @@ type SlashCommand = { name: string; description: string }
 type SlashMenuItem =
   | { kind: 'command'; command: SlashCommand }
   | { kind: 'skill'; skill: SkillSummary }
+  | { kind: 'custom'; command: CustomSlashCommand }
 
 type ComposerProps = {
   disabled: boolean
@@ -41,6 +47,8 @@ type ComposerProps = {
   /** Working directory for the @-mention file palette. Falls back to empty
    *  string (no files) when unset / first render before config loads. */
   workingDirectory?: string
+  /** User-defined slash commands persisted in `UserSettings.customSlashCommands`. */
+  customSlashCommands?: CustomSlashCommand[]
   /** Queued follow-ups awaiting to be sent to the model */
   queue?: { id: string; message: string }[]
   onQueueSendNow?: (queueItemId: string) => void
@@ -57,6 +65,7 @@ export function Composer({
   selectedSkills,
   attachments,
   ocrProcessingPaths = [],
+  customSlashCommands = [],
   onSelectedSkillsChange,
   onAttachFiles,
   onDropFiles,
@@ -143,14 +152,19 @@ export function Composer({
     if (slashQuery === undefined) return []
     return rankSkills(skills, slashQuery).slice(0, 8)
   }, [skills, slashQuery])
+  const matchingCustom = useMemo(() => {
+    if (slashQuery === undefined) return []
+    return rankCustomCommands(customSlashCommands, slashQuery).slice(0, 8)
+  }, [customSlashCommands, slashQuery])
   const menuItems = useMemo<SlashMenuItem[]>(() => [
     ...matchingCommands.map(command => ({ kind: 'command' as const, command })),
     ...matchingSkills.map(skill => ({ kind: 'skill' as const, skill })),
-  ], [matchingCommands, matchingSkills])
+    ...matchingCustom.map(command => ({ kind: 'custom' as const, command })),
+  ], [matchingCommands, matchingSkills, matchingCustom])
   const activeIndex = menuItems.length ? Math.min(highlighted, menuItems.length - 1) : 0
   const highlightedValue = useMemo(
-    () => renderHighlightedValue(value, skills, slashCommands),
-    [skills, slashCommands, value],
+    () => renderHighlightedValue(value, skills, slashCommands, customSlashCommands),
+    [skills, slashCommands, customSlashCommands, value],
   )
   const goalModeActive = isGoalCommandDraft(value)
   const dropActive = dragDepth > 0
@@ -250,7 +264,22 @@ export function Composer({
       selectCommand(item.command)
       return
     }
+    if (item.kind === 'custom') {
+      selectCustomCommand(item.command)
+      return
+    }
     selectSkill(item.skill)
+  }
+
+  function selectCustomCommand(command: CustomSlashCommand) {
+    // Replace the /query with the command's body. The renderer takes care
+    // of the trailing space when the body doesn't end in whitespace, so the
+    // user can keep typing after a sentence-ended template.
+    const token = getCustomCommandToken(command)
+    const nextValue = replaceSlashQueryWithToken(value, token)
+    setValue(nextValue)
+    setHighlighted(0)
+    textareaRef.current?.focus()
   }
 
   function selectAtFile(path: string) {
@@ -514,20 +543,38 @@ export function Composer({
           {menuItems.length === 0 ? (
             <div className="empty-menu">{t('composer.emptyMenu')}</div>
           ) : (
-            menuItems.map((item, index) =>
-              item.kind === 'command' ? (
-                <button
-                  key={`command:${item.command.name}`}
-                  className={`skill-option ${index === activeIndex ? 'highlighted' : ''}`}
-                  type="button"
-                  onMouseEnter={() => setHighlighted(index)}
-                  onClick={() => selectMenuItem(item)}
-                >
-                  <span className="skill-name">/{item.command.name}</span>
-                  <span className="skill-description">{item.command.description}</span>
-                  <span className="skill-source command">{t('composer.command')}</span>
-                </button>
-              ) : (
+            menuItems.map((item, index) => {
+              if (item.kind === 'command') {
+                return (
+                  <button
+                    key={`command:${item.command.name}`}
+                    className={`skill-option ${index === activeIndex ? 'highlighted' : ''}`}
+                    type="button"
+                    onMouseEnter={() => setHighlighted(index)}
+                    onClick={() => selectMenuItem(item)}
+                  >
+                    <span className="skill-name">/{item.command.name}</span>
+                    <span className="skill-description">{item.command.description}</span>
+                    <span className="skill-source command">{t('composer.command')}</span>
+                  </button>
+                )
+              }
+              if (item.kind === 'custom') {
+                return (
+                  <button
+                    key={`custom:${item.command.id}`}
+                    className={`skill-option ${index === activeIndex ? 'highlighted' : ''}`}
+                    type="button"
+                    onMouseEnter={() => setHighlighted(index)}
+                    onClick={() => selectMenuItem(item)}
+                  >
+                    <span className="skill-name">{getCustomCommandLabel(item.command)}</span>
+                    <span className="skill-description">{item.command.description}</span>
+                    <span className="skill-source custom">{t('composer.custom')}</span>
+                  </button>
+                )
+              }
+              return (
                 <button
                   key={`skill:${item.skill.id}`}
                   className={`skill-option ${index === activeIndex ? 'highlighted' : ''}`}
@@ -541,8 +588,8 @@ export function Composer({
                     {item.skill.source}
                   </span>
                 </button>
-              ),
-            )
+              )
+            })
           )}
         </div>,
         document.body,
@@ -772,11 +819,17 @@ function sameSkillIds(left: SkillSummary[], right: SkillSummary[]): boolean {
   return left.every(skill => rightIds.has(skill.id))
 }
 
-function renderHighlightedValue(value: string, skills: SkillSummary[], slashCommands: SlashCommand[]): ReactNode[] {
+function renderHighlightedValue(
+  value: string,
+  skills: SkillSummary[],
+  slashCommands: SlashCommand[],
+  customSlashCommands: CustomSlashCommand[] = [],
+): ReactNode[] {
   if (!value) return []
   const knownNames = new Set([
     ...skills.map(skill => skill.name.toLowerCase()),
     ...slashCommands.map(command => command.name.toLowerCase()),
+    ...customSlashCommands.map(command => command.name.toLowerCase()),
   ])
   const parts: ReactNode[] = []
   let cursor = 0

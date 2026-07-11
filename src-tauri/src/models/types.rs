@@ -487,6 +487,16 @@ pub struct TrustedCommandRule {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CustomSlashCommand {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub body: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateSettings {
     pub channel: UpdateChannel,
     pub auto_check: bool,
@@ -520,6 +530,8 @@ pub struct UserSettings {
     pub personality: PersonalityMode,
     pub custom_instructions: String,
     pub trusted_commands: Vec<TrustedCommandRule>,
+    #[serde(default)]
+    pub custom_slash_commands: Vec<CustomSlashCommand>,
     pub memories_enabled: bool,
     pub chronicle_preview: bool,
     pub ignore_tool_chats_for_memory: bool,
@@ -1082,6 +1094,7 @@ impl Default for UserSettings {
             personality: PersonalityMode::Pragmatic,
             custom_instructions: String::new(),
             trusted_commands: Vec::new(),
+            custom_slash_commands: Vec::new(),
             memories_enabled: false,
             chronicle_preview: false,
             ignore_tool_chats_for_memory: true,
@@ -1169,6 +1182,7 @@ mod tests {
         assert!(d.question_notifications);
         assert!(!d.response_enhancements_enabled);
         assert_eq!(d.personality, PersonalityMode::Pragmatic);
+        assert!(d.custom_slash_commands.is_empty());
         assert!(!d.memories_enabled);
         assert!(!d.chronicle_preview);
         assert!(d.ignore_tool_chats_for_memory);

@@ -70,6 +70,7 @@ export type LanguageCode = 'en-US' | 'pt-BR'
 export type SettingsTab =
   | 'permissions'
   | 'trustedCommands'
+  | 'customCommands'
   | 'app'
   | 'notifications'
   | 'personalization'
@@ -219,6 +220,14 @@ export type ModelDiscoveryResult = {
   error?: string
 }
 
+export type CustomSlashCommand = {
+  id: string
+  name: string
+  description: string
+  body: string
+  createdAt: number
+}
+
 export type UserSettings = {
   language: LanguageCode
   defaultAccessMode: AccessMode
@@ -235,6 +244,7 @@ export type UserSettings = {
   personality: PersonalityMode
   customInstructions: string
   trustedCommands: TrustedCommandRule[]
+  customSlashCommands: CustomSlashCommand[]
   memoriesEnabled: boolean
   chroniclePreview: boolean
   ignoreToolChatsForMemory: boolean
