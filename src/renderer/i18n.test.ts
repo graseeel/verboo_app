@@ -9,6 +9,11 @@ describe('@-mention + voice i18n keys', () => {
     expect(t('composer.file')).toBe('file')
     expect(t('composer.voiceStart')).toBe('Start voice input')
     expect(t('composer.voiceStop')).toBe('Stop voice input')
+    // Mapped error keys must not echo the key back.
+    expect(t('composer.voicePermissionDenied')).not.toBe('composer.voicePermissionDenied')
+    expect(t('composer.voiceNoMic')).not.toBe('composer.voiceNoMic')
+    expect(t('composer.voiceNetworkError')).not.toBe('composer.voiceNetworkError')
+    expect(t('composer.voiceNoSpeech')).not.toBe('composer.voiceNoSpeech')
   })
 
   it('has PT-BR translations for the @ palette and voice input', () => {

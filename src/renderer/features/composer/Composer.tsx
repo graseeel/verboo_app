@@ -3,6 +3,7 @@ import { type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent,
 import { createPortal } from 'react-dom'
 import type { AttachmentMeta, CustomSlashCommand, SkillSummary } from '../../../shared/types'
 import { useI18n } from '../../i18n'
+import { useToast } from '../../components/Toast'
 import { QueuePanel } from '../queue/QueuePanel'
 import { parseReservedSlashCommand, type ReservedSlashCommand } from './slashCommands'
 import {
@@ -93,7 +94,6 @@ export function Composer({
   const [palettePos, setPalettePos] = useState<{ bottom: number; left: number; width: number } | null>(null)
   const [atLoading, setAtLoading] = useState(false)
   const [voiceListening, setVoiceListening] = useState(false)
-  const [voiceNotice, setVoiceNotice] = useState<string | null>(null)
   // SpeechRecognition support is captured once at mount — rechecking per
   // render would race with the bridge and could create handle churn.
   const voiceSupported = useMemo(() => detectSupport(), [])
@@ -106,7 +106,6 @@ export function Composer({
   const valueRef = useRef(value)
   valueRef.current = value
   const voiceRef = useRef<VoiceInputHandle | null>(null)
-  const voiceNoticeTimer = useRef<number | undefined>(undefined)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
   const slashMenuRef = useRef<HTMLDivElement>(null)
@@ -293,15 +292,43 @@ export function Composer({
   // Lazy handle: created on the first toggle so a session never opens the
   // mic until the user explicitly asks for it. Cleanup runs on unmount and
   // whenever the composer is discarded so we never leave the OS mic open.
-  function showVoiceNotice(message: string | null) {
-    setVoiceNotice(message)
-    if (voiceNoticeTimer.current) window.clearTimeout(voiceNoticeTimer.current)
-    voiceNoticeTimer.current = undefined
-    if (message) {
-      voiceNoticeTimer.current = window.setTimeout(() => {
-        setVoiceNotice(null)
-        voiceNoticeTimer.current = undefined
-      }, 4500)
+  // Errors go through the app toast system (useToast) — no inline notice
+  // that would squash the toolbar layout.
+  const { toast } = useToast()
+
+  /** Map a SpeechRecognition error event to a user-facing i18n message.
+   *  Known codes get dedicated copy; unknown codes fall back to the
+   *  generic voiceError template with the raw message. */
+  function mapVoiceError(info: { message: string; code?: string }): string {
+    const code = info.code ?? ''
+    const msg = info.message ?? ''
+    if (code === 'not-allowed' || code === 'service-not-allowed' || /permission/i.test(msg)) {
+      return t('composer.voicePermissionDenied')
+    }
+    if (code === 'audio-capture') {
+      return t('composer.voiceNoMic')
+    }
+    if (code === 'network') {
+      return t('composer.voiceNetworkError')
+    }
+    if (code === 'no-speech') {
+      return t('composer.voiceNoSpeech')
+    }
+    return t('composer.voiceError', { message: msg || code })
+  }
+
+  /** Trigger the OS microphone permission prompt by requesting a short-lived
+   *  audio stream. The tracks are stopped immediately — we only need the
+   *  side-effect of the OS dialog, not the audio itself. Returns true when
+   *  the user has granted access (or already had it), false on denial. */
+  async function requestMicPermission(): Promise<boolean> {
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) return true
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      stream.getTracks().forEach(track => track.stop())
+      return true
+    } catch {
+      return false
     }
   }
 
@@ -331,35 +358,46 @@ export function Composer({
     })
   }
 
-  function handleVoiceToggle() {
+  async function handleVoiceToggle() {
     if (!voiceSupported) {
-      showVoiceNotice(t('composer.voiceUnsupported'))
+      toast(t('composer.voiceUnsupported'))
       return
     }
     if (!voiceRef.current) {
       voiceRef.current = createVoiceInput({
         lang: language,
         onFinal: appendVoiceText,
-        onStart: () => {
-          showVoiceNotice(null)
-          setVoiceListening(true)
+        onStart: () => setVoiceListening(true),
+        // onError fires before onEnd on most implementations; reset the
+        // listening flag here too so the button doesn't stay stuck in the
+        // MicOff state if the error arrives without a subsequent onEnd.
+        onError: info => {
+          setVoiceListening(false)
+          toast(mapVoiceError(info), 'error')
         },
         onEnd: () => setVoiceListening(false),
-        onError: info => showVoiceNotice(t('composer.voiceError', { message: info.message })),
       })
     }
     if (voiceRef.current.isListening()) {
       voiceRef.current.stop()
-    } else {
-      voiceRef.current.start()
+      return
     }
+    // Trigger the OS mic permission prompt before starting recognition.
+    // On macOS WKWebView, SpeechRecognition.start() can fail with
+    // "service permission check has failed" if the app hasn't been granted
+    // microphone access. getUserMedia forces the OS dialog to appear.
+    const granted = await requestMicPermission()
+    if (!granted) {
+      toast(t('composer.voicePermissionDenied'), 'error')
+      return
+    }
+    voiceRef.current.start()
   }
 
   // Stop the mic when the composer unmounts; OS permission stays granted
   // for the next mount, but no audio frames keep flowing.
   useEffect(() => () => {
     voiceRef.current?.stop()
-    if (voiceNoticeTimer.current) window.clearTimeout(voiceNoticeTimer.current)
   }, [])
 
   function selectCommand(command: SlashCommand) {
@@ -723,11 +761,6 @@ export function Composer({
           </button>
           {leftToolbar}
         </div>
-        {voiceNotice && (
-          <div className="voice-notice" role="status" aria-live="polite">
-            {voiceNotice}
-          </div>
-        )}
         {centerToolbar && <div className="composer-tools center">{centerToolbar}</div>}
         <div className="composer-tools right">
           {rightToolbar}
