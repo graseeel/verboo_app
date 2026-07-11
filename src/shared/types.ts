@@ -274,6 +274,12 @@ export type UserSettings = {
   trustedSkills: string[]
   // Avatar configuration: how the user's profile picture is rendered.
   avatar?: AvatarSettings
+  /**
+   * When true, commits made from the Review panel include a
+   * `Co-Authored-By: Verboo Code <noreply@code.verboo.ai>` trailer.
+   * Default: false (opt-in).
+   */
+  includeVerbooCoAuthor: boolean
 }
 
 /// Profile avatar configuration.

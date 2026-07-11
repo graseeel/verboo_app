@@ -589,6 +589,9 @@ const enUS: Record<string, string> = {
   'settings.showMenuBarTextBody': 'Show status, time, and model next to the Verboo icon.',
   'settings.preventSleep': 'Prevent sleep while running',
   'settings.preventSleepBody': 'Keep the computer awake while Verboo runs a chat.',
+  'settings.includeVerbooCoAuthor': 'Co-author commits as Verboo Code',
+  'settings.includeVerbooCoAuthorBody':
+    'When enabled, commits from the Review panel include a Co-Authored-By trailer for Verboo Code. Off by default.',
   'settings.goalMode': 'Goal Mode (beta)',
   'settings.goalModeBody': 'Allows /goal to execute objectives in autonomous loops with evaluation between turns.',
   'settings.maxTurns': 'Max turns',
@@ -766,6 +769,9 @@ const enUS: Record<string, string> = {
   'review.pushSuccess': 'Pushed',
   'review.pushFailed': 'Could not push: {message}',
   'review.pushCleanTreeRequired': 'Commit your changes before pushing (working tree must be clean)',
+  'review.coAuthorActive':
+    'Co-authorship with Verboo Code is on for this commit. You can turn it off in Settings.',
+  'review.coAuthorTrailerPreview': 'Co-Authored-By: Verboo Code <noreply@code.verboo.ai>',
   'review.pushNoRemote': 'No remote configured',
   'review.pushNoUpstream': 'Local branch — not yet pushed upstream',
   'review.pushAhead': '{count} commit(s) ahead of remote',
@@ -1306,6 +1312,9 @@ const ptBR: Record<string, string> = {
   'settings.showMenuBarTextBody': 'Mostrar status, tempo e modelo ao lado do ícone do Verboo.',
   'settings.preventSleep': 'Impedir suspensão durante a execução',
   'settings.preventSleepBody': 'Mantém o computador ativo enquanto o Verboo executa um chat.',
+  'settings.includeVerbooCoAuthor': 'Co-autorar commits como Verboo Code',
+  'settings.includeVerbooCoAuthorBody':
+    'Quando ativo, commits feitos no painel de Revisão incluem um trailer Co-Authored-By do Verboo Code. Desligado por padrão.',
   'settings.goalMode': 'Goal Mode (beta)',
   'settings.goalModeBody': 'Permite usar /goal para executar objetivos em loop autônomo com avaliação entre turnos.',
   'settings.maxTurns': 'Turnos máximos',
@@ -1491,6 +1500,9 @@ const ptBR: Record<string, string> = {
   'review.pushSuccess': 'Enviado',
   'review.pushFailed': 'Falha ao enviar: {message}',
   'review.pushCleanTreeRequired': 'Faça commit antes de enviar (working tree precisa estar limpa)',
+  'review.coAuthorActive':
+    'Co-autoria com Verboo Code está ativa neste commit. Você pode desativar em Configurações.',
+  'review.coAuthorTrailerPreview': 'Co-Authored-By: Verboo Code <noreply@code.verboo.ai>',
   'review.pushNoRemote': 'Nenhum remote configurado',
   'review.pushNoUpstream': 'Branch local — ainda não enviado upstream',
   'review.pushAhead': '{count} commit(s) à frente do remote',

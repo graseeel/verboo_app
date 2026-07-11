@@ -554,6 +554,10 @@ pub struct UserSettings {
     /// field so the avatar doesn't reset on reload.
     #[serde(default)]
     pub avatar: Option<AvatarSettings>,
+    /// When true, Review-panel commits append a Co-Authored-By trailer for
+    /// Verboo Code. Default false (opt-in). Missing field deserializes as false.
+    #[serde(default)]
+    pub include_verboo_co_author: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1160,6 +1164,7 @@ impl Default for UserSettings {
             vision_fallback_consent: VisionFallbackConsent::Ask,
             trusted_skills: Vec::new(),
             avatar: None,
+            include_verboo_co_author: false,
         }
     }
 }
@@ -1225,6 +1230,7 @@ mod tests {
         assert!(d.show_menu_bar_text);
         assert!(d.stay_signed_in);
         assert!(d.prevent_sleep_while_running);
+        assert!(!d.include_verboo_co_author);
         assert_eq!(d.completion_notifications, CompletionNotificationMode::Background);
         assert!(d.permission_notifications);
         assert!(d.question_notifications);

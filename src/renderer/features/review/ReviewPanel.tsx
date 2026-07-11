@@ -28,6 +28,9 @@ const DEFAULT_CAPABILITIES: WorkspaceReviewCapabilities = {
 
 const DEFAULT_PR_TITLE = 'Review changes'
 
+/** Trailer appended when Settings → includeVerbooCoAuthor is on. */
+export const VERBOO_CO_AUTHOR_TRAILER = 'Co-Authored-By: Verboo Code <noreply@code.verboo.ai>'
+
 type ReviewPanelProps = {
   open: boolean
   width: number
@@ -41,6 +44,8 @@ type ReviewPanelProps = {
   capabilities?: WorkspaceReviewCapabilities
   branchInfo?: WorkspaceBranchInfo
   metadata?: WorkspaceReviewMetadata
+  /** From user settings; default false (opt-in co-authorship). */
+  includeVerbooCoAuthor?: boolean
 }
 
 export function ReviewPanel(props: ReviewPanelProps) {
@@ -57,6 +62,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
     maxWidth,
     branchInfo,
     metadata,
+    includeVerbooCoAuthor = false,
   } = props
   const capabilities = props.capabilities ?? DEFAULT_CAPABILITIES
   const meta = metadata
@@ -106,10 +112,18 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const pushEnabled = capabilities.canPush && busy === 'idle' && !hasFiles && (!hasUpstream || aheadCount > 0)
   const prDisabled = !capabilities.canCreatePr || busy !== 'idle' || hasFiles
 
-  function buildFullCommitMessage(title: string, body?: string): string {
+  function buildFullCommitMessage(title: string, body?: string, withCoAuthor = false): string {
     const trimmedTitle = title.trim()
     const trimmedBody = body?.trim()
-    return trimmedBody ? `${trimmedTitle}\n\n${trimmedBody}` : trimmedTitle
+    let message = trimmedBody ? `${trimmedTitle}\n\n${trimmedBody}` : trimmedTitle
+    if (withCoAuthor) {
+      const already =
+        /co-authored-by:\s*verboo code\s*<noreply@code\.verboo\.ai>/i.test(message)
+      if (!already) {
+        message = `${message}\n\n${VERBOO_CO_AUTHOR_TRAILER}`
+      }
+    }
+    return message
   }
 
   function openCommitModal() { setCommitModalOpen(true); setCommitMessage(''); setCommitBody('') }
@@ -120,7 +134,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
   async function commitAndPush() {
     if (!target || (!hasFiles && !capabilities.canPush)) return
     if (!hasFiles) { await pushDirect(); return }
-    const message = buildFullCommitMessage(commitMessage, commitBody)
+    const message = buildFullCommitMessage(commitMessage, commitBody, includeVerbooCoAuthor)
     setBusy('commit')
     try {
       const r = await window.verboo.commitWorkspaceChanges(target.workingDirectory, message)
@@ -153,7 +167,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
 
   async function commit() {
     if (!target || !hasFiles) return
-    const message = buildFullCommitMessage(commitMessage, commitBody)
+    const message = buildFullCommitMessage(commitMessage, commitBody, includeVerbooCoAuthor)
     setBusy('commit')
     try {
       const result = await window.verboo.commitWorkspaceChanges(target.workingDirectory, message)
@@ -324,11 +338,17 @@ export function ReviewPanel(props: ReviewPanelProps) {
             {hasFiles && capabilities.canPush && (
               <small className="review-action-hint">{t('review.pushCleanTreeRequired')}</small>
             )}
+            {includeVerbooCoAuthor && hasFiles && (
+              <div className="review-coauthor-notice" role="status">
+                <strong>{t('review.coAuthorActive')}</strong>
+                <code className="review-coauthor-trailer">{t('review.coAuthorTrailerPreview')}</code>
+              </div>
+            )}
             <div className="review-modal-actions">
               <button
                 type="button"
                 className="primary-action"
-                disabled={!commitButtonDisabled}
+                disabled={commitButtonDisabled}
                 onClick={commit}
               >
                 <GitCommitHorizontal size={14} />
@@ -338,7 +358,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
                 <button
                   type="button"
                   className="primary-action"
-                  disabled={!commitButtonDisabled}
+                  disabled={commitButtonDisabled}
                   onClick={commitAndPush}
                 >
                   <GitCommitHorizontal size={14} />

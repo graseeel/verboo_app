@@ -140,6 +140,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   visionFallbackConsent: 'ask',
   trustedSkills: [],
   avatar: undefined,
+  includeVerbooCoAuthor: false,
 }
 const EMPTY_LINE_KEYS = ['empty.line1', 'empty.line2', 'empty.line3', 'empty.line4'] as const
 
@@ -569,7 +570,12 @@ export function App() {
         const ls = localStorage.getItem('verboo:avatar-settings')
         if (ls) settings.avatar = JSON.parse(ls)
       } catch { /* ignore parse errors */ }
-      setUserSettings(settings)
+      // Coalesce new fields for older settings.json payloads.
+      setUserSettings({
+        ...DEFAULT_USER_SETTINGS,
+        ...settings,
+        includeVerbooCoAuthor: settings.includeVerbooCoAuthor ?? false,
+      })
       setSelectedModel(settings.lastSelectedModelId)
       setAccessMode(settings.defaultAccessMode)
       setConfig(nextConfig)
@@ -3973,6 +3979,7 @@ export function App() {
           capabilities={reviewMetadata?.capabilities}
           metadata={reviewMetadata}
           branchInfo={branchInfo}
+          includeVerbooCoAuthor={userSettings.includeVerbooCoAuthor}
         />
       </div>
       <GoalStatusBar

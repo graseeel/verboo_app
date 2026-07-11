@@ -520,6 +520,31 @@
   color: var(--text-dim);
 }
 
+.review-coauthor-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.review-coauthor-notice strong {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.35;
+}
+
+.review-coauthor-trailer {
+  font-size: 11px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  color: var(--text-dim);
+  word-break: break-all;
+}
+
 .review-action-section .primary-action {
   display: inline-flex;
   align-items: center;

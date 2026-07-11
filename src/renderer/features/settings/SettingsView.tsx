@@ -426,6 +426,12 @@ export function SettingsView({
                 checked={userSettings.preventSleepWhileRunning}
                 onChange={preventSleepWhileRunning => onUserSettingsChange({ preventSleepWhileRunning })}
               />
+              <SettingToggle
+                title={t('settings.includeVerbooCoAuthor')}
+                body={t('settings.includeVerbooCoAuthorBody')}
+                checked={userSettings.includeVerbooCoAuthor}
+                onChange={includeVerbooCoAuthor => onUserSettingsChange({ includeVerbooCoAuthor })}
+              />
             </section>
 
             <section className="settings-panel">
