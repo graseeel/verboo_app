@@ -413,6 +413,48 @@
   min-width: 0;
 }
 
+/* Voice input button — quiet by default; a single subtle pulse while
+   listening. PRODUCT.md says the mic must not shout when it is just
+   attached to file/skills on the left rail. */
+.voice-button.is-listening {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+  animation: voice-button-pulse 1.4s ease-in-out infinite;
+}
+
+.voice-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.voice-button.is-listening:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+@keyframes voice-button-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); }
+  50%      { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 24%, transparent); }
+}
+
+/* Inline voice error/notice — quiet, 11px, sits below the toolbar text. */
+.voice-notice {
+  margin-top: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--accent) 65%, var(--text-muted));
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 0 var(--radius-sm, 6px) var(--radius-sm, 6px) 0;
+  animation: voice-notice-in 220ms var(--dropdown-ease);
+}
+
+@keyframes voice-notice-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 .composer-tools.left {
   flex: 0 1 auto;
 }

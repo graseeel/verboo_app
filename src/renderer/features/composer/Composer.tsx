@@ -1,10 +1,11 @@
-import { ArrowUp, Paperclip, Target, X } from 'lucide-react'
+import { ArrowUp, Mic, MicOff, Paperclip, Target, X } from 'lucide-react'
 import { type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { AttachmentMeta, SkillSummary } from '../../../shared/types'
 import { useI18n } from '../../i18n'
 import { QueuePanel } from '../queue/QueuePanel'
 import { parseReservedSlashCommand, type ReservedSlashCommand } from './slashCommands'
+import { createVoiceInput, composeVoiceAppend, detectSupport, type VoiceInputHandle } from './voiceInput'
 import { getAtQuery, removeAtQuery, replaceAtQueryWithToken, rankFiles, extractAtTokens } from './atMention'
 
 // Reserved slash commands surfaced in the "/" palette, exactly like the skills
@@ -73,7 +74,7 @@ export function Composer({
   onQueueEdit,
   onQueueRemove,
 }: ComposerProps) {
-  const { t } = useI18n()
+  const { t, language } = useI18n()
   const [internalValue, setInternalValue] = useState('')
   const value = externalValue ?? internalValue
   const setValue = onValueChange ?? setInternalValue
@@ -82,6 +83,21 @@ export function Composer({
   const [dragDepth, setDragDepth] = useState(0)
   const [palettePos, setPalettePos] = useState<{ bottom: number; left: number; width: number } | null>(null)
   const [atLoading, setAtLoading] = useState(false)
+  const [voiceListening, setVoiceListening] = useState(false)
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null)
+  // SpeechRecognition support is captured once at mount — rechecking per
+  // render would race with the bridge and could create handle churn.
+  const voiceSupported = useMemo(() => detectSupport(), [])
+  // Mirror of the latest composer value, kept in sync at every render so
+  // the voice-input onFinal closure (created lazily on first toggle and
+  // never re-bound) can READ the freshest text without going stale. The
+  // appender also WRITES back synchronously after setValue to cover the
+  // window where React has not yet committed the new state and a second
+  // onFinal can fire in the same task (continuous-mode dictated text).
+  const valueRef = useRef(value)
+  valueRef.current = value
+  const voiceRef = useRef<VoiceInputHandle | null>(null)
+  const voiceNoticeTimer = useRef<number | undefined>(undefined)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
   const slashMenuRef = useRef<HTMLDivElement>(null)
@@ -243,6 +259,79 @@ export function Composer({
     setAtHighlighted(0)
     textareaRef.current?.focus()
   }
+
+  // ── Voice input (Web Speech API, no backend key) ────────────────────────
+  // Lazy handle: created on the first toggle so a session never opens the
+  // mic until the user explicitly asks for it. Cleanup runs on unmount and
+  // whenever the composer is discarded so we never leave the OS mic open.
+  function showVoiceNotice(message: string | null) {
+    setVoiceNotice(message)
+    if (voiceNoticeTimer.current) window.clearTimeout(voiceNoticeTimer.current)
+    voiceNoticeTimer.current = undefined
+    if (message) {
+      voiceNoticeTimer.current = window.setTimeout(() => {
+        setVoiceNotice(null)
+        voiceNoticeTimer.current = undefined
+      }, 4500)
+    }
+  }
+
+  function appendVoiceText(text: string) {
+    // Always compute against the freshest composer text — appendVoiceText
+    // is captured by the lazy voice handle (built once on first toggle),
+    // so the React `value` in this closure would otherwise be stale by the
+    // second final chunk of a continuous-mode session.
+    const base = valueRef.current
+    const next = composeVoiceAppend(base, text)
+    if (next === base) {
+      // Empty/whitespace addition — nothing to do.
+      return
+    }
+    // Sync the ref BEFORE setValue so back-to-back finals concatenate
+    // correctly even if React hasn't re-rendered the controlled textarea yet.
+    valueRef.current = next
+    setValue(next)
+    // Keep caret after the inserted text — on the next paint.
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current
+      if (!textarea) return
+      const end = textarea.value.length
+      textarea.selectionStart = end
+      textarea.selectionEnd = end
+      textarea.focus()
+    })
+  }
+
+  function handleVoiceToggle() {
+    if (!voiceSupported) {
+      showVoiceNotice(t('composer.voiceUnsupported'))
+      return
+    }
+    if (!voiceRef.current) {
+      voiceRef.current = createVoiceInput({
+        lang: language,
+        onFinal: appendVoiceText,
+        onStart: () => {
+          showVoiceNotice(null)
+          setVoiceListening(true)
+        },
+        onEnd: () => setVoiceListening(false),
+        onError: info => showVoiceNotice(t('composer.voiceError', { message: info.message })),
+      })
+    }
+    if (voiceRef.current.isListening()) {
+      voiceRef.current.stop()
+    } else {
+      voiceRef.current.start()
+    }
+  }
+
+  // Stop the mic when the composer unmounts; OS permission stays granted
+  // for the next mount, but no audio frames keep flowing.
+  useEffect(() => () => {
+    voiceRef.current?.stop()
+    if (voiceNoticeTimer.current) window.clearTimeout(voiceNoticeTimer.current)
+  }, [])
 
   function selectCommand(command: SlashCommand) {
     // Fill "/goal " and keep focus so the user can type the objective. The
@@ -572,8 +661,26 @@ export function Composer({
           <button className="composer-icon-button" type="button" title={t('composer.attachFile')} onClick={onAttachFiles}>
             <Paperclip size={17} />
           </button>
+          <button
+            className={`composer-icon-button voice-button ${voiceListening ? 'is-listening' : ''}`}
+            type="button"
+            disabled={!voiceSupported}
+            aria-pressed={voiceListening}
+            aria-label={voiceListening ? t('composer.voiceStop') : t('composer.voiceStart')}
+            title={voiceSupported
+              ? (voiceListening ? t('composer.voiceStop') : t('composer.voiceStart'))
+              : t('composer.voiceUnsupportedTitle')}
+            onClick={handleVoiceToggle}
+          >
+            {voiceListening ? <MicOff size={17} /> : <Mic size={17} />}
+          </button>
           {leftToolbar}
         </div>
+        {voiceNotice && (
+          <div className="voice-notice" role="status" aria-live="polite">
+            {voiceNotice}
+          </div>
+        )}
         {centerToolbar && <div className="composer-tools center">{centerToolbar}</div>}
         <div className="composer-tools right">
           {rightToolbar}

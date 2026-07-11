@@ -54,7 +54,10 @@
       "resources/cli-package/"
     ],
     "macOS": {
-      "minimumSystemVersion": "12.0"
+      "minimumSystemVersion": "12.0",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Verboo Code uses your microphone for voice input. The mic is only enabled when you press the microphone button on the composer."
+      }
     },
     "windows": {
       "wix": null,
