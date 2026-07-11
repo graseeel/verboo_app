@@ -3860,6 +3860,7 @@ export function App() {
               userSettings={userSettings}
               petEnabled={petEnabled}
               petSize={petSize}
+              workingDirectory={currentWorkspaceDirectory}
               onPetToggle={togglePet}
               onPetSizeChange={updatePetSize}
               archivedConversations={archivedChats}

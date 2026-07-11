@@ -34,6 +34,8 @@ import type {
   MenuBarState,
   ModelDiscoveryResult,
   ProfileResult,
+  ProjectInstructionFile,
+  ProjectInstructionReadResult,
   ResearchSubagentResult,
   ResearchSubagentsRunRequest,
   SkillSummary,
@@ -208,6 +210,20 @@ const api = {
   // repo (respects .gitignore); bounded walk otherwise.
   listWorkspaceFiles: (workingDirectory: string) =>
     invoke<string[]>('list_workspace_files', { workingDirectory }),
+
+  // ── Project instructions (QW2) ──────────────────────────────
+  listProjectInstructionFiles: (workingDirectory: string) =>
+    invoke<ProjectInstructionFile[]>('list_project_instruction_files', { workingDirectory }),
+  readProjectInstructionFile: (workingDirectory: string, name: ProjectInstructionFile['name']) =>
+    invoke<ProjectInstructionReadResult>('read_project_instruction_file', {
+      workingDirectory,
+      name,
+    }),
+  writeProjectInstructionFile: (
+    workingDirectory: string,
+    name: ProjectInstructionFile['name'],
+    content: string,
+  ) => invoke<void>('write_project_instruction_file', { workingDirectory, name, content }),
 
   // ── Files ───────────────────────────────────────────────────
   pickFiles: () => invoke<AttachmentMeta[]>('pick_files'),

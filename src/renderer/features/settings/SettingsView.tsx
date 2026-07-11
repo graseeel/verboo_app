@@ -8,6 +8,7 @@ import {
   ChevronDown,
   Computer,
   Download,
+  FileText,
   Ghost,
   KeyRound,
   Languages,
@@ -37,6 +38,7 @@ import type {
   UserSettings,
   VerbooModel,
 } from '../../../shared/types'
+import { ProjectInstructionsEditor } from './ProjectInstructionsEditor'
 import { LanguageSelector } from '../language/LanguageSelector'
 import { useToast } from '../../components/Toast'
 import { AVATAR_PALETTE, AVATAR_PRESETS, renderPreset } from '../profile/avatarPresets'
@@ -57,6 +59,7 @@ type SettingsViewProps = {
   petEnabled: boolean
   petSize: number
   updateSnapshot?: UpdateSnapshot
+  workingDirectory: string
   onPetToggle: () => void
   onPetSizeChange: (size: number) => void
   onOpenDashboard: () => void
@@ -87,6 +90,7 @@ export function SettingsView({
   petEnabled,
   petSize,
   updateSnapshot,
+  workingDirectory,
   onPetToggle,
   onPetSizeChange,
   onOpenDashboard,
@@ -116,6 +120,7 @@ export function SettingsView({
     { id: 'notifications', label: t('settings.notifications'), icon: Bell },
     { id: 'personalization', label: t('settings.personalization'), icon: UserCog },
     { id: 'memory', label: t('settings.memory'), icon: Brain },
+    { id: 'projectInstructions', label: t('settings.projectInstructions'), icon: FileText },
     { id: 'updates', label: t('updates.title'), icon: Download },
     { id: 'archived', label: t('settings.archived'), icon: Archive },
   ]
@@ -607,6 +612,16 @@ export function SettingsView({
                 {t('settings.resetPreferences')}
               </button>
             </section>
+          </section>
+        )}
+
+        {activeTab === 'projectInstructions' && (
+          <section className="settings-section-view">
+            <SettingsHeading
+              title={t('settings.projectInstructions')}
+              subtitle={t('settings.projectInstructionsSubtitle')}
+            />
+            <ProjectInstructionsEditor workingDirectory={workingDirectory} />
           </section>
         )}
 

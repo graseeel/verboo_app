@@ -74,6 +74,7 @@ export type SettingsTab =
   | 'notifications'
   | 'personalization'
   | 'memory'
+  | 'projectInstructions'
   | 'updates'
   | 'archived'
 export type PersonalityMode = 'pragmatic' | 'concise' | 'explanatory'
@@ -154,6 +155,18 @@ export type WorkspaceChangeSummary = {
   totalFiles: number
   additions: number
   deletions: number
+}
+
+export type ProjectInstructionFile = {
+  name: 'AGENTS.md' | 'CLAUDE.md'
+  exists: boolean
+  size?: number
+}
+
+export type ProjectInstructionReadResult = {
+  name: 'AGENTS.md' | 'CLAUDE.md'
+  content: string
+  exists: boolean
 }
 
 export type ChatProject = {

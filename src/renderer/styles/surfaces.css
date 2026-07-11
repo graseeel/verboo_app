@@ -187,6 +187,119 @@
   gap: 12px;
 }
 
+/* Project instructions editor (QW2) — quiet, PRODUCT.md.
+   File tab toggle on top of the panel, monospace textarea, simple
+   footer with reload / dirty marker / save button. */
+.project-instructions-panel {
+  gap: 12px;
+}
+
+.project-instructions-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.project-instructions-meta {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.project-instructions-meta strong {
+  font-family: var(--font-mono, ui-monospace, 'SFMono-Regular', Menlo, monospace);
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-instructions-meta small {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.project-instructions-tabs {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg) 50%, transparent);
+}
+
+.project-instructions-tabs button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  transition: background 140ms var(--ease, ease), color 140ms var(--ease, ease);
+}
+
+.project-instructions-tabs button:hover {
+  color: var(--text);
+}
+
+.project-instructions-tabs button.active {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.project-instructions-banner {
+  padding: 8px 12px;
+  font-size: 11px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  color: color-mix(in srgb, var(--accent) 60%, var(--text-muted));
+  border-radius: 0 6px 6px 0;
+}
+
+.project-instructions-editor {
+  width: 100%;
+  min-height: 320px;
+  font-family: var(--font-mono, ui-monospace, 'SFMono-Regular', Menlo, monospace);
+  font-size: 13px;
+  line-height: 1.55;
+  resize: vertical;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.project-instructions-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.project-instructions-status {
+  flex: 1;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--accent) 60%, var(--text-muted));
+  font-weight: 600;
+}
+
+.project-instructions-empty {
+  padding: 32px 24px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-elevated) 60%, transparent);
+  color: var(--text-dim);
+  text-align: center;
+  font-size: 13px;
+}
+
 .metric-card,
 .profile-panel,
 .settings-panel,

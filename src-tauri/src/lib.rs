@@ -604,6 +604,53 @@ async fn list_workspace_files(working_directory: String) -> Result<Vec<String>, 
     .map_err(|e| format!("Falha ao listar arquivos do workspace: {e}"))?
 }
 
+// ════════════════════════════════════════════════════════════════════
+// Project instruction files (QW2)
+// ════════════════════════════════════════════════════════════════════
+
+#[tauri::command]
+async fn list_project_instruction_files(
+    working_directory: String,
+) -> Result<Vec<services::project_instructions_service::ProjectInstructionFile>, String> {
+    tokio::task::spawn_blocking(move || {
+        services::project_instructions_service::list_project_instruction_files(&working_directory)
+    })
+    .await
+    .map_err(|e| format!("Falha ao listar instruções do projeto: {e}"))?
+}
+
+#[tauri::command]
+async fn read_project_instruction_file(
+    working_directory: String,
+    name: String,
+) -> Result<services::project_instructions_service::ProjectInstructionReadResult, String> {
+    tokio::task::spawn_blocking(move || {
+        services::project_instructions_service::read_project_instruction_file(
+            &working_directory,
+            &name,
+        )
+    })
+    .await
+    .map_err(|e| format!("Falha ao ler instrução do projeto: {e}"))?
+}
+
+#[tauri::command]
+async fn write_project_instruction_file(
+    working_directory: String,
+    name: String,
+    content: String,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        services::project_instructions_service::write_project_instruction_file(
+            &working_directory,
+            &name,
+            &content,
+        )
+    })
+    .await
+    .map_err(|e| format!("Falha ao salvar instrução do projeto: {e}"))?
+}
+
 /// Returns the version of the bundled `@verboo/code` package (cli-package).
 /// Returns `"unknown"` if the package.json can't be read (e.g., in dev
 /// without a full bundle, or after a broken install).
@@ -1363,6 +1410,10 @@ pub fn run() {
             create_project_folder,
             // @-mention file listing (quick-win #1)
             list_workspace_files,
+            // Project instruction files (QW2)
+            list_project_instruction_files,
+            read_project_instruction_file,
+            write_project_instruction_file,
             // Agent
             send_turn,
             run_research_subagents,
