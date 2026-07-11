@@ -694,6 +694,35 @@ fn get_workspace_review_metadata(
 }
 
 #[tauri::command]
+async fn commit_workspace_changes(
+    working_directory: String,
+    message: String,
+) -> Result<WorkspaceCommitResult, String> {
+    tokio::task::spawn_blocking(move || {
+        services::git_service::commit_workspace_changes(&working_directory, &message)
+    })
+    .await
+    .map_err(|e| format!("Falha ao criar commit: {e}"))
+}
+
+#[tauri::command]
+async fn create_workspace_pull_request(
+    working_directory: String,
+    title: String,
+    body: Option<String>,
+) -> Result<WorkspacePullRequestResult, String> {
+    tokio::task::spawn_blocking(move || {
+        services::git_service::create_workspace_pull_request(
+            &working_directory,
+            &title,
+            body.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| format!("Falha ao criar PR: {e}"))
+}
+
+#[tauri::command]
 fn get_file_diff(
     working_directory: String,
     file_path: String,
@@ -1396,6 +1425,8 @@ pub fn run() {
             get_workspace_branches,
             switch_workspace_branch,
             get_workspace_review_metadata,
+            commit_workspace_changes,
+            create_workspace_pull_request,
             get_file_diff,
             revert_file,
             open_external_file,

@@ -912,6 +912,24 @@ pub struct WorkspaceReviewCapabilities {
     pub can_diff: bool,
     pub can_revert: bool,
     pub can_open_external: bool,
+    pub can_commit: bool,
+    pub can_create_pr: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceCommitResult {
+    pub ok: bool,
+    pub commit_hash: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspacePullRequestResult {
+    pub ok: bool,
+    pub url: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

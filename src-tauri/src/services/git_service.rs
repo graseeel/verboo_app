@@ -2,19 +2,24 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::models::types::{
-    FileDiff, FileDiffHunk, FileDiffLine, FileDiffStatus, DiffLineKind, WorkspaceBranch,
-    WorkspaceBranchInfo, WorkspaceBranchSwitchResult, WorkspaceChangeEntry,
-    WorkspaceChangeSummary, WorkspaceReviewCapabilities, WorkspaceReviewMetadata,
-    WorkspaceReviewScope,
+    DiffLineKind, FileDiff, FileDiffHunk, FileDiffLine, FileDiffStatus, WorkspaceBranch,
+    WorkspaceBranchInfo, WorkspaceBranchSwitchResult, WorkspaceChangeEntry, WorkspaceChangeSummary,
+    WorkspaceCommitResult, WorkspacePullRequestResult, WorkspaceReviewCapabilities,
+    WorkspaceReviewMetadata, WorkspaceReviewScope,
 };
 
 const MAX_UNTRACKED_FILE_BYTES: u64 = 1_000_000;
 const MAX_DIFF_BYTES: usize = 1_500_000;
 const MAX_DIFF_LINES: usize = 5_000;
+const MAX_COMMIT_MESSAGE_BYTES: usize = 4_096;
+const MAX_PR_TITLE_BYTES: usize = 4_096;
+const MAX_PR_BODY_BYTES: usize = 64 * 1024;
+const MAX_ERROR_BYTES: usize = 4_096;
 
 /// Result of running a git command.
 struct GitResult {
     ok: bool,
+    code: Option<i32>,
     stdout: String,
     stderr: String,
 }
@@ -32,11 +37,13 @@ fn run_git(cwd: &Path, args: &[&str]) -> GitResult {
     match output {
         Ok(out) => GitResult {
             ok: out.status.success(),
+            code: out.status.code(),
             stdout: String::from_utf8_lossy(&out.stdout).to_string(),
             stderr: String::from_utf8_lossy(&out.stderr).to_string(),
         },
         Err(e) => GitResult {
             ok: false,
+            code: None,
             stdout: String::new(),
             stderr: format!("git exec failed: {e}"),
         },
@@ -293,6 +300,8 @@ pub fn read_workspace_review_metadata(working_directory: &str) -> WorkspaceRevie
                 can_diff: false,
                 can_revert: false,
                 can_open_external: true,
+                can_commit: false,
+                can_create_pr: false,
             },
         };
     };
@@ -318,6 +327,8 @@ pub fn read_workspace_review_metadata(working_directory: &str) -> WorkspaceRevie
                 can_diff: true,
                 can_revert: true,
                 can_open_external: true,
+                can_commit: true,
+                can_create_pr: is_gh_available(),
             },
         }
     } else {
@@ -334,6 +345,8 @@ pub fn read_workspace_review_metadata(working_directory: &str) -> WorkspaceRevie
                 can_diff: true,
                 can_revert: true,
                 can_open_external: true,
+                can_commit: true,
+                can_create_pr: false,
             },
         }
     }
@@ -385,6 +398,259 @@ fn read_upstream_branch(root: &Path) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+fn is_gh_available() -> bool {
+    Command::new("gh")
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+fn command_error(stdout: &str, stderr: &str, fallback: &str) -> String {
+    let combined = if !stderr.trim().is_empty() {
+        stderr.trim()
+    } else if !stdout.trim().is_empty() {
+        stdout.trim()
+    } else {
+        fallback
+    };
+    sanitize_output(combined)
+}
+
+fn sanitize_output(value: &str) -> String {
+    let without_nul = value.replace('\0', "");
+    if without_nul.len() <= MAX_ERROR_BYTES {
+        without_nul
+    } else {
+        let truncated: String = without_nul.chars().take(MAX_ERROR_BYTES).collect();
+        format!("{truncated}…")
+    }
+}
+
+fn validate_limited_text(value: &str, label: &str, max_bytes: usize) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{label} não pode ficar vazio."));
+    }
+    if trimmed.contains('\0') {
+        return Err(format!("{label} contém caractere inválido."));
+    }
+    if trimmed.len() > max_bytes {
+        return Err(format!("{label} excede {max_bytes} bytes."));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn validate_optional_body(value: Option<&str>) -> Result<String, String> {
+    let body = value.unwrap_or("").trim();
+    if body.contains('\0') {
+        return Err("Corpo do PR contém caractere inválido.".into());
+    }
+    if body.len() > MAX_PR_BODY_BYTES {
+        return Err(format!("Corpo do PR excede {MAX_PR_BODY_BYTES} bytes."));
+    }
+    Ok(body.to_string())
+}
+
+fn clean_result(ok: bool, error: String) -> WorkspaceCommitResult {
+    WorkspaceCommitResult {
+        ok,
+        commit_hash: None,
+        error: Some(error),
+    }
+}
+
+fn pr_result_error(error: String) -> WorkspacePullRequestResult {
+    WorkspacePullRequestResult {
+        ok: false,
+        url: None,
+        error: Some(error),
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Review actions: commit + PR
+// ════════════════════════════════════════════════════════════════════
+
+pub fn commit_workspace_changes(working_directory: &str, message: &str) -> WorkspaceCommitResult {
+    let Some(root) = resolve_repo_root(working_directory) else {
+        return clean_result(false, "Commit exige um repositório Git.".into());
+    };
+    let message =
+        match validate_limited_text(message, "Mensagem do commit", MAX_COMMIT_MESSAGE_BYTES) {
+            Ok(message) => message,
+            Err(error) => return clean_result(false, error),
+        };
+
+    let add = run_git(&root, &["add", "-A"]);
+    if !add.ok {
+        return clean_result(
+            false,
+            command_error(
+                &add.stdout,
+                &add.stderr,
+                "Não foi possível preparar as mudanças.",
+            ),
+        );
+    }
+
+    let staged = run_git(&root, &["diff", "--cached", "--quiet", "--exit-code"]);
+    if staged.ok {
+        return clean_result(false, "Nenhuma mudança para commitar.".into());
+    }
+    if staged.code != Some(1) {
+        return clean_result(
+            false,
+            command_error(
+                &staged.stdout,
+                &staged.stderr,
+                "Não foi possível verificar mudanças staged.",
+            ),
+        );
+    }
+
+    let commit = run_git(&root, &["commit", "-m", message.as_str()]);
+    if !commit.ok {
+        return clean_result(
+            false,
+            command_error(
+                &commit.stdout,
+                &commit.stderr,
+                "Não foi possível criar o commit.",
+            ),
+        );
+    }
+
+    let hash = run_git(&root, &["rev-parse", "--short", "HEAD"]);
+    if !hash.ok {
+        return clean_result(
+            false,
+            command_error(
+                &hash.stdout,
+                &hash.stderr,
+                "Commit criado, mas não foi possível ler o hash.",
+            ),
+        );
+    }
+
+    WorkspaceCommitResult {
+        ok: true,
+        commit_hash: Some(hash.stdout.trim().to_string()),
+        error: None,
+    }
+}
+
+pub fn create_workspace_pull_request(
+    working_directory: &str,
+    title: &str,
+    body: Option<&str>,
+) -> WorkspacePullRequestResult {
+    let Some(root) = resolve_repo_root(working_directory) else {
+        return pr_result_error("PR exige um repositório Git.".into());
+    };
+    let title = match validate_limited_text(title, "Título do PR", MAX_PR_TITLE_BYTES) {
+        Ok(title) => title,
+        Err(error) => return pr_result_error(error),
+    };
+    let body = match validate_optional_body(body) {
+        Ok(body) => body,
+        Err(error) => return pr_result_error(error),
+    };
+
+    let dirty_files = read_dirty_files(&root);
+    if !dirty_files.is_empty() {
+        return pr_result_error(
+            "Há mudanças não commitadas. Faça commit antes de abrir o PR.".into(),
+        );
+    }
+
+    let gh_version = Command::new("gh")
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output();
+    match gh_version {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            return pr_result_error(command_error(
+                "",
+                &String::from_utf8_lossy(&out.stderr),
+                "GitHub CLI (gh) not found",
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return pr_result_error("GitHub CLI (gh) not found".into());
+        }
+        Err(e) => return pr_result_error(format!("Falha ao executar GitHub CLI (gh): {e}")),
+    }
+
+    let push = run_git(&root, &["push", "-u", "origin", "HEAD"]);
+    if !push.ok {
+        return pr_result_error(command_error(
+            &push.stdout,
+            &push.stderr,
+            "Não foi possível fazer push do branch atual.",
+        ));
+    }
+
+    let pr_output = Command::new("gh")
+        .arg("pr")
+        .arg("create")
+        .arg("--title")
+        .arg(&title)
+        .arg("--body")
+        .arg(&body)
+        .current_dir(&root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    let pr_output = match pr_output {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return pr_result_error("GitHub CLI (gh) not found".into());
+        }
+        Err(e) => return pr_result_error(format!("Falha ao executar GitHub CLI (gh): {e}")),
+    };
+
+    let stdout = String::from_utf8_lossy(&pr_output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&pr_output.stderr).to_string();
+    if !pr_output.status.success() {
+        return pr_result_error(command_error(
+            &stdout,
+            &stderr,
+            "Não foi possível criar o PR.",
+        ));
+    }
+
+    let output = if stdout.trim().is_empty() {
+        stderr.trim()
+    } else {
+        stdout.trim()
+    };
+    let url = extract_first_url(output).unwrap_or_else(|| output.to_string());
+    WorkspacePullRequestResult {
+        ok: true,
+        url: Some(url),
+        error: None,
+    }
+}
+
+fn extract_first_url(output: &str) -> Option<String> {
+    output
+        .split_whitespace()
+        .find(|part| part.starts_with("https://") || part.starts_with("http://"))
+        .map(|url| {
+            url.trim_matches(|c: char| c == ')' || c == ',' || c == '.')
+                .to_string()
+        })
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -853,6 +1119,102 @@ mod tests {
         assert!(regex_like_contains_github("origin\thttps://github.com/foo/bar.git (fetch)"));
         assert!(!regex_like_contains_github("origin\tgit@gitlab.com:foo/bar.git (fetch)"));
         assert!(!regex_like_contains_github(""));
+    }
+
+    #[test]
+    fn validate_commit_message_rejects_empty_nul_and_too_large() {
+        assert!(validate_limited_text("", "Mensagem do commit", MAX_COMMIT_MESSAGE_BYTES).is_err());
+        assert!(
+            validate_limited_text("   ", "Mensagem do commit", MAX_COMMIT_MESSAGE_BYTES).is_err()
+        );
+        assert!(validate_limited_text(
+            "bad\0message",
+            "Mensagem do commit",
+            MAX_COMMIT_MESSAGE_BYTES
+        )
+        .is_err());
+        assert!(validate_limited_text(
+            &"x".repeat(MAX_COMMIT_MESSAGE_BYTES + 1),
+            "Mensagem do commit",
+            MAX_COMMIT_MESSAGE_BYTES,
+        )
+        .is_err());
+        assert_eq!(
+            validate_limited_text("  ok  ", "Mensagem do commit", MAX_COMMIT_MESSAGE_BYTES)
+                .unwrap(),
+            "ok"
+        );
+    }
+
+    #[test]
+    fn commit_workspace_changes_roundtrip_in_temp_repo() {
+        let repo = init_test_repo();
+        std::fs::write(repo.path().join("file.txt"), "hello\n").unwrap();
+
+        let result = commit_workspace_changes(repo.path().to_str().unwrap(), "Initial commit");
+
+        assert!(result.ok, "commit failed: {:?}", result.error);
+        assert!(result.commit_hash.as_deref().unwrap_or("").len() >= 7);
+        assert_eq!(result.error, None);
+
+        let status = run_git(repo.path(), &["status", "--porcelain"]);
+        assert!(status.ok);
+        assert_eq!(status.stdout.trim(), "");
+
+        let log = run_git(repo.path(), &["log", "-1", "--pretty=%B"]);
+        assert!(log.ok);
+        assert_eq!(log.stdout.trim(), "Initial commit");
+    }
+
+    #[test]
+    fn commit_workspace_changes_reports_nothing_to_commit() {
+        let repo = init_test_repo();
+        std::fs::write(repo.path().join("file.txt"), "hello\n").unwrap();
+        let first = commit_workspace_changes(repo.path().to_str().unwrap(), "Initial commit");
+        assert!(first.ok, "initial commit failed: {:?}", first.error);
+
+        let result = commit_workspace_changes(repo.path().to_str().unwrap(), "No-op");
+
+        assert!(!result.ok);
+        assert!(result.commit_hash.is_none());
+        assert!(result.error.unwrap().contains("Nenhuma mudança"));
+    }
+
+    #[test]
+    fn create_workspace_pull_request_rejects_dirty_repo_before_gh_or_push() {
+        let repo = init_test_repo();
+        std::fs::write(repo.path().join("file.txt"), "hello\n").unwrap();
+        let first = commit_workspace_changes(repo.path().to_str().unwrap(), "Initial commit");
+        assert!(first.ok, "initial commit failed: {:?}", first.error);
+        std::fs::write(repo.path().join("file.txt"), "changed\n").unwrap();
+
+        let result = create_workspace_pull_request(repo.path().to_str().unwrap(), "Test PR", None);
+
+        assert!(!result.ok);
+        assert!(result.url.is_none());
+        assert!(result.error.unwrap().contains("Faça commit"));
+    }
+
+    fn init_test_repo() -> tempfile::TempDir {
+        let repo = tempfile::TempDir::new().unwrap();
+        let init = Command::new("git")
+            .arg("init")
+            .arg(repo.path())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(init.status.success(), "git init failed");
+        assert!(run_git(repo.path(), &["config", "user.name", "Verboo Test"]).ok);
+        assert!(
+            run_git(
+                repo.path(),
+                &["config", "user.email", "test@example.invalid"]
+            )
+            .ok
+        );
+        repo
     }
 
     #[test]

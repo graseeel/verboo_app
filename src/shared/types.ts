@@ -555,6 +555,20 @@ export type WorkspaceReviewCapabilities = {
   canDiff: boolean
   canRevert: boolean
   canOpenExternal: boolean
+  canCommit: boolean
+  canCreatePr: boolean
+}
+
+export type WorkspaceCommitResult = {
+  ok: boolean
+  commitHash?: string
+  error?: string
+}
+
+export type WorkspacePullRequestResult = {
+  ok: boolean
+  url?: string
+  error?: string
 }
 
 export type WorkspaceReviewMetadata = {

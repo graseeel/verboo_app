@@ -166,6 +166,8 @@ describe('verboo-bridge — API shape', () => {
       'getWorkspaceChanges',
       'getWorkspaceBranches',
       'switchWorkspaceBranch',
+      'commitWorkspaceChanges',
+      'createWorkspacePullRequest',
       'evaluateGoal',
       'listWorkspaceFiles',
       'listProjectInstructionFiles',

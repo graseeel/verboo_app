@@ -465,3 +465,81 @@
   background: color-mix(in srgb, var(--danger) 14%, transparent);
   color: color-mix(in srgb, var(--danger) 82%, var(--text));
 }
+
+/* Commit + PR actions (QW4) — quiet, PRODUCT.md. Panel footer that
+   only renders when at least one capability (canCommit / canCreatePr)
+   is granted, so users in unsupported workspaces never see an empty box. */
+.review-actions {
+  display: grid;
+  gap: 14px;
+  padding: 14px 14px 18px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 50%, transparent);
+  flex-shrink: 0;
+}
+
+.review-action-section {
+  display: grid;
+  gap: 8px;
+}
+
+.review-action-section-head {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.review-action-input {
+  width: 100%;
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-elevated) 70%, transparent);
+  color: var(--text);
+  font-family: inherit;
+  resize: vertical;
+}
+
+.review-action-textarea {
+  font-family: var(--font-mono, ui-monospace, 'SFMono-Regular', Menlo, monospace);
+  font-size: 12px;
+  min-height: 72px;
+  white-space: pre-wrap;
+}
+
+.review-action-input:disabled,
+.review-action-input:disabled::placeholder {
+  opacity: 0.6;
+}
+
+.review-action-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.review-action-section .primary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text);
+  cursor: pointer;
+  padding: 0 12px;
+  font-weight: 600;
+}
+
+.review-action-section .primary-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.review-action-section .primary-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

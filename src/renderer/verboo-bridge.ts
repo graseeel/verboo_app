@@ -47,6 +47,8 @@ import type {
   WorkspaceBranchInfo,
   WorkspaceBranchSwitchResult,
   WorkspaceChangeSummary,
+  WorkspaceCommitResult,
+  WorkspacePullRequestResult,
   WorkspaceReviewMetadata,
 } from '../shared/types'
 
@@ -200,6 +202,14 @@ const api = {
     invoke<WorkspaceBranchSwitchResult>('switch_workspace_branch', {
       workingDirectory,
       branchName,
+    }),
+  commitWorkspaceChanges: (workingDirectory: string, message: string) =>
+    invoke<WorkspaceCommitResult>('commit_workspace_changes', { workingDirectory, message }),
+  createWorkspacePullRequest: (workingDirectory: string, title: string, body?: string) =>
+    invoke<WorkspacePullRequestResult>('create_workspace_pull_request', {
+      workingDirectory,
+      title,
+      body,
     }),
   evaluateGoal: (input: GoalEvaluationInput) =>
     invoke<{ evaluation: GoalEvaluationResult; userMessage?: string }>('evaluate_goal', { input }),

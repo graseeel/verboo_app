@@ -740,6 +740,21 @@ const enUS: Record<string, string> = {
   'review.openFolderRequired': 'Open a folder to review files.',
   'review.gitRequired': 'Diff review requires a Git repository.',
   'review.loadChangesFailed': 'Could not load changes.',
+  'review.commitSection': 'Commit changes',
+  'review.commitPlaceholder': 'Commit message (summary line)',
+  'review.commitButton': 'Commit',
+  'review.commitButtonBusy': 'Committing…',
+  'review.commitSuccess': 'Committed {hash}',
+  'review.commitFailed': 'Could not commit: {message}',
+  'review.commitEmptyMessage': 'Type a commit message first.',
+  'review.prSection': 'Open pull request',
+  'review.prTitlePlaceholder': 'PR title',
+  'review.prTitleHint': 'Defaults to "Review changes".',
+  'review.prButton': 'Create PR',
+  'review.prButtonBusy': 'Creating…',
+  'review.prSuccess': 'PR ready: {url}',
+  'review.prFailed': 'Could not open PR: {message}',
+  'review.prUnavailable': 'PR creation is not available for this workspace.',
 }
 
 const ptBR: Record<string, string> = {
@@ -1416,6 +1431,21 @@ const ptBR: Record<string, string> = {
   'review.openFolderRequired': 'Abra uma pasta para revisar arquivos.',
   'review.gitRequired': 'Revisão de diff exige um repositório Git.',
   'review.loadChangesFailed': 'Não foi possível carregar mudanças.',
+  'review.commitSection': 'Fazer commit',
+  'review.commitPlaceholder': 'Mensagem do commit (linha de resumo)',
+  'review.commitButton': 'Commit',
+  'review.commitButtonBusy': 'Fazendo commit…',
+  'review.commitSuccess': 'Commit feito {hash}',
+  'review.commitFailed': 'Falha ao fazer commit: {message}',
+  'review.commitEmptyMessage': 'Digite uma mensagem de commit primeiro.',
+  'review.prSection': 'Abrir pull request',
+  'review.prTitlePlaceholder': 'Título do PR',
+  'review.prTitleHint': 'O padrão é "Review changes".',
+  'review.prButton': 'Criar PR',
+  'review.prButtonBusy': 'Criando…',
+  'review.prSuccess': 'PR pronto: {url}',
+  'review.prFailed': 'Falha ao abrir PR: {message}',
+  'review.prUnavailable': 'A criação de PR não está disponível neste workspace.',
 }
 
 const dictionaries: Record<LanguageCode, Record<string, string>> = {
