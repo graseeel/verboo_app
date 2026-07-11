@@ -84,6 +84,42 @@ export function commitVoiceFinal(committed: string, final: string): string {
   return composeVoiceAppend(committed, final)
 }
 
+/** Catch-up step for the voice typewriter. Given the current displayed text
+ *  and a longer target, returns the next text to display. Chars are added
+ *  per frame at a fluid ~4–6 chars/frame (240–360 cps) — NOT a percentage
+ *  of the gap (which makes medium gaps look chunky).
+ *
+ *  The graduated rate table keeps small gaps crisp (2/frame), medium gaps
+ *  smooth (3–4/frame), and large gaps from stalling (5–6/frame). Target
+ *  unchanged when equal or shorter (delete/backspace). Gaps ≤ 3 snap
+ *  instantly — imperceptible at 60 fps.
+ *
+ *  Usage: call in a requestAnimationFrame loop. When the target changes
+ *  (new interim/final), interrupt the running loop and restart. */
+export function nextCatchUpStep(
+  current: string,
+  target: string,
+  options?: { maxCharsPerFrame?: number },
+): string {
+  if (current === target) return target
+  const gap = target.length - current.length
+  // Gap ≤ 0 means the target shrank (new interim is shorter or the user
+  // backspaced) or the target changed its prefix — snap immediately
+  // rather than trying to animate a delete.
+  if (gap <= 0) return target
+  // Gap 1–3 is imperceptible at 60 fps → snap.
+  if (gap <= 3) return target
+  const max = options?.maxCharsPerFrame ?? 6
+  // Graduated rate: tiny=2, small=3, medium=4, large=5, huge=max(6)
+  const charsThisFrame =
+    gap <= 15 ? 2 :
+    gap <= 40 ? 3 :
+    gap <= 80 ? 4 :
+    gap <= 140 ? 5 :
+    Math.min(max, Math.ceil(gap * 0.04))
+  return target.slice(0, current.length + charsThisFrame)
+}
+
 /** Fatal error codes that should NOT trigger auto-restart. These represent
  *  permission or hardware failures that won't recover by retrying. */
 export function isFatalVoiceError(code: string | undefined): boolean {

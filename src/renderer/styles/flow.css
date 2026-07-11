@@ -49,7 +49,7 @@
 
 .step-actions { display: flex; flex-direction: column; }
 .step-actions-row {
-  display: inline-flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 8px;
   padding: 2px 0; border: 0; background: transparent;
   color: var(--text-muted); font-size: 13px; cursor: pointer; text-align: left;
 }
@@ -58,7 +58,7 @@
 .step-actions-avatar { width: 16px; height: 16px; border-radius: 5px; object-fit: cover; }
 .step-actions-label { min-width: 0; }
 .step-actions-chevron {
-  width: 6px; height: 6px; margin-left: 2px;
+  width: 6px; height: 6px; margin-left: auto; flex-shrink: 0;
   border-right: 1.4px solid currentColor; border-bottom: 1.4px solid currentColor;
   transform: rotate(-45deg); transition: transform 140ms ease;
 }
@@ -73,6 +73,39 @@
   font-family: 'SF Mono', Menlo, Monaco, monospace; font-size: 12px; color: var(--text-dim);
   overflow-wrap: anywhere;
 }
+
+/* Diff stats on edit actions — animated via slot-text. Quiet PRODUCT.md:
+   green `.step-diff-add` (+N, up direction), red `.step-diff-del` (-N,
+   down direction). Uses explicit classes (not :first-child/:last-child
+   pseudoclass) so a lone +N isn't also matched as :last-child (which
+   would paint it red). Inline-flex so they sit between the label and
+   the chevron without pushing either. */
+.step-actions-diffs {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding-right: 4px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.step-diff-add,
+.step-diff-del {
+  font-family: var(--font-mono, ui-monospace, 'SFMono-Regular', Menlo, monospace);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  display: inline-block;
+  white-space: nowrap;
+  vertical-align: middle;
+  /* Tabular figures keep digits aligned during SlotText stagger; the
+     slot-text library animates each digit independently, and without
+     tabular-nums the frame width fluctuates. */
+  font-variant-numeric: tabular-nums;
+}
+
+.step-diff-add { color: var(--green); }
+.step-diff-del { color: var(--danger); }
 /* Tool_result output (Read/Edit/Search/etc) — same monospace look as command
    detail, but with a muted left border so it reads as "result", not "command". */
 .step-actions-detail-line.step-actions-tool-output {
@@ -80,6 +113,89 @@
   border-left: 2px solid var(--border);
   padding: 2px 0 2px 8px;
 }
+/* Plain (non-diff) tool output — softer than the original. Used when the
+   output is status text ("File created...") not a unified diff block. */
+.step-actions-detail-line.step-actions-tool-output-plain {
+  white-space: pre-wrap;
+  border-left: 0;
+  padding: 0;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+/* Vision‑relay row — quiet, product‑grade. Replaces both the "Lendo
+   imagem…" live chip and a separate "Leu imagem" row when the turn is
+   processed through a helper vision model. While `is-active` the arrow
+   uses the existing shimmer classes (purple‑toned, calm‑duration). */
+.vision-relay-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  min-height: 22px;
+}
+
+.vision-relay-name {
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.vision-relay-primary {
+  color: var(--text-muted);
+}
+
+.vision-relay-helper {
+  color: color-mix(in srgb, var(--accent) 55%, var(--text));
+}
+
+.vision-relay-arrow {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  opacity: 0.6;
+  line-height: 0;
+}
+
+.vision-relay-status {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
+/* Unified diff block rendered inside an expanded edit action. Compact mono,
+   green + red for additions/deletions, muted for context. Quiet — no neon,
+   no box-shadow. PRODUCT.md: the diff is operational, not decorative. */
+.step-actions-diff-block {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 300px;
+  overflow: auto;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--bg-soft) 50%, transparent);
+  border-left: 2px solid var(--border);
+  border-radius: 0 6px 6px 0;
+  font-family: var(--font-mono, ui-monospace, 'SFMono-Regular', Menlo, monospace);
+  font-size: 11px;
+  line-height: 1.55;
+  scrollbar-width: thin;
+}
+
+.step-diff-line { display: block; white-space: pre; min-height: 1em; }
+.step-diff-line-add {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 8%, transparent);
+}
+.step-diff-line-del {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+.step-diff-line-ctx { color: var(--text-muted); }
 
 .cmd-block {
   background: color-mix(in srgb, var(--bg-soft) 60%, transparent);
@@ -108,16 +224,18 @@
    reasoning text appears whenever the user expands the turn. */
 .thinking-disclosure-body {
   display: flex; flex-direction: column; gap: 2px;
-  padding: 2px 0 1px 17px;
+  padding: 0;
 }
 
-/* Reasoning markdown is intentionally muted — it previews how the model
-   reached the conclusion and should not compete with the final answer. */
+/* Reasoning markdown is rendered as assistant-like prose — same color and
+   spacing as the final answer (step-text .markdown-body), NOT as a sub-item.
+   The user wants to read reasoning as a contiguous message, not a nested
+   code block. normalizeThinkingProse handles the "line by line" structure. */
 .thinking-disclosure-body .markdown-body {
-  color: var(--text-muted);
-  font-size: 13px;
-  line-height: 1.5;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.55;
 }
-.thinking-disclosure-body .markdown-body p { margin: 0 0 0.2em; }
+.thinking-disclosure-body .markdown-body p { margin: 0 0 0.5em; }
 .thinking-disclosure-body .markdown-body ul,
-.thinking-disclosure-body .markdown-body ol { margin: 0 0 0.15em; }
+.thinking-disclosure-body .markdown-body ol { margin: 0.25em 0; }

@@ -92,6 +92,11 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, readingImage,
   const streaming = entry.items.some(item => item.streaming)
   const textItems = entry.items.filter(item => item.role === 'assistant' && item.text.trim().length > 0)
   const hasText = textItems.length > 0
+  // When a vision-relay activity is in the turn, the VisionRelayRow in
+  // StepFlow replaces the "Lendo imagem…" live chip — no double status.
+  const hasVisionRelay = entry.items.some(item =>
+    item.activityDetail?.startsWith('vision-relay|') ?? false
+  )
   // The collapsed summary is the model's own final message (natural language),
   // not an app-generated action count. When expanded, the full flow already
   // includes this text as its last block, so the standalone recap is hidden.
@@ -126,7 +131,7 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, readingImage,
         </button>
       )}
 
-      {thinking && !hasText && (
+      {thinking && !hasText && !(readingImage && hasVisionRelay) && (
         <div className={`step-thinking ${readingImage ? 'is-reading-image' : ''}`} role="status">
           <span className="step-marker-icon" aria-hidden="true">
             {readingImage ? <ImageIcon size={14} strokeWidth={1.8} /> : <ThinkingIcon />}
@@ -145,7 +150,7 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, readingImage,
         </div>
       )}
 
-      {showFlow && <StepFlow items={entry.items} streaming={streaming} />}
+      {showFlow && <StepFlow items={entry.items} streaming={streaming} imageReading={readingImage} />}
 
       {!streaming && !expanded && finalText && (
         <div className="step-text turn-recap"><MarkdownMessage text={finalText} /></div>

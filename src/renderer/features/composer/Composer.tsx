@@ -11,7 +11,7 @@ import {
   getCustomCommandToken,
   rankCustomCommands,
 } from './customSlashCommands'
-import { createVoiceInput, applyVoiceInterim, commitVoiceFinal, detectSupport, type VoiceInputHandle } from './voiceInput'
+import { applyVoiceInterim, commitVoiceFinal, createVoiceInput, detectSupport, nextCatchUpStep, type VoiceInputHandle } from './voiceInput'
 import { getAtQuery, removeAtQuery, replaceAtQueryWithToken, rankFiles, extractAtTokens } from './atMention'
 
 // Reserved slash commands surfaced in the "/" palette, exactly like the skills
@@ -114,6 +114,16 @@ export function Composer({
   // residual interim is committed so the user sees what they said.
   const voiceCommittedRef = useRef('')
   const voiceInterimRef = useRef('')
+  // Catch-up typewriter: rAF loop that moves chars per frame so interim
+  // text appears fluidly rather than freezing the whole block. The loop
+  // is interruptible (cancelled + restarted on each new interim/final).
+  const catchUpRafId = useRef<number | undefined>(undefined)
+  const catchUpTargetRef = useRef('')
+  // Check once at mount — reduced-motion users snap directly without rAF.
+  const reduceMotion = useRef(
+    typeof window !== 'undefined'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+  )
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
   const slashMenuRef = useRef<HTMLDivElement>(null)
@@ -340,23 +350,56 @@ export function Composer({
     }
   }
 
+  function stopCatchUp() {
+    if (catchUpRafId.current !== undefined) {
+      cancelAnimationFrame(catchUpRafId.current)
+      catchUpRafId.current = undefined
+    }
+  }
+
+  function startCatchUp(target: string) {
+    catchUpTargetRef.current = target
+    if (reduceMotion.current) {
+      // Reduced-motion preference: snap to target without animation.
+      valueRef.current = target
+      setValue(target)
+      return
+    }
+    function tick() {
+      const current = valueRef.current
+      const step = nextCatchUpStep(current, catchUpTargetRef.current)
+      if (step !== current) {
+        valueRef.current = step
+        setValue(step)
+      }
+      if (step !== catchUpTargetRef.current) {
+        catchUpRafId.current = requestAnimationFrame(tick)
+      } else {
+        catchUpRafId.current = undefined
+        // Position caret at the end once we've caught up.
+        const textarea = textareaRef.current
+        if (textarea) {
+          const end = textarea.value.length
+          textarea.selectionStart = end
+          textarea.selectionEnd = end
+        }
+      }
+    }
+    catchUpRafId.current = requestAnimationFrame(tick)
+  }
+
   function appendVoiceText(text: string) {
-    // Append a final chunk to the committed base + update the composer.
-    // Uses voiceCommittedRef (not valueRef) so interim text that was
-    // on display doesn't get double-counted — the final replaces it.
+    // A final chunk arrived. Commit to the base and set the catch-up target
+    // to the committed value (replacing any interim that was on display).
+    // NOTE: we do NOT reset valueRef here — the textarea still shows the
+    // previous interim text. The rAF loop in startCatchUp will fill chars
+    // from the displayed value toward the committed target. If the target
+    // is shorter (final has fewer chars than the interim), gap ≤ 0 triggers
+    // a snap on the first tick.
+    stopCatchUp()
     voiceCommittedRef.current = commitVoiceFinal(voiceCommittedRef.current, text)
     voiceInterimRef.current = ''
-    valueRef.current = voiceCommittedRef.current
-    setValue(voiceCommittedRef.current)
-    // Keep caret at the end after the final lands.
-    requestAnimationFrame(() => {
-      const textarea = textareaRef.current
-      if (!textarea) return
-      const end = textarea.value.length
-      textarea.selectionStart = end
-      textarea.selectionEnd = end
-      textarea.focus()
-    })
+    startCatchUp(voiceCommittedRef.current)
   }
 
   async function handleVoiceToggle() {
@@ -372,10 +415,12 @@ export function Composer({
           // Display only: show committed + interim in the textarea WITHOUT
           // committing the interim to voiceCommittedRef. The next final
           // (or the residual-interim commit on end) will replace it.
+          // Uses the catch-up typewriter for a fluid reveal instead of a
+          // frozen block-swap (which looked like a stutter).
+          stopCatchUp()
           voiceInterimRef.current = text
           const display = applyVoiceInterim(voiceCommittedRef.current, text)
-          valueRef.current = display
-          setValue(display)
+          startCatchUp(display)
         },
         onStart: () => setVoiceListening(true),
         onError: info => {
@@ -387,7 +432,9 @@ export function Composer({
         },
         onEnd: () => {
           // Commit residual interim so the user sees what they said even
-          // if the session ended mid-phrase.
+          // if the session ended mid-phrase. Stop the catch-up first so
+          // the snap-to-target happens immediately.
+          stopCatchUp()
           if (voiceInterimRef.current) {
             voiceCommittedRef.current = commitVoiceFinal(voiceCommittedRef.current, voiceInterimRef.current)
             voiceInterimRef.current = ''

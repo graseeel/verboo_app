@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { densifyMarkdown } from './MarkdownMessage'
+import { densifyMarkdown, normalizeThinkingProse } from './MarkdownMessage'
 
 describe('densifyMarkdown', () => {
   it('normalizes \\r\\n to \\n', () => {
@@ -73,5 +73,42 @@ describe('densifyMarkdown', () => {
   it('handles mixed numbered and bullet lists', () => {
     const input = '1. First\n\n2. Second\n\n- bullet\n\n- another'
     expect(densifyMarkdown(input)).toBe('1. First\n2. Second\n- bullet\n- another')
+  })
+})
+
+describe('normalizeThinkingProse', () => {
+  it('joins short prose lines broken by the model', () => {
+    const input = 'We need to approach this\nsystematically. First, let us\nexamine the root cause.'
+    expect(normalizeThinkingProse(input)).toBe('We need to approach this systematically. First, let us examine the root cause.')
+  })
+
+  it('preserves list items (not joined into prose)', () => {
+    const input = 'Reasons:\n- Performance\n- Maintainability\n- Test coverage'
+    expect(normalizeThinkingProse(input)).toBe('Reasons:\n- Performance\n- Maintainability\n- Test coverage')
+  })
+
+  it('preserves paragraphs (double newline acts as a break)', () => {
+    const input = 'First paragraph about something.\n\nSecond paragraph about another thing.'
+    expect(normalizeThinkingProse(input)).toBe('First paragraph about something.\n\nSecond paragraph about another thing.')
+  })
+
+  it('preserves code fences', () => {
+    const input = 'Here is the fix:\n```\nconst x = 1\n```\nThat should work.'
+    expect(normalizeThinkingProse(input)).toBe('Here is the fix:\n```\nconst x = 1\n```\nThat should work.')
+  })
+
+  it('preserves headings', () => {
+    const input = '# Analysis\nThe system is working.\n## Next steps\nDeploy.'
+    expect(normalizeThinkingProse(input)).toBe('# Analysis\nThe system is working.\n## Next steps\nDeploy.')
+  })
+
+  it('handles empty input', () => {
+    expect(normalizeThinkingProse('')).toBe('')
+    expect(normalizeThinkingProse('   ')).toBe('')
+  })
+
+  it('joins a long chain of single-word lines (worst-case model output)', () => {
+    const input = 'The\nquick\nbrown\nfox\njumps\nover\nthe\nlazy\ndog'
+    expect(normalizeThinkingProse(input)).toBe('The quick brown fox jumps over the lazy dog')
   })
 })

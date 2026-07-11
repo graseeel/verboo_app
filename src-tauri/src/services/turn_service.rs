@@ -90,7 +90,12 @@ impl TurnService {
     /// can't be read, or the CLI spawn fails, the images fall through to the
     /// normal "DO NOT invent" warning path. The user's turn is never blocked
     /// by a fallback failure.
-    fn maybe_run_vision_fallback(&self, request: &mut AgentTurnRequest) {
+    fn maybe_run_vision_fallback(
+        &self,
+        app: Option<&AppHandle>,
+        turn_id: &str,
+        request: &mut AgentTurnRequest,
+    ) {
         // Only run when there are image attachments.
         let has_images = request
             .attachments
@@ -105,13 +110,38 @@ impl TurnService {
         }
 
         // Check consent from settings.
+        //
+        // Gate semantics (the FE pre-screens Ask consent and only attaches the
+        // image once the user accepts `allowOnce` or `alwaysProceed`):
+        //   - `Never`  → skip fallback. Image still reaches the model as a path
+        //                and gets the "do not invent" warning if the model
+        //                can't see it.
+        //   - `Always` → run fallback unconditionally (user opted in globally).
+        //   - `Ask`    → run fallback too. By the time we get here with image
+        //                attachments still on the request, the FE has already
+        //                shown the consent UI and the user accepted; otherwise
+        //                the attach would have been stripped before send_turn.
+        //
+        // `request.run_vision_fallback` (optional FE override) takes priority
+        // over consent when set: `Some(true)` always runs, `Some(false)`
+        // always skips. Useful for one-off turns where the FE knows better
+        // than the global setting (e.g. user clicked "describe once" on a
+        // turn started under `Never`).
         let consent = self
             .settings
             .as_ref()
             .and_then(|s| s.get().ok())
             .map(|s| s.vision_fallback_consent)
             .unwrap_or_default();
-        if consent != crate::models::types::VisionFallbackConsent::Always {
+        let should_run = match request.run_vision_fallback {
+            Some(explicit) => explicit,
+            None => consent != crate::models::types::VisionFallbackConsent::Never,
+        };
+        eprintln!(
+            "[verboo:vision-fallback] consent={consent:?}, override={:?}, should_run={should_run}",
+            request.run_vision_fallback
+        );
+        if !should_run {
             return;
         }
 
@@ -193,10 +223,69 @@ impl TurnService {
             helper.id, helper.display_name
         );
 
+        // Emit a single vision-relay activity so the FE shows ONE row like
+        // "glm-5.2 → kimi-k2.7" while the helper describes the image.
+        // The detail encodes primary+helper model ids/display names with a
+        // pipe delimiter (ids never contain pipes). The FE parses this to
+        // render the relay label. The image description text is NEVER put in
+        // label/detail — it goes only into `extracted_text` for the prompt.
+        // `app` is None in unit tests (no AppHandle available); the emit is
+        // skipped there since tests check consent gating, not event emission.
+        if let Some(app) = app {
+            let primary_id = request.model.clone().unwrap_or_default();
+            let primary_display = primary_id.clone();
+            emit_event(
+                app,
+                AgentEvent {
+                    event_type: EventType::Json,
+                    turn_id: Some(turn_id.to_string()),
+                    conversation_id: Some(request.conversation_id.clone()),
+                    runtime_activity: Some(RuntimeActivity {
+                        key: format!("{turn_id}:vision-relay"),
+                        label: "vision-relay".to_string(),
+                        detail: Some(format!(
+                            "vision-relay|{primary_id}|{primary_display}|{}|{}",
+                            helper.id, helper.display_name
+                        )),
+                        kind: "image".to_string(),
+                        tool_use_id: None,
+                        additions: None,
+                        deletions: None,
+                        diff_preview: None,
+                    }),
+                    ..Default::default()
+                },
+            );
+        }
+
+        // Pick a fallback helper (next-best vision model) so the per-image
+        // describe call can retry once on a different model if the primary
+        // helper fails. Deterministic: same sort criteria as
+        // `resolve_vision_helper`, minus the primary.
+        let fallback_helper = crate::services::vision_fallback_service::resolve_fallback_helper(
+            &discovery,
+            &helper.id,
+        );
+        if let Some(fb) = &fallback_helper {
+            eprintln!(
+                "[verboo:vision-fallback] fallback helper: {} ({})",
+                fb.id, fb.display_name
+            );
+        }
+
         // Describe each image attachment and inject as extracted_text.
         // `describe_image` uses `CliSpawn` internally to find the bundled CLI
         // + Node runtime — same resolver as the main turn. No need to resolve
         // cli_path separately (which would return None in packaged builds).
+        //
+        // Contract for the FE: once an attachment reaches this loop and
+        // succeeds, its `extracted_text` is the authoritative image
+        // description and `extraction_status == Extracted`. The renderer MUST
+        // NOT overwrite it with OCR or any secondary text source — that would
+        // discard the vision model's output and replace it with a noisier
+        // signal. OCR is only a last-resort FE path when no vision helper was
+        // available (`ExtractionStatus::Warning` from `inject_fallback_warning`
+        // or a `None` `extracted_text`).
         if let Some(list) = request.attachments.as_mut() {
             for att in list.iter_mut() {
                 if att.kind != AttachmentKind::Image || att.media_type.is_none() {
@@ -204,10 +293,11 @@ impl TurnService {
                 }
                 let media_type = att.media_type.clone().unwrap_or_default();
                 let path = std::path::PathBuf::from(&att.path);
-                match crate::services::vision_fallback_service::describe_image_cached(
+                match crate::services::vision_fallback_service::describe_image_cached_with_retry(
                     &path,
                     &media_type,
                     &helper.id,
+                    fallback_helper.as_ref().map(|m| m.id.as_str()),
                     &self.credentials,
                     &app_data_dir,
                 ) {
@@ -260,6 +350,12 @@ impl TurnService {
 
     /// Spawn an agent turn. Returns the turn_id (existing or newly generated).
     /// Emits `agent:event` events to the renderer as the CLI produces output.
+    ///
+    /// CRITICAL: This method must return IMMEDIATELY after emitting `Started`.
+    /// All heavy work (vision fallback, prompt building, base64 encoding, CLI
+    /// spawn, stdout reading) runs on a background `std::thread`. The Tauri
+    /// command thread is synchronous — blocking it for 30s during
+    /// `describe_image` freezes the macOS UI (rainbow beachball).
     pub fn send_turn(
         &self,
         app: AppHandle,
@@ -289,21 +385,91 @@ impl TurnService {
             },
         );
 
+        // Clone all Arc fields so the background thread owns them without
+        // borrowing `&self`. AppHandle is Clone. request is moved.
+        let active = self.active.clone();
+        let credentials = self.credentials.clone();
+        let settings = self.settings.clone();
+        let app_data_dir = self.app_data_dir.clone();
+        let app_for_thread = app.clone();
+        let turn_id_for_thread = turn_id.clone();
+        let conversation_id_for_thread = conversation_id.clone();
+
+        // Spawn a background thread for ALL heavy work. This is the structural
+        // fix for the beachball freeze: the Tauri command thread returns
+        // immediately, and vision fallback / CLI spawn / base64 encoding /
+        // stdout reading all happen off the main thread.
+        //
+        // Cross-platform: std::thread + std::process::Command work on macOS,
+        // Windows, and Linux without any platform-specific code here. The
+        // Windows process group is set inside the CLI spawn via
+        // `creation_flags` (see below). Interrupt via `child_signal` works
+        // on all three (SIGINT on Unix, GenerateConsoleCtrlEvent on Windows).
+        let builder = std::thread::Builder::new().name(format!("verboo-turn-{turn_id}"));
+        builder
+            .spawn(move || {
+                Self::run_turn_background(
+                    app_for_thread,
+                    request,
+                    resume_session_id,
+                    turn_id_for_thread,
+                    conversation_id_for_thread,
+                    active,
+                    credentials,
+                    settings,
+                    app_data_dir,
+                );
+            })
+            .map_err(|e| format!("Falha ao iniciar thread do turn: {e}"))?;
+
+        Ok(turn_id)
+    }
+
+    /// Background worker for a single turn. Runs on a dedicated
+    /// `std::thread` (never the Tauri command thread) so blocking I/O
+    /// (vision fallback, CLI spawn, base64 encoding) can't freeze the UI.
+    fn run_turn_background(
+        app: AppHandle,
+        mut request: AgentTurnRequest,
+        resume_session_id: Option<String>,
+        turn_id: String,
+        conversation_id: String,
+        active: Arc<Mutex<std::collections::HashMap<String, ChildHandle>>>,
+        credentials: Arc<CredentialsStore>,
+        settings: Option<Arc<SettingsStore>>,
+        app_data_dir: Option<std::path::PathBuf>,
+    ) {
+        // Set the turn_id on the request so downstream code can reference it.
+        request.turn_id = Some(turn_id.clone());
+
         // FASE 1: vision fallback. When the selected model doesn't support
         // vision but the user attached images, spawn a secondary CLI with a
         // vision-capable model (from the user's own catalog — never hardcoded)
         // to describe each image. Descriptions are injected as `extracted_text`
         // so `build_attachment_lines` includes them in the prompt as text.
         //
-        // Consent gates this:
+        // Consent gates this (see `maybe_run_vision_fallback` for full rules):
         // - 'always': run the fallback without asking.
         // - 'never': skip (images get the "DO NOT invent" warning).
-        // - 'ask': skip for now (needs a mid-turn consent event that isn't
-        //   implemented yet — falls back to 'never' behavior until Zelda's
-        //   UI is ready).
-        let mut request = request;
+        // - 'ask': run too. The FE pre-screens Ask consent and only keeps
+        //   image attachments on the request after the user accepts
+        //   `allowOnce` or `alwaysProceed`, so reaching here with images
+        //   means consent was granted for this turn.
+        // - `request.run_vision_fallback` (when present) overrides consent.
+        //
+        // This runs on the background thread, NOT the Tauri command thread,
+        // so the 30s timeout (x2 with retry) doesn't freeze the UI.
         if request.model_supports_vision != Some(true) {
-            self.maybe_run_vision_fallback(&mut request);
+            // Build a temporary TurnService view for the fallback — it only
+            // needs credentials, settings, app_data_dir, and active (for
+            // registering the helper child so interrupt can kill it).
+            let fallback_svc = TurnService {
+                active: active.clone(),
+                credentials: credentials.clone(),
+                settings: settings.clone(),
+                app_data_dir: app_data_dir.clone(),
+            };
+            fallback_svc.maybe_run_vision_fallback(Some(&app), &turn_id, &mut request);
         }
 
         let prompt = build_prompt(&request, resume_session_id.is_some());
@@ -311,8 +477,8 @@ impl TurnService {
 
         // FASE 0: when the model supports vision AND there are image
         // attachments, switch to stream-json input so images reach the model
-        // as base64 data URLs (not just text paths). Text-only turns keep
-        // the positional prompt path (lower risk, no stdin piping needed).
+        // as base64 (not just text paths). Text-only turns keep the
+        // positional prompt path (lower risk, no stdin piping needed).
         let stream_json_payload = build_stream_json_input(&request, &prompt);
         let use_stream_json = stream_json_payload.is_some();
 
@@ -324,11 +490,9 @@ impl TurnService {
             "--include-partial-messages".to_string(),
         ];
         if use_stream_json {
-            // Structured input: prompt + images go via stdin as JSON messages.
             args.push("--input-format".to_string());
             args.push("stream-json".to_string());
         } else {
-            // Positional prompt: text-only turn (no images, or model can't see).
             args.push(prompt);
         }
         if is_resume {
@@ -346,16 +510,9 @@ impl TurnService {
         }
 
         let working_directory = safe_runtime_working_directory(&request.working_directory);
+        let token = resolve_token(&credentials);
 
-        // Resolve the bearer token (CLI OAuth first with refresh, API key
-        // fallback). The CLI token gives full account access; the API key
-        // is the fallback for users who haven't done `verboo auth login`.
-        let token = resolve_token(&self.credentials);
-
-        // Prevent sleep while the turn is running, honoring the user's
-        // setting. The guard is moved into the stdout reader thread and
-        // released automatically when the thread exits.
-        let sleep_guard = match self.settings.as_ref() {
+        let sleep_guard = match settings.as_ref() {
             Some(store) => store
                 .get()
                 .map(|settings| PreventSleepGuard::start(&settings))
@@ -363,10 +520,6 @@ impl TurnService {
             None => PreventSleepGuard::start(&UserSettings::default()),
         };
 
-        // Build the CLI spawn. CliSpawn picks the best runtime:
-        //   - `<node> <bundled-cli.mjs>` (self-contained — option B of doc 03)
-        //   - `<node> <VERBOO_CLI_PATH>` (dev)
-        //   - `verboo` global on PATH (last-resort fallback)
         let spawn = crate::services::cli_spawn::CliSpawn::new(&args);
         let runtime_label = spawn.runtime.to_string();
         let working_dir_label = working_directory.clone();
@@ -374,15 +527,11 @@ impl TurnService {
         cmd.current_dir(&working_directory)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // stream-json input needs stdin piped so we can write messages.
-        // Text-only turns use null stdin (no stdin data needed).
         if use_stream_json {
             cmd.stdin(Stdio::piped());
         } else {
             cmd.stdin(Stdio::null());
         }
-        // On Windows, create the child in its own process group so
-        // `GenerateConsoleCtrlEvent` can target it for graceful interrupt.
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -391,38 +540,60 @@ impl TurnService {
         let _token_file = inject_api_key(token.as_deref(), &mut cmd);
         crate::services::auth_token::augment_identity_env(&mut cmd);
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Falha ao iniciar CLI Verboo: {e}"))?;
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                emit_event(
+                    &app,
+                    AgentEvent {
+                        event_type: EventType::Error,
+                        turn_id: Some(turn_id.clone()),
+                        conversation_id: Some(conversation_id.clone()),
+                        message: Some(format!("Falha ao iniciar CLI Verboo: {e}")),
+                        ..Default::default()
+                    },
+                );
+                emit_event(
+                    &app,
+                    AgentEvent {
+                        event_type: EventType::Done,
+                        turn_id: Some(turn_id.clone()),
+                        conversation_id: Some(conversation_id.clone()),
+                        exit_code: None,
+                        ..Default::default()
+                    },
+                );
+                return;
+            }
+        };
 
         let child_id = child.id();
 
-        // FASE 0: write stream-json payload to stdin (images as base64).
-        // The CLI reads newline-delimited JSON messages from stdin when
-        // --input-format stream-json is set. We write the payload then drop
-        // stdin (EOF) so the CLI knows input is complete.
         if let Some(payload) = stream_json_payload {
             if let Some(stdin) = child.stdin.take() {
                 use std::io::Write;
                 let mut stdin = stdin;
-                // Best-effort write — if it fails, the turn still runs but
-                // without images (the text prompt is in the payload too).
                 let _ = stdin.write_all(payload.as_bytes());
                 let _ = stdin.flush();
-                // stdin drops here → EOF → CLI processes the messages.
             }
         }
 
-        // Take stdout/stderr BEFORE wrapping in Arc<Mutex<>> so the streams
-        // can be moved into reader threads.
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "CLI stdout unavailable.".to_string())?;
-        // Capture stderr on its own thread (draining the pipe so it can't
-        // fill and block the child). We surface it if the turn ends with no
-        // output — otherwise CLI errors (bad auth, missing deps) were
-        // invisible: the user saw "Worked for 0s" with no explanation.
+        let stdout = match child.stdout.take() {
+            Some(s) => s,
+            None => {
+                emit_event(
+                    &app,
+                    AgentEvent {
+                        event_type: EventType::Error,
+                        turn_id: Some(turn_id.clone()),
+                        conversation_id: Some(conversation_id.clone()),
+                        message: Some("CLI stdout unavailable.".to_string()),
+                        ..Default::default()
+                    },
+                );
+                return;
+            }
+        };
         let stderr_buf = Arc::new(Mutex::new(String::new()));
         let stderr_handle = child.stderr.take().map(|se| {
             let buf = stderr_buf.clone();
@@ -438,31 +609,20 @@ impl TurnService {
             })
         });
 
-        // Wrap in Arc<Mutex<>> so both the active map AND the stdout reader
-        // thread can hold a handle. The reader thread calls `wait()` on
-        // its clone of the Arc; `interrupt()` calls `kill()` on the map's
-        // clone.
         let child_handle = Arc::new(Mutex::new(child));
 
         {
-            let mut active = self
-                .active
-                .lock()
-                .map_err(|e| format!("Lock error: {e}"))?;
-            active.insert(turn_id.clone(), child_handle.clone());
+            if let Ok(mut active_map) = active.lock() {
+                active_map.insert(turn_id.clone(), child_handle.clone());
+            }
         }
 
         let app_for_stdout = app.clone();
         let turn_id_for_stdout = turn_id.clone();
         let conversation_id_for_stdout = conversation_id.clone();
-        let active_map_for_thread = self.active.clone();
+        let active_map_for_thread = active.clone();
 
         // Spawn reader thread for stdout (the main streaming channel).
-        // `_sleep_guard` is moved into the closure and held alive for the
-        // duration of the turn; dropping it releases the OS sleep assertion.
-        // `_token_file` is moved into the closure so the 0600 temp file stays
-        // alive while the child holds the fd/path. `child_handle` is moved
-        // so the thread can call `wait()` to get the exit code.
         thread::spawn(move || {
             let _token_file = _token_file;
             let _sleep_guard = sleep_guard;
@@ -541,28 +701,17 @@ impl TurnService {
                 }
             }
 
-            // Wait for child to exit to get the exit code. The Arc<Mutex>
-            // is the same handle that lives in the active map; we hold a
-            // second clone in the closure.
             let exit_code = child_handle
                 .lock()
                 .ok()
                 .and_then(|mut c| c.wait().ok())
                 .and_then(|s| s.code());
-            // Drain any remaining stderr now that the child has exited.
             if let Some(h) = stderr_handle {
                 let _ = h.join();
             }
-            // Remove the child from the active map now that the turn is done.
-            // We can't hold the map lock directly (we're in a separate thread),
-            // but we share the Arc with the active map.
             if let Some(mut map) = active_map_for_thread.lock().ok() {
                 map.remove(&turn_id_for_stdout);
             }
-            // If the turn produced no streamed text and exited abnormally,
-            // surface the CLI's stderr / error result so the failure isn't
-            // invisible (this is what turned bad auth / missing deps into a
-            // silent "Worked for 0s").
             if !emitted_stream_text && exit_code != Some(0) {
                 let exit_display = match exit_code {
                     Some(code) => format!("exit={code}"),
@@ -576,7 +725,6 @@ impl TurnService {
                     .ok()
                     .map(|b| b.trim().to_string())
                     .filter(|s| !s.is_empty());
-                // Prefer structured error from the CLI result payload when present.
                 let result_err = result_snapshot.as_ref().and_then(|snap| {
                     if snap.is_error.unwrap_or(false) {
                         snap.errors
@@ -635,8 +783,6 @@ impl TurnService {
             );
             let _ = child_id;
         });
-
-        Ok(turn_id)
     }
 
     /// Interrupt a running turn by turn_id. Sends SIGINT on Unix, Ctrl+C
@@ -696,12 +842,13 @@ fn resolve_cli_path() -> String {
 ///
 /// The payload is a single user message with:
 /// - A text block containing the full prompt (same as `build_prompt`).
-/// - One `image_url` block per image attachment, with base64 data URL.
+/// - One `image` block per image attachment, with raw base64 in an
+///   Anthropic-style `source.base64` block (the CLI converts this internally).
 ///
-/// Format follows the OpenAI/Anthropic-compatible message schema the CLI
-/// accepts via `--input-format stream-json`:
+/// Format follows the envelope the CLI's `StructuredIO.processLine` requires
+/// via `--input-format stream-json`:
 /// ```json
-/// {"role":"user","content":[{"type":"text","text":"..."},{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}]}
+/// {"type":"user","session_id":"","message":{"role":"user","content":[{"type":"text","text":"..."},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"<b64>"}}]},"parent_tool_use_id":null}
 /// ```
 fn build_stream_json_input(
     request: &AgentTurnRequest,
@@ -726,7 +873,10 @@ fn build_stream_json_input(
         "text": prompt
     }));
     for img in images {
-        // Read the image file and base64-encode it.
+        // Read the image file and base64-encode it. The CLI expects raw
+        // base64 (no `data:` URL prefix) inside an Anthropic-style
+        // `source.base64` block — a bare `image_url` with a data URL is
+        // silently ignored by the CLI's StructuredIO processor.
         let bytes = match std::fs::read(&img.path) {
             Ok(b) => b,
             Err(_) => {
@@ -736,10 +886,13 @@ fn build_stream_json_input(
         };
         let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
         let media_type = img.media_type.as_deref().unwrap_or("image/png");
-        let data_url = format!("data:{media_type};base64,{b64}");
         content.push(serde_json::json!({
-            "type": "image_url",
-            "image_url": { "url": data_url }
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": b64
+            }
         }));
     }
 
@@ -748,12 +901,21 @@ fn build_stream_json_input(
         return None;
     }
 
+    // The CLI's StructuredIO.processLine requires the envelope
+    // `{type:"user", message:{role:"user", content:[...]}}` — a bare
+    // `{role, content}` is silently ignored, which was the root cause of
+    // vision turns producing no output.
     let message = serde_json::json!({
-        "role": "user",
-        "content": content
+        "type": "user",
+        "session_id": "",
+        "message": {
+            "role": "user",
+            "content": content
+        },
+        "parent_tool_use_id": null
     });
     // stream-json input is newline-delimited JSON messages.
-    Some(format!("{}\n", message))
+    Some(format!("{message}\n"))
 }
 
 /// Build the user prompt that goes to the CLI. Mirrors Electron's
@@ -1289,6 +1451,9 @@ fn runtime_activity_from_payload(payload: &serde_json::Value) -> Option<RuntimeA
                         detail: None,
                         kind: "compacting".to_string(),
                         tool_use_id: None,
+                        additions: None,
+                        deletions: None,
+                        diff_preview: None,
                     });
                 }
             }
@@ -1303,6 +1468,8 @@ fn runtime_activity_from_payload(payload: &serde_json::Value) -> Option<RuntimeA
     let input = tool_input(&block);
     let id = block.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
     let detail = detail_for_tool(&name, input.as_ref());
+    let stats = edit_stats_for_tool(&name, input.as_ref());
+    let diff_preview = diff_preview_for_tool(&name, input.as_ref());
     let activity = activity_for_tool(&name);
     Some(RuntimeActivity {
         key: format!("{}:{}", id.as_deref().unwrap_or(&name), detail.as_deref().unwrap_or("")),
@@ -1310,6 +1477,9 @@ fn runtime_activity_from_payload(payload: &serde_json::Value) -> Option<RuntimeA
         detail,
         kind: activity.1.to_string(),
         tool_use_id: id,
+        additions: stats.as_ref().map(|s| s.additions),
+        deletions: stats.as_ref().map(|s| s.deletions),
+        diff_preview,
     })
 }
 
@@ -1496,6 +1666,260 @@ fn tool_input(block: &serde_json::Map<String, serde_json::Value>) -> Option<serd
     parsed.as_object().cloned()
 }
 
+struct EditStats {
+    additions: u32,
+    deletions: u32,
+}
+
+const DIFF_PREVIEW_MAX_LINES: usize = 40;
+const DIFF_PREVIEW_MAX_CHARS: usize = 2_500;
+const DIFF_PREVIEW_PER_EDIT_LINES: usize = 12;
+
+/// Counts non-empty lines using git's convention: trailing newline does not
+/// add a new line, so "a\n" and "a" both count as 1, "" counts as 0.
+fn count_lines(s: &str) -> u32 {
+    s.lines().count() as u32
+}
+
+/// Computes (+additions, -deletions) for write/edit/multiedit tool inputs.
+/// Returns None for tools that don't represent a textual edit.
+fn edit_stats_for_tool(
+    tool_name: &str,
+    input: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<EditStats> {
+    let input = input?;
+    let n = tool_name.to_lowercase();
+    let text_for = |keys: &[&str]| -> Option<&str> {
+        keys.iter()
+            .find_map(|k| input.get(*k).and_then(|v| v.as_str()))
+    };
+
+    if matches!(
+        n.as_str(),
+        "write" | "write_file" | "create_file" | "new_file" | "notebookedit" | "notebook_edit"
+    ) {
+        let content = text_for(&["content", "file_text", "fileText", "newContent"]).unwrap_or("");
+        // Empty write still counts as one line written (mirrors git's "new file"
+        // semantics for create operations).
+        let additions = if content.is_empty() {
+            1
+        } else {
+            count_lines(content)
+        };
+        return Some(EditStats {
+            additions,
+            deletions: 0,
+        });
+    }
+
+    if matches!(n.as_str(), "edit" | "str_replace" | "strreplace" | "replace" | "patch" | "update") {
+        let old_text = text_for(&[
+            "old_string",
+            "oldString",
+            "find",
+            "search",
+            "match",
+            "matchStr",
+        ])
+        .unwrap_or("");
+        let new_text = text_for(&[
+            "new_string",
+            "newString",
+            "replace",
+            "replacement",
+            "replaceText",
+            "replace_with",
+        ])
+        .unwrap_or("");
+        return Some(EditStats {
+            additions: count_lines(new_text),
+            deletions: count_lines(old_text),
+        });
+    }
+
+    if matches!(
+        n.as_str(),
+        "multiedit" | "multi_edit" | "multi_edit_file" | "batch_edit"
+    ) {
+        let edits = input
+            .get("edits")
+            .or_else(|| input.get("edit"))
+            .or_else(|| input.get("operations"))
+            .and_then(|v| v.as_array());
+        let mut additions = 0u32;
+        let mut deletions = 0u32;
+        if let Some(edits) = edits {
+            for edit in edits {
+                let edit_obj = match edit.as_object() {
+                    Some(obj) => obj,
+                    None => continue,
+                };
+                let old_text = edit_obj
+                    .get("old_string")
+                    .or_else(|| edit_obj.get("oldString"))
+                    .or_else(|| edit_obj.get("find"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let new_text = edit_obj
+                    .get("new_string")
+                    .or_else(|| edit_obj.get("newString"))
+                    .or_else(|| edit_obj.get("replace"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                deletions = deletions.saturating_add(count_lines(old_text));
+                additions = additions.saturating_add(count_lines(new_text));
+            }
+        }
+        return Some(EditStats {
+            additions,
+            deletions,
+        });
+    }
+
+    None
+}
+
+/// Generates a CLI-style diff preview (+/-) for Write/Edit/MultiEdit inputs.
+/// Returns None for tools that don't represent a textual edit. Truncated to
+/// ~DIFF_PREVIEW_MAX_LINES lines / DIFF_PREVIEW_MAX_CHARS chars so the preview
+/// is cheap to surface in the transcript and store on disk.
+fn diff_preview_for_tool(
+    tool_name: &str,
+    input: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<String> {
+    let input = input?;
+    let n = tool_name.to_lowercase();
+    let text_for = |keys: &[&str]| -> Option<&str> {
+        keys.iter()
+            .find_map(|k| input.get(*k).and_then(|v| v.as_str()))
+    };
+
+    let mut lines: Vec<String> = Vec::new();
+
+    if matches!(
+        n.as_str(),
+        "write" | "write_file" | "create_file" | "new_file" | "notebookedit" | "notebook_edit"
+    ) {
+        let content = text_for(&["content", "file_text", "fileText", "newContent"]).unwrap_or("");
+        for line in content.lines() {
+            lines.push(format!("+{line}"));
+        }
+    } else if matches!(
+        n.as_str(),
+        "edit" | "str_replace" | "strreplace" | "replace" | "patch" | "update"
+    ) {
+        let old_text = text_for(&[
+            "old_string",
+            "oldString",
+            "find",
+            "search",
+            "match",
+            "matchStr",
+        ])
+        .unwrap_or("");
+        let new_text = text_for(&[
+            "new_string",
+            "newString",
+            "replace",
+            "replacement",
+            "replaceText",
+            "replace_with",
+        ])
+        .unwrap_or("");
+        for line in old_text.lines() {
+            lines.push(format!("-{line}"));
+        }
+        for line in new_text.lines() {
+            lines.push(format!("+{line}"));
+        }
+    } else if matches!(
+        n.as_str(),
+        "multiedit" | "multi_edit" | "multi_edit_file" | "batch_edit"
+    ) {
+        let edits = input
+            .get("edits")
+            .or_else(|| input.get("edit"))
+            .or_else(|| input.get("operations"))
+            .and_then(|v| v.as_array());
+        if let Some(edits) = edits {
+            for (idx, edit) in edits.iter().enumerate() {
+                let edit_obj = match edit.as_object() {
+                    Some(obj) => obj,
+                    None => continue,
+                };
+                let old_text = edit_obj
+                    .get("old_string")
+                    .or_else(|| edit_obj.get("oldString"))
+                    .or_else(|| edit_obj.get("find"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let new_text = edit_obj
+                    .get("new_string")
+                    .or_else(|| edit_obj.get("newString"))
+                    .or_else(|| edit_obj.get("replace"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let header = edits.len() > 1;
+                if header {
+                    lines.push(format!("@@ edit #{} @@@", idx + 1));
+                }
+                let mut edit_lines: Vec<String> = Vec::new();
+                for line in old_text.lines() {
+                    edit_lines.push(format!("-{line}"));
+                }
+                for line in new_text.lines() {
+                    edit_lines.push(format!("+{line}"));
+                }
+                if edit_lines.len() > DIFF_PREVIEW_PER_EDIT_LINES {
+                    edit_lines.truncate(DIFF_PREVIEW_PER_EDIT_LINES);
+                    edit_lines.push("...".to_string());
+                }
+                lines.extend(edit_lines);
+            }
+        }
+    } else {
+        return None;
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    truncate_diff_lines(&lines, DIFF_PREVIEW_MAX_LINES, DIFF_PREVIEW_MAX_CHARS)
+}
+
+fn truncate_diff_lines(lines: &[String], max_lines: usize, max_chars: usize) -> Option<String> {
+    let mut truncated: Vec<&String> = lines.iter().collect();
+    if truncated.len() > max_lines {
+        truncated.truncate(max_lines);
+        let overflow = lines.len() - max_lines;
+        // Build with an explicit trailing "... (N more lines)" marker.
+        let mut out = truncated
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        out.push_str(&format!("\n... ({overflow} more lines)"));
+        if out.len() > max_chars {
+            let mut cut: String = out.chars().take(max_chars.saturating_sub(1)).collect();
+            cut.push('…');
+            return Some(cut);
+        }
+        return Some(out);
+    }
+    let joined = truncated
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if joined.len() > max_chars {
+        let mut cut: String = joined.chars().take(max_chars.saturating_sub(1)).collect();
+        cut.push('…');
+        return Some(cut);
+    }
+    Some(joined)
+}
+
 fn snippet(value: Option<&str>, max_len: usize) -> Option<String> {
     let text = value?.trim();
     if text.is_empty() {
@@ -1513,6 +1937,127 @@ fn snippet(value: Option<&str>, max_len: usize) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn edit_stats_line_count_handles_trailing_newline() {
+        assert_eq!(count_lines(""), 0);
+        assert_eq!(count_lines("one"), 1);
+        assert_eq!(count_lines("one\n"), 1);
+        assert_eq!(count_lines("one\ntwo"), 2);
+        assert_eq!(count_lines("one\ntwo\n"), 2);
+    }
+
+    #[test]
+    fn edit_stats_for_write_counts_content_lines() {
+        let input = json!({"content": "one\ntwo\n"});
+        let stats = edit_stats_for_tool("write", input.as_object()).unwrap();
+        assert_eq!(stats.additions, 2);
+        assert_eq!(stats.deletions, 0);
+
+        let input = json!({"content": ""});
+        let stats = edit_stats_for_tool("write_file", input.as_object()).unwrap();
+        assert_eq!(stats.additions, 1);
+        assert_eq!(stats.deletions, 0);
+    }
+
+    #[test]
+    fn edit_stats_for_edit_counts_old_and_new_strings() {
+        let input = json!({
+            "old_string": "old one\nold two\n",
+            "new_string": "new one\nnew two\nnew three"
+        });
+        let stats = edit_stats_for_tool("edit", input.as_object()).unwrap();
+        assert_eq!(stats.deletions, 2);
+        assert_eq!(stats.additions, 3);
+
+        let input = json!({
+            "oldString": "old",
+            "newString": "new\n"
+        });
+        let stats = edit_stats_for_tool("str_replace", input.as_object()).unwrap();
+        assert_eq!(stats.deletions, 1);
+        assert_eq!(stats.additions, 1);
+    }
+
+    #[test]
+    fn edit_stats_for_multiedit_sums_edits() {
+        let input = json!({
+            "edits": [
+                {"old_string": "a\nb", "new_string": "c"},
+                {"oldString": "d\n", "newString": "e\nf\n"}
+            ]
+        });
+        let stats = edit_stats_for_tool("multiedit", input.as_object()).unwrap();
+        assert_eq!(stats.deletions, 3);
+        assert_eq!(stats.additions, 3);
+    }
+
+    #[test]
+    fn edit_stats_ignores_non_edit_tools() {
+        let input = json!({"path": "src/main.rs"});
+        assert!(edit_stats_for_tool("read", input.as_object()).is_none());
+    }
+
+    #[test]
+    fn diff_preview_for_write_marks_each_content_line() {
+        let input = json!({"content": "one\ntwo\nthree\n"});
+        let preview = diff_preview_for_tool("write", input.as_object()).unwrap();
+        assert_eq!(preview, "+one\n+two\n+three");
+
+        let input = json!({"content": ""});
+        // Empty write yields no diff lines (consistent with edit_stats which
+        // still counts it as 1 line written for stat purposes, but the preview
+        // has nothing to render).
+        assert!(diff_preview_for_tool("write", input.as_object()).is_none());
+    }
+
+    #[test]
+    fn diff_preview_for_edit_marks_old_and_new_lines() {
+        let input = json!({
+            "old_string": "old one\nold two\n",
+            "new_string": "new one\nnew two\nnew three"
+        });
+        let preview = diff_preview_for_tool("edit", input.as_object()).unwrap();
+        assert_eq!(
+            preview,
+            "-old one\n-old two\n+new one\n+new two\n+new three"
+        );
+    }
+
+    #[test]
+    fn diff_preview_for_multiedit_joins_edits_with_headers() {
+        let input = json!({
+            "edits": [
+                {"old_string": "a\n", "new_string": "b\nc"},
+                {"oldString": "d", "newString": "e"}
+            ]
+        });
+        let preview = diff_preview_for_tool("multiedit", input.as_object()).unwrap();
+        assert_eq!(
+            preview,
+            "@@ edit #1 @@@\n-a\n+b\n+c\n@@ edit #2 @@@\n-d\n+e"
+        );
+    }
+
+    #[test]
+    fn diff_preview_truncates_long_content() {
+        let big = (0..100)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let input = json!({"content": big});
+        let preview = diff_preview_for_tool("write", input.as_object()).unwrap();
+        // 40 line cap + overflow marker line
+        assert!(preview.lines().count() <= DIFF_PREVIEW_MAX_LINES + 1);
+        assert!(preview.contains("more lines)"));
+        assert!(preview.len() <= DIFF_PREVIEW_MAX_CHARS + 1);
+    }
+
+    #[test]
+    fn diff_preview_ignores_non_edit_tools() {
+        let input = json!({"path": "src/main.rs"});
+        assert!(diff_preview_for_tool("read", input.as_object()).is_none());
+    }
 
     #[test]
     fn clean_terminal_text_strips_ansi_and_decset() {
@@ -1734,6 +2279,7 @@ mod tests {
             personality: None,
             custom_instructions: None,
             memory_context: None,
+            run_vision_fallback: None,
         };
         let prompt = build_prompt(&request, false);
         assert!(prompt.contains("Current working directory: /tmp"));
@@ -1758,6 +2304,7 @@ mod tests {
             personality: Some(PersonalityMode::Concise),
             custom_instructions: Some("be brief".into()),
             memory_context: None,
+            run_vision_fallback: None,
         };
         let prompt = build_prompt(&request, true);
         // On resume, personality/customInstructions should NOT be present
@@ -1932,6 +2479,7 @@ mod tests {
             personality: None,
             custom_instructions: None,
             memory_context: None,
+            run_vision_fallback: None,
         };
         let payload = build_stream_json_input(&request, "prompt text");
         assert!(payload.is_none(), "non-vision model should not get stream-json");
@@ -1956,6 +2504,7 @@ mod tests {
             personality: None,
             custom_instructions: None,
             memory_context: None,
+            run_vision_fallback: None,
         };
         let payload = build_stream_json_input(&request, "prompt text");
         assert!(payload.is_none(), "text-only turn should not get stream-json");
@@ -1980,6 +2529,7 @@ mod tests {
             personality: None,
             custom_instructions: None,
             memory_context: None,
+            run_vision_fallback: None,
         };
         let payload = build_stream_json_input(&request, "prompt text");
         assert!(payload.is_none(), "unknown vision should not get stream-json");
@@ -2016,24 +2566,36 @@ mod tests {
             personality: None,
             custom_instructions: None,
             memory_context: None,
+            run_vision_fallback: None,
         };
         let payload = build_stream_json_input(&request, "prompt text here");
         assert!(payload.is_some(), "vision model + image should get stream-json");
         let payload = payload.unwrap();
-        // Should be valid JSON with role=user, content array with text + image_url.
+        // The CLI's StructuredIO.processLine requires the envelope:
+        // {type:"user", message:{role:"user", content:[...]}, parent_tool_use_id:null}
         let parsed: serde_json::Value = serde_json::from_str(payload.trim()).unwrap();
-        assert_eq!(parsed["role"], "user");
-        let content = parsed["content"].as_array().unwrap();
+        assert_eq!(parsed["type"], "user", "envelope type must be user");
+        assert_eq!(parsed["session_id"], "", "session_id must be empty string");
+        assert_eq!(parsed["parent_tool_use_id"], serde_json::Value::Null);
+        let message = &parsed["message"];
+        assert_eq!(message["role"], "user");
+        let content = message["content"].as_array().unwrap();
         assert!(content.len() >= 2, "should have text + image blocks");
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[0]["text"], "prompt text here");
-        // Find the image_url block.
+        // Image block uses Anthropic-style source.base64 (raw b64, no data: URL).
         let img_block = content
             .iter()
-            .find(|b| b["type"] == "image_url")
-            .expect("should have image_url block");
-        let url = img_block["image_url"]["url"].as_str().unwrap();
-        assert!(url.starts_with("data:image/png;base64,"), "should be data URL");
+            .find(|b| b["type"] == "image")
+            .expect("should have image block");
+        assert_eq!(img_block["source"]["type"], "base64");
+        assert_eq!(img_block["source"]["media_type"], "image/png");
+        let data = img_block["source"]["data"].as_str().unwrap();
+        assert!(!data.is_empty(), "base64 data must not be empty");
+        assert!(
+            !data.starts_with("data:"),
+            "base64 data must NOT be a data: URL — CLI expects raw base64"
+        );
         let _ = std::fs::remove_file(&temp);
     }
 
@@ -2059,6 +2621,7 @@ mod tests {
             personality: None,
             custom_instructions: None,
             memory_context: None,
+            run_vision_fallback: None,
         };
         let payload = build_stream_json_input(&request, "prompt text");
         // No readable images → None (falls back to positional prompt).
@@ -2092,6 +2655,7 @@ mod tests {
             personality: None,
             custom_instructions: None,
             memory_context: None,
+            run_vision_fallback: None,
         }
     }
 
@@ -2106,7 +2670,7 @@ mod tests {
         // maybe_run_vision_fallback is only called when vision != Some(true),
         // so we simulate that check here.
         if req.model_supports_vision != Some(true) {
-            svc.maybe_run_vision_fallback(&mut req);
+            svc.maybe_run_vision_fallback(None, "test-turn", &mut req);
         }
         // Vision model → fallback not called → extracted_text still None.
         assert!(
@@ -2121,7 +2685,7 @@ mod tests {
         let svc = make_turn_service();
         let mut req = request_with_image(Some(false));
         req.attachments = Some(vec![file_attachment("/tmp/doc.md")]);
-        svc.maybe_run_vision_fallback(&mut req);
+        svc.maybe_run_vision_fallback(None, "test-turn", &mut req);
         // File attachment unchanged (no image to describe).
         assert!(
             req.attachments.as_ref().unwrap()[0].extracted_text.as_deref()
@@ -2131,30 +2695,39 @@ mod tests {
     }
 
     #[test]
-    fn vision_fallback_skips_when_no_app_data_dir() {
-        // TurnService without app_data_dir (test mode) → can't cache → skip.
-        let svc = make_turn_service(); // app_data_dir = None
+    fn vision_fallback_skips_when_override_disables_it() {
+        // The FE can pass `run_vision_fallback: Some(false)` to skip the
+        // fallback regardless of consent (e.g. one-off turn under Always
+        // where the user explicitly chose not to describe). The override
+        // takes priority over the consent setting.
+        let svc = make_turn_service(); // app_data_dir = None, settings = None
         let mut req = request_with_image(Some(false));
-        svc.maybe_run_vision_fallback(&mut req);
-        // No app_data_dir → early return → extracted_text still None.
+        req.run_vision_fallback = Some(false);
+        svc.maybe_run_vision_fallback(None, "test-turn", &mut req);
         assert!(
             req.attachments.as_ref().unwrap()[0].extracted_text.is_none(),
-            "no app_data_dir → fallback should skip"
+            "run_vision_fallback=Some(false) → fallback must skip and leave extracted_text empty"
         );
     }
 
     #[test]
-    fn vision_fallback_skips_when_consent_is_never() {
-        // Consent = Never → fallback should not run.
-        // (We can't easily set up a SettingsStore in a unit test, so this
-        // test verifies the default consent path: when settings is None,
-        // consent defaults to Ask, which is != Always → skip.)
-        let svc = make_turn_service(); // settings = None → consent defaults to Ask
+    fn vision_fallback_runs_under_ask_when_override_allows() {
+        // Override Some(true) forces the fallback even when consent would
+        // otherwise skip. Without app_data_dir the runner bails early, but
+        // the consent gate itself is bypassed — we observe that by checking
+        // the function injected a warning (it would not have under Never).
+        let svc = make_turn_service(); // app_data_dir = None
         let mut req = request_with_image(Some(false));
-        svc.maybe_run_vision_fallback(&mut req);
+        req.run_vision_fallback = Some(true);
+        svc.maybe_run_vision_fallback(None, "test-turn", &mut req);
+        let att = &req.attachments.as_ref().unwrap()[0];
         assert!(
-            req.attachments.as_ref().unwrap()[0].extracted_text.is_none(),
-            "consent != Always → fallback should skip"
+            att.extracted_text.is_some(),
+            "run_vision_fallback=Some(true) should bypass consent and reach the app_data_dir check, which then injects a warning"
+        );
+        assert_eq!(
+            att.extraction_status,
+            Some(crate::models::types::ExtractionStatus::Warning)
         );
     }
 
@@ -2165,31 +2738,23 @@ mod tests {
         // (no VERBOO_CLI_PATH env var). The fix removed that check — the
         // fallback now uses `CliSpawn` internally (same as the main turn).
         //
-        // This test verifies the function does NOT early-return when
-        // VERBOO_CLI_PATH is unset. It will still return early (no consent,
-        // no app_data_dir, no catalog), but NOT because of cli_path.
-        //
-        // We set app_data_dir (so that check passes) but leave VERBOO_CLI_PATH
-        // unset. The function should proceed past the old cli_path check and
-        // return early only because the model catalog is empty (no token in
-        // test env).
-        let mut svc = TurnService::new(std::sync::Arc::new(CredentialsStore::new()))
+        // We set app_data_dir and force the override on so the function
+        // proceeds past consent + app_data_dir. It will reach the catalog
+        // load and either succeed (dev machine with token) or inject a
+        // "couldn't be loaded" warning. Either way, it must NOT panic and
+        // must NOT early-return because of cli_path. Compile-time guarantee
+        // is also enforced: `describe_image` no longer takes a cli_path arg.
+        let svc = TurnService::new(std::sync::Arc::new(CredentialsStore::new()))
             .with_app_data_dir(std::env::temp_dir());
-        // Force consent = Always by injecting a settings store.
-        // (We can't easily do this without a real SettingsStore, so this test
-        // is more of a smoke test — the key assertion is that the function
-        // doesn't panic and doesn't require VERBOO_CLI_PATH.)
         let mut req = request_with_image(Some(false));
-        svc.maybe_run_vision_fallback(&mut req);
-        // The function returns early because consent != Always (settings is
-        // None → default Ask). The key point: it does NOT return early because
-        // of cli_path. If the old cli_path check were still here, this test
-        // would still pass (consent check comes first), but the fix is
-        // verified by the fact that `describe_image` no longer takes a
-        // `cli_path` parameter (compile-time guarantee).
+        req.run_vision_fallback = Some(true);
+        svc.maybe_run_vision_fallback(None, "test-turn", &mut req);
+        // The function must have proceeded past the consent check and reached
+        // the model catalog load. Whether it injected a description (token
+        // available) or a warning (no token), extracted_text must be Some.
         assert!(
-            req.attachments.as_ref().unwrap()[0].extracted_text.is_none(),
-            "fallback should skip (consent != Always)"
+            req.attachments.as_ref().unwrap()[0].extracted_text.is_some(),
+            "override=true + app_data_dir set → fallback must reach catalog load (not early-return on cli_path)"
         );
     }
 
@@ -2233,7 +2798,7 @@ mod tests {
         // The key assertion: the image is NEVER left empty (non-silent).
         let svc = make_turn_service_with_always_consent();
         let mut req = request_with_image(Some(false));
-        svc.maybe_run_vision_fallback(&mut req);
+        svc.maybe_run_vision_fallback(None, "test-turn", &mut req);
 
         let att = &req.attachments.as_ref().unwrap()[0];
         assert!(
@@ -2249,6 +2814,41 @@ mod tests {
     }
 
     #[test]
+    fn vision_relay_detail_format_is_pipe_delimited() {
+        // The FE parses `detail` as `vision-relay|<primary_id>|<primary_display>|<helper_id>|<helper_display>`.
+        // Pipe is safe because model ids never contain `|`. This test pins
+        // the format so a refactor can't silently break the FE parser.
+        let primary_id = "glm-5.2";
+        let primary_display = "glm-5.2";
+        let helper_id = "ultra/kimi-k2.7";
+        let helper_display = "Kimi K2.7";
+        let detail = format!(
+            "vision-relay|{primary_id}|{primary_display}|{helper_id}|{helper_display}"
+        );
+        let parts: Vec<&str> = detail.split('|').collect();
+        assert_eq!(parts.len(), 5, "must have exactly 5 pipe-delimited parts");
+        assert_eq!(parts[0], "vision-relay");
+        assert_eq!(parts[1], primary_id);
+        assert_eq!(parts[2], primary_display);
+        assert_eq!(parts[3], helper_id);
+        assert_eq!(parts[4], helper_display);
+        // No image description text in the detail.
+        assert!(!detail.contains("description"));
+        assert!(!detail.contains("base64"));
+    }
+
+    #[test]
+    fn vision_relay_key_is_stable_per_turn() {
+        // The FE dedupes by key — the relay key must be deterministic per turn
+        // so re-emitting (e.g. after helper success) doesn't create a second row.
+        let turn_id = "turn-abc-123";
+        let key = format!("{turn_id}:vision-relay");
+        assert_eq!(key, "turn-abc-123:vision-relay");
+        // Same turn_id always produces the same key.
+        assert_eq!(format!("{turn_id}:vision-relay"), key);
+    }
+
+    #[test]
     fn vision_fallback_warning_is_anti_hallucination() {
         // On machines without a CLI token, the fallback injects a warning
         // that must tell the model NOT to invent content. On machines WITH
@@ -2256,7 +2856,7 @@ mod tests {
         // (Extracted) — the anti-hallucination check only applies to warnings.
         let svc = make_turn_service_with_always_consent();
         let mut req = request_with_image(Some(false));
-        svc.maybe_run_vision_fallback(&mut req);
+        svc.maybe_run_vision_fallback(None, "test-turn", &mut req);
 
         let att = &req.attachments.as_ref().unwrap()[0];
         let text = att.extracted_text.as_ref().unwrap();

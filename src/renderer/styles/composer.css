@@ -997,6 +997,16 @@
   min-width: 0;
 }
 
+/* Model name + Eye badge — keep on one line. The `<strong>` wraps the text
+   and the badge, both `inline-flex` so they sit side-by-side without break. */
+.model-option-text strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
 .model-option-text small {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1020,6 +1030,18 @@
   font-size: 10.5px;
   font-weight: 720;
   letter-spacing: 0.02em;
+}
+
+/* Vision Eye badge next to the model name — no pill border/outline, just the
+   icon in a muted accent so it doesn't compete with the name. Inline-flex
+   with `line-height: 0` prevents it from creating extra vertical space inside
+   the parent `<strong>`. */
+.model-badge-vision {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  line-height: 0;
+  color: color-mix(in srgb, var(--accent) 55%, var(--text-dim));
 }
 
 .model-option-check {

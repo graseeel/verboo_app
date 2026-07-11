@@ -17,6 +17,17 @@ type ModelSelectorProps = {
   onRefresh: () => void
 }
 
+/** Belt: when the router sends `"vision": true` in the raw payload but
+ *  `supportsVision` is not yet set, treat the model as vision-capable.
+ *  Without this, models whose metadata was cached before the vision field
+ *  was added to the shape miss their Eye badge until the next refresh. */
+function isModelVisionFromRaw(model: VerbooModel): boolean {
+  if (model.supportsVision !== undefined && model.supportsVision !== null) return false
+  if (typeof model.raw !== 'object' || model.raw === null) return false
+  if ('vision' in model.raw && (model.raw as Record<string, unknown>).vision === true) return true
+  return false
+}
+
 export function ModelSelector({ models, selectedModel, hasConversationHistory = false, modelResult, onSelect, onRefresh }: ModelSelectorProps) {
   const { language, t } = useI18n()
   const [open, setOpen] = useState(false)
@@ -193,15 +204,17 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
                         <ModelIcon modelId={model.id} displayName={model.displayName} size={18} />
                       </span>
                       <span className="model-option-text">
-                        <strong>{readableModelName(model)}</strong>
+                        <strong>
+                          {readableModelName(model)}
+                          {(model.supportsVision || isModelVisionFromRaw(model)) && (
+                            <span className="model-badge-vision" title={t('model.visionBadge')}>
+                              <Eye size={13} />
+                            </span>
+                          )}
+                        </strong>
                         <small>{model.id}</small>
                       </span>
                       <span className="model-option-meta">
-                        {model.supportsVision && (
-                          <span className="model-badge" title={t('model.visionBadge')}>
-                            <Eye size={11} />
-                          </span>
-                        )}
                         {model.contextWindow && (
                           <span className="model-badge">
                             {formatCompactNumber(model.contextWindow, language)}

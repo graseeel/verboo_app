@@ -1222,6 +1222,12 @@ export function App() {
 
     if (event.type === 'json') {
       let conversationId = turnConversationIds.current[event.turnId]
+      // Always signal image-reading UI when a kind=image activity arrives,
+      // regardless of whether conversationId is already known (Geralt emits
+      // started → turnConversationIds populated → then kind=image).
+      if (event.runtimeActivity?.kind === 'image') {
+        setImageReadingTurnId(event.turnId)
+      }
       if (!conversationId && event.runtimeActivity?.kind === 'image') {
         const pendingId = pendingConversationId.current
         if (pendingId) {
@@ -1231,7 +1237,6 @@ export function App() {
           beginTokenRateTracking(event.turnId)
           setRunningTurnId(event.turnId)
           setThinkingTurnId(event.turnId)
-          setImageReadingTurnId(event.turnId)
         }
       }
       trackLiveTokenRate(event.turnId, event.payload)
@@ -1524,9 +1529,17 @@ export function App() {
     }
   }
 
+  // Guard against re-entrant sendMessage (double-click, keyboard race with
+  // attachment flow). Checked AND set in the same synchronous section so
+  // concurrent awaits see the lock before the first call's first await.
+  // The ref resets in the `finally` block at the end of the function.
+  const sendMessageLock = useRef(false)
   async function sendMessage(message: string) {
     const trimmed = message.trim()
     if (!trimmed) return
+    if (sendMessageLock.current) return // already in flight
+    sendMessageLock.current = true
+    try {
     const conversationId = ensureActiveConversation()
 
     // ── Vision fallback consent check ──
@@ -1629,6 +1642,9 @@ export function App() {
     appendDowngradeActivity(conversationId)
     await runTurn(queued)
     setAttachedFiles([])
+    } finally {
+      sendMessageLock.current = false
+    }
   }
 
   function isConversationRunning(conversationId: string): boolean {
@@ -2603,9 +2619,16 @@ export function App() {
       for (const attachment of attachments) byPath.set(attachment.path, attachment)
       return Array.from(byPath.values())
     })
-    // Kick off local OCR for images where the backend didn't return extracted
-    // text. Runs async (lazy worker) — chips update in-place when done.
-    runOcrForAttachments(attachments)
+    // Local OCR is a LAST RESORT — only runs when the selected model doesn't
+    // support vision AND no vision-capable model exists in the catalog. If the
+    // user switches to a vision model, the backend's vision_fallback handles
+    // image description instead. This avoids the "OCR running" label blocking
+    // send while a vision model could describe the image directly.
+    const selectedVision = selectedModelInfo?.supportsVision ?? false
+    const anyVisionAvailable = modelResult.models.some(m => m.supportsVision)
+    const neverConsent = userSettings.visionFallbackConsent === 'never'
+    const shouldOcr = !selectedVision && !anyVisionAvailable && !neverConsent
+    if (shouldOcr) runOcrForAttachments(attachments)
   }
 
   function runOcrForAttachments(attachments: AttachmentMeta[]) {
@@ -3008,6 +3031,12 @@ export function App() {
     turnActivityKeys.current[turnId] = keys
     if (keys.has(activity.key)) return
     keys.add(activity.key)
+    // Dedupe: skip regular "Leu imagem" activities when a vision-relay
+    // activity already exists for this turn (avoids double image row).
+    if (activity.kind === 'image' && !activity.key.endsWith(':vision-relay')) {
+      const hasRelay = Array.from(keys).some(k => k.endsWith(':vision-relay'))
+      if (hasRelay) return
+    }
     if (activity.kind !== 'thinking') turnOpenTextSegment.current[turnId] = undefined
 
     if (activity.kind !== 'thinking') {
@@ -3043,6 +3072,9 @@ export function App() {
           kind: 'activity',
           activityKind: activity.kind,
           activityDetail: activity.detail,
+          activityAdditions: activity.additions,
+          activityDeletions: activity.deletions,
+          activityDiffPreview: activity.diffPreview,
           command,
           text: activityDisplayLabel(activity, t),
           timestamp: Date.now(),

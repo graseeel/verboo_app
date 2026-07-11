@@ -613,6 +613,8 @@ pub struct AgentTurnRequest {
     pub message: String,
     pub model: Option<String>,
     pub model_supports_vision: Option<bool>,
+    #[serde(default)]
+    pub run_vision_fallback: Option<bool>,
     pub context_window: Option<u32>,
     pub response_language: Option<LanguageCode>,
     pub access_mode: AccessMode,
@@ -887,6 +889,12 @@ pub struct RuntimeActivity {
     pub detail: Option<String>,
     pub kind: String,
     pub tool_use_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additions: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deletions: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_preview: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

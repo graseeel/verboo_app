@@ -37,9 +37,16 @@ export function groupTurnBlocks(items: TranscriptItem[]): TurnBlock[] {
           ? { input: item.activityDetail ?? item.text, output: '', status: 'success' }
           : undefined),
         toolOutput: item.toolOutput,
+        additions: item.activityAdditions,
+        deletions: item.activityDeletions,
+        diffPreview: item.activityDiffPreview,
       }
+      // Single-file edits/creates with a path get their OWN row (not collapsed
+      // into the previous actions block) so the user sees "Editou foo.js +87 -32"
+      // per file rather than a generic "Editou arquivos (2)" summary.
+      const isPerFileAction = (action.kind === 'edit' || action.kind === 'create') && action.detail
       const last = blocks[blocks.length - 1]
-      if (last && last.kind === 'actions') last.actions.push(action)
+      if (!isPerFileAction && last && last.kind === 'actions') last.actions.push(action)
       else blocks.push({ kind: 'actions', id: `${item.id}:g`, actions: [action] })
       continue
     }
@@ -68,6 +75,37 @@ const PLURAL_KEYS: Partial<Record<TurnActionKind, [string, string]>> = {
   'agent-open': ['transcript.agentOpenOne', 'transcript.agentOpenMany'],
   'agent-close': ['transcript.agentCloseOne', 'transcript.agentCloseMany'],
   tool: ['transcript.toolOne', 'transcript.toolMany'],
+}
+
+/**
+ * Parse a vision‑relay detail string emitted by Geralt for the vision
+ * fallback path. Format: `vision-relay|{primaryId}|{primaryDisplay}|{helperId}|{helperDisplay}`
+ *
+ * Returns null when the detail does not match this format.
+ */
+export function parseVisionRelayDetail(detail: string): {
+  primaryId: string
+  primaryDisplay: string
+  helperId: string
+  helperDisplay: string
+} | null {
+  const parts = detail.split('|')
+  if (parts[0] !== 'vision-relay' || parts.length < 5) return null
+  const [, primaryId, primaryDisplay, helperId, helperDisplay] = parts
+  if (!primaryId || !helperId) return null
+  return {
+    primaryId,
+    primaryDisplay: primaryDisplay || primaryId,
+    helperId,
+    helperDisplay: helperDisplay || helperId,
+  }
+}
+
+/** True when an activity's key signals a vision‑relay event (ends with
+ *  `:vision-relay`). Used by both the renderer and the deduplication
+ *  logic in `appendActivityItem`. */
+export function isVisionRelayKey(key: string): boolean {
+  return key.endsWith(':vision-relay')
 }
 
 export function summarizeActions(actions: TurnAction[], t: Translator): string {

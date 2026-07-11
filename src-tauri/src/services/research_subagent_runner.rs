@@ -640,6 +640,7 @@ mod tests {
             message: "build a feature".into(),
             model: None,
             model_supports_vision: None,
+            run_vision_fallback: None,
             context_window: None,
             response_language: Some(LanguageCode::EnUs),
             access_mode: AccessMode::Approval,

@@ -1168,9 +1168,15 @@
   justify-self: end;
   width: fit-content;
   max-width: min(760px, 74%);
-  padding: 2px 10px 3px;
+  padding: 8px 12px;
   border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
   background: color-mix(in srgb, var(--accent) 9%, var(--bg-elevated));
+  /* Stack attachments + text vertically inside the bubble. The gap replaces
+     the old margin on `.message-attachments` so the layout is consistent
+     whether there are 0, 1, or multiple attachments. */
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .message-row.assistant {
@@ -1772,7 +1778,6 @@
    images. Wraps naturally when there are multiple attachments. */
 .message-attachments {
   display: flex; flex-wrap: wrap; gap: 6px;
-  margin: 0 0 4px;
 }
 .message-row.user .message-attachments { justify-content: flex-end; }
 .message-attachment-chip {
@@ -1790,7 +1795,8 @@
   padding: 2px 8px 2px 2px;
 }
 .message-attachment-thumb {
-  width: 28px; height: 28px; border-radius: 4px; object-fit: cover;
+  width: 28px; height: 28px; min-width: 28px; min-height: 28px;
+  border-radius: 4px; object-fit: cover;
   flex-shrink: 0;
 }
 .message-attachment-icon {

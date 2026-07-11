@@ -7,6 +7,7 @@ import {
   detectSupport,
   getSpeechRecognitionCtor,
   isFatalVoiceError,
+  nextCatchUpStep,
   pickBestAlternative,
   type RecognitionLike,
 } from './voiceInput'
@@ -613,5 +614,71 @@ describe('createVoiceInput — auto-restart', () => {
     }
     mock.triggerResult({ resultIndex: 0, results: [result] })
     expect(onFinal).toHaveBeenCalledWith('high')
+  })
+})
+
+// ── Voice v2: catch-up typewriter ──────────────────────────────────────────
+
+describe('nextCatchUpStep', () => {
+  it('returns target unchanged when current equals target', () => {
+    expect(nextCatchUpStep('hello', 'hello')).toBe('hello')
+  })
+
+  it('snaps when target is shorter (deletion/backspace)', () => {
+    expect(nextCatchUpStep('hello world', 'hello')).toBe('hello')
+  })
+
+  it('snaps when the gap is ≤3 chars', () => {
+    expect(nextCatchUpStep('hel', 'hello')).toBe('hello')
+    expect(nextCatchUpStep('hello w', 'hello w')).toBe('hello w')
+  })
+
+  it('advances ~2 chars for a small gap of 11 (gap ≤ 15 → 2/frame)', () => {
+    const current = 'hello'            // length 5
+    const target  = 'hello world foo!' // length 16, gap = 11
+    const next = nextCatchUpStep(current, target)
+    // 2 chars added → length 7
+    expect(next.length).toBe(7)
+    expect(next).toBe('hello w')
+  })
+
+  it('advances ~4 chars for a large gap (gap ≤ 80 → 4/frame)', () => {
+    const current = ''                // length 0
+    const target  = 'a'.repeat(50)    // length 50, gap = 50
+    const next = nextCatchUpStep(current, target)
+    expect(next.length).toBe(4)
+    expect(next).toBe('a'.repeat(4))
+  })
+
+  it('advances ~5 chars for a huge gap (gap ≤ 140 → 5/frame)', () => {
+    const current = ''
+    const target  = 'a'.repeat(100)
+    const next = nextCatchUpStep(current, target)
+    expect(next.length).toBe(5)
+  })
+
+  it('respects maxCharsPerFrame option for extreme gaps', () => {
+    const current = ''
+    const target  = 'a'.repeat(200)
+    const next = nextCatchUpStep(current, target, { maxCharsPerFrame: 6 })
+    // 200 * 0.04 = 8 chars → but max is 6
+    expect(next.length).toBe(6)
+  })
+
+  it('produces the first N chars of target (always prefix-aligned)', () => {
+    const current = 'hello'
+    const target  = 'hello world and beyond'
+    const next = nextCatchUpStep(current, target)
+    expect(target.startsWith(next)).toBe(true)
+  })
+
+  it('eventually reaches target after enough steps (chain test)', () => {
+    let current = ''
+    const target = 'the quick brown fox jumps over the lazy dog near the riverbank and '  // ~72 chars
+    for (let i = 0; i < 25; i++) {
+      current = nextCatchUpStep(current, target)
+      if (current === target) break
+    }
+    expect(current).toBe(target)
   })
 })

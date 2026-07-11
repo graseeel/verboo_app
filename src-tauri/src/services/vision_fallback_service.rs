@@ -44,10 +44,13 @@ pub struct VisionCacheEntry {
 
 /// Picks the first vision-capable model from the user's catalog.
 ///
-/// Selection order (deterministic):
-/// 1. Models where `supports_vision == Some(true)` and source is "router"
-///    (most reliable — the Router API explicitly says this model sees images).
-/// 2. Models where `supports_vision == Some(true)` and source is anything else.
+/// Selection order (deterministic, no hardcoded ids):
+/// 1. Models where `supports_vision == Some(true)`.
+/// 2. Within that set, prefer (a) router-sourced vision flag, then (b) higher
+///    tier as inferred from the id prefix — `ultra/` ranks above `pro/` which
+///    ranks above everything else. The prefix convention is the same one the
+///    Verboo Router uses to expose model tiers and is purely lexicographic
+///    (no vendor list).
 /// 3. Within each tier, sort by display_name for deterministic picks.
 ///
 /// Returns `None` if the user's plan has no vision-capable model. The caller
@@ -61,15 +64,35 @@ pub fn resolve_vision_helper(models: &ModelDiscoveryResult) -> Option<&VerbooMod
     if vision_models.is_empty() {
         return None;
     }
-    // Prefer router-sourced vision flags (most reliable).
     vision_models.sort_by(|a, b| {
         let a_router = a.vision_support_source.as_deref() == Some("router");
         let b_router = b.vision_support_source.as_deref() == Some("router");
         b_router
             .cmp(&a_router)
+            .then_with(|| tier_rank(&b.id).cmp(&tier_rank(&a.id)))
             .then_with(|| a.display_name.cmp(&b.display_name))
     });
     vision_models.into_iter().next()
+}
+
+/// Maps a model id to a deterministic tier rank used only to break ties when
+/// selecting a vision helper. Higher rank = preferred.
+///
+/// - id starts with `ultra/` → 3
+/// - id starts with `pro/`   → 2
+/// - otherwise               → 1
+///
+/// The prefixes mirror the Verboo Router's id convention. No vendor names or
+/// hardcoded model ids are involved.
+fn tier_rank(id: &str) -> u8 {
+    let lower = id.to_lowercase();
+    if lower.starts_with("ultra/") {
+        3
+    } else if lower.starts_with("pro/") {
+        2
+    } else {
+        1
+    }
 }
 
 /// Computes the SHA-256 hash of a file for cache keying.
@@ -142,23 +165,75 @@ pub fn describe_image(
     helper_model: &str,
     credentials: &CredentialsStore,
 ) -> Result<String, String> {
-    // Read and base64-encode the image.
+    describe_image_with_retry(image_path, media_type, helper_model, credentials, None)
+}
+
+/// Inner describe with optional retry on a different helper model. The retry
+/// is only attempted when the first helper fails AND a fallback model is
+/// provided by the caller (next-best vision model from the catalog).
+pub fn describe_image_with_retry(
+    image_path: &Path,
+    media_type: &str,
+    helper_model: &str,
+    credentials: &CredentialsStore,
+    fallback_helper: Option<&str>,
+) -> Result<String, String> {
+    match describe_image_once(image_path, media_type, helper_model, credentials) {
+        Ok(text) => Ok(text),
+        Err(first_err) => {
+            if let Some(next_model) = fallback_helper {
+                eprintln!(
+                    "[verboo:vision-fallback] first helper failed ({first_err}); retrying with {next_model}"
+                );
+                describe_image_once(image_path, media_type, next_model, credentials)
+                    .map_err(|second_err| format!("{first_err}; retry {next_model}: {second_err}"))
+            } else {
+                Err(first_err)
+            }
+        }
+    }
+}
+
+fn describe_image_once(
+    image_path: &Path,
+    media_type: &str,
+    helper_model: &str,
+    credentials: &CredentialsStore,
+) -> Result<String, String> {
+    // Read and base64-encode the image. The CLI expects raw base64 (no
+    // `data:` URL prefix) inside an Anthropic-style `source.base64` block.
     let bytes = std::fs::read(image_path).map_err(|e| format!("read image: {e}"))?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    let data_url = format!("data:{media_type};base64,{b64}");
 
-    // Build the stream-json user message.
+    // Build the stream-json user message. The CLI's `StructuredIO.processLine`
+    // requires the envelope `{type:"user", message:{role:"user", content:[...]}}`
+    // — a bare `{role, content}` is silently ignored, which was the root cause
+    // of "vision model returned no description".
     let prompt = "Describe this image in detail. Include all visible text, objects, people, colors, layout, and any other relevant details. Be thorough but concise.";
     let message = serde_json::json!({
-        "role": "user",
-        "content": [
-            { "type": "text", "text": prompt },
-            { "type": "image_url", "image_url": { "url": data_url } }
-        ]
+        "type": "user",
+        "session_id": "",
+        "message": {
+            "role": "user",
+            "content": [
+                { "type": "text", "text": prompt },
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": b64
+                    }
+                }
+            ]
+        },
+        "parent_tool_use_id": null
     });
-    let stdin_payload = format!("{}\n", message);
+    let stdin_payload = format!("{message}\n");
 
-    // Build CLI args.
+    // Build CLI args. The helper is a one-shot non-interactive turn, so we
+    // always bypass permissions — without this the CLI may emit a permission
+    // prompt and exit without producing a result.
     let args = vec![
         "--print".to_string(),
         "--input-format".to_string(),
@@ -166,8 +241,13 @@ pub fn describe_image(
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--verbose".to_string(),
+        "--include-partial-messages".to_string(),
         "--model".to_string(),
         helper_model.to_string(),
+        "--allow-dangerously-skip-permissions".to_string(),
+        "--dangerously-skip-permissions".to_string(),
+        "--permission-mode".to_string(),
+        "bypassPermissions".to_string(),
     ];
 
     // LOG 3: spawn args (helps debug "wrong model" / "missing flag" issues).
@@ -176,9 +256,10 @@ pub fn describe_image(
         args
     );
     // LOG 4: payload length (base64 image can be large — helps debug
-    // "stdin write failed" or "payload too large" issues).
+    // "stdin write failed" or "payload too large" issues). We log the length
+    // and the content block shape, never the base64 blob itself.
     eprintln!(
-        "[verboo:vision-fallback] stdin payload: {} bytes",
+        "[verboo:vision-fallback] stdin payload: {} bytes, content blocks: text+image(source.base64, mime={media_type})",
         stdin_payload.len()
     );
 
@@ -191,6 +272,24 @@ pub fn describe_image(
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    // Run from the image's parent directory when possible so the helper CLI
+    // has a sane cwd (some models try to resolve relative paths). Falls back
+    // to the system temp dir if the image has no parent.
+    if let Some(parent) = image_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            cmd.current_dir(parent);
+        }
+    }
+
+    // On Windows, create the helper child in its own process group so
+    // `GenerateConsoleCtrlEvent` can target it for graceful interrupt (same
+    // pattern as the main turn in turn_service.rs).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(crate::services::child_signal::process_creation_flags());
+    }
 
     // Resolve token and inject into env.
     let token = resolve_token(credentials);
@@ -210,6 +309,37 @@ pub fn describe_image(
         let _ = stdin.flush();
         // stdin drops here → EOF.
     }
+
+    // Drain stderr on a separate thread so the child can't block on a full
+    // stderr pipe. We keep the last ~2k chars for error reporting.
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "CLI stderr unavailable".to_string())?;
+    let (stderr_tx, stderr_rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut buffer = String::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Ok(s) = std::str::from_utf8(&chunk[..n]) {
+                        buffer.push_str(s);
+                        // Keep the buffer bounded to the last ~4k chars so a
+                        // verbose CLI doesn't grow it unbounded.
+                        if buffer.len() > 4096 {
+                            let cut = buffer.len() - 4096;
+                            buffer = buffer.split_off(cut);
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = stderr_tx.send(buffer);
+    });
 
     // Read stdout on a separate thread with a timeout. The thread sends
     // parsed lines back via a channel; the main thread aborts if the
@@ -249,12 +379,13 @@ pub fn describe_image(
             // Timeout — kill the child and return an error.
             let _ = child.kill();
             let _ = child.wait();
+            let stderr_snippet = collect_stderr(&stderr_rx);
             eprintln!(
-                "[verboo:vision-fallback] TIMEOUT after {:.1}s — killing helper CLI",
+                "[verboo:vision-fallback] TIMEOUT after {:.1}s — killing helper CLI; stderr={stderr_snippet}",
                 start.elapsed().as_secs_f64()
             );
             return Err(format!(
-                "vision helper CLI timed out after {}s",
+                "vision helper CLI timed out after {}s; stderr: {stderr_snippet}",
                 HELPER_CLI_TIMEOUT.as_secs()
             ));
         }
@@ -266,6 +397,9 @@ pub fn describe_image(
                 break;
             }
             Ok(ParsedLine::AssistantText(text)) => {
+                description.push_str(&text);
+            }
+            Ok(ParsedLine::StreamDelta(text)) => {
                 description.push_str(&text);
             }
             Ok(ParsedLine::Other) => {
@@ -293,14 +427,17 @@ pub fn describe_image(
     }
 
     let _ = child.wait();
+    let stderr_snippet = collect_stderr(&stderr_rx);
 
     // LOG 6: empty description (helps debug "model returned nothing" bugs).
     if description.trim().is_empty() {
         eprintln!(
-            "[verboo:vision-fallback] helper returned empty description after {:.1}s (got_result={got_result})",
+            "[verboo:vision-fallback] helper returned empty description after {:.1}s (got_result={got_result}); stderr={stderr_snippet}",
             start.elapsed().as_secs_f64()
         );
-        Err("vision model returned no description".to_string())
+        Err(format!(
+            "vision model returned no description; stderr: {stderr_snippet}"
+        ))
     } else {
         eprintln!(
             "[verboo:vision-fallback] helper returned {} chars in {:.1}s",
@@ -311,6 +448,23 @@ pub fn describe_image(
     }
 }
 
+fn collect_stderr(stderr_rx: &mpsc::Receiver<String>) -> String {
+    let mut full = String::new();
+    while let Ok(chunk) = stderr_rx.try_recv() {
+        full.push_str(&chunk);
+    }
+    if full.is_empty() {
+        return "<no stderr>".to_string();
+    }
+    let trimmed = full.trim();
+    if trimmed.len() <= 2000 {
+        trimmed.to_string()
+    } else {
+        let cut = trimmed.len() - 2000;
+        format!("…{}", &trimmed[cut..])
+    }
+}
+
 /// Represents a parsed line from the helper CLI's stream-json stdout.
 #[derive(Debug)]
 enum ParsedLine {
@@ -318,6 +472,10 @@ enum ParsedLine {
     Result(String),
     /// `{"type":"assistant",...}` with text content blocks.
     AssistantText(String),
+    /// `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}}`
+    /// — partial text emitted by some models that never send a complete
+    /// assistant block.
+    StreamDelta(String),
     /// A valid JSON line that doesn't match result or assistant.
     Other,
     /// A line that couldn't be parsed as JSON.
@@ -354,7 +512,28 @@ fn parse_stream_json_line(line: &str) -> ParsedLine {
             }
         }
     }
+    // stream_event with a text_delta — some models only emit partial deltas
+    // and never send a complete assistant block.
+    if parsed.get("type").and_then(|v| v.as_str()) == Some("stream_event") {
+        if let Some(delta_text) = extract_stream_event_delta_text(&parsed) {
+            if !delta_text.is_empty() {
+                return ParsedLine::StreamDelta(delta_text);
+            }
+        }
+    }
     ParsedLine::Other
+}
+
+/// Extracts the text payload from a `stream_event` line. Supports the common
+/// Anthropic-style shape `{event:{type:"content_block_delta", delta:{type:"text_delta", text:"..."}}}`
+/// and the flatter `{event:{type:"text_delta", text:"..."}}` variant.
+fn extract_stream_event_delta_text(parsed: &serde_json::Value) -> Option<String> {
+    let event = parsed.get("event")?;
+    let delta = event.get("delta").or(Some(event))?;
+    if delta.get("type").and_then(|v| v.as_str()) != Some("text_delta") {
+        return None;
+    }
+    delta.get("text").and_then(|v| v.as_str()).map(|s| s.to_string())
 }
 
 /// High-level: describes an image with caching. Checks cache first; if miss,
@@ -368,11 +547,38 @@ pub fn describe_image_cached(
     credentials: &CredentialsStore,
     app_data_dir: &Path,
 ) -> Result<String, String> {
+    describe_image_cached_with_retry(
+        image_path,
+        media_type,
+        helper_model,
+        None,
+        credentials,
+        app_data_dir,
+    )
+}
+
+/// Same as `describe_image_cached` but retries on a fallback helper model
+/// when the primary helper fails. Cache is written with whichever model
+/// succeeded (or the primary when both fail, so the cache key stays stable).
+pub fn describe_image_cached_with_retry(
+    image_path: &Path,
+    media_type: &str,
+    helper_model: &str,
+    fallback_helper: Option<&str>,
+    credentials: &CredentialsStore,
+    app_data_dir: &Path,
+) -> Result<String, String> {
     let hash = sha256_hash(image_path)?;
     if let Some(entry) = read_cache(app_data_dir, &hash) {
         return Ok(entry.description);
     }
-    let description = describe_image(image_path, media_type, helper_model, credentials)?;
+    let description = describe_image_with_retry(
+        image_path,
+        media_type,
+        helper_model,
+        credentials,
+        fallback_helper,
+    )?;
     let entry = VisionCacheEntry {
         hash: hash.clone(),
         description: description.clone(),
@@ -384,6 +590,32 @@ pub fn describe_image_cached(
     };
     let _ = write_cache(app_data_dir, &entry);
     Ok(description)
+}
+
+/// Picks the second-best vision model from the catalog, excluding the primary
+/// helper id. Returns None when the catalog has no other vision model. Uses
+/// the same deterministic sort as `resolve_vision_helper`.
+pub fn resolve_fallback_helper<'a>(
+    models: &'a ModelDiscoveryResult,
+    primary_id: &str,
+) -> Option<&'a VerbooModel> {
+    let mut vision_models: Vec<&VerbooModel> = models
+        .models
+        .iter()
+        .filter(|m| m.supports_vision == Some(true) && m.id != primary_id)
+        .collect();
+    if vision_models.is_empty() {
+        return None;
+    }
+    vision_models.sort_by(|a, b| {
+        let a_router = a.vision_support_source.as_deref() == Some("router");
+        let b_router = b.vision_support_source.as_deref() == Some("router");
+        b_router
+            .cmp(&a_router)
+            .then_with(|| tier_rank(&b.id).cmp(&tier_rank(&a.id)))
+            .then_with(|| a.display_name.cmp(&b.display_name))
+    });
+    vision_models.into_iter().next()
 }
 
 #[cfg(test)]
@@ -444,6 +676,105 @@ mod tests {
         ]);
         let helper = resolve_vision_helper(&discovery).unwrap();
         assert_eq!(helper.id, "zzz-router-vision");
+    }
+
+    #[test]
+    fn resolve_vision_helper_prefers_ultra_over_pro_over_other() {
+        // Same router source — tier (ultra/ > pro/ > other) decides.
+        let discovery = make_discovery(vec![
+            make_model("pro/claude-sonnet", Some(true), Some("router")),
+            make_model("ultra/glm-5-vision", Some(true), Some("router")),
+            make_model("minimax-vision", Some(true), Some("router")),
+        ]);
+        let helper = resolve_vision_helper(&discovery).unwrap();
+        assert_eq!(helper.id, "ultra/glm-5-vision");
+    }
+
+    #[test]
+    fn resolve_vision_helper_pro_tier_over_other_when_no_ultra() {
+        let discovery = make_discovery(vec![
+            make_model("claude-opus", Some(true), Some("router")),
+            make_model("pro/claude-sonnet", Some(true), Some("router")),
+        ]);
+        let helper = resolve_vision_helper(&discovery).unwrap();
+        assert_eq!(helper.id, "pro/claude-sonnet");
+    }
+
+    #[test]
+    fn resolve_vision_helper_tier_rank_is_case_insensitive() {
+        assert_eq!(tier_rank("ULTRA/foo"), 3);
+        assert_eq!(tier_rank("Pro/bar"), 2);
+        assert_eq!(tier_rank("plain"), 1);
+        // Router takes priority over tier for the same id.
+        let discovery = make_discovery(vec![
+            make_model("pro/heuristic", Some(true), Some("heuristic")),
+            make_model("plain-router", Some(true), Some("router")),
+        ]);
+        let helper = resolve_vision_helper(&discovery).unwrap();
+        assert_eq!(helper.id, "plain-router");
+    }
+
+    #[test]
+    fn resolve_fallback_helper_excludes_primary_and_picks_next_best() {
+        let discovery = make_discovery(vec![
+            make_model("ultra/primary", Some(true), Some("router")),
+            make_model("pro/secondary", Some(true), Some("router")),
+            make_model("plain-tertiary", Some(true), Some("router")),
+        ]);
+        let fallback = resolve_fallback_helper(&discovery, "ultra/primary").unwrap();
+        assert_eq!(fallback.id, "pro/secondary");
+    }
+
+    #[test]
+    fn resolve_fallback_helper_returns_none_when_only_primary_available() {
+        let discovery = make_discovery(vec![make_model("ultra/only", Some(true), Some("router"))]);
+        assert!(resolve_fallback_helper(&discovery, "ultra/only").is_none());
+    }
+
+    #[test]
+    fn parse_stream_json_line_handles_result_and_assistant() {
+        let result_line = r#"{"type":"result","result":"final text","subtype":"success"}"#;
+        match parse_stream_json_line(result_line) {
+            ParsedLine::Result(text) => assert_eq!(text, "final text"),
+            other => panic!("expected Result, got {other:?}"),
+        }
+
+        let assistant_line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello "},{"type":"text","text":"world"}]}}"#;
+        match parse_stream_json_line(assistant_line) {
+            ParsedLine::AssistantText(text) => assert_eq!(text, "hello world"),
+            other => panic!("expected AssistantText, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_stream_json_line_captures_text_delta_stream_event() {
+        // Some models only emit partial deltas and never send a complete
+        // assistant block. The parser must accumulate these so the caller
+        // can stitch them together.
+        let delta_line = r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"partial "}}}"#;
+        match parse_stream_json_line(delta_line) {
+            ParsedLine::StreamDelta(text) => assert_eq!(text, "partial "),
+            other => panic!("expected StreamDelta, got {other:?}"),
+        }
+
+        // Flatter variant some routers emit.
+        let flat_line = r#"{"type":"stream_event","event":{"type":"text_delta","text":"flat"}}"#;
+        match parse_stream_json_line(flat_line) {
+            ParsedLine::StreamDelta(text) => assert_eq!(text, "flat"),
+            other => panic!("expected StreamDelta on flat variant, got {other:?}"),
+        }
+
+        // Non-text_delta events must not be captured.
+        let other_event = r#"{"type":"stream_event","event":{"type":"message_start","delta":{"type":"message_start"}}}"#;
+        assert!(matches!(parse_stream_json_line(other_event), ParsedLine::Other));
+    }
+
+    #[test]
+    fn parse_stream_json_line_rejects_non_json() {
+        assert!(matches!(
+            parse_stream_json_line("not json"),
+            ParsedLine::Invalid(_)
+        ));
     }
 
     #[test]

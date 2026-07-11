@@ -108,6 +108,9 @@ export type TranscriptItem = {
   kind?: 'message' | 'activity' | 'summary'
   activityKind?: 'thinking' | 'image' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool' | 'compacting'
   activityDetail?: string
+  activityAdditions?: number
+  activityDeletions?: number
+  activityDiffPreview?: string
   command?: CommandRun
   // Captured tool_result output for non-command activities (read/edit/search/etc).
   // Truncated at capture time to keep persistence small. Commands keep their
@@ -144,6 +147,13 @@ export type TurnAction = {
   // Truncated tool_result output for non-command actions. Surfaced inside the
   // expanded ActionRow so the user can see what a Read/Edit/Search returned.
   toolOutput?: string
+  // Line diff stats emitted by Geralt's edit service — animate via SlotText
+  // in the ActionRow label (see QW4 diff counts).
+  additions?: number
+  deletions?: number
+  // CLI-style diff preview (+/- lines) truncated for Write/Edit/MultiEdit.
+  // Surfaced in the expanded ActionRow so the user can read what changed.
+  diffPreview?: string
 }
 
 export type TurnBlock =
@@ -433,6 +443,7 @@ export type AgentTurnRequest = {
   message: string
   model?: string
   modelSupportsVision?: boolean
+  runVisionFallback?: boolean
   contextWindow?: number
   responseLanguage?: LanguageCode
   accessMode: AccessMode
@@ -528,6 +539,9 @@ export type RuntimeActivity = {
   detail?: string
   kind: NonNullable<TranscriptItem['activityKind']>
   toolUseId?: string
+  additions?: number
+  deletions?: number
+  diffPreview?: string
 }
 
 export type AgentEvent =

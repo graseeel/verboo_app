@@ -25,6 +25,64 @@ export function densifyMarkdown(input: string): string {
   return s
 }
 
+/** Normalize model thinking text into flowing prose rather than chopped
+ *  line-by-line output. Applies densifyMarkdown first (removes parasitic gaps
+ *  between list items), then joins consecutive short prose lines that are not
+ *  part of list markers, code fences, headers, or explicit paragraph breaks.
+ *
+ *  A short line is one that doesn't end in sentence punctuation (.!?:;) and
+ *  is under ~65 chars — meaning the model line-broke it for display, not for
+ *  semantic structure. Real markdown (code blocks, headings, lists) passes
+ *  through untouched. */
+export function normalizeThinkingProse(input: string): string {
+  const s = densifyMarkdown(input)
+  const lines = s.split('\n')
+  const result: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    const trimmed = line.trimEnd()
+    const isBreak = trimmed === ''
+      || /^\s*(?:[-*+]|\d+\.|[#>]|```|─+)/.test(trimmed)
+      || /[!?:;]\s*$/.test(trimmed)
+      || trimmed.length > 65
+      || /^```/.test(trimmed.trimStart())
+      || /^#{1,6}\s/.test(trimmed.trimStart())
+
+    if (isBreak) {
+      result.push(line)
+      i++
+      continue
+    }
+
+    // Accumulate consecutive short prose lines, then join with spaces.
+    const joinPhrase: string[] = [line]
+    let j = i + 1
+    while (j < lines.length) {
+      const next = lines[j]
+      const nt = next.trimEnd()
+      const nBreak = nt === ''
+        || /^\s*(?:[-*+]|\d+\.|[#>]|```|─+)/.test(nt)
+        || /[!?:;]\s*$/.test(nt)
+        || nt.length > 65
+        || /^```/.test(nt.trimStart())
+        || /^#{1,6}\s/.test(nt.trimStart())
+      if (nBreak) {
+        result.push(joinPhrase.map((_, idx) => lines[i + idx]).join(' ').replace(/\s+/g, ' '))
+        i = j
+        break
+      }
+      joinPhrase.push(next)
+      j++
+    }
+    if (j >= lines.length) {
+      result.push(joinPhrase.join(' ').replace(/\s+/g, ' '))
+      i = j
+    }
+  }
+  return result.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
 // Assistant messages arrive as markdown but were historically rendered as plain
 // text. react-markdown renders them safely (raw HTML is NOT rendered → no XSS)
 // and is tolerant of the *incomplete* markdown that streaming produces — an
