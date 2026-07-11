@@ -11,7 +11,7 @@ import {
   getCustomCommandToken,
   rankCustomCommands,
 } from './customSlashCommands'
-import { createVoiceInput, composeVoiceAppend, detectSupport, type VoiceInputHandle } from './voiceInput'
+import { createVoiceInput, applyVoiceInterim, commitVoiceFinal, detectSupport, type VoiceInputHandle } from './voiceInput'
 import { getAtQuery, removeAtQuery, replaceAtQueryWithToken, rankFiles, extractAtTokens } from './atMention'
 
 // Reserved slash commands surfaced in the "/" palette, exactly like the skills
@@ -106,6 +106,14 @@ export function Composer({
   const valueRef = useRef(value)
   valueRef.current = value
   const voiceRef = useRef<VoiceInputHandle | null>(null)
+  // Voice session state: `voiceCommittedRef` is the stable base text
+  // captured at session start + all committed finals. `voiceInterimRef`
+  // is the current interim text (for display only). The textarea shows
+  // `applyVoiceInterim(committed, interim)` while listening; on final,
+  // the interim is replaced by the final and committed. On stop/end,
+  // residual interim is committed so the user sees what they said.
+  const voiceCommittedRef = useRef('')
+  const voiceInterimRef = useRef('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
   const slashMenuRef = useRef<HTMLDivElement>(null)
@@ -333,21 +341,14 @@ export function Composer({
   }
 
   function appendVoiceText(text: string) {
-    // Always compute against the freshest composer text — appendVoiceText
-    // is captured by the lazy voice handle (built once on first toggle),
-    // so the React `value` in this closure would otherwise be stale by the
-    // second final chunk of a continuous-mode session.
-    const base = valueRef.current
-    const next = composeVoiceAppend(base, text)
-    if (next === base) {
-      // Empty/whitespace addition — nothing to do.
-      return
-    }
-    // Sync the ref BEFORE setValue so back-to-back finals concatenate
-    // correctly even if React hasn't re-rendered the controlled textarea yet.
-    valueRef.current = next
-    setValue(next)
-    // Keep caret after the inserted text — on the next paint.
+    // Append a final chunk to the committed base + update the composer.
+    // Uses voiceCommittedRef (not valueRef) so interim text that was
+    // on display doesn't get double-counted — the final replaces it.
+    voiceCommittedRef.current = commitVoiceFinal(voiceCommittedRef.current, text)
+    voiceInterimRef.current = ''
+    valueRef.current = voiceCommittedRef.current
+    setValue(voiceCommittedRef.current)
+    // Keep caret at the end after the final lands.
     requestAnimationFrame(() => {
       const textarea = textareaRef.current
       if (!textarea) return
@@ -367,21 +368,47 @@ export function Composer({
       voiceRef.current = createVoiceInput({
         lang: language,
         onFinal: appendVoiceText,
+        onInterim: text => {
+          // Display only: show committed + interim in the textarea WITHOUT
+          // committing the interim to voiceCommittedRef. The next final
+          // (or the residual-interim commit on end) will replace it.
+          voiceInterimRef.current = text
+          const display = applyVoiceInterim(voiceCommittedRef.current, text)
+          valueRef.current = display
+          setValue(display)
+        },
         onStart: () => setVoiceListening(true),
-        // onError fires before onEnd on most implementations; reset the
-        // listening flag here too so the button doesn't stay stuck in the
-        // MicOff state if the error arrives without a subsequent onEnd.
         onError: info => {
+          // no-speech is normal with continuous+auto-restart — skip toast
+          // and don't reset listening (auto-restart handles it transparently).
+          if (info.code === 'no-speech') return
           setVoiceListening(false)
           toast(mapVoiceError(info), 'error')
         },
-        onEnd: () => setVoiceListening(false),
+        onEnd: () => {
+          // Commit residual interim so the user sees what they said even
+          // if the session ended mid-phrase.
+          if (voiceInterimRef.current) {
+            voiceCommittedRef.current = commitVoiceFinal(voiceCommittedRef.current, voiceInterimRef.current)
+            voiceInterimRef.current = ''
+            valueRef.current = voiceCommittedRef.current
+            setValue(voiceCommittedRef.current)
+          }
+          setVoiceListening(false)
+        },
       })
     }
     if (voiceRef.current.isListening()) {
       voiceRef.current.stop()
       return
     }
+    // Capture the committed base at session start. All finals/interims
+    // build on top of this; the user's pre-existing text is preserved.
+    // NOTE: if the user types manually while listening, the dictation
+    // owns the tail — manual edits during interim will be overwritten
+    // by the next interim/final. Stop dictation before typing manually.
+    voiceCommittedRef.current = valueRef.current
+    voiceInterimRef.current = ''
     // Trigger the OS mic permission prompt before starting recognition.
     // On macOS WKWebView, SpeechRecognition.start() can fail with
     // "service permission check has failed" if the app hasn't been granted
@@ -738,6 +765,7 @@ export function Composer({
           }}
           placeholder={busy ? t('composer.placeholder.busy') : t('composer.placeholder.idle')}
           rows={1}
+          data-voice-listening={voiceListening || undefined}
         />
       </div>
 

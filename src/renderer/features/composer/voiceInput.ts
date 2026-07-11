@@ -18,6 +18,7 @@ export interface RecognitionLike {
   lang: string
   continuous: boolean
   interimResults: boolean
+  maxAlternatives?: number
   start(): void
   stop(): void
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -63,7 +64,56 @@ export function composeVoiceAppend(previous: string, addition: string): string {
     && !previous.endsWith(' ')
     && !previous.endsWith('\n')
     && !previous.endsWith('\t')
+    && !previous.endsWith('\r')
   return previous + (needsSeparator ? ' ' : '') + trimmed
+}
+
+/** Display the interim transcript on top of the committed base text.
+ *  Same separator logic as composeVoiceAppend — the difference is
+ *  semantic: this is for DISPLAY ONLY, the caller does NOT commit
+ *  the result to the stable base. The interim is replaced by the next
+ *  final or interim event. */
+export function applyVoiceInterim(committed: string, interim: string): string {
+  return composeVoiceAppend(committed, interim)
+}
+
+/** Commit a final transcript chunk to the stable base. Returns the new
+ *  committed text — the caller should update both the ref and the
+ *  composer value. */
+export function commitVoiceFinal(committed: string, final: string): string {
+  return composeVoiceAppend(committed, final)
+}
+
+/** Fatal error codes that should NOT trigger auto-restart. These represent
+ *  permission or hardware failures that won't recover by retrying. */
+export function isFatalVoiceError(code: string | undefined): boolean {
+  return code === 'not-allowed'
+    || code === 'service-not-allowed'
+    || code === 'audio-capture'
+}
+
+/** Pick the alternative with the highest confidence. Falls back to
+ *  index 0 when confidence is unavailable (some implementations don't
+ *  expose it or return NaN). Used to improve transcription quality
+ *  when maxAlternatives is set above 1. */
+export function pickBestAlternative(result: {
+  isFinal: boolean
+  length: number
+  [index: number]: { transcript: string; confidence?: number }
+}): string {
+  let bestTranscript = String(result[0]?.transcript ?? '')
+  let bestConfidence = -Infinity
+  for (let j = 0; j < result.length; j++) {
+    const alt = result[j]
+    const conf = typeof alt.confidence === 'number' && !Number.isNaN(alt.confidence)
+      ? alt.confidence
+      : -Infinity
+    if (conf > bestConfidence) {
+      bestTranscript = String(alt.transcript ?? '')
+      bestConfidence = conf
+    }
+  }
+  return bestTranscript
 }
 
 export type VoiceInputCallbacks = {
@@ -110,6 +160,13 @@ export function createVoiceInput(options: VoiceInputOptions = {}): VoiceInputHan
   const isSupported = detectSupport()
   let recognition: RecognitionLike | undefined
   let listening = false
+  // wantsListening: the user's intent. True while the user wants the mic
+  // active. Set true on start(), false on stop(). Auto-restart checks this
+  // to decide whether to re-fire start() after an unsolicited onend.
+  let wantsListening = false
+  // fatal: set true when onerror fires with a code that won't recover
+  // by retrying (permission/hardware). Prevents infinite restart loops.
+  let fatal = false
 
   function attach(rec: RecognitionLike) {
     rec.lang = options.lang ?? 'en-US'
@@ -117,21 +174,26 @@ export function createVoiceInput(options: VoiceInputOptions = {}): VoiceInputHan
     rec.continuous = true
     // Enable interimResults whenever the consumer subscribed to them.
     rec.interimResults = Boolean(options.onInterim)
+    // Request up to 3 alternatives so we can pick the one with the highest
+    // confidence. Some implementations ignore this or don't expose
+    // confidence; pickBestAlternative falls back to index 0 in that case.
+    try { rec.maxAlternatives = 3 } catch { /* read-only on some impls */ }
     rec.onresult = (event: {
       resultIndex?: number
       results: ArrayLike<{
         isFinal: boolean
-        0: { transcript: string }
+        length: number
+        [index: number]: { transcript: string; confidence?: number }
       }>
     }) => {
       let interimAcc = ''
       const start = event.resultIndex ?? 0
       for (let i = start; i < event.results.length; i++) {
         const result = event.results[i]
-        const transcript = String(result[0].transcript ?? '')
+        const transcript = pickBestAlternative(result)
         if (result.isFinal) {
-          const final = transcript.trim()
-          if (final) options.onFinal?.(final)
+          const finalText = transcript.trim()
+          if (finalText) options.onFinal?.(finalText)
         } else {
           interimAcc += transcript
         }
@@ -142,10 +204,28 @@ export function createVoiceInput(options: VoiceInputOptions = {}): VoiceInputHan
       }
     }
     rec.onerror = (event: { error?: string; message?: string }) => {
+      const code = event.error
+      if (isFatalVoiceError(code)) {
+        fatal = true
+        wantsListening = false
+      }
       const message = String(event.message ?? event.error ?? 'unknown voice error')
-      options.onError?.({ message, code: event.error })
+      options.onError?.({ message, code })
     }
     rec.onend = () => {
+      if (wantsListening && !fatal) {
+        // Auto-restart: WKWebView often ends the session early (silence
+        // timeout, internal throttling). The user still wants to listen,
+        // so restart transparently — don't call onEnd, the consumer
+        // shouldn't see the session as ended.
+        try {
+          rec.start()
+          return
+        } catch {
+          // start() threw (e.g., invalid state) — give up gracefully
+          // and signal the end to the consumer.
+        }
+      }
       listening = false
       options.onEnd?.()
     }
@@ -162,6 +242,8 @@ export function createVoiceInput(options: VoiceInputOptions = {}): VoiceInputHan
             if (!Ctor) throw new Error('SpeechRecognition is not available')
             return new Ctor()
           })()
+      fatal = false
+      wantsListening = true
       attach(recognition)
       recognition.start()
       listening = true
@@ -169,6 +251,7 @@ export function createVoiceInput(options: VoiceInputOptions = {}): VoiceInputHan
       return true
     } catch (err) {
       listening = false
+      wantsListening = false
       const message = err instanceof Error ? err.message : String(err)
       options.onError?.({ message })
       return false
@@ -176,6 +259,7 @@ export function createVoiceInput(options: VoiceInputOptions = {}): VoiceInputHan
   }
 
   function stop(): void {
+    wantsListening = false
     if (!recognition) return
     try {
       recognition.stop()

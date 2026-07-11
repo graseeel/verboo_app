@@ -438,6 +438,15 @@
   50%      { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 24%, transparent); }
 }
 
+/* Subtle textarea highlight while voice listening — a quiet accent ring
+   so the user knows the mic is live without shouting. The interim text
+   itself is already visible in the textarea (it's part of the value). */
+.composer textarea[data-voice-listening] {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
+  transition: border-color 180ms var(--dropdown-ease), box-shadow 180ms var(--dropdown-ease);
+}
+
 .composer-tools.left {
   flex: 0 1 auto;
 }
