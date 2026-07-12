@@ -618,23 +618,6 @@ fn approve_skill(
     store.update(serde_json::to_value(&current).map_err(|e| e.to_string())?)
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Computer Use — allowlist (P0.5, Kratos)
-//
-// Architecture: docs/computer-use-architecture-v1.md §7.9-7.10
-// Capability-gated by capabilities/computer-use.json (Geralt P0.3).
-//
-// These 3 commands operate on `user_settings.computerUse.allowlist`. The
-// whole-feature enable + self-test toggle + denylist + retention/cap/idle
-// all flow through the existing `get_user_settings` / `update_user_settings`
-// commands — only allowlist mutation needs dedicated handlers because it
-// requires upsert-by-bundle-id semantics (not raw replace).
-// ════════════════════════════════════════════════════════════════════
-
-/// Upserts an entry in the Computer Use allowlist. If an entry with the
-/// same `bundle_id` (case-insensitive) already exists, it is replaced;
-/// otherwise the entry is appended. Normalize() runs after, so invalid
-/// entries (e.g. non-self-test Verboo, self-test when toggle off) are
 /// Fires an OS notification when a background turn completes.
 ///
 /// The renderer calls this in the `done`/`error` handler when:

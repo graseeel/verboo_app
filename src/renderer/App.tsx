@@ -49,6 +49,7 @@ import type { ReservedSlashCommand } from './features/composer/slashCommands'
 import { AppSidebar, type AppView } from './components/AppSidebar'
 import { CommandPalette, paletteIcons, type PaletteAction } from './components/CommandPalette'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
+import { ComputerUseLayer } from './features/computer-use/ComputerUseLayer'
 import { useToast } from './components/Toast'
 import { VerbooPet, PET_MIN_SIZE, PET_MAX_SIZE, type PetState } from './features/pet/VerbooPet'
 import { QuestionWizard, type ModelQuestion, type QuestionAnswer, type QuestionPromptState } from './features/questions/QuestionWizard'
@@ -4510,6 +4511,8 @@ export function App() {
       />
 
       <ConfirmDialog request={confirmRequest} onClose={() => setConfirmRequest(undefined)} />
+
+      <ComputerUseLayer providerName={cliAuth.apiProvider ?? profile.user?.email} />
 
       <CommandPalette
         open={paletteOpen}
