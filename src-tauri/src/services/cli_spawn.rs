@@ -207,6 +207,11 @@ fn augment_path_env(command: &mut Command) {
 /// `cli-package` is also patched at build time in `copy-cli-resource.mjs`.
 fn protect_user_cli_env(command: &mut Command) {
     command.env("DISABLE_AUTOUPDATER", "1");
+    // Computer Use (P0.4, Geralt): the managed CLI process MUST NOT inherit
+    // the Computer Use session token from the parent Verboo process. The env
+    // is injected explicitly by turn_service.rs when the turn is CU-relevant.
+    // See docs/computer-use-architecture-v1.md §3.2.
+    command.env_remove("VERBOO_COMPUTER_USE_SESSION");
 }
 
 #[cfg(test)]

@@ -596,7 +596,7 @@ impl Default for ComputerUseScope {
 /// (architecture §4 Self-Test Scope). Such entries are only valid when
 /// `ComputerUseSettings::self_test_enabled == true`; normalize() strips
 /// them otherwise.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComputerUseAllowlistEntry {
     /// macOS bundle ID (e.g. "com.apple.Notes"), Linux `.desktop` file id,

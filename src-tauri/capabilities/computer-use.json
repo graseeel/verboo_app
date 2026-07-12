@@ -1,11 +1,34 @@
 {
   "$schema": "http://schema.tauri.app/config/2",
   "identifier": "computer-use",
-  "description": "Computer Use capability — isolated from default. Opt-in only; renderer MUST call enable_computer_use (gated by confirm_dialog) before any computer_* command works. Scoped to main window. NOT loaded unless Computer Use is enabled.",
+  "description": "Computer Use capability — isolated from default. Opt-in only; renderer MUST call request_computer_use_session (gated by user consent) before any computer_* command works. Scoped to main window. NOT loaded unless Computer Use is enabled.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "core:event:allow-listen",
-    "core:event:allow-emit"
+    "core:event:allow-emit",
+    "core:app:allow-app-show",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "computer-use-helper",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    },
+    {
+      "identifier": "shell:allow-stdin-write",
+      "allow": [
+        { "name": "computer-use-helper", "sidecar": true }
+      ]
+    },
+    {
+      "identifier": "shell:allow-kill",
+      "allow": [
+        { "name": "computer-use-helper", "sidecar": true }
+      ]
+    }
   ]
 }

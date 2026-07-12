@@ -272,7 +272,130 @@ fn reset_user_settings(
     Ok(next)
 }
 
-/// Returns the current vision fallback consent + a preview of which model
+// ════════════════════════════════════════════════════════════════════
+// Computer Use (P0, Geralt)
+// ════════════════════════════════════════════════════════════════════
+
+/// Returns the current allowlist. Capability-gated by computer-use.json.
+#[tauri::command]
+fn get_computer_use_allowlist(
+    store: tauri::State<'_, SettingsStore>,
+) -> Result<Vec<crate::models::types::ComputerUseAllowlistEntry>, String> {
+    Ok(store.get()?.computer_use.allowlist)
+}
+
+/// Upsert an allowlist entry by bundle_id (case-insensitive). Returns the
+/// resulting full settings.
+#[tauri::command]
+fn update_computer_use_allowlist(
+    entry: crate::models::types::ComputerUseAllowlistEntry,
+    store: tauri::State<'_, SettingsStore>,
+) -> Result<UserSettings, String> {
+    let current = store.get()?;
+    let mut cu = current.computer_use;
+    // Remove existing entry with same bundle_id (case-insensitive).
+    let lower = entry.bundle_id.to_lowercase();
+    cu.allowlist.retain(|e| e.bundle_id.to_lowercase() != lower);
+    cu.allowlist.push(entry);
+    let patch = serde_json::json!({ "computerUse": cu });
+    store.update(patch)
+}
+
+/// Remove an allowlist entry by bundle_id (case-insensitive).
+#[tauri::command]
+fn remove_computer_use_allowlist(
+    bundle_id: String,
+    store: tauri::State<'_, SettingsStore>,
+) -> Result<UserSettings, String> {
+    let current = store.get()?;
+    let mut cu = current.computer_use;
+    let lower = bundle_id.to_lowercase();
+    cu.allowlist.retain(|e| e.bundle_id.to_lowercase() != lower);
+    let patch = serde_json::json!({ "computerUse": cu });
+    store.update(patch)
+}
+
+/// Step 1 of consent flow: create a pending Computer Use session request.
+/// Returns the request ID. Session is NOT active yet — user must call
+/// `grant_computer_use_session` explicitly.
+#[tauri::command]
+fn request_computer_use_session(
+    cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
+    store: tauri::State<'_, SettingsStore>,
+    goal: String,
+    app: Option<String>,
+    scope: crate::models::types::ComputerUseScope,
+) -> Result<crate::models::computer_use::ConsentRequest, String> {
+    let settings = store.get()?;
+    cu.sessions.request_session(&settings.computer_use, goal, app, scope)
+        .map_err(|e| format!("session request denied: {:?}", e))
+}
+
+/// Step 2: user grants consent. Returns the active session or an error.
+#[tauri::command]
+fn grant_computer_use_session(
+    cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
+    store: tauri::State<'_, SettingsStore>,
+    request_id: String,
+    screenshot_attach_to_llm: bool,
+) -> Result<crate::models::computer_use::Session, String> {
+    let settings = store.get()?;
+    let grant = crate::models::computer_use::ConsentGrant {
+        id: request_id,
+        allowlist_version: 1,
+        self_test_enabled: settings.computer_use.self_test_enabled,
+        screenshot_attach_to_llm,
+        idle_timeout_secs: settings.computer_use.idle_timeout_seconds as u64,
+    };
+    cu.sessions.grant_session(grant).map_err(|e| format!("grant denied: {:?}", e))
+}
+
+/// Deny a pending consent request.
+#[tauri::command]
+fn deny_computer_use_session(
+    cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
+    request_id: String,
+) -> Result<(), String> {
+    cu.sessions.deny_session(&request_id, crate::models::computer_use::DenyReason::UserDenied);
+    Ok(())
+}
+
+/// Stop an active session.
+#[tauri::command]
+fn stop_computer_use_session(
+    cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
+    session_id: String,
+    reason: Option<String>,
+) -> Result<(), String> {
+    let r = match reason.as_deref() {
+        Some("user_cancelled") => crate::models::computer_use::StopReason::UserCancelled,
+        Some("emergency") => crate::models::computer_use::StopReason::EmergencyStop,
+        _ => crate::models::computer_use::StopReason::UserCancelled,
+    };
+    cu.sessions.stop(&session_id, r)
+        .map_err(|e| format!("stop denied: {:?}", e))?;
+    Ok(())
+}
+
+/// List running apps (requires active session). The helper's `list-apps`
+/// is proxied through SessionManager's gate — returns `no_active_session`
+/// error if no consent granted.
+#[tauri::command]
+fn list_apps(
+    cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
+    store: tauri::State<'_, SettingsStore>,
+) -> Result<serde_json::Value, String> {
+    let mut settings = store.get()?.computer_use;
+    let result = cu.list_apps(&mut settings);
+    if let Some(err) = &result.error {
+        return Err(format!("{}: {}", err.code, err.message));
+    }
+    Ok(result.result.unwrap_or(serde_json::Value::Null))
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Vision fallback (FASE 1)
+// ════════════════════════════════════════════════════════════════════
 /// would be picked as the helper. Zelda's UI calls this to render the
 /// settings panel (consent toggle + "will use: <model>" label).
 ///
@@ -512,54 +635,6 @@ fn approve_skill(
 /// same `bundle_id` (case-insensitive) already exists, it is replaced;
 /// otherwise the entry is appended. Normalize() runs after, so invalid
 /// entries (e.g. non-self-test Verboo, self-test when toggle off) are
-/// stripped silently — caller should re-read via get_user_settings to
-/// confirm the entry landed.
-#[tauri::command]
-fn update_computer_use_allowlist(
-    entry: crate::models::types::ComputerUseAllowlistEntry,
-    store: tauri::State<'_, SettingsStore>,
-) -> Result<UserSettings, String> {
-    let mut current = store.get()?;
-    let key = entry.bundle_id.to_lowercase();
-    let mut found = false;
-    for existing in current.computer_use.allowlist.iter_mut() {
-        if existing.bundle_id.to_lowercase() == key {
-            *existing = entry.clone();
-            found = true;
-            break;
-        }
-    }
-    if !found {
-        current.computer_use.allowlist.push(entry);
-    }
-    store.update(serde_json::to_value(&current).map_err(|e| e.to_string())?)
-}
-
-/// Removes the allowlist entry with the given bundle id (case-insensitive).
-/// No-op if not present. Returns the resulting UserSettings.
-#[tauri::command]
-fn remove_computer_use_allowlist(
-    bundle_id: String,
-    store: tauri::State<'_, SettingsStore>,
-) -> Result<UserSettings, String> {
-    let mut current = store.get()?;
-    let key = bundle_id.to_lowercase();
-    current
-        .computer_use
-        .allowlist
-        .retain(|e| e.bundle_id.to_lowercase() != key);
-    store.update(serde_json::to_value(&current).map_err(|e| e.to_string())?)
-}
-
-/// Returns the current allowlist. Convenience wrapper around
-/// `get_user_settings().computerUse.allowlist` for the AllowlistManager UI.
-#[tauri::command]
-fn get_computer_use_allowlist(
-    store: tauri::State<'_, SettingsStore>,
-) -> Result<Vec<crate::models::types::ComputerUseAllowlistEntry>, String> {
-    Ok(store.get()?.computer_use.allowlist)
-}
-
 /// Fires an OS notification when a background turn completes.
 ///
 /// The renderer calls this in the `done`/`error` handler when:
@@ -1390,6 +1465,7 @@ pub fn run() {
             ));
             // StaleFileDetector — tracks file snapshots per conversation
             app.manage(crate::services::stale_file_detector::StaleFileDetector::new());
+            app.manage(crate::services::computer_use_service::ComputerUseService::new());
 
             // ── System tray (macOS menubar / Win+Linux notification area) ──────
             // The tray icon shows the Verboo logo on Win/Linux and the animated
@@ -1562,11 +1638,15 @@ pub fn run() {
             // Skill approval gating (item 1.8)
             check_skill_approval,
             approve_skill,
-            // Computer Use allowlist (P0.5, Kratos) — capability-gated
-            // by capabilities/computer-use.json (Geralt P0.3, pending)
+            // Computer Use allowlist + session + actions (P0.3, Geralt)
             get_computer_use_allowlist,
             update_computer_use_allowlist,
             remove_computer_use_allowlist,
+            request_computer_use_session,
+            grant_computer_use_session,
+            deny_computer_use_session,
+            stop_computer_use_session,
+            list_apps,
             // Background turn completion notification (item 1.5)
             fire_completion_notification,
             // Defaults

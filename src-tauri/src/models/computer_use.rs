@@ -6,6 +6,10 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Re-export Kratos's authoritative type so SessionManager/ComputerUseService
+/// use the same enum without a second source of truth.
+pub use crate::models::types::ComputerUseScope;
+
 /// Session state machine (Kratos arch §2.1).
 ///
 /// Transitions:
@@ -49,16 +53,8 @@ pub enum DenyReason {
 }
 
 /// Scope of permitted actions for a session (Kratos arch §2.2 Layer 4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ActionScope {
-    /// Read-only: list-apps, list-windows, get-app-state (--no-screenshot).
-    View,
-    /// Mutating non-destructive: click, type-text, press-key, hotkey, scroll.
-    Input,
-    /// Full including P1 actions: set-value, paste-text, drag.
-    Full,
-}
+/// Re-exported from `types::ComputerUseScope` for convenience.
+pub type ActionScope = ComputerUseScope;
 
 /// A consent request awaiting user decision. Created by `request_session`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +74,7 @@ pub struct ConsentGrant {
     pub allowlist_version: u64,
     pub self_test_enabled: bool,
     pub screenshot_attach_to_llm: bool,
+    pub idle_timeout_secs: u64,
 }
 
 /// Active session — gates every CU action (Kratos arch §2.2).

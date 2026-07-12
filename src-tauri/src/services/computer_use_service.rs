@@ -26,6 +26,7 @@ use crate::models::computer_use::{
     ActionScope, AuditActor, AuditOutcome, AuditRow, ComputerUseError, ComputerUseResult,
     ConsentGrant, ConsentRequest, DenyCode, DenyReason, Session, StopReason,
 };
+use crate::models::types::ComputerUseSettings;
 use crate::services::audit_writer::AuditWriter;
 use crate::services::computer_use_spawn::ComputerUseSpawn;
 use crate::services::session_manager::{ActionKind, SessionManager};
@@ -62,13 +63,15 @@ impl ComputerUseService {
     }
 
     /// Step 1 of consent flow: create a pending request.
+    /// Takes `settings` because SessionManager checks `settings.enabled`.
     pub fn request_session(
         &self,
+        settings: &ComputerUseSettings,
         goal: impl Into<String>,
         app: Option<String>,
         scope: ActionScope,
-    ) -> ConsentRequest {
-        self.sessions.request_session(goal, app, scope)
+    ) -> Result<ConsentRequest, DenyCode> {
+        self.sessions.request_session(settings, goal, app, scope)
     }
 
     /// Step 2: user grants. Returns active session or deny code.
@@ -110,11 +113,6 @@ impl ComputerUseService {
         self.sessions.emergency_stop_all();
     }
 
-    /// Allowlist setter (Layer 2). Bumps version outside this fn.
-    pub fn set_allowlist(&self, bundle_ids: Vec<String>) {
-        self.sessions.set_allowlist(bundle_ids);
-    }
-
     /// Current session snapshot.
     pub fn current(&self) -> Option<Session> {
         self.sessions.current()
@@ -124,44 +122,42 @@ impl ComputerUseService {
     //  Helper-mediated actions
     // ──────────────────────────────────────────────────────────────
 
-    pub fn list_apps(&self) -> ComputerUseResult {
-        self.invoke_helper_safe(None, ActionKind::Read, "list-apps", ActionScope::View, json!({}))
+    pub fn list_apps(&self, settings: &mut ComputerUseSettings) -> ComputerUseResult {
+        self.invoke_helper_safe(settings, None, ActionKind::Read, "list-apps", ActionScope::View, json!({}))
     }
 
-    pub fn list_windows(&self, app: Option<&str>) -> ComputerUseResult {
-        self.invoke_helper_safe(app, ActionKind::Read, "list-windows", ActionScope::View,
+    pub fn list_windows(&self, settings: &mut ComputerUseSettings, app: Option<&str>) -> ComputerUseResult {
+        self.invoke_helper_safe(settings, app, ActionKind::Read, "list-windows", ActionScope::View,
             json!({ "app": app }))
     }
 
-    pub fn get_app_state(&self, app: &str, no_screenshot: bool) -> ComputerUseResult {
-        self.invoke_helper_safe(Some(app), ActionKind::Read, "get-app-state", ActionScope::View,
+    pub fn get_app_state(&self, settings: &mut ComputerUseSettings, app: &str, no_screenshot: bool) -> ComputerUseResult {
+        self.invoke_helper_safe(settings, Some(app), ActionKind::Read, "get-app-state", ActionScope::View,
             json!({ "app": app, "no_screenshot": no_screenshot }))
     }
 
-    pub fn click(&self, app: Option<&str>, element_index: Option<u32>, x: Option<i32>, y: Option<i32>) -> ComputerUseResult {
-        self.invoke_helper_safe(app, ActionKind::Mutate, "click", ActionScope::Input,
+    pub fn click(&self, settings: &mut ComputerUseSettings, app: Option<&str>, element_index: Option<u32>, x: Option<i32>, y: Option<i32>) -> ComputerUseResult {
+        self.invoke_helper_safe(settings, app, ActionKind::Mutate, "click", ActionScope::Input,
             json!({ "app": app, "element_index": element_index, "x": x, "y": y }))
     }
 
-    pub fn type_text(&self, app: Option<&str>, text: String) -> ComputerUseResult {
-        // Secrets via --text-stdin not yet supported in P0.1 facade.
-        // Caller-side redaction policy: don't pass passwords here.
-        self.invoke_helper_safe(app, ActionKind::Mutate, "type-text", ActionScope::Input,
+    pub fn type_text(&self, settings: &mut ComputerUseSettings, app: Option<&str>, text: String) -> ComputerUseResult {
+        self.invoke_helper_safe(settings, app, ActionKind::Mutate, "type-text", ActionScope::Input,
             json!({ "app": app, "text": text }))
     }
 
-    pub fn press_key(&self, app: Option<&str>, key: String) -> ComputerUseResult {
-        self.invoke_helper_safe(app, ActionKind::Mutate, "press-key", ActionScope::Input,
+    pub fn press_key(&self, settings: &mut ComputerUseSettings, app: Option<&str>, key: String) -> ComputerUseResult {
+        self.invoke_helper_safe(settings, app, ActionKind::Mutate, "press-key", ActionScope::Input,
             json!({ "app": app, "key": key }))
     }
 
-    pub fn hotkey(&self, app: Option<&str>, key: String) -> ComputerUseResult {
-        self.invoke_helper_safe(app, ActionKind::Mutate, "hotkey", ActionScope::Input,
+    pub fn hotkey(&self, settings: &mut ComputerUseSettings, app: Option<&str>, key: String) -> ComputerUseResult {
+        self.invoke_helper_safe(settings, app, ActionKind::Mutate, "hotkey", ActionScope::Input,
             json!({ "app": app, "key": key }))
     }
 
-    pub fn scroll(&self, app: Option<&str>, direction: &str, element_index: Option<u32>, x: Option<i32>, y: Option<i32>) -> ComputerUseResult {
-        self.invoke_helper_safe(app, ActionKind::Mutate, "scroll", ActionScope::Input,
+    pub fn scroll(&self, settings: &mut ComputerUseSettings, app: Option<&str>, direction: &str, element_index: Option<u32>, x: Option<i32>, y: Option<i32>) -> ComputerUseResult {
+        self.invoke_helper_safe(settings, app, ActionKind::Mutate, "scroll", ActionScope::Input,
             json!({ "app": app, "direction": direction, "element_index": element_index, "x": x, "y": y }))
     }
 
@@ -171,6 +167,7 @@ impl ComputerUseService {
 
     fn invoke_helper_safe(
         &self,
+        settings: &mut crate::models::types::ComputerUseSettings,
         bundle_id: Option<&str>,
         kind: ActionKind,
         method: &str,
@@ -187,8 +184,9 @@ impl ComputerUseService {
             }
         };
 
-        // Gate: 5 layers checked inside SessionManager.
-        match self.sessions.check_action(bundle_id, kind, scope) {
+        // Gate: all layers checked inside SessionManager. Pass settings
+        // (mutable so allowlist entry stats get updated for caller to persist).
+        match self.sessions.check_action(settings, bundle_id, kind, scope) {
             crate::models::computer_use::ActionVerdict::Allow => {}
             crate::models::computer_use::ActionVerdict::Deny(code) => {
                 let _ = self.append_audit(

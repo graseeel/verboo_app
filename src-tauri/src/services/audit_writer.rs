@@ -158,15 +158,30 @@ impl AuditWriter {
                 let rowid: i64 = row.get(0)?;
                 let prev_hash: String = row.get(1)?;
                 let row_hash: String = row.get(2)?;
-                // Canonical bytes for verification: serialize the row fields
-                // without prev_hash/row_hash. We rebuild from query order.
+                // Canonical bytes: read via `rusqlite::types::Value` to handle
+                // both TEXT and INTEGER columns correctly (ts_mono, ts_wall,
+                // screenshot_attach_to_llm, is_self_test are INTEGER).
                 let mut buf = Vec::new();
                 for i in 3..21 {
-                    let v: Option<String> = row.get(i).ok();
-                    if let Some(s) = v {
-                        buf.extend_from_slice(s.as_bytes());
+                    let v: rusqlite::types::Value = row.get(i).unwrap_or(rusqlite::types::Value::Null);
+                    match v {
+                        rusqlite::types::Value::Null => buf.push(0),
+                        rusqlite::types::Value::Text(s) => {
+                            buf.extend_from_slice(s.as_bytes());
+                            buf.push(0);
+                        }
+                        rusqlite::types::Value::Integer(n) => {
+                            let s = n.to_string();
+                            buf.extend_from_slice(s.as_bytes());
+                            buf.push(0);
+                        }
+                        rusqlite::types::Value::Real(f) => {
+                            let s = f.to_string();
+                            buf.extend_from_slice(s.as_bytes());
+                            buf.push(0);
+                        }
+                        _ => buf.push(0),
                     }
-                    buf.push(0); // field separator
                 }
                 Ok((rowid, prev_hash, row_hash, buf))
             })
@@ -263,8 +278,9 @@ fn canonical_bytes(row: &AuditRow) -> Vec<u8> {
     extend_opt(&mut buf, &row.action_args);
     extend(&mut buf, row.outcome.as_str());
     extend_opt(&mut buf, &row.result_detail);
-    if let Some(b) = row.bytes {
-        extend(&mut buf, &b.to_string());
+    match row.bytes {
+        Some(b) => extend(&mut buf, &b.to_string()),
+        None => buf.push(0),
     }
     extend_opt(&mut buf, &row.thumbnail_hash);
     extend_opt(&mut buf, &row.screenshot_path);
