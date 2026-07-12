@@ -14,6 +14,9 @@ type TranscriptProps = {
   thinkingTurnId?: string
   thinkingSnippets?: string[]
   compactingTurnId?: string
+  /** Set of turnIds whose compaction has completed (done boundary). A
+   *  separator marker is rendered below the turn once compaction finished. */
+  compactedTurnIds?: ReadonlySet<string>
   imageReadingTurnId?: string
   onEditSent?: (conversationId: string, itemId: string, newText: string) => void
 }
@@ -21,7 +24,7 @@ type TranscriptProps = {
 const MAX_ACTIVITY_DETAIL_LINES = 8
 const MAX_SUMMARY_DETAIL_LINES = 3
 
-export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, imageReadingTurnId, conversationId, onEditSent }: TranscriptProps) {
+export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, compactedTurnIds, imageReadingTurnId, conversationId, onEditSent }: TranscriptProps) {
   // `items` is a new array reference only when the conversation actually changes,
   // so this recomputes on real content changes but is skipped when the parent
   // re-renders for unrelated reasons (context-usage ticks, subagent updates…).
@@ -37,6 +40,7 @@ export const Transcript = memo(function Transcript({ items, onOpenReview, review
               thinking={thinkingTurnId === entry.turnId}
               thinkingSnippets={thinkingSnippets}
               compacting={compactingTurnId === entry.turnId}
+              compacted={compactedTurnIds?.has(entry.turnId) ?? false}
               readingImage={imageReadingTurnId === entry.turnId}
               onOpenReview={onOpenReview}
               reviewMetadata={reviewMetadata}
@@ -78,11 +82,12 @@ function ThinkingRotator({ snippets }: { snippets: string[] }) {
   )
 }
 
-function TurnView({ entry, thinking, thinkingSnippets, compacting, readingImage, onOpenReview, reviewMetadata }: {
+function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, readingImage, onOpenReview, reviewMetadata }: {
   entry: Extract<TranscriptEntry, { kind: 'assistant-turn' }>
   thinking: boolean
   thinkingSnippets?: string[]
   compacting: boolean
+  compacted: boolean
   readingImage: boolean
   onOpenReview?: TranscriptProps['onOpenReview']
   reviewMetadata?: WorkspaceReviewMetadata
@@ -112,16 +117,6 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, readingImage,
           side-by-side read as noise. */}
       <div className="message-meta">
         <span>{label}</span>
-        {compacting && (
-          <span className="message-status-marker compaction-marker" role="status">
-            <span className="message-status-marker-icon" aria-hidden="true">
-              <LoaderCircle size={12} />
-            </span>
-            <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm" data-text={t('transcript.compacting')}>
-              {t('transcript.compacting')}
-            </span>
-          </span>
-        )}
       </div>
 
       {!streaming && entry.items.length > 0 && (
@@ -161,6 +156,22 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, readingImage,
           <ChangeSummaryCard summary={summary.changeSummary} onOpenReview={onOpenReview} reviewMetadata={reviewMetadata} />
         </section>
       ) : null}
+
+      {/* Compacting marker — below the turn flow, centered. Two phases:
+          active (spinner + label) and done (separator with label). */}
+      {compacting && (
+        <div className="transcript-marker is-active" role="status">
+          <LoaderCircle size={14} strokeWidth={2} className="transcript-marker-spinner" />
+          <span>{t('transcript.compactingConversation')}</span>
+        </div>
+      )}
+      {compacted && !compacting && (
+        <div className="transcript-marker is-separator" role="status">
+          <span className="transcript-marker-line" aria-hidden="true" />
+          <span>{t('transcript.conversationCompacted')}</span>
+          <span className="transcript-marker-line" aria-hidden="true" />
+        </div>
+      )}
     </article>
   )
 }

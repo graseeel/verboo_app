@@ -33,6 +33,29 @@ describe('parseReservedSlashCommand', () => {
     expect(parseReservedSlashCommand('/pet me')).toBeUndefined()
   })
 
+  it('parses bare /compact', () => {
+    const result = parseReservedSlashCommand('/compact')
+    expect(result).toEqual<ReservedSlashCommand>({ kind: 'compact', raw: '/compact' })
+  })
+
+  it('parses /compact with summarization instructions', () => {
+    const result = parseReservedSlashCommand('/compact keep API design decisions')
+    expect(result).toEqual<ReservedSlashCommand>({
+      kind: 'compact',
+      instructions: 'keep API design decisions',
+      raw: '/compact keep API design decisions',
+    })
+  })
+
+  it('parses /compact case-insensitively', () => {
+    const result = parseReservedSlashCommand('/Compact  focus on tests  ')
+    expect(result).toEqual<ReservedSlashCommand>({
+      kind: 'compact',
+      instructions: 'focus on tests',
+      raw: '/Compact  focus on tests',
+    })
+  })
+
   it('parses bare /goal as show action', () => {
     const result = parseReservedSlashCommand('/goal')
     expect(result).toEqual<ReservedSlashCommand>({ kind: 'goal', action: 'show', raw: '/goal' })
@@ -106,15 +129,24 @@ describe('isReservedSlashQuery', () => {
   it('returns true for exact reserved commands', () => {
     expect(isReservedSlashQuery('/goal')).toBe(true)
     expect(isReservedSlashQuery('/pet')).toBe(true)
+    expect(isReservedSlashQuery('/compact')).toBe(true)
+  })
+
+  it('returns true for compact prefixes', () => {
+    expect(isReservedSlashQuery('/c')).toBe(true)
+    expect(isReservedSlashQuery('/co')).toBe(true)
+    expect(isReservedSlashQuery('/comp')).toBe(true)
   })
 
   it('returns false once arguments are present', () => {
     expect(isReservedSlashQuery('/goal pause')).toBe(false)
     expect(isReservedSlashQuery('/pet me')).toBe(false)
+    expect(isReservedSlashQuery('/compact keep')).toBe(false)
   })
 
   it('is case-insensitive', () => {
     expect(isReservedSlashQuery('/G')).toBe(true)
     expect(isReservedSlashQuery('/P')).toBe(true)
+    expect(isReservedSlashQuery('/C')).toBe(true)
   })
 })

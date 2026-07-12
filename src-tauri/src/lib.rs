@@ -552,10 +552,23 @@ fn fire_completion_notification(
             "[verboo:notification] firing OS notification: title={:?}, body={:?}",
             text.title, text.body
         );
+        // Tauri v2 notification plugin (2.3.3) does not support click
+        // callbacks on desktop. As a workaround, we emit `notification-clicked`
+        // immediately after showing the toast. Ciri's FE listener
+        // `listenForNotificationClick` can use this to navigate to the
+        // conversation when the user returns to the app (the event fires
+        // on notification show, not on click — but it's the best we can do
+        // without a custom macOS notification delegate).
+        //
+        // TODO: when tauri-plugin-notification adds desktop click support,
+        // move this emit into the click callback.
+        use tauri::Emitter;
+        let _ = app.emit("notification-clicked", &conversation_id);
         app.notification()
             .builder()
             .title(&text.title)
             .body(&text.body)
+            .auto_cancel()
             .show()
             .map_err(|e| {
                 eprintln!("[verboo:notification] show() failed: {e}");
@@ -731,6 +744,44 @@ async fn push_workspace_changes(
     })
     .await
     .map_err(|e| format!("Falha ao fazer push: {e}"))
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Stale file detector (Multichat Fase A)
+// ════════════════════════════════════════════════════════════════════
+
+#[tauri::command]
+fn record_file_read(
+    conversation_id: String,
+    file_path: String,
+    detector: tauri::State<'_, crate::services::stale_file_detector::StaleFileDetector>,
+) {
+    detector.record_read(&conversation_id, &file_path);
+}
+
+#[tauri::command]
+fn record_file_write(
+    conversation_id: String,
+    file_path: String,
+    detector: tauri::State<'_, crate::services::stale_file_detector::StaleFileDetector>,
+) {
+    detector.record_write(&conversation_id, &file_path);
+}
+
+#[tauri::command]
+fn list_stale_files(
+    conversation_id: String,
+    detector: tauri::State<'_, crate::services::stale_file_detector::StaleFileDetector>,
+) -> Vec<String> {
+    detector.list_stale(&conversation_id)
+}
+
+#[tauri::command]
+fn clear_stale_files(
+    conversation_id: String,
+    detector: tauri::State<'_, crate::services::stale_file_detector::StaleFileDetector>,
+) {
+    detector.clear_conversation(&conversation_id);
 }
 
 #[tauri::command]
@@ -1439,6 +1490,10 @@ pub fn run() {
             commit_workspace_changes,
             create_workspace_pull_request,
             push_workspace_changes,
+            record_file_read,
+            record_file_write,
+            list_stale_files,
+            clear_stale_files,
             get_file_diff,
             revert_file,
             open_external_file,

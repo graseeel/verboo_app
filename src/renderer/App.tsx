@@ -1,6 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ForwardedRef, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowDown, CheckCircle2, ChevronDown, ChevronRight, FolderClosed, GitBranch, LoaderCircle, XCircle } from 'lucide-react'
+import { ArrowDown, CheckCircle2, ChevronDown, ChevronRight, FolderClosed, GitBranch, LoaderCircle, X, XCircle } from 'lucide-react'
 import type {
   AccessMode,
   AgentEvent,
@@ -65,7 +65,7 @@ import { AccessSelector } from './features/access/AccessSelector'
 import { PermissionApprovalPanel, type PendingPermissionPrompt } from './features/permission/PermissionApprovalPanel'
 import { VisionFallbackModal } from './features/vision/VisionFallbackModal'
 import { SkillApprovalPanel } from './features/skills/SkillApprovalPanel'
-import type { ExtractionStatus, VisionFallbackConsent, VisionFallbackState } from '../shared/types'
+import type { ExtractionStatus, ModelReasoning, VisionFallbackConsent, VisionFallbackState } from '../shared/types'
 import { recognizeImage } from './features/ocr/ocrService'
 import { Composer } from './features/composer/Composer'
 import { ContextMeter } from './features/context/ContextMeter'
@@ -73,6 +73,7 @@ import { ContextPanel, estimateTotalContextTokens } from './features/context/Con
 import { TokenRateMeter } from './features/context/TokenRateMeter'
 import { FeedbackDialog } from './features/feedback/FeedbackDialog'
 import { ModelSelector } from './features/models/ModelSelector'
+import { validOverride, displayEffort, migrateEffortPrefs } from './features/models/effortOverride'
 import { ProfileView } from './features/profile/ProfileView'
 import { ProjectPicker } from './features/projects/ProjectPicker'
 import { SettingsView } from './features/settings/SettingsView'
@@ -96,8 +97,8 @@ import packageJson from '../../package.json'
 const defaultModels: VerbooModel[] = []
 const DEVELOPMENT_NOTICE_KEY = 'verboo:development-notice-accepted'
 const AUTH_SESSION_KEY = 'verboo:last-verified-auth'
+const EFFORT_BY_MODEL_KEY = 'verboo:effort-by-model'
 const AUTH_SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
-const CONTEXT_WINDOWS_KEY = 'verboo:context-windows-by-model'
 const REPORTED_CONTEXT_WINDOWS_KEY = 'verboo:reported-context-windows'
 const SIDEBAR_PREF_KEY = 'verboo:sidebar-preference'
 const SIDEBAR_DEFAULT_WIDTH = 292
@@ -341,10 +342,10 @@ export function App() {
     stale: false,
   })
   const [selectedModel, setSelectedModel] = useState<string | undefined>()
-  const [contextWindowsByModel, setContextWindowsByModel] = useState<Record<string, number>>(
-    readContextWindows,
-  )
   const [skills, setSkills] = useState<SkillSummary[]>([])
+  const [effortByModel, setEffortByModel] = useState<Record<string, string>>(
+    () => readEffortByModel(),
+  )
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | undefined>(undefined)
   const [dismissedVersion, setDismissedVersion] = useState<string | undefined>(undefined)
   const [selectedSkills, setSelectedSkills] = useState<SkillSummary[]>([])
@@ -495,6 +496,11 @@ export function App() {
   const turnSubagentToolIds = useRef<Record<string, Record<string, string>>>({})
   const [thinkingTurnId, setThinkingTurnId] = useState<string | undefined>(undefined)
   const [compactingTurnId, setCompactingTurnId] = useState<string | undefined>(undefined)
+  const [compactedTurnIds, setCompactedTurnIds] = useState<Set<string>>(new Set())
+  // After compacting, skip the local transcript estimate for 15s so the meter
+  // doesn't show inflated % (pre-compact messages are still in the local array).
+  // Once the CLI reports real usage (via agent:event), this becomes irrelevant.
+  const skipContextEstimateUntil = useRef(0)
   // Conversations currently auto-recovering from a context overflow (see the
   // 'error' handler). Guards against an infinite compact→overflow→compact loop.
   const overflowRecovering = useRef<Set<string>>(new Set())
@@ -576,6 +582,22 @@ export function App() {
         ...settings,
         includeVerbooCoAuthor: settings.includeVerbooCoAuthor ?? false,
       })
+      // Reasoning effort prefs: backend is the durable source. When the
+      // backend already has prefs, use them and drop localStorage. When the
+      // backend is empty but localStorage has prefs (user set them before
+      // backend support landed), hydrate from localStorage and kick off a
+      // one-time migration to the backend.
+      const effortMigration = migrateEffortPrefs(settings.effortByModel, readEffortByModel())
+      setEffortByModel(effortMigration.prefs)
+      if (effortMigration.migrate) {
+        void updateUserSettings({ effortByModel: effortMigration.migrate })
+          .then(() => {
+            try { window.localStorage.removeItem(EFFORT_BY_MODEL_KEY) } catch { /* noop */ }
+          })
+      } else if (effortMigration.prefs && Object.keys(effortMigration.prefs).length > 0) {
+        // Backend already has prefs — localStorage is stale, drop it.
+        try { window.localStorage.removeItem(EFFORT_BY_MODEL_KEY) } catch { /* noop */ }
+      }
       setSelectedModel(settings.lastSelectedModelId)
       setAccessMode(settings.defaultAccessMode)
       setConfig(nextConfig)
@@ -601,6 +623,19 @@ export function App() {
     return () => {
       cancelled = true
     }
+  }, [])
+
+  // Notification click → focus conversation. Wired once at mount. The
+  // backend emits "notification-clicked" with conversationId when the
+  // user clicks an OS notification — currently a TODO for Geralt's
+  // notification_service.rs. Until then the handler exists but the event
+  // never fires.
+  useEffect(() => {
+    const unlisten = (window.verboo as any).listenForNotificationClick?.((conversationId: string) => {
+      setActiveConversationId(conversationId)
+      setActiveView('chat')
+    })
+    return () => { unlisten?.then((fn: () => void) => fn()) }
   }, [])
 
   useEffect(() => {
@@ -764,9 +799,21 @@ export function App() {
   )
   const maxContextWindow = selectedModelInfo?.contextWindow
     ?? (selectedModel ? reportedContextWindows[selectedModel] : undefined)
-  const selectedContextWindow = selectedModel && maxContextWindow
-    ? clampContextWindow(contextWindowsByModel[selectedModel] ?? maxContextWindow, maxContextWindow)
-    : undefined
+  const selectedContextWindow = selectedModelInfo?.contextWindow
+    ?? (selectedModel ? reportedContextWindows[selectedModel] : undefined)
+
+  // ── Reasoning effort ──────────────────────────────────────────
+  const selectedModelReasoning = selectedModelInfo ? getModelReasoning(selectedModelInfo) : undefined
+  const selectedEffortLevels = selectedModelReasoning?.effortLevels ?? []
+  /** Wire value: only set when the user has a saved, still-valid preference
+   *  (i.e. the saved level is in the model's current `effortLevels`).
+   *  Never falls back to defaultEffort — when no preference is set, the
+   *  backend applies its own default. Preserves `"none"` when the model
+   *  offers it as a deliberate level (it is NOT coerced to undefined). */
+  const validEffortOverride = validOverride(effortByModel, selectedModel, selectedModelReasoning)
+  /** UI value: same rule as `validEffortOverride`, but falls back to the
+   *  model's `defaultEffort` so the pill always renders a meaningful level. */
+  const displayEffortValue = displayEffort(effortByModel, selectedModel, selectedModelReasoning)
 
   useEffect(() => {
     selectedContextWindowRef.current = selectedContextWindow
@@ -786,7 +833,7 @@ export function App() {
       updatedAt: Date.now(),
     }
   }, [items, attachedFiles, selectedSkills, queuedFollowUps, selectedContextWindow])
-  const effectiveContextUsage = contextUsage ?? estimatedContextUsage
+  const effectiveContextUsage = contextUsage ?? (Date.now() < skipContextEstimateUntil.current ? undefined : estimatedContextUsage)
 
   useEffect(() => {
     if (runningTurnId || queuedFollowUps.length === 0) return
@@ -808,6 +855,13 @@ export function App() {
         if (activeConversationId) {
           void window.verboo.interrupt(activeConversationId)
         }
+        // User ESC×2 is deliberate: dismiss the question wizard entirely
+        // (not just minimize). The auto-interrupt from presentTurnQuestions
+        // (line ~2251) does NOT go through this handler — that path must
+        // keep the wizard open for AskUserQuestion flow.
+        questionPromptRef.current = undefined
+        setQuestionPrompt(undefined)
+        setQuestionWizardOpen(false)
         return
       }
       lastEscapeAt.current = now
@@ -970,16 +1024,6 @@ export function App() {
     setNoticeAccepted(true)
   }
 
-  function changeContextWindow(value: number) {
-    if (!selectedModel || !maxContextWindow) return
-    const nextValue = clampContextWindow(value, maxContextWindow)
-    setContextWindowsByModel(current => {
-      const next = { ...current, [selectedModel]: nextValue }
-      window.localStorage.setItem(CONTEXT_WINDOWS_KEY, JSON.stringify(next))
-      return next
-    })
-  }
-
   async function updateUserSettings(patch: Partial<UserSettings>) {
     // Persist avatar locally as fallback (the Rust backend may not have the
     // AvatarSettings field yet — note: coordinate with Ezio).
@@ -1003,6 +1047,33 @@ export function App() {
     void updateUserSettings({ lastSelectedModelId: modelId })
   }
 
+  function handleEffortSelect(modelId: string, effort: string) {
+    // Optimistic update + durable persist. Rollback on backend failure so the
+    // UI never drifts from what's actually saved. localStorage is migration-
+    // only (see loadStartupState) — we do NOT mirror every change there.
+    const prev = effortByModel
+    const next = { ...prev, [modelId]: effort }
+    setEffortByModel(next)
+    // If the user picked effort for a model that isn't currently selected,
+    // select it too — otherwise the preference silently applies to the
+    // wrong model.
+    if (modelId !== selectedModel) handleModelSelect(modelId)
+    void updateUserSettings({ effortByModel: next }).catch(() => {
+      setEffortByModel(prev)
+    })
+  }
+
+  function handleClearEffortOverride(modelId: string) {
+    if (!(modelId in effortByModel)) return
+    const prev = effortByModel
+    const next = { ...prev }
+    delete next[modelId]
+    setEffortByModel(next)
+    void updateUserSettings({ effortByModel: next }).catch(() => {
+      setEffortByModel(prev)
+    })
+  }
+
   async function updateStaySignedIn(staySignedIn: boolean) {
     await updateUserSettings({ staySignedIn })
   }
@@ -1011,6 +1082,8 @@ export function App() {
     const next = await window.verboo.resetUserSettings()
     setUserSettings(next)
     setAccessMode(next.defaultAccessMode)
+    try { window.localStorage.removeItem(EFFORT_BY_MODEL_KEY) } catch { /* noop */ }
+    setEffortByModel({})
   }
 
   async function onCheckForUpdates(userInitiated = true) {
@@ -1161,7 +1234,7 @@ export function App() {
     })
   }
 
-  function handleAgentEvent(event: AgentEvent) {
+  async function handleAgentEvent(event: AgentEvent) {
     if (event.type === 'subagent-progress') {
       updateResearchSubagentProgress(event.progress)
       return
@@ -1281,11 +1354,18 @@ export function App() {
         setPetActivity({ kind: activity.kind, label: `${activity.label} ${activity.detail ?? ''}` })
       }
       if (activity?.kind === 'compacting') {
-        setCompactingTurnId(event.turnId)
+        // detail==='done' signals compaction completed (Geralt's event).
+        if (activity.detail === 'done') {
+          setCompactingTurnId(current => (current === event.turnId ? undefined : current))
+          setCompactedTurnIds(prev => { const next = new Set(prev); next.add(event.turnId); return next })
+        } else {
+          setCompactingTurnId(event.turnId)
+        }
         return
       }
-      // Clear compaction marker when any other activity arrives for this turn
-      setCompactingTurnId(current => (current === event.turnId ? undefined : current))
+      // Do NOT clear compactingTurnId here — it stays until the turn
+      // completes (done/error handler), ensuring the user sees the
+      // compaction marker long enough even if follow-up activities race in.
       if (activity?.kind === 'subagent') trackActiveSubagent(event.turnId, activity)
       if (conversationId && activity) {
         if (activity.kind === 'command' && activity.detail) {
@@ -1390,29 +1470,35 @@ export function App() {
       const lowerMessage = event.message.toLowerCase()
       const isContextOverflow =
         lowerMessage.includes('too many tokens')
+        || lowerMessage.includes('max_tokens')
+        || lowerMessage.includes('prompt is too long')
+        || lowerMessage.includes('token limit')
+        || lowerMessage.includes('max length')
         || (lowerMessage.includes('context')
           && (lowerMessage.includes('exceed')
             || lowerMessage.includes('too long')
             || lowerMessage.includes('maximum')
-            || lowerMessage.includes('window')))
-      // Context overflow auto-recovery: in headless (--print) mode the CLI errors
-      // on an API-level overflow instead of compacting, so the conversation would
-      // "die" and the user had to send "continue" by hand. Recover once by firing
-      // a "continue" turn — the CLI then auto-compacts (threshold now exceeded)
-      // and resumes the task. Guarded per-conversation so a still-too-big context
-      // surfaces the error instead of looping.
+            || lowerMessage.includes('window')
+            || lowerMessage.includes('limit exceeded')
+            || lowerMessage.includes('overflow')
+            || lowerMessage.includes('too large')))
+        || /rate limit.*token/i.test(lowerMessage)
+        || /token.*rate.*limit/i.test(lowerMessage)
+      // Context overflow auto-recovery: in headless (--print) mode the CLI may
+      // error on API-level overflow instead of finishing an in-process compact.
+      // Recover once with a structured resume prompt (never the bare word
+      // "continue") + session resume so the model continues without a user bubble.
+      // Guarded per-conversation so a still-too-big context surfaces the error
+      // instead of looping.
       const willAutoRecover = Boolean(
         conversationId && isContextOverflow && !overflowRecovering.current.has(conversationId),
       )
       if (conversationId) {
         if (willAutoRecover) {
           overflowRecovering.current.add(conversationId)
-          appendConversationItem(conversationId, {
-            id: `${event.turnId}:compacting`,
-            role: 'system',
-            text: t('context.autoCompacting'),
-            timestamp: Date.now(),
-          })
+          // Show the compacting spinner under the interrupted turn briefly;
+          // we flip to the "Conversation compacted" separator when resume starts.
+          setCompactingTurnId(event.turnId)
         } else {
           overflowRecovering.current.delete(conversationId)
           appendConversationItem(conversationId, {
@@ -1425,10 +1511,35 @@ export function App() {
           })
         }
       }
+      // Capture partial assistant text BEFORE cleanup, so it can be appended
+      // to the resume prompt as anchor context for the model.
+      const partialText = turnAssistantText.current[event.turnId] ?? ''
       delete turnAssistantText.current[event.turnId]
       cleanupTurnState(event.turnId)
+      // Auto-resume with structured prompt (no bare "continue", no user bubble).
+      // Uses runTurn so tracking (turnModels, runningConversations, baseline,
+      // retry payload) is preserved. createQueuedFollowUp does NOT create a
+      // user bubble in the transcript — the user never sees the resume prompt.
       if (willAutoRecover && conversationId) {
-        void runTurn(createQueuedFollowUp(conversationId, 'continue'))
+        const suffix = partialText.length > 50
+          ? `\n\nLast partial assistant output (may be truncated):\n"""\n${partialText.slice(-800)}\n"""`
+          : ''
+        const resumeMessage = t('context.resumePrompt') + suffix
+        const resume = createQueuedFollowUp(conversationId, resumeMessage)
+        // Mark the *interrupted* turn as compacted and clear its spinner so the
+        // separator shows under the last model content. Do not leave
+        // compactingTurnId stuck on a turnId that will never receive done/error
+        // again (cleanup already removed live tracking for that turn).
+        setCompactedTurnIds(prev => {
+          const next = new Set(prev)
+          next.add(event.turnId)
+          return next
+        })
+        setCompactingTurnId(current => (current === event.turnId ? undefined : current))
+        // Suppress local-estimate fallback for 15s so the meter doesn't show
+        // inflated % from pre-compact messages still in the local transcript.
+        skipContextEstimateUntil.current = Date.now() + 15_000
+        void runTurn(resume)
       }
       return
     }
@@ -1675,6 +1786,8 @@ export function App() {
         model: selectedModel,
         modelSupportsVision: Boolean(selectedModelInfo?.supportsVision),
         contextWindow: selectedContextWindow,
+        effort: validEffortOverride,
+        reasoning: selectedModelReasoning,
         responseLanguage,
         accessMode: accessMode === 'full' && !userSettings.fullAccessEnabled ? 'approval' : accessMode,
         workingDirectory: workingDirectoryForConversation(conversationId),
@@ -2116,6 +2229,8 @@ export function App() {
         model: selectedModel,
         modelSupportsVision: Boolean(selectedModelInfo?.supportsVision),
         contextWindow: selectedContextWindow,
+        effort: validEffortOverride,
+        reasoning: selectedModelReasoning,
         responseLanguage,
         accessMode: accessMode === 'full' && !userSettings.fullAccessEnabled ? 'approval' : accessMode,
         workingDirectory: workingDirectoryForConversation(conversationId),
@@ -2291,6 +2406,39 @@ export function App() {
     })
   }
 
+  /**
+   * /compact — reserved system command (like /goal and /pet).
+   * Forwards to the CLI's native `/compact` slash command with session resume
+   * so the CLI summarizes history and frees context. Optional free-text
+   * instructions are appended: `/compact keep API design decisions`.
+   * No user bubble is shown (same as other reserved commands).
+   */
+  function handleCompactCommand(command: Extract<ReservedSlashCommand, { kind: 'compact' }>) {
+    const conversationId = ensureActiveConversation()
+    const sessionId = conversationCliSessionId(conversationId)
+    if (!sessionId) {
+      toast(t('composer.compactNoSession'), 'info')
+      return
+    }
+
+    // Forward to the CLI's native /compact (supportsNonInteractive: true).
+    // Marker UI is driven by Geralt's runtimeActivity compacting events —
+    // no placeholder turnId (that would fight the real turnId from sendTurn).
+    const message = command.instructions?.trim()
+      ? `/compact ${command.instructions.trim()}`
+      : '/compact'
+
+    skipContextEstimateUntil.current = Date.now() + 15_000
+    toast(t('composer.compactStarted'), 'info')
+
+    const queued = createQueuedFollowUp(conversationId, message)
+    if (isConversationRunning(conversationId)) {
+      enqueueFollowUp(queued)
+      return
+    }
+    void runTurn(queued)
+  }
+
   function updatePetSize(size: number) {
     const clamped = Math.round(Math.max(PET_MIN_SIZE, Math.min(PET_MAX_SIZE, size)))
     setPetSize(clamped)
@@ -2318,6 +2466,12 @@ export function App() {
     { key: 'review', label: t('palette.toggleReview'), icon: paletteIcons.review, run: () => { void handleToggleReview() } },
     { key: 'sidebar', label: t('palette.toggleSidebar'), icon: paletteIcons.sidebar, run: toggleSidebarVisibility },
     { key: 'pet', label: t('palette.togglePet'), icon: paletteIcons.pet, run: togglePet },
+    {
+      key: 'compact',
+      label: t('palette.compactContext'),
+      icon: paletteIcons.compact,
+      run: () => handleCompactCommand({ kind: 'compact', raw: '/compact' }),
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ], [t, currentWorkspaceDirectory])
 
@@ -2485,6 +2639,8 @@ export function App() {
           model: selectedModel,
           modelSupportsVision: Boolean(selectedModelInfo?.supportsVision),
           contextWindow: selectedContextWindow,
+          effort: validEffortOverride,
+          reasoning: selectedModelReasoning,
           responseLanguage: inferResponseLanguage(nextMessage, goalLanguage),
           accessMode: continueAccess,
           workingDirectory: currentGoal.workingDirectory,
@@ -3892,8 +4048,6 @@ export function App() {
               credentials={credentials}
               modelResult={modelResult}
               selectedModel={selectedModelInfo}
-              selectedContextWindow={selectedContextWindow}
-              maxContextWindow={maxContextWindow}
               theme={theme}
               activeTab={settingsTab}
               userSettings={userSettings}
@@ -3907,7 +4061,6 @@ export function App() {
               onSaveApiKey={async apiKey => {
                 await saveApiKey(apiKey)
               }}
-              onContextWindowChange={changeContextWindow}
               onThemeChange={setTheme}
               onActiveTabChange={setSettingsTab}
               onUserSettingsChange={updateUserSettings}
@@ -3931,6 +4084,7 @@ export function App() {
                 thinkingTurnId={thinkingTurnId}
                 thinkingSnippets={thinkingSnippets}
                 compactingTurnId={compactingTurnId}
+                compactedTurnIds={compactedTurnIds}
                 imageReadingTurnId={imageReadingTurnId}
                 onEditSent={editSentMessage}
               />
@@ -4036,12 +4190,26 @@ export function App() {
                 onDismiss={() => setQuestionWizardOpen(false)}
               />
             ) : (
-              <button type="button" className="question-chip" onClick={() => setQuestionWizardOpen(true)}>
-                <MessageCircleQuestion size={15} aria-hidden="true" />
-                {questionPrompt.questions.length === 1
-                  ? t('questions.chipOne')
-                  : t('questions.chip', { count: questionPrompt.questions.length })}
-              </button>
+              <div className="question-chip-container">
+                <button type="button" className="question-chip" onClick={() => setQuestionWizardOpen(true)}>
+                  <MessageCircleQuestion size={15} aria-hidden="true" />
+                  {questionPrompt.questions.length === 1
+                    ? t('questions.chipOne')
+                    : t('questions.chip', { count: questionPrompt.questions.length })}
+                </button>
+                <button
+                  type="button"
+                  className="question-chip-close"
+                  onClick={() => {
+                    questionPromptRef.current = undefined
+                    setQuestionPrompt(undefined)
+                    setQuestionWizardOpen(false)
+                  }}
+                  aria-label={t('questions.dismiss')}
+                >
+                  <X size={13} />
+                </button>
+              </div>
             )
           )}
           {visiblePermissionPrompt && (
@@ -4091,6 +4259,7 @@ export function App() {
             onQueueEdit={editQueuedItem}
             onQueueRemove={removeQueuedItem}
             onPetCommand={togglePet}
+            onCompactCommand={handleCompactCommand}
             value={composerValue}
             onValueChange={setComposerValue}
             busy={activeConversationId ? runningConversations.has(activeConversationId) : false}
@@ -4149,6 +4318,11 @@ export function App() {
                   modelResult={modelResult}
                   onSelect={handleModelSelect}
                   onRefresh={() => refreshModels(true)}
+                  effortByModel={effortByModel}
+                  selectedEffortLevels={selectedEffortLevels}
+                  selectedEffort={displayEffortValue}
+                  onSelectEffort={handleEffortSelect}
+                  onClearEffortOverride={handleClearEffortOverride}
                 />
               </>
             }
@@ -4331,13 +4505,22 @@ function ResearchSubagentPanel({
   )
 }
 
-function readContextWindows(): Record<string, number> {
+/** Extract ModelReasoning from the promoted field or raw router payload.
+ *  When Geralt eventually promotes reasoning on the Rust VerbooModel,
+ *  the `model.reasoning` branch fires first; meanwhile raw fallback works. */
+function getModelReasoning(model: VerbooModel): ModelReasoning | undefined {
+  if (model.reasoning) return model.reasoning
+  const r = model.raw
+  if (r && typeof r === 'object' && 'reasoning' in r) {
+    const reas = (r as Record<string, unknown>).reasoning
+    if (reas && typeof reas === 'object') return reas as ModelReasoning
+  }
+  return undefined
+}
+
+function readEffortByModel(): Record<string, string> {
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(CONTEXT_WINDOWS_KEY) ?? '{}') as unknown
-    if (!parsed || typeof parsed !== 'object') return {}
-    return Object.fromEntries(
-      Object.entries(parsed).filter(([, value]) => typeof value === 'number' && Number.isFinite(value)),
-    ) as Record<string, number>
+    return JSON.parse(window.localStorage.getItem(EFFORT_BY_MODEL_KEY) ?? '{}') as Record<string, string>
   } catch {
     return {}
   }
@@ -4692,11 +4875,6 @@ function workspaceFolderName(path: string, projectName?: string, fallback = 'No 
   return trimmed.split(/[\\/]/).filter(Boolean).at(-1) ?? trimmed
 }
 
-function clampContextWindow(value: number, max: number): number {
-  const min = Math.min(4_000, max)
-  return Math.min(Math.max(Math.round(value), min), max)
-}
-
 function extractContextUsage(payload: unknown, maxTokens?: number): ContextUsageSnapshot | undefined {
   // Prefer the CLI's pre-calculated context_window object when available.
   // This is the authoritative source — the CLI accounts for its own context
@@ -4711,7 +4889,11 @@ function extractContextUsage(payload: unknown, maxTokens?: number): ContextUsage
     const cliTotalOutput = numberValueOptional(ctxWindow.total_output_tokens)
     const effectiveMax = cliWindowSize ?? maxTokens
     // If the CLI gives us a used_percentage (0-100), use it directly.
+    // BUT: return undefined when the CLI sends early zeros (before any tokens
+    // have actually been used) so the frontend's estimate is not overwritten.
     if (cliUsedPercentage !== undefined) {
+      const valid = cliUsedPercentage > 0 || (cliTotalInput !== undefined && cliTotalInput > 0)
+      if (!valid) return undefined
       const percentage = Math.max(0, Math.min(1, cliUsedPercentage / 100))
       const usedTokens = effectiveMax
         ? Math.round(percentage * effectiveMax)

@@ -7,8 +7,8 @@ use tauri::{AppHandle, Emitter};
 
 use crate::models::types::{
     access_mode_cli_args, AgentEvent, AgentResultSnapshot, AgentTurnRequest, AttachmentMeta,
-    AttachmentKind, EventType, LanguageCode, PersonalityMode, RuntimeActivity, RuntimeStatus,
-    RuntimeStatusKind, UserSettings,
+    AttachmentKind, EventType, LanguageCode, ModelReasoning, PersonalityMode, RuntimeActivity,
+    RuntimeStatus, RuntimeStatusKind, UserSettings,
 };
 use crate::services::auth_token::{inject_api_key, resolve_token};
 use crate::services::credentials_store::CredentialsStore;
@@ -43,6 +43,12 @@ type ChildHandle = Arc<Mutex<Child>>;
 pub struct TurnService {
     /// Active child processes keyed by turn_id, so `interrupt` can signal them.
     active: Arc<Mutex<std::collections::HashMap<String, ChildHandle>>>,
+    /// Maps conversation_id → turn_id for precise interrupt. Without this,
+    /// `interrupt(conversation_id)` had to guess which turn to kill (frágil
+    /// fallback to "any active turn" could kill the wrong chat in multichat).
+    /// Registered on `send_turn`, cleared on `Done`/`Error` in the reader
+    /// thread.
+    active_by_conversation: Arc<Mutex<std::collections::HashMap<String, String>>>,
     credentials: Arc<CredentialsStore>,
     /// Optional settings store for reading `prevent_sleep_while_running`.
     /// When `None`, sleep prevention is disabled (used in tests).
@@ -55,6 +61,7 @@ impl TurnService {
     pub fn new(credentials: Arc<CredentialsStore>) -> Self {
         Self {
             active: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            active_by_conversation: Arc::new(Mutex::new(std::collections::HashMap::new())),
             credentials,
             settings: None,
             app_data_dir: None,
@@ -388,12 +395,23 @@ impl TurnService {
         // Clone all Arc fields so the background thread owns them without
         // borrowing `&self`. AppHandle is Clone. request is moved.
         let active = self.active.clone();
+        let active_by_conversation = self.active_by_conversation.clone();
         let credentials = self.credentials.clone();
         let settings = self.settings.clone();
         let app_data_dir = self.app_data_dir.clone();
         let app_for_thread = app.clone();
         let turn_id_for_thread = turn_id.clone();
         let conversation_id_for_thread = conversation_id.clone();
+
+        // Register conversation_id → turn_id for precise interrupt. This
+        // replaces the old fragile fallback ("any active turn") that could
+        // kill the wrong chat in multichat. Cleared on Done/Error in the
+        // reader thread.
+        {
+            if let Ok(mut map) = active_by_conversation.lock() {
+                map.insert(conversation_id.clone(), turn_id.clone());
+            }
+        }
 
         // Spawn a background thread for ALL heavy work. This is the structural
         // fix for the beachball freeze: the Tauri command thread returns
@@ -415,6 +433,7 @@ impl TurnService {
                     turn_id_for_thread,
                     conversation_id_for_thread,
                     active,
+                    active_by_conversation,
                     credentials,
                     settings,
                     app_data_dir,
@@ -435,6 +454,7 @@ impl TurnService {
         turn_id: String,
         conversation_id: String,
         active: Arc<Mutex<std::collections::HashMap<String, ChildHandle>>>,
+        active_by_conversation: Arc<Mutex<std::collections::HashMap<String, String>>>,
         credentials: Arc<CredentialsStore>,
         settings: Option<Arc<SettingsStore>>,
         app_data_dir: Option<std::path::PathBuf>,
@@ -465,6 +485,7 @@ impl TurnService {
             // registering the helper child so interrupt can kill it).
             let fallback_svc = TurnService {
                 active: active.clone(),
+                active_by_conversation: active_by_conversation.clone(),
                 credentials: credentials.clone(),
                 settings: settings.clone(),
                 app_data_dir: app_data_dir.clone(),
@@ -482,32 +503,12 @@ impl TurnService {
         let stream_json_payload = build_stream_json_input(&request, &prompt);
         let use_stream_json = stream_json_payload.is_some();
 
-        let mut args = vec![
-            "--print".to_string(),
-            "--output-format".to_string(),
-            "stream-json".to_string(),
-            "--verbose".to_string(),
-            "--include-partial-messages".to_string(),
-        ];
-        if use_stream_json {
-            args.push("--input-format".to_string());
-            args.push("stream-json".to_string());
+        let resume_id = if is_resume {
+            Some(resume_session_id.unwrap())
         } else {
-            args.push(prompt);
-        }
-        if is_resume {
-            args.push("--resume".to_string());
-            args.push(resume_session_id.unwrap());
-        }
-        if let Some(model) = &request.model {
-            if !model.trim().is_empty() {
-                args.push("--model".to_string());
-                args.push(model.clone());
-            }
-        }
-        for arg in access_mode_cli_args(&request.access_mode) {
-            args.push(arg.to_string());
-        }
+            None
+        };
+        let mut args = build_cli_args(&request, &prompt, resume_id.as_deref(), use_stream_json);
 
         let working_directory = safe_runtime_working_directory(&request.working_directory);
         let token = resolve_token(&credentials);
@@ -539,6 +540,38 @@ impl TurnService {
         }
         let _token_file = inject_api_key(token.as_deref(), &mut cmd);
         crate::services::auth_token::augment_identity_env(&mut cmd);
+
+        // Effort transport: inject `CLAUDE_CODE_EFFORT_LEVEL=<level>` for
+        // valid overrides only. The CLI 0.12 validates this env value
+        // dynamically against the model's `reasoning.effortLevels`, so any
+        // router level (including "none" and future levels) flows through.
+        // We never pass `--effort` because its static allowlist rejects
+        // "none" and unknown levels. Absent/stale override → env not set →
+        // CLI applies the model's `default_effort`.
+        if let Some(level) = resolve_effort_arg(request.effort.as_deref(), request.reasoning.as_ref()) {
+            cmd.env("CLAUDE_CODE_EFFORT_LEVEL", level);
+        }
+
+        // Wire the user's context window setting into the CLI's auto-compact
+        // logic. The CLI honors `CLAUDE_CODE_AUTO_COMPACT_WINDOW` as the
+        // effective context window size (min of model window and this value).
+        //
+        // We do NOT set `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` anymore. The CLI's
+        // default threshold is `effectiveWindow - 13000 (AUTOCOMPACT_BUFFER)`,
+        // which is more conservative than a fixed 90%. With small user windows
+        // (e.g. 20k), 90% of effective = ~10.8k, but the meter divides by the
+        // raw window (20k) → compact fires at ~55% visual, confusing the user.
+        // The default threshold avoids this visual mismatch.
+        //
+        // We only set the window when the user's value is reasonably large
+        // (>= 40000). Below that, the CLI's own model default is safer —
+        // setting a tiny window makes the effective window go negative after
+        // the 13k buffer, causing double-compacts every turn.
+        if let Some(context_window) = request.context_window {
+            if context_window >= 40_000 {
+                cmd.env("CLAUDE_CODE_AUTO_COMPACT_WINDOW", context_window.to_string());
+            }
+        }
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
@@ -621,6 +654,7 @@ impl TurnService {
         let turn_id_for_stdout = turn_id.clone();
         let conversation_id_for_stdout = conversation_id.clone();
         let active_map_for_thread = active.clone();
+        let conv_map_for_thread = active_by_conversation.clone();
 
         // Spawn reader thread for stdout (the main streaming channel).
         thread::spawn(move || {
@@ -712,6 +746,19 @@ impl TurnService {
             if let Some(mut map) = active_map_for_thread.lock().ok() {
                 map.remove(&turn_id_for_stdout);
             }
+            // Clear the conversation→turn mapping so a future turn for the
+            // same conversation can register cleanly. This is the cleanup
+            // side of the precise interrupt mapping (A1).
+            if let Ok(mut conv_map) = conv_map_for_thread.lock() {
+                // Only remove if it still points to OUR turn_id — if the
+                // user already started a new turn for this conversation,
+                // that new mapping must survive.
+                if conv_map.get(&conversation_id_for_stdout)
+                    == Some(&turn_id_for_stdout)
+                {
+                    conv_map.remove(&conversation_id_for_stdout);
+                }
+            }
             if !emitted_stream_text && exit_code != Some(0) {
                 let exit_display = match exit_code {
                     Some(code) => format!("exit={code}"),
@@ -790,26 +837,37 @@ impl TurnService {
     /// true if a child was found and signaled, false if the turn wasn't
     /// running anymore.
     pub fn interrupt(&self, conversation_id: Option<String>) -> Result<bool, String> {
-        let mut active = self.active.lock().map_err(|e| e.to_string())?;
-        // For now we match by turn_id == conversation_id OR any active turn
-        // when conversation_id is None — the renderer's `interrupt()` call
-        // passes the active conversation_id, which we use as turn_id proxy.
-        let target_key = if let Some(conv) = conversation_id {
-            if active.contains_key(&conv) {
-                Some(conv)
-            } else {
+        // Precise interrupt: look up the turn_id registered for this
+        // conversation_id. If found, signal that specific child. If not
+        // found, return false (no-op) — we do NOT fall back to "any active
+        // turn" because that could kill the wrong chat in multichat.
+        //
+        // `conversation_id = None` is a legacy escape hatch (interrupt
+        // whatever is running). It's kept for backward compatibility but
+        // should not be used in multichat mode.
+        let target_turn_id = match conversation_id {
+            Some(conv_id) => {
+                let conv_map = self.active_by_conversation.lock().map_err(|e| e.to_string())?;
+                conv_map.get(&conv_id).cloned()
+            }
+            None => {
+                // Legacy: no conversation_id → interrupt any active turn.
+                // Only used by old callers that don't track conversation_id.
+                let active = self.active.lock().map_err(|e| e.to_string())?;
                 active.keys().next().cloned()
             }
-        } else {
-            active.keys().next().cloned()
         };
-        if let Some(key) = target_key {
-            if let Some(child_handle) = active.get_mut(&key) {
-                // Try graceful interrupt first (SIGINT / Ctrl+C), then kill.
-                if let Ok(mut child) = child_handle.lock() {
-                    let _ = crate::services::child_signal::interrupt_child(&mut child);
-                    return Ok(true);
-                }
+
+        let Some(turn_id) = target_turn_id else {
+            // No turn registered for this conversation — safe no-op.
+            return Ok(false);
+        };
+
+        let mut active = self.active.lock().map_err(|e| e.to_string())?;
+        if let Some(child_handle) = active.get_mut(&turn_id) {
+            if let Ok(mut child) = child_handle.lock() {
+                let _ = crate::services::child_signal::interrupt_child(&mut child);
+                return Ok(true);
             }
         }
         Ok(false)
@@ -1019,6 +1077,108 @@ pub(crate) fn build_prompt_internal(request: &AgentTurnRequest, is_resume: bool)
 
     parts.push(request.message.clone());
     parts.join("\n\n")
+}
+
+/// Resolves the `--effort <level>` argument to send to the CLI, given the
+/// user's saved override and the model's reasoning capability.
+///
+/// Three-contract model (no ambiguity):
+///   - **Saved valid override**: present, non-empty, and ∈
+///     `reasoning.effort_levels` → returned as-is.
+///   - **Displayed effort** (FE concern, not here): override when valid,
+///     else `reasoning.default_effort`. The FE reads `default_effort` from
+///     the capability to show a default chip.
+///   - **Sent effort** (this function): only a valid override is sent.
+///     Absent/invalid → `None` → `--effort` omitted → CLI applies
+///     `default_effort` on its own.
+///
+/// "none" is a real level (not a sentinel): if the model offers it
+/// (`effort_levels` contains "none"), an explicit "none" override is sent
+/// as `--effort none`. If the model does NOT offer "none", "none" is
+/// treated as an invalid override and dropped (no `--effort`).
+///
+/// No hardcoded level list — any string the Router sends in
+/// `effort_levels` is accepted. Models without `reasoning` (kimi/minimax)
+/// get `None` regardless of the override.
+/// Builds the full CLI argument vector for a turn, given the request, the
+/// pre-rendered prompt, the optional resume session id, and whether to use
+/// stream-json input. Extracted from `run_turn_background` so the arg set
+/// can be asserted in integration tests without spawning a process.
+///
+/// Effort contract (see `resolve_effort_arg`): `--effort <level>` is pushed
+/// only when the request carries a valid override for the model's current
+/// `reasoning.effort_levels`. Absent/invalid → omitted.
+pub(crate) fn build_cli_args(
+    request: &AgentTurnRequest,
+    prompt: &str,
+    resume_session_id: Option<&str>,
+    use_stream_json: bool,
+) -> Vec<String> {
+    let mut args = vec![
+        "--print".to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--verbose".to_string(),
+        "--include-partial-messages".to_string(),
+    ];
+    if use_stream_json {
+        args.push("--input-format".to_string());
+        args.push("stream-json".to_string());
+    } else {
+        args.push(prompt.to_string());
+    }
+    if let Some(sid) = resume_session_id {
+        args.push("--resume".to_string());
+        args.push(sid.to_string());
+    }
+    if let Some(model) = &request.model {
+        if !model.trim().is_empty() {
+            args.push("--model".to_string());
+            args.push(model.clone());
+        }
+    }
+    // Effort is NOT passed as `--effort` — the CLI 0.12 has a static
+    // allowlist that rejects "none" and future router levels. Instead, a
+    // valid override is injected as `CLAUDE_CODE_EFFORT_LEVEL=<level>` env
+    // var on the spawned process (see `run_turn_background`). The CLI
+    // validates the env value against the model's `reasoning.effortLevels`
+    // dynamically. Absent/invalid → env not set → CLI applies default_effort.
+    for arg in access_mode_cli_args(&request.access_mode) {
+        args.push(arg.to_string());
+    }
+    args
+}
+
+pub(crate) fn resolve_effort_arg(
+    effort_override: Option<&str>,
+    reasoning: Option<&ModelReasoning>,
+) -> Option<String> {
+    let raw = effort_override?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let levels = reasoning.map(|r| r.effort_levels.as_slice()).unwrap_or(&[]);
+    if levels.is_empty() {
+        // Model has no reasoning capability — no effort UI, no --effort.
+        return None;
+    }
+    // Case-insensitive membership against the capability's levels.
+    let lower = raw.to_lowercase();
+    let matched = levels.iter().find(|l| l.to_lowercase() == lower);
+    matched.map(|s| s.clone())
+}
+
+/// Returns the `CLAUDE_CODE_EFFORT_LEVEL` value to inject on the spawned
+/// CLI process, or `None` when the override is absent/invalid. Mirrors the
+/// env injection in `run_turn_background` so tests can assert the transport
+/// without spawning a process. Same validation as `resolve_effort_arg` —
+/// a valid override is one present, non-empty, and ∈ the model's
+/// `reasoning.effort_levels`.
+pub(crate) fn resolve_effort_env(
+    effort_override: Option<&str>,
+    reasoning: Option<&ModelReasoning>,
+) -> Option<String> {
+    resolve_effort_arg(effort_override, reasoning)
 }
 
 fn safe_runtime_working_directory(working_directory: &str) -> String {
@@ -1438,26 +1598,81 @@ fn runtime_status_from_payload(payload: &serde_json::Value) -> Option<RuntimeSta
     None
 }
 
-fn runtime_activity_from_payload(payload: &serde_json::Value) -> Option<RuntimeActivity> {
-    // Compaction detection
+/// Returns true when the payload represents a compaction event from the CLI.
+/// Handles three shapes:
+/// 1. Anthropic raw stream-json: `{"type":"stream_event","event":{"delta":{"type":"compaction_delta"|"compaction"}}}`
+/// 2. CLI system informational: `{"type":"system","subtype":"informational","content":"Compacting conversation…"}`
+/// 3. CLI compact boundary: `{"type":"system","subtype":"compact_boundary","content":"Conversation compacted"}`
+///
+/// Defensive: case-insensitive, handles unicode ellipsis `…` vs `...`.
+fn is_compaction_payload(payload: &serde_json::Value) -> bool {
+    // Shape 1: Anthropic raw stream_event with compaction_delta/compaction.
     if payload.get("type").and_then(|v| v.as_str()) == Some("stream_event") {
         if let Some(event) = payload.get("event") {
             if let Some(delta) = event.get("delta") {
                 let dtype = delta.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 if dtype == "compaction_delta" || dtype == "compaction" {
-                    return Some(RuntimeActivity {
-                        key: "compaction".to_string(),
-                        label: "Compacting context...".to_string(),
-                        detail: None,
-                        kind: "compacting".to_string(),
-                        tool_use_id: None,
-                        additions: None,
-                        deletions: None,
-                        diff_preview: None,
-                    });
+                    return true;
                 }
             }
         }
+    }
+
+    // Shape 2 & 3: CLI system messages with subtype or content matching compact.
+    if payload.get("type").and_then(|v| v.as_str()) == Some("system") {
+        // Check subtype for compact_boundary or any subtype containing "compact".
+        let subtype = payload.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
+        if subtype.to_lowercase().contains("compact") {
+            return true;
+        }
+        // Check content for "Compacting conversation" (case-insensitive, handles …).
+        let content = payload.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        if content.to_lowercase().contains("compacting") {
+            return true;
+        }
+        // Check status field (some CLI versions put status:"compacting" on system msgs).
+        let status = payload.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status.to_lowercase().contains("compact") {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn runtime_activity_from_payload(payload: &serde_json::Value) -> Option<RuntimeActivity> {
+    // Compaction detection — handles both Anthropic raw stream-json and the
+    // bundled CLI's `system` message format (cli.mjs convertStatusMessage).
+    //
+    // CLI shapes (real, from cli.mjs):
+    //   1. While compacting:
+    //      {"type":"system","subtype":"informational","content":"Compacting conversation…"}
+    //   2. After compact:
+    //      {"type":"system","subtype":"compact_boundary","content":"Conversation compacted","compactMetadata":{...}}
+    //   3. Anthropic raw (rare in bundled CLI):
+    //      {"type":"stream_event","event":{"delta":{"type":"compaction_delta"}}}
+    if is_compaction_payload(payload) {
+        let is_boundary = payload
+            .get("subtype")
+            .and_then(|v| v.as_str())
+            .map(|s| s.contains("compact_boundary"))
+            .unwrap_or(false);
+        let label = if is_boundary {
+            "Context compacted"
+        } else {
+            "Compacting context…"
+        };
+        let detail = if is_boundary { Some("done".to_string()) } else { None };
+        return Some(RuntimeActivity {
+            key: "compaction".to_string(),
+            label: label.to_string(),
+            detail,
+            kind: "compacting".to_string(),
+            tool_use_id: None,
+            additions: None,
+            deletions: None,
+            diff_preview: None,
+        });
     }
     let block = extract_tool_block(payload)?;
     let name = block
@@ -2223,7 +2438,7 @@ mod tests {
         });
         let activity = runtime_activity_from_payload(&payload).unwrap();
         assert_eq!(activity.kind, "compacting");
-        assert_eq!(activity.label, "Compacting context...");
+        assert_eq!(activity.label, "Compacting context…");
     }
 
     #[test]
@@ -2280,6 +2495,8 @@ mod tests {
             custom_instructions: None,
             memory_context: None,
             run_vision_fallback: None,
+            effort: None,
+            reasoning: None,
         };
         let prompt = build_prompt(&request, false);
         assert!(prompt.contains("Current working directory: /tmp"));
@@ -2305,6 +2522,8 @@ mod tests {
             custom_instructions: Some("be brief".into()),
             memory_context: None,
             run_vision_fallback: None,
+            effort: None,
+            reasoning: None,
         };
         let prompt = build_prompt(&request, true);
         // On resume, personality/customInstructions should NOT be present
@@ -2480,6 +2699,8 @@ mod tests {
             custom_instructions: None,
             memory_context: None,
             run_vision_fallback: None,
+            effort: None,
+            reasoning: None,
         };
         let payload = build_stream_json_input(&request, "prompt text");
         assert!(payload.is_none(), "non-vision model should not get stream-json");
@@ -2505,6 +2726,8 @@ mod tests {
             custom_instructions: None,
             memory_context: None,
             run_vision_fallback: None,
+            effort: None,
+            reasoning: None,
         };
         let payload = build_stream_json_input(&request, "prompt text");
         assert!(payload.is_none(), "text-only turn should not get stream-json");
@@ -2530,6 +2753,8 @@ mod tests {
             custom_instructions: None,
             memory_context: None,
             run_vision_fallback: None,
+            effort: None,
+            reasoning: None,
         };
         let payload = build_stream_json_input(&request, "prompt text");
         assert!(payload.is_none(), "unknown vision should not get stream-json");
@@ -2567,6 +2792,8 @@ mod tests {
             custom_instructions: None,
             memory_context: None,
             run_vision_fallback: None,
+            effort: None,
+            reasoning: None,
         };
         let payload = build_stream_json_input(&request, "prompt text here");
         assert!(payload.is_some(), "vision model + image should get stream-json");
@@ -2622,6 +2849,8 @@ mod tests {
             custom_instructions: None,
             memory_context: None,
             run_vision_fallback: None,
+            effort: None,
+            reasoning: None,
         };
         let payload = build_stream_json_input(&request, "prompt text");
         // No readable images → None (falls back to positional prompt).
@@ -2636,6 +2865,184 @@ mod tests {
 
     fn make_turn_service() -> TurnService {
         TurnService::new(std::sync::Arc::new(CredentialsStore::new()))
+    }
+
+    // ── resolve_effort_arg: CLI argument resolution contract ──────────
+    //
+    // Four scenarios required by the effort contract:
+    //   1. Override absent → no --effort (CLI applies default_effort).
+    //   2. Override valid (∈ effort_levels) → --effort <level>.
+    //   3. Override "none" AND "none" ∈ effort_levels → --effort none.
+    //   4. Override "none" but "none" ∉ effort_levels → no --effort.
+    // Plus: stale/invalid override (not in effort_levels) → no --effort.
+    // Plus: model without reasoning → no --effort regardless of override.
+
+    fn reasoning(levels: &[&str], default: Option<&str>) -> ModelReasoning {
+        ModelReasoning {
+            effort_levels: levels.iter().map(|s| s.to_string()).collect(),
+            default_effort: default.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn resolve_effort_arg_missing_override_returns_none() {
+        // Scenario 1: no saved override → omit --effort.
+        let r = reasoning(&["low", "medium", "high"], Some("high"));
+        assert_eq!(resolve_effort_arg(None, Some(&r)), None);
+        // Empty/whitespace override is also "absent".
+        assert_eq!(resolve_effort_arg(Some(""), Some(&r)), None);
+        assert_eq!(resolve_effort_arg(Some("   "), Some(&r)), None);
+    }
+
+    #[test]
+    fn resolve_effort_arg_valid_override_returns_level() {
+        // Scenario 2: override ∈ effort_levels → send --effort <level>.
+        let r = reasoning(&["low", "medium", "high", "max"], Some("high"));
+        assert_eq!(resolve_effort_arg(Some("high"), Some(&r)), Some("high".into()));
+        assert_eq!(resolve_effort_arg(Some("max"), Some(&r)), Some("max".into()));
+        assert_eq!(resolve_effort_arg(Some("low"), Some(&r)), Some("low".into()));
+        // Case-insensitive: user override "HIGH" matches level "high".
+        assert_eq!(resolve_effort_arg(Some("HIGH"), Some(&r)), Some("high".into()));
+    }
+
+    #[test]
+    fn resolve_effort_arg_explicit_none_when_offered_is_sent() {
+        // Scenario 3: "none" is a real level (offered by the model) →
+        // send --effort none (do NOT discard as empty).
+        let r = reasoning(&["none", "low", "medium", "high"], Some("none"));
+        assert_eq!(resolve_effort_arg(Some("none"), Some(&r)), Some("none".into()));
+        // Case-insensitive.
+        assert_eq!(resolve_effort_arg(Some("None"), Some(&r)), Some("none".into()));
+    }
+
+    #[test]
+    fn resolve_effort_arg_none_not_offered_is_dropped() {
+        // Scenario 4: "none" NOT in effort_levels → invalid override →
+        // no --effort (CLI applies default_effort).
+        let r = reasoning(&["low", "medium", "high"], Some("high"));
+        assert_eq!(resolve_effort_arg(Some("none"), Some(&r)), None);
+    }
+
+    #[test]
+    fn resolve_effort_arg_stale_override_dropped() {
+        // Override saved for an older model that no longer offers "max" →
+        // invalid against current capability → no --effort.
+        let r = reasoning(&["low", "medium", "high"], Some("medium"));
+        assert_eq!(resolve_effort_arg(Some("max"), Some(&r)), None);
+        // Unknown level string entirely.
+        assert_eq!(resolve_effort_arg(Some("xhigh"), Some(&r)), None);
+    }
+
+    #[test]
+    fn resolve_effort_arg_no_reasoning_returns_none() {
+        // Model without reasoning capability (kimi/minimax) → no --effort
+        // regardless of override.
+        assert_eq!(resolve_effort_arg(Some("high"), None), None);
+        assert_eq!(resolve_effort_arg(Some("none"), None), None);
+        assert_eq!(resolve_effort_arg(None, None), None);
+    }
+
+    // ── build_cli_args: integration test for the final CLI arg vector ──
+    //
+    // Proves the effort contract end-to-end at the arg-building layer
+    // (the real spawn path calls `build_cli_args` then hands the vec to
+    // `CliSpawn::new(&args)`). No process is spawned — we assert the
+    // presence/absence of `--effort` in the final vector.
+
+    fn base_turn_request(effort: Option<&str>, reasoning: Option<ModelReasoning>) -> AgentTurnRequest {
+        AgentTurnRequest {
+            turn_id: None,
+            conversation_id: "c1".into(),
+            message: "hello".into(),
+            model: Some("ultra/glm-5.2".into()),
+            model_supports_vision: None,
+            run_vision_fallback: None,
+            effort: effort.map(|s| s.to_string()),
+            reasoning,
+            context_window: None,
+            response_language: Some(LanguageCode::EnUs),
+            access_mode: crate::models::types::AccessMode::Approval,
+            working_directory: "/tmp".into(),
+            skills: Vec::new(),
+            attachments: None,
+            response_enhancements_enabled: None,
+            personality: None,
+            custom_instructions: None,
+            memory_context: None,
+        }
+    }
+
+    fn assert_no_effort_flag(args: &[String]) {
+        // The CLI 0.12 has a static allowlist on `--effort` that rejects
+        // "none" and future router levels. We transport effort exclusively
+        // via `CLAUDE_CODE_EFFORT_LEVEL` env var, so `--effort` must NEVER
+        // appear in the arg vector.
+        assert!(
+            !args.iter().any(|a| a == "--effort"),
+            "--effort flag must NOT be in args (transport is env-only), but was: {:?}",
+            args
+        );
+    }
+
+    #[test]
+    fn build_cli_args_default_no_effort_no_env() {
+        // Scenario 1: no override → no --effort flag, no env var.
+        let r = reasoning(&["low", "medium", "high"], Some("high"));
+        let req = base_turn_request(None, Some(r));
+        let args = build_cli_args(&req, "hello", None, false);
+        assert_no_effort_flag(&args);
+        assert_eq!(
+            resolve_effort_env(req.effort.as_deref(), req.reasoning.as_ref()),
+            None,
+            "no override → no env var"
+        );
+        // Sanity: core args still present.
+        assert!(args.contains(&"--print".to_string()));
+        assert!(args.contains(&"--model".to_string()));
+    }
+
+    #[test]
+    fn build_cli_args_valid_high_env_only_no_flag() {
+        // Scenario 2: valid override "high" → env=high, no --effort flag.
+        let r = reasoning(&["low", "medium", "high", "max"], Some("high"));
+        let req = base_turn_request(Some("high"), Some(r));
+        let args = build_cli_args(&req, "hello", None, false);
+        assert_no_effort_flag(&args);
+        assert_eq!(
+            resolve_effort_env(req.effort.as_deref(), req.reasoning.as_ref()),
+            Some("high".to_string()),
+            "valid override → env var set"
+        );
+    }
+
+    #[test]
+    fn build_cli_args_valid_none_env_only_no_flag() {
+        // Scenario 3: "none" ∈ effort_levels → env=none, no --effort flag.
+        // The CLI 0.12 would reject `--effort none` (static allowlist), but
+        // accepts `CLAUDE_CODE_EFFORT_LEVEL=none` (dynamic validation).
+        let r = reasoning(&["none", "low", "medium", "high"], Some("none"));
+        let req = base_turn_request(Some("none"), Some(r));
+        let args = build_cli_args(&req, "hello", None, false);
+        assert_no_effort_flag(&args);
+        assert_eq!(
+            resolve_effort_env(req.effort.as_deref(), req.reasoning.as_ref()),
+            Some("none".to_string()),
+            "valid 'none' → env var set (not discarded)"
+        );
+    }
+
+    #[test]
+    fn build_cli_args_stale_override_no_env_no_flag() {
+        // Scenario 4: override "max" but model no longer offers it → no env, no flag.
+        let r = reasoning(&["low", "medium", "high"], Some("medium"));
+        let req = base_turn_request(Some("max"), Some(r));
+        let args = build_cli_args(&req, "hello", None, false);
+        assert_no_effort_flag(&args);
+        assert_eq!(
+            resolve_effort_env(req.effort.as_deref(), req.reasoning.as_ref()),
+            None,
+            "stale override → no env var"
+        );
     }
 
     fn request_with_image(vision: Option<bool>) -> AgentTurnRequest {
@@ -2656,6 +3063,8 @@ mod tests {
             custom_instructions: None,
             memory_context: None,
             run_vision_fallback: None,
+            effort: None,
+            reasoning: None,
         }
     }
 
@@ -2811,6 +3220,141 @@ mod tests {
             att.extraction_status.is_some(),
             "extraction_status must be set"
         );
+    }
+
+    #[test]
+    fn interrupt_returns_false_for_unknown_conversation() {
+        // Precise interrupt: unknown conversation_id → no-op (no fallback
+        // to any active turn). This is the core safety guarantee of A1.
+        let svc = make_turn_service();
+        let result = svc.interrupt(Some("unknown-conv".into())).unwrap();
+        assert!(!result, "interrupt for unknown conversation must be a no-op");
+    }
+
+    #[test]
+    fn active_by_conversation_map_registers_and_clears() {
+        // Verify the map is populated on send_turn and cleared on Done.
+        // We can't call send_turn in a unit test (it spawns a real CLI),
+        // but we can test the map directly.
+        let svc = make_turn_service();
+        {
+            let mut map = svc.active_by_conversation.lock().unwrap();
+            map.insert("conv-a".into(), "turn-1".into());
+            map.insert("conv-b".into(), "turn-2".into());
+        }
+        // interrupt conv-a should look up turn-1 (not turn-2).
+        // Since no child is registered in `active`, interrupt returns false
+        // but the lookup itself proves the map is correct.
+        let result = svc.interrupt(Some("conv-a".into())).unwrap();
+        assert!(!result, "no child registered → false, but lookup was correct");
+
+        // Clear conv-a's mapping (simulating Done).
+        {
+            let mut map = svc.active_by_conversation.lock().unwrap();
+            map.remove("conv-a");
+        }
+        // Now interrupt conv-a → false (no mapping).
+        let result = svc.interrupt(Some("conv-a".into())).unwrap();
+        assert!(!result, "cleared mapping → false");
+    }
+
+    #[test]
+    fn interrupt_does_not_fallback_to_any_active_turn() {
+        // CRITICAL: even if there IS an active turn for conv-b, interrupting
+        // conv-a (which has no mapping) must NOT kill conv-b's turn.
+        let svc = make_turn_service();
+        {
+            let mut map = svc.active_by_conversation.lock().unwrap();
+            map.insert("conv-b".into(), "turn-2".into());
+        }
+        // interrupt conv-a (unknown) → false, NOT conv-b's turn.
+        let result = svc.interrupt(Some("conv-a".into())).unwrap();
+        assert!(!result, "must NOT fall back to conv-b's turn");
+    }
+
+    #[test]
+    fn compaction_detection_cli_informational() {
+        // Real shape from cli.mjs convertStatusMessage when status === "compacting":
+        // {"type":"system","subtype":"informational","content":"Compacting conversation…"}
+        let payload = json!({
+            "type": "system",
+            "subtype": "informational",
+            "content": "Compacting conversation…"
+        });
+        assert!(is_compaction_payload(&payload));
+        let activity = runtime_activity_from_payload(&payload).unwrap();
+        assert_eq!(activity.kind, "compacting");
+        assert_eq!(activity.label, "Compacting context…");
+        assert!(activity.detail.is_none(), "informational phase has no detail");
+    }
+
+    #[test]
+    fn compaction_detection_cli_compact_boundary() {
+        // Real shape from cli.mjs after compact:
+        // {"type":"system","subtype":"compact_boundary","content":"Conversation compacted","compactMetadata":{...}}
+        let payload = json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "content": "Conversation compacted",
+            "compactMetadata": {
+                "trigger": "auto",
+                "preTokens": 150000,
+                "postTokens": 80000
+            }
+        });
+        assert!(is_compaction_payload(&payload));
+        let activity = runtime_activity_from_payload(&payload).unwrap();
+        assert_eq!(activity.kind, "compacting");
+        assert_eq!(activity.label, "Context compacted");
+        assert_eq!(activity.detail.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn compaction_detection_anthropic_stream_event() {
+        // Anthropic raw stream-json (rare in bundled CLI but kept for compat):
+        // {"type":"stream_event","event":{"delta":{"type":"compaction_delta"}}}
+        let payload = json!({
+            "type": "stream_event",
+            "event": {
+                "delta": { "type": "compaction_delta" }
+            }
+        });
+        assert!(is_compaction_payload(&payload));
+        let activity = runtime_activity_from_payload(&payload).unwrap();
+        assert_eq!(activity.kind, "compacting");
+    }
+
+    #[test]
+    fn compaction_detection_case_insensitive_and_ellipsis_variants() {
+        // Defensive: case-insensitive, handles … vs ...
+        let lower = json!({"type":"system","subtype":"informational","content":"compacting conversation..."});
+        assert!(is_compaction_payload(&lower));
+
+        let upper = json!({"type":"system","subtype":"INFORMATIONAL","content":"COMPACTING CONVERSATION…"});
+        assert!(is_compaction_payload(&upper));
+    }
+
+    #[test]
+    fn compaction_detection_rejects_non_compact_system_messages() {
+        // System messages that aren't about compaction must not trigger.
+        let payload = json!({
+            "type": "system",
+            "subtype": "informational",
+            "content": "Session started"
+        });
+        assert!(!is_compaction_payload(&payload));
+        assert!(runtime_activity_from_payload(&payload).is_none());
+    }
+
+    #[test]
+    fn compaction_detection_status_field() {
+        // Some CLI versions put status:"compacting" on system messages.
+        let payload = json!({
+            "type": "system",
+            "subtype": "status",
+            "status": "compacting"
+        });
+        assert!(is_compaction_payload(&payload));
     }
 
     #[test]

@@ -12,7 +12,6 @@ import {
   Ghost,
   KeyRound,
   Languages,
-  MenuSquare,
   MessageSquare,
   Moon,
   Palette,
@@ -45,15 +44,13 @@ import { LanguageSelector } from '../language/LanguageSelector'
 import { useToast } from '../../components/Toast'
 import { AVATAR_PALETTE, AVATAR_PRESETS, renderPreset } from '../profile/avatarPresets'
 import { AvatarIcon } from '../../components/AvatarIcon'
-import { formatCompactNumber, formatDateTime, useI18n } from '../../i18n'
+import { formatDateTime, useI18n } from '../../i18n'
 import { DEFAULT_CONVERSATION_TITLE } from '../../state/chatStore'
 
 type SettingsViewProps = {
   credentials: CredentialStatus
   modelResult: ModelDiscoveryResult
   selectedModel?: VerbooModel
-  selectedContextWindow?: number
-  maxContextWindow?: number
   theme: ThemeMode
   activeTab: SettingsTab
   userSettings: UserSettings
@@ -66,7 +63,6 @@ type SettingsViewProps = {
   onPetSizeChange: (size: number) => void
   onOpenDashboard: () => void
   onSaveApiKey: (apiKey: string) => Promise<void>
-  onContextWindowChange: (value: number) => void
   onThemeChange: (theme: ThemeMode) => void
   onActiveTabChange: (tab: SettingsTab) => void
   onUserSettingsChange: (patch: Partial<UserSettings>) => Promise<void>
@@ -83,8 +79,6 @@ export function SettingsView({
   credentials,
   modelResult,
   selectedModel,
-  selectedContextWindow,
-  maxContextWindow,
   theme,
   activeTab,
   userSettings,
@@ -97,7 +91,6 @@ export function SettingsView({
   onPetSizeChange,
   onOpenDashboard,
   onSaveApiKey,
-  onContextWindowChange,
   onThemeChange,
   onActiveTabChange,
   onUserSettingsChange,
@@ -369,40 +362,6 @@ export function SettingsView({
                   <Palette size={15} />
                   {t('settings.light')}
                 </button>
-              </div>
-            </section>
-
-            <section className="settings-panel context-settings">
-              <div className="settings-row">
-                <MenuSquare size={16} />
-                <div>
-                  <strong>{t('settings.contextWindow')}</strong>
-                  <p>
-                    {selectedModel && selectedContextWindow && maxContextWindow
-                      ? t('settings.contextReady', {
-                          model: selectedModel.displayName,
-                          selected: formatCompactNumber(selectedContextWindow, language),
-                          max: formatCompactNumber(maxContextWindow, language),
-                        })
-                      : t('settings.contextUnavailable')}
-                  </p>
-                </div>
-              </div>
-              <ContextRange
-                maxContextWindow={maxContextWindow}
-                selectedContextWindow={selectedContextWindow}
-                disabled={!selectedModel}
-                onContextWindowChange={onContextWindowChange}
-              />
-              <div className="context-advice">
-                <div>
-                  <strong>{t('settings.increase')}</strong>
-                  <p>{t('settings.increaseBody')}</p>
-                </div>
-                <div>
-                  <strong>{t('settings.decrease')}</strong>
-                  <p>{t('settings.decreaseBody')}</p>
-                </div>
               </div>
             </section>
 
@@ -898,55 +857,6 @@ function ChoiceChip({ selected, onClick, children, disabled }: { selected: boole
       {children}
     </button>
   )
-}
-
-function ContextRange({
-  selectedContextWindow,
-  maxContextWindow,
-  disabled,
-  onContextWindowChange,
-}: {
-  selectedContextWindow?: number
-  maxContextWindow?: number
-  disabled: boolean
-  onContextWindowChange: (value: number) => void
-}) {
-  const ready = !disabled && Boolean(selectedContextWindow && maxContextWindow)
-  const max = ready ? maxContextWindow! : 1
-  const value = ready ? selectedContextWindow! : 0
-
-  return (
-    <>
-      <input
-        className="context-range"
-        type="range"
-        min={ready ? Math.min(4_000, max) : 0}
-        max={max}
-        step={ready ? contextStep(max) : 1}
-        value={value}
-        disabled={!ready}
-        onChange={event => onContextWindowChange(Number(event.target.value))}
-      />
-      <div className="context-presets">
-        {[0.25, 0.5, 0.75, 1].map(ratio => (
-          <button
-            key={ratio}
-            type="button"
-            disabled={!ready}
-            onClick={() => onContextWindowChange(max * ratio)}
-          >
-            {Math.round(ratio * 100)}%
-          </button>
-        ))}
-      </div>
-    </>
-  )
-}
-
-function contextStep(max: number): number {
-  if (max >= 1_000_000) return 32_000
-  if (max >= 128_000) return 8_000
-  return 1_000
 }
 
 function modelSettingsMessage(error: string, t: (key: string) => string): string {

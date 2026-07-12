@@ -64,8 +64,7 @@
 .login-copy p,
 .api-login-form p,
 .settings-header p,
-.settings-row p,
-.context-advice p {
+.settings-row p {
   margin: 0;
   color: var(--text-muted);
   line-height: 1.55;
@@ -127,8 +126,7 @@
 .continue-link,
 .api-login-row button,
 .dashboard-link,
-.theme-toggle button,
-.context-presets button {
+.theme-toggle button {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-soft);
@@ -168,8 +166,7 @@
 .secondary-action:hover,
 .continue-link:hover,
 .dashboard-link:hover,
-.theme-toggle button:hover,
-.context-presets button:hover {
+.theme-toggle button:hover {
   border-color: var(--border-strong);
   background: color-mix(in srgb, var(--bg-soft) 78%, var(--accent-soft));
 }
@@ -180,7 +177,6 @@
 .api-login-row button:focus-visible,
 .dashboard-link:focus-visible,
 .theme-toggle button:focus-visible,
-.context-presets button:focus-visible,
 .contact-list a:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
@@ -191,8 +187,7 @@
 .continue-link:not(:disabled):active,
 .api-login-row button:not(:disabled):active,
 .dashboard-link:not(:disabled):active,
-.theme-toggle button:not(:disabled):active,
-.context-presets button:not(:disabled):active {
+.theme-toggle button:not(:disabled):active {
   transform: scale(var(--press-scale));
 }
 
@@ -311,11 +306,6 @@
 .api-login-row button:disabled,
 .api-key-form button:disabled,
 .send-button:disabled,
-.context-presets button:disabled {
-  cursor: default;
-  opacity: 0.45;
-}
-
 .continue-link {
   width: 100%;
   margin-top: 18px;

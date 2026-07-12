@@ -641,6 +641,8 @@ mod tests {
             model: None,
             model_supports_vision: None,
             run_vision_fallback: None,
+            effort: None,
+            reasoning: None,
             context_window: None,
             response_language: Some(LanguageCode::EnUs),
             access_mode: AccessMode::Approval,

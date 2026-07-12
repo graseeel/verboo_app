@@ -1,5 +1,6 @@
-// StaleFileDetector is wired to renderer commands in a later phase.
-#![allow(dead_code)]
+// StaleFileDetector — tracks file snapshots per conversation so the FE can
+// show a "stale" banner when another conversation (or the user) modifies a
+// file the agent read/wrote earlier. Wired to Tauri commands in lib.rs.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -78,6 +79,34 @@ impl StaleFileDetector {
         if let Ok(mut guard) = self.snapshots.lock() {
             guard.retain(|k, _| !k.starts_with(&prefix));
         }
+    }
+
+    /// Returns all stale file paths for a conversation (batch check). The FE
+    /// uses this to render the stale banner with a list of affected files.
+    pub fn list_stale(&self, conversation_id: &str) -> Vec<String> {
+        let prefix = format!("{conversation_id}::");
+        let keys: Vec<String> = {
+            let guard = match self.snapshots.lock() {
+                Ok(g) => g,
+                Err(_) => return Vec::new(),
+            };
+            guard
+                .keys()
+                .filter(|k| k.starts_with(&prefix))
+                .cloned()
+                .collect()
+        };
+        keys.into_iter()
+            .filter_map(|k| {
+                // Extract the file_path from the key (after the second `::`).
+                let file_path = k.strip_prefix(&prefix)?;
+                if self.is_stale(conversation_id, file_path) {
+                    Some(file_path.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 }
 

@@ -117,13 +117,13 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
               <label className="avatar-editor-upload-btn">
                 <Camera size={14} />
                 <span>{t('settings.avatarUpload')}</span>
-                <input type="file" accept=".png,.jpg,.jpeg" className="sr-only"
+                <input type="file" accept=".png,.jpg,.jpeg,.webp" className="sr-only"
                   onChange={e => {
                     const file = e.target.files?.[0]
                     if (!file) return
                     console.log('[avatar] file picked:', file.name, file.type, file.size)
-                    // Validate MIME — accept only image/png and image/jpeg.
-                    if (!['image/png', 'image/jpeg'].includes(file.type)) {
+                    // Validate MIME — accept image/png, image/jpeg, image/webp.
+                    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
                       console.warn('[avatar] rejected format:', file.type, file.name)
                       toast(t('settings.avatarUploadErrorType'))
                       return

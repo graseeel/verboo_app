@@ -170,6 +170,7 @@ impl SettingsStore {
             trusted_skills: s.trusted_skills.clone(),
             avatar: s.avatar.clone(),
             include_verboo_co_author: s.include_verboo_co_author,
+            effort_by_model: s.effort_by_model.clone(),
         }
     }
 }

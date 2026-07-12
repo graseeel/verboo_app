@@ -161,6 +161,7 @@ mod tests {
             trusted_skills: Vec::new(),
             avatar: None,
             include_verboo_co_author: false,
+            effort_by_model: std::collections::HashMap::new(),
         }
     }
 

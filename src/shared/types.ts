@@ -220,7 +220,15 @@ export type VerbooModel = {
   maxOutputTokens?: number
   supportsVision?: boolean
   visionSupportSource?: 'router' | 'raw-capabilities' | 'heuristic'
+  /** Promoted from raw.reasoning when the router serves it. FE reads this
+   *  first, falling back to model.raw?.reasoning for backward compat. */
+  reasoning?: ModelReasoning
   raw: unknown
+}
+
+export type ModelReasoning = {
+  effortLevels: string[]
+  defaultEffort: string
 }
 
 export type ModelDiscoveryResult = {
@@ -280,6 +288,11 @@ export type UserSettings = {
    * Default: false (opt-in).
    */
   includeVerbooCoAuthor: boolean
+  /** Per-model reasoning effort preference. Keyed by model id; value is one
+   *  of the model's raw.reasoning.effortLevels (e.g. "low", "medium", "high").
+   *  Absent → model's defaultEffort applies. Promoted to UserSettings by
+   *  Geralt; FE falls back to localStorage when the backend hasn't landed yet. */
+  effortByModel?: Record<string, string>
 }
 
 /// Profile avatar configuration.
@@ -451,6 +464,11 @@ export type AgentTurnRequest = {
   modelSupportsVision?: boolean
   runVisionFallback?: boolean
   contextWindow?: number
+  effort?: string
+  /** Reasoning config snapshot at request-build time. FE reads this on the
+   *  Rust side to know which effortLevels are valid for the model, so it can
+   *  distinguish "user picked 'none'" from "no preference sent". */
+  reasoning?: ModelReasoning
   responseLanguage?: LanguageCode
   accessMode: AccessMode
   workingDirectory: string

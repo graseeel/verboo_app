@@ -412,7 +412,21 @@ pub struct VerbooModel {
     pub max_output_tokens: Option<u32>,
     pub supports_vision: Option<bool>,
     pub vision_support_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ModelReasoning>,
     pub raw: serde_json::Value,
+}
+
+/// Reasoning/effort metadata for a model, promoted from the Router's raw
+/// JSON (`reasoning.effort_levels` / `reasoning.default_effort`).
+/// Accepts any string[] the Router sends — no hardcoded level list — so
+/// future levels (e.g. "xhigh") flow through without code changes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelReasoning {
+    pub effort_levels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -558,6 +572,10 @@ pub struct UserSettings {
     /// Verboo Code. Default false (opt-in). Missing field deserializes as false.
     #[serde(default)]
     pub include_verboo_co_author: bool,
+    /// Per-model persisted effort level (e.g. {"ultra/glm-5.2": "high"}).
+    /// Keyed by model id; value is the effort level string. Empty by default.
+    #[serde(default)]
+    pub effort_by_model: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -619,6 +637,20 @@ pub struct AgentTurnRequest {
     pub model_supports_vision: Option<bool>,
     #[serde(default)]
     pub run_vision_fallback: Option<bool>,
+    /// Reasoning effort level for this turn (e.g. "low", "medium", "high",
+    /// "max", "none"). Sent to the CLI as `--effort <level>` only when it is
+    /// a valid override — i.e. present, non-empty, and listed in the model's
+    /// `reasoning.effort_levels`. Absent or invalid → `--effort` is omitted
+    /// and the CLI applies the model's `default_effort`. See
+    /// `resolve_effort_arg` in turn_service.
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// Reasoning capability for the resolved model, promoted from the
+    /// Router's raw JSON. Used to validate `effort` against
+    /// `effort_levels` before sending `--effort` to the CLI. Absent when
+    /// the model has no reasoning metadata (no `--effort` sent).
+    #[serde(default)]
+    pub reasoning: Option<ModelReasoning>,
     pub context_window: Option<u32>,
     pub response_language: Option<LanguageCode>,
     pub access_mode: AccessMode,
@@ -1165,6 +1197,7 @@ impl Default for UserSettings {
             trusted_skills: Vec::new(),
             avatar: None,
             include_verboo_co_author: false,
+            effort_by_model: std::collections::HashMap::new(),
         }
     }
 }

@@ -42,6 +42,7 @@ type ComposerProps = {
   onPasteFiles: (paths: string[], files: File[]) => void
   onGoalCommand: (command: Extract<ReservedSlashCommand, { kind: 'goal' }>) => void
   onPetCommand: () => void
+  onCompactCommand: (command: Extract<ReservedSlashCommand, { kind: 'compact' }>) => void
   leftToolbar: ReactNode
   centerToolbar?: ReactNode
   rightToolbar: ReactNode
@@ -75,6 +76,7 @@ export function Composer({
   onPasteFiles,
   onGoalCommand,
   onPetCommand,
+  onCompactCommand,
   leftToolbar,
   centerToolbar,
   rightToolbar,
@@ -159,6 +161,10 @@ export function Composer({
     {
       name: 'pet',
       description: t('composer.petDescription'),
+    },
+    {
+      name: 'compact',
+      description: t('composer.compactDescription'),
     },
   ], [t])
   const matchingCommands = useMemo(() => {
@@ -267,6 +273,11 @@ export function Composer({
     }
     if (reserved?.kind === 'pet') {
       onPetCommand()
+      setValue('')
+      return
+    }
+    if (reserved?.kind === 'compact') {
+      onCompactCommand(reserved)
       setValue('')
       return
     }

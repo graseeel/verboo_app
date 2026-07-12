@@ -633,6 +633,7 @@ mod tests {
             max_output_tokens: None,
             supports_vision: vision,
             vision_support_source: source.map(|s| s.into()),
+            reasoning: None,
             raw: serde_json::json!({}),
         }
     }

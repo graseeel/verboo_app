@@ -190,7 +190,11 @@ const api = {
       isActiveConversation,
     }),
 
-  // ── Defaults ────────────────────────────────────────────────
+  // ── Notification actions ────────────────────────────────────
+  // Geralt: in fire_completion_notification, use `app_handle.emit("notification-clicked", conversationId)`
+  // on click. The renderer listens via `listenForNotificationClick` and focuses the conversation.
+  listenForNotificationClick: (handler: (conversationId: string) => void) =>
+    listen<string>('notification-clicked', event => handler(event.payload)),
   getDefaultWorkingDirectory: () => invoke<string>('get_default_working_directory'),
   getBundledCliVersion: () => invoke<string>('get_bundled_cli_version'),
 
@@ -214,6 +218,17 @@ const api = {
     }),
   pushWorkspaceChanges: (workingDirectory: string) =>
     invoke<WorkspacePushResult>('push_workspace_changes', { workingDirectory }),
+
+  // ── Stale file detector (Multichat Fase A) ──────────────────
+  recordFileRead: (conversationId: string, filePath: string) =>
+    invoke<void>('record_file_read', { conversationId, filePath }),
+  recordFileWrite: (conversationId: string, filePath: string) =>
+    invoke<void>('record_file_write', { conversationId, filePath }),
+  listStaleFiles: (conversationId: string) =>
+    invoke<string[]>('list_stale_files', { conversationId }),
+  clearStaleFiles: (conversationId: string) =>
+    invoke<void>('clear_stale_files', { conversationId }),
+
   evaluateGoal: (input: GoalEvaluationInput) =>
     invoke<{ evaluation: GoalEvaluationResult; userMessage?: string }>('evaluate_goal', { input }),
 

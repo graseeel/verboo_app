@@ -1004,8 +1004,7 @@
   color: var(--accent-strong);
 }
 
-.theme-toggle button,
-.context-presets button {
+.theme-toggle button {
   height: 34px;
 }
 
@@ -1013,43 +1012,6 @@
   border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
   background: var(--accent-soft);
   color: var(--accent-strong);
-}
-
-.context-range {
-  width: 100%;
-  accent-color: var(--accent);
-}
-
-.context-presets {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-}
-
-.context-advice {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-  padding-top: 2px;
-}
-
-/* Plain two-column helper text — the previous bordered boxes were cards
-   nested inside a card, which added chrome without meaning. */
-.context-advice div {
-  display: grid;
-  gap: 4px;
-  align-content: start;
-}
-
-.context-advice strong {
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
-.context-advice p {
-  color: var(--text-dim);
-  font-size: 12.5px;
-  line-height: 1.5;
 }
 
 .dashboard-link {

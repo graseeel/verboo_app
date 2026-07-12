@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::models::types::{ModelDiscoveryResult, VerbooModel};
+use crate::models::types::{ModelDiscoveryResult, ModelReasoning, VerbooModel};
 
 const VERBOO_ROUTER_MODELS_URL: &str = "https://code.verboo.ai/router/v1/models";
 const CACHE_TTL_SECS: u64 = 24 * 60 * 60;
@@ -226,6 +226,7 @@ fn normalize_model(item: &serde_json::Value) -> Option<VerbooModel> {
         .map(|n| n as u32);
 
     let (supports_vision, vision_support_source) = detect_vision_support(&obj);
+    let reasoning = extract_reasoning(&obj);
 
     Some(VerbooModel {
         id,
@@ -234,7 +235,37 @@ fn normalize_model(item: &serde_json::Value) -> Option<VerbooModel> {
         max_output_tokens,
         supports_vision,
         vision_support_source,
+        reasoning,
         raw: item.clone(),
+    })
+}
+
+/// Extracts reasoning/effort metadata from the Router's raw model JSON.
+/// Accepts `reasoning.effort_levels` / `reasoning.default_effort` (camelCase
+/// or snake_case). Returns None when `effort_levels` is absent or empty —
+/// the model has no effort UI. Does NOT filter levels by a hardcoded list;
+/// any string[] the Router sends flows through (including future levels).
+fn extract_reasoning(obj: &serde_json::Map<String, serde_json::Value>) -> Option<ModelReasoning> {
+    let reasoning = obj.get("reasoning").and_then(|v| v.as_object())?;
+    let effort_levels = reasoning
+        .get("effort_levels")
+        .or_else(|| reasoning.get("effortLevels"))
+        .and_then(|v| v.as_array())?;
+    let levels: Vec<String> = effort_levels
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    if levels.is_empty() {
+        return None;
+    }
+    let default_effort = reasoning
+        .get("default_effort")
+        .or_else(|| reasoning.get("defaultEffort"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    Some(ModelReasoning {
+        effort_levels: levels,
+        default_effort,
     })
 }
 
@@ -672,6 +703,7 @@ mod tests {
             max_output_tokens: None,
             supports_vision: None,
             vision_support_source: None,
+            reasoning: None,
             raw: json!({"id": "x", "vision": true}),
         }];
         refresh_cached_vision_metadata(&mut models);
@@ -690,6 +722,7 @@ mod tests {
             max_output_tokens: None,
             supports_vision: Some(false),
             vision_support_source: Some("router".into()),
+            reasoning: None,
             raw: json!({"id": "y"}),
         }];
         refresh_cached_vision_metadata(&mut models);
@@ -706,6 +739,7 @@ mod tests {
                 max_output_tokens: None,
                 supports_vision: None,
                 vision_support_source: None,
+                reasoning: None,
                 raw: json!({"id": "a"}),
             },
             VerbooModel {
@@ -715,10 +749,67 @@ mod tests {
                 max_output_tokens: None,
                 supports_vision: None,
                 vision_support_source: None,
+                reasoning: None,
                 raw: json!({"id": "b"}),
             },
         ];
         assert!(cache_lacks_vision_metadata(&models));
+    }
+
+    #[test]
+    fn extract_reasoning_deepseek_shape() {
+        // Real shape from Router cache: deepseek-v4-flash
+        let obj = json!({
+            "id": "deepseek-v4-flash",
+            "reasoning": { "default_effort": "high", "effort_levels": ["high", "max"] }
+        });
+        let m = extract_reasoning(obj.as_object().unwrap()).unwrap();
+        assert_eq!(m.effort_levels, vec!["high", "max"]);
+        assert_eq!(m.default_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn extract_reasoning_glm52_shape() {
+        // Real shape: glm-5.2 with "none" as an explicit level
+        let obj = json!({
+            "id": "glm-5.2",
+            "reasoning": { "default_effort": "none", "effort_levels": ["none", "high", "max"] }
+        });
+        let m = extract_reasoning(obj.as_object().unwrap()).unwrap();
+        assert_eq!(m.effort_levels, vec!["none", "high", "max"]);
+        assert_eq!(m.default_effort.as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn extract_reasoning_kimi_shape_no_reasoning() {
+        // kimi-k2.7 has no reasoning field in raw
+        let obj = json!({
+            "id": "kimi-k2.7",
+            "context_window": 262144,
+            "vision": true
+        });
+        assert!(extract_reasoning(obj.as_object().unwrap()).is_none());
+    }
+
+    #[test]
+    fn extract_reasoning_empty_levels_returns_none() {
+        let obj = json!({
+            "id": "test",
+            "reasoning": { "effort_levels": [] }
+        });
+        assert!(extract_reasoning(obj.as_object().unwrap()).is_none());
+    }
+
+    #[test]
+    fn extract_reasoning_camel_case_keys() {
+        // Future-proof: accept camelCase if Router ever sends it
+        let obj = json!({
+            "id": "test",
+            "reasoning": { "defaultEffort": "medium", "effortLevels": ["low", "medium", "high"] }
+        });
+        let m = extract_reasoning(obj.as_object().unwrap()).unwrap();
+        assert_eq!(m.effort_levels, vec!["low", "medium", "high"]);
+        assert_eq!(m.default_effort.as_deref(), Some("medium"));
     }
 
     #[test]
@@ -730,6 +821,7 @@ mod tests {
             max_output_tokens: None,
             supports_vision: Some(false),
             vision_support_source: Some("router".into()),
+            reasoning: None,
             raw: json!({"id": "a", "vision": false}),
         }];
         assert!(!cache_lacks_vision_metadata(&models));

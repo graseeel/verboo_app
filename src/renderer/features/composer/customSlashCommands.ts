@@ -16,10 +16,10 @@ import type { CustomSlashCommand } from '../../../shared/types'
 export const CUSTOM_COMMAND_NAME_PATTERN = /^[A-Za-z0-9_-]+$/
 
 /** Built-in reserved names — must match `parseReservedSlashCommand`. The
- *  existing composer treats `/goal` and `/pet` as system commands that get
- *  routed to dedicated handlers; creating a custom command with either
- *  name would shadow that. */
-const RESERVED_COMMAND_NAMES: ReadonlySet<string> = new Set(['goal', 'pet'])
+ *  existing composer treats `/goal`, `/pet`, and `/compact` as system
+ *  commands that get routed to dedicated handlers; creating a custom
+ *  command with those names would shadow them. */
+const RESERVED_COMMAND_NAMES: ReadonlySet<string> = new Set(['goal', 'pet', 'compact'])
 
 export function isValidCustomCommandName(name: string): boolean {
   return name.length > 0 && CUSTOM_COMMAND_NAME_PATTERN.test(name)

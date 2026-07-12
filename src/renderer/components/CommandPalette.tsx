@@ -1,4 +1,4 @@
-import { Ghost, MessageSquare, MessageSquarePlus, Moon, PanelLeft, Search, Settings, SquareTerminal, FileDiff } from 'lucide-react'
+import { Ghost, MessageSquare, MessageSquarePlus, Moon, PanelLeft, Search, Settings, Shrink, SquareTerminal, FileDiff } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { StoredConversation } from '../../shared/types'
 import { useI18n } from '../i18n'
@@ -159,4 +159,5 @@ export const paletteIcons = {
   review: <FileDiff size={14} />,
   sidebar: <PanelLeft size={14} />,
   pet: <Ghost size={14} />,
+  compact: <Shrink size={14} />,
 }

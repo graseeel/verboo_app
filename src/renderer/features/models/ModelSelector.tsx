@@ -15,6 +15,13 @@ type ModelSelectorProps = {
   modelResult: ModelDiscoveryResult
   onSelect: (modelId: string) => void
   onRefresh: () => void
+  // Reasoning effort integration
+  effortByModel?: Record<string, string>
+  selectedEffortLevels?: string[]
+  selectedEffort?: string
+  onSelectEffort?: (modelId: string, effort: string) => void
+  /** Remove the per-model override so it falls back to the model's defaultEffort. */
+  onClearEffortOverride?: (modelId: string) => void
 }
 
 /** Belt: when the router sends `"vision": true` in the raw payload but
@@ -28,7 +35,19 @@ function isModelVisionFromRaw(model: VerbooModel): boolean {
   return false
 }
 
-export function ModelSelector({ models, selectedModel, hasConversationHistory = false, modelResult, onSelect, onRefresh }: ModelSelectorProps) {
+/** Map known effort level keys to display labels. Unknown → Title Case. */
+function effortLabel(level: string, t: (key: string) => string): string {
+  const known: Record<string, string> = {
+    none: t('composer.effortNone'),
+    low: t('composer.effortLow'),
+    medium: t('composer.effortMedium'),
+    high: t('composer.effortHigh'),
+    max: t('composer.effortMax'),
+  }
+  return known[level] ?? level.charAt(0).toUpperCase() + level.slice(1)
+}
+
+export function ModelSelector({ models, selectedModel, hasConversationHistory = false, modelResult, onSelect, onRefresh, effortByModel, selectedEffortLevels = [], selectedEffort, onSelectEffort, onClearEffortOverride }: ModelSelectorProps) {
   const { language, t } = useI18n()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -40,6 +59,14 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
   const searchRef = useRef<HTMLInputElement | null>(null)
   const selected = models.find(model => model.id === selectedModel)
   const showSearch = models.length > SEARCH_THRESHOLD
+  // Override is only "valid" when it's still in the model's current
+  // effortLevels. A stale value (model changed its levels) falls back to
+  // defaultEffort, surfaced as "Usar padrão" selected in the footer.
+  const hasEffortOverride = Boolean(
+    selected
+    && effortByModel?.[selected.id]
+    && selectedEffortLevels.includes(effortByModel[selected.id]),
+  )
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase()
     if (!normalized) return models
@@ -133,7 +160,10 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
         <span className="model-pill-icon" aria-hidden="true">
           {selected ? <ModelIcon modelId={selected.id} displayName={selected.displayName} size={15} /> : <ModelIcon modelId="" size={15} />}
         </span>
-        <span>{selected ? readableModelName(selected) : t('model.label')}</span>
+        <span>
+          {selected ? readableModelName(selected) : t('model.label')}
+          {selected && selectedEffort ? <>{' · '}{effortLabel(selectedEffort, t)}</> : null}
+        </span>
         <ChevronDown size={14} />
       </button>
 
@@ -227,6 +257,48 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
                 })}
               </div>
             ))
+          )}
+
+          {selected && selectedEffortLevels.length > 0 && (
+            <>
+              <div className="model-menu-divider" />
+              <div className="model-menu-effort-footer">
+                <span className="model-effort-footer-label">{t('composer.effortTitle')}</span>
+                <div className="model-effort-footer-levels">
+                  <button
+                    key="__default__"
+                    type="button"
+                    className={`model-effort-option model-effort-default${hasEffortOverride ? '' : ' selected'}`}
+                    aria-pressed={!hasEffortOverride}
+                    onClick={() => {
+                      onClearEffortOverride?.(selected.id)
+                      setOpen(false)
+                    }}
+                  >
+                    <span>{t('composer.effortUseDefault')}</span>
+                    {!hasEffortOverride && <Check size={13} />}
+                  </button>
+                  {selectedEffortLevels.map(level => {
+                    const isSelected = hasEffortOverride && effortByModel?.[selected.id] === level
+                    return (
+                      <button
+                        key={level}
+                        type="button"
+                        className={`model-effort-option${isSelected ? ' selected' : ''}`}
+                        aria-pressed={isSelected}
+                        onClick={() => {
+                          onSelectEffort?.(selected.id, level)
+                          setOpen(false)
+                        }}
+                      >
+                        <span>{effortLabel(level, t)}</span>
+                        {isSelected && <Check size={13} />}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            </>
           )}
         </div>,
         document.body,

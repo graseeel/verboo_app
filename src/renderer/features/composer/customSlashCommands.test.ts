@@ -44,10 +44,12 @@ describe('isValidCustomCommandName', () => {
 })
 
 describe('isReservedCommandName', () => {
-  it('flags goal and pet regardless of case', () => {
+  it('flags goal, pet, and compact regardless of case', () => {
     expect(isReservedCommandName('goal')).toBe(true)
     expect(isReservedCommandName('GOAL')).toBe(true)
     expect(isReservedCommandName('Pet')).toBe(true)
+    expect(isReservedCommandName('compact')).toBe(true)
+    expect(isReservedCommandName('COMPACT')).toBe(true)
   })
 
   it('does NOT flag arbitrary prefixes or extensions', () => {
