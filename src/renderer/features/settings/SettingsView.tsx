@@ -22,6 +22,7 @@ import {
   SquareTerminal,
   Trash2,
   UserCog,
+  MonitorSmartphone,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type {
@@ -119,6 +120,7 @@ export function SettingsView({
     { id: 'memory', label: t('settings.memory'), icon: Brain },
     { id: 'projectInstructions', label: t('settings.projectInstructions'), icon: FileText },
     { id: 'updates', label: t('updates.title'), icon: Download },
+    { id: 'computerUse', label: t('settings.computerUse'), icon: MonitorSmartphone },
     { id: 'archived', label: t('settings.archived'), icon: Archive },
   ]
   const accessOptions: Array<{ id: AccessMode; title: string; body: string; tone?: 'danger' }> = [
@@ -658,6 +660,55 @@ export function SettingsView({
                 )}
               </div>
             </div>
+          </section>
+        )}
+        {activeTab === 'computerUse' && (
+          <section className="settings-section-view">
+            <SettingsHeading title={t('settings.computerUse')} subtitle={t('settings.computerUseSubtitle')} />
+
+            <section className="settings-panel">
+              <SettingToggle
+                title={t('settings.computerUseEnableTitle')}
+                body={t('settings.computerUseEnableBody')}
+                checked={userSettings.computerUse.enabled}
+                onChange={enabled => onUserSettingsChange({ computerUse: { ...userSettings.computerUse, enabled } })}
+              />
+            </section>
+
+            <section className="settings-panel">
+              <SettingToggle
+                title={t('settings.computerUseSelfTestTitle')}
+                body={t('settings.computerUseSelfTestBody')}
+                checked={userSettings.computerUse.selfTestEnabled}
+                onChange={selfTestEnabled => onUserSettingsChange({ computerUse: { ...userSettings.computerUse, selfTestEnabled } })}
+              />
+            </section>
+
+            <section className="settings-panel">
+              <div className="settings-row">
+                <MonitorSmartphone size={16} />
+                <div>
+                  <strong>{t('settings.computerUseHotkeyTitle')}</strong>
+                  <small>{t('settings.computerUseHotkeyBody')}</small>
+                </div>
+                <span className="settings-hotkey-display">⌘⇧Esc</span>
+              </div>
+            </section>
+
+            <section className="settings-panel">
+              <div className="settings-row">
+                <div>
+                  <strong>{t('settings.computerUseIdleTimeout')}</strong>
+                </div>
+                <span className="settings-hotkey-display">{userSettings.computerUse.idleTimeoutSeconds ? Math.round(userSettings.computerUse.idleTimeoutSeconds / 60) : 15}</span>
+              </div>
+              <div className="settings-row">
+                <div>
+                  <strong>{t('settings.computerUseAuditRetention')}</strong>
+                </div>
+                <span className="settings-hotkey-display">{userSettings.computerUse.auditRetentionDays ?? 90}</span>
+              </div>
+            </section>
           </section>
         )}
         {activeTab === 'archived' && (

@@ -21,6 +21,7 @@ import type {
   AppConfig,
   AttachmentMeta,
   CliAuthStatus,
+  ComputerUseAllowlistEntry,
   CredentialStatus,
   FeedbackRequest,
   FeedbackResult,
@@ -342,6 +343,18 @@ const api = {
     onEvent<{ sessionId: string }>('terminal:exit', callback),
   onTerminalError: (callback: (event: { sessionId: string; error: string }) => void) =>
     onEvent<{ sessionId: string; error: string }>('terminal:error', callback),
+
+  // ── Computer Use allowlist (Kratos P0.4) ────────────────────
+  // Returns the persisted allowlist. Renderer calls on Settings mount and
+  // after every mutation. Entries are keyed by bundleId.
+  getComputerUseAllowlist: () =>
+    invoke<ComputerUseAllowlistEntry[]>('get_computer_use_allowlist'),
+  // Upserts an entry. If bundleId already exists, scope is updated.
+  updateComputerUseAllowlist: (entry: ComputerUseAllowlistEntry) =>
+    invoke<ComputerUseAllowlistEntry[]>('update_computer_use_allowlist', { entry }),
+  // Removes an entry by bundleId.
+  removeComputerUseAllowlist: (bundleId: string) =>
+    invoke<ComputerUseAllowlistEntry[]>('remove_computer_use_allowlist', { bundleId }),
 }
 
 // ── Expose on window (Tauri only) ──────────────────────────────

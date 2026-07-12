@@ -145,6 +145,22 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   trustedSkills: [],
   avatar: undefined,
   includeVerbooCoAuthor: false,
+  computerUse: {
+    enabled: false,
+    selfTestEnabled: false,
+    allowlist: [],
+    denylist: [
+      'com.apple.Mail',
+      'com.agilebits.onepassword-osx',
+      'com.agilebits.onepassword8',
+      'com.bitwarden.desktop',
+    ],
+    auditRetentionDays: 90,
+    auditStorageCapMb: 200,
+    idleTimeoutSeconds: 900,
+    telemetryOptOut: false,
+    showInMenuBar: false,
+  },
 }
 const EMPTY_LINE_KEYS = ['empty.line1', 'empty.line2', 'empty.line3', 'empty.line4'] as const
 
