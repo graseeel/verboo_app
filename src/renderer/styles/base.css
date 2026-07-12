@@ -227,6 +227,102 @@ button {
   margin: -8px -8px 18px 0;
 }
 
+/* Settings dropdown — mirrors the LanguageSelector trigger + popover pattern
+   so completion-notifications and personality pickers share the same visual
+   language as the language picker (no OS-native <select> popover). */
+.settings-select {
+  position: relative;
+  display: inline-flex;
+  -webkit-app-region: no-drag;
+}
+
+.settings-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 168px;
+  min-height: 36px;
+  padding: 6px 10px 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-soft) 72%, transparent);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: border-color 150ms ease-out, background-color 150ms ease-out;
+}
+
+.settings-select-trigger:hover,
+.settings-select-trigger[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-soft));
+}
+
+.settings-select-trigger:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.settings-select-trigger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.settings-select-chevron {
+  color: var(--text-dim);
+  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.settings-select-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.settings-select-menu {
+  position: absolute;
+  z-index: 940;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 200px;
+  display: grid;
+  gap: 2px;
+  padding: 5px;
+}
+
+.settings-select-option {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 9px 0 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+
+.settings-select-option:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text);
+}
+
+.settings-select-option.selected {
+  color: var(--text);
+  font-weight: 660;
+}
+
+.settings-select-check {
+  display: inline-grid;
+  place-items: center;
+  color: var(--accent-strong);
+}
+
 .ui-tooltip {
   position: relative;
 }

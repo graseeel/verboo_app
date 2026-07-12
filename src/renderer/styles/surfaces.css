@@ -946,12 +946,13 @@
 
 .settings-toggle-row + .settings-toggle-row,
 .settings-select-row + .settings-toggle-row,
-.settings-toggle-row + .settings-select-row {
+.settings-toggle-row + .settings-select-row,
+.settings-select-row + .settings-select-row {
   border-top: 1px solid color-mix(in srgb, var(--border) 76%, transparent) !important;
 }
 
 .settings-toggle-row span:first-child,
-.settings-select-row span:first-child,
+.settings-select-row > span:first-child,
 .custom-instructions-field > span {
   display: grid;
   gap: 5px;
@@ -1005,9 +1006,15 @@
 
 .settings-select-row {
   position: relative;
-  grid-template-columns: minmax(0, 1fr) minmax(180px, 280px) auto;
+  /* 2-col grid matches .settings-toggle-row so the dropdown trigger
+     right-aligns with the sibling toggle-switch column. The prior
+     3-col layout (label / select / chevron) left the OS-native chevron
+     floating in its own column and made the right edges drift. */
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
+/* Keep native <select> styling for any legacy uses (e.g. login forms) —
+   the new SettingsSelect popover reuses .settings-select-trigger instead. */
 .settings-select-row select {
   width: 100%;
   height: 36px;

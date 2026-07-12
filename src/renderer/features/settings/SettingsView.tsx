@@ -19,11 +19,11 @@ import {
   RotateCcw,
   Shield,
   ShieldCheck,
-  Sparkles,
+  SquareTerminal,
   Trash2,
   UserCog,
 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type {
   AccessMode,
   CompletionNotificationMode,
@@ -41,6 +41,7 @@ import type {
 import { ProjectInstructionsEditor } from './ProjectInstructionsEditor'
 import { CustomCommandsManager } from './CustomCommandsManager'
 import { LanguageSelector } from '../language/LanguageSelector'
+import { useOutsideDismiss } from '../../hooks/useOutsideDismiss'
 import { useToast } from '../../components/Toast'
 import { AVATAR_PALETTE, AVATAR_PRESETS, renderPreset } from '../profile/avatarPresets'
 import { AvatarIcon } from '../../components/AvatarIcon'
@@ -111,7 +112,7 @@ export function SettingsView({
   const settingsTabs: Array<{ id: SettingsTab; label: string; icon: typeof Shield }> = [
     { id: 'permissions', label: t('settings.permissions'), icon: Shield },
     { id: 'trustedCommands', label: t('settings.trustedCommands'), icon: ShieldCheck },
-    { id: 'customCommands', label: t('settings.customCommands'), icon: Sparkles },
+    { id: 'customCommands', label: t('settings.customCommands'), icon: SquareTerminal },
     { id: 'app', label: t('settings.app'), icon: Computer },
     { id: 'notifications', label: t('settings.notifications'), icon: Bell },
     { id: 'personalization', label: t('settings.personalization'), icon: UserCog },
@@ -398,15 +399,6 @@ export function SettingsView({
             </section>
 
             <section className="settings-panel">
-              <SettingToggle
-                title={t('settings.autoAccess')}
-                body={t('settings.autoAccessBody')}
-                checked={userSettings.goalMode.allowAutoAccess}
-                onChange={allowAutoAccess => onUserSettingsChange({ goalMode: { ...userSettings.goalMode, allowAutoAccess } })}
-              />
-            </section>
-
-            <section className="settings-panel">
               <div className="settings-row">
                 <Ghost size={16} />
                 <div>
@@ -451,15 +443,16 @@ export function SettingsView({
                   <strong>{t('settings.completionNotifications')}</strong>
                   <small>{t('settings.completionNotificationsBody')}</small>
                 </span>
-                <select
+                <SettingsSelect
                   value={userSettings.completionNotifications}
-                  onChange={event => onUserSettingsChange({ completionNotifications: event.target.value as CompletionNotificationMode })}
-                >
-                  <option value="always">{t('settings.always')}</option>
-                  <option value="background">{t('settings.backgroundOnly')}</option>
-                  <option value="never">{t('settings.never')}</option>
-                </select>
-                <ChevronDown size={15} />
+                  ariaLabel={t('settings.completionNotifications')}
+                  options={[
+                    { value: 'always', label: t('settings.always') },
+                    { value: 'background', label: t('settings.backgroundOnly') },
+                    { value: 'never', label: t('settings.never') },
+                  ]}
+                  onChange={mode => onUserSettingsChange({ completionNotifications: mode as CompletionNotificationMode })}
+                />
               </label>
               <SettingToggle
                 title={t('settings.permissionNotifications')}
@@ -492,16 +485,17 @@ export function SettingsView({
                   <strong>{t('settings.personality')}</strong>
                   <small>{t('settings.personalityBody')}</small>
                 </span>
-                <select
+                <SettingsSelect
                   value={userSettings.personality}
+                  ariaLabel={t('settings.personality')}
                   disabled={!userSettings.responseEnhancementsEnabled}
-                  onChange={event => onUserSettingsChange({ personality: event.target.value as PersonalityMode })}
-                >
-                  <option value="pragmatic">{t('settings.personalityPragmatic')}</option>
-                  <option value="concise">{t('settings.personalityConcise')}</option>
-                  <option value="explanatory">{t('settings.personalityExplanatory')}</option>
-                </select>
-                <ChevronDown size={15} />
+                  options={[
+                    { value: 'pragmatic', label: t('settings.personalityPragmatic') },
+                    { value: 'concise', label: t('settings.personalityConcise') },
+                    { value: 'explanatory', label: t('settings.personalityExplanatory') },
+                  ]}
+                  onChange={mode => onUserSettingsChange({ personality: mode as PersonalityMode })}
+                />
               </label>
 
               {/* ── Avatar section ────────────────────────── */}
@@ -787,6 +781,71 @@ function SettingToggle({
         <span />
       </span>
     </button>
+  )
+}
+
+// Custom select mirroring LanguageSelector's trigger + popover pattern, so
+// settings dropdowns match the app-styled dropdown used for language picking
+// (instead of falling back to the OS-native <select> popover). Reused by
+// completion-notifications and personality modes; right-aligns with the
+// sibling toggle-switch thanks to the shared .settings-toggle-row grid.
+function SettingsSelect<T extends string>({
+  value,
+  options,
+  ariaLabel,
+  disabled = false,
+  onChange,
+}: {
+  value: T
+  options: Array<{ value: T; label: string }>
+  ariaLabel: string
+  disabled?: boolean
+  onChange: (value: T) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  useOutsideDismiss(rootRef, open, () => setOpen(false))
+
+  const current = options.find(option => option.value === value) ?? options[0]
+
+  return (
+    <div ref={rootRef} className="settings-select">
+      <button
+        type="button"
+        className="settings-select-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        disabled={disabled}
+        onClick={() => setOpen(isOpen => !isOpen)}
+      >
+        <span>{current?.label}</span>
+        <ChevronDown size={13} className={`settings-select-chevron ${open ? 'is-open' : ''}`} aria-hidden="true" />
+      </button>
+
+      {open && (
+        <div className="settings-select-menu popover-panel t-dropdown is-open" role="listbox" aria-label={ariaLabel}>
+          {options.map(option => (
+            <button
+              key={option.value}
+              type="button"
+              role="option"
+              aria-selected={option.value === value}
+              className={`settings-select-option ${option.value === value ? 'selected' : ''}`}
+              onClick={() => {
+                onChange(option.value)
+                setOpen(false)
+              }}
+            >
+              <span className="settings-select-check" aria-hidden="true">
+                {option.value === value && <Check size={13} />}
+              </span>
+              <span>{option.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
