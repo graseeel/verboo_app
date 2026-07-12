@@ -1,0 +1,11 @@
+{
+  "$schema": "http://schema.tauri.app/config/2",
+  "identifier": "computer-use",
+  "description": "Computer Use capability — isolated from default. Opt-in only; renderer MUST call enable_computer_use (gated by confirm_dialog) before any computer_* command works. Scoped to main window. NOT loaded unless Computer Use is enabled.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-emit"
+  ]
+}

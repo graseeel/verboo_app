@@ -73,6 +73,10 @@ pdf-extract = "0.12"
 # and SHA-256 hashing for vision fallback cache (FASE 1).
 base64 = "0.22"
 sha2 = "0.10"
+# Computer Use audit DB (Kratos arch §6.1). Separate `computer_use.audit.db`
+# at ~/Library/Application Support/ai.verboo.code.desktop/. `bundled` feature
+# vendors SQLite so we don't depend on system libsqlite3 (cleaner cross-OS).
+rusqlite = { version = "0.31", features = ["bundled"] }
 # Force ctor to 1.0.x. ctor 0.8 (pulled transitively by tauri-utils) depends
 # on ctor-proc-macro as a separate crate, which fails to link in release
 # builds with "can't find crate for ctor_proc_macro" on Rust 1.89 + tauri
