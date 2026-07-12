@@ -18,8 +18,7 @@
   border-color: rgba(64, 200, 120, 0.25);
 }
 
-.goal-status-bar[data-kind="stopped"],
-.goal-status-bar[data-kind="budget_limited"] {
+.goal-status-bar[data-kind="stopped"] {
   background: rgba(255, 107, 107, 0.1);
   border-color: rgba(255, 107, 107, 0.25);
 }
@@ -109,5 +108,270 @@
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+/* GoalActivePanel — anchored above the composer while a goal is running
+ * or paused. Mirrors the Question chip pattern: subtle, dismissible,
+ * keyboard-accessible. */
+.goal-active-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  margin: 0 16px 6px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  font-size: 12px;
+  line-height: 1.4;
+  animation: goal-slide-in 200ms var(--modal-ease);
+}
+
+.goal-active-panel.paused {
+  background: color-mix(in srgb, var(--bg-soft) 60%, transparent);
+  border-color: var(--border);
+}
+
+.goal-active-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.goal-active-panel-title {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.goal-active-panel-status {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: color-mix(in srgb, var(--accent-strong) 82%, var(--text));
+}
+
+.goal-active-panel-status.paused {
+  background: color-mix(in srgb, var(--text-muted) 14%, transparent);
+  color: var(--text-muted);
+}
+
+.goal-active-panel-status.evaluating {
+  animation: goal-pulse 1.4s ease-in-out infinite;
+}
+
+.goal-active-panel-reason {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 11px;
+}
+
+.goal-active-panel-objective {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.goal-active-panel-objective-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.goal-active-panel-objective-text {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.goal-active-panel-edit-input {
+  width: 100%;
+  min-height: 48px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.goal-active-panel-edit-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.goal-active-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.goal-panel-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms;
+}
+
+.goal-panel-button:hover:not(:disabled) {
+  background: var(--bg-soft);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+
+.goal-panel-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.goal-panel-button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+
+.goal-panel-button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, white);
+}
+
+.goal-panel-button.danger {
+  color: var(--danger);
+}
+
+.goal-panel-button.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+}
+
+@keyframes goal-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* Compact strip — shown when QuestionWizard is open so both coexist.
+ * Single row: icon + status + truncated objective + icon buttons.
+ * Never hides the active goal — user can expand back to full panel. */
+.goal-active-panel.compact {
+  padding: 6px 10px;
+}
+
+.goal-active-panel-compact-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.goal-active-panel-compact-icon {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.goal-active-panel-compact-objective {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.goal-active-panel-compact-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* Icon-only buttons for compact mode (and the collapse-back chevron). */
+.goal-panel-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 120ms, color 120ms, border-color 120ms;
+}
+
+.goal-panel-icon-button:hover:not(:disabled) {
+  background: var(--bg-soft);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.goal-panel-icon-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.goal-panel-icon-button.primary {
+  color: var(--accent);
+}
+
+.goal-panel-icon-button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.goal-panel-icon-button.danger {
+  color: var(--danger);
+}
+
+.goal-panel-icon-button.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.goal-panel-icon-button.collapse-back {
+  margin-left: auto;
+}
+
+.goal-panel-icon-button .rotated {
+  transform: rotate(180deg);
+}
+
+/* Objective text scroll when long — prevents the panel from pushing
+ * the composer off-screen on very long objectives. */
+.goal-active-panel-objective-text {
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+/* Reduced motion: disable the evaluating pulse. */
+@media (prefers-reduced-motion: reduce) {
+  .goal-active-panel-status.evaluating {
+    animation: none;
+  }
+  .goal-active-panel {
+    animation: none;
   }
 }

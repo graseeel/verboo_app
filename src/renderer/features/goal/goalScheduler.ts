@@ -1,23 +1,42 @@
-import type { AgentEvent, GoalState } from '../../../shared/types'
+import type { GoalEvaluationResult, GoalState } from '../../../shared/types'
 import type { GoalStatusBarState } from './GoalStatusBar'
+import type { Translator } from '../../i18n'
+import { buildContinuePrompt, buildCompletionMessage } from './goalPrompt'
+import { isInfraError } from './goalReason'
+
+/**
+ * Maximum consecutive evaluator failures before the scheduler pauses the
+ * goal with `pauseReason: 'infra_error'`. Prevents burning budget on a
+ * broken evaluator (CLI timeout, parse error, network).
+ */
+export const MAX_EVALUATION_ERRORS = 3
 
 export type GoalSchedulerDelegate = {
   getGoal: () => GoalState | undefined
   updateGoal: (update: ((prev: GoalState) => GoalState) | GoalState) => void
-  evaluateGoal: (goal: GoalState) => Promise<{ status: GoalState['status']; nextMessage?: string }>
+  /**
+   * Run the evaluator. Returns the typed evaluation result on success.
+   * On failure (CLI timeout, parse error, network), THROWS — the
+   * scheduler counts consecutive errors and pauses the goal after
+   * `MAX_EVALUATION_ERRORS`. Callers must NOT swallow errors into a
+   * fake "continue" decision.
+   */
+  evaluateGoal: (goal: GoalState) => Promise<GoalEvaluationResult>
   continueGoal: (goal: GoalState, nextMessage: string) => Promise<string | undefined>
   abortTurn: () => void
   onStatusChange: (status: GoalStatusBarState) => void
   onLog: (message: string) => void
+  /** i18n translator for system messages emitted by the scheduler. */
+  t: Translator
 }
 
-export type ScheduleResult = 'completed' | 'cancelled' | 'budget_limited' | 'blocked' | 'error'
+export type ScheduleResult = 'completed' | 'cancelled' | 'paused' | 'blocked' | 'error'
 
 export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<ScheduleResult> {
   const goal = delegate.getGoal()
   if (!goal) return 'cancelled'
 
-  delegate.onStatusChange({ kind: 'active', objective: goal.objective, turn: goal.turnsRun, maxTurns: goal.maxTurns })
+  delegate.onStatusChange({ kind: 'active', objective: goal.objective, turn: goal.turnsRun })
 
   while (true) {
     const currentGoal = delegate.getGoal()
@@ -31,52 +50,112 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
       return 'cancelled'
     }
 
-    if (isBudgetExhausted(currentGoal)) {
-      delegate.updateGoal((prev: GoalState) => ({ ...prev, status: 'budget_limited' }))
-      delegate.onStatusChange({ kind: 'budget_limited', objective: currentGoal.objective, reason: budgetExhaustedReason(currentGoal) })
-      delegate.onLog('Budget exhausted: stopping goal cycle.')
-      return 'budget_limited'
-    }
-
+    // No budget enforcement — tokens and time are unlimited in Verboo.
+    // Only loop detection (identical output fingerprints) can block the cycle.
     if (detectLoop(currentGoal)) {
       delegate.updateGoal((prev: GoalState) => ({ ...prev, status: 'blocked' }))
-      delegate.onStatusChange({ kind: 'stopped', objective: currentGoal.objective, reason: 'Detected possible loop (repeated output fingerprints)' })
+      delegate.onStatusChange({ kind: 'stopped', objective: currentGoal.objective, reason: 'loop' })
       delegate.onLog('Loop detected: identical output fingerprints.')
       return 'blocked'
     }
 
     delegate.onLog(`Evaluating goal progress (turn ${currentGoal.turnsRun})...`)
-    delegate.onStatusChange({ kind: 'evaluating', objective: currentGoal.objective, turn: currentGoal.turnsRun, maxTurns: currentGoal.maxTurns })
+    delegate.onStatusChange({ kind: 'evaluating', objective: currentGoal.objective, turn: currentGoal.turnsRun })
     delegate.updateGoal((prev: GoalState) => ({ ...prev, status: 'evaluating' }))
 
-    const evaluation = await delegate.evaluateGoal(currentGoal)
+    let evaluation: GoalEvaluationResult
+    try {
+      evaluation = await delegate.evaluateGoal(currentGoal)
+    } catch (err) {
+      const errorCount = (currentGoal.errorCount ?? 0) + 1
+      const message = err instanceof Error ? err.message : String(err)
+      delegate.onLog(`Evaluator error #${errorCount}: ${message}`)
 
-    if (evaluation.status === 'completed') {
-      delegate.updateGoal((prev: GoalState) => ({ ...prev, status: 'completed', completedAt: Date.now() }))
+      if (errorCount >= MAX_EVALUATION_ERRORS) {
+        delegate.updateGoal((prev: GoalState) => ({
+          ...prev,
+          status: 'paused',
+          pausedAt: Date.now(),
+          pauseReason: 'infraError',
+          errorCount,
+        }))
+        delegate.onStatusChange({
+          kind: 'stopped',
+          objective: currentGoal.objective,
+          reason: 'infraError',
+        })
+        delegate.onLog(delegate.t('goal.errorPausedTitle', { count: errorCount }) + ': ' + message)
+        return 'paused'
+      }
+
+      // Transient error — record and retry next cycle (budget still consumed).
+      delegate.updateGoal((prev: GoalState) => ({ ...prev, errorCount }))
+      continue
+    }
+
+    // Successful evaluation — reset error counter.
+    if ((currentGoal.errorCount ?? 0) > 0) {
+      delegate.updateGoal((prev: GoalState) => ({ ...prev, errorCount: 0 }))
+    }
+
+    // Persist the evaluation on the goal for UI hydration.
+    delegate.updateGoal((prev: GoalState) => ({ ...prev, lastEvaluation: evaluation }))
+
+    if (evaluation.decision === 'complete') {
+      const completionMessage = buildCompletionMessage(evaluation)
+      delegate.updateGoal((prev: GoalState) => ({
+        ...prev,
+        status: 'completed',
+        completedAt: Date.now(),
+        lastEvaluation: evaluation,
+      }))
       delegate.onStatusChange({ kind: 'completed', objective: currentGoal.objective })
-      delegate.onLog('Goal completed!')
+      delegate.onLog(delegate.t('goal.completedHeading') + (completionMessage ? ': ' + completionMessage : ''))
       return 'completed'
     }
 
-    if (evaluation.status === 'blocked' || evaluation.status === 'budget_limited' || evaluation.status === 'cancelled') {
-      delegate.updateGoal((prev: GoalState) => ({ ...prev, status: 'blocked' }))
-      delegate.onStatusChange({ kind: 'stopped', objective: currentGoal.objective, reason: evaluation.nextMessage ?? 'Goal is blocked' })
-      delegate.onLog(`Goal blocked: ${evaluation.nextMessage ?? 'unknown reason'}`)
-      return 'blocked'
+    if (evaluation.decision === 'pause') {
+      // Maestro resolution: pause only on soft-stop reasons the user can
+      // resolve (unsafe, needsUser) or infra failures. taskFailure and
+      // taskIncomplete are continue-eligible — the model should keep
+      // working to fix the failure, not pause.
+      const reasonId = evaluation.reasonId
+      const shouldPause = reasonId === 'unsafe' || reasonId === 'needsUser' || reasonId === 'infraError'
+      if (!shouldPause) {
+        // Fall through to continue path — treat as a continue with the
+        // structured prompt. The reasonId is preserved on lastEvaluation
+        // for the UI to surface the failure context.
+        delegate.updateGoal((prev: GoalState) => ({ ...prev, lastEvaluation: evaluation }))
+      } else {
+        delegate.updateGoal((prev: GoalState) => ({
+          ...prev,
+          status: 'paused',
+          pausedAt: Date.now(),
+          pauseReason: reasonId,
+          lastEvaluation: evaluation,
+        }))
+        delegate.onStatusChange({
+          kind: 'stopped',
+          objective: currentGoal.objective,
+          reason: reasonId,
+        })
+        delegate.onLog(delegate.t('goal.pausedHeading') + ': ' + reasonId)
+        return 'paused'
+      }
     }
 
-    if (!evaluation.nextMessage) {
-      delegate.updateGoal((prev: GoalState) => ({ ...prev, status: 'blocked' }))
-      delegate.onStatusChange({ kind: 'stopped', objective: currentGoal.objective, reason: 'Evaluator did not provide next instruction' })
-      delegate.onLog('No next instruction from evaluator.')
-      return 'blocked'
-    }
+    // decision === 'continue'
+    const nextMessage = buildContinuePrompt({
+      objective: currentGoal.objective,
+      evaluation,
+      workingDirectory: currentGoal.workingDirectory,
+    })
 
     delegate.updateGoal((prev: GoalState) => ({ ...prev, status: 'continuing' }))
-    delegate.onStatusChange({ kind: 'continuing', objective: currentGoal.objective, turn: currentGoal.turnsRun, maxTurns: currentGoal.maxTurns })
+    delegate.onStatusChange({ kind: 'continuing', objective: currentGoal.objective, turn: currentGoal.turnsRun })
 
-    delegate.onLog(`Continuing goal with message: "${evaluation.nextMessage.slice(0, 80)}..."`)
-    const nextSessionId = await delegate.continueGoal(currentGoal, evaluation.nextMessage)
+    delegate.onLog(`Continuing goal with structured prompt (${nextMessage.length} chars).`)
+    const nextSessionId = await delegate.continueGoal(currentGoal, nextMessage)
 
     if (!nextSessionId) {
       delegate.onLog('Continue goal returned no session ID (interrupted/error).')
@@ -84,18 +163,6 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
       return 'error'
     }
   }
-}
-
-function isBudgetExhausted(goal: GoalState): boolean {
-  if (goal.turnsRun >= goal.maxTurns) return true
-  const elapsed = goal.startedAt ? Date.now() - goal.startedAt : 0
-  if (elapsed >= goal.maxElapsedMs) return true
-  return false
-}
-
-function budgetExhaustedReason(goal: GoalState): string {
-  if (goal.turnsRun >= goal.maxTurns) return `Max turns reached (${goal.turnsRun}/${goal.maxTurns})`
-  return `Max time elapsed`
 }
 
 function detectLoop(goal: GoalState): boolean {
@@ -106,3 +173,6 @@ function detectLoop(goal: GoalState): boolean {
   const thirdLast = goal.recentFingerprints.at(-3)
   return last === secondLast && secondLast === thirdLast
 }
+
+// Re-exported for callers that need to inspect the threshold.
+export { isInfraError }

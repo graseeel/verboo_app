@@ -6,15 +6,51 @@ export type GoalStatus =
   | 'blocked'
   | 'completed'
   | 'cancelled'
-  | 'budget_limited'
 
+/**
+ * Goal decision returned by the evaluator (Rust `GoalDecision` enum,
+ * serialized lowercase). `pause` differs from `blocked` — pause means
+ * the model itself flagged a soft-stop condition (e.g. `unsafe`,
+ * `needsUser`) that the user may be able to resolve and then resume.
+ */
+export type GoalDecision = 'continue' | 'pause' | 'complete'
+
+/**
+ * Stable reason identifiers (Rust `GoalReasonId` enum, camelCase).
+ * Used by the FE for circuit-breaking, i18n, and analytics. The
+ * string the model emitted is preserved in `GoalEvaluationResult.reason`.
+ *
+ * `userPaused`, `userCancelled`, and `safetyLimit` are FE-side reasonIds
+ * (not emitted by the Rust evaluator) — set by the scheduler when the
+ * user pauses/cancels or when a safety limit (maxTurns/maxElapsed) is
+ * reached. They share the same i18n namespace so call sites don't branch.
+ */
+export type GoalReasonId =
+  | 'taskIncomplete'
+  | 'taskFailure'
+  | 'unsafe'
+  | 'needsUser'
+  | 'done'
+  | 'infraError'
+  | 'userPaused'
+  | 'userCancelled'
+  | 'safetyLimit'
+
+/**
+ * Mirror of Rust `GoalEvaluationResult` (src-tauri/src/models/types.rs:810).
+ * `reasonId` is the programmatic handle; `reason` is the model's free-form
+ * text (shown as a secondary detail). `sessionSummary`, `gaps`, `nextAction`,
+ * and `completionSummary` feed the next-turn prompt and the UX cards.
+ */
 export type GoalEvaluationResult = {
-  decision: 'complete' | 'continue' | 'blocked'
-  confidence: number
+  decision: GoalDecision
+  reasonId: GoalReasonId
   reason: string
-  evidence: string[]
-  missing: string[]
-  nextMessage?: string
+  sessionSummary?: string
+  gaps: string[]
+  nextAction?: string
+  completionSummary?: string
+  confidence: number
 }
 
 export type AgentResultSnapshot = {
@@ -43,8 +79,16 @@ export type GoalState = {
   lastSessionId?: string
   lastTurnId?: string
   turnsRun: number
-  maxTurns: number
-  maxElapsedMs: number
+  /**
+   * @deprecated Budget limits are no longer enforced — tokens and time
+   * are unlimited. Kept on the type for backwards compatibility with
+   * stored goals; new goals set this to Number.MAX_SAFE_INTEGER.
+   */
+  maxTurns?: number
+  /**
+   * @deprecated See maxTurns.
+   */
+  maxElapsedMs?: number
   maxInputTokens?: number
   usedInputTokens: number
   usedOutputTokens: number
@@ -55,6 +99,14 @@ export type GoalState = {
   skills: SkillSummary[]
   noProgressCount: number
   recentFingerprints: string[]
+  /**
+   * Consecutive evaluator failures (CLI timeout, parse error, network).
+   * Reset to 0 on any successful evaluation. When it reaches
+   * `MAX_EVALUATION_ERRORS` the scheduler pauses the goal with
+   * `pauseReason: 'infra_error'` so the user can intervene instead of
+   * burning budget on a broken evaluator.
+   */
+  errorCount?: number
 }
 
 export type GoalEvaluationInput = {
@@ -65,8 +117,14 @@ export type GoalEvaluationInput = {
 }
 
 export type AccessMode = 'approval' | 'auto' | 'full'
-export type ThemeMode = 'dark' | 'light'
 export type LanguageCode = 'en-US' | 'pt-BR'
+
+/**
+ * Theme preference. `system` resolves to `dark` or `light` via
+ * `matchMedia('(prefers-color-scheme: dark)')` and updates when the
+ * OS preference changes.
+ */
+export type ThemeMode = 'dark' | 'light' | 'system'
 export type SettingsTab =
   | 'permissions'
   | 'trustedCommands'
@@ -248,6 +306,7 @@ export type CustomSlashCommand = {
 
 export type UserSettings = {
   language: LanguageCode
+  theme: ThemeMode
   defaultAccessMode: AccessMode
   fullAccessEnabled: boolean
   lastSelectedModelId?: string
@@ -267,9 +326,12 @@ export type UserSettings = {
   chroniclePreview: boolean
   ignoreToolChatsForMemory: boolean
   goalMode: {
-    enabled: boolean
-    maxTurns: number
-    maxElapsedMinutes: number
+    /** @deprecated Goal mode is always on; kept for backwards compat. */
+    enabled?: boolean
+    /** @deprecated Budget limits no longer enforced; kept for backwards compat. */
+    maxTurns?: number
+    /** @deprecated See maxTurns. */
+    maxElapsedMinutes?: number
     allowAutoAccess: boolean
   }
   updates: UpdateSettings

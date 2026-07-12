@@ -59,6 +59,30 @@
   box-sizing: border-box;
 }
 
+/*
+ * composer-aux-stack — vertical stack for composer helper panels
+ * (GoalActivePanel + QuestionWizard/chip). Keeps both visible when
+ * active simultaneously without overlap. Lane width matches the other
+ * dock panels so edges align with the transcript.
+ */
+.bottom-dock > .composer-aux-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(var(--chat-lane-width), 100%);
+  max-width: 100%;
+  margin-inline: auto;
+  box-sizing: border-box;
+}
+
+/* Children of the stack inherit the lane width — no double margin. */
+.bottom-dock > .composer-aux-stack > .goal-active-panel,
+.bottom-dock > .composer-aux-stack > .question-wizard,
+.bottom-dock > .composer-aux-stack > .question-chip-container {
+  width: 100%;
+  margin-inline: 0;
+}
+
 .bottom-dock.empty-mode {
   top: 57%;
   bottom: auto;

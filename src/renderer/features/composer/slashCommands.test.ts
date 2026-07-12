@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   parseReservedSlashCommand,
+  parseGoalCommand,
   isReservedSlashQuery,
   type ReservedSlashCommand,
 } from './slashCommands'
@@ -90,6 +91,39 @@ describe('parseReservedSlashCommand', () => {
     }
   })
 
+  it('treats end/halt as clear synonyms', () => {
+    for (const cmd of ['end', 'halt']) {
+      const result = parseReservedSlashCommand(`/goal ${cmd}`)
+      expect(result).toEqual<ReservedSlashCommand>({
+        kind: 'goal',
+        action: 'clear',
+        raw: `/goal ${cmd}`,
+      })
+    }
+  })
+
+  it('parses /goal status as status action', () => {
+    const result = parseReservedSlashCommand('/goal status')
+    expect(result).toEqual<ReservedSlashCommand>({
+      kind: 'goal',
+      action: 'status',
+      raw: '/goal status',
+    })
+  })
+
+  it('parses /goal help and /goal ? as help action', () => {
+    expect(parseReservedSlashCommand('/goal help')).toEqual<ReservedSlashCommand>({
+      kind: 'goal',
+      action: 'help',
+      raw: '/goal help',
+    })
+    expect(parseReservedSlashCommand('/goal ?')).toEqual<ReservedSlashCommand>({
+      kind: 'goal',
+      action: 'help',
+      raw: '/goal ?',
+    })
+  })
+
   it('parses /goal <objective> as start action', () => {
     const result = parseReservedSlashCommand('/goal write more tests')
     expect(result).toEqual<ReservedSlashCommand>({
@@ -148,5 +182,119 @@ describe('isReservedSlashQuery', () => {
     expect(isReservedSlashQuery('/G')).toBe(true)
     expect(isReservedSlashQuery('/P')).toBe(true)
     expect(isReservedSlashQuery('/C')).toBe(true)
+  })
+})
+
+describe('parseGoalCommand (no-slash)', () => {
+  it('parses `goal implement X` (no slash) as start', () => {
+    const result = parseGoalCommand('goal implement the payment endpoint')
+    expect(result).toEqual<ReservedSlashCommand>({
+      kind: 'goal',
+      action: 'start',
+      objective: 'implement the payment endpoint',
+      raw: 'goal implement the payment endpoint',
+    })
+  })
+
+  it('parses `/goal implement X` (with slash) as start', () => {
+    const result = parseGoalCommand('/goal implement the payment endpoint')
+    expect(result).toEqual<ReservedSlashCommand>({
+      kind: 'goal',
+      action: 'start',
+      objective: 'implement the payment endpoint',
+      raw: '/goal implement the payment endpoint',
+    })
+  })
+
+  it('parses `goal pause` (no slash) as pause', () => {
+    const result = parseGoalCommand('goal pause')
+    expect(result).toEqual<ReservedSlashCommand>({
+      kind: 'goal',
+      action: 'pause',
+      raw: 'goal pause',
+    })
+  })
+
+  it('parses `goal` (no slash, no args) as show', () => {
+    const result = parseGoalCommand('goal')
+    expect(result).toEqual<ReservedSlashCommand>({
+      kind: 'goal',
+      action: 'show',
+      raw: 'goal',
+    })
+  })
+
+  it('is case-insensitive for the command word', () => {
+    expect(parseGoalCommand('GOAL implement X')?.kind).toBe('goal')
+    expect(parseGoalCommand('Goal implement X')?.kind).toBe('goal')
+  })
+
+  it('returns undefined for non-goal text', () => {
+    expect(parseGoalCommand('hello world')).toBeUndefined()
+    expect(parseGoalCommand('implement the payment endpoint')).toBeUndefined()
+    expect(parseGoalCommand('')).toBeUndefined()
+  })
+
+  it('parses `goal status` (no slash) as status', () => {
+    const result = parseGoalCommand('goal status')
+    expect(result).toEqual<ReservedSlashCommand>({
+      kind: 'goal',
+      action: 'status',
+      raw: 'goal status',
+    })
+  })
+
+  it('parses `goal help` (no slash) as help', () => {
+    const result = parseGoalCommand('goal help')
+    expect(result).toEqual<ReservedSlashCommand>({
+      kind: 'goal',
+      action: 'help',
+      raw: 'goal help',
+    })
+  })
+
+  it('parses `goal stop` (no slash) as clear synonym', () => {
+    const result = parseGoalCommand('goal stop')
+    expect(result).toEqual<ReservedSlashCommand>({
+      kind: 'goal',
+      action: 'clear',
+      raw: 'goal stop',
+    })
+  })
+
+  it('rejects `goal is to ship` (no slash, filler first token) → undefined', () => {
+    expect(parseGoalCommand('goal is to ship')).toBeUndefined()
+  })
+
+  it('rejects `goal my objective is X` (no slash, filler) → undefined', () => {
+    expect(parseGoalCommand('goal my objective is X')).toBeUndefined()
+  })
+
+  it('accepts `/goal is to ship` (slash, explicit) → start', () => {
+    const result = parseGoalCommand('/goal is to ship')
+    expect(result).toEqual<ReservedSlashCommand>({
+      kind: 'goal',
+      action: 'start',
+      objective: 'is to ship',
+      raw: '/goal is to ship',
+    })
+  })
+
+  it('accepts `goal implement auth` (no slash, non-filler) → start', () => {
+    const result = parseGoalCommand('goal implement auth')
+    expect(result).toEqual<ReservedSlashCommand>({
+      kind: 'goal',
+      action: 'start',
+      objective: 'implement auth',
+      raw: 'goal implement auth',
+    })
+  })
+
+  it('rejects `hello goal world` (goal not first word) → undefined', () => {
+    expect(parseGoalCommand('hello goal world')).toBeUndefined()
+  })
+
+  it('rejects `goal é fazer X` (PT filler) → undefined', () => {
+    expect(parseGoalCommand('goal é fazer X')).toBeUndefined()
   })
 })

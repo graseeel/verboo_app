@@ -36,14 +36,18 @@ impl AppState {
 #[serde(rename_all = "camelCase")]
 struct EvaluationResult {
     evaluation: GoalEvaluationResult,
+    /// Legacy bridge field populated from evaluation.nextAction.
+    /// FE should migrate to reading evaluation.nextAction directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     user_message: Option<String>,
 }
 
 impl From<crate::services::goal_evaluator::EvaluationResult> for EvaluationResult {
     fn from(value: crate::services::goal_evaluator::EvaluationResult) -> Self {
+        let user_message = value.evaluation.next_action.clone();
         Self {
             evaluation: value.evaluation,
-            user_message: value.user_message,
+            user_message,
         }
     }
 }
@@ -854,16 +858,32 @@ fn open_external_file(
 #[tauri::command]
 fn evaluate_goal(
     input: GoalEvaluationInput,
-    _credentials: tauri::State<'_, CredentialsStore>,
+    credentials: tauri::State<'_, CredentialsStore>,
 ) -> Result<EvaluationResult, String> {
-    // CLI token first (with refresh), API key fallback — same resolver as
-    // turns/profile/models.
-    let credentials_fresh = CredentialsStore::new();
-    let token = crate::services::auth_token::resolve_token(&credentials_fresh);
-    Ok(
-        crate::services::goal_evaluator::GoalEvaluator::evaluate(input, token.as_deref())
-            .into(),
-    )
+    let token = crate::services::auth_token::resolve_token(&credentials);
+    let result = crate::services::goal_evaluator::GoalEvaluator::evaluate(input, token.as_deref());
+    match result {
+        Ok(r) => Ok(r.into()),
+        Err(e) => {
+            // Infra failure → return Pause+InfraError so the FE scheduler
+            // receives a predictable decision (NOT an Err throw — the scheduler
+            // can't handle promise rejections in runGoalCycle). The FE checks
+            // reasonId=infraError to circuit-break.
+            Ok(EvaluationResult {
+                evaluation: GoalEvaluationResult {
+                    decision: GoalDecision::Pause,
+                    reason_id: GoalReasonId::InfraError,
+                    reason: e.to_string(),
+                    session_summary: None,
+                    gaps: Vec::new(),
+                    next_action: None,
+                    completion_summary: None,
+                    confidence: 0.0,
+                },
+                user_message: None,
+            })
+        }
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════

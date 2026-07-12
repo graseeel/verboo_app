@@ -7,15 +7,18 @@ type CreateGoalInput = {
   modelDisplayName?: string
   workingDirectory: string
   skills: SkillSummary[]
-  /** From UserSettings.goalMode — clamp to the same bounds as the settings UI. */
+  /**
+   * Kept for backwards compatibility with callers that still pass
+   * settings values, but no longer enforced — tokens and time are
+   * unlimited. Defaults to Number.MAX_SAFE_INTEGER so the scheduler
+   * never pauses on budget.
+   */
   maxTurns?: number
   maxElapsedMinutes?: number
 }
 
 export function createGoalState(input: CreateGoalInput): GoalState {
   const now = Date.now()
-  const maxTurns = clampInt(input.maxTurns ?? 3, 1, 20)
-  const maxElapsedMinutes = clampInt(input.maxElapsedMinutes ?? 30, 1, 240)
   return {
     id: `goal:${crypto.randomUUID()}`,
     objective: input.objective.trim(),
@@ -24,8 +27,10 @@ export function createGoalState(input: CreateGoalInput): GoalState {
     updatedAt: now,
     startedAt: now,
     turnsRun: 0,
-    maxTurns,
-    maxElapsedMs: maxElapsedMinutes * 60 * 1000,
+    // Unlimited — fields remain on GoalState for backwards compat but
+    // are set to MAX_SAFE_INTEGER and never trigger a pause.
+    maxTurns: Number.MAX_SAFE_INTEGER,
+    maxElapsedMs: Number.MAX_SAFE_INTEGER,
     usedInputTokens: 0,
     usedOutputTokens: 0,
     accessMode: input.accessMode,
@@ -36,11 +41,6 @@ export function createGoalState(input: CreateGoalInput): GoalState {
     noProgressCount: 0,
     recentFingerprints: [],
   }
-}
-
-function clampInt(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min
-  return Math.round(Math.max(min, Math.min(max, value)))
 }
 
 export function goalSystemMessage(text: string): TranscriptItem {

@@ -362,6 +362,10 @@ export function SettingsView({
                   <Palette size={15} />
                   {t('settings.light')}
                 </button>
+                <button className={theme === 'system' ? 'active' : ''} type="button" onClick={() => onThemeChange('system')}>
+                  <Computer size={15} />
+                  {t('settings.system')}
+                </button>
               </div>
             </section>
 
@@ -395,37 +399,11 @@ export function SettingsView({
 
             <section className="settings-panel">
               <SettingToggle
-                title={t('settings.goalMode')}
-                body={t('settings.goalModeBody')}
-                checked={userSettings.goalMode.enabled}
-                onChange={enabled => onUserSettingsChange({ goalMode: { ...userSettings.goalMode, enabled } })}
+                title={t('settings.autoAccess')}
+                body={t('settings.autoAccessBody')}
+                checked={userSettings.goalMode.allowAutoAccess}
+                onChange={allowAutoAccess => onUserSettingsChange({ goalMode: { ...userSettings.goalMode, allowAutoAccess } })}
               />
-              {userSettings.goalMode.enabled && (
-                <div className="settings-nested-group">
-                  <SettingNumericInput
-                    title={t('settings.maxTurns')}
-                    body={t('settings.maxTurnsBody')}
-                    value={userSettings.goalMode.maxTurns}
-                    min={1}
-                    max={20}
-                    onChange={maxTurns => onUserSettingsChange({ goalMode: { ...userSettings.goalMode, maxTurns } })}
-                  />
-                  <SettingNumericInput
-                    title={t('settings.maxTime')}
-                    body={t('settings.maxTimeBody')}
-                    value={userSettings.goalMode.maxElapsedMinutes}
-                    min={1}
-                    max={240}
-                    onChange={maxElapsedMinutes => onUserSettingsChange({ goalMode: { ...userSettings.goalMode, maxElapsedMinutes } })}
-                  />
-                  <SettingToggle
-                    title={t('settings.autoAccess')}
-                    body={t('settings.autoAccessBody')}
-                    checked={userSettings.goalMode.allowAutoAccess}
-                    onChange={allowAutoAccess => onUserSettingsChange({ goalMode: { ...userSettings.goalMode, allowAutoAccess } })}
-                  />
-                </div>
-              )}
             </section>
 
             <section className="settings-panel">

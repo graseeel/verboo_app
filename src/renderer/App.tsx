@@ -42,6 +42,8 @@ import type {
 } from '../shared/types'
 import { createGoalState, goalSystemMessage } from './features/goal/goalState'
 import { GoalStatusBar, type GoalStatusBarState } from './features/goal/GoalStatusBar'
+import { GoalActivePanel } from './features/goal/GoalActivePanel'
+import { buildObjectiveUpdatedPrompt } from './features/goal/goalPrompt'
 import { runGoalCycle, type GoalSchedulerDelegate } from './features/goal/goalScheduler'
 import type { ReservedSlashCommand } from './features/composer/slashCommands'
 import { AppSidebar, type AppView } from './components/AppSidebar'
@@ -109,6 +111,7 @@ const BOTTOM_STICK_THRESHOLD = 72
 const SCROLL_SETTLE_MS = 360
 const DEFAULT_USER_SETTINGS: UserSettings = {
   language: 'en-US',
+  theme: 'system',
   defaultAccessMode: 'approval',
   fullAccessEnabled: false,
   lastSelectedModelId: undefined,
@@ -129,8 +132,8 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   ignoreToolChatsForMemory: true,
   goalMode: {
     enabled: true,
-    maxTurns: 3,
-    maxElapsedMinutes: 30,
+    maxTurns: Number.MAX_SAFE_INTEGER,
+    maxElapsedMinutes: Number.MAX_SAFE_INTEGER,
     allowAutoAccess: true,
   },
   updates: {
@@ -335,7 +338,7 @@ export function App() {
   const [entryUnlocked, setEntryUnlocked] = useState(false)
   const [authChecking, setAuthChecking] = useState(true)
   const [authError, setAuthError] = useState<string | undefined>()
-  const { theme, setTheme } = useTheme()
+  const { theme, setTheme, cycleTheme } = useTheme()
   const [modelResult, setModelResult] = useState<ModelDiscoveryResult>({
     models: defaultModels,
     source: 'none',
@@ -892,6 +895,40 @@ export function App() {
   useEffect(() => {
     setContextUsage(undefined)
   }, [activeConversationId, selectedContextWindow, selectedModel])
+
+  // Hydrate goal state when the active conversation changes (covers initial
+  // load, sidebar selection, and notification-click focus). Mirrors the
+  // hydration in selectConversation but lives in an effect so it fires on
+  // every activeConversationId transition, including the initial mount.
+  useEffect(() => {
+    if (!activeConversationId) {
+      setGoal(undefined)
+      goalRef.current = undefined
+      setGoalBarStatus({ kind: 'idle' })
+      return
+    }
+    const conversation = chatStore.conversations.find(item => item.id === activeConversationId)
+    const storedGoal = conversation?.goal
+    if (storedGoal && (storedGoal.status === 'active' || storedGoal.status === 'paused' || storedGoal.status === 'evaluating' || storedGoal.status === 'continuing')) {
+      // Active goals are restored as paused — the user must explicitly
+      // resume to restart the autonomous cycle. Prevents surprise execution
+      // on app launch or conversation switch.
+      const restored: GoalState = storedGoal.status === 'paused'
+        ? storedGoal
+        : { ...storedGoal, status: 'paused', pausedAt: storedGoal.pausedAt ?? Date.now() }
+      setGoal(restored)
+      goalRef.current = restored
+      setGoalBarStatus({
+        kind: 'stopped',
+        objective: restored.objective,
+        reason: restored.pauseReason ?? 'paused',
+      })
+    } else {
+      setGoal(undefined)
+      goalRef.current = undefined
+      setGoalBarStatus({ kind: 'idle' })
+    }
+  }, [activeConversationId, chatStore.conversations])
 
   async function refreshModels(forceRefresh: boolean): Promise<ModelDiscoveryResult> {
     const result = await window.verboo.listModels(forceRefresh)
@@ -2461,7 +2498,7 @@ export function App() {
   const paletteActions: PaletteAction[] = useMemo(() => [
     { key: 'new-chat', label: t('palette.newChat'), icon: paletteIcons.newChat, run: () => { setActiveView('chat'); newChat() } },
     { key: 'settings', label: t('palette.openSettings'), icon: paletteIcons.settings, run: () => setActiveView('settings') },
-    { key: 'theme', label: t('palette.toggleTheme'), icon: paletteIcons.theme, run: () => setTheme(current => current === 'dark' ? 'light' : 'dark') },
+    { key: 'theme', label: t('palette.toggleTheme'), icon: paletteIcons.theme, run: () => cycleTheme() },
     { key: 'terminal', label: t('palette.toggleTerminal'), icon: paletteIcons.terminal, run: () => handleToggleTerminal(currentWorkspaceDirectory) },
     { key: 'review', label: t('palette.toggleReview'), icon: paletteIcons.review, run: () => { void handleToggleReview() } },
     { key: 'sidebar', label: t('palette.toggleSidebar'), icon: paletteIcons.sidebar, run: toggleSidebarVisibility },
@@ -2475,28 +2512,90 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ], [t, currentWorkspaceDirectory])
 
+  function handleEditObjective(newObjective: string) {
+    const conversationId = activeConversation?.id
+    if (!conversationId) return
+    const current = goalRef.current
+    if (!current) return
+
+    const oldObjective = current.objective
+    const updated: GoalState = {
+      ...current,
+      objective: newObjective,
+      updatedAt: Date.now(),
+    }
+    setGoal(updated)
+    goalRef.current = updated
+    updateConversationGoal(updated)
+
+    // System message: show old→new when the user can see both, otherwise just the new.
+    const systemMessage = oldObjective.trim() && oldObjective !== newObjective
+      ? t('goal.objectiveUpdatedBody', { old: oldObjective, new: newObjective })
+      : t('goal.objectiveUpdatedSingle', { new: newObjective })
+    appendConversationItem(conversationId, goalSystemMessage(systemMessage))
+
+    // If a turn is in progress, interject the updated objective so the
+    // model pivots immediately. Otherwise, the next buildContinuePrompt
+    // cycle will pick up the new objective from goal state automatically.
+    const turnInProgress = runningConversations.has(conversationId)
+    if (turnInProgress) {
+      const prompt = buildObjectiveUpdatedPrompt(newObjective)
+      // interjectMessage expects a queue item ID (not raw text), so we
+      // create a queued follow-up first, then interject with its ID.
+      const queued = createQueuedFollowUp(conversationId, prompt)
+      enqueueFollowUp(queued)
+      void interjectMessage(conversationId, queued.id).catch(err => {
+        console.error('[goal] failed to interject objective update:', err)
+      })
+    }
+  }
+
   function handleGoalCommand(command: Extract<ReservedSlashCommand, { kind: 'goal' }>) {
-    if (command.action === 'show') {
-      return // status is shown in the GoalStatusBar
+    if (command.action === 'show' || command.action === 'status') {
+      const conversationId = ensureActiveConversation()
+      const current = goalRef.current
+      if (!current) {
+        appendConversationItem(conversationId, goalSystemMessage(t('goal.noneActive')))
+        return
+      }
+      const statusKey =
+        current.status === 'active' || current.status === 'evaluating' || current.status === 'continuing' ? 'goal.statusActive' :
+        current.status === 'paused' ? 'goal.statusPaused' :
+        current.status === 'completed' ? 'goal.statusCompleted' :
+        'goal.statusBlocked'
+      appendConversationItem(conversationId, goalSystemMessage(
+        t(statusKey, { objective: current.objective, turn: current.turnsRun }),
+      ))
+      return
+    }
+
+    if (command.action === 'help') {
+      const conversationId = ensureActiveConversation()
+      appendConversationItem(conversationId, goalSystemMessage(
+        `${t('goal.helpTitle')}\n\n${t('goal.helpBody')}`,
+      ))
+      return
     }
 
     if (command.action === 'pause') {
-      setGoal(current => current ? { ...current, status: 'paused' as const, pausedAt: Date.now() } : current)
-      setGoalBarStatus({ kind: 'idle' })
+      const conversationId = ensureActiveConversation()
+      setGoal(current => current ? {
+        ...current,
+        status: 'paused' as const,
+        pausedAt: Date.now(),
+        pauseReason: 'userPaused',
+      } : current)
+      setGoalBarStatus({ kind: 'stopped', objective: goalRef.current?.objective ?? '', reason: 'userPaused' })
       goalAbortRef.current?.abort()
+      appendConversationItem(conversationId, goalSystemMessage(t('goal.userPausedBody')))
       return
     }
 
     if (command.action === 'resume') {
-      if (!userSettings.goalMode.enabled) {
-        const conversationId = ensureActiveConversation()
-        appendConversationItem(conversationId, goalSystemMessage(t('settings.goalModeBody')))
-        return
-      }
       setGoal(current => {
-        if (!current || (current.status !== 'paused' && current.status !== 'blocked' && current.status !== 'budget_limited')) return current
-        const resumed: GoalState = { ...current, status: 'active', noProgressCount: 0 }
-        setGoalBarStatus({ kind: 'active', objective: resumed.objective, turn: resumed.turnsRun, maxTurns: resumed.maxTurns })
+        if (!current || (current.status !== 'paused' && current.status !== 'blocked')) return current
+        const resumed: GoalState = { ...current, status: 'active', noProgressCount: 0, errorCount: 0 }
+        setGoalBarStatus({ kind: 'active', objective: resumed.objective, turn: resumed.turnsRun })
         void startGoalScheduler(resumed)
         return resumed
       })
@@ -2504,21 +2603,16 @@ export function App() {
     }
 
     if (command.action === 'clear') {
+      const conversationId = ensureActiveConversation()
       goalAbortRef.current?.abort()
       setGoal(undefined)
       setGoalBarStatus({ kind: 'idle' })
       goalSessionId.current = undefined
+      appendConversationItem(conversationId, goalSystemMessage(t('goal.userCancelledBody')))
       return
     }
 
     if (command.action === 'start' && command.objective) {
-      if (!userSettings.goalMode.enabled) {
-        const conversationId = ensureActiveConversation()
-        appendConversationItem(conversationId, goalSystemMessage(
-          `${t('settings.goalMode')}: ${t('settings.goalModeBody')}`,
-        ))
-        return
-      }
       goalAbortRef.current?.abort()
 
       const conversationId = ensureActiveConversation()
@@ -2541,11 +2635,9 @@ export function App() {
         modelDisplayName: selectedModelInfo?.displayName,
         workingDirectory: wd,
         skills: selectedSkills,
-        maxTurns: userSettings.goalMode.maxTurns,
-        maxElapsedMinutes: userSettings.goalMode.maxElapsedMinutes,
       })
 
-      appendConversationItem(conversationId, goalSystemMessage(`Objetivo iniciado: ${command.objective}`))
+      appendConversationItem(conversationId, goalSystemMessage(t('goal.systemStarted', { objective: command.objective })))
 
       const message = buildGoalStartMessage(command.objective, wd)
       appendConversationItem(conversationId, {
@@ -2554,10 +2646,10 @@ export function App() {
         text: message,
         timestamp: Date.now(),
         skills: selectedSkills,
-      }, `Objetivo: ${command.objective}`)
+      }, t('goal.systemObjective', { objective: command.objective }))
 
       setGoal(goalState)
-      setGoalBarStatus({ kind: 'active', objective: goalState.objective, turn: 0, maxTurns: goalState.maxTurns })
+      setGoalBarStatus({ kind: 'active', objective: goalState.objective, turn: 0 })
 
       void startGoalScheduler(goalState)
     }
@@ -2580,29 +2672,31 @@ export function App() {
       evaluateGoal: async (currentGoal) => {
         const conversationItems = conversationItemsRef.current
         const conversationId = activeConversation?.id
-        if (!conversationId || controller.signal.aborted) return { status: 'cancelled' }
+        if (!conversationId || controller.signal.aborted) {
+          throw new Error('Goal evaluation aborted: no active conversation')
+        }
 
         const input: GoalEvaluationInput = {
           goal: currentGoal,
           conversationItems: [...conversationItems],
         }
 
-        try {
-          const result = await window.verboo.evaluateGoal(input)
-          if (controller.signal.aborted) return { status: 'cancelled' }
-
-          setGoal(current => current ? {
-            ...current,
-            lastEvaluation: result.evaluation,
-            updatedAt: Date.now(),
-          } : current)
-
-          if (result.evaluation.decision === 'complete') return { status: 'completed' }
-          if (result.evaluation.decision === 'blocked') return { status: 'blocked', nextMessage: result.evaluation.reason }
-          return { status: 'continuing', nextMessage: result.evaluation.nextMessage ?? currentGoal.objective }
-        } catch {
-          return { status: 'continuing', nextMessage: currentGoal.objective }
+        // Errors propagate to the scheduler, which counts consecutive
+        // failures and pauses the goal after MAX_EVALUATION_ERRORS. We
+        // do NOT swallow errors into a fake "continue" decision — that
+        // would burn budget silently on a broken evaluator.
+        const result = await window.verboo.evaluateGoal(input)
+        if (controller.signal.aborted) {
+          throw new Error('Goal evaluation aborted by user')
         }
+
+        setGoal(current => current ? {
+          ...current,
+          lastEvaluation: result.evaluation,
+          updatedAt: Date.now(),
+        } : current)
+
+        return result.evaluation
       },
       continueGoal: async (currentGoal, nextMessage) => {
         if (controller.signal.aborted) return undefined
@@ -2700,6 +2794,7 @@ export function App() {
       onLog: (message) => {
         console.log('[goal]', message)
       },
+      t,
     }
 
     await runGoalCycle(delegate)
@@ -2913,6 +3008,30 @@ export function App() {
     setSelectedProjectId(project?.id)
     if (project?.path) setConfig(current => ({ ...current, workingDirectory: project.path ?? current.workingDirectory }))
     setActiveView('chat')
+
+    // Hydrate goal state from the stored conversation. Only active/paused
+    // goals are restored — completed/blocked/cancelled goals are historical
+    // and don't drive the status bar on reopen. The scheduler is NOT
+    // auto-resumed here; the user clicks Resume on the status bar to
+    // restart the cycle (avoids surprise autonomous execution on chat switch).
+    const storedGoal = conversation.goal
+    if (storedGoal && (storedGoal.status === 'active' || storedGoal.status === 'paused' || storedGoal.status === 'evaluating' || storedGoal.status === 'continuing')) {
+      const restored: GoalState = storedGoal.status === 'active' || storedGoal.status === 'evaluating' || storedGoal.status === 'continuing'
+        ? { ...storedGoal, status: 'paused', pausedAt: storedGoal.pausedAt ?? Date.now() }
+        : storedGoal
+      setGoal(restored)
+      goalRef.current = restored
+      setGoalBarStatus({
+        kind: 'stopped',
+        objective: restored.objective,
+        reason: restored.pauseReason ?? 'paused',
+      })
+    } else {
+      // No live goal on this conversation — clear any stale state.
+      setGoal(undefined)
+      goalRef.current = undefined
+      setGoalBarStatus({ kind: 'idle' })
+    }
   }
 
   function toggleProject(projectId: string) {
@@ -4136,13 +4255,24 @@ export function App() {
           includeVerbooCoAuthor={userSettings.includeVerbooCoAuthor}
         />
       </div>
-      <GoalStatusBar
-        status={goalBarStatus}
-        onPause={() => handleGoalCommand({ kind: 'goal', action: 'pause', raw: '/goal pause' })}
-        onResume={() => handleGoalCommand({ kind: 'goal', action: 'resume', raw: '/goal resume' })}
-        onCancel={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
-        onClear={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
-      />
+      {(() => {
+        // GoalStatusBar only renders when GoalActivePanel is NOT visible.
+        // Panel covers: active | evaluating | continuing | paused.
+        // StatusBar covers: completed (toast) + cancelled/cleared (brief feedback).
+        // This prevents duplicate UI when goal is paused (panel shows paused+reason,
+        // status bar would show stopped+reason — only panel should show).
+        const panelVisible = !!goal && goal.status !== 'completed' && goal.status !== 'blocked' && goal.status !== 'cancelled'
+        if (panelVisible) return null
+        return (
+          <GoalStatusBar
+            status={goalBarStatus}
+            onPause={() => handleGoalCommand({ kind: 'goal', action: 'pause', raw: '/goal pause' })}
+            onResume={() => handleGoalCommand({ kind: 'goal', action: 'resume', raw: '/goal resume' })}
+            onCancel={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
+            onClear={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
+          />
+        )
+      })()}
 
       {activeView === 'chat' && (
         <div className={`bottom-dock ${hasConversation ? '' : 'empty-mode'}`}>
@@ -4176,42 +4306,57 @@ export function App() {
               <ArrowDown size={17} />
             </button>
           )}
-          {questionPrompt && questionPrompt.conversationId === activeConversationId && (
-            questionWizardOpen ? (
-              <QuestionWizard
-                prompt={questionPrompt}
-                onAnswersChange={answers => {
-                  if (questionPromptRef.current) {
-                    questionPromptRef.current = { ...questionPromptRef.current, answers }
-                  }
-                  setQuestionPrompt(current => current ? { ...current, answers } : current)
-                }}
-                onSubmit={() => { void submitQuestionAnswers() }}
-                onDismiss={() => setQuestionWizardOpen(false)}
-              />
-            ) : (
-              <div className="question-chip-container">
-                <button type="button" className="question-chip" onClick={() => setQuestionWizardOpen(true)}>
-                  <MessageCircleQuestion size={15} aria-hidden="true" />
-                  {questionPrompt.questions.length === 1
-                    ? t('questions.chipOne')
-                    : t('questions.chip', { count: questionPrompt.questions.length })}
-                </button>
-                <button
-                  type="button"
-                  className="question-chip-close"
-                  onClick={() => {
-                    questionPromptRef.current = undefined
-                    setQuestionPrompt(undefined)
-                    setQuestionWizardOpen(false)
-                  }}
-                  aria-label={t('questions.dismiss')}
-                >
-                  <X size={13} />
-                </button>
-              </div>
-            )
-          )}
+          {(goal && goal.status !== 'completed' && goal.status !== 'blocked' && goal.status !== 'cancelled') || (questionPrompt && questionPrompt.conversationId === activeConversationId) ? (
+            <div className="composer-aux-stack" role="region" aria-label={t('goal.auxStackLabel')}>
+              {goal && goal.status !== 'completed' && goal.status !== 'blocked' && goal.status !== 'cancelled' && (
+                <GoalActivePanel
+                  goal={goal}
+                  turnInProgress={activeConversationId ? runningConversations.has(activeConversationId) : false}
+                  compact={!!(questionPrompt && questionPrompt.conversationId === activeConversationId && questionWizardOpen)}
+                  onEditObjective={handleEditObjective}
+                  onPause={() => handleGoalCommand({ kind: 'goal', action: 'pause', raw: '/goal pause' })}
+                  onResume={() => handleGoalCommand({ kind: 'goal', action: 'resume', raw: '/goal resume' })}
+                  onCancel={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
+                />
+              )}
+              {questionPrompt && questionPrompt.conversationId === activeConversationId && (
+                questionWizardOpen ? (
+                  <QuestionWizard
+                    prompt={questionPrompt}
+                    onAnswersChange={answers => {
+                      if (questionPromptRef.current) {
+                        questionPromptRef.current = { ...questionPromptRef.current, answers }
+                      }
+                      setQuestionPrompt(current => current ? { ...current, answers } : current)
+                    }}
+                    onSubmit={() => { void submitQuestionAnswers() }}
+                    onDismiss={() => setQuestionWizardOpen(false)}
+                  />
+                ) : (
+                  <div className="question-chip-container">
+                    <button type="button" className="question-chip" onClick={() => setQuestionWizardOpen(true)}>
+                      <MessageCircleQuestion size={15} aria-hidden="true" />
+                      {questionPrompt.questions.length === 1
+                        ? t('questions.chipOne')
+                        : t('questions.chip', { count: questionPrompt.questions.length })}
+                    </button>
+                    <button
+                      type="button"
+                      className="question-chip-close"
+                      onClick={() => {
+                        questionPromptRef.current = undefined
+                        setQuestionPrompt(undefined)
+                        setQuestionWizardOpen(false)
+                      }}
+                      aria-label={t('questions.dismiss')}
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                )
+              )}
+            </div>
+          ) : null}
           {visiblePermissionPrompt && (
             <PermissionApprovalPanel
               prompt={visiblePermissionPrompt}

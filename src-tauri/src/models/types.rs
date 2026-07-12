@@ -309,9 +309,37 @@ pub enum CommandStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum GoalDecision {
-    Complete,
     Continue,
-    Blocked,
+    Pause,
+    Complete,
+}
+
+/// Stable reason identifiers for goal evaluation decisions.
+/// These are designed to be programmatically consumed by the FE for
+/// circuit-breaking, UX, and analytics. The values are serialized as
+/// camelCase (e.g. `infraError`, `needsUser`) so they flow cleanly
+/// to the renderer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum GoalReasonId {
+    /// Agent is still working on the task — not done yet.
+    TaskIncomplete,
+    /// Agent hit a task-level failure (test fails, compile error) —
+    /// should continue to fix.
+    TaskFailure,
+    /// Operation detected as unsafe — needs human review.
+    Unsafe,
+    /// Agent needs user input (credentials, architectural decision).
+    NeedsUser,
+    /// Objective met.
+    Done,
+    /// Goal hit safety limits (max turns, max elapsed, etc.).
+    /// NOT a budget limitation — Verboo has unlimited tokens.
+    /// FE maps this to budget_limited/paused status.
+    SafetyLimit,
+    /// Infrastructure failure (CLI timeout, parse error, crash).
+    /// Triggers circuit-breaker in the FE.
+    InfraError,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -520,8 +548,15 @@ pub struct UpdateSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GoalModeSettings {
+    /// Whether goal mode is enabled for new conversations. Default: true.
     pub enabled: bool,
+    /// DEPRECATED — safety guard only. Verboo has unlimited tokens.
+    /// Kept for FE backward compat. Max turns before auto-pause.
+    /// Default: 3. Clamped [1, 20].
     pub max_turns: u32,
+    /// DEPRECATED — safety guard only. Verboo has unlimited tokens.
+    /// Kept for FE backward compat. Max elapsed minutes before auto-pause.
+    /// Default: 30. Clamped [1, 240].
     pub max_elapsed_minutes: u32,
     pub allow_auto_access: bool,
 }
@@ -785,11 +820,13 @@ pub struct CommandRun {
 #[serde(rename_all = "camelCase")]
 pub struct GoalEvaluationResult {
     pub decision: GoalDecision,
-    pub confidence: f64,
+    pub reason_id: GoalReasonId,
     pub reason: String,
-    pub evidence: Vec<String>,
-    pub missing: Vec<String>,
-    pub next_message: Option<String>,
+    pub session_summary: Option<String>,
+    pub gaps: Vec<String>,
+    pub next_action: Option<String>,
+    pub completion_summary: Option<String>,
+    pub confidence: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1184,8 +1221,8 @@ impl Default for UserSettings {
             ignore_tool_chats_for_memory: true,
             goal_mode: GoalModeSettings {
                 enabled: true,
-                max_turns: 3,
-                max_elapsed_minutes: 30,
+                max_turns: 999,
+                max_elapsed_minutes: 99999,
                 allow_auto_access: true,
             },
             updates: UpdateSettings {
@@ -1274,8 +1311,8 @@ mod tests {
         assert!(!d.chronicle_preview);
         assert!(d.ignore_tool_chats_for_memory);
         assert!(d.goal_mode.enabled);
-        assert_eq!(d.goal_mode.max_turns, 3);
-        assert_eq!(d.goal_mode.max_elapsed_minutes, 30);
+        assert_eq!(d.goal_mode.max_turns, 999);
+        assert_eq!(d.goal_mode.max_elapsed_minutes, 99999);
         assert!(d.goal_mode.allow_auto_access);
         assert_eq!(d.updates.channel, UpdateChannel::Beta);
         assert!(d.updates.auto_check);

@@ -5,7 +5,7 @@ import type { AttachmentMeta, CustomSlashCommand, SkillSummary } from '../../../
 import { useI18n } from '../../i18n'
 import { useToast } from '../../components/Toast'
 import { QueuePanel } from '../queue/QueuePanel'
-import { parseReservedSlashCommand, type ReservedSlashCommand } from './slashCommands'
+import { parseReservedSlashCommand, parseGoalCommand, type ReservedSlashCommand } from './slashCommands'
 import {
   getCustomCommandLabel,
   getCustomCommandToken,
@@ -278,6 +278,17 @@ export function Composer({
     }
     if (reserved?.kind === 'compact') {
       onCompactCommand(reserved)
+      setValue('')
+      return
+    }
+
+    // No-slash goal command: `goal implement X` (without leading /) is
+    // treated as a goal start. This lets users invoke goal mode without
+    // remembering the slash prefix. Any other text falls through to
+    // normal chat.
+    const noSlashGoal = parseGoalCommand(trimmed)
+    if (noSlashGoal?.kind === 'goal') {
+      onGoalCommand(noSlashGoal)
       setValue('')
       return
     }

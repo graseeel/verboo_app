@@ -153,8 +153,9 @@ impl SettingsStore {
             ignore_tool_chats_for_memory: s.ignore_tool_chats_for_memory,
             goal_mode: crate::models::types::GoalModeSettings {
                 enabled: s.goal_mode.enabled,
-                max_turns: s.goal_mode.max_turns.clamp(1, 20),
-                max_elapsed_minutes: s.goal_mode.max_elapsed_minutes.clamp(1, 240),
+                // Unlimited — safety guard only, no budget.
+                max_turns: s.goal_mode.max_turns,
+                max_elapsed_minutes: s.goal_mode.max_elapsed_minutes,
                 allow_auto_access: s.goal_mode.allow_auto_access,
             },
             // Channel is locked to beta while stable builds are not published
