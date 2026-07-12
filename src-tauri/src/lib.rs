@@ -495,6 +495,71 @@ fn approve_skill(
     store.update(serde_json::to_value(&current).map_err(|e| e.to_string())?)
 }
 
+// ════════════════════════════════════════════════════════════════════
+// Computer Use — allowlist (P0.5, Kratos)
+//
+// Architecture: docs/computer-use-architecture-v1.md §7.9-7.10
+// Capability-gated by capabilities/computer-use.json (Geralt P0.3).
+//
+// These 3 commands operate on `user_settings.computerUse.allowlist`. The
+// whole-feature enable + self-test toggle + denylist + retention/cap/idle
+// all flow through the existing `get_user_settings` / `update_user_settings`
+// commands — only allowlist mutation needs dedicated handlers because it
+// requires upsert-by-bundle-id semantics (not raw replace).
+// ════════════════════════════════════════════════════════════════════
+
+/// Upserts an entry in the Computer Use allowlist. If an entry with the
+/// same `bundle_id` (case-insensitive) already exists, it is replaced;
+/// otherwise the entry is appended. Normalize() runs after, so invalid
+/// entries (e.g. non-self-test Verboo, self-test when toggle off) are
+/// stripped silently — caller should re-read via get_user_settings to
+/// confirm the entry landed.
+#[tauri::command]
+fn update_computer_use_allowlist(
+    entry: crate::models::types::ComputerUseAllowlistEntry,
+    store: tauri::State<'_, SettingsStore>,
+) -> Result<UserSettings, String> {
+    let mut current = store.get()?;
+    let key = entry.bundle_id.to_lowercase();
+    let mut found = false;
+    for existing in current.computer_use.allowlist.iter_mut() {
+        if existing.bundle_id.to_lowercase() == key {
+            *existing = entry.clone();
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        current.computer_use.allowlist.push(entry);
+    }
+    store.update(serde_json::to_value(&current).map_err(|e| e.to_string())?)
+}
+
+/// Removes the allowlist entry with the given bundle id (case-insensitive).
+/// No-op if not present. Returns the resulting UserSettings.
+#[tauri::command]
+fn remove_computer_use_allowlist(
+    bundle_id: String,
+    store: tauri::State<'_, SettingsStore>,
+) -> Result<UserSettings, String> {
+    let mut current = store.get()?;
+    let key = bundle_id.to_lowercase();
+    current
+        .computer_use
+        .allowlist
+        .retain(|e| e.bundle_id.to_lowercase() != key);
+    store.update(serde_json::to_value(&current).map_err(|e| e.to_string())?)
+}
+
+/// Returns the current allowlist. Convenience wrapper around
+/// `get_user_settings().computerUse.allowlist` for the AllowlistManager UI.
+#[tauri::command]
+fn get_computer_use_allowlist(
+    store: tauri::State<'_, SettingsStore>,
+) -> Result<Vec<crate::models::types::ComputerUseAllowlistEntry>, String> {
+    Ok(store.get()?.computer_use.allowlist)
+}
+
 /// Fires an OS notification when a background turn completes.
 ///
 /// The renderer calls this in the `done`/`error` handler when:
@@ -1497,6 +1562,11 @@ pub fn run() {
             // Skill approval gating (item 1.8)
             check_skill_approval,
             approve_skill,
+            // Computer Use allowlist (P0.5, Kratos) — capability-gated
+            // by capabilities/computer-use.json (Geralt P0.3, pending)
+            get_computer_use_allowlist,
+            update_computer_use_allowlist,
+            remove_computer_use_allowlist,
             // Background turn completion notification (item 1.5)
             fire_completion_notification,
             // Defaults

@@ -172,7 +172,85 @@ impl SettingsStore {
             avatar: s.avatar.clone(),
             include_verboo_co_author: s.include_verboo_co_author,
             effort_by_model: s.effort_by_model.clone(),
+            computer_use: normalize_computer_use(&s.computer_use),
         }
+    }
+}
+
+/// Normalizes Computer Use settings (Kratos P0.5).
+///
+/// Enforces Maestro-locked policy invariants (Q2, Q7) and clamps ranges.
+/// Strip-and-clamp rules — never fail-open:
+///   - audit_retention_days        clamp [7, 365]
+///   - audit_storage_cap_mb        clamp [10, 10_000]
+///   - idle_timeout_seconds        clamp [300, 3600]
+///   - self_test_enabled==false    strip all allowlist entries with
+///                                  `is_self_test == true` (architecture §4)
+///   - enabled==false              force self_test_enabled=false (can't run
+///                                  self-test when feature is disabled)
+///   - denylist                    de-duplicate (case-insensitive)
+///   - allowlist                   de-duplicate by bundle_id (case-insensitive,
+///                                  last-wins on conflict)
+fn normalize_computer_use(s: &crate::models::types::ComputerUseSettings) -> crate::models::types::ComputerUseSettings {
+    use crate::models::types::{ComputerUseAllowlistEntry, ComputerUseSettings};
+
+    let clamped_retention = s.audit_retention_days.clamp(7, 365);
+    let clamped_cap = s.audit_storage_cap_mb.clamp(10, 10_000);
+    let clamped_idle = s.idle_timeout_seconds.clamp(300, 3600);
+
+    // `enabled == false` is the top-level kill switch. Self-test cannot run
+    // when CU is disabled — architecture §4 requires an active session, and
+    // sessions require enabled==true.
+    let self_test_enabled = s.enabled && s.self_test_enabled;
+
+    // De-duplicate denylist (case-insensitive, preserve first-seen order).
+    let mut seen_deny: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let denylist: Vec<String> = s
+        .denylist
+        .iter()
+        .filter_map(|id| {
+            let key = id.to_lowercase();
+            if seen_deny.contains(&key) {
+                None
+            } else {
+                seen_deny.insert(key);
+                Some(id.clone())
+            }
+        })
+        .collect();
+
+    // De-duplicate allowlist by bundle_id (case-insensitive, last-wins).
+    // Strip self-test entries when self_test_enabled is false.
+    let mut by_bundle: std::collections::HashMap<String, ComputerUseAllowlistEntry> =
+        std::collections::HashMap::new();
+    for entry in &s.allowlist {
+        if !self_test_enabled && entry.is_self_test {
+            continue;
+        }
+        // Even when self-test is enabled, non-self-test entries with the
+        // Verboo bundle id are invalid — Verboo is only ever a self-test target.
+        let is_verboo = entry.bundle_id.eq_ignore_ascii_case("ai.verboo.code.desktop");
+        if is_verboo && !entry.is_self_test {
+            continue;
+        }
+        // Self-test entries must be on the Verboo bundle.
+        if entry.is_self_test && !is_verboo {
+            continue;
+        }
+        by_bundle.insert(entry.bundle_id.to_lowercase(), entry.clone());
+    }
+    let allowlist: Vec<ComputerUseAllowlistEntry> = by_bundle.into_values().collect();
+
+    ComputerUseSettings {
+        enabled: s.enabled,
+        self_test_enabled,
+        allowlist,
+        denylist,
+        audit_retention_days: clamped_retention,
+        audit_storage_cap_mb: clamped_cap,
+        idle_timeout_seconds: clamped_idle,
+        telemetry_opt_out: s.telemetry_opt_out,
+        show_in_menu_bar: s.show_in_menu_bar,
     }
 }
 
@@ -332,5 +410,200 @@ mod tests {
             .update(json!({ "showInMenuBar": true }))
             .unwrap();
         assert!(restored.show_in_menu_bar);
+    }
+
+    // ── Computer Use (P0.5 — Kratos) ─────────────────────────────────
+
+    #[test]
+    fn computer_use_defaults_are_fail_safe() {
+        // Verifies Maestro policy: enabled=false, self_test=false,
+        // retention=90, cap=200, idle=900, telemetry_opt_out=false.
+        let store = temp_store();
+        let s = store.get().unwrap();
+        let cu = &s.computer_use;
+        assert!(!cu.enabled, "CU must default disabled");
+        assert!(
+            !cu.self_test_enabled,
+            "self-test must default OFF (Maestro Q2)"
+        );
+        assert!(cu.allowlist.is_empty(), "allowlist must default empty");
+        assert!(
+            !cu.denylist.is_empty(),
+            "denylist must default non-empty (Mail, 1Password, Bitwarden)"
+        );
+        assert_eq!(cu.audit_retention_days, 90);
+        assert_eq!(cu.audit_storage_cap_mb, 200);
+        assert_eq!(cu.idle_timeout_seconds, 900);
+        assert!(!cu.telemetry_opt_out);
+    }
+
+    #[test]
+    fn computer_use_enable_then_self_test_works() {
+        let store = temp_store();
+        // CU on, then self-test on. Both must persist.
+        let step1 = store.update(json!({ "computerUse": { "enabled": true } })).unwrap();
+        assert!(step1.computer_use.enabled);
+        assert!(!step1.computer_use.self_test_enabled); // still off
+        let step2 = store
+            .update(json!({ "computerUse": { "selfTestEnabled": true } }))
+            .unwrap();
+        assert!(step2.computer_use.enabled);
+        assert!(step2.computer_use.self_test_enabled);
+    }
+
+    #[test]
+    fn computer_use_disabled_forces_self_test_off() {
+        // Architecture §4 invariant: CU disabled => no self-test.
+        let store = temp_store();
+        let poisoned = serde_json::json!({
+            "computerUse": {
+                "enabled": false,
+                "selfTestEnabled": true
+            }
+        });
+        let normalized = store.update(poisoned).unwrap();
+        assert!(!normalized.computer_use.enabled);
+        assert!(
+            !normalized.computer_use.self_test_enabled,
+            "self-test cannot stay on when CU is disabled"
+        );
+    }
+
+    #[test]
+    fn computer_use_clamps_out_of_range_values() {
+        let store = temp_store();
+        let out_of_range = serde_json::json!({
+            "computerUse": {
+                "enabled": true,
+                "auditRetentionDays": 0,      // below min 7
+                "auditStorageCapMb": 1,        // below min 10
+                "idleTimeoutSeconds": 10       // below min 300
+            }
+        });
+        let s = store.update(out_of_range).unwrap();
+        let cu = &s.computer_use;
+        assert_eq!(cu.audit_retention_days, 7);
+        assert_eq!(cu.audit_storage_cap_mb, 10);
+        assert_eq!(cu.idle_timeout_seconds, 300);
+
+        let over = serde_json::json!({
+            "computerUse": {
+                "enabled": true,
+                "auditRetentionDays": 99999,
+                "auditStorageCapMb": 9999999,
+                "idleTimeoutSeconds": 99999
+            }
+        });
+        let s = store.update(over).unwrap();
+        let cu = &s.computer_use;
+        assert_eq!(cu.audit_retention_days, 365);
+        assert_eq!(cu.audit_storage_cap_mb, 10_000);
+        assert_eq!(cu.idle_timeout_seconds, 3600);
+    }
+
+    #[test]
+    fn computer_use_allowlist_upsert_dedupes_by_bundle_id() {
+        let store = temp_store();
+        let with_dupes = serde_json::json!({
+            "computerUse": {
+                "enabled": true,
+                "allowlist": [
+                    {
+                        "bundleId": "com.apple.Notes",
+                        "displayName": "Notes",
+                        "scope": "view",
+                        "isSelfTest": false
+                    },
+                    {
+                        "bundleId": "com.apple.notes", // case differs
+                        "displayName": "Notes (dupe)",
+                        "scope": "input",
+                        "isSelfTest": false
+                    }
+                ]
+            }
+        });
+        let s = store.update(with_dupes).unwrap();
+        // Both map to "com.apple.notes" lowercased; last-wins wins.
+        assert_eq!(s.computer_use.allowlist.len(), 1);
+        let entry = &s.computer_use.allowlist[0];
+        assert_eq!(entry.scope, crate::models::types::ComputerUseScope::Input);
+    }
+
+    #[test]
+    fn computer_use_strips_self_test_entries_when_disabled() {
+        // Self-test OFF => any is_self_test=true entry must vanish.
+        let store = temp_store();
+        let poisoned = serde_json::json!({
+            "computerUse": {
+                "enabled": true,
+                "selfTestEnabled": false,
+                "allowlist": [
+                    {
+                        "bundleId": "com.apple.Notes",
+                        "displayName": "Notes",
+                        "scope": "view",
+                        "isSelfTest": false
+                    },
+                    {
+                        "bundleId": "ai.verboo.code.desktop",
+                        "displayName": "Verboo (self-test)",
+                        "scope": "input",
+                        "isSelfTest": true
+                    }
+                ]
+            }
+        });
+        let s = store.update(poisoned).unwrap();
+        let cu = &s.computer_use;
+        assert_eq!(cu.allowlist.len(), 1);
+        assert_eq!(cu.allowlist[0].bundle_id, "com.apple.Notes");
+        assert!(!cu.allowlist[0].is_self_test);
+    }
+
+    #[test]
+    fn computer_use_rejects_verboo_non_self_test_entry() {
+        // Architecture §4: Verboo bundle id is ONLY valid as a self-test target.
+        // A non-self-test entry with bundle=ai.verboo.code.desktop is stripped.
+        let store = temp_store();
+        let poisoned = serde_json::json!({
+            "computerUse": {
+                "enabled": true,
+                "selfTestEnabled": true,
+                "allowlist": [
+                    {
+                        "bundleId": "ai.verboo.code.desktop",
+                        "displayName": "Verboo (fraud)",
+                        "scope": "full",
+                        "isSelfTest": false
+                    }
+                ]
+            }
+        });
+        let s = store.update(poisoned).unwrap();
+        assert!(
+            s.computer_use.allowlist.is_empty(),
+            "non-self-test Verboo entry must be stripped (anti-tamper)"
+        );
+    }
+
+    #[test]
+    fn computer_use_denylist_dedupes_case_insensitive() {
+        let store = temp_store();
+        let with_dupes = serde_json::json!({
+            "computerUse": {
+                "enabled": true,
+                "denylist": [
+                    "com.apple.Mail",
+                    "com.apple.mail", // case dupe
+                    "com.apple.Safari"
+                ]
+            }
+        });
+        let s = store.update(with_dupes).unwrap();
+        let dl = &s.computer_use.denylist;
+        assert_eq!(dl.len(), 2); // Mail deduped; Safari stays
+        assert!(dl.iter().any(|x| x.eq_ignore_ascii_case("com.apple.Mail")));
+        assert!(dl.iter().any(|x| x == "com.apple.Safari"));
     }
 }

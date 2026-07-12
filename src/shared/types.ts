@@ -135,6 +135,7 @@ export type SettingsTab =
   | 'memory'
   | 'projectInstructions'
   | 'updates'
+  | 'computerUse'
   | 'archived'
 export type PersonalityMode = 'pragmatic' | 'concise' | 'explanatory'
 export type CompletionNotificationMode = 'always' | 'background' | 'never'
@@ -355,6 +356,9 @@ export type UserSettings = {
    *  Absent → model's defaultEffort applies. Promoted to UserSettings by
    *  Geralt; FE falls back to localStorage when the backend hasn't landed yet. */
   effortByModel?: Record<string, string>
+  /** Computer Use feature settings. Default: enabled=false, selfTestEnabled=false.
+   *  See docs/computer-use-architecture-v1.md. */
+  computerUse: ComputerUseSettings
 }
 
 /// Profile avatar configuration.
@@ -805,4 +809,157 @@ export type LocalTerminalStartRequest = {
 export type TerminalDataEvent = {
   sessionId: string
   data: string
+}
+
+// ── Computer Use types ──────────────────────────────────────────
+// Mirrors the Rust SessionManager contract from docs/computer-use-architecture-v1.md.
+// Renderer sees a subset: state machine + consent request/grant + audit row.
+// IPC channels live in verboo-bridge.ts; mock fallback in computerUseStore.ts.
+
+export type ComputerUseScope = 'view' | 'input' | 'full' | 'ask'
+
+export type ComputerUseStatus =
+  | 'idle'
+  | 'consent'
+  | 'active'
+  | 'paused'
+  | 'stopped'
+  | 'denied'
+  | 'emergency-stopping'
+
+export type ComputerUseConsentRequest = {
+  id: string
+  goal: string
+  appName: string
+  appBundleId?: string
+  scope: ComputerUseScope
+  isSelfTest?: boolean
+  createdAt: number
+  /** Auto-deny after this many ms. Renderer enforces; Rust may also enforce. */
+  timeoutMs?: number
+}
+
+export type ComputerUseConsentGrant = {
+  type: 'once' | 'session'
+  /** User opted to remember choice for this app — routes to allowlist. */
+  rememberApp?: boolean
+}
+
+export type ComputerUseDenyReason =
+  | 'user_denied'
+  | 'timeout'
+  | 'os_permission_missing'
+  | 'self_test_disabled'
+  | 'app_hard_blocked'
+  | 'scope_denied'
+
+export type ComputerUseStopReason =
+  | 'user_cancelled'
+  | 'emergency_stop'
+  | 'session_expired'
+  | 'os_permission_revoked'
+  | 'target_gone'
+  | 'audit_storage_full'
+  | 'app_quit'
+  | 'idle_expired'
+  | 'self_test_scope_violation'
+  | 'error'
+
+export type ComputerUseActionVerb =
+  | 'click'
+  | 'type'
+  | 'drag'
+  | 'scroll'
+  | 'read'
+  | 'launch'
+  | 'close'
+  | 'hotkey'
+
+export type ComputerUseActionEvent = {
+  sessionId: string
+  verb: ComputerUseActionVerb
+  targetLabel: string
+  appName: string
+  /** Monotonic ms since session start. */
+  elapsedMs: number
+  /** Cumulative action count for this session. */
+  actionIndex: number
+}
+
+export type ComputerUseSession = {
+  id: string
+  status: ComputerUseStatus
+  goal: string
+  appName: string
+  appBundleId?: string
+  scope: ComputerUseScope
+  isSelfTest: boolean
+  startedAt: number
+  /** Last action observed — drives banner subtext. */
+  lastAction?: ComputerUseActionEvent
+  /** Cumulative action count. */
+  actionCount: number
+  /** Reason for terminal states (stopped/denied/emergency-stopping). */
+  stopReason?: ComputerUseStopReason
+  denyReason?: ComputerUseDenyReason
+}
+
+export type ComputerUseAuditRow = {
+  id: number
+  tsWall: number
+  sessionId: string
+  actor: 'user' | 'agent'
+  appBundleId?: string
+  actionType: string
+  actionSummary?: string
+  outcome:
+    | 'success'
+    | 'denied'
+    | 'blocked'
+    | 'error'
+    | 'aborted'
+    | 'stale'
+    | 'paused'
+    | 'rate_limited'
+  isSelfTest: boolean
+}
+
+export type ComputerUseAllowlistEntry = {
+  /** macOS bundle ID, Linux .desktop id, Windows AppID. Self-test = "ai.verboo.code.desktop". */
+  bundleId: string
+  /** Human-readable name for UI display. Not security-critical. */
+  displayName: string
+  /** Maximum scope permitted for this app. */
+  scope: ComputerUseScope
+  /** Unix ms when the entry was added. */
+  addedAt: number
+  /** Unix ms when last used in an active CU session. */
+  lastUsedAt: number
+  /** Counter incremented on every action against this app. */
+  actionCount: number
+  /** When true, screenshots blocked for this app (tree only). Default false. */
+  piiRedact: boolean
+  /** Synthetic Verboo-on-Verboo entry (architecture §4). Stripped when selfTestEnabled=false. */
+  isSelfTest: boolean
+}
+
+export type ComputerUseSettings = {
+  /** Top-level kill switch. Default false. */
+  enabled: boolean
+  /** Self-test scope (architecture §4). Default false (Maestro Q2). */
+  selfTestEnabled: boolean
+  /** Per-app allowlist. Empty by default = deny all. */
+  allowlist: ComputerUseAllowlistEntry[]
+  /** User-configurable Tier 2 denylist (always blocked). Defaults: Mail, 1Password, Bitwarden. */
+  denylist: string[]
+  /** Audit retention days. Default 90, clamp [7, 365]. */
+  auditRetentionDays: number
+  /** Audit SQLite DB cap MB. Default 200, clamp [10, 10_000]. */
+  auditStorageCapMb: number
+  /** Idle timeout in seconds before consent expires. Default 900 (15min), clamp [300, 3600]. */
+  idleTimeoutSeconds: number
+  /** Local-only action-type telemetry opt-out. Default false (telemetry ON). */
+  telemetryOptOut: boolean
+  /** Show CU active state in menu bar. P1 feature, defaults false. */
+  showInMenuBar: boolean
 }

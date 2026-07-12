@@ -417,6 +417,7 @@ mod tests {
             avatar: None,
             include_verboo_co_author: false,
             effort_by_model: std::collections::HashMap::new(),
+            computer_use: crate::models::types::ComputerUseSettings::default(),
         }
     }
 

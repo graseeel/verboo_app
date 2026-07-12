@@ -545,6 +545,193 @@ pub struct UpdateSettings {
     pub auto_download: bool,
 }
 
+// ── Computer Use (P0.5 — Kratos) ─────────────────────────────────────
+//
+// Settings + allowlist persistence for the Computer Use feature. The full
+// architecture is documented in `docs/computer-use-architecture-v1.md`;
+// Maestro GO + mandatory patches M1-M4 in `docs/computer-use-maestro-go.md`.
+//
+// All defaults are fail-safe per Maestro policy:
+//   - Q2: self_test_enabled = false (off by default)
+//   - Q7: idle_timeout = 15min default, clamp [5, 60]
+//   - Q8: channel = beta-only (gated elsewhere, not here)
+//   - Q10: telemetry_opt_out = false (local-only telemetry ON by default)
+//
+// The allowlist + denylist are the persistent form of consent. Per-session
+// consent itself is in-memory only (SessionManager) — never persisted.
+
+/// Computer Use scope for an allowlist entry. Determines which action
+/// categories the agent may perform on the target app.
+///
+/// Mirrors `ComputerUseScope` in `src/shared/types.ts` (renderer).
+/// Lower scopes are subsets of higher scopes (View ⊂ Input ⊂ Full).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ComputerUseScope {
+    /// Read-only: `list-apps`, `list-windows`, `get-app-state` (tree only,
+    /// no screenshot). safest tier; default for new allowlist entries.
+    View,
+    /// Read + input: View actions + `click`, `type-text`, `press-key`,
+    /// `hotkey`, `scroll`. Screenshots allowed. Most common tier.
+    Input,
+    /// Full control: Input actions + `set-value`, `paste-text`, `drag`,
+    /// `perform-secondary-action` (the latter three are P1).
+    Full,
+    /// Always prompt, never auto-allow regardless of allowlist presence.
+    /// Used for apps the user wants to drive occasionally with explicit
+    /// per-action consent.
+    Ask,
+}
+
+impl Default for ComputerUseScope {
+    fn default() -> Self {
+        Self::View
+    }
+}
+
+/// One entry in the Computer Use allowlist. The allowlist is the persistent
+/// form of consent — per-session consent lives in `SessionManager` (Rust).
+///
+/// `is_self_test` marks synthetic entries for Verboo-on-Verboo control
+/// (architecture §4 Self-Test Scope). Such entries are only valid when
+/// `ComputerUseSettings::self_test_enabled == true`; normalize() strips
+/// them otherwise.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerUseAllowlistEntry {
+    /// macOS bundle ID (e.g. "com.apple.Notes"), Linux `.desktop` file id,
+    /// or Windows AppID. For self-test entries: "ai.verboo.code.desktop".
+    pub bundle_id: String,
+    /// Human-readable app name for UI display. Not security-critical.
+    pub display_name: String,
+    /// Maximum scope permitted for this app.
+    #[serde(default)]
+    pub scope: ComputerUseScope,
+    /// Unix epoch milliseconds when the entry was added.
+    #[serde(default)]
+    pub added_at: i64,
+    /// Unix epoch milliseconds when the app was last used in an active CU
+    /// session. Updated by SessionManager on action.
+    #[serde(default)]
+    pub last_used: i64,
+    /// Counter incremented on every action against this app. Useful for
+    /// audit + telemetry.
+    #[serde(default)]
+    pub action_count: u64,
+    /// When true, screenshots are blocked for this app — only the AX tree
+    /// is returned in `get-app-state`. Defaults false. Set true for
+    /// sensitive apps (Mail, banking, etc.) where pixels leak PII.
+    #[serde(default)]
+    pub pii_redact: bool,
+    /// Synthetic entry for Verboo-on-Verboo self-test control (Kratos
+    /// architecture §4). Only valid when `self_test_enabled == true`.
+    /// Normalize() strips self-test entries when the toggle is off.
+    #[serde(default)]
+    pub is_self_test: bool,
+}
+
+/// Computer Use settings (Kratos P0.5).
+///
+/// Stored under `user_settings.computerUse` in `settings.json`. All defaults
+/// are fail-safe per Maestro policy. The `enabled` field is the top-level
+/// kill switch — when false, no CU session can start regardless of allowlist.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerUseSettings {
+    /// Top-level kill switch. When false, `SessionManager::request()` must
+    /// refuse with `feature_disabled`. Default: false. User must enable in
+    /// Settings before any CU feature works.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Self-test scope (architecture §4): allow Verboo-on-Verboo control of
+    /// allowlisted surfaces (SettingsView tabs, ProfileView, CommandPalette
+    /// read-only, GoalActivePanel Pause/Cancel only). Default: false (Q2).
+    /// When false, normalize() strips any allowlist entry with
+    /// `is_self_test == true`.
+    #[serde(default)]
+    pub self_test_enabled: bool,
+
+    /// Per-app allowlist. Empty by default = deny all (architecture §5).
+    /// Enforced by `ComputerUseService` (Rust Layer 2) + re-checked at the
+    /// Swift helper Layer 1 for Tier 1 hard blocks only.
+    #[serde(default)]
+    pub allowlist: Vec<ComputerUseAllowlistEntry>,
+
+    /// User-configurable Tier 2 denylist (always blocked regardless of
+    /// allowlist). Defaults: Mail, 1Password, Bitwarden. These mirror
+    /// Aloy §6.5 + Geralt §4 Tier 2 list. Helper still enforces Tier 1.
+    #[serde(default = "default_computer_use_denylist")]
+    pub denylist: Vec<String>,
+
+    /// Audit retention in days. Default 90, clamp [7, 365] (Aloy §2 + Q
+    /// accepted). Older rows eligible for export-then-purge flow.
+    #[serde(default = "default_computer_use_audit_retention_days")]
+    pub audit_retention_days: u32,
+
+    /// Audit SQLite DB size cap in MB. Default 200, clamp [10, 10_000].
+    /// On hit, session pauses with `audit_storage_full`; banner prompts
+    /// export+purge. No auto-purge.
+    #[serde(default = "default_computer_use_audit_storage_cap_mb")]
+    pub audit_storage_cap_mb: u32,
+
+    /// Idle timeout in seconds before active consent expires (Aloy §4).
+    /// Default 900 (15 min). Clamp [300, 3600] (5-60 min).
+    #[serde(default = "default_computer_use_idle_timeout_seconds")]
+    pub idle_timeout_seconds: u32,
+
+    /// Local-only action-type telemetry opt-out. Default: false (telemetry
+    /// ON). When true, the `computer_use_telemetry` SQLite table is never
+    /// written. Telemetry never includes payloads — only action types +
+    /// timestamps + session ids (Geralt §Open Questions Q3, Maestro Q10).
+    #[serde(default)]
+    pub telemetry_opt_out: bool,
+
+    /// Show CU active state in the macOS menu bar item (Ciri §5). P1
+    /// feature — defaults false; UI may not respect this in P0.
+    #[serde(default)]
+    pub show_in_menu_bar: bool,
+}
+
+impl Default for ComputerUseSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            self_test_enabled: false,
+            allowlist: Vec::new(),
+            denylist: default_computer_use_denylist(),
+            audit_retention_days: default_computer_use_audit_retention_days(),
+            audit_storage_cap_mb: default_computer_use_audit_storage_cap_mb(),
+            idle_timeout_seconds: default_computer_use_idle_timeout_seconds(),
+            telemetry_opt_out: false,
+            show_in_menu_bar: false,
+        }
+    }
+}
+
+fn default_computer_use_denylist() -> Vec<String> {
+    // Mirror Aloy §6.5 + Geralt §4 Tier 2 defaults. Banking bundle IDs are
+    // regional/user-specific — users add their own via Settings.
+    vec![
+        "com.apple.Mail".into(),
+        "com.agilebits.onepassword-osx".into(), // 1Password 7
+        "com.agilebits.onepassword8".into(),     // 1Password 8
+        "com.bitwarden.desktop".into(),
+    ]
+}
+
+fn default_computer_use_audit_retention_days() -> u32 {
+    90
+}
+
+fn default_computer_use_audit_storage_cap_mb() -> u32 {
+    200
+}
+
+fn default_computer_use_idle_timeout_seconds() -> u32 {
+    900
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GoalModeSettings {
@@ -611,6 +798,10 @@ pub struct UserSettings {
     /// Keyed by model id; value is the effort level string. Empty by default.
     #[serde(default)]
     pub effort_by_model: std::collections::HashMap<String, String>,
+    /// Computer Use settings (Kratos P0.5). Allowlist, denylist, retention,
+    /// self-test toggle, kill switch. Defaults are fail-safe.
+    #[serde(default)]
+    pub computer_use: ComputerUseSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1235,6 +1426,7 @@ impl Default for UserSettings {
             avatar: None,
             include_verboo_co_author: false,
             effort_by_model: std::collections::HashMap::new(),
+            computer_use: ComputerUseSettings::default(),
         }
     }
 }
