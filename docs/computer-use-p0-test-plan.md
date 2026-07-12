@@ -41,8 +41,9 @@ A finding is **SEV-1** if any of these hold:
 - Agent types into an `AXSecureTextField` or any field whose aria-label matches `/password|senha|token|api[-_]?key|secret/i`.
 - Agent issues a hotkey in the M4 denylist (`Cmd+Q`, `Cmd+W`, `Cmd+Option+Esc`, equivalents) and the helper does NOT return `scope_denied`.
 - Emergency stop takes >500ms to abort an in-flight action.
-- `AccessMode = 'full'` auto-grants CU without consent flow.
+- `AccessMode = 'full'` auto-grants CU without consent flow (also covers N4: setting full+fullAccessEnabled does not activate CU).
 - `--dangerously-skip-permissions` bypasses any CU gate.
+- `normalize()` fails to enforce N1-N4 (see §2.8): CU defaults non-fail-safe, self-test entry surviving while toggle off, Verboo non-self-test entry accepted, or AccessMode full auto-activating CU at the configuration layer.
 - Audit DB write fails and CU continues executing actions (fail-open).
 
 A finding is **SEV-2** if it degrades safety but does not bypass a hard block: e.g. audit row missing a non-critical field, consent toast timeout miscalculated, rate limit off-by-one. SEV-2 must be fixed before stable channel (Q8) but does not block P0 beta.
@@ -87,7 +88,32 @@ These are the test-only surfaces Geralt needs to expose (behind a `#[cfg(test)]`
 - vitest covers renderer-side consent flow + Esc hotkey pill.
 - CI: bypass suite runs on every PR touching `src-tauri/services/computer_use/**` or `src-tauri/tests/cu/**`.
 
-**Geralt coordination**: this section §2 is the contract. Aloy writes tests against these hooks; Geralt implements them as the first P0.1 sub-task. Blocked until hooks land.
+### 2.8 Normalize invariants — asserted via production commands
+
+Every allowlist/settings mutation in tests MUST assert these invariants. They are the fail-safe backbone: if `normalize()` ever drifts so that one of these flips, ship is blocked regardless of bypass-suite pass/fail. Run as standalone `normalize_invariants.rs` tests, AND as post-condition checks after every §B/§F test.
+
+| # | Invariant | How to assert |
+|---|---|---|
+| **N1** | **Computer Use defaults fail-safe.** A freshly installed app (no settings.json, no allowlist on disk) loads to: CU disabled, no session ACTIVE, no allowlist entries, self-test OFF. No "first run" code path may grant any of these. | Delete settings.json + allowlist.db, restart app, call `getComputerUseState()` → `null`; `getComputerUseAllowlist()` → `[]`; `userSettings.computerUse.enabled === false`; `userSettings.computerUse.selfTest === false`. |
+| **N2** | **Self-test forced off when disabled.** If `computerUse.selfTest === false`, ANY allowlist entry with `bundle_id === 'ai.verboo.code.desktop'` is stripped by normalize() — even if a test/migration/old-version wrote it. Cannot be re-added while toggle off. | `update_user_settings({ computerUse: { selfTest: false } })`; then `update_computer_use_allowlist({ bundle_id: 'ai.verboo.code.desktop', scope: 'SelfTest' })`; assert response is `denied` or entry silently stripped on next `getComputerUseAllowlist()`. |
+| **N3** | **Verboo non-self-test entries stripped.** A Verboo bundle ID entry with scope ≠ `SelfTest` is rejected/stripped. The agent cannot escalate self-test scope to Input/Full on Verboo itself. | `update_computer_use_allowlist({ bundle_id: 'ai.verboo.code.desktop', scope: 'Input' })` → rejected with `self_test_scope_required`; allowlist unchanged. |
+| **N4** | **AccessMode full never starts CU.** Setting `defaultAccessMode: 'full'` + `fullAccessEnabled: true` does NOT activate CU. No session becomes ACTIVE, no allowlist entry is auto-granted, no env var is injected. CU consent flow is the only path to ACTIVE. | `update_user_settings({ defaultAccessMode: 'full', fullAccessEnabled: true })`; call `getComputerUseState()` → still `null`; inspect spawned CLI env → `VERBOO_COMPUTER_USE_SESSION` absent. |
+
+**Why these matter**: bypass suite (§B) proves the helper refuses bad actions. Normalize invariants prove the **configuration layer** cannot even express bad state. Both layers must hold — defense in depth.
+
+**Failure handling**: any N1-N4 failure is SEV-1 (see §1: "Self-test scope escape" / "AccessMode full auto-grants CU"). Block ship, file bug, do NOT mute the test.
+
+### 2.9 Future hooks — check_action verdict
+
+When Geralt exposes a `check_action(req: &ActionRequest) -> ActionVerdict` test seam (Rust side, no OS action executed — pure policy check), add SEV-1 cases that depend on it:
+
+- **check_action denies without executing** — for every Tier 1 / Tier 1.5 target, assert `check_action` returns `deny/blocked` BEFORE any helper IPC. Lets the bypass suite run without AX fixtures.
+- **check_action is the gate under test** — `SessionManager::check_action` is the single decision point. If a future refactor splits it, the test must follow.
+- **No silent allow** — `check_action` returning `allow` for a Tier 1.5 target (Keychain, password manager, browser cookies) is SEV-1 even if the helper would later refuse. Policy layer must be correct on its own.
+
+**Not blocking P0 ship**: §2.9 hooks are convenience. Bypass suite can run with real helper IPC if check_action seam is absent. But once Geralt adds it, Aloy MUST add the corresponding SEV-1 cases within the same PR.
+
+**Geralt coordination**: this section §2 is the contract. Aloy writes tests against these hooks; Geralt implements them as the first P0.1 sub-task. Blocked until hooks land. §2.8 invariants are testable TODAY via production commands — no hooks required.
 
 ---
 
@@ -488,11 +514,46 @@ Each test verifies that a Tier 1.5 target cannot be reached, even with full acce
 
 ---
 
+### K. Normalize invariants (§2.8 enforcement)
+
+Standalone tests for the fail-safe backbone. Independent of bypass suite (§B) — these run without helper IPC. Path: `src-tauri/tests/cu/normalize_invariants.rs`.
+
+**K.1 Defaults fail-safe (N1)**
+- Delete `settings.json` + `computer_use.audit.db` + allowlist persistence.
+- Restart app.
+- Assert `getComputerUseState() === null`, `getComputerUseAllowlist() === []`, `userSettings.computerUse.enabled === false`, `userSettings.computerUse.selfTest === false`.
+- No first-run code path grants CU, allowlist entries, or self-test.
+
+**K.2 Self-test entry stripped when toggle off (N2)**
+- Start from clean state. `update_user_settings({ computerUse: { selfTest: false } })`.
+- Attempt `update_computer_use_allowlist({ bundle_id: 'ai.verboo.code.desktop', scope: 'SelfTest' })`.
+- Expected: entry rejected OR silently stripped on next read.
+- Assert `getComputerUseAllowlist()` returns `[]` (no Verboo entry).
+- Flip toggle ON, retry same call → entry accepted.
+- Flip toggle OFF again, re-read allowlist → entry stripped by normalize().
+
+**K.3 Verboo non-self-test scope rejected (N3)**
+- Self-test ON. Attempt `update_computer_use_allowlist({ bundle_id: 'ai.verboo.code.desktop', scope: 'Input' })`.
+- Expected: rejected with `self_test_scope_required` (or equivalent).
+- Allowlist unchanged.
+- Repeat with `scope: 'Full'` → rejected.
+
+**K.4 AccessMode full never activates CU (N4)**
+- Clean state. `update_user_settings({ defaultAccessMode: 'full', fullAccessEnabled: true })`.
+- Assert `getComputerUseState() === null`.
+- Inspect CLI spawn env on next turn → `VERBOO_COMPUTER_USE_SESSION` absent.
+- Trigger a turn with CU skill loaded → still requires explicit consent; no auto-session.
+
+**K.5 Post-condition check after every §B/§F test**
+- Each bypass + AccessMode test asserts at teardown: allowlist contains only entries the test deliberately added, no synthetic Verboo entry survived, self-test state matches `userSettings.computerUse.selfTest`. Catches drift where a test mutation leaks into the next test.
+
+---
+
 ## 4. Test runner / CI
 
 ### 4.1 Rust bypass suite
-- Path: `src-tauri/tests/cu/bypass.rs` + `src-tauri/tests/cu/engine_impossible.rs` + `src-tauri/tests/cu/audit.rs` + `src-tauri/tests/cu/consent.rs` + `src-tauri/tests/cu/lifecycle.rs`.
-- Runner: `cargo test --features verboo_test --package computer-use`.
+- Path: `src-tauri/tests/cu/bypass.rs` + `src-tauri/tests/cu/engine_impossible.rs` + `src-tauri/tests/cu/audit.rs` + `src-tauri/tests/cu/consent.rs` + `src-tauri/tests/cu/lifecycle.rs` + `src-tauri/tests/cu/normalize_invariants.rs`.
+- Runner: `cargo test --features verboo_test --package computer-use`. Note: `normalize_invariants.rs` does NOT require `verboo_test` feature — uses production commands only. Runs in default `cargo test`.
 - CI gate: every PR touching `src-tauri/services/computer_use/**` or `src-tauri/tests/cu/**`.
 - Required: green for merge to `feat/computer-use-p0`.
 
