@@ -4057,7 +4057,6 @@ export function App() {
     <main className="app-shell" style={appLayoutStyle}>
       <TopBar
         sidebarVisible={sidebarMode !== 'hidden'}
-        statusLabel={runningTurnId ? t('topbar.statusWorking') : t('topbar.statusReady')}
         onToggleSidebar={toggleSidebarVisibility}
         terminalOpen={terminal.terminalOpen}
         terminalUnavailableReason={terminal.terminalUnavailableReason}

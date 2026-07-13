@@ -1,10 +1,8 @@
 import { FileSearch, PanelLeftOpen, Terminal as TerminalIcon } from 'lucide-react'
-import { SlotText } from 'slot-text/react'
 import { useI18n } from '../i18n'
 
 type TopBarProps = {
   sidebarVisible: boolean
-  statusLabel: string
   onToggleSidebar: () => void
   terminalOpen: boolean
   terminalUnavailableReason?: string
@@ -16,7 +14,6 @@ type TopBarProps = {
 
 export function TopBar({
   sidebarVisible,
-  statusLabel,
   onToggleSidebar,
   terminalOpen,
   terminalUnavailableReason,
@@ -51,17 +48,8 @@ export function TopBar({
           <PanelLeftOpen size={15} />
         </button>
       )}
-      {/* Status text only — the mascot lives in the sidebar footer near the
-          user account, so the topbar stays a quiet drag region. */}
-      <div
-        className="topbar-brand-status"
-        data-tauri-drag-region=""
-        aria-label={`Verboo ${statusLabel}`}
-      >
-        <span className="topbar-status-text">
-          <SlotText text={statusLabel} options={{ direction: 'up', duration: 180, stagger: 14, bounce: 0.2, interrupt: true }} />
-        </span>
-      </div>
+      {/* Quiet drag spacer — no "ready/pronto" status near traffic lights. */}
+      <div className="topbar-brand-status" data-tauri-drag-region="" aria-hidden="true" />
       <div className="topbar-actions">
         {(terminalUnavailableReason || reviewUnavailableReason) && (
           <span className="topbar-terminal-notice" role="status">

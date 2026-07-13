@@ -156,17 +156,16 @@
     box-shadow 150ms ease-out;
 }
 
-.settings-nav button:hover,
-.settings-nav button.active {
+.settings-nav button:hover {
   background: color-mix(in srgb, var(--accent-soft) 72%, transparent);
   color: var(--text);
 }
 
+/* Selected: soft purple fill only — no left accent bar (avoids “AI chrome”). */
 .settings-nav button.active {
+  background: color-mix(in srgb, var(--accent-soft) 88%, transparent);
   color: var(--text);
-  box-shadow:
-    inset 2px 0 0 var(--accent-strong),
-    0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: none;
 }
 
 .settings-content {

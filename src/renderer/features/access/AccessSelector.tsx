@@ -123,12 +123,12 @@ export function AccessSelector({ value, fullAccessEnabled, onChange, onRequestFu
                 type="button"
                 onClick={() => choose(option)}
               >
-                {isFullLocked ? <Lock size={22} className="access-option__lock" /> : <Icon size={22} />}
+                {isFullLocked ? <Lock size={18} className="access-option__lock" /> : <Icon size={18} />}
                 <span>
                   <strong>{option.title}</strong>
                   <small>{isFullLocked ? t('access.fullLocked') : option.description}</small>
                 </span>
-                {value === option.id && !isFullLocked && <Check size={20} />}
+                {value === option.id && !isFullLocked && <Check size={16} />}
               </button>
             )
           })}
