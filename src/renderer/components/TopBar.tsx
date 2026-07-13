@@ -34,12 +34,13 @@ export function TopBar({
       data-tauri-drag-region=""
       onDoubleClick={() => window.verboo.toggleWindowZoom()}
     >
-      {/* When the sidebar is collapsed, show a reopen button here. When it's
-          open, the collapse button lives next to "New chat" inside the sidebar
-          (see AppSidebar) — keeps it off the traffic-light area. */}
+      {/* When the sidebar is collapsed, show a reopen button here — but only
+          on touch/narrow viewports where hover is unreliable. On desktop
+          (pointer: fine, hover: hover) the left-edge rail handles re-opening,
+          so this button is hidden via CSS to avoid duplicate controls. */}
       {!sidebarVisible && (
         <button
-          className="topbar-sidebar-button ui-tooltip"
+          className="topbar-sidebar-button ui-tooltip topbar-sidebar-button--touch"
           type="button"
           onClick={event => {
             event.stopPropagation()

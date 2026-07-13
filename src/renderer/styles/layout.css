@@ -75,6 +75,72 @@
   background: color-mix(in srgb, var(--accent-soft) 42%, transparent);
 }
 
+/* On desktop (pointer: fine + hover: hover) the left-edge rail handles
+   re-opening the sidebar, so the topbar button is redundant — hide it.
+   Touch/narrow viewports keep the explicit button (hover is unreliable). */
+@media (hover: hover) and (pointer: fine) {
+  .topbar-sidebar-button--touch {
+    display: none;
+  }
+}
+
+/* Thin hit-area on the left edge when the sidebar is hidden. Hover/focus
+   expands the sidebar transiently (peek) without persisting. Click pins. */
+.sidebar-rail {
+  position: relative;
+  z-index: 80;
+  grid-column: 1;
+  grid-row: 1;
+  width: 8px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: default;
+}
+
+.sidebar-rail::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: transparent;
+  content: "";
+  transition: background-color 150ms ease-out;
+}
+
+.sidebar-rail:hover::after,
+.sidebar-rail:focus-visible::after {
+  background: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.sidebar-rail:focus-visible {
+  outline: none;
+}
+
+/* Wrapper around the sidebar + resizer so peek hover handlers can cover
+   both without the resizer gap causing flicker. */
+.sidebar-shell {
+  position: relative;
+  grid-column: 1;
+  grid-row: 1;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+}
+
+.sidebar-shell.is-peek {
+  /* Peek sidebar floats above the workspace so it doesn't push content. */
+  z-index: 90;
+  box-shadow: 4px 0 16px color-mix(in srgb, black 18%, transparent);
+}
+
+.sidebar-shell.is-peek .app-sidebar {
+  /* Slight transparency so the workspace peeking behind is hinted. */
+  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+}
+
 /* Collapse button that lives next to "New chat" inside the sidebar. */
 .sidebar-newchat-row {
   display: flex;
@@ -102,6 +168,26 @@
 .sidebar-collapse-button:hover {
   border-color: var(--border-strong);
   color: var(--text);
+  background: color-mix(in srgb, var(--accent-soft) 42%, transparent);
+}
+
+/* Pin button — shown only while peeking. Mirrors the collapse button's
+   dimensions so the newchat-row doesn't shift when toggling peek/pin. */
+.sidebar-pin-button {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.sidebar-pin-button:hover {
+  border-color: var(--border-strong);
+  color: var(--accent-strong);
   background: color-mix(in srgb, var(--accent-soft) 42%, transparent);
 }
 
@@ -1081,4 +1167,15 @@
   border-color: var(--border-strong);
   color: var(--text);
   background: var(--bg-soft);
+}
+
+/* Respect reduced-motion: sidebar peek/expand transitions become instant. */
+@media (prefers-reduced-motion: reduce) {
+  .app-layout,
+  .app-sidebar,
+  .sidebar-rail::after,
+  .sidebar-shell,
+  .sidebar-shell.is-peek .app-sidebar {
+    transition: none !important;
+  }
 }

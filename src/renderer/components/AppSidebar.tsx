@@ -11,6 +11,7 @@ import {
   MessageSquareDashed,
   MessageSquarePlus,
   PanelLeftClose,
+  Pin,
   Pencil,
   Search,
   Settings,
@@ -40,6 +41,7 @@ type AppSidebarProps = {
   profile: ProfileResult
   cliAuth: CliAuthStatus
   compact?: boolean
+  peek?: boolean
   onSelectView: (view: AppView) => void
   onOpenSettings: () => void
   onOpenArchivedChats: () => void
@@ -47,6 +49,7 @@ type AppSidebarProps = {
   onLogout: () => void
   onNewChat: (projectId?: string) => void
   onToggleSidebar: () => void
+  onPinSidebar?: () => void
   onOpenProject: () => void
   onSelectConversation: (conversationId: string) => void
   onToggleProject: (projectId: string) => void
@@ -69,6 +72,7 @@ export function AppSidebar({
   profile,
   cliAuth,
   compact = false,
+  peek = false,
   onSelectView,
   onOpenSettings,
   onOpenArchivedChats,
@@ -76,6 +80,7 @@ export function AppSidebar({
   onLogout,
   onNewChat,
   onToggleSidebar,
+  onPinSidebar,
   onOpenProject,
   onSelectConversation,
   onToggleProject,
@@ -168,7 +173,7 @@ export function AppSidebar({
   }
 
   return (
-    <aside className={`app-sidebar ${compact ? 'compact' : ''} ${activeView === 'settings' ? 'is-dimmed' : ''}`}>
+    <aside className={`app-sidebar ${compact ? 'compact' : ''} ${peek ? 'peek' : ''} ${activeView === 'settings' ? 'is-dimmed' : ''}`}>
       <div className="sidebar-scroll">
         <nav className="sidebar-primary" aria-label={t('sidebar.nav')}>
           <div className="sidebar-newchat-row">
@@ -176,15 +181,30 @@ export function AppSidebar({
               <MessageSquarePlus size={16} />
               <span>{t('sidebar.newChat')}</span>
             </button>
-            <button
-              className="sidebar-collapse-button ui-tooltip"
-              type="button"
-              onClick={onToggleSidebar}
-              data-tooltip={t('topbar.hideSidebar')}
-              aria-label={t('topbar.hideSidebar')}
-            >
-              <PanelLeftClose size={16} />
-            </button>
+            {peek ? (
+              // Pin button: persists expanded mode (clears peek). Only shown
+              // while peeking — in normal expanded mode the collapse button
+              // is the single control.
+              <button
+                className="sidebar-pin-button ui-tooltip"
+                type="button"
+                onClick={onPinSidebar}
+                data-tooltip={t('sidebar.pin')}
+                aria-label={t('sidebar.pin')}
+              >
+                <Pin size={16} />
+              </button>
+            ) : (
+              <button
+                className="sidebar-collapse-button ui-tooltip"
+                type="button"
+                onClick={onToggleSidebar}
+                data-tooltip={t('topbar.hideSidebar')}
+                aria-label={t('topbar.hideSidebar')}
+              >
+                <PanelLeftClose size={16} />
+              </button>
+            )}
           </div>
           <button className="sidebar-action" type="button" onClick={() => setSearchOpen(open => !open)} title={t('sidebar.search')}>
             <Search size={16} />

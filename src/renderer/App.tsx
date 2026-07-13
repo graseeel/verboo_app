@@ -232,6 +232,13 @@ type QueuedFollowUp = {
 type PermissionDecision = 'allow' | 'deny' | 'always'
 type SidebarMode = 'expanded' | 'compact' | 'hidden'
 
+// Transient peek state — when sidebarMode === 'hidden', hovering the rail
+// expands the sidebar visually WITHOUT persisting as 'expanded'. Mouse leave
+// (with a small delay to avoid flicker) returns to 'hidden'. Pin button or any
+// persistent toggle sets sidebarMode='expanded' and clears peek.
+// Touch devices keep the explicit topbar button (hover is unreliable).
+const SIDEBAR_PEEK_LEAVE_DELAY_MS = 200
+
 function isUsableWorkspaceDirectory(path?: string): path is string {
   const trimmed = path?.trim()
   return Boolean(trimmed && trimmed !== '/' && trimmed !== '.')
@@ -341,6 +348,11 @@ export function App() {
   const [goal, setGoal] = useState<GoalState | undefined>()
   const [imageReadingTurnId, setImageReadingTurnId] = useState<string | undefined>()
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(initialSidebarPreference.current.mode)
+  // Transient peek: only meaningful when sidebarMode === 'hidden'. The rail
+  // hit-area (rendered in App) calls setSidebarPeek(true) on hover/focus;
+  // a leave timer clears it. Pin button persists expanded and clears peek.
+  const [sidebarPeek, setSidebarPeek] = useState(false)
+  const peekLeaveTimer = useRef<number | undefined>(undefined)
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarPreference.current.width)
   const [reviewMetadata, setReviewMetadata] = useState<WorkspaceReviewMetadata | undefined>()
   const [branchInfo, setBranchInfo] = useState<WorkspaceBranchInfo | undefined>()
@@ -450,9 +462,12 @@ export function App() {
     ? pendingPermissionPrompt
     : undefined
   const shouldShowLogin = !noticeAccepted || !entryUnlocked
-  const effectiveSidebarWidth = sidebarMode === 'hidden'
+  // When peeking (hidden + hover), the sidebar column expands visually to
+  // the user's last expanded width — but the persisted mode stays 'hidden'.
+  const sidebarVisualMode = sidebarMode === 'hidden' && sidebarPeek ? 'expanded' : sidebarMode
+  const effectiveSidebarWidth = sidebarVisualMode === 'hidden'
     ? 0
-    : sidebarMode === 'compact'
+    : sidebarVisualMode === 'compact'
       ? SIDEBAR_COMPACT_WIDTH
       : sidebarWidth
   const workingSubagents = useMemo(() => activeSubagents.filter(isActiveSubagentWorking), [activeSubagents])
@@ -561,6 +576,14 @@ export function App() {
   useEffect(() => {
     saveSidebarPreference({ mode: sidebarMode, width: sidebarWidth })
   }, [sidebarMode, sidebarWidth])
+
+  // Clear any pending peek-leave timer on unmount so it can't fire after the
+  // component is gone (would be a no-op setState, but cleaner).
+  useEffect(() => {
+    return () => {
+      if (peekLeaveTimer.current !== undefined) window.clearTimeout(peekLeaveTimer.current)
+    }
+  }, [])
 
   useEffect(() => {
     function handleSidebarShortcut(event: KeyboardEvent) {
@@ -858,10 +881,41 @@ export function App() {
 
   function toggleSidebarVisibility() {
     setSidebarMode(current => current === 'hidden' ? 'expanded' : 'hidden')
+    setSidebarPeek(false)
   }
 
   function toggleSidebarCompact() {
     setSidebarMode(current => current === 'compact' ? 'expanded' : 'compact')
+    setSidebarPeek(false)
+  }
+
+  // Rail hover/focus → peek open. Clears any pending leave timer so the
+  // sidebar doesn't flicker closed while the pointer re-enters.
+  function showSidebarPeek() {
+    if (sidebarMode !== 'hidden') return
+    if (peekLeaveTimer.current !== undefined) {
+      window.clearTimeout(peekLeaveTimer.current)
+      peekLeaveTimer.current = undefined
+    }
+    setSidebarPeek(true)
+  }
+
+  // Rail/sidebar leave → schedule peek close after a short delay. The delay
+  // tolerates the pointer crossing the gap between rail and sidebar.
+  function scheduleHideSidebarPeek() {
+    if (sidebarMode !== 'hidden') return
+    if (peekLeaveTimer.current !== undefined) window.clearTimeout(peekLeaveTimer.current)
+    peekLeaveTimer.current = window.setTimeout(() => {
+      setSidebarPeek(false)
+      peekLeaveTimer.current = undefined
+    }, SIDEBAR_PEEK_LEAVE_DELAY_MS)
+  }
+
+  // Pin = persist expanded. Clears peek so the visual state transitions
+  // cleanly to the persisted expanded mode.
+  function pinSidebar() {
+    setSidebarMode('expanded')
+    setSidebarPeek(false)
   }
 
   function startSidebarResize(event: ReactPointerEvent<HTMLDivElement>) {
@@ -4010,10 +4064,30 @@ export function App() {
       />
 
       <div
-        className={`app-layout sidebar-${sidebarMode} ${activeView === 'settings' ? 'settings-open' : ''} ${terminal.terminalOpen ? 'terminal-open' : ''} ${review.reviewOpen ? 'review-open' : ''}`}
+        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${terminal.terminalOpen ? 'terminal-open' : ''} ${review.reviewOpen ? 'review-open' : ''}`}
       >
-        {sidebarMode !== 'hidden' && (
-          <>
+        {sidebarMode === 'hidden' && !sidebarPeek && (
+          // Rail: thin hit-area on the left edge. Hover/focus expands the
+          // sidebar transiently (peek) without persisting. Tab-focusable so
+          // keyboard users can open it without a pointer.
+          <button
+            type="button"
+            className="sidebar-rail"
+            aria-label={t('topbar.showSidebar')}
+            aria-expanded={false}
+            onMouseEnter={showSidebarPeek}
+            onFocus={showSidebarPeek}
+            onMouseLeave={scheduleHideSidebarPeek}
+            onClick={pinSidebar}
+          />
+        )}
+
+        {(sidebarMode !== 'hidden' || sidebarPeek) && (
+          <div
+            className={`sidebar-shell ${sidebarPeek ? 'is-peek' : ''}`}
+            onMouseEnter={sidebarPeek ? showSidebarPeek : undefined}
+            onMouseLeave={sidebarPeek ? scheduleHideSidebarPeek : undefined}
+          >
             <AppSidebar
               activeView={activeView}
               projects={shownProjects}
@@ -4025,6 +4099,7 @@ export function App() {
               cliAuth={cliAuth}
               avatarSettings={userSettings.avatar}
               compact={sidebarMode === 'compact'}
+              peek={sidebarPeek}
               onSelectView={setActiveView}
               onOpenSettings={() => {
                 setSettingsTab('permissions')
@@ -4038,6 +4113,7 @@ export function App() {
               onLogout={logout}
               onNewChat={newChat}
               onToggleSidebar={toggleSidebarVisibility}
+              onPinSidebar={pinSidebar}
               onOpenProject={openProjectFolder}
               onSelectConversation={selectConversation}
               onToggleProject={toggleProject}
@@ -4048,15 +4124,17 @@ export function App() {
               onDeleteConversation={deleteConversation}
               onRenameConversation={renameConversation}
             />
-            <div
-              className="sidebar-resizer"
-              role="separator"
-              aria-orientation="vertical"
-              title={t('workspace.resizeSidebar')}
-              onPointerDown={startSidebarResize}
-              onDoubleClick={toggleSidebarCompact}
-            />
-          </>
+            {sidebarMode !== 'compact' && !sidebarPeek && (
+              <div
+                className="sidebar-resizer"
+                role="separator"
+                aria-orientation="vertical"
+                title={t('workspace.resizeSidebar')}
+                onPointerDown={startSidebarResize}
+                onDoubleClick={toggleSidebarCompact}
+              />
+            )}
+          </div>
         )}
 
         <section
