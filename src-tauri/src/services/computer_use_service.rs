@@ -128,6 +128,30 @@ impl ComputerUseService {
         self.sessions.current()
     }
 
+    /// Bind the first concrete app on a goal-directed session, then update MCP
+    /// capability + start focus (best-effort if capability file is absent).
+    pub fn bind_session_target(
+        &self,
+        settings: &ComputerUseSettings,
+        session_id: &str,
+        bundle_id: &str,
+    ) -> Result<Session, DenyCode> {
+        let session = self.sessions.bind_target(session_id, bundle_id, settings)?;
+        if let Err(error) = crate::services::computer_use_mcp::bind_app(session_id, bundle_id) {
+            // Capability may be missing in pure unit tests; session lock is source of truth.
+            eprintln!("[computer-use] bind_app after target lock: {error}");
+        }
+        let _ = self.append_audit(
+            session_id,
+            Some(bundle_id),
+            "bind_target",
+            AuditOutcome::Success,
+            Some(format!("target_app={bundle_id}")),
+            false,
+        );
+        Ok(session)
+    }
+
     // ──────────────────────────────────────────────────────────────
     //  Helper-mediated actions
     // ──────────────────────────────────────────────────────────────
@@ -201,6 +225,47 @@ impl ComputerUseService {
                 }
             }
         };
+
+        // Goal-directed sessions: first concrete app-scoped call locks the target.
+        // bind_target runs hard-block / denylist / self-test gates; capability +
+        // focus are updated best-effort via bind_app.
+        if session.target_app.is_none() {
+            if let Some(bid) = bundle_id.map(str::trim).filter(|b| !b.is_empty() && *b != "*") {
+                match self.sessions.bind_target(&session.id, bid, settings) {
+                    Ok(_) => {
+                        if let Err(error) =
+                            crate::services::computer_use_mcp::bind_app(&session.id, bid)
+                        {
+                            eprintln!(
+                                "[computer-use] bind_app after auto-bind on {method}: {error}"
+                            );
+                        }
+                        let _ = self.append_audit(
+                            &session.id,
+                            Some(bid),
+                            "bind_target",
+                            AuditOutcome::Success,
+                            Some(format!("auto_bind method={method} target_app={bid}")),
+                            false,
+                        );
+                    }
+                    Err(code) => {
+                        let _ = self.append_audit(
+                            &session.id,
+                            Some(bid),
+                            method,
+                            AuditOutcome::Denied,
+                            Some(format!("deny_code={} (auto_bind)", code.as_str())),
+                            false,
+                        );
+                        return ComputerUseResult {
+                            result: None,
+                            error: Some(ComputerUseError::from(code)),
+                        };
+                    }
+                }
+            }
+        }
 
         // Gate: all layers checked inside SessionManager. Pass settings
         // (mutable so allowlist entry stats get updated for caller to persist).
@@ -394,5 +459,105 @@ struct ComputerUpdate;
 impl ComputerUpdate {
     fn write_err(e: std::io::Error) -> ComputerUseError {
         ComputerUseError::new("provider_down", format!("write helper: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::session_manager::SessionManager;
+
+    fn enabled_settings() -> ComputerUseSettings {
+        ComputerUseSettings {
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    fn service_without_audit() -> ComputerUseService {
+        ComputerUseService {
+            sessions: SessionManager::new(),
+            audit: None,
+        }
+    }
+
+    fn grant_goal_directed(service: &ComputerUseService) -> Session {
+        let settings = enabled_settings();
+        let req = service
+            .request_session(&settings, "test goal", None, ActionScope::Input)
+            .expect("request");
+        service
+            .grant_session(ConsentGrant {
+                id: req.id,
+                allowlist_version: 1,
+                self_test_enabled: false,
+                screenshot_attach_to_llm: false,
+                idle_timeout_secs: 900,
+            })
+            .expect("grant")
+    }
+
+    #[test]
+    fn bind_session_target_locks_goal_directed_session() {
+        let service = service_without_audit();
+        let session = grant_goal_directed(&service);
+        assert!(session.target_app.is_none());
+
+        let settings = enabled_settings();
+        let bound = service
+            .bind_session_target(&settings, &session.id, "com.apple.Notes")
+            .expect("bind");
+        assert_eq!(bound.target_app.as_deref(), Some("com.apple.Notes"));
+
+        // Cross-app silent switch denied.
+        let err = service
+            .bind_session_target(&settings, &session.id, "com.google.Chrome")
+            .unwrap_err();
+        assert_eq!(err, DenyCode::AppNotAllowlisted);
+    }
+
+    #[test]
+    fn auto_bind_on_app_scoped_read_then_allow() {
+        let service = service_without_audit();
+        let session = grant_goal_directed(&service);
+        assert!(session.target_app.is_none());
+
+        let mut settings = enabled_settings();
+        // invoke_helper_safe will auto-bind then try helper; without a real
+        // helper the call errors after bind. Assert the bind side-effect.
+        let _ = service.get_app_state(&mut settings, "com.apple.Notes", true);
+        assert_eq!(
+            service.current().and_then(|s| s.target_app),
+            Some("com.apple.Notes".into())
+        );
+
+        // Subsequent different app denied at auto-bind / gate.
+        let result = service.get_app_state(&mut settings, "com.google.Chrome", true);
+        assert_eq!(
+            result.error.as_ref().map(|e| e.code.as_str()),
+            Some("app_not_allowlisted")
+        );
+        assert_eq!(
+            service.current().and_then(|s| s.target_app),
+            Some("com.apple.Notes".into()),
+            "failed cross-app must leave original target"
+        );
+    }
+
+    #[test]
+    fn list_apps_does_not_require_target_bind() {
+        let service = service_without_audit();
+        let _ = grant_goal_directed(&service);
+        let mut settings = enabled_settings();
+        // May fail on helper spawn/audit, but must not deny for unbound target.
+        let result = service.list_apps(&mut settings);
+        if let Some(err) = &result.error {
+            assert_ne!(err.code, "app_not_allowlisted");
+            assert_ne!(err.code, "no_active_session");
+        }
+        assert!(
+            service.current().unwrap().target_app.is_none(),
+            "list-apps must not bind a target"
+        );
     }
 }

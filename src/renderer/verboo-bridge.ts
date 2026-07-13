@@ -417,6 +417,9 @@ const api = {
       requestId,
       screenshotAttachToLlm,
     }),
+  // Bind a concrete app onto a goal-directed (unbound) active session.
+  bindComputerUseTarget: (sessionId: string, bundleId: string) =>
+    invoke<RustSession>('bind_computer_use_target', { sessionId, bundleId }),
   // Deny a pending consent request. Always UserDenied reason on Rust side.
   denyComputerUseSession: (requestId: string) =>
     invoke<void>('deny_computer_use_session', { requestId }),

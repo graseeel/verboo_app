@@ -354,18 +354,41 @@ fn grant_computer_use_session(
         idle_timeout_secs: settings.computer_use.idle_timeout_seconds as u64,
     };
     let session = cu.sessions.grant_session(grant).map_err(|e| format!("grant denied: {:?}", e))?;
-    let app = session.target_app.as_deref().ok_or("computer-use consent has no target app")?;
+    // Goal-directed grants may have target_app: None — MCP activates unbound and
+    // focus is deferred until the first bind_target / bind_app.
+    let app = session.target_app.as_deref();
     let sessions = cu.sessions.clone();
-    if let Err(error) = crate::services::computer_use_mcp::activate(&session.id, app, &session.goal, session.idle_timeout_secs, session.screenshot_attach_to_llm, move || {
-        use tauri::Emitter;
-        sessions.emergency_stop_all();
-        let _ = app_handle.emit("computer-use:emergency-stop", ());
-    }) {
+    if let Err(error) = crate::services::computer_use_mcp::activate(
+        &session.id,
+        app,
+        &session.goal,
+        session.idle_timeout_secs,
+        session.screenshot_attach_to_llm,
+        move || {
+            use tauri::Emitter;
+            sessions.emergency_stop_all();
+            let _ = app_handle.emit("computer-use:emergency-stop", ());
+        },
+    ) {
         let _ = cu.sessions.stop(&session.id, crate::models::computer_use::StopReason::Error);
         let _ = crate::services::computer_use_mcp::revoke();
         return Err(error);
     }
     Ok(session)
+}
+
+/// Bind a concrete app onto an active goal-directed Computer Use session.
+/// Locks SessionManager target_app and updates MCP capability + focus HUD.
+#[tauri::command]
+fn bind_computer_use_target(
+    cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
+    store: tauri::State<'_, SettingsStore>,
+    session_id: String,
+    bundle_id: String,
+) -> Result<crate::models::computer_use::Session, String> {
+    let settings = store.get()?.computer_use;
+    cu.bind_session_target(&settings, &session_id, &bundle_id)
+        .map_err(|e| format!("bind denied: {:?}", e))
 }
 
 /// Deny a pending consent request.
@@ -1758,6 +1781,7 @@ pub fn run() {
             remove_computer_use_allowlist,
             request_computer_use_session,
             grant_computer_use_session,
+            bind_computer_use_target,
             deny_computer_use_session,
             stop_computer_use_session,
             pause_computer_use_session,

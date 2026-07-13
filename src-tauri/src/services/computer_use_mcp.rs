@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::models::computer_use::{ActionScope, ComputerUseResult, ConsentGrant};
+use crate::models::computer_use::{ActionScope, ComputerUseError, ComputerUseResult, ConsentGrant};
 use crate::models::types::{ComputerUseAllowlistEntry, ComputerUseScope, ComputerUseSettings};
 use crate::services::computer_use_service::ComputerUseService;
 
@@ -16,12 +16,28 @@ use crate::services::computer_use_service::ComputerUseService;
 pub struct Capability {
     pub session_id: String,
     pub token: String,
+    /// Bound bundle id, or `""` / `"*"` for goal-directed (unbound) sessions.
     pub app: String,
     pub goal: String,
     pub expires_at: u64,
     pub paused: bool,
     #[serde(default)]
     pub screenshot_attach_to_llm: bool,
+}
+
+/// `""` or `"*"` means bootstrap / goal-directed — no single target yet.
+pub fn capability_app_is_unbound(app: &str) -> bool {
+    let trimmed = app.trim();
+    trimmed.is_empty() || trimmed == "*"
+}
+
+/// Normalize an optional app into the capability wire form.
+/// `None` / empty / `"*"` → unbound (`""`).
+fn capability_app_value(app: Option<&str>) -> String {
+    match app.map(str::trim).filter(|s| !s.is_empty() && *s != "*") {
+        Some(s) => s.to_string(),
+        None => String::new(),
+    }
 }
 
 fn runtime_dir() -> Result<PathBuf, String> {
@@ -33,18 +49,32 @@ fn capability_path() -> Result<PathBuf, String> { Ok(runtime_dir()?.join("capabi
 pub fn config_path() -> Result<PathBuf, String> { Ok(runtime_dir()?.join("mcp.json")) }
 fn monitor_pid_path() -> Result<PathBuf, String> { Ok(runtime_dir()?.join("monitor.pid")) }
 
-pub fn activate<F>(session_id: &str, app: &str, goal: &str, idle_timeout_secs: u64, screenshot_attach_to_llm: bool, on_emergency: F) -> Result<PathBuf, String>
-where F: FnOnce() + Send + 'static {
+/// Activate MCP capability for a session.
+///
+/// `app: None` (or empty/`*`) starts a goal-directed session: capability is
+/// written with unbound app and focus HUD is deferred until `bind_app`.
+pub fn activate<F>(
+    session_id: &str,
+    app: Option<&str>,
+    goal: &str,
+    idle_timeout_secs: u64,
+    screenshot_attach_to_llm: bool,
+    on_emergency: F,
+) -> Result<PathBuf, String>
+where
+    F: FnOnce() + Send + 'static,
+{
     let dir = runtime_dir()?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     #[cfg(unix)] {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
     }
+    let app_value = capability_app_value(app);
     let cap = Capability {
         session_id: session_id.into(),
         token: Uuid::new_v4().to_string(),
-        app: app.into(),
+        app: app_value.clone(),
         goal: goal.into(),
         expires_at: now().saturating_add(idle_timeout_secs),
         paused: false,
@@ -66,11 +96,45 @@ where F: FnOnce() + Send + 'static {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
     }
     start_emergency_monitor(on_emergency)?;
-    if let Err(error) = crate::services::computer_use_focus::start(session_id, app, &cap_path) {
-        let _ = revoke();
-        return Err(error);
+    // Focus / isolation HUD only when a concrete app is already known.
+    if !capability_app_is_unbound(&app_value) {
+        if let Err(error) = crate::services::computer_use_focus::start(session_id, &app_value, &cap_path) {
+            let _ = revoke();
+            return Err(error);
+        }
     }
     Ok(path)
+}
+
+/// Bind a concrete app onto an active capability (mid-session first bind).
+///
+/// Updates `capability.json` and starts the focus HUD. Same-app rebind is
+/// idempotent; binding a different app while one is set is denied.
+pub fn bind_app(session_id: &str, app: &str) -> Result<(), String> {
+    let app = app.trim();
+    if capability_app_is_unbound(app) {
+        return Err("cannot bind empty or wildcard app".into());
+    }
+    let path = capability_path()?;
+    let mut cap: Capability = serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    if cap.session_id != session_id {
+        return Err("computer-use session mismatch".into());
+    }
+    if !capability_app_is_unbound(&cap.app) {
+        if cap.app.eq_ignore_ascii_case(app) {
+            return Ok(());
+        }
+        return Err("computer-use session already bound to a different app".into());
+    }
+    cap.app = app.to_string();
+    fs::write(&path, serde_json::to_vec(&cap).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+    }
+    crate::services::computer_use_focus::start(session_id, app, &path)?;
+    Ok(())
 }
 
 pub fn revoke() -> Result<(), String> {
@@ -227,15 +291,44 @@ fn tool_content(result: &Value) -> Value {
 pub fn run_stdio() -> Result<(), String> {
     let cap = read_capability()?;
     let service = ComputerUseService::new();
+    let bound_app = if capability_app_is_unbound(&cap.app) {
+        None
+    } else {
+        Some(cap.app.clone())
+    };
     let mut settings = ComputerUseSettings {
         enabled: true,
-        allowlist: vec![ComputerUseAllowlistEntry {
-            bundle_id: cap.app.clone(), display_name: cap.app.clone(), scope: ComputerUseScope::Input, ..Default::default()
-        }],
+        allowlist: bound_app
+            .as_ref()
+            .map(|app| {
+                vec![ComputerUseAllowlistEntry {
+                    bundle_id: app.clone(),
+                    display_name: app.clone(),
+                    scope: ComputerUseScope::Input,
+                    ..Default::default()
+                }]
+            })
+            .unwrap_or_default(),
         ..Default::default()
     };
-    let req = service.request_session_with_id(&settings, cap.session_id.clone(), cap.goal.clone(), Some(cap.app.clone()), ActionScope::Input).map_err(|e| format!("{e:?}"))?;
-    service.grant_session(ConsentGrant { id: req.id, allowlist_version: 1, self_test_enabled: false, screenshot_attach_to_llm: cap.screenshot_attach_to_llm, idle_timeout_secs: 900 }).map_err(|e| format!("{e:?}"))?;
+    let req = service
+        .request_session_with_id(
+            &settings,
+            cap.session_id.clone(),
+            cap.goal.clone(),
+            bound_app,
+            ActionScope::Input,
+        )
+        .map_err(|e| format!("{e:?}"))?;
+    service
+        .grant_session(ConsentGrant {
+            id: req.id,
+            allowlist_version: 1,
+            self_test_enabled: false,
+            screenshot_attach_to_llm: cap.screenshot_attach_to_llm,
+            idle_timeout_secs: 900,
+        })
+        .map_err(|e| format!("{e:?}"))?;
 
     let mut runtime = McpRuntime::default();
     for line in io::stdin().lock().lines() {
@@ -260,39 +353,102 @@ pub fn run_stdio() -> Result<(), String> {
 }
 
 fn tools() -> Value {
+    // Optional `app` on app-scoped tools lets the agent bind a goal-directed
+    // session on first use. Once bound, capability.app is the default.
     json!([
-      {"name":"computer_launch_app","description":"Open the application authorized for this session.","inputSchema":{"type":"object","properties":{}}},
-      {"name":"computer_get_app_state","description":"Read fresh accessibility state and capture only the authorized app window. Element indexes and screenshot coordinates are short-lived.","inputSchema":{"type":"object","properties":{}}},
-      {"name":"computer_click","description":"Click an element index or coordinates from the latest screenshot. Coordinates default to screenshot-local; use coordinate_space=screen only for absolute AX frames.","inputSchema":{"type":"object","properties":{"element_index":{"type":"integer"},"x":{"type":"number"},"y":{"type":"number"},"coordinate_space":{"enum":["screenshot","screen"]}}}},
-      {"name":"computer_type_text","description":"Type text into the focused control of the authorized app.","inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}}
-      ,{"name":"computer_press_key","description":"Press one navigation or editing key in the authorized app.","inputSchema":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"]}}
-      ,{"name":"computer_hotkey","description":"Send a safe keyboard shortcut to the authorized app. Quit, close, and force-quit shortcuts are blocked.","inputSchema":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"]}}
-      ,{"name":"computer_scroll","description":"Scroll up or down at verified coordinates from the latest authorized-app screenshot.","inputSchema":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"coordinate_space":{"enum":["screenshot","screen"]},"direction":{"enum":["up","down"]}},"required":["x","y","direction"]}}
+      {"name":"computer_bind_app","description":"Lock this goal-directed session to a concrete app (first bind only).","inputSchema":{"type":"object","properties":{"app":{"type":"string"}},"required":["app"]}},
+      {"name":"computer_launch_app","description":"Open the application authorized for this session.","inputSchema":{"type":"object","properties":{"app":{"type":"string","description":"Bundle id. Required on first app-scoped call for goal-directed sessions."}}}},
+      {"name":"computer_get_app_state","description":"Read fresh accessibility state and capture only the authorized app window. Element indexes and screenshot coordinates are short-lived.","inputSchema":{"type":"object","properties":{"app":{"type":"string","description":"Bundle id. Required on first app-scoped call for goal-directed sessions."}}}},
+      {"name":"computer_click","description":"Click an element index or coordinates from the latest screenshot. Coordinates default to screenshot-local; use coordinate_space=screen only for absolute AX frames.","inputSchema":{"type":"object","properties":{"app":{"type":"string"},"element_index":{"type":"integer"},"x":{"type":"number"},"y":{"type":"number"},"coordinate_space":{"enum":["screenshot","screen"]}}}},
+      {"name":"computer_type_text","description":"Type text into the focused control of the authorized app.","inputSchema":{"type":"object","properties":{"app":{"type":"string"},"text":{"type":"string"}},"required":["text"]}}
+      ,{"name":"computer_press_key","description":"Press one navigation or editing key in the authorized app.","inputSchema":{"type":"object","properties":{"app":{"type":"string"},"key":{"type":"string"}},"required":["key"]}}
+      ,{"name":"computer_hotkey","description":"Send a safe keyboard shortcut to the authorized app. Quit, close, and force-quit shortcuts are blocked.","inputSchema":{"type":"object","properties":{"app":{"type":"string"},"key":{"type":"string"}},"required":["key"]}}
+      ,{"name":"computer_scroll","description":"Scroll up or down at verified coordinates from the latest authorized-app screenshot.","inputSchema":{"type":"object","properties":{"app":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"},"coordinate_space":{"enum":["screenshot","screen"]},"direction":{"enum":["up","down"]}},"required":["x","y","direction"]}}
     ])
+}
+
+/// Resolve the concrete app for an MCP tool call.
+///
+/// Prefer an explicit `args.app` when the capability is still unbound (first
+/// bind path). Once bound, capability.app wins unless args matches it.
+fn resolve_tool_app(cap: &Capability, args: &Value) -> Result<String, Value> {
+    let arg_app = args
+        .get("app")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "*")
+        .map(ToOwned::to_owned);
+    if capability_app_is_unbound(&cap.app) {
+        return arg_app.ok_or_else(|| {
+            json!({
+                "error": {
+                    "code": "app_not_selected",
+                    "message": "Session has no target app yet. Call computer_bind_app or pass app on the first tool call."
+                }
+            })
+        });
+    }
+    if let Some(arg) = arg_app {
+        if !arg.eq_ignore_ascii_case(&cap.app) {
+            return Err(json!({
+                "error": {
+                    "code": "app_not_allowlisted",
+                    "message": format!("Session is bound to {}; cannot switch to {}", cap.app, arg)
+                }
+            }));
+        }
+    }
+    Ok(cap.app.clone())
 }
 
 fn call_tool(service: &ComputerUseService, settings: &mut ComputerUseSettings, runtime: &mut McpRuntime, request: &Value) -> Value {
     let cap = match read_capability() { Ok(c) => c, Err(e) => return json!({"error":{"code":"session_revoked","message":e}}) };
     let name = request.pointer("/params/name").and_then(Value::as_str).unwrap_or("");
     let args = request.pointer("/params/arguments").cloned().unwrap_or_else(|| json!({}));
+
+    if name == "computer_bind_app" {
+        let app = match args.get("app").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+            Some(a) => a.to_string(),
+            None => return json!({"error":{"code":"invalid_argument","message":"app is required"}}),
+        };
+        return match service.bind_session_target(settings, &cap.session_id, &app) {
+            Ok(session) => json!({
+                "result": {
+                    "session_id": session.id,
+                    "target_app": session.target_app,
+                    "bound": true
+                },
+                "error": null
+            }),
+            Err(code) => {
+                let err = ComputerUseError::from(code);
+                json!({"error":{"code":err.code,"message":err.message}})
+            }
+        };
+    }
+
+    let app = match resolve_tool_app(&cap, &args) {
+        Ok(a) => a,
+        Err(error) => return error,
+    };
     let result = match name {
-        "computer_launch_app" => service.launch_app(settings, &cap.app),
-        "computer_get_app_state" => service.get_app_state(settings, &cap.app, !cap.screenshot_attach_to_llm),
+        "computer_launch_app" => service.launch_app(settings, &app),
+        "computer_get_app_state" => service.get_app_state(settings, &app, !cap.screenshot_attach_to_llm),
         "computer_click" => {
             let element_index = args.get("element_index").and_then(Value::as_u64).map(|v| v as u32);
             if element_index.is_some() {
-                service.click(settings, Some(&cap.app), element_index, None, None)
+                service.click(settings, Some(&app), element_index, None, None)
             } else {
                 let (x, y) = match runtime.coordinates(&args) { Ok(value) => value, Err(error) => return error };
-                service.click(settings, Some(&cap.app), None, Some(x), Some(y))
+                service.click(settings, Some(&app), None, Some(x), Some(y))
             }
         }
-        "computer_type_text" => service.type_text(settings, Some(&cap.app), args.get("text").and_then(Value::as_str).unwrap_or("").to_string()),
-        "computer_press_key" => service.press_key(settings, Some(&cap.app), args.get("key").and_then(Value::as_str).unwrap_or("").to_string()),
-        "computer_hotkey" => service.hotkey(settings, Some(&cap.app), args.get("key").and_then(Value::as_str).unwrap_or("").to_string()),
+        "computer_type_text" => service.type_text(settings, Some(&app), args.get("text").and_then(Value::as_str).unwrap_or("").to_string()),
+        "computer_press_key" => service.press_key(settings, Some(&app), args.get("key").and_then(Value::as_str).unwrap_or("").to_string()),
+        "computer_hotkey" => service.hotkey(settings, Some(&app), args.get("key").and_then(Value::as_str).unwrap_or("").to_string()),
         "computer_scroll" => {
             let (x, y) = match runtime.coordinates(&args) { Ok(value) => value, Err(error) => return error };
-            service.scroll(settings, Some(&cap.app), args.get("direction").and_then(Value::as_str).unwrap_or(""), None, Some(x), Some(y))
+            service.scroll(settings, Some(&app), args.get("direction").and_then(Value::as_str).unwrap_or(""), None, Some(x), Some(y))
         }
         _ => return json!({"error":{"code":"unknown_tool","message":"unknown computer-use tool"}}),
     };
@@ -316,7 +472,67 @@ mod tests {
     fn exposes_only_the_p0_tools() {
         let tool_list = tools();
         let names: Vec<&str> = tool_list.as_array().unwrap().iter().filter_map(|v| v.get("name")?.as_str()).collect();
-        assert_eq!(names, vec!["computer_launch_app", "computer_get_app_state", "computer_click", "computer_type_text", "computer_press_key", "computer_hotkey", "computer_scroll"]);
+        assert_eq!(names, vec![
+            "computer_bind_app",
+            "computer_launch_app",
+            "computer_get_app_state",
+            "computer_click",
+            "computer_type_text",
+            "computer_press_key",
+            "computer_hotkey",
+            "computer_scroll",
+        ]);
+    }
+
+    #[test]
+    fn empty_and_star_app_mean_unbound() {
+        assert!(capability_app_is_unbound(""));
+        assert!(capability_app_is_unbound("  "));
+        assert!(capability_app_is_unbound("*"));
+        assert!(!capability_app_is_unbound("com.apple.Notes"));
+    }
+
+    #[test]
+    fn capability_app_value_normalizes_optional_app() {
+        assert_eq!(capability_app_value(None), "");
+        assert_eq!(capability_app_value(Some("")), "");
+        assert_eq!(capability_app_value(Some("*")), "");
+        assert_eq!(capability_app_value(Some("  com.apple.Notes  ")), "com.apple.Notes");
+    }
+
+    #[test]
+    fn resolve_tool_app_requires_arg_when_unbound() {
+        let cap = Capability {
+            session_id: "s".into(),
+            token: "t".into(),
+            app: String::new(),
+            goal: "g".into(),
+            expires_at: 99,
+            paused: false,
+            screenshot_attach_to_llm: true,
+        };
+        let err = resolve_tool_app(&cap, &json!({})).unwrap_err();
+        assert_eq!(err.pointer("/error/code").and_then(Value::as_str), Some("app_not_selected"));
+        assert_eq!(
+            resolve_tool_app(&cap, &json!({"app":"com.apple.Notes"})).unwrap(),
+            "com.apple.Notes"
+        );
+    }
+
+    #[test]
+    fn resolve_tool_app_locks_to_bound_capability() {
+        let cap = Capability {
+            session_id: "s".into(),
+            token: "t".into(),
+            app: "com.apple.Notes".into(),
+            goal: "g".into(),
+            expires_at: 99,
+            paused: false,
+            screenshot_attach_to_llm: true,
+        };
+        assert_eq!(resolve_tool_app(&cap, &json!({})).unwrap(), "com.apple.Notes");
+        let err = resolve_tool_app(&cap, &json!({"app":"com.google.Chrome"})).unwrap_err();
+        assert_eq!(err.pointer("/error/code").and_then(Value::as_str), Some("app_not_allowlisted"));
     }
 
     #[test]
@@ -325,6 +541,9 @@ mod tests {
         assert!(capability_is_active(&cap, "authorized", 19));
         assert!(!capability_is_active(&cap, "another-turn", 19));
         assert!(!capability_is_active(&cap, "authorized", 20));
+        // Unbound goal-directed capability is still active for its session.
+        let unbound = Capability { app: String::new(), ..cap.clone() };
+        assert!(capability_is_active(&unbound, "authorized", 19));
     }
 
     #[test]
