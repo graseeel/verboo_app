@@ -3,6 +3,11 @@
 //! State machine: IDLE → CONSENT → ACTIVE → PAUSED → STOPPED.
 //! Single-writer PID lock (Q9 — single session in P0).
 //!
+//! Goal-directed sessions may become ACTIVE with `target_app: None`. System-level
+//! actions (`bundle_id: None`, e.g. list-apps / capabilities) are allowed; app-scoped
+//! actions require either an allowlist match or a first `bind_target` that locks the
+//! session app (second different app denied — no silent cross-app switch).
+//!
 //! Gates per arch §2.2:
 //!   1. Feature gate — `settings.enabled`
 //!   2. OS-permission gate — polled every 5s (TODO P0.2b)
@@ -225,6 +230,76 @@ impl SessionManager {
     pub fn current(&self) -> Option<Session> {
         let g = self.inner.lock().expect("SessionManager mutex poisoned");
         g.current.clone().filter(|s| s.state == SessionState::Active)
+    }
+
+    /// Bind the first concrete app target on a goal-directed session.
+    ///
+    /// Goal-directed sessions start with `target_app: None`. The first successful
+    /// bind locks the session to that app for the rest of its life. A second bind
+    /// to a *different* app is denied (`AppNotAllowlisted`) — no silent cross-app
+    /// switch. Re-binding the same app is idempotent.
+    ///
+    /// Gates (hard block → self-test → denylist) run before the lock is written.
+    pub fn bind_target(
+        &self,
+        session_id: &str,
+        bundle_id: &str,
+        settings: &ComputerUseSettings,
+    ) -> Result<Session, DenyCode> {
+        let mut g = self.inner.lock().expect("SessionManager mutex poisoned");
+
+        if g.emergency_armed {
+            return Err(DenyCode::EmergencyStop);
+        }
+        if !settings.enabled {
+            return Err(DenyCode::NoActiveSession);
+        }
+
+        let session = g.current.as_mut().ok_or(DenyCode::NoActiveSession)?;
+        if session.id != session_id {
+            return Err(DenyCode::NoActiveSession);
+        }
+        if session.state == SessionState::Paused {
+            return Err(DenyCode::SessionPaused);
+        }
+        if session.state != SessionState::Active {
+            return Err(DenyCode::NoActiveSession);
+        }
+
+        let bid = bundle_id.trim();
+        if bid.is_empty() {
+            return Err(DenyCode::AppNotAllowlisted);
+        }
+        let lower = bid.to_lowercase();
+
+        // Already bound: same app is idempotent; different app is a silent switch → deny.
+        if let Some(existing) = session.target_app.as_ref() {
+            if existing.eq_ignore_ascii_case(bid) {
+                session.last_activity_mono = now_mono();
+                return Ok(session.clone());
+            }
+            return Err(DenyCode::AppNotAllowlisted);
+        }
+
+        // Tier 1 hard blocks.
+        if HARD_BLOCKED_BUNDLE_IDS.iter().any(|b| **b == lower) {
+            return Err(DenyCode::AppHardBlocked);
+        }
+
+        // Verboo self-test gate.
+        if lower == "ai.verboo.code.desktop" && !session.self_test_enabled {
+            return Err(DenyCode::SelfTestScopeViolation);
+        }
+
+        // Tier 2 denylist.
+        if settings.denylist.iter().any(|d| d.to_lowercase() == lower) {
+            return Err(DenyCode::AppHardBlocked);
+        }
+
+        // First bind locks the session target (store the caller-provided casing).
+        session.target_app = Some(bid.to_string());
+        session.last_activity_mono = now_mono();
+        Ok(session.clone())
     }
 
     /// Check action against ALL gates (arch §2.2). Reads settings from the
@@ -975,5 +1050,181 @@ mod tests {
             ComputerUseScope::Full,
         );
         assert_eq!(v_mutate, ActionVerdict::Deny(DenyCode::AppHardBlocked));
+    }
+
+    // ── Goal-first / bind_target (Approach A NL intent, Task 1) ──────────
+
+    /// Helper: grant an ACTIVE goal-directed session (no preselected app).
+    fn grant_goal_directed(manager: &SessionManager, scope: ComputerUseScope, self_test: bool) -> Session {
+        let settings = ComputerUseSettings {
+            enabled: true,
+            ..ComputerUseSettings::default()
+        };
+        let req = manager
+            .request_session(&settings, "test goal without app", None, scope)
+            .expect("request");
+        manager
+            .grant_session(ConsentGrant {
+                id: req.id,
+                allowlist_version: 1,
+                self_test_enabled: self_test,
+                screenshot_attach_to_llm: false,
+                idle_timeout_secs: 900,
+            })
+            .expect("grant")
+    }
+
+    /// Goal-directed ACTIVE session + system-level action (no bundle) is allowed.
+    #[test]
+    fn goal_directed_session_allows_system_level_read_without_target() {
+        let m = SessionManager::new();
+        let session = grant_goal_directed(&m, ComputerUseScope::View, false);
+        assert!(session.target_app.is_none(), "goal-directed session has no target yet");
+
+        let mut s = ComputerUseSettings {
+            enabled: true,
+            ..ComputerUseSettings::default()
+        };
+        let v = m.check_action(&mut s, None, ActionKind::Read, ComputerUseScope::View);
+        assert_eq!(v, ActionVerdict::Allow);
+    }
+
+    /// Unbound session denies concrete app actions until bind (empty allowlist).
+    #[test]
+    fn goal_directed_session_denies_app_scoped_action_until_bind() {
+        let m = SessionManager::new();
+        grant_goal_directed(&m, ComputerUseScope::Input, false);
+
+        let mut s = ComputerUseSettings {
+            enabled: true,
+            ..ComputerUseSettings::default()
+        };
+        // No allowlist, no target — concrete app action must deny.
+        let v = m.check_action(
+            &mut s,
+            Some("com.apple.Notes"),
+            ActionKind::Mutate,
+            ComputerUseScope::Input,
+        );
+        assert_eq!(v, ActionVerdict::Deny(DenyCode::AppNotAllowlisted));
+    }
+
+    /// After bind_target, the bound app is authorized; a different app is not.
+    #[test]
+    fn bind_target_locks_first_app_and_denies_cross_app() {
+        let m = SessionManager::new();
+        let session = grant_goal_directed(&m, ComputerUseScope::Input, false);
+        let settings = ComputerUseSettings {
+            enabled: true,
+            ..ComputerUseSettings::default()
+        };
+
+        let bound = m
+            .bind_target(&session.id, "com.apple.Notes", &settings)
+            .expect("bind Notes");
+        assert_eq!(
+            bound.target_app.as_deref(),
+            Some("com.apple.Notes"),
+            "first bind locks Notes as session target"
+        );
+
+        let mut empty = settings.clone();
+        assert_eq!(
+            m.check_action(
+                &mut empty,
+                Some("com.apple.Notes"),
+                ActionKind::Mutate,
+                ComputerUseScope::Input,
+            ),
+            ActionVerdict::Allow,
+        );
+        assert_eq!(
+            m.check_action(
+                &mut empty,
+                Some("com.google.Chrome"),
+                ActionKind::Mutate,
+                ComputerUseScope::Input,
+            ),
+            ActionVerdict::Deny(DenyCode::AppNotAllowlisted),
+        );
+
+        // Second bind to a different app is denied (no silent switch).
+        let switch = m.bind_target(&session.id, "com.google.Chrome", &settings);
+        assert_eq!(switch.unwrap_err(), DenyCode::AppNotAllowlisted);
+
+        // Same-app rebind is idempotent.
+        let again = m
+            .bind_target(&session.id, "com.apple.Notes", &settings)
+            .expect("idempotent rebind");
+        assert_eq!(again.target_app.as_deref(), Some("com.apple.Notes"));
+    }
+
+    /// bind_target refuses Tier 1 hard-blocked bundles.
+    #[test]
+    fn bind_target_refuses_hard_blocked_bundle() {
+        let m = SessionManager::new();
+        let session = grant_goal_directed(&m, ComputerUseScope::Full, false);
+        let settings = ComputerUseSettings {
+            enabled: true,
+            ..ComputerUseSettings::default()
+        };
+
+        let result = m.bind_target(&session.id, "com.apple.systempreferences", &settings);
+        assert_eq!(result.unwrap_err(), DenyCode::AppHardBlocked);
+        assert!(
+            m.current().unwrap().target_app.is_none(),
+            "failed bind must leave target unbound"
+        );
+    }
+
+    /// bind_target refuses Verboo when self_test is not enabled on the session.
+    #[test]
+    fn bind_target_refuses_verboo_without_self_test() {
+        let m = SessionManager::new();
+        let session = grant_goal_directed(&m, ComputerUseScope::Input, false);
+        let settings = ComputerUseSettings {
+            enabled: true,
+            ..ComputerUseSettings::default()
+        };
+
+        let result = m.bind_target(&session.id, "ai.verboo.code.desktop", &settings);
+        assert_eq!(result.unwrap_err(), DenyCode::SelfTestScopeViolation);
+        assert!(m.current().unwrap().target_app.is_none());
+    }
+
+    /// bind_target refuses denylisted bundles.
+    #[test]
+    fn bind_target_refuses_denylisted_bundle() {
+        let m = SessionManager::new();
+        let session = grant_goal_directed(&m, ComputerUseScope::Input, false);
+        let settings = ComputerUseSettings {
+            enabled: true,
+            denylist: vec!["com.apple.Mail".into()],
+            ..ComputerUseSettings::default()
+        };
+
+        let result = m.bind_target(&session.id, "com.apple.Mail", &settings);
+        assert_eq!(result.unwrap_err(), DenyCode::AppHardBlocked);
+    }
+
+    /// bind_target requires an active session matching session_id.
+    #[test]
+    fn bind_target_requires_active_session() {
+        let m = SessionManager::new();
+        let settings = ComputerUseSettings {
+            enabled: true,
+            ..ComputerUseSettings::default()
+        };
+        assert_eq!(
+            m.bind_target("missing", "com.apple.Notes", &settings).unwrap_err(),
+            DenyCode::NoActiveSession,
+        );
+
+        let session = grant_goal_directed(&m, ComputerUseScope::Input, false);
+        m.pause(&session.id).unwrap();
+        assert_eq!(
+            m.bind_target(&session.id, "com.apple.Notes", &settings).unwrap_err(),
+            DenyCode::SessionPaused,
+        );
     }
 }
