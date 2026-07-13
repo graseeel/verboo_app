@@ -305,7 +305,6 @@
 
 .api-login-row button:disabled,
 .api-key-form button:disabled,
-.send-button:disabled,
 .continue-link {
   width: 100%;
   margin-top: 18px;

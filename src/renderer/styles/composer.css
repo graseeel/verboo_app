@@ -814,8 +814,17 @@
 }
 
 .send-button:disabled {
+  /* Keep the purple ball visible even when disabled (empty composer). Earlier
+     login.css overrode `.send-button:disabled` with `background: transparent;
+     width: 100%` — that selector is now removed, but we re-assert the
+     composer's intent here so future cascade drift can't wash the ball out
+     again. Disabled = dimmed, never invisible. */
   opacity: 0.5;
   cursor: not-allowed;
+  background: var(--accent-strong);
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
 }
 
 .selected-skills {

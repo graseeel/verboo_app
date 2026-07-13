@@ -251,7 +251,7 @@ type SidebarMode = 'expanded' | 'compact' | 'hidden'
 // (with a small delay to avoid flicker) returns to 'hidden'. Pin button or any
 // persistent toggle sets sidebarMode='expanded' and clears peek.
 // Touch devices keep the explicit topbar button (hover is unreliable).
-const SIDEBAR_PEEK_LEAVE_DELAY_MS = 200
+const SIDEBAR_PEEK_LEAVE_DELAY_MS = 80
 
 function isUsableWorkspaceDirectory(path?: string): path is string {
   const trimmed = path?.trim()
@@ -742,7 +742,10 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    if (activeView !== 'settings') return undefined
+    // ESC closes both settings and profile fullscreen views. Earlier this only
+    // handled settings, so profile had no keyboard escape — users had to click
+    // the back button. Now both views respond to ESC.
+    if (activeView !== 'settings' && activeView !== 'profile') return undefined
 
     function handleEscape(event: KeyboardEvent) {
       if (event.key === 'Escape') {

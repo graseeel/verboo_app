@@ -140,6 +140,17 @@
 .sidebar-shell.is-peek .app-sidebar {
   /* Slight transparency so the workspace peeking behind is hinted. */
   background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+  /* Peek enter: opacity 0→1 + translateX(-8px)→0, 160ms ease-out. GPU-only
+     (transform + opacity) so the sidebar slides in without layout thrash.
+     Leave relies on the 180ms grid transition + 80ms leave delay — the shell
+     unmounts when sidebarPeek flips false, so a leave animation would need
+     deferred unmount (architecture change out of scope here). */
+  animation: sidebar-peek-enter 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@keyframes sidebar-peek-enter {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
 }
 
 /* Collapse button that lives next to "New chat" inside the sidebar. */
@@ -359,10 +370,12 @@
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  /* Same spring-like ease as dropdowns/modals. The sidebar column animates by
+  /* Same ease-out-strong as dropdowns/modals. The sidebar column animates by
      its --sidebar-width value only (like the terminal/review panels) — the
-     column list itself never changes, so the whole layout glides. */
-  transition: grid-template-columns 240ms cubic-bezier(0.22, 1, 0.36, 1);
+     column list itself never changes, so the whole layout glides. 180ms keeps
+     it snappy enough that peek leave (80ms delay + 120ms shell fade) doesn't
+     feel like it lags behind the grid. */
+  transition: grid-template-columns 180ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 /* During a manual resize drag the panel must follow the pointer 1:1 —
@@ -1211,4 +1224,13 @@
   .sidebar-shell.is-peek .app-sidebar {
     transition: none !important;
   }
+  /* Peek animations become opacity-only 80ms, no translate. */
+  .sidebar-shell.is-peek .app-sidebar {
+    animation: sidebar-peek-fade 80ms ease-out forwards !important;
+  }
+}
+
+@keyframes sidebar-peek-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }

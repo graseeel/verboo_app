@@ -29,6 +29,13 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
     <div className="profile-view page-surface">
       <header className="view-heading">
         <div>
+          {/* Back button sits ABOVE the H1, left-aligned, as a quiet breadcrumb
+             ghost — not the heavy boxed .settings-back. Refresh stays on the
+             right in view-heading-actions. */}
+          <button className="profile-back" type="button" onClick={onClose}>
+            <ArrowLeft size={14} />
+            {t('profile.back')}
+          </button>
           <h1>{t('profile.title')}</h1>
           <p>{t('profile.subtitle')}</p>
         </div>
@@ -36,10 +43,6 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
           <button className="ghost-button" type="button" onClick={onRefresh} disabled={loading}>
             <RefreshCw size={15} />
             {loading ? t('profile.refreshing') : t('common.refresh')}
-          </button>
-          <button className="settings-back" type="button" onClick={onClose}>
-            <ArrowLeft size={14} />
-            {t('settings.back')}
           </button>
         </div>
       </header>

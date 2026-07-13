@@ -765,6 +765,7 @@ const enUS: Record<string, string> = {
 
   'profile.title': 'Profile',
   'profile.subtitle': 'Activity, usage, and plan loaded directly from your Verboo account.',
+  'profile.back': 'Back',
   'profile.refreshing': 'Refreshing',
   'profile.warning': 'Sign in with Verboo or add your API key in settings to load real data.',
   'profile.partialWarning': 'Some account data could not be loaded right now.',
@@ -1579,6 +1580,7 @@ const ptBR: Record<string, string> = {
 
   'profile.title': 'Perfil',
   'profile.subtitle': 'Atividade, consumo e plano carregados diretamente da conta Verboo.',
+  'profile.back': 'Voltar',
   'profile.refreshing': 'Atualizando',
   'profile.warning': 'Entre com Verboo ou adicione sua chave de API nas configurações para carregar dados reais.',
   'profile.partialWarning': 'Alguns dados da conta não puderam ser carregados agora.',
