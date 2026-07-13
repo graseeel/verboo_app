@@ -230,5 +230,67 @@ describe('computerUseStore', () => {
       expect(computerUseStore.getSnapshot().status).toBe('denied')
       expect(computerUseStore.getSnapshot().lastDeny?.detail).toBe('policy block')
     })
+
+    it('goal-directed: requestConsent with no app passes null to native', async () => {
+      const bridge = mockNativeBridge({
+        request: vi.fn().mockResolvedValue({
+          id: 'rust-req-goal',
+          goal: 'Teste a feature que acabei de adicionar',
+          app: null,
+          scope: 'input',
+          created_at_mono: 1000,
+          created_at_wall: Date.now(),
+        }),
+      })
+      await computerUseStore.requestConsent({
+        goal: 'Teste a feature que acabei de adicionar',
+        scope: 'input',
+      })
+      expect(bridge.requestComputerUseSession).toHaveBeenCalledWith(
+        'Teste a feature que acabei de adicionar',
+        null,
+        'input',
+      )
+      expect(computerUseStore.getSnapshot().status).toBe('consent')
+      expect(computerUseStore.getSnapshot().pendingRequest?.appBundleId).toBeUndefined()
+      expect(computerUseStore.getSnapshot().pendingRequest?.appName).toBe('Teste a feature que acabei de adicionar')
+    })
+
+    it('goal-directed: grant with no app produces active session', async () => {
+      mockNativeBridge({
+        request: vi.fn().mockResolvedValue({
+          id: 'rust-req-goal',
+          goal: 'Teste a feature',
+          app: null,
+          scope: 'input',
+          created_at_mono: 1000,
+          created_at_wall: Date.now(),
+        }),
+        grant: vi.fn().mockResolvedValue({
+          id: 'rust-sess-goal',
+          state: 'active',
+          goal: 'Teste a feature',
+          target_app: null,
+          scope: 'input',
+          allowlist_version: 0,
+          self_test_enabled: false,
+          screenshot_attach_to_llm: true,
+          pid_lock: 12345,
+          started_at_mono: 1000,
+          started_at_wall: Date.now(),
+          last_activity_mono: 1000,
+          idle_timeout_secs: 900,
+        }),
+      })
+      await computerUseStore.requestConsent({
+        goal: 'Teste a feature',
+        scope: 'input',
+      })
+      await computerUseStore.grant({ type: 'session' })
+      expect(computerUseStore.getSnapshot().status).toBe('active')
+      expect(computerUseStore.getSnapshot().session?.id).toBe('rust-sess-goal')
+      // appName falls back to goal when no app was resolved
+      expect(computerUseStore.getSnapshot().session?.appName).toBe('Teste a feature')
+    })
   })
 })

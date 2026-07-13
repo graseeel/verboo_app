@@ -2733,32 +2733,39 @@ export function App() {
         resolvedApp = await window.verboo.resolveComputerUseApp(selector)
       }
     } catch {
-      // The inline error below is intentionally the same for resolution and
-      // app-list failures: neither path authorizes a guessed target.
+      // App resolution failure is non-fatal: the session can still start
+      // goal-directed. The agent will discover the target via list-apps.
     }
 
-    if (!resolvedApp) {
-      toast(t('computerUse.composer.missingApp'), 'error')
-      return
-    }
-    if (resolvedApp.bundleId === 'ai.verboo.code.desktop' && !userSettings.computerUse.selfTestEnabled) {
+    // Self-test gate: only applies when the resolved app is Verboo itself.
+    // Goal-directed sessions without a resolved app skip this gate — the
+    // agent binds the target later, and bind_target re-checks self-test.
+    if (resolvedApp?.bundleId === 'ai.verboo.code.desktop' && !userSettings.computerUse.selfTestEnabled) {
       toast(t('computerUse.composer.selfTestDisabled'), 'error')
       setSettingsTab('computerUse')
       setActiveView('settings')
       return
     }
 
+    // Goal-first: start the session even when no app was resolved. The
+    // agent discovers the target via list-apps/launch and binds it via
+    // bind_target (which re-runs hard-block + self-test + denylist gates).
+    // Never toast missingApp for skill/NL goals — that was the bug.
     await computerUseStore.requestConsent({
       goal,
-      appName: resolvedApp.name,
-      appBundleId: resolvedApp.bundleId,
+      appName: resolvedApp?.name,
+      appBundleId: resolvedApp?.bundleId,
       scope: 'input',
     })
     if (computerUseStore.getSnapshot().status !== 'consent') return
 
     // `/computer-use` or an explicit natural-language request is the user's
     // per-session authorization. There is no second app-styled modal.
-    toast(t('computerUse.composer.isolationNotice'), 'info')
+    if (resolvedApp) {
+      toast(t('computerUse.composer.isolationNotice'), 'info')
+    } else {
+      toast(t('computerUse.composer.goalDirectedNotice'), 'info')
+    }
     await computerUseStore.grant({ type: 'session' })
     const sessionId = computerUseStore.getSnapshot().session?.id
     if (computerUseStore.getSnapshot().status === 'active' && sessionId) {

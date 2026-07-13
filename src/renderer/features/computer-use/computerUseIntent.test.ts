@@ -5,6 +5,7 @@ import {
   detectComputerUseIntent,
   extractComputerUseAppSelector,
   resolveComputerUseTarget,
+  shouldStartGoalDirectedComputerUse,
 } from './computerUseIntent'
 
 const computerUseSkill: SkillSummary = {
@@ -102,5 +103,31 @@ describe('resolveComputerUseTarget', () => {
       .toBe('TextEdit')
     expect(extractComputerUseAppSelector('Use o aplicativo Google Chrome para testar a página'))
       .toBe('Google Chrome')
+  })
+})
+
+describe('shouldStartGoalDirectedComputerUse', () => {
+  it('returns false when there is no intent', () => {
+    expect(shouldStartGoalDirectedComputerUse(undefined, undefined)).toBe(false)
+  })
+
+  it('returns true for skill intent even without a resolved app (goal-directed)', () => {
+    const intent = detectComputerUseIntent('adicionamos essa feature, quero que você teste', [computerUseSkill])
+    expect(intent).toBeDefined()
+    expect(shouldStartGoalDirectedComputerUse(intent, undefined)).toBe(true)
+  })
+
+  it('returns true for explicit NL intent without a resolved app', () => {
+    const intent = detectComputerUseIntent('Use computer control to test the new feature', [])
+    expect(intent).toBeDefined()
+    expect(shouldStartGoalDirectedComputerUse(intent, undefined)).toBe(true)
+  })
+
+  it('returns true when an app is resolved (classic pre-bind path)', () => {
+    const intent = detectComputerUseIntent('Controle o computador para digitar olá no Notas', [])
+    const app = resolveComputerUseTarget('Controle o computador para digitar olá no Notas', runningApps)
+    expect(intent).toBeDefined()
+    expect(app).toBeDefined()
+    expect(shouldStartGoalDirectedComputerUse(intent, app)).toBe(true)
   })
 })

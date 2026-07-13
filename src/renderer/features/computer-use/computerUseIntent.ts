@@ -51,6 +51,30 @@ export function extractComputerUseAppSelector(goal: string): string | undefined 
   return match?.[1]?.trim() || undefined
 }
 
+/**
+ * Decides whether a Computer Use intent should start goal-directed (without
+ * a preselected app). Per spec §"Target behavior": when the user invokes the
+ * computer-use skill or makes an explicit NL request, the session MUST start
+ * even if no app name was mentioned — the agent discovers the target via
+ * list-apps/launch. Only returns false when there's no intent at all.
+ *
+ * The `resolvedApp` parameter is optional: when present, the session will
+ * pre-bind that app; when absent, the session starts goal-directed and the
+ * agent binds the first concrete non-blocked app it resolves.
+ */
+export function shouldStartGoalDirectedComputerUse(
+  intent: ComputerUseIntent | undefined,
+  resolvedApp: ComputerUseApp | undefined,
+): boolean {
+  if (!intent) return false
+  // If we have a resolved app, the classic pre-bind path applies — but the
+  // session still starts (this is the "explicit unique app mention" rule).
+  // The helper's job is only to confirm that intent alone is sufficient to
+  // start; it returns true for both cases (resolved or not) so the caller
+  // can branch on resolvedApp separately.
+  return true
+}
+
 function appAliases(app: ComputerUseApp): string[] {
   const aliases = new Set<string>([normalizeForMatch(app.name)])
   const known: Record<string, string[]> = {
