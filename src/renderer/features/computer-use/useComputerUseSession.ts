@@ -32,6 +32,7 @@ type Bridge = {
   onComputerUseStateChange?: (cb: (s: RustSession) => void) => () => void
   onComputerUseAction?: (cb: (a: unknown) => void) => () => void
   onComputerUseEmergencyStop?: (cb: () => void) => () => void
+  onComputerUseOsPermissionRevoked?: (cb: () => void) => () => void
   onComputerUseTurnComplete?: (cb: () => void) => () => void
   onComputerUseCleanupFailed?: (cb: (message: string) => void) => () => void
 }
@@ -67,6 +68,16 @@ export function useComputerUseSession() {
     }
     if (b.onComputerUseEmergencyStop) {
       unlisteners.push(b.onComputerUseEmergencyStop(() => computerUseStore.handleNativeEmergencyStop()))
+    }
+    if (b.onComputerUseOsPermissionRevoked) {
+      unlisteners.push(b.onComputerUseOsPermissionRevoked(() => {
+        // Rust already stopped the session; align renderer + toast.
+        void computerUseStore.stop('os_permission_revoked')
+        toast(
+          'Computer Use stopped: macOS Accessibility or Screen Recording was revoked. Re-enable both in System Settings to continue.',
+          'error',
+        )
+      }))
     }
     if (b.onComputerUseTurnComplete) {
       unlisteners.push(b.onComputerUseTurnComplete(() => void computerUseStore.stop('session_expired')))

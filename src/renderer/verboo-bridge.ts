@@ -448,16 +448,18 @@ const api = {
   revealComputerUseHelper: () =>
     invoke<void>('reveal_computer_use_helper'),
 
-  // ── Computer Use events (Geralt — not yet wired on Rust side) ──
-  // When Geralt adds emit() calls, these listeners will fire. Until then,
-  // the store drives state via invoke responses. Hooks attach unconditionally;
-  // no-op if Rust doesn't emit.
+  // ── Computer Use events ──────────────────────────────────────
+  // Rust emits these; until emit, listeners are no-ops. Store still drives
+  // state via invoke responses for grant/pause/stop.
   onComputerUseStateChange: (callback: (session: RustSession) => void) =>
     onEvent<RustSession>('computer-use:state-change', callback),
   onComputerUseAction: (callback: (action: unknown) => void) =>
     onEvent<unknown>('computer-use:action', callback),
   onComputerUseEmergencyStop: (callback: () => void) =>
     onEvent<void>('computer-use:emergency-stop', callback),
+  /** P0.2b: Accessibility or Screen Recording revoked mid-session. */
+  onComputerUseOsPermissionRevoked: (callback: () => void) =>
+    onEvent<void>('computer-use:os-permission-revoked', callback),
   onComputerUseTurnComplete: (callback: () => void) =>
     onEvent<void>('computer-use:turn-complete', callback),
   onComputerUseCleanupFailed: (callback: (message: string) => void) =>

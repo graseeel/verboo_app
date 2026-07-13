@@ -361,8 +361,12 @@ export const computerUseStore = {
       try {
         await native.stopComputerUseSession(s.id, rustReason)
       } catch {
-        // Keep the banner visible: control may still be active.
-        return
+        // When Rust already stopped the session (TCC revoke, idle, etc.),
+        // still clear the banner for those reasons. For user-initiated
+        // stop failures, keep the banner visible — control may still be active.
+        if (reason !== 'os_permission_revoked' && reason !== 'session_expired') {
+          return
+        }
       }
     }
     clearMockTimer()

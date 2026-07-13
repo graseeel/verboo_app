@@ -2750,7 +2750,11 @@ export function App() {
     // Goal-first: start the session even when no app was resolved. The
     // agent discovers the target via list-apps/launch and binds it via
     // bind_target (which re-runs hard-block + self-test + denylist gates).
-    // Never toast missingApp for skill/NL goals — that was the bug.
+    //
+    // Product decision (P4 / dual-MAESTRO): **inline session grant** — skill or
+    // explicit NL Computer Use is the user's consent for this goal. We do NOT
+    // show a second ConsentModal (Claude-like speed). Per-app first-bind still
+    // re-runs hard-block / self-test / denylist on the native side.
     await computerUseStore.requestConsent({
       goal,
       appName: resolvedApp?.name,
@@ -2759,8 +2763,7 @@ export function App() {
     })
     if (computerUseStore.getSnapshot().status !== 'consent') return
 
-    // `/computer-use` or an explicit natural-language request is the user's
-    // per-session authorization. There is no second app-styled modal.
+    // Inline grant (no modal). Toast confirms isolation or goal-directed mode.
     if (resolvedApp) {
       toast(t('computerUse.composer.isolationNotice'), 'info')
     } else {
