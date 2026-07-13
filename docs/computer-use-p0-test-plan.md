@@ -158,6 +158,10 @@ When Geralt exposes a `check_action(req: &ActionRequest) -> ActionVerdict` test 
 
 **Pass criteria**: no consent → no action; audit captures denial.
 
+**A.4 Approach A packaging — helper discovery + TCC per-binary (NL intent + Approach A, plan Task 5)**
+
+Fresh install. User opens Settings → Computer Use and clicks Grant. Verify all of: (1) Accessibility and Screen Recording deep-links open; (2) the resolved helper path string is shown and "Reveal in Finder" opens `Contents/Resources/` with `computer-use-helper` selected; (3) under ad-hoc / dev signing, System Settings → Privacy & Security → Accessibility lists BOTH **Verboo Code** and **computer-use-helper** as separate rows — user must enable both; notarized Developer ID builds collapse to a single row; (4) `list-apps` returns successfully with no target selected (goal-directed session: `target_app: None` is permitted, §3.7). Toggle Computer Use **enabled** ON with permissions missing → Grant helper runs automatically, non-blocking toast.
+
 ---
 
 ### B. Bypass suite (P0.9 — allowlist escape)

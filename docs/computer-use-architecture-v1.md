@@ -154,6 +154,16 @@ Info.plist must add `NSScreenCaptureDescription` (Sonoma+ requirement).
 - Idle timeout: helper self-exits after 5min inactivity, Rust re-spawns on demand.
 - Restart-on-crash: max 3 restarts / 60s; beyond that, `provider_down` until next user action.
 
+### 3.7 Goal-directed sessions & Approach A packaging (NL intent + Approach A)
+
+Short note added 2026-07-13 (plan `2026-07-13-computer-use-approach-a-and-nl-intent.md`). Does not alter §3.1–§3.6; extends them.
+
+**Goal-directed sessions (plan Task 1).** A session may start with `target_app: None`. `list-apps` is permitted without a target so the agent can discover candidates from a natural-language goal (Claude-like: goal-first, app discovered mid-flight). The first concrete, non-blocked app the agent binds becomes the session's locked target via `SessionManager::bind_target(session_id, bundle_id, settings)`. A second bind to a *different* app while one is already set returns `AppNotAllowlisted` — no silent cross-app switch. Same-app bind is idempotent. Binding a hard-blocked bundle (Tier 1 / Tier 1.5) or Verboo without self-test fails the bind.
+
+**Approach A packaging (plan Task 5).** The helper ships inside the app bundle at `Contents/Resources/computer-use-helper`, lazy-resolved by `computer_use_spawn.rs` (new `helper_path()` + `reveal_computer_use_helper` Tauri command). Settings → Computer Use exposes a Grant flow that opens Accessibility + Screen Recording deep-links, prints the resolved helper path string, and offers a "Reveal in Finder" action. When the user toggles Computer Use **enabled** ON and permissions are missing, the same Grant helper runs automatically (non-blocking toast).
+
+**Honest TCC note (per-binary, not per-bundle).** macOS Accessibility TCC is enforced **per-binary**, not per-app-bundle. Under ad-hoc / dev signing, System Settings → Privacy & Security → Accessibility may list **`computer-use-helper`** as a separate row from **Verboo Code** — **both must be enabled** for AX calls to succeed. Notarized Developer ID builds collapse the helper under the app's signing identity so only one row appears; ad-hoc / unsigned builds do not, and Settings copy must say this explicitly so users do not assume the prompt was a no-op. This does not change §3.4 (the gate itself is unchanged); it only documents how the binary appears to the user.
+
 ---
 
 ## 4. Self-control conflict — Self-Test Scope (D3)
