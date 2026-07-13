@@ -471,6 +471,17 @@ impl Default for ComputerUseService {
     }
 }
 
+/// Test-only constructor: gates work, audit always fails closed.
+#[cfg(test)]
+pub(crate) fn service_for_test_without_audit() -> ComputerUseService {
+    ComputerUseService {
+        sessions: SessionManager::new(),
+        audit: None,
+        poller_shutdown: Arc::new(AtomicBool::new(true)),
+        poller_handle: Mutex::new(None),
+    }
+}
+
 /// Spawn helper, write one request, read one response, kill. Id-correlated
 /// so multi-line responses can be matched. P0.1b will reuse a long-lived
 /// process; this is the simple synchronous path.

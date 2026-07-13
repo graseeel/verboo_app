@@ -452,10 +452,21 @@ fn call_tool(service: &ComputerUseService, settings: &mut ComputerUseSettings, r
         }
         _ => return json!({"error":{"code":"unknown_tool","message":"unknown computer-use tool"}}),
     };
+    // Audit fail-closed: refuse further CU authority for this MCP process by
+    // revoking capability files. Never hard-exit — a silent exit(70) left
+    // orphan capability/MCP state with no JSON error for the agent loop.
     if result.error.as_ref().is_some_and(|error| error.code == "audit_write_failed") {
-        if revoke().is_err() {
-            std::process::exit(70);
+        eprintln!("[computer-use-mcp] audit_write_failed — revoking capability (fail-closed)");
+        if let Err(error) = revoke() {
+            eprintln!("[computer-use-mcp] capability revoke after audit failure: {error}");
         }
+        // Force a clear wire error even if serde of the full result fails later.
+        return json!({
+            "error": {
+                "code": "audit_write_failed",
+                "message": "Audit write failed; Computer Use capability revoked for this session (fail-closed)."
+            }
+        });
     }
     if name == "computer_get_app_state" {
         runtime.remember_state(&result);
@@ -574,6 +585,45 @@ mod tests {
         };
         assert_eq!(runtime.coordinates(&json!({"x":25,"y":50})).unwrap(), (150, 300));
         assert_eq!(runtime.coordinates(&json!({"x":25,"y":50,"coordinate_space":"screen"})).unwrap(), (25, 50));
+    }
+
+    /// When audit storage is unavailable, tools fail closed with
+    /// `audit_write_failed`. MCP must never hard-exit on that path
+    /// (regression guard for the removed exit(70)).
+    #[test]
+    fn audit_write_failed_returns_structured_error_without_process_exit() {
+        let service = crate::services::computer_use_service::service_for_test_without_audit();
+        let mut settings = ComputerUseSettings {
+            enabled: true,
+            allowlist: vec![ComputerUseAllowlistEntry {
+                bundle_id: "com.apple.Notes".into(),
+                display_name: "Notes".into(),
+                scope: ComputerUseScope::Input,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let req = service
+            .request_session(&settings, "audit fail", Some("com.apple.Notes".into()), ActionScope::Input)
+            .expect("request");
+        let _session = service
+            .grant_session(ConsentGrant {
+                id: req.id,
+                allowlist_version: 1,
+                self_test_enabled: false,
+                screenshot_attach_to_llm: false,
+                idle_timeout_secs: 60,
+            })
+            .expect("grant");
+
+        // Audit None → pending write fails before helper spawn.
+        let response = service.get_app_state(&mut settings, "com.apple.Notes", true);
+        assert_eq!(
+            response.error.as_ref().map(|e| e.code.as_str()),
+            Some("audit_write_failed"),
+            "missing audit DB must fail closed: {response:?}"
+        );
+        // Reaching this assertion proves we did not process::exit(70).
     }
 
     #[test]
