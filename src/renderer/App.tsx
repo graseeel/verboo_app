@@ -1,5 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ForwardedRef, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
-import { createPortal } from 'react-dom'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
 import { ArrowDown, CheckCircle2, ChevronDown, ChevronRight, FolderClosed, GitBranch, LoaderCircle, X, XCircle } from 'lucide-react'
 import type {
   AccessMode,
@@ -71,7 +70,7 @@ import type { ExtractionStatus, ModelReasoning, VisionFallbackConsent, VisionFal
 import { recognizeImage } from './features/ocr/ocrService'
 import { Composer } from './features/composer/Composer'
 import { ContextMeter } from './features/context/ContextMeter'
-import { ContextPanel, estimateTotalContextTokens } from './features/context/ContextPanel'
+import { estimateTotalContextTokens } from './features/context/ContextPanel'
 import { TokenRateMeter } from './features/context/TokenRateMeter'
 import { FeedbackDialog } from './features/feedback/FeedbackDialog'
 import { ModelSelector } from './features/models/ModelSelector'
@@ -80,7 +79,6 @@ import { ProfileView } from './features/profile/ProfileView'
 import { ProjectPicker } from './features/projects/ProjectPicker'
 import { SettingsView } from './features/settings/SettingsView'
 import mascotUrl from '../../assets/branding/verboo-mascot.png'
-import { useOutsideDismiss } from './hooks/useOutsideDismiss'
 import { I18nProvider, createTranslator, useI18n, type Translator } from './i18n'
 import {
   DEFAULT_CONVERSATION_TITLE,
@@ -243,80 +241,6 @@ function firstUsableWorkspaceDirectory(...paths: Array<string | undefined>): str
   return paths.find(isUsableWorkspaceDirectory) ?? ''
 }
 
-// Imperative handle returned from ContextPanelPortal to its parent. Parent
-// (App.tsx) uses it to trigger an animated close from the meter toggle and
-// from the ContextPanel's own close button — without that, those handlers
-// would unmount the portal instantly instead of letting the close-dur
-// transition play.
-export type ContextPanelHandle = {
-  requestClose: () => void
-}
-
-const ContextPanelPortal = forwardRef<ContextPanelHandle, {
-  pos: { top: number; right: number }
-  onClose: () => void
-  ignoreRefs?: React.RefObject<HTMLElement | null>[]
-  children: React.ReactNode
-}>(function ContextPanelPortal({ pos, onClose, ignoreRefs, children }, ref) {
-  const divRef = useRef<HTMLDivElement>(null)
-  // Mount closed, then open on the next frame so the t-dropdown scale/opacity
-  // transition plays — the panel grows out of the meter in the composer.
-  const [open, setOpen] = useState(false)
-  const [closing, setClosing] = useState(false)
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => setOpen(true))
-    return () => cancelAnimationFrame(frame)
-  }, [])
-
-  // Single source of truth for animated close. Sets is-closing (CSS picks
-  // the close-dur transition), then waits for the opacity/transform
-  // transition to end. Falls back to a 200ms safety timeout in case the
-  // browser never fires transitionend (e.g. display:none mid-transition).
-  // Only then does it call the parent's onClose, which unmounts the portal.
-  const handleClose = useCallback(() => {
-    if (closing) return
-    setClosing(true)
-    const el = divRef.current
-    let done = false
-    const finish = () => {
-      if (done) return
-      done = true
-      onClose()
-    }
-    const onEnd = (event: TransitionEvent) => {
-      if (event.target !== el) return
-      if (event.propertyName !== 'opacity' && event.propertyName !== 'transform') return
-      el?.removeEventListener('transitionend', onEnd)
-      finish()
-    }
-    el?.addEventListener('transitionend', onEnd)
-    setTimeout(finish, 200)
-  }, [closing, onClose])
-
-  // Imperative API for parent (meter toggle + ContextPanel close button).
-  useImperativeHandle(ref, () => ({ requestClose: handleClose }), [handleClose])
-  useOutsideDismiss(divRef, true, handleClose, ignoreRefs)
-  return (
-    <div ref={divRef}
-      className={
-        closing
-          ? 'context-meter-popover-wrapper t-dropdown is-closing'
-          : `context-meter-popover-wrapper t-dropdown ${open ? 'is-open' : ''}`
-      }
-      data-origin="bottom-right"
-      style={{
-        position: 'fixed',
-        // Anchored ABOVE the meter (the meter sits in the composer at the
-        // bottom of the window — opening downward pushes it off-screen).
-        bottom: `${window.innerHeight - pos.top + 8}px`,
-        right: `${window.innerWidth - pos.right}px`,
-        top: 'auto', left: 'auto',
-      }}>
-      {children}
-    </div>
-  )
-})
-
 export function App() {
   const initialSidebarPreference = useRef(readSidebarPreference())
   const defaultWorkingDirectoryRef = useRef('')
@@ -408,19 +332,12 @@ export function App() {
   const [subagentSummaryExpanded, setSubagentSummaryExpanded] = useState(false)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshot | undefined>()
-  const [contextPanelOpen, setContextPanelOpen] = useState(false)
-  const [contextMeterPos, setContextMeterPos] = useState<{ top: number; right: number } | undefined>()
   // Context windows the CLI itself reported via result.modelUsage — the Verboo
   // Router omits contextWindow from model discovery, so this is often the only
   // authoritative source. Persisted so the meter works from app launch.
   const [reportedContextWindows, setReportedContextWindows] = useState<Record<string, number>>(
     readReportedContextWindows,
   )
-  const contextMeterRef = useRef<HTMLButtonElement>(null)
-  // Imperative handle for the ContextPanel popover so the meter toggle and the
-  // ContextPanel's own ✕ button trigger the animated close (otherwise they
-  // would unmount the popover instantly and skip the close-dur transition).
-  const contextPanelRef = useRef<ContextPanelHandle>(null)
   const [goal, setGoal] = useState<GoalState | undefined>()
   const [imageReadingTurnId, setImageReadingTurnId] = useState<string | undefined>()
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(initialSidebarPreference.current.mode)
@@ -4422,40 +4339,7 @@ export function App() {
             rightToolbar={
               <>
                 <TokenRateMeter rate={tokenRate} active={Boolean(runningTurnId)} />
-                <span ref={contextMeterRef}>
-                  <ContextMeter usage={effectiveContextUsage} contextWindow={selectedContextWindow} onClick={() => {
-                    if (!contextMeterRef.current) return
-                    if (contextPanelOpen) {
-                      // Animated close: play close-dur transition before unmounting.
-                      contextPanelRef.current?.requestClose()
-                      return
-                    }
-                    const rect = contextMeterRef.current.getBoundingClientRect()
-                    setContextMeterPos({ top: rect.top, right: rect.right })
-                    setContextPanelOpen(true)
-                  }} />
-                </span>
-                {contextPanelOpen && contextMeterPos && createPortal(
-                  <ContextPanelPortal
-                    ref={contextPanelRef}
-                    pos={contextMeterPos}
-                    onClose={() => setContextPanelOpen(false)}
-                    ignoreRefs={[contextMeterRef]}
-                  >
-                    <ContextPanel
-                      usage={effectiveContextUsage}
-                      maxWindow={selectedContextWindow}
-                      items={conversationItemsRef.current}
-                      attachments={attachedFiles}
-                      skills={selectedSkills}
-                      queue={queuedFollowUpsRef.current}
-                      onClearAttachments={() => setAttachedFiles([])}
-                      onClearSkills={() => setSelectedSkills([])}
-                      onClose={() => contextPanelRef.current?.requestClose()}
-                    />
-                  </ContextPanelPortal>,
-                  document.body
-                )}
+                <ContextMeter usage={effectiveContextUsage} contextWindow={selectedContextWindow} />
                 <ModelSelector
                   models={modelResult.models}
                   selectedModel={selectedModel}

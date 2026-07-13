@@ -1026,6 +1026,19 @@
   max-height: min(420px, calc(100vh - 220px));
 }
 
+/* Portaled above the composer so overflow:hidden cannot clip the menu.
+   Mirrors `.model-menu.model-menu-portal`. Inline style fixes position to
+   the pill's bounding rect; this class handles z-index, sizing, and bounds. */
+.access-menu.access-menu-portal {
+  z-index: 10000;
+  width: min(480px, calc(100vw - 24px));
+  min-width: min(360px, calc(100vw - 24px));
+  max-height: min(420px, calc(100vh - 120px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
 .model-menu-status {
   display: grid;
   gap: 2px;
@@ -1305,23 +1318,22 @@
 }
 
 .context-meter {
-  display: inline-grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  display: inline-flex;
   align-items: center;
-  flex: 0 1 164px;
-  gap: 7px;
+  flex: 0 0 auto;
   height: 34px;
-  min-width: 164px;
-  max-width: 190px;
-  padding: 0 7px 0 9px;
-  border: 1px solid color-mix(in srgb, var(--border-strong) 76%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--bg-soft) 48%, transparent);
+  padding: 0;
+  border: none;
+  background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
   font: inherit;
 }
-.context-meter:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+
+/* Ring-only variant: no pill chrome, no chevron, no select-like width.
+   The ring fills (conic-gradient) as context grows — Codex-like. */
+.context-meter--ring-only {
+  cursor: default;
+}
 
 @media (max-width: 1180px) {
   .composer-tools.right {
@@ -1344,51 +1356,13 @@
     font-size: 9.5px;
   }
 
-  .context-meter {
-    min-width: 132px;
-    max-width: 154px;
-  }
-
   .model-pill {
     min-width: 126px;
     max-width: 172px;
   }
 }
 
-.context-meter-icon {
-  color: var(--accent-strong);
-}
-
-.context-copy {
-  display: grid;
-  gap: 0;
-  min-width: 0;
-  line-height: 1.05;
-}
-
-.context-copy strong {
-  color: var(--text);
-  font-size: 11.5px;
-  font-weight: 780;
-}
-
-.context-copy small {
-  overflow: hidden;
-  color: var(--text-dim);
-  font-size: 10.5px;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .context-meter.over-limit {
-  border-color: color-mix(in srgb, var(--danger) 42%, var(--border));
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 9%, transparent);
-}
-
-.context-meter.over-limit .context-meter-icon,
-.context-meter.over-limit .context-copy strong {
   color: var(--danger);
 }
 
