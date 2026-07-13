@@ -10,7 +10,7 @@
 //!
 //! Gates per arch §2.2:
 //!   1. Feature gate — `settings.enabled`
-//!   2. OS-permission gate — polled every 5s (TODO P0.2b)
+//!   2. OS-permission gate — `os_permissions_ok` (poller P0.2b every 5s)
 //!   3. Session gate — `current()` returns ACTIVE
 //!   4. Allowlist gate — bundle ID + scope match (full entries from settings)
 //!   5. Denylist gate — Tier 2 (user-configured)
@@ -66,12 +66,27 @@ impl Default for RateBucket {
 }
 
 /// Inner state guarded by Mutex.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Inner {
     current: Option<Session>,
     pending_consent: Option<ConsentRequest>,
     rate: RateBucket,
     emergency_armed: bool,
+    /// OS Accessibility + Screen Recording still granted (P0.2b poller).
+    /// When false, `check_action` fails closed with `OsPermissionRevoked`.
+    os_permissions_ok: bool,
+}
+
+impl Default for Inner {
+    fn default() -> Self {
+        Self {
+            current: None,
+            pending_consent: None,
+            rate: RateBucket::default(),
+            emergency_armed: false,
+            os_permissions_ok: true,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -171,8 +186,22 @@ impl SessionManager {
             last_activity_mono: now,
             idle_timeout_secs: grant.idle_timeout_secs,
         };
+        g.os_permissions_ok = true;
         g.current = Some(session.clone());
         Ok(session)
+    }
+
+    /// Mark OS TCC permissions as still OK (or revoked). Called by the
+    /// P0.2b poller and by unit tests. Fail-closed when `ok == false`.
+    pub(crate) fn set_os_permissions_ok(&self, ok: bool) {
+        let mut g = self.inner.lock().expect("SessionManager mutex poisoned");
+        g.os_permissions_ok = ok;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn os_permissions_ok(&self) -> bool {
+        let g = self.inner.lock().expect("SessionManager mutex poisoned");
+        g.os_permissions_ok
     }
 
     /// User denies consent.
@@ -208,6 +237,7 @@ impl SessionManager {
         let final_session = s.clone();
         g.current = None;
         g.pending_consent = None;
+        g.os_permissions_ok = true;
         Ok(final_session)
     }
 
@@ -220,6 +250,7 @@ impl SessionManager {
         g.current = None;
         g.pending_consent = None;
         g.emergency_armed = true;
+        g.os_permissions_ok = true;
     }
 
     pub fn disarm_emergency(&self) {
@@ -327,6 +358,12 @@ impl SessionManager {
         // Gate 1: feature enabled.
         if !settings.enabled {
             return ActionVerdict::Deny(DenyCode::NoActiveSession);
+        }
+
+        // Gate 2: OS TCC (Accessibility + Screen Recording). Poller sets false
+        // when either permission is revoked mid-session.
+        if !g.os_permissions_ok {
+            return ActionVerdict::Deny(DenyCode::OsPermissionRevoked);
         }
 
         // Session gate.
@@ -907,6 +944,57 @@ mod tests {
             ActionVerdict::Deny(DenyCode::SelfTestScopeViolation),
             "is_self_test entries outside the Verboo bundle are invalid"
         );
+    }
+
+    /// P0.2b: when the OS TCC poller marks permissions revoked, check_action
+    /// must fail closed before allowlist evaluation.
+    #[test]
+    fn denies_when_os_permissions_revoked() {
+        let m = SessionManager::new();
+        let session = grant_default(&m);
+        assert!(session.state == SessionState::Active);
+
+        let mut s = test_settings();
+        s.allowlist.push(ComputerUseAllowlistEntry {
+            bundle_id: "com.apple.Notes".into(),
+            display_name: "Notes".into(),
+            scope: ComputerUseScope::Input,
+            ..Default::default()
+        });
+
+        // Baseline: allow while OS perms OK.
+        assert_eq!(
+            m.check_action(&mut s, Some("com.apple.Notes"), ActionKind::Read, ComputerUseScope::View),
+            ActionVerdict::Allow,
+        );
+
+        m.set_os_permissions_ok(false);
+        assert_eq!(
+            m.check_action(&mut s, Some("com.apple.Notes"), ActionKind::Mutate, ComputerUseScope::Input),
+            ActionVerdict::Deny(DenyCode::OsPermissionRevoked),
+        );
+        // System-level read (no bundle) also blocked once OS perms are bad.
+        assert_eq!(
+            m.check_action(&mut s, None, ActionKind::Read, ComputerUseScope::View),
+            ActionVerdict::Deny(DenyCode::OsPermissionRevoked),
+        );
+
+        // Restoring the flag re-opens the gate.
+        m.set_os_permissions_ok(true);
+        assert_eq!(
+            m.check_action(&mut s, Some("com.apple.Notes"), ActionKind::Read, ComputerUseScope::View),
+            ActionVerdict::Allow,
+        );
+    }
+
+    /// Grant always re-arms OS permission OK (poller starts after grant).
+    #[test]
+    fn grant_resets_os_permissions_ok() {
+        let m = SessionManager::new();
+        m.set_os_permissions_ok(false);
+        assert!(!m.os_permissions_ok());
+        let _ = grant_default(&m);
+        assert!(m.os_permissions_ok(), "grant must reset os_permissions_ok");
     }
 
     /// N4 session-layer: AccessMode/fullAccess cannot create a CU session.

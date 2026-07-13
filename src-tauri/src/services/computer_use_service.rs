@@ -17,8 +17,10 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Stdio};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
@@ -29,11 +31,17 @@ use crate::models::computer_use::{
 use crate::models::types::ComputerUseSettings;
 use crate::services::audit_writer::AuditWriter;
 use crate::services::computer_use_spawn::ComputerUseSpawn;
+use crate::services::computer_use_tcc::probe_tcc_status;
 use crate::services::session_manager::{ActionKind, SessionManager};
+
+/// Poll interval for OS TCC (Accessibility + Screen Recording).
+const OS_PERM_POLL_SECS: u64 = 5;
 
 pub struct ComputerUseService {
     pub sessions: SessionManager,
     pub audit: Option<Arc<AuditWriter>>,
+    poller_shutdown: Arc<AtomicBool>,
+    poller_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl ComputerUseService {
@@ -59,6 +67,82 @@ impl ComputerUseService {
         Self {
             sessions: SessionManager::new(),
             audit,
+            poller_shutdown: Arc::new(AtomicBool::new(true)),
+            poller_handle: Mutex::new(None),
+        }
+    }
+
+    /// Start the P0.2b OS-permission poller. First probe is immediate (t=0),
+    /// then every 5s. On revoke: mark gate false → stop session → MCP revoke
+    /// → `on_revoked` callback (emit to renderer). Does not spawn the helper.
+    pub fn start_os_permission_poller<F>(&self, on_revoked: F)
+    where
+        F: Fn() + Send + 'static,
+    {
+        self.stop_os_permission_poller();
+        self.poller_shutdown.store(false, Ordering::SeqCst);
+        let shutdown = Arc::clone(&self.poller_shutdown);
+        let sessions = self.sessions.clone();
+        let handle = thread::spawn(move || {
+            loop {
+                if shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
+                let status = probe_tcc_status();
+                if !status.both_granted() {
+                    // Order: flag → stop session → MCP revoke → emit.
+                    sessions.set_os_permissions_ok(false);
+                    if let Some(session) = sessions.current() {
+                        let _ = sessions.stop(&session.id, StopReason::OsPermissionRevoked);
+                    }
+                    let _ = crate::services::computer_use_mcp::revoke();
+                    on_revoked();
+                    shutdown.store(true, Ordering::SeqCst);
+                    break;
+                }
+                // Sleep in 100ms slices so stop_os_permission_poller can join quickly.
+                let mut waited = 0u64;
+                while waited < OS_PERM_POLL_SECS * 1000 {
+                    if shutdown.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                    waited += 100;
+                }
+            }
+        });
+        if let Ok(mut slot) = self.poller_handle.lock() {
+            *slot = Some(handle);
+        }
+    }
+
+    /// Signal the poller to exit and join with a short timeout.
+    pub fn stop_os_permission_poller(&self) {
+        self.poller_shutdown.store(true, Ordering::SeqCst);
+        let handle = self
+            .poller_handle
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        if let Some(handle) = handle {
+            // Don't block the UI forever if the thread is stuck.
+            let start = SystemTime::now();
+            loop {
+                if handle.is_finished() {
+                    let _ = handle.join();
+                    break;
+                }
+                if start
+                    .elapsed()
+                    .map(|d| d >= Duration::from_secs(1))
+                    .unwrap_or(true)
+                {
+                    // Detach: thread will exit on next shutdown check.
+                    drop(handle);
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
         }
     }
 
@@ -107,6 +191,7 @@ impl ComputerUseService {
 
     /// Stop with reason (logged by caller).
     pub fn stop(&self, id: &str, reason: StopReason) -> Result<Session, DenyCode> {
+        self.stop_os_permission_poller();
         self.append_audit(
             id,
             None,
@@ -120,6 +205,7 @@ impl ComputerUseService {
 
     /// Emergency stop (helper hotkey P0.8 or renderer Esc pill).
     pub fn emergency_stop_all(&self) {
+        self.stop_os_permission_poller();
         self.sessions.emergency_stop_all();
     }
 
@@ -478,6 +564,8 @@ mod tests {
         ComputerUseService {
             sessions: SessionManager::new(),
             audit: None,
+            poller_shutdown: Arc::new(AtomicBool::new(true)),
+            poller_handle: Mutex::new(None),
         }
     }
 

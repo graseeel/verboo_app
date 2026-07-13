@@ -119,6 +119,7 @@ pub enum DenyCode {
     ConsentExpired,
     ProviderDown,
     TamperDetected,
+    OsPermissionRevoked,
 }
 
 impl DenyCode {
@@ -137,6 +138,7 @@ impl DenyCode {
             DenyCode::ConsentExpired => "consent_expired",
             DenyCode::ProviderDown => "provider_down",
             DenyCode::TamperDetected => "tamper_detected",
+            DenyCode::OsPermissionRevoked => "os_permission_revoked",
         }
     }
 }
@@ -250,6 +252,7 @@ impl From<DenyCode> for ComputerUseError {
             DenyCode::ConsentExpired => "Session was valid but consent invalidated (idle/reboot/etc).",
             DenyCode::ProviderDown => "Swift helper crashed or restarting.",
             DenyCode::TamperDetected => "Audit hash chain verification failed; CU locked.",
+            DenyCode::OsPermissionRevoked => "macOS Accessibility or Screen Recording permission was revoked; Computer Use stopped.",
         };
         Self::new(code.as_str(), msg)
     }

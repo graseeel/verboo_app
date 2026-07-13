@@ -358,6 +358,7 @@ fn grant_computer_use_session(
     // focus is deferred until the first bind_target / bind_app.
     let app = session.target_app.as_deref();
     let sessions = cu.sessions.clone();
+    let app_handle_emergency = app_handle.clone();
     if let Err(error) = crate::services::computer_use_mcp::activate(
         &session.id,
         app,
@@ -367,13 +368,19 @@ fn grant_computer_use_session(
         move || {
             use tauri::Emitter;
             sessions.emergency_stop_all();
-            let _ = app_handle.emit("computer-use:emergency-stop", ());
+            let _ = app_handle_emergency.emit("computer-use:emergency-stop", ());
         },
     ) {
         let _ = cu.sessions.stop(&session.id, crate::models::computer_use::StopReason::Error);
         let _ = crate::services::computer_use_mcp::revoke();
         return Err(error);
     }
+    // P0.2b: poll OS TCC every 5s (first check immediate). On revoke, stop session.
+    let app_handle_poll = app_handle.clone();
+    cu.start_os_permission_poller(move || {
+        use tauri::Emitter;
+        let _ = app_handle_poll.emit("computer-use:os-permission-revoked", ());
+    });
     Ok(session)
 }
 
@@ -413,6 +420,7 @@ fn stop_computer_use_session(
         Some("emergency") => crate::models::computer_use::StopReason::EmergencyStop,
         _ => crate::models::computer_use::StopReason::UserCancelled,
     };
+    cu.stop_os_permission_poller();
     crate::services::computer_use_mcp::revoke_session(&session_id)?;
     cu.stop(&session_id, r)
         .map_err(|e| format!("stop denied: {:?}", e))?;
