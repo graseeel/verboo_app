@@ -1,6 +1,5 @@
 import { FileSearch, PanelLeftOpen, Terminal as TerminalIcon } from 'lucide-react'
 import { SlotText } from 'slot-text/react'
-import mascotUrl from '../../../assets/branding/verboo-mascot.png'
 import { useI18n } from '../i18n'
 
 type TopBarProps = {
@@ -52,12 +51,13 @@ export function TopBar({
           <PanelLeftOpen size={15} />
         </button>
       )}
+      {/* Status text only — the mascot lives in the sidebar footer near the
+          user account, so the topbar stays a quiet drag region. */}
       <div
         className="topbar-brand-status"
         data-tauri-drag-region=""
         aria-label={`Verboo ${statusLabel}`}
       >
-        <img className="topbar-mark" src={mascotUrl} alt="Verboo" />
         <span className="topbar-status-text">
           <SlotText text={statusLabel} options={{ direction: 'up', duration: 180, stagger: 14, bounce: 0.2, interrupt: true }} />
         </span>

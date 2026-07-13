@@ -373,18 +373,18 @@ export function AppSidebar({
           onClick={() => setProfileMenuOpen(open => !open)}
           aria-expanded={profileMenuOpen}
         >
-          <span className="account-brand">
-            <img src={mascotUrl} alt="" />
-            <strong>Verboo<span>:code</span></strong>
-            <small>{`v${packageJson.version}`}</small>
-          </span>
-          <small className="account-disclaimer">{t('sidebar.devBuild')}</small>
           <span className="account-profile">
             <AvatarIcon settings={avatarSettings} name={profileName} className="account-avatar" />
             <span>
               <strong>{profileName}</strong>
               <small>{profile.plan?.name ?? (cliAuth.loggedIn ? t('sidebar.cliConnected') : profile.status === 'unauthenticated' ? t('sidebar.noApiKey') : t('sidebar.planUnavailable'))}</small>
             </span>
+          </span>
+          <span className="account-brand">
+            <img src={mascotUrl} alt="" />
+            <strong>Verboo<span>:code</span></strong>
+            <small>{`v${packageJson.version}`}</small>
+            <small className="account-disclaimer">{t('sidebar.devBuild')}</small>
           </span>
         </button>
       </footer>
