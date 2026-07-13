@@ -295,6 +295,10 @@ const enUS: Record<string, string> = {
   'model.group.available': 'Available',
   'model.group.longContext': 'Long context',
   'model.contextSuffix': 'ctx',
+  'model.row.model': 'Model',
+  'model.row.effort': 'Effort',
+  'model.row.advanced': 'Advanced',
+  'model.row.effortDefault': 'Default',
 
   'context.label': 'Context',
   'context.window': 'window {value}',
@@ -1146,6 +1150,10 @@ const ptBR: Record<string, string> = {
   'model.group.available': 'Disponíveis',
   'model.group.longContext': 'Contexto longo',
   'model.contextSuffix': 'ctx',
+  'model.row.model': 'Modelo',
+  'model.row.effort': 'Esforço',
+  'model.row.advanced': 'Avançado',
+  'model.row.effortDefault': 'Padrão',
 
   'context.label': 'Contexto',
   'context.window': 'janela {value}',
