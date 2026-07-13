@@ -286,7 +286,9 @@ impl SessionManager {
             return Err(DenyCode::AppHardBlocked);
         }
 
-        // Verboo self-test gate.
+        // Verboo self-test gate: only allow binding Verboo when the session
+        // explicitly opted into self-test. The allowlist entry is checked later
+        // in check_action; bind_target only validates the session flag.
         if lower == "ai.verboo.code.desktop" && !session.self_test_enabled {
             return Err(DenyCode::SelfTestScopeViolation);
         }
@@ -357,11 +359,6 @@ impl SessionManager {
             return ActionVerdict::Deny(DenyCode::AppHardBlocked);
         }
 
-        // Verboo self-test gate: only allowed when self_test_enabled + is_self_test entry.
-        if lower == "ai.verboo.code.desktop" && !session.self_test_enabled {
-            return ActionVerdict::Deny(DenyCode::SelfTestScopeViolation);
-        }
-
         // Tier 2 denylist (user-configured).
         if settings.denylist.iter().any(|d| d.to_lowercase() == lower) {
             return ActionVerdict::Deny(DenyCode::AppHardBlocked);
@@ -376,6 +373,10 @@ impl SessionManager {
             }
             if session.scope == ComputerUseScope::Ask && action_kind == ActionKind::Mutate {
                 return ActionVerdict::Deny(DenyCode::ScopeDenied);
+            }
+            // Verboo self-test: ephemeral target on Verboo requires the session flag.
+            if lower == "ai.verboo.code.desktop" && !session.self_test_enabled {
+                return ActionVerdict::Deny(DenyCode::SelfTestScopeViolation);
             }
             let elapsed = now.saturating_sub(g.rate.window_start_mono);
             if elapsed >= 60 {
@@ -404,8 +405,15 @@ impl SessionManager {
         match settings.allowlist.iter_mut().find(|e| e.bundle_id.to_lowercase() == lower) {
             None => return ActionVerdict::Deny(DenyCode::AppNotAllowlisted),
             Some(e) => {
-                // Check self-test entry validity.
-                if e.is_self_test && !matches!(session.self_test_enabled, true) {
+                // Self-test entry validity: both halves of the AND must hold.
+                //   - Verboo bundle requires session.self_test_enabled AND entry.is_self_test.
+                //   - is_self_test entries are only valid on the Verboo bundle.
+                let is_verboo = lower == "ai.verboo.code.desktop";
+                if is_verboo {
+                    if !session.self_test_enabled || !e.is_self_test {
+                        return ActionVerdict::Deny(DenyCode::SelfTestScopeViolation);
+                    }
+                } else if e.is_self_test {
                     return ActionVerdict::Deny(DenyCode::SelfTestScopeViolation);
                 }
                 // Check entry scope permits action scope.
@@ -820,29 +828,12 @@ mod tests {
         assert_eq!(v, ActionVerdict::Allow, "self-test action must allow when flag+entry both true");
     }
 
-    /// If session.self_test_enabled == true but the matching Verboo entry has
-    /// is_self_test == false, the action is currently ALLOWED by
-    /// `check_action`. The SessionManager gate at lines 270-272 only checks
-    /// `session.self_test_enabled`; it does NOT verify `entry.is_self_test`.
-    ///
-    /// In production, `normalize_computer_use` (settings_store.rs:232-235)
-    /// strips such poisoned entries before they reach the SessionManager, so
-    /// the end-to-end behavior is safe. But this is a **defense-in-depth gap**:
-    /// if normalize() is ever bypassed (e.g. a future code path constructs
-    /// ComputerUseSettings without normalizing), the gate alone is insufficient.
-    ///
-    /// **SEV-2 finding (Aloy, 2026-07-12)**: SessionManager should additionally
-    /// check `entry.is_self_test == true` for Verboo bundle hits. Tracked in
-    /// `docs/computer-use-p0-test-plan.md` §K.findings (SEV-2 #1) as an engine tightening task
-    /// for Geralt/Kratos. Not P0-blocking because normalize() holds, but
-    /// must be fixed before stable channel promotion.
-    ///
-    /// This test documents the CURRENT behavior (Allow) so that any future
-    /// change to the gate is detected. If Geralt tightens the gate, this
-    /// test must flip to expect `Deny(SelfTestScopeViolation)` and the
-    /// finding is closed.
+    /// SEV-2 CLOSED: SessionManager now requires BOTH session.self_test_enabled
+    /// AND entry.is_self_test == true for the Verboo bundle. A matching Verboo
+    /// entry with is_self_test == false must be rejected even when the session
+    /// flag is true.
     #[test]
-    fn self_test_gate_currently_only_checks_session_flag_documented_gap() {
+    fn self_test_gate_rejects_verboo_entry_without_self_test_flag() {
         let m = SessionManager::new();
         let settings = test_settings();
         let req = m.request_session(&settings, "self-test", None, ComputerUseScope::Input).expect("request");
@@ -870,30 +861,18 @@ mod tests {
             ActionKind::Read,
             ComputerUseScope::View,
         );
-        // CURRENT behavior: Allow (gap). See SEV-2 note above.
         assert_eq!(
             v,
-            ActionVerdict::Allow,
-            "documents current gate behavior; flip to Deny(SelfTestScopeViolation) when gate is tightened"
+            ActionVerdict::Deny(DenyCode::SelfTestScopeViolation),
+            "Verboo allowlist entry must have is_self_test=true when session flag is true"
         );
     }
 
-    /// Sibling of the SEV-2 finding above: a NON-Verboo bundle with
-    /// `is_self_test=true` + session.self_test_enabled=true also flows to
-    /// Allow at the SessionManager gate. Line 270 only triggers on the
-    /// Verboo bundle; line 284 only denies when the session flag is FALSE.
-    ///
-    /// In production, `normalize_computer_use` (settings_store.rs:237-239)
-    /// strips any `is_self_test=true` entry whose bundle is NOT Verboo
-    /// ("Self-test entries must be on the Verboo bundle"), so end-to-end
-    /// behavior is safe. Same SEV-2 class as the documented Verboo variant.
-    ///
-    /// This test documents CURRENT behavior. When Geralt tightens the gate
-    /// to reject is_self_test entries outside the Verboo bundle (recommended
-    /// alongside the Verboo variant fix), flip this assertion to
-    /// `Deny(SelfTestScopeViolation)`.
+    /// SEV-2 CLOSED: is_self_test entries are only valid on the Verboo bundle.
+    /// A non-Verboo bundle marked is_self_test=true must be rejected regardless
+    /// of the session self_test flag.
     #[test]
-    fn self_test_gate_currently_allows_non_verboo_self_test_entry_documented_gap() {
+    fn self_test_gate_rejects_non_verboo_self_test_entry() {
         let m = SessionManager::new();
         let settings = test_settings();
         let req = m.request_session(&settings, "self-test", None, ComputerUseScope::Input).expect("request");
@@ -907,8 +886,8 @@ mod tests {
         m.grant_session(grant).expect("grant");
 
         let mut s = test_settings();
-        // Poisoned: Notes bundle but marked is_self_test=true.
-        // (normalize() would strip this in production — settings_store.rs:237-239.)
+        // Replace the default Notes entry with a poisoned self-test marker.
+        s.allowlist.retain(|e| e.bundle_id.to_lowercase() != "com.apple.notes");
         s.allowlist.push(ComputerUseAllowlistEntry {
             bundle_id: "com.apple.Notes".into(),
             display_name: "Notes (fraud marker)".into(),
@@ -923,11 +902,10 @@ mod tests {
             ActionKind::Read,
             ComputerUseScope::View,
         );
-        // CURRENT behavior: Allow (gap). See SEV-2 sibling note above.
         assert_eq!(
             v,
-            ActionVerdict::Allow,
-            "documents current gate behavior; flip to Deny(SelfTestScopeViolation) when gate is tightened"
+            ActionVerdict::Deny(DenyCode::SelfTestScopeViolation),
+            "is_self_test entries outside the Verboo bundle are invalid"
         );
     }
 
