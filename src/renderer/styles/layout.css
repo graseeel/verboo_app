@@ -137,20 +137,46 @@
   box-shadow: 4px 0 16px color-mix(in srgb, black 18%, transparent);
 }
 
-.sidebar-shell.is-peek .app-sidebar {
+/* During the leave fade, the shell detaches from the grid (position:absolute)
+   so the workspace can collapse underneath while the sidebar fades out on top.
+   Without this, the grid column stays expanded for the whole fade duration
+   and the workspace expansion feels delayed. */
+.sidebar-shell.is-peek-leaving {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  z-index: 90;
+}
+
+.sidebar-shell.is-peek .app-sidebar,
+.sidebar-shell.is-peek-leaving .app-sidebar {
   /* Slight transparency so the workspace peeking behind is hinted. */
   background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
-  /* Peek enter: opacity 0→1 + translateX(-8px)→0, 160ms ease-out. GPU-only
+}
+
+.sidebar-shell.is-peek .app-sidebar {
+  /* Peek enter: opacity 0→1 + translateX(-12px)→0, 260ms ease-out. GPU-only
      (transform + opacity) so the sidebar slides in without layout thrash.
-     Leave relies on the 180ms grid transition + 80ms leave delay — the shell
-     unmounts when sidebarPeek flips false, so a leave animation would need
-     deferred unmount (architecture change out of scope here). */
-  animation: sidebar-peek-enter 160ms cubic-bezier(0.23, 1, 0.32, 1);
+     260ms is perceptible but not sluggish — the sidebar reads as "arriving". */
+  animation: sidebar-peek-enter 260ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.sidebar-shell.is-peek-leaving .app-sidebar {
+  /* Leave fade: opacity 1→0 + translateX(-10px), 220ms. Faster than enter
+     (exit < entrance) so the sidebar retreats snappily. The shell is
+     position:absolute now, so the grid collapses underneath simultaneously. */
+  animation: sidebar-peek-leave 220ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
 }
 
 @keyframes sidebar-peek-enter {
-  from { opacity: 0; transform: translateX(-8px); }
+  from { opacity: 0; transform: translateX(-12px); }
   to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes sidebar-peek-leave {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(-10px); }
 }
 
 /* Collapse button that lives next to "New chat" inside the sidebar. */
@@ -372,10 +398,10 @@
   overflow: hidden;
   /* Same ease-out-strong as dropdowns/modals. The sidebar column animates by
      its --sidebar-width value only (like the terminal/review panels) — the
-     column list itself never changes, so the whole layout glides. 180ms keeps
-     it snappy enough that peek leave (80ms delay + 120ms shell fade) doesn't
-     feel like it lags behind the grid. */
-  transition: grid-template-columns 180ms cubic-bezier(0.23, 1, 0.32, 1);
+     column list itself never changes, so the whole layout glides. 220ms
+     matches the peek leave fade so the grid collapse and sidebar fade finish
+     together. */
+  transition: grid-template-columns 220ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 /* During a manual resize drag the panel must follow the pointer 1:1 —
@@ -1224,9 +1250,11 @@
   .sidebar-shell.is-peek .app-sidebar {
     transition: none !important;
   }
-  /* Peek animations become opacity-only 80ms, no translate. */
-  .sidebar-shell.is-peek .app-sidebar {
-    animation: sidebar-peek-fade 80ms ease-out forwards !important;
+  /* Peek animations become opacity-only 120ms, no translate. Leave delay is
+     capped at 100ms via SIDEBAR_PEEK_LEAVE_DELAY_MS (JS-side). */
+  .sidebar-shell.is-peek .app-sidebar,
+  .sidebar-shell.is-peek-leaving .app-sidebar {
+    animation: sidebar-peek-fade 120ms ease-out forwards !important;
   }
 }
 

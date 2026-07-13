@@ -251,7 +251,12 @@ type SidebarMode = 'expanded' | 'compact' | 'hidden'
 // (with a small delay to avoid flicker) returns to 'hidden'. Pin button or any
 // persistent toggle sets sidebarMode='expanded' and clears peek.
 // Touch devices keep the explicit topbar button (hover is unreliable).
-const SIDEBAR_PEEK_LEAVE_DELAY_MS = 80
+const SIDEBAR_PEEK_LEAVE_DELAY_MS = 100
+// Duration of the CSS leave animation (sidebar-peek-leave). The shell stays
+// mounted with .is-peek-leaving for this long before final unmount, so the
+// fade-out is actually visible. Must match the leave keyframe duration in
+// layout.css.
+const SIDEBAR_PEEK_LEAVE_ANIM_MS = 220
 
 function isUsableWorkspaceDirectory(path?: string): path is string {
   const trimmed = path?.trim()
@@ -366,7 +371,13 @@ export function App() {
   // hit-area (rendered in App) calls setSidebarPeek(true) on hover/focus;
   // a leave timer clears it. Pin button persists expanded and clears peek.
   const [sidebarPeek, setSidebarPeek] = useState(false)
+  // Leaving state: when true, the shell stays mounted with .is-peek-leaving so
+  // the CSS fade-out (opacity 1→0 + translateX) is visible before unmount.
+  // Without this, sidebarPeek=false unmounts the shell in the same frame and
+  // the leave animation never plays.
+  const [sidebarPeekLeaving, setSidebarPeekLeaving] = useState(false)
   const peekLeaveTimer = useRef<number | undefined>(undefined)
+  const peekUnmountTimer = useRef<number | undefined>(undefined)
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarPreference.current.width)
   const [reviewMetadata, setReviewMetadata] = useState<WorkspaceReviewMetadata | undefined>()
   const [branchInfo, setBranchInfo] = useState<WorkspaceBranchInfo | undefined>()
@@ -478,6 +489,10 @@ export function App() {
   const shouldShowLogin = !noticeAccepted || !entryUnlocked
   // When peeking (hidden + hover), the sidebar column expands visually to
   // the user's last expanded width — but the persisted mode stays 'hidden'.
+  // During the leave fade (sidebarPeekLeaving), the column collapses back to
+  // 0 (grid transition) while the sidebar shell floats (position:absolute) so
+  // the fade-out isn't clipped — the workspace expands and the sidebar fades
+  // simultaneously rather than sequentially.
   const sidebarVisualMode = sidebarMode === 'hidden' && sidebarPeek ? 'expanded' : sidebarMode
   // Fullscreen views (Profile / Settings) don't render the sidebar at all —
   // collapse the column to 0 so the workspace takes the full grid width.
@@ -902,40 +917,83 @@ export function App() {
   }
 
   function toggleSidebarVisibility() {
+    if (peekLeaveTimer.current !== undefined) {
+      window.clearTimeout(peekLeaveTimer.current)
+      peekLeaveTimer.current = undefined
+    }
+    if (peekUnmountTimer.current !== undefined) {
+      window.clearTimeout(peekUnmountTimer.current)
+      peekUnmountTimer.current = undefined
+    }
+    setSidebarPeekLeaving(false)
     setSidebarMode(current => current === 'hidden' ? 'expanded' : 'hidden')
     setSidebarPeek(false)
   }
 
   function toggleSidebarCompact() {
+    if (peekLeaveTimer.current !== undefined) {
+      window.clearTimeout(peekLeaveTimer.current)
+      peekLeaveTimer.current = undefined
+    }
+    if (peekUnmountTimer.current !== undefined) {
+      window.clearTimeout(peekUnmountTimer.current)
+      peekUnmountTimer.current = undefined
+    }
+    setSidebarPeekLeaving(false)
     setSidebarMode(current => current === 'compact' ? 'expanded' : 'compact')
     setSidebarPeek(false)
   }
 
-  // Rail hover/focus → peek open. Clears any pending leave timer so the
-  // sidebar doesn't flicker closed while the pointer re-enters.
+  // Rail hover/focus → peek open. Clears any pending leave timer AND any
+  // pending unmount so a re-enter during the leave fade cancels the close
+  // (the sidebar slides back in instead of vanishing mid-fade).
   function showSidebarPeek() {
     if (sidebarMode !== 'hidden') return
     if (peekLeaveTimer.current !== undefined) {
       window.clearTimeout(peekLeaveTimer.current)
       peekLeaveTimer.current = undefined
     }
+    if (peekUnmountTimer.current !== undefined) {
+      window.clearTimeout(peekUnmountTimer.current)
+      peekUnmountTimer.current = undefined
+    }
+    if (sidebarPeekLeaving) setSidebarPeekLeaving(false)
     setSidebarPeek(true)
   }
 
   // Rail/sidebar leave → schedule peek close after a short delay. The delay
-  // tolerates the pointer crossing the gap between rail and sidebar.
+  // tolerates the pointer crossing the gap between rail and sidebar. When the
+  // delay fires, we enter the leaving phase (CSS fade-out) rather than
+  // unmounting immediately — the final unmount happens after the leave
+  // animation duration.
   function scheduleHideSidebarPeek() {
     if (sidebarMode !== 'hidden') return
     if (peekLeaveTimer.current !== undefined) window.clearTimeout(peekLeaveTimer.current)
     peekLeaveTimer.current = window.setTimeout(() => {
-      setSidebarPeek(false)
       peekLeaveTimer.current = undefined
+      // Start the leave fade. Shell stays mounted with .is-peek-leaving so the
+      // CSS animation plays. Final unmount is scheduled below.
+      setSidebarPeekLeaving(true)
+      peekUnmountTimer.current = window.setTimeout(() => {
+        peekUnmountTimer.current = undefined
+        setSidebarPeek(false)
+        setSidebarPeekLeaving(false)
+      }, SIDEBAR_PEEK_LEAVE_ANIM_MS)
     }, SIDEBAR_PEEK_LEAVE_DELAY_MS)
   }
 
   // Pin = persist expanded. Clears peek so the visual state transitions
   // cleanly to the persisted expanded mode.
   function pinSidebar() {
+    if (peekLeaveTimer.current !== undefined) {
+      window.clearTimeout(peekLeaveTimer.current)
+      peekLeaveTimer.current = undefined
+    }
+    if (peekUnmountTimer.current !== undefined) {
+      window.clearTimeout(peekUnmountTimer.current)
+      peekUnmountTimer.current = undefined
+    }
+    setSidebarPeekLeaving(false)
     setSidebarMode('expanded')
     setSidebarPeek(false)
   }
@@ -4105,10 +4163,11 @@ export function App() {
       <div
         className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' || activeView === 'profile' ? 'view-fullscreen' : ''} ${terminal.terminalOpen ? 'terminal-open' : ''} ${review.reviewOpen ? 'review-open' : ''}`}
       >
-        {activeView !== 'settings' && activeView !== 'profile' && sidebarMode === 'hidden' && !sidebarPeek && (
+        {activeView !== 'settings' && activeView !== 'profile' && sidebarMode === 'hidden' && !sidebarPeek && !sidebarPeekLeaving && (
           // Rail: thin hit-area on the left edge. Hover/focus expands the
           // sidebar transiently (peek) without persisting. Tab-focusable so
-          // keyboard users can open it without a pointer.
+          // keyboard users can open it without a pointer. Hidden while the
+          // peek leave fade plays so the rail doesn't pop in mid-animation.
           <button
             type="button"
             className="sidebar-rail"
@@ -4121,11 +4180,11 @@ export function App() {
           />
         )}
 
-        {activeView !== 'settings' && activeView !== 'profile' && (sidebarMode !== 'hidden' || sidebarPeek) && (
+        {activeView !== 'settings' && activeView !== 'profile' && (sidebarMode !== 'hidden' || sidebarPeek || sidebarPeekLeaving) && (
           <div
-            className={`sidebar-shell ${sidebarPeek ? 'is-peek' : ''}`}
-            onMouseEnter={sidebarPeek ? showSidebarPeek : undefined}
-            onMouseLeave={sidebarPeek ? scheduleHideSidebarPeek : undefined}
+            className={`sidebar-shell ${sidebarPeek ? 'is-peek' : ''} ${sidebarPeekLeaving ? 'is-peek-leaving' : ''}`}
+            onMouseEnter={sidebarPeek || sidebarPeekLeaving ? showSidebarPeek : undefined}
+            onMouseLeave={sidebarPeek || sidebarPeekLeaving ? scheduleHideSidebarPeek : undefined}
           >
             <AppSidebar
               activeView={activeView}
