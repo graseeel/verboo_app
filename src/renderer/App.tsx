@@ -489,11 +489,12 @@ export function App() {
   const shouldShowLogin = !noticeAccepted || !entryUnlocked
   // When peeking (hidden + hover), the sidebar column expands visually to
   // the user's last expanded width — but the persisted mode stays 'hidden'.
-  // During the leave fade (sidebarPeekLeaving), the column collapses back to
-  // 0 (grid transition) while the sidebar shell floats (position:absolute) so
-  // the fade-out isn't clipped — the workspace expands and the sidebar fades
-  // simultaneously rather than sequentially.
-  const sidebarVisualMode = sidebarMode === 'hidden' && sidebarPeek ? 'expanded' : sidebarMode
+  // During the leave fade (sidebarPeekLeaving), the column collapses to 0
+  // immediately (grid transition) while the shell floats (position:absolute)
+  // to fade out on top. Expanding the grid ONLY when peek && !leaving avoids
+  // the "ghost column" — an empty full-width column that appeared because the
+  // grid stayed expanded while the shell had already faded.
+  const sidebarVisualMode = sidebarMode === 'hidden' && sidebarPeek && !sidebarPeekLeaving ? 'expanded' : sidebarMode
   // Fullscreen views (Profile / Settings) don't render the sidebar at all —
   // collapse the column to 0 so the workspace takes the full grid width.
   const isFullscreenView = activeView === 'settings' || activeView === 'profile'
@@ -963,20 +964,27 @@ export function App() {
 
   // Rail/sidebar leave → schedule peek close after a short delay. The delay
   // tolerates the pointer crossing the gap between rail and sidebar. When the
-  // delay fires, we enter the leaving phase (CSS fade-out) rather than
-  // unmounting immediately — the final unmount happens after the leave
-  // animation duration.
+  // delay fires, we flip to the leaving phase in a SINGLE tick:
+  //   setSidebarPeek(false) + setSidebarPeekLeaving(true)
+  // This is critical — if peek stays true while leaving is true, the shell
+  // gets BOTH .is-peek and .is-peek-leaving classes and the enter+leave
+  // animations play simultaneously → flicker. Mutually exclusive state means
+  // the shell gets exactly one class: is-peek (enter) OR is-peek-leaving (leave).
+  // The grid column collapses immediately (sidebarVisualMode sees peek=false)
+  // while the shell floats (position:absolute) to fade out on top.
   function scheduleHideSidebarPeek() {
     if (sidebarMode !== 'hidden') return
     if (peekLeaveTimer.current !== undefined) window.clearTimeout(peekLeaveTimer.current)
     peekLeaveTimer.current = window.setTimeout(() => {
       peekLeaveTimer.current = undefined
-      // Start the leave fade. Shell stays mounted with .is-peek-leaving so the
-      // CSS animation plays. Final unmount is scheduled below.
+      // Single-tick transition to leave phase. peek=false → grid collapses
+      // (220ms transition) + shell gets .is-peek-leaving only (fade 220ms).
+      setSidebarPeek(false)
       setSidebarPeekLeaving(true)
+      // After the leave animation, unmount the shell. peek is already false;
+      // we only clear leaving here.
       peekUnmountTimer.current = window.setTimeout(() => {
         peekUnmountTimer.current = undefined
-        setSidebarPeek(false)
         setSidebarPeekLeaving(false)
       }, SIDEBAR_PEEK_LEAVE_ANIM_MS)
     }, SIDEBAR_PEEK_LEAVE_DELAY_MS)
@@ -4182,7 +4190,7 @@ export function App() {
 
         {activeView !== 'settings' && activeView !== 'profile' && (sidebarMode !== 'hidden' || sidebarPeek || sidebarPeekLeaving) && (
           <div
-            className={`sidebar-shell ${sidebarPeek ? 'is-peek' : ''} ${sidebarPeekLeaving ? 'is-peek-leaving' : ''}`}
+            className={`sidebar-shell ${sidebarPeek && !sidebarPeekLeaving ? 'is-peek' : ''} ${sidebarPeekLeaving && !sidebarPeek ? 'is-peek-leaving' : ''}`}
             onMouseEnter={sidebarPeek || sidebarPeekLeaving ? showSidebarPeek : undefined}
             onMouseLeave={sidebarPeek || sidebarPeekLeaving ? scheduleHideSidebarPeek : undefined}
           >
