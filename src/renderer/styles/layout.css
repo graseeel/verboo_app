@@ -135,17 +135,23 @@
   /* Peek sidebar floats above the workspace so it doesn't push content. */
   z-index: 90;
   box-shadow: 4px 0 16px color-mix(in srgb, black 18%, transparent);
+  /* Explicit width so the shell never depends on --sidebar-width (which is 0
+     when peek is active, since sidebarVisualMode only expands the grid for
+     !leaving). Without this, .app-sidebar would grow to content width and
+     project names would lose truncation → ghost expand. */
+  width: var(--sidebar-peek-width, 292px);
 }
 
 /* During the leave fade, the shell detaches from the grid (position:absolute)
    so the workspace can collapse underneath while the sidebar fades out on top.
-   Without this, the grid column stays expanded for the whole fade duration
-   and the workspace expansion feels delayed. */
+   Width is frozen at --sidebar-peek-width (set in JS to sidebarWidth) so the
+   shell doesn't collapse to content-width mid-fade. */
 .sidebar-shell.is-peek-leaving {
   position: absolute;
   top: 0;
   left: 0;
   height: 100%;
+  width: var(--sidebar-peek-width, 292px);
   z-index: 90;
 }
 
@@ -153,6 +159,11 @@
 .sidebar-shell.is-peek-leaving .app-sidebar {
   /* Slight transparency so the workspace peeking behind is hinted. */
   background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+  /* Disable the base .app-sidebar transition (which includes opacity 240ms)
+     so it doesn't fight the enter/leave keyframe animations. Keyframes own
+     opacity + transform during peek; the base transition would interpolate
+     opacity in parallel → visible flicker/stutter when classes swap. */
+  transition: none;
 }
 
 .sidebar-shell.is-peek .app-sidebar {

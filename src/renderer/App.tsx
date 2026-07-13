@@ -378,6 +378,13 @@ export function App() {
   const [sidebarPeekLeaving, setSidebarPeekLeaving] = useState(false)
   const peekLeaveTimer = useRef<number | undefined>(undefined)
   const peekUnmountTimer = useRef<number | undefined>(undefined)
+  // Suppress re-open: after the leave fade finishes and the shell unmounts,
+  // the rail (8px hit-area on the left edge) mounts under the cursor. The
+  // browser fires mouseenter on the rail → showSidebarPeek() → sidebar pops
+  // back open. This ref blocks that re-open until the pointer actually leaves
+  // the rail area (rail onMouseLeave clears it). Mid-leave re-enter via the
+  // shell itself is NOT suppressed — only the post-unmount rail mouseenter.
+  const peekSuppressUntilPointerLeft = useRef(false)
   const [sidebarWidth, setSidebarWidth] = useState(initialSidebarPreference.current.width)
   const [reviewMetadata, setReviewMetadata] = useState<WorkspaceReviewMetadata | undefined>()
   const [branchInfo, setBranchInfo] = useState<WorkspaceBranchInfo | undefined>()
@@ -513,6 +520,12 @@ export function App() {
   const showSubagentSummary = activeView === 'chat' && workingSubagents.length > 0 && !terminal.terminalOpen && !review.reviewOpen
   const appLayoutStyle = {
     '--sidebar-width': `${effectiveSidebarWidth}px`,
+    // Peek width is frozen at the user's sidebarWidth and used by the shell
+    // during both enter and leave. This is critical for leave: when peek
+    // flips false, --sidebar-width goes to 0 (grid collapses), but the shell
+    // (position:absolute) must keep its own width or .app-sidebar grows to
+    // content width → ghost expand with untruncated project names.
+    '--sidebar-peek-width': `${sidebarMode === 'hidden' && (sidebarPeek || sidebarPeekLeaving) ? sidebarWidth : 0}px`,
     '--subagents-panel-width': showSubagentThreadPanel ? '320px' : '0px',
     '--terminal-width': terminal.terminalOpen ? `${terminal.terminalWidth}px` : '0px',
     '--review-width': review.reviewOpen ? `${review.reviewWidth}px` : '0px',
@@ -926,6 +939,7 @@ export function App() {
       window.clearTimeout(peekUnmountTimer.current)
       peekUnmountTimer.current = undefined
     }
+    peekSuppressUntilPointerLeft.current = false
     setSidebarPeekLeaving(false)
     setSidebarMode(current => current === 'hidden' ? 'expanded' : 'hidden')
     setSidebarPeek(false)
@@ -940,6 +954,7 @@ export function App() {
       window.clearTimeout(peekUnmountTimer.current)
       peekUnmountTimer.current = undefined
     }
+    peekSuppressUntilPointerLeft.current = false
     setSidebarPeekLeaving(false)
     setSidebarMode(current => current === 'compact' ? 'expanded' : 'compact')
     setSidebarPeek(false)
@@ -950,6 +965,10 @@ export function App() {
   // (the sidebar slides back in instead of vanishing mid-fade).
   function showSidebarPeek() {
     if (sidebarMode !== 'hidden') return
+    // Suppress: if the cursor never left the rail area after the last leave
+    // finished, don't re-open. This blocks the rail mouseenter that fires
+    // when the shell unmounts under the cursor. Cleared by rail onMouseLeave.
+    if (peekSuppressUntilPointerLeft.current) return
     if (peekLeaveTimer.current !== undefined) {
       window.clearTimeout(peekLeaveTimer.current)
       peekLeaveTimer.current = undefined
@@ -982,10 +1001,15 @@ export function App() {
       setSidebarPeek(false)
       setSidebarPeekLeaving(true)
       // After the leave animation, unmount the shell. peek is already false;
-      // we only clear leaving here.
+      // we only clear leaving here. We also arm the suppress flag: the shell
+      // unmounting means the rail (8px left edge) now sits under the cursor,
+      // and the browser will fire mouseenter on it → showSidebarPeek would
+      // re-open. Suppress blocks that until the pointer actually leaves the
+      // rail (rail onMouseLeave clears it).
       peekUnmountTimer.current = window.setTimeout(() => {
         peekUnmountTimer.current = undefined
         setSidebarPeekLeaving(false)
+        peekSuppressUntilPointerLeft.current = true
       }, SIDEBAR_PEEK_LEAVE_ANIM_MS)
     }, SIDEBAR_PEEK_LEAVE_DELAY_MS)
   }
@@ -1001,6 +1025,7 @@ export function App() {
       window.clearTimeout(peekUnmountTimer.current)
       peekUnmountTimer.current = undefined
     }
+    peekSuppressUntilPointerLeft.current = false
     setSidebarPeekLeaving(false)
     setSidebarMode('expanded')
     setSidebarPeek(false)
@@ -4183,7 +4208,15 @@ export function App() {
             aria-expanded={false}
             onMouseEnter={showSidebarPeek}
             onFocus={showSidebarPeek}
-            onMouseLeave={scheduleHideSidebarPeek}
+            onMouseLeave={() => {
+              // Clear suppress only after the pointer actually leaves the rail
+              // area. This is the gate that re-enables peek: the suppress flag
+              // was armed when the leave fade finished (shell unmounted under
+              // cursor). Without this, the sidebar would never re-open on a
+              // subsequent hover because suppress would stay true forever.
+              peekSuppressUntilPointerLeft.current = false
+              scheduleHideSidebarPeek()
+            }}
             onClick={pinSidebar}
           />
         )}
@@ -4205,7 +4238,7 @@ export function App() {
               cliAuth={cliAuth}
               avatarSettings={userSettings.avatar}
               compact={sidebarMode === 'compact'}
-              peek={sidebarPeek}
+              peek={sidebarPeek || sidebarPeekLeaving}
               onSelectView={setActiveView}
               onOpenSettings={() => {
                 setSettingsTab('permissions')
