@@ -46,10 +46,10 @@ impl ComputerUseService {
             Ok(w) => {
                 if let Err(e) = w.verify_chain() {
                     eprintln!("[computer-use] audit chain verify failed: {e}");
-                    // CU is now locked until manual review. We still expose
-                    // the service so the renderer can show a message.
+                    None
+                } else {
+                    Some(Arc::new(w))
                 }
-                Some(Arc::new(w))
             }
             Err(e) => {
                 eprintln!("[computer-use] audit open failed: {e}");
@@ -74,6 +74,17 @@ impl ComputerUseService {
         self.sessions.request_session(settings, goal, app, scope)
     }
 
+    pub(crate) fn request_session_with_id(
+        &self,
+        settings: &ComputerUseSettings,
+        id: String,
+        goal: impl Into<String>,
+        app: Option<String>,
+        scope: ActionScope,
+    ) -> Result<ConsentRequest, DenyCode> {
+        self.sessions.request_session_with_id(settings, id, goal, app, scope)
+    }
+
     /// Step 2: user grants. Returns active session or deny code.
     pub fn grant_session(&self, grant: ConsentGrant) -> Result<Session, DenyCode> {
         self.sessions.grant_session(grant)
@@ -96,16 +107,15 @@ impl ComputerUseService {
 
     /// Stop with reason (logged by caller).
     pub fn stop(&self, id: &str, reason: StopReason) -> Result<Session, DenyCode> {
-        let s = self.sessions.stop(id, reason)?;
-        let _ = self.append_audit(
-            &s.id,
+        self.append_audit(
+            id,
             None,
             "session_stop",
             AuditOutcome::Success,
             Some(format!("reason={:?})", reason as u8)),
             false,
-        );
-        Ok(s)
+        ).map_err(|_| DenyCode::AuditWriteFailed)?;
+        self.sessions.stop(id, reason)
     }
 
     /// Emergency stop (helper hotkey P0.8 or renderer Esc pill).
@@ -124,6 +134,14 @@ impl ComputerUseService {
 
     pub fn list_apps(&self, settings: &mut ComputerUseSettings) -> ComputerUseResult {
         self.invoke_helper_safe(settings, None, ActionKind::Read, "list-apps", ActionScope::View, json!({}))
+    }
+
+    pub fn resolve_app(&self, selector: &str) -> Result<Value, ComputerUseError> {
+        invoke_helper_once("resolve-app", &json!({ "app": selector }))
+    }
+
+    pub fn launch_app(&self, settings: &mut ComputerUseSettings, app: &str) -> ComputerUseResult {
+        self.invoke_helper_safe(settings, Some(app), ActionKind::Mutate, "launch-app", ActionScope::Input, json!({ "app": app }))
     }
 
     pub fn list_windows(&self, settings: &mut ComputerUseSettings, app: Option<&str>) -> ComputerUseResult {
@@ -205,40 +223,46 @@ impl ComputerUseService {
         }
 
         // Audit pending.
-        let _ = self.append_audit(
+        if self.append_audit(
             &session.id,
             bundle_id,
             method,
             AuditOutcome::Pending,
             None,
             false,
-        );
+        ).is_err() {
+            return ComputerUseResult { result: None, error: Some(ComputerUseError::from(DenyCode::AuditWriteFailed)) };
+        }
 
         // Invoke helper.
         match invoke_helper_once(method, &params) {
             Ok(result) => {
-                let _ = self.append_audit(
+                if self.append_audit(
                     &session.id,
                     bundle_id,
                     method,
                     AuditOutcome::Success,
                     None,
                     false,
-                );
+                ).is_err() {
+                    return ComputerUseResult { result: None, error: Some(ComputerUseError::from(DenyCode::AuditWriteFailed)) };
+                }
                 ComputerUseResult {
                     result: Some(result),
                     error: None,
                 }
             }
             Err(err) => {
-                let _ = self.append_audit(
+                if self.append_audit(
                     &session.id,
                     bundle_id,
                     method,
                     AuditOutcome::Error,
                     Some(format!("error_code={} message={}", err.code, err.message)),
                     false,
-                );
+                ).is_err() {
+                    return ComputerUseResult { result: None, error: Some(ComputerUseError::from(DenyCode::AuditWriteFailed)) };
+                }
                 ComputerUseResult {
                     result: None,
                     error: Some(err),
@@ -286,11 +310,7 @@ impl ComputerUseService {
             prev_hash: String::new(),
             row_hash: String::new(),
         };
-        if let Some(a) = &self.audit {
-            a.append(row)
-        } else {
-            Ok(())
-        }
+        self.audit.as_ref().ok_or_else(|| crate::services::audit_writer::AuditError::Db("audit unavailable".into()))?.append(row)
     }
 }
 
@@ -303,7 +323,7 @@ impl Default for ComputerUseService {
 /// Spawn helper, write one request, read one response, kill. Id-correlated
 /// so multi-line responses can be matched. P0.1b will reuse a long-lived
 /// process; this is the simple synchronous path.
-fn invoke_helper_once(method: &str, params: &Value) -> Result<Value, ComputerUseError> {
+pub(crate) fn invoke_helper_once(method: &str, params: &Value) -> Result<Value, ComputerUseError> {
     let spawn = ComputerUseSpawn::new();
     let mut cmd = spawn.command;
     cmd.stdin(Stdio::piped())

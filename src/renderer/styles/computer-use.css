@@ -1,0 +1,232 @@
+.computer-use-permissions-panel {
+  gap: 16px;
+}
+
+.computer-use-permission-status {
+  min-width: 92px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-soft));
+  color: var(--danger);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 24%, transparent);
+  cursor: pointer;
+}
+
+.computer-use-permission-status.is-granted {
+  background: color-mix(in srgb, var(--green) 10%, var(--bg-soft));
+  color: var(--green);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 24%, transparent);
+}
+
+.control-banner-actions button {
+  min-width: 40px;
+  min-height: 40px;
+  transition-property: scale, background-color, color, box-shadow;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.control-banner-actions button:active {
+  scale: 0.96;
+}
+
+.control-banner-meta {
+  font-variant-numeric: tabular-nums;
+}
+
+.control-banner {
+  position: fixed;
+  z-index: 850;
+  top: calc(var(--titlebar-height) + 10px);
+  left: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  width: min(720px, calc(100vw - 32px));
+  padding: 12px 12px 12px 16px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--bg-elevated) 94%, var(--accent-soft));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent),
+    0 18px 48px rgba(0, 0, 0, 0.32),
+    0 0 24px color-mix(in srgb, var(--accent) 12%, transparent);
+  transform: translateX(-50%);
+}
+
+.control-banner-main,
+.control-banner-actions {
+  display: flex;
+  align-items: center;
+}
+
+.control-banner-main {
+  min-width: 0;
+  gap: 12px;
+}
+
+.control-banner-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--accent-strong);
+  box-shadow: 0 0 0 4px var(--accent-soft), 0 0 18px var(--accent);
+  animation: verboo-computer-use-pulse 1.8s ease-in-out infinite;
+}
+
+.control-banner.is-paused .control-banner-dot {
+  opacity: 0.55;
+  animation: none;
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.control-banner-text {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.control-banner-title,
+.control-banner-body,
+.control-banner-action,
+.control-banner-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.control-banner-title {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.control-banner-body,
+.control-banner-meta {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.control-banner-action {
+  color: color-mix(in srgb, var(--accent-strong) 76%, var(--text));
+  font-size: 12px;
+}
+
+.control-banner-actions {
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.control-banner-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-soft) 88%, var(--accent-soft));
+  color: var(--text-muted);
+  box-shadow: inset 0 0 0 1px var(--border);
+  cursor: pointer;
+}
+
+.control-banner-actions button:hover {
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 32%, var(--border));
+}
+
+.control-banner-cancel:hover {
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-soft));
+  color: var(--danger) !important;
+}
+
+.emergency-stop-overlay {
+  position: fixed;
+  z-index: 1100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--bg) 48%, transparent);
+  backdrop-filter: blur(6px);
+}
+
+.emergency-stop-overlay-content,
+.computer-use-toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-radius: 14px;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow), inset 0 0 0 1px var(--border-strong);
+}
+
+.emergency-stop-overlay-content {
+  padding: 18px 22px;
+  color: var(--accent-strong);
+}
+
+.emergency-stop-overlay-content span {
+  color: var(--text-muted);
+}
+
+.computer-use-toast {
+  position: fixed;
+  z-index: 850;
+  top: calc(var(--titlebar-height) + 12px);
+  left: 50%;
+  min-width: 320px;
+  padding: 12px 16px;
+  transform: translateX(-50%);
+}
+
+.computer-use-toast-text {
+  display: grid;
+  gap: 2px;
+}
+
+.computer-use-toast-text span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.computer-use-toast-stopped svg {
+  color: var(--green);
+}
+
+.computer-use-toast-denied svg {
+  color: var(--danger);
+}
+
+@keyframes verboo-computer-use-pulse {
+  0%, 100% { opacity: 0.72; transform: scale(0.88); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .control-banner-dot {
+    animation: none;
+  }
+
+  .control-banner-actions button {
+    transition-duration: 0.01ms;
+  }
+}
+
+@media (max-width: 680px) {
+  .control-banner {
+    align-items: flex-start;
+  }
+
+  .control-banner-body,
+  .control-banner-meta {
+    display: none;
+  }
+
+  .control-banner-actions button span {
+    display: none;
+  }
+}

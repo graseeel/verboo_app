@@ -4,6 +4,9 @@
  * Returns the current state + action callbacks. Also wires:
  *  - Tauri event listeners (onComputerUseStateChange / onComputerUseAction /
  *    onComputerUseEmergencyStop) when the native bridge is present.
+ *    Geralt hasn't added emit() calls yet (P0.6 ships invoke only), so
+ *    these are no-ops until he does. The store drives state via invoke
+ *    responses in the meantime.
  *  - Esc key handler when the Verboo window has focus. Esc only fires
  *    emergency stop if a session is active or paused — otherwise Esc
  *    passes through to whatever element had it (dialog close, etc.).
@@ -18,14 +21,19 @@ import type {
   ComputerUseConsentGrant,
   ComputerUseConsentRequest,
   ComputerUseDenyReason,
+  ComputerUseScope,
   ComputerUseStopReason,
 } from '../../../shared/types'
+import type { RustSession } from '../../verboo-bridge'
 import { computerUseStore } from './computerUseStore'
+import { useToast } from '../../components/Toast'
 
 type Bridge = {
-  onComputerUseStateChange?: (cb: (s: import('../../../shared/types').ComputerUseSession) => void) => () => void
-  onComputerUseAction?: (cb: (a: import('../../../shared/types').ComputerUseActionEvent) => void) => () => void
+  onComputerUseStateChange?: (cb: (s: RustSession) => void) => () => void
+  onComputerUseAction?: (cb: (a: unknown) => void) => () => void
   onComputerUseEmergencyStop?: (cb: () => void) => () => void
+  onComputerUseTurnComplete?: (cb: () => void) => () => void
+  onComputerUseCleanupFailed?: (cb: (message: string) => void) => () => void
 }
 
 function getBridge(): Bridge {
@@ -34,13 +42,14 @@ function getBridge(): Bridge {
 }
 
 export function useComputerUseSession() {
+  const { toast } = useToast()
   const state = useSyncExternalStore(
     computerUseStore.subscribe,
     computerUseStore.getSnapshot,
     computerUseStore.getSnapshot,
   )
 
-  // ── Wire native event listeners (no-op in mock mode) ──────────
+  // ── Wire native event listeners (no-op until Geralt adds emit) ──
   useEffect(() => {
     const b = getBridge()
     const unlisteners: Array<() => void> = []
@@ -49,10 +58,21 @@ export function useComputerUseSession() {
       unlisteners.push(b.onComputerUseStateChange(s => computerUseStore.handleNativeStateChange(s)))
     }
     if (b.onComputerUseAction) {
-      unlisteners.push(b.onComputerUseAction(a => computerUseStore.handleNativeAction(a)))
+      // Action event shape is unknown until Geralt defines it; pass through.
+      unlisteners.push(b.onComputerUseAction(a => {
+        if (a && typeof a === 'object' && 'sessionId' in a) {
+          computerUseStore.handleNativeAction(a as never)
+        }
+      }))
     }
     if (b.onComputerUseEmergencyStop) {
       unlisteners.push(b.onComputerUseEmergencyStop(() => computerUseStore.handleNativeEmergencyStop()))
+    }
+    if (b.onComputerUseTurnComplete) {
+      unlisteners.push(b.onComputerUseTurnComplete(() => void computerUseStore.stop('session_expired')))
+    }
+    if (b.onComputerUseCleanupFailed) {
+      unlisteners.push(b.onComputerUseCleanupFailed(() => toast('Computer Use could not be revoked automatically. Use Stop and keep the app open.', 'error')))
     }
 
     return () => {
@@ -64,7 +84,7 @@ export function useComputerUseSession() {
         }
       }
     }
-  }, [])
+  }, [toast])
 
   // ── Esc when Verboo focused ───────────────────────────────────
   // Only fires emergency stop if a session is active or paused. Otherwise
@@ -106,6 +126,17 @@ export function useComputerUseSession() {
   }, [state.status, state.pendingRequest])
 
   // ── Action callbacks (stable identity) ─────────────────────────
+  const requestConsent = useCallback(
+    (params: {
+      goal: string
+      appName?: string
+      appBundleId?: string
+      scope: ComputerUseScope
+      isSelfTest?: boolean
+      timeoutMs?: number
+    }) => computerUseStore.requestConsent(params),
+    [],
+  )
   const receiveConsentRequest = useCallback(
     (req: ComputerUseConsentRequest) => computerUseStore.receiveConsentRequest(req),
     [],
@@ -120,6 +151,7 @@ export function useComputerUseSession() {
   return {
     state,
     actions: {
+      requestConsent,
       receiveConsentRequest,
       grant,
       deny,

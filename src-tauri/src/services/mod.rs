@@ -6,6 +6,8 @@ pub mod cli_path;
 pub mod cli_service;
 pub mod cli_spawn;
 pub mod computer_use_service;
+pub mod computer_use_focus;
+pub mod computer_use_mcp;
 pub mod computer_use_spawn;
 pub mod credentials_store;
 pub mod feedback_service;

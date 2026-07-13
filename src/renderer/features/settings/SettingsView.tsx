@@ -48,6 +48,7 @@ import { AVATAR_PALETTE, AVATAR_PRESETS, renderPreset } from '../profile/avatarP
 import { AvatarIcon } from '../../components/AvatarIcon'
 import { formatDateTime, useI18n } from '../../i18n'
 import { DEFAULT_CONVERSATION_TITLE } from '../../state/chatStore'
+import type { ComputerUsePermissions } from '../../verboo-bridge'
 
 type SettingsViewProps = {
   credentials: CredentialStatus
@@ -109,6 +110,8 @@ export function SettingsView({
   const [apiKey, setApiKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [customDraft, setCustomDraft] = useState(userSettings.customInstructions)
+  const [computerUsePermissions, setComputerUsePermissions] = useState<ComputerUsePermissions>()
+  const [requestingComputerUsePermissions, setRequestingComputerUsePermissions] = useState(false)
   const [confirmingFullAccess, setConfirmingFullAccess] = useState<'mode-selector' | 'capability' | false>(false)
   const settingsTabs: Array<{ id: SettingsTab; label: string; icon: typeof Shield }> = [
     { id: 'permissions', label: t('settings.permissions'), icon: Shield },
@@ -145,6 +148,34 @@ export function SettingsView({
   useEffect(() => {
     setCustomDraft(userSettings.customInstructions)
   }, [userSettings.customInstructions])
+
+  useEffect(() => {
+    if (activeTab !== 'computerUse') return
+    void refreshComputerUsePermissions()
+  }, [activeTab])
+
+  async function refreshComputerUsePermissions() {
+    try {
+      setComputerUsePermissions(await window.verboo.getComputerUsePermissions())
+    } catch {
+      setComputerUsePermissions(undefined)
+    }
+  }
+
+  async function requestNativeComputerUsePermissions() {
+    setRequestingComputerUsePermissions(true)
+    try {
+      const permissions = await window.verboo.requestComputerUsePermissions()
+      setComputerUsePermissions(permissions)
+      if (permissions.accessibility !== 'granted' || permissions.screenRecording !== 'granted') {
+        toast(t('settings.computerUsePermissionsRestart'), 'info')
+      }
+    } catch (error) {
+      toast(error instanceof Error ? error.message : t('settings.computerUsePermissionsError'), 'error')
+    } finally {
+      setRequestingComputerUsePermissions(false)
+    }
+  }
 
   async function submitApiKey() {
     setSaving(true)
@@ -398,6 +429,57 @@ export function SettingsView({
                 checked={userSettings.includeVerbooCoAuthor}
                 onChange={includeVerbooCoAuthor => onUserSettingsChange({ includeVerbooCoAuthor })}
               />
+            </section>
+
+            <section className="settings-panel computer-use-permissions-panel">
+              <div className="settings-row settings-row--control">
+                <ShieldCheck size={16} />
+                <div>
+                  <strong>{t('settings.computerUseAccessibility')}</strong>
+                  <small>{t('settings.computerUseAccessibilityBody')}</small>
+                </div>
+                <button
+                  type="button"
+                  className={`computer-use-permission-status ${computerUsePermissions?.accessibility === 'granted' ? 'is-granted' : ''}`}
+                  onClick={() => void window.verboo.openComputerUsePermissionSettings('accessibility')}
+                >
+                  {computerUsePermissions?.accessibility === 'granted'
+                    ? t('settings.computerUsePermissionGranted')
+                    : t('settings.computerUsePermissionMissing')}
+                </button>
+              </div>
+              <div className="settings-row settings-row--control">
+                <Camera size={16} />
+                <div>
+                  <strong>{t('settings.computerUseScreenRecording')}</strong>
+                  <small>{t('settings.computerUseScreenRecordingBody')}</small>
+                </div>
+                <button
+                  type="button"
+                  className={`computer-use-permission-status ${computerUsePermissions?.screenRecording === 'granted' ? 'is-granted' : ''}`}
+                  onClick={() => void window.verboo.openComputerUsePermissionSettings('screenRecording')}
+                >
+                  {computerUsePermissions?.screenRecording === 'granted'
+                    ? t('settings.computerUsePermissionGranted')
+                    : t('settings.computerUsePermissionMissing')}
+                </button>
+              </div>
+              <div className="settings-action-row">
+                <button
+                  type="button"
+                  className="choice-chip"
+                  disabled={requestingComputerUsePermissions}
+                  onClick={() => void requestNativeComputerUsePermissions()}
+                >
+                  {requestingComputerUsePermissions
+                    ? t('settings.computerUsePermissionRequesting')
+                    : t('settings.computerUsePermissionRequest')}
+                </button>
+                <button type="button" className="choice-chip" onClick={() => void refreshComputerUsePermissions()}>
+                  <RefreshCcw size={13} />
+                  {t('common.refresh')}
+                </button>
+              </div>
             </section>
 
             <section className="settings-panel">

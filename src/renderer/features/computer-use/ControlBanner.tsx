@@ -33,9 +33,11 @@ export function ControlBanner({ session, onPause, onResume, onCancel }: ControlB
   const isPaused = session.status === 'paused'
   const isSelfTest = session.isSelfTest
 
-  const title = isSelfTest
-    ? t('computerUse.active.selfTestTitle')
-    : t('computerUse.active.title')
+  const title = isPaused
+    ? t('computerUse.paused.title')
+    : isSelfTest
+      ? t('computerUse.active.selfTestTitle')
+      : t('computerUse.active.title')
   const body = isPaused
     ? t('computerUse.paused.body')
     : isSelfTest

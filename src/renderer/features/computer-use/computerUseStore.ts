@@ -1,18 +1,22 @@
 /**
  * computerUseStore.ts — module-level store for Computer Use session state.
  *
- * Pattern mirrors chatStore.ts (no external dep; useSyncExternalStore for
- * React binding). State machine per docs/computer-use-architecture-v1.md §2.1:
- *
+ * State machine per docs/computer-use-architecture-v1.md §2.1:
  *   idle → consent → active ⇄ paused → stopped
  *                  → denied
  *                  → emergency-stopping → stopped
  *
- * Mock fallback: when `window.verboo.requestComputerUseSession` is absent
- * (Geralt's Tauri commands not yet wired), the store simulates the session
- * lifecycle locally so Ciri's UX can ship and be tested in isolation. The
- * instant the real IPC lands, the mock branch is dead code — every public
- * action checks `IS_NATIVE_READY` first.
+ * Two execution paths:
+ *   1. NATIVE (P0.6): when window.verboo.requestComputerUseSession exists,
+ *      all actions call Tauri invoke. State is driven by invoke responses.
+ *      Event listeners (onComputerUseStateChange/Action/EmergencyStop) are
+ *      wired by useComputerUseSession — they fire when Geralt adds emit().
+ *   2. MOCK (fallback): when native bridge absent, store simulates the
+ *      session lifecycle locally so UX is testable in isolation.
+ *
+ * The renderer shape (ComputerUseSession) is richer than the Rust shape
+ * (RustSession) — we add convenience fields like appName, isSelfTest,
+ * lastAction, actionCount that the banner needs. Translation happens here.
  */
 
 import type {
@@ -20,10 +24,62 @@ import type {
   ComputerUseConsentGrant,
   ComputerUseConsentRequest,
   ComputerUseDenyReason,
+  ComputerUseScope,
   ComputerUseSession,
   ComputerUseSettings,
   ComputerUseStopReason,
 } from '../../../shared/types'
+
+// ── Native bridge detection ─────────────────────────────────────
+type NativeBridge = {
+  requestComputerUseSession?: (goal: string, app: string | null, scope: ComputerUseScope) => Promise<import('../../../renderer/verboo-bridge').RustConsentRequest>
+  grantComputerUseSession?: (requestId: string, screenshotAttachToLlm: boolean) => Promise<import('../../../renderer/verboo-bridge').RustSession>
+  denyComputerUseSession?: (requestId: string) => Promise<void>
+  stopComputerUseSession?: (sessionId: string, reason: 'user_cancelled' | 'emergency') => Promise<void>
+  pauseComputerUseSession?: (sessionId: string) => Promise<import('../../../renderer/verboo-bridge').RustSession>
+  resumeComputerUseSession?: (sessionId: string) => Promise<import('../../../renderer/verboo-bridge').RustSession>
+}
+
+function getNativeBridge(): NativeBridge {
+  if (typeof window === 'undefined') return {}
+  return (window as unknown as { verboo?: NativeBridge }).verboo ?? {}
+}
+
+function isNativeReady(): boolean {
+  const b = getNativeBridge()
+  return typeof b.requestComputerUseSession === 'function'
+}
+
+// ── Rust → renderer translation ─────────────────────────────────
+// Rust Session has `state` not `status`, `started_at_wall` not `startedAt`,
+// no `appName`/`isSelfTest`/`lastAction`/`actionCount`/`stopReason`.
+// We synthesize the renderer shape, preserving any fields we already had
+// from the consent request (goal, appName, isSelfTest).
+
+function rustSessionToRenderer(
+  rust: import('../../../renderer/verboo-bridge').RustSession,
+  fallback: { goal?: string; appName?: string; isSelfTest?: boolean },
+): ComputerUseSession {
+  const stateMap: Record<string, ComputerUseSession['status']> = {
+    idle: 'idle',
+    consent: 'consent',
+    active: 'active',
+    paused: 'paused',
+    stopped: 'stopped',
+  }
+  return {
+    id: rust.id,
+    status: stateMap[rust.state] ?? 'idle',
+    goal: rust.goal ?? fallback.goal ?? '',
+    appName: fallback.appName ?? rust.goal ?? '',
+    scope: rust.scope,
+    isSelfTest: rust.self_test_enabled || fallback.isSelfTest === true,
+    startedAt: rust.started_at_wall,
+    actionCount: 0,
+  }
+}
+
+// ── Store state ─────────────────────────────────────────────────
 
 type Listener = () => void
 
@@ -36,7 +92,7 @@ export type ComputerUseState = {
   /** Set when status === 'stopped' — drives StoppedToast (4s auto-clear). */
   lastStop?: { reason: ComputerUseStopReason; actionCount: number; durationMs: number; at: number }
   /** Set when status === 'denied' — drives inline toast (4s auto-clear). */
-  lastDeny?: { reason: ComputerUseDenyReason; at: number }
+  lastDeny?: { reason: ComputerUseDenyReason; at: number; detail?: string }
   /** Whether the emergency-stop overlay is mid-animation (600ms). */
   isEmergencyFlashing: boolean
 }
@@ -63,37 +119,7 @@ function getSnapshot(): ComputerUseState {
   return state
 }
 
-// ── Native IPC detection ────────────────────────────────────────
-// window.verboo is the Tauri bridge. Computer Use commands are added by
-// Geralt in P0.3/P0.6. Until they exist, we fall back to a mock so the UX
-// is fully testable in isolation.
-type ComputerUseBridge = {
-  requestComputerUseSession?: (req: ComputerUseConsentRequest) => Promise<string>
-  grantComputerUseSession?: (id: string, grant: ComputerUseConsentGrant) => Promise<ComputerUseSession>
-  denyComputerUseSession?: (id: string, reason: ComputerUseDenyReason) => Promise<void>
-  pauseComputerUseSession?: (id: string) => Promise<void>
-  resumeComputerUseSession?: (id: string) => Promise<ComputerUseSession>
-  stopComputerUseSession?: (id: string, reason: ComputerUseStopReason) => Promise<void>
-  emergencyStopComputerUse?: () => Promise<void>
-  getComputerUseState?: () => Promise<ComputerUseSession | null>
-  onComputerUseStateChange?: (cb: (s: ComputerUseSession) => void) => () => void
-  onComputerUseAction?: (cb: (a: ComputerUseActionEvent) => void) => () => void
-  onComputerUseEmergencyStop?: (cb: () => void) => Promise<() => void> | (() => void)
-}
-
-function bridge(): ComputerUseBridge {
-  if (typeof window === 'undefined') return {}
-  return (window as unknown as { verboo?: ComputerUseBridge }).verboo ?? {}
-}
-
-function isNativeReady(): boolean {
-  const b = bridge()
-  return typeof b.requestComputerUseSession === 'function'
-}
-
-// ── Mock session lifecycle ──────────────────────────────────────
-// Used only when native IPC is absent. Simulates action events so the
-// banner has live subtext to render. Cancellable via stop().
+// ── Mock session lifecycle (fallback only) ──────────────────────
 let mockActionTimer: ReturnType<typeof setInterval> | undefined
 let mockActionIndex = 0
 const MOCK_VERBS = ['click', 'type', 'read', 'scroll'] as const
@@ -140,9 +166,83 @@ export const computerUseStore = {
   subscribe,
   getSnapshot,
 
-  /** Renderer calls this when an agent requests control. In native mode
-   *  this is triggered by the `onComputerUseStateChange` event; in mock
-   *  mode the caller (e.g. a dev button or skill stub) invokes it. */
+  /** Step 1: agent or user invokes a consent request. In native mode this
+   *  calls request_computer_use_session and translates the Rust response.
+   *  In mock mode, synthesizes a request locally. */
+  async requestConsent(params: {
+    goal: string
+    appName?: string
+    appBundleId?: string
+    scope: ComputerUseScope
+    isSelfTest?: boolean
+    timeoutMs?: number
+  }): Promise<void> {
+    clearMockTimer()
+    const native = getNativeBridge()
+    if (isNativeReady() && native.requestComputerUseSession) {
+      try {
+        const rust = await native.requestComputerUseSession(
+          params.goal,
+          params.appBundleId ?? null,
+          params.scope,
+        )
+        const req: ComputerUseConsentRequest = {
+          id: rust.id,
+          goal: rust.goal,
+          appName: params.appName ?? rust.app ?? params.goal,
+          appBundleId: params.appBundleId ?? rust.app ?? undefined,
+          scope: rust.scope,
+          isSelfTest: params.isSelfTest,
+          createdAt: rust.created_at_wall,
+          timeoutMs: params.timeoutMs ?? 30000,
+        }
+        setState({
+          status: 'consent',
+          pendingRequest: req,
+          session: undefined,
+          lastStop: undefined,
+          lastDeny: undefined,
+          isEmergencyFlashing: false,
+        })
+        return
+      } catch (err) {
+        // Native request failed (e.g. policy block, OS perm missing).
+        // Surface as denied so the user sees feedback.
+        const reason: ComputerUseDenyReason = 'app_hard_blocked'
+        setState({
+          status: 'denied',
+          lastDeny: { reason, at: Date.now(), detail: nativeErrorMessage(err) },
+        })
+        setTimeout(() => {
+          if (state.status === 'denied') setState({ status: 'idle', lastDeny: undefined })
+        }, 4000)
+        return
+      }
+    }
+
+    // Mock fallback
+    const req: ComputerUseConsentRequest = {
+      id: `cu-req:${crypto.randomUUID()}`,
+      goal: params.goal,
+      appName: params.appName ?? 'Verboo Settings',
+      appBundleId: params.appBundleId ?? 'ai.verboo.code.desktop',
+      scope: params.scope,
+      isSelfTest: params.isSelfTest ?? false,
+      createdAt: Date.now(),
+      timeoutMs: params.timeoutMs ?? 30000,
+    }
+    setState({
+      status: 'consent',
+      pendingRequest: req,
+      session: undefined,
+      lastStop: undefined,
+      lastDeny: undefined,
+      isEmergencyFlashing: false,
+    })
+  },
+
+  /** Renderer-only: receive a consent request from an external trigger
+   *  (e.g. native event). Kept for backward compat with the hook. */
   receiveConsentRequest(req: ComputerUseConsentRequest): void {
     clearMockTimer()
     setState({
@@ -155,17 +255,45 @@ export const computerUseStore = {
     })
   },
 
+  /** Step 2: user grants consent. Calls grant_computer_use_session in native
+   *  mode. The `type` ('once' | 'session') and `rememberApp` are renderer
+   *  concerns — Rust doesn't know about them. `rememberApp` routes to
+   *  allowlist via a separate updateComputerUseAllowlist call (Settings). */
   async grant(grant: ComputerUseConsentGrant): Promise<void> {
     const req = state.pendingRequest
     if (!req) return
-    const b = bridge()
-    if (isNativeReady() && b.grantComputerUseSession) {
-      const session = await b.grantComputerUseSession(req.id, grant)
-      const active: ComputerUseSession = { ...session, status: 'active' }
-      setState({ status: 'active', pendingRequest: undefined, session: active })
-      return
+    const native = getNativeBridge()
+    if (isNativeReady() && native.grantComputerUseSession) {
+      try {
+        // The consent modal explicitly discloses that the authorized app
+        // window is captured and sent to the selected model provider.
+        const rustSession = await native.grantComputerUseSession(req.id, true)
+        const session = rustSessionToRenderer(rustSession, {
+          goal: req.goal,
+          appName: req.appName,
+          isSelfTest: req.isSelfTest,
+        })
+        setState({
+          status: 'active',
+          pendingRequest: undefined,
+          session: { ...session, status: 'active' },
+        })
+        return
+      } catch (err) {
+        // Grant failed (e.g. consent expired, OS perm revoked). Deny.
+        setState({
+          status: 'denied',
+          pendingRequest: undefined,
+          lastDeny: { reason: 'os_permission_missing', at: Date.now(), detail: nativeErrorMessage(err) },
+        })
+        setTimeout(() => {
+          if (state.status === 'denied') setState({ status: 'idle', lastDeny: undefined })
+        }, 4000)
+        return
+      }
     }
-    // Mock: synthesize a session and start emitting fake actions.
+
+    // Mock fallback
     const session: ComputerUseSession = {
       id: `cu:${crypto.randomUUID()}`,
       status: 'active',
@@ -184,16 +312,19 @@ export const computerUseStore = {
   async deny(reason: ComputerUseDenyReason = 'user_denied'): Promise<void> {
     const req = state.pendingRequest
     if (!req) return
-    const b = bridge()
-    if (isNativeReady() && b.denyComputerUseSession) {
-      await b.denyComputerUseSession(req.id, reason)
+    const native = getNativeBridge()
+    if (isNativeReady() && native.denyComputerUseSession) {
+      try {
+        await native.denyComputerUseSession(req.id)
+      } catch {
+        // Deny failed — still transition locally so UI doesn't hang.
+      }
     }
     setState({
       status: 'denied',
       pendingRequest: undefined,
       lastDeny: { reason, at: Date.now() },
     })
-    // Auto-clear the deny toast after 4s; return to idle.
     setTimeout(() => {
       if (state.status === 'denied') setState({ status: 'idle', lastDeny: undefined })
     }, 4000)
@@ -202,10 +333,8 @@ export const computerUseStore = {
   async pause(): Promise<void> {
     const s = state.session
     if (!s || state.status !== 'active') return
-    const b = bridge()
-    if (isNativeReady() && b.pauseComputerUseSession) {
-      await b.pauseComputerUseSession(s.id)
-    }
+    const native = getNativeBridge()
+    if (native.pauseComputerUseSession) await native.pauseComputerUseSession(s.id)
     clearMockTimer()
     setState({ status: 'paused', session: { ...s, status: 'paused' } })
   },
@@ -213,23 +342,28 @@ export const computerUseStore = {
   async resume(): Promise<void> {
     const s = state.session
     if (!s || state.status !== 'paused') return
-    const b = bridge()
-    if (isNativeReady() && b.resumeComputerUseSession) {
-      const next = await b.resumeComputerUseSession(s.id)
-      setState({ status: 'active', session: { ...next, status: 'active' } })
-      return
-    }
+    const native = getNativeBridge()
+    if (native.resumeComputerUseSession) await native.resumeComputerUseSession(s.id)
     const active: ComputerUseSession = { ...s, status: 'active' }
     setState({ status: 'active', session: active })
-    startMockActions(active)
+    if (!isNativeReady()) {
+      startMockActions(active)
+    }
   },
 
   async stop(reason: ComputerUseStopReason = 'user_cancelled'): Promise<void> {
     const s = state.session
     if (!s) return
-    const b = bridge()
-    if (isNativeReady() && b.stopComputerUseSession) {
-      await b.stopComputerUseSession(s.id, reason)
+    const native = getNativeBridge()
+    if (isNativeReady() && native.stopComputerUseSession) {
+      const rustReason: 'user_cancelled' | 'emergency' =
+        reason === 'emergency_stop' ? 'emergency' : 'user_cancelled'
+      try {
+        await native.stopComputerUseSession(s.id, rustReason)
+      } catch {
+        // Keep the banner visible: control may still be active.
+        return
+      }
     }
     clearMockTimer()
     const durationMs = Date.now() - s.startedAt
@@ -238,7 +372,6 @@ export const computerUseStore = {
       session: { ...s, status: 'stopped', stopReason: reason },
       lastStop: { reason, actionCount: s.actionCount, durationMs, at: Date.now() },
     })
-    // Auto-clear the stopped toast after 4s; return to idle.
     setTimeout(() => {
       if (state.status === 'stopped') {
         setState({ status: 'idle', session: undefined, lastStop: undefined })
@@ -248,15 +381,20 @@ export const computerUseStore = {
 
   /** Emergency stop — fires immediately, no confirmation. Triggers the
    *  600ms overlay flash, then transitions to stopped. Called from:
-   *  - Esc key when Verboo has focus (this file's keybind)
+   *  - Esc key when Verboo has focus (useComputerUseSession keybind)
    *  - ControlBanner Cancel button
-   *  - Native helper Cmd+Shift+Esc (via onComputerUseEmergencyStop event) */
-  async emergencyStop(): Promise<void> {
+   *  - Native event onComputerUseEmergencyStop (when Geralt wires it) */
+  async emergencyStop(alreadyRevoked = false): Promise<void> {
     if (state.status !== 'active' && state.status !== 'paused') return
     const s = state.session
-    const b = bridge()
-    if (isNativeReady() && b.emergencyStopComputerUse) {
-      await b.emergencyStopComputerUse()
+    const native = getNativeBridge()
+    if (!alreadyRevoked && isNativeReady() && native.stopComputerUseSession && s) {
+      try {
+        await native.stopComputerUseSession(s.id, 'emergency')
+      } catch {
+        // Keep the banner visible: control may still be active.
+        return
+      }
     }
     clearMockTimer()
     setState({ isEmergencyFlashing: true })
@@ -277,16 +415,22 @@ export const computerUseStore = {
     }, 600)
   },
 
-  /** Native event: helper fired Cmd+Shift+Esc. Same path as emergencyStop. */
+  /** Native event: helper fired ⌘⇧Esc. Same path as emergencyStop. */
   handleNativeEmergencyStop(): void {
-    void this.emergencyStop()
+    void this.emergencyStop(true)
   },
 
   /** Native event: SessionManager state changed (e.g. OS permission revoked,
    *  target gone, idle expired). Renderer mirrors the new state. */
-  handleNativeStateChange(next: ComputerUseSession): void {
-    setState({ status: next.status, session: next })
-    if (next.status === 'stopped' || next.status === 'idle') {
+  handleNativeStateChange(rust: import('../../../renderer/verboo-bridge').RustSession): void {
+    const existing = state.session
+    const session = rustSessionToRenderer(rust, {
+      goal: existing?.goal,
+      appName: existing?.appName,
+      isSelfTest: existing?.isSelfTest,
+    })
+    setState({ status: session.status, session })
+    if (session.status === 'stopped' || session.status === 'idle') {
       clearMockTimer()
     }
   },
@@ -301,7 +445,7 @@ export const computerUseStore = {
   },
 
   /** Dev/test hook: simulate a consent request without the native bridge.
-   *  Used by the Settings "Test consent flow" button. */
+   *  Used by the Settings "Test consent flow" button + vitest. */
   __mockRequestConsent(partial: Partial<ComputerUseConsentRequest>): void {
     const req: ComputerUseConsentRequest = {
       id: `cu-req:${crypto.randomUUID()}`,
@@ -323,24 +467,18 @@ export const computerUseStore = {
   },
 }
 
-// ── Settings helpers ────────────────────────────────────────────
-// Default settings mirror Rust `ComputerUseSettings::default()` (src-tauri/src/models/types.rs).
-// Exported for the settings UI to import + for tests.
-// Emergency-stop hotkey display string is renderer-derived (M3 binding):
-//   primary ⌘⇧Esc (helper OS-wide), secondary Esc (Verboo focused).
-export const COMPUTER_USE_EMERGENCY_STOP_HOTKEY_PRIMARY = '⌘⇧Esc'
-export const COMPUTER_USE_EMERGENCY_STOP_HOTKEY_SECONDARY = 'Esc'
+function nativeErrorMessage(error: unknown): string | undefined {
+  if (error instanceof Error) return error.message.trim() || undefined
+  if (typeof error === 'string') return error.trim() || undefined
+  return undefined
+}
 
+// ── Settings helpers ────────────────────────────────────────────
 export const DEFAULT_COMPUTER_USE_SETTINGS: ComputerUseSettings = {
   enabled: false,
   selfTestEnabled: false,
   allowlist: [],
-  denylist: [
-    'com.apple.Mail',
-    'com.agilebits.onepassword-osx',
-    'com.agilebits.onepassword8',
-    'com.bitwarden.desktop',
-  ],
+  denylist: [],
   auditRetentionDays: 90,
   auditStorageCapMb: 200,
   idleTimeoutSeconds: 900,
@@ -349,5 +487,4 @@ export const DEFAULT_COMPUTER_USE_SETTINGS: ComputerUseSettings = {
 }
 
 // ── React binding ───────────────────────────────────────────────
-// Re-exported as a hook from useComputerUseSession.ts.
 export { computerUseStore as store }

@@ -50,6 +50,12 @@ import { AppSidebar, type AppView } from './components/AppSidebar'
 import { CommandPalette, paletteIcons, type PaletteAction } from './components/CommandPalette'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { ComputerUseLayer } from './features/computer-use/ComputerUseLayer'
+import { computerUseStore } from './features/computer-use/computerUseStore'
+import {
+  detectComputerUseIntent,
+  extractComputerUseAppSelector,
+  resolveComputerUseTarget,
+} from './features/computer-use/computerUseIntent'
 import { useToast } from './components/Toast'
 import { VerbooPet, PET_MIN_SIZE, PET_MAX_SIZE, type PetState } from './features/pet/VerbooPet'
 import { QuestionWizard, type ModelQuestion, type QuestionAnswer, type QuestionPromptState } from './features/questions/QuestionWizard'
@@ -1705,9 +1711,17 @@ export function App() {
   // concurrent awaits see the lock before the first call's first await.
   // The ref resets in the `finally` block at the end of the function.
   const sendMessageLock = useRef(false)
-  async function sendMessage(message: string) {
+  async function sendMessage(message: string, computerUseSessionId?: string, skillsOverride?: SkillSummary[]) {
     const trimmed = message.trim()
     if (!trimmed) return
+    if (!computerUseSessionId) {
+      const computerUseIntent = detectComputerUseIntent(trimmed, selectedSkills)
+      if (computerUseIntent) {
+        void startComputerUseFromComposer(computerUseIntent.goal, [...selectedSkills])
+        return
+      }
+    }
+    const turnSkills = skillsOverride ?? selectedSkills
     if (sendMessageLock.current) return // already in flight
     sendMessageLock.current = true
     try {
@@ -1763,8 +1777,8 @@ export function App() {
     }
 
     // ── Skill approval gate ───────────────────────────────────
-    if (selectedSkills.length) {
-      const unapproved = await window.verboo.checkSkillApproval(selectedSkills)
+    if (turnSkills.length) {
+      const unapproved = await window.verboo.checkSkillApproval(turnSkills)
       if (unapproved.length) {
         const choice = await new Promise<{ allowOnce: boolean } | { trust: string } | { cancel: true }>(resolve => {
           skillApprovalResolveRef.current = resolve
@@ -1787,7 +1801,7 @@ export function App() {
       }
     }
 
-    const queued = createQueuedFollowUp(conversationId, trimmed)
+    const queued = createQueuedFollowUp(conversationId, trimmed, computerUseSessionId, turnSkills)
     setActiveView('chat')
     stickToBottomRef.current = true
     setShowJumpToLatest(false)
@@ -1798,7 +1812,7 @@ export function App() {
       role: 'user',
       text: trimmed,
       timestamp: Date.now(),
-      skills: selectedSkills,
+      skills: turnSkills,
       // Persist a slim version of attachments — just path/name/kind — so the
       // transcript can render chips/thumbnails on reload without base64 bloat.
       attachments: attachedFiles.length ? attachedFiles.map(slimMeta) : undefined,
@@ -1822,7 +1836,12 @@ export function App() {
     return Object.values(turnConversationIds.current).includes(conversationId)
   }
 
-  function createQueuedFollowUp(conversationId: string, message: string): QueuedFollowUp {
+  function createQueuedFollowUp(
+    conversationId: string,
+    message: string,
+    computerUseSessionId?: string,
+    skillsOverride?: SkillSummary[],
+  ): QueuedFollowUp {
     const turnModel = {
       modelId: selectedModel,
       modelDisplayName: selectedModelInfo?.displayName ?? selectedModel,
@@ -1837,6 +1856,7 @@ export function App() {
       request: {
         conversationId,
         message,
+        computerUseSessionId,
         model: selectedModel,
         modelSupportsVision: Boolean(selectedModelInfo?.supportsVision),
         contextWindow: selectedContextWindow,
@@ -1845,7 +1865,7 @@ export function App() {
         responseLanguage,
         accessMode: accessMode === 'full' && !userSettings.fullAccessEnabled ? 'approval' : accessMode,
         workingDirectory: workingDirectoryForConversation(conversationId),
-        skills: selectedSkills,
+        skills: skillsOverride ?? selectedSkills,
         attachments: attachedFiles,
         responseEnhancementsEnabled: userSettings.responseEnhancementsEnabled,
         personality: userSettings.personality,
@@ -2670,6 +2690,84 @@ export function App() {
 
       void startGoalScheduler(goalState)
     }
+  }
+
+  async function startComputerUseFromComposer(
+    goal: string,
+    skills: SkillSummary[],
+    explicitSelector?: string,
+  ) {
+    if (!userSettings.computerUse.enabled) {
+      toast(t('computerUse.disabled'), 'error')
+      setSettingsTab('computerUse')
+      setActiveView('settings')
+      return
+    }
+    if (!goal.trim()) {
+      toast(t('computerUse.composer.missingGoal'), 'error')
+      return
+    }
+
+    try {
+      let permissions = await window.verboo.getComputerUsePermissions()
+      if (permissions.accessibility !== 'granted' || permissions.screenRecording !== 'granted') {
+        permissions = await window.verboo.requestComputerUsePermissions()
+      }
+      if (permissions.accessibility !== 'granted' || permissions.screenRecording !== 'granted') {
+        toast(t('computerUse.composer.permissionsMissing'), 'error')
+        setSettingsTab('computerUse')
+        setActiveView('settings')
+        return
+      }
+    } catch (error) {
+      toast(error instanceof Error ? error.message : t('computerUse.composer.permissionsMissing'), 'error')
+      return
+    }
+
+    let resolvedApp: { bundleId: string; name: string } | undefined
+    try {
+      const apps = await window.verboo.listComputerUseApps()
+      resolvedApp = resolveComputerUseTarget(goal, apps, explicitSelector)
+      const selector = explicitSelector ?? extractComputerUseAppSelector(goal)
+      if (!resolvedApp && selector) {
+        resolvedApp = await window.verboo.resolveComputerUseApp(selector)
+      }
+    } catch {
+      // The inline error below is intentionally the same for resolution and
+      // app-list failures: neither path authorizes a guessed target.
+    }
+
+    if (!resolvedApp) {
+      toast(t('computerUse.composer.missingApp'), 'error')
+      return
+    }
+    if (resolvedApp.bundleId === 'ai.verboo.code.desktop' && !userSettings.computerUse.selfTestEnabled) {
+      toast(t('computerUse.composer.selfTestDisabled'), 'error')
+      setSettingsTab('computerUse')
+      setActiveView('settings')
+      return
+    }
+
+    await computerUseStore.requestConsent({
+      goal,
+      appName: resolvedApp.name,
+      appBundleId: resolvedApp.bundleId,
+      scope: 'input',
+    })
+    if (computerUseStore.getSnapshot().status !== 'consent') return
+
+    // `/computer-use` or an explicit natural-language request is the user's
+    // per-session authorization. There is no second app-styled modal.
+    toast(t('computerUse.composer.isolationNotice'), 'info')
+    await computerUseStore.grant({ type: 'session' })
+    const sessionId = computerUseStore.getSnapshot().session?.id
+    if (computerUseStore.getSnapshot().status === 'active' && sessionId) {
+      await sendMessage(goal, sessionId, skills)
+    }
+  }
+
+  async function handleComputerUseCommand(command: Extract<ReservedSlashCommand, { kind: 'computer-use' }>) {
+    await startComputerUseFromComposer(command.goal ?? '', [...selectedSkills], command.app)
   }
 
   async function startGoalScheduler(initialGoal: GoalState) {
@@ -4416,6 +4514,7 @@ export function App() {
             }}
             onSubmit={sendMessage}
             onGoalCommand={handleGoalCommand}
+            onComputerUseCommand={handleComputerUseCommand}
             queue={queuedFollowUpsRef.current}
             onQueueSendNow={queueItemId => sendNow(activeConversationId ?? '', queueItemId)}
             onQueueEdit={editQueuedItem}
@@ -4512,7 +4611,7 @@ export function App() {
 
       <ConfirmDialog request={confirmRequest} onClose={() => setConfirmRequest(undefined)} />
 
-      <ComputerUseLayer providerName={cliAuth.apiProvider ?? profile.user?.email} />
+      <ComputerUseLayer />
 
       <CommandPalette
         open={paletteOpen}

@@ -2,10 +2,11 @@ export type ReservedSlashCommand =
   | { kind: 'goal'; action: 'show' | 'status' | 'start' | 'pause' | 'resume' | 'clear' | 'help'; objective?: string; raw: string }
   | { kind: 'pet'; raw: string }
   | { kind: 'compact'; instructions?: string; raw: string }
+  | { kind: 'computer-use'; app?: string; goal?: string; raw: string }
 
 /** Built-in composer commands (not user custom slash commands). Keep in sync
  *  with `customSlashCommands.ts` RESERVED_COMMAND_NAMES and Composer palette. */
-const RESERVED_COMMANDS = new Set(['goal', 'pet', 'compact'])
+const RESERVED_COMMANDS = new Set(['goal', 'pet', 'compact', 'computer-use'])
 
 /**
  * Parse a goal command from text that may or may not start with a slash.
@@ -65,7 +66,7 @@ export function parseReservedSlashCommand(value: string): ReservedSlashCommand |
   const raw = value.trim()
   if (!raw.startsWith('/')) return undefined
 
-  const [command = '', ...parts] = raw.slice(1).split(/\s+/)
+  const [command = ''] = raw.slice(1).split(/\s+/)
   const rest = raw.slice(command.length + 1).trim()
   const name = command.toLowerCase()
 
@@ -75,6 +76,26 @@ export function parseReservedSlashCommand(value: string): ReservedSlashCommand |
     return {
       kind: 'compact',
       instructions: rest || undefined,
+      raw,
+    }
+  }
+
+  if (name === 'computer-use') {
+    let app = ''
+    let goal = ''
+    if (rest.startsWith('"')) {
+      const closingQuote = rest.indexOf('"', 1)
+      if (closingQuote > 1) {
+        app = rest.slice(1, closingQuote).trim()
+        goal = rest.slice(closingQuote + 1).trim()
+      }
+    } else {
+      goal = rest
+    }
+    return {
+      kind: 'computer-use',
+      app: app || undefined,
+      goal: goal || undefined,
       raw,
     }
   }

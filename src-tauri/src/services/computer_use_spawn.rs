@@ -109,11 +109,13 @@ fn find_bundled_helper(triple: &str) -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         if let Some(resources) = exe_dir.parent().map(|p| p.join("Resources")) {
-            let candidate = resources.join(format!("computer-use-helper-{triple}"));
-            if candidate.exists() {
-                return Some(candidate);
+            for name in ["computer-use-helper".to_string(), format!("computer-use-helper-{triple}")] {
+                let candidate = resources.join(name);
+                if candidate.exists() { return Some(candidate); }
             }
         }
+        let sidecar = exe_dir.join("computer-use-helper");
+        if sidecar.exists() { return Some(sidecar); }
     }
 
     let candidate = exe_dir.join(format!("computer-use-helper-{triple}"));

@@ -56,14 +56,14 @@ export function StoppedToast({
   )
 }
 
-export function DeniedToast() {
+export function DeniedToast({ detail }: { detail?: string }) {
   const { t } = useI18n()
   return (
     <div className="computer-use-toast computer-use-toast-denied" role="status" aria-live="polite">
       <XCircle size={15} aria-hidden="true" />
       <div className="computer-use-toast-text">
         <strong>{t('computerUse.denied.title')}</strong>
-        <span>{t('computerUse.denied.body')}</span>
+        <span>{detail || t('computerUse.denied.body')}</span>
       </div>
     </div>
   )

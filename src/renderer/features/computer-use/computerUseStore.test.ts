@@ -117,4 +117,118 @@ describe('computerUseStore', () => {
     })
     expect(computerUseStore.getSnapshot().pendingRequest?.isSelfTest).toBe(true)
   })
+
+  describe('native bridge', () => {
+    const originalVerboo = (window as unknown as { verboo?: unknown }).verboo
+
+    function mockNativeBridge(overrides: {
+      request?: (goal: string, app: string | null, scope: string) => Promise<unknown>
+      grant?: (id: string, screenshot: boolean) => Promise<unknown>
+      deny?: (id: string) => Promise<void>
+      stop?: (id: string, reason: string) => Promise<void>
+    }) {
+      const bridge = {
+        requestComputerUseSession: overrides.request ?? vi.fn().mockResolvedValue({
+          id: 'rust-req-1',
+          goal: 'Native goal',
+          app: 'Safari',
+          scope: 'input',
+          created_at_mono: 1000,
+          created_at_wall: Date.now(),
+        }),
+        grantComputerUseSession: overrides.grant ?? vi.fn().mockResolvedValue({
+          id: 'rust-sess-1',
+          state: 'active',
+          goal: 'Native goal',
+          scope: 'input',
+          allowlist_version: 1,
+          self_test_enabled: false,
+          screenshot_attach_to_llm: false,
+          pid_lock: 12345,
+          started_at_mono: 1000,
+          started_at_wall: Date.now(),
+          last_activity_mono: 1000,
+          idle_timeout_secs: 900,
+        }),
+        denyComputerUseSession: overrides.deny ?? vi.fn().mockResolvedValue(undefined),
+        stopComputerUseSession: overrides.stop ?? vi.fn().mockResolvedValue(undefined),
+      }
+      ;(window as unknown as { verboo?: unknown }).verboo = bridge
+      return bridge
+    }
+
+    afterEach(() => {
+      ;(window as unknown as { verboo?: unknown }).verboo = originalVerboo
+    })
+
+    it('requestConsent calls native request_computer_use_session', async () => {
+      const bridge = mockNativeBridge({})
+      await computerUseStore.requestConsent({
+        goal: 'Click save',
+        appName: 'Safari',
+        appBundleId: 'com.apple.Safari',
+        scope: 'input',
+      })
+      expect(bridge.requestComputerUseSession).toHaveBeenCalledWith('Click save', 'com.apple.Safari', 'input')
+      expect(computerUseStore.getSnapshot().status).toBe('consent')
+      expect(computerUseStore.getSnapshot().pendingRequest?.id).toBe('rust-req-1')
+      expect(computerUseStore.getSnapshot().pendingRequest?.appName).toBe('Safari')
+    })
+
+    it('grant calls native grant_computer_use_session and translates session', async () => {
+      mockNativeBridge({})
+      await computerUseStore.requestConsent({
+        goal: 'Click save',
+        appName: 'Safari',
+        scope: 'input',
+      })
+      await computerUseStore.grant({ type: 'once' })
+      expect(computerUseStore.getSnapshot().status).toBe('active')
+      expect(computerUseStore.getSnapshot().session?.id).toBe('rust-sess-1')
+      expect(computerUseStore.getSnapshot().session?.appName).toBe('Safari')
+      expect(computerUseStore.getSnapshot().session?.isSelfTest).toBe(false)
+    })
+
+    it('deny calls native deny_computer_use_session', async () => {
+      const bridge = mockNativeBridge({})
+      await computerUseStore.requestConsent({ goal: 'G', appName: 'App', scope: 'ask' })
+      await computerUseStore.deny('user_denied')
+      expect(bridge.denyComputerUseSession).toHaveBeenCalledWith('rust-req-1')
+      expect(computerUseStore.getSnapshot().status).toBe('denied')
+    })
+
+    it('stop calls native stop_computer_use_session with reason', async () => {
+      const bridge = mockNativeBridge({})
+      await computerUseStore.requestConsent({ goal: 'G', appName: 'App', scope: 'ask' })
+      await computerUseStore.grant({ type: 'once' })
+      await computerUseStore.stop('user_cancelled')
+      expect(bridge.stopComputerUseSession).toHaveBeenCalledWith('rust-sess-1', 'user_cancelled')
+      expect(computerUseStore.getSnapshot().status).toBe('stopped')
+    })
+
+    it('emergencyStop calls native stop with emergency reason', async () => {
+      vi.useFakeTimers()
+      const bridge = mockNativeBridge({})
+      await computerUseStore.requestConsent({ goal: 'G', appName: 'App', scope: 'ask' })
+      await computerUseStore.grant({ type: 'once' })
+      // emergencyStop is async; it calls native stop then sets a 600ms flash.
+      // The native call is awaited, but the 600ms timeout is fire-and-forget.
+      await computerUseStore.emergencyStop()
+      expect(bridge.stopComputerUseSession).toHaveBeenCalledWith('rust-sess-1', 'emergency')
+      // During flash, isEmergencyFlashing is true and lastStop not yet set.
+      expect(computerUseStore.getSnapshot().isEmergencyFlashing).toBe(true)
+      // Advance past the 600ms flash — lastStop gets set.
+      vi.advanceTimersByTime(600)
+      expect(computerUseStore.getSnapshot().lastStop?.reason).toBe('emergency_stop')
+    })
+
+    it('request failure surfaces as denied', async () => {
+      mockNativeBridge({
+        request: vi.fn().mockRejectedValue(new Error('policy block')),
+      })
+      await computerUseStore.requestConsent({ goal: 'G', appName: 'App', scope: 'ask' })
+      expect(computerUseStore.getSnapshot().status).toBe('denied')
+      expect(computerUseStore.getSnapshot().lastDeny?.detail).toBe('policy block')
+    })
+  })
 })

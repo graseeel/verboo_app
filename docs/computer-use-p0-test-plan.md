@@ -547,6 +547,91 @@ Standalone tests for the fail-safe backbone. Independent of bypass suite (§B) �
 **K.5 Post-condition check after every §B/§F test**
 - Each bypass + AccessMode test asserts at teardown: allowlist contains only entries the test deliberately added, no synthetic Verboo entry survived, self-test state matches `userSettings.computerUse.selfTest`. Catches drift where a test mutation leaks into the next test.
 
+### K.exec Executable checklist — what landed 2026-07-12 (P0.9 GO)
+
+Backend landed by Geralt + tests landed by Aloy on `feat/computer-use-p0`. All assertions below are **automated Rust unit tests** in `src-tauri/src/services/{settings_store,session_manager}.rs`. Run with `cargo test --manifest-path src-tauri/Cargo.toml --lib services::`.
+
+**Settings layer (`settings_store::tests`)** — exercises `normalize_computer_use` via production `SettingsStore::update`:
+
+| Test | Covers | Status |
+|---|---|---|
+| `computer_use_defaults_are_fail_safe` | N1 — enabled=false, self_test=false, allowlist empty, denylist non-empty, retention/cap/idle at policy defaults | ✅ Geralt |
+| `computer_use_enable_then_self_test_works` | N2 prerequisite — CU toggle independent of self-test toggle | ✅ Geralt |
+| `computer_use_disabled_forces_self_test_off` | N2 corollary — `enabled=false` forces `self_test_enabled=false` even if poisoned | ✅ Geralt |
+| `computer_use_clamps_out_of_range_values` | Range clamps (retention 7-365, cap 10-10000, idle 300-3600) | ✅ Geralt |
+| `computer_use_allowlist_upsert_dedupes_by_bundle_id` | Allowlist dedupe (case-insensitive, last-wins) | ✅ Geralt |
+| `computer_use_strips_self_test_entries_when_disabled` | **N2** — `self_test_enabled=false` strips any `is_self_test=true` entry | ✅ Geralt |
+| `computer_use_preserves_self_test_entries_when_enabled` | **N2 positive** — `self_test_enabled=true` keeps Verboo self-test entry | ✅ Aloy |
+| `computer_use_rejects_verboo_non_self_test_entry` | **N3** — Verboo bundle with `is_self_test=false` stripped | ✅ Geralt |
+| `computer_use_denylist_dedupes_case_insensitive` | Denylist dedupe | ✅ Geralt |
+| `access_mode_full_does_not_activate_cu` | **N4 settings-layer** — `defaultAccessMode='full'`+`fullAccessEnabled=true` does NOT mutate any CU field | ✅ Aloy |
+| `full_access_payload_does_not_leak_into_cu_state` | **N4 defense-in-depth** — poisoned bundle of full+CU still leaves CU disabled; self-test forced off; Verboo entry stripped | ✅ Aloy |
+
+**Session layer (`session_manager::tests`)** — exercises `SessionManager::check_action`:
+
+| Test | Covers | Status |
+|---|---|---|
+| `refuses_when_enabled_is_false` | Feature gate (Layer 1) | ✅ Geralt |
+| `denies_when_no_session` | Active session required | ✅ Geralt |
+| `default_deny_with_empty_allowlist` | **N1 explicit @ session** — empty allowlist denies every app even with active session | ✅ Aloy |
+| `denies_system_settings_hard_block` | Tier 1 hard-block (basic case) | ✅ Geralt |
+| `system_settings_hard_blocked_even_if_allowlisted` | **Tier 1 defense-in-depth** — System Settings hard-blocked even if poisoned into allowlist; requires Full scope session to test mutate path | ✅ Aloy |
+| `allows_read_when_active_view_scope` | Scope gate positive (View ≤ View) | ✅ Geralt |
+| `denies_mutate_when_view_scope` | Scope gate negative (Input > View) | ✅ Geralt |
+| `allows_mutate_when_input_scope` | Scope gate positive (Mutate ≤ Input) | ✅ Geralt |
+| `allows_self_test_when_flag_and_entry_both_true` | **Self-test positive** — session.self_test_enabled=true AND entry.is_self_test=true → Allow on Verboo bundle | ✅ Aloy |
+| `deny_self_test_when_off` | Self-test gate negative (session flag false) | ✅ Geralt |
+| `self_test_gate_currently_only_checks_session_flag_documented_gap` | **SEV-2 #1 (see §K.findings)** — documents current weaker behavior; flip to Deny(SelfTestScopeViolation) when Geralt tightens gate | ✅ Aloy |
+| `self_test_gate_currently_allows_non_verboo_self_test_entry_documented_gap` | **SEV-2 #2 (see §K.findings)** — sibling: non-Verboo + is_self_test=true + flag ON → Allow; flip when gate tightened | ✅ Aloy |
+| `access_mode_full_does_not_grant_cu_session` | **N4 session-layer** — fresh SessionManager has no current(); check_action denies NoActiveSession regardless of external AccessMode; only explicit grant activates | ✅ Aloy |
+| `refuses_not_allowlisted` | Allowlist gate (Layer 4) | ✅ Geralt |
+| `refuses_denylist_app` | Tier 2 denylist gate | ✅ Geralt |
+| `denies_when_paused` | Pause state | ✅ Geralt |
+| `emergency_stop_blocks_all` | Emergency stop | ✅ Geralt |
+| `consent_expires_after_30s` | Consent timeout (Q3 binding) | ✅ Geralt |
+| `scope_hierarchy_correct` | View < Input < Full ordering | ✅ Geralt |
+| `ask_mutate_denied` | Consent request during mutate | ✅ Geralt |
+| `action_count_increments_on_allow` | Audit counter | ✅ Geralt |
+
+**Total**: 21 session_manager tests + 18 settings_store tests = **39 unit tests** (CU-specific; 8 settings tests are general and excluded from this table). All pass on `feat/computer-use-p0` @ HEAD.
+
+**Run book**:
+```sh
+cd /Users/grasel/Documents/gabriel\ workshell/workspace/code/verboo_app-dev
+cargo test --manifest-path src-tauri/Cargo.toml --lib services::session_manager::tests
+cargo test --manifest-path src-tauri/Cargo.toml --lib services::settings_store::tests
+```
+
+### K.findings Open findings from this cycle
+
+**SEV-2 #1: `SessionManager::check_action` does not verify `entry.is_self_test` on Verboo bundle hits.**
+
+- **Where**: `src-tauri/src/services/session_manager.rs:270-272`. Gate checks `!session.self_test_enabled` but not `entry.is_self_test` for the Verboo bundle. If session flag is `true`, the action allows regardless of the entry's `is_self_test` field.
+- **Why not SEV-1**: `normalize_computer_use` (settings_store.rs:232-235) strips Verboo entries with `is_self_test=false` upstream. End-to-end behavior is safe — no production path can deliver a poisoned entry to SessionManager.
+- **Why still finding**: defense-in-depth principle. If a future code path constructs `ComputerUseSettings` without going through `normalize()` (e.g. a test fixture, a migration, a refactor), the gate alone is insufficient.
+- **Documented in test**: `self_test_gate_currently_only_checks_session_flag_documented_gap` — currently asserts `Allow` (the weaker current behavior). When Geralt/Kratos tighten the gate (add `|| (is_verboo && !entry.is_self_test)`), flip the assertion to `Deny(SelfTestScopeViolation)` and close this finding.
+- **Owner**: Geralt (engine) — P0 tightening OR P1 hardening. Aloy recommendation: fix in P0 since the test fixture work is the natural moment to add the assertion.
+- **Not blocking P0 ship**: normalize() holds; no SEV-1.
+
+**SEV-2 #2: `SessionManager::check_action` allows non-Verboo bundles with `is_self_test=true` when session flag is ON.**
+
+- **Where**: `src-tauri/src/services/session_manager.rs:270 + :284`. Line 270 only triggers the Verboo-self-test gate on the Verboo bundle; line 284 only denies when `session.self_test_enabled` is FALSE. A non-Verboo bundle (e.g. `com.apple.Notes`) with `is_self_test=true` + session flag ON flows to Allow.
+- **Why not SEV-1**: `normalize_computer_use` (settings_store.rs:237-239) strips any `is_self_test=true` entry whose bundle is not Verboo ("Self-test entries must be on the Verboo bundle"). End-to-end behavior is safe.
+- **Why still finding**: same defense-in-depth class as SEV-2 #1. If normalize() is ever bypassed, a poisoned `is_self_test=true` marker on a non-Verboo entry would bypass the intended scope restriction.
+- **Documented in test**: `self_test_gate_currently_allows_non_verboo_self_test_entry_documented_gap` — currently asserts `Allow`. When the gate is tightened (reject `is_self_test=true` entries outside Verboo bundle), flip to `Deny(SelfTestScopeViolation)`.
+- **Owner**: Geralt (engine) — fix alongside SEV-2 #1 tightening.
+- **Not blocking P0 ship**: normalize() holds; no SEV-1.
+- **Recommended engine fix (covers both SEV-2s)**: in `check_action`, after allowlist match, add:
+  ```rust
+  let is_verboo = lower == "ai.verboo.code.desktop";
+  if is_verboo != e.is_self_test {
+      return ActionVerdict::Deny(DenyCode::SelfTestScopeViolation);
+  }
+  ```
+  This enforces the invariant "Verboo bundle iff self-test entry" at the gate, mirroring normalize().
+
+**SEV-3: None open.**
+
 ---
 
 ## 4. Test runner / CI
@@ -554,6 +639,7 @@ Standalone tests for the fail-safe backbone. Independent of bypass suite (§B) �
 ### 4.1 Rust bypass suite
 - Path: `src-tauri/tests/cu/bypass.rs` + `src-tauri/tests/cu/engine_impossible.rs` + `src-tauri/tests/cu/audit.rs` + `src-tauri/tests/cu/consent.rs` + `src-tauri/tests/cu/lifecycle.rs` + `src-tauri/tests/cu/normalize_invariants.rs`.
 - Runner: `cargo test --features verboo_test --package computer-use`. Note: `normalize_invariants.rs` does NOT require `verboo_test` feature — uses production commands only. Runs in default `cargo test`.
+- **Already landed (P0.9 cycle 1)**: 31 unit tests in `services::{settings_store,session_manager}::tests` covering N1-N4 + Tier 1 hard-block + self-test AND gate + AccessMode orthogonality. Run with `cargo test --lib services::`. See §K.exec.
 - CI gate: every PR touching `src-tauri/services/computer_use/**` or `src-tauri/tests/cu/**`.
 - Required: green for merge to `feat/computer-use-p0`.
 

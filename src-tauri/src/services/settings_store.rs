@@ -606,4 +606,131 @@ mod tests {
         assert!(dl.iter().any(|x| x.eq_ignore_ascii_case("com.apple.Mail")));
         assert!(dl.iter().any(|x| x == "com.apple.Safari"));
     }
+
+    /// N2 positive case: with self_test_enabled=true, an is_self_test=true
+    /// entry on the Verboo bundle is preserved (not stripped).
+    #[test]
+    fn computer_use_preserves_self_test_entries_when_enabled() {
+        let store = temp_store();
+        let patch = serde_json::json!({
+            "computerUse": {
+                "enabled": true,
+                "selfTestEnabled": true,
+                "allowlist": [
+                    {
+                        "bundleId": "ai.verboo.code.desktop",
+                        "displayName": "Verboo (self-test)",
+                        "scope": "input",
+                        "isSelfTest": true
+                    },
+                    {
+                        "bundleId": "com.apple.Notes",
+                        "displayName": "Notes",
+                        "scope": "view",
+                        "isSelfTest": false
+                    }
+                ]
+            }
+        });
+        let s = store.update(patch).unwrap();
+        let cu = &s.computer_use;
+        assert!(cu.self_test_enabled, "self-test toggle must persist");
+        assert_eq!(cu.allowlist.len(), 2, "both entries must survive");
+
+        let verboo_entry = cu
+            .allowlist
+            .iter()
+            .find(|e| e.bundle_id.eq_ignore_ascii_case("ai.verboo.code.desktop"))
+            .expect("self-test Verboo entry must be preserved when toggle on");
+        assert!(
+            verboo_entry.is_self_test,
+            "Verboo entry must carry is_self_test=true"
+        );
+    }
+
+    /// N4 (settings-layer half): setting `defaultAccessMode='full'` +
+    /// `fullAccessEnabled=true` MUST NOT mutate any Computer Use state.
+    /// CU is activated only via its own enable toggle + consent flow
+    /// (architecture §0 — orthogonality).
+    #[test]
+    fn access_mode_full_does_not_activate_cu() {
+        let store = temp_store();
+
+        // Baseline: CU fully off, allowlist empty.
+        let before = store.get().unwrap();
+        assert!(!before.computer_use.enabled);
+        assert!(before.computer_use.allowlist.is_empty());
+
+        // Flip access mode to full + fullAccessEnabled.
+        let s = store
+            .update(json!({
+                "defaultAccessMode": "full",
+                "fullAccessEnabled": true
+            }))
+            .unwrap();
+
+        // Access mode DID flip — that's a separate system.
+        assert_eq!(s.default_access_mode, AccessMode::Full);
+        assert!(s.full_access_enabled);
+
+        // CU is completely untouched.
+        assert!(
+            !s.computer_use.enabled,
+            "AccessMode=full MUST NOT enable Computer Use"
+        );
+        assert!(
+            !s.computer_use.self_test_enabled,
+            "AccessMode=full MUST NOT enable self-test"
+        );
+        assert!(
+            s.computer_use.allowlist.is_empty(),
+            "AccessMode=full MUST NOT auto-add any allowlist entry"
+        );
+        assert!(
+            !s.computer_use.allowlist
+                .iter()
+                .any(|e| e.bundle_id.eq_ignore_ascii_case("ai.verboo.code.desktop")),
+            "AccessMode=full MUST NOT inject a Verboo self-test entry"
+        );
+    }
+
+    /// Defense-in-depth: even a poisoned payload that tries to enable CU
+    /// while also flipping full access is normalized so the two systems
+    /// remain independent. CU on requires its own explicit toggle.
+    #[test]
+    fn full_access_payload_does_not_leak_into_cu_state() {
+        let store = temp_store();
+        // Attacker / confused user writes a payload that bundles both.
+        let s = store
+            .update(json!({
+                "defaultAccessMode": "full",
+                "fullAccessEnabled": true,
+                "computerUse": {
+                    // Note: NO "enabled" key here. normalize() must not
+                    // infer enabled from fullAccessEnabled.
+                    "selfTestEnabled": true,
+                    "allowlist": [
+                        {
+                            "bundleId": "ai.verboo.code.desktop",
+                            "displayName": "fraud",
+                            "scope": "full",
+                            "isSelfTest": true
+                        }
+                    ]
+                }
+            }))
+            .unwrap();
+
+        assert!(s.full_access_enabled);
+        // CU enabled defaults to false; full_access_enabled did not flip it.
+        assert!(!s.computer_use.enabled);
+        // And because CU is disabled, self_test_enabled is forced false
+        // (normalize() line 204: `enabled && self_test_enabled`).
+        assert!(
+            !s.computer_use.self_test_enabled,
+            "self-test cannot run when CU itself is disabled"
+        );
+        // Therefore the Verboo self-test entry is stripped.
+        assert!(s.computer_use.allowlist.is_empty());
+    }
 }

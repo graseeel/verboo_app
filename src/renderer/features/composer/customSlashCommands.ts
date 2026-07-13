@@ -19,7 +19,7 @@ export const CUSTOM_COMMAND_NAME_PATTERN = /^[A-Za-z0-9_-]+$/
  *  existing composer treats `/goal`, `/pet`, and `/compact` as system
  *  commands that get routed to dedicated handlers; creating a custom
  *  command with those names would shadow them. */
-const RESERVED_COMMAND_NAMES: ReadonlySet<string> = new Set(['goal', 'pet', 'compact'])
+const RESERVED_COMMAND_NAMES: ReadonlySet<string> = new Set(['goal', 'pet', 'compact', 'computer-use'])
 
 export function isValidCustomCommandName(name: string): boolean {
   return name.length > 0 && CUSTOM_COMMAND_NAME_PATTERN.test(name)

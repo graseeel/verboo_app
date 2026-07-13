@@ -93,6 +93,12 @@ impl std::fmt::Display for AuditError {
 impl std::error::Error for AuditError {}
 
 impl AuditWriter {
+    pub fn count_for_session(&self, session_id: &str) -> Result<u64, AuditError> {
+        let conn = self.conn.lock().map_err(|_| AuditError::Db("audit mutex poisoned".into()))?;
+        conn.query_row("SELECT COUNT(*) FROM audit WHERE session_id = ?1", [session_id], |row| row.get(0))
+            .map_err(|e| AuditError::Db(e.to_string()))
+    }
+
     /// Open (or create) the audit DB at the canonical path.
     pub fn open() -> Result<Self, AuditError> {
         let path = Self::db_path();
@@ -189,8 +195,20 @@ impl AuditWriter {
             .filter_map(Result::ok)
             .collect();
 
-        // Walk rows in chronological order (reverse of DESC).
-        let mut prev_expected = GENESIS_HASH.to_string();
+        // Walk rows in chronological order (reverse of DESC). When the DB
+        // has more than 256 rows, anchor the window to the immediately
+        // preceding row instead of incorrectly assuming genesis.
+        let oldest_rowid = rows.last().map(|row| row.0).unwrap_or(1);
+        drop(stmt);
+        let mut prev_expected = if oldest_rowid <= 1 {
+            GENESIS_HASH.to_string()
+        } else {
+            conn.query_row(
+                "SELECT row_hash FROM audit WHERE rowid < ?1 ORDER BY rowid DESC LIMIT 1",
+                [oldest_rowid],
+                |row| row.get(0),
+            ).unwrap_or_else(|_| GENESIS_HASH.to_string())
+        };
         for (rowid, prev_hash, row_hash, buf) in rows.into_iter().rev() {
             if prev_hash != prev_expected {
                 return Err(AuditError::HashChainBroken {
@@ -391,6 +409,17 @@ mod tests {
         }
         let err = w.verify_chain().unwrap_err();
         assert!(matches!(err, AuditError::HashChainBroken { .. }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verification_window_is_anchored_after_256_rows() {
+        let dir = unique_test_dir("long-chain");
+        let w = AuditWriter::open_for_test(&dir).expect("open");
+        for index in 0..260 {
+            w.append(row("s1", &format!("action-{index}"), AuditOutcome::Success)).unwrap();
+        }
+        w.verify_chain().expect("last 256 rows remain anchored to their predecessor");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -22,6 +22,7 @@ import type {
   AttachmentMeta,
   CliAuthStatus,
   ComputerUseAllowlistEntry,
+  ComputerUseScope,
   CredentialStatus,
   FeedbackRequest,
   FeedbackResult,
@@ -53,6 +54,53 @@ import type {
   WorkspacePushResult,
   WorkspaceReviewMetadata,
 } from '../shared/types'
+
+// ── Computer Use wire types (mirror Rust src/models/computer_use.rs) ──
+// Rust Session/ConsentRequest have different field names than the renderer's
+// convenience shape (e.g. `state` not `status`, `started_at_wall` not
+// `startedAt`, no `appName`/`isSelfTest`/`lastAction`/`actionCount`).
+// The store translates these to the renderer shape after invoke.
+
+export type RustSessionState = 'idle' | 'consent' | 'active' | 'paused' | 'stopped'
+
+export type RustConsentRequest = {
+  id: string
+  goal: string
+  app: string | null
+  scope: ComputerUseScope
+  created_at_mono: number
+  created_at_wall: number
+}
+
+export type RustSession = {
+  id: string
+  state: RustSessionState
+  goal: string
+  target_app: string | null
+  scope: ComputerUseScope
+  allowlist_version: number
+  self_test_enabled: boolean
+  screenshot_attach_to_llm: boolean
+  pid_lock: number
+  started_at_mono: number
+  started_at_wall: number
+  last_activity_mono: number
+  idle_timeout_secs: number
+}
+
+export type RustStopReason = 'user_cancelled' | 'emergency'
+
+export type ComputerUseApp = {
+  bundleId: string
+  name: string
+  pid: number
+  isFrontmost: boolean
+}
+
+export type ComputerUsePermissions = {
+  accessibility: 'granted' | 'missing'
+  screenRecording: 'granted' | 'missing'
+}
 
 // ── Helper: subscribe to Tauri event, returns cleanup fn ────────
 function onEvent<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -350,11 +398,63 @@ const api = {
   getComputerUseAllowlist: () =>
     invoke<ComputerUseAllowlistEntry[]>('get_computer_use_allowlist'),
   // Upserts an entry. If bundleId already exists, scope is updated.
+  // Returns the full updated UserSettings (Rust shape).
   updateComputerUseAllowlist: (entry: ComputerUseAllowlistEntry) =>
-    invoke<ComputerUseAllowlistEntry[]>('update_computer_use_allowlist', { entry }),
-  // Removes an entry by bundleId.
+    invoke<UserSettings>('update_computer_use_allowlist', { entry }),
+  // Removes an entry by bundleId. Returns full updated UserSettings.
   removeComputerUseAllowlist: (bundleId: string) =>
-    invoke<ComputerUseAllowlistEntry[]>('remove_computer_use_allowlist', { bundleId }),
+    invoke<UserSettings>('remove_computer_use_allowlist', { bundleId }),
+
+  // ── Computer Use session IPC (Geralt P0.2/P0.3) ────────────
+  // Step 1: create a pending consent request. Returns the request (with ID).
+  // Session is NOT active yet — user must call grantComputerUseSession.
+  requestComputerUseSession: (goal: string, app: string | null, scope: ComputerUseScope) =>
+    invoke<RustConsentRequest>('request_computer_use_session', { goal, app, scope }),
+  // Step 2: user grants consent. Returns the active session.
+  // screenshotAttachToLlm controls whether screenshots are sent to the model.
+  grantComputerUseSession: (requestId: string, screenshotAttachToLlm: boolean) =>
+    invoke<RustSession>('grant_computer_use_session', {
+      requestId,
+      screenshotAttachToLlm,
+    }),
+  // Deny a pending consent request. Always UserDenied reason on Rust side.
+  denyComputerUseSession: (requestId: string) =>
+    invoke<void>('deny_computer_use_session', { requestId }),
+  // Stop an active session. reason: 'user_cancelled' | 'emergency' | other.
+  stopComputerUseSession: (sessionId: string, reason: RustStopReason) =>
+    invoke<void>('stop_computer_use_session', { sessionId, reason }),
+  pauseComputerUseSession: (sessionId: string) =>
+    invoke<RustSession>('pause_computer_use_session', { sessionId }),
+  resumeComputerUseSession: (sessionId: string) =>
+    invoke<RustSession>('resume_computer_use_session', { sessionId }),
+  // List running apps (requires active session). Returns null if no session.
+  listApps: () =>
+    invoke<unknown>('list_apps'),
+  listComputerUseApps: () =>
+    invoke<ComputerUseApp[]>('list_computer_use_apps'),
+  resolveComputerUseApp: (selector: string) =>
+    invoke<{ bundleId: string; name: string; running: boolean }>('resolve_computer_use_app', { selector }),
+  getComputerUsePermissions: () =>
+    invoke<ComputerUsePermissions>('get_computer_use_permissions'),
+  requestComputerUsePermissions: () =>
+    invoke<ComputerUsePermissions>('request_computer_use_permissions'),
+  openComputerUsePermissionSettings: (kind: 'accessibility' | 'screenRecording') =>
+    invoke<void>('open_computer_use_permission_settings', { kind }),
+
+  // ── Computer Use events (Geralt — not yet wired on Rust side) ──
+  // When Geralt adds emit() calls, these listeners will fire. Until then,
+  // the store drives state via invoke responses. Hooks attach unconditionally;
+  // no-op if Rust doesn't emit.
+  onComputerUseStateChange: (callback: (session: RustSession) => void) =>
+    onEvent<RustSession>('computer-use:state-change', callback),
+  onComputerUseAction: (callback: (action: unknown) => void) =>
+    onEvent<unknown>('computer-use:action', callback),
+  onComputerUseEmergencyStop: (callback: () => void) =>
+    onEvent<void>('computer-use:emergency-stop', callback),
+  onComputerUseTurnComplete: (callback: () => void) =>
+    onEvent<void>('computer-use:turn-complete', callback),
+  onComputerUseCleanupFailed: (callback: (message: string) => void) =>
+    onEvent<string>('computer-use:cleanup-failed', callback),
 }
 
 // ── Expose on window (Tauri only) ──────────────────────────────

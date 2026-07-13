@@ -1,6 +1,10 @@
 mod models;
 mod services;
 
+pub fn run_computer_use_mcp() -> Result<(), String> {
+    services::computer_use_mcp::run_stdio()
+}
+
 use std::sync::Mutex;
 
 use models::types::*;
@@ -327,6 +331,7 @@ fn request_computer_use_session(
     scope: crate::models::types::ComputerUseScope,
 ) -> Result<crate::models::computer_use::ConsentRequest, String> {
     let settings = store.get()?;
+    cu.sessions.disarm_emergency();
     cu.sessions.request_session(&settings.computer_use, goal, app, scope)
         .map_err(|e| format!("session request denied: {:?}", e))
 }
@@ -336,6 +341,7 @@ fn request_computer_use_session(
 fn grant_computer_use_session(
     cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
     store: tauri::State<'_, SettingsStore>,
+    app_handle: tauri::AppHandle,
     request_id: String,
     screenshot_attach_to_llm: bool,
 ) -> Result<crate::models::computer_use::Session, String> {
@@ -347,7 +353,19 @@ fn grant_computer_use_session(
         screenshot_attach_to_llm,
         idle_timeout_secs: settings.computer_use.idle_timeout_seconds as u64,
     };
-    cu.sessions.grant_session(grant).map_err(|e| format!("grant denied: {:?}", e))
+    let session = cu.sessions.grant_session(grant).map_err(|e| format!("grant denied: {:?}", e))?;
+    let app = session.target_app.as_deref().ok_or("computer-use consent has no target app")?;
+    let sessions = cu.sessions.clone();
+    if let Err(error) = crate::services::computer_use_mcp::activate(&session.id, app, &session.goal, session.idle_timeout_secs, session.screenshot_attach_to_llm, move || {
+        use tauri::Emitter;
+        sessions.emergency_stop_all();
+        let _ = app_handle.emit("computer-use:emergency-stop", ());
+    }) {
+        let _ = cu.sessions.stop(&session.id, crate::models::computer_use::StopReason::Error);
+        let _ = crate::services::computer_use_mcp::revoke();
+        return Err(error);
+    }
+    Ok(session)
 }
 
 /// Deny a pending consent request.
@@ -372,9 +390,76 @@ fn stop_computer_use_session(
         Some("emergency") => crate::models::computer_use::StopReason::EmergencyStop,
         _ => crate::models::computer_use::StopReason::UserCancelled,
     };
-    cu.sessions.stop(&session_id, r)
+    crate::services::computer_use_mcp::revoke_session(&session_id)?;
+    cu.stop(&session_id, r)
         .map_err(|e| format!("stop denied: {:?}", e))?;
     Ok(())
+}
+
+#[tauri::command]
+fn pause_computer_use_session(
+    cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
+    session_id: String,
+) -> Result<crate::models::computer_use::Session, String> {
+    crate::services::computer_use_mcp::set_paused(&session_id, true)?;
+    match cu.pause(&session_id) {
+        Ok(session) => Ok(session),
+        Err(error) => {
+            let _ = crate::services::computer_use_mcp::set_paused(&session_id, false);
+            Err(format!("pause denied: {error:?}"))
+        }
+    }
+}
+
+#[tauri::command]
+fn resume_computer_use_session(
+    cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
+    session_id: String,
+) -> Result<crate::models::computer_use::Session, String> {
+    let session = cu.resume(&session_id).map_err(|e| format!("resume denied: {e:?}"))?;
+    if let Err(error) = crate::services::computer_use_mcp::set_paused(&session_id, false) {
+        let _ = cu.pause(&session_id);
+        return Err(error);
+    }
+    Ok(session)
+}
+
+/// List running apps for the pre-consent target picker. This exposes metadata
+/// only and does not create or widen a Computer Use capability.
+#[tauri::command]
+fn list_computer_use_apps(
+    store: tauri::State<'_, SettingsStore>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let settings = store.get()?;
+    let mut blocked: std::collections::HashSet<String> = settings
+        .computer_use
+        .denylist
+        .iter()
+        .map(|bundle| bundle.to_lowercase())
+        .collect();
+    blocked.extend([
+        "ai.verboo.code.desktop".to_string(),
+        "com.apple.systempreferences".to_string(),
+        "com.apple.loginwindow".to_string(),
+    ]);
+    let result = crate::services::computer_use_service::invoke_helper_once(
+        "list-apps",
+        &serde_json::json!({}),
+    )
+    .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let apps = result
+        .get("apps")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("computer-use helper returned an invalid app list")?;
+    Ok(apps
+        .iter()
+        .filter(|app| {
+            app.get("bundleId")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|bundle| !blocked.contains(&bundle.to_lowercase()))
+        })
+        .cloned()
+        .collect())
 }
 
 /// List running apps (requires active session). The helper's `list-apps`
@@ -391,6 +476,52 @@ fn list_apps(
         return Err(format!("{}: {}", err.code, err.message));
     }
     Ok(result.result.unwrap_or(serde_json::Value::Null))
+}
+
+#[tauri::command]
+fn resolve_computer_use_app(
+    cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
+    selector: String,
+) -> Result<serde_json::Value, String> {
+    cu.resolve_app(&selector).map_err(|error| format!("{}: {}", error.code, error.message))
+}
+
+#[tauri::command]
+fn get_computer_use_permissions() -> Result<serde_json::Value, String> {
+    crate::services::computer_use_service::invoke_helper_once(
+        "permissions",
+        &serde_json::json!({}),
+    ).map_err(|error| format!("{}: {}", error.code, error.message))
+}
+
+#[tauri::command]
+fn request_computer_use_permissions() -> Result<serde_json::Value, String> {
+    crate::services::computer_use_service::invoke_helper_once(
+        "request-permissions",
+        &serde_json::json!({}),
+    ).map_err(|error| format!("{}: {}", error.code, error.message))
+}
+
+#[tauri::command]
+fn open_computer_use_permission_settings(kind: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let url = match kind.as_str() {
+            "accessibility" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+            "screenRecording" => "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+            _ => return Err("Unknown Computer Use permission kind.".into()),
+        };
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|error| format!("Could not open System Settings: {error}"))?;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = kind;
+        Ok(())
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1629,7 +1760,14 @@ pub fn run() {
             grant_computer_use_session,
             deny_computer_use_session,
             stop_computer_use_session,
+            pause_computer_use_session,
+            resume_computer_use_session,
+            list_computer_use_apps,
             list_apps,
+            resolve_computer_use_app,
+            get_computer_use_permissions,
+            request_computer_use_permissions,
+            open_computer_use_permission_settings,
             // Background turn completion notification (item 1.5)
             fire_completion_notification,
             // Defaults

@@ -57,6 +57,36 @@ describe('parseReservedSlashCommand', () => {
     })
   })
 
+  it('parses an explicit computer-use request with target app and goal', () => {
+    expect(parseReservedSlashCommand('/computer-use "Notes" open it and type hello')).toEqual<ReservedSlashCommand>({
+      kind: 'computer-use',
+      app: 'Notes',
+      goal: 'open it and type hello',
+      raw: '/computer-use "Notes" open it and type hello',
+    })
+  })
+
+  it('parses computer-use requests when the app or goal is omitted', () => {
+    expect(parseReservedSlashCommand('/computer-use')).toEqual<ReservedSlashCommand>({
+      kind: 'computer-use',
+      raw: '/computer-use',
+    })
+    expect(parseReservedSlashCommand('/computer-use update the release note')).toEqual<ReservedSlashCommand>({
+      kind: 'computer-use',
+      goal: 'update the release note',
+      raw: '/computer-use update the release note',
+    })
+  })
+
+  it('accepts quoted application names with spaces', () => {
+    expect(parseReservedSlashCommand('/computer-use "Google Chrome" open a new tab')).toEqual<ReservedSlashCommand>({
+      kind: 'computer-use',
+      app: 'Google Chrome',
+      goal: 'open a new tab',
+      raw: '/computer-use "Google Chrome" open a new tab',
+    })
+  })
+
   it('parses bare /goal as show action', () => {
     const result = parseReservedSlashCommand('/goal')
     expect(result).toEqual<ReservedSlashCommand>({ kind: 'goal', action: 'show', raw: '/goal' })
@@ -164,12 +194,14 @@ describe('isReservedSlashQuery', () => {
     expect(isReservedSlashQuery('/goal')).toBe(true)
     expect(isReservedSlashQuery('/pet')).toBe(true)
     expect(isReservedSlashQuery('/compact')).toBe(true)
+    expect(isReservedSlashQuery('/computer-use')).toBe(true)
   })
 
   it('returns true for compact prefixes', () => {
     expect(isReservedSlashQuery('/c')).toBe(true)
     expect(isReservedSlashQuery('/co')).toBe(true)
     expect(isReservedSlashQuery('/comp')).toBe(true)
+    expect(isReservedSlashQuery('/computer')).toBe(true)
   })
 
   it('returns false once arguments are present', () => {

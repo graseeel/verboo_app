@@ -43,6 +43,7 @@ type ComposerProps = {
   onGoalCommand: (command: Extract<ReservedSlashCommand, { kind: 'goal' }>) => void
   onPetCommand: () => void
   onCompactCommand: (command: Extract<ReservedSlashCommand, { kind: 'compact' }>) => void
+  onComputerUseCommand: (command: Extract<ReservedSlashCommand, { kind: 'computer-use' }>) => void
   leftToolbar: ReactNode
   centerToolbar?: ReactNode
   rightToolbar: ReactNode
@@ -77,6 +78,7 @@ export function Composer({
   onGoalCommand,
   onPetCommand,
   onCompactCommand,
+  onComputerUseCommand,
   leftToolbar,
   centerToolbar,
   rightToolbar,
@@ -165,6 +167,10 @@ export function Composer({
     {
       name: 'compact',
       description: t('composer.compactDescription'),
+    },
+    {
+      name: 'computer-use',
+      description: 'Control one explicitly authorized Mac app',
     },
   ], [t])
   const matchingCommands = useMemo(() => {
@@ -278,6 +284,11 @@ export function Composer({
     }
     if (reserved?.kind === 'compact') {
       onCompactCommand(reserved)
+      setValue('')
+      return
+    }
+    if (reserved?.kind === 'computer-use') {
+      onComputerUseCommand(reserved)
       setValue('')
       return
     }

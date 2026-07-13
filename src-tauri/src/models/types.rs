@@ -859,6 +859,8 @@ pub struct AgentTurnRequest {
     pub turn_id: Option<String>,
     pub conversation_id: String,
     pub message: String,
+    #[serde(default)]
+    pub computer_use_session_id: Option<String>,
     pub model: Option<String>,
     pub model_supports_vision: Option<bool>,
     #[serde(default)]

@@ -83,6 +83,7 @@ pub struct Session {
     pub id: String,
     pub state: SessionState,
     pub goal: String,
+    pub target_app: Option<String>,
     pub scope: ActionScope,
     pub allowlist_version: u64,
     pub self_test_enabled: bool,

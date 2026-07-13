@@ -6,5 +6,7 @@
   <string>Verboo Code uses your microphone for voice input. The mic is only enabled when you press the microphone button on the composer.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
   <string>Verboo Code uses speech recognition to transcribe your voice input when you press the microphone button on the composer.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>Verboo Code captures only the explicitly authorized app window so the agent can see and verify Computer Use actions.</string>
 </dict>
 </plist>

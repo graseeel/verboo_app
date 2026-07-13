@@ -526,6 +526,7 @@ export type AgentTurnRequest = {
   turnId?: string
   conversationId: string
   message: string
+  computerUseSessionId?: string
   model?: string
   modelSupportsVision?: boolean
   runVisionFallback?: boolean
@@ -933,8 +934,8 @@ export type ComputerUseAllowlistEntry = {
   scope: ComputerUseScope
   /** Unix ms when the entry was added. */
   addedAt: number
-  /** Unix ms when last used in an active CU session. */
-  lastUsedAt: number
+  /** Unix ms when last used in an active CU session. Rust field: last_used. */
+  lastUsed: number
   /** Counter incremented on every action against this app. */
   actionCount: number
   /** When true, screenshots blocked for this app (tree only). Default false. */
