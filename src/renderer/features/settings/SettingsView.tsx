@@ -23,6 +23,7 @@ import {
   Trash2,
   UserCog,
   MonitorSmartphone,
+  FolderOpen,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type {
@@ -112,6 +113,7 @@ export function SettingsView({
   const [customDraft, setCustomDraft] = useState(userSettings.customInstructions)
   const [computerUsePermissions, setComputerUsePermissions] = useState<ComputerUsePermissions>()
   const [requestingComputerUsePermissions, setRequestingComputerUsePermissions] = useState(false)
+  const [computerUseHelperPath, setComputerUseHelperPath] = useState<string | undefined>()
   const [confirmingFullAccess, setConfirmingFullAccess] = useState<'mode-selector' | 'capability' | false>(false)
   const settingsTabs: Array<{ id: SettingsTab; label: string; icon: typeof Shield }> = [
     { id: 'permissions', label: t('settings.permissions'), icon: Shield },
@@ -152,6 +154,7 @@ export function SettingsView({
   useEffect(() => {
     if (activeTab !== 'computerUse') return
     void refreshComputerUsePermissions()
+    void refreshComputerUseHelperPath()
   }, [activeTab])
 
   async function refreshComputerUsePermissions() {
@@ -162,11 +165,25 @@ export function SettingsView({
     }
   }
 
+  async function refreshComputerUseHelperPath() {
+    try {
+      setComputerUseHelperPath(await window.verboo.getComputerUseHelperPath())
+    } catch {
+      setComputerUseHelperPath(undefined)
+    }
+  }
+
   async function requestNativeComputerUsePermissions() {
     setRequestingComputerUsePermissions(true)
     try {
       const permissions = await window.verboo.requestComputerUsePermissions()
       setComputerUsePermissions(permissions)
+      // Open both TCC panes so the user can enable Verboo Code and/or
+      // computer-use-helper. macOS lists the helper as a separate entry
+      // for ad-hoc builds; signed product may show both.
+      await window.verboo.openComputerUsePermissionSettings('accessibility')
+      await window.verboo.openComputerUsePermissionSettings('screenRecording')
+      await refreshComputerUseHelperPath()
       if (permissions.accessibility !== 'granted' || permissions.screenRecording !== 'granted') {
         toast(t('settings.computerUsePermissionsRestart'), 'info')
       }
@@ -174,6 +191,32 @@ export function SettingsView({
       toast(error instanceof Error ? error.message : t('settings.computerUsePermissionsError'), 'error')
     } finally {
       setRequestingComputerUsePermissions(false)
+    }
+  }
+
+  async function revealComputerUseHelper() {
+    try {
+      await window.verboo.revealComputerUseHelper()
+    } catch {
+      toast(t('settings.computerUseHelperRevealFailed'), 'error')
+    }
+  }
+
+  // When the user toggles Computer Use enabled ON and OS permissions are
+  // missing, auto-trigger the grant helper flow. Non-blocking: the toggle
+  // still flips, the toast informs, and the grant flow opens the panes.
+  async function handleComputerUseEnableToggle(enabled: boolean) {
+    onUserSettingsChange({ computerUse: { ...userSettings.computerUse, enabled } })
+    if (!enabled) return
+    try {
+      const permissions = await window.verboo.getComputerUsePermissions()
+      if (permissions.accessibility !== 'granted' || permissions.screenRecording !== 'granted') {
+        toast(t('settings.computerUseEnableAutoGrant'), 'info')
+        void requestNativeComputerUsePermissions()
+      }
+    } catch {
+      // Permission check failed — don't block the toggle. The user can
+      // click "Authorize on macOS" manually in the permissions panel.
     }
   }
 
@@ -480,6 +523,36 @@ export function SettingsView({
                   {t('common.refresh')}
                 </button>
               </div>
+              <div className="settings-row settings-row--control computer-use-helper-row">
+                <FolderOpen size={16} />
+                <div>
+                  <strong>{t('settings.computerUseHelperPathTitle')}</strong>
+                  <small>{t('settings.computerUseHelperPathBody')}</small>
+                  {computerUseHelperPath ? (
+                    <code className="computer-use-helper-path">{computerUseHelperPath}</code>
+                  ) : (
+                    <small className="computer-use-helper-path-unavailable">
+                      {t('settings.computerUseHelperPathUnavailable')}
+                    </small>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="choice-chip"
+                  disabled={!computerUseHelperPath}
+                  onClick={() => void revealComputerUseHelper()}
+                >
+                  <FolderOpen size={13} />
+                  {t('settings.computerUseHelperReveal')}
+                </button>
+              </div>
+              <p className="computer-use-tcc-copy">
+                {t('settings.computerUseTccCopySigned')}
+                <br />
+                <span className="computer-use-tcc-copy-adhoc">
+                  {t('settings.computerUseTccCopyAdHoc')}
+                </span>
+              </p>
             </section>
 
             <section className="settings-panel">
@@ -753,7 +826,7 @@ export function SettingsView({
                 title={t('settings.computerUseEnableTitle')}
                 body={t('settings.computerUseEnableBody')}
                 checked={userSettings.computerUse.enabled}
-                onChange={enabled => onUserSettingsChange({ computerUse: { ...userSettings.computerUse, enabled } })}
+                onChange={enabled => void handleComputerUseEnableToggle(enabled)}
               />
             </section>
 
