@@ -139,6 +139,40 @@ fn find_dev_helper(triple: &str) -> Option<PathBuf> {
     }
 }
 
+/// Resolve the absolute path to the computer-use-helper binary, or None if
+/// only a PATH-based (unresolvable) fallback exists.
+///
+/// Resolution order (same as `ComputerUseSpawn::new()`):
+///   1. `VERBOO_COMPUTER_USE_HELPER` env var.
+///   2. Bundled sidecar at `<Resources>/computer-use-helper[-<triple>]`.
+///   3. Local dev build at `<src-tauri>/binaries/computer-use-helper-<triple>`.
+///
+/// PATH-only resolution returns None (cannot verify it resolves at runtime).
+pub fn resolved_helper_path() -> Option<PathBuf> {
+    let triple = target_triple();
+
+    // 1. Env override.
+    if let Ok(p) = std::env::var("VERBOO_COMPUTER_USE_HELPER") {
+        let path = PathBuf::from(p);
+        if path.exists() && path.is_file() {
+            return Some(path);
+        }
+    }
+
+    // 2. Bundled sidecar.
+    if let Some(path) = find_bundled_helper(triple) {
+        return Some(path);
+    }
+
+    // 3. Local dev build.
+    if let Some(path) = find_dev_helper(triple) {
+        return Some(path);
+    }
+
+    // 4. PATH — no proof it resolves.
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +190,14 @@ mod tests {
         // We can't assert which runtime without machine-specific paths,
         // but the Display impl must not panic.
         let _ = spawn.runtime.to_string();
+    }
+
+    #[test]
+    fn resolved_helper_path_returns_some_in_dev_mode() {
+        // On this dev machine the helper should exist at
+        // <src-tauri>/binaries/computer-use-helper-<triple>.
+        let path = resolved_helper_path();
+        assert!(path.is_some(), "expected dev build to exist on this machine");
+        assert!(path.as_ref().map_or(false, |p| p.is_file()), "resolved path is not a file");
     }
 }

@@ -547,6 +547,37 @@ fn open_computer_use_permission_settings(kind: String) -> Result<(), String> {
     }
 }
 
+/// Returns the absolute path to the computer-use-helper binary, or an error
+/// if it could not be resolved (neither bundled, env override, nor dev build).
+#[tauri::command]
+fn get_computer_use_helper_path() -> Result<String, String> {
+    crate::services::computer_use_spawn::resolved_helper_path()
+        .map(|p| p.to_string_lossy().into_owned())
+        .ok_or_else(|| "computer-use-helper binary not found — try a dev build or set VERBOO_COMPUTER_USE_HELPER".to_string())
+}
+
+/// Reveals the computer-use-helper binary in Finder (macOS only).
+/// On other platforms this is a no-op.
+#[tauri::command]
+fn reveal_computer_use_helper() -> Result<(), String> {
+    let path = crate::services::computer_use_spawn::resolved_helper_path()
+        .ok_or_else(|| "computer-use-helper binary not found — try a dev build or set VERBOO_COMPUTER_USE_HELPER".to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Could not reveal helper in Finder: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        return Err("Reveal in Finder is only supported on macOS".to_string());
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════
 // Vision fallback (FASE 1)
 // ════════════════════════════════════════════════════════════════════
@@ -1792,6 +1823,8 @@ pub fn run() {
             get_computer_use_permissions,
             request_computer_use_permissions,
             open_computer_use_permission_settings,
+            get_computer_use_helper_path,
+            reveal_computer_use_helper,
             // Background turn completion notification (item 1.5)
             fire_completion_notification,
             // Defaults

@@ -443,6 +443,10 @@ const api = {
     invoke<ComputerUsePermissions>('request_computer_use_permissions'),
   openComputerUsePermissionSettings: (kind: 'accessibility' | 'screenRecording') =>
     invoke<void>('open_computer_use_permission_settings', { kind }),
+  getComputerUseHelperPath: () =>
+    invoke<string>('get_computer_use_helper_path'),
+  revealComputerUseHelper: () =>
+    invoke<void>('reveal_computer_use_helper'),
 
   // ── Computer Use events (Geralt — not yet wired on Rust side) ──
   // When Geralt adds emit() calls, these listeners will fire. Until then,
