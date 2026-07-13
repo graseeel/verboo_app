@@ -794,14 +794,28 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 38px;
-  width: 38px;
-  height: 38px;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
   border: 0;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 84%, white);
+  /* Solid accent fill so the send ball reads as a committed primary action
+     in dark mode (earlier 84% accent + white mix washed it out against the
+     elevated composer surface). accent-strong is the same purple used for
+     selected rows / focus rings, so the toolbar has one clear visual anchor. */
+  background: var(--accent-strong);
   color: white;
   cursor: pointer;
+  transition: transform 120ms var(--dropdown-ease), background-color 120ms var(--dropdown-ease);
+}
+
+.send-button:hover {
+  background: color-mix(in srgb, var(--accent-strong) 88%, white);
+}
+
+.send-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .selected-skills {

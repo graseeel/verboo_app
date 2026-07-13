@@ -143,7 +143,22 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   avatar: undefined,
   includeVerbooCoAuthor: false,
 }
-const EMPTY_LINE_KEYS = ['empty.line1', 'empty.line2', 'empty.line3', 'empty.line4'] as const
+const EMPTY_LINE_KEYS = [
+  'empty.line1',
+  'empty.line2',
+  'empty.line3',
+  'empty.line4',
+  'empty.line5',
+  'empty.line6',
+  'empty.line7',
+  'empty.line8',
+  'empty.line9',
+  'empty.line10',
+  'empty.line11',
+  'empty.line12',
+  'empty.line13',
+  'empty.line14',
+] as const
 
 type TurnActivity = RuntimeActivity
 
@@ -2950,6 +2965,10 @@ export function App() {
         ),
       }))
       if (project.path) setConfig(current => ({ ...current, workingDirectory: project.path ?? current.workingDirectory }))
+    } else {
+      // No project on this new chat — reset the working directory to the host
+      // default so the badge doesn't keep showing the previous project's path.
+      setConfig(current => ({ ...current, workingDirectory: defaultWorkingDirectoryRef.current }))
     }
     setActiveConversationId(undefined)
     setSelectedProjectId(project?.id)
@@ -2970,6 +2989,12 @@ export function App() {
   function clearProjectSelection() {
     setSelectedProjectId(undefined)
     setActiveConversationId(undefined)
+    // Reset the working directory to the host default so the workspace badge
+    // and terminal don't keep showing the previous project's path after the
+    // user clears the selection. Without this, `config.workingDirectory` stays
+    // pinned to the last project and the badge reads "northstar-commerce" even
+    // though no project is active.
+    setConfig(current => ({ ...current, workingDirectory: defaultWorkingDirectoryRef.current }))
     setActiveView('chat')
   }
 
@@ -2981,7 +3006,15 @@ export function App() {
       : undefined
     setActiveConversationId(conversation.id)
     setSelectedProjectId(project?.id)
-    if (project?.path) setConfig(current => ({ ...current, workingDirectory: project.path ?? current.workingDirectory }))
+    if (project?.path) {
+      setConfig(current => ({ ...current, workingDirectory: project.path ?? current.workingDirectory }))
+    } else {
+      // Conversation has no project — reset the working directory to the host
+      // default so the badge and terminal don't keep showing the previous
+      // project's path. This is the root cause of the "badge still says
+      // northstar-commerce after switching to a loose chat" bug.
+      setConfig(current => ({ ...current, workingDirectory: defaultWorkingDirectoryRef.current }))
+    }
     setActiveView('chat')
 
     // Hydrate goal state from the stored conversation. Only active/paused
@@ -4205,7 +4238,7 @@ export function App() {
               <div ref={transcriptEndRef} className="transcript-end" />
             </>
           ) : (
-            <EmptyChat projectName={projectName || t('project.none')} line={emptyLine} />
+            <EmptyChat hasProject={Boolean(activeProject?.name)} projectName={projectName} line={emptyLine} />
           )}
         </section>
         {showSubagentThreadPanel && selectedSubagent && (

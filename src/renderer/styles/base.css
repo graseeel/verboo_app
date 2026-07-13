@@ -40,11 +40,13 @@
   --shimmer-spread: 7rem;
   --shimmer-color: color-mix(in srgb, var(--accent-strong) 54%, white 46%);
   --shimmer-base-color: color-mix(in srgb, var(--text-muted) 82%, var(--accent-strong));
-  --dropdown-open-dur: 250ms;
-  --dropdown-close-dur: 150ms;
+  --dropdown-open-dur: 180ms;
+  --dropdown-close-dur: 130ms;
   --dropdown-pre-scale: 0.97;
   --dropdown-closing-scale: 0.99;
-  --dropdown-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  /* ease-out forte — saida rápida no início, desacelera no fim. Sentido UI:
+     entradas de dropdown/menu sentem instantâneas mas não abruptas. */
+  --dropdown-ease: cubic-bezier(0.23, 1, 0.32, 1);
   --modal-open-dur: 250ms;
   --modal-close-dur: 150ms;
   --modal-scale: 0.96;
@@ -591,4 +593,15 @@ input[type="checkbox"]:focus-visible {
 input[type="checkbox"]:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+/* Reduced motion: dropdowns/menus become opacity-only ~80ms, no scale/translate.
+   The scale(0.97) enter and scale(0.99) exit are muted to 1 (no transform) so
+   users with vestibular sensitivity get a calm fade instead of a pop. */
+@media (prefers-reduced-motion: reduce) {
+  .t-dropdown,
+  .t-dropdown.is-closing {
+    transform: none !important;
+    transition: opacity 80ms ease-out !important;
+  }
 }
