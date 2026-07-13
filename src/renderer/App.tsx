@@ -69,7 +69,6 @@ import { SkillApprovalPanel } from './features/skills/SkillApprovalPanel'
 import type { ExtractionStatus, ModelReasoning, VisionFallbackConsent, VisionFallbackState } from '../shared/types'
 import { recognizeImage } from './features/ocr/ocrService'
 import { Composer } from './features/composer/Composer'
-import { ContextMeter } from './features/context/ContextMeter'
 import { estimateTotalContextTokens } from './features/context/ContextPanel'
 import { TokenRateMeter } from './features/context/TokenRateMeter'
 import { FeedbackDialog } from './features/feedback/FeedbackDialog'
@@ -4419,7 +4418,6 @@ export function App() {
             rightToolbar={
               <>
                 <TokenRateMeter rate={tokenRate} active={Boolean(runningTurnId)} />
-                <ContextMeter usage={effectiveContextUsage} contextWindow={selectedContextWindow} />
                 <ModelSelector
                   models={modelResult.models}
                   selectedModel={selectedModel}
