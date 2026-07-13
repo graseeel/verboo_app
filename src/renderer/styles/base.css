@@ -605,3 +605,9 @@ input[type="checkbox"]:disabled {
     transition: opacity 80ms ease-out !important;
   }
 }
+
+/* Generic spinner utility — applies to any icon (e.g. lucide Loader2) that
+   needs to rotate. Reuses the subagent-spin keyframe cadence. */
+.t-spin {
+  animation: subagent-spin 1.1s linear infinite;
+}

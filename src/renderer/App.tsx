@@ -75,6 +75,7 @@ import { FeedbackDialog } from './features/feedback/FeedbackDialog'
 import { ModelSelector } from './features/models/ModelSelector'
 import { validOverride, displayEffort, migrateEffortPrefs } from './features/models/effortOverride'
 import { ProfileView } from './features/profile/ProfileView'
+import { PluginsView } from './features/plugins/PluginsView'
 import { ProjectPicker } from './features/projects/ProjectPicker'
 import { SettingsView } from './features/settings/SettingsView'
 import mascotUrl from '../../assets/branding/verboo-mascot.png'
@@ -504,7 +505,7 @@ export function App() {
   const sidebarVisualMode = sidebarMode === 'hidden' && sidebarPeek && !sidebarPeekLeaving ? 'expanded' : sidebarMode
   // Fullscreen views (Profile / Settings) don't render the sidebar at all —
   // collapse the column to 0 so the workspace takes the full grid width.
-  const isFullscreenView = activeView === 'settings' || activeView === 'profile'
+  const isFullscreenView = activeView === 'settings' || activeView === 'profile' || activeView === 'plugins'
   const effectiveSidebarWidth = isFullscreenView
     ? 0
     : sidebarVisualMode === 'hidden'
@@ -771,10 +772,10 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    // ESC closes both settings and profile fullscreen views. Earlier this only
-    // handled settings, so profile had no keyboard escape — users had to click
-    // the back button. Now both views respond to ESC.
-    if (activeView !== 'settings' && activeView !== 'profile') return undefined
+    // ESC closes settings, profile, and plugins fullscreen views. Earlier this
+    // only handled settings, so profile/plugins had no keyboard escape — users
+    // had to click the back button. Now all three views respond to ESC.
+    if (activeView !== 'settings' && activeView !== 'profile' && activeView !== 'plugins') return undefined
 
     function handleEscape(event: KeyboardEvent) {
       if (event.key === 'Escape') {
@@ -2568,7 +2569,9 @@ export function App() {
 
   useEffect(() => {
     function handlePaletteShortcut(event: KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+      // ⌘K (mac) / Ctrl+K (win/linux) toggles the palette. ⌘P is an alias —
+      // common in editors (VS Code "Quick Open") and feels natural for search.
+      if ((event.metaKey || event.ctrlKey) && (event.key.toLowerCase() === 'k' || event.key.toLowerCase() === 'p')) {
         event.preventDefault()
         setPaletteOpen(current => !current)
       }
@@ -2581,6 +2584,7 @@ export function App() {
   // referencing callbacks declared later in the component is safe here.
   const paletteActions: PaletteAction[] = useMemo(() => [
     { key: 'new-chat', label: t('palette.newChat'), icon: paletteIcons.newChat, run: () => { setActiveView('chat'); newChat() } },
+    { key: 'plugins', label: t('palette.openPlugins'), icon: paletteIcons.plugins, run: () => setActiveView('plugins') },
     { key: 'settings', label: t('palette.openSettings'), icon: paletteIcons.settings, run: () => setActiveView('settings') },
     { key: 'theme', label: t('palette.toggleTheme'), icon: paletteIcons.theme, run: () => cycleTheme() },
     { key: 'terminal', label: t('palette.toggleTerminal'), icon: paletteIcons.terminal, run: () => handleToggleTerminal(currentWorkspaceDirectory) },
@@ -4194,9 +4198,9 @@ export function App() {
       />
 
       <div
-        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' || activeView === 'profile' ? 'view-fullscreen' : ''} ${terminal.terminalOpen ? 'terminal-open' : ''} ${review.reviewOpen ? 'review-open' : ''}`}
+        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' || activeView === 'profile' || activeView === 'plugins' ? 'view-fullscreen' : ''} ${terminal.terminalOpen ? 'terminal-open' : ''} ${review.reviewOpen ? 'review-open' : ''}`}
       >
-        {activeView !== 'settings' && activeView !== 'profile' && sidebarMode === 'hidden' && !sidebarPeek && !sidebarPeekLeaving && (
+        {activeView !== 'settings' && activeView !== 'profile' && activeView !== 'plugins' && sidebarMode === 'hidden' && !sidebarPeek && !sidebarPeekLeaving && (
           // Rail: thin hit-area on the left edge. Hover/focus expands the
           // sidebar transiently (peek) without persisting. Tab-focusable so
           // keyboard users can open it without a pointer. Hidden while the
@@ -4221,7 +4225,7 @@ export function App() {
           />
         )}
 
-        {activeView !== 'settings' && activeView !== 'profile' && (sidebarMode !== 'hidden' || sidebarPeek || sidebarPeekLeaving) && (
+        {activeView !== 'settings' && activeView !== 'profile' && activeView !== 'plugins' && (sidebarMode !== 'hidden' || sidebarPeek || sidebarPeekLeaving) && (
           <div
             className={`sidebar-shell ${sidebarPeek && !sidebarPeekLeaving ? 'is-peek' : ''} ${sidebarPeekLeaving && !sidebarPeek ? 'is-peek-leaving' : ''}`}
             onMouseEnter={sidebarPeek || sidebarPeekLeaving ? showSidebarPeek : undefined}
@@ -4244,6 +4248,7 @@ export function App() {
                 setSettingsTab('permissions')
                 setActiveView('settings')
               }}
+              onOpenSearch={() => setPaletteOpen(true)}
               onOpenFeedback={() => setFeedbackOpen(true)}
               onLogout={logout}
               onNewChat={newChat}
@@ -4293,6 +4298,8 @@ export function App() {
               onUpdateAvatar={avatar => updateUserSettings({ avatar })}
               onClose={() => setActiveView('chat')}
             />
+          ) : activeView === 'plugins' ? (
+            <PluginsView onClose={() => setActiveView('chat')} />
           ) : activeView === 'settings' ? (
             <SettingsView
               credentials={credentials}

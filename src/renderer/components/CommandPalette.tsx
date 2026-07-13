@@ -1,4 +1,4 @@
-import { Ghost, MessageSquare, MessageSquarePlus, Moon, PanelLeft, Search, Settings, Shrink, SquareTerminal, FileDiff } from 'lucide-react'
+import { Blocks, Ghost, MessageSquare, MessageSquarePlus, Moon, PanelLeft, Search, Settings, Shrink, SquareTerminal, FileDiff } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { StoredConversation } from '../../shared/types'
 import { useI18n } from '../i18n'
@@ -50,11 +50,25 @@ export function CommandPalette({ open, conversations, actions, onSelectConversat
     return matches.slice(0, 8)
   }, [conversations, normalizedQuery, t])
 
+  // Recents: top 5 chats by updatedAt, shown only when the query is empty.
+  // Gives the empty-state palette immediate utility — the user sees their most
+  // recent conversations without typing. Distinct from visibleChats (which is
+  // the filtered search list) so the two sections can render independently.
+  const recentChats = useMemo(() => {
+    if (normalizedQuery) return []
+    return conversations
+      .filter(conversation => !conversation.archivedAt)
+      .slice()
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 5)
+  }, [conversations, normalizedQuery])
+
   type Row = { kind: 'action'; action: PaletteAction } | { kind: 'chat'; chat: StoredConversation }
   const rows: Row[] = useMemo(() => [
     ...visibleActions.map(action => ({ kind: 'action' as const, action })),
+    ...recentChats.map(chat => ({ kind: 'chat' as const, chat })),
     ...visibleChats.map(chat => ({ kind: 'chat' as const, chat })),
-  ], [visibleActions, visibleChats])
+  ], [visibleActions, recentChats, visibleChats])
 
   const activeIndex = rows.length ? Math.min(highlighted, rows.length - 1) : 0
 
@@ -105,7 +119,32 @@ export function CommandPalette({ open, conversations, actions, onSelectConversat
         </div>
         <div ref={listRef} className="palette-list">
           {rows.length === 0 && <div className="palette-empty">{t('palette.empty')}</div>}
-          {visibleActions.length > 0 && <div className="palette-group-label">{t('palette.actions')}</div>}
+          {/* Empty query: Recents (top 5 chats by updatedAt) + Suggestions (all actions).
+              Typed query: filtered Actions + filtered Chats (no Recents — the
+              filtered chats list already serves that role). */}
+          {!normalizedQuery && recentChats.length > 0 && (
+            <>
+              <div className="palette-group-label">{t('palette.recents')}</div>
+              {recentChats.map(chat => {
+                cursor += 1
+                const index = cursor
+                return (
+                  <button
+                    key={`recent-${chat.id}`}
+                    type="button"
+                    data-index={index}
+                    className={`palette-item ${index === activeIndex ? 'highlighted' : ''}`}
+                    onMouseEnter={() => setHighlighted(index)}
+                    onClick={() => runRow({ kind: 'chat', chat })}
+                  >
+                    <span className="palette-item-icon" aria-hidden="true"><MessageSquare size={14} /></span>
+                    <span className="palette-item-label">{displayConversationTitle(chat.title, t)}</span>
+                  </button>
+                )
+              })}
+            </>
+          )}
+          {visibleActions.length > 0 && <div className="palette-group-label">{normalizedQuery ? t('palette.actions') : t('palette.suggestions')}</div>}
           {visibleActions.map(action => {
             cursor += 1
             const index = cursor
@@ -123,8 +162,8 @@ export function CommandPalette({ open, conversations, actions, onSelectConversat
               </button>
             )
           })}
-          {visibleChats.length > 0 && <div className="palette-group-label">{t('palette.chats')}</div>}
-          {visibleChats.map(chat => {
+          {normalizedQuery && visibleChats.length > 0 && <div className="palette-group-label">{t('palette.chats')}</div>}
+          {normalizedQuery && visibleChats.map(chat => {
             cursor += 1
             const index = cursor
             return (
@@ -153,6 +192,7 @@ function displayConversationTitle(title: string, t: (key: string) => string): st
 
 export const paletteIcons = {
   newChat: <MessageSquarePlus size={14} />,
+  plugins: <Blocks size={14} />,
   settings: <Settings size={14} />,
   theme: <Moon size={14} />,
   terminal: <SquareTerminal size={14} />,

@@ -1,5 +1,6 @@
 import {
   Archive,
+  Blocks,
   Bug,
   ChevronDown,
   ChevronRight,
@@ -29,7 +30,7 @@ import { DEFAULT_CONVERSATION_TITLE } from '../state/chatStore'
 import mascotUrl from '../../../assets/branding/verboo-mascot.png'
 import packageJson from '../../../package.json'
 
-export type AppView = 'chat' | 'profile' | 'settings'
+export type AppView = 'chat' | 'profile' | 'settings' | 'plugins'
 
 type AppSidebarProps = {
   activeView: AppView
@@ -44,6 +45,7 @@ type AppSidebarProps = {
   peek?: boolean
   onSelectView: (view: AppView) => void
   onOpenSettings: () => void
+  onOpenSearch: () => void
   onOpenFeedback: () => void
   onLogout: () => void
   onNewChat: (projectId?: string) => void
@@ -74,6 +76,7 @@ export function AppSidebar({
   peek = false,
   onSelectView,
   onOpenSettings,
+  onOpenSearch,
   onOpenFeedback,
   onLogout,
   onNewChat,
@@ -91,8 +94,6 @@ export function AppSidebar({
   avatarSettings,
 }: AppSidebarProps) {
   const { t } = useI18n()
-  const [searchOpen, setSearchOpen] = useState(false)
-  const [query, setQuery] = useState('')
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
   const [editingProjectId, setEditingProjectId] = useState<string | undefined>()
   const [projectDraft, setProjectDraft] = useState('')
@@ -102,19 +103,16 @@ export function AppSidebar({
   const profileMenuRef = useRef<HTMLDivElement | null>(null)
   const profileName = profile.user?.name ?? profile.user?.email ?? cliAuth.email ?? t('sidebar.profile')
   useOutsideDismiss(profileMenuRef, profileMenuOpen, () => setProfileMenuOpen(false))
-  const filteredConversations = useMemo(
-    () => filterConversations(conversations, query),
-    [conversations, query],
-  )
-  const filteredProjects = useMemo(
-    () => filterProjects(projects, filteredConversations, query),
-    [projects, filteredConversations, query],
-  )
-  const looseChats = filteredConversations.filter(conversation => !conversation.projectId)
+  // Search is now handled by the command palette (⌘K / ⌘P). The sidebar no
+  // longer keeps a local query or inline input — clicking "Pesquisar" opens
+  // the palette via onOpenSearch. Conversations/projects render unfiltered
+  // here; filtering happens in the palette.
+  const visibleConversations = useMemo(() => conversations, [conversations])
+  const visibleProjects = useMemo(() => projects, [projects])
+  const looseChats = visibleConversations.filter(conversation => !conversation.projectId)
 
   useEffect(() => {
     if (!compact) return
-    setSearchOpen(false)
     setProfileMenuOpen(false)
     setEditingProjectId(undefined)
   }, [compact])
@@ -204,20 +202,19 @@ export function AppSidebar({
               </button>
             )}
           </div>
-          <button className="sidebar-action" type="button" onClick={() => setSearchOpen(open => !open)} title={t('sidebar.search')}>
+          <button className="sidebar-action" type="button" onClick={onOpenSearch} title={t('sidebar.search')}>
             <Search size={16} />
             <span>{t('sidebar.search')}</span>
           </button>
-          {searchOpen && (
-            <input
-              className="sidebar-search"
-              value={query}
-              onChange={event => setQuery(event.target.value)}
-              autoFocus
-              placeholder={t('sidebar.searchPlaceholder')}
-              aria-label={t('sidebar.searchPlaceholder')}
-            />
-          )}
+          <button
+            className={`sidebar-action ${activeView === 'plugins' ? 'active' : ''}`}
+            type="button"
+            onClick={() => onSelectView('plugins')}
+            title={t('sidebar.plugins')}
+          >
+            <Blocks size={16} />
+            <span>{t('sidebar.plugins')}</span>
+          </button>
         </nav>
 
         <section className="sidebar-section project-section">
@@ -228,11 +225,11 @@ export function AppSidebar({
             </button>
           </div>
 
-          {filteredProjects.length === 0 ? (
+          {visibleProjects.length === 0 ? (
             <p className="sidebar-empty">{t('sidebar.noProjects')}</p>
           ) : (
-            filteredProjects.map(project => {
-              const projectChats = filteredConversations.filter(conversation => conversation.projectId === project.id)
+            visibleProjects.map(project => {
+              const projectChats = visibleConversations.filter(conversation => conversation.projectId === project.id)
               return (
                 <div key={project.id} className="sidebar-project">
                   <div
@@ -449,26 +446,8 @@ function ConversationRow({ conversation, active, running, editing, draft, onDraf
   )
 }
 
-function filterConversations(conversations: StoredConversation[], query: string): StoredConversation[] {
-  const normalized = query.trim().toLowerCase()
-  return conversations
-    .filter(conversation => !conversation.archivedAt)
-    .filter(conversation => !normalized || conversation.title.toLowerCase().includes(normalized))
-}
-
 function displayConversationTitle(title: string, t: (key: string) => string): string {
   return title === DEFAULT_CONVERSATION_TITLE ? t('sidebar.newChat') : title
-}
-
-function filterProjects(projects: ChatProject[], conversations: StoredConversation[], query: string): ChatProject[] {
-  const normalized = query.trim().toLowerCase()
-  return projects
-    .filter(project => !project.archivedAt)
-    .filter(project => {
-      if (!normalized) return true
-      if (project.name.toLowerCase().includes(normalized)) return true
-      return conversations.some(conversation => conversation.projectId === project.id)
-    })
 }
 
 function relativeTime(timestamp: number, t: (key: string, values?: Record<string, string | number | undefined>) => string): string {
