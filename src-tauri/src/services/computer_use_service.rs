@@ -12,13 +12,13 @@
 //!
 //! Failure-safe: any audit write error refuses the action.
 //!
-//! P0.1 scope: synchronous spawn-per-call helper invocation. P0.1b will
-//! add a long-lived helper process with id-correlated stdin/stdout muxing.
+//! P0.1b: long-lived helper process with id-correlated stdin/stdout.
+//! One helper is reused under a mutex; crashed helpers are respawned on demand.
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -192,6 +192,7 @@ impl ComputerUseService {
     /// Stop with reason (logged by caller).
     pub fn stop(&self, id: &str, reason: StopReason) -> Result<Session, DenyCode> {
         self.stop_os_permission_poller();
+        kill_live_helper();
         self.append_audit(
             id,
             None,
@@ -206,6 +207,7 @@ impl ComputerUseService {
     /// Emergency stop (helper hotkey P0.8 or renderer Esc pill).
     pub fn emergency_stop_all(&self) {
         self.stop_os_permission_poller();
+        kill_live_helper();
         self.sessions.emergency_stop_all();
     }
 
@@ -482,81 +484,173 @@ pub(crate) fn service_for_test_without_audit() -> ComputerUseService {
     }
 }
 
-/// Spawn helper, write one request, read one response, kill. Id-correlated
-/// so multi-line responses can be matched. P0.1b will reuse a long-lived
-/// process; this is the simple synchronous path.
-pub(crate) fn invoke_helper_once(method: &str, params: &Value) -> Result<Value, ComputerUseError> {
+/// Long-lived helper process (one per app process). Mutex serializes IPC so
+/// request/response pairs stay id-correlated on a single stdio stream.
+struct LiveHelper {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    next_id: u64,
+}
+
+fn live_helper_slot() -> &'static Mutex<Option<LiveHelper>> {
+    static SLOT: OnceLock<Mutex<Option<LiveHelper>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+/// Kill and drop the long-lived helper if running (session stop / emergency).
+pub fn kill_live_helper() {
+    if let Ok(mut slot) = live_helper_slot().lock() {
+        if let Some(mut live) = slot.take() {
+            let _ = live.child.kill();
+            let _ = live.child.wait();
+        }
+    }
+}
+
+fn spawn_live_helper() -> Result<LiveHelper, ComputerUseError> {
     let spawn = ComputerUseSpawn::new();
     let mut cmd = spawn.command;
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child: Child = cmd
+        .stderr(Stdio::null());
+    let mut child = cmd
         .spawn()
         .map_err(|e| ComputerUseError::new("provider_down", format!("spawn helper: {e}")))?;
-
-    let request = json!({
-        "id": 1,
-        "method": method,
-        "params": params,
-    });
-    let line = format!("{}\n", request);
-    {
-        let mut stdin = child.stdin.take();
-        if let Some(stdin) = stdin.as_mut() {
-            stdin
-                .write_all(line.as_bytes())
-                .map_err(|e| ComputerUpdate::write_err(e))?;
-        }
-    }
-    // Drop stdin to signal EOF... actually we want to keep the helper running.
-    // For per-call spawn, dropping stdin closes the pipe; helper reads EOF and exits.
-    drop(child.stdin.take());
-
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| ComputerUseError::new("provider_down", "helper has no stdin"))?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| ComputerUseError::new("provider_down", "no helper stdout"))?;
-    let mut reader = BufReader::new(stdout);
-    let mut buffer = String::new();
-    reader
-        .read_line(&mut buffer)
-        .map_err(|e| ComputerUseError::new("provider_down", format!("read helper: {e}")))?;
-
-    // Best-effort kill.
-    let _ = child.kill();
-    let _ = child.wait();
-
-    let resp: Value = serde_json::from_str(buffer.trim())
-        .map_err(|e| ComputerUseError::new("provider_down", format!("parse helper response: {e}")))?;
-
-    let err = resp.get("error").and_then(|v| v.as_object());
-    if let Some(err_obj) = err {
-        // Helper uses {"error": null} when ok. Non-null = error.
-        if !err_obj.is_empty() {
-            let code = err_obj
-                .get("code")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let message = err_obj
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            return Err(ComputerUseError::new(code, message));
-        }
-    }
-
-    Ok(resp.get("result").cloned().unwrap_or(Value::Null))
+        .ok_or_else(|| ComputerUseError::new("provider_down", "helper has no stdout"))?;
+    Ok(LiveHelper {
+        child,
+        stdin,
+        stdout: BufReader::new(stdout),
+        next_id: 1,
+    })
 }
 
-/// Internal helper to keep error mapping terse.
-#[allow(non_camel_case_types)]
-struct ComputerUpdate;
-impl ComputerUpdate {
-    fn write_err(e: std::io::Error) -> ComputerUseError {
-        ComputerUseError::new("provider_down", format!("write helper: {e}"))
+fn ensure_live_helper(slot: &mut Option<LiveHelper>) -> Result<&mut LiveHelper, ComputerUseError> {
+    if let Some(live) = slot.as_mut() {
+        if let Ok(Some(status)) = live.child.try_wait() {
+            eprintln!("[computer-use] helper exited ({status:?}); will respawn");
+            *slot = None;
+        }
     }
+    if slot.is_none() {
+        *slot = Some(spawn_live_helper()?);
+    }
+    slot.as_mut()
+        .ok_or_else(|| ComputerUseError::new("provider_down", "helper slot empty after spawn"))
+}
+
+/// Invoke the Swift helper with one JSON-RPC-like request.
+/// Reuses a long-lived process (P0.1b); respawns after crash / IO error.
+/// Mutex serializes concurrent calls (single stdio stream).
+pub(crate) fn invoke_helper_once(method: &str, params: &Value) -> Result<Value, ComputerUseError> {
+    let mut slot = live_helper_slot()
+        .lock()
+        .map_err(|_| ComputerUseError::new("provider_down", "helper mutex poisoned"))?;
+
+    for attempt in 0..2 {
+        let live = match ensure_live_helper(&mut slot) {
+            Ok(l) => l,
+            Err(e) if attempt == 0 => {
+                *slot = None;
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        let id = live.next_id;
+        live.next_id = live.next_id.saturating_add(1);
+
+        let request = json!({
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        let line = format!("{}\n", request);
+        if let Err(e) = live.stdin.write_all(line.as_bytes()).and_then(|_| live.stdin.flush()) {
+            eprintln!("[computer-use] helper write failed: {e}; respawning");
+            let _ = live.child.kill();
+            let _ = live.child.wait();
+            *slot = None;
+            continue;
+        }
+
+        let mut buffer = String::new();
+        if let Err(e) = live.stdout.read_line(&mut buffer) {
+            eprintln!("[computer-use] helper read failed: {e}; killing");
+            let _ = live.child.kill();
+            let _ = live.child.wait();
+            *slot = None;
+            if attempt == 0 {
+                continue;
+            }
+            return Err(ComputerUseError::new(
+                "provider_down",
+                format!("read helper: {e}"),
+            ));
+        }
+
+        let resp: Value = match serde_json::from_str(buffer.trim()) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[computer-use] helper parse failed: {e}; killing");
+                let _ = live.child.kill();
+                let _ = live.child.wait();
+                *slot = None;
+                if attempt == 0 {
+                    continue;
+                }
+                return Err(ComputerUseError::new(
+                    "provider_down",
+                    format!("parse helper response: {e}"),
+                ));
+            }
+        };
+
+        if let Some(resp_id) = resp.get("id").and_then(Value::as_u64) {
+            if resp_id != id {
+                eprintln!(
+                    "[computer-use] helper id mismatch: expected {id}, got {resp_id}; killing"
+                );
+                let _ = live.child.kill();
+                let _ = live.child.wait();
+                *slot = None;
+                if attempt == 0 {
+                    continue;
+                }
+                return Err(ComputerUseError::new(
+                    "provider_down",
+                    "helper response id mismatch",
+                ));
+            }
+        }
+
+        if let Some(err_obj) = resp.get("error").and_then(|v| v.as_object()) {
+            if !err_obj.is_empty() {
+                let code = err_obj
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let message = err_obj
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                return Err(ComputerUseError::new(code, message));
+            }
+        }
+        return Ok(resp.get("result").cloned().unwrap_or(Value::Null));
+    }
+
+    Err(ComputerUseError::new(
+        "provider_down",
+        "helper unavailable after retry",
+    ))
 }
 
 #[cfg(test)]
