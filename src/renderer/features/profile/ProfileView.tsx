@@ -1,4 +1,4 @@
-import { ArrowUpRight, Camera, Loader2, RefreshCw, RotateCcw, ShieldCheck, X } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, Camera, Loader2, RefreshCw, RotateCcw, ShieldCheck, X } from 'lucide-react'
 import { type CSSProperties, useState } from 'react'
 import type { AvatarSettings, ProfileActivityDay, ProfileResult } from '../../../shared/types'
 import { formatStandardNumber, useI18n, type Translator } from '../../i18n'
@@ -13,9 +13,10 @@ type ProfileViewProps = {
   onRefresh: () => void
   onManagePlan: () => void
   onUpdateAvatar: (settings: AvatarSettings) => void
+  onClose: () => void
 }
 
-export function ProfileView({ profile, loading, avatarSettings, onRefresh, onManagePlan, onUpdateAvatar }: ProfileViewProps) {
+export function ProfileView({ profile, loading, avatarSettings, onRefresh, onManagePlan, onUpdateAvatar, onClose }: ProfileViewProps) {
   const { language, t } = useI18n()
   const { toast } = useToast()
   const summary = profile.summary
@@ -31,10 +32,16 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
           <h1>{t('profile.title')}</h1>
           <p>{t('profile.subtitle')}</p>
         </div>
-        <button className="ghost-button" type="button" onClick={onRefresh} disabled={loading}>
-          <RefreshCw size={15} />
-          {loading ? t('profile.refreshing') : t('common.refresh')}
-        </button>
+        <div className="view-heading-actions">
+          <button className="ghost-button" type="button" onClick={onRefresh} disabled={loading}>
+            <RefreshCw size={15} />
+            {loading ? t('profile.refreshing') : t('common.refresh')}
+          </button>
+          <button className="settings-back" type="button" onClick={onClose}>
+            <ArrowLeft size={14} />
+            {t('settings.back')}
+          </button>
+        </div>
       </header>
 
       {profile.status !== 'ready' && (

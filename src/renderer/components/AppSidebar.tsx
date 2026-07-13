@@ -44,7 +44,6 @@ type AppSidebarProps = {
   peek?: boolean
   onSelectView: (view: AppView) => void
   onOpenSettings: () => void
-  onOpenArchivedChats: () => void
   onOpenFeedback: () => void
   onLogout: () => void
   onNewChat: (projectId?: string) => void
@@ -75,7 +74,6 @@ export function AppSidebar({
   peek = false,
   onSelectView,
   onOpenSettings,
-  onOpenArchivedChats,
   onOpenFeedback,
   onLogout,
   onNewChat,
@@ -357,10 +355,6 @@ export function AppSidebar({
             <button type="button" onClick={() => { onOpenSettings(); setProfileMenuOpen(false) }}>
               <Settings size={15} />
               {t('sidebar.settings')}
-            </button>
-            <button type="button" onClick={() => { onOpenArchivedChats(); setProfileMenuOpen(false) }}>
-              <Archive size={15} />
-              {t('sidebar.archivedChats')}
             </button>
             <button type="button" onClick={() => { onOpenFeedback(); setProfileMenuOpen(false) }}>
               <Bug size={15} />

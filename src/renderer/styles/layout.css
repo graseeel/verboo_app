@@ -471,6 +471,26 @@
   opacity: 1;
 }
 
+/* Fullscreen views (Profile / Settings): sidebar + rail are not rendered, so
+   the workspace takes the full grid width. The sidebar column collapses to 0
+   via --sidebar-width=0 (set inline by App.tsx when activeView is fullscreen),
+   but we also neutralize the dim overlay and any residual sidebar chrome so
+   the view is truly full-bleed. */
+.app-layout.view-fullscreen {
+  grid-template-columns: 0 minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--review-width) var(--terminal-width);
+}
+
+.app-layout.view-fullscreen .workspace {
+  grid-column: 1 / -1;
+}
+
+/* No sidebar to dim when fullscreen — neutralize the settings-open dim rules. */
+.app-layout.view-fullscreen.settings-open .sidebar-scroll,
+.app-layout.view-fullscreen.settings-open .sidebar-account-wrap {
+  filter: none;
+  opacity: 1;
+}
+
 .sidebar-scroll {
   flex: 1 1 auto;
   min-height: 0;

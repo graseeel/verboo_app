@@ -465,11 +465,16 @@ export function App() {
   // When peeking (hidden + hover), the sidebar column expands visually to
   // the user's last expanded width — but the persisted mode stays 'hidden'.
   const sidebarVisualMode = sidebarMode === 'hidden' && sidebarPeek ? 'expanded' : sidebarMode
-  const effectiveSidebarWidth = sidebarVisualMode === 'hidden'
+  // Fullscreen views (Profile / Settings) don't render the sidebar at all —
+  // collapse the column to 0 so the workspace takes the full grid width.
+  const isFullscreenView = activeView === 'settings' || activeView === 'profile'
+  const effectiveSidebarWidth = isFullscreenView
     ? 0
-    : sidebarVisualMode === 'compact'
-      ? SIDEBAR_COMPACT_WIDTH
-      : sidebarWidth
+    : sidebarVisualMode === 'hidden'
+      ? 0
+      : sidebarVisualMode === 'compact'
+        ? SIDEBAR_COMPACT_WIDTH
+        : sidebarWidth
   const workingSubagents = useMemo(() => activeSubagents.filter(isActiveSubagentWorking), [activeSubagents])
   const selectedSubagent = selectedSubagentId
     ? activeSubagents.find(agent => agent.id === selectedSubagentId)
@@ -4064,9 +4069,9 @@ export function App() {
       />
 
       <div
-        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${terminal.terminalOpen ? 'terminal-open' : ''} ${review.reviewOpen ? 'review-open' : ''}`}
+        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' || activeView === 'profile' ? 'view-fullscreen' : ''} ${terminal.terminalOpen ? 'terminal-open' : ''} ${review.reviewOpen ? 'review-open' : ''}`}
       >
-        {sidebarMode === 'hidden' && !sidebarPeek && (
+        {activeView !== 'settings' && activeView !== 'profile' && sidebarMode === 'hidden' && !sidebarPeek && (
           // Rail: thin hit-area on the left edge. Hover/focus expands the
           // sidebar transiently (peek) without persisting. Tab-focusable so
           // keyboard users can open it without a pointer.
@@ -4082,7 +4087,7 @@ export function App() {
           />
         )}
 
-        {(sidebarMode !== 'hidden' || sidebarPeek) && (
+        {activeView !== 'settings' && activeView !== 'profile' && (sidebarMode !== 'hidden' || sidebarPeek) && (
           <div
             className={`sidebar-shell ${sidebarPeek ? 'is-peek' : ''}`}
             onMouseEnter={sidebarPeek ? showSidebarPeek : undefined}
@@ -4103,10 +4108,6 @@ export function App() {
               onSelectView={setActiveView}
               onOpenSettings={() => {
                 setSettingsTab('permissions')
-                setActiveView('settings')
-              }}
-              onOpenArchivedChats={() => {
-                setSettingsTab('archived')
                 setActiveView('settings')
               }}
               onOpenFeedback={() => setFeedbackOpen(true)}
@@ -4156,6 +4157,7 @@ export function App() {
               onRefresh={refreshProfile}
               onManagePlan={() => window.verboo.openSubscriptions()}
               onUpdateAvatar={avatar => updateUserSettings({ avatar })}
+              onClose={() => setActiveView('chat')}
             />
           ) : activeView === 'settings' ? (
             <SettingsView
