@@ -506,7 +506,7 @@ export function App() {
   const sidebarVisualMode = sidebarMode === 'hidden' && sidebarPeek && !sidebarPeekLeaving ? 'expanded' : sidebarMode
   // Fullscreen views (Profile / Settings) don't render the sidebar at all —
   // collapse the column to 0 so the workspace takes the full grid width.
-  const isFullscreenView = activeView === 'settings' || activeView === 'profile' || activeView === 'plugins'
+  const isFullscreenView = activeView === 'settings' || activeView === 'profile'
   const effectiveSidebarWidth = isFullscreenView
     ? 0
     : sidebarVisualMode === 'hidden'
@@ -4200,9 +4200,9 @@ export function App() {
       />
 
       <div
-        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' || activeView === 'profile' || activeView === 'plugins' ? 'view-fullscreen' : ''} ${terminal.terminalOpen ? 'terminal-open' : ''} ${review.reviewOpen ? 'review-open' : ''}`}
+        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' || activeView === 'profile' ? 'view-fullscreen' : ''} ${terminal.terminalOpen ? 'terminal-open' : ''} ${review.reviewOpen ? 'review-open' : ''}`}
       >
-        {activeView !== 'settings' && activeView !== 'profile' && activeView !== 'plugins' && sidebarMode === 'hidden' && !sidebarPeek && !sidebarPeekLeaving && (
+        {activeView !== 'settings' && activeView !== 'profile' && sidebarMode === 'hidden' && !sidebarPeek && !sidebarPeekLeaving && (
           // Rail: thin hit-area on the left edge. Hover/focus expands the
           // sidebar transiently (peek) without persisting. Tab-focusable so
           // keyboard users can open it without a pointer. Hidden while the
@@ -4227,7 +4227,7 @@ export function App() {
           />
         )}
 
-        {activeView !== 'settings' && activeView !== 'profile' && activeView !== 'plugins' && (sidebarMode !== 'hidden' || sidebarPeek || sidebarPeekLeaving) && (
+        {activeView !== 'settings' && activeView !== 'profile' && (sidebarMode !== 'hidden' || sidebarPeek || sidebarPeekLeaving) && (
           <div
             className={`sidebar-shell ${sidebarPeek && !sidebarPeekLeaving ? 'is-peek' : ''} ${sidebarPeekLeaving && !sidebarPeek ? 'is-peek-leaving' : ''}`}
             onMouseEnter={sidebarPeek || sidebarPeekLeaving ? showSidebarPeek : undefined}
