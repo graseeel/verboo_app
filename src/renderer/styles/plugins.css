@@ -29,6 +29,71 @@
   font-size: 13px;
 }
 
+/* ── Segmented control (Plugins | Habilidades) ──────────────────── */
+/* Codex-style pills: two buttons in a row, active = solid bg, inactive =
+   transparent. Crossfade 120ms opacity-only on tab content swap. */
+.plugins-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  width: fit-content;
+}
+
+.plugins-tab {
+  padding: 5px 16px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  font-weight: 680;
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease), color 120ms var(--dropdown-ease);
+}
+
+.plugins-tab:hover:not(.is-active) {
+  color: var(--text);
+}
+
+.plugins-tab.is-active {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* Tab content crossfade — 120ms opacity-only. Applied to the wrapper of
+   each tab's content so the swap feels smooth, not jarring. */
+.plugins-tab-content {
+  animation: plugins-tab-fade 120ms ease-out;
+}
+
+@keyframes plugins-tab-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── Skill group header (Skills tab) ────────────────────────────── */
+.plugin-skill-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.plugin-skill-group-name {
+  font-size: 13px;
+  font-weight: 680;
+  color: var(--text);
+}
+
+.plugin-skill-group-count {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
 /* ── Sticky search ──────────────────────────────────────────────── */
 /* Stays fixed at top while the list scrolls. Header (title+subtitle)
    scrolls away normally. App bg + subtle bottom border for separation. */
@@ -1343,6 +1408,10 @@
     animation: plugins-fade-in 80ms ease-out both !important;
   }
   .plugin-card-menu {
+    animation: plugins-fade-in 80ms ease-out !important;
+  }
+  /* Tab crossfade: opacity-only 80ms under reduced-motion. */
+  .plugins-tab-content {
     animation: plugins-fade-in 80ms ease-out !important;
   }
   .plugin-detail-hero-mesh {

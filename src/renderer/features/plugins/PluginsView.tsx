@@ -1,6 +1,6 @@
-import { AlertTriangle, ArrowLeft, Blocks, ChevronDown, RefreshCw, Search, Settings } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Blocks, ChevronDown, RefreshCw, Search, Settings, Zap } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import type { AvailablePlugin, Plugin, PluginError, PluginScope } from '../../../shared/plugins'
+import type { AvailablePlugin, Plugin, PluginError, PluginScope, PluginSkill } from '../../../shared/plugins'
 import { describePluginError } from '../../../shared/plugins'
 import { useI18n } from '../../i18n'
 import { useToast } from '../../components/Toast'
@@ -103,6 +103,14 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set())
   // Track which marketplace sections are expanded (by group key).
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
+  // Tab state: 'plugins' (catalog) or 'skills' (all skills from installed).
+  // Preserved when navigating to detail and back — the tab doesn't reset
+  // because selectedPlugin is a separate state that swaps the render branch.
+  const [activeTab, setActiveTab] = useState<'plugins' | 'skills'>('plugins')
+  // Skills for ALL installed plugins, keyed by plugin id. Fetched once when
+  // the Skills tab is first opened (lazy) or when installed list changes.
+  const [allSkills, setAllSkills] = useState<Record<string, PluginSkill[]>>({})
+  const [skillsLoading, setSkillsLoading] = useState(false)
 
   // Invalidate the icon cache when manifests arrive. A plugin that returned
   // null earlier (manifests not loaded yet on the backend → no homepage →
@@ -116,6 +124,32 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
       invalidatePluginIconCache()
     }
   }, [manifests])
+
+  // Fetch skills for all installed plugins when the Skills tab is opened.
+  // Lazy: only fires when activeTab === 'skills' and we haven't fetched yet
+  // for the current installed set. Re-fetches if installed list changes (ex:
+  // after install/uninstall) to keep the skills list fresh.
+  useEffect(() => {
+    if (activeTab !== 'skills' || installed.length === 0) return
+    let cancelled = false
+    setSkillsLoading(true)
+    Promise.all(
+      installed.map(plugin =>
+        window.verboo.pluginSkills(plugin.id)
+          .then(skills => [plugin.id, skills] as const)
+          .catch(() => [plugin.id, [] as PluginSkill[]] as const),
+      ),
+    ).then(results => {
+      if (cancelled) return
+      const map: Record<string, PluginSkill[]> = {}
+      for (const [id, skills] of results) {
+        map[id] = skills
+      }
+      setAllSkills(map)
+      setSkillsLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [activeTab, installed])
 
   const normalizedQuery = query.trim().toLowerCase()
 
@@ -167,6 +201,23 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
     }
     return sorted
   }, [filteredAvailable, manifests, t])
+
+  // Skills grouped by plugin for the Skills tab. Each group = installed
+  // plugin + its skills filtered by the search query (name/description).
+  // Plugins with zero skills after filtering are omitted from the list.
+  const skillGroups = useMemo(() => {
+    return installed
+      .map(plugin => {
+        const skills = (allSkills[plugin.id] ?? []).filter(skill => {
+          if (!normalizedQuery) return true
+          const name = skill.name.toLowerCase()
+          const desc = (skill.description ?? '').toLowerCase()
+          return name.includes(normalizedQuery) || desc.includes(normalizedQuery)
+        })
+        return { plugin, skills }
+      })
+      .filter(group => group.skills.length > 0)
+  }, [installed, allSkills, normalizedQuery])
 
   function setBusy(id: string, busy: boolean) {
     setBusyIds(prev => {
@@ -369,18 +420,43 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
         </div>
       )}
 
+      {/* Segmented control: Plugins | Habilidades. Codex-style pills. */}
+      <div className="plugins-tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'plugins'}
+          className={`plugins-tab ${activeTab === 'plugins' ? 'is-active' : ''}`}
+          onClick={() => setActiveTab('plugins')}
+        >
+          {t('plugins.tabs.plugins')}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'skills'}
+          className={`plugins-tab ${activeTab === 'skills' ? 'is-active' : ''}`}
+          onClick={() => setActiveTab('skills')}
+        >
+          {t('plugins.tabs.skills')}
+        </button>
+      </div>
+
       {/* Sticky search — stays fixed at top while list scrolls.
-          Header (title+subtitle) scrolls away normally. */}
+          Placeholder changes based on active tab. */}
       <div className="plugins-search">
         <Search size={15} className="plugins-search-icon" />
         <input
           value={query}
           onChange={event => setQuery(event.target.value)}
-          placeholder={t('plugins.searchPlaceholder')}
-          aria-label={t('plugins.searchPlaceholder')}
+          placeholder={activeTab === 'skills' ? t('plugins.searchSkillsPlaceholder') : t('plugins.searchPlaceholder')}
+          aria-label={activeTab === 'skills' ? t('plugins.searchSkillsPlaceholder') : t('plugins.searchPlaceholder')}
         />
       </div>
 
+      {/* ── Plugins tab ──────────────────────────────────────────────── */}
+      {activeTab === 'plugins' && (
+      <div className="plugins-tab-content">
       {/* Installed icon-only strip — 40px monograms, no names.
           Gear icon opens marketplace modal (replaces big header button). */}
       {!showSkeletons && installed.length > 0 && (
@@ -527,6 +603,55 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
             })
           )}
         </>
+      )}
+      </div>
+      )}
+
+      {/* ── Skills tab ──────────────────────────────────────────────── */}
+      {activeTab === 'skills' && (
+      <div className="plugins-tab-content">
+        {skillsLoading ? (
+          <div className="plugins-lines">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <PluginSkeletonCard key={i} delay={i * 60} />
+            ))}
+          </div>
+        ) : skillGroups.length === 0 ? (
+          <div className="plugins-empty">
+            <div className="plugins-empty-icon"><Zap size={24} /></div>
+            <p className="plugins-empty-title">{t('plugins.skillsEmptyTitle')}</p>
+            <p className="plugins-empty-body">{t('plugins.skillsEmptyBody')}</p>
+            <button type="button" className="ghost-button" onClick={() => setActiveTab('plugins')}>
+              {t('plugins.skillsEmptyCta')}
+            </button>
+          </div>
+        ) : (
+          skillGroups.map(({ plugin, skills }) => (
+            <div key={plugin.id} className="plugins-section">
+              <div className="plugin-skill-group-header">
+                <PluginIcon name={plugin.name} id={plugin.id} size={28} loadIcons={loadIcons} />
+                <span className="plugin-skill-group-name">{plugin.name}</span>
+                <span className="plugin-skill-group-count">{skills.length}</span>
+              </div>
+              <div className="plugin-detail-skills-list">
+                {skills.map(skill => (
+                  <div key={skill.skillPath} className="plugin-skill-row">
+                    <div className="plugin-skill-icon" aria-hidden="true">
+                      <Zap size={14} />
+                    </div>
+                    <div className="plugin-skill-body">
+                      <div className="plugin-skill-name">{skill.name}</div>
+                      {skill.description && (
+                        <div className="plugin-skill-desc">{skill.description}</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
       )}
 
       {installTarget && (
