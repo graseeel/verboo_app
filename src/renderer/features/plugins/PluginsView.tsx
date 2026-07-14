@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowLeft, Blocks, RefreshCw, Search, Store } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Blocks, ChevronDown, RefreshCw, Search, Settings } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import type { AvailablePlugin, Plugin, PluginError, PluginScope } from '../../../shared/plugins'
 import { describePluginError } from '../../../shared/plugins'
@@ -13,13 +13,13 @@ import { usePlugins } from './usePlugins'
 
 type PluginsViewProps = {
   onClose: () => void
+  onSeedComposer?: (text: string) => void
 }
 
-// Map a PluginError kind to a catalog-specific i18n key. The generic
-// describePluginError() returns PT-BR hardcoded copy; this helper respects
-// the active locale and gives a message scoped to the catalog fetch (not a
-// generic "check your connection" for every error kind — parse/unknown get
-// "invalid data", timeout gets "took too long", network gets connection).
+// Cap of lines shown per section before the expander kicks in. Sections
+// with <= CAP items render fully; > CAP shows CAP items + an expander row.
+const SECTION_CAP = 6
+
 function catalogErrorMessage(err: PluginError, t: (key: string) => string): string {
   switch (err.kind) {
     case 'network_error':
@@ -29,25 +29,50 @@ function catalogErrorMessage(err: PluginError, t: (key: string) => string): stri
     case 'timeout':
       return t('plugins.catalogError.timeout')
     default:
-      // cli_not_found, cli_auth_required, invalid_plugin, already_installed,
-      // not_installed, unknown — all fall back to the "invalid data" copy
-      // since they're not network/timeout and the catalog endpoint returned
-      // something we couldn't use.
       return t('plugins.catalogError.unknown')
   }
 }
 
-// Plugins marketplace view. Loads real data from the CLI via the Tauri
-// bridge (pluginList + marketplaceList in parallel, then pluginAvailable
-// which is slower and shows skeletons). Install/enable/disable/uninstall/
-// update all hit the real backend — no mocks.
-export function PluginsView({ onClose }: PluginsViewProps) {
+// Expander row: 3 overlapping mini-monograms (20px, ~40% overlap) + text
+// "Ver {n1}, {n2} e mais {N}". Click expands the section inline.
+// `plugins` = the hidden plugins (beyond the cap) that will be revealed.
+function SectionExpander({ plugins, onExpand }: {
+  plugins: AvailablePlugin[]
+  onExpand: () => void
+}) {
+  const { t } = useI18n()
+  const preview = plugins.slice(0, 3)
+  const remaining = plugins.length - preview.length
+  const names = preview.map(p => p.name)
+  return (
+    <button type="button" className="plugin-section-expander" onClick={onExpand}>
+      <div className="plugin-expander-stack">
+        {preview.map((p, i) => (
+          <div
+            key={p.pluginId}
+            className="plugin-expander-mini"
+            style={{ zIndex: preview.length - i, marginLeft: i === 0 ? 0 : -8 }}
+          >
+            <PluginMonogram name={p.name} id={p.pluginId} size={20} />
+          </div>
+        ))}
+      </div>
+      <span className="plugin-expander-text">
+        {t('plugins.expander', { name1: names[0] ?? '', name2: names[1] ?? '', count: remaining })}
+      </span>
+      <ChevronDown size={14} className="plugin-expander-chevron" />
+    </button>
+  )
+}
+
+export function PluginsView({ onClose, onSeedComposer }: PluginsViewProps) {
   const { t } = useI18n()
   const { toast } = useToast()
   const {
     installed,
     available,
     marketplaces,
+    manifests,
     loading,
     availableLoading,
     error,
@@ -67,15 +92,14 @@ export function PluginsView({ onClose }: PluginsViewProps) {
   const [query, setQuery] = useState('')
   const [installTarget, setInstallTarget] = useState<AvailablePlugin | undefined>(undefined)
   const [marketplaceOpen, setMarketplaceOpen] = useState(false)
-  // Selected plugin for the detail view. Union: installed (Plugin) or
-  // available (AvailablePlugin). When set, the detail view replaces the grid.
   const [selectedPlugin, setSelectedPlugin] = useState<
     | { kind: 'installed'; plugin: Plugin }
     | { kind: 'available'; plugin: AvailablePlugin }
     | undefined
   >(undefined)
-  // Track which plugin ids have an in-flight mutation (for per-card spinners).
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set())
+  // Track which marketplace sections are expanded (by group key).
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
 
   const normalizedQuery = query.trim().toLowerCase()
 
@@ -90,7 +114,6 @@ export function PluginsView({ onClose }: PluginsViewProps) {
   const installedIds = useMemo(() => new Set(installed.map(p => p.id)), [installed])
 
   const filteredAvailable = useMemo(() => {
-    // Exclude already-installed plugins from the Available section.
     const notInstalled = available.filter(p => !installedIds.has(p.pluginId))
     if (!normalizedQuery) return notInstalled
     return notInstalled.filter(p =>
@@ -99,28 +122,50 @@ export function PluginsView({ onClose }: PluginsViewProps) {
     )
   }, [available, installedIds, normalizedQuery])
 
-  // Group available plugins. Prefer category when present (more meaningful
-  // for browsing), fall back to marketplace name (provenance signal).
+  // Group available plugins by category from marketplace manifests. Plugins
+  // without a category go to "Outros" (always last). Sections ordered by
+  // count desc. The marketplace source stays visible as discrete meta on
+  // each line (not as the group key anymore).
   const availableGroups = useMemo(() => {
     const groups = new Map<string, AvailablePlugin[]>()
+    const uncategorized: AvailablePlugin[] = []
     for (const plugin of filteredAvailable) {
-      // AvailablePlugin doesn't have category, but Plugin (installed) does.
-      // We group by marketplaceName for available — category isn't on the
-      // available shape, only on installed Plugin. This is the correct
-      // grouping for the available section.
-      const key = plugin.marketplaceName
-      const list = groups.get(key) ?? []
-      list.push(plugin)
-      groups.set(key, list)
+      const manifest = manifests[plugin.pluginId]
+      const category = manifest?.category?.trim()
+      if (category) {
+        const list = groups.get(category) ?? []
+        list.push(plugin)
+        groups.set(category, list)
+      } else {
+        uncategorized.push(plugin)
+      }
     }
-    return [...groups.entries()]
-  }, [filteredAvailable])
+    // Sort categories by count desc, then name asc for stable order.
+    const sorted = [...groups.entries()].sort((a, b) => {
+      if (b[1].length !== a[1].length) return b[1].length - a[1].length
+      return a[0].localeCompare(b[0])
+    })
+    // "Outros" always last, only if non-empty.
+    if (uncategorized.length > 0) {
+      sorted.push([t('plugins.categoryOthers'), uncategorized])
+    }
+    return sorted
+  }, [filteredAvailable, manifests, t])
 
   function setBusy(id: string, busy: boolean) {
     setBusyIds(prev => {
       const next = new Set(prev)
       if (busy) next.add(id)
       else next.delete(id)
+      return next
+    })
+  }
+
+  function toggleSection(key: string) {
+    setExpandedSections(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
       return next
     })
   }
@@ -181,9 +226,6 @@ export function PluginsView({ onClose }: PluginsViewProps) {
     }
   }
 
-  // F2: one-click install from the card. Default scope 'user', no modal.
-  // The advanced scope modal (PluginInstallModal) is still available from
-  // the detail view if the user wants project/local scope.
   async function handleInstallOneClick(plugin: AvailablePlugin) {
     setBusy(plugin.pluginId, true)
     try {
@@ -196,18 +238,33 @@ export function PluginsView({ onClose }: PluginsViewProps) {
     }
   }
 
+  // Testar agora: fetch the plugin's skills, seed the composer with the 1st
+  // skill description (fallback: plugin description), close PluginsView,
+  // and focus the composer. The text is NOT sent — user reviews + hits enter.
+  async function handleTestNow(plugin: Plugin) {
+    let seedText = plugin.description ?? ''
+    try {
+      const skills = await window.verboo.pluginSkills(plugin.id)
+      if (skills[0]?.description) {
+        seedText = skills[0].description
+      }
+    } catch {
+      // skills fetch failed — fall back to plugin description (already set)
+    }
+    onSeedComposer?.(seedText)
+  }
+
   const showSkeletons = loading === 'loading'
   const showError = loading === 'error' && error
 
   // ── Detail view branch ────────────────────────────────────────────
-  // When a plugin is selected, render the detail view instead of the grid.
-  // The detail view has its own back button that clears the selection.
   if (selectedPlugin) {
     const detailId = selectedPlugin.kind === 'installed' ? selectedPlugin.plugin.id : selectedPlugin.plugin.pluginId
     return (
       <div className="plugins-view page-surface">
         <PluginDetailView
           target={selectedPlugin}
+          manifests={manifests}
           onBack={() => setSelectedPlugin(undefined)}
           onInstall={async (scope: PluginScope) => {
             if (selectedPlugin.kind !== 'available') return
@@ -273,14 +330,6 @@ export function PluginsView({ onClose }: PluginsViewProps) {
           <h1>{t('plugins.title')}</h1>
           <p>{t('plugins.subtitle')}</p>
         </div>
-        <button
-          type="button"
-          className="ghost-button"
-          onClick={() => setMarketplaceOpen(true)}
-        >
-          <Store size={15} />
-          {t('plugins.manageMarketplaces')}
-        </button>
       </header>
 
       {pendingRestartPluginIds.size > 0 && (
@@ -303,6 +352,8 @@ export function PluginsView({ onClose }: PluginsViewProps) {
         </div>
       )}
 
+      {/* Sticky search — stays fixed at top while list scrolls.
+          Header (title+subtitle) scrolls away normally. */}
       <div className="plugins-search">
         <Search size={15} className="plugins-search-icon" />
         <input
@@ -313,39 +364,48 @@ export function PluginsView({ onClose }: PluginsViewProps) {
         />
       </div>
 
-      {/* Installed strip — horizontal scroll of monogram chips. Primary nav
-          for installed plugins; click opens detail. Active ring on the
-          plugin currently open in detail (if any). */}
+      {/* Installed icon-only strip — 40px monograms, no names.
+          Gear icon opens marketplace modal (replaces big header button). */}
       {!showSkeletons && installed.length > 0 && (
-        <div className="plugins-installed-strip" role="list" aria-label={t('plugins.installed')}>
-          {installed.map(plugin => {
-            // After the detail-view early return above, selectedPlugin is
-            // undefined here — but we read it defensively for the active-ring
-            // check in case the detail branch is removed/refactored later.
-            const sel = selectedPlugin as { kind: string; plugin: { id: string } } | undefined
-            const isActive = sel?.kind === 'installed' && sel.plugin.id === plugin.id
-            return (
-              <button
-                key={plugin.id}
-                type="button"
-                role="listitem"
-                className={`plugins-strip-chip ${isActive ? 'is-active' : ''} ${plugin.enabled ? 'is-enabled' : 'is-disabled'}`}
-                onClick={() => setSelectedPlugin({ kind: 'installed', plugin })}
-                title={`${plugin.name} — ${plugin.enabled ? t('plugins.enabled') : t('plugins.disabled')}`}
-                aria-label={plugin.name}
-              >
-                <PluginMonogram name={plugin.name} id={plugin.id} size={32} />
-                <span className="plugins-strip-chip-name">{plugin.name}</span>
-              </button>
-            )
-          })}
+        <div className="plugins-installed-section">
+          <div className="plugins-installed-header">
+            <span className="plugins-section-label">{t('plugins.installed')}</span>
+            <button
+              type="button"
+              className="plugins-installed-gear"
+              onClick={() => setMarketplaceOpen(true)}
+              aria-label={t('plugins.manageMarketplaces')}
+              title={t('plugins.manageMarketplaces')}
+            >
+              <Settings size={15} />
+            </button>
+          </div>
+          <div className="plugins-installed-strip" role="list">
+            {installed.map(plugin => {
+              const sel = selectedPlugin as { kind: string; plugin: { id: string } } | undefined
+              const isActive = sel?.kind === 'installed' && sel.plugin.id === plugin.id
+              return (
+                <button
+                  key={plugin.id}
+                  type="button"
+                  role="listitem"
+                  className={`plugins-strip-icon ${isActive ? 'is-active' : ''} ${plugin.enabled ? 'is-enabled' : 'is-disabled'}`}
+                  onClick={() => setSelectedPlugin({ kind: 'installed', plugin })}
+                  title={plugin.name}
+                  aria-label={plugin.name}
+                >
+                  <PluginMonogram name={plugin.name} id={plugin.id} size={40} />
+                </button>
+              )
+            })}
+          </div>
         </div>
       )}
 
       {showSkeletons ? (
         <>
           <p className="plugins-section-label">{t('plugins.installed')}</p>
-          <div className="plugins-grid">
+          <div className="plugins-lines">
             {Array.from({ length: 4 }).map((_, i) => (
               <PluginSkeletonCard key={i} delay={i * 60} />
             ))}
@@ -353,47 +413,41 @@ export function PluginsView({ onClose }: PluginsViewProps) {
         </>
       ) : (
         <>
-          {/* ── Installed ─────────────────────────────────────────── */}
-          <p className="plugins-section-label">
-            {t('plugins.installed')} ({filteredInstalled.length})
-          </p>
-          {filteredInstalled.length === 0 ? (
-            <div className="plugins-empty">
-              <div className="plugins-empty-icon"><Blocks size={24} /></div>
-              <p className="plugins-empty-title">{t('plugins.noInstalled')}</p>
-            </div>
-          ) : (
-            <div className="plugins-grid">
-              {filteredInstalled.slice(0, 8).map((plugin, i) => (
-                <div key={plugin.id} style={{ animationDelay: `${i * 40}ms` }}>
-                  <InstalledPluginCard
-                    plugin={plugin}
-                    onToggle={enabled => void handleToggle(plugin, enabled)}
-                    onUpdate={() => void handleUpdate(plugin)}
-                    onUninstall={() => void handleUninstall(plugin)}
-                    onOpenDetail={() => setSelectedPlugin({ kind: 'installed', plugin })}
-                    busy={busyIds.has(plugin.id)}
-                  />
-                </div>
-              ))}
-            </div>
+          {/* ── Installed lines ──────────────────────────────────── */}
+          {filteredInstalled.length > 0 && (
+            <>
+              <p className="plugins-section-label">
+                {t('plugins.installed')} ({filteredInstalled.length})
+              </p>
+              <div className="plugins-lines">
+                {filteredInstalled.map((plugin, i) => (
+                  <div key={plugin.id} style={{ animationDelay: `${i * 40}ms` }}>
+                    <InstalledPluginCard
+                      plugin={plugin}
+                      onToggle={enabled => void handleToggle(plugin, enabled)}
+                      onUpdate={() => void handleUpdate(plugin)}
+                      onUninstall={() => void handleUninstall(plugin)}
+                      onOpenDetail={() => setSelectedPlugin({ kind: 'installed', plugin })}
+                      onTestNow={onSeedComposer ? () => void handleTestNow(plugin) : undefined}
+                      busy={busyIds.has(plugin.id)}
+                    />
+                  </div>
+                ))}
+              </div>
+            </>
           )}
 
-          {/* ── Available ────────────────────────────────────────── */}
+          {/* ── Available lines (grouped by marketplace) ─────────── */}
           {availableLoading ? (
             <>
               <p className="plugins-section-label">{t('plugins.featured')}</p>
-              <div className="plugins-grid">
+              <div className="plugins-lines">
                 {Array.from({ length: 6 }).map((_, i) => (
                   <PluginSkeletonCard key={i} delay={i * 60} />
                 ))}
               </div>
             </>
           ) : availableError ? (
-            // Catalog fetch failed but installed plugins are showing — scoped
-            // empty state with retry, NOT a full-page error banner. Message is
-            // kind-specific: network → connection, parse/unknown → invalid data,
-            // timeout → took too long.
             <div className="plugins-empty">
               <div className="plugins-empty-icon"><AlertTriangle size={22} /></div>
               <p className="plugins-empty-title">{t('plugins.catalogError')}</p>
@@ -411,25 +465,46 @@ export function PluginsView({ onClose }: PluginsViewProps) {
               </div>
             )
           ) : (
-            availableGroups.map(([groupKey, plugins]) => (
-              <div key={groupKey}>
-                <p className="plugins-section-label">
-                  {t('plugins.featured')} — {marketplaceFriendlyName(groupKey)}
-                </p>
-                <div className="plugins-grid">
-                  {plugins.slice(0, 8).map((plugin, i) => (
-                    <div key={plugin.pluginId} style={{ animationDelay: `${i * 40}ms` }}>
-                      <AvailablePluginCard
-                        plugin={plugin}
-                        onInstall={() => void handleInstallOneClick(plugin)}
-                        onOpenDetail={() => setSelectedPlugin({ kind: 'available', plugin })}
-                        busy={busyIds.has(plugin.pluginId)}
-                      />
-                    </div>
-                  ))}
+            availableGroups.map(([groupKey, plugins]) => {
+              const isExpanded = expandedSections.has(groupKey)
+              const visible = isExpanded ? plugins : plugins.slice(0, SECTION_CAP)
+              const hasExpander = plugins.length > SECTION_CAP
+              return (
+                <div key={groupKey} className="plugins-section">
+                  <p className="plugins-section-label">
+                    {groupKey}
+                  </p>
+                  <div className="plugins-lines">
+                    {visible.map((plugin, i) => (
+                      <div key={plugin.pluginId} style={{ animationDelay: `${i * 40}ms` }}>
+                        <AvailablePluginCard
+                          plugin={plugin}
+                          onInstall={() => void handleInstallOneClick(plugin)}
+                          onOpenDetail={() => setSelectedPlugin({ kind: 'available', plugin })}
+                          busy={busyIds.has(plugin.pluginId)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  {hasExpander && !isExpanded && (
+                    <SectionExpander
+                      plugins={plugins.slice(SECTION_CAP)}
+                      onExpand={() => toggleSection(groupKey)}
+                    />
+                  )}
+                  {hasExpander && isExpanded && (
+                    <button
+                      type="button"
+                      className="plugin-section-expander"
+                      onClick={() => toggleSection(groupKey)}
+                    >
+                      <ChevronDown size={14} className="plugin-expander-chevron is-up" />
+                      <span className="plugin-expander-text">{t('plugins.showLess')}</span>
+                    </button>
+                  )}
                 </div>
-              </div>
-            ))
+              )
+            })
           )}
         </>
       )}

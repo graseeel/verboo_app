@@ -4299,7 +4299,18 @@ export function App() {
               onClose={() => setActiveView('chat')}
             />
           ) : activeView === 'plugins' ? (
-            <PluginsView onClose={() => setActiveView('chat')} />
+            <PluginsView
+              onClose={() => setActiveView('chat')}
+              onSeedComposer={(text: string) => {
+                setComposerValue(text)
+                setActiveView('chat')
+                // Focus the composer after the view switch commits. rAF
+                // ensures the textarea is mounted before we dispatch.
+                requestAnimationFrame(() => {
+                  window.dispatchEvent(new CustomEvent('verboo:focus-composer'))
+                })
+              }}
+            />
           ) : activeView === 'settings' ? (
             <SettingsView
               credentials={credentials}

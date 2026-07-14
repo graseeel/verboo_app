@@ -1,6 +1,6 @@
-import { ArrowLeft, ChevronDown, Download, Power, Trash2 } from 'lucide-react'
-import { useState } from 'react'
-import type { AvailablePlugin, Plugin, PluginError, PluginScope } from '../../../shared/plugins'
+import { ArrowLeft, ChevronDown, Download, ExternalLink, Power, Trash2, Zap } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import type { AvailablePlugin, MarketplaceManifestMap, Plugin, PluginDetail, PluginError, PluginScope, PluginSkill } from '../../../shared/plugins'
 import { describePluginError } from '../../../shared/plugins'
 import { useI18n } from '../../i18n'
 import { monogramColor, pluginHue, PluginMonogram } from './PluginCard'
@@ -12,6 +12,7 @@ type DetailTarget =
 
 type PluginDetailViewProps = {
   target: DetailTarget
+  manifests: MarketplaceManifestMap
   onBack: () => void
   onInstall?: (scope: PluginScope) => Promise<void>
   onUninstall?: () => Promise<void>
@@ -20,15 +21,19 @@ type PluginDetailViewProps = {
   error?: PluginError
 }
 
-// Plugin detail view — Codex-inspired hero structure:
+// Plugin detail view — Codex-inspired rich detail:
 // 1. Breadcrumb (Plugins > name)
-// 2. Header row: monogram 56px + title + marketplace subtitle + badge + actions
-// 3. Hero band: full-width mesh gradient with animated drift, glass chip
-// 4. Body: full description
-// 5. Collapsible "Detalhes técnicos" (accordion, default collapsed)
-export function PluginDetailView({ target, onBack, onInstall, onUninstall, onToggle, busy, error }: PluginDetailViewProps) {
+// 2. Sticky header: monogram 56px + title + marketplace subtitle + badge + actions
+// 3. Hero band: violet mesh + glass chip (1st skill desc or plugin desc)
+// 4. Full description paragraph (manifest description if richer)
+// 5. Habilidades section (installed only, skill count gray)
+// 6. Informações table (Desenvolvedor/Categoria/Versão/Site — omit missing)
+// 7. Collapsible "Detalhes técnicos" (ID, path, dates)
+export function PluginDetailView({ target, manifests, onBack, onInstall, onUninstall, onToggle, busy, error }: PluginDetailViewProps) {
   const { t } = useI18n()
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const [detail, setDetail] = useState<PluginDetail | undefined>(undefined)
+  const [skills, setSkills] = useState<PluginSkill[]>([])
   const isInstalled = target.kind === 'installed'
 
   const name = isInstalled ? target.plugin.name : target.plugin.name
@@ -41,6 +46,31 @@ export function PluginDetailView({ target, onBack, onInstall, onUninstall, onTog
   const pluginId = isInstalled ? target.plugin.id : target.plugin.pluginId
   const enabled = isInstalled ? target.plugin.enabled : false
 
+  // Manifest metadata (category, author, homepage, richer description).
+  const manifest = manifests[pluginId]
+  const fullDescription = detail?.manifestDescription ?? manifest?.description ?? description
+  const author = detail?.authorName ?? manifest?.author
+  const category = manifest?.category
+  const homepage = detail?.manifestHomepage ?? manifest?.homepage
+
+  // Fetch rich detail + skills for installed plugins only. Available plugins
+  // don't have on-disk manifests/skills yet — the section is omitted.
+  useEffect(() => {
+    if (!isInstalled) {
+      setDetail(undefined)
+      setSkills([])
+      return
+    }
+    let cancelled = false
+    window.verboo.pluginDetail(pluginId).then(d => { if (!cancelled) setDetail(d) }).catch(() => {})
+    window.verboo.pluginSkills(pluginId).then(s => { if (!cancelled) setSkills(s) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [isInstalled, pluginId])
+
+  // Chip phrase: 1st skill description (installed with skills), fallback
+  // to plugin description. Empty desc → chip shows monogram+name only.
+  const chipPhrase = skills[0]?.description ?? fullDescription
+
   return (
     <div className="plugin-detail page-surface">
       {/* Breadcrumb */}
@@ -52,7 +82,7 @@ export function PluginDetailView({ target, onBack, onInstall, onUninstall, onTog
         <span className="plugin-detail-crumb plugin-detail-crumb--current">{name}</span>
       </nav>
 
-      {/* Header row: monogram + title/subtitle/badge + actions */}
+      {/* Sticky header */}
       <div className="plugin-detail-header">
         <div className="plugin-detail-header-left">
           <PluginMonogram name={name} id={pluginId} size={56} />
@@ -80,7 +110,7 @@ export function PluginDetailView({ target, onBack, onInstall, onUninstall, onTog
               </button>
               <button
                 type="button"
-                className="danger-button"
+                className="plugin-uninstall-btn"
                 onClick={() => void onUninstall?.()}
                 disabled={busy}
               >
@@ -91,7 +121,7 @@ export function PluginDetailView({ target, onBack, onInstall, onUninstall, onTog
           ) : (
             <button
               type="button"
-              className="primary-button"
+              className="plugin-install-pill"
               onClick={() => void onInstall?.('user')}
               disabled={busy}
             >
@@ -102,10 +132,7 @@ export function PluginDetailView({ target, onBack, onInstall, onUninstall, onTog
         </div>
       </div>
 
-      {/* Hero band — full-width mesh gradient with animated drift.
-          --plugin-hero-color is seeded from the plugin id so the same plugin
-          always gets the same hue (matches the monogram). Mesh layers in CSS
-          use this var with --accent fallback. */}
+      {/* Hero band — Verboo violet mesh + glass chip */}
       <div
         className="plugin-detail-hero"
         style={{
@@ -115,14 +142,19 @@ export function PluginDetailView({ target, onBack, onInstall, onUninstall, onTog
       >
         <div className="plugin-detail-hero-mesh" aria-hidden="true" />
         <div className="plugin-detail-hero-content">
-          {/* Glass chip "Exemplo de uso" — presentational only, role=group,
-              NOT a button. No navigation, no @ prefill, no toast. */}
-          <div className="plugin-hero-chip" role="group" aria-label={t('plugins.detail.exampleLabel')}>
-            <PluginMonogram name={name} id={pluginId} size={28} />
-            <span className="plugin-hero-chip-text">
-              {t('plugins.detail.exampleUse')}
-            </span>
-            <ArrowLeft size={13} className="plugin-hero-chip-arrow" />
+          <div className="plugin-hero-chip" role="group" aria-label={name}>
+            <PluginMonogram name={name} id={pluginId} size={32} />
+            <div className="plugin-hero-chip-text">
+              <span className="plugin-hero-chip-name">{name}</span>
+              {chipPhrase && (
+                <span className="plugin-hero-chip-desc">
+                  {chipPhrase.length > 90 ? chipPhrase.slice(0, 90) + '…' : chipPhrase}
+                </span>
+              )}
+            </div>
+            <div className="plugin-hero-chip-arrow" aria-hidden="true">
+              <ArrowLeft size={16} />
+            </div>
           </div>
         </div>
       </div>
@@ -133,14 +165,75 @@ export function PluginDetailView({ target, onBack, onInstall, onUninstall, onTog
         </div>
       )}
 
-      {/* Body: full description */}
-      {description && (
-        <p className="plugin-detail-body-desc">{description}</p>
+      {/* Full description paragraph */}
+      {fullDescription && (
+        <p className="plugin-detail-body-desc">{fullDescription}</p>
       )}
 
-      {/* Collapsible "Detalhes técnicos" — accordion, default collapsed.
-          De-emphasizes filesystem paths/ids behind a disclosure so the hero
-          and description stay the focus. */}
+      {/* Habilidades section — installed only. Skill count gray (Codex style). */}
+      {isInstalled && skills.length > 0 && (
+        <section className="plugin-detail-skills">
+          <div className="plugin-detail-skills-header">
+            <h2 className="plugins-section-label">{t('plugins.detail.skills')}</h2>
+            <span className="plugin-detail-skills-count">{skills.length}</span>
+          </div>
+          <div className="plugin-detail-skills-list">
+            {skills.map(skill => (
+              <div key={skill.skillPath} className="plugin-skill-row">
+                <div className="plugin-skill-icon" aria-hidden="true">
+                  <Zap size={14} />
+                </div>
+                <div className="plugin-skill-body">
+                  <div className="plugin-skill-name">{skill.name}</div>
+                  {skill.description && (
+                    <div className="plugin-skill-desc">{skill.description}</div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Informações table — omit rows when data missing. */}
+      {(author || category || version || homepage) && (
+        <section className="plugin-detail-info-section">
+          <h2 className="plugins-section-label">{t('plugins.detail.information')}</h2>
+          <dl className="plugin-detail-info-grid">
+            {author && (
+              <>
+                <dt className="plugin-detail-info-key">{t('plugins.detail.developer')}</dt>
+                <dd className="plugin-detail-info-val">{author}</dd>
+              </>
+            )}
+            {category && (
+              <>
+                <dt className="plugin-detail-info-key">{t('plugins.detail.category')}</dt>
+                <dd className="plugin-detail-info-val">{category}</dd>
+              </>
+            )}
+            {version && (
+              <>
+                <dt className="plugin-detail-info-key">{t('plugins.detail.version')}</dt>
+                <dd className="plugin-detail-info-val">v{version}</dd>
+              </>
+            )}
+            {homepage && (
+              <>
+                <dt className="plugin-detail-info-key">{t('plugins.detail.site')}</dt>
+                <dd className="plugin-detail-info-val">
+                  <a href={homepage} target="_blank" rel="noopener noreferrer" className="plugin-detail-link">
+                    {homepage}
+                    <ExternalLink size={11} />
+                  </a>
+                </dd>
+              </>
+            )}
+          </dl>
+        </section>
+      )}
+
+      {/* Collapsible "Detalhes técnicos" — ID + filesystem paths */}
       <section className="plugin-detail-tech">
         <button
           type="button"
@@ -155,13 +248,6 @@ export function PluginDetailView({ target, onBack, onInstall, onUninstall, onTog
           <dl className="plugin-detail-info-grid">
             <dt className="plugin-detail-info-key">{t('plugins.detail.id')}</dt>
             <dd className="plugin-detail-info-val"><code>{pluginId}</code></dd>
-
-            {version && (
-              <>
-                <dt className="plugin-detail-info-key">{t('plugins.detail.version')}</dt>
-                <dd className="plugin-detail-info-val">v{version}</dd>
-              </>
-            )}
 
             {scope && (
               <>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AvailablePlugin, Marketplace, Plugin, PluginError, PluginScope, PluginValidateResult } from '../../../shared/plugins'
+import type { AvailablePlugin, Marketplace, MarketplaceManifestMap, Plugin, PluginError, PluginScope, PluginValidateResult } from '../../../shared/plugins'
 import { isPluginError } from '../../../shared/plugins'
 
 // ── State shape ──────────────────────────────────────────────────────
@@ -9,15 +9,14 @@ type PluginsState = {
   installed: Plugin[]
   available: AvailablePlugin[]
   marketplaces: Marketplace[]
+  // Rich per-plugin metadata from marketplace manifests (category, author,
+  // homepage). Fetched in parallel with pluginList/marketplaceList so the
+  // catalog can group by category without a second round-trip.
+  manifests: MarketplaceManifestMap
   loading: LoadingState
   availableLoading: boolean
   error?: PluginError
-  // Separate error for the available-catalog fetch. Non-fatal: if installed
-  // plugins loaded fine, we show this only in the Featured section empty
-  // state (with a retry) rather than a full-page error banner.
   availableError?: PluginError
-  // Plugin ids that were updated and need an app restart to take effect.
-  // Persisted to localStorage so the banner survives reloads.
   pendingRestartPluginIds: Set<string>
 }
 
@@ -53,6 +52,7 @@ export function usePlugins() {
     availableLoading: false,
     pendingRestartPluginIds: loadPendingRestart(),
     availableError: undefined,
+    manifests: {},
   })
   // Track in-flight mutations so the UI can show per-card spinners and avoid
   // double-dispatch on rapid clicks.
@@ -63,11 +63,12 @@ export function usePlugins() {
   const refreshAll = useCallback(async () => {
     setState(prev => ({ ...prev, loading: 'loading', error: undefined }))
     try {
-      const [installed, marketplaces] = await Promise.all([
+      const [installed, marketplaces, manifests] = await Promise.all([
         window.verboo.pluginList(),
         window.verboo.marketplaceList(),
+        window.verboo.marketplaceManifests().catch(() => ({})),
       ])
-      setState(prev => ({ ...prev, installed, marketplaces, loading: 'success' }))
+      setState(prev => ({ ...prev, installed, marketplaces, manifests, loading: 'success' }))
       // plugin_available is slow — kick it off after the fast reads resolve
       // so the Installed section renders immediately.
       setState(prev => ({ ...prev, availableLoading: true, availableError: undefined }))
@@ -75,10 +76,6 @@ export function usePlugins() {
         const payload = await window.verboo.pluginAvailable()
         setState(prev => ({ ...prev, available: payload.available, availableLoading: false }))
       } catch (err) {
-        // available failing is non-fatal — Installed section still works.
-        // Store as availableError so the Featured section can show a scoped
-        // empty state + retry, rather than a full-page error banner that
-        // would hide the already-loaded Installed plugins.
         const pluginErr = isPluginError(err) ? err : { kind: 'unknown', message: String(err) } as PluginError
         setState(prev => ({ ...prev, availableLoading: false, availableError: pluginErr }))
       }

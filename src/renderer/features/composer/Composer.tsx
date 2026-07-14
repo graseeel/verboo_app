@@ -151,6 +151,22 @@ export function Composer({
     window.addEventListener('verboo:drag-event', onTauriDrag)
     return () => window.removeEventListener('verboo:drag-event', onTauriDrag)
   }, [disabled, onDropFiles])
+
+  // Focus the composer textarea on request — used by "Testar agora" in the
+  // plugins view to seed a prompt and focus the input without sending.
+  useEffect(() => {
+    function onFocusRequest() {
+      textareaRef.current?.focus()
+      // Move caret to end so seeded text is appended-after, not mid-string.
+      const ta = textareaRef.current
+      if (ta) {
+        const end = ta.value.length
+        ta.setSelectionRange(end, end)
+      }
+    }
+    window.addEventListener('verboo:focus-composer', onFocusRequest)
+    return () => window.removeEventListener('verboo:focus-composer', onFocusRequest)
+  }, [])
   const highlightRef = useRef<HTMLDivElement>(null)
   const slashQuery = getSlashQuery(value)
   const slashCommands = useMemo<SlashCommand[]>(() => [
