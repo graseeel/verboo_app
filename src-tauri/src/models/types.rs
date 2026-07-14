@@ -611,6 +611,19 @@ pub struct UserSettings {
     /// Keyed by model id; value is the effort level string. Empty by default.
     #[serde(default)]
     pub effort_by_model: std::collections::HashMap<String, String>,
+    /// When true (default), the backend fetches plugin icons from the
+    /// plugin's homepage domain on-demand (never preemptive). When false,
+    /// `plugin_icon` returns `None` without any network request — the FE
+    /// renders a monogram fallback. Privacy toggle: users who don't want
+    /// any outbound requests to third-party plugin sites can disable it.
+    #[serde(default = "default_true")]
+    pub load_web_icons: bool,
+}
+
+/// Default function for `load_web_icons`. Used by `#[serde(default = ...)]`
+/// so existing settings.json files without the field parse as `true`.
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1235,6 +1248,7 @@ impl Default for UserSettings {
             avatar: None,
             include_verboo_co_author: false,
             effort_by_model: std::collections::HashMap::new(),
+            load_web_icons: true,
         }
     }
 }
@@ -1287,6 +1301,37 @@ mod tests {
         assert_eq!(back.default_access_mode, settings.default_access_mode);
         assert_eq!(back.goal_mode.max_turns, settings.goal_mode.max_turns);
         assert_eq!(back.updates.channel, settings.updates.channel);
+    }
+
+    #[test]
+    fn load_web_icons_defaults_true_when_absent() {
+        // Backwards-compat: existing settings.json files without the
+        // `loadWebIcons` field must deserialize as `true` (privacy toggle
+        // defaults on — icons fetched on-demand). This is the
+        // `#[serde(default = "default_true")]` contract.
+        let raw = r#"{
+            "language": "en-US",
+            "defaultAccessMode": "approval",
+            "fullAccessEnabled": false,
+            "showInMenuBar": true,
+            "showMenuBarText": true,
+            "staySignedIn": true,
+            "preventSleepWhileRunning": true,
+            "completionNotifications": "background",
+            "permissionNotifications": true,
+            "questionNotifications": true,
+            "responseEnhancementsEnabled": false,
+            "personality": "pragmatic",
+            "customInstructions": "",
+            "trustedCommands": [],
+            "memoriesEnabled": false,
+            "chroniclePreview": false,
+            "ignoreToolChatsForMemory": true,
+            "goalMode": { "enabled": true, "maxTurns": 999, "maxElapsedMinutes": 99999, "allowAutoAccess": true },
+            "updates": { "channel": "beta", "autoCheck": true, "autoDownload": false }
+        }"#;
+        let s: UserSettings = serde_json::from_str(raw).expect("parse");
+        assert!(s.load_web_icons, "loadWebIcons must default to true when absent");
     }
 
     #[test]

@@ -205,6 +205,9 @@ pub async fn marketplace_add(source: String, scope: Option<String>) -> Result<Ma
         args.push(s);
     }
     run_cli_quiet(&args, 60).await?;
+    // Invalidate the manifest cache so the new marketplace's plugins are
+    // visible immediately (don't wait for the 60s TTL).
+    crate::services::manifest_cache::invalidate().await;
     Ok(Marketplace {
         name: derive_marketplace_name(&source),
         source: classify_marketplace_source(&source).to_string(),
@@ -227,7 +230,11 @@ pub async fn marketplace_add(source: String, scope: Option<String>) -> Result<Ma
 ///     `verboo plugin marketplace remove <name>` (15 s).
 pub async fn marketplace_remove(name: String) -> Result<(), PluginError> {
     require_auth()?;
-    run_cli_quiet(&["plugin", "marketplace", "remove", name.as_str()], 15).await
+    run_cli_quiet(&["plugin", "marketplace", "remove", name.as_str()], 15).await?;
+    // Invalidate the manifest cache so the removed marketplace's plugins
+    // don't linger for 60s.
+    crate::services::manifest_cache::invalidate().await;
+    Ok(())
 }
 
 // ════════════════════════════════════════════════════════════════════

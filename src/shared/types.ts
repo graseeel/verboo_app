@@ -355,6 +355,13 @@ export type UserSettings = {
    *  Absent → model's defaultEffort applies. Promoted to UserSettings by
    *  Geralt; FE falls back to localStorage when the backend hasn't landed yet. */
   effortByModel?: Record<string, string>
+  /**
+   * When true (default), the plugins view fetches real icons from plugin
+   * homepages (apple-touch-icon / favicon) via the backend cache. When
+   * false, only monograms are rendered — no network calls for icons.
+   * Privacy toggle in Settings → Privacy.
+   */
+  loadWebIcons: boolean
 }
 
 /// Profile avatar configuration.

@@ -59,6 +59,7 @@ import type {
   Plugin,
   PluginAvailablePayload,
   PluginDetail,
+  PluginIconResult,
   PluginScope,
   PluginSkill,
   PluginValidateResult,
@@ -387,6 +388,14 @@ const api = {
     invoke<PluginSkill[]>('plugin_skills', { id }),
   marketplaceManifests: () =>
     invoke<MarketplaceManifestMap>('marketplace_manifests'),
+
+  // ── Plugins — icon fetch (P5.1 — on-demand, cached, privacy-gated) ──
+  // Fetches the plugin's icon from its homepage domain (apple-touch-icon.png
+  // → favicon.ico). HTTPS only, on-demand only. Returns a local file path
+  // (use `convertFileSrc`) or null (FE renders monogram). Respects the
+  // `loadWebIcons` user setting — if false, returns null without network.
+  pluginIcon: (pluginId: string) =>
+    invoke<PluginIconResult>('plugin_icon', { pluginId }),
 }
 
 // ── Expose on window (Tauri only) ──────────────────────────────

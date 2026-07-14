@@ -248,3 +248,22 @@ export interface MarketplacePluginEntry {
 
 /** Map keyed by `pluginId` (`name@marketplaceName`) → rich metadata. */
 export type MarketplaceManifestMap = Record<string, MarketplacePluginEntry>
+
+// ════════════════════════════════════════════════════════════════════
+// Plugin icon (P5.1 — on-demand fetch from homepage domain)
+// ════════════════════════════════════════════════════════════════════
+
+/**
+ * Result of `pluginIcon`. `iconPath === null` means the FE should render
+ * a monogram fallback (no icon available, toggle off, or fetch failed).
+ *
+ * The FE converts `iconPath` to a displayable URL via `convertFileSrc(path)`.
+ */
+export interface PluginIconResult {
+  /** Absolute path to the cached icon file, or null if unavailable. */
+  iconPath: string | null
+  /** The domain the icon was fetched from (for debugging / dedupe). */
+  domain?: string
+  /** True if the icon came from the cache (no network request). */
+  cached: boolean
+}

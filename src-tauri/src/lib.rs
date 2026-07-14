@@ -1384,6 +1384,56 @@ async fn marketplace_manifests(
     Ok(services::marketplace_manifest_service::read_all_manifests(&marketplaces))
 }
 
+/// 15. `plugin_icon(pluginId)` — fetches the plugin's icon from its homepage
+/// domain (apple-touch-icon.png → favicon.ico). HTTPS only, on-demand only
+/// (never preemptive). Cached at `<app_data_dir>/cache/plugin-icons/` with
+/// 7-day TTL, 50 MB LRU cap, dedupe by domain. Returns a local file path
+/// (FE uses `convertFileSrc`) or `None` (FE renders monogram).
+///
+/// Respects the `loadWebIcons` user setting — if false, returns `None`
+/// without any network request (privacy toggle).
+#[tauri::command]
+async fn plugin_icon(
+    app: tauri::AppHandle,
+    settings_store: tauri::State<'_, services::settings_store::SettingsStore>,
+    plugin_id: String,
+) -> Result<services::plugin_icon_service::PluginIconResult, models::plugins::PluginError> {
+    eprintln!("[verboo:plugin-icon] command invoked: plugin_id={plugin_id}");
+
+    // Read the loadWebIcons toggle. If false, return None without network.
+    let load_web_icons = settings_store
+        .get()
+        .map(|s| s.load_web_icons)
+        .unwrap_or(true);
+    eprintln!("[verboo:plugin-icon] load_web_icons={load_web_icons}");
+
+    // Resolve cache dir: <app_data_dir>/cache/plugin-icons/
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| models::plugins::PluginError::Unknown {
+            message: format!("failed to resolve app_data_dir: {e}"),
+            exit_code: None,
+        })?;
+    let cache_dir = app_data_dir.join("cache").join("plugin-icons");
+    eprintln!("[verboo:plugin-icon] cache_dir={}", cache_dir.display());
+
+    // Fetch marketplace manifests via the in-memory cache (TTL 60s +
+    // single-flight). This avoids spawning the CLI on every request —
+    // 83 concurrent requests share 1 fetch.
+    eprintln!("[verboo:plugin-icon] getting manifests (cached)...");
+    let manifests = services::manifest_cache::get_or_fetch_manifests().await?;
+    eprintln!("[verboo:plugin-icon] manifests: {} entries", manifests.len());
+
+    services::plugin_icon_service::resolve_plugin_icon(
+        &plugin_id,
+        &manifests,
+        cache_dir,
+        load_web_icons,
+    )
+    .await
+}
+
 // ════════════════════════════════════════════════════════════════════
 // App entry point
 // ════════════════════════════════════════════════════════════════════
@@ -1708,6 +1758,7 @@ pub fn run() {
             plugin_detail,
             plugin_skills,
             marketplace_manifests,
+            plugin_icon,
         ])
         .run(tauri::generate_context!())
         .expect("error while running verboo-desktop");

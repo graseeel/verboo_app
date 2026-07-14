@@ -172,6 +172,7 @@ impl SettingsStore {
             avatar: s.avatar.clone(),
             include_verboo_co_author: s.include_verboo_co_author,
             effort_by_model: s.effort_by_model.clone(),
+            load_web_icons: s.load_web_icons,
         }
     }
 }
