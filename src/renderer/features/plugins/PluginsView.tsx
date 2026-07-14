@@ -22,6 +22,16 @@ type PluginsViewProps = {
 // with <= CAP items render fully; > CAP shows CAP items + an expander row.
 const SECTION_CAP = 6
 
+// Deterministic title-case from kebab-case skill names.
+// brainstorming → Brainstorming, dispatching-parallel-agents → Dispatching Parallel Agents.
+function titleCaseSkill(name: string): string {
+  return name
+    .split('-')
+    .filter(Boolean)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
+}
+
 function catalogErrorMessage(err: PluginError, t: (key: string) => string): string {
   switch (err.kind) {
     case 'network_error':
@@ -111,6 +121,7 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
   // the Skills tab is first opened (lazy) or when installed list changes.
   const [allSkills, setAllSkills] = useState<Record<string, PluginSkill[]>>({})
   const [skillsLoading, setSkillsLoading] = useState(false)
+  const [skillsExpanded, setSkillsExpanded] = useState(false)
 
   // Invalidate the icon cache when manifests arrive. A plugin that returned
   // null earlier (manifests not loaded yet on the backend → no homepage →
@@ -202,21 +213,26 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
     return sorted
   }, [filteredAvailable, manifests, t])
 
-  // Skills grouped by plugin for the Skills tab. Each group = installed
-  // plugin + its skills filtered by the search query (name/description).
-  // Plugins with zero skills after filtering are omitted from the list.
-  const skillGroups = useMemo(() => {
-    return installed
-      .map(plugin => {
-        const skills = (allSkills[plugin.id] ?? []).filter(skill => {
-          if (!normalizedQuery) return true
+  // Flat list of all skills from installed plugins, sorted alphabetically.
+  // Each skill carries its source plugin name for the meta line. Filtered by
+  // the search query (name/description). Used by the Skills tab (flat, not
+  // grouped by plugin — Codex parity).
+  const flatSkills = useMemo(() => {
+    const list: Array<{ skill: PluginSkill; pluginName: string }> = []
+    for (const plugin of installed) {
+      const skills = allSkills[plugin.id] ?? []
+      for (const skill of skills) {
+        list.push({ skill, pluginName: plugin.name })
+      }
+    }
+    const filtered = normalizedQuery
+      ? list.filter(({ skill }) => {
           const name = skill.name.toLowerCase()
           const desc = (skill.description ?? '').toLowerCase()
           return name.includes(normalizedQuery) || desc.includes(normalizedQuery)
         })
-        return { plugin, skills }
-      })
-      .filter(group => group.skills.length > 0)
+      : list
+    return filtered.sort((a, b) => a.skill.name.localeCompare(b.skill.name))
   }, [installed, allSkills, normalizedQuery])
 
   function setBusy(id: string, busy: boolean) {
@@ -395,8 +411,8 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
             <ArrowLeft size={14} />
             {t('plugins.back')}
           </button>
-          <h1>{t('plugins.title')}</h1>
-          <p>{t('plugins.subtitle')}</p>
+          <h1>{activeTab === 'skills' ? t('plugins.skillsTitle') : t('plugins.title')}</h1>
+          <p>{activeTab === 'skills' ? t('plugins.skillsSubtitle') : t('plugins.subtitle')}</p>
         </div>
       </header>
 
@@ -607,7 +623,7 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
       </div>
       )}
 
-      {/* ── Skills tab ──────────────────────────────────────────────── */}
+      {/* ── Skills tab — flat list, alphabetical, cap 6 + textual expander */}
       {activeTab === 'skills' && (
       <div className="plugins-tab-content">
         {skillsLoading ? (
@@ -616,7 +632,7 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
               <PluginSkeletonCard key={i} delay={i * 60} />
             ))}
           </div>
-        ) : skillGroups.length === 0 ? (
+        ) : flatSkills.length === 0 ? (
           <div className="plugins-empty">
             <div className="plugins-empty-icon"><Zap size={24} /></div>
             <p className="plugins-empty-title">{t('plugins.skillsEmptyTitle')}</p>
@@ -626,30 +642,48 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
             </button>
           </div>
         ) : (
-          skillGroups.map(({ plugin, skills }) => (
-            <div key={plugin.id} className="plugins-section">
-              <div className="plugin-skill-group-header">
-                <PluginIcon name={plugin.name} id={plugin.id} size={28} loadIcons={loadIcons} />
-                <span className="plugin-skill-group-name">{plugin.name}</span>
-                <span className="plugin-skill-group-count">{skills.length}</span>
-              </div>
-              <div className="plugin-detail-skills-list">
-                {skills.map(skill => (
-                  <div key={skill.skillPath} className="plugin-skill-row">
-                    <div className="plugin-skill-icon" aria-hidden="true">
-                      <Zap size={14} />
+          <>
+            <div className="plugins-lines">
+              {(skillsExpanded ? flatSkills : flatSkills.slice(0, SECTION_CAP)).map(({ skill, pluginName }, i) => (
+                <div key={skill.skillPath} style={{ animationDelay: `${i * 40}ms` }}>
+                  <div className="plugin-line plugin-line--skill" role="button" tabIndex={0}>
+                    <div className="plugin-skill-icon plugin-skill-icon--line" aria-hidden="true">
+                      <Zap size={16} />
                     </div>
-                    <div className="plugin-skill-body">
-                      <div className="plugin-skill-name">{skill.name}</div>
+                    <div className="plugin-line-body">
+                      <div className="plugin-line-name">{titleCaseSkill(skill.name)}</div>
                       {skill.description && (
-                        <div className="plugin-skill-desc">{skill.description}</div>
+                        <div className="plugin-line-desc">{skill.description}</div>
                       )}
+                      <div className="plugin-line-meta">{pluginName}</div>
                     </div>
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
             </div>
-          ))
+            {flatSkills.length > SECTION_CAP && (
+              <button
+                type="button"
+                className="plugin-section-expander"
+                onClick={() => setSkillsExpanded(open => !open)}
+              >
+                {skillsExpanded ? (
+                  <>
+                    <ChevronDown size={14} className="plugin-expander-chevron is-up" />
+                    <span className="plugin-expander-text">{t('plugins.showLess')}</span>
+                  </>
+                ) : (
+                  <span className="plugin-expander-text">
+                    {t('plugins.skillsExpander', {
+                      name1: titleCaseSkill(flatSkills[SECTION_CAP].skill.name),
+                      name2: titleCaseSkill(flatSkills[SECTION_CAP + 1]?.skill.name ?? ''),
+                      count: flatSkills.length - SECTION_CAP,
+                    })}
+                  </span>
+                )}
+              </button>
+            )}
+          </>
         )}
       </div>
       )}

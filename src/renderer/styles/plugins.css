@@ -29,6 +29,19 @@
   font-size: 13px;
 }
 
+/* ── Skill icon in flat line (Skills tab) ────────────────────────── */
+.plugin-skill-icon--line {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent-strong);
+  flex-shrink: 0;
+}
+
 /* ── Segmented control (Plugins | Habilidades) ──────────────────── */
 /* Codex-style pills: two buttons in a row, active = solid bg, inactive =
    transparent. Crossfade 120ms opacity-only on tab content swap. */
@@ -113,6 +126,11 @@
   background: color-mix(in srgb, var(--bg) 100%, var(--bg-elevated));
   backdrop-filter: none;
   border-bottom: 1px solid var(--border);
+  /* Fade mask: content scrolling behind the search bar fades out at the
+     bottom edge of the sticky wrapper. Static (no animation) so
+     reduced-motion is unaffected. */
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 8px), transparent 100%);
+  mask-image: linear-gradient(to bottom, black calc(100% - 8px), transparent 100%);
 }
 
 .plugins-search input {

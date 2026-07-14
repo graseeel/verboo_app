@@ -722,7 +722,8 @@
 
 .sidebar-action:hover,
 .sidebar-item:hover,
-.sidebar-item.active {
+.sidebar-item.active,
+.sidebar-action.active {
   background: color-mix(in srgb, var(--accent-soft) 76%, transparent);
   color: var(--text);
 }
