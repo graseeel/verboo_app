@@ -1,49 +1,42 @@
-import { Check, Download, MoreHorizontal, Power, RefreshCw, Trash2 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
-import type { AvailablePlugin, Plugin, PluginScope } from '../../../shared/plugins'
+import { Download, MoreHorizontal, Power, RefreshCw, Trash2 } from 'lucide-react'
+import { useRef, useState } from 'react'
+import type { AvailablePlugin, Plugin } from '../../../shared/plugins'
 import { useI18n } from '../../i18n'
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss'
 
 type InstalledCardProps = {
   plugin: Plugin
-  onToggle: (enabled: boolean) => void
   onUpdate: () => void
+  onToggle: (enabled: boolean) => void
   onUninstall: () => void
+  onOpenDetail: () => void
   busy?: boolean
 }
 
-// Installed plugin card: name, version, description, enable toggle, and a
-// ⋯ menu with Update + Uninstall. The toggle is optimistic — the parent
-// flips state immediately and reverts on error.
-export function InstalledPluginCard({ plugin, onToggle, onUpdate, onUninstall, busy }: InstalledCardProps) {
+// Installed plugin card. Codex-inspired: the whole card is clickable (opens
+// the detail view), and a ⋯ menu on the right holds the actions — Update,
+// Enable/Disable (label depends on current state), Uninstall. The toggle
+// moved to the detail view to keep the card surface clean.
+export function InstalledPluginCard({ plugin, onUpdate, onToggle, onUninstall, onOpenDetail, busy }: InstalledCardProps) {
   const { t } = useI18n()
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement | null>(null)
   useOutsideDismiss(menuRef, menuOpen, () => setMenuOpen(false))
 
   return (
-    <div className={`plugin-card plugin-card--installed ${plugin.enabled ? 'is-enabled' : 'is-disabled'}`}>
+    <div
+      className={`plugin-card plugin-card--installed ${plugin.enabled ? 'is-enabled' : 'is-disabled'}`}
+      onClick={onOpenDetail}
+      role="button"
+      tabIndex={0}
+      onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpenDetail() } }}
+    >
       <div className="plugin-card-head">
         <div className="plugin-card-title">
           <span className="plugin-card-name">{plugin.name}</span>
           <span className="plugin-card-version">v{plugin.version}</span>
         </div>
-        <button
-          type="button"
-          className={`plugin-toggle ${plugin.enabled ? 'is-on' : 'is-off'}`}
-          onClick={() => onToggle(!plugin.enabled)}
-          disabled={busy}
-          aria-pressed={plugin.enabled}
-          aria-label={plugin.enabled ? t('plugins.disable') : t('plugins.enable')}
-          title={plugin.enabled ? t('plugins.disable') : t('plugins.enable')}
-        >
-          <span className="plugin-toggle-knob" />
-        </button>
-      </div>
-      {plugin.description && <p className="plugin-card-desc">{plugin.description}</p>}
-      <div className="plugin-card-foot">
-        <span className="plugin-card-scope">{t(`plugins.scope.${plugin.scope}`)}</span>
-        <div className="plugin-card-menu-wrap" ref={menuRef}>
+        <div className="plugin-card-menu-wrap" ref={menuRef} onClick={event => event.stopPropagation()}>
           <button
             type="button"
             className="plugin-card-menu-trigger"
@@ -65,6 +58,14 @@ export function InstalledPluginCard({ plugin, onToggle, onUpdate, onUninstall, b
               </button>
               <button
                 type="button"
+                className="plugin-card-menu-item"
+                onClick={() => { setMenuOpen(false); onToggle(!plugin.enabled) }}
+              >
+                <Power size={14} />
+                {plugin.enabled ? t('plugins.disable') : t('plugins.enable')}
+              </button>
+              <button
+                type="button"
                 className="plugin-card-menu-item plugin-card-menu-item--danger"
                 onClick={() => { setMenuOpen(false); onUninstall() }}
               >
@@ -75,6 +76,11 @@ export function InstalledPluginCard({ plugin, onToggle, onUpdate, onUninstall, b
           )}
         </div>
       </div>
+      {plugin.description && <p className="plugin-card-desc">{plugin.description}</p>}
+      <div className="plugin-card-foot">
+        <span className="plugin-card-scope">{t(`plugins.scope.${plugin.scope}`)}</span>
+        <span className="plugin-card-state">{plugin.enabled ? t('plugins.enabled') : t('plugins.disabled')}</span>
+      </div>
     </div>
   )
 }
@@ -82,15 +88,22 @@ export function InstalledPluginCard({ plugin, onToggle, onUpdate, onUninstall, b
 type AvailableCardProps = {
   plugin: AvailablePlugin
   onInstall: () => void
+  onOpenDetail: () => void
   busy?: boolean
 }
 
-// Available plugin card (Featured grid): name, description, marketplace,
-// install count, and an Install button. No toggle — it's not installed yet.
-export function AvailablePluginCard({ plugin, onInstall, busy }: AvailableCardProps) {
+// Available plugin card. Click opens detail; Install button is a quick action
+// that stops propagation so it doesn't double-trigger the card click.
+export function AvailablePluginCard({ plugin, onInstall, onOpenDetail, busy }: AvailableCardProps) {
   const { t } = useI18n()
   return (
-    <div className="plugin-card plugin-card--available">
+    <div
+      className="plugin-card plugin-card--available"
+      onClick={onOpenDetail}
+      role="button"
+      tabIndex={0}
+      onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpenDetail() } }}
+    >
       <div className="plugin-card-head">
         <div className="plugin-card-title">
           <span className="plugin-card-name">{plugin.name}</span>
@@ -98,7 +111,7 @@ export function AvailablePluginCard({ plugin, onInstall, busy }: AvailableCardPr
         <button
           type="button"
           className="plugin-install-btn"
-          onClick={onInstall}
+          onClick={event => { event.stopPropagation(); onInstall() }}
           disabled={busy}
         >
           {busy ? <RefreshCw size={14} className="t-spin" /> : <Download size={14} />}
@@ -119,7 +132,7 @@ export function AvailablePluginCard({ plugin, onInstall, busy }: AvailableCardPr
 type SkeletonCardProps = { delay: number }
 
 // Loading placeholder — matches the card footprint so the grid doesn't jump
-// when real data arrives. Staggered via inline transition-delay.
+// when real data arrives. Staggered via inline animation-delay.
 export function PluginSkeletonCard({ delay }: SkeletonCardProps) {
   return (
     <div className="plugin-card plugin-card--skeleton" style={{ animationDelay: `${delay}ms` }}>
@@ -135,6 +148,3 @@ export function PluginSkeletonCard({ delay }: SkeletonCardProps) {
     </div>
   )
 }
-
-// Re-export for convenience — consumers can import all variants from one module.
-export { Check, Power }

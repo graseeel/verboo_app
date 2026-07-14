@@ -6,6 +6,7 @@ import { useI18n } from '../../i18n'
 import { useToast } from '../../components/Toast'
 import { AvailablePluginCard, InstalledPluginCard, PluginSkeletonCard } from './PluginCard'
 import { MarketplaceModal } from './MarketplaceModal'
+import { PluginDetailView } from './PluginDetailView'
 import { PluginInstallModal } from './PluginInstallModal'
 import { usePlugins } from './usePlugins'
 
@@ -65,6 +66,13 @@ export function PluginsView({ onClose }: PluginsViewProps) {
   const [query, setQuery] = useState('')
   const [installTarget, setInstallTarget] = useState<AvailablePlugin | undefined>(undefined)
   const [marketplaceOpen, setMarketplaceOpen] = useState(false)
+  // Selected plugin for the detail view. Union: installed (Plugin) or
+  // available (AvailablePlugin). When set, the detail view replaces the grid.
+  const [selectedPlugin, setSelectedPlugin] = useState<
+    | { kind: 'installed'; plugin: Plugin }
+    | { kind: 'available'; plugin: AvailablePlugin }
+    | undefined
+  >(undefined)
   // Track which plugin ids have an in-flight mutation (for per-card spinners).
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set())
 
@@ -171,6 +179,69 @@ export function PluginsView({ onClose }: PluginsViewProps) {
   const showSkeletons = loading === 'loading'
   const showError = loading === 'error' && error
 
+  // ── Detail view branch ────────────────────────────────────────────
+  // When a plugin is selected, render the detail view instead of the grid.
+  // The detail view has its own back button that clears the selection.
+  if (selectedPlugin) {
+    const detailId = selectedPlugin.kind === 'installed' ? selectedPlugin.plugin.id : selectedPlugin.plugin.pluginId
+    return (
+      <div className="plugins-view page-surface">
+        <PluginDetailView
+          target={selectedPlugin}
+          onBack={() => setSelectedPlugin(undefined)}
+          onInstall={async (scope: PluginScope) => {
+            if (selectedPlugin.kind !== 'available') return
+            setBusy(detailId, true)
+            try {
+              await install(selectedPlugin.plugin, scope)
+              toast(t('plugins.install'), 'success')
+              setSelectedPlugin(undefined)
+            } catch (err) {
+              toast(describePluginError(err as PluginError), 'error')
+              throw err
+            } finally {
+              setBusy(detailId, false)
+            }
+          }}
+          onUninstall={async () => {
+            if (selectedPlugin.kind !== 'installed') return
+            const plugin = selectedPlugin.plugin
+            if (!window.confirm(t('plugins.uninstall') + ' — ' + plugin.name)) return
+            setBusy(detailId, true)
+            try {
+              await uninstall(plugin.id, plugin.scope)
+              toast(t('plugins.uninstall'), 'success')
+              setSelectedPlugin(undefined)
+            } catch (err) {
+              toast(describePluginError(err as PluginError), 'error')
+            } finally {
+              setBusy(detailId, false)
+            }
+          }}
+          onToggle={async (enabled: boolean) => {
+            if (selectedPlugin.kind !== 'installed') return
+            const plugin = selectedPlugin.plugin
+            setBusy(detailId, true)
+            try {
+              if (enabled) {
+                await enable(plugin.id, plugin.scope)
+                toast(t('plugins.enable'), 'success')
+              } else {
+                await disable(plugin.id, plugin.scope)
+                toast(t('plugins.disable'), 'success')
+              }
+            } catch (err) {
+              toast(describePluginError(err as PluginError), 'error')
+            } finally {
+              setBusy(detailId, false)
+            }
+          }}
+          busy={busyIds.has(detailId)}
+        />
+      </div>
+    )
+  }
+
   return (
     <div className="plugins-view page-surface">
       <header className="plugins-view-header">
@@ -251,6 +322,7 @@ export function PluginsView({ onClose }: PluginsViewProps) {
                     onToggle={enabled => void handleToggle(plugin, enabled)}
                     onUpdate={() => void handleUpdate(plugin)}
                     onUninstall={() => void handleUninstall(plugin)}
+                    onOpenDetail={() => setSelectedPlugin({ kind: 'installed', plugin })}
                     busy={busyIds.has(plugin.id)}
                   />
                 </div>
@@ -301,6 +373,7 @@ export function PluginsView({ onClose }: PluginsViewProps) {
                       <AvailablePluginCard
                         plugin={plugin}
                         onInstall={() => setInstallTarget(plugin)}
+                        onOpenDetail={() => setSelectedPlugin({ kind: 'available', plugin })}
                         busy={busyIds.has(plugin.pluginId)}
                       />
                     </div>

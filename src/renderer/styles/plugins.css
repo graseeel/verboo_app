@@ -656,6 +656,167 @@
   gap: 8px;
 }
 
+/* ── Card state badge (Enabled/Disabled) ──────────────────────────── */
+.plugin-card-state {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* ── Card click affordance ───────────────────────────────────────── */
+.plugin-card--installed,
+.plugin-card--available {
+  cursor: pointer;
+  transition: border-color 120ms var(--dropdown-ease), box-shadow 120ms var(--dropdown-ease);
+}
+
+.plugin-card--installed:hover,
+.plugin-card--available:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  box-shadow: 0 2px 8px color-mix(in srgb, black 8%, transparent);
+}
+
+/* ── Detail view ─────────────────────────────────────────────────── */
+.plugin-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.plugin-detail-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.plugin-detail-crumb--current {
+  color: var(--text);
+  font-weight: 680;
+}
+
+.plugin-detail-crumb-sep {
+  opacity: 0.5;
+}
+
+.plugin-detail-hero {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-elevated);
+}
+
+.plugin-detail-hero-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-strong);
+  flex-shrink: 0;
+}
+
+.plugin-detail-hero-text {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.plugin-detail-name {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 680;
+  line-height: 1.15;
+}
+
+.plugin-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.plugin-detail-version,
+.plugin-detail-marketplace {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.plugin-detail-state {
+  font-size: 11px;
+  font-weight: 680;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.plugin-detail-state.is-on {
+  background: color-mix(in srgb, #22c55e 16%, transparent);
+  color: #16a34a;
+}
+
+.plugin-detail-state.is-off {
+  background: color-mix(in srgb, var(--text-dim) 16%, transparent);
+  color: var(--text-dim);
+}
+
+.plugin-detail-desc {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.plugin-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.plugin-detail-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plugin-detail-info-grid {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) 1fr;
+  gap: 8px 16px;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+}
+
+.plugin-detail-info-key {
+  font-size: 12px;
+  font-weight: 680;
+  color: var(--text-dim);
+}
+
+.plugin-detail-info-val {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.plugin-detail-info-val code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-hover);
+}
+
 /* ── Keyframes ───────────────────────────────────────────────────── */
 @keyframes plugin-card-enter {
   from { opacity: 0; transform: translateY(6px); }
