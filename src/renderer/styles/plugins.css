@@ -797,24 +797,29 @@
   border: 1px solid var(--border);
   /* Base tintada — NUNCA bg-elevated sozinho (ficaria near-white/cream).
      Dark: deep purple/ink wash. Light: soft accent wash, clearly colored.
-     --plugin-hero-color é seeded do plugin id (inline style no hero). */
+     --plugin-hero-color (hex da palette) + --plugin-hero-hue (0-360) são
+     seeded do plugin id (inline style no hero). */
   background:
-    color-mix(in srgb, var(--plugin-hero-color, var(--accent)) 14%, var(--bg-elevated));
+    color-mix(in srgb, var(--plugin-hero-color, var(--accent)) 22%, var(--bg-elevated));
 }
 
 /* Mesh layer — multi-radial gradient with animated drift. Transform-only
-   animation (GPU). Static under reduced-motion. Blobs em 40-55% saturação
-   para ler como cover intencional, não wash fraco. */
+   animation (GPU). Static under reduced-motion. Camadas:
+   1. Primary blob: plugin-hero-color 55% (saturação real, não lilás diluído)
+   2. Secondary HSL: hsl(hue, 70%, 55%) — S/L fixos garantem saturação em
+      light E dark mode (color-mix com accent pode lavar em light)
+   3. accent-strong blob: 45% (profundidade roxa)
+   4. Vignette: bordas escurecidas para "cover" intencional */
 .plugin-detail-hero-mesh {
   position: absolute;
   inset: -20%;
   background:
-    radial-gradient(ellipse 55% 65% at 18% 28%, color-mix(in srgb, var(--plugin-hero-color, var(--accent)) 52%, transparent), transparent 55%),
-    radial-gradient(ellipse 50% 60% at 82% 72%, color-mix(in srgb, var(--accent-strong) 42%, transparent), transparent 50%),
-    radial-gradient(ellipse 45% 55% at 60% 15%, color-mix(in srgb, var(--plugin-hero-color, var(--accent)) 30%, transparent), transparent 60%),
-    radial-gradient(ellipse 40% 50% at 28% 82%, color-mix(in srgb, var(--accent-strong) 24%, transparent), transparent 55%),
+    radial-gradient(ellipse 55% 65% at 18% 28%, color-mix(in srgb, var(--plugin-hero-color, var(--accent)) 55%, transparent), transparent 55%),
+    radial-gradient(ellipse 50% 60% at 82% 72%, hsl(var(--plugin-hero-hue, 270), 70%, 55%) / 45%, transparent 50%),
+    radial-gradient(ellipse 45% 55% at 60% 15%, color-mix(in srgb, var(--accent-strong) 45%, transparent), transparent 60%),
+    radial-gradient(ellipse 40% 50% at 28% 82%, hsl(var(--plugin-hero-hue, 270), 65%, 50%) / 35%, transparent 55%),
     /* Vignette — escurece levemente as bordas para dar profundidade. */
-    radial-gradient(ellipse 90% 100% at 50% 50%, transparent 60%, color-mix(in srgb, black 18%, transparent));
+    radial-gradient(ellipse 90% 100% at 50% 50%, transparent 55%, color-mix(in srgb, black 22%, transparent));
   animation: plugin-hero-drift 12s ease-in-out infinite alternate;
   will-change: transform;
 }

@@ -3,7 +3,7 @@ import { useState } from 'react'
 import type { AvailablePlugin, Plugin, PluginError, PluginScope } from '../../../shared/plugins'
 import { describePluginError } from '../../../shared/plugins'
 import { useI18n } from '../../i18n'
-import { monogramColor, PluginMonogram } from './PluginCard'
+import { monogramColor, pluginHue, PluginMonogram } from './PluginCard'
 import { marketplaceFriendlyName } from './marketplaceNames'
 
 type DetailTarget =
@@ -108,7 +108,10 @@ export function PluginDetailView({ target, onBack, onInstall, onUninstall, onTog
           use this var with --accent fallback. */}
       <div
         className="plugin-detail-hero"
-        style={{ '--plugin-hero-color': monogramColor(pluginId) } as React.CSSProperties}
+        style={{
+          '--plugin-hero-color': monogramColor(pluginId),
+          '--plugin-hero-hue': pluginHue(pluginId),
+        } as React.CSSProperties}
       >
         <div className="plugin-detail-hero-mesh" aria-hidden="true" />
         <div className="plugin-detail-hero-content">
