@@ -32,7 +32,11 @@ use crate::services::cli_spawn::CliSpawn;
 /// reads files from disk.
 pub async fn plugin_list() -> Result<Vec<Plugin>, PluginError> {
     let raw = run_cli_json(&["plugin", "list", "--json"], 15).await?;
-    let plugins: Vec<Plugin> = parse_json(&raw).map_err(|e| parse_err(&raw, &e))?;
+    let mut plugins: Vec<Plugin> = parse_json(&raw).map_err(|e| parse_err(&raw, &e))?;
+    // The CLI's bare `list` payload omits `name` — fill from `id`.
+    for p in &mut plugins {
+        p.fill_name_from_id();
+    }
     Ok(plugins)
 }
 
@@ -42,8 +46,14 @@ pub async fn plugin_list() -> Result<Vec<Plugin>, PluginError> {
 /// to populate the `available[]` half of the payload. Read-only.
 pub async fn plugin_available() -> Result<PluginAvailablePayload, PluginError> {
     let raw = run_cli_json(&["plugin", "list", "--json", "--available"], 30).await?;
-    let payload: PluginAvailablePayload =
+    let mut payload: PluginAvailablePayload =
         parse_json(&raw).map_err(|e| parse_err(&raw, &e))?;
+    // The CLI's `--available` payload omits `name` on installed rows — fill
+    // from `id`. Available rows already carry `name` from the marketplace
+    // manifest, so we only touch the `installed` half.
+    for p in &mut payload.installed {
+        p.fill_name_from_id();
+    }
     Ok(payload)
 }
 
@@ -260,24 +270,126 @@ fn push_scope_arg(args: &mut Vec<&str>, scope: Option<PluginScope>) {
 // ════════════════════════════════════════════════════════════════════
 
 /// Strips the alt-screen escape wrappers CLI 0.13 emits around JSON output
-/// (`\u{1b}[?2026h` / `\u{1b}[?2026l`). Conservative — only strips the
-/// known prefix. Greedy ANSI stripping could mask real problems.
+/// (`\u{1b}[?2026h` / `\u{1b}[?2026l`) plus any other CSI escape sequences
+/// (`\u{1b}[...m` etc.) the CLI may emit. The CLI interleaves these with
+/// newlines and whitespace, so we loop-strip until no more known prefixes
+/// remain at the start, then strip trailing wrappers. As a final safety
+/// net, we strip ALL remaining CSI sequences (not just the two known
+/// wrappers) and extract the JSON substring by scanning for the first
+/// `[`/`{` and the last matching `]`/`}` — this guarantees serde_json
+/// receives a clean JSON document even if the CLI emits unexpected
+/// control sequences between the wrappers.
 ///
 /// Verified against CLI 0.13.0 (2026-07-13).
 pub(crate) fn strip_ansi(s: &str) -> String {
-    // Multi-char escape sequences — use string strip, not char strip.
     const PREFIX_H: &str = "\u{1b}[?2026h";
     const PREFIX_L: &str = "\u{1b}[?2026l";
-    let s = s.trim_start();
-    let s = s.strip_prefix(PREFIX_H).unwrap_or(s);
-    let s = s.strip_prefix(PREFIX_L).unwrap_or(s);
-    // The closing `\u{1b}[?2026l` may appear after the JSON body. Strip
-    // trailing instance as well so a trailing newline doesn't leak through
-    // to serde_json (which would tolerate it anyway, but the debug log is
-    // cleaner).
-    let s = s.trim_end();
-    let s = s.strip_suffix(PREFIX_L).unwrap_or(s);
-    s.trim().to_string()
+
+    // Phase 1: loop-strip leading wrappers + whitespace. The CLI emits
+    // sequences like `ESC[?2026h \n ESC[?2026l JSON` where the prefix
+    // is split across lines; a single strip_prefix misses the second
+    // wrapper and serde sees `ESC[?2026l[...]` → "expected value at
+    // line 1 column 1".
+    let mut s = s.trim();
+    loop {
+        let next = s.trim_start();
+        if let Some(rest) = next.strip_prefix(PREFIX_H) {
+            s = rest;
+            continue;
+        }
+        if let Some(rest) = next.strip_prefix(PREFIX_L) {
+            s = rest;
+            continue;
+        }
+        s = next;
+        break;
+    }
+
+    // Phase 2: strip trailing wrappers (loop, same reason — may repeat).
+    loop {
+        let trimmed = s.trim_end();
+        if let Some(rest) = trimmed.strip_suffix(PREFIX_L) {
+            s = rest.trim_end();
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_suffix(PREFIX_H) {
+            s = rest.trim_end();
+            continue;
+        }
+        s = trimmed;
+        break;
+    }
+
+    // Phase 3: strip ALL remaining CSI escape sequences. A CSI sequence
+    // is `ESC [` followed by parameter bytes (0x30-0x3F), intermediate
+    // bytes (0x20-0x2F), and a final byte (0x40-0x7E). This catches
+    // `\u{1b}[?25l` (hide cursor), `\u{1b}[m` (reset color), etc. —
+    // any of which would leave a stray `[` that confuses phase 4.
+    let cleaned = strip_csi_sequences(s);
+
+    // Phase 4: extract JSON substring by first `[`/`{` and last matching
+    // `]`/`}`. Safety net for any non-CSI noise that survived phases 1-3.
+    // If no JSON opener is found, return the cleaned string as-is (caller
+    // will surface a ParseError with raw preview — better than a panic).
+    extract_json_substring(&cleaned).to_string()
+}
+
+/// Strips ALL CSI (Control Sequence Introducer) escape sequences from `s`.
+/// A CSI sequence is `ESC [` (0x1b 0x5b) followed by parameter bytes
+/// (0x30-0x3F), intermediate bytes (0x20-0x2F), and a final byte
+/// (0x40-0x7E). This catches the alt-screen wrappers, cursor-hide,
+/// color codes, etc. — any of which would leave stray `[` chars that
+/// confuse JSON extraction.
+fn strip_csi_sequences(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // Look for ESC [ (0x1b 0x5b).
+        if i + 1 < bytes.len() && bytes[i] == 0x1b && bytes[i + 1] == 0x5b {
+            // Skip parameter bytes (0x30-0x3F) and intermediate bytes
+            // (0x20-0x2F) until we find a final byte (0x40-0x7E).
+            i += 2;
+            while i < bytes.len() {
+                let b = bytes[i];
+                if (0x40..=0x7e).contains(&b) {
+                    i += 1; // consume final byte
+                    break;
+                }
+                if (0x30..=0x3f).contains(&b) || (0x20..=0x2f).contains(&b) {
+                    i += 1; // consume parameter/intermediate byte
+                    continue;
+                }
+                // Unexpected byte — bail out of CSI, emit it literally.
+                break;
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+/// Extracts the JSON substring by scanning for the first `[` or `{` and
+/// the last matching `]` or `}`. Returns the input unchanged if no JSON
+/// opener is found. Does NOT validate JSON syntax — just bounds the
+/// substring so serde_json::from_str doesn't see leading/trailing noise.
+fn extract_json_substring(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    let start = bytes
+        .iter()
+        .position(|&b| b == b'[' || b == b'{')
+        .unwrap_or(0);
+    let end = bytes
+        .iter()
+        .rposition(|&b| b == b']' || b == b'}')
+        .map(|i| i + 1)
+        .unwrap_or(bytes.len());
+    if end <= start {
+        return s;
+    }
+    &s[start..end]
 }
 
 /// Parses JSON with a typed deserializer. The wrapper owns the
@@ -731,6 +843,55 @@ mod tests {
         let raw = "   \n\u{1b}[?2026h\u{1b}[?2026l{\"a\":1}\u{1b}[?2026l";
         let stripped = strip_ansi(raw);
         assert_eq!(stripped, "{\"a\":1}");
+    }
+
+    #[test]
+    fn strip_ansi_real_cli_fixture_split_wrappers() {
+        // Regression: CLI 0.13 emits wrappers split across lines with
+        // whitespace between them. The naive single strip_prefix missed
+        // the second wrapper → serde saw `ESC[?2026l[...]` → "expected
+        // value at line 1 column 1". The loop-strip + JSON-extraction
+        // must handle this.
+        let raw = "\u{1b}[?2026h\n\u{1b}[?2026l[{\"id\":\"x@y\"}]\n";
+        let stripped = strip_ansi(raw);
+        assert_eq!(stripped, "[{\"id\":\"x@y\"}]");
+        assert!(!stripped.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn strip_ansi_real_cli_fixture_with_whitespace() {
+        // Real CLI fixture: wrappers + whitespace + JSON + trailing wrapper.
+        let raw = "\u{1b}[?2026h \n \u{1b}[?2026l [\n{\"id\":\"x@y\"}\n] \u{1b}[?2026l\n";
+        let stripped = strip_ansi(raw);
+        assert_eq!(stripped, "[\n{\"id\":\"x@y\"}\n]");
+        assert!(!stripped.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn strip_ansi_extracts_json_from_noise() {
+        // Safety net: if the CLI emits unexpected control sequences between
+        // the wrappers, the JSON-extraction phase bounds the substring to
+        // the first `[`/`{` and last matching `]`/`}`.
+        let raw = "\u{1b}[?2026h\u{1b}[?25lgarbage[{\"id\":\"x@y\"}]trailing\u{1b}[?2026l";
+        let stripped = strip_ansi(raw);
+        assert_eq!(stripped, "[{\"id\":\"x@y\"}]");
+    }
+
+    #[test]
+    fn strip_ansi_object_form() {
+        // Object-form JSON (single object, not array).
+        let raw = "\u{1b}[?2026h\n\u{1b}[?2026l{\"id\":\"x@y\"}\n\u{1b}[?2026l";
+        let stripped = strip_ansi(raw);
+        assert_eq!(stripped, "{\"id\":\"x@y\"}");
+    }
+
+    #[test]
+    fn strip_ansi_no_json_returns_cleaned_string() {
+        // No JSON opener — return the cleaned string (caller surfaces
+        // ParseError with raw preview).
+        let raw = "\u{1b}[?2026h\n\u{1b}[?2026lnot json at all\u{1b}[?2026l";
+        let stripped = strip_ansi(raw);
+        assert_eq!(stripped, "not json at all");
     }
 
     // ── map_cli_error (spec §4) ────────────────────────────────────────

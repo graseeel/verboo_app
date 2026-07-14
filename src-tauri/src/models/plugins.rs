@@ -61,8 +61,11 @@ pub enum MarketplaceTrust {
 // ════════════════════════════════════════════════════════════════════
 
 /// An installed plugin row. Mirrors `verboo plugin list --json` (real shape
-/// verified 2026-07-13). `installed` is always `true` for rows from `list`;
-/// see `PluginAvailablePayload` for the `--available` merge.
+/// verified 2026-07-13). The CLI's bare `list` payload omits `name` and
+/// `installed` — `name` is derived from `id` (the part before `@marketplace`)
+/// and `installed` defaults to `true` (rows from `list` are by definition
+/// installed). The post-parse path in `plugin_list` / `plugin_available`
+/// fills `name` from `id` when the CLI omits it.
 ///
 /// JSON field naming is camelCase on the wire (CLI emits `installPath` /
 /// `installedAt` / `lastUpdated`) — `#[serde(rename_all = "camelCase")]`
@@ -72,13 +75,18 @@ pub enum MarketplaceTrust {
 pub struct Plugin {
     /// Composite primary key: `name@marketplace`.
     pub id: String,
-    /// Bare name without `@marketplace` (for display).
+    /// Bare name without `@marketplace` (for display). Defaults to empty
+    /// when the CLI omits it; the post-parse path fills it from `id`.
+    #[serde(default)]
     pub name: String,
     /// Semver.
     pub version: String,
     pub scope: PluginScope,
     pub enabled: bool,
-    /// Always `true` in `Plugin[]` payloads. Surfaced for FE merge logic.
+    /// Always `true` in `Plugin[]` payloads. Defaults to `true` because
+    /// the CLI's `list` payload omits it (rows from `list` are by
+    /// definition installed). Surfaced for FE merge logic with `--available`.
+    #[serde(default = "default_true")]
     pub installed: bool,
     /// Absolute path to the cached plugin on disk.
     pub install_path: String,
@@ -101,6 +109,26 @@ pub struct Plugin {
     pub category: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_count: Option<u64>,
+}
+
+/// Default function for `Plugin::installed`. Used by `#[serde(default = ...)]`
+/// so the CLI's bare `list` payload (which omits `installed`) parses cleanly.
+/// Rows from `list` are by definition installed.
+fn default_true() -> bool {
+    true
+}
+
+impl Plugin {
+    /// Fills `name` from `id` (the part before `@marketplace`) when `name`
+    /// is empty. Called by the post-parse path in `plugin_list` and
+    /// `plugin_available` because the CLI's bare `list` payload omits `name`.
+    pub fn fill_name_from_id(&mut self) {
+        if self.name.is_empty() {
+            if let Some(bare) = self.id.split('@').next() {
+                self.name = bare.to_string();
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -434,6 +462,83 @@ mod tests {
             "lastUpdated": "2026-07-06T00:46:08.857Z"
         }"#;
         let _p: Plugin = serde_json::from_str(raw).expect("parse");
+    }
+
+    #[test]
+    fn plugin_parses_real_cli_list_without_name_and_installed() {
+        // Regression: the CLI's bare `list` payload omits `name` and
+        // `installed` (verified 2026-07-13). `name` defaults to empty
+        // and is filled from `id` by the post-parse path; `installed`
+        // defaults to `true` because rows from `list` are by definition
+        // installed.
+        let raw = r#"[
+            {
+                "id": "rust-analyzer-lsp@claude-plugins-official",
+                "version": "1.0.0",
+                "scope": "user",
+                "enabled": true,
+                "installPath": "/Users/grasel/.verboo/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0",
+                "installedAt": "2026-07-06T00:46:08.857Z",
+                "lastUpdated": "2026-07-06T00:46:08.857Z"
+            }
+        ]"#;
+        let mut plugins: Vec<Plugin> = serde_json::from_str(raw).expect("parse");
+        assert_eq!(plugins.len(), 1);
+        let p = &mut plugins[0];
+        assert_eq!(p.id, "rust-analyzer-lsp@claude-plugins-official");
+        assert_eq!(p.name, ""); // CLI omits — default empty
+        assert!(p.installed); // CLI omits — default true
+        // Post-parse fill: name derived from id (before `@`).
+        p.fill_name_from_id();
+        assert_eq!(p.name, "rust-analyzer-lsp");
+    }
+
+    #[test]
+    fn plugin_fill_name_from_id_noop_when_already_set() {
+        let mut p = Plugin {
+            id: "x@y".into(),
+            name: "explicit-name".into(),
+            version: "1.0.0".into(),
+            scope: PluginScope::User,
+            enabled: true,
+            installed: true,
+            install_path: "/p".into(),
+            installed_at: "2026-07-06T00:46:08.857Z".into(),
+            last_updated: "2026-07-06T00:46:08.857Z".into(),
+            git_commit_sha: None,
+            description: None,
+            homepage: None,
+            author: None,
+            category: None,
+            install_count: None,
+        };
+        p.fill_name_from_id();
+        assert_eq!(p.name, "explicit-name");
+    }
+
+    #[test]
+    fn plugin_fill_name_from_id_handles_no_at_sign() {
+        // Edge case: id without `@marketplace` — fill_name_from_id should
+        // use the whole id as the name.
+        let mut p = Plugin {
+            id: "bare-id".into(),
+            name: String::new(),
+            version: "1.0.0".into(),
+            scope: PluginScope::User,
+            enabled: true,
+            installed: true,
+            install_path: "/p".into(),
+            installed_at: "2026-07-06T00:46:08.857Z".into(),
+            last_updated: "2026-07-06T00:46:08.857Z".into(),
+            git_commit_sha: None,
+            description: None,
+            homepage: None,
+            author: None,
+            category: None,
+            install_count: None,
+        };
+        p.fill_name_from_id();
+        assert_eq!(p.name, "bare-id");
     }
 
     #[test]
