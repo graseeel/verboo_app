@@ -30,8 +30,17 @@ function monogramInitials(name: string): string {
   return (parts[0][0] + parts[1][0]).toUpperCase()
 }
 
-function monogramColor(seed: string): string {
+// Exported so PluginDetailView can seed the hero mesh with the same hue as
+// the monogram — same plugin = same color, always. The mesh layers read
+// --plugin-hero-color (set inline on the hero) and fall back to --accent.
+export function monogramColor(seed: string): string {
   return MONOGRAM_PALETTE[hashString(seed) % MONOGRAM_PALETTE.length]
+}
+
+// Hue (0-360) derived from the same hash — useful for HSL-based mesh layers
+// that need a single hue channel rather than a fixed palette swatch.
+export function pluginHue(seed: string): number {
+  return hashString(seed) % 360
 }
 
 export function PluginMonogram({ name, id, size = 36 }: { name: string; id: string; size?: number }) {

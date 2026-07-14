@@ -4,10 +4,11 @@ import type { AvailablePlugin, Plugin, PluginError, PluginScope } from '../../..
 import { describePluginError } from '../../../shared/plugins'
 import { useI18n } from '../../i18n'
 import { useToast } from '../../components/Toast'
-import { AvailablePluginCard, InstalledPluginCard, PluginSkeletonCard } from './PluginCard'
+import { AvailablePluginCard, InstalledPluginCard, PluginMonogram, PluginSkeletonCard } from './PluginCard'
 import { MarketplaceModal } from './MarketplaceModal'
 import { PluginDetailView } from './PluginDetailView'
 import { PluginInstallModal } from './PluginInstallModal'
+import { marketplaceFriendlyName } from './marketplaceNames'
 import { usePlugins } from './usePlugins'
 
 type PluginsViewProps = {
@@ -312,6 +313,35 @@ export function PluginsView({ onClose }: PluginsViewProps) {
         />
       </div>
 
+      {/* Installed strip — horizontal scroll of monogram chips. Primary nav
+          for installed plugins; click opens detail. Active ring on the
+          plugin currently open in detail (if any). */}
+      {!showSkeletons && installed.length > 0 && (
+        <div className="plugins-installed-strip" role="list" aria-label={t('plugins.installed')}>
+          {installed.map(plugin => {
+            // After the detail-view early return above, selectedPlugin is
+            // undefined here — but we read it defensively for the active-ring
+            // check in case the detail branch is removed/refactored later.
+            const sel = selectedPlugin as { kind: string; plugin: { id: string } } | undefined
+            const isActive = sel?.kind === 'installed' && sel.plugin.id === plugin.id
+            return (
+              <button
+                key={plugin.id}
+                type="button"
+                role="listitem"
+                className={`plugins-strip-chip ${isActive ? 'is-active' : ''} ${plugin.enabled ? 'is-enabled' : 'is-disabled'}`}
+                onClick={() => setSelectedPlugin({ kind: 'installed', plugin })}
+                title={`${plugin.name} — ${plugin.enabled ? t('plugins.enabled') : t('plugins.disabled')}`}
+                aria-label={plugin.name}
+              >
+                <PluginMonogram name={plugin.name} id={plugin.id} size={32} />
+                <span className="plugins-strip-chip-name">{plugin.name}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
       {showSkeletons ? (
         <>
           <p className="plugins-section-label">{t('plugins.installed')}</p>
@@ -384,7 +414,7 @@ export function PluginsView({ onClose }: PluginsViewProps) {
             availableGroups.map(([groupKey, plugins]) => (
               <div key={groupKey}>
                 <p className="plugins-section-label">
-                  {t('plugins.featured')} — {groupKey}
+                  {t('plugins.featured')} — {marketplaceFriendlyName(groupKey)}
                 </p>
                 <div className="plugins-grid">
                   {plugins.slice(0, 8).map((plugin, i) => (

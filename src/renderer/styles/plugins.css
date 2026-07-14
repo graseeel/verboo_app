@@ -238,7 +238,7 @@
   font-weight: 680;
   cursor: pointer;
   flex-shrink: 0;
-  transition: border-color 120ms var(--dropdown-ease), background-color 120ms var(--dropdown-ease);
+  transition: border-color 120ms var(--dropdown-ease), background-color 120ms var(--dropdown-ease), transform 150ms var(--dropdown-ease);
 }
 
 .plugin-install-btn:hover:not(:disabled) {
@@ -250,6 +250,17 @@
 .plugin-install-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* Press feedback — scale(0.97) em 150ms ease-out. Confirma ação tátil. */
+.plugin-install-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* Primary button (detail Install) — press scale local em plugins.css para
+   garantir feedback mesmo se global não tiver. */
+.plugin-detail .primary-button:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 /* ── Card menu trigger ────────────────────────────────────────────── */
@@ -678,7 +689,9 @@
 .plugin-detail {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
+  /* Detail enter: 200ms easeOutQuint opacity + translateY. */
+  animation: plugin-detail-enter 200ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .plugin-detail-breadcrumb {
@@ -687,6 +700,20 @@
   gap: 6px;
   font-size: 12px;
   color: var(--text-dim);
+}
+
+.plugin-detail-crumb--link {
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  transition: color 120ms var(--dropdown-ease);
+}
+
+.plugin-detail-crumb--link:hover {
+  color: var(--text);
 }
 
 .plugin-detail-crumb--current {
@@ -698,85 +725,216 @@
   opacity: 0.5;
 }
 
-.plugin-detail-hero {
+/* ── Header row ──────────────────────────────────────────────────── */
+.plugin-detail-header {
   display: flex;
-  align-items: flex-start;
-  gap: 18px;
-  padding: 24px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  /* Verboo mesh gradient: accent purple soft layered over bg-elevated.
-     Multiple radial gradients create depth without flat color. */
-  background:
-    radial-gradient(ellipse 60% 80% at 0% 0%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 60%),
-    radial-gradient(ellipse 50% 60% at 100% 100%, color-mix(in srgb, var(--accent-strong) 12%, transparent), transparent 55%),
-    var(--bg-elevated);
-  /* Detail enter: 200ms opacity + translateY. */
-  animation: plugin-detail-enter 200ms var(--dropdown-ease);
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
-.plugin-detail-hero-text {
+.plugin-detail-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.plugin-detail-header-text {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
   min-width: 0;
 }
 
 .plugin-detail-name {
   margin: 0;
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 680;
   line-height: 1.15;
+  text-wrap: balance;
 }
 
-.plugin-detail-meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.plugin-detail-version,
-.plugin-detail-marketplace {
-  font-size: 12px;
+.plugin-detail-subtitle {
+  margin: 0;
+  font-size: 12.5px;
   color: var(--text-dim);
 }
 
-.plugin-detail-state {
+.plugin-detail-badge {
   font-size: 11px;
   font-weight: 680;
-  padding: 2px 8px;
+  padding: 3px 9px;
   border-radius: 999px;
+  flex-shrink: 0;
 }
 
-.plugin-detail-state.is-on {
+.plugin-detail-badge.is-on {
   background: color-mix(in srgb, #22c55e 16%, transparent);
   color: #16a34a;
 }
 
-.plugin-detail-state.is-off {
+.plugin-detail-badge.is-off {
   background: color-mix(in srgb, var(--text-dim) 16%, transparent);
   color: var(--text-dim);
 }
 
-.plugin-detail-desc {
-  margin: 4px 0 0;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--text-dim);
-}
-
-.plugin-detail-actions {
+.plugin-detail-header-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
-.plugin-detail-info {
+/* ── Hero band (F6) ─────────────────────────────────────────────── */
+.plugin-detail-hero {
+  position: relative;
+  width: 100%;
+  min-height: 160px;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  /* Base tintada — NUNCA bg-elevated sozinho (ficaria near-white/cream).
+     Dark: deep purple/ink wash. Light: soft accent wash, clearly colored.
+     --plugin-hero-color é seeded do plugin id (inline style no hero). */
+  background:
+    color-mix(in srgb, var(--plugin-hero-color, var(--accent)) 14%, var(--bg-elevated));
+}
+
+/* Mesh layer — multi-radial gradient with animated drift. Transform-only
+   animation (GPU). Static under reduced-motion. Blobs em 40-55% saturação
+   para ler como cover intencional, não wash fraco. */
+.plugin-detail-hero-mesh {
+  position: absolute;
+  inset: -20%;
+  background:
+    radial-gradient(ellipse 55% 65% at 18% 28%, color-mix(in srgb, var(--plugin-hero-color, var(--accent)) 52%, transparent), transparent 55%),
+    radial-gradient(ellipse 50% 60% at 82% 72%, color-mix(in srgb, var(--accent-strong) 42%, transparent), transparent 50%),
+    radial-gradient(ellipse 45% 55% at 60% 15%, color-mix(in srgb, var(--plugin-hero-color, var(--accent)) 30%, transparent), transparent 60%),
+    radial-gradient(ellipse 40% 50% at 28% 82%, color-mix(in srgb, var(--accent-strong) 24%, transparent), transparent 55%),
+    /* Vignette — escurece levemente as bordas para dar profundidade. */
+    radial-gradient(ellipse 90% 100% at 50% 50%, transparent 60%, color-mix(in srgb, black 18%, transparent));
+  animation: plugin-hero-drift 12s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+.plugin-detail-hero-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  min-height: 160px;
+  padding: 24px;
+}
+
+/* Glass chip "Exemplo de uso" — presentational, role=group, NOT a button.
+   backdrop-filter for glass effect. Hover gives slight lift but NO nav.
+   Enter via @starting-style (progressive enhancement — browsers without
+   support just show the chip without the enter transition). */
+.plugin-hero-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px 8px 8px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-elevated) 65%, transparent);
+  backdrop-filter: blur(14px) saturate(1.25);
+  -webkit-backdrop-filter: blur(14px) saturate(1.25);
+  border: 1px solid color-mix(in srgb, var(--plugin-hero-color, var(--accent)) 22%, transparent);
+  box-shadow: 0 4px 16px color-mix(in srgb, black 14%, transparent);
+  cursor: default;
+  transition: transform 200ms var(--dropdown-ease), box-shadow 120ms var(--dropdown-ease), opacity 200ms var(--dropdown-ease);
+  @starting-style {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* Hover only on devices with fine pointer + hover capability — touch
+   devices don't get sticky :hover states. */
+@media (hover: hover) and (pointer: fine) {
+  .plugin-hero-chip:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px color-mix(in srgb, black 20%, transparent);
+  }
+}
+
+.plugin-hero-chip-text {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-hero-chip-arrow {
+  color: var(--text-dim);
+  flex-shrink: 0;
+  transform: rotate(180deg);
+}
+
+/* ── Body description ────────────────────────────────────────────── */
+.plugin-detail-body-desc {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text);
+  text-wrap: pretty;
+}
+
+/* ── Collapsible tech details (accordion) ─────────────────────────── */
+.plugin-detail-tech {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
+}
+
+.plugin-detail-tech-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  color: var(--text-dim);
+  font-size: 12.5px;
+  font-weight: 680;
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease);
+}
+
+.plugin-detail-tech-trigger:hover {
+  background: var(--bg-hover);
+}
+
+.plugin-detail-tech-chevron {
+  transition: transform 160ms var(--dropdown-ease);
+}
+
+.plugin-detail-tech-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+/* Accordion panel — grid-rows 0fr→1fr for smooth height animation. */
+.plugin-detail-tech-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 200ms var(--dropdown-ease);
+}
+
+.plugin-detail-tech-panel.is-open {
+  grid-template-rows: 1fr;
+}
+
+.plugin-detail-tech-panel > .plugin-detail-info-grid {
+  overflow: hidden;
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
 }
 
 .plugin-detail-info-grid {
@@ -811,6 +969,61 @@
   background: var(--bg-hover);
 }
 
+/* ── Installed strip (F7) ─────────────────────────────────────────── */
+.plugins-installed-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px 0 8px;
+  scrollbar-width: thin;
+}
+
+.plugins-installed-strip::-webkit-scrollbar {
+  height: 4px;
+}
+
+.plugins-installed-strip::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+
+.plugins-strip-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 120ms var(--dropdown-ease), transform 120ms var(--dropdown-ease);
+}
+
+.plugins-strip-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.plugins-strip-chip:active {
+  transform: scale(0.97);
+}
+
+.plugins-strip-chip.is-active {
+  border-color: var(--accent-strong);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.plugins-strip-chip-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Keyframes ───────────────────────────────────────────────────── */
 @keyframes plugin-card-enter {
   from { opacity: 0; transform: translateY(6px); }
@@ -827,6 +1040,11 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes plugin-hero-drift {
+  from { transform: translate(0, 0) rotate(0deg); }
+  to   { transform: translate(4%, -3%) rotate(2deg); }
+}
+
 @keyframes plugins-fade-in {
   from { opacity: 0; }
   to   { opacity: 1; }
@@ -841,19 +1059,40 @@
 @media (prefers-reduced-motion: reduce) {
   .plugin-card,
   .plugins-restart-banner,
+  .plugin-detail,
   .plugin-detail-hero {
     animation: plugins-fade-in 80ms ease-out both !important;
   }
   .plugin-card-menu {
     animation: plugins-fade-in 80ms ease-out !important;
   }
+  /* Hero drift stops — mesh becomes static. */
+  .plugin-detail-hero-mesh {
+    animation: none !important;
+  }
+  .plugin-detail-tech-panel {
+    transition: none !important;
+  }
+  /* Chip lift OFF, install press OFF, all interactive transitions OFF. */
   .plugin-install-btn,
   .plugin-card-menu-trigger,
   .plugin-card-menu-item,
   .plugin-scope-option,
   .marketplace-modal-close,
   .marketplace-row-remove,
-  .plugins-search input {
+  .plugins-search input,
+  .plugin-hero-chip,
+  .plugins-strip-chip,
+  .plugin-detail-crumb--link,
+  .plugin-detail-tech-trigger,
+  .plugin-detail-tech-chevron,
+  .plugin-detail .primary-button {
     transition: none !important;
+  }
+  /* No press scale, no chip lift under reduced-motion. */
+  .plugin-install-btn:active:not(:disabled),
+  .plugin-detail .primary-button:active:not(:disabled),
+  .plugin-hero-chip:hover {
+    transform: none !important;
   }
 }
