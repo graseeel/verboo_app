@@ -1,9 +1,9 @@
 import { ArrowLeft, ChevronDown, Download, ExternalLink, Power, Trash2, Zap } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AvailablePlugin, MarketplaceManifestMap, Plugin, PluginDetail, PluginError, PluginScope, PluginSkill } from '../../../shared/plugins'
 import { describePluginError } from '../../../shared/plugins'
 import { useI18n } from '../../i18n'
-import { monogramColor, pluginHue, PluginMonogram } from './PluginCard'
+import { monogramColor, pluginHue, PluginIcon } from './PluginCard'
 import { marketplaceFriendlyName } from './marketplaceNames'
 
 type DetailTarget =
@@ -13,6 +13,7 @@ type DetailTarget =
 type PluginDetailViewProps = {
   target: DetailTarget
   manifests: MarketplaceManifestMap
+  loadIcons?: boolean
   onBack: () => void
   onInstall?: (scope: PluginScope) => Promise<void>
   onUninstall?: () => Promise<void>
@@ -29,12 +30,61 @@ type PluginDetailViewProps = {
 // 5. Habilidades section (installed only, skill count gray)
 // 6. Informações table (Desenvolvedor/Categoria/Versão/Site — omit missing)
 // 7. Collapsible "Detalhes técnicos" (ID, path, dates)
-export function PluginDetailView({ target, manifests, onBack, onInstall, onUninstall, onToggle, busy, error }: PluginDetailViewProps) {
+export function PluginDetailView({ target, manifests, loadIcons = true, onBack, onInstall, onUninstall, onToggle, busy, error }: PluginDetailViewProps) {
   const { t } = useI18n()
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [detail, setDetail] = useState<PluginDetail | undefined>(undefined)
   const [skills, setSkills] = useState<PluginSkill[]>([])
   const isInstalled = target.kind === 'installed'
+
+  // ── Mouse parallax for hero mesh ──────────────────────────────────
+  // pointermove (rAF-throttled) updates --mouse-x/--mouse-y (0-1) on the
+  // hero element. CSS layers shift positions by different factors (parallax).
+  // Disabled under reduced-motion and on touch/coarse pointers.
+  const heroRef = useRef<HTMLDivElement | null>(null)
+  const rafId = useRef<number | undefined>(undefined)
+  const reduceMotion = useRef(
+    typeof window !== 'undefined'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+  )
+  const canHover = useRef(
+    typeof window !== 'undefined'
+      && window.matchMedia('(hover: hover) and (pointer: fine)').matches,
+  )
+
+  const handlePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!canHover.current || reduceMotion.current) return
+    const el = heroRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const x = (event.clientX - rect.left) / rect.width
+    const y = (event.clientY - rect.top) / rect.height
+    if (rafId.current !== undefined) return
+    rafId.current = requestAnimationFrame(() => {
+      rafId.current = undefined
+      el.style.setProperty('--mouse-x', x.toFixed(3))
+      el.style.setProperty('--mouse-y', y.toFixed(3))
+    })
+  }, [])
+
+  const handlePointerLeave = useCallback(() => {
+    if (!canHover.current || reduceMotion.current) return
+    const el = heroRef.current
+    if (!el) return
+    if (rafId.current !== undefined) {
+      cancelAnimationFrame(rafId.current)
+      rafId.current = undefined
+    }
+    // Reset to center (0.5, 0.5) — CSS transitions back to base positions.
+    el.style.setProperty('--mouse-x', '0.5')
+    el.style.setProperty('--mouse-y', '0.5')
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (rafId.current !== undefined) cancelAnimationFrame(rafId.current)
+    }
+  }, [])
 
   const name = isInstalled ? target.plugin.name : target.plugin.name
   const description = isInstalled ? target.plugin.description : target.plugin.description
@@ -85,7 +135,7 @@ export function PluginDetailView({ target, manifests, onBack, onInstall, onUnins
       {/* Sticky header */}
       <div className="plugin-detail-header">
         <div className="plugin-detail-header-left">
-          <PluginMonogram name={name} id={pluginId} size={56} />
+          <PluginIcon name={name} id={pluginId} size={56} loadIcons={loadIcons} />
           <div className="plugin-detail-header-text">
             <h1 className="plugin-detail-name">{name}</h1>
             <p className="plugin-detail-subtitle">{marketplace}</p>
@@ -132,18 +182,25 @@ export function PluginDetailView({ target, manifests, onBack, onInstall, onUnins
         </div>
       </div>
 
-      {/* Hero band — Verboo violet mesh + glass chip */}
+      {/* Hero band — Verboo violet mesh + glass chip. Mouse parallax
+          shifts mesh layers by different factors (disabled under
+          reduced-motion / touch). */}
       <div
+        ref={heroRef}
         className="plugin-detail-hero"
         style={{
           '--plugin-hero-color': monogramColor(pluginId),
           '--plugin-hero-hue': pluginHue(pluginId),
+          '--mouse-x': '0.5',
+          '--mouse-y': '0.5',
         } as React.CSSProperties}
+        onPointerMove={handlePointerMove}
+        onPointerLeave={handlePointerLeave}
       >
         <div className="plugin-detail-hero-mesh" aria-hidden="true" />
         <div className="plugin-detail-hero-content">
           <div className="plugin-hero-chip" role="group" aria-label={name}>
-            <PluginMonogram name={name} id={pluginId} size={32} />
+            <PluginIcon name={name} id={pluginId} size={32} loadIcons={loadIcons} />
             <div className="plugin-hero-chip-text">
               <span className="plugin-hero-chip-name">{name}</span>
               {chipPhrase && (

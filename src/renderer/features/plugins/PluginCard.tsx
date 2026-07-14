@@ -4,6 +4,7 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import type { AvailablePlugin, Plugin } from '../../../shared/plugins'
 import { useI18n } from '../../i18n'
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss'
+import { usePluginIcon } from './usePluginIcon'
 
 // ── Monogram ────────────────────────────────────────────────────────
 // Deterministic initials + color from a plugin id/name. Gives each plugin
@@ -43,7 +44,7 @@ export function pluginHue(seed: string): number {
   return hashString(seed) % 360
 }
 
-export function PluginMonogram({ name, id, size = 36 }: { name: string; id: string; size?: number }) {
+export function PluginMonogram({ name, id, size = 36, iconUrl }: { name: string; id: string; size?: number; iconUrl?: string | null }) {
   const color = monogramColor(id || name)
   return (
     <div
@@ -56,8 +57,29 @@ export function PluginMonogram({ name, id, size = 36 }: { name: string; id: stri
       aria-hidden="true"
     >
       {monogramInitials(name)}
+      {iconUrl && (
+        <img
+          src={iconUrl}
+          alt=""
+          className="plugin-monogram-img"
+          loading="lazy"
+          draggable={false}
+          onError={event => {
+            // Hide the img on error — monogram stays visible underneath.
+            (event.currentTarget as HTMLImageElement).style.display = 'none'
+          }}
+        />
+      )}
     </div>
   )
+}
+
+// PluginIcon — renders monogram immediately, swaps to <img> when the icon
+// URL arrives (opacity transition). Uses usePluginIcon hook with session
+// cache. `loadIcons` = false (privacy setting) → monogram only, no fetch.
+export function PluginIcon({ name, id, size = 36, loadIcons = true }: { name: string; id: string; size?: number; loadIcons?: boolean }) {
+  const { iconUrl } = usePluginIcon(id, loadIcons)
+  return <PluginMonogram name={name} id={id} size={size} iconUrl={iconUrl} />
 }
 
 // ── Portal menu ─────────────────────────────────────────────────────
@@ -122,10 +144,11 @@ type InstalledLineProps = {
   onUninstall: () => void
   onOpenDetail: () => void
   onTestNow?: () => void
+  loadIcons?: boolean
   busy?: boolean
 }
 
-export function InstalledPluginCard({ plugin, onUpdate, onToggle, onUninstall, onOpenDetail, onTestNow, busy }: InstalledLineProps) {
+export function InstalledPluginCard({ plugin, onUpdate, onToggle, onUninstall, onOpenDetail, onTestNow, loadIcons = true, busy }: InstalledLineProps) {
   const { t } = useI18n()
   const [menuOpen, setMenuOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
@@ -150,7 +173,7 @@ export function InstalledPluginCard({ plugin, onUpdate, onToggle, onUninstall, o
       tabIndex={0}
       onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpenDetail() } }}
     >
-      <PluginMonogram name={plugin.name} id={plugin.id} size={44} />
+      <PluginIcon name={plugin.name} id={plugin.id} size={44} loadIcons={loadIcons} />
       <div className="plugin-line-body">
         <div className="plugin-line-name">{plugin.name}</div>
         {plugin.description && <div className="plugin-line-desc">{plugin.description}</div>}
@@ -185,10 +208,11 @@ type AvailableLineProps = {
   plugin: AvailablePlugin
   onInstall: () => void
   onOpenDetail: () => void
+  loadIcons?: boolean
   busy?: boolean
 }
 
-export function AvailablePluginCard({ plugin, onInstall, onOpenDetail, busy }: AvailableLineProps) {
+export function AvailablePluginCard({ plugin, onInstall, onOpenDetail, loadIcons = true, busy }: AvailableLineProps) {
   const { t } = useI18n()
   return (
     <div
@@ -198,7 +222,7 @@ export function AvailablePluginCard({ plugin, onInstall, onOpenDetail, busy }: A
       tabIndex={0}
       onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpenDetail() } }}
     >
-      <PluginMonogram name={plugin.name} id={plugin.pluginId} size={44} />
+      <PluginIcon name={plugin.name} id={plugin.pluginId} size={44} loadIcons={loadIcons} />
       <div className="plugin-line-body">
         <div className="plugin-line-name">{plugin.name}</div>
         <div className="plugin-line-desc">{plugin.description}</div>

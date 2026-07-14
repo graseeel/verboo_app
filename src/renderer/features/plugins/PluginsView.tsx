@@ -1,19 +1,21 @@
 import { AlertTriangle, ArrowLeft, Blocks, ChevronDown, RefreshCw, Search, Settings } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { AvailablePlugin, Plugin, PluginError, PluginScope } from '../../../shared/plugins'
 import { describePluginError } from '../../../shared/plugins'
 import { useI18n } from '../../i18n'
 import { useToast } from '../../components/Toast'
-import { AvailablePluginCard, InstalledPluginCard, PluginMonogram, PluginSkeletonCard } from './PluginCard'
+import { AvailablePluginCard, InstalledPluginCard, PluginIcon, PluginSkeletonCard } from './PluginCard'
 import { MarketplaceModal } from './MarketplaceModal'
 import { PluginDetailView } from './PluginDetailView'
 import { PluginInstallModal } from './PluginInstallModal'
 import { marketplaceFriendlyName } from './marketplaceNames'
 import { usePlugins } from './usePlugins'
+import { invalidatePluginIconCache } from './usePluginIcon'
 
 type PluginsViewProps = {
   onClose: () => void
   onSeedComposer?: (text: string) => void
+  loadIcons?: boolean
 }
 
 // Cap of lines shown per section before the expander kicks in. Sections
@@ -36,9 +38,10 @@ function catalogErrorMessage(err: PluginError, t: (key: string) => string): stri
 // Expander row: 3 overlapping mini-monograms (20px, ~40% overlap) + text
 // "Ver {n1}, {n2} e mais {N}". Click expands the section inline.
 // `plugins` = the hidden plugins (beyond the cap) that will be revealed.
-function SectionExpander({ plugins, onExpand }: {
+function SectionExpander({ plugins, onExpand, loadIcons = true }: {
   plugins: AvailablePlugin[]
   onExpand: () => void
+  loadIcons?: boolean
 }) {
   const { t } = useI18n()
   const preview = plugins.slice(0, 3)
@@ -53,7 +56,7 @@ function SectionExpander({ plugins, onExpand }: {
             className="plugin-expander-mini"
             style={{ zIndex: preview.length - i, marginLeft: i === 0 ? 0 : -8 }}
           >
-            <PluginMonogram name={p.name} id={p.pluginId} size={20} />
+            <PluginIcon name={p.name} id={p.pluginId} size={20} loadIcons={loadIcons} />
           </div>
         ))}
       </div>
@@ -65,7 +68,7 @@ function SectionExpander({ plugins, onExpand }: {
   )
 }
 
-export function PluginsView({ onClose, onSeedComposer }: PluginsViewProps) {
+export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: PluginsViewProps) {
   const { t } = useI18n()
   const { toast } = useToast()
   const {
@@ -100,6 +103,19 @@ export function PluginsView({ onClose, onSeedComposer }: PluginsViewProps) {
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set())
   // Track which marketplace sections are expanded (by group key).
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set())
+
+  // Invalidate the icon cache when manifests arrive. A plugin that returned
+  // null earlier (manifests not loaded yet on the backend → no homepage →
+  // null iconPath) may now have a homepage in the freshly-loaded manifest.
+  // Clearing the cache lets the next render re-fetch with the new data.
+  // This fixes the "lines that never called plugin_icon" bug: the first
+  // fetch happened before manifests were ready, cached null, and the hook
+  // never retried.
+  useEffect(() => {
+    if (Object.keys(manifests).length > 0) {
+      invalidatePluginIconCache()
+    }
+  }, [manifests])
 
   const normalizedQuery = query.trim().toLowerCase()
 
@@ -265,6 +281,7 @@ export function PluginsView({ onClose, onSeedComposer }: PluginsViewProps) {
         <PluginDetailView
           target={selectedPlugin}
           manifests={manifests}
+          loadIcons={loadIcons}
           onBack={() => setSelectedPlugin(undefined)}
           onInstall={async (scope: PluginScope) => {
             if (selectedPlugin.kind !== 'available') return
@@ -394,7 +411,7 @@ export function PluginsView({ onClose, onSeedComposer }: PluginsViewProps) {
                   title={plugin.name}
                   aria-label={plugin.name}
                 >
-                  <PluginMonogram name={plugin.name} id={plugin.id} size={40} />
+                  <PluginIcon name={plugin.name} id={plugin.id} size={40} loadIcons={loadIcons} />
                 </button>
               )
             })}
@@ -429,6 +446,7 @@ export function PluginsView({ onClose, onSeedComposer }: PluginsViewProps) {
                       onUninstall={() => void handleUninstall(plugin)}
                       onOpenDetail={() => setSelectedPlugin({ kind: 'installed', plugin })}
                       onTestNow={onSeedComposer ? () => void handleTestNow(plugin) : undefined}
+                      loadIcons={loadIcons}
                       busy={busyIds.has(plugin.id)}
                     />
                   </div>
@@ -481,6 +499,7 @@ export function PluginsView({ onClose, onSeedComposer }: PluginsViewProps) {
                           plugin={plugin}
                           onInstall={() => void handleInstallOneClick(plugin)}
                           onOpenDetail={() => setSelectedPlugin({ kind: 'available', plugin })}
+                          loadIcons={loadIcons}
                           busy={busyIds.has(plugin.pluginId)}
                         />
                       </div>
@@ -490,6 +509,7 @@ export function PluginsView({ onClose, onSeedComposer }: PluginsViewProps) {
                     <SectionExpander
                       plugins={plugins.slice(SECTION_CAP)}
                       onExpand={() => toggleSection(groupKey)}
+                      loadIcons={loadIcons}
                     />
                   )}
                   {hasExpander && isExpanded && (

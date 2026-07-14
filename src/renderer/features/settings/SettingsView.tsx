@@ -431,6 +431,16 @@ export function SettingsView({
                 </div>
               )}
             </section>
+
+            <section className="settings-panel">
+              <SettingsHeading title={t('settings.privacy')} subtitle={t('settings.privacySubtitle')} />
+              <SettingToggle
+                title={t('settings.loadWebIcons')}
+                body={t('settings.loadWebIconsBody')}
+                checked={userSettings.loadWebIcons}
+                onChange={loadWebIcons => onUserSettingsChange({ loadWebIcons })}
+              />
+            </section>
           </section>
         )}
 

@@ -143,6 +143,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   trustedSkills: [],
   avatar: undefined,
   includeVerbooCoAuthor: false,
+  loadWebIcons: true,
 }
 const EMPTY_LINE_KEYS = [
   'empty.line1',
@@ -565,6 +566,7 @@ export function App() {
         ...DEFAULT_USER_SETTINGS,
         ...settings,
         includeVerbooCoAuthor: settings.includeVerbooCoAuthor ?? false,
+        loadWebIcons: settings.loadWebIcons ?? true,
       })
       // Reasoning effort prefs: backend is the durable source. When the
       // backend already has prefs, use them and drop localStorage. When the
@@ -4301,6 +4303,7 @@ export function App() {
           ) : activeView === 'plugins' ? (
             <PluginsView
               onClose={() => setActiveView('chat')}
+              loadIcons={userSettings.loadWebIcons}
               onSeedComposer={(text: string) => {
                 setComposerValue(text)
                 setActiveView('chat')
