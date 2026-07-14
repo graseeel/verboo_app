@@ -307,14 +307,42 @@
   align-items: center;
   justify-content: center;
   border-radius: 10px;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+  /* Neutral theme-aware bg so transparent PNGs are legible in both themes.
+     Light: light surface; Dark: elevated surface. The colored gradient lives
+     on the initials layer and fades out when the icon arrives. */
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+
+:root[data-theme="dark"] .plugin-monogram {
+  background: color-mix(in srgb, var(--bg-elevated) 80%, black 20%);
+}
+
+/* Initials layer — the colored gradient + initials. Fades out (opacity 1→0)
+   when the icon arrives so the monogram doesn't leak behind transparent PNGs.
+   Crossfade is simultaneous: initials 1→0 while img 0→1, both 150ms. */
+.plugin-monogram-initials {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: inherit;
   color: white;
   font-size: 13px;
   font-weight: 720;
   letter-spacing: -0.02em;
-  flex-shrink: 0;
   text-shadow: 0 1px 2px color-mix(in srgb, black 30%, transparent);
-  position: relative;
-  overflow: hidden;
+  opacity: 1;
+  transition: opacity 150ms var(--dropdown-ease);
+}
+
+/* When the icon is present, fade initials out. */
+.plugin-monogram.has-icon .plugin-monogram-initials {
+  opacity: 0;
 }
 
 /* Real icon overlay — fades in on top of the monogram when the URL arrives.

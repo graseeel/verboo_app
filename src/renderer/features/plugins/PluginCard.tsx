@@ -48,15 +48,26 @@ export function PluginMonogram({ name, id, size = 36, iconUrl }: { name: string;
   const color = monogramColor(id || name)
   return (
     <div
-      className="plugin-monogram"
+      className={`plugin-monogram ${iconUrl ? 'has-icon' : ''}`}
       style={{
         width: size,
         height: size,
-        background: `linear-gradient(135deg, ${color}, color-mix(in srgb, ${color} 70%, black))`,
-      }}
+        // Gradient bg lives on the initials layer, not the container — so
+        // when the icon fades in, the container shows a neutral theme-aware
+        // bg (for transparent PNGs) instead of the colored gradient.
+        '--mono-color': color,
+      } as React.CSSProperties}
       aria-hidden="true"
     >
-      {monogramInitials(name)}
+      {/* Initials layer — fades out when the icon arrives (crossfade). */}
+      <span
+        className="plugin-monogram-initials"
+        style={{
+          background: `linear-gradient(135deg, ${color}, color-mix(in srgb, ${color} 70%, black))`,
+        }}
+      >
+        {monogramInitials(name)}
+      </span>
       {iconUrl && (
         <img
           src={iconUrl}
@@ -65,8 +76,10 @@ export function PluginMonogram({ name, id, size = 36, iconUrl }: { name: string;
           loading="lazy"
           draggable={false}
           onError={event => {
-            // Hide the img on error — monogram stays visible underneath.
+            // Hide the img on error — initials layer fades back in.
             (event.currentTarget as HTMLImageElement).style.display = 'none'
+            const container = event.currentTarget.parentElement
+            container?.classList.remove('has-icon')
           }}
         />
       )}
