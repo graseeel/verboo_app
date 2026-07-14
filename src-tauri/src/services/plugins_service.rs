@@ -573,12 +573,18 @@ pub(crate) fn map_cli_error(
     }
 
     // 2. Network failures — first matching substring wins, truncated 200 chars.
+    // NOTE: "failed to fetch" is intentionally ABSENT from this list — a
+    // generic "failed to fetch" without network context (e.g. DNS error,
+    // connection refused) is ambiguous. The CLI uses "failed to fetch" for
+    // both network failures AND marketplace-not-found (operational). We
+    // let rule 3 (marketplace markers) catch the marketplace-specific case
+    // first; only explicit network markers (etimedout, econnrefused, etc.)
+    // classify as NetworkError here.
     for needle in &[
         "etimedout",
         "econnrefused",
         "enotfound",
         "getaddrinfo",
-        "failed to fetch",
         "git pull",
         "git clone",
         "network",
@@ -596,19 +602,34 @@ pub(crate) fn map_cli_error(
     // 3. Marketplace-command failures — check BEFORE validate-marker because
     // CLI 0.13 emits `✘` on ANY failure (not just validate), so a marketplace
     // add/remove failure gets misclassified as InvalidPlugin with empty errors.
-    // Spec §4: marketplace_* failures are operational (not schema validation),
-    // so they surface as Unknown with the full CLI message truncated.
-    // Markers verified against CLI 0.13.0 (2026-07-13).
     //
-    // NOTE: "failed to fetch marketplace" is intentionally NOT in this list —
-    // rule 2 (network) catches "failed to fetch" first and classifies as
-    // NetworkError with a 200-char snippet, which is the desired behavior
-    // for fetch failures (they're network-related, not operational).
+    // Two sub-categories:
+    //   (a) "marketplace file not found" / "marketplace not found" → the
+    //       source is not a valid marketplace (missing .claude-plugin/
+    //       marketplace.json). Maps to `InvalidMarketplace` — distinct from
+    //       `InvalidPlugin` (schema-invalid plugin manifest) and `Unknown`
+    //       (operational failure). FE renders "Marketplace inválido".
+    //   (b) "failed to add/remove marketplace" (operational, e.g. permission
+    //       denied, disk full) → `Unknown` with the full CLI message.
+    //
+    // Markers verified against CLI 0.13.0 (2026-07-13).
+    for needle in &[
+        "marketplace file not found",
+        "marketplace not found",
+        "no marketplace.json found",
+        "is not a valid marketplace",
+    ] {
+        if lower.contains(needle) {
+            let (message, _) = pick_unknown_message(stdout, stderr);
+            return PluginError::InvalidMarketplace {
+                message: truncate_str(message.trim(), 500),
+            };
+        }
+    }
+
     for needle in &[
         "failed to add marketplace",
         "failed to remove marketplace",
-        "marketplace file not found",
-        "marketplace not found",
     ] {
         if lower.contains(needle) {
             let (message, _) = pick_unknown_message(stdout, stderr);
@@ -1245,11 +1266,15 @@ mod tests {
 
     #[test]
     fn map_cli_error_network_substring_classifies_network_error() {
+        // NOTE: "failed to fetch" is intentionally NOT in this list — a
+        // generic "failed to fetch" is ambiguous (network OR operational).
+        // Only explicit network markers classify as NetworkError. See
+        // `map_cli_error_generic_failed_to_fetch_not_network_error` for
+        // the regression test.
         let cases = [
             ("ETIMEDOUT after 10s", "etimedout"),
             ("ECONNREFUSED", "econnrefused"),
             ("getaddrinfo failed", "getaddrinfo"),
-            ("Failed to fetch marketplace", "failed to fetch"),
             ("git clone error", "git clone"),
             ("network unreachable", "network"),
             ("HTTP 502", "502"),
@@ -1322,42 +1347,44 @@ mod tests {
     }
 
     #[test]
-    fn map_cli_error_marketplace_add_failure_classifies_unknown() {
+    fn map_cli_error_marketplace_add_failure_classifies_invalid_marketplace() {
         // Regression: CLI 0.13 emits `✘` on ANY failure (not just validate),
         // so a marketplace add failure was misclassified as InvalidPlugin
         // with empty errors. The marketplace-marker check must run BEFORE
         // the validate-marker check.
         // Real fixture: user tried to add a GitHub repo that is NOT a
         // marketplace (no marketplace.json). CLI exits 1 with this stderr.
+        // "Marketplace file not found" → InvalidMarketplace (not Unknown,
+        // not InvalidPlugin) — the source is not a valid marketplace.
         let stderr = "✘ Failed to add marketplace: Marketplace file not found at https://github.com/barvian/number-flow/blob/main/marketplace.json\n";
         let e = map_cli_error(Some(1), "", stderr, "verboo plugin marketplace add".into());
         match e {
-            PluginError::Unknown { message, exit_code } => {
-                assert_eq!(exit_code, Some(1));
-                assert!(message.contains("Failed to add marketplace"));
+            PluginError::InvalidMarketplace { message } => {
                 assert!(message.contains("Marketplace file not found"));
             }
-            other => panic!("expected Unknown, got {other:?}"),
+            other => panic!("expected InvalidMarketplace, got {other:?}"),
         }
     }
 
     #[test]
     fn map_cli_error_marketplace_add_failure_without_x_marker() {
         // Same failure but without the `✘` prefix (CLI version drift).
-        // Must still classify as Unknown, not InvalidPlugin.
+        // Must still classify as InvalidMarketplace, not InvalidPlugin.
         let stderr = "Failed to add marketplace: Marketplace file not found at /path/marketplace.json\n";
         let e = map_cli_error(Some(1), "", stderr, "verboo plugin marketplace add".into());
         match e {
-            PluginError::Unknown { message, .. } => {
-                assert!(message.contains("Failed to add marketplace"));
+            PluginError::InvalidMarketplace { message, .. } => {
+                assert!(message.contains("Marketplace file not found"));
             }
-            other => panic!("expected Unknown, got {other:?}"),
+            other => panic!("expected InvalidMarketplace, got {other:?}"),
         }
     }
 
     #[test]
     fn map_cli_error_marketplace_remove_failure_classifies_unknown() {
-        let stderr = "✘ Failed to remove marketplace: marketplace not found: nonexistent\n";
+        // "Failed to remove marketplace" is operational (not a missing
+        // manifest) → Unknown with the full message.
+        let stderr = "✘ Failed to remove marketplace: permission denied\n";
         let e = map_cli_error(Some(1), "", stderr, "verboo plugin marketplace remove".into());
         match e {
             PluginError::Unknown { message, .. } => {
@@ -1368,14 +1395,45 @@ mod tests {
     }
 
     #[test]
+    fn map_cli_error_marketplace_not_found_classifies_invalid_marketplace() {
+        // "marketplace not found" on remove → the marketplace doesn't exist
+        // locally. This is InvalidMarketplace (the named marketplace is not
+        // valid/installed), not Unknown.
+        let stderr = "✘ Failed to remove marketplace: marketplace not found: nonexistent\n";
+        let e = map_cli_error(Some(1), "", stderr, "verboo plugin marketplace remove".into());
+        match e {
+            PluginError::InvalidMarketplace { message } => {
+                assert!(message.contains("marketplace not found"));
+            }
+            other => panic!("expected InvalidMarketplace, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn map_cli_error_marketplace_failure_precedence_over_validate_marker() {
         // A marketplace failure that ALSO contains `✘` must classify as
-        // Unknown (marketplace operational error), NOT InvalidPlugin.
+        // InvalidMarketplace (marketplace manifest missing), NOT InvalidPlugin.
         let stderr = "✘ Failed to add marketplace: Marketplace file not found\n✘ Validation failed\n";
         let e = map_cli_error(Some(1), "", stderr, "verboo plugin marketplace add".into());
         assert!(
-            matches!(e, PluginError::Unknown { .. }),
-            "expected Unknown, got {e:?}"
+            matches!(e, PluginError::InvalidMarketplace { .. }),
+            "expected InvalidMarketplace, got {e:?}"
+        );
+    }
+
+    #[test]
+    fn map_cli_error_generic_failed_to_fetch_not_network_error() {
+        // Regression: "failed to fetch" without explicit network markers
+        // (etimedout, econnrefused, etc.) must NOT classify as NetworkError.
+        // The CLI uses "failed to fetch" for both network failures AND
+        // marketplace-not-found (operational). Only explicit network
+        // markers classify as NetworkError now.
+        let stderr = "failed to fetch: unknown reason\n";
+        let e = map_cli_error(Some(1), "", stderr, "verboo plugin marketplace add".into());
+        // Should fall through to Unknown, NOT NetworkError.
+        assert!(
+            !matches!(e, PluginError::NetworkError { .. }),
+            "generic 'failed to fetch' must not be NetworkError, got {e:?}"
         );
     }
 
