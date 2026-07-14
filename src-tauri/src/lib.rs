@@ -1244,6 +1244,101 @@ fn clipboard_write_text(app: tauri::AppHandle, text: String) -> Result<bool, Str
 }
 
 // ════════════════════════════════════════════════════════════════════
+// Plugins (P5 / Wave 2 — spec docs/plugins-marketplace.md)
+// ════════════════════════════════════════════════════════════════════
+//
+// Thin shell-out wrappers around `verboo plugin …` and
+// `verboo plugin marketplace …`. Rust owns: command translation, timeout,
+// auth gate on mutations, ANSI/JSON normalization, and 9-variant error
+// mapping. The CLI is the only authority for filesystem state under
+// `~/.claude/plugins/` and `~/.verboo/plugins/`.
+//
+// Wrappers translate from the free-function shape in
+// `services::plugins_service` to `#[tauri::command]` async fns that Tauri
+// resolves via `invoke_handler`. The bridge converts PluginError → a
+// renderer-friendly error string automatically (via serde).
+
+#[tauri::command]
+async fn plugin_list() -> Result<Vec<models::plugins::Plugin>, models::plugins::PluginError> {
+    services::plugins_service::plugin_list().await
+}
+
+#[tauri::command]
+async fn plugin_available(
+) -> Result<models::plugins::PluginAvailablePayload, models::plugins::PluginError> {
+    services::plugins_service::plugin_available().await
+}
+
+#[tauri::command]
+async fn plugin_install(
+    id: String,
+    scope: models::plugins::PluginScope,
+) -> Result<models::plugins::Plugin, models::plugins::PluginError> {
+    services::plugins_service::plugin_install(id, scope).await
+}
+
+#[tauri::command]
+async fn plugin_enable(
+    id: String,
+    scope: Option<models::plugins::PluginScope>,
+) -> Result<(), models::plugins::PluginError> {
+    services::plugins_service::plugin_enable(id, scope).await
+}
+
+#[tauri::command]
+async fn plugin_disable(
+    id: String,
+    scope: Option<models::plugins::PluginScope>,
+) -> Result<(), models::plugins::PluginError> {
+    services::plugins_service::plugin_disable(id, scope).await
+}
+
+#[tauri::command]
+async fn plugin_uninstall(
+    id: String,
+    scope: models::plugins::PluginScope,
+    keep_data: Option<bool>,
+) -> Result<(), models::plugins::PluginError> {
+    services::plugins_service::plugin_uninstall(id, scope, keep_data).await
+}
+
+#[tauri::command]
+async fn plugin_update(
+    id: String,
+    scope: models::plugins::PluginScope,
+) -> Result<models::plugins::Plugin, models::plugins::PluginError> {
+    services::plugins_service::plugin_update(id, scope).await
+}
+
+#[tauri::command]
+async fn plugin_validate(
+    path: String,
+) -> Result<models::plugins::PluginValidateResult, models::plugins::PluginError> {
+    services::plugins_service::plugin_validate(path).await
+}
+
+#[tauri::command]
+async fn marketplace_list(
+) -> Result<Vec<models::plugins::Marketplace>, models::plugins::PluginError> {
+    services::plugins_service::marketplace_list().await
+}
+
+#[tauri::command]
+async fn marketplace_add(
+    source: String,
+    scope: Option<String>,
+) -> Result<models::plugins::Marketplace, models::plugins::PluginError> {
+    services::plugins_service::marketplace_add(source, scope).await
+}
+
+#[tauri::command]
+async fn marketplace_remove(
+    name: String,
+) -> Result<(), models::plugins::PluginError> {
+    services::plugins_service::marketplace_remove(name).await
+}
+
+// ════════════════════════════════════════════════════════════════════
 // App entry point
 // ════════════════════════════════════════════════════════════════════
 
@@ -1551,6 +1646,18 @@ pub fn run() {
             // Clipboard
             clipboard_read_text,
             clipboard_write_text,
+            // Plugins (P5 / Wave 2)
+            plugin_list,
+            plugin_available,
+            plugin_install,
+            plugin_enable,
+            plugin_disable,
+            plugin_uninstall,
+            plugin_update,
+            plugin_validate,
+            marketplace_list,
+            marketplace_add,
+            marketplace_remove,
         ])
         .run(tauri::generate_context!())
         .expect("error while running verboo-desktop");

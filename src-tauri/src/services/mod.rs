@@ -15,6 +15,7 @@ pub mod markdown_wrap_contract;
 pub mod model_service;
 pub mod node_runtime;
 pub mod notification_service;
+pub mod plugins_service;
 pub mod prevent_sleep;
 pub mod profile_service;
 pub mod project_instructions_service;

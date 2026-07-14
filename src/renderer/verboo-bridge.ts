@@ -53,6 +53,14 @@ import type {
   WorkspaceReviewMetadata,
 } from '../shared/types'
 
+import type {
+  Marketplace,
+  Plugin,
+  PluginAvailablePayload,
+  PluginScope,
+  PluginValidateResult,
+} from '../shared/plugins'
+
 // ── Helper: subscribe to Tauri event, returns cleanup fn ────────
 function onEvent<T>(channel: string, cb: (payload: T) => void): () => void {
   let unlisten: (() => void) | undefined
@@ -342,6 +350,30 @@ const api = {
     onEvent<{ sessionId: string }>('terminal:exit', callback),
   onTerminalError: (callback: (event: { sessionId: string; error: string }) => void) =>
     onEvent<{ sessionId: string; error: string }>('terminal:error', callback),
+
+  // ── Plugins (P5 / Wave 2 — spec docs/plugins-marketplace.md) ──
+  // 11 wrappers. Reads (`pluginList`, `pluginAvailable`, `marketplaceList`,
+  // `pluginValidate`) bypass the Rust auth gate; mutations are gated both
+  // FE-side (via cliAuth) and Rust-side.
+  pluginList: () => invoke<Plugin[]>('plugin_list'),
+  pluginAvailable: () => invoke<PluginAvailablePayload>('plugin_available'),
+  pluginInstall: (id: string, scope: PluginScope) =>
+    invoke<Plugin>('plugin_install', { id, scope }),
+  pluginEnable: (id: string, scope?: PluginScope) =>
+    invoke<void>('plugin_enable', { id, scope }),
+  pluginDisable: (id: string, scope?: PluginScope) =>
+    invoke<void>('plugin_disable', { id, scope }),
+  pluginUninstall: (id: string, scope: PluginScope, keepData = false) =>
+    invoke<void>('plugin_uninstall', { id, scope, keepData }),
+  pluginUpdate: (id: string, scope: PluginScope) =>
+    invoke<Plugin>('plugin_update', { id, scope }),
+  pluginValidate: (path: string) =>
+    invoke<PluginValidateResult>('plugin_validate', { path }),
+  marketplaceList: () => invoke<Marketplace[]>('marketplace_list'),
+  marketplaceAdd: (source: string, scope?: string) =>
+    invoke<Marketplace>('marketplace_add', { source, scope }),
+  marketplaceRemove: (name: string) =>
+    invoke<void>('marketplace_remove', { name }),
 }
 
 // ── Expose on window (Tauri only) ──────────────────────────────
