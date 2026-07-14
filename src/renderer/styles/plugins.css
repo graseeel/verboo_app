@@ -134,8 +134,7 @@
 .plugin-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 14px;
+  padding: 12px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--bg-elevated);
@@ -143,11 +142,25 @@
   animation: plugin-card-enter 200ms var(--dropdown-ease) both;
 }
 
-.plugin-card-head {
+/* Dense row layout: monogram | body | actions */
+.plugin-card-row {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
   gap: 10px;
+}
+
+.plugin-card-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plugin-card-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
 }
 
 .plugin-card-title {
@@ -158,7 +171,7 @@
 }
 
 .plugin-card-name {
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 680;
   color: var(--text);
   overflow: hidden;
@@ -167,14 +180,14 @@
 }
 
 .plugin-card-version {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--text-dim);
   flex-shrink: 0;
 }
 
 .plugin-card-desc {
   margin: 0;
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.4;
   color: var(--text-dim);
   display: -webkit-box;
@@ -186,70 +199,52 @@
 .plugin-card-foot {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  margin-top: auto;
+  margin-top: 2px;
 }
 
 .plugin-card-scope,
 .plugin-card-marketplace,
 .plugin-card-installs {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--text-dim);
 }
 
-/* ── Toggle ──────────────────────────────────────────────────────── */
-.plugin-toggle {
-  position: relative;
-  width: 32px;
-  height: 18px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--border);
-  cursor: pointer;
+/* ── Monogram ────────────────────────────────────────────────────── */
+.plugin-monogram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  color: white;
+  font-size: 13px;
+  font-weight: 720;
+  letter-spacing: -0.02em;
   flex-shrink: 0;
-  transition: background-color 120ms var(--dropdown-ease);
+  text-shadow: 0 1px 2px color-mix(in srgb, black 30%, transparent);
 }
 
-.plugin-toggle.is-on {
-  background: var(--accent-strong);
-}
-
-.plugin-toggle-knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  background: white;
-  transition: transform 120ms var(--dropdown-ease);
-}
-
-.plugin-toggle.is-on .plugin-toggle-knob {
-  transform: translateX(14px);
-}
-
-/* ── Install button ──────────────────────────────────────────────── */
+/* ── Install button (ghost, Codex-style) ─────────────────────────── */
 .plugin-install-btn {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   padding: 5px 10px;
-  border: 1px solid var(--accent-strong);
+  border: 1px solid var(--border);
   border-radius: 8px;
   background: transparent;
-  color: var(--accent-strong);
-  font-size: 12px;
+  color: var(--text);
+  font-size: 11.5px;
   font-weight: 680;
   cursor: pointer;
   flex-shrink: 0;
-  transition: background-color 120ms var(--dropdown-ease), color 120ms var(--dropdown-ease);
+  transition: border-color 120ms var(--dropdown-ease), background-color 120ms var(--dropdown-ease);
 }
 
 .plugin-install-btn:hover:not(:disabled) {
-  background: var(--accent-strong);
-  color: white;
+  border-color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent-strong);
 }
 
 .plugin-install-btn:disabled {
@@ -257,40 +252,37 @@
   cursor: not-allowed;
 }
 
-/* ── Card menu ───────────────────────────────────────────────────── */
-.plugin-card-menu-wrap {
-  position: relative;
-}
-
+/* ── Card menu trigger ────────────────────────────────────────────── */
 .plugin-card-menu-trigger {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 7px;
   background: transparent;
   color: var(--text-dim);
   cursor: pointer;
-  transition: background-color 120ms var(--dropdown-ease);
+  transition: background-color 120ms var(--dropdown-ease), color 120ms var(--dropdown-ease);
 }
 
 .plugin-card-menu-trigger:hover:not(:disabled) {
   background: var(--bg-hover);
+  color: var(--text);
 }
 
+/* ── Portal menu (F1) ────────────────────────────────────────────── */
+/* Rendered via createPortal(document.body) with position:fixed. */
 .plugin-card-menu {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 4px);
-  min-width: 160px;
+  min-width: 168px;
   padding: 4px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 9px;
   background: var(--bg-elevated);
-  box-shadow: 0 8px 24px color-mix(in srgb, black 24%, transparent);
-  z-index: 20;
+  box-shadow: 0 12px 32px color-mix(in srgb, black 32%, transparent);
+  /* Menu pop: opacity + scale only, 120ms. */
+  animation: plugin-menu-pop 120ms var(--dropdown-ease);
 }
 
 .plugin-card-menu-item {
@@ -323,16 +315,23 @@
   animation: plugin-skel-pulse 1.4s ease-in-out infinite;
 }
 
+.plugin-skel-monogram {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: var(--bg-hover);
+  flex-shrink: 0;
+}
+
 .plugin-skel-line {
   border-radius: 4px;
   background: var(--bg-hover);
 }
 
-.plugin-skel-line--title { width: 60%; height: 14px; }
-.plugin-skel-line--toggle { width: 32px; height: 18px; border-radius: 999px; }
+.plugin-skel-line--title { width: 60%; height: 13px; }
 .plugin-skel-line--desc { width: 100%; height: 11px; }
 .plugin-skel-line--short { width: 70%; }
-.plugin-skel-line--foot { width: 40%; height: 10px; }
+.plugin-skel-line--install { width: 64px; height: 26px; border-radius: 8px; }
 
 /* ── Empty states ───────────────────────────────────────────────── */
 .plugins-empty {
@@ -702,23 +701,18 @@
 .plugin-detail-hero {
   display: flex;
   align-items: flex-start;
-  gap: 16px;
-  padding: 20px;
+  gap: 18px;
+  padding: 24px;
   border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--bg-elevated);
-}
-
-.plugin-detail-hero-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 56px;
-  height: 56px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--accent-strong);
-  flex-shrink: 0;
+  border-radius: 16px;
+  /* Verboo mesh gradient: accent purple soft layered over bg-elevated.
+     Multiple radial gradients create depth without flat color. */
+  background:
+    radial-gradient(ellipse 60% 80% at 0% 0%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 60%),
+    radial-gradient(ellipse 50% 60% at 100% 100%, color-mix(in srgb, var(--accent-strong) 12%, transparent), transparent 55%),
+    var(--bg-elevated);
+  /* Detail enter: 200ms opacity + translateY. */
+  animation: plugin-detail-enter 200ms var(--dropdown-ease);
 }
 
 .plugin-detail-hero-text {
@@ -823,6 +817,16 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes plugin-menu-pop {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes plugin-detail-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 @keyframes plugins-fade-in {
   from { opacity: 0; }
   to   { opacity: 1; }
@@ -836,10 +840,13 @@
 /* ── Reduced motion ───────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   .plugin-card,
-  .plugins-restart-banner {
+  .plugins-restart-banner,
+  .plugin-detail-hero {
     animation: plugins-fade-in 80ms ease-out both !important;
   }
-  .plugin-toggle-knob,
+  .plugin-card-menu {
+    animation: plugins-fade-in 80ms ease-out !important;
+  }
   .plugin-install-btn,
   .plugin-card-menu-trigger,
   .plugin-card-menu-item,

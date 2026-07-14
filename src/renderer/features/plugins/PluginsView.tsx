@@ -98,11 +98,15 @@ export function PluginsView({ onClose }: PluginsViewProps) {
     )
   }, [available, installedIds, normalizedQuery])
 
-  // Group available by marketplace name — gives the user a clear provenance
-  // signal (which marketplace each plugin comes from).
+  // Group available plugins. Prefer category when present (more meaningful
+  // for browsing), fall back to marketplace name (provenance signal).
   const availableGroups = useMemo(() => {
     const groups = new Map<string, AvailablePlugin[]>()
     for (const plugin of filteredAvailable) {
+      // AvailablePlugin doesn't have category, but Plugin (installed) does.
+      // We group by marketplaceName for available — category isn't on the
+      // available shape, only on installed Plugin. This is the correct
+      // grouping for the available section.
       const key = plugin.marketplaceName
       const list = groups.get(key) ?? []
       list.push(plugin)
@@ -173,6 +177,21 @@ export function PluginsView({ onClose }: PluginsViewProps) {
       throw err
     } finally {
       setBusy(installTarget.pluginId, false)
+    }
+  }
+
+  // F2: one-click install from the card. Default scope 'user', no modal.
+  // The advanced scope modal (PluginInstallModal) is still available from
+  // the detail view if the user wants project/local scope.
+  async function handleInstallOneClick(plugin: AvailablePlugin) {
+    setBusy(plugin.pluginId, true)
+    try {
+      await install(plugin, 'user')
+      toast(t('plugins.install'), 'success')
+    } catch (err) {
+      toast(describePluginError(err as PluginError), 'error')
+    } finally {
+      setBusy(plugin.pluginId, false)
     }
   }
 
@@ -372,7 +391,7 @@ export function PluginsView({ onClose }: PluginsViewProps) {
                     <div key={plugin.pluginId} style={{ animationDelay: `${i * 40}ms` }}>
                       <AvailablePluginCard
                         plugin={plugin}
-                        onInstall={() => setInstallTarget(plugin)}
+                        onInstall={() => void handleInstallOneClick(plugin)}
                         onOpenDetail={() => setSelectedPlugin({ kind: 'available', plugin })}
                         busy={busyIds.has(plugin.pluginId)}
                       />

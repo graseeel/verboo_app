@@ -1,7 +1,8 @@
-import { ArrowLeft, Blocks, Download, Power, Trash2 } from 'lucide-react'
+import { ArrowLeft, Download, Power, Trash2 } from 'lucide-react'
 import type { AvailablePlugin, Plugin, PluginError, PluginScope } from '../../../shared/plugins'
 import { describePluginError } from '../../../shared/plugins'
 import { useI18n } from '../../i18n'
+import { PluginMonogram } from './PluginCard'
 
 // Union type for the detail view — it handles both installed (Plugin) and
 // available (AvailablePlugin) shapes. The parent decides which to pass based
@@ -53,11 +54,11 @@ export function PluginDetailView({ target, onBack, onInstall, onUninstall, onTog
         <span className="plugin-detail-crumb plugin-detail-crumb--current">{name}</span>
       </nav>
 
-      {/* Hero placeholder — clean branded block, no fake screenshots */}
+      {/* Hero band — Verboo mesh gradient (accent purple soft + bg-elevated).
+          Large monogram left, title/subtitle/description right. No fake
+          screenshots or invented examples. */}
       <div className="plugin-detail-hero">
-        <div className="plugin-detail-hero-icon">
-          <Blocks size={32} />
-        </div>
+        <PluginMonogram name={name} id={pluginId} size={64} />
         <div className="plugin-detail-hero-text">
           <h1 className="plugin-detail-name">{name}</h1>
           <div className="plugin-detail-meta">
