@@ -477,12 +477,16 @@ pub(crate) fn map_cli_error(
     // Spec §4: marketplace_* failures are operational (not schema validation),
     // so they surface as Unknown with the full CLI message truncated.
     // Markers verified against CLI 0.13.0 (2026-07-13).
+    //
+    // NOTE: "failed to fetch marketplace" is intentionally NOT in this list —
+    // rule 2 (network) catches "failed to fetch" first and classifies as
+    // NetworkError with a 200-char snippet, which is the desired behavior
+    // for fetch failures (they're network-related, not operational).
     for needle in &[
         "failed to add marketplace",
         "failed to remove marketplace",
         "marketplace file not found",
         "marketplace not found",
-        "failed to fetch marketplace",
     ] {
         if lower.contains(needle) {
             let (message, _) = pick_unknown_message(stdout, stderr);
