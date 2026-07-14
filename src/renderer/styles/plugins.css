@@ -1,0 +1,691 @@
+/* Plugins view — marketplace cards, grid, skeletons, modals.
+   Motion: transform + opacity only (no transition: all). Stagger max 8 cards.
+   Reduced-motion: opacity-only. */
+
+/* ── View shell ─────────────────────────────────────────────────── */
+.plugins-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 18px;
+}
+
+.plugins-view-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.plugins-view-header h1 {
+  margin: 0 0 4px;
+  font-size: 26px;
+  line-height: 1.12;
+}
+
+.plugins-view-header p {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* ── Search ─────────────────────────────────────────────────────── */
+.plugins-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plugins-search input {
+  flex: 1;
+  height: 36px;
+  padding: 0 12px 0 36px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 120ms var(--dropdown-ease), box-shadow 120ms var(--dropdown-ease);
+}
+
+.plugins-search input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.plugins-search-icon {
+  position: absolute;
+  left: 12px;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+/* ── Restart banner ─────────────────────────────────────────────── */
+.plugins-restart-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--text);
+  font-size: 13px;
+  animation: plugins-fade-in 200ms var(--dropdown-ease);
+}
+
+.plugins-restart-banner button {
+  margin-left: auto;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent-strong);
+  color: white;
+  font-size: 12px;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+/* ── Error banner ───────────────────────────────────────────────── */
+.plugins-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+  border: 1px solid color-mix(in srgb, #ef4444 28%, transparent);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.plugins-error-banner button {
+  margin-left: auto;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+/* ── Section label ───────────────────────────────────────────────── */
+.plugins-section-label {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* ── Card grid ───────────────────────────────────────────────────── */
+.plugins-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+/* ── Card base ───────────────────────────────────────────────────── */
+.plugin-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  /* Stagger enter — opacity + translateY only (GPU). Max 8 cards stagger. */
+  animation: plugin-card-enter 200ms var(--dropdown-ease) both;
+}
+
+.plugin-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.plugin-card-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.plugin-card-name {
+  font-size: 14px;
+  font-weight: 680;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-card-version {
+  font-size: 11px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.plugin-card-desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.plugin-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.plugin-card-scope,
+.plugin-card-marketplace,
+.plugin-card-installs {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* ── Toggle ──────────────────────────────────────────────────────── */
+.plugin-toggle {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--border);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 120ms var(--dropdown-ease);
+}
+
+.plugin-toggle.is-on {
+  background: var(--accent-strong);
+}
+
+.plugin-toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: white;
+  transition: transform 120ms var(--dropdown-ease);
+}
+
+.plugin-toggle.is-on .plugin-toggle-knob {
+  transform: translateX(14px);
+}
+
+/* ── Install button ──────────────────────────────────────────────── */
+.plugin-install-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--accent-strong);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 680;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 120ms var(--dropdown-ease), color 120ms var(--dropdown-ease);
+}
+
+.plugin-install-btn:hover:not(:disabled) {
+  background: var(--accent-strong);
+  color: white;
+}
+
+.plugin-install-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Card menu ───────────────────────────────────────────────────── */
+.plugin-card-menu-wrap {
+  position: relative;
+}
+
+.plugin-card-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease);
+}
+
+.plugin-card-menu-trigger:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.plugin-card-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 160px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  box-shadow: 0 8px 24px color-mix(in srgb, black 24%, transparent);
+  z-index: 20;
+}
+
+.plugin-card-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease);
+}
+
+.plugin-card-menu-item:hover {
+  background: var(--bg-hover);
+}
+
+.plugin-card-menu-item--danger {
+  color: #ef4444;
+}
+
+/* ── Skeleton ────────────────────────────────────────────────────── */
+.plugin-card--skeleton {
+  pointer-events: none;
+  animation: plugin-skel-pulse 1.4s ease-in-out infinite;
+}
+
+.plugin-skel-line {
+  border-radius: 4px;
+  background: var(--bg-hover);
+}
+
+.plugin-skel-line--title { width: 60%; height: 14px; }
+.plugin-skel-line--toggle { width: 32px; height: 18px; border-radius: 999px; }
+.plugin-skel-line--desc { width: 100%; height: 11px; }
+.plugin-skel-line--short { width: 70%; }
+.plugin-skel-line--foot { width: 40%; height: 10px; }
+
+/* ── Empty states ───────────────────────────────────────────────── */
+.plugins-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 56px 24px;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.plugins-empty-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent-strong);
+}
+
+.plugins-empty-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 680;
+  color: var(--text);
+}
+
+.plugins-empty-body {
+  margin: 0;
+  font-size: 12.5px;
+  max-width: 320px;
+}
+
+/* ── Install modal ───────────────────────────────────────────────── */
+.plugin-install-modal {
+  width: min(440px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.plugin-install-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.plugin-install-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-strong);
+  flex-shrink: 0;
+}
+
+.plugin-install-name {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 680;
+}
+
+.plugin-install-marketplace {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.plugin-install-desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+.plugin-install-scope {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plugin-install-scope-label {
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.plugin-install-scope-options {
+  display: flex;
+  gap: 6px;
+}
+
+.plugin-scope-option {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease), border-color 120ms var(--dropdown-ease);
+}
+
+.plugin-scope-option.is-active {
+  border-color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.plugin-install-error {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+  border: 1px solid color-mix(in srgb, #ef4444 28%, transparent);
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.plugin-install-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ── Trust badge ─────────────────────────────────────────────────── */
+.plugin-trust-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 680;
+  letter-spacing: 0.02em;
+}
+
+.plugin-trust-badge--official {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-strong);
+}
+
+/* ── Marketplace modal ───────────────────────────────────────────── */
+.marketplace-modal {
+  width: min(520px, 100%);
+  max-height: min(560px, 80vh);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.marketplace-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.marketplace-modal-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 680;
+}
+
+.marketplace-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease);
+}
+
+.marketplace-modal-close:hover {
+  background: var(--bg-hover);
+}
+
+.marketplace-add-row {
+  display: flex;
+  gap: 8px;
+}
+
+.marketplace-add-input {
+  flex: 1;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color 120ms var(--dropdown-ease);
+}
+
+.marketplace-add-input:focus {
+  border-color: var(--accent);
+}
+
+.marketplace-add-hint {
+  margin: -6px 0 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.marketplace-error {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+  border: 1px solid color-mix(in srgb, #ef4444 28%, transparent);
+  font-size: 12.5px;
+}
+
+.marketplace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.marketplace-empty {
+  margin: 0;
+  padding: 24px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.marketplace-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+
+.marketplace-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.marketplace-row-name {
+  font-size: 13px;
+  font-weight: 680;
+  color: var(--text);
+}
+
+.marketplace-row-source {
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marketplace-row-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease), color 120ms var(--dropdown-ease);
+}
+
+.marketplace-row-remove:hover:not(:disabled) {
+  background: color-mix(in srgb, #ef4444 14%, transparent);
+  color: #ef4444;
+}
+
+/* ── Confirm remove overlay ──────────────────────────────────────── */
+.marketplace-confirm-overlay {
+  position: absolute;
+}
+
+.marketplace-confirm {
+  width: min(360px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.marketplace-confirm h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 680;
+}
+
+.marketplace-confirm p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.marketplace-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ── Keyframes ───────────────────────────────────────────────────── */
+@keyframes plugin-card-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes plugins-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes plugin-skel-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+
+/* ── Reduced motion ───────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .plugin-card,
+  .plugins-restart-banner {
+    animation: plugins-fade-in 80ms ease-out both !important;
+  }
+  .plugin-toggle-knob,
+  .plugin-install-btn,
+  .plugin-card-menu-trigger,
+  .plugin-card-menu-item,
+  .plugin-scope-option,
+  .marketplace-modal-close,
+  .marketplace-row-remove,
+  .plugins-search input {
+    transition: none !important;
+  }
+}
