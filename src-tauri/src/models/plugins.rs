@@ -147,18 +147,23 @@ pub struct AvailablePlugin {
 
 /// The CLI emits `source` either as an object with a `source` discriminator
 /// field OR as a relative path shorthand string (e.g. `"./plugins/x"`).
-/// We model this as an untagged outer enum with two arms: a tagged
-/// `Object` sub-enum (which maps the discriminator to a concrete variant)
-/// and a `Shorthand` string fallback. Unknown future discriminator
-/// values fall through to `Shorthand` so the UI can render a safe
-/// "unsupported source type" badge instead of crashing.
+/// We model this as an untagged outer enum with three arms: a tagged
+/// `Object` sub-enum (which maps the discriminator to a concrete variant),
+/// a `Shorthand` string fallback, and a `Raw` catch-all for unknown
+/// future object-form variants. Spec §2.3 forward-compat: unknown
+/// discriminator values (e.g. `{"source":"zip",...}`) must NOT crash
+/// `plugin_available` — they fall through to `Raw(serde_json::Value)`
+/// so the FE can render a safe "unsupported source type" badge.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum PluginSource {
     Object(PluginSourceObject),
-    /// Relative path shorthand OR unknown future variant. The string is
-    /// the raw CLI payload (e.g. `"./plugins/agent-sdk-dev"`).
+    /// Relative path shorthand (e.g. `"./plugins/agent-sdk-dev"`).
     Shorthand(String),
+    /// Catch-all for unknown future object-form variants. The FE renders
+    /// a safe "unsupported source type" badge. The raw JSON value is
+    /// preserved for diagnostics.
+    Raw(serde_json::Value),
 }
 
 /// Tagged inner enum. The CLI's `source` field discriminates the variant.
@@ -524,6 +529,25 @@ mod tests {
         let raw = r#""unknown-future-form""#;
         let s: PluginSource = serde_json::from_str(raw).expect("parse");
         assert!(matches!(s, PluginSource::Shorthand(_)));
+    }
+
+    #[test]
+    fn plugin_source_unknown_object_variant_falls_through_to_raw() {
+        // Regression: spec §2.3 forward-compat rule. A future CLI version
+        // adding a new `source` discriminator (e.g. `{"source":"zip",...}`)
+        // must NOT crash `plugin_available`. The untagged enum tries
+        // `Object(PluginSourceObject)` (fails: unknown discriminator) then
+        // `Shorthand(String)` (fails: input is an object) then
+        // `Raw(serde_json::Value)` (succeeds).
+        let raw = r#"{"source":"zip","url":"https://example.com/p.zip"}"#;
+        let s: PluginSource = serde_json::from_str(raw).expect("parse");
+        match s {
+            PluginSource::Raw(val) => {
+                assert_eq!(val["source"], "zip");
+                assert_eq!(val["url"], "https://example.com/p.zip");
+            }
+            other => panic!("expected Raw, got {other:?}"),
+        }
     }
 
     #[test]

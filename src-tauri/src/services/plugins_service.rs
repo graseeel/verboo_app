@@ -296,13 +296,15 @@ fn parse_err(raw: &str, e: &serde_json::Error) -> PluginError {
     }
 }
 
-/// Truncates `s` to `max` chars. Pure string op; no Unicode grapheme logic
-/// (CLI JSON is ASCII-safe; truncation is for diagnostics only).
+/// Truncates `s` to at most `max` **chars** (not bytes). Char-boundary-
+/// aware — never panics on multibyte UTF-8 (spec §4 says "chars"; spec
+/// §10.4 forbids panics on user-facing paths). Used for `raw_preview`
+/// (500 chars) and `raw_output` (2048 chars) diagnostics.
 fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else {
-        s[..max].to_string()
+        s.chars().take(max).collect()
     }
 }
 
@@ -357,31 +359,33 @@ pub(crate) fn map_cli_error(
         }
     }
 
-    // 3. Already-installed — `plugin` name parsed from message if possible.
-    if lower.contains("already installed") || lower.contains("is already installed") {
-        return PluginError::AlreadyInstalled {
-            plugin: parse_plugin_token(&combined).unwrap_or_else(|| "unknown".into()),
-        };
-    }
-
-    // 4. Not-installed — same plugin-token parse.
-    if lower.contains("not installed")
-        || lower.contains("is not installed")
-        || lower.contains("cannot find plugin")
-    {
-        return PluginError::NotInstalled {
-            plugin: parse_plugin_token(&combined).unwrap_or_else(|| "unknown".into()),
-        };
-    }
-
-    // 5. Validate-error marker (only relevant when caller is plugin_validate,
-    // but the marker is unambiguous so we classify it here too).
+    // 3. Validate-error marker (spec §4 rule 5 — BEFORE already/not-installed).
+    // The `✘` / "Validation failed" markers are unambiguous for validate
+    // output; checking them first prevents a validate output that happens
+    // to mention "already installed" from being misclassified.
     if combined.contains('✘') || combined.contains("validation failed") {
         let errors = extract_validate_errors(&combined);
         let warnings = extract_validate_warnings(&combined);
         return PluginError::InvalidPlugin {
             errors,
             warnings: if warnings.is_empty() { None } else { Some(warnings) },
+        };
+    }
+
+    // 4. Already-installed — `plugin` name parsed from message if possible.
+    if lower.contains("already installed") || lower.contains("is already installed") {
+        return PluginError::AlreadyInstalled {
+            plugin: parse_plugin_token(&combined).unwrap_or_else(|| "unknown".into()),
+        };
+    }
+
+    // 5. Not-installed — same plugin-token parse.
+    if lower.contains("not installed")
+        || lower.contains("is not installed")
+        || lower.contains("cannot find plugin")
+    {
+        return PluginError::NotInstalled {
+            plugin: parse_plugin_token(&combined).unwrap_or_else(|| "unknown".into()),
         };
     }
 
@@ -487,7 +491,9 @@ pub(crate) fn parse_validate_output(output: &CliOutput) -> PluginValidateResult 
 ///   - empty strings
 ///   - paths containing `..` (path traversal)
 ///   - system directories `/System`, `/Library`, `/usr`, `/bin`, `/sbin`,
-///     `/etc`, `/dev`, `/proc`, `/sys`
+///     `/etc`, `/dev`, `/proc`, `/sys` — case-INSENSITIVE match (macOS
+///     APFS is case-insensitive; `/system` and `/LIBRARY` resolve to the
+///     same inodes as the canonical forms).
 ///   - non-existent paths (fail loudly rather than letting the CLI spawn
 ///     against a dangling path).
 ///
@@ -506,9 +512,10 @@ pub(crate) fn validate_path(input: &str) -> Result<PathBuf, PluginError> {
         });
     }
     let candidate = Path::new(input);
+    let candidate_lower = input.to_ascii_lowercase();
     for forbidden in &[
-        "/System",
-        "/Library",
+        "/system",
+        "/library",
         "/usr",
         "/bin",
         "/sbin",
@@ -517,7 +524,7 @@ pub(crate) fn validate_path(input: &str) -> Result<PathBuf, PluginError> {
         "/proc",
         "/sys",
     ] {
-        if candidate.starts_with(forbidden) {
+        if candidate_lower.starts_with(forbidden) {
             return Err(PluginError::Unknown {
                 message: format!("validate path under forbidden system dir: {forbidden}"),
                 exit_code: None,
@@ -528,6 +535,28 @@ pub(crate) fn validate_path(input: &str) -> Result<PathBuf, PluginError> {
         message: format!("validate path does not exist: {input}"),
         exit_code: None,
     })?;
+    // Defense-in-depth: re-check the canonicalized path against the
+    // denylist. A symlink like `/tmp/evil → /etc` would pass the input
+    // check but resolve to a system dir.
+    let canonical_str = canonical.to_string_lossy().to_ascii_lowercase();
+    for forbidden in &[
+        "/system",
+        "/library",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/etc",
+        "/dev",
+        "/proc",
+        "/sys",
+    ] {
+        if canonical_str.starts_with(forbidden) {
+            return Err(PluginError::Unknown {
+                message: format!("validate path resolves to forbidden system dir: {forbidden}"),
+                exit_code: None,
+            });
+        }
+    }
     Ok(canonical)
 }
 
@@ -787,6 +816,19 @@ mod tests {
     }
 
     #[test]
+    fn map_cli_error_validate_marker_precedence_over_already_installed() {
+        // Regression: spec §4 requires validate-marker (rule 5) BEFORE
+        // already-installed (rule 6). A validate output that happens to
+        // mention "already installed" must classify as InvalidPlugin.
+        let combined = "Validating: /p\n\n✘ Validation failed: plugin already installed in manifest\n";
+        let e = map_cli_error(Some(1), combined, "", "verboo plugin validate".into());
+        assert!(
+            matches!(e, PluginError::InvalidPlugin { .. }),
+            "expected InvalidPlugin, got {e:?}"
+        );
+    }
+
+    #[test]
     fn map_cli_error_unknown_fallthrough_uses_stderr_first() {
         let e = map_cli_error(
             Some(42),
@@ -914,6 +956,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn validate_path_rejects_system_dirs_case_insensitive() {
+        // Regression: macOS APFS is case-insensitive — `/system` and
+        // `/LIBRARY` resolve to the same inodes as the canonical forms.
+        // The denylist must catch case variations.
+        for forbidden in &[
+            "/system",
+            "/LIBRARY",
+            "/Usr",
+            "/ETC/passwd",
+            "/Bin",
+            "/SBIN",
+            "/Dev",
+            "/Proc",
+            "/SYS",
+        ] {
+            let e = validate_path(forbidden).unwrap_err();
+            match e {
+                PluginError::Unknown { message, .. } => {
+                    assert!(
+                        message.contains("system dir"),
+                        "forbidden={forbidden}, msg={message}"
+                    );
+                }
+                other => panic!("forbidden={forbidden} → {other:?}"),
+            }
+        }
+    }
+
     // ── marketplace source classification ─────────────────────────────
 
     #[test]
@@ -1012,6 +1083,37 @@ mod tests {
         let s = "a".repeat(1000);
         let t = truncate_str(&s, 100);
         assert_eq!(t.len(), 100);
+    }
+
+    #[test]
+    fn truncate_str_multibyte_no_panic() {
+        // Regression: byte-slice s[..max] panicked when max fell inside a
+        // multibyte UTF-8 sequence. Char-boundary-aware truncation must
+        // never panic and must preserve whole codepoints.
+        let s = "€".repeat(600); // 3 bytes/char × 600 = 1800 bytes
+        let t = truncate_str(&s, 500);
+        assert_eq!(t.chars().count(), 500);
+        assert_eq!(t.len(), 1500); // 500 × 3 bytes
+        // Round-trip: result is valid UTF-8.
+        assert!(std::str::from_utf8(t.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn truncate_str_multibyte_mixed_content() {
+        // Realistic CLI output: ASCII + accented + emoji.
+        let s = format!("{}{}", "a".repeat(300), "é".repeat(300));
+        let t = truncate_str(&s, 500);
+        assert_eq!(t.chars().count(), 500);
+        assert!(std::str::from_utf8(t.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn truncate_str_emoji_no_panic() {
+        // 4-byte codepoint (emoji). Cut in the middle of a codepoint.
+        let s = "🚀".repeat(600);
+        let t = truncate_str(&s, 500);
+        assert_eq!(t.chars().count(), 500);
+        assert!(t.chars().all(|c| c == '🚀'));
     }
 
     // ── pick_unknown_message ─────────────────────────────────────────
