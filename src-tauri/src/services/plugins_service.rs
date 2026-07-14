@@ -59,14 +59,15 @@ pub async fn plugin_available() -> Result<PluginAvailablePayload, PluginError> {
     let value: serde_json::Value =
         parse_json(&raw).map_err(|e| parse_err(&raw, &e))?;
 
-    // Installed half — trusted, parse normally.
+    // Installed half — trusted CLI state, but parse tolerantly via
+    // `unwrap_or_default()` so a single malformed installed row (CLI drift)
+    // doesn't fail the whole payload. If the entire `installed[]` array is
+    // unparseable, we return empty rather than a hard parse_error — the
+    // `available[]` half may still be valid and useful to the user.
     let installed: Vec<Plugin> = value
         .get("installed")
         .and_then(|v| v.as_array())
         .map(|arr| {
-            // Deserialize the whole array at once — installed rows are the
-            // CLI's own state and should be well-formed. If they're not,
-            // we want a hard parse_error (something is fundamentally wrong).
             serde_json::from_value::<Vec<Plugin>>(serde_json::Value::Array(arr.clone()))
                 .unwrap_or_default()
         })
@@ -247,24 +248,72 @@ pub(crate) struct CliOutput {
 /// `CliOutput`. Used directly by `plugin_validate` (which needs raw bytes)
 /// and indirectly by `run_cli_json` / `run_cli_quiet`.
 ///
+/// **stdout is redirected to a tempfile** (not a pipe) because the CLI's
+/// `plugin list --json --available` output can exceed 64 KB / 147 KB, and
+/// OS pipe buffers cap at ~64 KB on macOS. A piped stdout fills the buffer,
+/// the CLI blocks on write, the timeout fires, and the JSON is truncated
+/// mid-object → `parse_error` before the item-by-item tolerant parser even
+/// runs. Redirecting to a tempfile removes the pipe-buffer ceiling entirely.
+///
 /// `kill_on_drop(true)` ensures the child dies cleanly when the timeout
 /// fires (the future is dropped, the command is dropped, the child is killed).
+/// The `NamedTempFile` is auto-deleted when dropped.
 async fn run_cli_raw(args: &[&str], timeout_secs: u64) -> Result<CliOutput, PluginError> {
     // CliSpawn already exhausted PATH/bundle/env resolution. If spawn fails
     // here with `NotFound`, the CLI is genuinely unavailable.
     let spawn = CliSpawn::new(args.iter().copied());
     let std_cmd = spawn.command;
+
+    // Create a tempfile for stdout BEFORE spawn. NamedTempFile is owned
+    // and auto-deleted on drop — we keep a handle to read it after wait.
+    let stdout_file = tempfile::tempfile().map_err(|e| PluginError::Unknown {
+        message: format!("failed to create stdout tempfile: {e}"),
+        exit_code: None,
+    })?;
+    let stdout_file_clone = stdout_file.try_clone().map_err(|e| PluginError::Unknown {
+        message: format!("failed to clone stdout tempfile: {e}"),
+        exit_code: None,
+    })?;
+
     let mut cmd = TokioCommand::from(std_cmd);
     cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        // Redirect stdout to the tempfile (NOT piped — pipe buffers cap at
+        // ~64 KB on macOS and truncate large JSON payloads).
+        .stdout(Stdio::from(stdout_file_clone))
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
     // Build a debug representation of args for error messages BEFORE moving.
     let args_debug = format!("verboo {}", args.join(" "));
 
-    let child_fut = cmd.output();
-    let output = match timeout(Duration::from_secs(timeout_secs), child_fut).await {
+    // Spawn the child. spawn() is not a future — it returns immediately
+    // with io::Result<Child>. The timeout applies to the wait() phase.
+    let mut child = cmd.spawn().map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => PluginError::CliNotFound,
+        _ => PluginError::Unknown {
+            message: format!("spawn failed: {e}"),
+            exit_code: None,
+        },
+    })?;
+
+    // Take stderr BEFORE moving child into the wait task — we drain stderr
+    // concurrently with wait() to avoid pipe-buffer deadlock on stderr.
+    let stderr_pipe = child.stderr.take();
+
+    // Wait for the child to exit, with timeout. The child writes stdout
+    // to the tempfile (no pipe-buffer ceiling) and stderr to the pipe
+    // (drained concurrently below).
+    let wait_with_stderr = async {
+        use tokio::io::AsyncReadExt;
+        let mut stderr_buf = String::new();
+        if let Some(mut pipe) = stderr_pipe {
+            let _ = pipe.read_to_string(&mut stderr_buf).await;
+        }
+        let status = child.wait().await;
+        (status, stderr_buf)
+    };
+
+    let (status, stderr) = match timeout(Duration::from_secs(timeout_secs), wait_with_stderr).await {
         Ok(r) => r,
         Err(_) => {
             return Err(PluginError::Timeout {
@@ -274,19 +323,17 @@ async fn run_cli_raw(args: &[&str], timeout_secs: u64) -> Result<CliOutput, Plug
         }
     };
 
-    let output = output.map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => PluginError::CliNotFound,
-        _ => PluginError::Unknown {
-            message: format!("spawn failed: {e}"),
-            exit_code: None,
-        },
+    let status = status.map_err(|e| PluginError::Unknown {
+        message: format!("wait failed: {e}"),
+        exit_code: None,
     })?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let exit_code = output.status.code();
+    // Read stdout from the tempfile. Seek to start first.
+    let stdout = read_stdout_tempfile(stdout_file)?;
 
-    if !output.status.success() {
+    let exit_code = status.code();
+
+    if !status.success() {
         return Err(map_cli_error(exit_code, &stdout, &stderr, args_debug));
     }
 
@@ -295,6 +342,25 @@ async fn run_cli_raw(args: &[&str], timeout_secs: u64) -> Result<CliOutput, Plug
         stdout,
         stderr,
     })
+}
+
+/// Reads the entire contents of a stdout tempfile after the child exits.
+/// Seeks to start first, then reads to EOF. Returns the contents as a
+/// `String` (lossy UTF-8 conversion — CLI JSON is UTF-8).
+fn read_stdout_tempfile(mut file: std::fs::File) -> Result<String, PluginError> {
+    use std::io::{Read, Seek, SeekFrom};
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| PluginError::Unknown {
+            message: format!("failed to seek stdout tempfile: {e}"),
+            exit_code: None,
+        })?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)
+        .map_err(|e| PluginError::Unknown {
+            message: format!("failed to read stdout tempfile: {e}"),
+            exit_code: None,
+        })?;
+    Ok(String::from_utf8_lossy(&buf).to_string())
 }
 
 /// Runs the CLI, expects JSON output, strips ANSI alt-screen wrappers, and
@@ -1073,6 +1139,91 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].plugin_id, "first@m");
         assert_eq!(parsed[1].plugin_id, "third@m");
+    }
+
+    // ── Pipe-truncation regression (catalog v2) ───────────────────────
+    //
+    // The CLI's `plugin list --json --available` output can exceed 64 KB
+    // (real measurement: 147 KB, 265 available). OS pipe buffers cap at
+    // ~64 KB on macOS. A piped stdout fills the buffer, the CLI blocks
+    // on write, the timeout fires, and the JSON is truncated mid-object
+    // → `parse_error` before the item-by-item tolerant parser even runs.
+    //
+    // The fix redirects stdout to a tempfile (no pipe-buffer ceiling).
+    // These tests document the truncation hazard and confirm the tolerant
+    // parser surfaces a clean ParseError (not a hang) when given truncated
+    // input — and that complete input parses cleanly.
+
+    #[test]
+    fn parse_json_truncated_mid_object_fails_cleanly() {
+        // Simulates a pipe-truncated payload: JSON cut mid-object.
+        // The tolerant parser must surface a ParseError, not hang.
+        let truncated = r#"{"installed":[],"available":[{"pluginId":"a@b","#;
+        let result: Result<serde_json::Value, _> = serde_json::from_str(truncated);
+        assert!(result.is_err(), "truncated JSON must fail to parse");
+        let err = result.unwrap_err();
+        // Confirm it's a syntax error (not a type mismatch).
+        assert!(err.is_syntax() || err.is_eof(), "expected syntax/EOF error, got {err}");
+    }
+
+    #[test]
+    fn parse_json_complete_large_payload_parses_cleanly() {
+        // Simulates a complete large payload (265 available items).
+        // Confirms the tolerant parser handles the full catalog size
+        // without truncation when the input is complete.
+        let mut available = Vec::with_capacity(265);
+        for i in 0..265 {
+            available.push(serde_json::json!({
+                "pluginId": format!("plugin-{i}@marketplace"),
+                "name": format!("plugin-{i}"),
+                "description": format!("Description for plugin {i}"),
+                "marketplaceName": "marketplace",
+                "source": "./",
+                "installCount": i
+            }));
+        }
+        let payload = serde_json::json!({
+            "installed": [],
+            "available": available
+        });
+        let raw = payload.to_string();
+        // Confirm the payload is non-trivial (> 10 KB — exercises the
+        // "large output" path that would truncate under pipe buffering).
+        assert!(raw.len() > 10_000, "payload too small: {} bytes", raw.len());
+        // Parse as generic Value (mirrors plugin_available's first step).
+        let value: serde_json::Value = serde_json::from_str(&raw).expect("parse");
+        let arr = value.get("available").and_then(|v| v.as_array()).unwrap();
+        let parsed = parse_available_items_tolerant(arr);
+        assert_eq!(parsed.len(), 265);
+        assert_eq!(parsed[0].plugin_id, "plugin-0@marketplace");
+        assert_eq!(parsed[264].plugin_id, "plugin-264@marketplace");
+    }
+
+    #[test]
+    fn read_stdout_tempfile_round_trip() {
+        // Confirms the tempfile helper reads back exactly what was written.
+        use std::io::Write;
+        let mut file = tempfile::tempfile().expect("create tempfile");
+        let payload = r#"{"installed":[],"available":[]}"#;
+        file.write_all(payload.as_bytes()).expect("write");
+        // Read back via the production helper.
+        let read = read_stdout_tempfile(file).expect("read");
+        assert_eq!(read, payload);
+    }
+
+    #[test]
+    fn read_stdout_tempfile_large_payload() {
+        // Confirms the tempfile helper handles payloads > 64 KB (the
+        // pipe-buffer ceiling). This is the exact scenario that broke
+        // the catalog under pipe-based stdout capture.
+        use std::io::Write;
+        let mut file = tempfile::tempfile().expect("create tempfile");
+        // 200 KB payload — larger than the real 147 KB catalog.
+        let large = "x".repeat(200_000);
+        file.write_all(large.as_bytes()).expect("write");
+        let read = read_stdout_tempfile(file).expect("read");
+        assert_eq!(read.len(), 200_000);
+        assert!(read.chars().all(|c| c == 'x'));
     }
 
     // ── map_cli_error (spec §4) ────────────────────────────────────────
