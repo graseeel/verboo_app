@@ -37,14 +37,21 @@ use crate::services::marketplace_manifest_service::MarketplacePluginEntry;
 // Constants
 // ════════════════════════════════════════════════════════════════════
 
-/// Cache TTL: 7 days in seconds.
-const TTL_SECS: u64 = 7 * 24 * 60 * 60;
+/// Cache TTL for a HIT (icon was fetched successfully): 7 days.
+const TTL_HIT_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Cache TTL for a MISS (fetch failed — cache the negative result so we
+/// don't hammer the server on every request): 1 day. Natural retry.
+const TTL_MISS_SECS: u64 = 24 * 60 * 60;
 
 /// Max cache size: 50 MB.
 const MAX_CACHE_BYTES: u64 = 50 * 1024 * 1024;
 
 /// Max icon size: 512 KB.
 const MAX_ICON_BYTES: usize = 512 * 1024;
+
+/// Max HTML size for link-tag discovery: 100 KB.
+const MAX_HTML_BYTES: usize = 100 * 1024;
 
 /// Max concurrent fetches.
 const MAX_CONCURRENCY: usize = 6;
@@ -77,7 +84,8 @@ const GENERIC_HOST_BLOCKLIST: &[&str] = &[
 /// Cache schema version. Bumped when the blocklist changes or the index
 /// shape changes — old caches are evicted on load to avoid serving stale
 /// blocklisted entries (e.g. github.com icons from before the blocklist).
-const CACHE_VERSION: u32 = 2;
+/// v3: added `ttl_secs` field to CacheIndexEntry (hit=7d, miss=1d).
+const CACHE_VERSION: u32 = 3;
 
 // ════════════════════════════════════════════════════════════════════
 // Public types
@@ -110,6 +118,16 @@ pub struct CacheIndexEntry {
     pub fetched_at: u64,
     /// File size in bytes.
     pub size: u64,
+    /// TTL in seconds for this entry. Hits use `TTL_HIT_SECS` (7 days);
+    /// misses use `TTL_MISS_SECS` (1 day) for natural retry. v3 field.
+    #[serde(default = "default_ttl_hit_secs")]
+    pub ttl_secs: u64,
+}
+
+/// Default for `ttl_secs` when deserializing v2 caches (no field). Treats
+/// old entries as hits (7-day TTL) — safe default.
+fn default_ttl_hit_secs() -> u64 {
+    TTL_HIT_SECS
 }
 
 /// The cache index — a map of `domain → CacheIndexEntry`.
@@ -202,7 +220,10 @@ pub async fn resolve_plugin_icon(
     // that were just written.
     let mut index = load_index(&cache_dir);
 
-    // Check cache first.
+    // Check cache first. `check_cache` returns the path only for a HIT
+    // (icon file present + fresh). A MISS entry (no file) is handled
+    // separately by `check_miss_cache` — we don't re-fetch within the
+    // 1-day miss TTL.
     if let Some(cached) = check_cache(&index, &domain, &cache_dir) {
         return Ok(PluginIconResult {
             icon_path: Some(cached.to_string_lossy().to_string()),
@@ -210,11 +231,21 @@ pub async fn resolve_plugin_icon(
             cached: true,
         });
     }
+    if check_miss_cache(&index, &domain) {
+        // Recent miss (within TTL_MISS_SECS) — return None without fetching.
+        return Ok(PluginIconResult {
+            icon_path: None,
+            domain: Some(domain),
+            cached: false,
+        });
+    }
 
-    // Fetch (semaphore-limited). If all paths fail, return None (not an error).
+    // Fetch (semaphore-limited). If all paths fail, cache the miss and
+    // return None (not an error).
     let icon_data = match fetch_icon(&domain).await {
         Some(data) => data,
         None => {
+            write_miss_to_cache(&cache_dir, &domain, &mut index);
             return Ok(PluginIconResult {
                 icon_path: None,
                 domain: Some(domain),
@@ -268,6 +299,187 @@ pub(crate) fn extract_domain(url: &str) -> Option<String> {
 pub(crate) fn is_generic_host(domain: &str) -> bool {
     let lower = domain.to_lowercase();
     GENERIC_HOST_BLOCKLIST.iter().any(|h| lower == *h || lower.ends_with(&format!(".{h}")))
+}
+
+/// SSRF guard: validates a resolved icon URL is safe to fetch. Returns
+/// `Some(url)` if safe, `None` if rejected. Checks:
+///   - HTTPS only (http:// rejected)
+///   - Host is NOT a generic code/package host (re-apply blocklist)
+///   - Host is NOT an IP literal in private/loopback/link-local ranges
+///   - Host is NOT `localhost`
+///
+/// This is CRITICAL when fetching icons discovered via HTML `<link rel>`
+/// tags — a malicious manifest could point to `http://127.0.0.1/admin`
+/// or `https://10.0.0.1/internal`. We block all private IP ranges.
+pub(crate) fn is_ssrf_safe_url(url: &str) -> bool {
+    // Must be https://.
+    if !url.starts_with("https://") {
+        return false;
+    }
+    // Parse host.
+    let after_scheme = &url[8..]; // skip "https://"
+    let host = after_scheme.split('/').next().unwrap_or("");
+    let host = host.split('?').next().unwrap_or("");
+    let host = host.split('#').next().unwrap_or("");
+    // Strip port. IPv6 literals are wrapped in brackets: [::1]:8080.
+    let host = if host.starts_with('[') {
+        // IPv6 literal — extract between brackets.
+        if let Some(end) = host.find(']') {
+            &host[1..end]
+        } else {
+            return false; // malformed
+        }
+    } else {
+        host.split(':').next().unwrap_or("")
+    };
+    let host = host.to_lowercase();
+
+    if host.is_empty() || host == "localhost" {
+        return false;
+    }
+
+    // Re-apply generic host blocklist (a link-tag could point to github.com).
+    if is_generic_host(&host) {
+        return false;
+    }
+
+    // Block IP literals in private/loopback/link-local ranges.
+    if is_private_ip(&host) {
+        return false;
+    }
+
+    true
+}
+
+/// Returns true if `host` is an IP literal in a private/loopback/link-local
+/// range. Blocks: 10.x, 172.16-31.x, 192.168.x, 127.x, 169.254.x, ::1,
+/// fc00::/7 (IPv6 ULA), fe80::/10 (IPv6 link-local).
+///
+/// Also catches non-standard IP encodings that glibc resolves differently
+/// from Rust's `FromStr` (decimal integer IP, hex IP, octal-prefixed octets,
+/// IPv4-mapped IPv6). The guideline: "na dúvida, REJEITAR — é só um ícone."
+pub(crate) fn is_private_ip(host: &str) -> bool {
+    // ── Non-standard IP encodings (glibc divergence) ──────────────────
+
+    // 1. Hex integer: "0x7f000001" → 127.0.0.1 (glibc). Rust rejects this
+    //    as an Ipv4Addr parse. Reject any host with `0x` / `0X` prefix.
+    if host.starts_with("0x") || host.starts_with("0X") {
+        if let Ok(num) = u32::from_str_radix(&host[2..], 16) {
+            return is_private_ipv4(&std::net::Ipv4Addr::from(num));
+        }
+        return true; // suspicious hex-like — REJECT
+    }
+
+    // 2. Decimal integer: "2130706433" → 127.0.0.1 (glibc).
+    //    Rust's Ipv4Addr parse rejects this. Reject ALL all-numeric hosts
+    //    regardless of whether the decoded IP is private or public — the
+    //    non-standard encoding is suspicious enough to reject ("é só um
+    //    ícone, fallback monogram").
+    if is_all_digits(host) {
+        return true; // REJECT: non-standard numeric form
+    }
+
+    // 3. Leading-zero octets (octal ambiguity): "0177.0.0.1" → glibc
+    //    interprets 0177 as octal 127.0.0.1; Rust parses 0177 as decimal
+    //    177.0.0.1. Reject dotted-quads with leading-zero components.
+    if has_leading_zero_octet(host) || has_hex_octet(host) || has_octal_octet(host) {
+        // Try Rust's parse first — if it maps to a private IP, reject.
+        if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+            if is_private_ipv4(&ip) {
+                return true;
+            }
+        }
+        // glibc would interpret differently; reject to be safe.
+        return true;
+    }
+
+    // ── Standard IP literals ──────────────────────────────────────────
+
+    // IPv4 literal.
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        return is_private_ipv4(&ip);
+    }
+    // IPv6 literal.
+    if let Ok(ip) = host.parse::<std::net::Ipv6Addr>() {
+        // IPv4-mapped IPv6 addresses: `::ffff:127.0.0.1` is NOT caught by
+        // `is_loopback()` (which only covers `::1`). Extract the embedded
+        // IPv4 and re-check.
+        if let Some(mapped) = ip.to_ipv4() {
+            if is_private_ipv4(&mapped) {
+                return true;
+            }
+        }
+        // Also check ::1 (loopback), unspecified, ULA, link-local.
+        return ip.is_loopback()
+            || ip.is_unspecified()
+            || is_ipv6_ula(&ip)
+            || is_ipv6_link_local(&ip);
+    }
+    // Not an IP literal (it's a hostname like "example.com").
+    false
+}
+
+/// Checks if an `Ipv4Addr` is in a private/loopback/link-local/unspec range.
+fn is_private_ipv4(ip: &std::net::Ipv4Addr) -> bool {
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+}
+
+/// Returns true if `s` is non-empty and all ASCII digits.
+fn is_all_digits(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Returns true if a dotted-quad host has components with leading zeros
+/// (e.g. `0177.0.0.1`). glibc interprets these as octal (0177 = 127),
+/// while Rust parses them as decimal (0177 = 177). Reject to be safe.
+fn has_leading_zero_octet(host: &str) -> bool {
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() != 4 {
+        return false;
+    }
+    parts.iter().any(|p| p.len() > 1 && p.starts_with('0'))
+}
+
+/// Returns true if a dotted-quad host has `0x` in any component
+/// (e.g. `0x7f.0.0.1`). glibc interprets these as hex. Only applies
+/// to dotted-quad strings so `example0x00.com` is NOT rejected.
+fn has_hex_octet(host: &str) -> bool {
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() != 4 {
+        return false;
+    }
+    host.to_lowercase().contains("0x")
+}
+
+/// Returns true if a dotted-quad host has octal-form components
+/// (e.g. `0177.0.0.1` or `0.0.0.0177` — anything that starts with 0
+/// and has > 1 digit). Redundant with `has_leading_zero_octet` but
+/// also catches the edge case `0.0.0.0177` where only the last octet
+/// has leading zeros.
+fn has_octal_octet(host: &str) -> bool {
+    // Same as leading-zero check but also works for non-dotted forms.
+    // For dotted forms, this is covered by has_leading_zero_octet.
+    // For single-integer forms (already caught by is_all_digits),
+    // octal isn't applicable.
+    false // Covered by has_leading_zero_octet for dotted forms.
+}
+
+/// Returns true if an IPv6 address is in the Unique Local Address range
+/// (fc00::/7). `std::net::Ipv6Addr` doesn't expose this directly.
+fn is_ipv6_ula(ip: &std::net::Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    // fc00::/7 means the first byte (top 8 bits of segments[0]) is in
+    // 0xfc..=0xfd.
+    (segments[0] & 0xfe00) == 0xfc00
+}
+
+/// Returns true if an IPv6 address is link-local (fe80::/10).
+fn is_ipv6_link_local(ip: &std::net::Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    (segments[0] & 0xffc0) == 0xfe80
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -350,13 +562,19 @@ fn save_index(cache_dir: &Path, index: &CacheIndex) {
     }
 }
 
-/// Checks the cache for a fresh entry for `domain`. Returns the icon path
-/// if the entry exists, the file is present, and the TTL hasn't expired.
+/// Checks the cache for a fresh HIT entry for `domain`. Returns the icon
+/// path if the entry exists, has a non-empty file, the file is present, and
+/// the TTL hasn't expired.
 fn check_cache(index: &CacheIndex, domain: &str, cache_dir: &Path) -> Option<PathBuf> {
     let entry = index.get(domain)?;
+    // Miss entries (empty file) are handled by `check_miss_cache`.
+    if entry.file.is_empty() {
+        return None;
+    }
     let now = now_secs();
-    if now.saturating_sub(entry.fetched_at) > TTL_SECS {
-        return None; // expired
+    let ttl = entry.ttl_secs;
+    if now.saturating_sub(entry.fetched_at) > ttl {
+        return None; // expired (hit TTL=7d)
     }
     let path = cache_dir.join(&entry.file);
     if !path.exists() {
@@ -365,8 +583,24 @@ fn check_cache(index: &CacheIndex, domain: &str, cache_dir: &Path) -> Option<Pat
     Some(path)
 }
 
+/// Checks if `domain` has a fresh MISS entry (recent fetch failure within
+/// `TTL_MISS_SECS`). Returns true if we should NOT re-fetch (avoid hammering).
+fn check_miss_cache(index: &CacheIndex, domain: &str) -> bool {
+    let entry = match index.get(domain) {
+        Some(e) => e,
+        None => return false,
+    };
+    // Only miss entries (empty file) are checked here.
+    if !entry.file.is_empty() {
+        return false;
+    }
+    let now = now_secs();
+    now.saturating_sub(entry.fetched_at) <= entry.ttl_secs
+}
+
 /// Writes icon data to the cache and updates the index. Enforces the 50 MB
-/// LRU cap by evicting oldest entries until under the limit.
+/// LRU cap by evicting oldest entries until under the limit. Uses
+/// `TTL_HIT_SECS` (7 days) — successful fetches are cached long.
 fn write_to_cache(
     cache_dir: &Path,
     domain: &str,
@@ -400,6 +634,7 @@ fn write_to_cache(
             ext: data.ext.to_string(),
             fetched_at: now,
             size,
+            ttl_secs: TTL_HIT_SECS,
         },
     );
 
@@ -409,6 +644,35 @@ fn write_to_cache(
     save_index(cache_dir, index);
 
     Ok(path)
+}
+
+/// Writes a negative cache entry (miss) for a domain. No icon file is
+/// written — just an index entry with `TTL_MISS_SECS` (1 day) so we don't
+/// hammer the server on every request. After 1 day, the entry expires and
+/// the next request re-fetches.
+fn write_miss_to_cache(cache_dir: &Path, domain: &str, index: &mut CacheIndex) {
+    let now = now_secs();
+
+    // Remove any old entry (file + index) for this domain.
+    if let Some(old) = index.remove(domain) {
+        let old_path = cache_dir.join(&old.file);
+        if old_path.exists() {
+            let _ = std::fs::remove_file(&old_path);
+        }
+    }
+
+    index.insert(
+        domain.to_string(),
+        CacheIndexEntry {
+            file: String::new(), // no file for a miss
+            ext: String::new(),
+            fetched_at: now,
+            size: 0,
+            ttl_secs: TTL_MISS_SECS,
+        },
+    );
+
+    save_index(cache_dir, index);
 }
 
 /// Evicts oldest entries (by `fetched_at`) until the total cache size is
@@ -482,9 +746,16 @@ async fn semaphore() -> &'static Arc<Semaphore> {
         .await
 }
 
-/// Fetches the icon for a domain. Tries `/apple-touch-icon.png` then
-/// `/favicon.ico`. Returns `None` if all paths fail (network error, 404,
-/// invalid content type, too large, etc.). HTTPS only.
+/// Fetches the icon for a domain. Tries in order:
+///   1. `/apple-touch-icon.png` (direct)
+///   2. `/favicon.ico` (direct)
+///   3. HTML `<link rel="icon|apple-touch-icon|shortcut icon">` discovery
+///      (GET homepage HTML, parse link tags, resolve relative URLs, SSRF
+///      guard the resolved URL, fetch the icon)
+///   4. Returns `None` if all paths fail.
+///
+/// HTTPS only. On-demand only. Respects `load_web_icons` toggle (checked
+/// upstream in `resolve_plugin_icon`).
 async fn fetch_icon(domain: &str) -> Option<IconData> {
     let _permit = semaphore().await.acquire().await.ok()?;
 
@@ -494,36 +765,223 @@ async fn fetch_icon(domain: &str) -> Option<IconData> {
         .build()
         .ok()?;
 
+    // Phase 1: try direct icon paths (apple-touch-icon.png, favicon.ico).
     for path in ICON_PATHS {
         let url = format!("https://{domain}{path}");
-        match client.get(&url).send().await {
-            Ok(resp) => {
-                let status = resp.status();
-                if !status.is_success() {
-                    continue;
-                }
-                let content_type = resp
-                    .headers()
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("")
-                    .to_string();
-                let bytes = match resp.bytes().await {
-                    Ok(b) => b.to_vec(),
-                    Err(_) => continue,
-                };
-                if bytes.len() > MAX_ICON_BYTES {
-                    continue;
-                }
-                match validate_icon(&bytes, &content_type) {
-                    Some(ext) => return Some(IconData { bytes, ext }),
-                    None => continue,
+        if let Some(data) = fetch_and_validate_icon(&client, &url).await {
+            return Some(data);
+        }
+    }
+
+    // Phase 2: HTML link-tag discovery. Many sites don't serve icons at the
+    // root but declare them via `<link rel="icon" href="...">` in the HTML.
+    let homepage_url = format!("https://{domain}/");
+    if let Some(icon_url) = discover_icon_url_from_html(&client, &homepage_url, domain).await {
+        // SSRF guard the resolved URL before fetching.
+        if !is_ssrf_safe_url(&icon_url) {
+            return None;
+        }
+        if let Some(data) = fetch_and_validate_icon(&client, &icon_url).await {
+            return Some(data);
+        }
+    }
+
+    None
+}
+
+/// Fetches a URL and validates it as an icon. Returns `Some(IconData)` if
+/// the response is a valid icon (magic bytes), `None` otherwise. Rejects
+/// text/html and application/json (a link-tag pointing to HTML = failure,
+/// no chaining).
+async fn fetch_and_validate_icon(client: &reqwest::Client, url: &str) -> Option<IconData> {
+    let resp = client.get(url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    // Reject text/html and application/json — a link-tag pointing to HTML
+    // is a failure (no chaining). This prevents following redirect chains
+    // into arbitrary pages.
+    let ct_lower = content_type.to_lowercase();
+    if ct_lower.contains("text/html") || ct_lower.contains("application/json") {
+        return None;
+    }
+    let bytes = resp.bytes().await.ok()?.to_vec();
+    if bytes.len() > MAX_ICON_BYTES {
+        return None;
+    }
+    validate_icon(&bytes, &content_type).map(|ext| IconData { bytes, ext })
+}
+
+/// Fetches the homepage HTML and parses `<link rel="icon|apple-touch-icon|
+/// shortcut icon" href="...">` tags. Returns the resolved absolute URL of
+/// the first matching icon, or `None` if not found.
+///
+/// Respects `<base href>` if present. Resolves relative URLs against the
+/// base URL (or the homepage URL if no base tag).
+async fn discover_icon_url_from_html(
+    client: &reqwest::Client,
+    homepage_url: &str,
+    domain: &str,
+) -> Option<String> {
+    let resp = client.get(homepage_url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+    // Only parse HTML.
+    if !content_type.contains("text/html") {
+        return None;
+    }
+    let bytes = resp.bytes().await.ok()?.to_vec();
+    if bytes.len() > MAX_HTML_BYTES {
+        return None;
+    }
+    let html = String::from_utf8_lossy(&bytes);
+
+    // Parse base href first (if present).
+    let base_url = extract_base_href(&html).unwrap_or_else(|| homepage_url.to_string());
+
+    // Find the first matching link tag.
+    extract_icon_link(&html, &base_url, domain)
+}
+
+/// Extracts `<base href="...">` from HTML. Returns the absolute URL if found.
+fn extract_base_href(html: &str) -> Option<String> {
+    let lower = html.to_lowercase();
+    let base_start = lower.find("<base ")?;
+    // Find the end of the <base> tag.
+    let tag_end = lower[base_start..].find('>')? + base_start;
+    let tag = &html[base_start..=tag_end];
+    // Extract href value.
+    extract_attr_value(tag, "href")
+}
+
+/// Extracts the first `<link rel="icon|apple-touch-icon|shortcut icon"
+/// href="...">` from HTML. Resolves relative URLs against `base_url`.
+fn extract_icon_link(html: &str, base_url: &str, _domain: &str) -> Option<String> {
+    let lower = html.to_lowercase();
+    let mut search_from = 0;
+    while let Some(link_start) = lower[search_from..].find("<link ") {
+        let abs_start = search_from + link_start;
+        let tag_end = lower[abs_start..].find('>')? + abs_start;
+        let tag = &html[abs_start..=tag_end];
+        let tag_lower = &lower[abs_start..=tag_end];
+
+        // Check if this is an icon link.
+        if let Some(rel) = extract_attr_value(tag_lower, "rel") {
+            let rel_lower = rel.to_lowercase();
+            if rel_lower == "icon"
+                || rel_lower == "apple-touch-icon"
+                || rel_lower == "shortcut icon"
+                || rel_lower == "apple-touch-icon-precomposed"
+            {
+                if let Some(href) = extract_attr_value(tag, "href") {
+                    // Resolve relative URL against base_url.
+                    if let Some(resolved) = resolve_url(&href, base_url) {
+                        return Some(resolved);
+                    }
                 }
             }
-            Err(_) => continue,
+        }
+        search_from = tag_end + 1;
+    }
+    None
+}
+
+/// Extracts the value of an HTML attribute `attr` from a tag string.
+/// Handles single quotes, double quotes, unquoted values, and whitespace
+/// around `=` (valid HTML5: `rel = "icon"`). Uses word-boundary matching
+/// so `data-href` does NOT match `href` (the `=` must be preceded by the
+/// attr name exactly, not a suffix of another attribute name).
+/// Returns `None` if the attribute is not found.
+fn extract_attr_value(tag: &str, attr: &str) -> Option<String> {
+    let lower = tag.to_lowercase();
+    // Search for the attr name as a whole word: it must be preceded by
+    // whitespace or `<` (tag start) or `/` (self-closing), so that
+    // `data-href=` does NOT match `href=`.
+    let bytes = lower.as_bytes();
+    let attr_bytes = attr.as_bytes();
+    let mut search_from = 0;
+    while search_from + attr_bytes.len() <= bytes.len() {
+        let found = lower[search_from..].find(attr)?;
+        let abs = search_from + found;
+        // Check word boundary before the attr name.
+        let before_ok = abs == 0
+            || {
+                let b = bytes[abs - 1];
+                b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' || b == b'<' || b == b'/'
+            };
+        if !before_ok {
+            search_from = abs + 1;
+            continue;
+        }
+        // After the attr name, skip whitespace, then expect `=`.
+        let after_name = abs + attr_bytes.len();
+        let rest = &lower[after_name..];
+        let trimmed = rest.trim_start();
+        if !trimmed.starts_with('=') {
+            search_from = abs + 1;
+            continue;
+        }
+        // Skip the `=` and any whitespace after it.
+        let after_eq = trimmed[1..].trim_start();
+        if after_eq.is_empty() {
+            return None;
+        }
+        let first = after_eq.chars().next()?;
+        if first == '"' || first == '\'' {
+            let quote = first;
+            let value_end = after_eq[1..].find(quote)? + 1;
+            return Some(after_eq[1..value_end].to_string());
+        } else {
+            // Unquoted — value ends at whitespace or >.
+            let value_end = after_eq
+                .find(|c: char| c.is_whitespace() || c == '>')
+                .unwrap_or(after_eq.len());
+            return Some(after_eq[..value_end].to_string());
         }
     }
     None
+}
+
+/// Resolves a possibly-relative URL against a base URL. Returns the
+/// absolute URL string, or `None` if resolution fails.
+fn resolve_url(href: &str, base_url: &str) -> Option<String> {
+    // Handle protocol-relative URLs (//example.com/icon.png).
+    let href = if href.starts_with("//") {
+        format!("https:{href}")
+    } else {
+        href.to_string()
+    };
+    // Simple resolution: if href is absolute (has scheme), use it; otherwise
+    // join with base. We avoid the `url` crate dependency by doing manual
+    // resolution for the common cases.
+    if href.starts_with("https://") || href.starts_with("http://") {
+        return Some(href);
+    }
+    // Relative URL — join with base.
+    let base = base_url.trim_end_matches('/');
+    if href.starts_with('/') {
+        // Absolute path — join with base scheme+host.
+        if let Some(scheme_end) = base.find("://") {
+            let after_scheme = &base[scheme_end + 3..];
+            let host = after_scheme.split('/').next().unwrap_or("");
+            return Some(format!("https://{host}{href}"));
+        }
+    }
+    // Relative path — join with base directory.
+    Some(format!("{base}/{href}"))
 }
 
 /// Validates icon bytes by magic bytes (NOT content-type header — servers
@@ -695,6 +1153,496 @@ mod tests {
         assert!(is_generic_host("foo.raw.githubusercontent.com"));
     }
 
+    // ── SSRF guard (is_ssrf_safe_url + is_private_ip) ─────────────────
+
+    #[test]
+    fn ssrf_rejects_http() {
+        assert!(!is_ssrf_safe_url("http://example.com/icon.png"));
+        assert!(!is_ssrf_safe_url("http://127.0.0.1/icon.png"));
+    }
+
+    #[test]
+    fn ssrf_accepts_https_public_domain() {
+        assert!(is_ssrf_safe_url("https://example.com/icon.png"));
+        assert!(is_ssrf_safe_url("https://apollo.io/favicon.ico"));
+    }
+
+    #[test]
+    fn ssrf_rejects_localhost() {
+        assert!(!is_ssrf_safe_url("https://localhost/icon.png"));
+        assert!(!is_ssrf_safe_url("https://localhost:8080/icon.png"));
+    }
+
+    #[test]
+    fn ssrf_rejects_loopback_ipv4() {
+        assert!(!is_ssrf_safe_url("https://127.0.0.1/icon.png"));
+        assert!(!is_ssrf_safe_url("https://127.0.0.1:8080/icon.png"));
+        assert!(!is_ssrf_safe_url("https://127.1.2.3/icon.png"));
+    }
+
+    #[test]
+    fn ssrf_rejects_private_ipv4_ranges() {
+        assert!(!is_ssrf_safe_url("https://10.0.0.1/icon.png"));
+        assert!(!is_ssrf_safe_url("https://10.255.255.255/icon.png"));
+        assert!(!is_ssrf_safe_url("https://172.16.0.1/icon.png"));
+        assert!(!is_ssrf_safe_url("https://172.31.255.255/icon.png"));
+        assert!(!is_ssrf_safe_url("https://192.168.1.1/icon.png"));
+        assert!(!is_ssrf_safe_url("https://192.168.0.0/icon.png"));
+    }
+
+    #[test]
+    fn ssrf_rejects_link_local_ipv4() {
+        assert!(!is_ssrf_safe_url("https://169.254.1.1/icon.png"));
+        assert!(!is_ssrf_safe_url("https://169.254.169.254/icon.png"));
+    }
+
+    #[test]
+    fn ssrf_rejects_loopback_ipv6() {
+        assert!(!is_ssrf_safe_url("https://[::1]/icon.png"));
+    }
+
+    #[test]
+    fn ssrf_rejects_generic_hosts() {
+        // A link-tag could point to github.com — re-apply blocklist.
+        assert!(!is_ssrf_safe_url("https://github.com/icon.png"));
+        assert!(!is_ssrf_safe_url("https://npmjs.com/icon.png"));
+        assert!(!is_ssrf_safe_url("https://raw.githubusercontent.com/x.png"));
+    }
+
+    #[test]
+    fn ssrf_allows_public_ipv4() {
+        // 8.8.8.8 is a public IP (Google DNS) — should be allowed.
+        assert!(is_ssrf_safe_url("https://8.8.8.8/icon.png"));
+    }
+
+    #[test]
+    fn is_private_ip_detects_all_ranges() {
+        assert!(is_private_ip("10.0.0.1"));
+        assert!(is_private_ip("172.16.0.1"));
+        assert!(is_private_ip("172.31.255.255"));
+        assert!(is_private_ip("192.168.1.1"));
+        assert!(is_private_ip("127.0.0.1"));
+        assert!(is_private_ip("169.254.1.1"));
+        assert!(is_private_ip("::1"));
+    }
+
+    #[test]
+    fn is_private_ip_rejects_public() {
+        assert!(!is_private_ip("8.8.8.8"));
+        assert!(!is_private_ip("1.1.1.1"));
+        assert!(!is_private_ip("example.com"));
+    }
+
+    // ── SSRF regression: non-standard IP encodings ───────────────────
+
+    #[test]
+    fn ssrf_rejects_decimal_integer_ip() {
+        // 2130706433 = 127.0.0.1 in decimal. glibc resolves this to loopback.
+        assert!(!is_ssrf_safe_url("https://2130706433/icon.png"));
+        // Also: any all-numeric host should be rejected even if u32 parse
+        // yields a public IP (suspicious non-standard form).
+        assert!(!is_ssrf_safe_url("https://167772161/icon.png")); // 10.0.0.1
+        assert!(!is_ssrf_safe_url("https://2886729728/icon.png")); // 172.16.0.0
+    }
+
+    #[test]
+    fn is_private_ip_decimal_integer_private() {
+        assert!(is_private_ip("2130706433")); // 127.0.0.1
+        assert!(is_private_ip("167772161")); // 10.0.0.1
+        assert!(is_private_ip("3232235521")); // 192.168.0.1
+    }
+
+    #[test]
+    fn is_private_ip_decimal_integer_public() {
+        // 134744072 = 8.8.8.8 — public, but all-numeric → REJECT (suspicious).
+        assert!(is_private_ip("134744072"));
+    }
+
+    #[test]
+    fn ssrf_rejects_hex_integer_ip() {
+        // 0x7f000001 = 127.0.0.1. glibc resolves this to loopback.
+        assert!(!is_ssrf_safe_url("https://0x7f000001/icon.png"));
+        assert!(!is_ssrf_safe_url("https://0X7f000001/icon.png")); // uppercase X
+    }
+
+    #[test]
+    fn is_private_ip_hex_integer_private() {
+        assert!(is_private_ip("0x7f000001")); // 127.0.0.1
+        assert!(is_private_ip("0xa000001")); // 10.0.0.1
+    }
+
+    #[test]
+    fn is_private_ip_hex_integer_invalid() {
+        // 0x followed by non-hex — REJECT (suspicious).
+        assert!(is_private_ip("0xgggg"));
+    }
+
+    #[test]
+    fn ssrf_rejects_octal_octet_ip() {
+        // 0177.0.0.1 → glibc interprets 0177 as octal 127 → 127.0.0.1.
+        // Rust parses 0177 as decimal 177 → 177.0.0.1 (wrong).
+        // Must REJECT either way.
+        assert!(!is_ssrf_safe_url("https://0177.0.0.1/icon.png"));
+        assert!(!is_ssrf_safe_url("https://0.0.0.0177/icon.png"));
+    }
+
+    #[test]
+    fn ssrf_rejects_hex_in_octet() {
+        // 0x7f.0.0.1 → glibc interprets 0x7f as hex 127.
+        assert!(!is_ssrf_safe_url("https://0x7f.0.0.1/icon.png"));
+    }
+
+    #[test]
+    fn ssrf_rejects_ipv4_mapped_ipv6() {
+        // ::ffff:127.0.0.1 is IPv4-mapped IPv6. is_loopback() does NOT
+        // catch this. Must extract and re-check.
+        assert!(!is_ssrf_safe_url("https://[::ffff:127.0.0.1]/icon.png"));
+        assert!(!is_ssrf_safe_url("https://[::ffff:10.0.0.1]/icon.png"));
+        assert!(!is_ssrf_safe_url("https://[::ffff:192.168.1.1]/icon.png"));
+        assert!(!is_ssrf_safe_url("https://[::ffff:169.254.1.1]/icon.png"));
+    }
+
+    #[test]
+    fn is_private_ip_ipv4_mapped_ipv6_private() {
+        assert!(is_private_ip("::ffff:127.0.0.1"));
+        assert!(is_private_ip("::ffff:10.0.0.1"));
+        assert!(is_private_ip("::ffff:192.168.1.1"));
+    }
+
+    #[test]
+    fn is_private_ip_ipv4_mapped_ipv6_public() {
+        // ::ffff:8.8.8.8 is IPv4-mapped but the IPv4 is public.
+        // Still false (it's a public IP).
+        assert!(!is_private_ip("::ffff:8.8.8.8"));
+    }
+
+    #[test]
+    fn is_ssrf_safe_url_accepts_normal_hostname() {
+        assert!(is_ssrf_safe_url("https://example.com/icon.png"));
+        assert!(is_ssrf_safe_url("https://apollo.io/icon.png"));
+        assert!(is_ssrf_safe_url("https://cdn.example.com/x.png"));
+    }
+
+    #[test]
+    fn is_all_digits_helper() {
+        assert!(is_all_digits("12345"));
+        assert!(is_all_digits("0"));
+        assert!(!is_all_digits(""));
+        assert!(!is_all_digits("1a"));
+        assert!(!is_all_digits("12.34"));
+    }
+
+    #[test]
+    fn has_leading_zero_octet_helper() {
+        assert!(has_leading_zero_octet("0177.0.0.1"));
+        assert!(has_leading_zero_octet("0.0.0.0177"));
+        assert!(!has_leading_zero_octet("10.0.0.1"));
+        assert!(!has_leading_zero_octet("127.0.0.1"));
+        assert!(!has_leading_zero_octet("example.com"));
+    }
+
+    #[test]
+    fn has_hex_octet_helper() {
+        assert!(has_hex_octet("0x7f.0.0.1"));
+        assert!(has_hex_octet("0X7f.0.0.1"));
+        assert!(!has_hex_octet("127.0.0.1"));
+        assert!(!has_hex_octet("example.com"));
+        // Must NOT catch "0x" in a non-dotted hostname.
+        assert!(!has_hex_octet("example0x00.com"));
+    }
+
+    #[test]
+    fn ssrf_does_not_reject_hostname_containing_ox() {
+        // Regression: hostnames like `example0x00.com` must NOT be rejected
+        // by has_hex_octet (which only applies to dotted-quads).
+        assert!(is_ssrf_safe_url("https://example0x00.com/icon.png"));
+    }
+
+    // ── HTML link-tag discovery (extract_icon_link + extract_base_href) ─
+
+    #[test]
+    fn extract_icon_link_absolute_href() {
+        let html = r#"<html><head>
+            <link rel="icon" href="https://cdn.example.com/favicon.png">
+        </head></html>"#;
+        let url = extract_icon_link(html, "https://example.com/", "example.com");
+        assert_eq!(url.as_deref(), Some("https://cdn.example.com/favicon.png"));
+    }
+
+    #[test]
+    fn extract_icon_link_relative_href() {
+        let html = r#"<html><head>
+            <link rel="icon" href="/assets/icon.png">
+        </head></html>"#;
+        let url = extract_icon_link(html, "https://example.com/", "example.com");
+        assert_eq!(url.as_deref(), Some("https://example.com/assets/icon.png"));
+    }
+
+    #[test]
+    fn extract_icon_link_apple_touch_icon() {
+        let html = r#"<html><head>
+            <link rel="apple-touch-icon" href="/touch-icon.png">
+        </head></html>"#;
+        let url = extract_icon_link(html, "https://example.com/", "example.com");
+        assert_eq!(url.as_deref(), Some("https://example.com/touch-icon.png"));
+    }
+
+    #[test]
+    fn extract_icon_link_shortcut_icon() {
+        let html = r#"<html><head>
+            <link rel="shortcut icon" href="/shortcut.ico">
+        </head></html>"#;
+        let url = extract_icon_link(html, "https://example.com/", "example.com");
+        assert_eq!(url.as_deref(), Some("https://example.com/shortcut.ico"));
+    }
+
+    #[test]
+    fn extract_icon_link_single_quotes() {
+        let html = r#"<html><head>
+            <link rel='icon' href='/icon.png'>
+        </head></html>"#;
+        let url = extract_icon_link(html, "https://example.com/", "example.com");
+        assert_eq!(url.as_deref(), Some("https://example.com/icon.png"));
+    }
+
+    #[test]
+    fn extract_icon_link_unquoted_href() {
+        let html = r#"<html><head>
+            <link rel=icon href=/icon.png>
+        </head></html>"#;
+        let url = extract_icon_link(html, "https://example.com/", "example.com");
+        assert_eq!(url.as_deref(), Some("https://example.com/icon.png"));
+    }
+
+    #[test]
+    fn extract_icon_link_with_base_href() {
+        let html = r#"<html><head>
+            <base href="https://cdn.example.com/assets/">
+            <link rel="icon" href="icon.png">
+        </head></html>"#;
+        let base = extract_base_href(html).unwrap();
+        assert_eq!(base, "https://cdn.example.com/assets/");
+        let url = extract_icon_link(html, &base, "example.com");
+        // Relative path joins with base (base ends with /, so icon.png appends).
+        assert!(url.is_some());
+        assert!(url.unwrap().contains("icon.png"));
+    }
+
+    #[test]
+    fn extract_icon_link_protocol_relative() {
+        let html = r#"<html><head>
+            <link rel="icon" href="//cdn.example.com/icon.png">
+        </head></html>"#;
+        let url = extract_icon_link(html, "https://example.com/", "example.com");
+        assert_eq!(url.as_deref(), Some("https://cdn.example.com/icon.png"));
+    }
+
+    #[test]
+    fn extract_icon_link_no_link_tag() {
+        let html = r#"<html><head><title>No icon</title></head></html>"#;
+        let url = extract_icon_link(html, "https://example.com/", "example.com");
+        assert!(url.is_none());
+    }
+
+    #[test]
+    fn extract_icon_link_picks_first_match() {
+        // Multiple link tags — should return the first icon one.
+        let html = r#"<html><head>
+            <link rel="stylesheet" href="/style.css">
+            <link rel="icon" href="/first.png">
+            <link rel="icon" href="/second.png">
+        </head></html>"#;
+        let url = extract_icon_link(html, "https://example.com/", "example.com");
+        assert_eq!(url.as_deref(), Some("https://example.com/first.png"));
+    }
+
+    #[test]
+    fn extract_icon_link_apple_touch_icon_precomposed() {
+        let html = r#"<html><head>
+            <link rel="apple-touch-icon-precomposed" href="/precomposed.png">
+        </head></html>"#;
+        let url = extract_icon_link(html, "https://example.com/", "example.com");
+        assert_eq!(url.as_deref(), Some("https://example.com/precomposed.png"));
+    }
+
+    #[test]
+    fn extract_attr_value_double_quote() {
+        let tag = r#"<link rel="icon" href="/x.png">"#;
+        assert_eq!(extract_attr_value(tag, "href"), Some("/x.png".into()));
+        assert_eq!(extract_attr_value(tag, "rel"), Some("icon".into()));
+    }
+
+    #[test]
+    fn extract_attr_value_single_quote() {
+        let tag = r#"<link rel='icon' href='/x.png'>"#;
+        assert_eq!(extract_attr_value(tag, "href"), Some("/x.png".into()));
+    }
+
+    #[test]
+    fn extract_attr_value_missing() {
+        let tag = r#"<link rel="icon">"#;
+        assert_eq!(extract_attr_value(tag, "href"), None);
+    }
+
+    #[test]
+    fn extract_attr_value_data_href_does_not_match_href() {
+        // Regression: `href=` is a substring of `data-href=`. Word-boundary
+        // check must prevent extracting the wrong value.
+        let tag = r#"<link rel="icon" data-href="/decoy.png" href="/real.png">"#;
+        assert_eq!(extract_attr_value(tag, "href"), Some("/real.png".into()));
+    }
+
+    #[test]
+    fn extract_attr_value_spaces_around_equals() {
+        // Valid HTML5: `rel = "icon"` (whitespace around `=`).
+        let tag = r#"<link rel = "icon" href = "/x.png">"#;
+        assert_eq!(extract_attr_value(tag, "rel"), Some("icon".into()));
+        assert_eq!(extract_attr_value(tag, "href"), Some("/x.png".into()));
+    }
+
+    #[test]
+    fn extract_attr_value_data_href_only() {
+        // Only data-href present — should NOT match href.
+        let tag = r#"<link rel="icon" data-href="/decoy.png">"#;
+        assert_eq!(extract_attr_value(tag, "href"), None);
+    }
+
+    #[test]
+    fn resolve_url_absolute_https() {
+        assert_eq!(
+            resolve_url("https://cdn.example.com/x.png", "https://example.com/"),
+            Some("https://cdn.example.com/x.png".into())
+        );
+    }
+
+    #[test]
+    fn resolve_url_absolute_path() {
+        assert_eq!(
+            resolve_url("/assets/x.png", "https://example.com/"),
+            Some("https://example.com/assets/x.png".into())
+        );
+    }
+
+    #[test]
+    fn resolve_url_protocol_relative() {
+        assert_eq!(
+            resolve_url("//cdn.example.com/x.png", "https://example.com/"),
+            Some("https://cdn.example.com/x.png".into())
+        );
+    }
+
+    #[test]
+    fn resolve_url_relative_path() {
+        assert_eq!(
+            resolve_url("x.png", "https://example.com/assets"),
+            Some("https://example.com/assets/x.png".into())
+        );
+    }
+
+    // ── TTL differentiation (hit 7d, miss 1d) ──────────────────────────
+
+    #[test]
+    fn ttl_hit_is_7_days() {
+        assert_eq!(TTL_HIT_SECS, 7 * 24 * 60 * 60);
+    }
+
+    #[test]
+    fn ttl_miss_is_1_day() {
+        assert_eq!(TTL_MISS_SECS, 24 * 60 * 60);
+    }
+
+    #[test]
+    fn write_to_cache_sets_hit_ttl() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut index = CacheIndex::new();
+        let data = IconData {
+            bytes: vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+            ext: "png",
+        };
+        write_to_cache(dir.path(), "example.com", &data, &mut index).expect("write");
+        let entry = index.get("example.com").expect("entry");
+        assert_eq!(entry.ttl_secs, TTL_HIT_SECS);
+    }
+
+    #[test]
+    fn write_miss_to_cache_sets_miss_ttl() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut index = CacheIndex::new();
+        write_miss_to_cache(dir.path(), "example.com", &mut index);
+        let entry = index.get("example.com").expect("entry");
+        assert_eq!(entry.ttl_secs, TTL_MISS_SECS);
+        assert!(entry.file.is_empty());
+        assert_eq!(entry.size, 0);
+    }
+
+    #[test]
+    fn check_miss_cache_returns_true_for_fresh_miss() {
+        let mut index = CacheIndex::new();
+        index.insert(
+            "example.com".into(),
+            CacheIndexEntry {
+                file: String::new(),
+                ext: String::new(),
+                fetched_at: now_secs(),
+                size: 0,
+                ttl_secs: TTL_MISS_SECS,
+            },
+        );
+        assert!(check_miss_cache(&index, "example.com"));
+    }
+
+    #[test]
+    fn check_miss_cache_returns_false_for_expired_miss() {
+        let mut index = CacheIndex::new();
+        let old = now_secs().saturating_sub(TTL_MISS_SECS + 100);
+        index.insert(
+            "example.com".into(),
+            CacheIndexEntry {
+                file: String::new(),
+                ext: String::new(),
+                fetched_at: old,
+                size: 0,
+                ttl_secs: TTL_MISS_SECS,
+            },
+        );
+        assert!(!check_miss_cache(&index, "example.com"));
+    }
+
+    #[test]
+    fn check_miss_cache_returns_false_for_hit_entry() {
+        let mut index = CacheIndex::new();
+        index.insert(
+            "example.com".into(),
+            CacheIndexEntry {
+                file: "abc.png".into(),
+                ext: "png".into(),
+                fetched_at: now_secs(),
+                size: 100,
+                ttl_secs: TTL_HIT_SECS,
+            },
+        );
+        // A hit entry should NOT be treated as a miss.
+        assert!(!check_miss_cache(&index, "example.com"));
+    }
+
+    #[test]
+    fn check_cache_skips_miss_entries() {
+        // A miss entry (empty file) should NOT be served as a hit.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut index = CacheIndex::new();
+        index.insert(
+            "example.com".into(),
+            CacheIndexEntry {
+                file: String::new(),
+                ext: String::new(),
+                fetched_at: now_secs(),
+                size: 0,
+                ttl_secs: TTL_MISS_SECS,
+            },
+        );
+        assert!(check_cache(&index, "example.com", dir.path()).is_none());
+    }
+
     // ── resolve_plugin_icon blocklist integration ─────────────────────
 
     #[test]
@@ -791,6 +1739,7 @@ mod tests {
                 ext: "png".into(),
                 fetched_at: now_secs(),
                 size: png_bytes.len() as u64,
+                ttl_secs: TTL_HIT_SECS,
             },
         );
         save_index(dir.path(), &index);
@@ -844,6 +1793,7 @@ mod tests {
                 ext: "png".into(),
                 fetched_at: now_secs(),
                 size: png_bytes.len() as u64,
+                ttl_secs: TTL_HIT_SECS,
             },
         );
         // Also add a non-blocklisted entry that should survive.
@@ -857,6 +1807,7 @@ mod tests {
                 ext: "png".into(),
                 fetched_at: now_secs(),
                 size: png_bytes.len() as u64,
+                ttl_secs: TTL_HIT_SECS,
             },
         );
         save_index(dir.path(), &index);
@@ -889,6 +1840,7 @@ mod tests {
                 ext: "png".into(),
                 fetched_at: now_secs(),
                 size: png_bytes.len() as u64,
+                ttl_secs: TTL_HIT_SECS,
             },
         );
         // Write as v1 (plain map, no version wrapper).
@@ -912,6 +1864,7 @@ mod tests {
                 ext: "png".into(),
                 fetched_at: now_secs(),
                 size: 100,
+                ttl_secs: TTL_HIT_SECS,
             },
         );
         save_index(dir.path(), &index);
@@ -946,6 +1899,7 @@ mod tests {
                 ext: "png".into(),
                 fetched_at: now_secs(),
                 size: 100,
+                ttl_secs: TTL_HIT_SECS,
             },
         );
         save_index(dir.path(), &index);
@@ -981,6 +1935,7 @@ mod tests {
                 ext: "png".into(),
                 fetched_at: now_secs(),
                 size: png_bytes.len() as u64,
+                ttl_secs: TTL_HIT_SECS,
             },
         );
         save_index(dir.path(), &index);
@@ -1106,6 +2061,7 @@ mod tests {
                 ext: "png".into(),
                 fetched_at: now_secs(),
                 size: 100,
+                ttl_secs: TTL_HIT_SECS,
             },
         );
         save_index(dir.path(), &index);
@@ -1123,6 +2079,7 @@ mod tests {
             ext: "png".into(),
             fetched_at: now_secs(),
             size: 100,
+            ttl_secs: TTL_HIT_SECS,
         };
         // Create the file so check_cache finds it.
         std::fs::write(dir.path().join("abc.png"), b"fake png").expect("write");
@@ -1136,7 +2093,7 @@ mod tests {
     fn cache_check_expired_entry() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut index = CacheIndex::new();
-        let old = now_secs().saturating_sub(TTL_SECS + 100);
+        let old = now_secs().saturating_sub(TTL_HIT_SECS + 100);
         std::fs::write(dir.path().join("abc.png"), b"fake").expect("write");
         index.insert(
             "example.com".into(),
@@ -1145,6 +2102,7 @@ mod tests {
                 ext: "png".into(),
                 fetched_at: old,
                 size: 100,
+                ttl_secs: TTL_HIT_SECS,
             },
         );
         let result = check_cache(&index, "example.com", dir.path());
@@ -1162,6 +2120,7 @@ mod tests {
                 ext: "png".into(),
                 fetched_at: now_secs(),
                 size: 100,
+                ttl_secs: TTL_HIT_SECS,
             },
         );
         let result = check_cache(&index, "example.com", dir.path());
@@ -1205,6 +2164,7 @@ mod tests {
                 ext: "ico".into(),
                 fetched_at: now_secs(),
                 size: 3,
+                ttl_secs: TTL_HIT_SECS,
             },
         );
         // New entry: .png
@@ -1238,6 +2198,7 @@ mod tests {
                     ext: "bin".into(),
                     fetched_at: now_secs() + i, // ascending: site-0 oldest
                     size: big.len() as u64,
+                    ttl_secs: TTL_HIT_SECS,
                 },
             );
         }
@@ -1340,6 +2301,7 @@ mod tests {
                 ext: "png".into(),
                 fetched_at: now_secs(),
                 size: png_bytes.len() as u64,
+                ttl_secs: TTL_HIT_SECS,
             },
         );
         save_index(dir.path(), &index);
