@@ -90,28 +90,20 @@ pub async fn get_or_fetch_manifests() -> Result<HashMap<String, MarketplacePlugi
         match guard.as_ref() {
             // Fresh cache → return immediately (lock released on scope exit).
             Some(FetchState::Ready(cached)) if cached.fetched_at.elapsed() < TTL => {
-                eprintln!(
-                    "[verboo:manifest-cache] cache HIT (age={:.1}s, entries={})",
-                    cached.fetched_at.elapsed().as_secs_f32(),
-                    cached.entries.len()
-                );
                 Action::Return(cached.entries.clone())
             }
             // Stale cache → become leader (clear + start fetch).
             Some(FetchState::Ready(_)) => {
-                eprintln!("[verboo:manifest-cache] cache EXPIRED → becoming leader");
                 let (tx, _rx) = watch::channel(None);
                 *guard = Some(FetchState::Fetching(tx.clone()));
                 Action::LeadFetch(tx)
             }
             // Fetch in progress → become waiter.
             Some(FetchState::Fetching(tx)) => {
-                eprintln!("[verboo:manifest-cache] fetch in progress → becoming waiter");
                 Action::Wait(tx.subscribe())
             }
             // No cache → become leader.
             None => {
-                eprintln!("[verboo:manifest-cache] no cache → becoming leader");
                 let (tx, _rx) = watch::channel(None);
                 *guard = Some(FetchState::Fetching(tx.clone()));
                 Action::LeadFetch(tx)
@@ -136,19 +128,16 @@ pub async fn get_or_fetch_manifests() -> Result<HashMap<String, MarketplacePlugi
                         _ => {
                             // Leader failed or cache still stale. Fall through
                             // to a direct fetch (rare path).
-                            eprintln!("[verboo:manifest-cache] leader failed → direct fetch fallback");
                             fetch_direct().await
                         }
                     }
                 }
                 Ok(Err(_)) => {
                     // watch sender dropped (leader panicked/errored). Direct fetch.
-                    eprintln!("[verboo:manifest-cache] watch closed → direct fetch fallback");
                     fetch_direct().await
                 }
                 Err(_) => {
                     // Timeout. Direct fetch (don't hang the command).
-                    eprintln!("[verboo:manifest-cache] waiter timeout ({WAITER_TIMEOUT:?}) → direct fetch");
                     fetch_direct().await
                 }
             }
@@ -172,17 +161,12 @@ pub async fn get_or_fetch_manifests() -> Result<HashMap<String, MarketplacePlugi
                     // waiters see Err (sender closed) → they do their own fetch.
                     let _ = tx.send(Some(cached.clone()));
                     *guard = Some(FetchState::Ready(cached.clone()));
-                    eprintln!(
-                        "[verboo:manifest-cache] fetch OK (entries={}, cached for {TTL:?})",
-                        entries.len()
-                    );
                     Ok(entries)
                 }
                 Err(e) => {
                     // On error, signal waiters (None = failure) and clear state.
                     let _ = tx.send(None);
                     *guard = None;
-                    eprintln!("[verboo:manifest-cache] fetch FAILED: {e}");
                     Err(e)
                 }
             }
@@ -205,7 +189,6 @@ enum Action {
 /// out — the waiter does its own fetch without trying to cache (avoids
 /// thundering herd on failure, since failures are rare).
 async fn fetch_direct() -> Result<HashMap<String, MarketplacePluginEntry>, PluginError> {
-    eprintln!("[verboo:manifest-cache] direct fetch (no cache)");
     fetch_manifests_inner().await
 }
 
@@ -220,9 +203,6 @@ async fn fetch_manifests_inner() -> Result<HashMap<String, MarketplacePluginEntr
 pub async fn invalidate() {
     let cache_mutex = cache().await;
     let mut guard = cache_mutex.lock().await;
-    if guard.is_some() {
-        eprintln!("[verboo:manifest-cache] invalidating (marketplace changed)");
-    }
     *guard = None;
 }
 

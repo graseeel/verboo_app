@@ -146,15 +146,8 @@ pub async fn resolve_plugin_icon(
     cache_dir: PathBuf,
     load_web_icons: bool,
 ) -> Result<PluginIconResult, PluginError> {
-    eprintln!(
-        "[verboo:plugin-icon] resolve_plugin_icon called: plugin_id={plugin_id}, load_web_icons={load_web_icons}, cache_dir={}, manifests_count={}",
-        cache_dir.display(),
-        manifests.len()
-    );
-
     // Privacy toggle: if off, return None without any network request.
     if !load_web_icons {
-        eprintln!("[verboo:plugin-icon] load_web_icons=false → returning None (privacy toggle)");
         return Ok(PluginIconResult {
             icon_path: None,
             domain: None,
@@ -171,7 +164,7 @@ pub async fn resolve_plugin_icon(
     let homepage = match entry.homepage.as_deref() {
         Some(h) if !h.is_empty() => h,
         _ => {
-            eprintln!("[verboo:plugin-icon] {plugin_id} has no homepage in manifest → None");
+            // No homepage → can't fetch. Return None (FE renders monogram).
             return Ok(PluginIconResult {
                 icon_path: None,
                 domain: None,
@@ -185,16 +178,11 @@ pub async fn resolve_plugin_icon(
         exit_code: None,
     })?;
 
-    eprintln!("[verboo:plugin-icon] {plugin_id} → homepage={homepage} → domain={domain}");
-
     // Blocklist: generic code/package hosts (github.com, npmjs.com, etc.)
     // have their own branding as favicon — fetching would show dozens of
     // identical wrong icons (e.g. GitHub's octocat for every GitHub-hosted
     // plugin). Skip the fetch entirely; FE renders a monogram.
     if is_generic_host(&domain) {
-        eprintln!(
-            "[verboo:plugin-icon] {domain} is a generic code/package host → skipping fetch (monogram)"
-        );
         return Ok(PluginIconResult {
             icon_path: None,
             domain: Some(domain),
@@ -216,7 +204,6 @@ pub async fn resolve_plugin_icon(
 
     // Check cache first.
     if let Some(cached) = check_cache(&index, &domain, &cache_dir) {
-        eprintln!("[verboo:plugin-icon] cache HIT for {domain} → {}", cached.display());
         return Ok(PluginIconResult {
             icon_path: Some(cached.to_string_lossy().to_string()),
             domain: Some(domain),
@@ -224,20 +211,10 @@ pub async fn resolve_plugin_icon(
         });
     }
 
-    eprintln!("[verboo:plugin-icon] cache MISS for {domain} → fetching");
-
     // Fetch (semaphore-limited). If all paths fail, return None (not an error).
     let icon_data = match fetch_icon(&domain).await {
-        Some(data) => {
-            eprintln!(
-                "[verboo:plugin-icon] fetch OK for {domain} → {} bytes, ext={}",
-                data.bytes.len(),
-                data.ext
-            );
-            data
-        }
+        Some(data) => data,
         None => {
-            eprintln!("[verboo:plugin-icon] fetch FAILED for {domain} (all paths exhausted) → None");
             return Ok(PluginIconResult {
                 icon_path: None,
                 domain: Some(domain),
@@ -249,8 +226,6 @@ pub async fn resolve_plugin_icon(
     // Write to cache + update index + enforce LRU cap. Pass the already-loaded
     // index (no second load_index call).
     let icon_path = write_to_cache(&cache_dir, &domain, &icon_data, &mut index)?;
-
-    eprintln!("[verboo:plugin-icon] wrote cache for {domain} → {}", icon_path.display());
 
     Ok(PluginIconResult {
         icon_path: Some(icon_path.to_string_lossy().to_string()),
@@ -327,9 +302,6 @@ fn load_index(cache_dir: &Path) -> CacheIndex {
 
     // If the cache schema is outdated, drop everything (re-fetch on demand).
     if version < CACHE_VERSION {
-        eprintln!(
-            "[verboo:plugin-icon] cache version {version} < {CACHE_VERSION} → dropping all entries"
-        );
         // Best-effort: delete the old icon files.
         for entry in index.values() {
             let _ = std::fs::remove_file(cache_dir.join(&entry.file));
@@ -341,10 +313,6 @@ fn load_index(cache_dir: &Path) -> CacheIndex {
     let before = index.len();
     index.retain(|domain, entry| {
         if is_generic_host(domain) {
-            eprintln!(
-                "[verboo:plugin-icon] evicting blocklisted domain {domain} from cache (file={})",
-                entry.file
-            );
             let _ = std::fs::remove_file(cache_dir.join(&entry.file));
             false
         } else {
@@ -360,8 +328,8 @@ fn load_index(cache_dir: &Path) -> CacheIndex {
 
 /// Saves the cache index to `index.json` with the current schema version.
 /// Uses atomic write (tmp file + rename) so concurrent readers never see a
-/// half-written file. Best-effort — a write failure logs a warn but doesn't
-/// fail the icon fetch.
+/// half-written file. Best-effort — a write failure is silently ignored
+/// (the next successful write will persist the correct state).
 fn save_index(cache_dir: &Path, index: &CacheIndex) {
     let index_path = cache_dir.join("index.json");
     let tmp_path = cache_dir.join("index.json.tmp");
@@ -369,22 +337,16 @@ fn save_index(cache_dir: &Path, index: &CacheIndex) {
         version: CACHE_VERSION,
         entries: index.clone(),
     };
-    match serde_json::to_string_pretty(&versioned) {
-        Ok(raw) => {
-            // Write to tmp, then atomically rename. This prevents concurrent
-            // readers from seeing a partial write (which caused the migration
-            // to re-run and drop entries).
-            if let Err(e) = std::fs::write(&tmp_path, &raw) {
-                eprintln!("[verboo:plugin-icon] failed to write index tmp: {e}");
-                return;
-            }
-            if let Err(e) = std::fs::rename(&tmp_path, &index_path) {
-                eprintln!("[verboo:plugin-icon] failed to rename index: {e}");
+    if let Ok(raw) = serde_json::to_string_pretty(&versioned) {
+        // Write to tmp, then atomically rename. This prevents concurrent
+        // readers from seeing a partial write (which caused the migration
+        // to re-run and drop entries).
+        if std::fs::write(&tmp_path, &raw).is_ok() {
+            if std::fs::rename(&tmp_path, &index_path).is_err() {
                 // Clean up the tmp file on rename failure.
                 let _ = std::fs::remove_file(&tmp_path);
             }
         }
-        Err(e) => eprintln!("[verboo:plugin-icon] failed to serialize index: {e}"),
     }
 }
 
@@ -524,36 +486,20 @@ async fn semaphore() -> &'static Arc<Semaphore> {
 /// `/favicon.ico`. Returns `None` if all paths fail (network error, 404,
 /// invalid content type, too large, etc.). HTTPS only.
 async fn fetch_icon(domain: &str) -> Option<IconData> {
-    eprintln!("[verboo:plugin-icon] fetch_icon start for {domain}");
+    let _permit = semaphore().await.acquire().await.ok()?;
 
-    let _permit = match semaphore().await.acquire().await {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("[verboo:plugin-icon] semaphore acquire failed: {e}");
-            return None;
-        }
-    };
-
-    let client = match reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
         .redirect(reqwest::redirect::Policy::limited(3))
         .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("[verboo:plugin-icon] reqwest client build failed: {e}");
-            return None;
-        }
-    };
+        .ok()?;
 
     for path in ICON_PATHS {
         let url = format!("https://{domain}{path}");
-        eprintln!("[verboo:plugin-icon] trying {url}");
         match client.get(&url).send().await {
             Ok(resp) => {
                 let status = resp.status();
                 if !status.is_success() {
-                    eprintln!("[verboo:plugin-icon] {url} → HTTP {status}");
                     continue;
                 }
                 let content_type = resp
@@ -562,40 +508,21 @@ async fn fetch_icon(domain: &str) -> Option<IconData> {
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("")
                     .to_string();
-                eprintln!("[verboo:plugin-icon] {url} → {status}, content-type={content_type}");
                 let bytes = match resp.bytes().await {
                     Ok(b) => b.to_vec(),
-                    Err(e) => {
-                        eprintln!("[verboo:plugin-icon] {url} bytes read failed: {e}");
-                        continue;
-                    }
+                    Err(_) => continue,
                 };
-                eprintln!("[verboo:plugin-icon] {url} → {} bytes", bytes.len());
                 if bytes.len() > MAX_ICON_BYTES {
-                    eprintln!(
-                        "[verboo:plugin-icon] {url} too large ({} bytes > {MAX_ICON_BYTES})",
-                        bytes.len()
-                    );
                     continue;
                 }
                 match validate_icon(&bytes, &content_type) {
-                    Some(ext) => {
-                        eprintln!("[verboo:plugin-icon] {url} validated as {ext}");
-                        return Some(IconData { bytes, ext });
-                    }
-                    None => {
-                        eprintln!("[verboo:plugin-icon] {url} rejected by validate_icon (magic bytes mismatch)");
-                        continue;
-                    }
+                    Some(ext) => return Some(IconData { bytes, ext }),
+                    None => continue,
                 }
             }
-            Err(e) => {
-                eprintln!("[verboo:plugin-icon] {url} send failed: {e}");
-                continue;
-            }
+            Err(_) => continue,
         }
     }
-    eprintln!("[verboo:plugin-icon] all paths exhausted for {domain}");
     None
 }
 
@@ -634,7 +561,6 @@ pub(crate) fn validate_icon(bytes: &[u8], _content_type: &str) -> Option<&'stati
     let preview = &bytes[..bytes.len().min(512)];
     let preview_str = String::from_utf8_lossy(preview).to_lowercase();
     if preview_str.contains("<svg") || preview_str.contains("<?xml") {
-        eprintln!("[verboo:plugin-icon] rejected SVG (script risk)");
         return None;
     }
     None

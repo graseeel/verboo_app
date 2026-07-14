@@ -1398,14 +1398,11 @@ async fn plugin_icon(
     settings_store: tauri::State<'_, services::settings_store::SettingsStore>,
     plugin_id: String,
 ) -> Result<services::plugin_icon_service::PluginIconResult, models::plugins::PluginError> {
-    eprintln!("[verboo:plugin-icon] command invoked: plugin_id={plugin_id}");
-
     // Read the loadWebIcons toggle. If false, return None without network.
     let load_web_icons = settings_store
         .get()
         .map(|s| s.load_web_icons)
         .unwrap_or(true);
-    eprintln!("[verboo:plugin-icon] load_web_icons={load_web_icons}");
 
     // Resolve cache dir: <app_data_dir>/cache/plugin-icons/
     let app_data_dir = app
@@ -1416,14 +1413,11 @@ async fn plugin_icon(
             exit_code: None,
         })?;
     let cache_dir = app_data_dir.join("cache").join("plugin-icons");
-    eprintln!("[verboo:plugin-icon] cache_dir={}", cache_dir.display());
 
     // Fetch marketplace manifests via the in-memory cache (TTL 60s +
     // single-flight). This avoids spawning the CLI on every request —
     // 83 concurrent requests share 1 fetch.
-    eprintln!("[verboo:plugin-icon] getting manifests (cached)...");
     let manifests = services::manifest_cache::get_or_fetch_manifests().await?;
-    eprintln!("[verboo:plugin-icon] manifests: {} entries", manifests.len());
 
     services::plugin_icon_service::resolve_plugin_icon(
         &plugin_id,
