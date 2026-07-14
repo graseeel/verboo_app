@@ -13,6 +13,28 @@ type PluginsViewProps = {
   onClose: () => void
 }
 
+// Map a PluginError kind to a catalog-specific i18n key. The generic
+// describePluginError() returns PT-BR hardcoded copy; this helper respects
+// the active locale and gives a message scoped to the catalog fetch (not a
+// generic "check your connection" for every error kind — parse/unknown get
+// "invalid data", timeout gets "took too long", network gets connection).
+function catalogErrorMessage(err: PluginError, t: (key: string) => string): string {
+  switch (err.kind) {
+    case 'network_error':
+      return t('plugins.catalogError.network')
+    case 'parse_error':
+      return t('plugins.catalogError.parse')
+    case 'timeout':
+      return t('plugins.catalogError.timeout')
+    default:
+      // cli_not_found, cli_auth_required, invalid_plugin, already_installed,
+      // not_installed, unknown — all fall back to the "invalid data" copy
+      // since they're not network/timeout and the catalog endpoint returned
+      // something we couldn't use.
+      return t('plugins.catalogError.unknown')
+  }
+}
+
 // Plugins marketplace view. Loads real data from the CLI via the Tauri
 // bridge (pluginList + marketplaceList in parallel, then pluginAvailable
 // which is slower and shows skeletons). Install/enable/disable/uninstall/
@@ -248,11 +270,13 @@ export function PluginsView({ onClose }: PluginsViewProps) {
             </>
           ) : availableError ? (
             // Catalog fetch failed but installed plugins are showing — scoped
-            // empty state with retry, NOT a full-page error banner.
+            // empty state with retry, NOT a full-page error banner. Message is
+            // kind-specific: network → connection, parse/unknown → invalid data,
+            // timeout → took too long.
             <div className="plugins-empty">
               <div className="plugins-empty-icon"><AlertTriangle size={22} /></div>
               <p className="plugins-empty-title">{t('plugins.catalogError')}</p>
-              <p className="plugins-empty-body">{t('plugins.catalogErrorBody')}</p>
+              <p className="plugins-empty-body">{catalogErrorMessage(availableError, t)}</p>
               <button type="button" className="ghost-button" onClick={() => void refreshAll()}>
                 {t('plugins.retry')}
               </button>

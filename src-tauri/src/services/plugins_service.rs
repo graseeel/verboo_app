@@ -17,7 +17,8 @@ use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 
 use crate::models::plugins::{
-    Marketplace, Plugin, PluginAvailablePayload, PluginError, PluginScope, PluginValidateResult,
+    AvailablePlugin, Marketplace, Plugin, PluginAvailablePayload, PluginError, PluginScope,
+    PluginValidateResult,
 };
 use crate::services::cli_spawn::CliSpawn;
 
@@ -44,10 +45,42 @@ pub async fn plugin_list() -> Result<Vec<Plugin>, PluginError> {
 ///
 /// Slower than `plugin_list` because the CLI fetches marketplace manifests
 /// to populate the `available[]` half of the payload. Read-only.
+///
+/// Tolerant parsing: the `available[]` half is parsed item-by-item so a
+/// single malformed row (e.g. a marketplace manifest with a missing
+/// `installCount` or an unknown `source` shape) does NOT fail the entire
+/// catalog. Invalid rows are skipped with a warn log. The `installed[]`
+/// half is parsed normally (it's the CLI's own state, not third-party
+/// manifests, so it's trusted).
 pub async fn plugin_available() -> Result<PluginAvailablePayload, PluginError> {
     let raw = run_cli_json(&["plugin", "list", "--json", "--available"], 30).await?;
-    let mut payload: PluginAvailablePayload =
+    // Parse as generic Value first so we can deserialize each `available[]`
+    // item individually without failing the whole payload.
+    let value: serde_json::Value =
         parse_json(&raw).map_err(|e| parse_err(&raw, &e))?;
+
+    // Installed half — trusted, parse normally.
+    let installed: Vec<Plugin> = value
+        .get("installed")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            // Deserialize the whole array at once — installed rows are the
+            // CLI's own state and should be well-formed. If they're not,
+            // we want a hard parse_error (something is fundamentally wrong).
+            serde_json::from_value::<Vec<Plugin>>(serde_json::Value::Array(arr.clone()))
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
+    // Available half — untrusted (third-party marketplace manifests).
+    // Parse item-by-item so one bad row doesn't fail the catalog.
+    let available: Vec<AvailablePlugin> = value
+        .get("available")
+        .and_then(|v| v.as_array())
+        .map(|arr| parse_available_items_tolerant(arr))
+        .unwrap_or_default();
+
+    let mut payload = PluginAvailablePayload { installed, available };
     // The CLI's `--available` payload omits `name` on installed rows — fill
     // from `id`. Available rows already carry `name` from the marketplace
     // manifest, so we only touch the `installed` half.
@@ -55,6 +88,29 @@ pub async fn plugin_available() -> Result<PluginAvailablePayload, PluginError> {
         p.fill_name_from_id();
     }
     Ok(payload)
+}
+
+/// Parses `available[]` items one-by-one, skipping invalid rows with a warn
+/// log. Returns the successfully-parsed items in original order. A row is
+/// "invalid" if it's missing a required field (e.g. `pluginId`) or has a
+/// shape we can't deserialize. This prevents a single malformed marketplace
+/// manifest from failing the entire catalog (spec §2.3 forward-compat).
+fn parse_available_items_tolerant(arr: &[serde_json::Value]) -> Vec<AvailablePlugin> {
+    let mut out = Vec::with_capacity(arr.len());
+    for (idx, item) in arr.iter().enumerate() {
+        match serde_json::from_value::<AvailablePlugin>(item.clone()) {
+            Ok(p) => out.push(p),
+            Err(e) => {
+                // Log warn with the row index + error + a preview of the
+                // raw row. Don't fail the whole catalog — skip and continue.
+                let preview = truncate_str(&item.to_string(), 200);
+                eprintln!(
+                    "[verboo:plugins] skipping malformed available[{idx}]: {e} | row={preview}"
+                );
+            }
+        }
+    }
+    out
 }
 
 /// 3. `plugin_install(id, scope)` → `verboo plugin install <id> --scope <scope>` (60 s).
@@ -839,7 +895,9 @@ pub(crate) fn derive_marketplace_name(source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::plugins::{AvailablePlugin, PluginScope, PluginSource, PluginSourceObject};
+    use crate::models::plugins::{
+        AvailablePlugin, PluginScope, PluginSource, PluginSourceObject,
+    };
 
     // ── strip_ansi (spec §8.1) ──────────────────────────────────────────
 
@@ -918,6 +976,103 @@ mod tests {
         let raw = "\u{1b}[?2026h\n\u{1b}[?2026lnot json at all\u{1b}[?2026l";
         let stripped = strip_ansi(raw);
         assert_eq!(stripped, "not json at all");
+    }
+
+    // ── parse_available_items_tolerant (catalog resilience) ───────────
+
+    #[test]
+    fn parse_available_items_tolerant_skips_invalid_rows() {
+        // Regression: 1 bad row (missing `pluginId`) + 1 good row →
+        // returns 1. The catalog must NOT fail entirely for 1 bad row.
+        let arr = vec![
+            // Bad row: missing pluginId (required field).
+            serde_json::json!({
+                "name": "bad",
+                "description": "d",
+                "marketplaceName": "m",
+                "source": "./",
+                "installCount": 0
+            }),
+            // Good row.
+            serde_json::json!({
+                "pluginId": "good@m",
+                "name": "good",
+                "description": "d",
+                "marketplaceName": "m",
+                "source": "./",
+                "installCount": 5
+            }),
+        ];
+        let parsed = parse_available_items_tolerant(&arr);
+        assert_eq!(parsed.len(), 1, "expected 1 good row, got {parsed:?}");
+        assert_eq!(parsed[0].plugin_id, "good@m");
+        assert_eq!(parsed[0].install_count, 5);
+    }
+
+    #[test]
+    fn parse_available_items_tolerant_all_good() {
+        let arr = vec![
+            serde_json::json!({
+                "pluginId": "a@m",
+                "name": "a",
+                "description": "d",
+                "marketplaceName": "m",
+                "source": "./",
+                "installCount": 10
+            }),
+            serde_json::json!({
+                "pluginId": "b@m",
+                "name": "b",
+                "description": "d",
+                "marketplaceName": "m",
+                "source": "./"
+            }),
+        ];
+        let parsed = parse_available_items_tolerant(&arr);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].plugin_id, "a@m");
+        assert_eq!(parsed[1].plugin_id, "b@m");
+        assert_eq!(parsed[1].install_count, 0); // default
+    }
+
+    #[test]
+    fn parse_available_items_tolerant_all_bad_returns_empty() {
+        // All rows invalid → empty vec (not an error). The catalog shows
+        // "no plugins available" rather than a parse_error.
+        let arr = vec![
+            serde_json::json!({"name": "bad1"}),
+            serde_json::json!({"foo": "bar"}),
+            serde_json::json!(null),
+        ];
+        let parsed = parse_available_items_tolerant(&arr);
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn parse_available_items_tolerant_empty_input() {
+        let arr: Vec<serde_json::Value> = vec![];
+        let parsed = parse_available_items_tolerant(&arr);
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn parse_available_items_tolerant_preserves_order() {
+        // Successfully-parsed rows must preserve original CLI order.
+        let arr = vec![
+            serde_json::json!({
+                "pluginId": "first@m", "name": "first", "description": "d",
+                "marketplaceName": "m", "source": "./", "installCount": 1
+            }),
+            serde_json::json!({"bad": "row"}),
+            serde_json::json!({
+                "pluginId": "third@m", "name": "third", "description": "d",
+                "marketplaceName": "m", "source": "./", "installCount": 3
+            }),
+        ];
+        let parsed = parse_available_items_tolerant(&arr);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].plugin_id, "first@m");
+        assert_eq!(parsed[1].plugin_id, "third@m");
     }
 
     // ── map_cli_error (spec §4) ────────────────────────────────────────

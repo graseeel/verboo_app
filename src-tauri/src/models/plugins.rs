@@ -154,6 +154,12 @@ pub struct PluginAvailablePayload {
 /// because the CLI's `--available` row has a different shape: keyed by
 /// `pluginId` (same `name@marketplace` form), carries `marketplaceName`,
 /// `source`, `installCount`, but no `installPath` (not installed).
+///
+/// `install_count` and `description` default when the CLI omits them —
+/// real CLI 0.13 payloads have ~12 plugins without `installCount`
+/// (superpowers, mattpocock, verboo-test, notion, etc.). Without defaults,
+/// serde fails the entire `Vec<AvailablePlugin>` → parse_error → FE shows
+/// "Verifique sua conexão" (wrong; network is fine).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AvailablePlugin {
@@ -161,11 +167,17 @@ pub struct AvailablePlugin {
     pub plugin_id: String,
     /// Bare name without `@marketplace`.
     pub name: String,
+    /// Defaults to empty when the CLI omits it (some marketplace manifests
+    /// don't include a description).
+    #[serde(default)]
     pub description: String,
     pub marketplace_name: String,
     /// Discriminated union (git-subdir / git / url / github / npm / local)
     /// with a `String` fallback for the CLI's relative-path shorthand.
     pub source: PluginSource,
+    /// Defaults to 0 when the CLI omits it — ~12 plugins in real CLI 0.13
+    /// payloads lack `installCount` (superpowers, mattpocock, etc.).
+    #[serde(default)]
     pub install_count: u64,
 }
 
@@ -602,6 +614,84 @@ mod tests {
             }
             other => panic!("expected GitSubdir, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn available_plugin_parses_without_install_count() {
+        // Regression: ~12 plugins in real CLI 0.13 payloads omit
+        // `installCount` (superpowers, mattpocock, verboo-test, notion).
+        // Without `#[serde(default)]`, serde failed the entire
+        // `Vec<AvailablePlugin>` → parse_error → FE showed "Verifique sua
+        // conexão" (wrong; network was fine).
+        let raw = r#"{
+            "pluginId": "superpowers@obra-superpowers-marketplace",
+            "name": "superpowers",
+            "description": "Superpowers skill marketplace",
+            "marketplaceName": "obra-superpowers-marketplace",
+            "source": "./"
+        }"#;
+        let a: AvailablePlugin = serde_json::from_str(raw).expect("parse");
+        assert_eq!(a.plugin_id, "superpowers@obra-superpowers-marketplace");
+        assert_eq!(a.name, "superpowers");
+        assert_eq!(a.install_count, 0); // default
+        // Source "./" is a bare string → Shorthand fallback.
+        assert!(matches!(a.source, PluginSource::Shorthand(_)));
+    }
+
+    #[test]
+    fn available_plugin_parses_without_description() {
+        // Some marketplace manifests omit `description`.
+        let raw = r#"{
+            "pluginId": "p@m",
+            "name": "p",
+            "marketplaceName": "m",
+            "source": "./",
+            "installCount": 5
+        }"#;
+        let a: AvailablePlugin = serde_json::from_str(raw).expect("parse");
+        assert_eq!(a.description, ""); // default
+        assert_eq!(a.install_count, 5);
+    }
+
+    #[test]
+    fn available_plugin_parses_mattpocock_real_shape() {
+        // Real-ish fixture from mattpocock marketplace: source "./",
+        // no installCount. This is the exact shape that broke the catalog.
+        let raw = r#"{
+            "pluginId": "some-plugin@mattpocock-plugins",
+            "name": "some-plugin",
+            "description": "A plugin",
+            "marketplaceName": "mattpocock-plugins",
+            "source": "./"
+        }"#;
+        let a: AvailablePlugin = serde_json::from_str(raw).expect("parse");
+        assert_eq!(a.install_count, 0);
+        assert!(matches!(a.source, PluginSource::Shorthand(s) if s == "./"));
+    }
+
+    #[test]
+    fn available_plugin_parses_git_subdir_without_ref() {
+        // Edge case: git-subdir source without `ref`. The PluginSource
+        // enum requires `ref_` — this should FAIL to parse (fall through
+        // to Raw via the untagged outer enum). Confirm it doesn't explode.
+        let raw = r#"{
+            "pluginId": "p@m",
+            "name": "p",
+            "description": "d",
+            "marketplaceName": "m",
+            "source": {
+                "source": "git-subdir",
+                "url": "https://github.com/o/r.git",
+                "path": "plugins/p",
+                "sha": "abc123"
+            },
+            "installCount": 0
+        }"#;
+        // Without `ref`, the GitSubdir arm fails. The untagged outer enum
+        // tries Object (fails: missing ref) → Shorthand (fails: not a string)
+        // → Raw (succeeds: catches the whole object).
+        let a: AvailablePlugin = serde_json::from_str(raw).expect("parse");
+        assert!(matches!(a.source, PluginSource::Raw(_)));
     }
 
     #[test]
