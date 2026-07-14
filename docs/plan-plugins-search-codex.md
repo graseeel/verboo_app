@@ -9,10 +9,10 @@
 > **Alternativa aceita (secundária):** mover search para logo acima do "Novo chat" na sidebar.
 > Pin/collapse continua na row Novo chat (sem mudança).
 
-> **STATUS — Wave 1 EM CURSO (Gabriel GO 2026-07-13):**
-> - **Wave 1 (agora):** P0 Kratos spec + Ciri FE chrome (search modal + item Plugins + placeholder view)
-> - **Wave 2 (depois do gate P0):** Geralt backend P5
-> - **Wave 3:** Ciri PluginsView real P6
+> **STATUS (2026-07-13):**
+> - **Wave 1 DONE** (Gabriel validated) — P0 Kratos spec + Ciri FE chrome (search modal + item Plugins + placeholder view)
+> - **Wave 2 IN PROGRESS** — Geralt P5 backend
+> - **Wave 3 pending** — Ciri PluginsView real P6
 
 **LOCKED:** Plugins item na sidebar → view dedicada fullscreen; Search fica na sidebar (item "Pesquisar" abre modal CommandPalette, sem input inline); Pin/collapse mantido na row Novo chat; Backend REAL via CLI 0.13; UI Verboo clean/minimal/animada (inspirar Codex).
 
