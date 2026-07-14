@@ -471,7 +471,29 @@ pub(crate) fn map_cli_error(
         }
     }
 
-    // 3. Validate-error marker (spec §4 rule 5 — BEFORE already/not-installed).
+    // 3. Marketplace-command failures — check BEFORE validate-marker because
+    // CLI 0.13 emits `✘` on ANY failure (not just validate), so a marketplace
+    // add/remove failure gets misclassified as InvalidPlugin with empty errors.
+    // Spec §4: marketplace_* failures are operational (not schema validation),
+    // so they surface as Unknown with the full CLI message truncated.
+    // Markers verified against CLI 0.13.0 (2026-07-13).
+    for needle in &[
+        "failed to add marketplace",
+        "failed to remove marketplace",
+        "marketplace file not found",
+        "marketplace not found",
+        "failed to fetch marketplace",
+    ] {
+        if lower.contains(needle) {
+            let (message, _) = pick_unknown_message(stdout, stderr);
+            return PluginError::Unknown {
+                message: truncate_str(message.trim(), 500),
+                exit_code,
+            };
+        }
+    }
+
+    // 4. Validate-error marker (spec §4 rule 5 — BEFORE already/not-installed).
     // The `✘` / "Validation failed" markers are unambiguous for validate
     // output; checking them first prevents a validate output that happens
     // to mention "already installed" from being misclassified.
@@ -484,14 +506,14 @@ pub(crate) fn map_cli_error(
         };
     }
 
-    // 4. Already-installed — `plugin` name parsed from message if possible.
+    // 5. Already-installed — `plugin` name parsed from message if possible.
     if lower.contains("already installed") || lower.contains("is already installed") {
         return PluginError::AlreadyInstalled {
             plugin: parse_plugin_token(&combined).unwrap_or_else(|| "unknown".into()),
         };
     }
 
-    // 5. Not-installed — same plugin-token parse.
+    // 6. Not-installed — same plugin-token parse.
     if lower.contains("not installed")
         || lower.contains("is not installed")
         || lower.contains("cannot find plugin")
@@ -501,7 +523,7 @@ pub(crate) fn map_cli_error(
         };
     }
 
-    // 6. Fall-through: Unknown. Use stderr if present, else stdout.
+    // 7. Fall-through: Unknown. Use stderr if present, else stdout.
     let (message, _) = pick_unknown_message(stdout, stderr);
     PluginError::Unknown {
         message: truncate_str(message.trim(), 500),
@@ -986,6 +1008,64 @@ mod tests {
         assert!(
             matches!(e, PluginError::InvalidPlugin { .. }),
             "expected InvalidPlugin, got {e:?}"
+        );
+    }
+
+    #[test]
+    fn map_cli_error_marketplace_add_failure_classifies_unknown() {
+        // Regression: CLI 0.13 emits `✘` on ANY failure (not just validate),
+        // so a marketplace add failure was misclassified as InvalidPlugin
+        // with empty errors. The marketplace-marker check must run BEFORE
+        // the validate-marker check.
+        // Real fixture: user tried to add a GitHub repo that is NOT a
+        // marketplace (no marketplace.json). CLI exits 1 with this stderr.
+        let stderr = "✘ Failed to add marketplace: Marketplace file not found at https://github.com/barvian/number-flow/blob/main/marketplace.json\n";
+        let e = map_cli_error(Some(1), "", stderr, "verboo plugin marketplace add".into());
+        match e {
+            PluginError::Unknown { message, exit_code } => {
+                assert_eq!(exit_code, Some(1));
+                assert!(message.contains("Failed to add marketplace"));
+                assert!(message.contains("Marketplace file not found"));
+            }
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_cli_error_marketplace_add_failure_without_x_marker() {
+        // Same failure but without the `✘` prefix (CLI version drift).
+        // Must still classify as Unknown, not InvalidPlugin.
+        let stderr = "Failed to add marketplace: Marketplace file not found at /path/marketplace.json\n";
+        let e = map_cli_error(Some(1), "", stderr, "verboo plugin marketplace add".into());
+        match e {
+            PluginError::Unknown { message, .. } => {
+                assert!(message.contains("Failed to add marketplace"));
+            }
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_cli_error_marketplace_remove_failure_classifies_unknown() {
+        let stderr = "✘ Failed to remove marketplace: marketplace not found: nonexistent\n";
+        let e = map_cli_error(Some(1), "", stderr, "verboo plugin marketplace remove".into());
+        match e {
+            PluginError::Unknown { message, .. } => {
+                assert!(message.contains("Failed to remove marketplace"));
+            }
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_cli_error_marketplace_failure_precedence_over_validate_marker() {
+        // A marketplace failure that ALSO contains `✘` must classify as
+        // Unknown (marketplace operational error), NOT InvalidPlugin.
+        let stderr = "✘ Failed to add marketplace: Marketplace file not found\n✘ Validation failed\n";
+        let e = map_cli_error(Some(1), "", stderr, "verboo plugin marketplace add".into());
+        assert!(
+            matches!(e, PluginError::Unknown { .. }),
+            "expected Unknown, got {e:?}"
         );
     }
 

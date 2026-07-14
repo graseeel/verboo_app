@@ -12,6 +12,10 @@ type PluginsState = {
   loading: LoadingState
   availableLoading: boolean
   error?: PluginError
+  // Separate error for the available-catalog fetch. Non-fatal: if installed
+  // plugins loaded fine, we show this only in the Featured section empty
+  // state (with a retry) rather than a full-page error banner.
+  availableError?: PluginError
   // Plugin ids that were updated and need an app restart to take effect.
   // Persisted to localStorage so the banner survives reloads.
   pendingRestartPluginIds: Set<string>
@@ -48,6 +52,7 @@ export function usePlugins() {
     loading: 'idle',
     availableLoading: false,
     pendingRestartPluginIds: loadPendingRestart(),
+    availableError: undefined,
   })
   // Track in-flight mutations so the UI can show per-card spinners and avoid
   // double-dispatch on rapid clicks.
@@ -65,17 +70,17 @@ export function usePlugins() {
       setState(prev => ({ ...prev, installed, marketplaces, loading: 'success' }))
       // plugin_available is slow — kick it off after the fast reads resolve
       // so the Installed section renders immediately.
-      setState(prev => ({ ...prev, availableLoading: true }))
+      setState(prev => ({ ...prev, availableLoading: true, availableError: undefined }))
       try {
         const payload = await window.verboo.pluginAvailable()
         setState(prev => ({ ...prev, available: payload.available, availableLoading: false }))
       } catch (err) {
         // available failing is non-fatal — Installed section still works.
-        setState(prev => ({ ...prev, availableLoading: false }))
-        if (isPluginError(err)) {
-          // Only surface as error if we have no installed plugins either.
-          setState(prev => prev.installed.length === 0 ? { ...prev, error: err } : prev)
-        }
+        // Store as availableError so the Featured section can show a scoped
+        // empty state + retry, rather than a full-page error banner that
+        // would hide the already-loaded Installed plugins.
+        const pluginErr = isPluginError(err) ? err : { kind: 'unknown', message: String(err) } as PluginError
+        setState(prev => ({ ...prev, availableLoading: false, availableError: pluginErr }))
       }
     } catch (err) {
       setState(prev => ({ ...prev, loading: 'error', error: isPluginError(err) ? err : { kind: 'unknown', message: String(err) } }))

@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowLeft, Blocks, Loader2, RefreshCw, Search, Store } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Blocks, RefreshCw, Search, Store } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import type { AvailablePlugin, Plugin, PluginError, PluginScope } from '../../../shared/plugins'
 import { describePluginError } from '../../../shared/plugins'
@@ -27,6 +27,7 @@ export function PluginsView({ onClose }: PluginsViewProps) {
     loading,
     availableLoading,
     error,
+    availableError,
     pendingRestartPluginIds,
     refreshAll,
     install,
@@ -245,11 +246,22 @@ export function PluginsView({ onClose }: PluginsViewProps) {
                 ))}
               </div>
             </>
+          ) : availableError ? (
+            // Catalog fetch failed but installed plugins are showing — scoped
+            // empty state with retry, NOT a full-page error banner.
+            <div className="plugins-empty">
+              <div className="plugins-empty-icon"><AlertTriangle size={22} /></div>
+              <p className="plugins-empty-title">{t('plugins.catalogError')}</p>
+              <p className="plugins-empty-body">{t('plugins.catalogErrorBody')}</p>
+              <button type="button" className="ghost-button" onClick={() => void refreshAll()}>
+                {t('plugins.retry')}
+              </button>
+            </div>
           ) : filteredAvailable.length === 0 ? (
             normalizedQuery && installed.length > 0 ? null : (
               <div className="plugins-empty">
-                <div className="plugins-empty-icon"><Loader2 size={22} className="t-spin" /></div>
-                <p className="plugins-empty-title">{t('plugins.connecting')}</p>
+                <div className="plugins-empty-icon"><Blocks size={24} /></div>
+                <p className="plugins-empty-title">{t('plugins.loadingCatalog')}</p>
                 <p className="plugins-empty-body">{t('plugins.empty')}</p>
               </div>
             )
