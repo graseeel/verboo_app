@@ -1338,6 +1338,52 @@ async fn marketplace_remove(
     services::plugins_service::marketplace_remove(name).await
 }
 
+/// 12. `plugin_detail(id)` — rich detail for an installed plugin.
+/// Reads `.claude-plugin/plugin.json` (author, homepage, version, license,
+/// keywords) and walks `skills/*/SKILL.md` (name + description per skill).
+/// The CLI's `plugin list --json` omits these fields; this command fills
+/// the gap for Codex parity.
+#[tauri::command]
+async fn plugin_detail(
+    id: String,
+) -> Result<services::plugin_detail_service::PluginDetail, models::plugins::PluginError> {
+    // Fetch the installed plugin row from the CLI, then enrich it.
+    let plugins = services::plugins_service::plugin_list().await?;
+    let plugin = plugins
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| models::plugins::PluginError::NotInstalled { plugin: id.clone() })?;
+    services::plugin_detail_service::build_plugin_detail(plugin)
+}
+
+/// 13. `plugin_skills(id)` — list of skills for an installed plugin.
+/// Walks `skills/*/SKILL.md` and parses frontmatter (name + description).
+/// Plugin without skills = empty list.
+#[tauri::command]
+async fn plugin_skills(
+    id: String,
+) -> Result<Vec<services::plugin_detail_service::PluginSkill>, models::plugins::PluginError> {
+    let plugins = services::plugins_service::plugin_list().await?;
+    let plugin = plugins
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| models::plugins::PluginError::NotInstalled { plugin: id.clone() })?;
+    let detail = services::plugin_detail_service::build_plugin_detail(plugin)?;
+    Ok(detail.skills)
+}
+
+/// 14. `marketplace_manifests()` — rich per-plugin metadata from all
+/// marketplaces' `.claude-plugin/marketplace.json` files. Returns a map
+/// keyed by `pluginId` (`name@marketplaceName`) with category, author,
+/// homepage, description, version, keywords, tags. The FE merges this
+/// with the CLI's `--available` JSON to reach Codex parity.
+#[tauri::command]
+async fn marketplace_manifests(
+) -> Result<std::collections::HashMap<String, services::marketplace_manifest_service::MarketplacePluginEntry>, models::plugins::PluginError> {
+    let marketplaces = services::plugins_service::marketplace_list().await?;
+    Ok(services::marketplace_manifest_service::read_all_manifests(&marketplaces))
+}
+
 // ════════════════════════════════════════════════════════════════════
 // App entry point
 // ════════════════════════════════════════════════════════════════════
@@ -1658,6 +1704,10 @@ pub fn run() {
             marketplace_list,
             marketplace_add,
             marketplace_remove,
+            // Plugins — rich detail (Wave 2 P5+)
+            plugin_detail,
+            plugin_skills,
+            marketplace_manifests,
         ])
         .run(tauri::generate_context!())
         .expect("error while running verboo-desktop");

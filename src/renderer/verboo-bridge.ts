@@ -55,9 +55,12 @@ import type {
 
 import type {
   Marketplace,
+  MarketplaceManifestMap,
   Plugin,
   PluginAvailablePayload,
+  PluginDetail,
   PluginScope,
+  PluginSkill,
   PluginValidateResult,
 } from '../shared/plugins'
 
@@ -374,6 +377,16 @@ const api = {
     invoke<Marketplace>('marketplace_add', { source, scope }),
   marketplaceRemove: (name: string) =>
     invoke<void>('marketplace_remove', { name }),
+
+  // ── Plugins — rich detail (Wave 2 P5+ — Codex parity) ──────────
+  // These read on-disk manifests the CLI's `--available` JSON discards:
+  // category, author, homepage, skills list, license, keywords.
+  pluginDetail: (id: string) =>
+    invoke<PluginDetail>('plugin_detail', { id }),
+  pluginSkills: (id: string) =>
+    invoke<PluginSkill[]>('plugin_skills', { id }),
+  marketplaceManifests: () =>
+    invoke<MarketplaceManifestMap>('marketplace_manifests'),
 }
 
 // ── Expose on window (Tauri only) ──────────────────────────────

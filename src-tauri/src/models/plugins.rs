@@ -298,7 +298,7 @@ pub struct PluginValidateResult {
 // PluginError (9 variants)
 // ════════════════════════════════════════════════════════════════════
 
-/// 9-variant error union. Internal tag (`#[serde(tag = "kind")]`) so the
+/// 10-variant error union. Internal tag (`#[serde(tag = "kind")]`) so the
 /// FE can `switch (error.kind)` like a TypeScript discriminated union.
 /// Variants ordered by the mapping table in spec §4 — most-specific first.
 ///
@@ -330,6 +330,14 @@ pub enum PluginError {
         #[serde(skip_serializing_if = "Option::is_none")]
         warnings: Option<Vec<String>>,
     },
+    /// A marketplace repo/source is missing `.claude-plugin/marketplace.json`
+    /// — the source is not a valid marketplace (e.g. user tried to add a
+    /// regular GitHub repo). Distinct from `InvalidPlugin` (schema-invalid
+    /// plugin manifest) and `Unknown` (operational failure). Surfaced when
+    /// the CLI's `marketplace add` fails with "Marketplace file not found"
+    /// OR when the manifest_service cannot locate the manifest on disk.
+    #[serde(rename_all = "camelCase")]
+    InvalidMarketplace { message: String },
     /// Stderr indicated the plugin is already installed.
     #[serde(rename_all = "camelCase")]
     AlreadyInstalled { plugin: String },
@@ -363,6 +371,9 @@ impl std::fmt::Display for PluginError {
             }
             PluginError::InvalidPlugin { errors, .. } => {
                 write!(f, "invalid_plugin ({} error(s))", errors.len())
+            }
+            PluginError::InvalidMarketplace { message } => {
+                write!(f, "invalid_marketplace: {message}")
             }
             PluginError::AlreadyInstalled { plugin } => {
                 write!(f, "already_installed: {plugin}")
@@ -924,6 +935,49 @@ mod tests {
         assert_eq!(PluginError::CliAuthRequired.to_string(), "cli_auth_required");
         let t = PluginError::Timeout { command: "c".into(), seconds: 30 };
         assert!(t.to_string().contains("30s"));
+    }
+
+    #[test]
+    fn plugin_error_invalid_marketplace_serializes() {
+        let e = PluginError::InvalidMarketplace {
+            message: "Marketplace file not found".into(),
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains("\"kind\":\"invalid_marketplace\""));
+        assert!(json.contains("\"message\":\"Marketplace file not found\""));
+        let back: PluginError = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, e);
+    }
+
+    #[test]
+    fn plugin_error_invalid_marketplace_display() {
+        let e = PluginError::InvalidMarketplace { message: "m".into() };
+        assert!(e.to_string().contains("invalid_marketplace"));
+        assert!(e.to_string().contains("m"));
+    }
+
+    #[test]
+    fn plugin_error_has_10_variants() {
+        // Regression: ensure InvalidMarketplace is the 10th variant and
+        // the enum round-trips all variants without drift.
+        let variants = [
+            PluginError::CliNotFound,
+            PluginError::CliAuthRequired,
+            PluginError::NetworkError { message: "n".into() },
+            PluginError::ParseError { message: "p".into(), raw_preview: None },
+            PluginError::InvalidPlugin { errors: vec![], warnings: None },
+            PluginError::InvalidMarketplace { message: "im".into() },
+            PluginError::AlreadyInstalled { plugin: "a".into() },
+            PluginError::NotInstalled { plugin: "n".into() },
+            PluginError::Timeout { command: "c".into(), seconds: 1 },
+            PluginError::Unknown { message: "u".into(), exit_code: None },
+        ];
+        for v in &variants {
+            let json = serde_json::to_string(v).unwrap();
+            let back: PluginError = serde_json::from_str(&json).unwrap();
+            assert_eq!(&back, v, "round-trip failed for {v}");
+        }
+        assert_eq!(variants.len(), 10);
     }
 
     // ── PluginValidateResult ──────────────────────────────────────────

@@ -121,6 +121,7 @@ export type PluginError =
   | { kind: 'network_error'; message: string }
   | { kind: 'parse_error'; message: string; rawPreview?: string }
   | { kind: 'invalid_plugin'; errors: string[]; warnings?: string[] }
+  | { kind: 'invalid_marketplace'; message: string }
   | { kind: 'already_installed'; plugin: string }
   | { kind: 'not_installed'; plugin: string }
   | { kind: 'timeout'; command: string; seconds: number }
@@ -139,6 +140,8 @@ export function describePluginError(err: PluginError): string {
       return `Falha ao ler resposta do CLI: ${err.message}`
     case 'invalid_plugin':
       return `Plugin inválido: ${err.errors.join('; ')}`
+    case 'invalid_marketplace':
+      return `Marketplace inválido: ${err.message}`
     case 'already_installed':
       return `Plugin já instalado: ${err.plugin}`
     case 'not_installed':
@@ -162,6 +165,7 @@ export function isPluginError(value: unknown): value is PluginError {
       'network_error',
       'parse_error',
       'invalid_plugin',
+      'invalid_marketplace',
       'already_installed',
       'not_installed',
       'timeout',
@@ -169,3 +173,78 @@ export function isPluginError(value: unknown): value is PluginError {
     ].includes(kind)
   )
 }
+
+// ════════════════════════════════════════════════════════════════════
+// Rich detail types (Wave 2 P5+ — Codex parity)
+// ════════════════════════════════════════════════════════════════════
+
+/**
+ * A skill discovered in an installed plugin's `skills/` directory.
+ * Parsed from `skills/<dir>/SKILL.md` YAML frontmatter.
+ */
+export interface PluginSkill {
+  /** Skill name from frontmatter `name:`. Falls back to directory name. */
+  name: string
+  /** Skill description from frontmatter `description:`. */
+  description?: string
+  /** Absolute path to the SKILL.md file (for FE deep-linking). */
+  skillPath: string
+}
+
+/**
+ * Rich detail for an installed plugin — merges the CLI's `Plugin` row
+ * with on-disk `.claude-plugin/plugin.json` metadata + discovered skills.
+ * The FE uses this for the plugin detail view (Codex parity).
+ */
+export interface PluginDetail extends Plugin {
+  /** Skills discovered in `skills/<dir>/SKILL.md`. Empty if no skills dir. */
+  skills: PluginSkill[]
+  /** Author name from `.claude-plugin/plugin.json`. Distinct from
+   * `Plugin.author` (which is a `PluginAuthor` object from the CLI's
+   * `--available` payload). This is the flat string from the manifest. */
+  authorName?: string
+  /** Author email from `.claude-plugin/plugin.json`. */
+  authorEmail?: string
+  /** Homepage URL from `.claude-plugin/plugin.json`. */
+  manifestHomepage?: string
+  /** Repository URL from `.claude-plugin/plugin.json`. */
+  repository?: string
+  /** License from `.claude-plugin/plugin.json` (e.g. "MIT"). */
+  license?: string
+  /** Keywords from `.claude-plugin/plugin.json`. */
+  keywords: string[]
+  /** Description from `.claude-plugin/plugin.json` (richer than CLI's). */
+  manifestDescription?: string
+}
+
+/**
+ * Rich per-plugin metadata extracted from a marketplace's
+ * `.claude-plugin/marketplace.json`. Keyed by `pluginId`
+ * (`name@marketplaceName`) in the map returned by `marketplaceManifests()`.
+ * The FE merges this with the CLI's `--available` JSON for Codex parity.
+ */
+export interface MarketplacePluginEntry {
+  /** Bare plugin name (e.g. "42crunch-api-security-testing"). */
+  name: string
+  /** Thematic category (e.g. "security", "design", "development"). */
+  category?: string
+  /** Developer/author name. */
+  author?: string
+  /** Author email (rare). */
+  authorEmail?: string
+  /** Homepage URL. */
+  homepage?: string
+  /** Long description. */
+  description?: string
+  /** Semver version (rare in marketplace.json). */
+  version?: string
+  /** Display name (some manifests carry this). */
+  displayName?: string
+  /** Keywords array (rare). */
+  keywords: string[]
+  /** Tags array (some manifests carry this). */
+  tags: string[]
+}
+
+/** Map keyed by `pluginId` (`name@marketplaceName`) → rich metadata. */
+export type MarketplaceManifestMap = Record<string, MarketplacePluginEntry>
