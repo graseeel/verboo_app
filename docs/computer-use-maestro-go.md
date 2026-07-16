@@ -14,7 +14,7 @@
 |------|----------|
 | Overall | **GO** — M1–M4 applied to architecture; Geralt + Ciri start implementation |
 | D1 Session + consent | **APPROVED** |
-| D2 Swift sidecar (not Orca bundle) | **APPROVED** |
+| D2 Verboo-owned Swift sidecar | **APPROVED** |
 | D3 Self-Test Scope | **APPROVED** (default OFF) |
 | D4 CU orthogonal to AccessMode | **APPROVED** |
 | D5 Phases P0/P1/P2 | **APPROVED** with smoke-test correction |
@@ -104,7 +104,7 @@ Mutating `hotkey` must reject chords that quit/close/force-quit: `Cmd+Q`, `Cmd+W
 
 ## Explicit non-goals for P0
 
-- Bundling Orca
+- Bundling third-party desktop-automation binaries
 - Win/Linux runtimes
 - `set-value` / `paste-text` / `drag` / `perform-secondary-action`
 - Multi-session

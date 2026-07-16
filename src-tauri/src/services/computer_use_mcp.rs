@@ -3043,7 +3043,13 @@ mod tests {
             executor_model_id: "vision-executor".into(),
             token: "smoke-token".into(),
             app: "com.apple.Notes".into(),
-            approved_apps: Vec::new(),
+            approved_apps: vec![ApprovedApp {
+                bundle_id: "com.apple.Notes".into(),
+                display_name: "Notes".into(),
+                tier: crate::models::computer_use::AppControlTier::ViewOnly,
+                approved_at_wall: now(),
+                sentinel_confirmed: false,
+            }],
             self_test_enabled: false,
             goal: "read Notes".into(),
             expires_at: now() + 60,
@@ -3072,11 +3078,16 @@ mod tests {
             ..Default::default()
         };
         let request = service
-            .request_session(
+            .request_session_with_id(
                 &settings,
-                "read Notes",
+                cap.session_id.clone(),
+                cap.goal.clone(),
                 Some(cap.app.clone()),
                 ActionScope::Input,
+                crate::models::computer_use::ComputerUseTurnBinding {
+                    conversation_id: cap.conversation_id.clone(),
+                    executor_model_id: cap.executor_model_id.clone(),
+                },
             )
             .unwrap();
         let session = service

@@ -1,8 +1,8 @@
 //! Computer Use types — request/response shapes for the CU subsystem.
 //!
-//! Mirrors Kratos arch §2 (session state machine) and §7 (skill CLI surface).
-//! Wire shape is Orca-compatible so the existing `~/.verboo/skills/computer-use/SKILL.md`
-//! agent skill works unchanged.
+//! Mirrors Kratos arch §2 (session state machine) and §7 (tool surface).
+//! The wire shape belongs to Verboo's bundled Computer Use MCP runtime and
+//! does not depend on a user-installed desktop-control skill.
 
 use serde::{Deserialize, Serialize};
 

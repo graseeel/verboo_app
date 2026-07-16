@@ -7,7 +7,7 @@
 > - `computer-use-proposal-aloy.md` — threat model, audit schema, red-team checklist, ship blockers (Aloy)
 > - `computer-use-native-layer.md` — Swift helper sidecar Option B, process model, TCC, capability isolation (Geralt)
 >
-> **Kratos role**: synthesize, decide, define integration with Verboo's existing systems. This doc does not re-research Orca; it makes architectural calls.
+> **Kratos role**: synthesize, decide, and define integration with Verboo's existing systems. This document makes architectural calls around a Verboo-owned runtime.
 
 ---
 
@@ -16,11 +16,11 @@
 | # | Decision | Verdict |
 |---|----------|---------|
 | D1 | Session model + consent gates | Adopt Ciri's Idle/Consent/Active/Paused/Stopped state machine; add Rust `SessionManager` with PID-level single-writer lock |
-| D2 | Native layer | **Adopt Geralt Option B** (Swift helper sidecar). Do NOT bundle Orca. Same JSON contract under our own binary. |
+| D2 | Native layer | **Adopt Geralt Option B** (Swift helper sidecar). Do not bundle a third-party desktop-control binary. Keep the JSON contract under Verboo's own binary. |
 | D3 | Self-control conflict | **Self-Test Scope** — allow Verboo-on-Verboo control of an explicit allowlist of safe surfaces; hard-block everything else (credentials, full-access toggle, logout, API key, audit store). |
 | D4 | CU vs AccessMode | Orthogonal. `full` access NEVER implies CU. CU has its own consent flow regardless of AccessMode. |
 | D5 | P0/P1/P2 phases | P0 = macOS foundations + Aloy's 5 ship blockers; P1 = cross-platform + UI completeness; P2 = power features. |
-| D6 | Skill CLI surface v1 | Orca-compatible subset: read (`list-apps`, `list-windows`, `get-app-state`, `capabilities`, `permissions`) + mutate (`click`, `type-text`, `press-key`, `hotkey`, `scroll`). Defer `set-value`, `paste-text`, `drag`, `perform-secondary-action` to P1. |
+| D6 | Skill CLI surface v1 | Verboo-native subset: read (`list-apps`, `list-windows`, `get-app-state`, `capabilities`, `permissions`) + mutate (`click`, `type-text`, `press-key`, `hotkey`, `scroll`). Defer `set-value`, `paste-text`, `drag`, `perform-secondary-action` to P1. |
 
 The rest of this document elaborates.
 
@@ -114,11 +114,11 @@ pub enum StopReason {
 
 **Yes.** Build a Swift binary at `.app/Contents/Resources/computer-use-helper`, lazy-started by a new `computer_use_spawn.rs` (clones the `cli_spawn.rs` pattern).
 
-### 3.2 Why not Orca, why not in-process objc2
+### 3.2 Why a Verboo-owned sidecar instead of third-party or in-process automation
 
 | Option | Verdict | Why |
 |--------|---------|-----|
-| **A. Bundle Orca binary** | Rejected | TCC perms are per-signing-identity; every Orca upstream change forces re-notarization of Verboo. Also introduces third-party security-review burden. |
+| **A. Bundle a third-party desktop-control binary** | Rejected | TCC permissions are per signing identity; every upstream binary change forces re-notarization of Verboo and introduces a separate security-review burden. |
 | **B. Swift helper sidecar** | **Adopted** | Process isolation (AX fault doesn't kill main), privilege separation (helper has own TCC identity), independent killability, MIT-compatible, ~500KB binary. ~2-5ms IPC overhead is negligible vs. AX round-trip. |
 | **C. In-process objc2/AX** | Rejected | Couples main process to TCC; one AX fault kills Verboo; re-notarize per AX tweak; no privilege boundary. |
 | **D. Embed OpenAI SkyComputerUseService** | Rejected | Opaque binary; closed license; Sparkle updater conflicts with `tauri-plugin-updater`; we don't own the TCC identity. |
@@ -127,7 +127,7 @@ pub enum StopReason {
 
 - Newline-delimited JSON over stdio.
 - Every request has `id`; every response has `id + ok|err`.
-- Same JSON shape as Orca's CLI surface — so the existing `~/.verboo/skills/computer-use/SKILL.md` (already present per Geralt §0) works unchanged.
+- Verboo-owned JSON shape consumed only by the bundled Computer Use MCP runtime. The feature does not depend on a user-installed desktop-control skill.
 
 ### 3.4 TCC permissions
 
@@ -362,7 +362,7 @@ Adopt Geralt §5 3-layer model + Aloy §3 bypass test suite.
 
 ## 7. Skill CLI surface v1 (D6)
 
-### 7.1 v1 commands (Orca-compatible subset)
+### 7.1 v1 commands (Verboo-native subset)
 
 All `--json` output. Stdio newline-delimited for streaming.
 
@@ -411,7 +411,7 @@ All `--json` output. Stdio newline-delimited for streaming.
 | `provider_down` | Swift helper crashed/restarting |
 | `tamper_detected` | audit hash chain verification failed; CU locked |
 
-### 7.4 JSON return shape (Orca-compatible)
+### 7.4 JSON return shape (Verboo-native)
 
 ```json
 {

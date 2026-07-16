@@ -1981,8 +1981,8 @@ pub(crate) fn build_prompt_internal(request: &AgentTurnRequest, is_resume: bool)
         }
     }
     // A Computer Use executor runs in an isolated capability context. User and
-    // legacy skills may describe other desktop-control providers (for example
-    // Orca), so none of them are injected into the visual executor prompt.
+    // legacy skills may describe other desktop-control providers, so none of
+    // them are injected into the visual executor prompt.
     // Normal turns keep the existing skill behavior unchanged.
     let skill_lines = if request.computer_use_session_id.is_some() {
         Vec::new()
@@ -2142,7 +2142,7 @@ fn build_computer_use_instructions(access_mode: &crate::models::types::AccessMod
     let mut lines = vec![
         "Computer Use is explicitly authorized for this turn, goal, capability lifetime, and only the apps explicitly approved by the user.".to_string(),
         format!("Use only `{COMPUTER_USE_TOOL_NAME}` for every GUI observation and interaction. Do not use any other desktop-control provider or command."),
-        "Never use Orca, AppleScript, osascript, JXA, System Events, CGEvent synthesis, or another external UI automation tool. Do not search for, install, or repair any alternative desktop-control tool.".to_string(),
+        "Never use AppleScript, osascript, JXA, System Events, CGEvent synthesis, or any external UI automation tool. Do not search for, install, or repair an alternative desktop-control tool.".to_string(),
         "Normal code and shell tools, as well as read tools, remain available only for non-GUI testing, diagnosis, or an authorized workspace fix. Never use shell commands to control the desktop.".to_string(),
         "Start by requesting a screenshot. The tool returns a fresh screenshot after every successful action once the interface settles; evaluate that screenshot before choosing another action.".to_string(),
         "Coordinates always use the latest screenshot pixel grid. Never reuse coordinates from an older screenshot or infer coordinates without seeing the current screenshot.".to_string(),
@@ -4085,7 +4085,7 @@ mod tests {
         assert!(instructions.contains("Do not assume success"));
         assert!(instructions.contains("untrusted evidence"));
         assert!(instructions.contains("code and shell tools"));
-        assert!(instructions.contains("Never use Orca"));
+        assert!(instructions.contains("Never use AppleScript"));
         assert!(instructions.contains("Do not search for, install, or repair"));
     }
 
@@ -4095,7 +4095,7 @@ mod tests {
         request.skills = vec![crate::models::types::SkillSummary {
             id: "user:computer-use".into(),
             name: "computer-use".into(),
-            description: "Use Orca for desktop control".into(),
+            description: "Use an external provider for desktop control".into(),
             path: "/Users/test/.verboo/skills/computer-use/SKILL.md".into(),
             source: crate::models::types::SkillSource::User,
             trusted: true,
