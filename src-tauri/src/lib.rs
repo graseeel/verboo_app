@@ -230,15 +230,17 @@ fn send_feedback(
         "linux"
     };
     let app_for_url = app.clone();
-    Ok(crate::services::feedback_service::FeedbackService::send_feedback(
-        request,
-        &app_version,
-        platform,
-        |url| match app_for_url.opener().open_url(url, None::<&str>) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(format!("Falha ao abrir URL: {e}")),
-        },
-    ))
+    Ok(
+        crate::services::feedback_service::FeedbackService::send_feedback(
+            request,
+            &app_version,
+            platform,
+            |url| match app_for_url.opener().open_url(url, None::<&str>) {
+                Ok(_) => Ok(()),
+                Err(e) => Err(format!("Falha ao abrir URL: {e}")),
+            },
+        ),
+    )
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -256,10 +258,11 @@ fn update_user_settings(
     store: tauri::State<'_, SettingsStore>,
     tray: tauri::State<'_, crate::services::tray_service::TrayService>,
     updates: tauri::State<'_, crate::services::update_service::UpdateService>,
+    cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
     app: tauri::AppHandle,
 ) -> Result<UserSettings, String> {
     let next = store.update(patch)?;
-    apply_runtime_settings(&next, &tray, &updates, &app);
+    apply_runtime_settings(&next, &tray, &updates, &cu, &app);
     Ok(next)
 }
 
@@ -268,17 +271,285 @@ fn reset_user_settings(
     store: tauri::State<'_, SettingsStore>,
     tray: tauri::State<'_, crate::services::tray_service::TrayService>,
     updates: tauri::State<'_, crate::services::update_service::UpdateService>,
+    cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
     app: tauri::AppHandle,
 ) -> Result<UserSettings, String> {
     let next = store.reset()?;
     // Reset must also re-apply side effects (tray visible again, update flags).
-    apply_runtime_settings(&next, &tray, &updates, &app);
+    apply_runtime_settings(&next, &tray, &updates, &cu, &app);
     Ok(next)
 }
 
 // ════════════════════════════════════════════════════════════════════
 // Computer Use (P0, Geralt)
 // ════════════════════════════════════════════════════════════════════
+
+fn emit_computer_use_state(app: &tauri::AppHandle, session: &crate::models::computer_use::Session) {
+    use tauri::Emitter;
+    let _ = app.emit("computer-use:state-change", session);
+}
+
+fn computer_use_lifecycle_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+fn acquire_computer_use_lifecycle() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    computer_use_lifecycle_lock()
+        .lock()
+        .map_err(|_| "Computer Use lifecycle lock is unavailable".to_string())
+}
+
+fn show_computer_use_notification(app: &tauri::AppHandle, settings: &UserSettings, started: bool) {
+    use crate::models::types::{CompletionNotificationMode, LanguageCode};
+    use tauri_plugin_notification::NotificationExt;
+
+    if settings.completion_notifications == CompletionNotificationMode::Never {
+        return;
+    }
+    let (title, body) = match (settings.language, started) {
+        (LanguageCode::PtBr, true) => ("Computer Use ativo", "Pressione Esc para parar."),
+        (LanguageCode::PtBr, false) => ("Computer Use concluído", "O controle da tela terminou."),
+        (LanguageCode::EnUs, true) => ("Computer Use active", "Press Esc to stop."),
+        (LanguageCode::EnUs, false) => ("Computer Use finished", "Screen control has ended."),
+    };
+    if let Err(error) = app
+        .notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .auto_cancel()
+        .show()
+    {
+        eprintln!("[computer-use] notification failed: {error}");
+    }
+}
+
+fn visual_executor_lease_store(
+    app: &tauri::AppHandle,
+) -> Result<crate::services::computer_use_executor::VisualExecutorLeaseStore, String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    Ok(
+        crate::services::computer_use_executor::VisualExecutorLeaseStore::new(
+            app_data.join("computer-use-runtime"),
+        ),
+    )
+}
+
+#[tauri::command]
+fn select_computer_use_executor(
+    current_model_id: String,
+    preferred_visual_model_id: Option<String>,
+    model_service: tauri::State<'_, ModelService>,
+) -> Result<serde_json::Value, String> {
+    use crate::services::computer_use_executor::{select_executor, ExecutorChoice};
+    let catalog = model_service.cached_catalog()?;
+    let choice = select_executor(
+        &current_model_id,
+        &catalog,
+        preferred_visual_model_id.as_deref(),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(match choice {
+        ExecutorChoice::Current { model_id } => {
+            serde_json::json!({ "modelId": model_id, "temporary": false })
+        }
+        ExecutorChoice::TemporaryVision {
+            vision_model_id, ..
+        } => serde_json::json!({ "modelId": vision_model_id, "temporary": true }),
+    })
+}
+
+#[tauri::command]
+fn persist_computer_use_executor_lease(
+    app: tauri::AppHandle,
+    model_service: tauri::State<'_, ModelService>,
+    conversation_id: String,
+    original_model_id: String,
+    executor_model_id: String,
+    expires_at_ms: u64,
+) -> Result<crate::services::computer_use_executor::VisualExecutorLease, String> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    if conversation_id.trim().is_empty()
+        || original_model_id.trim().is_empty()
+        || executor_model_id.trim().is_empty()
+        || original_model_id == executor_model_id
+        || expires_at_ms <= now_ms
+        || expires_at_ms > now_ms.saturating_add(3_600_000)
+    {
+        return Err("invalid temporary visual executor lease".into());
+    }
+    model_service.require_computer_use_executor(&executor_model_id)?;
+    let lease = crate::services::computer_use_executor::VisualExecutorLease {
+        conversation_id,
+        original_model_id,
+        executor_model_id,
+        started_at_ms: now_ms,
+        expires_at_ms,
+    };
+    visual_executor_lease_store(&app)?.persist(&lease)?;
+    Ok(lease)
+}
+
+#[tauri::command]
+fn get_computer_use_executor_lease(
+    app: tauri::AppHandle,
+) -> Result<Option<crate::services::computer_use_executor::VisualExecutorLease>, String> {
+    visual_executor_lease_store(&app)?.load()
+}
+
+fn computer_use_session_matches_executor_lease(
+    session: Option<&crate::models::computer_use::Session>,
+    lease: &crate::services::computer_use_executor::VisualExecutorLease,
+) -> bool {
+    session.is_some_and(|session| {
+        matches!(
+            session.state,
+            crate::models::computer_use::SessionState::Active
+                | crate::models::computer_use::SessionState::Paused
+        ) && session.conversation_id == lease.conversation_id
+            && session.executor_model_id == lease.executor_model_id
+    })
+}
+
+#[tauri::command]
+fn recover_computer_use_executor_lease(
+    app: tauri::AppHandle,
+    model_service: tauri::State<'_, ModelService>,
+    turns: tauri::State<'_, crate::services::turn_service::TurnService>,
+    cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
+) -> Result<serde_json::Value, String> {
+    use crate::services::computer_use_executor::LeaseRecoveryDecision;
+
+    let store = visual_executor_lease_store(&app)?;
+    let existing = store.load().ok().flatten();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    let catalog = model_service.cached_catalog()?;
+    match store.recover_decision(now_ms, &catalog)? {
+        LeaseRecoveryDecision::NoLease => Ok(serde_json::json!({ "kind": "none" })),
+        LeaseRecoveryDecision::OfferRestoreOrResume { lease } => {
+            let session = cu.sessions.current_any();
+            let resumable = turns.is_conversation_active(&lease.conversation_id)
+                && computer_use_session_matches_executor_lease(session.as_ref(), &lease);
+            if resumable {
+                Ok(serde_json::json!({
+                    "kind": "offer",
+                    "lease": lease,
+                    "session": session,
+                }))
+            } else {
+                store.clear()?;
+                Ok(serde_json::json!({
+                    "kind": "restored",
+                    "originalModelId": lease.original_model_id,
+                    "executorModelId": lease.executor_model_id,
+                    "reason": "runtime_unavailable",
+                }))
+            }
+        }
+        LeaseRecoveryDecision::RestoreOriginal {
+            original_model_id,
+            reason,
+        } => Ok(serde_json::json!({
+            "kind": "restored",
+            "originalModelId": original_model_id,
+            "executorModelId": existing.as_ref().map(|lease| lease.executor_model_id.as_str()),
+            "reason": format!("{reason:?}"),
+        })),
+        LeaseRecoveryDecision::ClearInconsistent { reason } => Ok(serde_json::json!({
+            "kind": "cleared",
+            "reason": format!("{reason:?}"),
+        })),
+    }
+}
+
+#[cfg(test)]
+mod computer_use_recovery_binding_tests {
+    use super::computer_use_session_matches_executor_lease;
+
+    fn session() -> crate::models::computer_use::Session {
+        crate::models::computer_use::Session {
+            id: "session-recovery".into(),
+            state: crate::models::computer_use::SessionState::Active,
+            conversation_id: "conversation-recovery".into(),
+            executor_model_id: "vision-executor".into(),
+            goal: "Continue the approved task".into(),
+            target_app: Some("com.example.app".into()),
+            approved_apps: Vec::new(),
+            active_app: Some("com.example.app".into()),
+            scope: crate::models::types::ComputerUseScope::Full,
+            allowlist_version: 1,
+            self_test_enabled: false,
+            screenshot_attach_to_llm: true,
+            isolate_other_apps: true,
+            pid_lock: 1,
+            started_at_mono: 1,
+            started_at_wall: 1,
+            last_activity_mono: 1,
+            idle_timeout_secs: 900,
+        }
+    }
+
+    fn lease() -> crate::services::computer_use_executor::VisualExecutorLease {
+        crate::services::computer_use_executor::VisualExecutorLease {
+            conversation_id: "conversation-recovery".into(),
+            original_model_id: "text-model".into(),
+            executor_model_id: "vision-executor".into(),
+            started_at_ms: 1,
+            expires_at_ms: 2,
+        }
+    }
+
+    #[test]
+    fn recovery_requires_the_exact_session_conversation_and_executor() {
+        let expected = session();
+        let lease = lease();
+        assert!(computer_use_session_matches_executor_lease(
+            Some(&expected),
+            &lease,
+        ));
+
+        let mut wrong_conversation = expected.clone();
+        wrong_conversation.conversation_id = "another-conversation".into();
+        assert!(!computer_use_session_matches_executor_lease(
+            Some(&wrong_conversation),
+            &lease,
+        ));
+
+        let mut wrong_executor = expected.clone();
+        wrong_executor.executor_model_id = "another-executor".into();
+        assert!(!computer_use_session_matches_executor_lease(
+            Some(&wrong_executor),
+            &lease,
+        ));
+        assert!(!computer_use_session_matches_executor_lease(None, &lease));
+    }
+}
+
+#[tauri::command]
+fn clear_computer_use_executor_lease(
+    app: tauri::AppHandle,
+    conversation_id: Option<String>,
+) -> Result<bool, String> {
+    let store = visual_executor_lease_store(&app)?;
+    match conversation_id {
+        Some(conversation_id) => store.clear_if_conversation(&conversation_id),
+        None => {
+            let existed = store.load()?.is_some();
+            store.clear()?;
+            Ok(existed)
+        }
+    }
+}
 
 /// Returns the current allowlist. Capability-gated by computer-use.json.
 #[tauri::command]
@@ -323,29 +594,207 @@ fn remove_computer_use_allowlist(
 /// Returns the request ID. Session is NOT active yet — user must call
 /// `grant_computer_use_session` explicitly.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn request_computer_use_session(
     cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
     store: tauri::State<'_, SettingsStore>,
+    model_service: tauri::State<'_, ModelService>,
     goal: String,
     app: Option<String>,
     scope: crate::models::types::ComputerUseScope,
+    conversation_id: String,
+    executor_model_id: String,
 ) -> Result<crate::models::computer_use::ConsentRequest, String> {
+    let _lifecycle = acquire_computer_use_lifecycle()?;
+    if conversation_id.trim().is_empty() || executor_model_id.trim().is_empty() {
+        return Err("Computer Use requires a conversation and visual executor binding.".into());
+    }
+    model_service.require_computer_use_executor(&executor_model_id)?;
     let settings = store.get()?;
     cu.sessions.disarm_emergency();
-    cu.sessions.request_session(&settings.computer_use, goal, app, scope)
-        .map_err(|e| format!("session request denied: {:?}", e))
+    cu.request_bound_session(
+        &settings.computer_use,
+        goal,
+        app,
+        scope,
+        conversation_id,
+        executor_model_id,
+    )
+    .map_err(|e| format!("session request denied: {:?}", e))
+}
+
+fn clear_computer_use_action_sequence(app: &tauri::AppHandle, session_id: &str) {
+    if let Some(turns) = app.try_state::<TurnService>() {
+        turns.clear_computer_use_action_sequence(session_id);
+    }
+}
+
+fn start_computer_use_action_sequence(app: &tauri::AppHandle, session_id: &str) {
+    if let Some(turns) = app.try_state::<TurnService>() {
+        turns.start_computer_use_action_sequence(session_id);
+    }
+}
+
+fn restore_computer_use_layout(app: &tauri::AppHandle, session_id: &str) -> Result<bool, String> {
+    let layout = app
+        .try_state::<crate::services::computer_use_layout::ComputerUseLayoutService>()
+        .ok_or("computer-use layout service is unavailable")?;
+    layout.restore(app, session_id)
+}
+
+fn apply_computer_use_focus_layout(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    receipt: crate::services::computer_use_focus::FocusStartReceipt,
+) -> Result<(), String> {
+    if !receipt.target_observed {
+        return Ok(());
+    }
+    let Some(layout) =
+        app.try_state::<crate::services::computer_use_layout::ComputerUseLayoutService>()
+    else {
+        return Ok(());
+    };
+    let state = layout.state()?;
+    if state.session_id.as_deref() != Some(session_id)
+        || matches!(
+            state.mode,
+            crate::services::computer_use_layout::ComputerUseLayoutMode::Idle
+                | crate::services::computer_use_layout::ComputerUseLayoutMode::Restoring
+        )
+    {
+        return Ok(());
+    }
+    layout
+        .mark_focus_result(app, session_id, receipt.compact_layout_applied)
+        .map(|_| ())
+}
+
+#[tauri::command]
+fn get_computer_use_layout_state(
+    layout: tauri::State<'_, crate::services::computer_use_layout::ComputerUseLayoutService>,
+) -> Result<crate::services::computer_use_layout::ComputerUseLayoutState, String> {
+    layout.state()
+}
+
+fn persist_computer_use_handoff_or_emit(
+    cu: &crate::services::computer_use_service::ComputerUseService,
+    app: &tauri::AppHandle,
+    session_id: &str,
+    stopped_reason: &str,
+) {
+    if let Err(error) = cu.persist_trusted_handoff(session_id, stopped_reason) {
+        use tauri::Emitter;
+        let _ = app.emit("computer-use:handoff-failed", error);
+    }
+}
+
+fn launch_approved_target_with_live_capability<F>(
+    target_bundle_id: Option<&str>,
+    mut launch: F,
+) -> Result<(), String>
+where
+    F: FnMut(&str) -> crate::models::computer_use::ComputerUseResult,
+{
+    let Some(target_bundle_id) = target_bundle_id else {
+        return Ok(());
+    };
+    let result = launch(target_bundle_id);
+    if let Some(error) = result.error {
+        return Err(format!(
+            "launch approved Computer Use target failed: {}",
+            error.message
+        ));
+    }
+    if result.result.is_none() {
+        return Err("launch approved Computer Use target returned no result".into());
+    }
+    Ok(())
+}
+
+fn activate_then_launch_approved_target<A, F, T>(
+    target_bundle_id: Option<&str>,
+    activate: A,
+    launch: F,
+) -> Result<T, String>
+where
+    A: FnOnce() -> Result<T, String>,
+    F: FnMut(&str) -> crate::models::computer_use::ComputerUseResult,
+{
+    let activation = activate()?;
+    launch_approved_target_with_live_capability(target_bundle_id, launch)?;
+    Ok(activation)
+}
+
+#[cfg(test)]
+mod computer_use_target_launch_tests {
+    use super::activate_then_launch_approved_target;
+    use crate::models::computer_use::{ComputerUseError, ComputerUseResult};
+    use serde_json::json;
+    use std::cell::RefCell;
+
+    #[test]
+    fn activates_capability_before_launching_the_exact_approved_target() {
+        let order = RefCell::new(Vec::new());
+
+        let activation = activate_then_launch_approved_target(
+            Some("com.apple.calculator"),
+            || {
+                order.borrow_mut().push("activate".to_string());
+                Ok("capability-live")
+            },
+            |bundle_id| {
+                order.borrow_mut().push(format!("launch:{bundle_id}"));
+                ComputerUseResult {
+                    result: Some(json!({ "bundleId": bundle_id, "running": true })),
+                    error: None,
+                }
+            },
+        )
+        .expect("approved target should launch");
+
+        assert_eq!(activation, "capability-live");
+        assert_eq!(
+            order.into_inner(),
+            vec!["activate", "launch:com.apple.calculator"]
+        );
+    }
+
+    #[test]
+    fn launch_failure_blocks_executor_activation() {
+        let error = activate_then_launch_approved_target(
+            Some("com.apple.calculator"),
+            || Ok("capability-live"),
+            |_| ComputerUseResult {
+                result: None,
+                error: Some(ComputerUseError::new(
+                    "provider_down",
+                    "Calculator did not launch",
+                )),
+            },
+        )
+        .expect_err("activation must stop when the approved app cannot launch");
+
+        assert!(error.contains("Calculator did not launch"));
+    }
 }
 
 /// Step 2: user grants consent. Returns the active session or an error.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn grant_computer_use_session(
     cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
     store: tauri::State<'_, SettingsStore>,
+    model_service: tauri::State<'_, ModelService>,
     app_handle: tauri::AppHandle,
     request_id: String,
     screenshot_attach_to_llm: bool,
+    app_display_name: Option<String>,
+    requested_tier: Option<crate::models::computer_use::AppControlTier>,
+    sentinel_confirmed: bool,
 ) -> Result<crate::models::computer_use::Session, String> {
-    let settings = store.get()?;
+    let _lifecycle = acquire_computer_use_lifecycle()?;
+    let mut settings = store.get()?;
     let grant = crate::models::computer_use::ConsentGrant {
         id: request_id,
         allowlist_version: 1,
@@ -353,49 +802,404 @@ fn grant_computer_use_session(
         screenshot_attach_to_llm,
         idle_timeout_secs: settings.computer_use.idle_timeout_seconds as u64,
     };
-    let session = cu.sessions.grant_session(grant).map_err(|e| format!("grant denied: {:?}", e))?;
-    // Goal-directed grants may have target_app: None — MCP activates unbound and
-    // focus is deferred until the first bind_target / bind_app.
-    let app = session.target_app.as_deref();
+    let mut session = cu
+        .sessions
+        .grant_session(grant)
+        .map_err(|e| format!("grant denied: {:?}", e))?;
+    if let Err(error) = model_service.require_computer_use_executor(&session.executor_model_id) {
+        let _ = cu
+            .sessions
+            .stop(&session.id, crate::models::computer_use::StopReason::Error);
+        return Err(error);
+    }
+    if let Some(bundle_id) = session.target_app.clone() {
+        let fallback_tier = match session.scope {
+            crate::models::types::ComputerUseScope::View
+            | crate::models::types::ComputerUseScope::Ask => {
+                crate::models::computer_use::AppControlTier::ViewOnly
+            }
+            crate::models::types::ComputerUseScope::Input
+            | crate::models::types::ComputerUseScope::Full => {
+                crate::models::computer_use::AppControlTier::FullControl
+            }
+        };
+        if let Err(error) = cu.sessions.pause(&session.id) {
+            let _ = cu
+                .sessions
+                .stop(&session.id, crate::models::computer_use::StopReason::Error);
+            return Err(format!("grant denied: {error:?}"));
+        }
+        session = match cu.sessions.approve_app(
+            &session.id,
+            &bundle_id,
+            app_display_name.as_deref().unwrap_or(&bundle_id),
+            requested_tier.unwrap_or(fallback_tier),
+            sentinel_confirmed,
+            &settings.computer_use,
+        ) {
+            Ok(session) => session,
+            Err(error) => {
+                let _ = cu
+                    .sessions
+                    .stop(&session.id, crate::models::computer_use::StopReason::Error);
+                return Err(format!("grant denied: {error:?}"));
+            }
+        };
+        session = match cu.sessions.resume(&session.id) {
+            Ok(session) => session,
+            Err(error) => {
+                let _ = cu
+                    .sessions
+                    .stop(&session.id, crate::models::computer_use::StopReason::Error);
+                return Err(format!("grant denied: {error:?}"));
+            }
+        };
+    }
+    let target_bundle_id = session
+        .active_app
+        .as_deref()
+        .or(session.target_app.as_deref())
+        .map(str::to_string);
+    if let Some(target_bundle_id) = session
+        .active_app
+        .as_deref()
+        .or(session.target_app.as_deref())
+    {
+        let layout =
+            app_handle.state::<crate::services::computer_use_layout::ComputerUseLayoutService>();
+        if let Err(error) = layout.enter(&app_handle, &session.id, target_bundle_id) {
+            use tauri::Emitter;
+            let _ = app_handle.emit(
+                "computer-use:cleanup-failed",
+                format!("compact layout unavailable; using fallback: {error}"),
+            );
+        }
+    }
+    start_computer_use_action_sequence(&app_handle, &session.id);
     let sessions = cu.sessions.clone();
     let app_handle_emergency = app_handle.clone();
-    if let Err(error) = crate::services::computer_use_mcp::activate(
-        &session.id,
-        app,
-        &session.goal,
-        session.idle_timeout_secs,
-        session.screenshot_attach_to_llm,
-        move || {
-            use tauri::Emitter;
-            sessions.emergency_stop_all();
-            let _ = app_handle_emergency.emit("computer-use:emergency-stop", ());
+    let emergency_session_id = session.id.clone();
+    let app_handle_layout = app_handle.clone();
+    let layout_session_id = session.id.clone();
+    let activation = match activate_then_launch_approved_target(
+        target_bundle_id.as_deref(),
+        || {
+            crate::services::computer_use_mcp::activate(
+                &session,
+                move |incident_kind, authority_revoked| {
+                    use tauri::Emitter;
+                    if let Some(service) = app_handle_emergency
+                        .try_state::<crate::services::computer_use_service::ComputerUseService>(
+                    ) {
+                        let stopped_reason = match incident_kind {
+                    crate::services::computer_use_mcp::SafetyIncidentKind::EmergencyStop => {
+                        "emergency_stop"
+                    }
+                    crate::services::computer_use_mcp::SafetyIncidentKind::RuntimeFailure => {
+                        "executor_error"
+                    }
+                };
+                        if authority_revoked {
+                            persist_computer_use_handoff_or_emit(
+                                &service,
+                                &app_handle_emergency,
+                                &emergency_session_id,
+                                stopped_reason,
+                            );
+                        } else {
+                            let _ = app_handle_emergency.emit(
+                        "computer-use:handoff-failed",
+                        "Computer Use handoff omitted because runtime authority revocation could not be confirmed.",
+                    );
+                        }
+                        match incident_kind {
+                    crate::services::computer_use_mcp::SafetyIncidentKind::EmergencyStop => {
+                        service.emergency_stop_all();
+                    }
+                    crate::services::computer_use_mcp::SafetyIncidentKind::RuntimeFailure => {
+                        match service.stop(
+                            &emergency_session_id,
+                            crate::models::computer_use::StopReason::Error,
+                        ) {
+                            Ok(stopped) => emit_computer_use_state(&app_handle_emergency, &stopped),
+                            Err(error) => {
+                                let _ = app_handle_emergency.emit(
+                                    "computer-use:cleanup-failed",
+                                    format!("stop failed Computer Use runtime: {error:?}"),
+                                );
+                            }
+                        }
+                    }
+                }
+                    } else {
+                        match incident_kind {
+                    crate::services::computer_use_mcp::SafetyIncidentKind::EmergencyStop => {
+                        sessions.emergency_stop_all();
+                    }
+                    crate::services::computer_use_mcp::SafetyIncidentKind::RuntimeFailure => {
+                        let _ = sessions.stop(
+                            &emergency_session_id,
+                            crate::models::computer_use::StopReason::Error,
+                        );
+                    }
+                }
+                    }
+                    clear_computer_use_action_sequence(
+                        &app_handle_emergency,
+                        &emergency_session_id,
+                    );
+                    if let Err(error) =
+                        restore_computer_use_layout(&app_handle_emergency, &emergency_session_id)
+                    {
+                        let _ = app_handle_emergency.emit("computer-use:cleanup-failed", error);
+                    }
+                    if let Some(store) = app_handle_emergency.try_state::<SettingsStore>() {
+                        if let Ok(settings) = store.get() {
+                            show_computer_use_notification(&app_handle_emergency, &settings, false);
+                        }
+                    }
+                    if incident_kind
+                        == crate::services::computer_use_mcp::SafetyIncidentKind::EmergencyStop
+                    {
+                        let _ = app_handle_emergency.emit("computer-use:emergency-stop", ());
+                    }
+                },
+                move |receipt| {
+                    if let Err(error) = apply_computer_use_focus_layout(
+                        &app_handle_layout,
+                        &layout_session_id,
+                        receipt,
+                    ) {
+                        use tauri::Emitter;
+                        let _ = app_handle_layout.emit("computer-use:cleanup-failed", error);
+                    }
+                },
+            )
         },
+        |bundle_id| cu.launch_app(&mut settings.computer_use, bundle_id),
     ) {
-        let _ = cu.sessions.stop(&session.id, crate::models::computer_use::StopReason::Error);
-        let _ = crate::services::computer_use_mcp::revoke();
-        return Err(error);
+        Ok(receipt) => receipt,
+        Err(error) => {
+            clear_computer_use_action_sequence(&app_handle, &session.id);
+            let _ = restore_computer_use_layout(&app_handle, &session.id);
+            let _ = cu
+                .sessions
+                .stop(&session.id, crate::models::computer_use::StopReason::Error);
+            let _ = crate::services::computer_use_mcp::revoke();
+            return Err(error);
+        }
+    };
+    if session.active_app.is_some() || session.target_app.is_some() {
+        let layout_result = activation.focus.map_or(Ok(()), |receipt| {
+            apply_computer_use_focus_layout(&app_handle, &session.id, receipt)
+        });
+        if let Err(error) = layout_result {
+            let _ = crate::services::computer_use_mcp::revoke_session(&session.id);
+            let _ = restore_computer_use_layout(&app_handle, &session.id);
+            clear_computer_use_action_sequence(&app_handle, &session.id);
+            let _ = cu
+                .sessions
+                .stop(&session.id, crate::models::computer_use::StopReason::Error);
+            return Err(format!("apply compact layout receipt: {error}"));
+        }
     }
     // P0.2b: poll OS TCC every 5s (first check immediate). On revoke, stop session.
     let app_handle_poll = app_handle.clone();
-    cu.start_os_permission_poller(move || {
+    let poll_session_id = session.id.clone();
+    cu.start_os_permission_poller(move |handoff_result| {
         use tauri::Emitter;
+        if let Err(error) = handoff_result {
+            let _ = app_handle_poll.emit("computer-use:handoff-failed", error);
+        }
+        clear_computer_use_action_sequence(&app_handle_poll, &poll_session_id);
+        if let Err(error) = restore_computer_use_layout(&app_handle_poll, &poll_session_id) {
+            let _ = app_handle_poll.emit("computer-use:cleanup-failed", error);
+        }
+        if let Some(store) = app_handle_poll.try_state::<SettingsStore>() {
+            if let Ok(settings) = store.get() {
+                show_computer_use_notification(&app_handle_poll, &settings, false);
+            }
+        }
         let _ = app_handle_poll.emit("computer-use:os-permission-revoked", ());
     });
+    emit_computer_use_state(&app_handle, &session);
+    show_computer_use_notification(&app_handle, &settings, true);
     Ok(session)
 }
 
-/// Bind a concrete app onto an active goal-directed Computer Use session.
-/// Locks SessionManager target_app and updates MCP capability + focus HUD.
+/// Explicitly approve an additional app for the current session and make it
+/// the active isolated target. The MCP capability is widened only after the
+/// SessionManager accepts the per-app tier and sentinel confirmation.
 #[tauri::command]
-fn bind_computer_use_target(
+#[allow(clippy::too_many_arguments)]
+fn approve_computer_use_app(
     cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
     store: tauri::State<'_, SettingsStore>,
     session_id: String,
     bundle_id: String,
+    display_name: String,
+    requested_tier: crate::models::computer_use::AppControlTier,
+    sentinel_confirmed: bool,
+    app: tauri::AppHandle,
 ) -> Result<crate::models::computer_use::Session, String> {
+    let _lifecycle = acquire_computer_use_lifecycle()?;
     let settings = store.get()?.computer_use;
-    cu.bind_session_target(&settings, &session_id, &bundle_id)
-        .map_err(|e| format!("bind denied: {:?}", e))
+    let session = cu
+        .sessions
+        .approve_app(
+            &session_id,
+            &bundle_id,
+            &display_name,
+            requested_tier,
+            sentinel_confirmed,
+            &settings,
+        )
+        .map_err(|error| format!("app approval denied: {error:?}"))?;
+    let approved = session
+        .approved_apps
+        .iter()
+        .find(|app| app.bundle_id.eq_ignore_ascii_case(&bundle_id))
+        .cloned()
+        .ok_or("approved app missing from session")?;
+    if let Err(error) = app
+        .state::<crate::services::computer_use_layout::ComputerUseLayoutService>()
+        .enter(&app, &session_id, &bundle_id)
+    {
+        use tauri::Emitter;
+        let _ = app.emit(
+            "computer-use:cleanup-failed",
+            format!("compact layout unavailable; using fallback: {error}"),
+        );
+    }
+    let layout_app = app.clone();
+    let layout_session_id = session_id.clone();
+    let focus_receipt = match crate::services::computer_use_mcp::approve_and_select_app(
+        &session_id,
+        approved,
+        move |receipt| {
+            if let Err(error) =
+                apply_computer_use_focus_layout(&layout_app, &layout_session_id, receipt)
+            {
+                use tauri::Emitter;
+                let _ = layout_app.emit("computer-use:cleanup-failed", error);
+            }
+        },
+    ) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            let (revoke_result, _) = revoke_before_computer_use_handoff(
+                || crate::services::computer_use_mcp::revoke_session(&session_id),
+                || {
+                    persist_computer_use_handoff_or_emit(
+                        &cu,
+                        &app,
+                        &session_id,
+                        "app_approval_failed",
+                    )
+                },
+            );
+            let _ = restore_computer_use_layout(&app, &session_id);
+            clear_computer_use_action_sequence(&app, &session_id);
+            let stopped = cu.stop(&session_id, crate::models::computer_use::StopReason::Error);
+            if let Ok(stopped) = stopped {
+                emit_computer_use_state(&app, &stopped);
+            }
+            match revoke_result {
+                Err(revoke_error) => {
+                    use tauri::Emitter;
+                    let _ = app.emit("computer-use:cleanup-failed", revoke_error);
+                }
+                Ok(false) => {
+                    use tauri::Emitter;
+                    let _ = app.emit(
+                        "computer-use:cleanup-failed",
+                        "Computer Use authority belonged to another session.",
+                    );
+                }
+                Ok(true) => {}
+            }
+            return Err(format!("activate approved app: {error}"));
+        }
+    };
+    if let Err(error) = apply_computer_use_focus_layout(&app, &session_id, focus_receipt) {
+        let _ = crate::services::computer_use_mcp::revoke_session(&session_id);
+        let _ = restore_computer_use_layout(&app, &session_id);
+        clear_computer_use_action_sequence(&app, &session_id);
+        let _ = cu.stop(&session_id, crate::models::computer_use::StopReason::Error);
+        return Err(format!("apply compact layout receipt: {error}"));
+    }
+    emit_computer_use_state(&app, &session);
+    Ok(session)
+}
+
+#[tauri::command]
+fn get_pending_computer_use_confirmation(
+    cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
+    session_id: String,
+) -> Result<Option<crate::services::computer_use_confirmation::PendingConfirmationView>, String> {
+    let current = cu
+        .sessions
+        .current()
+        .ok_or("computer-use session is not active")?;
+    if current.id != session_id
+        || !matches!(
+            current.state,
+            crate::models::computer_use::SessionState::Active
+                | crate::models::computer_use::SessionState::Paused
+        )
+    {
+        return Err("computer-use session mismatch".into());
+    }
+    crate::services::computer_use_confirmation::ConfirmationStore::runtime()?
+        .pending(&session_id)
+        .map(|pending| pending.map(|confirmation| confirmation.renderer_view()))
+}
+
+#[tauri::command]
+fn decide_computer_use_confirmation(
+    cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
+    app: tauri::AppHandle,
+    session_id: String,
+    confirmation_id: String,
+    allow: bool,
+) -> Result<(), String> {
+    let _lifecycle = acquire_computer_use_lifecycle()?;
+    let current = cu
+        .sessions
+        .current()
+        .ok_or("computer-use session is not active")?;
+    if current.id != session_id
+        || !matches!(
+            current.state,
+            crate::models::computer_use::SessionState::Active
+                | crate::models::computer_use::SessionState::Paused
+        )
+    {
+        return Err("computer-use session mismatch".into());
+    }
+    let store = crate::services::computer_use_confirmation::ConfirmationStore::runtime()?;
+    let pending = store
+        .pending(&session_id)?
+        .ok_or("confirmation is missing or expired")?;
+    if pending.id != confirmation_id {
+        return Err("confirmation id does not match the pending action".into());
+    }
+    if let Err(error) = cu.record_confirmation_decision(
+        &session_id,
+        &pending.app_bundle_id,
+        &pending.summary,
+        allow,
+    ) {
+        let _ = crate::services::computer_use_mcp::revoke_session(&session_id);
+        let _ = restore_computer_use_layout(&app, &session_id);
+        clear_computer_use_action_sequence(&app, &session_id);
+        if let Some(stopped) = cu.sessions.current_any() {
+            emit_computer_use_state(&app, &stopped);
+        }
+        return Err(error);
+    }
+    store.decide(&session_id, &confirmation_id, allow)?;
+    crate::services::computer_use_mcp::request_target_focus(&session_id)
 }
 
 /// Deny a pending consent request.
@@ -404,59 +1208,235 @@ fn deny_computer_use_session(
     cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
     request_id: String,
 ) -> Result<(), String> {
-    cu.sessions.deny_session(&request_id, crate::models::computer_use::DenyReason::UserDenied);
+    let _lifecycle = acquire_computer_use_lifecycle()?;
+    cu.sessions.deny_session(
+        &request_id,
+        crate::models::computer_use::DenyReason::UserDenied,
+    );
     Ok(())
 }
 
 /// Stop an active session.
+fn revoke_before_computer_use_handoff<R, H, T>(
+    revoke: R,
+    read_and_persist_handoff: H,
+) -> (Result<bool, String>, Option<T>)
+where
+    R: FnOnce() -> Result<bool, String>,
+    H: FnOnce() -> T,
+{
+    let revoke_result = revoke();
+    let handoff_result = matches!(revoke_result, Ok(true)).then(read_and_persist_handoff);
+    (revoke_result, handoff_result)
+}
+
 #[tauri::command]
 fn stop_computer_use_session(
     cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
+    store: tauri::State<'_, SettingsStore>,
+    app: tauri::AppHandle,
     session_id: String,
     reason: Option<String>,
 ) -> Result<(), String> {
+    let _lifecycle = acquire_computer_use_lifecycle()?;
     let r = match reason.as_deref() {
         Some("user_cancelled") => crate::models::computer_use::StopReason::UserCancelled,
         Some("emergency") => crate::models::computer_use::StopReason::EmergencyStop,
         _ => crate::models::computer_use::StopReason::UserCancelled,
     };
+    let stopped_reason = if matches!(r, crate::models::computer_use::StopReason::EmergencyStop) {
+        "emergency_stop"
+    } else {
+        "cancelled"
+    };
+    cu.signal_os_permission_poller_stop();
+    let (revoke_result, _) = revoke_before_computer_use_handoff(
+        || crate::services::computer_use_mcp::revoke_session(&session_id),
+        || persist_computer_use_handoff_or_emit(&cu, &app, &session_id, stopped_reason),
+    );
+    let layout_result = restore_computer_use_layout(&app, &session_id);
     cu.stop_os_permission_poller();
-    crate::services::computer_use_mcp::revoke_session(&session_id)?;
-    cu.stop(&session_id, r)
+    clear_computer_use_action_sequence(&app, &session_id);
+    let stopped = cu
+        .stop(&session_id, r)
         .map_err(|e| format!("stop denied: {:?}", e))?;
-    Ok(())
+    emit_computer_use_state(&app, &stopped);
+    if let Ok(settings) = store.get() {
+        show_computer_use_notification(&app, &settings, false);
+    }
+    match (revoke_result, layout_result) {
+        (Ok(true), Ok(_)) => Ok(()),
+        (Ok(true), Err(error)) => Err(error),
+        (Ok(false), _) => Err("Computer Use authority belonged to another session.".into()),
+        (Err(error), _) => Err(error),
+    }
 }
 
 #[tauri::command]
 fn pause_computer_use_session(
     cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
+    app: tauri::AppHandle,
     session_id: String,
 ) -> Result<crate::models::computer_use::Session, String> {
+    let _lifecycle = acquire_computer_use_lifecycle()?;
     crate::services::computer_use_mcp::set_paused(&session_id, true)?;
     match cu.pause(&session_id) {
-        Ok(session) => Ok(session),
-        Err(error) => {
-            let _ = crate::services::computer_use_mcp::set_paused(&session_id, false);
-            Err(format!("pause denied: {error:?}"))
+        Ok(session) => {
+            emit_computer_use_state(&app, &session);
+            Ok(session)
         }
+        // Fail closed: once the capability has been paused, an inconsistent
+        // session state must never reactivate native authority as a rollback.
+        Err(error) => Err(format!("pause denied: {error:?}")),
     }
 }
 
 #[tauri::command]
 fn resume_computer_use_session(
     cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
+    model_service: tauri::State<'_, ModelService>,
+    app: tauri::AppHandle,
     session_id: String,
 ) -> Result<crate::models::computer_use::Session, String> {
-    let session = cu.resume(&session_id).map_err(|e| format!("resume denied: {e:?}"))?;
+    let _lifecycle = acquire_computer_use_lifecycle()?;
+    let paused = cu
+        .sessions
+        .current_any()
+        .filter(|session| session.id == session_id)
+        .ok_or("computer-use session is not resumable")?;
+    model_service.require_computer_use_executor(&paused.executor_model_id)?;
+    let session = cu
+        .resume(&session_id)
+        .map_err(|e| format!("resume denied: {e:?}"))?;
     if let Err(error) = crate::services::computer_use_mcp::set_paused(&session_id, false) {
         let _ = cu.pause(&session_id);
         return Err(error);
     }
+    if let Err(error) = crate::services::computer_use_mcp::request_target_focus(&session_id) {
+        let _ = crate::services::computer_use_mcp::set_paused(&session_id, true);
+        let _ = cu.pause(&session_id);
+        return Err(error);
+    }
+    emit_computer_use_state(&app, &session);
     Ok(session)
 }
 
 /// List running apps for the pre-consent target picker. This exposes metadata
 /// only and does not create or widen a Computer Use capability.
+fn computer_use_app_is_visible(
+    app: &serde_json::Value,
+    blocked: &std::collections::HashSet<String>,
+) -> bool {
+    let Some(bundle_id) = app.get("bundleId").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let normalized_bundle_id = bundle_id.to_lowercase();
+    let display_name = app
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+
+    !blocked.contains(&normalized_bundle_id)
+        && !crate::services::session_manager::is_hard_blocked_app(
+            &normalized_bundle_id,
+            display_name,
+        )
+}
+
+#[cfg(test)]
+mod computer_use_app_filter_tests {
+    use super::computer_use_app_is_visible;
+    use std::collections::HashSet;
+
+    #[test]
+    fn preconsent_picker_hides_hard_blocked_display_names() {
+        let blocked = HashSet::new();
+
+        assert!(!computer_use_app_is_visible(
+            &serde_json::json!({
+                "bundleId": "com.example.ordinary",
+                "name": "Acme Bank"
+            }),
+            &blocked,
+        ));
+        assert!(computer_use_app_is_visible(
+            &serde_json::json!({
+                "bundleId": "com.apple.TextEdit",
+                "name": "TextEdit"
+            }),
+            &blocked,
+        ));
+    }
+}
+
+#[cfg(test)]
+mod computer_use_stop_order_tests {
+    use std::cell::RefCell;
+
+    use super::revoke_before_computer_use_handoff;
+
+    #[test]
+    fn stop_removes_action_authority_before_reading_handoff_audit() {
+        let events = RefCell::new(Vec::new());
+
+        let (revoke_result, handoff_result) = revoke_before_computer_use_handoff(
+            || {
+                events.borrow_mut().push("authority_revoked");
+                Ok(true)
+            },
+            || {
+                events.borrow_mut().push("handoff_read");
+            },
+        );
+
+        assert!(revoke_result.unwrap());
+        assert_eq!(handoff_result, Some(()));
+        assert_eq!(*events.borrow(), vec!["authority_revoked", "handoff_read"]);
+    }
+
+    #[test]
+    fn stop_never_reads_a_potentially_stale_handoff_when_revocation_fails() {
+        let events = RefCell::new(Vec::new());
+
+        let (revoke_result, handoff_result) = revoke_before_computer_use_handoff(
+            || {
+                events.borrow_mut().push("revocation_failed");
+                Err("could not remove authority".into())
+            },
+            || {
+                events.borrow_mut().push("handoff_read");
+            },
+        );
+
+        assert!(revoke_result.is_err());
+        assert_eq!(handoff_result, None);
+        assert_eq!(*events.borrow(), vec!["revocation_failed"]);
+    }
+}
+
+#[cfg(test)]
+mod computer_use_lifecycle_lock_tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::acquire_computer_use_lifecycle;
+
+    #[test]
+    fn pause_resume_and_stop_transitions_cannot_interleave() {
+        let first_transition = acquire_computer_use_lifecycle().unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let second = std::thread::spawn(move || {
+            let _second_transition = acquire_computer_use_lifecycle().unwrap();
+            entered_tx.send(()).unwrap();
+        });
+
+        assert!(entered_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        drop(first_transition);
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        second.join().unwrap();
+    }
+}
+
 #[tauri::command]
 fn list_computer_use_apps(
     store: tauri::State<'_, SettingsStore>,
@@ -468,11 +1448,10 @@ fn list_computer_use_apps(
         .iter()
         .map(|bundle| bundle.to_lowercase())
         .collect();
-    blocked.extend([
-        "ai.verboo.code.desktop".to_string(),
-        "com.apple.systempreferences".to_string(),
-        "com.apple.loginwindow".to_string(),
-    ]);
+    blocked.insert("com.apple.loginwindow".to_string());
+    if !settings.computer_use.self_test_enabled {
+        blocked.insert("ai.verboo.code.desktop".to_string());
+    }
     let result = crate::services::computer_use_service::invoke_helper_once(
         "list-apps",
         &serde_json::json!({}),
@@ -484,11 +1463,7 @@ fn list_computer_use_apps(
         .ok_or("computer-use helper returned an invalid app list")?;
     Ok(apps
         .iter()
-        .filter(|app| {
-            app.get("bundleId")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|bundle| !blocked.contains(&bundle.to_lowercase()))
-        })
+        .filter(|app| computer_use_app_is_visible(app, &blocked))
         .cloned()
         .collect())
 }
@@ -514,23 +1489,20 @@ fn resolve_computer_use_app(
     cu: tauri::State<'_, crate::services::computer_use_service::ComputerUseService>,
     selector: String,
 ) -> Result<serde_json::Value, String> {
-    cu.resolve_app(&selector).map_err(|error| format!("{}: {}", error.code, error.message))
+    cu.resolve_app(&selector)
+        .map_err(|error| format!("{}: {}", error.code, error.message))
 }
 
 #[tauri::command]
 fn get_computer_use_permissions() -> Result<serde_json::Value, String> {
-    crate::services::computer_use_service::invoke_helper_once(
-        "permissions",
-        &serde_json::json!({}),
-    ).map_err(|error| format!("{}: {}", error.code, error.message))
+    crate::services::computer_use_service::computer_use_permission_status(false)
+        .map_err(|error| format!("{}: {}", error.code, error.message))
 }
 
 #[tauri::command]
 fn request_computer_use_permissions() -> Result<serde_json::Value, String> {
-    crate::services::computer_use_service::invoke_helper_once(
-        "request-permissions",
-        &serde_json::json!({}),
-    ).map_err(|error| format!("{}: {}", error.code, error.message))
+    crate::services::computer_use_service::computer_use_permission_status(true)
+        .map_err(|error| format!("{}: {}", error.code, error.message))
 }
 
 #[tauri::command]
@@ -538,15 +1510,19 @@ fn open_computer_use_permission_settings(kind: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let url = match kind.as_str() {
-            "accessibility" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-            "screenRecording" => "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+            "accessibility" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+            }
+            "screenRecording" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+            }
             _ => return Err("Unknown Computer Use permission kind.".into()),
         };
         std::process::Command::new("open")
             .arg(url)
             .spawn()
             .map_err(|error| format!("Could not open System Settings: {error}"))?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -559,17 +1535,23 @@ fn open_computer_use_permission_settings(kind: String) -> Result<(), String> {
 /// if it could not be resolved (neither bundled, env override, nor dev build).
 #[tauri::command]
 fn get_computer_use_helper_path() -> Result<String, String> {
-    crate::services::computer_use_spawn::resolved_helper_path()
+    crate::services::computer_use_spawn::resolved_agent_path()
+        .or_else(crate::services::computer_use_spawn::resolved_helper_path)
         .map(|p| p.to_string_lossy().into_owned())
-        .ok_or_else(|| "computer-use-helper binary not found — try a dev build or set VERBOO_COMPUTER_USE_HELPER".to_string())
+        .ok_or_else(|| {
+            "Verboo Computer Use agent not found — rebuild the native dependencies".to_string()
+        })
 }
 
 /// Reveals the computer-use-helper binary in Finder (macOS only).
 /// On other platforms this is a no-op.
 #[tauri::command]
 fn reveal_computer_use_helper() -> Result<(), String> {
-    let path = crate::services::computer_use_spawn::resolved_helper_path()
-        .ok_or_else(|| "computer-use-helper binary not found — try a dev build or set VERBOO_COMPUTER_USE_HELPER".to_string())?;
+    let path = crate::services::computer_use_spawn::resolved_agent_path()
+        .or_else(crate::services::computer_use_spawn::resolved_helper_path)
+        .ok_or_else(|| {
+            "Verboo Computer Use agent not found — rebuild the native dependencies".to_string()
+        })?;
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
@@ -577,12 +1559,12 @@ fn reveal_computer_use_helper() -> Result<(), String> {
             .arg(&path)
             .spawn()
             .map_err(|e| format!("Could not reveal helper in Finder: {e}"))?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = path;
-        return Err("Reveal in Finder is only supported on macOS".to_string());
+        Err("Reveal in Finder is only supported on macOS".to_string())
     }
 }
 
@@ -605,18 +1587,14 @@ async fn get_vision_fallback_state(
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
     let settings = store.get()?;
-    let consent = serde_json::to_value(&settings.vision_fallback_consent)
-        .map_err(|e| e.to_string())?;
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let consent =
+        serde_json::to_value(&settings.vision_fallback_consent).map_err(|e| e.to_string())?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
 
     // Run the blocking model list fetch on a background thread.
     let app_data_dir_clone = app_data_dir.clone();
     let helper_preview = tauri::async_runtime::spawn_blocking(move || {
-        let model_service =
-            crate::services::model_service::ModelService::new(app_data_dir_clone);
+        let model_service = crate::services::model_service::ModelService::new(app_data_dir_clone);
         let credentials_fresh = CredentialsStore::new();
         let token = crate::services::auth_token::resolve_token(&credentials_fresh);
         // force_refresh=false: try cache first (fast), fall back to API.
@@ -626,13 +1604,14 @@ async fn get_vision_fallback_state(
             .list_models(token.as_deref(), false)
             .ok()
             .and_then(|discovery| {
-                crate::services::vision_fallback_service::resolve_vision_helper(&discovery)
-                    .map(|m| {
+                crate::services::vision_fallback_service::resolve_vision_helper(&discovery).map(
+                    |m| {
                         serde_json::json!({
                             "id": m.id,
                             "displayName": m.display_name,
                         })
-                    })
+                    },
+                )
             })
     })
     .await
@@ -660,6 +1639,7 @@ fn apply_runtime_settings(
     next: &UserSettings,
     tray: &crate::services::tray_service::TrayService,
     updates: &crate::services::update_service::UpdateService,
+    cu: &crate::services::computer_use_service::ComputerUseService,
     app: &tauri::AppHandle,
 ) {
     tray.configure(next);
@@ -675,6 +1655,68 @@ fn apply_runtime_settings(
                 let _ = icon.set_title(Some(""));
             }
         }
+    }
+
+    let _lifecycle = match acquire_computer_use_lifecycle() {
+        Ok(guard) => guard,
+        Err(error) => {
+            eprintln!("[computer-use] settings kill switch could not lock lifecycle: {error}");
+            return;
+        }
+    };
+    let Some(session) = cu.sessions.current_any() else {
+        return;
+    };
+    let denied_approved_app = session.approved_apps.iter().any(|approved| {
+        crate::services::session_manager::is_hard_blocked_bundle(&approved.bundle_id)
+            || next
+                .computer_use
+                .denylist
+                .iter()
+                .any(|denied| denied.eq_ignore_ascii_case(&approved.bundle_id))
+            || (approved
+                .bundle_id
+                .eq_ignore_ascii_case("ai.verboo.code.desktop")
+                && !next.computer_use.self_test_enabled)
+    });
+    if next.computer_use.enabled && !denied_approved_app {
+        return;
+    }
+
+    cu.stop_os_permission_poller();
+    let (revoke_result, _) = revoke_before_computer_use_handoff(
+        || crate::services::computer_use_mcp::revoke_session(&session.id),
+        || persist_computer_use_handoff_or_emit(cu, app, &session.id, "settings_revoked"),
+    );
+    if let Err(error) = restore_computer_use_layout(app, &session.id) {
+        eprintln!("[computer-use] settings layout restore failed: {error}");
+    }
+    clear_computer_use_action_sequence(app, &session.id);
+    let _ = cu
+        .sessions
+        .stop(&session.id, crate::models::computer_use::StopReason::Error);
+    use tauri::Emitter;
+    let reason = if next.computer_use.enabled {
+        "app_denied"
+    } else {
+        "feature_disabled"
+    };
+    let _ = app.emit(
+        "computer-use:settings-revoked",
+        serde_json::json!({
+            "sessionId": session.id,
+            "reason": reason,
+        }),
+    );
+    show_computer_use_notification(app, next, false);
+    match revoke_result {
+        Err(error) => eprintln!(
+            "[computer-use] settings kill switch removed local session; cleanup error: {error}"
+        ),
+        Ok(false) => {
+            eprintln!("[computer-use] settings kill switch found authority for another session")
+        }
+        Ok(true) => {}
     }
 }
 
@@ -718,7 +1760,8 @@ fn heartbeat_menu_bar(
         crate::services::tray_service::TrayExecution::Permission => "permission",
         crate::services::tray_service::TrayExecution::Done => "done",
         crate::services::tray_service::TrayExecution::Error => "error",
-    }.to_string())
+    }
+    .to_string())
 }
 
 /// Pre-renders the Verboo mascot into the tray "breathing" frames, mirroring
@@ -791,10 +1834,12 @@ fn check_skill_approval(
     store: tauri::State<'_, SettingsStore>,
 ) -> Result<Vec<SkillSummary>, String> {
     let settings = store.get()?;
-    Ok(crate::services::skills_service::SkillsService::pending_approval_skills(
-        &skills,
-        &settings.trusted_skills,
-    ))
+    Ok(
+        crate::services::skills_service::SkillsService::pending_approval_skills(
+            &skills,
+            &settings.trusted_skills,
+        ),
+    )
 }
 
 /// Persists a "Always Allow" decision for an untrusted skill. After this,
@@ -896,7 +1941,10 @@ fn fire_completion_notification(
             })?;
         Ok(true)
     } else {
-        eprintln!("[verboo:notification] suppressed by settings (mode={:?})", settings.completion_notifications);
+        eprintln!(
+            "[verboo:notification] suppressed by settings (mode={:?})",
+            settings.completion_notifications
+        );
         Ok(false)
     }
 }
@@ -910,7 +1958,6 @@ fn get_default_working_directory() -> String {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "/".to_string())
 }
-
 
 // ════════════════════════════════════════════════════════════════════
 // @-mention file listing (quick-win #1)
@@ -998,12 +2045,16 @@ fn get_bundled_cli_version() -> String {
 
 #[tauri::command]
 fn get_workspace_changes(working_directory: String) -> Result<WorkspaceChangeSummary, String> {
-    Ok(services::git_service::read_workspace_change_summary(&working_directory))
+    Ok(services::git_service::read_workspace_change_summary(
+        &working_directory,
+    ))
 }
 
 #[tauri::command]
 fn get_workspace_branches(working_directory: String) -> Result<WorkspaceBranchInfo, String> {
-    Ok(services::git_service::read_workspace_branch_info(&working_directory))
+    Ok(services::git_service::read_workspace_branch_info(
+        &working_directory,
+    ))
 }
 
 #[tauri::command]
@@ -1056,9 +2107,7 @@ async fn create_workspace_pull_request(
 }
 
 #[tauri::command]
-async fn push_workspace_changes(
-    working_directory: String,
-) -> Result<WorkspacePushResult, String> {
+async fn push_workspace_changes(working_directory: String) -> Result<WorkspacePushResult, String> {
     tokio::task::spawn_blocking(move || {
         services::git_service::push_workspace_changes(&working_directory)
     })
@@ -1118,10 +2167,7 @@ fn get_file_diff(
 }
 
 #[tauri::command]
-fn revert_file(
-    working_directory: String,
-    file_path: String,
-) -> Result<FileDiffResponse, String> {
+fn revert_file(working_directory: String, file_path: String) -> Result<FileDiffResponse, String> {
     match services::git_service::revert_file(&working_directory, &file_path) {
         Ok(_) => Ok(FileDiffResponse {
             ok: true,
@@ -1212,7 +2258,10 @@ async fn pick_files(app: tauri::AppHandle) -> Result<Vec<AttachmentMeta>, String
     let paths = app
         .dialog()
         .file()
-        .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp", "heic", "heif"])
+        .add_filter(
+            "Images",
+            &["png", "jpg", "jpeg", "gif", "webp", "heic", "heif"],
+        )
         .add_filter("All files", &["*"])
         .blocking_pick_files();
     let paths = paths.unwrap_or_default();
@@ -1262,11 +2311,8 @@ fn inspect_pasted_image(
     let pasted_dir = app_data_dir.join("pasted_images");
 
     // Delegate to the testable core function.
-    let meta = services::file_service::write_pasted_image_and_inspect(
-        &bytes,
-        &filename,
-        &pasted_dir,
-    )?;
+    let meta =
+        services::file_service::write_pasted_image_and_inspect(&bytes, &filename, &pasted_dir)?;
     Ok(vec![meta])
 }
 
@@ -1281,11 +2327,7 @@ fn inspect_pasted_image(
 /// Returns the absolute path of the saved file. The renderer stores this
 /// path in `UserSettings.avatar.uploadPath`.
 #[tauri::command]
-fn save_avatar_blob(
-    base64: String,
-    mime: String,
-    app: tauri::AppHandle,
-) -> Result<String, String> {
+fn save_avatar_blob(base64: String, mime: String, app: tauri::AppHandle) -> Result<String, String> {
     use base64::Engine;
 
     // Decode base64. Reject if invalid.
@@ -1312,7 +2354,9 @@ async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
         .file()
         .set_title("Selecionar pasta")
         .blocking_pick_folder();
-    Ok(folder.and_then(|p| p.into_path().ok()).map(|p| p.to_string_lossy().to_string()))
+    Ok(folder
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.to_string_lossy().to_string()))
 }
 
 #[tauri::command]
@@ -1410,12 +2454,8 @@ async fn check_for_updates(
     };
     match updater.check().await {
         Ok(Some(update)) => {
-            let snap = service.mark_available(
-                update.version.clone(),
-                None,
-                None,
-                update.body.clone(),
-            );
+            let snap =
+                service.mark_available(update.version.clone(), None, None, update.body.clone());
             let _ = app.emit("update:snapshot", snap.clone());
             Ok(snap)
         }
@@ -1459,7 +2499,7 @@ async fn download_update(
                     let snap = service_handle.mark_download_progress(
                         percent,
                         chunk_len as u64,
-                        total as u64,
+                        total,
                         0.0,
                     );
                     let _ = app_for_chunk.emit("update:snapshot", snap);
@@ -1593,13 +2633,8 @@ pub fn run() {
             {
                 use tauri_plugin_notification::NotificationExt;
                 match app.notification().request_permission() {
-                    Ok(state) => eprintln!(
-                        "[verboo:notification] permission state: {:?}",
-                        state
-                    ),
-                    Err(e) => eprintln!(
-                        "[verboo:notification] request_permission failed: {e}"
-                    ),
+                    Ok(state) => eprintln!("[verboo:notification] permission state: {:?}", state),
+                    Err(e) => eprintln!("[verboo:notification] request_permission failed: {e}"),
                 }
             }
 
@@ -1618,14 +2653,20 @@ pub fn run() {
             // ModelService — fetches models from Verboo Router API with disk cache
             app.manage(ModelService::new(app_data_dir.clone()));
             // TurnService — spawns `verboo` CLI for agent turns with streaming
-            app.manage(TurnService::new(std::sync::Arc::new(CredentialsStore::new())).with_settings(std::sync::Arc::new(settings_store_for_turn)).with_app_data_dir(app_data_dir.clone()));
+            app.manage(
+                TurnService::new(std::sync::Arc::new(CredentialsStore::new()))
+                    .with_settings(std::sync::Arc::new(settings_store_for_turn))
+                    .with_app_data_dir(app_data_dir.clone()),
+            );
             // ResearchSubagentRunner — spawns read-only CLI turns for research
             // subagents. Shares a CredentialsStore (Arc) so it can resolve the
             // bearer token (CLI OAuth first, API key fallback) the same way
             // TurnService does.
-            app.manage(crate::services::research_subagent_runner::ResearchSubagentRunner::new(
-                std::sync::Arc::new(CredentialsStore::new()),
-            ));
+            app.manage(
+                crate::services::research_subagent_runner::ResearchSubagentRunner::new(
+                    std::sync::Arc::new(CredentialsStore::new()),
+                ),
+            );
             // TerminalService — PTY for the local terminal panel
             app.manage(TerminalService::new());
             // TrayService — owns the menubar state machine (icon/title animation)
@@ -1642,6 +2683,18 @@ pub fn run() {
             // StaleFileDetector — tracks file snapshots per conversation
             app.manage(crate::services::stale_file_detector::StaleFileDetector::new());
             app.manage(crate::services::computer_use_service::ComputerUseService::new());
+            app.manage(crate::services::computer_use_layout::ComputerUseLayoutService::new());
+
+            // Crash recovery is authorized only while this process holds the
+            // machine-owner lock. It removes stale capability first, then
+            // restores only windows recorded by the focus helper.
+            match crate::services::computer_use_mcp::recover_stale_runtime() {
+                Ok(true) => eprintln!("[computer-use] restored stale focused windows"),
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("[computer-use] stale runtime preserved for safe retry: {error}")
+                }
+            }
 
             // ── System tray (macOS menubar / Win+Linux notification area) ──────
             // The tray icon shows the Verboo logo on Win/Linux and the animated
@@ -1745,7 +2798,7 @@ pub fn run() {
                         } else {
                             // Win/Linux: actually quit (the default behavior).
                             // Allow the close so the app exits cleanly.
-                            let _ = app_handle.exit(0);
+                            app_handle.exit(0);
                         }
                     }
                 });
@@ -1820,11 +2873,19 @@ pub fn run() {
             remove_computer_use_allowlist,
             request_computer_use_session,
             grant_computer_use_session,
-            bind_computer_use_target,
+            approve_computer_use_app,
+            get_pending_computer_use_confirmation,
+            decide_computer_use_confirmation,
             deny_computer_use_session,
             stop_computer_use_session,
+            get_computer_use_layout_state,
             pause_computer_use_session,
             resume_computer_use_session,
+            select_computer_use_executor,
+            persist_computer_use_executor_lease,
+            get_computer_use_executor_lease,
+            recover_computer_use_executor_lease,
+            clear_computer_use_executor_lease,
             list_computer_use_apps,
             list_apps,
             resolve_computer_use_app,
@@ -1888,6 +2949,27 @@ pub fn run() {
             clipboard_read_text,
             clipboard_write_text,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running verboo-desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building verboo-desktop")
+        .run(|app, event| {
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                if let Err(error) = crate::services::computer_use_mcp::shutdown_owned_runtime() {
+                    eprintln!("[computer-use] shutdown cleanup failed: {error}");
+                }
+                if let Some(layout) = app
+                    .try_state::<crate::services::computer_use_layout::ComputerUseLayoutService>(
+                ) {
+                    if let Ok(state) = layout.state() {
+                        if let Some(session_id) = state.session_id {
+                            if let Err(error) = layout.restore(app, &session_id) {
+                                eprintln!("[computer-use] shutdown layout restore failed: {error}");
+                            }
+                        }
+                    }
+                }
+            }
+        });
 }

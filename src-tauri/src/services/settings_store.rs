@@ -132,7 +132,7 @@ impl SettingsStore {
         };
 
         UserSettings {
-            language: s.language.clone(),
+            language: s.language,
             default_access_mode: access_mode,
             full_access_enabled: s.full_access_enabled,
             last_selected_model_id: s.last_selected_model_id.clone(),
@@ -185,13 +185,15 @@ impl SettingsStore {
 ///   - audit_storage_cap_mb        clamp [10, 10_000]
 ///   - idle_timeout_seconds        clamp [300, 3600]
 ///   - self_test_enabled==false    strip all allowlist entries with
-///                                  `is_self_test == true` (architecture §4)
+///     `is_self_test == true` (architecture §4)
 ///   - enabled==false              force self_test_enabled=false (can't run
-///                                  self-test when feature is disabled)
+///     self-test when feature is disabled)
 ///   - denylist                    de-duplicate (case-insensitive)
 ///   - allowlist                   de-duplicate by bundle_id (case-insensitive,
-///                                  last-wins on conflict)
-fn normalize_computer_use(s: &crate::models::types::ComputerUseSettings) -> crate::models::types::ComputerUseSettings {
+///     last-wins on conflict)
+fn normalize_computer_use(
+    s: &crate::models::types::ComputerUseSettings,
+) -> crate::models::types::ComputerUseSettings {
     use crate::models::types::{ComputerUseAllowlistEntry, ComputerUseSettings};
 
     let clamped_retention = s.audit_retention_days.clamp(7, 365);
@@ -229,7 +231,9 @@ fn normalize_computer_use(s: &crate::models::types::ComputerUseSettings) -> crat
         }
         // Even when self-test is enabled, non-self-test entries with the
         // Verboo bundle id are invalid — Verboo is only ever a self-test target.
-        let is_verboo = entry.bundle_id.eq_ignore_ascii_case("ai.verboo.code.desktop");
+        let is_verboo = entry
+            .bundle_id
+            .eq_ignore_ascii_case("ai.verboo.code.desktop");
         if is_verboo && !entry.is_self_test {
             continue;
         }
@@ -246,6 +250,15 @@ fn normalize_computer_use(s: &crate::models::types::ComputerUseSettings) -> crat
         self_test_enabled,
         allowlist,
         denylist,
+        preferred_visual_executor_id: s
+            .preferred_visual_executor_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned),
+        // Kept on the persisted schema for compatibility, but safe focus
+        // isolation always restores every window it minimized.
+        restore_hidden_apps: true,
         audit_retention_days: clamped_retention,
         audit_storage_cap_mb: clamped_cap,
         idle_timeout_seconds: clamped_idle,
@@ -275,10 +288,7 @@ impl Clone for SettingsStore {
 fn merge_json(target: &mut serde_json::Value, patch: &serde_json::Map<String, serde_json::Value>) {
     if let Some(target_obj) = target.as_object_mut() {
         for (key, patch_val) in patch {
-            let needs_deep_merge = target_obj
-                .get(key)
-                .and_then(|v| v.as_object())
-                .is_some()
+            let needs_deep_merge = target_obj.get(key).and_then(|v| v.as_object()).is_some()
                 && patch_val.as_object().is_some();
             if needs_deep_merge {
                 if let Some(target_sub) = target_obj.get_mut(key).and_then(|v| v.as_object_mut()) {
@@ -401,14 +411,10 @@ mod tests {
     #[test]
     fn update_show_in_menu_bar_toggle_is_honored() {
         let store = temp_store();
-        let updated = store
-            .update(json!({ "showInMenuBar": false }))
-            .unwrap();
+        let updated = store.update(json!({ "showInMenuBar": false })).unwrap();
         assert!(!updated.show_in_menu_bar);
         assert!(!store.get().unwrap().show_in_menu_bar);
-        let restored = store
-            .update(json!({ "showInMenuBar": true }))
-            .unwrap();
+        let restored = store.update(json!({ "showInMenuBar": true })).unwrap();
         assert!(restored.show_in_menu_bar);
     }
 
@@ -435,13 +441,25 @@ mod tests {
         assert_eq!(cu.audit_storage_cap_mb, 200);
         assert_eq!(cu.idle_timeout_seconds, 900);
         assert!(!cu.telemetry_opt_out);
+        assert!(cu.restore_hidden_apps);
+    }
+
+    #[test]
+    fn computer_use_cannot_disable_safe_focus_restoration() {
+        let store = temp_store();
+        let normalized = store
+            .update(json!({ "computerUse": { "restoreHiddenApps": false } }))
+            .unwrap();
+        assert!(normalized.computer_use.restore_hidden_apps);
     }
 
     #[test]
     fn computer_use_enable_then_self_test_works() {
         let store = temp_store();
         // CU on, then self-test on. Both must persist.
-        let step1 = store.update(json!({ "computerUse": { "enabled": true } })).unwrap();
+        let step1 = store
+            .update(json!({ "computerUse": { "enabled": true } }))
+            .unwrap();
         assert!(step1.computer_use.enabled);
         assert!(!step1.computer_use.self_test_enabled); // still off
         let step2 = store
@@ -687,7 +705,8 @@ mod tests {
             "AccessMode=full MUST NOT auto-add any allowlist entry"
         );
         assert!(
-            !s.computer_use.allowlist
+            !s.computer_use
+                .allowlist
                 .iter()
                 .any(|e| e.bundle_id.eq_ignore_ascii_case("ai.verboo.code.desktop")),
             "AccessMode=full MUST NOT inject a Verboo self-test entry"

@@ -31,6 +31,36 @@ impl ModelService {
         self.cache_dir.join(CACHE_FILE)
     }
 
+    /// Returns the last catalog persisted by the backend model-discovery path.
+    /// Computer Use uses this copy instead of trusting vision flags supplied by
+    /// the renderer. No network request is made here.
+    pub fn cached_catalog(&self) -> Result<Vec<VerbooModel>, String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let cached = self
+            .read_cache(now)
+            .ok_or("The verified model catalog is unavailable. Refresh models and try again.")?;
+        if cached.models.is_empty() {
+            return Err(
+                "The verified model catalog is empty. Refresh models and try again.".into(),
+            );
+        }
+        Ok(cached.models)
+    }
+
+    /// Revalidates the exact Computer Use executor against the backend-owned
+    /// catalog at every authority boundary.
+    pub fn require_computer_use_executor(&self, executor_model_id: &str) -> Result<(), String> {
+        let catalog = self.cached_catalog()?;
+        crate::services::computer_use_executor::require_backend_verified_visual_executor(
+            &catalog,
+            executor_model_id,
+        )
+        .map_err(|error| error.to_string())
+    }
+
     /// Lists models. Tries API key first, then CLI token.
     pub fn list_models(
         &self,
@@ -93,12 +123,9 @@ impl ModelService {
                 models: cached.models,
                 source: "cache".into(),
                 stale: true,
-                error: Some(
-                    live_error.unwrap_or_else(|| {
-                        "Entre com Verboo pelo CLI/app para atualizar os modelos da sua conta."
-                            .into()
-                    }),
-                ),
+                error: Some(live_error.unwrap_or_else(|| {
+                    "Entre com Verboo pelo CLI/app para atualizar os modelos da sua conta.".into()
+                })),
             });
         }
 
@@ -106,11 +133,9 @@ impl ModelService {
             models: Vec::new(),
             source: "none".into(),
             stale: false,
-            error: Some(
-                live_error.unwrap_or_else(|| {
-                    "Entre com Verboo pelo CLI/app ou configure uma chave API.".into()
-                }),
-            ),
+            error: Some(live_error.unwrap_or_else(|| {
+                "Entre com Verboo pelo CLI/app ou configure uma chave API.".into()
+            })),
         })
     }
 
@@ -132,7 +157,14 @@ impl ModelService {
             let status = response.status();
             let body = response.text().unwrap_or_default();
             let sanitized = sanitize_body(&body);
-            return Err(format!("HTTP {status}{}", if sanitized.is_empty() { String::new() } else { format!(": {sanitized}") }));
+            return Err(format!(
+                "HTTP {status}{}",
+                if sanitized.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {sanitized}")
+                }
+            ));
         }
 
         let payload: serde_json::Value = response
@@ -183,7 +215,7 @@ fn normalize_models(payload: &serde_json::Value) -> Vec<VerbooModel> {
     let items = if let Some(obj) = payload.as_object() {
         obj.get("data")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.clone())
+            .cloned()
             .unwrap_or_default()
     } else if let Some(arr) = payload.as_array() {
         arr.clone()
@@ -191,10 +223,7 @@ fn normalize_models(payload: &serde_json::Value) -> Vec<VerbooModel> {
         return Vec::new();
     };
 
-    items
-        .iter()
-        .filter_map(normalize_model)
-        .collect()
+    items.iter().filter_map(normalize_model).collect()
 }
 
 fn normalize_model(item: &serde_json::Value) -> Option<VerbooModel> {
@@ -225,8 +254,8 @@ fn normalize_model(item: &serde_json::Value) -> Option<VerbooModel> {
         .and_then(|v| v.as_u64())
         .map(|n| n as u32);
 
-    let (supports_vision, vision_support_source) = detect_vision_support(&obj);
-    let reasoning = extract_reasoning(&obj);
+    let (supports_vision, vision_support_source) = detect_vision_support(obj);
+    let reasoning = extract_reasoning(obj);
 
     Some(VerbooModel {
         id,
@@ -344,32 +373,35 @@ fn detect_vision_support(
 
     // Classification
     let classifications = collect_strings(obj, &["classification"]);
-    if classifications.iter().any(|s| s.contains("vision") || s.contains("image")) {
+    if classifications
+        .iter()
+        .any(|s| s.contains("vision") || s.contains("image"))
+    {
         return (Some(true), Some("raw-capabilities".into()));
     }
 
-    // Heuristic: check name for vision keywords (word-boundary match,
-    // mirroring Electron's `\b<pattern>\b` regex).
-    let id_text = vec![
-        obj.get("id").and_then(|v| v.as_str()),
-        obj.get("display_name").and_then(|v| v.as_str()),
-        obj.get("displayName").and_then(|v| v.as_str()),
-        obj.get("label").and_then(|v| v.as_str()),
+    // Preserve the existing non-authoritative UI/fallback hint. Computer Use
+    // rejects this `heuristic` provenance at every authority boundary.
+    let id_text = [
+        obj.get("id").and_then(|value| value.as_str()),
+        obj.get("display_name").and_then(|value| value.as_str()),
+        obj.get("displayName").and_then(|value| value.as_str()),
+        obj.get("label").and_then(|value| value.as_str()),
     ]
     .into_iter()
     .flatten()
     .collect::<Vec<_>>()
     .join(" ")
     .to_lowercase();
-
-    // Tokens with non-alphanumeric boundaries (including hyphens, slashes,
-    // underscores). "minimax-vision" matches as two tokens: "minimax", "vision".
     let heuristic_patterns = ["vision", "vl", "omni", "multimodal"];
-    let tokens: Vec<&str> = id_text
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    if tokens.iter().any(|tok| heuristic_patterns.contains(tok)) {
+    let tokens = id_text
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens
+        .iter()
+        .any(|token| heuristic_patterns.contains(token))
+    {
         return (Some(true), Some("heuristic".into()));
     }
 
@@ -448,14 +480,14 @@ fn refresh_cached_vision_metadata(models: &mut [VerbooModel]) {
     }
 }
 
-fn collect_strings(
-    obj: &serde_json::Map<String, serde_json::Value>,
-    keys: &[&str],
-) -> Vec<String> {
+fn collect_strings(obj: &serde_json::Map<String, serde_json::Value>, keys: &[&str]) -> Vec<String> {
     let mut result = Vec::new();
     for key in keys {
         if let Some(arr) = obj.get(*key).and_then(|v| v.as_array()) {
-            result.extend(arr.iter().filter_map(|v| v.as_str().map(|s| s.to_lowercase())));
+            result.extend(
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase())),
+            );
         }
     }
     result
@@ -531,11 +563,7 @@ mod tests {
         for (key, value) in cases {
             let obj = json!({ key: value });
             let (vision, source) = detect_vision_support(obj.as_object().unwrap());
-            assert_eq!(
-                vision,
-                Some(value),
-                "key {key} should resolve to {value}"
-            );
+            assert_eq!(vision, Some(value), "key {key} should resolve to {value}");
             assert_eq!(
                 source.as_deref(),
                 Some("router"),
@@ -585,11 +613,14 @@ mod tests {
 
         let obj = json!({"capabilities": {"supports_image": "true"}});
         let (vision, _) = detect_vision_support(obj.as_object().unwrap());
-        assert_eq!(vision, None, "capabilities string must not be treated as true");
+        assert_eq!(
+            vision, None,
+            "capabilities string must not be treated as true"
+        );
     }
 
     #[test]
-    fn vision_detection_heuristic_name() {
+    fn vision_detection_heuristic_name_remains_a_non_authoritative_hint() {
         let obj = json!({"id": "claude-sonnet-4-vision"});
         let (vision, source) = detect_vision_support(obj.as_object().unwrap());
         assert_eq!(vision, Some(true));
@@ -612,19 +643,15 @@ mod tests {
     }
 
     #[test]
-    fn vision_detection_word_boundary_vl() {
-        // "vl" must match as a whole word, not as a substring.
-        // "invlnv" should NOT trigger vision (Electron uses \bvl\b regex).
+    fn vision_detection_heuristic_uses_whole_vl_tokens_only() {
         let obj = json!({"id": "invlnv"});
         let (vision, _) = detect_vision_support(obj.as_object().unwrap());
-        assert_eq!(vision, None, "substring 'vl' inside 'invlnv' must not match");
+        assert_eq!(vision, None);
 
-        // "model-vl-1" should match (vl is a token between hyphens).
         let obj = json!({"id": "model-vl-1"});
         let (vision, _) = detect_vision_support(obj.as_object().unwrap());
         assert_eq!(vision, Some(true));
 
-        // "qwen-vl" should match.
         let obj = json!({"id": "qwen-vl"});
         let (vision, _) = detect_vision_support(obj.as_object().unwrap());
         assert_eq!(vision, Some(true));
@@ -679,11 +706,7 @@ mod tests {
         ] {
             let obj = json!({ key: value });
             let (vision, source) = detect_vision_support(obj.as_object().unwrap());
-            assert_eq!(
-                vision,
-                Some(value),
-                "key {key} should resolve to {value}"
-            );
+            assert_eq!(vision, Some(value), "key {key} should resolve to {value}");
             assert_eq!(
                 source.as_deref(),
                 Some("router"),
@@ -825,5 +848,67 @@ mod tests {
             raw: json!({"id": "a", "vision": false}),
         }];
         assert!(!cache_lacks_vision_metadata(&models));
+    }
+
+    #[test]
+    fn computer_use_catalog_is_loaded_from_backend_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = ModelService::new(directory.path().to_path_buf());
+        let model = VerbooModel {
+            id: "vision-model".into(),
+            display_name: "Vision Model".into(),
+            context_window: None,
+            max_output_tokens: None,
+            supports_vision: Some(true),
+            vision_support_source: Some("router".into()),
+            reasoning: None,
+            raw: json!({"id": "vision-model", "vision": true}),
+        };
+        service
+            .write_cache(std::slice::from_ref(&model), 1)
+            .unwrap();
+
+        let catalog = service.cached_catalog().unwrap();
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0].id, model.id);
+        assert_eq!(catalog[0].supports_vision, Some(true));
+    }
+
+    #[test]
+    fn computer_use_catalog_fails_closed_without_backend_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = ModelService::new(directory.path().to_path_buf());
+
+        assert!(service.cached_catalog().is_err());
+    }
+
+    #[test]
+    fn computer_use_executor_is_revalidated_from_backend_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = ModelService::new(directory.path().to_path_buf());
+        let verified = VerbooModel {
+            id: "verified-vision".into(),
+            display_name: "Verified Vision".into(),
+            context_window: None,
+            max_output_tokens: None,
+            supports_vision: Some(true),
+            vision_support_source: Some("router".into()),
+            reasoning: None,
+            raw: json!({"id": "verified-vision", "vision": true}),
+        };
+        let mut heuristic = verified.clone();
+        heuristic.id = "vision-by-name-only".into();
+        heuristic.vision_support_source = Some("heuristic".into());
+        service.write_cache(&[verified, heuristic], 1).unwrap();
+
+        assert!(service
+            .require_computer_use_executor("verified-vision")
+            .is_ok());
+        assert!(service
+            .require_computer_use_executor("vision-by-name-only")
+            .is_err());
+        assert!(service
+            .require_computer_use_executor("renderer-invented-model")
+            .is_err());
     }
 }

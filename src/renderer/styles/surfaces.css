@@ -521,6 +521,14 @@
   color: var(--green);
 }
 
+.computer-use-denied-apps-panel {
+  gap: 10px;
+}
+
+.computer-use-denied-app-row svg {
+  color: var(--danger);
+}
+
 .trusted-command-row span {
   display: grid;
   gap: 4px;

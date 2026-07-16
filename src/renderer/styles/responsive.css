@@ -108,6 +108,21 @@
     flex-direction: column;
   }
 
+  .app-shell.is-computer-use-compact .composer-toolbar {
+    align-items: center;
+    flex-direction: row;
+  }
+
+  .app-shell.is-computer-use-compact .composer-tools,
+  .app-shell.is-computer-use-compact .composer-tools.right {
+    width: auto;
+    justify-content: flex-start;
+  }
+
+  .app-shell.is-computer-use-compact .composer-tools.right {
+    justify-content: flex-end;
+  }
+
   .composer-tools,
   .composer-tools.right {
     width: 100%;

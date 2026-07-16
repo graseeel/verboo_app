@@ -51,6 +51,28 @@ export function extractComputerUseAppSelector(goal: string): string | undefined 
   return match?.[1]?.trim() || undefined
 }
 
+export function countHiddenComputerUseApps(
+  apps: ComputerUseApp[],
+  targetBundleId: string,
+  approvedBundleIds: string[] = [],
+): number {
+  const excludedBundleIds = new Set([
+    targetBundleId.trim().toLocaleLowerCase(),
+    'ai.verboo.code.desktop',
+    ...approvedBundleIds.map(bundleId => bundleId.trim().toLocaleLowerCase()),
+  ])
+  const visibleBundleIds = new Set<string>()
+
+  for (const app of apps) {
+    const bundleId = app.bundleId.trim().toLocaleLowerCase()
+    if (!bundleId || excludedBundleIds.has(bundleId)) continue
+    if (!Number.isFinite(app.visibleWindowCount) || (app.visibleWindowCount ?? 0) <= 0) continue
+    visibleBundleIds.add(bundleId)
+  }
+
+  return visibleBundleIds.size
+}
+
 /**
  * True when CU intent is present (skill or explicit NL). Callers may pre-bind
  * `resolvedApp` when known; absence of an app never blocks start (goal-first).

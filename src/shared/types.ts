@@ -819,6 +819,36 @@ export type TerminalDataEvent = {
 
 export type ComputerUseScope = 'view' | 'input' | 'full' | 'ask'
 
+export type ComputerUseAppTier = 'view_only' | 'click_only' | 'full_control'
+
+export type ComputerUseLayoutState = {
+  sessionId?: string
+  mode: 'idle' | 'entering' | 'compact' | 'fallback' | 'restoring'
+  targetBundleId?: string
+}
+
+export type ComputerUseModelIdentity = {
+  id: string
+  displayName: string
+}
+
+export type ComputerUseApprovedApp = {
+  bundleId: string
+  displayName: string
+  tier: ComputerUseAppTier
+  sentinelConfirmed: boolean
+}
+
+export type ComputerUsePendingConfirmation = {
+  id: string
+  sessionId: string
+  appBundleId: string
+  action: string
+  summary: string
+  createdAt: number
+  expiresAt: number
+}
+
 export type ComputerUseStatus =
   | 'idle'
   | 'consent'
@@ -830,11 +860,20 @@ export type ComputerUseStatus =
 
 export type ComputerUseConsentRequest = {
   id: string
+  conversationId?: string
+  executorModelId?: string
   goal: string
   appName: string
   appBundleId?: string
+  appIconBase64?: string
   scope: ComputerUseScope
+  requestedTier?: ComputerUseAppTier
+  originalModel?: ComputerUseModelIdentity
+  executorModel?: ComputerUseModelIdentity
+  temporaryExecutor?: boolean
+  sentinelConfirmationRequired?: boolean
   isSelfTest?: boolean
+  hiddenAppCount: number
   createdAt: number
   /** Auto-deny after this many ms. Renderer enforces; Rust may also enforce. */
   timeoutMs?: number
@@ -853,8 +892,10 @@ export type ComputerUseDenyReason =
   | 'self_test_disabled'
   | 'app_hard_blocked'
   | 'scope_denied'
+  | 'safety_check_failed'
 
 export type ComputerUseStopReason =
+  | 'completed'
   | 'user_cancelled'
   | 'emergency_stop'
   | 'session_expired'
@@ -866,8 +907,27 @@ export type ComputerUseStopReason =
   | 'self_test_scope_violation'
   | 'error'
 
+export type ComputerUseTurnCompleteEvent = {
+  sessionId: string
+  conversationId: string
+  executorModelId: string
+  stoppedReason:
+    | 'completed'
+    | 'spawn_error'
+    | 'stdout_unavailable'
+    | 'executor_error'
+    | 'cleanup_error'
+    | 'cancelled'
+    | 'emergency_stop'
+    | 'os_permission_revoked'
+    | 'settings_revoked'
+    | 'app_approval_failed'
+    | 'stopped'
+}
+
 export type ComputerUseActionVerb =
   | 'click'
+  | 'move'
   | 'type'
   | 'drag'
   | 'scroll'
@@ -883,21 +943,39 @@ export type ComputerUseActionEvent = {
   appName: string
   /** Monotonic ms since session start. */
   elapsedMs: number
-  /** Cumulative action count for this session. */
+  /** Zero-based monotonic sequence; cumulative count is `actionIndex + 1`. */
   actionIndex: number
+}
+
+export type ComputerUsePendingActionEvent = Omit<ComputerUseActionEvent, 'actionIndex'> & {
+  actionId: string
+}
+
+export type ComputerUseSettledActionEvent = {
+  sessionId: string
+  actionId: string
 }
 
 export type ComputerUseSession = {
   id: string
   status: ComputerUseStatus
+  conversationId?: string
+  executorModelId?: string
   goal: string
   appName: string
   appBundleId?: string
   scope: ComputerUseScope
+  requestedTier?: ComputerUseAppTier
+  approvedApps?: ComputerUseApprovedApp[]
+  originalModel?: ComputerUseModelIdentity
+  executorModel?: ComputerUseModelIdentity
+  temporaryExecutor?: boolean
   isSelfTest: boolean
   startedAt: number
   /** Last action observed — drives banner subtext. */
   lastAction?: ComputerUseActionEvent
+  /** Tool action currently executing; it is not counted until screenshot verification. */
+  currentAction?: ComputerUsePendingActionEvent
   /** Cumulative action count. */
   actionCount: number
   /** Reason for terminal states (stopped/denied/emergency-stopping). */
@@ -953,6 +1031,10 @@ export type ComputerUseSettings = {
   allowlist: ComputerUseAllowlistEntry[]
   /** User-configurable Tier 2 denylist (always blocked). Defaults: Mail, 1Password, Bitwarden. */
   denylist: string[]
+  /** Exact public-catalog model id preferred for temporary visual execution. */
+  preferredVisualExecutorId?: string
+  /** Restore apps hidden by focus isolation when Computer Use finishes. */
+  restoreHiddenApps: boolean
   /** Audit retention days. Default 90, clamp [7, 365]. */
   auditRetentionDays: number
   /** Audit SQLite DB cap MB. Default 200, clamp [10, 10_000]. */
@@ -963,4 +1045,12 @@ export type ComputerUseSettings = {
   telemetryOptOut: boolean
   /** Show CU active state in menu bar. P1 feature, defaults false. */
   showInMenuBar: boolean
+}
+
+export type ComputerUseExecutorLease = {
+  conversationId: string
+  originalModelId: string
+  executorModelId: string
+  startedAtMs: number
+  expiresAtMs: number
 }

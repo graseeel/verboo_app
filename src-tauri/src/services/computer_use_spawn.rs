@@ -3,37 +3,59 @@
 //! Mirrors `cli_spawn.rs` pattern but for the Swift binary at
 //! `<Resources>/computer-use-helper-<triple>` (Tauri `externalBin`).
 //!
-//! Resolution order:
-//!   1. `VERBOO_COMPUTER_USE_HELPER` env var (explicit override, dev only).
-//!   2. Bundled sidecar at `<Resources>/computer-use-helper-<triple>`.
-//!   3. Local dev build at `<src-tauri>/binaries/computer-use-helper-<triple>`.
-//!   4. `computer-use-helper-<triple>` on PATH (last resort).
+//! Release builds accept only canonical helper files inside the installed app
+//! layout. Development and test builds additionally allow an explicit env
+//! override, the local Cargo build, and a PATH fallback.
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[cfg(target_os = "macos")]
+use std::os::fd::AsRawFd;
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "macos")]
+use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(target_os = "macos")]
+use std::time::{Duration, Instant};
+
+const AGENT_APP_NAME: &str = "Verboo Computer Use.app";
+const AGENT_EXECUTABLE_NAME: &str = "computer-use-helper";
 
 /// Target triple for the current platform. Mirrors Tauri's `externalBin`
 /// naming so the same binary works in dev and bundled modes.
 fn target_triple() -> &'static str {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    { "aarch64-apple-darwin" }
+    {
+        "aarch64-apple-darwin"
+    }
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    { "x86_64-apple-darwin" }
+    {
+        "x86_64-apple-darwin"
+    }
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    { "x86_64-pc-windows-msvc" }
+    {
+        "x86_64-pc-windows-msvc"
+    }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    { "x86_64-unknown-linux-gnu" }
+    {
+        "x86_64-unknown-linux-gnu"
+    }
     #[cfg(not(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "macos", target_arch = "x86_64"),
         all(target_os = "windows", target_arch = "x86_64"),
         all(target_os = "linux", target_arch = "x86_64"),
     )))]
-    { compile_error!("computer-use-helper: unsupported target triple") }
+    {
+        compile_error!("computer-use-helper: unsupported target triple")
+    }
 }
 
 pub struct ComputerUseSpawn {
     pub command: Command,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub runtime: ComputerUseRuntime,
 }
 
@@ -47,6 +69,18 @@ pub enum ComputerUseRuntime {
     Dev { path: PathBuf },
     /// Resolved via PATH lookup.
     Path,
+    /// No trusted packaged helper was available. The command points at a
+    /// deliberately unavailable absolute path so spawning fails closed.
+    Unavailable { expected: PathBuf },
+}
+
+impl ComputerUseRuntime {
+    fn path(&self) -> Option<&Path> {
+        match self {
+            Self::Bundled { path } | Self::Env { path } | Self::Dev { path } => Some(path),
+            Self::Path | Self::Unavailable { .. } => None,
+        }
+    }
 }
 
 impl std::fmt::Display for ComputerUseRuntime {
@@ -56,132 +90,515 @@ impl std::fmt::Display for ComputerUseRuntime {
             ComputerUseRuntime::Env { path } => write!(f, "env({})", path.display()),
             ComputerUseRuntime::Dev { path } => write!(f, "dev({})", path.display()),
             ComputerUseRuntime::Path => write!(f, "path"),
+            ComputerUseRuntime::Unavailable { expected } => {
+                write!(f, "unavailable({})", expected.display())
+            }
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResolverPolicy {
+    Development,
+    Release,
+}
+
+impl ResolverPolicy {
+    fn current_build() -> Self {
+        if cfg!(debug_assertions) || cfg!(test) {
+            Self::Development
+        } else {
+            Self::Release
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HelperResolution {
+    Found(ComputerUseRuntime),
+    PathLookup(String),
+    Unavailable(PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComputerUseAgentRuntime {
+    Bundled {
+        app_path: PathBuf,
+        executable_path: PathBuf,
+    },
+    Env {
+        app_path: PathBuf,
+        executable_path: PathBuf,
+    },
+    Dev {
+        app_path: PathBuf,
+        executable_path: PathBuf,
+    },
+}
+
+impl ComputerUseAgentRuntime {
+    fn app_path(&self) -> &Path {
+        match self {
+            Self::Bundled { app_path, .. }
+            | Self::Env { app_path, .. }
+            | Self::Dev { app_path, .. } => app_path,
+        }
+    }
+
+    fn executable_path(&self) -> &Path {
+        match self {
+            Self::Bundled {
+                executable_path, ..
+            }
+            | Self::Env {
+                executable_path, ..
+            }
+            | Self::Dev {
+                executable_path, ..
+            } => executable_path,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AgentResolution {
+    Found(ComputerUseAgentRuntime),
+    Unavailable(PathBuf),
+}
+
+#[cfg(target_os = "macos")]
+pub struct ComputerUseAgentConnection {
+    pub stream: UnixStream,
+    pub pid: u32,
+    pub executable_path: PathBuf,
 }
 
 impl ComputerUseSpawn {
     /// Resolve the helper binary and build a Command ready to spawn.
     /// Stdio MUST be set by the caller (piped for IPC).
     pub fn new() -> Self {
-        let triple = target_triple();
-
-        // 1. Env override.
-        if let Ok(p) = std::env::var("VERBOO_COMPUTER_USE_HELPER") {
-            let path = PathBuf::from(p);
-            if path.exists() {
-                return Self {
-                    command: Command::new(&path),
-                    runtime: ComputerUseRuntime::Env { path },
-                };
-            }
-        }
-
-        // 2. Bundled sidecar (release builds).
-        if let Some(path) = find_bundled_helper(triple) {
-            return Self {
-                command: Command::new(&path),
-                runtime: ComputerUseRuntime::Bundled { path },
-            };
-        }
-
-        // 3. Local dev build.
-        if let Some(path) = find_dev_helper(triple) {
-            return Self {
-                command: Command::new(&path),
-                runtime: ComputerUseRuntime::Dev { path },
-            };
-        }
-
-        // 4. PATH lookup.
-        let exe_name = format!("computer-use-helper-{triple}");
-        Self {
-            command: Command::new(&exe_name),
-            runtime: ComputerUseRuntime::Path,
+        match resolve_current_helper() {
+            HelperResolution::Found(runtime) => Self {
+                command: Command::new(runtime.path().expect("found runtime has an absolute path")),
+                runtime,
+            },
+            HelperResolution::PathLookup(program) => Self {
+                command: Command::new(program),
+                runtime: ComputerUseRuntime::Path,
+            },
+            HelperResolution::Unavailable(expected) => Self {
+                command: Command::new(&expected),
+                runtime: ComputerUseRuntime::Unavailable { expected },
+            },
         }
     }
 }
 
-fn find_bundled_helper(triple: &str) -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let exe_dir = exe.parent()?;
+fn find_bundled_helper_from(executable: &Path, triple: &str) -> Option<PathBuf> {
+    let executable = executable.canonicalize().ok()?;
+    let exe_dir = executable.parent()?;
+    let names = [
+        "computer-use-helper".to_string(),
+        format!("computer-use-helper-{triple}"),
+    ];
 
     #[cfg(target_os = "macos")]
     {
-        if let Some(resources) = exe_dir.parent().map(|p| p.join("Resources")) {
-            for name in ["computer-use-helper".to_string(), format!("computer-use-helper-{triple}")] {
-                let candidate = resources.join(name);
-                if candidate.exists() { return Some(candidate); }
+        if let Some(contents) = exe_dir.parent() {
+            let contents = contents.canonicalize().ok()?;
+            for resource_root in [
+                contents.join("Resources"),
+                contents.join("Resources/binaries"),
+            ] {
+                let Ok(canonical_root) = resource_root.canonicalize() else {
+                    continue;
+                };
+                if !canonical_root.starts_with(&contents) {
+                    continue;
+                }
+                for name in &names {
+                    if let Some(candidate) =
+                        canonical_file_within(&resource_root.join(name), &canonical_root)
+                    {
+                        return Some(candidate);
+                    }
+                }
             }
         }
-        let sidecar = exe_dir.join("computer-use-helper");
-        if sidecar.exists() { return Some(sidecar); }
     }
 
-    let candidate = exe_dir.join(format!("computer-use-helper-{triple}"));
-    if candidate.exists() {
+    let canonical_exe_dir = exe_dir.canonicalize().ok()?;
+    for name in names {
+        if let Some(candidate) = canonical_file_within(&exe_dir.join(name), &canonical_exe_dir) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn canonical_file_within(candidate: &Path, canonical_root: &Path) -> Option<PathBuf> {
+    let candidate = candidate.canonicalize().ok()?;
+    if candidate.is_file() && candidate.starts_with(canonical_root) {
         Some(candidate)
     } else {
         None
     }
 }
 
-fn find_dev_helper(triple: &str) -> Option<PathBuf> {
-    // CARGO_MANIFEST_DIR = src-tauri/ at build time.
-    let manifest = option_env!("CARGO_MANIFEST_DIR")?;
-    let dev_path = PathBuf::from(manifest)
+fn find_dev_helper_from(manifest: &Path, triple: &str) -> Option<PathBuf> {
+    let dev_path = manifest
         .join("binaries")
         .join(format!("computer-use-helper-{triple}"));
-    if dev_path.exists() {
+    let dev_path = dev_path.canonicalize().ok()?;
+    if dev_path.is_file() {
         Some(dev_path)
     } else {
         None
     }
 }
 
-/// Resolve the absolute path to the computer-use-helper binary, or None if
-/// only a PATH-based (unresolvable) fallback exists.
-///
-/// Resolution order (same as `ComputerUseSpawn::new()`):
-///   1. `VERBOO_COMPUTER_USE_HELPER` env var.
-///   2. Bundled sidecar at `<Resources>/computer-use-helper[-<triple>]`.
-///   3. Local dev build at `<src-tauri>/binaries/computer-use-helper-<triple>`.
-///
-/// PATH-only resolution returns None (cannot verify it resolves at runtime).
-pub fn resolved_helper_path() -> Option<PathBuf> {
-    let triple = target_triple();
+fn canonical_agent_bundle(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let app_path = path.canonicalize().ok()?;
+    if !app_path.is_dir() || app_path.extension().and_then(|value| value.to_str()) != Some("app") {
+        return None;
+    }
+    let info_plist = app_path.join("Contents/Info.plist");
+    if !info_plist.is_file() {
+        return None;
+    }
+    let executable_path = app_path
+        .join("Contents/MacOS")
+        .join(AGENT_EXECUTABLE_NAME)
+        .canonicalize()
+        .ok()?;
+    if !executable_path.is_file() || !executable_path.starts_with(&app_path) {
+        return None;
+    }
+    Some((app_path, executable_path))
+}
 
-    // 1. Env override.
-    if let Ok(p) = std::env::var("VERBOO_COMPUTER_USE_HELPER") {
-        let path = PathBuf::from(p);
-        if path.exists() && path.is_file() {
-            return Some(path);
+fn find_bundled_agent_from(executable: &Path) -> Option<(PathBuf, PathBuf)> {
+    let executable = executable.canonicalize().ok()?;
+    let contents = executable.parent()?.parent()?.canonicalize().ok()?;
+    for candidate in [
+        contents.join("Resources/binaries").join(AGENT_APP_NAME),
+        contents.join("Resources/resources").join(AGENT_APP_NAME),
+        contents.join("Resources").join(AGENT_APP_NAME),
+    ] {
+        let Some((app_path, executable_path)) = canonical_agent_bundle(&candidate) else {
+            continue;
+        };
+        if app_path.starts_with(&contents) {
+            return Some((app_path, executable_path));
+        }
+    }
+    None
+}
+
+fn find_dev_agent_from(manifest: &Path) -> Option<(PathBuf, PathBuf)> {
+    canonical_agent_bundle(&manifest.join("binaries").join(AGENT_APP_NAME))
+}
+
+fn resolve_current_agent() -> AgentResolution {
+    let current_exe = std::env::current_exe().ok();
+    let manifest_dir = option_env!("CARGO_MANIFEST_DIR").map(Path::new);
+    let env_override = std::env::var_os("VERBOO_COMPUTER_USE_AGENT");
+    resolve_agent_with_policy(
+        ResolverPolicy::current_build(),
+        current_exe.as_deref(),
+        manifest_dir,
+        env_override.as_deref().map(Path::new),
+    )
+}
+
+fn resolve_agent_with_policy(
+    policy: ResolverPolicy,
+    current_exe: Option<&Path>,
+    manifest_dir: Option<&Path>,
+    env_override: Option<&Path>,
+) -> AgentResolution {
+    if policy == ResolverPolicy::Development {
+        if let Some((app_path, executable_path)) = env_override.and_then(canonical_agent_bundle) {
+            return AgentResolution::Found(ComputerUseAgentRuntime::Env {
+                app_path,
+                executable_path,
+            });
         }
     }
 
-    // 2. Bundled sidecar.
-    if let Some(path) = find_bundled_helper(triple) {
-        return Some(path);
+    if let Some((app_path, executable_path)) = current_exe.and_then(find_bundled_agent_from) {
+        return AgentResolution::Found(ComputerUseAgentRuntime::Bundled {
+            app_path,
+            executable_path,
+        });
     }
 
-    // 3. Local dev build.
-    if let Some(path) = find_dev_helper(triple) {
-        return Some(path);
+    if policy == ResolverPolicy::Development {
+        if let Some((app_path, executable_path)) = manifest_dir.and_then(find_dev_agent_from) {
+            return AgentResolution::Found(ComputerUseAgentRuntime::Dev {
+                app_path,
+                executable_path,
+            });
+        }
     }
 
-    // 4. PATH — no proof it resolves.
-    None
+    let expected = current_exe
+        .and_then(|executable| executable.parent()?.parent())
+        .map(|contents| contents.join("Resources/binaries").join(AGENT_APP_NAME))
+        .unwrap_or_else(|| {
+            PathBuf::from(std::path::MAIN_SEPARATOR.to_string())
+                .join("verboo-computer-use-agent-unavailable.app")
+        });
+    AgentResolution::Unavailable(expected)
+}
+
+fn agent_launch_arguments(agent_app: &Path, socket_path: &Path) -> Vec<OsString> {
+    vec![
+        OsString::from("-g"),
+        OsString::from("-n"),
+        agent_app.as_os_str().to_owned(),
+        OsString::from("--args"),
+        OsString::from("--verboo-agent-socket"),
+        socket_path.as_os_str().to_owned(),
+    ]
+}
+
+pub fn resolved_agent_path() -> Option<PathBuf> {
+    match resolve_current_agent() {
+        AgentResolution::Found(runtime) => Some(runtime.app_path().to_path_buf()),
+        AgentResolution::Unavailable(_) => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn agent_socket_path() -> Result<PathBuf, String> {
+    let uid = unsafe { libc::geteuid() };
+    // Darwin's sockaddr_un path is intentionally short (104 bytes). The
+    // per-user 0700 directory plus peer-executable validation keeps this
+    // predictable /tmp rendezvous private without relying on a long cache path.
+    let directory = PathBuf::from("/tmp").join(format!("verboo-cu-agent-{uid}"));
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("create agent socket directory: {error}"))?;
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("protect agent socket directory: {error}"))?;
+    Ok(directory.join(format!("{}.sock", uuid::Uuid::new_v4())))
+}
+
+#[cfg(target_os = "macos")]
+fn peer_pid(stream: &UnixStream) -> Result<u32, String> {
+    let mut pid: libc::pid_t = 0;
+    let mut size = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&mut pid as *mut libc::pid_t).cast(),
+            &mut size,
+        )
+    };
+    if result != 0 || pid <= 1 {
+        return Err(format!(
+            "read agent peer pid: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(pid as u32)
+}
+
+#[cfg(target_os = "macos")]
+fn process_path(pid: u32) -> Option<PathBuf> {
+    let mut buffer = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let length = unsafe {
+        libc::proc_pidpath(
+            pid as libc::c_int,
+            buffer.as_mut_ptr().cast(),
+            buffer.len() as u32,
+        )
+    };
+    if length <= 0 {
+        return None;
+    }
+    buffer.truncate(length as usize);
+    let value = std::str::from_utf8(&buffer).ok()?;
+    Path::new(value).canonicalize().ok()
+}
+
+#[cfg(target_os = "macos")]
+pub fn agent_process_matches(pid: u32, expected_executable: &Path) -> bool {
+    let expected = expected_executable.canonicalize().ok();
+    expected.is_some() && process_path(pid) == expected
+}
+
+#[cfg(target_os = "macos")]
+pub fn launch_action_agent() -> Result<ComputerUseAgentConnection, String> {
+    let AgentResolution::Found(runtime) = resolve_current_agent() else {
+        return Err("Verboo Computer Use.app is not packaged".into());
+    };
+    let socket_path = agent_socket_path()?;
+    let listener =
+        UnixListener::bind(&socket_path).map_err(|error| format!("bind agent socket: {error}"))?;
+    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("protect agent socket: {error}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("configure agent socket: {error}"))?;
+
+    let launch = Command::new("/usr/bin/open")
+        .args(agent_launch_arguments(runtime.app_path(), &socket_path))
+        .status()
+        .map_err(|error| format!("launch Verboo Computer Use agent: {error}"))?;
+    if !launch.success() {
+        let _ = std::fs::remove_file(&socket_path);
+        return Err(format!("LaunchServices returned {launch}"));
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let accepted = loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .map_err(|error| format!("configure agent transport: {error}"))?;
+                let pid = peer_pid(&stream)?;
+                if agent_process_matches(pid, runtime.executable_path()) {
+                    break Ok((stream, pid));
+                }
+                unsafe {
+                    libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    break Err("timed out waiting for Verboo Computer Use agent".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => break Err(format!("accept Verboo Computer Use agent: {error}")),
+        }
+    };
+    let _ = std::fs::remove_file(&socket_path);
+    let (stream, pid) = accepted?;
+    Ok(ComputerUseAgentConnection {
+        stream,
+        pid,
+        executable_path: runtime.executable_path().to_path_buf(),
+    })
+}
+
+fn resolve_current_helper() -> HelperResolution {
+    let current_exe = std::env::current_exe().ok();
+    let manifest_dir = option_env!("CARGO_MANIFEST_DIR").map(Path::new);
+    let env_override = std::env::var_os("VERBOO_COMPUTER_USE_HELPER");
+    resolve_helper_with_policy(
+        ResolverPolicy::current_build(),
+        current_exe.as_deref(),
+        manifest_dir,
+        env_override.as_deref().map(Path::new),
+        target_triple(),
+    )
+}
+
+fn resolve_helper_with_policy(
+    policy: ResolverPolicy,
+    current_exe: Option<&Path>,
+    manifest_dir: Option<&Path>,
+    env_override: Option<&Path>,
+    triple: &str,
+) -> HelperResolution {
+    if policy == ResolverPolicy::Development {
+        if let Some(path) = env_override.and_then(canonical_existing_file) {
+            return HelperResolution::Found(ComputerUseRuntime::Env { path });
+        }
+    }
+
+    if let Some(path) = current_exe.and_then(|exe| find_bundled_helper_from(exe, triple)) {
+        return HelperResolution::Found(ComputerUseRuntime::Bundled { path });
+    }
+
+    if policy == ResolverPolicy::Development {
+        if let Some(path) = manifest_dir.and_then(|manifest| find_dev_helper_from(manifest, triple))
+        {
+            return HelperResolution::Found(ComputerUseRuntime::Dev { path });
+        }
+
+        return HelperResolution::PathLookup(format!("computer-use-helper-{triple}"));
+    }
+
+    HelperResolution::Unavailable(expected_packaged_path(current_exe, triple))
+}
+
+fn canonical_existing_file(path: &Path) -> Option<PathBuf> {
+    let path = path.canonicalize().ok()?;
+    path.is_file().then_some(path)
+}
+
+fn expected_packaged_path(current_exe: Option<&Path>, triple: &str) -> PathBuf {
+    if let Some(parent) = current_exe.and_then(Path::parent) {
+        return parent.join(format!("computer-use-helper-{triple}"));
+    }
+
+    // This branch is only reached if the OS cannot report the current
+    // executable. Keep a path separator in the command so the OS cannot
+    // resolve an attacker-controlled binary from PATH.
+    #[cfg(not(target_os = "windows"))]
+    {
+        PathBuf::from(std::path::MAIN_SEPARATOR.to_string())
+            .join(format!("verboo-computer-use-helper-unavailable-{triple}"))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        PathBuf::from(r"C:\Windows\System32")
+            .join(format!("verboo-computer-use-helper-unavailable-{triple}"))
+    }
+}
+
+/// Resolve the absolute path to the computer-use-helper binary, or None if
+/// only a PATH-based (unresolvable) fallback exists.
+///
+/// In release builds, only a canonical bundled sidecar is returned. In
+/// development and test builds the env override and local dev build are also
+/// eligible.
+///
+/// PATH-only resolution returns None (cannot verify it resolves at runtime).
+pub fn resolved_helper_path() -> Option<PathBuf> {
+    match resolve_current_helper() {
+        HelperResolution::Found(runtime) => runtime.path().map(Path::to_path_buf),
+        HelperResolution::PathLookup(_) | HelperResolution::Unavailable(_) => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    fn fixture_executable(root: &std::path::Path) -> PathBuf {
+        let executable = root.join("Verboo Code.app/Contents/MacOS/verboo-code");
+        fs::create_dir_all(executable.parent().expect("executable parent")).unwrap();
+        fs::write(&executable, b"app").unwrap();
+        executable
+    }
+
+    fn fixture_file(path: &std::path::Path) {
+        fs::create_dir_all(path.parent().expect("fixture parent")).unwrap();
+        fs::write(path, b"helper").unwrap();
+    }
+
+    fn fixture_agent(path: &std::path::Path) -> PathBuf {
+        let executable = path.join("Contents/MacOS/computer-use-helper");
+        fixture_file(&executable);
+        fixture_file(&path.join("Contents/Info.plist"));
+        executable
+    }
 
     #[test]
     fn target_triple_matches_host() {
         let t = target_triple();
         // Smoke: contains "apple-darwin", "pc-windows", or "unknown-linux".
-        assert!(t.contains("apple-darwin") || t.contains("pc-windows") || t.contains("unknown-linux"));
+        assert!(
+            t.contains("apple-darwin") || t.contains("pc-windows") || t.contains("unknown-linux")
+        );
     }
 
     #[test]
@@ -197,7 +614,303 @@ mod tests {
         // On this dev machine the helper should exist at
         // <src-tauri>/binaries/computer-use-helper-<triple>.
         let path = resolved_helper_path();
-        assert!(path.is_some(), "expected dev build to exist on this machine");
-        assert!(path.as_ref().map_or(false, |p| p.is_file()), "resolved path is not a file");
+        assert!(
+            path.is_some(),
+            "expected dev build to exist on this machine"
+        );
+        assert!(
+            path.as_ref().is_some_and(|p| p.is_file()),
+            "resolved path is not a file"
+        );
+    }
+
+    #[test]
+    fn release_ignores_env_override_and_uses_packaged_resource() {
+        let bundle = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let executable = fixture_executable(bundle.path());
+        let packaged = bundle
+            .path()
+            .join("Verboo Code.app/Contents/Resources/computer-use-helper");
+        let override_path = external.path().join("computer-use-helper");
+        fixture_file(&packaged);
+        fixture_file(&override_path);
+
+        let resolution = resolve_helper_with_policy(
+            ResolverPolicy::Release,
+            Some(&executable),
+            None,
+            Some(&override_path),
+            target_triple(),
+        );
+
+        assert_eq!(
+            resolution,
+            HelperResolution::Found(ComputerUseRuntime::Bundled {
+                path: packaged.canonicalize().unwrap(),
+            })
+        );
+    }
+
+    #[test]
+    fn release_accepts_sidecar_next_to_current_executable() {
+        let bundle = tempfile::tempdir().unwrap();
+        let executable = fixture_executable(bundle.path());
+        let packaged = executable.parent().unwrap().join("computer-use-helper");
+        fixture_file(&packaged);
+
+        let resolution = resolve_helper_with_policy(
+            ResolverPolicy::Release,
+            Some(&executable),
+            None,
+            None,
+            target_triple(),
+        );
+
+        assert_eq!(
+            resolution,
+            HelperResolution::Found(ComputerUseRuntime::Bundled {
+                path: packaged.canonicalize().unwrap(),
+            })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn release_rejects_packaged_symlink_that_escapes_bundle() {
+        use std::os::unix::fs::symlink;
+
+        let bundle = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let executable = fixture_executable(bundle.path());
+        let packaged = bundle
+            .path()
+            .join("Verboo Code.app/Contents/Resources/computer-use-helper");
+        let external_helper = external.path().join("computer-use-helper");
+        fixture_file(&external_helper);
+        fs::create_dir_all(packaged.parent().unwrap()).unwrap();
+        symlink(&external_helper, &packaged).unwrap();
+
+        let resolution = resolve_helper_with_policy(
+            ResolverPolicy::Release,
+            Some(&executable),
+            None,
+            None,
+            target_triple(),
+        );
+
+        assert!(matches!(resolution, HelperResolution::Unavailable(_)));
+    }
+
+    #[test]
+    fn release_rejects_env_and_never_falls_back_to_path_lookup() {
+        let bundle = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let executable = fixture_executable(bundle.path());
+        let override_path = external.path().join("computer-use-helper");
+        fixture_file(&override_path);
+
+        let resolution = resolve_helper_with_policy(
+            ResolverPolicy::Release,
+            Some(&executable),
+            None,
+            Some(&override_path),
+            target_triple(),
+        );
+
+        let HelperResolution::Unavailable(expected) = resolution else {
+            panic!("release resolver must fail closed");
+        };
+        assert!(expected.is_absolute());
+    }
+
+    #[test]
+    fn development_env_override_wins() {
+        let bundle = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let executable = fixture_executable(bundle.path());
+        let packaged = bundle
+            .path()
+            .join("Verboo Code.app/Contents/Resources/computer-use-helper");
+        let override_path = external.path().join("computer-use-helper");
+        fixture_file(&packaged);
+        fixture_file(&override_path);
+
+        let resolution = resolve_helper_with_policy(
+            ResolverPolicy::Development,
+            Some(&executable),
+            None,
+            Some(&override_path),
+            target_triple(),
+        );
+
+        assert_eq!(
+            resolution,
+            HelperResolution::Found(ComputerUseRuntime::Env {
+                path: override_path.canonicalize().unwrap(),
+            })
+        );
+    }
+
+    #[test]
+    fn development_preserves_path_fallback() {
+        let bundle = tempfile::tempdir().unwrap();
+        let executable = fixture_executable(bundle.path());
+        let program = format!("computer-use-helper-{}", target_triple());
+
+        let resolution = resolve_helper_with_policy(
+            ResolverPolicy::Development,
+            Some(&executable),
+            Some(bundle.path().join("missing-manifest").as_path()),
+            None,
+            target_triple(),
+        );
+
+        assert_eq!(resolution, HelperResolution::PathLookup(program));
+    }
+
+    #[test]
+    fn release_accepts_packaged_resources_binaries_candidate() {
+        let bundle = tempfile::tempdir().unwrap();
+        let executable = fixture_executable(bundle.path());
+        let packaged = bundle.path().join(format!(
+            "Verboo Code.app/Contents/Resources/binaries/computer-use-helper-{}",
+            target_triple()
+        ));
+        fixture_file(&packaged);
+
+        let resolution = resolve_helper_with_policy(
+            ResolverPolicy::Release,
+            Some(&executable),
+            None,
+            None,
+            target_triple(),
+        );
+
+        assert_eq!(
+            resolution,
+            HelperResolution::Found(ComputerUseRuntime::Bundled {
+                path: packaged.canonicalize().unwrap(),
+            })
+        );
+    }
+
+    #[test]
+    fn release_resolves_packaged_agent_app_as_an_independent_identity() {
+        let bundle = tempfile::tempdir().unwrap();
+        let executable = fixture_executable(bundle.path());
+        let agent = bundle
+            .path()
+            .join("Verboo Code.app/Contents/Resources/binaries/Verboo Computer Use.app");
+        let agent_executable = fixture_agent(&agent);
+
+        let resolution =
+            resolve_agent_with_policy(ResolverPolicy::Release, Some(&executable), None, None);
+
+        assert_eq!(
+            resolution,
+            AgentResolution::Found(ComputerUseAgentRuntime::Bundled {
+                app_path: agent.canonicalize().unwrap(),
+                executable_path: agent_executable.canonicalize().unwrap(),
+            })
+        );
+    }
+
+    #[test]
+    fn development_resolves_generated_agent_app_from_binaries() {
+        let manifest = tempfile::tempdir().unwrap();
+        let agent = manifest.path().join("binaries/Verboo Computer Use.app");
+        let agent_executable = fixture_agent(&agent);
+
+        let resolution = resolve_agent_with_policy(
+            ResolverPolicy::Development,
+            None,
+            Some(manifest.path()),
+            None,
+        );
+
+        assert_eq!(
+            resolution,
+            AgentResolution::Found(ComputerUseAgentRuntime::Dev {
+                app_path: agent.canonicalize().unwrap(),
+                executable_path: agent_executable.canonicalize().unwrap(),
+            })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn release_rejects_agent_bundle_whose_executable_escapes_the_app() {
+        use std::os::unix::fs::symlink;
+
+        let bundle = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let executable = fixture_executable(bundle.path());
+        let agent = bundle
+            .path()
+            .join("Verboo Code.app/Contents/Resources/binaries/Verboo Computer Use.app");
+        let escaped = external.path().join("computer-use-helper");
+        fixture_file(&escaped);
+        fs::create_dir_all(agent.join("Contents/MacOS")).unwrap();
+        fixture_file(&agent.join("Contents/Info.plist"));
+        symlink(&escaped, agent.join("Contents/MacOS/computer-use-helper")).unwrap();
+
+        let resolution =
+            resolve_agent_with_policy(ResolverPolicy::Release, Some(&executable), None, None);
+
+        assert!(matches!(resolution, AgentResolution::Unavailable(_)));
+    }
+
+    #[test]
+    fn launch_services_arguments_keep_the_agent_out_of_the_dock() {
+        let arguments = agent_launch_arguments(
+            Path::new("/Applications/Verboo Computer Use.app"),
+            Path::new("/tmp/verboo-agent.sock"),
+        );
+        let rendered = arguments
+            .iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered,
+            vec![
+                "-g",
+                "-n",
+                "/Applications/Verboo Computer Use.app",
+                "--args",
+                "--verboo-agent-socket",
+                "/tmp/verboo-agent.sock",
+            ]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "launches the real local Verboo Computer Use agent"]
+    fn agent_launches_via_launchservices_and_answers_over_private_ipc() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::Shutdown;
+
+        let connection = launch_action_agent().expect("launch agent");
+        assert!(agent_process_matches(
+            connection.pid,
+            &connection.executable_path
+        ));
+        let mut writer = connection.stream.try_clone().unwrap();
+        writer
+            .write_all(b"{\"id\":1,\"method\":\"permissions\",\"params\":{}}\n")
+            .unwrap();
+        writer.flush().unwrap();
+
+        let mut response = String::new();
+        BufReader::new(connection.stream)
+            .read_line(&mut response)
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(payload["id"], 1);
+        assert!(payload["result"]["accessibility"].is_string());
+        assert!(payload["result"]["screenRecording"].is_string());
+        let _ = writer.shutdown(Shutdown::Both);
     }
 }

@@ -159,6 +159,7 @@ const HELPER_CLI_TIMEOUT: Duration = Duration::from_secs(30);
 /// a clear warning into the turn instead of blocking indefinitely.
 ///
 /// This is a blocking call — the caller should run it on a background thread.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn describe_image(
     image_path: &Path,
     media_type: &str,
@@ -297,9 +298,7 @@ fn describe_image_once(
     crate::services::auth_token::augment_identity_env(&mut cmd);
 
     let start = Instant::now();
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("spawn CLI: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("spawn CLI: {e}"))?;
 
     // Write stdin payload.
     if let Some(stdin) = child.stdin.take() {
@@ -360,9 +359,7 @@ fn describe_image_once(
                 Err(e) => {
                     // LOG 5: invalid parsed lines (helps debug "CLI output
                     // format changed" or "encoding issue" bugs).
-                    eprintln!(
-                        "[verboo:vision-fallback] stdout read error: {e}"
-                    );
+                    eprintln!("[verboo:vision-fallback] stdout read error: {e}");
                     break;
                 }
             }
@@ -411,7 +408,11 @@ fn describe_image_once(
                 eprintln!(
                     "[verboo:vision-fallback] unparseable stdout line (len={}): {:?}",
                     line.len(),
-                    if line.len() > 200 { &line[..200] } else { &line }
+                    if line.len() > 200 {
+                        &line[..200]
+                    } else {
+                        &line
+                    }
                 );
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -533,13 +534,17 @@ fn extract_stream_event_delta_text(parsed: &serde_json::Value) -> Option<String>
     if delta.get("type").and_then(|v| v.as_str()) != Some("text_delta") {
         return None;
     }
-    delta.get("text").and_then(|v| v.as_str()).map(|s| s.to_string())
+    delta
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// High-level: describes an image with caching. Checks cache first; if miss,
 /// spawns the helper CLI, caches the result, and returns the description.
 ///
 /// `app_data_dir` is the Tauri app data dir for cache storage.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn describe_image_cached(
     image_path: &Path,
     media_type: &str,
@@ -621,9 +626,7 @@ pub fn resolve_fallback_helper<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::types::{
-        AccessMode, ModelDiscoveryResult, VerbooModel, VisionFallbackConsent,
-    };
+    use crate::models::types::{ModelDiscoveryResult, VerbooModel, VisionFallbackConsent};
 
     fn make_model(id: &str, vision: Option<bool>, source: Option<&str>) -> VerbooModel {
         VerbooModel {
@@ -767,7 +770,10 @@ mod tests {
 
         // Non-text_delta events must not be captured.
         let other_event = r#"{"type":"stream_event","event":{"type":"message_start","delta":{"type":"message_start"}}}"#;
-        assert!(matches!(parse_stream_json_line(other_event), ParsedLine::Other));
+        assert!(matches!(
+            parse_stream_json_line(other_event),
+            ParsedLine::Other
+        ));
     }
 
     #[test]
@@ -903,33 +909,20 @@ mod tests {
         // Verify the function signature at compile time. The function takes
         // 4 params (image_path, media_type, helper_model, credentials) —
         // NOT 5 (the old signature had cli_path as the 5th).
-        fn _assert_signature(
-            _image_path: &Path,
-            _media_type: &str,
-            _helper_model: &str,
-            _credentials: &CredentialsStore,
-        ) {
-            // This function mirrors the describe_image signature. If
-            // describe_image's signature changes, this test still compiles
-            // (it's just a local fn), but the call site in
-            // `maybe_run_vision_fallback` would fail to compile if someone
-            // re-adds the cli_path param.
-        }
-        // If we get here, the signature is correct (4 params, no cli_path).
-        assert!(true, "describe_image signature has no cli_path parameter");
+        let _assert_signature: fn(&Path, &str, &str, &CredentialsStore) -> Result<String, String> =
+            describe_image;
     }
 
     #[test]
     fn describe_image_cached_does_not_take_cli_path_parameter() {
         // Same regression test for describe_image_cached — 5 params, not 6.
-        fn _assert_signature(
-            _image_path: &Path,
-            _media_type: &str,
-            _helper_model: &str,
-            _credentials: &CredentialsStore,
-            _app_data_dir: &Path,
-        ) {}
-        assert!(true, "describe_image_cached signature has no cli_path parameter");
+        let _assert_signature: fn(
+            &Path,
+            &str,
+            &str,
+            &CredentialsStore,
+            &Path,
+        ) -> Result<String, String> = describe_image_cached;
     }
 
     // ── parse_stream_json_line tests (used by the timeout-protected reader) ──

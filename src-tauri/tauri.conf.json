@@ -54,7 +54,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/cli-package/"
+      "resources/cli-package/",
+      "binaries/Verboo Computer Use.app/"
     ],
     "externalBin": [
       "binaries/computer-use-helper"

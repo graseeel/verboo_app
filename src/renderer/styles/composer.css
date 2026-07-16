@@ -17,6 +17,35 @@
   box-sizing: border-box;
 }
 
+.app-shell.is-computer-use-compact .bottom-dock {
+  right: 12px;
+  left: 12px;
+  bottom: 12px;
+  gap: 8px;
+  padding: 0;
+}
+
+.app-shell.is-computer-use-compact .bottom-dock > .composer {
+  width: 100%;
+}
+
+.app-shell.is-computer-use-compact .composer {
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 12px;
+}
+
+.app-shell.is-computer-use-compact .access-pill,
+.app-shell.is-computer-use-compact .model-pill,
+.app-shell.is-computer-use-compact .token-rate-meter,
+.app-shell.is-computer-use-compact .context-meter,
+.app-shell.is-computer-use-compact .project-picker,
+.app-shell.is-computer-use-compact .permission-approval-panel,
+.app-shell.is-computer-use-compact .vision-fallback-panel,
+.app-shell.is-computer-use-compact .skill-approval-panel {
+  display: none !important;
+}
+
 /*
  * Lane width applies ONLY to the chat message composer (and other full-width
  * dock panels) — NOT to chrome controls like `.jump-to-latest`.

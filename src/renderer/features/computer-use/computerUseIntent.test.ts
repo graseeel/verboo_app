@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { SkillSummary } from '../../../shared/types'
 import type { ComputerUseApp } from '../../verboo-bridge'
 import {
+  countHiddenComputerUseApps,
   detectComputerUseIntent,
   extractComputerUseAppSelector,
   resolveComputerUseTarget,
@@ -75,6 +76,27 @@ const runningApps: ComputerUseApp[] = [
   { bundleId: 'com.google.Chrome', name: 'Google Chrome', pid: 11, isFrontmost: false },
   { bundleId: 'ai.verboo.code.desktop', name: 'Verboo Code', pid: 12, isFrontmost: true },
 ]
+
+describe('countHiddenComputerUseApps', () => {
+  it('counts unique visible apps while excluding the target and Verboo', () => {
+    expect(countHiddenComputerUseApps([
+      { bundleId: 'com.apple.Notes', name: 'Notes', pid: 10, isFrontmost: true, visibleWindowCount: 1 },
+      { bundleId: 'ai.verboo.code.desktop', name: 'Verboo Code', pid: 11, isFrontmost: false, visibleWindowCount: 2 },
+      { bundleId: 'com.google.Chrome', name: 'Google Chrome', pid: 12, isFrontmost: false, visibleWindowCount: 2 },
+      { bundleId: 'COM.GOOGLE.CHROME', name: 'Google Chrome Helper', pid: 13, isFrontmost: false, visibleWindowCount: 1 },
+      { bundleId: 'com.apple.Preview', name: 'Preview', pid: 14, isFrontmost: false, visibleWindowCount: 1 },
+      { bundleId: 'com.apple.TextEdit', name: 'TextEdit', pid: 15, isFrontmost: false, visibleWindowCount: 0 },
+      { bundleId: 'com.apple.Safari', name: 'Safari', pid: 16, isFrontmost: false },
+    ], 'com.apple.Notes')).toBe(2)
+  })
+
+  it('excludes apps that are already approved for the session', () => {
+    expect(countHiddenComputerUseApps([
+      { bundleId: 'com.apple.Notes', name: 'Notes', pid: 10, isFrontmost: true, visibleWindowCount: 1 },
+      { bundleId: 'com.google.Chrome', name: 'Chrome', pid: 12, isFrontmost: false, visibleWindowCount: 1 },
+    ], 'com.apple.Notes', ['com.google.Chrome'])).toBe(0)
+  })
+})
 
 describe('resolveComputerUseTarget', () => {
   it('matches a running app mentioned naturally in Portuguese', () => {

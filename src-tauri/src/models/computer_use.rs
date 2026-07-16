@@ -31,6 +31,7 @@ pub enum SessionState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
+    Completed,
     UserCancelled,
     EmergencyStop,
     SessionExpired,
@@ -56,15 +57,42 @@ pub enum DenyReason {
 /// Re-exported from `types::ComputerUseScope` for convenience.
 pub type ActionScope = ComputerUseScope;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppControlTier {
+    ViewOnly,
+    ClickOnly,
+    FullControl,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovedApp {
+    pub bundle_id: String,
+    pub display_name: String,
+    pub tier: AppControlTier,
+    pub approved_at_wall: u64,
+    #[serde(default)]
+    pub sentinel_confirmed: bool,
+}
+
 /// A consent request awaiting user decision. Created by `request_session`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConsentRequest {
     pub id: String,
+    pub conversation_id: String,
+    pub executor_model_id: String,
     pub goal: String,
     pub app: Option<String>,
     pub scope: ActionScope,
+    pub isolate_other_apps: bool,
     pub created_at_mono: u64,
     pub created_at_wall: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseTurnBinding {
+    pub conversation_id: String,
+    pub executor_model_id: String,
 }
 
 /// User's grant of consent. Carries the allowlist snapshot the user agreed to.
@@ -82,12 +110,19 @@ pub struct ConsentGrant {
 pub struct Session {
     pub id: String,
     pub state: SessionState,
+    pub conversation_id: String,
+    pub executor_model_id: String,
     pub goal: String,
     pub target_app: Option<String>,
+    #[serde(default)]
+    pub approved_apps: Vec<ApprovedApp>,
+    #[serde(default)]
+    pub active_app: Option<String>,
     pub scope: ActionScope,
     pub allowlist_version: u64,
     pub self_test_enabled: bool,
     pub screenshot_attach_to_llm: bool,
+    pub isolate_other_apps: bool,
     pub pid_lock: u32,
     pub started_at_mono: u64,
     pub started_at_wall: u64,
@@ -115,11 +150,14 @@ pub enum DenyCode {
     SecureTextField,
     RateLimited,
     AuditWriteFailed,
+    AuditStorageFull,
     EmergencyStop,
     ConsentExpired,
     ProviderDown,
     TamperDetected,
     OsPermissionRevoked,
+    ConfirmationRequired,
+    InvalidBinding,
 }
 
 impl DenyCode {
@@ -134,16 +172,20 @@ impl DenyCode {
             DenyCode::SecureTextField => "secure_text_field",
             DenyCode::RateLimited => "rate_limited",
             DenyCode::AuditWriteFailed => "audit_write_failed",
+            DenyCode::AuditStorageFull => "audit_storage_full",
             DenyCode::EmergencyStop => "emergency_stop",
             DenyCode::ConsentExpired => "consent_expired",
             DenyCode::ProviderDown => "provider_down",
             DenyCode::TamperDetected => "tamper_detected",
             DenyCode::OsPermissionRevoked => "os_permission_revoked",
+            DenyCode::ConfirmationRequired => "confirmation_required",
+            DenyCode::InvalidBinding => "invalid_binding",
         }
     }
 }
 
-/// Audit row (Kratos arch §6.3). INSERT-only — never UPDATE/DELETE.
+/// Audit row (Kratos arch §6.3). Rows are immutable after insert; retention may
+/// remove only a verified chronological prefix anchored by its terminal hash.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditRow {
     pub ts_mono: u64,
@@ -207,6 +249,7 @@ impl AuditOutcome {
 
 /// Allowlist entry (Layer 2 — Rust enforced, Kratos arch §6.5).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct AllowlistEntry {
     pub bundle_id: String,
     pub display_name: String,
@@ -217,8 +260,33 @@ pub struct AllowlistEntry {
 /// Result of a CU command — returned to Tauri command layer.
 #[derive(Debug, Clone, Serialize)]
 pub struct ComputerUseResult {
+    #[serde(serialize_with = "serialize_result_with_dimension_aliases")]
     pub result: Option<serde_json::Value>,
     pub error: Option<ComputerUseError>,
+}
+
+fn serialize_result_with_dimension_aliases<S>(
+    result: &Option<serde_json::Value>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let mut wire_result = result.clone();
+    if let Some(serde_json::Value::Object(payload)) = wire_result.as_mut() {
+        for (legacy, alias) in [
+            ("screenshot_width", "display_width_px"),
+            ("screenshot_height", "display_height_px"),
+        ] {
+            let Some(dimension) = payload.get(alias).or_else(|| payload.get(legacy)).cloned()
+            else {
+                continue;
+            };
+            payload.insert(legacy.to_owned(), dimension.clone());
+            payload.insert(alias.to_owned(), dimension);
+        }
+    }
+    wire_result.serialize(serializer)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -243,17 +311,62 @@ impl From<DenyCode> for ComputerUseError {
             DenyCode::SessionPaused => "Session is paused. Resume before issuing actions.",
             DenyCode::ScopeDenied => "Action not permitted by current scope.",
             DenyCode::AppNotAllowlisted => "Target app is not in the user-approved allowlist.",
-            DenyCode::AppHardBlocked => "Target app is Tier 1 hard-blocked (System Settings, loginwindow, secure fields, or self-test blocked surface).",
+            DenyCode::AppHardBlocked => "Target app is blocked by Computer Use policy.",
             DenyCode::SelfTestScopeViolation => "Action attempted on blocked Verboo surface (Kratos §4.2.2).",
             DenyCode::SecureTextField => "Target is AXSecureTextField — never interact.",
             DenyCode::RateLimited => "Over rate cap; back off and retry.",
             DenyCode::AuditWriteFailed => "Audit write failed; action refused (failure-safe).",
+            DenyCode::AuditStorageFull => "The private local Computer Use audit reached its configured storage limit; the session was stopped.",
             DenyCode::EmergencyStop => "Esc hotkey fired mid-action.",
             DenyCode::ConsentExpired => "Session was valid but consent invalidated (idle/reboot/etc).",
             DenyCode::ProviderDown => "Swift helper crashed or restarting.",
             DenyCode::TamperDetected => "Audit hash chain verification failed; CU locked.",
             DenyCode::OsPermissionRevoked => "macOS Accessibility or Screen Recording permission was revoked; Computer Use stopped.",
+            DenyCode::ConfirmationRequired => "This app or action requires explicit user confirmation.",
+            DenyCode::InvalidBinding => "Computer Use is not bound to this conversation and visual executor.",
         };
         Self::new(code.as_str(), msg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn computer_use_result_publishes_display_dimension_aliases_without_removing_legacy_fields() {
+        let wire = serde_json::to_value(ComputerUseResult {
+            result: Some(json!({
+                "screenshot_id": "shot-1",
+                "screenshot_width": 1280,
+                "screenshot_height": 720,
+            })),
+            error: None,
+        })
+        .expect("serialize Computer Use result");
+
+        assert_eq!(wire["result"]["screenshot_width"], 1280);
+        assert_eq!(wire["result"]["screenshot_height"], 720);
+        assert_eq!(wire["result"]["display_width_px"], 1280);
+        assert_eq!(wire["result"]["display_height_px"], 720);
+    }
+
+    #[test]
+    fn computer_use_result_keeps_legacy_dimensions_when_only_display_aliases_are_supplied() {
+        let wire = serde_json::to_value(ComputerUseResult {
+            result: Some(json!({
+                "screenshot_id": "shot-2",
+                "display_width_px": 800,
+                "display_height_px": 600,
+            })),
+            error: None,
+        })
+        .expect("serialize Computer Use result");
+
+        assert_eq!(wire["result"]["display_width_px"], 800);
+        assert_eq!(wire["result"]["display_height_px"], 600);
+        assert_eq!(wire["result"]["screenshot_width"], 800);
+        assert_eq!(wire["result"]["screenshot_height"], 600);
     }
 }

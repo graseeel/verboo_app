@@ -232,6 +232,35 @@ describe('verboo-bridge — API shape', () => {
     }
   })
 
+  it('exposes the complete Computer Use consent and confirmation surface', () => {
+    expect(api).toBeDefined()
+    const required = [
+      'requestComputerUseSession',
+      'grantComputerUseSession',
+      'approveComputerUseApp',
+      'getPendingComputerUseConfirmation',
+      'decideComputerUseConfirmation',
+      'pauseComputerUseSession',
+      'resumeComputerUseSession',
+      'stopComputerUseSession',
+      'getComputerUseLayoutState',
+      'listComputerUseApps',
+      'selectComputerUseExecutor',
+      'persistComputerUseExecutorLease',
+      'getComputerUseExecutorLease',
+      'recoverComputerUseExecutorLease',
+      'clearComputerUseExecutorLease',
+      'onComputerUseHandoffFailed',
+      'onComputerUseSettingsRevoked',
+      'onComputerUseActionPending',
+      'onComputerUseActionSettled',
+      'onComputerUseLayoutState',
+    ] as const
+    for (const name of required) {
+      expect(typeof (api as Record<string, unknown> | undefined)?.[name]).toBe('function')
+    }
+  })
+
   it('returns a cleanup function from event subscriptions', async () => {
     expect(api).toBeDefined()
     // onAgentEvent returns a cleanup fn — calling it must not throw.

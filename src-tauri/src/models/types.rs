@@ -54,6 +54,7 @@ pub fn access_mode_cli_args(mode: &AccessMode) -> &'static [&'static str] {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
+#[allow(dead_code)]
 pub enum ThemeMode {
     Dark,
     Light,
@@ -70,6 +71,7 @@ pub enum LanguageCode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
+#[allow(dead_code)]
 pub enum SettingsTab {
     Permissions,
     TrustedCommands,
@@ -153,18 +155,13 @@ pub enum ExtractionStatus {
 /// - `Ask`: prompt the user before each fallback (default — safest).
 /// - `Always`: always run the fallback without asking.
 /// - `Never`: never run the fallback; images are ignored with a warning.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum VisionFallbackConsent {
+    #[default]
     Ask,
     Always,
     Never,
-}
-
-impl Default for VisionFallbackConsent {
-    fn default() -> Self {
-        Self::Ask
-    }
 }
 
 /// Avatar configuration: how the user's profile picture is rendered.
@@ -173,18 +170,13 @@ impl Default for VisionFallbackConsent {
 /// - `Initials` → show the user's initials (default, no storage needed).
 /// - `Preset` → render one of the built-in SVG icons (preset_id + preset_color).
 /// - `Upload` → show a user-uploaded photo (upload_path saved by `save_avatar_blob`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum AvatarKind {
+    #[default]
     Initials,
     Preset,
     Upload,
-}
-
-impl Default for AvatarKind {
-    fn default() -> Self {
-        Self::Initials
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -283,6 +275,7 @@ pub enum UpdateStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[allow(dead_code)]
 pub enum TurnActionKind {
     Read,
     Search,
@@ -565,11 +558,12 @@ pub struct UpdateSettings {
 ///
 /// Mirrors `ComputerUseScope` in `src/shared/types.ts` (renderer).
 /// Lower scopes are subsets of higher scopes (View ⊂ Input ⊂ Full).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ComputerUseScope {
     /// Read-only: `list-apps`, `list-windows`, `get-app-state` (tree only,
     /// no screenshot). safest tier; default for new allowlist entries.
+    #[default]
     View,
     /// Read + input: View actions + `click`, `type-text`, `press-key`,
     /// `hotkey`, `scroll`. Screenshots allowed. Most common tier.
@@ -581,12 +575,6 @@ pub enum ComputerUseScope {
     /// Used for apps the user wants to drive occasionally with explicit
     /// per-action consent.
     Ask,
-}
-
-impl Default for ComputerUseScope {
-    fn default() -> Self {
-        Self::View
-    }
 }
 
 /// One entry in the Computer Use allowlist. The allowlist is the persistent
@@ -664,14 +652,24 @@ pub struct ComputerUseSettings {
     #[serde(default = "default_computer_use_denylist")]
     pub denylist: Vec<String>,
 
-    /// Audit retention in days. Default 90, clamp [7, 365] (Aloy §2 + Q
-    /// accepted). Older rows eligible for export-then-purge flow.
+    /// Optional exact public-catalog model id used only when the conversation
+    /// model cannot inspect screenshots. Selection still requires explicit
+    /// `supports_vision=true`; provider metadata is never interpreted here.
+    #[serde(default)]
+    pub preferred_visual_executor_id: Option<String>,
+
+    /// Restore applications hidden by focus isolation when control ends.
+    #[serde(default = "default_true")]
+    pub restore_hidden_apps: bool,
+
+    /// Audit retention in days. Default 90, clamp [7, 365]. A fully verified
+    /// expired prefix is pruned while its terminal hash remains anchored.
     #[serde(default = "default_computer_use_audit_retention_days")]
     pub audit_retention_days: u32,
 
     /// Audit SQLite DB size cap in MB. Default 200, clamp [10, 10_000].
-    /// On hit, session pauses with `audit_storage_full`; banner prompts
-    /// export+purge. No auto-purge.
+    /// On hit, the active session stops with `audit_storage_full` before any
+    /// further UI action can execute.
     #[serde(default = "default_computer_use_audit_storage_cap_mb")]
     pub audit_storage_cap_mb: u32,
 
@@ -700,6 +698,8 @@ impl Default for ComputerUseSettings {
             self_test_enabled: false,
             allowlist: Vec::new(),
             denylist: default_computer_use_denylist(),
+            preferred_visual_executor_id: None,
+            restore_hidden_apps: true,
             audit_retention_days: default_computer_use_audit_retention_days(),
             audit_storage_cap_mb: default_computer_use_audit_storage_cap_mb(),
             idle_timeout_seconds: default_computer_use_idle_timeout_seconds(),
@@ -715,7 +715,7 @@ fn default_computer_use_denylist() -> Vec<String> {
     vec![
         "com.apple.Mail".into(),
         "com.agilebits.onepassword-osx".into(), // 1Password 7
-        "com.agilebits.onepassword8".into(),     // 1Password 8
+        "com.agilebits.onepassword8".into(),    // 1Password 8
         "com.bitwarden.desktop".into(),
     ]
 }
@@ -730,6 +730,10 @@ fn default_computer_use_audit_storage_cap_mb() -> u32 {
 
 fn default_computer_use_idle_timeout_seconds() -> u32 {
     900
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1024,6 +1028,7 @@ pub struct GoalEvaluationResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct StoredConversation {
     pub id: String,
     pub title: String,
@@ -1038,6 +1043,7 @@ pub struct StoredConversation {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct ChatProject {
     pub id: String,
     pub name: String,
@@ -1050,6 +1056,7 @@ pub struct ChatProject {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct ChatStore {
     pub version: u32,
     pub projects: Vec<ChatProject>,
@@ -1357,12 +1364,14 @@ pub struct TerminalDataEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct TerminalExitEvent {
     pub session_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct TerminalErrorEvent {
     pub session_id: String,
     pub error: String,
@@ -1370,6 +1379,7 @@ pub struct TerminalErrorEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct TurnAction {
     pub kind: TurnActionKind,
     pub label: String,
@@ -1379,6 +1389,7 @@ pub struct TurnAction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct TokenRateSnapshot {
     pub output_tokens: u64,
     pub total_tokens: u64,
@@ -1437,9 +1448,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             working_directory: std::env::current_dir()
-                .unwrap_or_else(|_| {
-                    dirs::home_dir().unwrap_or_default()
-                })
+                .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default())
                 .to_string_lossy()
                 .to_string(),
             access_mode: AccessMode::Approval,
@@ -1495,7 +1504,10 @@ mod tests {
         assert!(d.stay_signed_in);
         assert!(d.prevent_sleep_while_running);
         assert!(!d.include_verboo_co_author);
-        assert_eq!(d.completion_notifications, CompletionNotificationMode::Background);
+        assert_eq!(
+            d.completion_notifications,
+            CompletionNotificationMode::Background
+        );
         assert!(d.permission_notifications);
         assert!(d.question_notifications);
         assert!(!d.response_enhancements_enabled);
@@ -1529,10 +1541,7 @@ mod tests {
     #[test]
     fn enums_serialize_as_expected() {
         // kebab-case
-        assert_eq!(
-            serde_json::to_string(&ThemeMode::Dark).unwrap(),
-            "\"dark\""
-        );
+        assert_eq!(serde_json::to_string(&ThemeMode::Dark).unwrap(), "\"dark\"");
         assert_eq!(
             serde_json::to_string(&SettingsTab::TrustedCommands).unwrap(),
             "\"trusted-commands\""
@@ -1611,7 +1620,10 @@ mod tests {
         let avatar: AvatarSettings = serde_json::from_str(json).expect("deserialize");
         assert_eq!(avatar.kind, AvatarKind::Upload);
         assert_eq!(avatar.upload_path.as_deref(), Some("/appdata/avatar.png"));
-        assert_eq!(avatar.upload_version, None, "absent field must default to None");
+        assert_eq!(
+            avatar.upload_version, None,
+            "absent field must default to None"
+        );
     }
 
     #[test]
@@ -1641,14 +1653,16 @@ mod tests {
     fn avatar_settings_in_user_settings_round_trip() {
         // Full UserSettings round-trip with avatar.uploadVersion set —
         // proves the version survives the settings store cycle.
-        let mut settings = UserSettings::default();
-        settings.avatar = Some(AvatarSettings {
-            kind: AvatarKind::Upload,
-            preset_id: None,
-            preset_color: None,
-            upload_path: Some("/appdata/avatar.webp".into()),
-            upload_version: Some(99),
-        });
+        let settings = UserSettings {
+            avatar: Some(AvatarSettings {
+                kind: AvatarKind::Upload,
+                preset_id: None,
+                preset_color: None,
+                upload_path: Some("/appdata/avatar.webp".into()),
+                upload_version: Some(99),
+            }),
+            ..Default::default()
+        };
         let json = serde_json::to_string(&settings).expect("serialize");
         assert!(
             json.contains("\"uploadVersion\":99"),
@@ -1658,7 +1672,10 @@ mod tests {
         // UserSettings doesn't derive PartialEq, so check the avatar fields.
         let back_avatar = back.avatar.expect("avatar must survive round-trip");
         assert_eq!(back_avatar.kind, AvatarKind::Upload);
-        assert_eq!(back_avatar.upload_path.as_deref(), Some("/appdata/avatar.webp"));
+        assert_eq!(
+            back_avatar.upload_path.as_deref(),
+            Some("/appdata/avatar.webp")
+        );
         assert_eq!(
             back_avatar.upload_version,
             Some(99),

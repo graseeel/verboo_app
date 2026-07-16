@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ForwardedRef, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ForwardedRef, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { ArrowDown, CheckCircle2, ChevronDown, ChevronRight, FolderClosed, GitBranch, LoaderCircle, X, XCircle } from 'lucide-react'
 import type {
@@ -11,6 +11,8 @@ import type {
   ChatStore,
   CliAuthStatus,
   CommandRun,
+  ComputerUseSession,
+  ComputerUseTurnCompleteEvent,
   ContextUsageSnapshot,
   CredentialStatus,
   FeedbackDiagnostics,
@@ -50,8 +52,19 @@ import { AppSidebar, type AppView } from './components/AppSidebar'
 import { CommandPalette, paletteIcons, type PaletteAction } from './components/CommandPalette'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { ComputerUseLayer } from './features/computer-use/ComputerUseLayer'
-import { computerUseStore } from './features/computer-use/computerUseStore'
+import { ComputerUseExecutorDialog } from './features/computer-use/ComputerUseExecutorDialog'
+import { ComputerUseRecoveryDialog } from './features/computer-use/ComputerUseRecoveryDialog'
+import type { ComputerUseApp, ComputerUseExecutorRecovery } from './verboo-bridge'
+import { computerUseStore, isComputerUseCompactState } from './features/computer-use/computerUseStore'
+import { computerUsePolicyForApp } from './features/computer-use/appControlTier'
+import { reportComputerUseError } from './features/computer-use/computerUseError'
+import { nextComputerUseTranscriptScroll } from './features/computer-use/computerUseCompactScroll'
 import {
+  computerUseCliSessionPolicy,
+  type ComputerUseCliSessionPolicy,
+} from './features/computer-use/executorSelection'
+import {
+  countHiddenComputerUseApps,
   detectComputerUseIntent,
   extractComputerUseAppSelector,
   resolveComputerUseTarget,
@@ -162,6 +175,8 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
       'com.agilebits.onepassword8',
       'com.bitwarden.desktop',
     ],
+    preferredVisualExecutorId: undefined,
+    restoreHiddenApps: true,
     auditRetentionDays: 90,
     auditStorageCapMb: 200,
     idleTimeoutSeconds: 900,
@@ -252,6 +267,7 @@ type QueuedFollowUp = {
     modelId?: string
     modelDisplayName?: string
   }
+  cliSessionPolicy?: ComputerUseCliSessionPolicy
 }
 
 type PermissionDecision = 'allow' | 'deny' | 'always'
@@ -406,6 +422,14 @@ export function App() {
   // fn is called by the modal with the user's choice; awaiting code continues.
   const [visionFallbackState, setVisionFallbackState] = useState<VisionFallbackState | undefined>()
   const visionFallbackResolveRef = useRef<(value: { allowOnce: boolean } | { persist: VisionFallbackConsent }) => void>(undefined)
+  const [computerUseExecutorPrompt, setComputerUseExecutorPrompt] = useState<{
+    destinationModelName: string
+  } | undefined>()
+  const computerUseExecutorResolveRef = useRef<((allow: boolean) => void) | undefined>(undefined)
+  const [computerUseRecovery, setComputerUseRecovery] = useState<
+    Extract<ComputerUseExecutorRecovery, { kind: 'offer' }> | undefined
+  >()
+  const computerUseRecoveryCheckedRef = useRef(false)
 
   // Skill approval — deferred promise pattern matching vision fallback.
   // Set when sendMessage encounters unapproved project-root skills.
@@ -454,6 +478,11 @@ export function App() {
   const terminal = useLocalTerminal()
   const review = useReviewPanel()
   const t = useMemo(() => createTranslator(userSettings.language), [userSettings.language])
+  const computerUseState = useSyncExternalStore(
+    computerUseStore.subscribe,
+    computerUseStore.getSnapshot,
+    computerUseStore.getSnapshot,
+  )
   const [tokenRate, setTokenRate] = useState<TokenRateSnapshot | undefined>()
   const goalRef = useRef(goal)
   const [goalBarStatus, setGoalBarStatus] = useState<GoalStatusBarState>({ kind: 'idle' })
@@ -466,6 +495,7 @@ export function App() {
   const userSettingsRef = useRef(userSettings)
   const turnConversationIds = useRef<Record<string, string>>({})
   const turnModels = useRef<Record<string, { modelId?: string; modelDisplayName?: string }>>({})
+  const turnCliSessionPolicies = useRef<Record<string, ComputerUseCliSessionPolicy>>({})
   const pendingConversationId = useRef<string | undefined>(undefined)
   // Ref mirror of activeConversationId so the agent event handler (which has
   // a stale closure via useEffect []) can read the current value when a
@@ -474,6 +504,15 @@ export function App() {
   const goalSessionId = useRef<string | undefined>(undefined)
   const goalAbortRef = useRef<AbortController | undefined>(undefined)
   const queuedFollowUpsRef = useRef<QueuedFollowUp[]>([])
+  const pendingComputerUseLaunchRef = useRef<{
+    goal: string
+    skills: SkillSummary[]
+    executorModelId: string
+    originalModelId?: string
+    conversationId: string
+    temporaryExecutor: boolean
+  } | undefined>(undefined)
+  const computerUseConversationIdRef = useRef<string | undefined>(undefined)
   const lastEscapeAt = useRef(0)
   const selectedContextWindowRef = useRef<number | undefined>(undefined)
   const turnStartedAt = useRef<Record<string, number>>({})
@@ -552,6 +591,17 @@ export function App() {
   const emptyLine = t(emptyLineKey)
   const latestItem = items[items.length - 1]
   const latestItemSignature = `${latestItem?.id ?? ''}:${latestItem?.text.length ?? 0}:${latestItem?.streaming ? 1 : 0}`
+  const isComputerUseCompact = isComputerUseCompactState(computerUseState)
+  const computerUseLiveActivity = isComputerUseCompact && computerUseState.session
+    ? {
+        status: computerUseState.status as 'active' | 'paused',
+        appName: computerUseState.session.appName,
+        action: computerUseState.session.currentAction,
+      }
+    : undefined
+  const computerUseLiveActionSignature = computerUseLiveActivity
+    ? `${computerUseLiveActivity.status}:${computerUseLiveActivity.action?.actionId ?? 'working'}`
+    : 'inactive'
   const visiblePermissionPrompt = pendingPermissionPrompt && pendingPermissionPrompt.conversationId === activeConversationId && !pendingPermissionPrompt.autoApprove
     ? pendingPermissionPrompt
     : undefined
@@ -781,14 +831,19 @@ export function App() {
   useLayoutEffect(() => {
     if (shouldShowLogin || activeView !== 'chat' || !hasConversation || !workspaceRef.current) return undefined
 
-    if (!stickToBottomRef.current) {
+    const scrollBehavior = nextComputerUseTranscriptScroll({
+      following: stickToBottomRef.current,
+      compact: isComputerUseCompact,
+      streaming: Boolean(latestItem?.streaming),
+    })
+    if (!scrollBehavior) {
       setShowJumpToLatest(true)
       return undefined
     }
 
-    scrollToLatest(latestItem?.streaming ? 'auto' : 'smooth')
+    scrollToLatest(scrollBehavior)
     return undefined
-  }, [activeView, activeConversationId, hasConversation, latestItemSignature, shouldShowLogin])
+  }, [activeView, activeConversationId, computerUseLiveActionSignature, hasConversation, isComputerUseCompact, latestItemSignature, shouldShowLogin])
 
   useEffect(() => {
     if (!pendingPermissionPrompt?.autoApprove) return
@@ -823,6 +878,96 @@ export function App() {
     () => modelResult.models.find(model => model.id === selectedModel),
     [modelResult.models, selectedModel],
   )
+
+  function restoreOriginalModelSelection(originalModelId: string, executorModelId?: string) {
+    if (!executorModelId || selectedModel !== executorModelId) return
+    setSelectedModel(originalModelId)
+    if (userSettingsRef.current.lastSelectedModelId === executorModelId) {
+      void updateUserSettings({ lastSelectedModelId: originalModelId })
+    }
+  }
+
+  useEffect(() => {
+    if (computerUseRecoveryCheckedRef.current || modelResult.models.length === 0) return
+    computerUseRecoveryCheckedRef.current = true
+    void window.verboo.recoverComputerUseExecutorLease()
+      .then(recovery => {
+        if (recovery.kind === 'offer') {
+          setComputerUseRecovery(recovery)
+          return
+        }
+        if (recovery.kind === 'restored') {
+          restoreOriginalModelSelection(recovery.originalModelId, recovery.executorModelId)
+          toast(t('computerUse.recovery.autoRestored'))
+        }
+      })
+      .catch(() => {
+        computerUseRecoveryCheckedRef.current = false
+        toast(t('computerUse.recovery.failed'), 'error')
+      })
+  }, [modelResult.models])
+
+  async function resumeRecoveredComputerUse() {
+    const pending = computerUseRecovery
+    if (!pending) return
+    try {
+      const recovery = await window.verboo.recoverComputerUseExecutorLease()
+      if (recovery.kind !== 'offer'
+        || recovery.lease.conversationId !== pending.lease.conversationId
+        || !chatStore.conversations.some(conversation => conversation.id === recovery.lease.conversationId)) {
+        if (recovery.kind === 'restored') {
+          restoreOriginalModelSelection(recovery.originalModelId, recovery.executorModelId)
+        }
+        setComputerUseRecovery(undefined)
+        toast(t('computerUse.recovery.noLongerResumable'), 'error')
+        return
+      }
+      const originalName = modelResult.models.find(model => model.id === recovery.lease.originalModelId)?.displayName
+        ?? recovery.lease.originalModelId
+      const executorName = modelResult.models.find(model => model.id === recovery.lease.executorModelId)?.displayName
+        ?? recovery.lease.executorModelId
+      const session = computerUseStore.restoreNativeExecutorLease(
+        recovery.session,
+        recovery.lease,
+        originalName,
+        executorName,
+      )
+      setActiveConversationId(recovery.lease.conversationId)
+      setActiveView('chat')
+      if (session.status === 'paused') await computerUseStore.resume()
+      setComputerUseRecovery(undefined)
+      toast(t('computerUse.recovery.resumed'))
+    } catch {
+      toast(t('computerUse.recovery.failed'), 'error')
+    }
+  }
+
+  async function restoreRecoveredComputerUse() {
+    const pending = computerUseRecovery
+    if (!pending) return
+    try {
+      computerUseStore.restoreNativeExecutorLease(
+        pending.session,
+        pending.lease,
+        modelResult.models.find(model => model.id === pending.lease.originalModelId)?.displayName
+          ?? pending.lease.originalModelId,
+        modelResult.models.find(model => model.id === pending.lease.executorModelId)?.displayName
+          ?? pending.lease.executorModelId,
+      )
+      await window.verboo.interrupt(pending.lease.conversationId)
+      await computerUseStore.stop('user_cancelled')
+      await window.verboo.clearComputerUseExecutorLease(pending.lease.conversationId)
+      restoreOriginalModelSelection(
+        pending.lease.originalModelId,
+        pending.lease.executorModelId,
+      )
+      setComputerUseRecovery(undefined)
+      toast(t('computerUse.recovery.autoRestored'))
+    } catch {
+      toast(t('computerUse.recovery.failed'), 'error')
+    }
+  }
+
   const maxContextWindow = selectedModelInfo?.contextWindow
     ?? (selectedModel ? reportedContextWindows[selectedModel] : undefined)
   const selectedContextWindow = selectedModelInfo?.contextWindow
@@ -1461,9 +1606,13 @@ export function App() {
 
     if (event.type === 'result') {
       turnResultSnapshots.current[event.turnId] = event.result
-      if (event.result.sessionId) goalSessionId.current = event.result.sessionId
+      const persistReturnedSession = turnCliSessionPolicies.current[event.turnId]
+        ?.persistReturnedSession !== false
+      if (event.result.sessionId && persistReturnedSession) {
+        goalSessionId.current = event.result.sessionId
+      }
       const conversationId = turnConversationIds.current[event.turnId]
-      if (conversationId && event.result.sessionId) {
+      if (conversationId && event.result.sessionId && persistReturnedSession) {
         updateConversationSession(conversationId, event.result.sessionId)
       }
       // Stable sidebar ordering: bump lastTurnEndedAt when the turn result
@@ -1711,7 +1860,14 @@ export function App() {
   // concurrent awaits see the lock before the first call's first await.
   // The ref resets in the `finally` block at the end of the function.
   const sendMessageLock = useRef(false)
-  async function sendMessage(message: string, computerUseSessionId?: string, skillsOverride?: SkillSummary[]) {
+  async function sendMessage(
+    message: string,
+    computerUseSessionId?: string,
+    skillsOverride?: SkillSummary[],
+    modelOverrideId?: string,
+    temporaryComputerUseExecutor = false,
+    boundComputerUseConversationId?: string,
+  ) {
     const trimmed = message.trim()
     if (!trimmed) return
     if (!computerUseSessionId) {
@@ -1725,7 +1881,7 @@ export function App() {
     if (sendMessageLock.current) return // already in flight
     sendMessageLock.current = true
     try {
-    const conversationId = ensureActiveConversation()
+    const conversationId = boundComputerUseConversationId ?? ensureActiveConversation()
 
     // ── Vision fallback consent check ──
     const hasImages = attachedFiles.some(f => f.kind === 'image')
@@ -1801,7 +1957,14 @@ export function App() {
       }
     }
 
-    const queued = createQueuedFollowUp(conversationId, trimmed, computerUseSessionId, turnSkills)
+    const queued = createQueuedFollowUp(
+      conversationId,
+      trimmed,
+      computerUseSessionId,
+      turnSkills,
+      modelOverrideId,
+      temporaryComputerUseExecutor,
+    )
     setActiveView('chat')
     stickToBottomRef.current = true
     setShowJumpToLatest(false)
@@ -1841,10 +2004,15 @@ export function App() {
     message: string,
     computerUseSessionId?: string,
     skillsOverride?: SkillSummary[],
+    modelOverrideId?: string,
+    temporaryComputerUseExecutor = false,
   ): QueuedFollowUp {
+    const turnModelId = modelOverrideId ?? selectedModel
+    const turnModelInfo = modelResult.models.find(model => model.id === turnModelId)
+    const turnModelReasoning = turnModelInfo ? getModelReasoning(turnModelInfo) : undefined
     const turnModel = {
-      modelId: selectedModel,
-      modelDisplayName: selectedModelInfo?.displayName ?? selectedModel,
+      modelId: turnModelId,
+      modelDisplayName: turnModelInfo?.displayName ?? turnModelId,
     }
     const responseLanguage = inferResponseLanguage(message, conversationLanguageFallback(conversationId))
 
@@ -1853,15 +2021,17 @@ export function App() {
       conversationId,
       message,
       turnModel,
+      cliSessionPolicy: computerUseCliSessionPolicy(temporaryComputerUseExecutor),
       request: {
         conversationId,
         message,
         computerUseSessionId,
-        model: selectedModel,
-        modelSupportsVision: Boolean(selectedModelInfo?.supportsVision),
-        contextWindow: selectedContextWindow,
-        effort: validEffortOverride,
-        reasoning: selectedModelReasoning,
+        model: turnModelId,
+        modelSupportsVision: Boolean(turnModelInfo?.supportsVision),
+        contextWindow: turnModelInfo?.contextWindow
+          ?? (turnModelId ? reportedContextWindows[turnModelId] : undefined),
+        effort: validOverride(effortByModel, turnModelId, turnModelReasoning),
+        reasoning: turnModelReasoning,
         responseLanguage,
         accessMode: accessMode === 'full' && !userSettings.fullAccessEnabled ? 'approval' : accessMode,
         workingDirectory: workingDirectoryForConversation(conversationId),
@@ -2009,25 +2179,45 @@ export function App() {
     setTokenRate(undefined)
 
     const request = await prepareRequestWithResearchSubagents(item)
-    const resumeId = options?.skipResume ? undefined : conversationCliSessionId(item.conversationId)
-    const turnId = await sendTrackedTurn(request, resumeId)
+    const cliSessionPolicy = item.cliSessionPolicy ?? computerUseCliSessionPolicy(false)
+    const resumeId = options?.skipResume || !cliSessionPolicy.resumeExistingSession
+      ? undefined
+      : conversationCliSessionId(item.conversationId)
+    const turnId = await sendTrackedTurn(request, resumeId, cliSessionPolicy)
     turnConversationIds.current[turnId] = item.conversationId
     turnModels.current[turnId] = item.turnModel
     // Track last user text for one-shot session-resume recovery.
     turnRetryPayload.current[turnId] = {
       conversationId: item.conversationId,
       message: item.message,
-      alreadyRetriedWithoutSession: Boolean(options?.skipResume),
+      alreadyRetriedWithoutSession: Boolean(
+        options?.skipResume || !cliSessionPolicy.resumeExistingSession,
+      ),
     }
     attachPendingResearchSubagents(turnId)
     tagAssistantMessage(item.conversationId, turnId, item.turnModel)
     if (pendingConversationId.current === item.conversationId) pendingConversationId.current = undefined
   }
 
-  async function sendTrackedTurn(request: AgentTurnRequest, resumeSessionId?: string): Promise<string> {
+  async function sendTrackedTurn(
+    request: AgentTurnRequest,
+    resumeSessionId?: string,
+    cliSessionPolicy = computerUseCliSessionPolicy(false),
+  ): Promise<string> {
     const baseline = await snapshotWorkspaceChanges(request.workingDirectory)
     const clientTurnId = request.turnId ?? crypto.randomUUID()
-    const turnId = await window.verboo.sendTurn({ ...request, turnId: clientTurnId }, resumeSessionId)
+    turnCliSessionPolicies.current[clientTurnId] = cliSessionPolicy
+    let turnId: string
+    try {
+      turnId = await window.verboo.sendTurn({ ...request, turnId: clientTurnId }, resumeSessionId)
+    } catch (error) {
+      delete turnCliSessionPolicies.current[clientTurnId]
+      throw error
+    }
+    if (turnId !== clientTurnId) {
+      turnCliSessionPolicies.current[turnId] = cliSessionPolicy
+      delete turnCliSessionPolicies.current[clientTurnId]
+    }
     turnChangeBaselines.current[turnId] = baseline
     turnWorkingDirectories.current[turnId] = request.workingDirectory
     return turnId
@@ -2708,6 +2898,35 @@ export function App() {
       return
     }
 
+    if (!selectedModel) {
+      toast(t('computerUse.composer.visionModelUnavailable'), 'error')
+      return
+    }
+    let executorSelection: { modelId: string; temporary: boolean }
+    try {
+      executorSelection = await window.verboo.selectComputerUseExecutor(
+        selectedModel,
+        userSettings.computerUse.preferredVisualExecutorId,
+      )
+    } catch {
+      toast(t('computerUse.composer.visionModelUnavailable'), 'error')
+      return
+    }
+    const executorModel = modelResult.models.find(model => model.id === executorSelection.modelId)
+    if (!executorModel || executorModel.supportsVision !== true) {
+      toast(t('computerUse.composer.visionModelUnavailable'), 'error')
+      return
+    }
+
+    if (executorSelection.temporary) {
+      if (computerUseExecutorResolveRef.current) return
+      const approved = await new Promise<boolean>(resolve => {
+        computerUseExecutorResolveRef.current = resolve
+        setComputerUseExecutorPrompt({ destinationModelName: executorModel.displayName })
+      })
+      if (!approved) return
+    }
+
     try {
       let permissions = await window.verboo.getComputerUsePermissions()
       if (permissions.accessibility !== 'granted' || permissions.screenRecording !== 'granted') {
@@ -2720,21 +2939,31 @@ export function App() {
         return
       }
     } catch (error) {
-      toast(error instanceof Error ? error.message : t('computerUse.composer.permissionsMissing'), 'error')
+      toast(reportComputerUseError(
+        'check macOS permissions before launch',
+        error,
+        t('computerUse.composer.permissionsMissing'),
+      ), 'error')
       return
     }
 
-    let resolvedApp: { bundleId: string; name: string } | undefined
+    let runningApps: ComputerUseApp[] = []
+    let resolvedApp: { bundleId: string; name: string; iconBase64?: string } | undefined
     try {
-      const apps = await window.verboo.listComputerUseApps()
-      resolvedApp = resolveComputerUseTarget(goal, apps, explicitSelector)
+      runningApps = await window.verboo.listComputerUseApps()
+      resolvedApp = resolveComputerUseTarget(goal, runningApps, explicitSelector)
       const selector = explicitSelector ?? extractComputerUseAppSelector(goal)
       if (!resolvedApp && selector) {
         resolvedApp = await window.verboo.resolveComputerUseApp(selector)
       }
     } catch {
-      // App resolution failure is non-fatal: the session can still start
-      // goal-directed. The agent will discover the target via list-apps.
+      // The explicit consent contract requires a concrete app. Resolution
+      // failures are surfaced below instead of creating an unbound session.
+    }
+
+    if (!resolvedApp) {
+      toast(t('computerUse.composer.missingApp'), 'error')
+      return
     }
 
     // Self-test gate: only applies when the resolved app is Verboo itself.
@@ -2747,34 +2976,133 @@ export function App() {
       return
     }
 
-    // Goal-first: start the session even when no app was resolved. The
-    // agent discovers the target via list-apps/launch and binds it via
-    // bind_target (which re-runs hard-block + self-test + denylist gates).
-    //
-    // Product decision (P4 / dual-MAESTRO): **inline session grant** — skill or
-    // explicit NL Computer Use is the user's consent for this goal. We do NOT
-    // show a second ConsentModal (Claude-like speed). Per-app first-bind still
-    // re-runs hard-block / self-test / denylist on the native side.
+    const policy = computerUsePolicyForApp(resolvedApp.bundleId, resolvedApp.name)
+    const hiddenAppCount = countHiddenComputerUseApps(runningApps, resolvedApp.bundleId)
+    const originalModel = selectedModel
+      ? { id: selectedModel, displayName: selectedModelInfo?.displayName ?? selectedModel }
+      : undefined
+
+    const conversationId = ensureActiveConversation()
+    pendingComputerUseLaunchRef.current = {
+      goal,
+      skills,
+      executorModelId: executorModel.id,
+      originalModelId: selectedModel,
+      conversationId,
+      temporaryExecutor: executorSelection.temporary,
+    }
+
     await computerUseStore.requestConsent({
       goal,
-      appName: resolvedApp?.name,
-      appBundleId: resolvedApp?.bundleId,
-      scope: 'input',
+      appName: resolvedApp.name,
+      appBundleId: resolvedApp.bundleId,
+      appIconBase64: resolvedApp.iconBase64,
+      // Session authority stays Full so additional explicitly approved apps
+      // can have their own tier. The per-app tier is the actual action gate.
+      scope: 'full',
+      requestedTier: policy.tier,
+      originalModel,
+      executorModel: { id: executorModel.id, displayName: executorModel.displayName },
+      temporaryExecutor: executorSelection.temporary,
+      sentinelConfirmationRequired: policy.sentinelConfirmationRequired,
+      hiddenAppCount,
+      conversationId,
+      executorModelId: executorModel.id,
     })
-    if (computerUseStore.getSnapshot().status !== 'consent') return
-
-    // Inline grant (no modal). Toast confirms isolation or goal-directed mode.
-    if (resolvedApp) {
-      toast(t('computerUse.composer.isolationNotice'), 'info')
-    } else {
-      toast(t('computerUse.composer.goalDirectedNotice'), 'info')
-    }
-    await computerUseStore.grant({ type: 'session' })
-    const sessionId = computerUseStore.getSnapshot().session?.id
-    if (computerUseStore.getSnapshot().status === 'active' && sessionId) {
-      await sendMessage(goal, sessionId, skills)
+    if (computerUseStore.getSnapshot().status !== 'consent') {
+      pendingComputerUseLaunchRef.current = undefined
     }
   }
+
+  function handleComputerUseSessionStarted(session: ComputerUseSession) {
+    const pending = pendingComputerUseLaunchRef.current
+    if (!pending) return
+    pendingComputerUseLaunchRef.current = undefined
+    computerUseConversationIdRef.current = pending.conversationId
+    void (async () => {
+      if (pending.temporaryExecutor && pending.originalModelId) {
+        try {
+          await window.verboo.persistComputerUseExecutorLease(
+            pending.conversationId,
+            pending.originalModelId,
+            pending.executorModelId,
+            Date.now() + userSettings.computerUse.idleTimeoutSeconds * 1000,
+          )
+        } catch (error) {
+          await computerUseStore.stop('error')
+          toast(reportComputerUseError(
+            'persist temporary executor lease',
+            error,
+            t('computerUse.composer.executorLeaseFailed'),
+          ), 'error')
+          return
+        }
+      }
+      try {
+        await sendMessage(
+          pending.goal,
+          session.id,
+          pending.skills,
+          pending.executorModelId,
+          pending.temporaryExecutor,
+          pending.conversationId,
+        )
+      } catch (error) {
+        if (pending.temporaryExecutor) {
+          await window.verboo.clearComputerUseExecutorLease(pending.conversationId).catch(() => false)
+        }
+        await computerUseStore.stop('error')
+        toast(reportComputerUseError(
+          'start visual executor',
+          error,
+          t('computerUse.composer.startFailed'),
+        ), 'error')
+      }
+    })()
+  }
+
+  function handleComputerUseConsentDismissed() {
+    pendingComputerUseLaunchRef.current = undefined
+    computerUseConversationIdRef.current = undefined
+  }
+
+  const handleComputerUseEmergencyStop = useCallback(() => {
+    goalAbortRef.current?.abort()
+    const conversationId = computerUseConversationIdRef.current
+      ?? pendingComputerUseLaunchRef.current?.conversationId
+    if (conversationId) void window.verboo.interrupt(conversationId)
+  }, [])
+
+  const handleComputerUseTurnComplete = useCallback((event: ComputerUseTurnCompleteEvent) => {
+    if (computerUseConversationIdRef.current === event.conversationId) {
+      computerUseConversationIdRef.current = undefined
+    }
+    const itemId = `computer-use:${event.sessionId}:complete`
+    updateConversation(event.conversationId, conversation => {
+      if (conversation.items.some(item => item.id === itemId)) return conversation
+      return {
+        ...conversation,
+        items: [
+          ...conversation.items,
+          {
+            id: itemId,
+            role: 'system',
+            kind: 'activity',
+            activityKind: 'tool',
+            text: t(
+              event.stoppedReason === 'completed'
+                ? 'computerUse.transcript.completed'
+                : event.stoppedReason === 'cancelled' || event.stoppedReason === 'emergency_stop'
+                  ? 'computerUse.transcript.stopped'
+                  : 'computerUse.transcript.failed',
+            ),
+            timestamp: Date.now(),
+          },
+        ],
+        updatedAt: Date.now(),
+      }
+    })
+  }, [t])
 
   async function handleComputerUseCommand(command: Extract<ReservedSlashCommand, { kind: 'computer-use' }>) {
     await startComputerUseFromComposer(command.goal ?? '', [...selectedSkills], command.app)
@@ -3865,6 +4193,7 @@ export function App() {
 
   function cleanupTurnState(turnId: string) {
     delete turnConversationIds.current[turnId]
+    delete turnCliSessionPolicies.current[turnId]
     delete turnStartedAt.current[turnId]
     delete turnTokenRates.current[turnId]
     delete turnLiveRates.current[turnId]
@@ -4204,7 +4533,7 @@ export function App() {
 
   return (
     <I18nProvider language={userSettings.language}>
-    <main className="app-shell" style={appLayoutStyle}>
+    <main className={`app-shell ${isComputerUseCompact ? 'is-computer-use-compact' : ''}`} style={appLayoutStyle}>
       <TopBar
         sidebarVisible={sidebarMode !== 'hidden'}
         statusLabel={runningTurnId ? t('topbar.statusWorking') : t('topbar.statusReady')}
@@ -4331,6 +4660,7 @@ export function App() {
                 compactedTurnIds={compactedTurnIds}
                 imageReadingTurnId={imageReadingTurnId}
                 onEditSent={editSentMessage}
+                computerUseLiveActivity={computerUseLiveActivity}
               />
               <div ref={transcriptEndRef} className="transcript-end" />
             </>
@@ -4490,7 +4820,7 @@ export function App() {
               onAlwaysAllow={() => respondToPermissionPrompt(visiblePermissionPrompt, 'always')}
             />
           )}
-          {visionFallbackState && visionFallbackResolveRef.current && (
+      {visionFallbackState && visionFallbackResolveRef.current && (
             <VisionFallbackModal
               state={visionFallbackState}
               onRespond={choice => {
@@ -4611,6 +4941,35 @@ export function App() {
         </div>
       )}
 
+      {computerUseExecutorPrompt && computerUseExecutorResolveRef.current && (
+        <ComputerUseExecutorDialog
+          destinationModelName={computerUseExecutorPrompt.destinationModelName}
+          onContinue={() => {
+            const resolve = computerUseExecutorResolveRef.current
+            computerUseExecutorResolveRef.current = undefined
+            setComputerUseExecutorPrompt(undefined)
+            resolve?.(true)
+          }}
+          onCancel={() => {
+            const resolve = computerUseExecutorResolveRef.current
+            computerUseExecutorResolveRef.current = undefined
+            setComputerUseExecutorPrompt(undefined)
+            resolve?.(false)
+          }}
+        />
+      )}
+
+      {computerUseRecovery && (
+        <ComputerUseRecoveryDialog
+          executorModelName={modelResult.models.find(model => model.id === computerUseRecovery.lease.executorModelId)?.displayName
+            ?? computerUseRecovery.lease.executorModelId}
+          originalModelName={modelResult.models.find(model => model.id === computerUseRecovery.lease.originalModelId)?.displayName
+            ?? computerUseRecovery.lease.originalModelId}
+          onResume={() => void resumeRecoveredComputerUse()}
+          onRestore={() => void restoreRecoveredComputerUse()}
+        />
+      )}
+
       <FeedbackDialog
         open={feedbackOpen}
         defaultContact={cliAuth.email ?? profile.user?.email}
@@ -4621,7 +4980,12 @@ export function App() {
 
       <ConfirmDialog request={confirmRequest} onClose={() => setConfirmRequest(undefined)} />
 
-      <ComputerUseLayer />
+      <ComputerUseLayer
+        onSessionStarted={handleComputerUseSessionStarted}
+        onConsentDismissed={handleComputerUseConsentDismissed}
+        onEmergencyStop={handleComputerUseEmergencyStop}
+        onTurnComplete={handleComputerUseTurnComplete}
+      />
 
       <CommandPalette
         open={paletteOpen}

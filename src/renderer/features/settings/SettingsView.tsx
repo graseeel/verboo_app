@@ -25,7 +25,7 @@ import {
   MonitorSmartphone,
   FolderOpen,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type {
   AccessMode,
   CompletionNotificationMode,
@@ -50,6 +50,7 @@ import { AvatarIcon } from '../../components/AvatarIcon'
 import { formatDateTime, useI18n } from '../../i18n'
 import { DEFAULT_CONVERSATION_TITLE } from '../../state/chatStore'
 import type { ComputerUsePermissions } from '../../verboo-bridge'
+import { reportComputerUseError } from '../computer-use/computerUseError'
 
 type SettingsViewProps = {
   credentials: CredentialStatus
@@ -114,6 +115,7 @@ export function SettingsView({
   const [computerUsePermissions, setComputerUsePermissions] = useState<ComputerUsePermissions>()
   const [requestingComputerUsePermissions, setRequestingComputerUsePermissions] = useState(false)
   const [computerUseHelperPath, setComputerUseHelperPath] = useState<string | undefined>()
+  const [computerUseDeniedAppDraft, setComputerUseDeniedAppDraft] = useState('')
   const [confirmingFullAccess, setConfirmingFullAccess] = useState<'mode-selector' | 'capability' | false>(false)
   const settingsTabs: Array<{ id: SettingsTab; label: string; icon: typeof Shield }> = [
     { id: 'permissions', label: t('settings.permissions'), icon: Shield },
@@ -178,9 +180,9 @@ export function SettingsView({
     try {
       const permissions = await window.verboo.requestComputerUsePermissions()
       setComputerUsePermissions(permissions)
-      // Open both TCC panes so the user can enable Verboo Code and/or
-      // computer-use-helper. macOS lists the helper as a separate entry
-      // for ad-hoc builds; signed product may show both.
+      // Both real TCC identities request registration first: the controller
+      // and the independent LSUIElement agent. The panes are then opened so
+      // the user can explicitly grant them; macOS never allows silent grants.
       await window.verboo.openComputerUsePermissionSettings('accessibility')
       await window.verboo.openComputerUsePermissionSettings('screenRecording')
       await refreshComputerUseHelperPath()
@@ -188,7 +190,11 @@ export function SettingsView({
         toast(t('settings.computerUsePermissionsRestart'), 'info')
       }
     } catch (error) {
-      toast(error instanceof Error ? error.message : t('settings.computerUsePermissionsError'), 'error')
+      toast(reportComputerUseError(
+        'request macOS permissions',
+        error,
+        t('settings.computerUsePermissionsError'),
+      ), 'error')
     } finally {
       setRequestingComputerUsePermissions(false)
     }
@@ -200,6 +206,34 @@ export function SettingsView({
     } catch {
       toast(t('settings.computerUseHelperRevealFailed'), 'error')
     }
+  }
+
+  function addComputerUseDeniedApp() {
+    const bundleId = computerUseDeniedAppDraft.trim()
+    if (!bundleId) return
+    const alreadyDenied = userSettings.computerUse.denylist.some(
+      denied => denied.localeCompare(bundleId, undefined, { sensitivity: 'accent' }) === 0,
+    )
+    if (!alreadyDenied) {
+      void onUserSettingsChange({
+        computerUse: {
+          ...userSettings.computerUse,
+          denylist: [...userSettings.computerUse.denylist, bundleId],
+        },
+      })
+    }
+    setComputerUseDeniedAppDraft('')
+  }
+
+  function removeComputerUseDeniedApp(bundleId: string) {
+    void onUserSettingsChange({
+      computerUse: {
+        ...userSettings.computerUse,
+        denylist: userSettings.computerUse.denylist.filter(
+          denied => denied.toLocaleLowerCase() !== bundleId.toLocaleLowerCase(),
+        ),
+      },
+    })
   }
 
   // When the user toggles Computer Use enabled ON and OS permissions are
@@ -472,87 +506,6 @@ export function SettingsView({
                 checked={userSettings.includeVerbooCoAuthor}
                 onChange={includeVerbooCoAuthor => onUserSettingsChange({ includeVerbooCoAuthor })}
               />
-            </section>
-
-            <section className="settings-panel computer-use-permissions-panel">
-              <div className="settings-row settings-row--control">
-                <ShieldCheck size={16} />
-                <div>
-                  <strong>{t('settings.computerUseAccessibility')}</strong>
-                  <small>{t('settings.computerUseAccessibilityBody')}</small>
-                </div>
-                <button
-                  type="button"
-                  className={`computer-use-permission-status ${computerUsePermissions?.accessibility === 'granted' ? 'is-granted' : ''}`}
-                  onClick={() => void window.verboo.openComputerUsePermissionSettings('accessibility')}
-                >
-                  {computerUsePermissions?.accessibility === 'granted'
-                    ? t('settings.computerUsePermissionGranted')
-                    : t('settings.computerUsePermissionMissing')}
-                </button>
-              </div>
-              <div className="settings-row settings-row--control">
-                <Camera size={16} />
-                <div>
-                  <strong>{t('settings.computerUseScreenRecording')}</strong>
-                  <small>{t('settings.computerUseScreenRecordingBody')}</small>
-                </div>
-                <button
-                  type="button"
-                  className={`computer-use-permission-status ${computerUsePermissions?.screenRecording === 'granted' ? 'is-granted' : ''}`}
-                  onClick={() => void window.verboo.openComputerUsePermissionSettings('screenRecording')}
-                >
-                  {computerUsePermissions?.screenRecording === 'granted'
-                    ? t('settings.computerUsePermissionGranted')
-                    : t('settings.computerUsePermissionMissing')}
-                </button>
-              </div>
-              <div className="settings-action-row">
-                <button
-                  type="button"
-                  className="choice-chip"
-                  disabled={requestingComputerUsePermissions}
-                  onClick={() => void requestNativeComputerUsePermissions()}
-                >
-                  {requestingComputerUsePermissions
-                    ? t('settings.computerUsePermissionRequesting')
-                    : t('settings.computerUsePermissionRequest')}
-                </button>
-                <button type="button" className="choice-chip" onClick={() => void refreshComputerUsePermissions()}>
-                  <RefreshCcw size={13} />
-                  {t('common.refresh')}
-                </button>
-              </div>
-              <div className="settings-row settings-row--control computer-use-helper-row">
-                <FolderOpen size={16} />
-                <div>
-                  <strong>{t('settings.computerUseHelperPathTitle')}</strong>
-                  <small>{t('settings.computerUseHelperPathBody')}</small>
-                  {computerUseHelperPath ? (
-                    <code className="computer-use-helper-path">{computerUseHelperPath}</code>
-                  ) : (
-                    <small className="computer-use-helper-path-unavailable">
-                      {t('settings.computerUseHelperPathUnavailable')}
-                    </small>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  className="choice-chip"
-                  disabled={!computerUseHelperPath}
-                  onClick={() => void revealComputerUseHelper()}
-                >
-                  <FolderOpen size={13} />
-                  {t('settings.computerUseHelperReveal')}
-                </button>
-              </div>
-              <p className="computer-use-tcc-copy">
-                {t('settings.computerUseTccCopySigned')}
-                <br />
-                <span className="computer-use-tcc-copy-adhoc">
-                  {t('settings.computerUseTccCopyAdHoc')}
-                </span>
-              </p>
             </section>
 
             <section className="settings-panel">
@@ -831,6 +784,160 @@ export function SettingsView({
             </section>
 
             <section className="settings-panel">
+              <div className="settings-select-row">
+                <span>
+                  <strong>{t('settings.computerUsePreferredExecutor')}</strong>
+                  <small>{t('settings.computerUsePreferredExecutorBody')}</small>
+                </span>
+                <SettingsSelect
+                  value={userSettings.computerUse.preferredVisualExecutorId ?? ''}
+                  ariaLabel={t('settings.computerUsePreferredExecutor')}
+                  options={[
+                    { value: '', label: t('settings.computerUsePreferredExecutorAutomatic') },
+                    ...modelResult.models
+                      .filter(model => model.supportsVision === true)
+                      .map(model => ({ value: model.id, label: model.displayName })),
+                  ]}
+                  onChange={preferredVisualExecutorId => void onUserSettingsChange({
+                    computerUse: {
+                      ...userSettings.computerUse,
+                      preferredVisualExecutorId: preferredVisualExecutorId || undefined,
+                    },
+                  })}
+                />
+              </div>
+              <SettingToggle
+                title={t('settings.computerUseRestoreHiddenApps')}
+                body={t('settings.computerUseRestoreHiddenAppsBody')}
+                checked
+                disabled
+                onChange={() => undefined}
+              />
+            </section>
+
+            <section className="settings-panel computer-use-denied-apps-panel">
+              <div className="settings-row">
+                <Shield size={16} />
+                <div>
+                  <strong>{t('settings.computerUseDeniedApps')}</strong>
+                  <small>{t('settings.computerUseDeniedAppsBody')}</small>
+                </div>
+              </div>
+              <div className="api-key-form">
+                <input
+                  value={computerUseDeniedAppDraft}
+                  onChange={event => setComputerUseDeniedAppDraft(event.target.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      addComputerUseDeniedApp()
+                    }
+                  }}
+                  placeholder={t('settings.computerUseDeniedAppsPlaceholder')}
+                  aria-label={t('settings.computerUseDeniedAppsPlaceholder')}
+                />
+                <button type="button" disabled={!computerUseDeniedAppDraft.trim()} onClick={addComputerUseDeniedApp}>
+                  {t('settings.computerUseDeniedAppsAdd')}
+                </button>
+              </div>
+              <div className="trusted-command-list">
+                {userSettings.computerUse.denylist.map(bundleId => (
+                  <article key={bundleId.toLocaleLowerCase()} className="trusted-command-row computer-use-denied-app-row">
+                    <Shield size={16} />
+                    <span><code>{bundleId}</code></span>
+                    <button type="button" onClick={() => removeComputerUseDeniedApp(bundleId)}>
+                      <Trash2 size={14} />
+                      {t('common.delete')}
+                    </button>
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <section className="settings-panel computer-use-permissions-panel">
+              <div className="settings-row settings-row--control">
+                <ShieldCheck size={16} />
+                <div>
+                  <strong>{t('settings.computerUseAccessibility')}</strong>
+                  <small>{t('settings.computerUseAccessibilityBody')}</small>
+                </div>
+                <button
+                  type="button"
+                  className={`computer-use-permission-status ${computerUsePermissions?.accessibility === 'granted' ? 'is-granted' : ''}`}
+                  aria-label={t('settings.computerUseOpenAccessibilitySettings')}
+                  onClick={() => void window.verboo.openComputerUsePermissionSettings('accessibility')}
+                >
+                  {computerUsePermissions?.accessibility === 'granted'
+                    ? t('settings.computerUsePermissionGranted')
+                    : t('settings.computerUsePermissionMissing')}
+                </button>
+              </div>
+              <div className="settings-row settings-row--control">
+                <Camera size={16} />
+                <div>
+                  <strong>{t('settings.computerUseScreenRecording')}</strong>
+                  <small>{t('settings.computerUseScreenRecordingBody')}</small>
+                </div>
+                <button
+                  type="button"
+                  className={`computer-use-permission-status ${computerUsePermissions?.screenRecording === 'granted' ? 'is-granted' : ''}`}
+                  aria-label={t('settings.computerUseOpenScreenRecordingSettings')}
+                  onClick={() => void window.verboo.openComputerUsePermissionSettings('screenRecording')}
+                >
+                  {computerUsePermissions?.screenRecording === 'granted'
+                    ? t('settings.computerUsePermissionGranted')
+                    : t('settings.computerUsePermissionMissing')}
+                </button>
+              </div>
+              <div className="settings-action-row">
+                <button
+                  type="button"
+                  className="choice-chip"
+                  disabled={requestingComputerUsePermissions}
+                  onClick={() => void requestNativeComputerUsePermissions()}
+                >
+                  {requestingComputerUsePermissions
+                    ? t('settings.computerUsePermissionRequesting')
+                    : t('settings.computerUsePermissionRequest')}
+                </button>
+                <button type="button" className="choice-chip" onClick={() => void refreshComputerUsePermissions()}>
+                  <RefreshCcw size={13} />
+                  {t('common.refresh')}
+                </button>
+              </div>
+              <div className="settings-row settings-row--control computer-use-helper-row">
+                <FolderOpen size={16} />
+                <div>
+                  <strong>{t('settings.computerUseHelperPathTitle')}</strong>
+                  <small>{t('settings.computerUseHelperPathBody')}</small>
+                  {computerUseHelperPath ? (
+                    <code className="computer-use-helper-path">{computerUseHelperPath}</code>
+                  ) : (
+                    <small className="computer-use-helper-path-unavailable">
+                      {t('settings.computerUseHelperPathUnavailable')}
+                    </small>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="choice-chip"
+                  disabled={!computerUseHelperPath}
+                  onClick={() => void revealComputerUseHelper()}
+                >
+                  <FolderOpen size={13} />
+                  {t('settings.computerUseHelperReveal')}
+                </button>
+              </div>
+              <p className="computer-use-tcc-copy">
+                {t('settings.computerUseTccCopySigned')}
+                <br />
+                <span className="computer-use-tcc-copy-adhoc">
+                  {t('settings.computerUseTccCopyAdHoc')}
+                </span>
+              </p>
+            </section>
+
+            <section className="settings-panel">
               <SettingToggle
                 title={t('settings.computerUseSelfTestTitle')}
                 body={t('settings.computerUseSelfTestBody')}
@@ -846,23 +953,50 @@ export function SettingsView({
                   <strong>{t('settings.computerUseHotkeyTitle')}</strong>
                   <small>{t('settings.computerUseHotkeyBody')}</small>
                 </div>
-                <span className="settings-hotkey-display">⌘⇧Esc</span>
+                <span className="settings-hotkey-display">Esc</span>
               </div>
             </section>
 
             <section className="settings-panel">
-              <div className="settings-row">
-                <div>
-                  <strong>{t('settings.computerUseIdleTimeout')}</strong>
-                </div>
-                <span className="settings-hotkey-display">{userSettings.computerUse.idleTimeoutSeconds ? Math.round(userSettings.computerUse.idleTimeoutSeconds / 60) : 15}</span>
-              </div>
-              <div className="settings-row">
-                <div>
-                  <strong>{t('settings.computerUseAuditRetention')}</strong>
-                </div>
-                <span className="settings-hotkey-display">{userSettings.computerUse.auditRetentionDays ?? 90}</span>
-              </div>
+              <SettingNumericInput
+                title={t('settings.computerUseIdleTimeout')}
+                body={t('settings.computerUseIdleTimeoutBody')}
+                value={Math.round((userSettings.computerUse.idleTimeoutSeconds || 900) / 60)}
+                min={5}
+                max={60}
+                onChange={minutes => void onUserSettingsChange({
+                  computerUse: {
+                    ...userSettings.computerUse,
+                    idleTimeoutSeconds: Math.max(5, Math.min(60, minutes)) * 60,
+                  },
+                })}
+              />
+              <SettingNumericInput
+                title={t('settings.computerUseAuditRetention')}
+                body={t('settings.computerUseAuditRetentionBody')}
+                value={userSettings.computerUse.auditRetentionDays ?? 90}
+                min={7}
+                max={365}
+                onChange={auditRetentionDays => void onUserSettingsChange({
+                  computerUse: {
+                    ...userSettings.computerUse,
+                    auditRetentionDays: Math.max(7, Math.min(365, auditRetentionDays)),
+                  },
+                })}
+              />
+              <SettingNumericInput
+                title={t('settings.computerUseAuditStorageCap')}
+                body={t('settings.computerUseAuditStorageCapBody')}
+                value={userSettings.computerUse.auditStorageCapMb ?? 200}
+                min={10}
+                max={10_000}
+                onChange={auditStorageCapMb => void onUserSettingsChange({
+                  computerUse: {
+                    ...userSettings.computerUse,
+                    auditStorageCapMb: Math.max(10, Math.min(10_000, auditStorageCapMb)),
+                  },
+                })}
+              />
             </section>
           </section>
         )}
@@ -978,7 +1112,13 @@ function SettingToggle({
   onChange: (checked: boolean) => void
 }) {
   return (
-    <button className="settings-toggle-row" type="button" disabled={disabled} onClick={() => onChange(!checked)}>
+    <button
+      className="settings-toggle-row"
+      type="button"
+      disabled={disabled}
+      aria-pressed={checked}
+      onClick={() => onChange(!checked)}
+    >
       <span>
         <strong>{title}</strong>
         <small>{body}</small>
@@ -1070,15 +1210,19 @@ function SettingNumericInput({
   max: number
   onChange: (value: number) => void
 }) {
+  const titleId = useId()
+  const bodyId = useId()
   return (
     <div className="settings-toggle-row" style={{ cursor: 'default' }}>
       <span>
-        <strong>{title}</strong>
-        <small>{body}</small>
+        <strong id={titleId}>{title}</strong>
+        <small id={bodyId}>{body}</small>
       </span>
       <input
         className="settings-numeric-input"
         type="number"
+        aria-labelledby={titleId}
+        aria-describedby={bodyId}
         min={min}
         max={max}
         value={value}

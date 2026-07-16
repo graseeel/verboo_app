@@ -17,15 +17,15 @@ case "$mode" in
       root="$(cd "$(dirname "$0")/../.." && pwd)"
       path="$(ls "$root"/src-tauri/binaries/computer-use-helper-* 2>/dev/null | head -1 || true)"
     fi
-    [[ -n "$path" && -f "$path" ]] || { echo "helper binary not found" >&2; exit 1; }
-    codesign --force --sign - --timestamp=none "$path"
+    [[ -n "$path" && -e "$path" ]] || { echo "helper or agent not found" >&2; exit 1; }
+    codesign --force --deep --sign - --timestamp=none "$path"
     echo "ad-hoc signed: $path"
     ;;
   --release)
-    [[ -n "$path" && -f "$path" ]] || usage
+    [[ -n "$path" && -e "$path" ]] || usage
     identity="${MACOS_CODESIGN_IDENTITY:-}"
     [[ -n "$identity" ]] || { echo "Set MACOS_CODESIGN_IDENTITY" >&2; exit 1; }
-    codesign --force --options runtime --sign "$identity" --timestamp "$path"
+    codesign --force --deep --options runtime --sign "$identity" --timestamp "$path"
     echo "release signed: $path"
     ;;
   *)

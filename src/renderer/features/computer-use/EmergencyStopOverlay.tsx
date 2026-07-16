@@ -12,6 +12,11 @@
  */
 
 import { ShieldCheck, XCircle } from 'lucide-react'
+import type {
+  ComputerUseDenyReason,
+  ComputerUseStopReason,
+  ComputerUseTurnCompleteEvent,
+} from '../../../shared/types'
 import { useI18n } from '../../i18n'
 
 export function EmergencyStopOverlay({ visible }: { visible: boolean }) {
@@ -32,38 +37,67 @@ export function StoppedToast({
   actionCount,
   durationMs,
   isEmergency,
+  stopReason,
+  turnReason,
 }: {
   actionCount: number
   durationMs: number
   isEmergency: boolean
+  stopReason?: ComputerUseStopReason
+  turnReason?: ComputerUseTurnCompleteEvent['stoppedReason']
 }) {
   const { t } = useI18n()
   const seconds = Math.max(1, Math.round(durationMs / 1000))
+  const failedStop = Boolean(stopReason && ![
+    'completed',
+    'user_cancelled',
+    'emergency_stop',
+  ].includes(stopReason))
+  const failed = failedStop
+    || turnReason === 'spawn_error'
+    || turnReason === 'stdout_unavailable'
+    || turnReason === 'executor_error'
+    || turnReason === 'cleanup_error'
+    || turnReason === 'app_approval_failed'
+  const body = turnReason === 'cleanup_error'
+    ? t('computerUse.stopped.cleanupErrorBody')
+    : failed
+      ? t('computerUse.stopped.errorBody')
+      : isEmergency
+        ? t('computerUse.stopped.emergencyBody')
+        : t('computerUse.stopped.body')
+            .replace('{count}', String(actionCount))
+            .replace('{seconds}', String(seconds))
   return (
-    <div className="computer-use-toast computer-use-toast-stopped" role="status" aria-live="polite">
-      <ShieldCheck size={15} aria-hidden="true" />
+    <div className={`computer-use-toast computer-use-toast-stopped ${failed ? 'is-error' : ''}`} role="status" aria-live="polite">
+      {failed
+        ? <XCircle size={15} aria-hidden="true" />
+        : <ShieldCheck size={15} aria-hidden="true" />}
       <div className="computer-use-toast-text">
-        <strong>{t('computerUse.stopped.title')}</strong>
-        <span>
-          {isEmergency
-            ? t('computerUse.stopped.emergencyBody')
-            : t('computerUse.stopped.body')
-                .replace('{count}', String(actionCount))
-                .replace('{seconds}', String(seconds))}
-        </span>
+        <strong>{t(failed ? 'computerUse.stopped.errorTitle' : 'computerUse.stopped.title')}</strong>
+        <span>{body}</span>
       </div>
     </div>
   )
 }
 
-export function DeniedToast({ detail }: { detail?: string }) {
+export function DeniedToast({ reason }: { reason?: ComputerUseDenyReason }) {
   const { t } = useI18n()
+  const bodyKey: Record<ComputerUseDenyReason, string> = {
+    user_denied: 'computerUse.denied.body',
+    timeout: 'computerUse.denied.timeout',
+    os_permission_missing: 'computerUse.denied.osPermission',
+    self_test_disabled: 'computerUse.denied.selfTest',
+    app_hard_blocked: 'computerUse.denied.blockedApp',
+    scope_denied: 'computerUse.denied.scope',
+    safety_check_failed: 'computerUse.denied.safetyCheck',
+  }
   return (
     <div className="computer-use-toast computer-use-toast-denied" role="status" aria-live="polite">
       <XCircle size={15} aria-hidden="true" />
       <div className="computer-use-toast-text">
         <strong>{t('computerUse.denied.title')}</strong>
-        <span>{detail || t('computerUse.denied.body')}</span>
+        <span>{t(reason ? bodyKey[reason] : 'computerUse.denied.body')}</span>
       </div>
     </div>
   )

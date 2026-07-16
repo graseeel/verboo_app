@@ -21,8 +21,14 @@ import type {
   AppConfig,
   AttachmentMeta,
   CliAuthStatus,
+  ComputerUseActionEvent,
+  ComputerUsePendingActionEvent,
+  ComputerUseSettledActionEvent,
   ComputerUseAllowlistEntry,
+  ComputerUsePendingConfirmation,
+  ComputerUseLayoutState,
   ComputerUseScope,
+  ComputerUseTurnCompleteEvent,
   CredentialStatus,
   FeedbackRequest,
   FeedbackResult,
@@ -44,6 +50,7 @@ import type {
   TerminalDataEvent,
   UpdateSnapshot,
   UserSettings,
+  ComputerUseExecutorLease,
   VisionFallbackConsent,
   VisionFallbackState,
   WorkspaceBranchInfo,
@@ -65,41 +72,79 @@ export type RustSessionState = 'idle' | 'consent' | 'active' | 'paused' | 'stopp
 
 export type RustConsentRequest = {
   id: string
+  conversation_id: string
+  executor_model_id: string
   goal: string
   app: string | null
   scope: ComputerUseScope
+  isolate_other_apps: boolean
   created_at_mono: number
+  /** Unix timestamp emitted by Rust. Current builds use seconds. */
   created_at_wall: number
 }
 
 export type RustSession = {
   id: string
   state: RustSessionState
+  conversation_id: string
+  executor_model_id: string
   goal: string
   target_app: string | null
+  approved_apps?: Array<{
+    bundle_id: string
+    display_name: string
+    tier: import('../shared/types').ComputerUseAppTier
+    approved_at_wall: number
+    sentinel_confirmed: boolean
+  }>
+  active_app?: string | null
   scope: ComputerUseScope
   allowlist_version: number
   self_test_enabled: boolean
   screenshot_attach_to_llm: boolean
+  isolate_other_apps: boolean
   pid_lock: number
   started_at_mono: number
   started_at_wall: number
   last_activity_mono: number
   idle_timeout_secs: number
+  /** Optional in current helpers; newer helpers may include the terminal receipt reason. */
+  stop_reason?: string | null
 }
+
+export type ComputerUseExecutorRecovery =
+  | { kind: 'none' }
+  | { kind: 'offer'; lease: ComputerUseExecutorLease; session: RustSession }
+  | {
+    kind: 'restored'
+    originalModelId: string
+    executorModelId?: string
+    reason: string
+  }
+  | { kind: 'cleared'; reason: string }
 
 export type RustStopReason = 'user_cancelled' | 'emergency'
 
 export type ComputerUseApp = {
   bundleId: string
   name: string
+  iconBase64?: string
   pid: number
   isFrontmost: boolean
+  visibleWindowCount?: number
 }
 
 export type ComputerUsePermissions = {
   accessibility: 'granted' | 'missing'
   screenRecording: 'granted' | 'missing'
+  controller?: {
+    accessibility: 'granted' | 'missing'
+    screenRecording: 'granted' | 'missing'
+  }
+  agent?: {
+    accessibility: 'granted' | 'missing'
+    screenRecording: 'granted' | 'missing'
+  }
 }
 
 // ── Helper: subscribe to Tauri event, returns cleanup fn ────────
@@ -183,6 +228,30 @@ const api = {
   updateUserSettings: (patch: Partial<UserSettings>) =>
     invoke<UserSettings>('update_user_settings', { patch }),
   resetUserSettings: () => invoke<UserSettings>('reset_user_settings'),
+  selectComputerUseExecutor: (
+    currentModelId: string,
+    preferredVisualModelId?: string,
+  ) => invoke<{ modelId: string; temporary: boolean }>('select_computer_use_executor', {
+    currentModelId,
+    preferredVisualModelId: preferredVisualModelId ?? null,
+  }),
+  persistComputerUseExecutorLease: (
+    conversationId: string,
+    originalModelId: string,
+    executorModelId: string,
+    expiresAtMs: number,
+  ) => invoke<ComputerUseExecutorLease>('persist_computer_use_executor_lease', {
+    conversationId,
+    originalModelId,
+    executorModelId,
+    expiresAtMs,
+  }),
+  getComputerUseExecutorLease: () =>
+    invoke<ComputerUseExecutorLease | null>('get_computer_use_executor_lease'),
+  recoverComputerUseExecutorLease: () =>
+    invoke<ComputerUseExecutorRecovery>('recover_computer_use_executor_lease'),
+  clearComputerUseExecutorLease: (conversationId?: string) =>
+    invoke<boolean>('clear_computer_use_executor_lease', { conversationId: conversationId ?? null }),
 
   // ── Vision fallback (FASE 1) ───────────────────────────────────
   // Returns current consent + preview of which model would be picked.
@@ -408,35 +477,72 @@ const api = {
   // ── Computer Use session IPC (Geralt P0.2/P0.3) ────────────
   // Step 1: create a pending consent request. Returns the request (with ID).
   // Session is NOT active yet — user must call grantComputerUseSession.
-  requestComputerUseSession: (goal: string, app: string | null, scope: ComputerUseScope) =>
-    invoke<RustConsentRequest>('request_computer_use_session', { goal, app, scope }),
+  requestComputerUseSession: (
+    goal: string,
+    app: string | null,
+    scope: ComputerUseScope,
+    conversationId: string,
+    executorModelId: string,
+  ) => invoke<RustConsentRequest>('request_computer_use_session', {
+    goal,
+    app,
+    scope,
+    conversationId,
+    executorModelId,
+  }),
   // Step 2: user grants consent. Returns the active session.
   // screenshotAttachToLlm controls whether screenshots are sent to the model.
-  grantComputerUseSession: (requestId: string, screenshotAttachToLlm: boolean) =>
+  grantComputerUseSession: (
+    requestId: string,
+    screenshotAttachToLlm: boolean,
+    appDisplayName?: string,
+    requestedTier?: import('../shared/types').ComputerUseAppTier,
+    sentinelConfirmed = false,
+  ) =>
     invoke<RustSession>('grant_computer_use_session', {
       requestId,
       screenshotAttachToLlm,
+      appDisplayName,
+      requestedTier,
+      sentinelConfirmed,
     }),
   // Bind a concrete app onto a goal-directed (unbound) active session.
-  bindComputerUseTarget: (sessionId: string, bundleId: string) =>
-    invoke<RustSession>('bind_computer_use_target', { sessionId, bundleId }),
   // Deny a pending consent request. Always UserDenied reason on Rust side.
   denyComputerUseSession: (requestId: string) =>
     invoke<void>('deny_computer_use_session', { requestId }),
   // Stop an active session. reason: 'user_cancelled' | 'emergency' | other.
   stopComputerUseSession: (sessionId: string, reason: RustStopReason) =>
     invoke<void>('stop_computer_use_session', { sessionId, reason }),
+  getComputerUseLayoutState: () =>
+    invoke<ComputerUseLayoutState>('get_computer_use_layout_state'),
   pauseComputerUseSession: (sessionId: string) =>
     invoke<RustSession>('pause_computer_use_session', { sessionId }),
   resumeComputerUseSession: (sessionId: string) =>
     invoke<RustSession>('resume_computer_use_session', { sessionId }),
+  approveComputerUseApp: (
+    sessionId: string,
+    bundleId: string,
+    displayName: string,
+    requestedTier: import('../shared/types').ComputerUseAppTier,
+    sentinelConfirmed: boolean,
+  ) => invoke<RustSession>('approve_computer_use_app', {
+    sessionId,
+    bundleId,
+    displayName,
+    requestedTier,
+    sentinelConfirmed,
+  }),
+  getPendingComputerUseConfirmation: (sessionId: string) =>
+    invoke<ComputerUsePendingConfirmation | null>('get_pending_computer_use_confirmation', { sessionId }),
+  decideComputerUseConfirmation: (sessionId: string, confirmationId: string, allow: boolean) =>
+    invoke<void>('decide_computer_use_confirmation', { sessionId, confirmationId, allow }),
   // List running apps (requires active session). Returns null if no session.
   listApps: () =>
     invoke<unknown>('list_apps'),
   listComputerUseApps: () =>
     invoke<ComputerUseApp[]>('list_computer_use_apps'),
   resolveComputerUseApp: (selector: string) =>
-    invoke<{ bundleId: string; name: string; running: boolean }>('resolve_computer_use_app', { selector }),
+    invoke<{ bundleId: string; name: string; running: boolean; iconBase64?: string }>('resolve_computer_use_app', { selector }),
   getComputerUsePermissions: () =>
     invoke<ComputerUsePermissions>('get_computer_use_permissions'),
   requestComputerUsePermissions: () =>
@@ -453,17 +559,27 @@ const api = {
   // state via invoke responses for grant/pause/stop.
   onComputerUseStateChange: (callback: (session: RustSession) => void) =>
     onEvent<RustSession>('computer-use:state-change', callback),
-  onComputerUseAction: (callback: (action: unknown) => void) =>
-    onEvent<unknown>('computer-use:action', callback),
+  onComputerUseAction: (callback: (action: ComputerUseActionEvent) => void) =>
+    onEvent<ComputerUseActionEvent>('computer-use:action', callback),
+  onComputerUseActionPending: (callback: (action: ComputerUsePendingActionEvent) => void) =>
+    onEvent<ComputerUsePendingActionEvent>('computer-use:action-pending', callback),
+  onComputerUseActionSettled: (callback: (action: ComputerUseSettledActionEvent) => void) =>
+    onEvent<ComputerUseSettledActionEvent>('computer-use:action-settled', callback),
+  onComputerUseLayoutState: (callback: (state: ComputerUseLayoutState) => void) =>
+    onEvent<ComputerUseLayoutState>('computer-use:layout-state', callback),
   onComputerUseEmergencyStop: (callback: () => void) =>
     onEvent<void>('computer-use:emergency-stop', callback),
   /** P0.2b: Accessibility or Screen Recording revoked mid-session. */
   onComputerUseOsPermissionRevoked: (callback: () => void) =>
     onEvent<void>('computer-use:os-permission-revoked', callback),
-  onComputerUseTurnComplete: (callback: () => void) =>
-    onEvent<void>('computer-use:turn-complete', callback),
+  onComputerUseTurnComplete: (callback: (event: ComputerUseTurnCompleteEvent) => void) =>
+    onEvent<ComputerUseTurnCompleteEvent>('computer-use:turn-complete', callback),
   onComputerUseCleanupFailed: (callback: (message: string) => void) =>
     onEvent<string>('computer-use:cleanup-failed', callback),
+  onComputerUseHandoffFailed: (callback: (message: string) => void) =>
+    onEvent<string>('computer-use:handoff-failed', callback),
+  onComputerUseSettingsRevoked: (callback: (event: { sessionId: string; reason: 'feature_disabled' | 'app_denied' }) => void) =>
+    onEvent<{ sessionId: string; reason: 'feature_disabled' | 'app_denied' }>('computer-use:settings-revoked', callback),
 }
 
 // ── Expose on window (Tauri only) ──────────────────────────────

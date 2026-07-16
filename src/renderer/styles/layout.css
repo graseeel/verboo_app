@@ -278,6 +278,50 @@
   transition: grid-template-columns 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/* Compact Computer Use is presentation-only. Existing sidebar/panel state
+   remains mounted and untouched, then reappears exactly after lease restore. */
+.app-shell.is-computer-use-compact {
+  --sidebar-width: 0px !important;
+  --terminal-width: 0px !important;
+  --review-width: 0px !important;
+  --subagents-panel-width: 0px !important;
+  grid-template-rows: 52px minmax(0, 1fr);
+}
+
+.app-shell.is-computer-use-compact > .topbar {
+  display: none;
+}
+
+.app-shell.is-computer-use-compact > .app-layout {
+  grid-row: 2;
+  grid-template-columns: 0 minmax(0, 1fr) 0 0 0;
+}
+
+.app-shell.is-computer-use-compact .app-sidebar,
+.app-shell.is-computer-use-compact .sidebar-resizer,
+.app-shell.is-computer-use-compact .terminal-panel,
+.app-shell.is-computer-use-compact .review-panel,
+.app-shell.is-computer-use-compact .research-subagent-panel,
+.app-shell.is-computer-use-compact .workspace-folder-badge,
+.app-shell.is-computer-use-compact .goal-status-bar,
+.app-shell.is-computer-use-compact .performance-warning-banner,
+.app-shell.is-computer-use-compact .subagent-summary-card,
+.app-shell.is-computer-use-compact .composer-aux-stack,
+.app-shell.is-computer-use-compact .verboo-pet,
+.app-shell.is-computer-use-compact .update-banner {
+  display: none !important;
+}
+
+.app-shell.is-computer-use-compact .workspace {
+  padding: 16px 16px var(--composer-clearance);
+}
+
+.app-shell.is-computer-use-compact .transcript {
+  width: 100%;
+  min-height: calc(100vh - 52px - var(--composer-clearance) - 32px);
+  gap: 18px;
+}
+
 /* During a manual resize drag the panel must follow the pointer 1:1 —
    any easing here reads as rubber-band lag. */
 .app-layout.is-resizing {

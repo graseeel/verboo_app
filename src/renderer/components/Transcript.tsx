@@ -1,6 +1,7 @@
 import { Check, CheckCircle2, ChevronDown, ChevronRight, Clipboard, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { TranscriptItem, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
+import type { ComputerUsePendingActionEvent, TranscriptItem, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
+import { ComputerUseLiveActionRow } from '../features/computer-use/ComputerUseLiveActionRow'
 import { MarkdownMessage } from '../features/transcript/MarkdownMessage'
 import { StepFlow } from '../features/transcript/StepFlow'
 import { ThinkingIcon } from '../features/transcript/TranscriptIcons'
@@ -19,12 +20,17 @@ type TranscriptProps = {
   compactedTurnIds?: ReadonlySet<string>
   imageReadingTurnId?: string
   onEditSent?: (conversationId: string, itemId: string, newText: string) => void
+  computerUseLiveActivity?: {
+    status: 'active' | 'paused'
+    appName: string
+    action?: ComputerUsePendingActionEvent
+  }
 }
 
 const MAX_ACTIVITY_DETAIL_LINES = 8
 const MAX_SUMMARY_DETAIL_LINES = 3
 
-export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, compactedTurnIds, imageReadingTurnId, conversationId, onEditSent }: TranscriptProps) {
+export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, compactedTurnIds, imageReadingTurnId, conversationId, onEditSent, computerUseLiveActivity }: TranscriptProps) {
   // `items` is a new array reference only when the conversation actually changes,
   // so this recomputes on real content changes but is skipped when the parent
   // re-renders for unrelated reasons (context-usage ticks, subagent updates…).
@@ -47,6 +53,13 @@ export const Transcript = memo(function Transcript({ items, onOpenReview, review
             />
           : <MessageArticle key={entry.item.id} item={entry.item} conversationId={conversationId} onCopy={() => {}} onEditSent={onEditSent} />
       ))}
+      {computerUseLiveActivity && (
+        <ComputerUseLiveActionRow
+          status={computerUseLiveActivity.status}
+          appName={computerUseLiveActivity.appName}
+          action={computerUseLiveActivity.action}
+        />
+      )}
     </div>
   )
 })
