@@ -113,7 +113,11 @@
 .plugins-search {
   position: sticky;
   top: 0;
-  z-index: 20;
+  /* z-index bumped above plugin cards' animation stacking contexts
+     (plugin-card-enter leaves fill-mode 'both' permanently, so each
+     card promotes to its own stacking context — competing z-index 20
+     isn't enough to keep scrolling rows from painting on top). */
+  z-index: 50;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -123,7 +127,7 @@
      compensates so the input sits at the same visual position. */
   margin-top: -18px;
   padding: 26px 0 8px;
-  background: color-mix(in srgb, var(--bg) 100%, var(--bg-elevated));
+  background: var(--bg);
   backdrop-filter: none;
   border-bottom: 1px solid var(--border);
   /* Fade mask: content scrolling behind the search bar fades out at the
@@ -393,6 +397,19 @@
 
 .plugin-install-btn:active:not(:disabled) {
   transform: scale(0.97);
+}
+
+/* Crossfade between Install and Installing states — icon + label swap
+   opacity instead of teleporting. Matches the monogram crossfade pattern
+   (plugins.css:351–361). 150ms is short enough to feel like a state change,
+   long enough to register the swap. */
+.plugin-install-btn > svg,
+.plugin-install-btn > span {
+  transition: opacity 150ms var(--dropdown-ease);
+}
+.plugin-install-btn.is-busy > svg,
+.plugin-install-btn.is-busy > span {
+  opacity: 0.85;
 }
 
 /* ── Line menu trigger (…) ───────────────────────────────────────── */
@@ -1126,8 +1143,9 @@
     radial-gradient(ellipse 95% 100% at 50% 50%, transparent 65%, color-mix(in srgb, black 10%, transparent));
   animation: plugin-hero-drift 12s ease-in-out infinite alternate;
   will-change: transform;
-  /* Smooth transition when mouse leaves — positions ease back to base. */
-  transition: background-position 200ms var(--dropdown-ease);
+  /* Parallax moves positions inside background-image via calc() on
+     --mouse-x/--mouse-y, NOT via background-position — so a transition on
+     background-position was inert. Removed (003-2). */
 }
 
 /* Dark mode mesh: brighter blobs so they pop on the dark violet base. */

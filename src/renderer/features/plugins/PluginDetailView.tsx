@@ -38,11 +38,16 @@ export function PluginDetailView({ target, manifests, loadIcons = true, onBack, 
   const isInstalled = target.kind === 'installed'
 
   // ── Mouse parallax for hero mesh ──────────────────────────────────
-  // pointermove (rAF-throttled) updates --mouse-x/--mouse-y (0-1) on the
-  // hero element. CSS layers shift positions by different factors (parallax).
+  // pointermove (rAF-throttled to ~30fps) updates --mouse-x/--mouse-y (0-1)
+  // on the hero element. CSS layers shift positions by different factors
+  // (parallax). Each update re-resolves 4+ radial-gradients = repaint of
+  // the hero area, so we gate to every other frame (~33ms) — visually
+  // identical to 60fps for a decorative drift, halves paint cost.
   // Disabled under reduced-motion and on touch/coarse pointers.
   const heroRef = useRef<HTMLDivElement | null>(null)
   const rafId = useRef<number | undefined>(undefined)
+  const lastUpdateMs = useRef(0)
+  const PARALLAX_MIN_INTERVAL_MS = 33
   const reduceMotion = useRef(
     typeof window !== 'undefined'
       && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
@@ -56,12 +61,15 @@ export function PluginDetailView({ target, manifests, loadIcons = true, onBack, 
     if (!canHover.current || reduceMotion.current) return
     const el = heroRef.current
     if (!el) return
+    const now = event.timeStamp
+    if (now - lastUpdateMs.current < PARALLAX_MIN_INTERVAL_MS) return
     const rect = el.getBoundingClientRect()
     const x = (event.clientX - rect.left) / rect.width
     const y = (event.clientY - rect.top) / rect.height
     if (rafId.current !== undefined) return
     rafId.current = requestAnimationFrame(() => {
       rafId.current = undefined
+      lastUpdateMs.current = now
       el.style.setProperty('--mouse-x', x.toFixed(3))
       el.style.setProperty('--mouse-y', y.toFixed(3))
     })

@@ -384,7 +384,7 @@
   background: var(--bg-elevated);
   box-shadow: 0 4px 24px rgba(0,0,0,0.14);
   max-width: 360px;
-  animation: update-banner-enter 260ms cubic-bezier(0.16, 1, 0.3, 1);
+  animation: update-banner-enter 260ms var(--dropdown-ease);
 }
 
 @keyframes update-banner-enter {

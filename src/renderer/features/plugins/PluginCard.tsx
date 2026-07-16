@@ -244,7 +244,7 @@ export function AvailablePluginCard({ plugin, onInstall, onOpenDetail, loadIcons
       <div className="plugin-line-actions" onClick={event => event.stopPropagation()}>
         <button
           type="button"
-          className="plugin-install-btn"
+          className={`plugin-install-btn${busy ? ' is-busy' : ''}`}
           onClick={onInstall}
           disabled={busy}
           aria-label={t('plugins.install')}

@@ -109,7 +109,12 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
   const modelItem = entry.items.find(item => item.role === 'assistant' && item.modelDisplayName)
   const label = modelItem?.modelDisplayName ? `Verboo - ${modelItem.modelDisplayName}` : 'Verboo'
   const summary = entry.summary
-  const showFlow = streaming || expanded
+  // A turn has "steps" when it contains at least one non-thinking activity
+  // (read/search/edit/command/etc). Turns with only a final assistant message
+  // have nothing to expand — the chevron would open an empty panel.
+  const hasActions = entry.items.some(item =>
+    item.kind === 'activity' && item.activityKind !== 'thinking'
+  )
   return (
     <article className="message-row assistant turn-view">
       {/* No "generating" badge here: while streaming, the thinking marker and
@@ -120,10 +125,16 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
       </div>
 
       {!streaming && entry.items.length > 0 && (
-        <button type="button" className="turn-collapsed" onClick={() => setExpanded(value => !value)}>
-          <ChevronRight size={14} className={expanded ? 'is-open' : ''} />
-          <span>{summary?.text ?? t('transcript.worked')}</span>
-        </button>
+        hasActions ? (
+          <button type="button" className="turn-collapsed" onClick={() => setExpanded(value => !value)}>
+            <ChevronRight size={14} className={expanded ? 'is-open' : ''} />
+            <span>{summary?.text ?? t('transcript.worked')}</span>
+          </button>
+        ) : (
+          <span className="turn-collapsed is-static">
+            <span>{summary?.text ?? t('transcript.worked')}</span>
+          </span>
+        )
       )}
 
       {thinking && !hasText && !(readingImage && hasVisionRelay) && (
@@ -145,7 +156,13 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
         </div>
       )}
 
-      {showFlow && <StepFlow items={entry.items} streaming={streaming} imageReading={readingImage} />}
+      {streaming
+        ? <StepFlow items={entry.items} streaming={streaming} imageReading={readingImage} />
+        : entry.items.length > 0 && (
+            <div className={`turn-flow-panel ${expanded ? 'is-open' : ''}`} aria-hidden={!expanded}>
+              <div><StepFlow items={entry.items} streaming={false} imageReading={readingImage} /></div>
+            </div>
+          )}
 
       {!streaming && !expanded && finalText && (
         <div className="step-text turn-recap"><MarkdownMessage text={finalText} /></div>

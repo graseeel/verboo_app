@@ -247,6 +247,19 @@
   display: grid;
   gap: 16px;
   padding-bottom: 54px;
+  /* Fade in on section switch — the section remounts on activeTab change,
+     so the animation replays naturally. Reuses the plugins-fade-in pattern
+     (opacity 0→1, 200ms). */
+  animation: settings-section-fade 200ms var(--dropdown-ease);
+}
+
+@keyframes settings-section-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-section-view { animation-duration: 80ms; }
 }
 
 .profile-grid {

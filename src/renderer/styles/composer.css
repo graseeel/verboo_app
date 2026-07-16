@@ -1482,7 +1482,7 @@
   display: flex; height: 8px; border-radius: 999px; overflow: hidden;
   background: color-mix(in srgb, var(--border) 50%, transparent);
 }
-.context-panel-bar-seg { transition: width 0.2s; min-width: 2px; }
+.context-panel-bar-seg { transition: flex-grow 200ms var(--dropdown-ease); min-width: 2px; }
 .context-bar-user { background: var(--accent-strong); }
 .context-bar-assistant { background: color-mix(in srgb, var(--accent) 60%, var(--bg-soft)); }
 .context-bar-attachments { background: var(--amber); }

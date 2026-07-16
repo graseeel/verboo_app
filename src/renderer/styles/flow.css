@@ -259,6 +259,31 @@
 }
 .turn-collapsed svg { transition: transform 140ms ease; }
 .turn-collapsed svg.is-open { transform: rotate(90deg); }
+/* Static variant: turns with no actions (only a final assistant message)
+   have nothing to expand — render the same label as a non-interactive span
+   so the row keeps its visual weight without a misleading chevron. */
+.turn-collapsed.is-static { cursor: default; }
+
+/* Expand/collapse panel for a turn's StepFlow. Uses the 0fr→1fr grid-rows
+   pattern so the panel slides open/closed without measuring content height.
+   The StepFlow stays mounted during collapse so the reverse transition
+   retargets (transitions retarget; keyframes don't). Streaming turns bypass
+   this wrapper and render StepFlow directly. */
+.turn-flow-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 200ms var(--dropdown-ease), opacity 200ms var(--dropdown-ease);
+  opacity: 0;
+}
+.turn-flow-panel.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.turn-flow-panel > div { overflow: hidden; min-height: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-flow-panel { transition: opacity 120ms ease-out; }
+}
 
 /* Persisted reasoning body — rendered inline inside StepFlow (the "Worked for
    Xs" expansion), before the actions it generated. No separate toggle: the

@@ -568,8 +568,9 @@ input[type="checkbox"]::before {
   content: "";
   width: 9px;
   height: 9px;
-  transform: scale(0);
-  transition: transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform: scale(0.5);
+  opacity: 0;
+  transition: transform 120ms var(--modal-ease), opacity 120ms var(--modal-ease);
   background-color: var(--text);
   /* Draw a checkmark using clip-path on a rotated square. */
   clip-path: polygon(14% 44%, 0 60%, 50% 100%, 100% 16%, 86% 0, 38% 62%);
@@ -582,6 +583,7 @@ input[type="checkbox"]:checked {
 
 input[type="checkbox"]:checked::before {
   transform: scale(1);
+  opacity: 1;
   background-color: white;
 }
 
@@ -593,6 +595,13 @@ input[type="checkbox"]:focus-visible {
 input[type="checkbox"]:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Opacity-only checkbox state change under reduced-motion — no scale pop. */
+  input[type="checkbox"]::before {
+    transition: opacity 80ms ease-out;
+  }
 }
 
 /* Reduced motion: dropdowns/menus become opacity-only ~80ms, no scale/translate.

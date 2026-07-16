@@ -165,7 +165,7 @@ export function ContextPanel({
               <div
                 key={s.key}
                 className={`context-panel-bar-seg context-bar-${s.key}`}
-                style={{ width: `${Math.min(pct, 100)}%` }}
+                style={{ flexGrow: Math.min(pct, 100) }}
                 title={`${s.tokens.toLocaleString()} ${t('context.panelTokens')}`}
               />
             )
