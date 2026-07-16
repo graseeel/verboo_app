@@ -58,6 +58,7 @@ type SettingsViewProps = {
   selectedModel?: VerbooModel
   theme: ThemeMode
   activeTab: SettingsTab
+  platform: NodeJS.Platform
   userSettings: UserSettings
   archivedConversations: StoredConversation[]
   petEnabled: boolean
@@ -86,6 +87,7 @@ export function SettingsView({
   selectedModel,
   theme,
   activeTab,
+  platform,
   userSettings,
   archivedConversations,
   petEnabled,
@@ -154,10 +156,10 @@ export function SettingsView({
   }, [userSettings.customInstructions])
 
   useEffect(() => {
-    if (activeTab !== 'computerUse') return
+    if (activeTab !== 'computerUse' || platform !== 'darwin') return
     void refreshComputerUsePermissions()
     void refreshComputerUseHelperPath()
-  }, [activeTab])
+  }, [activeTab, platform])
 
   async function refreshComputerUsePermissions() {
     try {
@@ -774,6 +776,18 @@ export function SettingsView({
           <section className="settings-section-view">
             <SettingsHeading title={t('settings.computerUse')} subtitle={t('settings.computerUseSubtitle')} />
 
+            {platform !== 'darwin' ? (
+              <section className="settings-panel">
+                <div className="settings-row">
+                  <MonitorSmartphone size={16} />
+                  <div>
+                    <strong>{t('settings.computerUseUnsupportedPlatform')}</strong>
+                    <small>{t('settings.computerUseUnsupportedPlatformBody')}</small>
+                  </div>
+                </div>
+              </section>
+            ) : (
+              <>
             <section className="settings-panel">
               <SettingToggle
                 title={t('settings.computerUseEnableTitle')}
@@ -998,6 +1012,8 @@ export function SettingsView({
                 })}
               />
             </section>
+              </>
+            )}
           </section>
         )}
         {activeTab === 'archived' && (

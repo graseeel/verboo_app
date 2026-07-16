@@ -407,13 +407,6 @@ impl TurnService {
         request: AgentTurnRequest,
         resume_session_id: Option<String>,
     ) -> Result<String, String> {
-        if request.computer_use_session_id.is_some() {
-            let session = app
-                .try_state::<crate::services::computer_use_service::ComputerUseService>()
-                .and_then(|service| service.current());
-            let catalog = backend_computer_use_catalog(&app)?;
-            validate_computer_use_turn_binding(&request, session.as_ref(), &catalog)?;
-        }
         let turn_id = request
             .turn_id
             .clone()
@@ -514,6 +507,36 @@ impl TurnService {
         // Set the turn_id on the request so downstream code can reference it.
         request.turn_id = Some(turn_id.clone());
 
+        let computer_use_session_id = request.computer_use_session_id.clone();
+        let computer_use_executor_model_id = request
+            .model
+            .clone()
+            .unwrap_or_else(|| "unknown-model".to_string());
+        let computer_use_config = match resolve_computer_use_config_for_turn(&app, &request) {
+            Ok(config) => config,
+            Err(error) => {
+                finish_computer_use_turn(
+                    &app,
+                    computer_use_session_id.as_deref(),
+                    &computer_use_action_sequences,
+                    &conversation_id,
+                    &computer_use_executor_model_id,
+                    "executor_error",
+                );
+                clear_active_conversation_registration(
+                    &active_by_conversation,
+                    &conversation_id,
+                    &turn_id,
+                );
+                for event in
+                    computer_use_admission_failure_events(&turn_id, &conversation_id, error)
+                {
+                    emit_event(&app, event);
+                }
+                return;
+            }
+        };
+
         // FASE 1: vision fallback. When the selected model doesn't support
         // vision but the user attached images, spawn a secondary CLI with a
         // vision-capable model (from the user's own catalog — never hardcoded)
@@ -547,11 +570,6 @@ impl TurnService {
         }
 
         let mut prompt = build_prompt(&request, resume_session_id.is_some());
-        let computer_use_session_id = request.computer_use_session_id.clone();
-        let computer_use_executor_model_id = request
-            .model
-            .clone()
-            .unwrap_or_else(|| "unknown-model".to_string());
         let mut trusted_handoff_receipt = None;
         if computer_use_session_id.is_none() {
             match crate::services::computer_use_handoff::peek_pending_receipt(&conversation_id) {
@@ -572,45 +590,6 @@ impl TurnService {
             }
         }
         let computer_use_enabled = computer_use_session_id.is_some();
-        let computer_use_config = match resolve_computer_use_config_for_turn(&app, &request) {
-            Ok(config) => config,
-            Err(error) => {
-                finish_computer_use_turn(
-                    &app,
-                    computer_use_session_id.as_deref(),
-                    &computer_use_action_sequences,
-                    &conversation_id,
-                    &computer_use_executor_model_id,
-                    "executor_error",
-                );
-                clear_active_conversation_registration(
-                    &active_by_conversation,
-                    &conversation_id,
-                    &turn_id,
-                );
-                emit_event(
-                    &app,
-                    AgentEvent {
-                        event_type: EventType::Error,
-                        turn_id: Some(turn_id.clone()),
-                        conversation_id: Some(conversation_id.clone()),
-                        message: Some(error),
-                        ..Default::default()
-                    },
-                );
-                emit_event(
-                    &app,
-                    AgentEvent {
-                        event_type: EventType::Done,
-                        turn_id: Some(turn_id.clone()),
-                        conversation_id: Some(conversation_id.clone()),
-                        exit_code: None,
-                        ..Default::default()
-                    },
-                );
-                return;
-            }
-        };
         if computer_use_config.is_some() {
             prompt.push_str("\n\n");
             prompt.push_str(&build_computer_use_instructions(&request.access_mode).join("\n"));
@@ -1510,6 +1489,29 @@ fn emit_verified_computer_use_action(
         action_index,
     };
     let _ = app.emit(COMPUTER_USE_ACTION_CHANNEL, event);
+}
+
+fn computer_use_admission_failure_events(
+    turn_id: &str,
+    conversation_id: &str,
+    message: String,
+) -> [AgentEvent; 2] {
+    [
+        AgentEvent {
+            event_type: EventType::Error,
+            turn_id: Some(turn_id.to_string()),
+            conversation_id: Some(conversation_id.to_string()),
+            message: Some(message),
+            ..Default::default()
+        },
+        AgentEvent {
+            event_type: EventType::Done,
+            turn_id: Some(turn_id.to_string()),
+            conversation_id: Some(conversation_id.to_string()),
+            exit_code: None,
+            ..Default::default()
+        },
+    ]
 }
 
 fn validate_computer_use_turn_binding(
@@ -3185,6 +3187,22 @@ mod tests {
             reasoning: None,
             raw: json!({"id": "vision-executor", "vision": true}),
         }]
+    }
+
+    #[test]
+    fn computer_use_admission_failure_is_terminal_and_visible() {
+        let events = computer_use_admission_failure_events(
+            "turn-cu",
+            "conversation-cu",
+            "Computer Use turn does not match the authorized session.".into(),
+        );
+
+        assert_eq!(events[0].event_type, EventType::Error);
+        assert_eq!(events[1].event_type, EventType::Done);
+        assert_eq!(
+            events[0].message.as_deref(),
+            Some("Computer Use turn does not match the authorized session."),
+        );
     }
 
     fn pending_handoff(

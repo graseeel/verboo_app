@@ -58,6 +58,7 @@ import type { ComputerUseApp, ComputerUseExecutorRecovery } from './verboo-bridg
 import { computerUseStore, isComputerUseCompactState } from './features/computer-use/computerUseStore'
 import { computerUsePolicyForApp } from './features/computer-use/appControlTier'
 import { reportComputerUseError } from './features/computer-use/computerUseError'
+import { computerUseTurnStartMessage } from './features/computer-use/computerUseTurnError'
 import { nextComputerUseTranscriptScroll } from './features/computer-use/computerUseCompactScroll'
 import {
   computerUseCliSessionPolicy,
@@ -2183,7 +2184,23 @@ export function App() {
     const resumeId = options?.skipResume || !cliSessionPolicy.resumeExistingSession
       ? undefined
       : conversationCliSessionId(item.conversationId)
-    const turnId = await sendTrackedTurn(request, resumeId, cliSessionPolicy)
+    let turnId: string
+    try {
+      turnId = await sendTrackedTurn(request, resumeId, cliSessionPolicy)
+    } catch (error) {
+      if (request.computerUseSessionId) {
+        appendConversationItem(item.conversationId, {
+          id: `computer-use-turn-start-error:${item.id}`,
+          role: 'system',
+          text: computerUseTurnStartMessage(error, t('computerUse.composer.startFailed')),
+          timestamp: Date.now(),
+        })
+      }
+      if (pendingConversationId.current === item.conversationId) {
+        pendingConversationId.current = undefined
+      }
+      throw error
+    }
     turnConversationIds.current[turnId] = item.conversationId
     turnModels.current[turnId] = item.turnModel
     // Track last user text for one-shot session-resume recovery.
@@ -2887,6 +2904,10 @@ export function App() {
     skills: SkillSummary[],
     explicitSelector?: string,
   ) {
+    if (config.platform !== 'darwin') {
+      toast(t('computerUse.composer.unsupportedPlatform'), 'info')
+      return
+    }
     if (!userSettings.computerUse.enabled) {
       toast(t('computerUse.disabled'), 'error')
       setSettingsTab('computerUse')
@@ -4623,6 +4644,7 @@ export function App() {
               selectedModel={selectedModelInfo}
               theme={theme}
               activeTab={settingsTab}
+              platform={config.platform}
               userSettings={userSettings}
               petEnabled={petEnabled}
               petSize={petSize}

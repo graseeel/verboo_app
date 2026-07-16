@@ -72,6 +72,7 @@ function renderSettings(
   activeTab: 'app' | 'computerUse',
   onUserSettingsChange = vi.fn().mockResolvedValue(undefined),
   language: 'en-US' | 'pt-BR' = 'en-US',
+  platform: NodeJS.Platform = 'darwin',
 ) {
   render(
     <I18nProvider language={language}>
@@ -86,6 +87,7 @@ function renderSettings(
           selectedModel={{ id: 'vision-model', displayName: 'Vision Model', supportsVision: true, raw: {} }}
           theme="system"
           activeTab={activeTab}
+          platform={platform}
           userSettings={userSettings}
           archivedConversations={[]}
           petEnabled={false}
@@ -129,6 +131,18 @@ describe('SettingsView computer-use settings placement', () => {
     expect(screen.getByText('com.example.Blocked')).toBeInTheDocument()
     expect(screen.getByText('Local audit storage (MB)')).toBeInTheDocument()
   })
+
+  it.each(['win32', 'linux'] as const)(
+    'shows an explicit macOS-only notice and hides native controls on %s',
+    platform => {
+      renderSettings('computerUse', undefined, 'en-US', platform)
+
+      expect(screen.getByText('Computer Use is currently available only on macOS.')).toBeInTheDocument()
+      expect(screen.queryByText('Accessibility')).not.toBeInTheDocument()
+      expect(screen.queryByText('Screen Recording')).not.toBeInTheDocument()
+      expect(window.verboo.getComputerUsePermissions).not.toHaveBeenCalled()
+    },
+  )
 
   it('keeps the moved controls wired to the existing computer-use settings', () => {
     const onUserSettingsChange = vi.fn().mockResolvedValue(undefined)

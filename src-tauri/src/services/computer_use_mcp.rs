@@ -147,6 +147,15 @@ impl Drop for AdvisoryFileLock {
     }
 }
 
+fn clear_recovered_owner_metadata(lock: &mut AdvisoryFileLock) -> Result<(), String> {
+    lock.file
+        .set_len(0)
+        .map_err(|error| format!("clear recovered Computer Use owner metadata: {error}"))?;
+    lock.file
+        .sync_all()
+        .map_err(|error| format!("sync recovered Computer Use owner metadata: {error}"))
+}
+
 #[derive(Debug)]
 struct MachineOwner {
     session_id: String,
@@ -579,7 +588,7 @@ pub fn revoke() -> Result<(), String> {
 /// completely untouched; otherwise authority is removed before any window
 /// restoration is attempted.
 pub fn recover_stale_runtime() -> Result<bool, String> {
-    let owner_guard = match AdvisoryFileLock::acquire(&owner_lock_path()?, true) {
+    let mut owner_guard = match AdvisoryFileLock::acquire(&owner_lock_path()?, true) {
         Ok(lock) => lock,
         Err(error) if error == "another Computer Use session already owns this machine" => {
             return Ok(false)
@@ -614,8 +623,13 @@ pub fn recover_stale_runtime() -> Result<bool, String> {
             Err(error) => break Err(error),
         }
     };
+    let metadata_result = clear_recovered_owner_metadata(&mut owner_guard);
     drop(owner_guard);
-    restored
+    match (restored, metadata_result) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(restored), Ok(())) => Ok(restored),
+    }
 }
 
 /// Clean process shutdown affects only the session whose advisory owner lock
@@ -2711,6 +2725,25 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("owner.lock");
         let first = AdvisoryFileLock::acquire(&path, true).unwrap();
+        assert!(AdvisoryFileLock::acquire(&path, true).is_err());
+        drop(first);
+        assert!(AdvisoryFileLock::acquire(&path, true).is_ok());
+    }
+
+    #[test]
+    fn advisory_owner_lock_clears_stale_metadata_without_replacing_the_locked_inode() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("owner.lock");
+        fs::write(
+            &path,
+            r#"{"pid":999999,"session_id":"stale","started_at":1}"#,
+        )
+        .unwrap();
+        let mut first = AdvisoryFileLock::acquire(&path, true).unwrap();
+
+        clear_recovered_owner_metadata(&mut first).unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "");
         assert!(AdvisoryFileLock::acquire(&path, true).is_err());
         drop(first);
         assert!(AdvisoryFileLock::acquire(&path, true).is_ok());
