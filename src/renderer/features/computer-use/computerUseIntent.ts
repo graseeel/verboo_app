@@ -12,11 +12,13 @@ export function detectComputerUseIntent(
 ): ComputerUseIntent | undefined {
   const goal = message.trim()
   const asksForExplanation = /^(?:explain|describe|what\s+is|how\s+does|explique|descreva|o\s+que\s+[ée]|como\s+funciona)\b/i.test(goal)
+  const directAppSelector = extractDirectAppSelector(goal)
   if (
     !asksForExplanation && (
       /^computer[- ]use\s*[:,\-]/i.test(goal)
       || /\b(?:use|control|operate)\b.{0,48}\b(?:computer[- ]use|the\s+computer|computer\s+control|desktop\s+control)\b/i.test(goal)
       || /\b(?:use|usar|utilize|controle|controlar|opere)\b.{0,48}\b(?:computer[- ]use|computador|controle\s+(?:do\s+)?computador|desktop)\b/i.test(goal)
+      || directAppSelector !== undefined
     )
   ) {
     return { source: 'explicit', goal }
@@ -48,7 +50,7 @@ export function extractComputerUseAppSelector(goal: string): string | undefined 
   const match = goal.match(
     /\b(?:app|aplicativo|application)\s+["“”']?([\p{L}\p{N}][\p{L}\p{N} ._-]*?)["“”']?(?=\s+(?:e|and|para|to|que|then)\b|[,;.!?]|$)/iu,
   )
-  return match?.[1]?.trim() || undefined
+  return match?.[1]?.trim() || extractDirectAppSelector(goal)
 }
 
 export function countHiddenComputerUseApps(
@@ -106,6 +108,49 @@ function appAliases(app: ComputerUseApp): string[] {
 
 function containsTerm(haystack: string, term: string): boolean {
   return (` ${haystack} `).includes(` ${term} `)
+}
+
+function extractDirectAppSelector(goal: string): string | undefined {
+  const match = goal.trim().match(
+    /^(?:(?:por\s+favor|please)\s+)?(?:abra|abre|abrir|inicie|iniciar|open|launch)\s+(?:(?:o|a|os|as|um|uma|the|an?)\s+)?["“”']?([\p{L}\p{N}][\p{L}\p{N} ._+-]*?)["“”']?(?=\s+(?:e|and|para|to|que|then|depois|calcule|calculate|digite|type|clique|click)\b|[,;.!?]|$)/iu,
+  )
+  const selector = match?.[1]?.trim()
+  if (!selector) return undefined
+
+  const normalized = normalizeForMatch(selector)
+  const workspaceObjects = new Set([
+    'arquivo',
+    'arquivos',
+    'file',
+    'files',
+    'pasta',
+    'pastas',
+    'folder',
+    'folders',
+    'diretorio',
+    'diretorios',
+    'directory',
+    'directories',
+    'projeto',
+    'projetos',
+    'project',
+    'projects',
+    'repositorio',
+    'repositorios',
+    'repository',
+    'repositories',
+    'documento',
+    'documentos',
+    'document',
+    'documents',
+    'codigo',
+    'code',
+  ])
+  const firstToken = normalized.split(' ')[0]
+  if (!firstToken || workspaceObjects.has(firstToken)) return undefined
+  if (/^[^\s]+\.[a-z0-9]{1,8}$/i.test(selector)) return undefined
+
+  return selector
 }
 
 function normalizeForMatch(value: string): string {

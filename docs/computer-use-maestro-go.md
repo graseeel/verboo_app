@@ -79,7 +79,7 @@ Mutating `hotkey` must reject chords that quit/close/force-quit: `Cmd+Q`, `Cmd+W
 | **Q9** | Multi-session | **P2** (or never). Single-writer PID lock in P0. |
 | **Q10** | Telemetry | **Local only in P0.** No product analytics of CU payloads. Action *types* may stay local audit only. |
 | **Q11** | ESC chords | See **M3**. |
-| **Q12** | SKILL.md | **Ship in app resources**; seed/copy to `~/.verboo/skills/computer-use/` on first enable (idempotent). |
+| **Q12** | Product entry point | **Reserved native mode.** Do not seed or require a separate skill. |
 
 ---
 
@@ -104,7 +104,7 @@ Mutating `hotkey` must reject chords that quit/close/force-quit: `Cmd+Q`, `Cmd+W
 
 ## Explicit non-goals for P0
 
-- Bundling third-party desktop-automation binaries
+- Bundling a third-party desktop-control runtime
 - Win/Linux runtimes
 - `set-value` / `paste-text` / `drag` / `perform-secondary-action`
 - Multi-session

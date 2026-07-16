@@ -9,7 +9,9 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+
+use crate::services::computer_use_mcp::ActionHelperAuthority;
 
 #[cfg(target_os = "macos")]
 use std::os::fd::AsRawFd;
@@ -168,6 +170,7 @@ enum AgentResolution {
 
 #[cfg(target_os = "macos")]
 pub struct ComputerUseAgentConnection {
+    pub child: Child,
     pub stream: UnixStream,
     pub pid: u32,
     pub executable_path: PathBuf,
@@ -352,15 +355,27 @@ fn resolve_agent_with_policy(
     AgentResolution::Unavailable(expected)
 }
 
-fn agent_launch_arguments(agent_app: &Path, socket_path: &Path) -> Vec<OsString> {
+fn agent_launch_arguments(socket_path: &Path) -> Vec<OsString> {
     vec![
-        OsString::from("-g"),
-        OsString::from("-n"),
-        agent_app.as_os_str().to_owned(),
-        OsString::from("--args"),
         OsString::from("--verboo-agent-socket"),
         socket_path.as_os_str().to_owned(),
     ]
+}
+
+fn configure_agent_launch_command(
+    command: &mut Command,
+    socket_path: &Path,
+    authority: Option<&ActionHelperAuthority>,
+) {
+    command
+        .args(agent_launch_arguments(socket_path))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(authority) = authority {
+        command.env("VERBOO_CU_TOKEN", &authority.token);
+        command.env("VERBOO_CU_CAPABILITY_FILE", &authority.capability_path);
+    }
 }
 
 pub fn resolved_agent_path() -> Option<PathBuf> {
@@ -431,7 +446,9 @@ pub fn agent_process_matches(pid: u32, expected_executable: &Path) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-pub fn launch_action_agent() -> Result<ComputerUseAgentConnection, String> {
+pub fn launch_action_agent(
+    authority: Option<&ActionHelperAuthority>,
+) -> Result<ComputerUseAgentConnection, String> {
     let AgentResolution::Found(runtime) = resolve_current_agent() else {
         return Err("Verboo Computer Use.app is not packaged".into());
     };
@@ -444,24 +461,25 @@ pub fn launch_action_agent() -> Result<ComputerUseAgentConnection, String> {
         .set_nonblocking(true)
         .map_err(|error| format!("configure agent socket: {error}"))?;
 
-    let launch = Command::new("/usr/bin/open")
-        .args(agent_launch_arguments(runtime.app_path(), &socket_path))
-        .status()
+    let mut command = Command::new(runtime.executable_path());
+    configure_agent_launch_command(&mut command, &socket_path, authority);
+    let mut child = command
+        .spawn()
         .map_err(|error| format!("launch Verboo Computer Use agent: {error}"))?;
-    if !launch.success() {
-        let _ = std::fs::remove_file(&socket_path);
-        return Err(format!("LaunchServices returned {launch}"));
-    }
+    let child_pid = child.id();
 
     let deadline = Instant::now() + Duration::from_secs(8);
     let accepted = loop {
         match listener.accept() {
             Ok((stream, _)) => {
-                stream
-                    .set_nonblocking(false)
-                    .map_err(|error| format!("configure agent transport: {error}"))?;
-                let pid = peer_pid(&stream)?;
-                if agent_process_matches(pid, runtime.executable_path()) {
+                if let Err(error) = stream.set_nonblocking(false) {
+                    break Err(format!("configure agent transport: {error}"));
+                }
+                let pid = match peer_pid(&stream) {
+                    Ok(pid) => pid,
+                    Err(error) => break Err(error),
+                };
+                if pid == child_pid && agent_process_matches(pid, runtime.executable_path()) {
                     break Ok((stream, pid));
                 }
                 unsafe {
@@ -469,6 +487,17 @@ pub fn launch_action_agent() -> Result<ComputerUseAgentConnection, String> {
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        break Err(format!(
+                            "Verboo Computer Use agent exited before connecting: {status}"
+                        ));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        break Err(format!("inspect Verboo Computer Use agent: {error}"));
+                    }
+                }
                 if Instant::now() >= deadline {
                     break Err("timed out waiting for Verboo Computer Use agent".to_string());
                 }
@@ -478,8 +507,16 @@ pub fn launch_action_agent() -> Result<ComputerUseAgentConnection, String> {
         }
     };
     let _ = std::fs::remove_file(&socket_path);
-    let (stream, pid) = accepted?;
+    let (stream, pid) = match accepted {
+        Ok(connection) => connection,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
     Ok(ComputerUseAgentConnection {
+        child,
         stream,
         pid,
         executable_path: runtime.executable_path().to_path_buf(),
@@ -862,11 +899,8 @@ mod tests {
     }
 
     #[test]
-    fn launch_services_arguments_keep_the_agent_out_of_the_dock() {
-        let arguments = agent_launch_arguments(
-            Path::new("/Applications/Verboo Computer Use.app"),
-            Path::new("/tmp/verboo-agent.sock"),
-        );
+    fn direct_agent_arguments_use_the_private_socket_only() {
+        let arguments = agent_launch_arguments(Path::new("/tmp/verboo-agent.sock"));
         let rendered = arguments
             .iter()
             .map(|value| value.to_string_lossy().into_owned())
@@ -874,25 +908,62 @@ mod tests {
 
         assert_eq!(
             rendered,
-            vec![
-                "-g",
-                "-n",
-                "/Applications/Verboo Computer Use.app",
-                "--args",
-                "--verboo-agent-socket",
-                "/tmp/verboo-agent.sock",
-            ]
+            vec!["--verboo-agent-socket", "/tmp/verboo-agent.sock",]
+        );
+    }
+
+    #[test]
+    fn direct_agent_launch_passes_capability_only_through_the_child_environment() {
+        let authority = crate::services::computer_use_mcp::ActionHelperAuthority {
+            session_id: "session-cu".into(),
+            token: "secret-token".into(),
+            capability_path: PathBuf::from("/tmp/verboo-capability.json"),
+        };
+        let mut command = Command::new(
+            "/Applications/Verboo Computer Use.app/Contents/MacOS/computer-use-helper",
+        );
+
+        configure_agent_launch_command(
+            &mut command,
+            Path::new("/tmp/verboo-agent.sock"),
+            Some(&authority),
+        );
+
+        let arguments = command
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let environment = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|item| item.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert!(!arguments.iter().any(|value| value.contains("secret-token")));
+        assert_eq!(
+            environment.get("VERBOO_CU_TOKEN"),
+            Some(&Some("secret-token".into())),
+        );
+        assert_eq!(
+            environment.get("VERBOO_CU_CAPABILITY_FILE"),
+            Some(&Some("/tmp/verboo-capability.json".into())),
         );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "launches the real local Verboo Computer Use agent"]
-    fn agent_launches_via_launchservices_and_answers_over_private_ipc() {
+    fn signed_agent_launches_directly_and_answers_over_private_ipc() {
         use std::io::{BufRead, BufReader, Write};
         use std::net::Shutdown;
 
-        let connection = launch_action_agent().expect("launch agent");
+        let authority =
+            crate::services::computer_use_mcp::current_action_helper_authority().unwrap();
+        let connection = launch_action_agent(authority.as_ref()).expect("launch agent");
         assert!(agent_process_matches(
             connection.pid,
             &connection.executable_path
@@ -912,5 +983,7 @@ mod tests {
         assert!(payload["result"]["accessibility"].is_string());
         assert!(payload["result"]["screenRecording"].is_string());
         let _ = writer.shutdown(Shutdown::Both);
+        let mut child = connection.child;
+        let _ = child.wait();
     }
 }

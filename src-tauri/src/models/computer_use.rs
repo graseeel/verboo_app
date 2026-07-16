@@ -1,8 +1,8 @@
 //! Computer Use types — request/response shapes for the CU subsystem.
 //!
-//! Mirrors Kratos arch §2 (session state machine) and §7 (tool surface).
-//! The wire shape belongs to Verboo's bundled Computer Use MCP runtime and
-//! does not depend on a user-installed desktop-control skill.
+//! Mirrors Kratos arch §2 (session state machine) and §7 (native MCP surface).
+//! The wire contract is owned by Verboo and does not depend on a separately
+//! installed desktop-control skill or provider.
 
 use serde::{Deserialize, Serialize};
 

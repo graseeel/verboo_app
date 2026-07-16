@@ -51,6 +51,22 @@ describe('detectComputerUseIntent', () => {
     })
   })
 
+  it('routes a direct Calculator command through native Computer Use', () => {
+    const goal = 'Abra a Calculadora, calcule 1 + 1 e confirme visualmente o resultado.'
+
+    expect(detectComputerUseIntent(goal, [])).toEqual({
+      source: 'explicit',
+      goal,
+    })
+  })
+
+  it('does not treat workspace file commands as desktop app control', () => {
+    expect(detectComputerUseIntent('Abra o arquivo package.json', [])).toBeUndefined()
+    expect(detectComputerUseIntent('Open the project README', [])).toBeUndefined()
+    expect(detectComputerUseIntent('Run npm test', [])).toBeUndefined()
+    expect(detectComputerUseIntent('Execute cargo test', [])).toBeUndefined()
+  })
+
   it('treats selecting the computer-use skill as explicit intent', () => {
     expect(detectComputerUseIntent('Type hello in Notes', [computerUseSkill])).toEqual({
       source: 'selected-skill',
@@ -125,6 +141,9 @@ describe('resolveComputerUseTarget', () => {
       .toBe('TextEdit')
     expect(extractComputerUseAppSelector('Use o aplicativo Google Chrome para testar a página'))
       .toBe('Google Chrome')
+    expect(extractComputerUseAppSelector(
+      'Abra a Calculadora, calcule 1 + 1 e confirme visualmente o resultado.',
+    )).toBe('Calculadora')
   })
 })
 

@@ -39,7 +39,7 @@ So a Claude-style request never reaches the agent.
 ### Target behavior (goal-first)
 
 ```
-User: [computer-use skill] + "adicionamos feature X, teste e ache bugs"
+User: "adicionamos feature X, use o computador para testar e achar bugs"
   → OS perms OK
   → Session ACTIVE with goal, target_app optional
   → Agent turn with CU MCP + mission contract
@@ -120,7 +120,7 @@ macOS Accessibility TCC is **per process binary path**. Ad-hoc / CLI-built sidec
 
 ## Acceptance criteria
 
-1. With computer-use skill selected and goal *without* app name, no `missingApp` toast; agent turn starts with CU MCP.  
+1. With an explicit Computer Use goal *without* app name, no `missingApp` toast; agent turn starts with CU MCP.
 2. With goal naming Notes uniquely, Notes is pre-bound as today.  
 3. Cross-app silent switch after first bind is denied.  
 4. Settings → Grant permissions opens OS panes and requests helper permissions; reveal helper works.  

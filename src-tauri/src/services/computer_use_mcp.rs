@@ -63,6 +63,13 @@ pub struct ActivationReceipt {
     pub focus: Option<crate::services::computer_use_focus::FocusStartReceipt>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActionHelperAuthority {
+    pub session_id: String,
+    pub token: String,
+    pub capability_path: PathBuf,
+}
+
 fn default_isolate_other_apps() -> bool {
     true
 }
@@ -1009,6 +1016,36 @@ pub fn active_config_path(expected_session_id: Option<&str>) -> Option<PathBuf> 
 
 fn capability_is_active(cap: &Capability, expected_session_id: &str, at: u64) -> bool {
     cap.session_id == expected_session_id && !cap.paused && cap.expires_at > at
+}
+
+fn action_helper_authority_from(
+    path: &Path,
+    owner_session_id: Option<&str>,
+    at: u64,
+) -> Result<Option<ActionHelperAuthority>, String> {
+    let Some(owner_session_id) = owner_session_id else {
+        return Ok(None);
+    };
+    let capability: Capability =
+        serde_json::from_slice(&fs::read(path).map_err(|_| "computer-use session revoked")?)
+            .map_err(|error| error.to_string())?;
+    if capability.session_id != owner_session_id
+        || capability.token.is_empty()
+        || capability.expires_at <= at
+        || (capability.controller_pid != 0 && capability.controller_pid != std::process::id())
+    {
+        return Err("computer-use session is not active".into());
+    }
+    Ok(Some(ActionHelperAuthority {
+        session_id: capability.session_id,
+        token: capability.token,
+        capability_path: path.to_path_buf(),
+    }))
+}
+
+pub(crate) fn current_action_helper_authority() -> Result<Option<ActionHelperAuthority>, String> {
+    let owner_session_id = current_machine_owner_session();
+    action_helper_authority_from(&capability_path()?, owner_session_id.as_deref(), now())
 }
 
 fn read_capability() -> Result<Capability, String> {
@@ -2042,6 +2079,51 @@ mod tests {
                 "monitor transport failed",
             ))
         }
+    }
+
+    #[test]
+    fn action_helper_authority_comes_from_the_owned_live_capability() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("capability.json");
+        let capability = Capability {
+            session_id: "session-cu".into(),
+            conversation_id: "conversation-cu".into(),
+            executor_model_id: "vision-model".into(),
+            token: "secret-token".into(),
+            app: "com.apple.calculator".into(),
+            approved_apps: Vec::new(),
+            self_test_enabled: false,
+            goal: "calculate 1 + 1".into(),
+            expires_at: 2_000,
+            idle_timeout_secs: 900,
+            paused: false,
+            screenshot_attach_to_llm: true,
+            isolate_other_apps: true,
+            controller_pid: std::process::id(),
+            compact_layout: true,
+            compact_panel_width: 420,
+            focus_request_generation: 1,
+        };
+        fs::write(&path, serde_json::to_vec(&capability).unwrap()).unwrap();
+
+        let authority = action_helper_authority_from(&path, Some("session-cu"), 1_000)
+            .unwrap()
+            .expect("owned live capability");
+
+        assert_eq!(authority.session_id, "session-cu");
+        assert_eq!(authority.token, "secret-token");
+        assert_eq!(authority.capability_path, path);
+        assert!(
+            action_helper_authority_from(&authority.capability_path, None, 1_000)
+                .unwrap()
+                .is_none()
+        );
+        assert!(action_helper_authority_from(
+            &authority.capability_path,
+            Some("different-session"),
+            1_000,
+        )
+        .is_err());
     }
 
     #[test]

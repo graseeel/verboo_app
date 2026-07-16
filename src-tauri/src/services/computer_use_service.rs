@@ -17,9 +17,9 @@
 //! One helper is reused under a mutex; crashed helpers are respawned on demand.
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::Stdio;
+use std::process::{Child, Stdio};
 #[cfg(not(target_os = "macos"))]
-use std::process::{Child, ChildStdin, ChildStdout};
+use std::process::{ChildStdin, ChildStdout};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -1060,10 +1060,11 @@ pub(crate) fn service_for_test_without_audit() -> ComputerUseService {
     }
 }
 
-/// Long-lived helper process (one per app process). On macOS the process is
-/// launched as the independent LSUIElement `Verboo Computer Use.app` and IPC
-/// runs over a private Unix socket. Other targets retain the stdio fallback so
-/// the crate keeps compiling across existing platform boundaries.
+/// Long-lived helper process (one per app process). On macOS the signed
+/// executable inside the independent LSUIElement `Verboo Computer Use.app` is
+/// launched directly and IPC runs over a private Unix socket. Other targets
+/// retain the stdio fallback so the crate keeps compiling across existing
+/// platform boundaries.
 struct LiveHelper {
     #[cfg(not(target_os = "macos"))]
     child: Arc<Mutex<Child>>,
@@ -1080,6 +1081,7 @@ struct LiveHelper {
     next_id: u64,
     pid: u32,
     generation: u64,
+    authority_session_id: Option<String>,
     fail_closed_exit: Arc<AtomicBool>,
 }
 
@@ -1249,17 +1251,15 @@ fn start_live_helper_exit_watcher(
 
 #[cfg(target_os = "macos")]
 fn start_live_helper_exit_watcher(
+    mut child: Child,
     pid: u32,
-    executable_path: std::path::PathBuf,
     generation: u64,
     fail_closed_exit: Arc<AtomicBool>,
 ) {
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_millis(100));
-        if crate::services::computer_use_spawn::agent_process_matches(pid, &executable_path) {
-            continue;
+    thread::spawn(move || {
+        if let Err(error) = child.wait() {
+            eprintln!("[computer-use] wait for helper process failed: {error}");
         }
-
         live_helper_pid()
             .compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst)
             .ok();
@@ -1278,7 +1278,6 @@ fn start_live_helper_exit_watcher(
         expected_live_helper_stop_generation()
             .compare_exchange(generation, 0, Ordering::SeqCst, Ordering::SeqCst)
             .ok();
-        break;
     });
 }
 
@@ -1305,10 +1304,16 @@ fn terminate_agent_transport(live: &LiveHelper) {
 }
 
 fn spawn_live_helper() -> Result<LiveHelper, ComputerUseError> {
+    let authority = crate::services::computer_use_mcp::current_action_helper_authority()
+        .map_err(|error| ComputerUseError::new("session_revoked", error))?;
+    let authority_session_id = authority
+        .as_ref()
+        .map(|authority| authority.session_id.clone());
     #[cfg(target_os = "macos")]
     {
-        let connection = crate::services::computer_use_spawn::launch_action_agent()
-            .map_err(|error| ComputerUseError::new("provider_down", error))?;
+        let connection =
+            crate::services::computer_use_spawn::launch_action_agent(authority.as_ref())
+                .map_err(|error| ComputerUseError::new("provider_down", error))?;
         let stdin = connection.stream.try_clone().map_err(|error| {
             ComputerUseError::new("provider_down", format!("clone agent socket: {error}"))
         })?;
@@ -1319,8 +1324,8 @@ fn spawn_live_helper() -> Result<LiveHelper, ComputerUseError> {
         let fail_closed_exit = Arc::new(AtomicBool::new(false));
         live_helper_pid().store(pid, Ordering::SeqCst);
         start_live_helper_exit_watcher(
+            connection.child,
             pid,
-            connection.executable_path.clone(),
             generation,
             Arc::clone(&fail_closed_exit),
         );
@@ -1331,6 +1336,7 @@ fn spawn_live_helper() -> Result<LiveHelper, ComputerUseError> {
             next_id: 1,
             pid,
             generation,
+            authority_session_id,
             fail_closed_exit,
         });
     }
@@ -1339,6 +1345,10 @@ fn spawn_live_helper() -> Result<LiveHelper, ComputerUseError> {
     {
         let spawn = ComputerUseSpawn::new();
         let mut cmd = spawn.command;
+        if let Some(authority) = authority.as_ref() {
+            cmd.env("VERBOO_CU_TOKEN", &authority.token);
+            cmd.env("VERBOO_CU_CAPABILITY_FILE", &authority.capability_path);
+        }
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -1373,6 +1383,7 @@ fn spawn_live_helper() -> Result<LiveHelper, ComputerUseError> {
             next_id: 1,
             pid,
             generation,
+            authority_session_id,
             fail_closed_exit,
         })
     }
@@ -1451,7 +1462,39 @@ fn helper_response_id_error(response: &Value, expected_id: u64) -> Option<&'stat
     }
 }
 
+fn action_helper_authority_changed(
+    existing_session_id: Option<&str>,
+    current_session_id: Option<&str>,
+) -> bool {
+    existing_session_id != current_session_id
+}
+
 fn ensure_live_helper(slot: &mut Option<LiveHelper>) -> Result<&mut LiveHelper, ComputerUseError> {
+    let current_authority = crate::services::computer_use_mcp::current_action_helper_authority()
+        .map_err(|error| ComputerUseError::new("session_revoked", error))?;
+    let current_authority_session_id = current_authority
+        .as_ref()
+        .map(|authority| authority.session_id.as_str());
+    if slot.as_ref().is_some_and(|live| {
+        action_helper_authority_changed(
+            live.authority_session_id.as_deref(),
+            current_authority_session_id,
+        )
+    }) {
+        mark_live_helper_stop_expected();
+        if let Some(live) = slot.take() {
+            #[cfg(target_os = "macos")]
+            terminate_agent_transport(&live);
+            #[cfg(not(target_os = "macos"))]
+            if let Ok(mut child) = live.child.lock() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            live_helper_pid()
+                .compare_exchange(live.pid, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .ok();
+        }
+    }
     if let Some(live) = slot.as_mut() {
         #[cfg(target_os = "macos")]
         let status = if crate::services::computer_use_spawn::agent_process_matches(
@@ -1753,6 +1796,21 @@ mod tests {
         assert!(!helper_transport_may_retry("screenshot", true));
         assert!(!helper_transport_may_retry("permissions", true));
         assert!(!helper_transport_may_retry("left-click", true));
+    }
+
+    #[test]
+    fn helper_is_replaced_when_its_capability_session_changes() {
+        assert!(action_helper_authority_changed(None, Some("session-cu")));
+        assert!(action_helper_authority_changed(
+            Some("session-old"),
+            Some("session-cu"),
+        ));
+        assert!(action_helper_authority_changed(Some("session-cu"), None));
+        assert!(!action_helper_authority_changed(
+            Some("session-cu"),
+            Some("session-cu"),
+        ));
+        assert!(!action_helper_authority_changed(None, None));
     }
 
     #[test]

@@ -16,11 +16,11 @@
 | # | Decision | Verdict |
 |---|----------|---------|
 | D1 | Session model + consent gates | Adopt Ciri's Idle/Consent/Active/Paused/Stopped state machine; add Rust `SessionManager` with PID-level single-writer lock |
-| D2 | Native layer | **Adopt Geralt Option B** (Swift helper sidecar). Do not bundle a third-party desktop-control binary. Keep the JSON contract under Verboo's own binary. |
+| D2 | Native layer | **Adopt Geralt Option B**: a Verboo-owned Swift helper sidecar with its own signed app identity and JSON contract. |
 | D3 | Self-control conflict | **Self-Test Scope** — allow Verboo-on-Verboo control of an explicit allowlist of safe surfaces; hard-block everything else (credentials, full-access toggle, logout, API key, audit store). |
 | D4 | CU vs AccessMode | Orthogonal. `full` access NEVER implies CU. CU has its own consent flow regardless of AccessMode. |
 | D5 | P0/P1/P2 phases | P0 = macOS foundations + Aloy's 5 ship blockers; P1 = cross-platform + UI completeness; P2 = power features. |
-| D6 | Skill CLI surface v1 | Verboo-native subset: read (`list-apps`, `list-windows`, `get-app-state`, `capabilities`, `permissions`) + mutate (`click`, `type-text`, `press-key`, `hotkey`, `scroll`). Defer `set-value`, `paste-text`, `drag`, `perform-secondary-action` to P1. |
+| D6 | Native MCP surface v1 | Read (`list-apps`, `list-windows`, `get-app-state`, `capabilities`, `permissions`) + mutate (`click`, `type-text`, `press-key`, `hotkey`, `scroll`). Defer `set-value`, `paste-text`, `drag`, `perform-secondary-action` to P1. |
 
 The rest of this document elaborates.
 
@@ -114,11 +114,11 @@ pub enum StopReason {
 
 **Yes.** Build a Swift binary at `.app/Contents/Resources/computer-use-helper`, lazy-started by a new `computer_use_spawn.rs` (clones the `cli_spawn.rs` pattern).
 
-### 3.2 Why a Verboo-owned sidecar instead of third-party or in-process automation
+### 3.2 Why a Verboo-owned Swift sidecar
 
 | Option | Verdict | Why |
 |--------|---------|-----|
-| **A. Bundle a third-party desktop-control binary** | Rejected | TCC permissions are per signing identity; every upstream binary change forces re-notarization of Verboo and introduces a separate security-review burden. |
+| **A. Bundle a third-party automation binary** | Rejected | TCC permissions are per signing identity; upstream changes force renewed review and notarization while adding an external security dependency. |
 | **B. Swift helper sidecar** | **Adopted** | Process isolation (AX fault doesn't kill main), privilege separation (helper has own TCC identity), independent killability, MIT-compatible, ~500KB binary. ~2-5ms IPC overhead is negligible vs. AX round-trip. |
 | **C. In-process objc2/AX** | Rejected | Couples main process to TCC; one AX fault kills Verboo; re-notarize per AX tweak; no privilege boundary. |
 | **D. Embed OpenAI SkyComputerUseService** | Rejected | Opaque binary; closed license; Sparkle updater conflicts with `tauri-plugin-updater`; we don't own the TCC identity. |
@@ -127,7 +127,7 @@ pub enum StopReason {
 
 - Newline-delimited JSON over stdio.
 - Every request has `id`; every response has `id + ok|err`.
-- Verboo-owned JSON shape consumed only by the bundled Computer Use MCP runtime. The feature does not depend on a user-installed desktop-control skill.
+- Verboo-owned request and response schema shared by the native helper and temporary MCP server. No separately installed desktop-control skill is required.
 
 ### 3.4 TCC permissions
 
@@ -360,9 +360,9 @@ Adopt Geralt §5 3-layer model + Aloy §3 bypass test suite.
 
 ---
 
-## 7. Skill CLI surface v1 (D6)
+## 7. Native MCP surface v1 (D6)
 
-### 7.1 v1 commands (Verboo-native subset)
+### 7.1 v1 commands
 
 All `--json` output. Stdio newline-delimited for streaming.
 
@@ -411,7 +411,7 @@ All `--json` output. Stdio newline-delimited for streaming.
 | `provider_down` | Swift helper crashed/restarting |
 | `tamper_detected` | audit hash chain verification failed; CU locked |
 
-### 7.4 JSON return shape (Verboo-native)
+### 7.4 JSON return shape
 
 ```json
 {
@@ -439,21 +439,21 @@ Error:
 
 This is Kratos's main value-add over the peer proposals. Computer Use must compose cleanly with what Verboo already does.
 
-### 8.1 turn_service.rs (skill injection)
+### 8.1 turn_service.rs (isolated visual executor)
 
-Today `build_skill_lines` at `turn_service.rs:1211-1228` injects approved skills as text into the system prompt. The `computer-use` skill flows through unchanged.
+Ordinary turns may inject approved skills through `build_skill_lines`. A Computer Use executor is different: it receives the temporary native MCP configuration and the dedicated Computer Use mission contract.
 
-**Kratos decision**: NO changes to `build_skill_lines`. Skill is text; governance is runtime. Coupling them breaks the "skill is opaque" model.
+**Kratos decision**: while a Computer Use session is bound, omit all user skills from the visual executor prompt and disable the generic `Skill` tool. This prevents any external automation instructions from redirecting the model away from Verboo's authorized MCP.
 
-**One addition**: when `turn_service.rs` builds env for `cli_spawn.rs`, it consults `SessionManager::current()`. If ACTIVE, inject `VERBOO_COMPUTER_USE_SESSION=<id>`. Otherwise absent — helper refuses all calls with `no_active_session`.
+The turn carries `computer_use_session_id`; the backend validates the model/session binding and attaches only the matching temporary MCP configuration. Without that binding, the native tool is unavailable.
 
 ### 8.2 cli_spawn.rs (env discipline)
 
 Extend `protect_user_cli_env` (`cli_spawn.rs:208`) to clear `VERBOO_COMPUTER_USE_SESSION` by default. Set ONLY in the spawn path that goes through `SessionManager::current()`. Prevents stale session env from leaking across turns.
 
-### 8.3 skills_service.rs (existing trusted/untrusted gate)
+### 8.3 Reserved product mode, not an installed skill
 
-`computer-use` skill lives in `~/.verboo/skills/computer-use/` → user-trusted (per `skills_service.rs:90-93`). Flows through `filter_approved_skills` directly, no SkillApprovalPanel. The skill itself is trusted (Verboo ships it). What's gated is the **actuation**, separately.
+Computer Use is a reserved Verboo product mode exposed by `/computer-use`, direct application commands, and the consent UI. It is not seeded into `~/.verboo/skills` and does not depend on the Skills approval system. Consent, capability lifetime, app tiers, TCC, audit, and emergency stop gate the actuation directly.
 
 ### 8.4 Goal mode
 
@@ -582,7 +582,7 @@ Maestro Grok issued CONDITIONAL GO with policy answers binding. See `docs/comput
 | **Q9** | Multi-session | **P2** (or never). Single-writer PID lock in P0. |
 | **Q10** | Telemetry | **Local only in P0.** No product analytics of CU payloads. Action *types* may stay local audit only. |
 | **Q11** | ESC chords | **M3 binding**: ⌘⇧Esc primary (helper OS-wide), Esc secondary (Verboo focused). See §6.6. |
-| **Q12** | SKILL.md | **Ship in app resources**; seed/copy to `~/.verboo/skills/computer-use/` on first enable (idempotent). |
+| **Q12** | Product entry point | **Reserved native mode.** Do not seed or require a separate skill; use the composer router, consent flow, and temporary MCP configuration. |
 
 ---
 
