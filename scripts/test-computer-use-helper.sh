@@ -708,6 +708,45 @@ grep -q 'SCStream(filter:' "$ROOT/src-tauri/swift-helper/main.swift"
 agent_app="$ROOT/src-tauri/binaries/Verboo Computer Use.app"
 [[ "$(plutil -extract CFBundleIdentifier raw "$agent_app/Contents/Info.plist")" == "ai.verboo.code.computer-use" ]]
 [[ "$(plutil -extract LSUIElement raw "$agent_app/Contents/Info.plist")" == "true" ]]
+agent_verify_dir="$(mktemp -d "${TMPDIR:-/tmp}/verboo-agent-verify.XXXXXX")"
+trap 'rm -rf "$agent_verify_dir"' EXIT
+ditto --norsrc --noextattr "$agent_app" "$agent_verify_dir/Verboo Computer Use.app"
+xattr -cr "$agent_verify_dir/Verboo Computer Use.app"
+codesign --verify --deep --strict "$agent_verify_dir/Verboo Computer Use.app"
+
+launch_plan="$(
+  VERBOO_CU_TOKEN='contract-secret-token' \
+  VERBOO_CU_CAPABILITY_FILE='/tmp/contract-capability.json' \
+  "$helper" \
+    --contract-test \
+    --contract-agent-launch-plan \
+    --launch-agent-app '/Applications/Verboo Code.app/Contents/Helpers/Verboo Computer Use.app' \
+    --installed-agent-app '/Users/test/Library/Application Support/Verboo/Computer Use/Verboo Computer Use.app' \
+    --launch-agent-socket '/tmp/verboo-contract.sock'
+)"
+
+node - "$launch_plan" <<'NODE'
+const plan = JSON.parse(process.argv[2])
+const expected = {
+  source_app: '/Applications/Verboo Code.app/Contents/Helpers/Verboo Computer Use.app',
+  installed_app: '/Users/test/Library/Application Support/Verboo/Computer Use/Verboo Computer Use.app',
+  socket: '/tmp/verboo-contract.sock',
+  activates: false,
+  adds_to_recent_items: false,
+  creates_new_application_instance: true,
+  allows_running_application_substitution: false,
+  capability_environment: true,
+}
+for (const [key, value] of Object.entries(expected)) {
+  if (plan[key] !== value) {
+    throw new Error(`launch plan ${key}: expected ${JSON.stringify(value)}, received ${JSON.stringify(plan[key])}`)
+  }
+}
+const rendered = JSON.stringify(plan)
+if (rendered.includes('contract-secret-token')) {
+  throw new Error('launch plan leaked the capability token')
+}
+NODE
 
 node - "$ROOT/src-tauri/swift-helper/main.swift" "$ROOT/src-tauri/src/services/computer_use_mcp.rs" <<'NODE'
 const fs = require('node:fs')
@@ -733,19 +772,53 @@ const permissionRequest = source.slice(
   source.indexOf('private func requestScreenCaptureAccess()'),
   source.indexOf('// MARK: - Stdio loop'),
 )
+const shareableContentRequest = source.slice(
+  source.indexOf('private func shareableScreenContent('),
+  source.indexOf('@available(macOS 12.3, *)\nprivate func screenCaptureKitWindow('),
+)
 if (!permissionRequest.includes('NSApplication.shared')) {
   throw new Error('screen capture registration must initialize the bundled agent as a macOS application')
 }
 if (!permissionRequest.includes('setActivationPolicy(.accessory)')) {
   throw new Error('the LSUIElement agent must remain an accessory app while registering with TCC')
 }
-if (!permissionRequest.includes('SCShareableContent.getExcludingDesktopWindows')) {
+if (!shareableContentRequest.includes('SCShareableContent.getExcludingDesktopWindows')) {
   throw new Error('screen capture registration must use ScreenCaptureKit when the legacy request does not register TCC')
+}
+if (permissionRequest.includes('DispatchSemaphore')) {
+  throw new Error('screen capture registration must not block the AppKit main thread while awaiting ScreenCaptureKit')
+}
+if (!shareableContentRequest.includes('RunLoop.current.run')) {
+  throw new Error('screen capture registration must keep the AppKit run loop responsive while awaiting shareable content')
+}
+if (
+  permissionRequest.indexOf('shareableScreenContent()')
+    > permissionRequest.indexOf('CGRequestScreenCaptureAccess')
+) {
+  throw new Error('screen capture registration must follow the Apple ScreenCaptureKit-first request flow')
+}
+if (!permissionRequest.includes('OneFrameCapture()')) {
+  throw new Error('screen capture registration must use the real window capture output')
+}
+if (!permissionRequest.includes('permissionCapture.capture(filter: filter, configuration: configuration)')) {
+  throw new Error('screen capture registration must start a real output-backed ScreenCaptureKit stream')
+}
+if (!source.includes('stream.addStreamOutput(self, type: .screen')) {
+  throw new Error('the registration stream must attach a video output before starting capture')
+}
+if (!source.includes('stream.startCapture')) {
+  throw new Error('screen capture registration must start capture so macOS creates the TCC entry')
 }
 const capture = source.slice(
   source.indexOf('private func screenCaptureKitWindow('),
   source.indexOf('private func legacyAuthorizedWindow('),
 )
+if (capture.includes('DispatchSemaphore')) {
+  throw new Error('window capture must not block the AppKit main run loop while retrieving shareable content')
+}
+if (!shareableContentRequest.includes('RunLoop.current.run')) {
+  throw new Error('window capture must keep the AppKit main run loop responsive while retrieving shareable content')
+}
 if (!capture.includes('SCContentFilter(desktopIndependentWindow: selected)')) {
   throw new Error('model capture must use the approved target window filter')
 }

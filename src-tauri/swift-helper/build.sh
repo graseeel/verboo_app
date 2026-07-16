@@ -43,16 +43,19 @@ swiftc \
 echo "Built: $OUT_DIR/computer-use-helper-$TRIPLE"
 
 AGENT_APP="$OUT_DIR/Verboo Computer Use.app"
-AGENT_CONTENTS="$AGENT_APP/Contents"
+AGENT_STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/verboo-computer-use-agent.XXXXXX")"
+trap 'rm -rf "$AGENT_STAGE_DIR"' EXIT
+STAGED_AGENT_APP="$AGENT_STAGE_DIR/Verboo Computer Use.app"
+AGENT_CONTENTS="$STAGED_AGENT_APP/Contents"
 AGENT_EXECUTABLE="$AGENT_CONTENTS/MacOS/computer-use-helper"
 AGENT_RESOURCES="$AGENT_CONTENTS/Resources"
 ICON_SOURCE="$SCRIPT_DIR/../icons/verboo-computer-use.png"
-ICONSET="$OUT_DIR/VerbooComputerUse.iconset"
+ICONSET="$AGENT_STAGE_DIR/VerbooComputerUse.iconset"
 VERSION="$(plutil -extract version raw "$SCRIPT_DIR/../tauri.conf.json")"
 
-rm -rf "$AGENT_APP" "$ICONSET"
+rm -rf "$AGENT_APP" "$STAGED_AGENT_APP" "$ICONSET"
 mkdir -p "$AGENT_CONTENTS/MacOS" "$AGENT_RESOURCES" "$ICONSET"
-cp "$OUT_DIR/computer-use-helper-$TRIPLE" "$AGENT_EXECUTABLE"
+COPYFILE_DISABLE=1 cp "$OUT_DIR/computer-use-helper-$TRIPLE" "$AGENT_EXECUTABLE"
 chmod 0755 "$AGENT_EXECUTABLE"
 
 for spec in \
@@ -93,16 +96,28 @@ plutil -insert NSScreenCaptureUsageDescription -string "Verboo Computer Use capt
 
 # Development builds remain launchable. Distribution builds must re-sign this
 # nested agent and the outer app with the same stable Apple identity.
-xattr -cr "$AGENT_APP"
 SIGNING_IDENTITY="${MACOS_CODESIGN_IDENTITY:-${APPLE_SIGNING_IDENTITY:-}}"
-if [[ -n "$SIGNING_IDENTITY" ]]; then
-  if [[ "$SIGNING_IDENTITY" == Developer\ ID\ Application:* ]]; then
-    codesign --force --deep --options runtime --sign "$SIGNING_IDENTITY" --timestamp "$AGENT_APP"
+sign_agent_app() {
+  if [[ -n "$SIGNING_IDENTITY" ]]; then
+    if [[ "$SIGNING_IDENTITY" == Developer\ ID\ Application:* ]]; then
+      codesign --force --deep --options runtime --sign "$SIGNING_IDENTITY" --timestamp "$STAGED_AGENT_APP"
+    else
+      codesign --force --deep --options runtime --sign "$SIGNING_IDENTITY" --timestamp=none "$STAGED_AGENT_APP"
+    fi
   else
-    codesign --force --deep --options runtime --sign "$SIGNING_IDENTITY" --timestamp=none "$AGENT_APP"
+    codesign --force --deep --sign - --timestamp=none "$STAGED_AGENT_APP"
   fi
+}
+
+xattr -cr "$STAGED_AGENT_APP"
+sign_agent_app
+codesign --verify --deep --strict "$STAGED_AGENT_APP"
+
+# Copy the already-signed bundle into the Tauri input directory without
+# resource forks or extended attributes from the synchronized workspace.
+ditto --norsrc --noextattr "$STAGED_AGENT_APP" "$AGENT_APP"
+xattr -cr "$AGENT_APP"
+if [[ -n "$SIGNING_IDENTITY" ]]; then
   echo "Signed agent with stable identity: $SIGNING_IDENTITY"
-else
-  codesign --force --deep --sign - --timestamp=none "$AGENT_APP"
 fi
 echo "Built agent app: $AGENT_APP"

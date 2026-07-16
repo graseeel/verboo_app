@@ -17,6 +17,7 @@
 //! One helper is reused under a mutex; crashed helpers are respawned on demand.
 
 use std::io::{BufRead, BufReader, Write};
+#[cfg(not(target_os = "macos"))]
 use std::process::{Child, Stdio};
 #[cfg(not(target_os = "macos"))]
 use std::process::{ChildStdin, ChildStdout};
@@ -39,6 +40,7 @@ use crate::models::computer_use_action::{ActionRequest, ComputerAction};
 use crate::models::types::ComputerUseSettings;
 use crate::services::audit_writer::AuditWriter;
 use crate::services::computer_use_engine::VerifiedScreenshot;
+#[cfg(not(target_os = "macos"))]
 use crate::services::computer_use_spawn::ComputerUseSpawn;
 use crate::services::computer_use_tcc::{self, TccStatus};
 use crate::services::session_manager::{ActionKind, SessionManager};
@@ -1251,14 +1253,15 @@ fn start_live_helper_exit_watcher(
 
 #[cfg(target_os = "macos")]
 fn start_live_helper_exit_watcher(
-    mut child: Child,
     pid: u32,
+    executable_path: std::path::PathBuf,
     generation: u64,
     fail_closed_exit: Arc<AtomicBool>,
 ) {
-    thread::spawn(move || {
-        if let Err(error) = child.wait() {
-            eprintln!("[computer-use] wait for helper process failed: {error}");
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_millis(100));
+        if crate::services::computer_use_spawn::agent_process_matches(pid, &executable_path) {
+            continue;
         }
         live_helper_pid()
             .compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst)
@@ -1278,6 +1281,7 @@ fn start_live_helper_exit_watcher(
         expected_live_helper_stop_generation()
             .compare_exchange(generation, 0, Ordering::SeqCst, Ordering::SeqCst)
             .ok();
+        break;
     });
 }
 
@@ -1324,8 +1328,8 @@ fn spawn_live_helper() -> Result<LiveHelper, ComputerUseError> {
         let fail_closed_exit = Arc::new(AtomicBool::new(false));
         live_helper_pid().store(pid, Ordering::SeqCst);
         start_live_helper_exit_watcher(
-            connection.child,
             pid,
+            connection.executable_path.clone(),
             generation,
             Arc::clone(&fail_closed_exit),
         );
@@ -1659,82 +1663,9 @@ pub(crate) fn invoke_helper_once(method: &str, params: &Value) -> Result<Value, 
     ))
 }
 
-fn invoke_controller_helper_once(method: &str, params: &Value) -> Result<Value, ComputerUseError> {
-    if !matches!(method, "permissions" | "request-permissions") {
-        return Err(ComputerUseError::new(
-            "scope_denied",
-            "controller helper is restricted to TCC probes",
-        ));
-    }
-    let mut spawn = ComputerUseSpawn::new();
-    spawn
-        .command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child = spawn.command.spawn().map_err(|error| {
-        ComputerUseError::new("provider_down", format!("spawn controller probe: {error}"))
-    })?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| ComputerUseError::new("provider_down", "controller probe has no stdin"))?;
-    let request = json!({
-        "id": 1,
-        "method": method,
-        "params": params,
-    });
-    stdin
-        .write_all(format!("{request}\n").as_bytes())
-        .and_then(|_| stdin.flush())
-        .map_err(|error| {
-            ComputerUseError::new("provider_down", format!("write controller probe: {error}"))
-        })?;
-    drop(stdin);
-    let output = child.wait_with_output().map_err(|error| {
-        ComputerUseError::new(
-            "provider_down",
-            format!("wait for controller probe: {error}"),
-        )
-    })?;
-    if !output.status.success() {
-        return Err(ComputerUseError::new(
-            "provider_down",
-            format!("controller probe exited with {}", output.status),
-        ));
-    }
-    let line = String::from_utf8(output.stdout)
-        .map_err(|error| ComputerUseError::new("provider_down", error.to_string()))?;
-    let response: Value = serde_json::from_str(line.lines().next().unwrap_or_default())
-        .map_err(|error| ComputerUseError::new("provider_down", error.to_string()))?;
-    if let Some(id_error) = helper_response_id_error(&response, 1) {
-        return Err(ComputerUseError::new("provider_down", id_error));
-    }
-    if let Some(error) = response.get("error").and_then(Value::as_object) {
-        if !error.is_empty() {
-            return Err(ComputerUseError::new(
-                error
-                    .get("code")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown"),
-                error
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-            ));
-        }
-    }
-    Ok(response.get("result").cloned().unwrap_or(Value::Null))
-}
-
 pub(crate) fn computer_use_permission_status(request: bool) -> Result<Value, ComputerUseError> {
     let controller = if request {
-        let value = invoke_controller_helper_once("request-permissions", &json!({}))?;
-        let mut status = tcc_status_from_helper(&value).ok_or_else(|| {
-            ComputerUseError::new("provider_down", "controller returned malformed TCC status")
-        })?;
-        status.screen_recording = computer_use_tcc::request_controller_screen_recording();
-        status
+        computer_use_tcc::request_controller_permissions()
     } else {
         computer_use_tcc::probe_tcc_status()
     };

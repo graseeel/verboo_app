@@ -7,9 +7,10 @@
 //! layout. Development and test builds additionally allow an explicit env
 //! override, the local Cargo build, and a PATH fallback.
 
+#[cfg(test)]
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 
 use crate::services::computer_use_mcp::ActionHelperAuthority;
 
@@ -147,19 +148,6 @@ impl ComputerUseAgentRuntime {
         }
     }
 
-    fn executable_path(&self) -> &Path {
-        match self {
-            Self::Bundled {
-                executable_path, ..
-            }
-            | Self::Env {
-                executable_path, ..
-            }
-            | Self::Dev {
-                executable_path, ..
-            } => executable_path,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,7 +158,6 @@ enum AgentResolution {
 
 #[cfg(target_os = "macos")]
 pub struct ComputerUseAgentConnection {
-    pub child: Child,
     pub stream: UnixStream,
     pub pid: u32,
     pub executable_path: PathBuf,
@@ -284,6 +271,7 @@ fn find_bundled_agent_from(executable: &Path) -> Option<(PathBuf, PathBuf)> {
     let executable = executable.canonicalize().ok()?;
     let contents = executable.parent()?.parent()?.canonicalize().ok()?;
     for candidate in [
+        contents.join("Helpers").join(AGENT_APP_NAME),
         contents.join("Resources/binaries").join(AGENT_APP_NAME),
         contents.join("Resources/resources").join(AGENT_APP_NAME),
         contents.join("Resources").join(AGENT_APP_NAME),
@@ -347,7 +335,7 @@ fn resolve_agent_with_policy(
 
     let expected = current_exe
         .and_then(|executable| executable.parent()?.parent())
-        .map(|contents| contents.join("Resources/binaries").join(AGENT_APP_NAME))
+        .map(|contents| contents.join("Helpers").join(AGENT_APP_NAME))
         .unwrap_or_else(|| {
             PathBuf::from(std::path::MAIN_SEPARATOR.to_string())
                 .join("verboo-computer-use-agent-unavailable.app")
@@ -355,6 +343,7 @@ fn resolve_agent_with_policy(
     AgentResolution::Unavailable(expected)
 }
 
+#[cfg(test)]
 fn agent_launch_arguments(socket_path: &Path) -> Vec<OsString> {
     vec![
         OsString::from("--verboo-agent-socket"),
@@ -362,20 +351,57 @@ fn agent_launch_arguments(socket_path: &Path) -> Vec<OsString> {
     ]
 }
 
-fn configure_agent_launch_command(
+fn installed_agent_app_path_from(data_dir: &Path) -> PathBuf {
+    data_dir
+        .join("Verboo")
+        .join("Computer Use")
+        .join(AGENT_APP_NAME)
+}
+
+#[cfg(target_os = "macos")]
+fn installed_agent_app_path() -> Result<PathBuf, String> {
+    let data_dir = dirs::data_local_dir()
+        .ok_or_else(|| "macOS Application Support directory is unavailable".to_string())?;
+    Ok(installed_agent_app_path_from(&data_dir))
+}
+
+fn configure_agent_launcher_command(
     command: &mut Command,
+    source_app_path: &Path,
+    installed_app_path: &Path,
     socket_path: &Path,
     authority: Option<&ActionHelperAuthority>,
 ) {
     command
-        .args(agent_launch_arguments(socket_path))
+        .arg("--launch-agent-app")
+        .arg(source_app_path)
+        .arg("--installed-agent-app")
+        .arg(installed_app_path)
+        .arg("--launch-agent-socket")
+        .arg(socket_path)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped());
     if let Some(authority) = authority {
         command.env("VERBOO_CU_TOKEN", &authority.token);
         command.env("VERBOO_CU_CAPABILITY_FILE", &authority.capability_path);
     }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AgentLauncherResult {
+    pid: u32,
+    app_path: PathBuf,
+    executable_path: PathBuf,
+}
+
+fn parse_agent_launcher_result(stdout: &[u8]) -> Result<AgentLauncherResult, String> {
+    let line = std::str::from_utf8(stdout)
+        .map_err(|error| format!("read Launch Services result: {error}"))?
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| "Launch Services returned no process identity".to_string())?;
+    serde_json::from_str(line).map_err(|error| format!("parse Launch Services result: {error}"))
 }
 
 pub fn resolved_agent_path() -> Option<PathBuf> {
@@ -461,12 +487,50 @@ pub fn launch_action_agent(
         .set_nonblocking(true)
         .map_err(|error| format!("configure agent socket: {error}"))?;
 
-    let mut command = Command::new(runtime.executable_path());
-    configure_agent_launch_command(&mut command, &socket_path, authority);
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("launch Verboo Computer Use agent: {error}"))?;
-    let child_pid = child.id();
+    let installed_app_path = installed_agent_app_path()?;
+    let mut launcher = ComputerUseSpawn::new().command;
+    configure_agent_launcher_command(
+        &mut launcher,
+        runtime.app_path(),
+        &installed_app_path,
+        &socket_path,
+        authority,
+    );
+    let output = launcher
+        .output()
+        .map_err(|error| format!("run Verboo Computer Use launcher: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = std::fs::remove_file(&socket_path);
+        return Err(format!(
+            "launch Verboo Computer Use agent: {}{}",
+            output.status,
+            if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", stderr.trim())
+            }
+        ));
+    }
+    let launched = parse_agent_launcher_result(&output.stdout)?;
+    let canonical_installed_app = installed_app_path
+        .canonicalize()
+        .map_err(|error| format!("canonicalize installed agent app: {error}"))?;
+    let canonical_installed_executable = canonical_installed_app
+        .join("Contents/MacOS")
+        .join(AGENT_EXECUTABLE_NAME)
+        .canonicalize()
+        .map_err(|error| format!("canonicalize installed agent executable: {error}"))?;
+    if launched.app_path.canonicalize().ok().as_ref() != Some(&canonical_installed_app)
+        || launched.executable_path.canonicalize().ok().as_ref()
+            != Some(&canonical_installed_executable)
+    {
+        unsafe {
+            libc::kill(launched.pid as libc::pid_t, libc::SIGKILL);
+        }
+        let _ = std::fs::remove_file(&socket_path);
+        return Err("Launch Services returned an unexpected agent identity".into());
+    }
 
     let deadline = Instant::now() + Duration::from_secs(8);
     let accepted = loop {
@@ -479,7 +543,8 @@ pub fn launch_action_agent(
                     Ok(pid) => pid,
                     Err(error) => break Err(error),
                 };
-                if pid == child_pid && agent_process_matches(pid, runtime.executable_path()) {
+                if pid == launched.pid && agent_process_matches(pid, &canonical_installed_executable)
+                {
                     break Ok((stream, pid));
                 }
                 unsafe {
@@ -487,16 +552,8 @@ pub fn launch_action_agent(
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        break Err(format!(
-                            "Verboo Computer Use agent exited before connecting: {status}"
-                        ));
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        break Err(format!("inspect Verboo Computer Use agent: {error}"));
-                    }
+                if !agent_process_matches(launched.pid, &canonical_installed_executable) {
+                    break Err("Verboo Computer Use agent exited before connecting".to_string());
                 }
                 if Instant::now() >= deadline {
                     break Err("timed out waiting for Verboo Computer Use agent".to_string());
@@ -510,16 +567,16 @@ pub fn launch_action_agent(
     let (stream, pid) = match accepted {
         Ok(connection) => connection,
         Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            unsafe {
+                libc::kill(launched.pid as libc::pid_t, libc::SIGKILL);
+            }
             return Err(error);
         }
     };
     Ok(ComputerUseAgentConnection {
-        child,
         stream,
         pid,
-        executable_path: runtime.executable_path().to_path_buf(),
+        executable_path: canonical_installed_executable,
     })
 }
 
@@ -838,7 +895,7 @@ mod tests {
         let executable = fixture_executable(bundle.path());
         let agent = bundle
             .path()
-            .join("Verboo Code.app/Contents/Resources/binaries/Verboo Computer Use.app");
+            .join("Verboo Code.app/Contents/Helpers/Verboo Computer Use.app");
         let agent_executable = fixture_agent(&agent);
 
         let resolution =
@@ -885,7 +942,7 @@ mod tests {
         let executable = fixture_executable(bundle.path());
         let agent = bundle
             .path()
-            .join("Verboo Code.app/Contents/Resources/binaries/Verboo Computer Use.app");
+            .join("Verboo Code.app/Contents/Helpers/Verboo Computer Use.app");
         let escaped = external.path().join("computer-use-helper");
         fixture_file(&escaped);
         fs::create_dir_all(agent.join("Contents/MacOS")).unwrap();
@@ -913,18 +970,30 @@ mod tests {
     }
 
     #[test]
-    fn direct_agent_launch_passes_capability_only_through_the_child_environment() {
+    fn stable_agent_install_path_uses_the_verboo_application_support_directory() {
+        assert_eq!(
+            installed_agent_app_path_from(Path::new("/Users/test/Library/Application Support")),
+            PathBuf::from(
+                "/Users/test/Library/Application Support/Verboo/Computer Use/Verboo Computer Use.app"
+            ),
+        );
+    }
+
+    #[test]
+    fn launch_services_agent_passes_capability_only_through_the_launch_environment() {
         let authority = crate::services::computer_use_mcp::ActionHelperAuthority {
             session_id: "session-cu".into(),
             token: "secret-token".into(),
             capability_path: PathBuf::from("/tmp/verboo-capability.json"),
         };
-        let mut command = Command::new(
-            "/Applications/Verboo Computer Use.app/Contents/MacOS/computer-use-helper",
-        );
+        let mut command = Command::new("/Applications/Verboo Code.app/Contents/MacOS/computer-use-helper");
 
-        configure_agent_launch_command(
+        configure_agent_launcher_command(
             &mut command,
+            Path::new("/Applications/Verboo Code.app/Contents/Helpers/Verboo Computer Use.app"),
+            Path::new(
+                "/Users/test/Library/Application Support/Verboo/Computer Use/Verboo Computer Use.app",
+            ),
             Path::new("/tmp/verboo-agent.sock"),
             Some(&authority),
         );
@@ -945,6 +1014,17 @@ mod tests {
 
         assert!(!arguments.iter().any(|value| value.contains("secret-token")));
         assert_eq!(
+            arguments,
+            vec![
+                "--launch-agent-app",
+                "/Applications/Verboo Code.app/Contents/Helpers/Verboo Computer Use.app",
+                "--installed-agent-app",
+                "/Users/test/Library/Application Support/Verboo/Computer Use/Verboo Computer Use.app",
+                "--launch-agent-socket",
+                "/tmp/verboo-agent.sock",
+            ],
+        );
+        assert_eq!(
             environment.get("VERBOO_CU_TOKEN"),
             Some(&Some("secret-token".into())),
         );
@@ -954,10 +1034,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn launch_services_result_reports_the_exact_installed_process_identity() {
+        let result = parse_agent_launcher_result(
+            br#"{"pid":4321,"app_path":"/Users/test/Library/Application Support/Verboo/Computer Use/Verboo Computer Use.app","executable_path":"/Users/test/Library/Application Support/Verboo/Computer Use/Verboo Computer Use.app/Contents/MacOS/computer-use-helper"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(result.pid, 4321);
+        assert_eq!(
+            result.app_path,
+            PathBuf::from(
+                "/Users/test/Library/Application Support/Verboo/Computer Use/Verboo Computer Use.app"
+            ),
+        );
+        assert_eq!(
+            result.executable_path,
+            PathBuf::from(
+                "/Users/test/Library/Application Support/Verboo/Computer Use/Verboo Computer Use.app/Contents/MacOS/computer-use-helper"
+            ),
+        );
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "launches the real local Verboo Computer Use agent"]
-    fn signed_agent_launches_directly_and_answers_over_private_ipc() {
+    fn signed_agent_installs_and_launches_through_launch_services() {
         use std::io::{BufRead, BufReader, Write};
         use std::net::Shutdown;
 
@@ -983,7 +1085,8 @@ mod tests {
         assert!(payload["result"]["accessibility"].is_string());
         assert!(payload["result"]["screenRecording"].is_string());
         let _ = writer.shutdown(Shutdown::Both);
-        let mut child = connection.child;
-        let _ = child.wait();
+        unsafe {
+            libc::kill(connection.pid as libc::pid_t, libc::SIGTERM);
+        }
     }
 }

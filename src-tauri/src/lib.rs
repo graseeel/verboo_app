@@ -1500,9 +1500,13 @@ fn get_computer_use_permissions() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-fn request_computer_use_permissions() -> Result<serde_json::Value, String> {
-    crate::services::computer_use_service::computer_use_permission_status(true)
-        .map_err(|error| format!("{}: {}", error.code, error.message))
+async fn request_computer_use_permissions() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        crate::services::computer_use_service::computer_use_permission_status(true)
+            .map_err(|error| format!("{}: {}", error.code, error.message))
+    })
+    .await
+    .map_err(|error| format!("Computer Use permission request failed: {error}"))?
 }
 
 #[tauri::command]

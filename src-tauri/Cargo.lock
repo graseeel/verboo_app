@@ -3237,6 +3237,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-screen-capture-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74b7c5390f477482f001bc354d6571a70db7e4f8d5288e860c45521fbce11394"
+dependencies = [
+ "block2",
+ "objc2",
+ "objc2-foundation",
+]
+
+[[package]]
 name = "objc2-ui-kit"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6029,6 +6040,7 @@ name = "verboo-desktop"
 version = "0.5.3-beta.1"
 dependencies = [
  "base64 0.22.1",
+ "block2",
  "chrono",
  "ctor 1.0.8",
  "dirs",
@@ -6036,6 +6048,9 @@ dependencies = [
  "keepawake",
  "keyring",
  "libc",
+ "objc2",
+ "objc2-foundation",
+ "objc2-screen-capture-kit",
  "pdf-extract",
  "portable-pty",
  "reqwest 0.12.28",

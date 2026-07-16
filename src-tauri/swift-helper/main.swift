@@ -859,6 +859,7 @@ private final class OneFrameCapture: NSObject, SCStreamOutput, SCStreamDelegate 
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        NSLog("Verboo Computer Use: ScreenCaptureKit stream stopped: %@", error.localizedDescription)
         finish(nil)
     }
 
@@ -868,18 +869,61 @@ private final class OneFrameCapture: NSObject, SCStreamOutput, SCStreamDelegate 
         do {
             try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
         } catch {
+            NSLog("Verboo Computer Use: could not attach ScreenCaptureKit output: %@", error.localizedDescription)
             return nil
         }
         stream.startCapture { [weak self] error in
-            if error != nil { self?.finish(nil) }
+            if let error {
+                NSLog("Verboo Computer Use: could not start ScreenCaptureKit stream: %@", error.localizedDescription)
+                self?.finish(nil)
+            }
         }
         guard semaphore.wait(timeout: .now() + 4) == .success else {
+            NSLog("Verboo Computer Use: timed out waiting for a ScreenCaptureKit frame")
             stream.stopCapture(completionHandler: nil)
             return nil
         }
         stream.stopCapture(completionHandler: nil)
         return capturedImage
     }
+}
+
+@available(macOS 12.3, *)
+private final class ShareableContentCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var content: SCShareableContent?
+    private var completed = false
+
+    func complete(content: SCShareableContent?) {
+        lock.lock()
+        self.content = content
+        completed = true
+        lock.unlock()
+    }
+
+    func snapshot() -> (completed: Bool, content: SCShareableContent?) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (completed, content)
+    }
+}
+
+@available(macOS 12.3, *)
+private func shareableScreenContent(timeout: TimeInterval = 4) -> SCShareableContent? {
+    let completion = ShareableContentCompletion()
+    SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: true) {
+        content,
+        error in
+        if let error {
+            NSLog("Verboo Computer Use: could not retrieve shareable content: %@", error.localizedDescription)
+        }
+        completion.complete(content: content)
+    }
+    let deadline = Date().addingTimeInterval(timeout)
+    while !completion.snapshot().completed && Date() < deadline {
+        _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+    }
+    return completion.snapshot().content
 }
 
 @available(macOS 12.3, *)
@@ -897,14 +941,7 @@ private func screenCaptureKitWindow(
     // the Cocoa application identity required by current TCC implementations.
     let helperApplication = NSApplication.shared
     _ = helperApplication.setActivationPolicy(.accessory)
-    let semaphore = DispatchSemaphore(value: 0)
-    var shareableContent: SCShareableContent?
-    SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: true) { content, _ in
-        shareableContent = content
-        semaphore.signal()
-    }
-    guard semaphore.wait(timeout: .now() + 4) == .success,
-          let content = shareableContent,
+    guard let content = shareableScreenContent(),
           let selected = content.windows
             .filter({
                 $0.owningApplication?.processID == app.processIdentifier
@@ -2349,18 +2386,26 @@ private func requestScreenCaptureAccess() -> Bool {
     let agentApplication = NSApplication.shared
     _ = agentApplication.setActivationPolicy(.accessory)
 
-    if CGRequestScreenCaptureAccess() { return true }
-
     if #available(macOS 12.3, *) {
-        let semaphore = DispatchSemaphore(value: 0)
-        SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: true) { _, _ in
-            semaphore.signal()
+        guard let content = shareableScreenContent(),
+              let display = content.displays.first else {
+            let requested = CGRequestScreenCaptureAccess()
+            NSLog("Verboo Computer Use: legacy Screen Recording request after missing shareable content returned %@", requested.description)
+            return CGPreflightScreenCaptureAccess()
         }
-        _ = semaphore.wait(timeout: .now() + 4)
+
+        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let configuration = SCStreamConfiguration()
+        configuration.showsCursor = false
+
+        let permissionCapture = OneFrameCapture()
+        _ = permissionCapture.capture(filter: filter, configuration: configuration)
         if CGPreflightScreenCaptureAccess() { return true }
     }
 
-    return false
+    let requested = CGRequestScreenCaptureAccess()
+    NSLog("Verboo Computer Use: legacy Screen Recording fallback returned %@", requested.description)
+    return CGPreflightScreenCaptureAccess()
 }
 
 // MARK: - Stdio loop
@@ -3497,6 +3542,240 @@ private func runFocusStateWriteContract() {
     }
 }
 
+private struct AgentLaunchRequest {
+    let sourceAppURL: URL
+    let installedAppURL: URL
+    let socketPath: String
+
+    var capabilityEnvironment: [String: String] {
+        var environment: [String: String] = [:]
+        if let token = ProcessInfo.processInfo.environment["VERBOO_CU_TOKEN"] {
+            environment["VERBOO_CU_TOKEN"] = token
+        }
+        if let capabilityFile = ProcessInfo.processInfo.environment["VERBOO_CU_CAPABILITY_FILE"] {
+            environment["VERBOO_CU_CAPABILITY_FILE"] = capabilityFile
+        }
+        return environment
+    }
+}
+
+private func commandLineValue(after flag: String) -> String? {
+    guard let index = CommandLine.arguments.firstIndex(of: flag),
+          CommandLine.arguments.indices.contains(index + 1) else {
+        return nil
+    }
+    return CommandLine.arguments[index + 1]
+}
+
+private func agentLaunchRequest() -> AgentLaunchRequest? {
+    guard let sourceApp = commandLineValue(after: "--launch-agent-app"),
+          let installedApp = commandLineValue(after: "--installed-agent-app"),
+          let socketPath = commandLineValue(after: "--launch-agent-socket"),
+          !sourceApp.isEmpty,
+          !installedApp.isEmpty,
+          !socketPath.isEmpty else {
+        return nil
+    }
+    return AgentLaunchRequest(
+        sourceAppURL: URL(fileURLWithPath: sourceApp).standardizedFileURL,
+        installedAppURL: URL(fileURLWithPath: installedApp).standardizedFileURL,
+        socketPath: socketPath
+    )
+}
+
+private func writeJSONAndExit(_ payload: [String: Any], code: Int32 = 0) -> Never {
+    guard let data = try? JSONSerialization.data(
+        withJSONObject: payload,
+        options: [.sortedKeys, .withoutEscapingSlashes]
+    ) else {
+        exit(3)
+    }
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+    fflush(stdout)
+    exit(code)
+}
+
+private func runAgentLaunchPlanContract() -> Never {
+    guard let request = agentLaunchRequest() else {
+        writeJSONAndExit(["error": "invalid launch arguments"], code: 2)
+    }
+    writeJSONAndExit([
+        "source_app": request.sourceAppURL.path,
+        "installed_app": request.installedAppURL.path,
+        "socket": request.socketPath,
+        "activates": false,
+        "adds_to_recent_items": false,
+        "creates_new_application_instance": true,
+        "allows_running_application_substitution": false,
+        "capability_environment": request.capabilityEnvironment.count == 2,
+    ])
+}
+
+private func agentBundlesMatch(source: URL, installed: URL) -> Bool {
+    let fileManager = FileManager.default
+    guard fileManager.fileExists(atPath: installed.path) else { return false }
+    for relativePath in [
+        "Contents/Info.plist",
+        "Contents/MacOS/computer-use-helper",
+    ] {
+        let sourcePath = source.appendingPathComponent(relativePath).path
+        let installedPath = installed.appendingPathComponent(relativePath).path
+        if !fileManager.contentsEqual(atPath: sourcePath, andPath: installedPath) {
+            return false
+        }
+    }
+    return true
+}
+
+private func terminateInstalledAgentInstances(at installedAppURL: URL) {
+    let installedPath = installedAppURL.standardizedFileURL.path
+    let applications = NSRunningApplication.runningApplications(
+        withBundleIdentifier: "ai.verboo.code.computer-use"
+    )
+    for application in applications {
+        guard application.bundleURL?.standardizedFileURL.path == installedPath else { continue }
+        _ = application.terminate()
+        let deadline = Date().addingTimeInterval(2)
+        while !application.isTerminated && Date() < deadline {
+            _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        }
+        if !application.isTerminated {
+            _ = application.forceTerminate()
+        }
+    }
+}
+
+private func installAgentApp(_ request: AgentLaunchRequest) throws {
+    let fileManager = FileManager.default
+    guard fileManager.fileExists(atPath: request.sourceAppURL.path) else {
+        throw NSError(
+            domain: "ai.verboo.code.computer-use.launcher",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Packaged Verboo Computer Use.app is missing"]
+        )
+    }
+    if agentBundlesMatch(source: request.sourceAppURL, installed: request.installedAppURL) {
+        return
+    }
+
+    terminateInstalledAgentInstances(at: request.installedAppURL)
+    let parentURL = request.installedAppURL.deletingLastPathComponent()
+    try fileManager.createDirectory(
+        at: parentURL,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
+    try fileManager.setAttributes(
+        [.posixPermissions: 0o700],
+        ofItemAtPath: parentURL.path
+    )
+
+    let stagedURL = parentURL.appendingPathComponent(
+        ".Verboo Computer Use-\(UUID().uuidString).app",
+        isDirectory: true
+    )
+    if fileManager.fileExists(atPath: stagedURL.path) {
+        try fileManager.removeItem(at: stagedURL)
+    }
+    do {
+        try fileManager.copyItem(at: request.sourceAppURL, to: stagedURL)
+        if fileManager.fileExists(atPath: request.installedAppURL.path) {
+            _ = try fileManager.replaceItemAt(
+                request.installedAppURL,
+                withItemAt: stagedURL,
+                backupItemName: nil,
+                options: []
+            )
+        } else {
+            try fileManager.moveItem(at: stagedURL, to: request.installedAppURL)
+        }
+    } catch {
+        try? fileManager.removeItem(at: stagedURL)
+        throw error
+    }
+}
+
+private final class AgentLaunchCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: (NSRunningApplication?, Error?)?
+
+    func complete(application: NSRunningApplication?, error: Error?) {
+        lock.lock()
+        value = (application, error)
+        lock.unlock()
+    }
+
+    func snapshot() -> (NSRunningApplication?, Error?)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+
+private func runAgentLauncher() -> Never {
+    guard let request = agentLaunchRequest() else {
+        FileHandle.standardError.write(Data("Missing Verboo agent launch arguments\n".utf8))
+        exit(2)
+    }
+
+    do {
+        try installAgentApp(request)
+    } catch {
+        FileHandle.standardError.write(Data("Install Verboo Computer Use agent: \(error)\n".utf8))
+        exit(3)
+    }
+
+    let configuration = NSWorkspace.OpenConfiguration()
+    configuration.activates = false
+    configuration.addsToRecentItems = false
+    configuration.createsNewApplicationInstance = true
+    configuration.allowsRunningApplicationSubstitution = false
+    configuration.promptsUserIfNeeded = false
+    configuration.arguments = [
+        "--verboo-agent-socket",
+        request.socketPath,
+    ]
+    configuration.environment = request.capabilityEnvironment
+
+    let completion = AgentLaunchCompletion()
+    NSWorkspace.shared.openApplication(
+        at: request.installedAppURL,
+        configuration: configuration
+    ) { application, error in
+        completion.complete(application: application, error: error)
+    }
+
+    let deadline = Date().addingTimeInterval(8)
+    while completion.snapshot() == nil && Date() < deadline {
+        _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+    }
+    guard let (application, error) = completion.snapshot() else {
+        FileHandle.standardError.write(Data("Launch Services timed out\n".utf8))
+        exit(3)
+    }
+    if let error {
+        FileHandle.standardError.write(Data("Launch Services failed: \(error)\n".utf8))
+        exit(3)
+    }
+    guard let application,
+          application.processIdentifier > 1,
+          application.bundleIdentifier == "ai.verboo.code.computer-use" else {
+        FileHandle.standardError.write(Data("Launch Services returned an invalid application\n".utf8))
+        exit(3)
+    }
+
+    let installedAppURL = request.installedAppURL.resolvingSymlinksInPath()
+    let executableURL = installedAppURL
+        .appendingPathComponent("Contents/MacOS/computer-use-helper")
+        .resolvingSymlinksInPath()
+    writeJSONAndExit([
+        "pid": Int(application.processIdentifier),
+        "app_path": installedAppURL.path,
+        "executable_path": executableURL.path,
+    ])
+}
+
 func readLoop(contractTest: Bool = false, dispatchRequestsOnMain: Bool = false) {
     let stdin = FileHandle.standardInput
     var buffer = Data()
@@ -3584,6 +3863,13 @@ private func installAgentSocketTransportIfNeeded() -> Bool {
     }
     Darwin.close(socketDescriptor)
     return true
+}
+
+if CommandLine.arguments.contains("--contract-agent-launch-plan") {
+    runAgentLaunchPlanContract()
+}
+if CommandLine.arguments.contains("--launch-agent-app") {
+    runAgentLauncher()
 }
 
 let usesAgentSocketTransport = installAgentSocketTransportIfNeeded()

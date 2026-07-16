@@ -54,13 +54,15 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/cli-package/",
-      "binaries/Verboo Computer Use.app/"
+      "resources/cli-package/"
     ],
     "externalBin": [
       "binaries/computer-use-helper"
     ],
     "macOS": {
+      "files": {
+        "Helpers/Verboo Computer Use.app": "binaries/Verboo Computer Use.app"
+      },
       "minimumSystemVersion": "12.0",
       "infoPlist": "Info.plist"
     },
