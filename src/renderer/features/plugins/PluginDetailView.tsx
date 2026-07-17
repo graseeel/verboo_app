@@ -35,6 +35,7 @@ export function PluginDetailView({ target, manifests, loadIcons = true, onBack, 
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [detail, setDetail] = useState<PluginDetail | undefined>(undefined)
   const [skills, setSkills] = useState<PluginSkill[]>([])
+  const [resting, setResting] = useState(true)
   const isInstalled = target.kind === 'installed'
 
   // ── Mouse parallax for hero mesh ──────────────────────────────────
@@ -67,13 +68,14 @@ export function PluginDetailView({ target, manifests, loadIcons = true, onBack, 
     const x = (event.clientX - rect.left) / rect.width
     const y = (event.clientY - rect.top) / rect.height
     if (rafId.current !== undefined) return
+    if (resting) setResting(false)
     rafId.current = requestAnimationFrame(() => {
       rafId.current = undefined
       lastUpdateMs.current = now
       el.style.setProperty('--mouse-x', x.toFixed(3))
       el.style.setProperty('--mouse-y', y.toFixed(3))
     })
-  }, [])
+  }, [resting])
 
   const handlePointerLeave = useCallback(() => {
     if (!canHover.current || reduceMotion.current) return
@@ -83,7 +85,11 @@ export function PluginDetailView({ target, manifests, loadIcons = true, onBack, 
       cancelAnimationFrame(rafId.current)
       rafId.current = undefined
     }
-    // Reset to center (0.5, 0.5) — CSS transitions back to base positions.
+    setResting(true)
+    // Reset to center (0.5, 0.5). Because --mouse-x/--mouse-y are registered
+    // as @property <number>, the browser interpolates between current values
+    // and 0.5 over the transition declared on the mesh — resting variant uses
+    // 700ms var(--dropdown-ease), active tracking 160ms linear.
     el.style.setProperty('--mouse-x', '0.5')
     el.style.setProperty('--mouse-y', '0.5')
   }, [])
@@ -195,7 +201,7 @@ export function PluginDetailView({ target, manifests, loadIcons = true, onBack, 
           reduced-motion / touch). */}
       <div
         ref={heroRef}
-        className="plugin-detail-hero"
+        className={`plugin-detail-hero${resting ? ' is-resting' : ''}`}
         style={{
           '--plugin-hero-color': monogramColor(pluginId),
           '--plugin-hero-hue': pluginHue(pluginId),

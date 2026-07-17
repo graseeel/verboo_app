@@ -1149,6 +1149,12 @@
 }
 
 /* ── Hero band (Verboo violet mesh — luminous, not dark) ────────── */
+/* Registered @property so the browser can interpolate --mouse-x/--mouse-y
+   during transitions (without @property, custom properties are discrete
+   and never lerp). Resting variant uses 700ms ease, active 160ms linear. */
+@property --mouse-x { syntax: '<number>'; inherits: true; initial-value: 0.5; }
+@property --mouse-y { syntax: '<number>'; inherits: true; initial-value: 0.5; }
+
 .plugin-detail-hero {
   position: relative;
   width: 100%;
@@ -1187,6 +1193,7 @@
     radial-gradient(ellipse 95% 100% at 50% 50%, transparent 65%, color-mix(in srgb, black 10%, transparent));
   animation: plugin-hero-drift 12s ease-in-out infinite alternate;
   will-change: transform;
+  transition: --mouse-x 160ms linear, --mouse-y 160ms linear;
   /* Parallax moves positions inside background-image via calc() on
      --mouse-x/--mouse-y, NOT via background-position — so a transition on
      background-position was inert. Removed (003-2). */
@@ -1200,6 +1207,13 @@
     radial-gradient(ellipse 45% 55% at calc(40% + (var(--mouse-x, 0.5) - 0.5) * 18%) calc(85% + (var(--mouse-y, 0.5) - 0.5) * 18%), color-mix(in srgb, var(--accent) 40%, transparent), transparent 50%),
     radial-gradient(ellipse 42% 52% at calc(85% + (var(--mouse-x, 0.5) - 0.5) * 12%) calc(18% + (var(--mouse-y, 0.5) - 0.5) * 12%), hsla(var(--plugin-hero-hue, 270), 72%, 60%, 0.6), transparent 48%),
     radial-gradient(ellipse 95% 100% at 50% 50%, transparent 60%, color-mix(in srgb, black 22%, transparent));
+}
+
+/* Resting → tracking transition: @property interpolation enables smooth
+   700ms bounce-back on pointer leave. Active tracking keeps 160ms linear.
+   prefers-reduced-motion forces transition: none (see below). */
+.plugin-detail-hero.is-resting .plugin-detail-hero-mesh {
+  transition: --mouse-x 700ms var(--dropdown-ease), --mouse-y 700ms var(--dropdown-ease);
 }
 
 .plugin-detail-hero-content {
