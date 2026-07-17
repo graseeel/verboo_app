@@ -134,9 +134,10 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
     item.activityDetail?.startsWith('vision-relay|') ?? false
   )
   // The collapsed summary is the model's own final message (natural language),
-  // not an app-generated action count. When expanded, the full flow already
-  // includes this text as its last block, so the standalone recap is hidden.
-  const finalText = hasText ? textItems[textItems.length - 1].text : ''
+  // not an app-generated action count. The recap is always visible below the
+  // panel; StepFlow uses hideFinalTextId to suppress the duplicate block.
+  const finalTextItem = hasText ? textItems[textItems.length - 1] : undefined
+  const finalText = finalTextItem?.text ?? ''
   const modelItem = entry.items.find(item => item.role === 'assistant' && item.modelDisplayName)
   const label = modelItem?.modelDisplayName ? `Verboo - ${modelItem.modelDisplayName}` : 'Verboo'
   const summary = entry.summary
@@ -197,11 +198,11 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
         ? <StepFlow items={entry.items} streaming={streaming} imageReading={readingImage} />
         : entry.items.length > 0 && (
             <div className={`turn-flow-panel ${expanded ? 'is-open' : ''}`} aria-hidden={!expanded}>
-              <div><StepFlow items={entry.items} streaming={false} imageReading={readingImage} /></div>
+              <div><StepFlow items={entry.items} streaming={false} imageReading={readingImage} hideFinalTextId={finalTextItem?.id} /></div>
             </div>
           )}
 
-      {!streaming && !expanded && finalText && (
+      {!streaming && finalText && (
         <div className="step-text turn-recap"><MarkdownMessage text={finalText} /></div>
       )}
 
