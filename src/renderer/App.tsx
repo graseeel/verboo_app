@@ -479,9 +479,14 @@ export function App() {
     () => chatStore.conversations.find(conversation => conversation.id === activeConversationId),
     [chatStore.conversations, activeConversationId],
   )
+  // activeProject resolves the project that owns the current conversation.
+  // Only fall back to selectedProjectId when there is NO active conversation —
+  // otherwise, a chat without a project would inherit the previously-selected
+  // project, causing the sidebar to highlight both the chat and an unrelated
+  // project simultaneously, and the transcript pill to show the wrong name.
   const activeProject = activeConversation?.projectId
     ? chatStore.projects.find(project => project.id === activeConversation.projectId)
-    : selectedProjectId
+    : !activeConversation && selectedProjectId
       ? chatStore.projects.find(project => project.id === selectedProjectId)
       : undefined
   const currentWorkspaceDirectory = firstUsableWorkspaceDirectory(activeProject?.path, config.workingDirectory)

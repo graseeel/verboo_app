@@ -1,5 +1,5 @@
 import { Check, CheckCircle2, ChevronDown, ChevronRight, Clipboard, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { TranscriptItem, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
 import { MarkdownMessage } from '../features/transcript/MarkdownMessage'
 import { StepFlow } from '../features/transcript/StepFlow'
@@ -97,6 +97,25 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
   const streaming = entry.items.some(item => item.streaming)
   const textItems = entry.items.filter(item => item.role === 'assistant' && item.text.trim().length > 0)
   const hasText = textItems.length > 0
+
+  // Preserve scroll position when toggling expand — the grid-template-rows
+  // 0fr→1fr transition changes the container height, which can cause the
+  // browser to shift the user's viewport. Capture scrollTop before the
+  // state change and restore it in a layout effect so the user stays put.
+  const toggleExpand = useCallback(() => {
+    const workspace = document.querySelector<HTMLElement>('.workspace')
+    if (workspace) workspace.dataset.scrollBefore = String(workspace.scrollTop)
+    setExpanded(prev => !prev)
+  }, [])
+
+  useLayoutEffect(() => {
+    const workspace = document.querySelector<HTMLElement>('.workspace')
+    const saved = workspace?.dataset.scrollBefore
+    if (workspace && saved !== undefined) {
+      workspace.scrollTop = Number(saved)
+      delete workspace.dataset.scrollBefore
+    }
+  }, [expanded])
   // When a vision-relay activity is in the turn, the VisionRelayRow in
   // StepFlow replaces the "Lendo imagem…" live chip — no double status.
   const hasVisionRelay = entry.items.some(item =>
@@ -109,6 +128,12 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
   const modelItem = entry.items.find(item => item.role === 'assistant' && item.modelDisplayName)
   const label = modelItem?.modelDisplayName ? `Verboo - ${modelItem.modelDisplayName}` : 'Verboo'
   const summary = entry.summary
+  // The backend always sends summary.text in English ("Worked for 8s").
+  // When the user's locale is not en, localise via the i18n key instead of
+  // displaying the raw English string. The regex extracts the elapsed portion
+  // (e.g. "8s", "1m 23s") and re-renders via t('transcript.workedFor').
+  const WORKED_FOR_RE = /^Worked for (.+)$/
+  const workedForMatch = summary?.text?.match(WORKED_FOR_RE)
   // A turn has "steps" when it contains at least one non-thinking activity
   // (read/search/edit/command/etc). Turns with only a final assistant message
   // have nothing to expand — the chevron would open an empty panel.
@@ -126,13 +151,13 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
 
       {!streaming && entry.items.length > 0 && (
         hasActions ? (
-          <button type="button" className="turn-collapsed" onClick={() => setExpanded(value => !value)}>
+          <button type="button" className="turn-collapsed" onClick={toggleExpand}>
             <ChevronRight size={14} className={expanded ? 'is-open' : ''} />
-            <span>{summary?.text ?? t('transcript.worked')}</span>
+            <span>{workedForMatch ? t('transcript.workedFor', { elapsed: workedForMatch[1] }) : summary?.text ?? t('transcript.worked')}</span>
           </button>
         ) : (
           <span className="turn-collapsed is-static">
-            <span>{summary?.text ?? t('transcript.worked')}</span>
+            <span>{workedForMatch ? t('transcript.workedFor', { elapsed: workedForMatch[1] }) : summary?.text ?? t('transcript.worked')}</span>
           </span>
         )
       )}

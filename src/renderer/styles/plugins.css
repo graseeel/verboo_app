@@ -113,28 +113,60 @@
 .plugins-search {
   position: sticky;
   top: 0;
-  /* z-index bumped above plugin cards' animation stacking contexts
-     (plugin-card-enter leaves fill-mode 'both' permanently, so each
-     card promotes to its own stacking context — competing z-index 20
-     isn't enough to keep scrolling rows from painting on top). */
   z-index: 50;
   display: flex;
   align-items: center;
   gap: 8px;
-  /* Negative margin-top cancels the flex gap above so the opaque background
-     extends up to cover the gap area — without this, scrolling header content
-     bleeds through the 18px gap between header and search. Padding-top
-     compensates so the input sits at the same visual position. */
   margin-top: -18px;
   padding: 26px 0 8px;
   background: var(--bg);
   backdrop-filter: none;
   border-bottom: 1px solid var(--border);
-  /* Fade mask: content scrolling behind the search bar fades out at the
-     bottom edge of the sticky wrapper. Static (no animation) so
-     reduced-motion is unaffected. */
-  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 8px), transparent 100%);
-  mask-image: linear-gradient(to bottom, black calc(100% - 8px), transparent 100%);
+}
+
+/* Opaque overlay covering the .workspace padding area (30px top, 28px sides)
+   above the sticky search bar. Without this, the strip between the top of
+   the scroll container and the sticky bar shows scrolling content bleeding
+   through. The values mirror the .workspace padding exactly (surfaces.css:1).
+   The ::before is positioned absolutely relative to the sticky element's
+   padding-box; with top:-30px it sits in the padding area, and the
+   negative left/right extend it to cover the horizontal padding too.
+   z-index:0 keeps it in front of the parent's background layer. */
+.plugins-search::before {
+  content: '';
+  position: absolute;
+  left: -28px;
+  right: -28px;
+  top: -30px;
+  height: 30px;
+  background: var(--bg);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Bottom fade — replaces the CSS mask-image approach (which was clipping
+   the ::before above since mask operates on the border-box and hides any
+   paint outside). A 10px gradient from var(--bg) to transparent softens
+   the hard bottom edge of the sticky bar, making scrolled content blend
+   in as it passes underneath. */
+.plugins-search::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: -28px;
+  right: -28px;
+  height: 10px;
+  background: linear-gradient(to bottom, var(--bg), transparent);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Push interactive children above the pseudo-elements so the input,
+   icon, and button remain clickable. Positioned ancestor + z-index:1
+   lifts them into a child stacking context above z-index:0. */
+.plugins-search > * {
+  position: relative;
+  z-index: 1;
 }
 
 .plugins-search input {

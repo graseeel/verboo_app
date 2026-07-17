@@ -4,6 +4,12 @@
   min-height: 0;
   overflow-y: auto;
   padding: 30px 28px var(--composer-clearance);
+  /* Neutralize CSS scroll anchoring (Scroll Anchoring Spec) during the
+     200ms grid-template-rows expand/collapse transition in Transcript.tsx.
+     Without this, the browser's anchor selection algorithm may shift the
+     scroll position when the container height changes, overriding the
+     save/restore logic in TurnView's toggleExpand callback. */
+  overflow-anchor: none;
 }
 
 .workspace.settings-workspace {
