@@ -403,6 +403,20 @@ export function App() {
   const stickToBottomRef = useRef(true)
   const autoScrollingRef = useRef(false)
   const scrollSettleTimer = useRef<number | undefined>(undefined)
+  // Suppress stick-to-bottom autoscroll on user-initiated expand. The callback
+  // is called from TurnView's toggleExpand before the state change. We set
+  // stickToBottomRef to false and schedule a restore after the transition
+  // completes — this prevents scrollToLatest/forceWorkspaceToBottom from
+  // overriding the scroll-top restore that TurnView does in useLayoutEffect.
+  const handleUserExpand = useCallback(() => {
+    // Save the prior stick state so we can restore it after the expand
+    // transition finishes. If the user expanded a message mid-history the
+    // stick was already false; forcing it to true here would pull the next
+    // streaming item back to the bottom against the user's intent.
+    const prev = stickToBottomRef.current
+    stickToBottomRef.current = false
+    setTimeout(() => { stickToBottomRef.current = prev }, 400)
+  }, [])
   const userSettingsRef = useRef(userSettings)
   const turnConversationIds = useRef<Record<string, string>>({})
   const turnModels = useRef<Record<string, { modelId?: string; modelDisplayName?: string }>>({})
@@ -3110,7 +3124,7 @@ export function App() {
       ? chatStore.projects.find(item => item.id === conversation.projectId)
       : undefined
     setActiveConversationId(conversation.id)
-    setSelectedProjectId(project?.id)
+    setSelectedProjectId(conversation.projectId ?? undefined)
     if (project?.path) {
       setConfig(current => ({ ...current, workingDirectory: project.path ?? current.workingDirectory }))
     } else {
@@ -4363,6 +4377,7 @@ export function App() {
                 compactedTurnIds={compactedTurnIds}
                 imageReadingTurnId={imageReadingTurnId}
                 onEditSent={editSentMessage}
+                onUserExpand={handleUserExpand}
               />
               <div ref={transcriptEndRef} className="transcript-end" />
             </>

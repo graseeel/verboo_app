@@ -230,10 +230,12 @@ export function AppSidebar({
           ) : (
             visibleProjects.map(project => {
               const projectChats = visibleConversations.filter(conversation => conversation.projectId === project.id)
+              const isProjectActive = selectedProjectId === project.id
+                && (!activeConversationId || projectChats.some(c => c.id === activeConversationId))
               return (
                 <div key={project.id} className="sidebar-project">
                   <div
-                    className={`project-row ${selectedProjectId === project.id ? 'active' : ''}`}
+                    className={`project-row ${isProjectActive ? 'active' : ''}`}
                     onContextMenu={event => openProjectContextMenu(event, project)}
                   >
                     <button

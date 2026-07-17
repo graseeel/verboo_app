@@ -1,5 +1,5 @@
 import { AlertTriangle, ArrowLeft, Blocks, ChevronDown, RefreshCw, Search, Settings, Zap } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AvailablePlugin, Plugin, PluginError, PluginScope, PluginSkill } from '../../../shared/plugins'
 import { describePluginError } from '../../../shared/plugins'
 import { useI18n } from '../../i18n'
@@ -122,6 +122,31 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
   const [allSkills, setAllSkills] = useState<Record<string, PluginSkill[]>>({})
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsExpanded, setSkillsExpanded] = useState(false)
+
+  // Sentinel-based detection for the sticky search bar. CSS has no
+  // :stuck pseudo-class, so we render a 1px sentinel immediately before
+  // .plugins-search and observe it via IntersectionObserver against the
+  // .workspace scroll container. When the sentinel scrolls out of view,
+  // the bar is effectively pinned at top:0 and we toggle is-stuck so the
+  // opaque ::before/::after pseudo-elements start painting. Without this,
+  // those pseudo-elements would always cover the tab buttons sitting
+  // directly above the bar before any scroll happens.
+  const stickySentinelRef = useRef<HTMLDivElement | null>(null)
+  const [isStuck, setIsStuck] = useState(false)
+  useEffect(() => {
+    const sentinel = stickySentinelRef.current
+    if (!sentinel) return
+    const scrollContainer = sentinel.closest<HTMLElement>('.workspace')
+    if (!scrollContainer || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(
+      entries => {
+        for (const entry of entries) setIsStuck(!entry.isIntersecting)
+      },
+      { root: scrollContainer, threshold: 0 },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [])
 
   // Invalidate the icon cache when manifests arrive. A plugin that returned
   // null earlier (manifests not loaded yet on the backend → no homepage →
@@ -458,9 +483,16 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
         </button>
       </div>
 
+      {/* Sentinel: 1px spacer rendered immediately before the sticky search
+          bar. The IntersectionObserver (see state above) watches this node;
+          when it scrolls out of view, the search bar is effectively stuck at
+          top:0 and we paint the opaque ::before/::after overlays. Without
+          this, the overlays would always be visible and cover the tab bar. */}
+      <div ref={stickySentinelRef} className="plugins-sticky-sentinel" aria-hidden="true" style={{ height: '1px' }} />
+
       {/* Sticky search — stays fixed at top while list scrolls.
           Placeholder changes based on active tab. */}
-      <div className="plugins-search">
+      <div className={`plugins-search${isStuck ? ' is-stuck' : ''}`}>
         <Search size={15} className="plugins-search-icon" />
         <input
           value={query}

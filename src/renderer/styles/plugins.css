@@ -124,15 +124,27 @@
   border-bottom: 1px solid var(--border);
 }
 
+/* Sentinel helper — 1px spacer used by the IntersectionObserver in
+   PluginsView.tsx to detect when the sticky bar is pinned. Visually
+   invisible but must not collapse to zero height. The negative margins
+   cancel the 18px flex gap (above) and the 1px sentinel height (below),
+   preserving the exact vertical spacing between the tab bar and the
+   search input that existed before the sentinel was added. */
+.plugins-sticky-sentinel {
+  pointer-events: none;
+  margin: -18px 0 -1px;
+}
+
 /* Opaque overlay covering the .workspace padding area (30px top, 28px sides)
-   above the sticky search bar. Without this, the strip between the top of
-   the scroll container and the sticky bar shows scrolling content bleeding
-   through. The values mirror the .workspace padding exactly (surfaces.css:1).
-   The ::before is positioned absolutely relative to the sticky element's
-   padding-box; with top:-30px it sits in the padding area, and the
-   negative left/right extend it to cover the horizontal padding too.
-   z-index:0 keeps it in front of the parent's background layer. */
-.plugins-search::before {
+   above the sticky search bar. Only paints when is-stuck is set — without
+   that guard the overlay would cover the tab buttons sitting directly above
+   the bar (Plugins/Habilidades) before any scroll happens. The values
+   mirror the .workspace padding exactly (surfaces.css:1). The ::before is
+   positioned absolutely relative to the sticky element's padding-box; with
+   top:-30px it sits in the padding area, and the negative left/right extend
+   it to cover the horizontal padding too. z-index:0 keeps it in front of
+   the parent's background layer. */
+.plugins-search.is-stuck::before {
   content: '';
   position: absolute;
   left: -28px;
@@ -144,12 +156,12 @@
   z-index: 0;
 }
 
-/* Bottom fade — replaces the CSS mask-image approach (which was clipping
-   the ::before above since mask operates on the border-box and hides any
-   paint outside). A 10px gradient from var(--bg) to transparent softens
-   the hard bottom edge of the sticky bar, making scrolled content blend
-   in as it passes underneath. */
-.plugins-search::after {
+/* Bottom fade — only paints when is-stuck. A 10px gradient from var(--bg)
+   to transparent softens the hard bottom edge of the sticky bar, making
+   scrolled content blend in as it passes underneath. Replaces an earlier
+   CSS mask-image approach that clipped the ::before (mask operates on the
+   border-box and hides paint outside). */
+.plugins-search.is-stuck::after {
   content: '';
   position: absolute;
   top: 100%;

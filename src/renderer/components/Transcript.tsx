@@ -19,16 +19,25 @@ type TranscriptProps = {
   compactedTurnIds?: ReadonlySet<string>
   imageReadingTurnId?: string
   onEditSent?: (conversationId: string, itemId: string, newText: string) => void
+  /** Fired when a user toggles expand/collapse on a turn. The parent uses
+   *  this to suppress stick-to-bottom autoscroll during the height change
+   *  — otherwise scrollToLatest/forceWorkspaceToBottom fire after the
+   *  restore and override the user's viewport position. */
+  onUserExpand?: () => void
 }
 
 const MAX_ACTIVITY_DETAIL_LINES = 8
 const MAX_SUMMARY_DETAIL_LINES = 3
 
-export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, compactedTurnIds, imageReadingTurnId, conversationId, onEditSent }: TranscriptProps) {
+export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, compactedTurnIds, imageReadingTurnId, conversationId, onEditSent, onUserExpand }: TranscriptProps) {
   // `items` is a new array reference only when the conversation actually changes,
   // so this recomputes on real content changes but is skipped when the parent
   // re-renders for unrelated reasons (context-usage ticks, subagent updates…).
   const visibleItems = useMemo(() => buildTranscriptEntries(items), [items])
+
+  const handleUserExpand = useCallback(() => {
+    onUserExpand?.()
+  }, [onUserExpand])
 
   return (
     <div className="transcript">
@@ -44,6 +53,7 @@ export const Transcript = memo(function Transcript({ items, onOpenReview, review
               readingImage={imageReadingTurnId === entry.turnId}
               onOpenReview={onOpenReview}
               reviewMetadata={reviewMetadata}
+              onUserExpand={handleUserExpand}
             />
           : <MessageArticle key={entry.item.id} item={entry.item} conversationId={conversationId} onCopy={() => {}} onEditSent={onEditSent} />
       ))}
@@ -82,7 +92,7 @@ function ThinkingRotator({ snippets }: { snippets: string[] }) {
   )
 }
 
-function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, readingImage, onOpenReview, reviewMetadata }: {
+function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, readingImage, onOpenReview, reviewMetadata, onUserExpand }: {
   entry: Extract<TranscriptEntry, { kind: 'assistant-turn' }>
   thinking: boolean
   thinkingSnippets?: string[]
@@ -91,6 +101,7 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
   readingImage: boolean
   onOpenReview?: TranscriptProps['onOpenReview']
   reviewMetadata?: WorkspaceReviewMetadata
+  onUserExpand?: () => void
 }) {
   const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
@@ -105,8 +116,9 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
   const toggleExpand = useCallback(() => {
     const workspace = document.querySelector<HTMLElement>('.workspace')
     if (workspace) workspace.dataset.scrollBefore = String(workspace.scrollTop)
+    onUserExpand?.()
     setExpanded(prev => !prev)
-  }, [])
+  }, [onUserExpand])
 
   useLayoutEffect(() => {
     const workspace = document.querySelector<HTMLElement>('.workspace')
