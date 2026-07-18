@@ -64,11 +64,39 @@ export const MSG = Object.freeze({
 // ── Tool Call envelope ────────────────────────────────────
 
 /**
+ * Tool catalog version. Bumped when a new tool kind is added or when the
+ * shape of an existing tool's params changes in a non-backward-compatible way.
+ * Clients (panel, Desktop bridge, agent loop) compare this against the version
+ * they were built against and refuse to start a turn if it is older than the
+ * minimum supported.
+ *
+ * Version history:
+ *   - 0.1.0 (P1): hard blocks + site grants + mode store, no tools yet
+ *   - 0.2.0 (P2): MVP catalog — navigate, read_page, click, type, screenshot, tabs, tab_group
+ *   - 0.3.0 (P5): full catalog — +console_reader, network_reader, console_clear,
+ *                 gif_recording, session_recording, file_upload, schedule_task,
+ *                 workflow_record, workflow_replay, history_read
+ *
+ * Adding a tool:
+ *   1. Add the kind to BrowserTool in src/controller/types.ts (TS contract)
+ *   2. Add the risk class to TOOL_RISK_MAP below (gate input)
+ *   3. Implement handler in src/controller/tools/<name>.js
+ *   4. Add dispatch case in src/controller/execute.js dispatch()
+ *   5. Add unit test in src/controller/tools/<name>.test.js
+ *   6. Bump CATALOG_VERSION, append a version-history line above
+ *   7. Update PRIVACY.md + PERMISSIONS.md + STORE_LISTING.md if the tool
+ *      requires a new permission (AEGIS audit required for elevated tools)
+ *
+ * Multi-user: zero hardcoded path/user/token. accountId from session
+ * distinguishes users.
+ */
+
+/**
  * ToolCall — what the agent loop produces and the controller executes.
  *
  * @typedef {Object} ToolCall
  * @property {string} id                  - UUID, stable across the turn
- * @property {string} name                - Tool kind: navigate|read_page|click|type|screenshot|tabs|tab_group
+ * @property {string} name                - Tool kind (see TOOL_RISK_MAP)
  * @property {'read'|'mutate'|'elevated'} risk - Risk class for policy gate
  * @property {string} input               - Tool name + params joined for Hard Block matching
  * @property {Record<string, unknown>} params - Tool-specific parameters (BrowserTool shape)
@@ -80,8 +108,14 @@ export const TOOL_RISK = Object.freeze({
   ELEVATED: 'elevated',
 })
 
-// Risk classification per tool kind — single source of truth.
+/** Bump on every catalog change (see comment above). */
+export const CATALOG_VERSION = '0.3.0'
+
+// Risk classification per tool kind — single source of truth for the policy gate.
+// 'elevated' tools ALWAYS re-prompt, even with an 'always' site grant and even in
+// Auto/Skip mode (see policy/evaluateToolPolicy.js).
 export const TOOL_RISK_MAP = Object.freeze({
+  // ── MVP (P2) ─────────────────────────────────────────
   navigate: 'mutate',
   read_page: 'read',
   click: 'mutate',
@@ -89,7 +123,26 @@ export const TOOL_RISK_MAP = Object.freeze({
   screenshot: 'read',
   tabs: 'mutate',
   tab_group: 'mutate',
-  // future: evaluate → 'elevated'
+
+  // ── P5: full catalog ────────────────────────────────
+  // Read-only additions. No new permissions required.
+  console_reader: 'read',       // chrome.scripting + console API override
+  network_reader: 'read',       // chrome.debugger Network domain
+
+  // Mutate additions. console_clear + gif/session recording.
+  console_clear: 'mutate',
+  gif_recording: 'mutate',      // MediaRecorder in panel
+  session_recording: 'mutate',  // recorded events for later replay
+  schedule_task: 'mutate',      // chrome.alarms — REQUIRES 'alarms' permission
+  workflow_record: 'mutate',    // record sequence of tool calls
+  workflow_replay: 'mutate',    // replay recorded sequence
+
+  // Elevated additions. ALWAYS re-prompt; NO always-allow override.
+  file_upload: 'elevated',      // chrome.debugger DOM.setFileInputFiles — filesystem access
+  history_read: 'elevated',    // chrome.history.search — REQUIRES 'history' permission
+
+  // Future (post-P5, do not implement yet):
+  // evaluate: 'elevated',     // Runtime.evaluate in isolated world — needs debugger permission
 })
 
 // ── Policy Decision (mirrors evaluateToolPolicy.js output) ──

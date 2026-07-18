@@ -31,6 +31,10 @@ import { typeText } from './tools/type.js'
 import { screenshot } from './tools/screenshot.js'
 import { tabs } from './tools/tabs.js'
 import { tabGroup } from './tools/tabGroup.js'
+import { consoleTool } from './tools/console.js'
+import { network } from './tools/network.js'
+import { upload } from './tools/upload.js'
+import { gifRecord } from './tools/gifRecord.js'
 
 /**
  * Execute a Browser Tool call after policy gate.
@@ -103,6 +107,20 @@ async function dispatch(toolCall, ctx) {
       return tabs(toolCall)
     case 'tab_group':
       return tabGroup(toolCall)
+    case 'console_reader':
+    case 'console':
+      return consoleTool(toolCall)
+    case 'console_clear':
+      return consoleTool({ ...toolCall, name: 'console_reader', action: 'clear' })
+    case 'network_reader':
+    case 'network':
+      return network(toolCall)
+    case 'file_upload':
+    case 'upload':
+      return upload(toolCall)
+    case 'gif_recording':
+    case 'gif_record':
+      return gifRecord(toolCall)
     default:
       throw new Error(`unknown_tool:${toolCall.name}`)
   }

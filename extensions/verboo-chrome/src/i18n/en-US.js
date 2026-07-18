@@ -163,5 +163,38 @@ export default {
   },
   "desktop_status_unknown": {
     "message": "Unknown"
+  },
+  "tool_name_navigate": {
+    "message": "Navigate"
+  },
+  "tool_name_read_page": {
+    "message": "Read page"
+  },
+  "tool_name_click": {
+    "message": "Click"
+  },
+  "tool_name_type": {
+    "message": "Type"
+  },
+  "tool_name_screenshot": {
+    "message": "Screenshot"
+  },
+  "tool_name_tabs": {
+    "message": "Tabs"
+  },
+  "tool_name_tab_group": {
+    "message": "Tab group"
+  },
+  "tool_name_console": {
+    "message": "Console"
+  },
+  "tool_name_network": {
+    "message": "Network"
+  },
+  "tool_name_upload": {
+    "message": "Upload"
+  },
+  "tool_name_gif": {
+    "message": "GIF"
   }
 }

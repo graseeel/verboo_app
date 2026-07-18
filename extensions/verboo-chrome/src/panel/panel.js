@@ -250,7 +250,10 @@ function riskLabel(risk) {
 }
 
 function toolNameLabel(name) {
-  return name
+  // i18n lookup with fallback to the raw tool name.
+  const key = `tool_name_${name}`
+  const bundle = pickLocaleBundle()
+  return bundle[key]?.message ?? EN_US[key]?.message ?? name
 }
 
 function renderToolCard(toolCall, policyDecision) {

@@ -3,6 +3,7 @@
 **Host name:** `com.verboo.code.browser_extension`
 **Channel:** Chrome Native Messaging (`chrome.runtime.connectNative` / `chrome.runtime.sendNativeMessage`)
 **Framing:** 4-byte little-endian length header + UTF-8 JSON payload (Chrome standard)
+**Tool catalog version:** `0.3.0` (P5 — full catalog). Mirror in `src/controller/protocol.js` as `CATALOG_VERSION`. Bump both together when adding tools.
 
 This document is the wire-protocol reference. The TypeScript contracts live at `src/controller/nativeMessaging.ts`. The design rationale lives at `docs/control-chrome/native-messaging-design.md` (gitignored).
 
@@ -11,13 +12,34 @@ This document is the wire-protocol reference. The TypeScript contracts live at `
 1. **One controller.** Only the extension mutates the browser. Desktop/CLI send tool calls; the extension's `controller.execute(toolCall, ctx)` runs the policy gate and dispatches. Desktop never calls `chrome.*` directly.
 2. **`execute()` is the only entry point.** Desktop-originated messages land in `background.js`, which calls `execute()`. The `dispatchTool` forbidden-pattern invariant from `src/controller/protocol.js` still holds.
 3. **Policy gate runs in the controller.** `evaluateToolPolicy(mode, siteGrant, toolCall)` fires on every Desktop-originated call. Desktop `AccessMode` (`approval`|`auto`|`full`) **never silently upgrades** Chrome Permission Mode. The controller's mode wins.
-4. **Shared Tool Catalog.** Desktop and extension use the same `{name, schema, risk}` shapes from `src/controller/types.ts` and `protocol.js`'s `makeToolCall`. No parallel catalog.
+4. **Shared Tool Catalog.** Desktop and extension use the same `{name, schema, risk}` shapes from `src/controller/types.ts` and `protocol.js`'s `makeToolCall`. No parallel catalog. Clients compare their built-against `CATALOG_VERSION` against the one in `protocol.js` and refuse to start a turn if older.
 5. **No session tokens over NM.** The extension's `verbooSession` (in `chrome.storage.local`) is NOT shared with Desktop. Desktop has its own Verboo session (separate process, separate storage). The NM channel carries tool calls and results, never session tokens.
 6. **No personal paths.** The host name is a product identifier (`com.verboo.code.browser_extension`), not a developer identifier. Per-OS install paths are resolved at install time via OS-standard directory resolution — never hardcoded in source.
 
 ## Message types
 
 All `type` values reuse the `MSG` enum from `src/controller/protocol.js`. No parallel vocabulary.
+
+### Tool catalog (`CATALOG_VERSION` in protocol.js)
+
+| Version | Phase | Tools |
+|---------|-------|-------|
+| `0.1.0` | P1 | hard blocks + site grants + mode store, no tools |
+| `0.2.0` | P2 | `navigate`, `read_page`, `click`, `type`, `screenshot`, `tabs`, `tab_group` |
+| `0.3.0` | P5 | `+` `console_reader`, `network_reader`, `console_clear`, `gif_recording`, `session_recording`, `file_upload`, `schedule_task`, `workflow_record`, `workflow_replay`, `history_read` |
+
+Tool risk classes: `read` (informational), `mutate` (changes page state), `elevated` (ALWAYS re-prompts, even with `always` site grant or in Auto/Skip mode — see `policy/evaluateToolPolicy.js`).
+
+Tool→permission table (added to `manifest.json` when the tool ships):
+
+| Tool | New permission | Risk |
+|------|----------------|------|
+| `console_reader` / `console_clear` | none | read / mutate |
+| `network_reader` | `debugger` | read |
+| `file_upload` | `debugger` (CDP `DOM.setFileInputFiles`) | elevated |
+| `schedule_task` | `alarms` | mutate |
+| `history_read` | `history` | elevated (NO always-allow) |
+| `gif_recording` / `session_recording` / `workflow_record` / `workflow_replay` | none | mutate |
 
 ### Desktop → Extension
 
