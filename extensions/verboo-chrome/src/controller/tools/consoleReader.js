@@ -19,7 +19,7 @@
  * @param {{ name: 'console'; action?: 'list' | 'clear'; risk?: string; input?: string }} tool
  * @returns {Promise<{ messages: Array<{ level: string; text: string; ts: number }>; note: string }>}
  */
-export async function consoleTool(tool) {
+export async function consoleReader(tool) {
   const action = tool?.action ?? 'list'
   if (action === 'clear') {
     return clearConsole()

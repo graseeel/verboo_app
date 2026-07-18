@@ -31,7 +31,7 @@
  *   note: string;
  * }>}
  */
-export async function network(tool) {
+export async function networkReader(tool) {
   const action = tool?.action ?? 'list'
   const sensitive = tool?.markSensitive === true
   const durationMs = clampDuration(tool?.durationMs)

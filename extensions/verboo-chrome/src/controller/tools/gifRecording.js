@@ -27,7 +27,7 @@
  * }} tool
  * @returns {Promise<never>} throws — contract-only stub
  */
-export async function gifRecord(tool) {
+export async function gifRecording(tool) {
   const durationMs = clamp(tool?.durationMs, 100, 30_000, 3000)
   const fps = clamp(tool?.fps, 1, 30, 10)
   const format = tool?.format === 'webp' ? 'webp' : 'gif'

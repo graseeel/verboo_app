@@ -141,6 +141,15 @@ export const TOOL_RISK_MAP = Object.freeze({
   file_upload: 'elevated',      // chrome.debugger DOM.setFileInputFiles — filesystem access
   history_read: 'elevated',    // chrome.history.search — REQUIRES 'history' permission
 
+  // ── Aliases (short names → same risk as canonical) ───
+  // Kept for backward compatibility with tool handlers that ship
+  // under short names (tools/console.js, tools/network.js, etc.).
+  // The dispatch switch in execute.js accepts both forms.
+  console: 'read',
+  network: 'read',
+  upload: 'elevated',
+  gif_record: 'mutate',
+
   // Future (post-P5, do not implement yet):
   // evaluate: 'elevated',     // Runtime.evaluate in isolated world — needs debugger permission
 })

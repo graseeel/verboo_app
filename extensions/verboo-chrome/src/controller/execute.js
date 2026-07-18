@@ -31,10 +31,10 @@ import { typeText } from './tools/type.js'
 import { screenshot } from './tools/screenshot.js'
 import { tabs } from './tools/tabs.js'
 import { tabGroup } from './tools/tabGroup.js'
-import { consoleTool } from './tools/console.js'
-import { network } from './tools/network.js'
-import { upload } from './tools/upload.js'
-import { gifRecord } from './tools/gifRecord.js'
+import { consoleReader } from './tools/consoleReader.js'
+import { networkReader } from './tools/networkReader.js'
+import { fileUpload } from './tools/fileUpload.js'
+import { gifRecording } from './tools/gifRecording.js'
 
 /**
  * Execute a Browser Tool call after policy gate.
@@ -108,19 +108,23 @@ async function dispatch(toolCall, ctx) {
     case 'tab_group':
       return tabGroup(toolCall)
     case 'console_reader':
-    case 'console':
-      return consoleTool(toolCall)
+      return consoleReader(toolCall)
     case 'console_clear':
-      return consoleTool({ ...toolCall, name: 'console_reader', action: 'clear' })
+      return consoleReader({ ...toolCall, name: 'console_reader', action: 'clear' })
     case 'network_reader':
-    case 'network':
-      return network(toolCall)
+      return networkReader(toolCall)
     case 'file_upload':
-    case 'upload':
-      return upload(toolCall)
+      return fileUpload(toolCall)
     case 'gif_recording':
+      return gifRecording(toolCall)
+    case 'console':
+      return consoleReader(toolCall)
+    case 'network':
+      return networkReader(toolCall)
+    case 'upload':
+      return fileUpload(toolCall)
     case 'gif_record':
-      return gifRecord(toolCall)
+      return gifRecording(toolCall)
     default:
       throw new Error(`unknown_tool:${toolCall.name}`)
   }

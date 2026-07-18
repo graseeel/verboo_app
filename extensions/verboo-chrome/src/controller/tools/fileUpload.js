@@ -31,7 +31,7 @@
  * }} tool
  * @returns {Promise<never>} throws — contract-only stub
  */
-export async function upload(tool) {
+export async function fileUpload(tool) {
   const selector = tool?.selector
   if (!selector || typeof selector !== 'string') {
     throw new Error('upload: missing selector')
