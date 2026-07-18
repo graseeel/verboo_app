@@ -467,3 +467,221 @@ body {
     animation: none !important;
   }
 }
+
+/* ── Thought bubble (agent planning) ─────────────────────────── */
+.chat-thought {
+  align-self: flex-start;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-style: italic;
+  background: var(--bg-elev);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  max-width: 90%;
+}
+
+/* ── Error bubble ───────────────────────────────────────────── */
+.chat-message.chat-error {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+/* ── Tool card ──────────────────────────────────────────────── */
+.tool-card {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12px;
+}
+
+.tool-card[data-state="awaiting"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.tool-card[data-state="denied"] {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.tool-card[data-state="executing"] {
+  border-color: var(--border-strong);
+}
+
+.tool-card[data-state="done"] {
+  border-color: var(--success);
+}
+
+.tool-card[data-state="failed"] {
+  border-color: var(--danger);
+}
+
+.tool-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tool-card-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.tool-card-params {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  word-break: break-all;
+}
+
+.tool-card-reasoning {
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.tool-card-policy {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  padding: 4px 8px;
+  background: var(--bg-elev-2);
+  border-radius: var(--radius-sm);
+}
+
+.tool-card-policy[data-reason="hard_block"],
+.tool-card-policy[data-reason="site_denied"] {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.tool-card-policy[data-reason="site_always_allowed"],
+.tool-card-policy[data-reason="site_once_allowed"] {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.tool-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.tool-card-actions .btn {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+.tool-card-executing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  padding: 4px 0;
+}
+
+.tool-card-closed {
+  font-size: 11px;
+  color: var(--fg-muted);
+  padding: 4px 0;
+  font-style: italic;
+}
+
+/* ── Risk badge ─────────────────────────────────────────────── */
+.risk-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.risk-badge.risk-read {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.risk-badge.risk-mutate {
+  background: rgba(255, 152, 0, 0.15);
+  color: #c77700;
+}
+
+@media (prefers-color-scheme: dark) {
+  .risk-badge.risk-mutate {
+    color: #ffb74d;
+  }
+}
+
+.risk-badge.risk-elevated {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* ── Tool result chip ──────────────────────────────────────── */
+.tool-result-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  border-radius: var(--radius-sm);
+  margin-top: 4px;
+}
+
+.tool-result-chip.success {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.tool-result-chip.error {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.tool-result-label {
+  font-weight: 600;
+}
+
+.tool-result-detail {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+/* ── Spinner ────────────────────────────────────────────────── */
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: verboo-spin 0.8s linear infinite;
+}
+
+@keyframes verboo-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+    border-top-color: var(--border-strong);
+  }
+}

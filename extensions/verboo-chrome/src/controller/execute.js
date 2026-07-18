@@ -1,0 +1,128 @@
+/**
+ * execute.js — Browser Controller entry point.
+ *
+ * Contract: EVERY tool call passes through evaluateToolPolicy before
+ * any chrome.* API is touched. If policy denies, the tool never runs
+ * and the denial is returned to the caller (agent client / panel).
+ *
+ * The controller is the single chokepoint the design spec §6.2 calls
+ * "Browser Controller boundary". Clients cannot bypass it.
+ *
+ * @typedef {import('../policy/evaluateToolPolicy.js').PolicyDecision} PolicyDecision
+ * @typedef {import('../policy/evaluateToolPolicy.js').ChromePermissionMode} ChromePermissionMode
+ * @typedef {import('../policy/evaluateToolPolicy.js').GrantDecision} GrantDecision
+ * @typedef {import('../policy/evaluateToolPolicy.js').ToolCall} ToolCall
+ *
+ * @typedef {{
+ *   mode: ChromePermissionMode;
+ *   getSiteGrant: (host: string) => Promise<GrantDecision | undefined>;
+ *   setSiteGrant: (host: string, decision: GrantDecision) => Promise<void>;
+ *   activeTabId?: number;
+ * }} ExecutionContext
+ *
+ * @typedef {{ ok: true; result: unknown; policy: PolicyDecision } | { ok: false; error: string; policy: PolicyDecision }} ExecutionResult
+ */
+
+import { evaluateToolPolicy } from '../policy/evaluateToolPolicy.js'
+import { navigate } from './tools/navigate.js'
+import { readPage } from './tools/readPage.js'
+import { click } from './tools/click.js'
+import { typeText } from './tools/type.js'
+import { screenshot } from './tools/screenshot.js'
+import { tabs } from './tools/tabs.js'
+import { tabGroup } from './tools/tabGroup.js'
+
+/**
+ * Execute a Browser Tool call after policy gate.
+ *
+ * @param {ToolCall} toolCall — { name, risk, input, ...args }
+ * @param {ExecutionContext} ctx
+ * @returns {Promise<ExecutionResult>}
+ */
+export async function execute(toolCall, ctx) {
+  if (!toolCall || typeof toolCall !== 'object' || !toolCall.name) {
+    return {
+      ok: false,
+      error: 'invalid_tool_call',
+      policy: { allowed: false, needsApproval: false, reason: 'invalid_tool_call' },
+    }
+  }
+
+  // Resolve site grant for the active tab's host (if any).
+  let siteGrant = undefined
+  if (ctx.activeTabId != null && ctx.getSiteGrant) {
+    try {
+      const host = await getActiveTabHost(ctx.activeTabId)
+      if (host) siteGrant = await ctx.getSiteGrant(host)
+    } catch {
+      // Non-fatal: treat as no grant.
+    }
+  }
+
+  const policy = evaluateToolPolicy(ctx.mode, siteGrant, toolCall)
+
+  // Hard denials (allowed=false, needsApproval=false) never run.
+  // needsApproval=true is returned to the caller — the controller does
+  // not prompt the user directly; the panel/agent client handles it.
+  if (!policy.allowed) {
+    return { ok: false, error: policy.reason, policy }
+  }
+
+  // Dispatch to the tool implementation.
+  try {
+    const result = await dispatch(toolCall, ctx)
+    return { ok: true, result, policy }
+  } catch (err) {
+    return {
+      ok: false,
+      error: err?.message ?? String(err),
+      policy,
+    }
+  }
+}
+
+/**
+ * Dispatch a policy-approved toolCall to its implementation.
+ * @param {ToolCall} toolCall
+ * @param {ExecutionContext} ctx
+ * @returns {Promise<unknown>}
+ */
+async function dispatch(toolCall, ctx) {
+  switch (toolCall.name) {
+    case 'navigate':
+      return navigate(toolCall)
+    case 'read_page':
+      return readPage(toolCall)
+    case 'click':
+      return click(toolCall)
+    case 'type':
+      return typeText(toolCall)
+    case 'screenshot':
+      return screenshot(toolCall)
+    case 'tabs':
+      return tabs(toolCall)
+    case 'tab_group':
+      return tabGroup(toolCall)
+    default:
+      throw new Error(`unknown_tool:${toolCall.name}`)
+  }
+}
+
+/**
+ * Resolve the host of the active tab. Returns '' for internal pages.
+ * @param {number} tabId
+ * @returns {Promise<string>}
+ */
+async function getActiveTabHost(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    if (!tab?.url) return ''
+    try {
+      return new URL(tab.url).host
+    } catch {
+      return ''
+    }
+  } catch {
+    return ''
+  }
+}

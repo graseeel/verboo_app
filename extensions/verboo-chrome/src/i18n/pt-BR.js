@@ -91,5 +91,62 @@ export default {
   },
   "chat_send": {
     "message": "Enviar"
+  },
+  "chat_signInRequired": {
+    "message": "Conecte-se para enviar uma mensagem."
+  },
+  "risk_read": {
+    "message": "leitura"
+  },
+  "risk_mutate": {
+    "message": "mutação"
+  },
+  "risk_elevated": {
+    "message": "elevada"
+  },
+  "tool_deny": {
+    "message": "Negar"
+  },
+  "tool_approved": {
+    "message": "Aprovado"
+  },
+  "tool_denied": {
+    "message": "Negado"
+  },
+  "tool_cancelled": {
+    "message": "Cancelado"
+  },
+  "tool_executing": {
+    "message": "Executando…"
+  },
+  "tool_result_success": {
+    "message": "Concluído"
+  },
+  "tool_result_error": {
+    "message": "Erro"
+  },
+  "policy_hard_block": {
+    "message": "Bloqueio rígido"
+  },
+  "policy_site_denied": {
+    "message": "Site negado"
+  },
+  "policy_site_always_allowed": {
+    "message": "Site sempre permitido"
+  },
+  "policy_site_once_allowed": {
+    "message": "Site permitido uma vez"
+  },
+  "policy_manual_needs_approval": {
+    "message": "Modo manual — aprovação necessária"
+  },
+  "policy_elevated_requires_approval": {
+    "message": "Ferramenta elevada — aprovação necessária"
+  },
+  "policy_auto_no_grant": {
+    "message": "Modo automático — sem permissão"
+  },
+  "policy_skip_no_grant": {
+    "message": "Modo pular — sem permissão"
   }
 }

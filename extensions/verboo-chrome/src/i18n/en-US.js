@@ -91,5 +91,62 @@ export default {
   },
   "chat_send": {
     "message": "Send"
+  },
+  "chat_signInRequired": {
+    "message": "Sign in to send a message."
+  },
+  "risk_read": {
+    "message": "read"
+  },
+  "risk_mutate": {
+    "message": "mutate"
+  },
+  "risk_elevated": {
+    "message": "elevated"
+  },
+  "tool_deny": {
+    "message": "Deny"
+  },
+  "tool_approved": {
+    "message": "Approved"
+  },
+  "tool_denied": {
+    "message": "Denied"
+  },
+  "tool_cancelled": {
+    "message": "Cancelled"
+  },
+  "tool_executing": {
+    "message": "Executing…"
+  },
+  "tool_result_success": {
+    "message": "Done"
+  },
+  "tool_result_error": {
+    "message": "Error"
+  },
+  "policy_hard_block": {
+    "message": "Hard block"
+  },
+  "policy_site_denied": {
+    "message": "Site denied"
+  },
+  "policy_site_always_allowed": {
+    "message": "Site always allowed"
+  },
+  "policy_site_once_allowed": {
+    "message": "Site allowed once"
+  },
+  "policy_manual_needs_approval": {
+    "message": "Manual mode — approval required"
+  },
+  "policy_elevated_requires_approval": {
+    "message": "Elevated tool — approval required"
+  },
+  "policy_auto_no_grant": {
+    "message": "Auto mode — no grant"
+  },
+  "policy_skip_no_grant": {
+    "message": "Skip mode — no grant"
   }
 }
