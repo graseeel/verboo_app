@@ -148,5 +148,8 @@ export default {
   },
   "policy_skip_no_grant": {
     "message": "Modo pular — sem permissão"
+  },
+  "privacy_link": {
+    "message": "Política de privacidade"
   }
 }

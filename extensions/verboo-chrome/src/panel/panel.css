@@ -460,6 +460,30 @@ body {
   line-height: 1.4;
 }
 
+.disclaimer-privacy-link {
+  display: block;
+  margin: 6px auto 0;
+  padding: 2px 8px;
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-size: 10px;
+  font-family: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.disclaimer-privacy-link:hover {
+  color: var(--fg);
+}
+
+.disclaimer-privacy-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
 /* ── Reduced motion ──────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   * {

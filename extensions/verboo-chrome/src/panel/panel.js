@@ -499,6 +499,17 @@ function initChat() {
       userMessage: text,
     })
   })
+
+  // ── Privacy policy link (P3) ───────────────────────────────
+  const privacyBtn = document.getElementById('privacy-link')
+  if (privacyBtn) {
+    privacyBtn.addEventListener('click', async () => {
+      // Open the bundled privacy.html in a new tab. ANVIL ships it at
+      // the extension root; chrome.runtime.getURL resolves the
+      // chrome-extension://<id>/privacy.html URL.
+      await chrome.tabs.create({ url: chrome.runtime.getURL('privacy.html') })
+    })
+  }
 }
 
 // ── Agent event listener ─────────────────────────────────────────

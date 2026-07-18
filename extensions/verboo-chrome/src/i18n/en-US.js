@@ -148,5 +148,8 @@ export default {
   },
   "policy_skip_no_grant": {
     "message": "Skip mode — no grant"
+  },
+  "privacy_link": {
+    "message": "Privacy policy"
   }
 }
