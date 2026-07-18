@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Verboo — Control Chrome with Verboo</title>
+  <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <div class="app" id="app">
+    <!-- ── Branding header ─────────────────────────────────────── -->
+    <header class="branding">
+      <div class="branding-mark">
+        <svg class="branding-glyph" viewBox="0 0 32 32" aria-hidden="true">
+          <rect x="3" y="3" width="26" height="26" rx="7" fill="currentColor" />
+          <path d="M11 10 L11 22 M11 10 L16 22 L21 10" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <div class="branding-text">
+          <h1 class="branding-title" data-i18n="branding_title">Verboo</h1>
+          <p class="branding-tagline" data-i18n="branding_tagline">Control Chrome with Verboo</p>
+        </div>
+      </div>
+    </header>
+
+    <!-- ── Auth section ────────────────────────────────────────── -->
+    <section class="auth" id="auth-section" aria-label="Authentication">
+      <div class="auth-status" id="auth-status">
+        <span class="auth-status-text" data-i18n="auth_notSignedIn">Not signed in</span>
+      </div>
+      <p class="auth-description" data-i18n="auth_signInDescription">
+        Sign in with your Verboo account to use the browser side panel.
+      </p>
+      <button class="btn btn-primary auth-action" id="auth-action" type="button" data-i18n="auth_login">
+        Sign in
+      </button>
+    </section>
+
+    <!-- ── Permission mode selector ────────────────────────────── -->
+    <section class="modes" aria-labelledby="modes-title">
+      <h2 class="section-title" id="modes-title" data-i18n="mode_title">Permission mode</h2>
+      <div class="modes-grid" role="radiogroup" aria-labelledby="modes-title">
+        <label class="mode-card" data-mode="manual">
+          <input type="radio" name="mode" value="manual" checked />
+          <span class="mode-card-body">
+            <span class="mode-card-title" data-i18n="mode_manual">Manual</span>
+            <span class="mode-card-desc" data-i18n="mode_manual_desc">Review every action before it runs</span>
+          </span>
+        </label>
+        <label class="mode-card" data-mode="auto">
+          <input type="radio" name="mode" value="auto" />
+          <span class="mode-card-body">
+            <span class="mode-card-title" data-i18n="mode_auto">Auto</span>
+            <span class="mode-card-desc" data-i18n="mode_auto_desc">Fewer prompts; safety checks still apply</span>
+          </span>
+        </label>
+        <label class="mode-card" data-mode="skip">
+          <input type="radio" name="mode" value="skip" />
+          <span class="mode-card-body">
+            <span class="mode-card-title" data-i18n="mode_skip">Skip</span>
+            <span class="mode-card-desc" data-i18n="mode_skip_desc">No routine prompts; hard blocks still enforced</span>
+          </span>
+        </label>
+      </div>
+    </section>
+
+    <!-- ── Site grants ─────────────────────────────────────────── -->
+    <section class="grants" aria-labelledby="grants-title">
+      <h2 class="section-title" id="grants-title" data-i18n="siteGrants_title">Site grants</h2>
+      <div class="grants-add">
+        <input
+          type="text"
+          id="grants-host-input"
+          class="grants-host-input"
+          data-i18n-placeholder="siteGrants_hostPlaceholder"
+          placeholder="example.com"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <select id="grants-decision-select" class="grants-decision-select" aria-label="Decision">
+          <option value="always" data-i18n="siteGrants_alwaysAllow">Always allow</option>
+          <option value="once" data-i18n="siteGrants_allowOnce">Allow once</option>
+          <option value="deny" data-i18n="siteGrants_deny">Deny</option>
+        </select>
+        <button class="btn btn-secondary" id="grants-add-btn" type="button" data-i18n="siteGrants_addHost">
+          Add host
+        </button>
+      </div>
+      <ul class="grants-list" id="grants-list" aria-live="polite"></ul>
+      <p class="grants-empty" id="grants-empty" data-i18n="siteGrants_empty">
+        No site grants yet. Grants appear when you interact with a site.
+      </p>
+    </section>
+
+    <!-- ── Chat shell (stub) ───────────────────────────────────── -->
+    <section class="chat" aria-labelledby="chat-title">
+      <h2 class="section-title" id="chat-title" data-i18n="chat_title">Chat</h2>
+      <div class="chat-stub-notice" data-i18n="chat_stubNotice">
+        Agent chat is not yet available in this preview build.
+      </div>
+      <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
+      <form class="chat-composer" id="chat-form">
+        <input
+          type="text"
+          id="chat-input"
+          class="chat-input"
+          data-i18n-placeholder="chat_placeholder"
+          placeholder="Type a message…"
+          autocomplete="off"
+        />
+        <button class="btn btn-primary" type="submit" data-i18n="chat_send">Send</button>
+      </form>
+    </section>
+
+    <!-- ── Disclaimer footer ───────────────────────────────────── -->
+    <footer class="disclaimer">
+      <p class="disclaimer-text" data-i18n="disclaimer_text">
+        Independent build. Authorized but not an official Verboo Inc. product.
+      </p>
+    </footer>
+  </div>
+
+  <script type="module" src="panel.js"></script>
+</body>
+</html>

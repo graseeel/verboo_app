@@ -5,6 +5,11 @@ build/
 supabase/.temp/
 supabase/.branches/
 docs/superpowers/
+
+# Control Chrome with Verboo — planning/design only (local; never commit)
+docs/control-chrome/
+docs/adr/
+
 .DS_Store
 npm-debug.log*
 /index.js

@@ -1,0 +1,10 @@
+{
+  "name": "verboo-chrome",
+  "version": "0.1.0-p1",
+  "description": "Control Chrome with Verboo — MV3 extension",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"src/policy/**/*.test.js\""
+  }
+}
