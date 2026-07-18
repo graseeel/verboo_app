@@ -87,6 +87,23 @@ const NON_CONTROLLABLE_SCHEMES = Object.freeze([
 
 const PURCHASE_INTENT_RE = /\b(buy|purchase|checkout|order|pay|payment)\b/i
 
+/**
+ * YouTube search / play-music intent (EN + PT).
+ * Captures the query string when present.
+ *
+ * Examples matched:
+ *   - "search cats on youtube"
+ *   - "search youtube for lo-fi"
+ *   - "pesquise gatos no youtube"
+ *   - "tocar musica lo-fi"
+ *   - "tocar música X"
+ */
+const YOUTUBE_SEARCH_RE =
+  /(?:search\s+(?:for\s+)?(.+?)\s+on\s+youtube|search\s+youtube\s+for\s+(.+)|(?:pesquise|pesquisar|procure|procurar)\s+(.+?)\s+no\s+youtube|tocar\s+m[uú]sica\s+(.+)|play\s+(?:music|song)\s+(.+?)(?:\s+on\s+youtube)?)/i
+
+/** YouTube search box — common stable selectors. */
+const YOUTUBE_SEARCH_SELECTOR = 'input#search, input[name="search_query"]'
+
 // ── Public API ───────────────────────────────────────────────
 
 /**
@@ -110,11 +127,28 @@ export function planForMessage(userMessage, activeTabUrl) {
   const wantsNavigate = NAVIGATE_INTENT_RE.test(lower)
   const url = extractUrl(userMessage)
   const siteToken = matchSiteToken(userMessage)
+  const youtubeQuery = extractYoutubeSearchQuery(userMessage)
 
   const onInternalPage = !isControllableUrl(activeTabUrl)
 
   /** @type {ToolCall[]} */
   const plan = []
+
+  // 0) YouTube search / play-music — navigate then type into the search box.
+  //    Takes priority over a bare navigate when a query was extracted.
+  if (youtubeQuery) {
+    plan.push(
+      buildNavigateToolCall('https://www.youtube.com', 'Open YouTube for search'),
+    )
+    plan.push(
+      buildTypeToolCall(
+        YOUTUBE_SEARCH_SELECTOR,
+        youtubeQuery,
+        'Type the YouTube search query',
+      ),
+    )
+    return { plan }
+  }
 
   // 1) Navigate branch — explicit URL, OR explicit intent with a
   //    recognised site token, OR explicit intent with no token (we'll
@@ -266,6 +300,45 @@ function buildNavigateToolCall(url, reasoning) {
     url, // top-level for execute.dispatch() → navigate(tool) reads tool.url
     reasoning,
   }
+}
+
+/**
+ * @param {string} selector
+ * @param {string} text
+ * @param {string} reasoning
+ * @returns {ToolCall}
+ */
+function buildTypeToolCall(selector, text, reasoning) {
+  return {
+    id: cryptoRandomId(),
+    name: 'type',
+    risk: 'mutate',
+    input: `type selector=${selector} text=${text}`,
+    params: { selector, text, clear: true },
+    selector,
+    text,
+    clear: true,
+    reasoning,
+  }
+}
+
+/**
+ * Extract a YouTube search query from EN/PT phrases.
+ * Returns null when the message is not a YouTube-search intent.
+ *
+ * @param {string} text
+ * @returns {string | null}
+ */
+export function extractYoutubeSearchQuery(text) {
+  if (typeof text !== 'string') return null
+  const m = text.match(YOUTUBE_SEARCH_RE)
+  if (!m) return null
+  // Capture groups are alternatives — first non-empty wins.
+  for (let i = 1; i < m.length; i++) {
+    const q = (m[i] ?? '').trim()
+    if (q) return q.replace(/\s+/g, ' ').trim()
+  }
+  return null
 }
 
 function shortScheme(url) {

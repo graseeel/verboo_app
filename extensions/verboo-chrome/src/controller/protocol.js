@@ -41,9 +41,13 @@ export const MSG = Object.freeze({
   AGENT_TURN_CANCEL: 'agent:turn_cancel',     // user cancels in-flight turn
   TOOL_APPROVE: 'tool:approve',               // user approves a needsApproval tool
   TOOL_DENY: 'tool:deny',                     // user denies a needsApproval tool
-  AUTH_LOGIN: 'auth:login',                   // start OAuth flow
+  AUTH_LOGIN: 'auth:login',                   // start OAuth flow (legacy)
+  AUTH_LOGIN_API_KEY: 'auth:login_api_key',   // login with Verboo dashboard API key
   AUTH_LOGOUT: 'auth:logout',
   AUTH_REFRESH: 'auth:refresh',
+  AUTH_STATE_REQUEST: 'auth:state_request',   // panel asks SW for current session
+  MODELS_LIST: 'models:list',                 // panel asks SW for available models
+  MODELS_SELECT: 'models:select',             // panel persists selected modelId
   POLICY_MODE_SET: 'policy:mode_set',
   POLICY_GRANT_UPSERT: 'policy:grant_upsert',
   POLICY_GRANT_REMOVE: 'policy:grant_remove',
@@ -57,6 +61,7 @@ export const MSG = Object.freeze({
   AGENT_TURN_COMPLETE: 'agent:turn_complete',
   AGENT_TURN_ERROR: 'agent:turn_error',
   AUTH_STATE_CHANGED: 'auth:state_changed',
+  MODELS_STATE_CHANGED: 'models:state_changed',
   POLICY_MODE_CHANGED: 'policy:mode_changed',
   POLICY_GRANT_CHANGED: 'policy:grant_changed',
 })
@@ -199,6 +204,7 @@ export const MSG_SHAPES = Object.freeze({
   [MSG.AGENT_TURN_COMPLETE]:{ turnId: 'string', assistantMessage: 'string', toolResults: 'array' },
   [MSG.AGENT_TURN_ERROR]:  { turnId: 'string', error: 'string' },
   [MSG.AUTH_STATE_CHANGED]:{ session: 'object?' },
+  [MSG.MODELS_STATE_CHANGED]:{ models: 'array', selectedId: 'string?' },
   [MSG.POLICY_MODE_CHANGED]:{ mode: 'string' },
   [MSG.POLICY_GRANT_CHANGED]:{ grants: 'array' },
 })

@@ -15,6 +15,7 @@ import {
   matchSiteToken,
   isControllableUrl,
   nonControllablePageMessage,
+  extractYoutubeSearchQuery,
 } from './planMessage.js'
 
 // ── isControllableUrl ───────────────────────────────────────
@@ -191,6 +192,43 @@ test('planForMessage: handles missing/undefined active tab URL safely', () => {
   const r = planForMessage('what does this say?', undefined)
   assert.equal(r.plan.length, 0)
   assert.ok(r.assistantMessage)
+})
+
+// ── YouTube search multi-step ───────────────────────────────
+
+test('extractYoutubeSearchQuery: EN search on youtube', () => {
+  assert.equal(extractYoutubeSearchQuery('search cats on youtube'), 'cats')
+  assert.equal(extractYoutubeSearchQuery('search youtube for lo-fi beats'), 'lo-fi beats')
+})
+
+test('extractYoutubeSearchQuery: PT pesquise / tocar musica', () => {
+  assert.equal(extractYoutubeSearchQuery('pesquise gatos no youtube'), 'gatos')
+  assert.equal(extractYoutubeSearchQuery('tocar musica lo-fi'), 'lo-fi')
+  assert.equal(extractYoutubeSearchQuery('tocar música jazz suave'), 'jazz suave')
+})
+
+test('extractYoutubeSearchQuery: returns null for plain open youtube', () => {
+  assert.equal(extractYoutubeSearchQuery('open youtube'), null)
+  assert.equal(extractYoutubeSearchQuery('abra o youtube'), null)
+})
+
+test('planForMessage: "search X on youtube" is navigate + type', () => {
+  const r = planForMessage('search cats on youtube', 'chrome://extensions')
+  assert.equal(r.assistantMessage, undefined)
+  assert.equal(r.plan.length, 2)
+  assert.equal(r.plan[0].name, 'navigate')
+  assert.equal(r.plan[0].url, 'https://www.youtube.com')
+  assert.equal(r.plan[1].name, 'type')
+  assert.equal(r.plan[1].params.text, 'cats')
+  assert.ok(r.plan[1].params.selector.includes('search'))
+})
+
+test('planForMessage: "tocar musica X" is navigate + type', () => {
+  const r = planForMessage('tocar musica lo-fi', 'https://example.com')
+  assert.equal(r.plan.length, 2)
+  assert.equal(r.plan[0].name, 'navigate')
+  assert.equal(r.plan[1].name, 'type')
+  assert.equal(r.plan[1].text, 'lo-fi')
 })
 
 // ── nonControllablePageMessage ──────────────────────────────

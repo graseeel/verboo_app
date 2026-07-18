@@ -17,6 +17,14 @@ import { loadMode } from './policy/modesStore.js'
 import { getGrant } from './policy/siteGrantsStore.js'
 import { MSG } from './controller/protocol.js'
 import { planForMessage } from './planMessage.js'
+import {
+  loadSession,
+  logout,
+  startApiKeyLogin,
+  loadModels,
+  selectModel,
+  getSelectedModelId,
+} from './auth/auth.js'
 
 // ── Native Messaging host name ──────────────────────────────────
 // Matches the manifest at native-messaging/com.verboo.code.browser_extension.json.template
@@ -201,6 +209,87 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // Panel asks for the current Desktop bridge state.
       sendResponse({ ok: true, state: getDesktopState() })
       return false
+    }
+
+    case MSG.AUTH_LOGIN_API_KEY: {
+      const apiKey = message.apiKey
+      startApiKeyLogin(apiKey)
+        .then(async ({ session, models }) => {
+          const selectedId = await getSelectedModelId()
+          broadcast({ type: MSG.AUTH_STATE_CHANGED, session })
+          broadcast({
+            type: MSG.MODELS_STATE_CHANGED,
+            models,
+            selectedId: selectedId ?? undefined,
+          })
+          sendResponse({ ok: true, session, models, selectedId })
+        })
+        .catch((err) => {
+          sendResponse({ ok: false, error: err?.message ?? String(err) })
+        })
+      return true // async sendResponse
+    }
+
+    case MSG.AUTH_LOGOUT: {
+      logout()
+        .then(async () => {
+          broadcast({ type: MSG.AUTH_STATE_CHANGED, session: null })
+          broadcast({ type: MSG.MODELS_STATE_CHANGED, models: [], selectedId: undefined })
+          sendResponse({ ok: true })
+        })
+        .catch((err) => {
+          sendResponse({ ok: false, error: err?.message ?? String(err) })
+        })
+      return true
+    }
+
+    case MSG.AUTH_STATE_REQUEST: {
+      loadSession()
+        .then(async (session) => {
+          broadcast({ type: MSG.AUTH_STATE_CHANGED, session })
+          sendResponse({ ok: true, session })
+        })
+        .catch((err) => {
+          sendResponse({ ok: false, error: err?.message ?? String(err) })
+        })
+      return true
+    }
+
+    case MSG.MODELS_LIST: {
+      const forceRefresh = message.forceRefresh === true
+      loadModels(forceRefresh)
+        .then(async (models) => {
+          const selectedId = await getSelectedModelId()
+          broadcast({
+            type: MSG.MODELS_STATE_CHANGED,
+            models,
+            selectedId: selectedId ?? undefined,
+          })
+          sendResponse({ ok: true, models, selectedId })
+        })
+        .catch((err) => {
+          sendResponse({ ok: false, error: err?.message ?? String(err) })
+        })
+      return true
+    }
+
+    case MSG.MODELS_SELECT: {
+      const modelId = message.modelId
+      selectModel(modelId)
+        .then(async () => {
+          const models = await loadModels(false)
+          const selectedId = await getSelectedModelId()
+          broadcast({
+            type: MSG.MODELS_STATE_CHANGED,
+            models,
+            selectedId: selectedId ?? undefined,
+          })
+          sendResponse({ ok: true, selectedId })
+        })
+        .catch((err) => {
+          sendResponse({ ok: false, error: err?.message ?? String(err) })
+        })
+      return true
     }
 
     default:
@@ -433,11 +522,11 @@ async function runAgentTurn(turnId, userMessage, senderTabId) {
   }
 
   // Final assistant message summarising the turn.
-  const assistantMessage = summarize(plan, toolResults)
+  const finalMessage = summarize(plan, toolResults)
   broadcast({
     type: MSG.AGENT_TURN_COMPLETE,
     turnId,
-    assistantMessage,
+    assistantMessage: finalMessage,
     toolResults,
   })
 
