@@ -5,9 +5,15 @@
  * injected function dispatches a real PointerEvent so SPA click
  * handlers fire correctly.
  *
+ * Presence: shows the purple frame + orange agent cursor at the
+ * target before clicking so the user can see where Verboo will act.
+ *
  * @param {{ name: 'click'; selector: string; button?: number; risk?: string; input?: string }} tool
  * @returns {Promise<{ selector: string; clicked: boolean; url: string }>}
  */
+
+import { preparePresenceForAction } from '../../presence/inject.js'
+
 export async function click(tool) {
   const selector = tool?.selector
   if (!selector || typeof selector !== 'string') {
@@ -17,6 +23,9 @@ export async function click(tool) {
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
   if (!tab?.id) throw new Error('click: no active tab')
+
+  // Agent presence: frame + cursor at target, brief delay, then click.
+  await preparePresenceForAction(tab.id, selector)
 
   const [result] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },

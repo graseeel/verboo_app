@@ -6,9 +6,15 @@
  * (the URL policy gate in policy.js already blocks these, but we
  * double-check here as defense-in-depth).
  *
+ * Presence: after load, groups the tab under "Verboo" and shows the
+ * purple viewport frame on the new page.
+ *
  * @param {{ name: 'navigate'; url: string; risk?: string; input?: string }} tool
  * @returns {Promise<{ tabId: number; url: string }>}
  */
+
+import { ensureVerbooTabGroup, showPresenceFrame } from '../../presence/inject.js'
+
 export async function navigate(tool) {
   const url = tool?.url
   if (!url || typeof url !== 'string') {
@@ -27,6 +33,15 @@ export async function navigate(tool) {
   await chrome.tabs.update(tab.id, { url })
   // Wait for the tab to finish loading so the caller can chain reads.
   await waitForTabComplete(tab.id)
+
+  // Agent presence on the destination page.
+  try {
+    await ensureVerbooTabGroup(tab.id)
+    await showPresenceFrame(tab.id)
+  } catch {
+    // Non-controllable / race — never block navigation success.
+  }
+
   return { tabId: tab.id, url }
 }
 

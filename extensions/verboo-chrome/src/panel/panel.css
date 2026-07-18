@@ -109,6 +109,13 @@ textarea {
   flex-direction: column;
 }
 
+/* Claude-like focus ring when signed in (panel shell). */
+.app[data-auth="signed-in"] {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 70%, transparent);
+  outline: 1.5px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: -4px;
+}
+
 /* ── Login gate (signed-out only) ─────────────────────────────── */
 .login-gate {
   flex: 1;
@@ -349,23 +356,25 @@ textarea {
   display: none;
 }
 
-/* ── Topbar — quiet. Brand + truncated user + gear + sign out. ── */
+/* ── Topbar — brand | model (flex grow) | actions. No wrapping email. ── */
 .topbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-elevated) 88%, transparent);
   flex-shrink: 0;
+  min-width: 0;
 }
 
 .topbar-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  flex: 0 0 auto;
   min-width: 0;
+  max-width: 40%;
 }
 
 .topbar-mascot {
@@ -376,34 +385,26 @@ textarea {
   flex-shrink: 0;
 }
 
-.topbar-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
 .topbar-title {
   font-size: 13px;
   font-weight: 650;
   letter-spacing: -0.01em;
   color: var(--text);
-}
-
-.topbar-user {
-  font-size: 11px;
-  color: var(--text-muted);
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 160px;
+}
+
+/* Email / accountId live on the brand title attribute — keep off-layout. */
+.topbar-user {
+  display: none;
 }
 
 .topbar-actions {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-shrink: 0;
+  flex: 0 0 auto;
 }
 
 /* Model selector — pill dropdown with leading glyph + caret. */
@@ -411,8 +412,9 @@ textarea {
   position: relative;
   display: inline-flex;
   align-items: center;
-  max-width: 200px;
+  flex: 1 1 auto;
   min-width: 0;
+  max-width: 160px;
 }
 
 .model-select-icon {
@@ -430,7 +432,6 @@ textarea {
   -webkit-appearance: none;
   width: 100%;
   min-width: 0;
-  max-width: 200px;
   min-height: 32px;
   padding: 0 26px 0 28px;
   border: 1px solid var(--border);

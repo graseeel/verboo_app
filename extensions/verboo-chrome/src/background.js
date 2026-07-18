@@ -25,6 +25,7 @@ import {
   selectModel,
   getSelectedModelId,
 } from './auth/auth.js'
+import { ensureVerbooTabGroup, showPresenceFrame } from './presence/inject.js'
 
 // ── Native Messaging host name ──────────────────────────────────
 // Matches the manifest at native-messaging/com.verboo.code.browser_extension.json.template
@@ -350,6 +351,7 @@ async function runAgentTurn(turnId, userMessage, senderTabId) {
   // read_page on the current tab.
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
   const activeTabUrl = activeTab?.url
+  const selectedModelId = await getSelectedModelId()
 
   const { plan, assistantMessage } = planForMessage(userMessage, activeTabUrl)
 
@@ -360,6 +362,7 @@ async function runAgentTurn(turnId, userMessage, senderTabId) {
       plan.length > 0
         ? `Planning ${plan.length} tool call(s) for: "${userMessage}"`
         : `No tool action — replying directly for: "${userMessage}"`,
+    modelId: selectedModelId ?? undefined,
   })
 
   // Empty plan + assistantMessage → reply directly without executing
@@ -374,6 +377,19 @@ async function runAgentTurn(turnId, userMessage, senderTabId) {
     })
     turnControllers.delete(turnId)
     return
+  }
+
+  // Agent presence: purple Verboo tab group + viewport frame while we control.
+  // Presence is UX chrome — not a BrowserTool — so it does not go through
+  // execute()/evaluateToolPolicy. Failures (chrome:// etc.) are ignored.
+  const presenceTabId = activeTab?.id ?? senderTabId
+  if (typeof presenceTabId === 'number') {
+    try {
+      await ensureVerbooTabGroup(presenceTabId)
+      await showPresenceFrame(presenceTabId)
+    } catch {
+      // Non-controllable page or missing APIs — continue the turn.
+    }
   }
 
   /** @type {import('./controller/protocol.js').ToolResult[]} */

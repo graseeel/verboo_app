@@ -100,11 +100,18 @@ function renderAuth(session) {
   app.dataset.auth = signedIn ? 'signed-in' : 'signed-out'
   if (workspace) workspace.hidden = !signedIn
 
+  // Keep "Verboo" as the only visible brand line. Put account/email on the
+  // brand title attribute so it does not wrap ("VerS…") in a narrow panel.
+  const brandEl = document.getElementById('topbar-brand')
+  const label = signedIn ? sessionDisplayLabel(session) : ''
+  if (brandEl) {
+    brandEl.title = label || ''
+  }
   const userEl = document.getElementById('topbar-user')
   if (userEl) {
-    const label = sessionDisplayLabel(session)
-    userEl.textContent = signedIn ? `${t('auth_signedInAs')} ${label}` : ''
-    userEl.title = signedIn ? label : ''
+    userEl.textContent = ''
+    userEl.title = ''
+    userEl.hidden = true
   }
 
   const logoutBtn = document.getElementById('auth-action')

@@ -4,9 +4,14 @@
  * Uses chrome.tabs only (no debugger). All actions operate on the
  * current window by default.
  *
+ * Presence: new tabs opened during a turn are grouped under "Verboo".
+ *
  * @param {{ name: 'tabs'; action: 'list' | 'switch' | 'close' | 'new'; tabId?: number; url?: string; risk?: string; input?: string }} tool
  * @returns {Promise<unknown>}
  */
+
+import { ensureVerbooTabGroup } from '../../presence/inject.js'
+
 export async function tabs(tool) {
   const action = tool?.action
   switch (action) {
@@ -48,5 +53,13 @@ async function newTab(url) {
     throw new Error(`tabs.new: unsupported scheme: ${safeUrl.split(':')[0]}`)
   }
   const tab = await chrome.tabs.create({ url: safeUrl })
+  // Group tabs created during an agent turn under the purple Verboo group.
+  if (tab?.id != null) {
+    try {
+      await ensureVerbooTabGroup(tab.id)
+    } catch {
+      // Grouping is best-effort; never fail tabs.new on presence errors.
+    }
+  }
   return { tabId: tab.id, url: safeUrl }
 }

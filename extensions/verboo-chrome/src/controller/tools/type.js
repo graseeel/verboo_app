@@ -5,9 +5,15 @@
  * the field first if `clear` is true. Dispatches input + change events
  * so React/Vue controlled components pick up the value.
  *
+ * Presence: shows the purple frame + orange agent cursor at the
+ * target before typing so the user can see where Verboo will act.
+ *
  * @param {{ name: 'type'; selector: string; text: string; clear?: boolean; risk?: string; input?: string }} tool
  * @returns {Promise<{ selector: string; textLength: number; url: string }>}
  */
+
+import { preparePresenceForAction } from '../../presence/inject.js'
+
 export async function typeText(tool) {
   const selector = tool?.selector
   if (!selector || typeof selector !== 'string') {
@@ -19,6 +25,9 @@ export async function typeText(tool) {
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
   if (!tab?.id) throw new Error('type: no active tab')
+
+  // Agent presence: frame + cursor at target, brief delay, then type.
+  await preparePresenceForAction(tab.id, selector)
 
   const [result] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },

@@ -122,7 +122,7 @@
          ═══════════════════════════════════════════════════════════ -->
     <div class="workspace" id="workspace" hidden>
       <header class="topbar">
-        <div class="topbar-brand">
+        <div class="topbar-brand" id="topbar-brand">
           <img
             class="topbar-mascot"
             src="/icons/verboo-mascot.png"
@@ -131,31 +131,30 @@
             alt=""
             decoding="async"
           />
-          <div class="topbar-meta">
-            <span class="topbar-title" data-i18n="branding_title">Verboo</span>
-            <span class="topbar-user" id="topbar-user"></span>
-          </div>
+          <span class="topbar-title" data-i18n="branding_title">Verboo</span>
+          <!-- Email / account kept off-layout; surface via brand title attr in JS -->
+          <span class="topbar-user" id="topbar-user" hidden></span>
         </div>
+        <label class="model-select-wrap" for="model-select" id="model-select-wrap">
+          <span class="model-select-icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="8" cy="8" r="5.5" />
+              <path d="M2.5 8h11M8 2.5c1.8 1.6 2.7 3.6 2.7 5.5s-.9 3.9-2.7 5.5c-1.8-1.6-2.7-3.6-2.7-5.5s.9-3.9 2.7-5.5z" />
+            </svg>
+          </span>
+          <select
+            id="model-select"
+            class="model-select"
+            aria-label="Model"
+            disabled
+          ></select>
+          <span class="model-select-caret" aria-hidden="true">
+            <svg viewBox="0 0 12 12" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 5l3 3 3-3" />
+            </svg>
+          </span>
+        </label>
         <div class="topbar-actions">
-          <label class="model-select-wrap" for="model-select" id="model-select-wrap">
-            <span class="model-select-icon" aria-hidden="true">
-              <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="8" cy="8" r="5.5" />
-                <path d="M2.5 8h11M8 2.5c1.8 1.6 2.7 3.6 2.7 5.5s-.9 3.9-2.7 5.5c-1.8-1.6-2.7-3.6-2.7-5.5s.9-3.9 2.7-5.5z" />
-              </svg>
-            </span>
-            <select
-              id="model-select"
-              class="model-select"
-              aria-label="Model"
-              disabled
-            ></select>
-            <span class="model-select-caret" aria-hidden="true">
-              <svg viewBox="0 0 12 12" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3 5l3 3 3-3" />
-              </svg>
-            </span>
-          </label>
           <button
             type="button"
             class="icon-btn"
