@@ -25,7 +25,11 @@ import {
   selectModel,
   getSelectedModelId,
 } from './auth/auth.js'
-import { ensureVerbooTabGroup, showPresenceFrame } from './presence/inject.js'
+import {
+  ensureVerbooTabGroup,
+  showPresenceFrame,
+  clearPresenceBestEffort,
+} from './presence/inject.js'
 import { runLlmAgentTurn } from './agent/loop.js'
 
 // ── Native Messaging host name ──────────────────────────────────
@@ -149,6 +153,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case MSG.AGENT_TURN_START: {
       void runAgentTurn(message.turnId, message.userMessage, sender.tab?.id)
         .catch((err) => {
+          try {
+            void clearPresenceBestEffort(sender.tab?.id)
+          } catch {
+            /* presence cleanup is best-effort */
+          }
           broadcast({
             type: MSG.AGENT_TURN_ERROR,
             turnId: message.turnId,
@@ -402,6 +411,11 @@ async function runAgentTurn(turnId, userMessage, senderTabId) {
         assistantMessage: llmResult.assistantMessage,
         toolResults: llmResult.toolResults,
       })
+      try {
+        await clearPresenceBestEffort(presenceTabId)
+      } catch {
+        /* presence cleanup is best-effort */
+      }
       turnControllers.delete(turnId)
       return
     } catch (llmErr) {
@@ -438,6 +452,11 @@ async function runAgentTurn(turnId, userMessage, senderTabId) {
       assistantMessage: assistantMessage ?? 'I have nothing to do for that request.',
       toolResults: [],
     })
+    try {
+      await clearPresenceBestEffort(presenceTabId)
+    } catch {
+      /* presence cleanup is best-effort */
+    }
     turnControllers.delete(turnId)
     return
   }
@@ -595,6 +614,11 @@ async function runAgentTurn(turnId, userMessage, senderTabId) {
     assistantMessage: finalMessage,
     toolResults,
   })
+  try {
+    await clearPresenceBestEffort(presenceTabId)
+  } catch {
+    /* presence cleanup is best-effort */
+  }
 
   turnControllers.delete(turnId)
 }
@@ -634,6 +658,11 @@ function cancelTurn(turnId) {
     pendingApprovals.delete(id)
   }
   turnControllers.delete(turnId)
+  try {
+    void clearPresenceBestEffort()
+  } catch {
+    /* presence cleanup is best-effort */
+  }
 }
 
 /**

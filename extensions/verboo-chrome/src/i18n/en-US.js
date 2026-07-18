@@ -289,5 +289,29 @@ export default {
   },
   "tool_result_error": {
     "message": "Error"
+  },
+  "activity_working": {
+    "message": "Working…"
+  },
+  "activity_navigating": {
+    "message": "Navigating to {url}…"
+  },
+  "activity_clicking": {
+    "message": "Clicking…"
+  },
+  "activity_typing": {
+    "message": "Typing…"
+  },
+  "activity_capturing": {
+    "message": "Capturing page…"
+  },
+  "activity_reading": {
+    "message": "Reading page…"
+  },
+  "activity_done_short": {
+    "message": "Done"
+  },
+  "activity_capture_failed": {
+    "message": "Could not capture the page"
   }
 }

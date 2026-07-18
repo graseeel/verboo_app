@@ -174,6 +174,48 @@ export async function hideAgentCursor(tabId) {
 }
 
 /**
+ * Hide frame + cursor on a known tab (end of agent control).
+ *
+ * @param {number} tabId
+ * @returns {Promise<void>}
+ */
+export async function clearPresence(tabId) {
+  if (typeof tabId !== 'number') return
+  // Clear independently so one failure does not leave the other visible.
+  try {
+    await hidePresenceFrame(tabId)
+  } catch {
+    /* ignore */
+  }
+  try {
+    await hideAgentCursor(tabId)
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Best-effort clear of presence overlays. Resolves the active tab when
+ * `tabId` is omitted. Never throws — presence must not block turn teardown.
+ *
+ * @param {number} [tabId]
+ * @returns {Promise<void>}
+ */
+export async function clearPresenceBestEffort(tabId) {
+  try {
+    let id = tabId
+    if (typeof id !== 'number') {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      id = tab?.id
+    }
+    if (typeof id !== 'number') return
+    await clearPresence(id)
+  } catch {
+    // chrome:// pages, closed tabs, missing APIs — ignore.
+  }
+}
+
+/**
  * Best-effort presence prelude used by click/type: frame + cursor + delay.
  * Never throws. Delay is randomBetween(280, 380) unless reduced-motion (0).
  *

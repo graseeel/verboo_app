@@ -14,6 +14,8 @@ import {
   PRESENCE_ACTION_DELAY_MS_MIN,
   PRESENCE_ACTION_DELAY_MS_MAX,
   randomBetween,
+  clearPresence,
+  clearPresenceBestEffort,
 } from './inject.js'
 
 test('Verboo tab group title is "Verboo"', () => {
@@ -37,4 +39,15 @@ test('randomBetween stays within [min, max]', () => {
     const n = randomBetween(280, 380)
     assert.ok(n >= 280 && n <= 380, `got ${n}`)
   }
+})
+
+test('clearPresence and clearPresenceBestEffort are exported functions', () => {
+  assert.equal(typeof clearPresence, 'function')
+  assert.equal(typeof clearPresenceBestEffort, 'function')
+})
+
+test('clearPresence no-ops without a numeric tabId', async () => {
+  // No chrome.scripting in node — non-numeric ids must not throw.
+  await assert.doesNotReject(() => clearPresence(/** @type {any} */ (undefined)))
+  await assert.doesNotReject(() => clearPresence(/** @type {any} */ (null)))
 })

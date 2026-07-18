@@ -319,18 +319,20 @@ async function initModes() {
 
 // ── Chat transcript ──────────────────────────────────────────────
 //
-// Cards rendered into #chat-messages:
+// Claude-like human activity model (not terminal dumps):
 //   - user bubble
-//   - assistant bubble (turn_complete)
-//   - thought bubble (muted)
-//   - tool_request card (with risk badge + Approve/Deny buttons when
-//     needsApproval; or hard_block/site_denied denial card)
-//   - tool_executing state (spinner replaces buttons)
-//   - tool_result chip (success=green, error=red)
+//   - [Working…] header (pulse) while the turn is in flight
+//   - activity lines: Navigating… / Clicking… / Reading page…
+//   - tool_request card only for needsApproval / hard denial
+//   - soft activity-ok / activity-err for normal tool results
+//   - assistant bubble (turn_complete) — natural message only
 //   - turn_error bubble
 
 /** @type {Map<string, HTMLElement>} card by toolCallId */
 const toolCards = new Map()
+
+/** @type {HTMLElement | null} live "Working…" header for the current turn */
+let workingHeaderEl = null
 
 function appendUserMessage(text) {
   const messages = document.getElementById('chat-messages')
@@ -343,6 +345,7 @@ function appendUserMessage(text) {
 }
 
 function appendAssistantMessage(text) {
+  clearWorkingHeader()
   const messages = document.getElementById('chat-messages')
   const msg = document.createElement('div')
   msg.className = 'chat-message'
@@ -352,16 +355,119 @@ function appendAssistantMessage(text) {
   messages.scrollTop = messages.scrollHeight
 }
 
-function appendThought(text) {
+/**
+ * Ensure a single pulsing "Working…" header exists for the current turn.
+ */
+function ensureWorkingHeader() {
+  if (workingHeaderEl && document.contains(workingHeaderEl)) return
   const messages = document.getElementById('chat-messages')
-  const bubble = document.createElement('div')
-  bubble.className = 'chat-thought'
-  bubble.textContent = text
-  messages.appendChild(bubble)
+  if (!messages) return
+  const el = document.createElement('div')
+  el.className = 'activity-working'
+  el.setAttribute('aria-live', 'polite')
+  const glyph = document.createElement('span')
+  glyph.className = 'activity-working-glyph'
+  glyph.setAttribute('aria-hidden', 'true')
+  glyph.textContent = '●'
+  const label = document.createElement('span')
+  label.textContent = t('activity_working')
+  el.append(glyph, label)
+  messages.appendChild(el)
+  workingHeaderEl = el
   messages.scrollTop = messages.scrollHeight
 }
 
+/**
+ * Remove the working header when the turn ends (complete / error).
+ */
+function clearWorkingHeader() {
+  if (workingHeaderEl) {
+    workingHeaderEl.remove()
+    workingHeaderEl = null
+  }
+}
+
+/**
+ * Append a quiet human activity line.
+ * @param {string} text
+ * @param {'ok' | 'err' | null} [variant]
+ */
+function appendActivityLine(text, variant) {
+  if (!text) return
+  ensureWorkingHeader()
+  const messages = document.getElementById('chat-messages')
+  if (!messages) return
+  const line = document.createElement('div')
+  line.className = 'activity-line'
+  if (variant === 'ok') line.classList.add('activity-ok')
+  if (variant === 'err') line.classList.add('activity-err')
+  line.textContent = text
+  messages.appendChild(line)
+  messages.scrollTop = messages.scrollHeight
+}
+
+/**
+ * Turn raw agent thought dumps into short human activity lines.
+ * Returns null when the thought should not be shown (step counters, etc.).
+ * @param {string} text
+ * @returns {string | null}
+ */
+function humanizeThought(text) {
+  if (!text || typeof text !== 'string') return null
+  const raw = text.trim()
+  if (!raw) return null
+
+  // Step counters are noise in a product transcript.
+  if (/^Step \d+\/\d+/i.test(raw)) return null
+
+  if (/Calling navigate/i.test(raw)) {
+    const m = raw.match(/→\s*(\S+?)(?:…|\.\.\.)?\s*$/)
+    const short = m ? shortUrl(m[1]) : ''
+    if (short) return t('activity_navigating').replace('{url}', short)
+    return 'Navigating…'
+  }
+  if (/Calling click/i.test(raw)) return t('activity_clicking')
+  if (/Calling type/i.test(raw)) return t('activity_typing')
+  if (/Calling screenshot/i.test(raw)) return t('activity_capturing')
+  if (/Calling read_page/i.test(raw)) return t('activity_reading')
+
+  // Covered by the Working… header alone.
+  if (/Analyzing request/i.test(raw)) return null
+
+  if (/LLM agent unavailable/i.test(raw)) return 'Using quick planner…'
+
+  // Soften remaining machine lines; strip CSS selectors after →.
+  let s = raw
+  s = s.replace(/\s*→\s*(?![hH][tT][tT][pP][sS]?:)[^\s…]+(?:…)?/g, '')
+  s = s.replace(/^Planning \d+ tool call\(s\) for:\s*".*"$/i, 'Planning…')
+  s = s.replace(/^No tool action — .*$/i, 'Thinking…')
+  s = s.replace(/Injected strategy hint.*/i, 'Trying a different approach…')
+  s = s.replace(/\s{2,}/g, ' ').trim()
+  return s || null
+}
+
+/**
+ * Short host + path for activity lines (no protocol, no query bloat).
+ * @param {string} url
+ * @returns {string}
+ */
+function shortUrl(url) {
+  if (!url) return ''
+  let cleaned = String(url).replace(/…$/, '').replace(/\.\.\.$/, '')
+  try {
+    const u = new URL(cleaned)
+    let out = u.hostname + (u.pathname === '/' ? '' : u.pathname)
+    if (out.length > 48) out = out.slice(0, 45) + '…'
+    return out
+  } catch {
+    cleaned = cleaned.replace(/^https?:\/\//i, '').replace(/\/$/, '')
+    if (cleaned.length > 48) cleaned = cleaned.slice(0, 45) + '…'
+    return cleaned
+  }
+}
+
 function appendTurnError(text) {
+  clearWorkingHeader()
   const messages = document.getElementById('chat-messages')
   const bubble = document.createElement('div')
   bubble.className = 'chat-message chat-error'
@@ -506,27 +612,33 @@ function renderToolResult(toolResult) {
   const card = toolCards.get(toolResult.toolCallId)
   const messages = document.getElementById('chat-messages')
 
-  const chip = document.createElement('div')
-  chip.className = `tool-result-chip ${toolResult.success ? 'success' : 'error'}`
-  const label = toolResult.success
-    ? t('tool_result_success')
-    : t('tool_result_error')
-  const detail = toolResult.success
-    ? formatResultData(toolResult.data)
-    : (toolResult.error || '')
-  chip.innerHTML = `<span class="tool-result-label">${label}</span><span class="tool-result-detail">${escapeHtml(detail)}</span>`
-
+  // Approval / hard-denial cards keep a compact result note on the card.
+  // Normal auto-run tools use quiet activity lines (not green JSON boxes).
   if (card) {
-    // Replace executing indicator with result chip
+    const chip = document.createElement('div')
+    chip.className = `tool-result-chip ${toolResult.success ? 'success' : 'error'}`
+    const label = toolResult.success
+      ? t('tool_result_success')
+      : t('tool_result_error')
+    const detail = toolResult.success
+      ? formatResultData(toolResult.data)
+      : formatErrorLine(toolResult.error)
+    chip.innerHTML = `<span class="tool-result-label">${label}</span><span class="tool-result-detail">${escapeHtml(detail)}</span>`
+
     const executing = card.querySelector('.tool-card-executing')
     if (executing) executing.remove()
     card.dataset.state = toolResult.success ? 'done' : 'failed'
     card.appendChild(chip)
-  } else {
-    // Orphan result (no prior card) — append standalone
-    messages.appendChild(chip)
+    messages.scrollTop = messages.scrollHeight
+    return
   }
-  messages.scrollTop = messages.scrollHeight
+
+  if (toolResult.success) {
+    const detail = formatResultData(toolResult.data)
+    if (detail) appendActivityLine(detail, 'ok')
+  } else {
+    appendActivityLine(formatErrorLine(toolResult.error) || t('tool_result_error'), 'err')
+  }
 }
 
 function closeApprovalCard(toolCallId, decision) {
@@ -560,25 +672,98 @@ function formatParams(toolCall) {
   }
 }
 
+/**
+ * Short human summary of a tool result payload — never dump raw JSON/selectors.
+ * @param {unknown} data
+ * @returns {string}
+ */
 function formatResultData(data) {
   if (data == null) return ''
-  let text
+
+  // dataUrl / base64 blobs
   if (typeof data === 'string') {
-    text = data
-  } else if (data && typeof data === 'object' && typeof data.text === 'string') {
-    // read_page returns { text, selector, url, … } — surface the body text.
-    text = data.text
-  } else {
+    if (
+      data.startsWith('data:image') ||
+      /^Screenshot captured/i.test(data) ||
+      (data.length > 200 && /^[A-Za-z0-9+/=\s]+$/.test(data.slice(0, 400)))
+    ) {
+      return 'Screenshot captured'
+    }
+    if (
+      /permission|screenshot|capture/i.test(data) &&
+      /error|denied|fail|could not|blocked/i.test(data)
+    ) {
+      return t('activity_capture_failed')
+    }
+    if (looksLikeScriptNoise(data)) return 'Page content not useful'
+    // Soften accidental JSON strings
+    const trimmed = data.trim()
+    if (
+      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    ) {
+      try {
+        return formatResultData(JSON.parse(trimmed))
+      } catch {
+        // fall through
+      }
+    }
+    return data.slice(0, 120)
+  }
+
+  if (typeof data === 'object') {
+    const obj = /** @type {Record<string, unknown>} */ (data)
+    if (obj.image || obj.dataUrl || obj.base64) return 'Screenshot captured'
+    if (typeof obj.text === 'string') {
+      if (looksLikeScriptNoise(obj.text)) return 'Page content not useful'
+      // Prefer a short clip of useful page text
+      const clip = obj.text.replace(/\s+/g, ' ').trim().slice(0, 100)
+      return clip || t('activity_reading')
+    }
+    // Objects with selector/url keys → short summary, no full selector dump
+    if ('url' in obj || 'selector' in obj || 'ok' in obj) {
+      const parts = []
+      if (typeof obj.url === 'string' && obj.url) parts.push(shortUrl(obj.url))
+      if (obj.ok === false) parts.push(t('tool_result_error'))
+      else if (parts.length === 0) parts.push(t('tool_result_success'))
+      return parts.join(' · ')
+    }
     try {
-      text = JSON.stringify(data)
+      const s = JSON.stringify(data)
+      if (s.length > 80) return t('tool_result_success')
+      return s
     } catch {
       return ''
     }
   }
-  if (looksLikeScriptNoise(text)) {
-    return 'Page content not useful'
+
+  return String(data).slice(0, 120)
+}
+
+/**
+ * One soft line for tool errors.
+ * @param {unknown} error
+ * @returns {string}
+ */
+function formatErrorLine(error) {
+  if (error == null) return ''
+  const s = String(error)
+  if (
+    /permission|screenshot|capture/i.test(s) &&
+    /error|denied|fail|could not|blocked/i.test(s)
+  ) {
+    return t('activity_capture_failed')
   }
-  return text.slice(0, 200)
+  if (s.startsWith('hard_block:')) return t('policy_hard_block')
+  if (s === 'site_denied') return t('policy_site_denied')
+  if (s === 'denied_by_user') return t('tool_denied')
+  if (s === 'cancelled') return t('tool_cancelled')
+  // Strip noisy CSS selectors from errors
+  return s
+    .replace(/\s*→\s*(?![hH][tT][tT][pP][sS]?:)[^\s…]+(?:…)?/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    .slice(0, 140)
 }
 
 /**
@@ -691,10 +876,13 @@ function initAgentEventListener() {
         break
       }
       case MSG.AGENT_THOUGHT: {
-        appendThought(message.text)
+        ensureWorkingHeader()
+        const humanized = humanizeThought(message.text)
+        if (humanized) appendActivityLine(humanized)
         break
       }
       case MSG.AGENT_TOOL_REQUEST: {
+        // Big tool cards only for approval / hard-denial flows.
         renderToolCard(message.toolCall, message.policyDecision)
         break
       }
@@ -711,10 +899,12 @@ function initAgentEventListener() {
         break
       }
       case MSG.AGENT_TURN_COMPLETE: {
+        clearWorkingHeader()
         appendAssistantMessage(message.assistantMessage)
         break
       }
       case MSG.AGENT_TURN_ERROR: {
+        clearWorkingHeader()
         appendTurnError(message.error)
         break
       }

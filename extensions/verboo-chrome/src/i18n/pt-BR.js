@@ -301,5 +301,29 @@ export default {
   },
   "desktop_status_unknown": {
     "message": "Desconhecido"
+  },
+  "activity_working": {
+    "message": "Trabalhando…"
+  },
+  "activity_navigating": {
+    "message": "Navegando para {url}…"
+  },
+  "activity_clicking": {
+    "message": "Clicando…"
+  },
+  "activity_typing": {
+    "message": "Digitando…"
+  },
+  "activity_capturing": {
+    "message": "Capturando página…"
+  },
+  "activity_reading": {
+    "message": "Lendo página…"
+  },
+  "activity_done_short": {
+    "message": "Pronto"
+  },
+  "activity_capture_failed": {
+    "message": "Não foi possível capturar a página"
   }
 }
