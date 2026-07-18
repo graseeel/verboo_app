@@ -361,11 +361,12 @@ textarea {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-elevated) 88%, transparent);
   flex-shrink: 0;
   min-width: 0;
+  flex-wrap: nowrap;
 }
 
 .topbar-brand {
@@ -374,14 +375,14 @@ textarea {
   gap: 8px;
   flex: 0 0 auto;
   min-width: 0;
-  max-width: 40%;
+  overflow: hidden;
 }
 
 .topbar-mascot {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   object-fit: contain;
-  border-radius: 8px;
+  border-radius: 6px;
   flex-shrink: 0;
 }
 
@@ -393,6 +394,8 @@ textarea {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 0;
 }
 
 /* Email / accountId live on the brand title attribute — keep off-layout. */
@@ -403,18 +406,19 @@ textarea {
 .topbar-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex: 0 0 auto;
 }
 
-/* Model selector — pill dropdown with leading glyph + caret. */
+/* Model selector — pill dropdown with leading glyph + caret.
+ * Owns the row's flex growth so brand and actions stay fixed. */
 .model-select-wrap {
   position: relative;
   display: inline-flex;
   align-items: center;
   flex: 1 1 auto;
   min-width: 0;
-  max-width: 160px;
+  max-width: none;
 }
 
 .model-select-icon {
