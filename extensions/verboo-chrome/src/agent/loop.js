@@ -6,17 +6,17 @@
  *   2. Call LLM via routerClient.chatCompletion
  *   3. If response has no tool_calls → done (assistant message)
  *   4. For each tool_call → broadcast thought → executeTool callback → broadcast result
- *   5. Tool results are role:'tool' string messages (OpenAI protocol)
- *   6. If screenshot → after all tool messages, attach as image_url user message
- *   7. Repeat up to MAX_STEPS (10)
- *   8. On any error → throw (background falls back to planMessage heuristic)
+ *   5. If screenshot → attach as image_url in next user message
+ *   6. Repeat up to MAX_STEPS (10)
+ *   7. On any error → throw (background falls back to planMessage heuristic)
  *
  * Policy gate: executeTool callback MUST go through the existing
  * execute() → evaluateToolPolicy path. This module never touches chrome.*.
  *
- * Approval: elevated tools may return needsApproval without running (execute.js).
- * In Skip mode normal tools run; elevated tools still need panel approval wiring.
- * MVP: when needsApproval, we broadcast AGENT_TOOL_REQUEST and surface the error.
+ * Broadcast shapes match panel.js expectations (see MSG constants):
+ *   AGENT_THOUGHT       — { turnId, text, modelId? }
+ *   AGENT_TOOL_EXECUTING— { turnId, toolCallId, toolName }
+ *   AGENT_TOOL_RESULT   — { turnId, toolResult: { toolCallId, success, data?, error?, durationMs } }
  *
  * Multi-user: zero hardcoded accounts.
  */
@@ -27,7 +27,7 @@ import { MSG } from '../controller/protocol.js'
 
 const MAX_STEPS = 10
 const MAX_RESULT_CHARS = 4000
-const NAVIGATE_SETTLE_MS = 1500
+const POST_NAVIGATE_DELAY_MS = 1500
 
 /**
  * System prompt for the browser agent. Bilingual EN+PT to handle mixed requests.
@@ -44,10 +44,10 @@ CAPABILITIES:
 
 IMPORTANT RULES:
 - NEVER use chrome://, chrome-extension://, about:, or edge:// URLs
-- After navigating to a page, WAIT for the page to load before acting. Read the page first.
+- After navigating to a page, WAIT for the page to load before acting. Read the page first or take a screenshot.
 - Prefer precise CSS selectors (e.g. a#video-title, ytd-video-renderer a, input#search)
-- For YouTube music/video: navigate to https://www.youtube.com/results?search_query=... then screenshot then click a#video-title or ytd-video-renderer a#video-title
-  Good selectors: a#video-title, ytd-video-renderer a#video-title, ytd-rich-item-renderer a
+- For YouTube music/video: navigate to youtube.com, type the search query, then click the best matching video link
+  Good selectors: ytd-video-renderer a#video-title, a#video-title, ytd-rich-item-renderer a
 - For search: navigate to the search engine, type the query, submit
 - For reading a page: use read_page with a targeted selector, not the whole body when possible
 - Return a brief text summary when you finish the task
@@ -74,15 +74,13 @@ export async function runLlmAgentTurn({
   if (!apiKey) throw new Error('LLM agent: apiKey is required')
   if (!modelId) throw new Error('LLM agent: modelId is required')
 
-  const messages = [
-    { role: 'system', content: SYSTEM_PROMPT },
-  ]
+  const messages = [{ role: 'system', content: SYSTEM_PROMPT }]
 
-  // Seed with current page context if available (text only — no fake tool_calls).
+  // Seed with current page context as a system note (not a fake tool_call).
   const tabMeta = await getActiveTabMeta()
-  if (tabMeta?.url && !isInternalUrl(tabMeta.url)) {
+  if (tabMeta?.url && /^https?:\/\//i.test(tabMeta.url)) {
     messages.push({
-      role: 'user',
+      role: 'system',
       content: `[Current page: ${tabMeta.url}${tabMeta.title ? ` — ${tabMeta.title}` : ''}]`,
     })
   }
@@ -93,6 +91,8 @@ export async function runLlmAgentTurn({
   const allToolResults = []
 
   for (let step = 0; step < MAX_STEPS; step++) {
+    if (signal?.aborted) break
+
     broadcast({
       type: MSG.AGENT_THOUGHT,
       turnId,
@@ -127,21 +127,20 @@ export async function runLlmAgentTurn({
       })),
     })
 
-    // Execute each tool call; push OpenAI-protocol tool messages (string content only).
-    let screenshotDataUrl = null
-
+    // Execute each tool call → push role:tool message per call.
+    let lastWasSuccessfulNavigate = false
     for (const rawTc of completion.toolCalls) {
       if (signal?.aborted) break
 
       const tc = toToolCall(rawTc)
+      const startedAt = Date.now()
 
-      // Broadcast what the LLM decided to do.
+      // Broadcast what the LLM decided to do (panel shape).
       broadcast({
         type: MSG.AGENT_THOUGHT,
         turnId,
         text: `Calling ${tc.name}${tc.params?.url ? ` → ${tc.params.url}` : tc.params?.selector ? ` → ${tc.params.selector}` : ''}…`,
       })
-
       broadcast({
         type: MSG.AGENT_TOOL_EXECUTING,
         turnId,
@@ -151,27 +150,16 @@ export async function runLlmAgentTurn({
 
       // Execute via the existing policy-gated execute path.
       const execResult = await executeTool(tc)
+      const durationMs = Date.now() - startedAt
 
-      // Elevated / approval-gated tools: execute returns without running.
-      // Broadcast AGENT_TOOL_REQUEST so the panel can show approval UI when wired.
-      // MVP (Skip mode): most tools run; elevated may still fail until panel approval is connected.
-      if (!execResult.ok && execResult.policy?.needsApproval) {
-        broadcast({
-          type: MSG.AGENT_TOOL_REQUEST,
-          turnId,
-          toolCall: tc,
-          policyDecision: execResult.policy,
-        })
-      }
-
-      // Build the tool result for the conversation (STRING only for role:tool).
+      // Build text result for the conversation.
       let resultText = ''
+      let screenshotDataUrl = null
       if (execResult.ok) {
         const raw = execResult.result
         if (typeof raw === 'string') {
           resultText = truncate(raw, MAX_RESULT_CHARS)
         } else if (raw && typeof raw === 'object') {
-          // Screenshot → strip dataUrl from text; attach as separate user message later.
           if (raw.image || raw.dataUrl) {
             screenshotDataUrl = raw.image ?? raw.dataUrl
             const meta = []
@@ -194,9 +182,10 @@ export async function runLlmAgentTurn({
 
       allToolResults.push({
         toolCallId: tc.id,
-        ok: execResult.ok,
-        result: resultText,
-        policy: execResult.policy,
+        success: execResult.ok,
+        data: execResult.ok ? (execResult.result ?? null) : null,
+        error: execResult.ok ? null : execResult.error,
+        durationMs,
       })
 
       broadcast({
@@ -205,41 +194,44 @@ export async function runLlmAgentTurn({
         toolResult: {
           toolCallId: tc.id,
           success: execResult.ok,
-          data: execResult.ok ? resultText : undefined,
-          error: execResult.ok ? undefined : execResult.error,
-          durationMs: 0,
+          data: execResult.ok ? resultText.slice(0, 500) : null,
+          error: execResult.ok ? null : execResult.error,
+          durationMs,
         },
       })
 
-      // OpenAI protocol: each tool result is a string content tool message.
-      messages.push({
-        role: 'tool',
-        tool_call_id: tc.id,
-        content: resultText,
-      })
+      // Push role:tool message with the result. If it was a screenshot,
+      // include the image as an image_url content part (OpenAI shape).
+      if (screenshotDataUrl) {
+        const url = screenshotDataUrl.startsWith('data:')
+          ? screenshotDataUrl
+          : `data:image/png;base64,${screenshotDataUrl}`
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: [
+            { type: 'text', text: resultText },
+            { type: 'image_url', image_url: { url } },
+          ],
+        })
+      } else {
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: resultText,
+        })
+      }
 
-      // After successful navigate, give the page time to settle before next step.
+      // After successful navigate, give the page a moment to load before
+      // asking the LLM for the next step.
       if (execResult.ok && tc.name === 'navigate') {
-        await new Promise((r) => setTimeout(r, NAVIGATE_SETTLE_MS))
+        lastWasSuccessfulNavigate = true
       }
     }
 
-    // Screenshots: after ALL tool messages, attach image as a multimodal user message.
-    if (screenshotDataUrl) {
-      const url = screenshotDataUrl.startsWith('data:')
-        ? screenshotDataUrl
-        : `data:image/png;base64,${screenshotDataUrl}`
-      messages.push({
-        role: 'user',
-        content: [
-          { type: 'text', text: 'Screenshot of the current page for visual analysis:' },
-          { type: 'image_url', image_url: { url } },
-        ],
-      })
+    if (lastWasSuccessfulNavigate) {
+      await sleep(POST_NAVIGATE_DELAY_MS)
     }
-
-    // If aborted, stop here.
-    if (signal?.aborted) break
   }
 
   // Reached max steps without text-only response.
@@ -256,8 +248,6 @@ function truncate(text, max) {
   return text.slice(0, max - 20) + '\n…(truncated)'
 }
 
-function isInternalUrl(url) {
-  if (!url || typeof url !== 'string') return true
-  const lower = url.trim().toLowerCase()
-  return !/^https?:\/\//i.test(lower)
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
