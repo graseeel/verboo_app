@@ -26,6 +26,7 @@ import {
   getSelectedModelId,
 } from './auth/auth.js'
 import { ensureVerbooTabGroup, showPresenceFrame } from './presence/inject.js'
+import { runLlmAgentTurn } from './agent/loop.js'
 
 // ── Native Messaging host name ──────────────────────────────────
 // Matches the manifest at native-messaging/com.verboo.code.browser_extension.json.template
@@ -353,6 +354,68 @@ async function runAgentTurn(turnId, userMessage, senderTabId) {
   const activeTabUrl = activeTab?.url
   const selectedModelId = await getSelectedModelId()
 
+  // ── LLM path: try real multi-step agent when session + model exist.
+  // On any failure, fall back to the heuristic planMessage path below.
+  const session = await loadSession()
+  const apiKey = session?.accessToken
+
+  // Agent presence: purple Verboo tab group + viewport frame while we control.
+  // Presence is UX chrome — not a BrowserTool — so it does not go through
+  // execute()/evaluateToolPolicy. Failures (chrome:// etc.) are ignored.
+  const presenceTabId = activeTab?.id ?? senderTabId
+  if (typeof presenceTabId === 'number') {
+    try {
+      await ensureVerbooTabGroup(presenceTabId)
+      await showPresenceFrame(presenceTabId)
+    } catch {
+      // Non-controllable page or missing APIs — continue the turn.
+    }
+  }
+
+  if (apiKey && selectedModelId) {
+    try {
+      const llmResult = await runLlmAgentTurn({
+        turnId,
+        userMessage,
+        apiKey,
+        modelId: selectedModelId,
+        broadcast: (msg) => broadcast(msg),
+        executeTool: async (tc) => {
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+          const mode = await loadMode()
+          const ctx = {
+            mode,
+            getSiteGrant: (host) => getGrant(host),
+            activeTabId: tab?.id ?? senderTabId,
+          }
+          return execute(tc, ctx)
+        },
+        getActiveTabMeta: async () => {
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+          return { url: tab?.url, title: tab?.title, id: tab?.id }
+        },
+        signal: controller.signal,
+      })
+      broadcast({
+        type: MSG.AGENT_TURN_COMPLETE,
+        turnId,
+        assistantMessage: llmResult.assistantMessage,
+        toolResults: llmResult.toolResults,
+      })
+      turnControllers.delete(turnId)
+      return
+    } catch (llmErr) {
+      // LLM failed → fall back to heuristic planMessage below.
+      broadcast({
+        type: MSG.AGENT_THOUGHT,
+        turnId,
+        text: `LLM agent unavailable (${llmErr?.message ?? llmErr}), using local planner…`,
+      })
+    }
+  }
+
+  // ── Heuristic fallback path (planMessage) ─────────────────────
+
   const { plan, assistantMessage } = planForMessage(userMessage, activeTabUrl)
 
   broadcast({
@@ -377,19 +440,6 @@ async function runAgentTurn(turnId, userMessage, senderTabId) {
     })
     turnControllers.delete(turnId)
     return
-  }
-
-  // Agent presence: purple Verboo tab group + viewport frame while we control.
-  // Presence is UX chrome — not a BrowserTool — so it does not go through
-  // execute()/evaluateToolPolicy. Failures (chrome:// etc.) are ignored.
-  const presenceTabId = activeTab?.id ?? senderTabId
-  if (typeof presenceTabId === 'number') {
-    try {
-      await ensureVerbooTabGroup(presenceTabId)
-      await showPresenceFrame(presenceTabId)
-    } catch {
-      // Non-controllable page or missing APIs — continue the turn.
-    }
   }
 
   /** @type {import('./controller/protocol.js').ToolResult[]} */
