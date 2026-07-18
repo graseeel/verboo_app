@@ -3,7 +3,7 @@
  *
  * Responsibilities:
  * - Apply i18n strings to the DOM
- * - Render auth status (stub login/logout via auth.js)
+ * - Render auth status (API key login via MSG.AUTH_LOGIN_API_KEY)
  * - Persist Chrome Permission Mode (manual/auto/skip) via the inline chip
  * - Chat: send user message → AGENT_TURN_START; render agent events
  *   (thought, tool_request, tool_executing, tool_result, turn_complete,
@@ -19,11 +19,7 @@
  */
 
 import { loadMode, saveMode } from '../policy/modesStore.js'
-import {
-  loadSession,
-  saveSession,
-  logout as clearSession,
-} from '../auth/auth.js'
+import { loadSession } from '../auth/auth.js'
 import { MSG } from '../controller/protocol.js'
 
 // ── i18n ────────────────────────────────────────────────────────
@@ -70,6 +66,28 @@ function applyI18n(root) {
 // ── Auth (login-first gate) ───────────────────────────────────────
 
 /**
+ * Session is active when accessToken is present and not expired.
+ * API-key sessions have no email — accessToken is the source of truth.
+ * @param {import('../auth/auth.js').VerbooSession | null | undefined} session
+ */
+function isSessionActive(session) {
+  if (!session?.accessToken) return false
+  if (session.expiresAt != null && session.expiresAt <= Date.now()) return false
+  return true
+}
+
+/**
+ * @param {import('../auth/auth.js').VerbooSession | null | undefined} session
+ * @returns {string}
+ */
+function sessionDisplayLabel(session) {
+  if (!session) return ''
+  if (session.email) return session.email
+  if (session.accountId) return session.accountId
+  return t('auth_apiKeyLabel')
+}
+
+/**
  * Toggle login gate vs workspace. Signed-out shows only the login card.
  * Signed-in unlocks the chat workspace.
  * @param {import('../auth/auth.js').VerbooSession | null | undefined} session
@@ -77,17 +95,16 @@ function applyI18n(root) {
 function renderAuth(session) {
   const app = document.getElementById('app')
   const workspace = document.getElementById('workspace')
-  const signedIn = Boolean(session?.email)
+  const signedIn = isSessionActive(session)
 
   app.dataset.auth = signedIn ? 'signed-in' : 'signed-out'
   if (workspace) workspace.hidden = !signedIn
 
   const userEl = document.getElementById('topbar-user')
   if (userEl) {
-    userEl.textContent = signedIn
-      ? `${t('auth_signedInAs')} ${session.email}`
-      : ''
-    userEl.title = signedIn ? session.email : ''
+    const label = sessionDisplayLabel(session)
+    userEl.textContent = signedIn ? `${t('auth_signedInAs')} ${label}` : ''
+    userEl.title = signedIn ? label : ''
   }
 
   const logoutBtn = document.getElementById('auth-action')
@@ -113,36 +130,169 @@ function showLoginError(message) {
   }
 }
 
+/**
+ * @param {boolean} loading
+ */
+function setLoginLoading(loading) {
+  const btn = document.getElementById('login-submit')
+  if (!btn) return
+  btn.disabled = loading
+  btn.classList.toggle('is-loading', loading)
+  btn.setAttribute('aria-busy', loading ? 'true' : 'false')
+  const label = btn.querySelector('.btn-label')
+  if (label) {
+    label.textContent = loading ? t('auth_loginLoading') : t('auth_login')
+  }
+}
+
+/**
+ * Promise wrapper around chrome.runtime.sendMessage.
+ * @param {Record<string, unknown>} message
+ * @returns {Promise<any>}
+ */
+function sendMessage(message) {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message })
+          return
+        }
+        resolve(response ?? { ok: false, error: 'no response' })
+      })
+    } catch (err) {
+      resolve({ ok: false, error: err?.message ?? String(err) })
+    }
+  })
+}
+
+// ── Models select ────────────────────────────────────────────────
+
+/**
+ * @param {Array<{ id: string, name?: string, displayName?: string, supportsVision?: boolean }>} models
+ * @param {string | null | undefined} selectedId
+ */
+function populateModelSelect(models, selectedId) {
+  const select = document.getElementById('model-select')
+  if (!select) return
+
+  select.innerHTML = ''
+  const list = Array.isArray(models) ? models : []
+  if (list.length === 0) {
+    select.disabled = true
+    return
+  }
+
+  for (const model of list) {
+    if (!model?.id) continue
+    const opt = document.createElement('option')
+    opt.value = model.id
+    const name = model.displayName || model.name || model.id
+    opt.textContent = model.supportsVision ? `${name} 👁` : name
+    select.appendChild(opt)
+  }
+
+  if (selectedId && list.some((m) => m.id === selectedId)) {
+    select.value = selectedId
+  }
+  select.disabled = select.options.length === 0
+}
+
+function clearModelSelect() {
+  const select = document.getElementById('model-select')
+  if (!select) return
+  select.innerHTML = ''
+  select.disabled = true
+}
+
+function initModelSelect() {
+  const select = document.getElementById('model-select')
+  if (!select) return
+  select.addEventListener('change', () => {
+    const modelId = select.value
+    if (!modelId) return
+    void sendMessage({ type: MSG.MODELS_SELECT, modelId })
+  })
+}
+
 async function handleLoginSubmit(event) {
   event.preventDefault()
   showLoginError('')
-  const input = document.getElementById('login-email')
-  const email = (input?.value ?? '').trim().toLowerCase()
-  if (!email || !email.includes('@') || email.startsWith('@') || email.endsWith('@')) {
-    showLoginError(t('auth_emailInvalid'))
+
+  const input = document.getElementById('login-api-key')
+  const apiKey = (input?.value ?? '').trim()
+  if (!apiKey) {
+    showLoginError(t('auth_apiKeyRequired'))
     input?.focus()
     return
   }
-  // Stub session until real Verboo OAuth is wired (matches auth.js VerbooSession).
-  const now = Date.now()
-  await saveSession({
-    accountId: `acct_${crypto.randomUUID()}`,
-    email,
-    idToken: `stub-id-${crypto.randomUUID()}`,
-    accessToken: `stub-access-${crypto.randomUUID()}`,
-    refreshToken: `stub-refresh-${crypto.randomUUID()}`,
-    expiresAt: now + 60 * 60 * 1000,
-  })
-  const session = await loadSession()
-  renderAuth(session)
-  if (input) input.value = ''
+
+  setLoginLoading(true)
+  try {
+    const response = await sendMessage({
+      type: MSG.AUTH_LOGIN_API_KEY,
+      apiKey,
+    })
+    if (!response?.ok) {
+      showLoginError(response?.error || t('auth_loginFailed'))
+      return
+    }
+    renderAuth(response.session)
+    populateModelSelect(response.models ?? [], response.selectedId)
+    if (input) input.value = ''
+  } catch (err) {
+    showLoginError(err?.message ?? t('auth_loginFailed'))
+  } finally {
+    setLoginLoading(false)
+  }
 }
 
 async function handleLogout() {
-  await clearSession()
-  const session = await loadSession()
-  renderAuth(session)
   showLoginError('')
+  const response = await sendMessage({ type: MSG.AUTH_LOGOUT })
+  if (!response?.ok && response?.error) {
+    console.warn('[Verboo panel] logout failed', response.error)
+  }
+  renderAuth(null)
+  clearModelSelect()
+}
+
+function initApiKeyToggle() {
+  const toggle = document.getElementById('login-key-toggle')
+  const input = document.getElementById('login-api-key')
+  if (!toggle || !input) return
+  toggle.addEventListener('click', () => {
+    const show = input.type === 'password'
+    input.type = show ? 'text' : 'password'
+    toggle.setAttribute('aria-pressed', show ? 'true' : 'false')
+  })
+}
+
+/**
+ * Ask the service worker for current auth + models on panel open.
+ */
+async function hydrateAuthFromBackground() {
+  const authRes = await sendMessage({ type: MSG.AUTH_STATE_REQUEST })
+  if (authRes?.ok && isSessionActive(authRes.session)) {
+    renderAuth(authRes.session)
+    const modelsRes = await sendMessage({ type: MSG.MODELS_LIST })
+    if (modelsRes?.ok) {
+      populateModelSelect(modelsRes.models ?? [], modelsRes.selectedId)
+    }
+    return
+  }
+  // Fallback: local storage (tests / offline SW race)
+  const local = await loadSession()
+  if (isSessionActive(local)) {
+    renderAuth(local)
+    const modelsRes = await sendMessage({ type: MSG.MODELS_LIST })
+    if (modelsRes?.ok) {
+      populateModelSelect(modelsRes.models ?? [], modelsRes.selectedId)
+    }
+  } else {
+    renderAuth(null)
+    clearModelSelect()
+  }
 }
 
 // ── Mode selector (inline chip next to composer) ────────────────
@@ -470,7 +620,7 @@ function initChat() {
     updateSendEnabled()
 
     const session = await loadSession()
-    if (!session?.email && !session?.sessionToken) {
+    if (!isSessionActive(session)) {
       appendTurnError(t('chat_signInRequired'))
       return
     }
@@ -493,6 +643,17 @@ function initAgentEventListener() {
     if (!message || typeof message !== 'object') return
 
     switch (message.type) {
+      case MSG.AUTH_STATE_CHANGED: {
+        renderAuth(message.session ?? null)
+        if (!isSessionActive(message.session)) {
+          clearModelSelect()
+        }
+        break
+      }
+      case MSG.MODELS_STATE_CHANGED: {
+        populateModelSelect(message.models ?? [], message.selectedId)
+        break
+      }
       case MSG.AGENT_THOUGHT: {
         appendThought(message.text)
         break
@@ -572,12 +733,14 @@ async function init() {
   applyI18n(document)
   resolveBrandAssets()
 
-  const session = await loadSession()
-  renderAuth(session)
+  initAgentEventListener()
+  initModelSelect()
+  initApiKeyToggle()
+
+  await hydrateAuthFromBackground()
 
   await initModes()
   initChat()
-  initAgentEventListener()
 
   document.getElementById('login-form')?.addEventListener('submit', (e) => {
     void handleLoginSubmit(e)
@@ -589,10 +752,14 @@ async function init() {
 
   document.getElementById('privacy-link-login')?.addEventListener('click', openPrivacy)
 
+  // Backup if AUTH_STATE_CHANGED broadcast is missed (e.g. race).
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return
     if ('verbooSession' in changes) {
       renderAuth(changes.verbooSession.newValue ?? null)
+      if (!isSessionActive(changes.verbooSession.newValue)) {
+        clearModelSelect()
+      }
     }
   })
 }

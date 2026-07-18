@@ -10,7 +10,8 @@
 
 import { loadMode, saveMode } from '../policy/modesStore.js'
 import { loadGrants, upsertGrant, removeGrant } from '../policy/siteGrantsStore.js'
-import { loadSession, logout as clearSession } from '../auth/auth.js'
+import { loadSession } from '../auth/auth.js'
+import { MSG } from '../controller/protocol.js'
 
 import EN_US from '../i18n/en-US.js'
 import PT_BR from '../i18n/pt-BR.js'
@@ -44,19 +45,49 @@ function applyI18n(root) {
 
 // ── Auth ────────────────────────────────────────────────────────
 
+/**
+ * @param {import('../auth/auth.js').VerbooSession | null | undefined} session
+ */
+function isSessionActive(session) {
+  if (!session?.accessToken) return false
+  if (session.expiresAt != null && session.expiresAt <= Date.now()) return false
+  return true
+}
+
 async function renderAuth(session) {
   const sub = document.getElementById('options-user')
-  if (sub) {
-    sub.textContent = session?.email
-      ? `${t('auth_signedInAs')} ${session.email}`
-      : t('auth_notSignedIn')
+  if (!sub) return
+  if (isSessionActive(session)) {
+    const label = session.email || session.accountId || t('auth_apiKeyLabel')
+    sub.textContent = `${t('auth_signedInAs')} ${label}`
+  } else {
+    sub.textContent = t('auth_notSignedIn')
   }
 }
 
+/**
+ * @param {Record<string, unknown>} message
+ * @returns {Promise<any>}
+ */
+function sendMessage(message) {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message })
+          return
+        }
+        resolve(response ?? { ok: false, error: 'no response' })
+      })
+    } catch (err) {
+      resolve({ ok: false, error: err?.message ?? String(err) })
+    }
+  })
+}
+
 async function handleLogout() {
-  await clearSession()
-  const session = await loadSession()
-  await renderAuth(session)
+  await sendMessage({ type: MSG.AUTH_LOGOUT })
+  await renderAuth(null)
 }
 
 // ── Mode selector ───────────────────────────────────────────────

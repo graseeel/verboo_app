@@ -20,6 +20,12 @@ export default {
   "auth_login": {
     "message": "Entrar"
   },
+  "auth_loginLoading": {
+    "message": "Entrando…"
+  },
+  "auth_loginFailed": {
+    "message": "Falha ao entrar. Verifique sua chave de API e tente de novo."
+  },
   "auth_logout": {
     "message": "Sair"
   },
@@ -31,6 +37,27 @@ export default {
   },
   "auth_signInDescription": {
     "message": "Entre com sua conta Verboo para controlar o Chrome por este painel."
+  },
+  "auth_apiKeyIntro": {
+    "message": "Cole sua chave de API Verboo do plano da sua conta."
+  },
+  "auth_apiKeyLabel": {
+    "message": "Chave de API"
+  },
+  "auth_apiKeyPlaceholder": {
+    "message": "vboo_••••••••••••••••"
+  },
+  "auth_apiKeyToggle": {
+    "message": "Mostrar / ocultar chave"
+  },
+  "auth_apiKeyRequired": {
+    "message": "Informe sua chave de API Verboo."
+  },
+  "auth_createAccount": {
+    "message": "Criar conta"
+  },
+  "auth_openDashboard": {
+    "message": "Abrir painel"
   },
   "auth_emailLabel": {
     "message": "E-mail"

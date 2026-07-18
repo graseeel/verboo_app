@@ -184,6 +184,102 @@ textarea {
   gap: 8px;
 }
 
+/* API-key input with show/hide toggle suffix. */
+.field-input-wrap {
+  position: relative;
+  display: block;
+}
+
+.field-input-wrap .field-input {
+  padding-right: 40px;
+}
+
+.field-input-suffix {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
+}
+
+.field-input-suffix:hover {
+  color: var(--text);
+  background: var(--bg);
+}
+
+.field-input-suffix:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Login links row (Create account / Open dashboard). */
+.login-links {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px 14px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.login-links .text-link {
+  margin: 0;
+  padding: 4px 2px;
+}
+
+/* Loading state on the Sign-in button. */
+.btn .btn-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn .btn-spinner {
+  display: none;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: btn-spin 0.7s linear infinite;
+}
+
+.btn[data-loading="true"] {
+  pointer-events: none;
+}
+
+.btn[data-loading="true"] .btn-label {
+  visibility: hidden;
+}
+
+.btn[data-loading="true"] .btn-spinner {
+  display: inline-block;
+  position: absolute;
+}
+
+.btn[data-loading="true"] {
+  position: relative;
+}
+
+@keyframes btn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .field-label {
   font-size: 12px;
   font-weight: 600;
@@ -306,8 +402,132 @@ textarea {
 .topbar-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   flex-shrink: 0;
+}
+
+/* Model selector — pill dropdown with leading glyph + caret. */
+.model-select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 200px;
+  min-width: 0;
+}
+
+.model-select-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-dim);
+  pointer-events: none;
+  display: inline-flex;
+}
+
+.model-select {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  min-width: 0;
+  max-width: 200px;
+  min-height: 32px;
+  padding: 0 26px 0 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-soft);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  cursor: pointer;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.model-select:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--bg-soft) 78%, var(--accent-soft));
+}
+
+.model-select:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
+  box-shadow: var(--focus-ring);
+}
+
+.model-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.model-select option {
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-weight: 500;
+  padding: 6px 4px;
+}
+
+.model-select option[data-vision="true"] {
+  /* The vision suffix is added in JS so it shows in the native menu */
+}
+
+.model-select-caret {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-dim);
+  pointer-events: none;
+  display: inline-flex;
+}
+
+.model-select-wrap:focus-within .model-select-caret,
+.model-select:hover + .model-select-caret {
+  color: var(--text);
+}
+
+/* Vision badge — appears next to a model name in the dropdown label. */
+.model-select-vision {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+
+.model-select[data-state="loading"]::after,
+.model-select[data-state="error"]::after {
+  content: '';
+  position: absolute;
+  right: 26px;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  transform: translateY(-50%);
+}
+
+.model-select[data-state="loading"]::after {
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  animation: btn-spin 0.7s linear infinite;
+}
+
+.model-select[data-state="error"]::after {
+  background: var(--danger);
+  box-shadow: 0 0 0 2px var(--danger-soft);
 }
 
 .topbar-signout {
