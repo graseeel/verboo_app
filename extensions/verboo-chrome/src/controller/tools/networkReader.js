@@ -18,7 +18,7 @@
  * elevated check).
  *
  * @param {{
- *   name: 'network';
+ *   name: 'network_reader';
  *   action?: 'list' | 'clear';
  *   durationMs?: number;
  *   markSensitive?: boolean;

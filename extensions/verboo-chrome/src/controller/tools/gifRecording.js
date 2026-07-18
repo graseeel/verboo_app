@@ -18,7 +18,7 @@
  *     upgrade path documented.
  *
  * @param {{
- *   name: 'gif_record';
+ *   name: 'gif_recording';
  *   durationMs?: number;
  *   fps?: number;
  *   format?: 'gif' | 'webp';

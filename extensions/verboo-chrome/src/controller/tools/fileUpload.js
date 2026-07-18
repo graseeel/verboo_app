@@ -22,7 +22,7 @@
  *     "this leaves the page context" — which is the right heuristic.
  *
  * @param {{
- *   name: 'upload';
+ *   name: 'file_upload';
  *   selector: string;
  *   mimeType?: string;
  *   filename?: string;

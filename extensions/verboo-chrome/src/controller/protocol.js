@@ -129,9 +129,8 @@ export const TOOL_RISK_MAP = Object.freeze({
   console_reader: 'read',       // chrome.scripting + console API override
   network_reader: 'read',       // chrome.debugger Network domain
 
-  // Mutate additions. console_clear + gif/session recording.
+  // Mutate additions. console_clear + session recording.
   console_clear: 'mutate',
-  gif_recording: 'mutate',      // MediaRecorder in panel
   session_recording: 'mutate',  // recorded events for later replay
   schedule_task: 'mutate',      // chrome.alarms — REQUIRES 'alarms' permission
   workflow_record: 'mutate',    // record sequence of tool calls
@@ -140,15 +139,13 @@ export const TOOL_RISK_MAP = Object.freeze({
   // Elevated additions. ALWAYS re-prompt; NO always-allow override.
   file_upload: 'elevated',      // chrome.debugger DOM.setFileInputFiles — filesystem access
   history_read: 'elevated',    // chrome.history.search — REQUIRES 'history' permission
+  gif_recording: 'elevated',    // MediaRecorder in panel — captures screen (PII/passwords visible)
 
-  // ── Aliases (short names → same risk as canonical) ───
-  // Kept for backward compatibility with tool handlers that ship
-  // under short names (tools/console.js, tools/network.js, etc.).
-  // The dispatch switch in execute.js accepts both forms.
+  // Aliases (short names) — same risk as canonical long names
   console: 'read',
   network: 'read',
   upload: 'elevated',
-  gif_record: 'mutate',
+  gif_record: 'elevated',
 
   // Future (post-P5, do not implement yet):
   // evaluate: 'elevated',     // Runtime.evaluate in isolated world — needs debugger permission
@@ -216,7 +213,7 @@ export const MSG_SHAPES = Object.freeze({
  */
 export function makeToolCall(name, params, reasoning) {
   const id = crypto.randomUUID()
-  const risk = TOOL_RISK_MAP[name] ?? 'mutate' // fail safe
+  const risk = TOOL_RISK_MAP[name] ?? 'elevated' // fail safe — unknown tools prompt
   const input = `${name} ${serializeParams(params)}`
   return { id, name, risk, input, params, reasoning }
 }

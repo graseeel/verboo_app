@@ -16,7 +16,7 @@
  * Risk: `read`. The policy gate (evaluateToolPolicy) treats this as a
  * read; site grants (deny) and Hard Blocks apply normally.
  *
- * @param {{ name: 'console'; action?: 'list' | 'clear'; risk?: string; input?: string }} tool
+ * @param {{ name: 'console_reader'; action?: 'list' | 'clear'; risk?: string; input?: string }} tool
  * @returns {Promise<{ messages: Array<{ level: string; text: string; ts: number }>; note: string }>}
  */
 export async function consoleReader(tool) {
