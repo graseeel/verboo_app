@@ -547,10 +547,32 @@ function initAgentEventListener() {
         appendTurnError(message.error)
         break
       }
+      case 'desktop:status': {
+        renderDesktopStatus(message.state)
+        break
+      }
       default:
         break
     }
   })
+}
+
+// ── Desktop connection status (P4) ───────────────────────────────
+//
+// Listens for 'desktop:status' messages from the background (which
+// probes the native host / Tauri IPC). States: 'connected',
+// 'disconnected', 'unknown'. Default is 'unknown' until the first
+// message arrives.
+
+function renderDesktopStatus(state) {
+  const chip = document.getElementById('desktop-status-chip')
+  if (!chip) return
+  const textEl = chip.querySelector('.desktop-status-text')
+  const valid = ['connected', 'disconnected', 'unknown'].includes(state)
+  const next = valid ? state : 'unknown'
+  chip.dataset.state = next
+  const key = `desktop_status_${next}`
+  if (textEl) textEl.textContent = t(key)
 }
 
 // ── Init ─────────────────────────────────────────────────────────

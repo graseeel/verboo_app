@@ -1,3 +1,4 @@
+mod browser_bridge;
 mod models;
 mod services;
 

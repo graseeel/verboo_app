@@ -24,7 +24,8 @@
     "storage",
     "scripting",
     "tabs",
-    "tabGroups"
+    "tabGroups",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "http://*/*",

@@ -50,6 +50,10 @@ reqwest = { version = "0.12", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# ── Error handling ───────────────────────────────────────────────
+# Used by browser_bridge::native_messaging::FrameError and friends.
+thiserror = "1"
+
 # ── Power management ──────────────────────────────────────────────
 # keepawake: cross-platform (macOS IOKit, Windows SetThreadExecutionState,
 # Linux systemd-inhibit/dbus). Used by TurnService to honor

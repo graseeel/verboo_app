@@ -492,6 +492,60 @@ body {
   }
 }
 
+/* ── Desktop connection status chip (P4) ─────────────────────── */
+.desktop-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.desktop-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--fg-muted);
+  width: fit-content;
+}
+
+.desktop-status-chip[data-state="connected"] {
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.desktop-status-chip[data-state="disconnected"] {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.desktop-status-chip[data-state="unknown"] {
+  background: var(--bg-elev-2);
+  color: var(--fg-subtle);
+  border-color: var(--border-strong);
+}
+
+.desktop-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.desktop-status-chip[data-state="connected"] .desktop-status-dot {
+  box-shadow: 0 0 0 3px var(--success-soft);
+}
+
+.desktop-status-chip[data-state="disconnected"] .desktop-status-dot {
+  box-shadow: 0 0 0 3px var(--danger-soft);
+}
+
 /* ── Thought bubble (agent planning) ─────────────────────────── */
 .chat-thought {
   align-self: flex-start;

@@ -151,5 +151,17 @@ export default {
   },
   "privacy_link": {
     "message": "Política de privacidade"
+  },
+  "desktop_status_title": {
+    "message": "Desktop"
+  },
+  "desktop_status_connected": {
+    "message": "Desktop conectado"
+  },
+  "desktop_status_disconnected": {
+    "message": "Desktop desconectado"
+  },
+  "desktop_status_unknown": {
+    "message": "Desconhecido"
   }
 }
