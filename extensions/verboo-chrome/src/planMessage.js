@@ -88,21 +88,34 @@ const NON_CONTROLLABLE_SCHEMES = Object.freeze([
 const PURCHASE_INTENT_RE = /\b(buy|purchase|checkout|order|pay|payment)\b/i
 
 /**
- * YouTube search / play-music intent (EN + PT).
- * Captures the query string when present.
+ * Structured YouTube search phrases (EN + PT) with capture groups for the query.
  *
  * Examples matched:
  *   - "search cats on youtube"
  *   - "search youtube for lo-fi"
  *   - "pesquise gatos no youtube"
  *   - "tocar musica lo-fi"
- *   - "tocar música X"
+ *   - "play music X"
  */
-const YOUTUBE_SEARCH_RE =
+const YOUTUBE_SEARCH_STRUCTURED_RE =
   /(?:search\s+(?:for\s+)?(.+?)\s+on\s+youtube|search\s+youtube\s+for\s+(.+)|(?:pesquise|pesquisar|procure|procurar)\s+(.+?)\s+no\s+youtube|tocar\s+m[uú]sica\s+(.+)|play\s+(?:music|song)\s+(.+?)(?:\s+on\s+youtube)?)/i
 
-/** YouTube search box — common stable selectors. */
-const YOUTUBE_SEARCH_SELECTOR = 'input#search, input[name="search_query"]'
+/**
+ * Broader music / play / YouTube intent (EN + PT).
+ * Used when structured capture fails but the user clearly wants audio/video.
+ *
+ * Examples: "coloque uma musica da sabrina carpenter, house tour",
+ * "play stay kid laroi", "toque song X", "put on music Y".
+ */
+const MUSIC_OR_YOUTUBE_INTENT_RE =
+  /\b(coloque|coloca|toque|tocar|toca|play(?:\s+me)?|put\s+on|m[uú]sica|music|song|songs|v[ií]deo\s+clipe|video\s+clipe|clipe|youtube)\b/i
+
+/**
+ * Filler / intent words stripped when deriving a free-form music search query.
+ * Keep artist/title tokens; drop verbs, articles, and "youtube" noise.
+ */
+const MUSIC_QUERY_STRIP_RE =
+  /\b(coloque|coloca|toque|tocar|toca|play(?:\s+me)?|put\s+on|please|por\s+favor|pra\s+mim|para\s+mim|uma|um|uns|umas|a|o|os|as|da|de|do|das|dos|the|me|my|on|no|na|em|youtube|you\s+tube|m[uú]sica|music|song|songs|v[ií]deo\s+clipe|video\s+clipe|clipe|video|vídeo)\b/gi
 
 // ── Public API ───────────────────────────────────────────────
 
@@ -134,18 +147,15 @@ export function planForMessage(userMessage, activeTabUrl) {
   /** @type {ToolCall[]} */
   const plan = []
 
-  // 0) YouTube search / play-music — navigate then type into the search box.
+  // 0) YouTube search / play-music — single navigate to results URL.
+  //    More reliable than home + type into the search box.
   //    Takes priority over a bare navigate when a query was extracted.
   if (youtubeQuery) {
+    const resultsUrl =
+      'https://www.youtube.com/results?search_query=' +
+      encodeURIComponent(youtubeQuery)
     plan.push(
-      buildNavigateToolCall('https://www.youtube.com', 'Open YouTube for search'),
-    )
-    plan.push(
-      buildTypeToolCall(
-        YOUTUBE_SEARCH_SELECTOR,
-        youtubeQuery,
-        'Type the YouTube search query',
-      ),
+      buildNavigateToolCall(resultsUrl, 'Open YouTube search results'),
     )
     return { plan }
   }
@@ -303,42 +313,55 @@ function buildNavigateToolCall(url, reasoning) {
 }
 
 /**
- * @param {string} selector
- * @param {string} text
- * @param {string} reasoning
- * @returns {ToolCall}
- */
-function buildTypeToolCall(selector, text, reasoning) {
-  return {
-    id: cryptoRandomId(),
-    name: 'type',
-    risk: 'mutate',
-    input: `type selector=${selector} text=${text}`,
-    params: { selector, text, clear: true },
-    selector,
-    text,
-    clear: true,
-    reasoning,
-  }
-}
-
-/**
- * Extract a YouTube search query from EN/PT phrases.
- * Returns null when the message is not a YouTube-search intent.
+ * Extract a YouTube / music search query from EN/PT phrases.
+ * Returns null when the message is not a YouTube/music-search intent.
+ *
+ * Preference order:
+ *   1. Structured captures ("search X on youtube", "pesquise X no youtube", …)
+ *   2. Broader play/music verbs — strip intent filler, keep artist/title
  *
  * @param {string} text
  * @returns {string | null}
  */
 export function extractYoutubeSearchQuery(text) {
   if (typeof text !== 'string') return null
-  const m = text.match(YOUTUBE_SEARCH_RE)
-  if (!m) return null
-  // Capture groups are alternatives — first non-empty wins.
-  for (let i = 1; i < m.length; i++) {
-    const q = (m[i] ?? '').trim()
-    if (q) return q.replace(/\s+/g, ' ').trim()
+  const trimmed = text.trim()
+  if (!trimmed) return null
+
+  // 1) Structured patterns with explicit capture groups.
+  const m = trimmed.match(YOUTUBE_SEARCH_STRUCTURED_RE)
+  if (m) {
+    for (let i = 1; i < m.length; i++) {
+      const q = normalizeSearchQuery(m[i])
+      if (q) return q
+    }
   }
-  return null
+
+  // 2) Free-form music / play intent — strip verbs & filler, keep the rest.
+  if (!MUSIC_OR_YOUTUBE_INTENT_RE.test(trimmed)) return null
+
+  // Bare "open youtube" / "abra o youtube" is navigate-only, not a search.
+  if (/^\s*(open|go\s+to|navigate|visit|abra|abrir|abre|vai\s+para|ir\s+para|acessar|acesso)\s+(o\s+|the\s+)?(youtube|you\s+tube)\b/i.test(trimmed)
+    && !/\b(search|pesquise|pesquisar|procure|procurar|m[uú]sica|music|song|play|coloque|toque|tocar)\b/i.test(trimmed)) {
+    return null
+  }
+
+  const stripped = trimmed
+    .replace(MUSIC_QUERY_STRIP_RE, ' ')
+    .replace(/[,;:!?.]+/g, ' ')
+  const q = normalizeSearchQuery(stripped)
+  // Need at least one content token left after stripping intent words.
+  return q || null
+}
+
+/**
+ * Collapse whitespace / trim a search query candidate.
+ * @param {string|undefined|null} s
+ * @returns {string}
+ */
+function normalizeSearchQuery(s) {
+  if (s == null) return ''
+  return String(s).replace(/\s+/g, ' ').trim()
 }
 
 function shortScheme(url) {

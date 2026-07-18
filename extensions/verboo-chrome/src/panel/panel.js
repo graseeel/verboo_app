@@ -562,12 +562,41 @@ function formatParams(toolCall) {
 
 function formatResultData(data) {
   if (data == null) return ''
-  if (typeof data === 'string') return data.slice(0, 200)
-  try {
-    return JSON.stringify(data).slice(0, 200)
-  } catch {
-    return ''
+  let text
+  if (typeof data === 'string') {
+    text = data
+  } else if (data && typeof data === 'object' && typeof data.text === 'string') {
+    // read_page returns { text, selector, url, … } — surface the body text.
+    text = data.text
+  } else {
+    try {
+      text = JSON.stringify(data)
+    } catch {
+      return ''
+    }
   }
+  if (looksLikeScriptNoise(text)) {
+    return 'Page content not useful'
+  }
+  return text.slice(0, 200)
+}
+
+/**
+ * Detect minified script / SPA dumps that are useless in the chat chip
+ * (e.g. YouTube body textContent full of ytcsi / function noise).
+ * @param {string} text
+ * @returns {boolean}
+ */
+function looksLikeScriptNoise(text) {
+  if (!text || typeof text !== 'string') return false
+  const sample = text.slice(0, 4000)
+  if (/\bytcsi\b|ytcfg\.set|window\[["']yt/i.test(sample)) return true
+  // Dense braces/semicolons typical of minified JS blobs.
+  if (sample.length >= 200) {
+    const symbols = (sample.match(/[{};=]/g) || []).length
+    if (symbols / sample.length > 0.08) return true
+  }
+  return false
 }
 
 function policyReasonLabel(decision) {

@@ -194,7 +194,7 @@ test('planForMessage: handles missing/undefined active tab URL safely', () => {
   assert.ok(r.assistantMessage)
 })
 
-// ── YouTube search multi-step ───────────────────────────────
+// ── YouTube / music search ──────────────────────────────────
 
 test('extractYoutubeSearchQuery: EN search on youtube', () => {
   assert.equal(extractYoutubeSearchQuery('search cats on youtube'), 'cats')
@@ -207,28 +207,66 @@ test('extractYoutubeSearchQuery: PT pesquise / tocar musica', () => {
   assert.equal(extractYoutubeSearchQuery('tocar música jazz suave'), 'jazz suave')
 })
 
+test('extractYoutubeSearchQuery: free-form PT "coloque uma musica da …"', () => {
+  assert.equal(
+    extractYoutubeSearchQuery('coloque uma musica da sabrina carpenter, house tour'),
+    'sabrina carpenter house tour',
+  )
+})
+
+test('extractYoutubeSearchQuery: free-form EN play / put on', () => {
+  assert.equal(extractYoutubeSearchQuery('play stay kid laroi'), 'stay kid laroi')
+  assert.equal(extractYoutubeSearchQuery('play me espresso sabrina carpenter'), 'espresso sabrina carpenter')
+  assert.equal(extractYoutubeSearchQuery('put on music lo-fi hip hop'), 'lo-fi hip hop')
+})
+
+test('extractYoutubeSearchQuery: toque / song / video clipe', () => {
+  assert.equal(extractYoutubeSearchQuery('toque song bad guy billie'), 'bad guy billie')
+  assert.equal(extractYoutubeSearchQuery('coloque o video clipe de shape of you'), 'shape of you')
+})
+
 test('extractYoutubeSearchQuery: returns null for plain open youtube', () => {
   assert.equal(extractYoutubeSearchQuery('open youtube'), null)
   assert.equal(extractYoutubeSearchQuery('abra o youtube'), null)
 })
 
-test('planForMessage: "search X on youtube" is navigate + type', () => {
-  const r = planForMessage('search cats on youtube', 'chrome://extensions')
-  assert.equal(r.assistantMessage, undefined)
-  assert.equal(r.plan.length, 2)
-  assert.equal(r.plan[0].name, 'navigate')
-  assert.equal(r.plan[0].url, 'https://www.youtube.com')
-  assert.equal(r.plan[1].name, 'type')
-  assert.equal(r.plan[1].params.text, 'cats')
-  assert.ok(r.plan[1].params.selector.includes('search'))
+test('extractYoutubeSearchQuery: returns null without music/youtube intent', () => {
+  assert.equal(extractYoutubeSearchQuery('what does this page say?'), null)
+  assert.equal(extractYoutubeSearchQuery('hello world'), null)
 })
 
-test('planForMessage: "tocar musica X" is navigate + type', () => {
-  const r = planForMessage('tocar musica lo-fi', 'https://example.com')
-  assert.equal(r.plan.length, 2)
+function assertYoutubeResultsNavigate(r, expectedQuery) {
+  assert.equal(r.assistantMessage, undefined)
+  assert.equal(r.plan.length, 1)
   assert.equal(r.plan[0].name, 'navigate')
-  assert.equal(r.plan[1].name, 'type')
-  assert.equal(r.plan[1].text, 'lo-fi')
+  const expectedUrl =
+    'https://www.youtube.com/results?search_query=' +
+    encodeURIComponent(expectedQuery)
+  assert.equal(r.plan[0].url, expectedUrl)
+  assert.equal(r.plan[0].params.url, expectedUrl)
+}
+
+test('planForMessage: "search X on youtube" navigates to results URL', () => {
+  const r = planForMessage('search cats on youtube', 'chrome://extensions')
+  assertYoutubeResultsNavigate(r, 'cats')
+})
+
+test('planForMessage: "tocar musica X" navigates to results URL', () => {
+  const r = planForMessage('tocar musica lo-fi', 'https://example.com')
+  assertYoutubeResultsNavigate(r, 'lo-fi')
+})
+
+test('planForMessage: PT music request "coloque uma musica da sabrina carpenter, house tour"', () => {
+  const r = planForMessage(
+    'coloque uma musica da sabrina carpenter, house tour',
+    'chrome://extensions',
+  )
+  assertYoutubeResultsNavigate(r, 'sabrina carpenter house tour')
+})
+
+test('planForMessage: "play stay kid laroi" navigates to results URL', () => {
+  const r = planForMessage('play stay kid laroi', 'https://example.com')
+  assertYoutubeResultsNavigate(r, 'stay kid laroi')
 })
 
 // ── nonControllablePageMessage ──────────────────────────────

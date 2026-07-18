@@ -5,7 +5,7 @@
  * injected function dispatches a real PointerEvent so SPA click
  * handlers fire correctly.
  *
- * Presence: shows the purple frame + orange agent cursor at the
+ * Presence: shows the purple frame + purple agent cursor at the
  * target before clicking so the user can see where Verboo will act.
  *
  * @param {{ name: 'click'; selector: string; button?: number; risk?: string; input?: string }} tool

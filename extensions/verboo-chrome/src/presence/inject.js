@@ -1,10 +1,10 @@
 /**
- * presence/inject.js — Claude-in-Chrome style agent presence for Verboo.
+ * presence/inject.js — agent presence for Verboo (tab group + frame + cursor).
  *
  * Visual + tab-group cues while Verboo controls the browser:
  *   - Purple "Verboo" tab group
  *   - Animated purple viewport frame
- *   - Orange agent cursor that moves to the interaction target
+ *   - Discrete purple agent cursor that moves to the interaction target
  *
  * Prefer chrome.scripting.executeScript (no content_scripts) so overlays
  * only appear during control. All public helpers are best-effort: failures
@@ -273,7 +273,7 @@ function injectAgentCursorInPage(cursorId, styleId, target) {
   if (!document.getElementById(styleId)) {
     const style = document.createElement('style')
     style.id = styleId
-    // Colors: orange/amber ~#ff8b4a with soft glow (Claude-style agent cursor).
+    // Brand purple soft circle + discrete drop shadow (blurred silhouette, not a loud glow).
     style.textContent = `
 #${cursorId} {
   position: fixed;
@@ -284,15 +284,17 @@ function injectAgentCursorInPage(cursorId, styleId, target) {
   border-radius: 50%;
   pointer-events: none;
   z-index: 2147483647;
+  opacity: 0.9;
   background: radial-gradient(
     circle at 35% 35%,
-    #ffc48a 0%,
-    #ff8b4a 55%,
-    rgba(255, 139, 74, 0.15) 100%
+    rgba(169, 109, 255, 0.95) 0%,
+    rgba(147, 85, 255, 0.85) 55%,
+    rgba(147, 85, 255, 0.12) 100%
   );
   box-shadow:
-    0 0 16px 6px rgba(255, 139, 74, 0.55),
-    0 0 4px 1px rgba(255, 180, 100, 0.85);
+    0 4px 10px rgba(0, 0, 0, 0.22),
+    0 8px 20px rgba(147, 85, 255, 0.25),
+    0 12px 16px rgba(0, 0, 0, 0.12);
   transform: translate(-50%, -50%);
   will-change: transform;
 }

@@ -5,7 +5,7 @@
  * the field first if `clear` is true. Dispatches input + change events
  * so React/Vue controlled components pick up the value.
  *
- * Presence: shows the purple frame + orange agent cursor at the
+ * Presence: shows the purple frame + purple agent cursor at the
  * target before typing so the user can see where Verboo will act.
  *
  * @param {{ name: 'type'; selector: string; text: string; clear?: boolean; risk?: string; input?: string }} tool
