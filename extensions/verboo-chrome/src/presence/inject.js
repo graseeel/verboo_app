@@ -216,6 +216,53 @@ export async function clearPresenceBestEffort(tabId) {
 }
 
 /**
+ * Clear presence overlays on every tab that could have them. Targets:
+ *   - All tabs in any "Verboo" tab group (any window)
+ *   - Plus the active tab in every window (fallback when no group exists)
+ *
+ * Use at turn teardown when the agent may have opened / switched tabs
+ * mid-turn and we don't want a stale frame left behind on a background tab.
+ *
+ * Never throws — presence cleanup must not block turn teardown.
+ *
+ * @returns {Promise<void>}
+ */
+export async function clearPresenceOnAllTabs() {
+  try {
+    /** @type {Set<number>} */
+    const tabIds = new Set()
+    try {
+      const groups = await chrome.tabGroups.query({ title: VERBOO_TAB_GROUP_TITLE })
+      for (const g of groups) {
+        const tabs = await chrome.tabs.query({ groupId: g.id })
+        for (const t of tabs) {
+          if (typeof t.id === 'number') tabIds.add(t.id)
+        }
+      }
+    } catch {
+      // tabGroups may be unavailable — fall through to active-tab fallback.
+    }
+    try {
+      const windows = await chrome.windows.getAll()
+      for (const w of windows) {
+        const [active] = await chrome.tabs.query({
+          active: true,
+          windowId: w.id,
+        })
+        if (typeof active?.id === 'number') tabIds.add(active.id)
+      }
+    } catch {
+      // windows/tabs query failure — best-effort.
+    }
+    await Promise.all(
+      Array.from(tabIds).map((id) => clearPresence(id).catch(() => {})),
+    )
+  } catch {
+    // Whole-operation failure — ignore.
+  }
+}
+
+/**
  * Best-effort presence prelude used by click/type: frame + cursor + delay.
  * Never throws. Delay is randomBetween(280, 380) unless reduced-motion (0).
  *

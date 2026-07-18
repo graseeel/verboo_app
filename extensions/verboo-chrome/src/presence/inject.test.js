@@ -16,6 +16,7 @@ import {
   randomBetween,
   clearPresence,
   clearPresenceBestEffort,
+  clearPresenceOnAllTabs,
 } from './inject.js'
 
 test('Verboo tab group title is "Verboo"', () => {
@@ -44,6 +45,7 @@ test('randomBetween stays within [min, max]', () => {
 test('clearPresence and clearPresenceBestEffort are exported functions', () => {
   assert.equal(typeof clearPresence, 'function')
   assert.equal(typeof clearPresenceBestEffort, 'function')
+  assert.equal(typeof clearPresenceOnAllTabs, 'function')
 })
 
 test('clearPresence no-ops without a numeric tabId', async () => {

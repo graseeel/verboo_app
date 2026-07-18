@@ -28,7 +28,7 @@ import {
 import {
   ensureVerbooTabGroup,
   showPresenceFrame,
-  clearPresenceBestEffort,
+  clearPresenceOnAllTabs,
 } from './presence/inject.js'
 import { runLlmAgentTurn } from './agent/loop.js'
 
@@ -154,7 +154,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       void runAgentTurn(message.turnId, message.userMessage, sender.tab?.id)
         .catch((err) => {
           try {
-            void clearPresenceBestEffort(sender.tab?.id)
+            void clearPresenceOnAllTabs()
           } catch {
             /* presence cleanup is best-effort */
           }
@@ -412,7 +412,7 @@ async function runAgentTurn(turnId, userMessage, senderTabId) {
         toolResults: llmResult.toolResults,
       })
       try {
-        await clearPresenceBestEffort(presenceTabId)
+        await clearPresenceOnAllTabs()
       } catch {
         /* presence cleanup is best-effort */
       }
@@ -453,7 +453,7 @@ async function runAgentTurn(turnId, userMessage, senderTabId) {
       toolResults: [],
     })
     try {
-      await clearPresenceBestEffort(presenceTabId)
+      await clearPresenceOnAllTabs()
     } catch {
       /* presence cleanup is best-effort */
     }
@@ -615,7 +615,7 @@ async function runAgentTurn(turnId, userMessage, senderTabId) {
     toolResults,
   })
   try {
-    await clearPresenceBestEffort(presenceTabId)
+    await clearPresenceOnAllTabs()
   } catch {
     /* presence cleanup is best-effort */
   }
@@ -659,7 +659,7 @@ function cancelTurn(turnId) {
   }
   turnControllers.delete(turnId)
   try {
-    void clearPresenceBestEffort()
+    void clearPresenceOnAllTabs()
   } catch {
     /* presence cleanup is best-effort */
   }

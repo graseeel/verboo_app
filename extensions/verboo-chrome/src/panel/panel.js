@@ -818,12 +818,20 @@ function escapeHtml(s) {
 
 // ── Chat send ────────────────────────────────────────────────────
 
+/** True while an agent turn is in flight (disables the send button). */
+let turnInFlight = false
+
 function updateSendEnabled() {
   const input = document.getElementById('chat-input')
   const send = document.getElementById('chat-send')
   if (!input || !send) return
   const hasText = input.value.trim().length > 0
-  send.disabled = !hasText
+  send.disabled = turnInFlight || !hasText
+}
+
+function setTurnInFlight(inFlight) {
+  turnInFlight = Boolean(inFlight)
+  updateSendEnabled()
 }
 
 function initChat() {
@@ -849,6 +857,7 @@ function initChat() {
     appendUserMessage(text)
 
     const turnId = crypto.randomUUID()
+    setTurnInFlight(true)
     await chrome.runtime.sendMessage({
       type: MSG.AGENT_TURN_START,
       turnId,
@@ -900,11 +909,13 @@ function initAgentEventListener() {
       }
       case MSG.AGENT_TURN_COMPLETE: {
         clearWorkingHeader()
+        setTurnInFlight(false)
         appendAssistantMessage(message.assistantMessage)
         break
       }
       case MSG.AGENT_TURN_ERROR: {
         clearWorkingHeader()
+        setTurnInFlight(false)
         appendTurnError(message.error)
         break
       }
