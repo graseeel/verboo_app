@@ -30,7 +30,22 @@ export default {
     "message": "Not signed in"
   },
   "auth_signInDescription": {
-    "message": "Sign in with your Verboo account to use the browser side panel."
+    "message": "Sign in with your Verboo account to control Chrome from this panel."
+  },
+  "auth_emailLabel": {
+    "message": "Email"
+  },
+  "auth_emailPlaceholder": {
+    "message": "you@company.com"
+  },
+  "auth_emailInvalid": {
+    "message": "Enter a valid email address."
+  },
+  "settings_title": {
+    "message": "Permissions & sites"
+  },
+  "chat_emptyHint": {
+    "message": "Ask Verboo to navigate, read, or act on this page."
   },
   "mode_title": {
     "message": "Permission mode"
@@ -72,7 +87,7 @@ export default {
     "message": "Remove"
   },
   "siteGrants_addHost": {
-    "message": "Add host"
+    "message": "Add"
   },
   "siteGrants_hostPlaceholder": {
     "message": "example.com"
@@ -83,14 +98,50 @@ export default {
   "chat_title": {
     "message": "Chat"
   },
+  "chat_greeting": {
+    "message": "How can I help you today?"
+  },
   "chat_placeholder": {
-    "message": "Type a message…"
+    "message": "Ask Verboo to control this page…"
   },
   "chat_stubNotice": {
     "message": "Agent chat is not yet available in this preview build."
   },
   "chat_send": {
     "message": "Send"
+  },
+  "chat_sendTitle": {
+    "message": "Send"
+  },
+  "topbar_settingsTitle": {
+    "message": "Settings"
+  },
+  "options_title": {
+    "message": "Verboo settings"
+  },
+  "account_title": {
+    "message": "Account"
+  },
+  "desktop_sectionTitle": {
+    "message": "Desktop connection"
+  },
+  "mode_short_manual": {
+    "message": "Ask before acting"
+  },
+  "mode_short_auto": {
+    "message": "Auto"
+  },
+  "mode_short_skip": {
+    "message": "Act without asking"
+  },
+  "mode_manualLong": {
+    "message": "Ask before acting"
+  },
+  "mode_autoLong": {
+    "message": "Auto"
+  },
+  "mode_skipLong": {
+    "message": "Act without asking"
   },
   "chat_signInRequired": {
     "message": "Sign in to send a message."
@@ -196,5 +247,20 @@ export default {
   },
   "tool_name_gif": {
     "message": "GIF"
+  },
+  "risk_read": {
+    "message": "Read"
+  },
+  "risk_mutate": {
+    "message": "Mutate"
+  },
+  "risk_elevated": {
+    "message": "Elevated"
+  },
+  "tool_result_success": {
+    "message": "Done"
+  },
+  "tool_result_error": {
+    "message": "Error"
   }
 }

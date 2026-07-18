@@ -3,132 +3,185 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Verboo — Control Chrome with Verboo</title>
+  <title>Verboo</title>
   <link rel="stylesheet" href="panel.css" />
 </head>
 <body>
-  <div class="app" id="app">
-    <!-- ── Branding header ─────────────────────────────────────── -->
-    <header class="branding">
-      <div class="branding-mark">
-        <svg class="branding-glyph" viewBox="0 0 32 32" aria-hidden="true">
-          <rect x="3" y="3" width="26" height="26" rx="7" fill="currentColor" />
-          <path d="M11 10 L11 22 M11 10 L16 22 L21 10" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-        <div class="branding-text">
-          <h1 class="branding-title" data-i18n="branding_title">Verboo</h1>
-          <p class="branding-tagline" data-i18n="branding_tagline">Control Chrome with Verboo</p>
-        </div>
-      </div>
-    </header>
+  <div class="app" id="app" data-auth="signed-out">
 
-    <!-- ── Auth section ────────────────────────────────────────── -->
-    <section class="auth" id="auth-section" aria-label="Authentication">
-      <div class="auth-status" id="auth-status">
-        <span class="auth-status-text" data-i18n="auth_notSignedIn">Not signed in</span>
-      </div>
-      <p class="auth-description" data-i18n="auth_signInDescription">
-        Sign in with your Verboo account to use the browser side panel.
-      </p>
-      <button class="btn btn-primary auth-action" id="auth-action" type="button" data-i18n="auth_login">
-        Sign in
-      </button>
-    </section>
-
-    <!-- ── Desktop connection status (P4) ─────────────────────── -->
-    <section class="desktop-status" aria-labelledby="desktop-status-title">
-      <h2 class="section-title" id="desktop-status-title" data-i18n="desktop_status_title">Desktop</h2>
-      <div class="desktop-status-chip" id="desktop-status-chip" data-state="unknown">
-        <span class="desktop-status-dot" aria-hidden="true"></span>
-        <span class="desktop-status-text" data-i18n="desktop_status_unknown">Unknown</span>
-      </div>
-    </section>
-
-    <!-- ── Permission mode selector ────────────────────────────── -->
-    <section class="modes" aria-labelledby="modes-title">
-      <h2 class="section-title" id="modes-title" data-i18n="mode_title">Permission mode</h2>
-      <div class="modes-grid" role="radiogroup" aria-labelledby="modes-title">
-        <label class="mode-card" data-mode="manual">
-          <input type="radio" name="mode" value="manual" checked />
-          <span class="mode-card-body">
-            <span class="mode-card-title" data-i18n="mode_manual">Manual</span>
-            <span class="mode-card-desc" data-i18n="mode_manual_desc">Review every action before it runs</span>
-          </span>
-        </label>
-        <label class="mode-card" data-mode="auto">
-          <input type="radio" name="mode" value="auto" />
-          <span class="mode-card-body">
-            <span class="mode-card-title" data-i18n="mode_auto">Auto</span>
-            <span class="mode-card-desc" data-i18n="mode_auto_desc">Fewer prompts; safety checks still apply</span>
-          </span>
-        </label>
-        <label class="mode-card" data-mode="skip">
-          <input type="radio" name="mode" value="skip" />
-          <span class="mode-card-body">
-            <span class="mode-card-title" data-i18n="mode_skip">Skip</span>
-            <span class="mode-card-desc" data-i18n="mode_skip_desc">No routine prompts; hard blocks still enforced</span>
-          </span>
-        </label>
-      </div>
-    </section>
-
-    <!-- ── Site grants ─────────────────────────────────────────── -->
-    <section class="grants" aria-labelledby="grants-title">
-      <h2 class="section-title" id="grants-title" data-i18n="siteGrants_title">Site grants</h2>
-      <div class="grants-add">
-        <input
-          type="text"
-          id="grants-host-input"
-          class="grants-host-input"
-          data-i18n-placeholder="siteGrants_hostPlaceholder"
-          placeholder="example.com"
-          autocomplete="off"
-          spellcheck="false"
+    <!-- ═══════════════════════════════════════════════════════════
+         SIGNED-OUT: login only (nothing else unlocked)
+         ═══════════════════════════════════════════════════════════ -->
+    <section class="login-gate" id="login-gate" aria-label="Sign in">
+      <div class="login-card">
+        <img
+          class="login-mascot"
+          src="/icons/verboo-mascot.png"
+          width="56"
+          height="56"
+          alt=""
+          decoding="async"
         />
-        <select id="grants-decision-select" class="grants-decision-select" aria-label="Decision">
-          <option value="always" data-i18n="siteGrants_alwaysAllow">Always allow</option>
-          <option value="once" data-i18n="siteGrants_allowOnce">Allow once</option>
-          <option value="deny" data-i18n="siteGrants_deny">Deny</option>
-        </select>
-        <button class="btn btn-secondary" id="grants-add-btn" type="button" data-i18n="siteGrants_addHost">
-          Add host
+        <h1 class="login-title" data-i18n="branding_title">Verboo</h1>
+        <p class="login-tagline" data-i18n="branding_tagline">Control Chrome with Verboo</p>
+        <p class="login-copy" data-i18n="auth_signInDescription">
+          Sign in with your Verboo account to use the browser side panel.
+        </p>
+
+        <form class="login-form" id="login-form" novalidate>
+          <label class="field-label" for="login-email" data-i18n="auth_emailLabel">Email</label>
+          <input
+            type="email"
+            id="login-email"
+            class="field-input"
+            name="email"
+            autocomplete="username email"
+            inputmode="email"
+            required
+            data-i18n-placeholder="auth_emailPlaceholder"
+            placeholder="you@company.com"
+          />
+          <p class="field-error" id="login-error" role="alert" hidden></p>
+          <button class="btn btn-primary btn-block" type="submit" id="login-submit" data-i18n="auth_login">
+            Sign in
+          </button>
+        </form>
+
+        <button type="button" class="text-link" id="privacy-link-login" data-i18n="privacy_link">
+          Privacy policy
         </button>
       </div>
-      <ul class="grants-list" id="grants-list" aria-live="polite"></ul>
-      <p class="grants-empty" id="grants-empty" data-i18n="siteGrants_empty">
-        No site grants yet. Grants appear when you interact with a site.
-      </p>
-    </section>
-
-    <!-- ── Chat shell (stub) ───────────────────────────────────── -->
-    <section class="chat" aria-labelledby="chat-title">
-      <h2 class="section-title" id="chat-title" data-i18n="chat_title">Chat</h2>
-      <div class="chat-stub-notice" data-i18n="chat_stubNotice">
-        Agent chat is not yet available in this preview build.
-      </div>
-      <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
-      <form class="chat-composer" id="chat-form">
-        <input
-          type="text"
-          id="chat-input"
-          class="chat-input"
-          data-i18n-placeholder="chat_placeholder"
-          placeholder="Type a message…"
-          autocomplete="off"
-        />
-        <button class="btn btn-primary" type="submit" data-i18n="chat_send">Send</button>
-      </form>
-    </section>
-
-    <!-- ── Disclaimer footer ───────────────────────────────────── -->
-    <footer class="disclaimer">
-      <p class="disclaimer-text" data-i18n="disclaimer_text">
+      <p class="login-disclaimer" data-i18n="disclaimer_text">
         Independent build. Authorized but not an official Verboo Inc. product.
       </p>
-      <button type="button" class="disclaimer-privacy-link" id="privacy-link" data-i18n="privacy_link">
-        Privacy policy
-      </button>
-    </footer>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════
+         SIGNED-IN: chat-first. Composer + mode chip at the bottom;
+         permissions & grants live in chrome.runtime.openOptionsPage.
+         ═══════════════════════════════════════════════════════════ -->
+    <div class="workspace" id="workspace" hidden>
+      <header class="topbar">
+        <div class="topbar-brand">
+          <img
+            class="topbar-mascot"
+            src="/icons/verboo-mascot.png"
+            width="28"
+            height="28"
+            alt=""
+            decoding="async"
+          />
+          <div class="topbar-meta">
+            <span class="topbar-title" data-i18n="branding_title">Verboo</span>
+            <span class="topbar-user" id="topbar-user"></span>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button
+            type="button"
+            class="icon-btn"
+            id="settings-btn"
+            title="Settings"
+            data-i18n-title="topbar_settingsTitle"
+            data-i18n-aria-label="topbar_settingsTitle"
+            aria-label="Settings"
+          >
+            <svg
+              class="icon-btn-glyph"
+              viewBox="0 0 16 16"
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="8" cy="8" r="2.25" />
+              <path d="M8 1.5v1.5M8 13v1.5M3.05 3.05l1.05 1.05M11.9 11.9l1.05 1.05M1.5 8h1.5M13 8h1.5M3.05 12.95l1.05-1.05M11.9 4.1l1.05-1.05" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="topbar-signout"
+            id="auth-action"
+            data-action="logout"
+            data-i18n="auth_logout"
+          >
+            Sign out
+          </button>
+        </div>
+      </header>
+
+      <!-- Primary: chat transcript takes the entire body -->
+      <section class="chat" aria-label="Chat">
+        <div
+          class="chat-messages"
+          id="chat-messages"
+          aria-live="polite"
+          data-empty="chat_greeting"
+        ></div>
+
+        <div class="chat-foot">
+          <!-- Compact permission select NEXT TO the composer -->
+          <div class="mode-inline" role="radiogroup" aria-label="Permission mode">
+            <label class="mode-chip" data-mode="manual">
+              <input type="radio" name="mode" value="manual" checked />
+              <span class="mode-chip-label" data-i18n="mode_short_manual">
+                Ask before acting
+              </span>
+            </label>
+            <label class="mode-chip" data-mode="auto">
+              <input type="radio" name="mode" value="auto" />
+              <span class="mode-chip-label" data-i18n="mode_short_auto">Auto</span>
+            </label>
+            <label class="mode-chip" data-mode="skip">
+              <input type="radio" name="mode" value="skip" />
+              <span class="mode-chip-label" data-i18n="mode_short_skip">
+                Act without asking
+              </span>
+            </label>
+          </div>
+
+          <form class="chat-composer" id="chat-form">
+            <input
+              type="text"
+              id="chat-input"
+              class="field-input chat-input"
+              data-i18n-placeholder="chat_placeholder"
+              placeholder="Ask Verboo to control this page…"
+              autocomplete="off"
+              aria-label="Message"
+            />
+            <button
+              type="submit"
+              class="icon-send"
+              id="chat-send"
+              title="Send"
+              data-i18n-title="chat_sendTitle"
+              data-i18n-aria-label="chat_sendTitle"
+              aria-label="Send"
+              disabled
+            >
+              <svg
+                viewBox="0 0 16 16"
+                width="16"
+                height="16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 12.5L13 8 3 3.5l1.8 4.5L9.5 8 4.8 8z" />
+              </svg>
+            </button>
+          </form>
+        </div>
+      </section>
+    </div>
   </div>
 
   <script type="module" src="panel.js"></script>

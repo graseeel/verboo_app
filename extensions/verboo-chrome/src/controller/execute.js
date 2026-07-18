@@ -92,42 +92,64 @@ export async function execute(toolCall, ctx) {
  * @returns {Promise<unknown>}
  */
 async function dispatch(toolCall, ctx) {
-  switch (toolCall.name) {
+  // Flatten `params` onto the top level so tool handlers can read
+  // `tool.url`, `tool.selector`, `tool.text` directly regardless of
+  // whether the planner stored them under `toolCall.params`. Top-level
+  // fields win when both are set (planner-sourced values are the
+  // source of truth).
+  const args = mergeToolArgs(toolCall)
+  switch (args.name) {
     case 'navigate':
-      return navigate(toolCall)
+      return navigate(args)
     case 'read_page':
-      return readPage(toolCall)
+      return readPage(args)
     case 'click':
-      return click(toolCall)
+      return click(args)
     case 'type':
-      return typeText(toolCall)
+      return typeText(args)
     case 'screenshot':
-      return screenshot(toolCall)
+      return screenshot(args)
     case 'tabs':
-      return tabs(toolCall)
+      return tabs(args)
     case 'tab_group':
-      return tabGroup(toolCall)
+      return tabGroup(args)
     case 'console_reader':
-      return consoleReader(toolCall)
+      return consoleReader(args)
     case 'console_clear':
-      return consoleReader({ ...toolCall, name: 'console_reader', action: 'clear' })
+      return consoleReader({ ...args, name: 'console_reader', action: 'clear' })
     case 'network_reader':
-      return networkReader(toolCall)
+      return networkReader(args)
     case 'file_upload':
-      return fileUpload(toolCall)
+      return fileUpload(args)
     case 'gif_recording':
-      return gifRecording(toolCall)
+      return gifRecording(args)
     case 'console':
-      return consoleReader(toolCall)
+      return consoleReader(args)
     case 'network':
-      return networkReader(toolCall)
+      return networkReader(args)
     case 'upload':
-      return fileUpload(toolCall)
+      return fileUpload(args)
     case 'gif_record':
-      return gifRecording(toolCall)
+      return gifRecording(args)
     default:
-      throw new Error(`unknown_tool:${toolCall.name}`)
+      throw new Error(`unknown_tool:${args.name}`)
   }
+}
+
+/**
+ * Flatten a toolCall's `params` onto the top level. Top-level fields
+ * win when both are present, so planner-sourced values (e.g.
+ * `toolCall.url` set explicitly) override any value that happens to
+ * also live in `toolCall.params`.
+ *
+ * @param {ToolCall} toolCall
+ * @returns {Record<string, unknown>}
+ */
+export function mergeToolArgs(toolCall) {
+  if (!toolCall || typeof toolCall !== 'object') return toolCall
+  const { params, ...rest } = toolCall
+  if (!params || typeof params !== 'object') return toolCall
+  return { ...params, ...rest }
 }
 
 /**

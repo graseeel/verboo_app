@@ -16,6 +16,7 @@ import { execute } from './controller/execute.js'
 import { loadMode } from './policy/modesStore.js'
 import { getGrant } from './policy/siteGrantsStore.js'
 import { MSG } from './controller/protocol.js'
+import { planForMessage } from './planMessage.js'
 
 // ── Native Messaging host name ──────────────────────────────────
 // Matches the manifest at native-messaging/com.verboo.code.browser_extension.json.template
@@ -255,13 +256,36 @@ async function runAgentTurn(turnId, userMessage, senderTabId) {
 
   broadcast({ type: MSG.AGENT_TURN_STARTED, turnId, userMessage })
 
-  const plan = planForMessage(userMessage)
+  // Resolve the active tab up front so the planner can decide between
+  // a navigate (e.g. "abra o youtube" on chrome://extensions) and a
+  // read_page on the current tab.
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  const activeTabUrl = activeTab?.url
+
+  const { plan, assistantMessage } = planForMessage(userMessage, activeTabUrl)
 
   broadcast({
     type: MSG.AGENT_THOUGHT,
     turnId,
-    text: `Planning ${plan.length} tool call(s) for: "${userMessage}"`,
+    text:
+      plan.length > 0
+        ? `Planning ${plan.length} tool call(s) for: "${userMessage}"`
+        : `No tool action — replying directly for: "${userMessage}"`,
   })
+
+  // Empty plan + assistantMessage → reply directly without executing
+  // anything (e.g. user is on chrome:// and asked a question with no
+  // navigate intent, or asked us to navigate to something unrecognised).
+  if (plan.length === 0) {
+    broadcast({
+      type: MSG.AGENT_TURN_COMPLETE,
+      turnId,
+      assistantMessage: assistantMessage ?? 'I have nothing to do for that request.',
+      toolResults: [],
+    })
+    turnControllers.delete(turnId)
+    return
+  }
 
   /** @type {import('./controller/protocol.js').ToolResult[]} */
   const toolResults = []
@@ -418,68 +442,6 @@ async function runAgentTurn(turnId, userMessage, senderTabId) {
   })
 
   turnControllers.delete(turnId)
-}
-
-/**
- * Plan tool calls from user message (P2 stub heuristic).
- * Routes "buy"/"purchase"/"checkout" to click on a buy-now selector
- * to trigger Hard Block. Routes "open/go to/navigate/visit" + URL to
- * navigate. Otherwise reads the page.
- * @param {string} userMessage
- */
-function planForMessage(userMessage) {
-  const lower = userMessage.toLowerCase()
-  const isPurchase = /\b(buy|purchase|checkout|order|pay|payment)\b/.test(lower)
-  const wantsNavigate = /\b(open|go\s+to|navigate|visit)\b/.test(lower)
-
-  /** @type {import('./controller/protocol.js').ToolCall[]} */
-  const plan = []
-
-  if (wantsNavigate) {
-    const url = extractUrl(userMessage) ?? 'https://example.com'
-    plan.push({
-      id: crypto.randomUUID(),
-      name: 'navigate',
-      risk: 'mutate',
-      input: `navigate url=${url}`,
-      params: { url },
-      reasoning: 'Open the requested page',
-    })
-  }
-
-  if (isPurchase) {
-    // This will hit the `purchase` Hard Block.
-    plan.push({
-      id: crypto.randomUUID(),
-      name: 'click',
-      risk: 'mutate',
-      input: 'click selector=button#buy-now text=Buy Now',
-      params: { selector: 'button#buy-now' },
-      reasoning: 'Click the buy button as the user requested',
-    })
-  } else if (plan.length === 0) {
-    // Fallback: read_page so the transcript shows a tool activity card
-    // without triggering prompts or blocks.
-    plan.push({
-      id: crypto.randomUUID(),
-      name: 'read_page',
-      risk: 'read',
-      input: 'read_page selector=body',
-      params: { selector: 'body' },
-      reasoning: 'Read the current page content',
-    })
-  }
-
-  return plan
-}
-
-/**
- * @param {string} text
- * @returns {string | null}
- */
-function extractUrl(text) {
-  const m = text.match(/https?:\/\/[^\s]+/i)
-  return m ? m[0] : null
 }
 
 /**

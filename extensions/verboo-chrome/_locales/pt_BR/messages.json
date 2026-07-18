@@ -27,7 +27,19 @@
   "siteGrants_hostPlaceholder": { "message": "exemplo.com" },
   "siteGrants_granted": { "message": "Concedido" },
   "chat_title": { "message": "Chat" },
-  "chat_placeholder": { "message": "Digite uma mensagem…" },
+  "chat_greeting": { "message": "Como posso ajudar você hoje?" },
+  "chat_placeholder": { "message": "Peça ao Verboo para controlar esta página…" },
   "chat_stubNotice": { "message": "Chat do agente ainda não disponível nesta versão de prévia." },
-  "chat_send": { "message": "Enviar" }
+  "chat_send": { "message": "Enviar" },
+  "chat_sendTitle": { "message": "Enviar" },
+  "topbar_settingsTitle": { "message": "Configurações" },
+  "options_title": { "message": "Configurações do Verboo" },
+  "account_title": { "message": "Conta" },
+  "desktop_sectionTitle": { "message": "Conexão com o Desktop" },
+  "mode_short_manual": { "message": "Pergunte antes" },
+  "mode_short_auto": { "message": "Automático" },
+  "mode_short_skip": { "message": "Aja sem perguntar" },
+  "mode_manualLong": { "message": "Pergunte antes de agir" },
+  "mode_autoLong": { "message": "Automático" },
+  "mode_skipLong": { "message": "Aja sem perguntar" }
 }

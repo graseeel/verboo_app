@@ -30,7 +30,22 @@ export default {
     "message": "Não conectado"
   },
   "auth_signInDescription": {
-    "message": "Conecte-se com sua conta Verboo para usar o painel do navegador."
+    "message": "Entre com sua conta Verboo para controlar o Chrome por este painel."
+  },
+  "auth_emailLabel": {
+    "message": "E-mail"
+  },
+  "auth_emailPlaceholder": {
+    "message": "voce@empresa.com"
+  },
+  "auth_emailInvalid": {
+    "message": "Informe um e-mail válido."
+  },
+  "settings_title": {
+    "message": "Permissões e sites"
+  },
+  "chat_emptyHint": {
+    "message": "Peça ao Verboo para navegar, ler ou agir nesta página."
   },
   "mode_title": {
     "message": "Modo de permissão"
@@ -72,7 +87,7 @@ export default {
     "message": "Remover"
   },
   "siteGrants_addHost": {
-    "message": "Adicionar host"
+    "message": "Adicionar"
   },
   "siteGrants_hostPlaceholder": {
     "message": "exemplo.com"
@@ -83,14 +98,50 @@ export default {
   "chat_title": {
     "message": "Chat"
   },
+  "chat_greeting": {
+    "message": "Como posso ajudar você hoje?"
+  },
   "chat_placeholder": {
-    "message": "Digite uma mensagem…"
+    "message": "Peça ao Verboo para controlar esta página…"
   },
   "chat_stubNotice": {
     "message": "Chat do agente ainda não disponível nesta versão de prévia."
   },
   "chat_send": {
     "message": "Enviar"
+  },
+  "chat_sendTitle": {
+    "message": "Enviar"
+  },
+  "topbar_settingsTitle": {
+    "message": "Configurações"
+  },
+  "options_title": {
+    "message": "Configurações do Verboo"
+  },
+  "account_title": {
+    "message": "Conta"
+  },
+  "desktop_sectionTitle": {
+    "message": "Conexão com o Desktop"
+  },
+  "mode_short_manual": {
+    "message": "Pergunte antes"
+  },
+  "mode_short_auto": {
+    "message": "Automático"
+  },
+  "mode_short_skip": {
+    "message": "Aja sem perguntar"
+  },
+  "mode_manualLong": {
+    "message": "Pergunte antes de agir"
+  },
+  "mode_autoLong": {
+    "message": "Automático"
+  },
+  "mode_skipLong": {
+    "message": "Aja sem perguntar"
   },
   "chat_signInRequired": {
     "message": "Conecte-se para enviar uma mensagem."
@@ -196,5 +247,32 @@ export default {
   },
   "tool_name_gif": {
     "message": "GIF"
+  },
+  "risk_read": {
+    "message": "Leitura"
+  },
+  "risk_mutate": {
+    "message": "Mutação"
+  },
+  "risk_elevated": {
+    "message": "Elevado"
+  },
+  "tool_result_success": {
+    "message": "Concluído"
+  },
+  "tool_result_error": {
+    "message": "Erro"
+  },
+  "desktop_status_title": {
+    "message": "Desktop"
+  },
+  "desktop_status_connected": {
+    "message": "Desktop conectado"
+  },
+  "desktop_status_disconnected": {
+    "message": "Desktop desconectado"
+  },
+  "desktop_status_unknown": {
+    "message": "Desconhecido"
   }
 }

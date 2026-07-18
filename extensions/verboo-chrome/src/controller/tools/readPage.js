@@ -4,6 +4,15 @@
  * Uses chrome.scripting.executeScript (no debugger needed). The
  * injected function runs in the page's isolated world (MV3 default).
  *
+ * Fails with a friendly error when the active tab is on a non-
+ * controllable scheme (chrome://, about:, edge://, file://, etc.).
+ * Chrome would otherwise throw a raw "Cannot access a chrome:// URL"
+ * exception that's useless to the user.
+ */
+
+import { isControllableUrl, nonControllablePageMessage } from '../../planMessage.js'
+
+/**
  * @param {{ name: 'read_page'; selector?: string; attribute?: string; risk?: string; input?: string }} tool
  * @returns {Promise<{ text: string; selector?: string; attribute?: string; url: string }>}
  */
@@ -13,6 +22,10 @@ export async function readPage(tool) {
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
   if (!tab?.id) throw new Error('read_page: no active tab')
+
+  if (!isControllableUrl(tab.url)) {
+    throw new Error(nonControllablePageMessage(tab.url))
+  }
 
   const [result] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },

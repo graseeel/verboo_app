@@ -15,6 +15,10 @@
   "side_panel": {
     "default_path": "src/panel/panel.html"
   },
+  "options_ui": {
+    "page": "src/panel/options.html",
+    "open_in_tab": true
+  },
   "background": {
     "service_worker": "src/background.js",
     "type": "module"

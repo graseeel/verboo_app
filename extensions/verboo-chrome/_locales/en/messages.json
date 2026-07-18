@@ -27,7 +27,19 @@
   "siteGrants_hostPlaceholder": { "message": "example.com" },
   "siteGrants_granted": { "message": "Granted" },
   "chat_title": { "message": "Chat" },
-  "chat_placeholder": { "message": "Type a message…" },
+  "chat_greeting": { "message": "How can I help you today?" },
+  "chat_placeholder": { "message": "Ask Verboo to control this page…" },
   "chat_stubNotice": { "message": "Agent chat is not yet available in this preview build." },
-  "chat_send": { "message": "Send" }
+  "chat_send": { "message": "Send" },
+  "chat_sendTitle": { "message": "Send" },
+  "topbar_settingsTitle": { "message": "Settings" },
+  "options_title": { "message": "Verboo settings" },
+  "account_title": { "message": "Account" },
+  "desktop_sectionTitle": { "message": "Desktop connection" },
+  "mode_short_manual": { "message": "Ask before acting" },
+  "mode_short_auto": { "message": "Auto" },
+  "mode_short_skip": { "message": "Act without asking" },
+  "mode_manualLong": { "message": "Ask before acting" },
+  "mode_autoLong": { "message": "Auto" },
+  "mode_skipLong": { "message": "Act without asking" }
 }

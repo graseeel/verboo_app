@@ -1,29 +1,28 @@
 /**
  * panel.js — Verboo Chrome Extension side panel controller.
  *
- * P2 responsibilities:
+ * Responsibilities:
  * - Apply i18n strings to the DOM
  * - Render auth status (stub login/logout via auth.js)
- * - Persist Chrome Permission Mode (manual/auto/skip)
- * - Manage Site Grants (add/remove, persisted)
+ * - Persist Chrome Permission Mode (manual/auto/skip) via the inline chip
  * - Chat: send user message → AGENT_TURN_START; render agent events
  *   (thought, tool_request, tool_executing, tool_result, turn_complete,
  *   turn_error) as transcript cards
  * - Tool approval prompts: once/always/deny for needsApproval tools
+ * - Open the settings page (chrome.runtime.openOptionsPage) from the gear
+ * - Surface the desktop connection status ONLY when connected (no
+ *   unknown/disconnected noise in the panel chrome)
+ *
+ * Site Grants live in options.html, not here.
  *
  * Multi-user: zero hardcoded accounts, paths, or tokens.
  */
 
 import { loadMode, saveMode } from '../policy/modesStore.js'
 import {
-  loadGrants,
-  upsertGrant,
-  removeGrant,
-} from '../policy/siteGrantsStore.js'
-import {
   loadSession,
   saveSession,
-  clearSession,
+  logout as clearSession,
 } from '../auth/auth.js'
 import { MSG } from '../controller/protocol.js'
 
@@ -58,47 +57,95 @@ function applyI18n(root) {
     const key = el.getAttribute('data-i18n-placeholder')
     el.setAttribute('placeholder', t(key))
   }
+  for (const el of root.querySelectorAll('[data-i18n-title]')) {
+    const key = el.getAttribute('data-i18n-title')
+    el.setAttribute('title', t(key))
+  }
+  for (const el of root.querySelectorAll('[data-i18n-aria-label]')) {
+    const key = el.getAttribute('data-i18n-aria-label')
+    el.setAttribute('aria-label', t(key))
+  }
 }
 
-// ── Auth ──────────────────────────────────────────────────────────
+// ── Auth (login-first gate) ───────────────────────────────────────
 
+/**
+ * Toggle login gate vs workspace. Signed-out shows only the login card.
+ * Signed-in unlocks the chat workspace.
+ * @param {import('../auth/auth.js').VerbooSession | null | undefined} session
+ */
 function renderAuth(session) {
-  const statusEl = document.getElementById('auth-status')
-  const statusText = statusEl.querySelector('.auth-status-text')
-  const actionBtn = document.getElementById('auth-action')
+  const app = document.getElementById('app')
+  const workspace = document.getElementById('workspace')
+  const signedIn = Boolean(session?.email)
 
-  if (session?.email) {
-    statusEl.classList.add('is-signed-in')
-    statusText.textContent = `${t('auth_signedInAs')} ${session.email}`
-    actionBtn.textContent = t('auth_logout')
-    actionBtn.dataset.action = 'logout'
+  app.dataset.auth = signedIn ? 'signed-in' : 'signed-out'
+  if (workspace) workspace.hidden = !signedIn
+
+  const userEl = document.getElementById('topbar-user')
+  if (userEl) {
+    userEl.textContent = signedIn
+      ? `${t('auth_signedInAs')} ${session.email}`
+      : ''
+    userEl.title = signedIn ? session.email : ''
+  }
+
+  const logoutBtn = document.getElementById('auth-action')
+  if (logoutBtn) {
+    logoutBtn.dataset.action = 'logout'
+    logoutBtn.textContent = t('auth_logout')
+  }
+
+  // Empty chat greeting (CSS :empty::before pulls attr(data-empty))
+  const messages = document.getElementById('chat-messages')
+  if (messages) messages.dataset.empty = t('chat_greeting')
+}
+
+function showLoginError(message) {
+  const err = document.getElementById('login-error')
+  if (!err) return
+  if (message) {
+    err.hidden = false
+    err.textContent = message
   } else {
-    statusEl.classList.remove('is-signed-in')
-    statusText.textContent = t('auth_notSignedIn')
-    actionBtn.textContent = t('auth_login')
-    actionBtn.dataset.action = 'login'
+    err.hidden = true
+    err.textContent = ''
   }
 }
 
-async function handleAuthAction() {
-  const btn = document.getElementById('auth-action')
-  const action = btn.dataset.action
-  if (action === 'login') {
-    // Stub: in P3 this opens the Verboo OAuth flow. For P2 we use a
-    // placeholder email prompt so the UI is testable without a backend.
-    const email = window.prompt('Verboo account email (stub):')
-    if (email && email.includes('@')) {
-      const sessionToken = `stub-${crypto.randomUUID()}`
-      await saveSession({ sessionToken, email, signedInAt: Date.now() })
-    }
-  } else if (action === 'logout') {
-    await clearSession()
+async function handleLoginSubmit(event) {
+  event.preventDefault()
+  showLoginError('')
+  const input = document.getElementById('login-email')
+  const email = (input?.value ?? '').trim().toLowerCase()
+  if (!email || !email.includes('@') || email.startsWith('@') || email.endsWith('@')) {
+    showLoginError(t('auth_emailInvalid'))
+    input?.focus()
+    return
   }
+  // Stub session until real Verboo OAuth is wired (matches auth.js VerbooSession).
+  const now = Date.now()
+  await saveSession({
+    accountId: `acct_${crypto.randomUUID()}`,
+    email,
+    idToken: `stub-id-${crypto.randomUUID()}`,
+    accessToken: `stub-access-${crypto.randomUUID()}`,
+    refreshToken: `stub-refresh-${crypto.randomUUID()}`,
+    expiresAt: now + 60 * 60 * 1000,
+  })
   const session = await loadSession()
   renderAuth(session)
+  if (input) input.value = ''
 }
 
-// ── Mode selector ────────────────────────────────────────────────
+async function handleLogout() {
+  await clearSession()
+  const session = await loadSession()
+  renderAuth(session)
+  showLoginError('')
+}
+
+// ── Mode selector (inline chip next to composer) ────────────────
 
 async function initModes() {
   const mode = await loadMode()
@@ -107,74 +154,10 @@ async function initModes() {
 
   for (const input of document.querySelectorAll('input[name="mode"]')) {
     input.addEventListener('change', async (e) => {
-      await saveMode(/** @type {any} */ (e.target).value)
+      const value = /** @type {HTMLInputElement} */ (e.target).value
+      await saveMode(/** @type {any} */ (value))
     })
   }
-}
-
-// ── Site grants ─────────────────────────────────────────────────
-
-function normalizeHost(raw) {
-  const trimmed = raw.trim().toLowerCase()
-  if (!trimmed) return ''
-  return trimmed
-    .replace(/^https?:\/\//, '')
-    .replace(/^www\./, '')
-    .split('/')[0]
-}
-
-function decisionLabel(decision) {
-  switch (decision) {
-    case 'always': return t('siteGrants_alwaysAllow')
-    case 'once': return t('siteGrants_allowOnce')
-    case 'deny': return t('siteGrants_deny')
-    default: return decision
-  }
-}
-
-async function renderGrants() {
-  const grants = await loadGrants()
-  const list = document.getElementById('grants-list')
-  list.innerHTML = ''
-  for (const grant of grants) {
-    const li = document.createElement('li')
-    li.className = 'grant-item'
-
-    const host = document.createElement('span')
-    host.className = 'grant-host'
-    host.textContent = grant.host
-    host.title = grant.host
-
-    const decision = document.createElement('span')
-    decision.className = 'grant-decision'
-    decision.dataset.decision = grant.decision
-    decision.textContent = decisionLabel(grant.decision)
-
-    const remove = document.createElement('button')
-    remove.className = 'grant-remove'
-    remove.type = 'button'
-    remove.textContent = '×'
-    remove.setAttribute('aria-label', t('siteGrants_remove'))
-    remove.title = t('siteGrants_remove')
-    remove.addEventListener('click', async () => {
-      await removeGrant(grant.host)
-      await renderGrants()
-    })
-
-    li.append(host, decision, remove)
-    list.appendChild(li)
-  }
-}
-
-async function handleAddGrant() {
-  const input = document.getElementById('grants-host-input')
-  const select = document.getElementById('grants-decision-select')
-  const host = normalizeHost(input.value)
-  if (!host) return
-  const decision = select.value
-  await upsertGrant(host, decision)
-  input.value = ''
-  await renderGrants()
 }
 
 // ── Chat transcript ──────────────────────────────────────────────
@@ -330,10 +313,7 @@ function renderToolCard(toolCall, policyDecision) {
     alwaysBtn.type = 'button'
     alwaysBtn.className = 'btn btn-primary tool-always'
     alwaysBtn.textContent = t('siteGrants_alwaysAllow')
-    alwaysBtn.addEventListener('click', async () => {
-      // Persist grant for the active host before approving.
-      const host = await activeHost()
-      if (host) await upsertGrant(host, 'always')
+    alwaysBtn.addEventListener('click', () => {
       void chrome.runtime.sendMessage({
         type: MSG.TOOL_APPROVE,
         toolCallId: toolCall.id,
@@ -458,37 +438,39 @@ function policyReasonLabel(decision) {
 
 function escapeHtml(s) {
   return String(s)
-    .replace(/&/g, '&')
-    .replace(/</g, '<')
-    .replace(/>/g, '>')
-    .replace(/"/g, '"')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
-}
-
-async function activeHost() {
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-    if (!tab?.url) return ''
-    return new URL(tab.url).host
-  } catch {
-    return ''
-  }
 }
 
 // ── Chat send ────────────────────────────────────────────────────
 
+function updateSendEnabled() {
+  const input = document.getElementById('chat-input')
+  const send = document.getElementById('chat-send')
+  if (!input || !send) return
+  const hasText = input.value.trim().length > 0
+  send.disabled = !hasText
+}
+
 function initChat() {
   const form = document.getElementById('chat-form')
   const input = document.getElementById('chat-input')
+
+  input.addEventListener('input', updateSendEnabled)
+  updateSendEnabled()
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault()
     const text = input.value.trim()
     if (!text) return
     input.value = ''
+    updateSendEnabled()
 
     const session = await loadSession()
-    if (!session?.sessionToken) {
+    if (!session?.email && !session?.sessionToken) {
       appendTurnError(t('chat_signInRequired'))
       return
     }
@@ -502,17 +484,6 @@ function initChat() {
       userMessage: text,
     })
   })
-
-  // ── Privacy policy link (P3) ───────────────────────────────
-  const privacyBtn = document.getElementById('privacy-link')
-  if (privacyBtn) {
-    privacyBtn.addEventListener('click', async () => {
-      // Open the bundled privacy.html in a new tab. ANVIL ships it at
-      // the extension root; chrome.runtime.getURL resolves the
-      // chrome-extension://<id>/privacy.html URL.
-      await chrome.tabs.create({ url: chrome.runtime.getURL('privacy.html') })
-    })
-  }
 }
 
 // ── Agent event listener ─────────────────────────────────────────
@@ -550,64 +521,78 @@ function initAgentEventListener() {
         appendTurnError(message.error)
         break
       }
-      case 'desktop:status': {
-        renderDesktopStatus(message.state)
-        break
-      }
       default:
         break
     }
   })
 }
 
-// ── Desktop connection status (P4) ───────────────────────────────
+// ── Desktop connection status ────────────────────────────────────
 //
-// Listens for 'desktop:status' messages from the background (which
-// probes the native host / Tauri IPC). States: 'connected',
-// 'disconnected', 'unknown'. Default is 'unknown' until the first
-// message arrives.
+// Background broadcasts 'desktop:status' messages with state
+// 'connected' | 'disconnected' | 'unknown'. Per the quiet-chrome rule,
+// we only react to 'connected' — unknown/disconnected stay silent in
+// the panel and surface (with reason) in the options page instead.
+// The function remains so the message channel stays wired; if the
+// element isn't present (default chrome has none) it's a no-op.
 
 function renderDesktopStatus(state) {
+  if (state !== 'connected') return
+  // Quiet by design — connected state is acknowledged but never
+  // shouted. If the design later adds a subtle indicator, the chip
+  // selector would be #desktop-status-chip.
   const chip = document.getElementById('desktop-status-chip')
   if (!chip) return
+  chip.dataset.state = 'connected'
   const textEl = chip.querySelector('.desktop-status-text')
-  const valid = ['connected', 'disconnected', 'unknown'].includes(state)
-  const next = valid ? state : 'unknown'
-  chip.dataset.state = next
-  const key = `desktop_status_${next}`
-  if (textEl) textEl.textContent = t(key)
+  if (textEl) textEl.textContent = t('desktop_status_connected')
+}
+
+function openSettings() {
+  // chrome.runtime.openOptionsPage falls back to options.html if no
+  // options_ui is declared in the manifest.
+  void chrome.runtime.openOptionsPage()
+}
+
+function openPrivacy() {
+  void chrome.tabs.create({ url: chrome.runtime.getURL('privacy.html') })
 }
 
 // ── Init ─────────────────────────────────────────────────────────
 
+function resolveBrandAssets() {
+  // Extension-root paths so mascot/icons resolve regardless of panel nesting.
+  const mascot = chrome.runtime.getURL('icons/verboo-mascot.png')
+  for (const img of document.querySelectorAll('.login-mascot, .topbar-mascot')) {
+    img.src = mascot
+  }
+}
+
 async function init() {
   applyI18n(document)
+  resolveBrandAssets()
 
   const session = await loadSession()
   renderAuth(session)
 
   await initModes()
-  await renderGrants()
   initChat()
   initAgentEventListener()
 
-  document.getElementById('auth-action').addEventListener('click', handleAuthAction)
-  document.getElementById('grants-add-btn').addEventListener('click', handleAddGrant)
-  document.getElementById('grants-host-input').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      void handleAddGrant()
-    }
+  document.getElementById('login-form')?.addEventListener('submit', (e) => {
+    void handleLoginSubmit(e)
   })
+  document.getElementById('auth-action')?.addEventListener('click', () => {
+    void handleLogout()
+  })
+  document.getElementById('settings-btn')?.addEventListener('click', openSettings)
 
-  // Re-render auth + grants when storage changes (e.g. from another surface).
+  document.getElementById('privacy-link-login')?.addEventListener('click', openPrivacy)
+
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return
     if ('verbooSession' in changes) {
       renderAuth(changes.verbooSession.newValue ?? null)
-    }
-    if ('siteGrants' in changes) {
-      void renderGrants()
     }
   })
 }
