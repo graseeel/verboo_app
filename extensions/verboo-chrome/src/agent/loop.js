@@ -7,7 +7,7 @@
  *   3. If response has no tool_calls → done (assistant message)
  *   4. For each tool_call → broadcast thought → executeTool callback → broadcast result
  *   5. If screenshot → attach as image_url in next user message
- *   6. Repeat up to MAX_STEPS (10)
+ *   6. Repeat up to MAX_STEPS (20)
  *   7. On any error → throw (background falls back to planMessage heuristic)
  *
  * Policy gate: executeTool callback MUST go through the existing
@@ -25,9 +25,19 @@ import { chatCompletion } from './routerClient.js'
 import { OPENAI_TOOLS, toToolCall } from './toolCatalog.js'
 import { MSG } from '../controller/protocol.js'
 
-const MAX_STEPS = 10
+const MAX_STEPS = 20
 const MAX_RESULT_CHARS = 4000
-const POST_NAVIGATE_DELAY_MS = 1500
+const POST_NAVIGATE_DELAY_MS = 400
+
+/**
+ * Injected once after 3 consecutive failures of the same tool to unstick the agent.
+ */
+const STRATEGY_HINT = `You seem stuck failing the same tool repeatedly. Strategy change:
+For YouTube music/video: Prefer ONE navigate to https://www.youtube.com/results?search_query=URL_ENCODED_QUERY
+Avoid typing on the homepage if you can open results URL directly.
+Working selectors: input[name="search_query"], #search-input input, button#search-icon-legacy, ytd-video-renderer a#video-title, a#video-title-link, a#video-title
+If a selector fails once, try a different selector — do not retry the same selector 5 times.
+Use screenshot only to disambiguate which video to click when results are ambiguous.`
 
 /**
  * System prompt for the browser agent. Bilingual EN+PT to handle mixed requests.
@@ -46,8 +56,11 @@ IMPORTANT RULES:
 - NEVER use chrome://, chrome-extension://, about:, or edge:// URLs
 - After navigating to a page, WAIT for the page to load before acting. Read the page first or take a screenshot.
 - Prefer precise CSS selectors (e.g. a#video-title, ytd-video-renderer a, input#search)
-- For YouTube music/video: navigate to youtube.com, type the search query, then click the best matching video link
-  Good selectors: ytd-video-renderer a#video-title, a#video-title, ytd-rich-item-renderer a
+- For YouTube music/video: Prefer ONE navigate to https://www.youtube.com/results?search_query=URL_ENCODED_QUERY
+  Avoid typing on the homepage if you can open results URL directly.
+  Working selectors: input[name="search_query"], #search-input input, button#search-icon-legacy, ytd-video-renderer a#video-title, a#video-title-link, a#video-title
+  If a selector fails once, try a different selector — do not retry the same selector 5 times.
+  Use screenshot only to disambiguate which video to click when results are ambiguous.
 - For search: navigate to the search engine, type the query, submit
 - For reading a page: use read_page with a targeted selector, not the whole body when possible
 - Return a brief text summary when you finish the task
@@ -89,6 +102,9 @@ export async function runLlmAgentTurn({
 
   /** @type {Array<object>} */
   const allToolResults = []
+
+  /** Tracks consecutive failures of the same tool to inject strategy / stop early. */
+  let failStreak = { name: null, count: 0, afterHint: false }
 
   for (let step = 0; step < MAX_STEPS; step++) {
     if (signal?.aborted) break
@@ -220,6 +236,36 @@ export async function runLlmAgentTurn({
           tool_call_id: tc.id,
           content: resultText,
         })
+      }
+
+      // Consecutive failure tracking — strategy hint, then early stop if still stuck.
+      if (execResult.ok) {
+        failStreak = { name: null, count: 0, afterHint: false }
+      } else if (failStreak.name === tc.name) {
+        failStreak.count++
+      } else {
+        failStreak = { name: tc.name, count: 1, afterHint: false }
+      }
+
+      if (!execResult.ok) {
+        if (failStreak.count >= 3 && !failStreak.afterHint) {
+          messages.push({ role: 'system', content: STRATEGY_HINT })
+          failStreak.afterHint = true
+          failStreak.count = 0
+          broadcast({
+            type: MSG.AGENT_THOUGHT,
+            turnId,
+            text: 'Injected strategy hint after repeated failures — trying a different approach…',
+          })
+        } else if (failStreak.count >= 2 && failStreak.afterHint) {
+          const lastError = execResult.error ?? 'unknown error'
+          return {
+            assistantMessage:
+              `I hit persistent failures with \`${tc.name}\` (last error: ${lastError}). ` +
+              `Tried a strategy change, but the same tool kept failing. Please try a different approach or a more specific instruction.`,
+            toolResults: allToolResults,
+          }
+        }
       }
 
       // After successful navigate, give the page a moment to load before

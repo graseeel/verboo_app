@@ -189,3 +189,41 @@ test('runLlmAgentTurn: propagates fetch errors so background can fallback', asyn
     globalThis.fetch = origFetch
   }
 })
+
+test('runLlmAgentTurn: early-stop after 5 consecutive failures of same tool', async () => {
+  // Mock fetch: always returns a click tool_call (never text-only).
+  // After 3 fails → STRATEGY_HINT injected. After 2 more → early stop.
+  globalThis.fetch = async () => ({
+    ok: true, status: 200, json: async () => ({
+      choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+        { id: 'tc_fail', function: { name: 'click', arguments: '{"selector":".btn"}' } },
+      ] } }],
+    }),
+  })
+
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_early',
+      userMessage: 'click the button',
+      apiKey: 'test-key',
+      modelId: 'test-model',
+      broadcast: () => {},
+      executeTool: async () => ({ ok: false, error: 'element not found', policy: { allowed: true, needsApproval: false } }),
+      getActiveTabMeta: async () => null,
+    })
+
+    // Stopped early with a friendly message, not burning all 20 steps.
+    assert.ok(
+      result.assistantMessage.includes('try a different approach') ||
+      result.assistantMessage.includes('try a more specific instruction') ||
+      result.assistantMessage.includes('try a different'),
+      `expected early-stop message, got: "${result.assistantMessage}"`,
+    )
+    // All tool results are failures.
+    assert.ok(result.toolResults.every(r => r.success === false))
+    // Stopped well before 20 (5 fails + optional strategy-hint step).
+    assert.ok(result.toolResults.length < 10, `expected <10 tools, got ${result.toolResults.length}`)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})

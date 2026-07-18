@@ -11,6 +11,9 @@ import {
   VERBOO_TAB_GROUP_TITLE,
   VERBOO_TAB_GROUP_COLOR,
   PRESENCE_ACTION_DELAY_MS,
+  PRESENCE_ACTION_DELAY_MS_MIN,
+  PRESENCE_ACTION_DELAY_MS_MAX,
+  randomBetween,
 } from './inject.js'
 
 test('Verboo tab group title is "Verboo"', () => {
@@ -22,7 +25,16 @@ test('Verboo tab group color is chrome.tabGroups purple', () => {
   assert.equal(VERBOO_TAB_GROUP_COLOR, 'purple')
 })
 
-test('presence action delay is brief (120–200ms range)', () => {
-  assert.ok(PRESENCE_ACTION_DELAY_MS >= 120)
-  assert.ok(PRESENCE_ACTION_DELAY_MS <= 200)
+test('presence action delay is brief (280–380ms range)', () => {
+  assert.equal(PRESENCE_ACTION_DELAY_MS_MIN, 280)
+  assert.equal(PRESENCE_ACTION_DELAY_MS_MAX, 380)
+  assert.ok(PRESENCE_ACTION_DELAY_MS >= 280)
+  assert.ok(PRESENCE_ACTION_DELAY_MS <= 380)
+})
+
+test('randomBetween stays within [min, max]', () => {
+  for (let i = 0; i < 40; i++) {
+    const n = randomBetween(280, 380)
+    assert.ok(n >= 280 && n <= 380, `got ${n}`)
+  }
 })

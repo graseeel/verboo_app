@@ -4,7 +4,7 @@
  * Visual + tab-group cues while Verboo controls the browser:
  *   - Purple "Verboo" tab group
  *   - Animated purple viewport frame
- *   - Discrete purple agent cursor that moves to the interaction target
+ *   - Classic purple SVG mouse-arrow cursor that moves to the interaction target
  *
  * Prefer chrome.scripting.executeScript (no content_scripts) so overlays
  * only appear during control. All public helpers are best-effort: failures
@@ -25,8 +25,27 @@ const FRAME_STYLE_ID = 'verboo-presence-frame-style'
 const CURSOR_ID = 'verboo-agent-cursor'
 const CURSOR_STYLE_ID = 'verboo-agent-cursor-style'
 
-/** Brief pause so the user can see the cursor land before click/type. */
-export const PRESENCE_ACTION_DELAY_MS = 160
+/** Inclusive lower bound for the random presence pause (ms). */
+export const PRESENCE_ACTION_DELAY_MS_MIN = 280
+/** Inclusive upper bound for the random presence pause (ms). */
+export const PRESENCE_ACTION_DELAY_MS_MAX = 380
+/**
+ * Representative delay in the [280, 380] range (for tests / docs).
+ * Runtime uses {@link randomBetween}(280, 380) each action.
+ */
+export const PRESENCE_ACTION_DELAY_MS = 330
+
+/**
+ * Inclusive integer random in [min, max].
+ * @param {number} min
+ * @param {number} max
+ * @returns {number}
+ */
+export function randomBetween(min, max) {
+  const lo = Math.ceil(min)
+  const hi = Math.floor(max)
+  return Math.floor(Math.random() * (hi - lo + 1)) + lo
+}
 
 // ── Tab group ──────────────────────────────────────────────────
 
@@ -156,7 +175,7 @@ export async function hideAgentCursor(tabId) {
 
 /**
  * Best-effort presence prelude used by click/type: frame + cursor + delay.
- * Never throws.
+ * Never throws. Delay is randomBetween(280, 380) unless reduced-motion (0).
  *
  * @param {number} tabId
  * @param {string} [selector]
@@ -168,10 +187,30 @@ export async function preparePresenceForAction(tabId, selector) {
     if (selector) {
       await showAgentCursor(tabId, { selector })
     }
-    await sleep(PRESENCE_ACTION_DELAY_MS)
+    const delayMs = await resolvePresenceDelayMs(tabId)
+    if (delayMs > 0) await sleep(delayMs)
   } catch {
     // chrome:// pages, closed tabs, CSP edge cases — ignore.
   }
+}
+
+/**
+ * @param {number} tabId
+ * @returns {Promise<number>} 0 when prefers-reduced-motion, else 280–380
+ */
+async function resolvePresenceDelayMs(tabId) {
+  try {
+    const [r] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () =>
+        typeof matchMedia === 'function' &&
+        matchMedia('(prefers-reduced-motion: reduce)').matches,
+    })
+    if (r?.result) return 0
+  } catch {
+    // Fall through to random delay.
+  }
+  return randomBetween(PRESENCE_ACTION_DELAY_MS_MIN, PRESENCE_ACTION_DELAY_MS_MAX)
 }
 
 // ── In-page injectors (serialized into the page via executeScript) ──
@@ -238,6 +277,13 @@ function injectPresenceFrameInPage(frameId, styleId) {
  * @param {{ x?: number; y?: number; selector?: string } | null} target
  */
 function injectAgentCursorInPage(cursorId, styleId, target) {
+  // Must be self-contained: chrome.scripting.executeScript serializes this
+  // function alone (no outer module scope). Classic pointer tip ≈ top-left.
+  const cursorSvgHtml =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">' +
+    '<path fill="#9355ff" stroke="#fff" stroke-width="0.8" d="M4 3 L4 19 L9 14 L12 21 L14.5 20 L11.5 13 L18 13 Z"/>' +
+    '</svg>'
+
   const reduced =
     typeof matchMedia === 'function' &&
     matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -273,7 +319,7 @@ function injectAgentCursorInPage(cursorId, styleId, target) {
   if (!document.getElementById(styleId)) {
     const style = document.createElement('style')
     style.id = styleId
-    // Brand purple soft circle + discrete drop shadow (blurred silhouette, not a loud glow).
+    // Classic SVG pointer: tip at transform-origin 0 0, soft purple drop-shadow.
     style.textContent = `
 #${cursorId} {
   position: fixed;
@@ -281,37 +327,36 @@ function injectAgentCursorInPage(cursorId, styleId, target) {
   top: 0;
   width: 20px;
   height: 20px;
-  border-radius: 50%;
   pointer-events: none;
   z-index: 2147483647;
-  opacity: 0.9;
-  background: radial-gradient(
-    circle at 35% 35%,
-    rgba(169, 109, 255, 0.95) 0%,
-    rgba(147, 85, 255, 0.85) 55%,
-    rgba(147, 85, 255, 0.12) 100%
-  );
-  box-shadow:
-    0 4px 10px rgba(0, 0, 0, 0.22),
-    0 8px 20px rgba(147, 85, 255, 0.25),
-    0 12px 16px rgba(0, 0, 0, 0.12);
-  transform: translate(-50%, -50%);
+  opacity: 0.95;
+  transform-origin: 0 0;
+  filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.3)) drop-shadow(0 0 8px rgba(147, 85, 255, 0.25));
   will-change: transform;
+  line-height: 0;
+}
+#${cursorId} svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+  overflow: visible;
 }
 #${cursorId}.verboo-cursor-animate {
-  transition: transform 180ms cubic-bezier(0.23, 1, 0.32, 1);
+  transition: transform 380ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 `.trim()
     ;(document.documentElement || document.body).appendChild(style)
   }
 
   let cursor = document.getElementById(cursorId)
-  const transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`
+  // Tip of the arrow is the hotspot (origin 0,0) — no centering offset.
+  const transform = `translate(${x}px, ${y}px)`
 
   if (!cursor) {
     cursor = document.createElement('div')
     cursor.id = cursorId
     cursor.setAttribute('aria-hidden', 'true')
+    cursor.innerHTML = cursorSvgHtml
     // Place without transition first, then enable animation for later moves.
     cursor.style.transform = transform
     ;(document.documentElement || document.body).appendChild(cursor)
@@ -323,6 +368,9 @@ function injectAgentCursorInPage(cursorId, styleId, target) {
       })
     }
   } else {
+    if (!cursor.querySelector('svg')) {
+      cursor.innerHTML = cursorSvgHtml
+    }
     if (reduced) {
       cursor.classList.remove('verboo-cursor-animate')
     } else {
