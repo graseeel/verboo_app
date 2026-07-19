@@ -51,6 +51,7 @@ import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { useToast } from './components/Toast'
 import { VerbooPet, PET_MIN_SIZE, PET_MAX_SIZE, type PetState } from './features/pet/VerbooPet'
 import { QuestionWizard, type ModelQuestion, type QuestionAnswer, type QuestionPromptState } from './features/questions/QuestionWizard'
+import { detectTextQuestionPrompt, extractModelQuestionsFromPayload, mergeModelQuestions } from './features/questions/questionDetection'
 import { MessageCircleQuestion } from 'lucide-react'
 import { useLocalTerminal } from './features/terminal/useLocalTerminal'
 import { LocalTerminalPanel } from './features/terminal/LocalTerminalPanel'
@@ -2538,46 +2539,26 @@ export function App() {
     await updateUserSettings({ trustedCommands: next })
   }
 
-  // Model questions can arrive two ways: the structured AskUserQuestion tool
+  // Model questions can arrive through the structured AskUserQuestion tool
   // (headless CLI fails it with "Answer questions?", so the model never gets
-  // answers on its own) or plain numbered questions in the final text. The
-  // wizard turns both into an answerable step-by-step flow whose answers go
-  // back as a follow-up message — same mechanism the permission panel uses.
+  // answers on its own) or as a high-confidence question pattern in the final
+  // text. The wizard turns both into an answerable step-by-step flow whose
+  // answers go back as a follow-up message — same mechanism the permission
+  // panel uses.
   function collectModelQuestions(turnId: string, payload: unknown) {
-    if (!isRecord(payload) || payload.type !== 'assistant') return
-    const message = isRecord(payload.message) ? payload.message : undefined
-    if (!message || !Array.isArray(message.content)) return
-    for (const block of message.content) {
-      if (!isRecord(block) || block.type !== 'tool_use' || block.name !== 'AskUserQuestion') continue
-      const input = isRecord(block.input) ? block.input : undefined
-      if (!input || !Array.isArray(input.questions)) continue
-      const questions: ModelQuestion[] = []
-      for (const raw of input.questions) {
-        if (!isRecord(raw) || typeof raw.question !== 'string') continue
-        const options = Array.isArray(raw.options)
-          ? raw.options.flatMap(option => isRecord(option) && typeof option.label === 'string'
-            ? [{ label: option.label, description: typeof option.description === 'string' ? option.description : undefined }]
-            : [])
-          : []
-        questions.push({
-          header: typeof raw.header === 'string' ? raw.header : undefined,
-          question: raw.question,
-          multiSelect: raw.multiSelect === true,
-          options,
-        })
-      }
-      if (questions.length > 0) {
-        const firstCapture = !turnQuestions.current[turnId]?.length
-        turnQuestions.current[turnId] = [...(turnQuestions.current[turnId] ?? []), ...questions]
-        if (firstCapture) {
-          // The headless CLI fails AskUserQuestion instantly, and the model
-          // tends to retry it in a loop, burning minutes and tokens. Open the
-          // wizard right away and interrupt the turn — the answers come back
-          // as the next message.
-          presentTurnQuestions(turnId, turnConversationIds.current[turnId])
-          void window.verboo.interrupt()
-        }
-      }
+    const questions = extractModelQuestionsFromPayload(payload)
+    if (questions.length === 0) return
+    const existing = turnQuestions.current[turnId] ?? []
+    const merged = mergeModelQuestions(existing, questions)
+    if (merged.length === existing.length) return
+    turnQuestions.current[turnId] = merged
+    if (existing.length === 0) {
+      // The headless CLI fails AskUserQuestion instantly, and the model tends
+      // to retry it in a loop. Present the captured questions once, then stop
+      // only this conversation's turn; answers return as the next message.
+      const conversationId = turnConversationIds.current[turnId]
+      presentTurnQuestions(turnId, conversationId)
+      void window.verboo.interrupt(conversationId)
     }
   }
 
@@ -2585,14 +2566,12 @@ export function App() {
     if (!conversationId) return
     // Already presented for this turn (wizard opened mid-turn on tool capture).
     if (questionPromptRef.current?.turnId === turnId) return
-    let questions = turnQuestions.current[turnId]
+    let questions: ModelQuestion[] | undefined = turnQuestions.current[turnId]
     let autoOpen = true
     if (!questions || questions.length === 0) {
-      // Text heuristic: two or more numbered lines ending in a question mark
-      // in the turn's final message. Confident enough for a chip, not for a
-      // modal that steals focus.
-      questions = detectTextQuestions(turnAssistantText.current[turnId] ?? '')
-      autoOpen = false
+      const detected = detectTextQuestionPrompt(turnAssistantText.current[turnId] ?? '')
+      questions = detected?.questions
+      autoOpen = detected?.autoOpen ?? false
     }
     if (!questions || questions.length === 0) return
     delete turnQuestions.current[turnId]
@@ -5418,21 +5397,6 @@ function extractTokenUsage(payload: unknown): TokenUsage | undefined {
     cache_creation_input_tokens: cacheCreationTokens,
     cache_read_input_tokens: cacheReadTokens,
   }
-}
-
-// Plain-text fallback: the model often ends a turn with a numbered list of
-// questions ("1. ...? 2. ...?"). Two or more numbered lines containing a
-// question mark is confident enough to offer the wizard via chip.
-function detectTextQuestions(text: string): ModelQuestion[] {
-  const questions: ModelQuestion[] = []
-  for (const line of text.split('\n')) {
-    const match = line.match(/^\s*(?:\d+)[.)]\s+(.{8,})$/)
-    if (!match) continue
-    const body = match[1].replace(/\*\*/g, '').trim()
-    if (!body.includes('?')) continue
-    questions.push({ question: body, options: [], multiSelect: false })
-  }
-  return questions.length >= 2 ? questions : []
 }
 
 // Streamed content of a delta — assistant text, thinking, or tool-call JSON.
