@@ -35,6 +35,8 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
  * @property {string} name
  * @property {string} [displayName]
  * @property {boolean} [supportsVision]
+ * @property {string} [description]
+ * @property {string} [provider]
  */
 
 // ── chrome.storage.local with in-memory fallback (Node tests) ────
@@ -312,13 +314,39 @@ function normalizeModel(item) {
     id
 
   const supportsVision = detectVisionSupport(obj)
+  const description = firstString(obj, ['description', 'summary', 'tagline'])
+  const provider = firstString(obj, ['provider_name', 'providerName', 'provider'])
 
   return {
     id,
     name: displayName,
     displayName,
     supportsVision: supportsVision === true,
+    ...(description ? { description } : {}),
+    ...(provider ? { provider } : {}),
   }
+}
+
+/**
+ * Resolve the model for a turn. A model explicitly sent by the panel wins when
+ * it is present in the live catalog, eliminating the small persistence race
+ * between changing the picker and immediately sending a prompt.
+ * @param {VerbooModel[]} models
+ * @param {string | null | undefined} requestedId
+ * @param {string | null | undefined} storedId
+ * @returns {VerbooModel | null}
+ */
+export function resolveModelSelection(models, requestedId, storedId) {
+  const list = Array.isArray(models) ? models.filter((model) => model?.id) : []
+  if (requestedId) {
+    const requested = list.find((model) => model.id === requestedId)
+    if (requested) return requested
+  }
+  if (storedId) {
+    const stored = list.find((model) => model.id === storedId)
+    if (stored) return stored
+  }
+  return list[0] ?? null
 }
 
 /**
@@ -381,6 +409,26 @@ function collectStrings(obj, keys) {
     }
   }
   return out
+}
+
+/**
+ * @param {Record<string, unknown>} obj
+ * @param {string[]} keys
+ * @returns {string | undefined}
+ */
+function firstString(obj, keys) {
+  for (const key of keys) {
+    const value = obj[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+    if (value && typeof value === 'object') {
+      const nested = /** @type {Record<string, unknown>} */ (value)
+      for (const nestedKey of ['display_name', 'displayName', 'name', 'id']) {
+        const nestedValue = nested[nestedKey]
+        if (typeof nestedValue === 'string' && nestedValue.trim()) return nestedValue.trim()
+      }
+    }
+  }
+  return undefined
 }
 
 /**

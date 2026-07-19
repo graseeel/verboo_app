@@ -131,29 +131,41 @@
             alt=""
             decoding="async"
           />
-          <span class="topbar-title" data-i18n="branding_title">Verboo</span>
+          <span class="sr-only" data-i18n="branding_title">Verboo</span>
           <!-- Email / account kept off-layout; surface via brand title attr in JS -->
           <span class="topbar-user" id="topbar-user" hidden></span>
         </div>
-        <label class="model-select-wrap" for="model-select" id="model-select-wrap">
-          <span class="model-select-icon" aria-hidden="true">
-            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="8" cy="8" r="5.5" />
-              <path d="M2.5 8h11M8 2.5c1.8 1.6 2.7 3.6 2.7 5.5s-.9 3.9-2.7 5.5c-1.8-1.6-2.7-3.6-2.7-5.5s.9-3.9 2.7-5.5z" />
-            </svg>
-          </span>
-          <select
-            id="model-select"
-            class="model-select"
-            aria-label="Model"
+        <div class="model-picker" id="model-picker">
+          <button
+            type="button"
+            class="model-picker-trigger"
+            id="model-picker-trigger"
+            aria-haspopup="listbox"
+            aria-expanded="false"
+            aria-controls="model-menu"
+            data-i18n-aria-label="model_picker_label"
+            aria-label="Choose model"
             disabled
-          ></select>
-          <span class="model-select-caret" aria-hidden="true">
-            <svg viewBox="0 0 12 12" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3 5l3 3 3-3" />
-            </svg>
-          </span>
-        </label>
+          >
+            <span class="model-picker-copy">
+              <span class="model-picker-name" id="model-picker-name" data-i18n="model_loading">Loading models…</span>
+              <span class="model-picker-meta" id="model-picker-meta"></span>
+            </span>
+            <span class="model-picker-caret" aria-hidden="true">
+              <svg viewBox="0 0 12 12" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 5l3 3 3-3" />
+              </svg>
+            </span>
+          </button>
+          <div
+            class="model-menu"
+            id="model-menu"
+            role="listbox"
+            data-i18n-aria-label="model_picker_label"
+            aria-label="Choose model"
+            hidden
+          ></div>
+        </div>
         <div class="topbar-actions">
           <button
             type="button"
@@ -218,25 +230,6 @@
         ></div>
 
         <div class="chat-foot">
-          <div class="mode-inline" role="radiogroup" aria-label="Permission mode">
-            <label class="mode-chip" data-mode="manual">
-              <input type="radio" name="mode" value="manual" checked />
-              <span class="mode-chip-label" data-i18n="mode_short_manual">
-                Ask before acting
-              </span>
-            </label>
-            <label class="mode-chip" data-mode="auto">
-              <input type="radio" name="mode" value="auto" />
-              <span class="mode-chip-label" data-i18n="mode_short_auto">Auto</span>
-            </label>
-            <label class="mode-chip" data-mode="skip">
-              <input type="radio" name="mode" value="skip" />
-              <span class="mode-chip-label" data-i18n="mode_short_skip">
-                Act without asking
-              </span>
-            </label>
-          </div>
-
           <form class="chat-composer" id="chat-form">
             <input
               type="text"
@@ -247,30 +240,68 @@
               autocomplete="off"
               aria-label="Message"
             />
-            <button
-              type="submit"
-              class="icon-send"
-              id="chat-send"
-              title="Send"
-              data-i18n-title="chat_sendTitle"
-              data-i18n-aria-label="chat_sendTitle"
-              aria-label="Send"
-              disabled
-            >
-              <svg
-                viewBox="0 0 16 16"
-                width="16"
-                height="16"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.75"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M3 12.5L13 8 3 3.5l1.8 4.5L9.5 8 4.8 8z" />
-              </svg>
-            </button>
+            <div class="composer-toolbar">
+              <div class="mode-inline" role="radiogroup" data-i18n-aria-label="mode_title" aria-label="Permission mode">
+                <label class="mode-chip" data-mode="manual">
+                  <input type="radio" name="mode" value="manual" checked />
+                  <span class="mode-chip-label" data-i18n="mode_short_manual">
+                    Ask before acting
+                  </span>
+                </label>
+                <label class="mode-chip" data-mode="skip">
+                  <input type="radio" name="mode" value="skip" />
+                  <span class="mode-chip-label" data-i18n="mode_short_skip">
+                    Act without asking
+                  </span>
+                </label>
+              </div>
+              <div class="composer-submit">
+                <button
+                  type="submit"
+                  class="icon-send"
+                  id="chat-send"
+                  title="Send"
+                  data-i18n-title="chat_sendTitle"
+                  data-i18n-aria-label="chat_sendTitle"
+                  aria-label="Send"
+                  disabled
+                >
+                  <svg
+                    viewBox="0 0 16 16"
+                    width="16"
+                    height="16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.75"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M3 12.5L13 8 3 3.5l1.8 4.5L9.5 8 4.8 8z" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="icon-send icon-stop"
+                  id="chat-stop"
+                  title="Stop"
+                  data-i18n-title="chat_stopTitle"
+                  data-i18n-aria-label="chat_stopTitle"
+                  aria-label="Stop"
+                  hidden
+                >
+                  <svg
+                    viewBox="0 0 16 16"
+                    width="16"
+                    height="16"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
+                    <rect x="4.25" y="4.25" width="7.5" height="7.5" rx="1.5" />
+                  </svg>
+                </button>
+              </div>
+            </div>
           </form>
         </div>
       </section>

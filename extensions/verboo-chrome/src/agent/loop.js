@@ -2,13 +2,16 @@
  * loop.js — multi-step LLM agent loop.
  *
  * Flow:
- *   1. Build messages array with system prompt + user message
- *   2. Call LLM via routerClient.chatCompletion
- *   3. If response has no tool_calls → done (assistant message)
- *   4. For each tool_call → broadcast thought → executeTool callback → broadcast result
- *   5. If screenshot → attach as image_url in next user message
- *   6. Repeat up to MAX_STEPS (20)
- *   7. On any error → throw (background falls back to planMessage heuristic)
+ *   1. Decide whether the user asked for browser control or normal conversation
+ *   2. Build messages array with system prompt + user message
+ *   3. Call LLM via routerClient.chatCompletion
+ *   4. If response has no tool_calls → done (assistant message)
+ *   5. For each tool_call → broadcast thought → executeTool callback → broadcast result
+ *   6. For vision-capable models, screenshot pixels are attached once as a
+ *      multimodal user message; tool messages stay OpenAI-compatible strings
+ *   7. Repeat up to MAX_STEPS (20)
+ *   8. Router errors after partial tool success → friendly completion (no throw)
+ *   9. On hard failure with zero tools → throw (background may planMessage)
  *
  * Policy gate: executeTool callback MUST go through the existing
  * execute() → evaluateToolPolicy path. This module never touches chrome.*.
@@ -27,7 +30,11 @@ import { MSG } from '../controller/protocol.js'
 
 const MAX_STEPS = 20
 const MAX_RESULT_CHARS = 4000
+const MAX_HISTORY_MESSAGES = 12
+const MAX_HISTORY_MESSAGE_CHARS = 4000
 const POST_NAVIGATE_DELAY_MS = 400
+const YOUTUBE_WATCH_POLL_MS = 100
+const YOUTUBE_WATCH_POLL_ATTEMPTS = 8
 
 /**
  * Injected once after 3 consecutive failures of the same tool to unstick the agent.
@@ -42,36 +49,49 @@ Use screenshot only to disambiguate which video to click when results are ambigu
 /**
  * System prompt for the browser agent. Bilingual EN+PT to handle mixed requests.
  */
-const SYSTEM_PROMPT = `You are Verboo, a browser agent that controls Chrome via tools.
+const SYSTEM_PROMPT = `You are Verboo, a conversational AI that can also control Chrome via tools when the user asks.
+
+DUAL MODE (mandatory):
+- NORMAL CONVERSATION: Answer questions, explain topics, brainstorm, write, translate, and help from general knowledge exactly like a normal AI assistant. Do not inspect or change the current page merely because browser context exists.
+- BROWSER CONTROL: Use browser tools only when the user asks you to open, inspect, navigate, search, click, type, play, upload, or otherwise interact with Chrome or the current page.
+- Never turn an ordinary informational question into a browser task. If it can be answered without interacting with Chrome, reply directly.
 
 CAPABILITIES:
 - Navigate to websites (always use full https:// URLs)
 - Read page content via CSS selectors
 - Click elements (buttons, links, video thumbnails)
 - Type text into input fields
-- Take screenshots to see the visual state of the page
+- Use screenshots for visual disambiguation when visual input is available
 - Manage browser tabs
+
+LANGUAGE (mandatory):
+- Always write your final user-facing reply in the SAME language as the user's latest message.
+- If the user writes in Portuguese (including PT-BR), the final summary MUST be in Brazilian Portuguese.
+- If the user writes in English, reply in English.
+- Tool arguments (URLs, CSS selectors) stay technical; only the final assistant message follows the user language.
+- Never default to English when the user wrote in another language.
 
 IMPORTANT RULES:
 - NEVER use chrome://, chrome-extension://, about:, or edge:// URLs
-- After navigating to a page, WAIT for the page to load before acting. Read the page first or take a screenshot.
+- After navigating to a page, WAIT for the page to load before acting. Prefer read_page; use screenshot only when you need visual disambiguation.
 - Prefer precise CSS selectors (e.g. a#video-title, ytd-video-renderer a, input#search)
 - For YouTube music/video: Prefer ONE navigate to https://www.youtube.com/results?search_query=URL_ENCODED_QUERY
   Avoid typing on the homepage if you can open results URL directly.
   Working selectors: input[name="search_query"], #search-input input, button#search-icon-legacy, ytd-video-renderer a#video-title, a#video-title-link, a#video-title
   If a selector fails once, try a different selector — do not retry the same selector 5 times.
-  Use screenshot only to disambiguate which video to click when results are ambiguous.
+  Prefer read_page for titles; avoid screenshot unless results are ambiguous.
+  After a successful click that opens /watch (or the video is clearly playing): STOP.
+  Do NOT search again, do NOT re-navigate to results, do NOT take another screenshot.
+  Reply immediately with a short confirmation in the user's language.
 - For search: navigate to the search engine, type the query, submit
 - For reading a page: use read_page with a targeted selector, not the whole body when possible
 - Return a brief text summary when you finish the task
-- Never invent or fabricate selectors — only use ones you can see from page content
-
-PT-BR: Você também pode responder em português brasileiro quando o usuário usar PT.`
+- Never invent or fabricate selectors — only use ones you can see from page content`
 
 /**
  * Run a multi-step LLM agent turn.
  *
- * @param {{ turnId: string, userMessage: string, apiKey: string, modelId: string, broadcast: Function, executeTool: Function, getActiveTabMeta: Function, signal?: AbortSignal }} params
+ * @param {{ turnId: string, userMessage: string, apiKey: string, modelId: string, modelSupportsVision?: boolean, conversationHistory?: Array<object>, broadcast: Function, executeTool: Function, getActiveTabMeta: Function, signal?: AbortSignal }} params
  * @returns {Promise<{ assistantMessage: string, toolResults: Array<object> }>}
  */
 export async function runLlmAgentTurn({
@@ -79,6 +99,8 @@ export async function runLlmAgentTurn({
   userMessage,
   apiKey,
   modelId,
+  modelSupportsVision,
+  conversationHistory,
   broadcast,
   executeTool,
   getActiveTabMeta,
@@ -87,24 +109,58 @@ export async function runLlmAgentTurn({
   if (!apiKey) throw new Error('LLM agent: apiKey is required')
   if (!modelId) throw new Error('LLM agent: modelId is required')
 
-  const messages = [{ role: 'system', content: SYSTEM_PROMPT }]
+  const messages = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: modelIdentityDirectiveFor(modelId, modelSupportsVision) },
+  ]
+  const browserToolsEnabled = shouldOfferBrowserTools(userMessage)
+  const tools = browserToolsEnabled
+    ? modelSupportsVision === true
+      ? OPENAI_TOOLS
+      : OPENAI_TOOLS.filter((tool) => tool.function?.name !== 'screenshot')
+    : []
+
+  messages.push({
+    role: 'system',
+    content: browserToolsEnabled
+      ? 'TURN MODE: BROWSER CONTROL. Browser tools are available because the user explicitly requested interaction with Chrome or the current page.'
+      : 'TURN MODE: NORMAL CONVERSATION. Answer the user directly. Do not inspect or modify the browser; no browser tools are available for this turn.',
+  })
 
   // Seed with current page context as a system note (not a fake tool_call).
-  const tabMeta = await getActiveTabMeta()
-  if (tabMeta?.url && /^https?:\/\//i.test(tabMeta.url)) {
-    messages.push({
-      role: 'system',
-      content: `[Current page: ${tabMeta.url}${tabMeta.title ? ` — ${tabMeta.title}` : ''}]`,
-    })
+  if (browserToolsEnabled) {
+    const tabMeta = await getActiveTabMeta()
+    if (tabMeta?.url && /^https?:\/\//i.test(tabMeta.url)) {
+      messages.push({
+        role: 'system',
+        content: `[Current page: ${tabMeta.url}${tabMeta.title ? ` — ${tabMeta.title}` : ''}]`,
+      })
+    }
   }
 
+  messages.push(...sanitizeConversationHistory(conversationHistory))
   messages.push({ role: 'user', content: userMessage })
+  // Hard language pin for the final reply (models often ignore a soft prompt rule).
+  messages.push({
+    role: 'system',
+    content: languageDirectiveFor(userMessage),
+  })
 
   /** @type {Array<object>} */
   const allToolResults = []
 
+  // Screenshot pixels only need to survive until the next model response.
+  // Afterwards the visual message is replaced with a small history marker so
+  // later requests do not resend a large base64 payload on every step.
+  /** @type {number[]} */
+  let pendingVisualMessageIndexes = []
+
   /** Tracks consecutive failures of the same tool to inject strategy / stop early. */
   let failStreak = { name: null, count: 0, afterHint: false }
+
+  // Some tasks have an observable terminal state. Once reached, the next
+  // request asks only for the final reply and cannot trigger another action.
+  let browserActionsComplete = false
 
   for (let step = 0; step < MAX_STEPS; step++) {
     if (signal?.aborted) break
@@ -118,13 +174,39 @@ export async function runLlmAgentTurn({
       modelId,
     })
 
-    const completion = await chatCompletion({
-      apiKey,
-      model: modelId,
-      messages,
-      tools: OPENAI_TOOLS,
-      signal,
-    })
+    let completion
+    try {
+      completion = await chatCompletion({
+        apiKey,
+        model: modelId,
+        messages,
+        tools: browserActionsComplete ? [] : tools,
+        signal,
+      })
+    } catch (routerErr) {
+      if (signal?.aborted) throw routerErr
+      // After tools already ran, never throw away progress for planMessage re-search.
+      if (allToolResults.length > 0) {
+        broadcast({
+          type: MSG.AGENT_THOUGHT,
+          turnId,
+          text: `Router error after ${allToolResults.length} action(s) — finishing with what we have…`,
+        })
+        return {
+          assistantMessage: summarizePartialAgentTurn(userMessage, allToolResults),
+          toolResults: allToolResults,
+        }
+      }
+      throw routerErr
+    }
+
+    for (const index of pendingVisualMessageIndexes) {
+      messages[index] = {
+        role: 'system',
+        content: '[A screenshot was provided as visual context for the previous step.]',
+      }
+    }
+    pendingVisualMessageIndexes = []
 
     // Text-only response → done.
     if (completion.toolCalls.length === 0) {
@@ -132,20 +214,37 @@ export async function runLlmAgentTurn({
       return { assistantMessage: text, toolResults: allToolResults }
     }
 
+    // Models may emit the same action more than once in a parallel tool-call
+    // batch. Execute one canonical copy so a single request cannot double-click
+    // or type the same value twice.
+    const toolCalls = dedupeToolCalls(completion.toolCalls)
+
+    // A terminal browser state has already been reached and tools were removed
+    // from the request. Refuse an out-of-contract tool call instead of acting.
+    if (browserActionsComplete && toolCalls.length > 0) {
+      return {
+        assistantMessage: summarizePartialAgentTurn(userMessage, allToolResults),
+        toolResults: allToolResults,
+      }
+    }
+
     // Add assistant message (with tool_calls) to conversation.
     messages.push({
       role: 'assistant',
       content: completion.content,
-      tool_calls: completion.toolCalls.map((tc) => ({
+      tool_calls: toolCalls.map((tc) => ({
         id: tc.id,
         type: 'function',
         function: { name: tc.name, arguments: tc.arguments },
       })),
     })
 
-    // Execute each tool call → push role:tool message per call.
+    // Execute each tool call → push role:tool message per call. Any screenshot
+    // images are appended only after all tool responses from this assistant
+    // message, which preserves the OpenAI tool-call ordering contract.
     let lastWasSuccessfulNavigate = false
-    for (const rawTc of completion.toolCalls) {
+    const visualParts = []
+    for (const rawTc of toolCalls) {
       if (signal?.aborted) break
 
       const tc = toToolCall(rawTc)
@@ -169,6 +268,8 @@ export async function runLlmAgentTurn({
       const durationMs = Date.now() - startedAt
 
       // Build text result for the conversation.
+      // Tool role content remains a string. Vision pixels travel in a separate
+      // user message after every tool response from this step has been added.
       let resultText = ''
       let screenshotDataUrl = null
       if (execResult.ok) {
@@ -177,11 +278,13 @@ export async function runLlmAgentTurn({
           resultText = truncate(raw, MAX_RESULT_CHARS)
         } else if (raw && typeof raw === 'object') {
           if (raw.image || raw.dataUrl) {
-            screenshotDataUrl = raw.image ?? raw.dataUrl
+            if (modelSupportsVision === true) {
+              screenshotDataUrl = normalizeScreenshotDataUrl(raw.image ?? raw.dataUrl)
+            }
             const meta = []
             if (raw.width) meta.push(`${raw.width}x${raw.height}`)
             if (raw.url) meta.push(`url=${raw.url}`)
-            resultText = `Screenshot captured${meta.length ? ' (' + meta.join(', ') + ')' : ''}.`
+            resultText = `Screenshot captured${meta.length ? ' (' + meta.join(', ') + ')' : ''}. Use read_page or click next; do not re-search unless needed.`
           } else if (raw.text) {
             resultText = truncate(String(raw.text), MAX_RESULT_CHARS)
           } else if (Array.isArray(raw)) {
@@ -196,10 +299,25 @@ export async function runLlmAgentTurn({
         resultText = `Error: ${execResult.error}`
       }
 
+      // Keep heavy blobs out of in-memory toolResults (panel only needs slim status).
+      const storedData =
+        execResult.ok && execResult.result && typeof execResult.result === 'object'
+          && (execResult.result.image || execResult.result.dataUrl)
+          ? {
+              captured: true,
+              width: execResult.result.width,
+              height: execResult.result.height,
+              format: execResult.result.format,
+            }
+          : execResult.ok
+            ? (execResult.result ?? null)
+            : null
+
       allToolResults.push({
         toolCallId: tc.id,
+        name: tc.name,
         success: execResult.ok,
-        data: execResult.ok ? (execResult.result ?? null) : null,
+        data: storedData,
         error: execResult.ok ? null : execResult.error,
         durationMs,
       })
@@ -216,25 +334,16 @@ export async function runLlmAgentTurn({
         },
       })
 
-      // Push role:tool message with the result. If it was a screenshot,
-      // include the image as an image_url content part (OpenAI shape).
+      // Tool role content must stay a plain string (OpenAI-compatible).
+      messages.push({
+        role: 'tool',
+        tool_call_id: tc.id,
+        content: resultText,
+      })
       if (screenshotDataUrl) {
-        const url = screenshotDataUrl.startsWith('data:')
-          ? screenshotDataUrl
-          : `data:image/png;base64,${screenshotDataUrl}`
-        messages.push({
-          role: 'tool',
-          tool_call_id: tc.id,
-          content: [
-            { type: 'text', text: resultText },
-            { type: 'image_url', image_url: { url } },
-          ],
-        })
-      } else {
-        messages.push({
-          role: 'tool',
-          tool_call_id: tc.id,
-          content: resultText,
+        visualParts.push({
+          type: 'image_url',
+          image_url: { url: screenshotDataUrl },
         })
       }
 
@@ -273,12 +382,52 @@ export async function runLlmAgentTurn({
       if (execResult.ok && tc.name === 'navigate') {
         lastWasSuccessfulNavigate = true
       }
+
+      // YouTube watch page after click/navigate → pin "task done, reply now".
+      if (execResult.ok && (tc.name === 'click' || tc.name === 'navigate')) {
+        try {
+          const meta = await getPostActionTabMeta(getActiveTabMeta, tc, execResult)
+          if (meta?.url && /youtube\.com\/watch/i.test(meta.url)) {
+            browserActionsComplete = true
+            messages.push({
+              role: 'system',
+              content:
+                'You are now on a YouTube /watch page — the video is open. ' +
+                'Do NOT search again, do NOT navigate to results, do NOT screenshot. ' +
+                'Reply to the user with a brief confirmation in their language and stop calling tools.',
+            })
+          }
+        } catch {
+          /* meta is best-effort */
+        }
+      }
+
+      if (browserActionsComplete) break
+    }
+
+    if (signal?.aborted) throw new Error('Agent turn cancelled')
+
+    if (visualParts.length > 0) {
+      const visualMessageIndex = messages.length
+      messages.push({
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: 'Visual context from the current browser viewport. Inspect it before choosing the next action.',
+          },
+          ...visualParts,
+        ],
+      })
+      pendingVisualMessageIndexes.push(visualMessageIndex)
     }
 
     if (lastWasSuccessfulNavigate) {
       await sleep(POST_NAVIGATE_DELAY_MS)
     }
   }
+
+  if (signal?.aborted) throw new Error('Agent turn cancelled')
 
   // Reached max steps without text-only response.
   return {
@@ -288,6 +437,300 @@ export async function runLlmAgentTurn({
 }
 
 // ── Helpers ──────────────────────────────────────────────────
+
+/**
+ * Keep only bounded user/assistant text from the visible panel conversation.
+ * System and tool roles are deliberately rejected so panel data cannot inject
+ * privileged cross-turn instructions or stale tool-call protocol messages.
+ *
+ * @param {unknown} history
+ * @returns {Array<{role:'user'|'assistant', content:string}>}
+ */
+function sanitizeConversationHistory(history) {
+  if (!Array.isArray(history)) return []
+  return history
+    .filter((message) =>
+      message &&
+      typeof message === 'object' &&
+      (message.role === 'user' || message.role === 'assistant') &&
+      typeof message.content === 'string' &&
+      message.content.trim().length > 0,
+    )
+    .slice(-MAX_HISTORY_MESSAGES)
+    .map((message) => ({
+      role: message.role,
+      content: message.content.trim().slice(0, MAX_HISTORY_MESSAGE_CHARS),
+    }))
+}
+
+/**
+ * Decide whether a turn explicitly asks Verboo to interact with Chrome.
+ * Defaulting to conversation is intentional: an unrelated active page must
+ * never turn a general-knowledge question into a browsing session.
+ *
+ * This is a language-level intent guard, not a model or provider allowlist.
+ * The Router still decides which browser tools to use after the guard opens.
+ *
+ * @param {string} userMessage
+ * @returns {boolean}
+ */
+export function shouldOfferBrowserTools(userMessage) {
+  const text = String(userMessage ?? '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .trim()
+    .toLowerCase()
+
+  if (!text) return false
+
+  const action =
+    '(?:abra|abre|abrir|acesse|acessa|acessar|navegue|navegar|va|vai|entre|entrar|' +
+    'clique|clica|clicar|digite|digitar|preencha|preencher|pesquise|pesquisa|pesquisar|' +
+    'procure|procurar|busque|busca|buscar|toque|toca|tocar|reproduza|reproduzir|' +
+    'coloque|coloca|colocar|pause|pausar|feche|fecha|fechar|recarregue|recarregar|' +
+    'role|rolar|mude|mudar|curta|curtir|siga|seguir|faca login|fazer login|' +
+    'open|go to|navigate|visit|click|type|fill|search|find|play|put on|' +
+    'pause|close|reload|scroll|switch|submit|upload|download|like|follow|' +
+    'log in|sign in)'
+
+  const directAction = new RegExp(
+    `^(?:(?:por favor|please)[, ]+)?(?:me\\s+)?${action}\\b`,
+    'i',
+  )
+  const requestedAction = new RegExp(
+    `\\b(?:voce pode|pode|consegue|poderia|can you|could you|would you)\\s+(?:por favor\\s+)?(?:me\\s+)?${action}\\b`,
+    'i',
+  )
+  const desiredAction = new RegExp(
+    `\\b(?:quero|gostaria|preciso|i want|i need)\\s+(?:(?:que\\s+)?voce\\s+|you to\\s+)?${action}\\b`,
+    'i',
+  )
+
+  if (directAction.test(text) || requestedAction.test(text) || desiredAction.test(text)) {
+    return true
+  }
+
+  // Communication verbs need an explicit external destination. Phrases such
+  // as "me mande uma explicação" are normal conversation, not browser control.
+  const communicationAction =
+    /^(?:(?:por favor|please)[, ]+)?(?:me\s+)?(?:mande|envie|publique|send|post|publish)\b/i
+  const externalDestination =
+    /\b(?:whatsapp|gmail|e-?mail|instagram|facebook|linkedin|twitter|formulario|form|site)\b/i
+  if (communicationAction.test(text) && externalDestination.test(text)) return true
+
+  const pageReference =
+    /\b(?:esta|essa|desta|dessa|na|this|current)\s+(?:pagina|page|aba|tab|site)\b/i
+  const pageInspection =
+    /\b(?:resuma|resume|leia|ler|analise|verifique|veja|descreva|diga o que|o que tem|o que esta|summarize|read|analyze|check|inspect|describe|what is on|what's on|what is visible)\b/i
+
+  return pageReference.test(text) && pageInspection.test(text)
+}
+
+/**
+ * Remove identical tool calls from a single assistant response. Parallel tool
+ * calling is useful for independent reads, but repeating the same mutation is
+ * never a valid substitute for a deliberate double-click operation.
+ *
+ * @param {Array<{id:string,name:string,arguments:string}>} toolCalls
+ * @returns {Array<{id:string,name:string,arguments:string}>}
+ */
+function dedupeToolCalls(toolCalls) {
+  const seen = new Set()
+  const unique = []
+  for (const toolCall of toolCalls) {
+    const key = `${toolCall.name}:${canonicalJson(toolCall.arguments)}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    unique.push(toolCall)
+  }
+  return unique
+}
+
+/** @param {string} json */
+function canonicalJson(json) {
+  try {
+    return JSON.stringify(sortJsonValue(JSON.parse(json)))
+  } catch {
+    return String(json ?? '').trim()
+  }
+}
+
+/** @param {unknown} value */
+function sortJsonValue(value) {
+  if (Array.isArray(value)) return value.map(sortJsonValue)
+  if (!value || typeof value !== 'object') return value
+  const obj = /** @type {Record<string, unknown>} */ (value)
+  return Object.fromEntries(
+    Object.keys(obj)
+      .sort()
+      .map((key) => [key, sortJsonValue(obj[key])]),
+  )
+}
+
+/**
+ * YouTube updates its URL asynchronously after an SPA thumbnail click. Poll
+ * only when the click originated on YouTube; other websites keep the existing
+ * zero-delay behavior.
+ *
+ * @param {Function} getActiveTabMeta
+ * @param {{name:string}} toolCall
+ * @param {{result?:unknown}} execResult
+ * @returns {Promise<object | null | undefined>}
+ */
+async function getPostActionTabMeta(getActiveTabMeta, toolCall, execResult) {
+  let meta = await getActiveTabMeta()
+  if (meta?.url && /youtube\.com\/watch/i.test(meta.url)) return meta
+
+  const result = execResult?.result
+  const sourceUrl = result && typeof result === 'object' && typeof result.url === 'string'
+    ? result.url
+    : ''
+  const shouldPoll = toolCall.name === 'click' && /youtube\.com\//i.test(sourceUrl)
+  if (!shouldPoll) return meta
+
+  for (let attempt = 0; attempt < YOUTUBE_WATCH_POLL_ATTEMPTS; attempt++) {
+    await sleep(YOUTUBE_WATCH_POLL_MS)
+    meta = await getActiveTabMeta()
+    if (meta?.url && /youtube\.com\/watch/i.test(meta.url)) return meta
+  }
+  return meta
+}
+
+/**
+ * User-facing summary when the router dies mid-turn after some tools succeeded.
+ * Avoids destructive planMessage re-search and keeps the user's language.
+ * @param {string} userMessage
+ * @param {Array<object>} toolResults
+ * @returns {string}
+ */
+export function summarizePartialAgentTurn(userMessage, toolResults) {
+  const results = Array.isArray(toolResults) ? toolResults : []
+  const ok = results.filter((r) => r && r.success).length
+  const names = results.map((r) => r?.name).filter(Boolean)
+  const didClick = names.includes('click')
+  const didNav = names.includes('navigate')
+  const pt = looksPortuguese(userMessage)
+
+  if (pt) {
+    if (didClick) {
+      return (
+        'Consegui avançar na página (incluindo um clique). ' +
+        'Se o vídeo ou o resultado não estiver certo, diga o que ajustar.'
+      )
+    }
+    if (didNav) {
+      return (
+        'Abri a página pedida e executei parte das ações. ' +
+        'Se algo faltar, peça o próximo passo.'
+      )
+    }
+    return ok > 0
+      ? `Fiz ${ok} ação(ões), mas a conexão com o modelo falhou no final. Tente de novo se precisar.`
+      : 'Não consegui concluir o pedido. Tente novamente.'
+  }
+
+  if (didClick) {
+    return (
+      'I made progress on the page (including a click). ' +
+      'If the video or result is wrong, tell me what to fix.'
+    )
+  }
+  if (didNav) {
+    return (
+      'I opened the requested page and completed part of the work. ' +
+      'Ask for the next step if something is missing.'
+    )
+  }
+  return ok > 0
+    ? `I completed ${ok} action(s), but the model connection failed at the end. Try again if needed.`
+    : 'I could not complete the request. Please try again.'
+}
+
+/**
+ * Pin the final assistant language to the user's message language.
+ * Prefer explicit PT markers; default to "same language as the user".
+ * @param {string} userMessage
+ * @returns {string}
+ */
+export function languageDirectiveFor(userMessage) {
+  const text = typeof userMessage === 'string' ? userMessage : ''
+  if (looksPortuguese(text)) {
+    return (
+      'LANGUAGE LOCK: The user wrote in Portuguese. Your final assistant message ' +
+      '(the text reply when you stop calling tools) MUST be in Brazilian Portuguese (pt-BR). ' +
+      'Do not answer in English.'
+    )
+  }
+  if (looksEnglish(text)) {
+    return (
+      'LANGUAGE LOCK: The user wrote in English. Your final assistant message ' +
+      'MUST be in English.'
+    )
+  }
+  return (
+    'LANGUAGE LOCK: Write your final assistant message in the same language as the user message above. ' +
+    'Do not switch to English unless the user wrote in English.'
+  )
+}
+
+/**
+ * Give the selected model an authoritative, runtime-derived identity. A model
+ * cannot reliably infer the Router selection from conversational context alone.
+ * @param {string} modelId
+ * @param {boolean | undefined} supportsVision
+ * @returns {string}
+ */
+export function modelIdentityDirectiveFor(modelId, supportsVision) {
+  const safeModelId = String(modelId ?? '')
+    .replace(/[\r\n]+/g, ' ')
+    .trim()
+    .slice(0, 200)
+  const visualLine = supportsVision === true
+    ? 'VISUAL INPUT: Available. Screenshot pixels will be provided in a multimodal user message after the screenshot tool runs.'
+    : 'VISUAL INPUT: Unavailable. Use read_page and DOM tools; never claim that you can see a screenshot.'
+  return (
+    `CURRENT MODEL ID: ${safeModelId}\n` +
+    'This exact ID was selected by the user for the current turn. If asked which model you are using, ' +
+    'state this exact ID. Do not infer or substitute another model or provider name.\n' +
+    visualLine
+  )
+}
+
+/**
+ * Lightweight PT detector — enough for agent turns without a full i18n stack.
+ * @param {string} text
+ */
+function looksPortuguese(text) {
+  if (!text) return false
+  if (/[áàâãéêíóôõúçÁÀÂÃÉÊÍÓÔÕÚÇ]/.test(text)) return true
+  // Common PT browser-agent phrases (with and without accents).
+  return (
+    /\b(abra|abre|abrir|coloque|coloca|procure|pesquis[ae]|toque|tocar|m[uú]sica|musica|v[ií]deo|video|clipe|para|com|uma|o|a|de|da|do|no|na|eu|quero|pode|por\s+favor|obrigad[oa])\b/i.test(
+      text,
+    ) &&
+    // Avoid treating pure EN "a/to/the" noise as PT when no PT tokens beyond stopwords.
+    /\b(abra|abre|abrir|coloque|coloca|procure|pesquis|toque|tocar|m[uú]sica|musica|clipe|quero|pode|obrigad)\w*\b/i.test(
+      text,
+    )
+  )
+}
+
+/**
+ * @param {string} text
+ */
+function looksEnglish(text) {
+  if (!text) return false
+  return /\b(open|go to|search|play|put on|find|please|the|and|for|with|youtube|music|song|video)\b/i.test(
+    text,
+  )
+}
+
+/** @param {unknown} value */
+function normalizeScreenshotDataUrl(value) {
+  if (typeof value !== 'string' || value.length === 0) return null
+  if (/^data:image\/(?:png|jpe?g|webp);base64,/i.test(value)) return value
+  return `data:image/jpeg;base64,${value}`
+}
 
 function truncate(text, max) {
   if (text.length <= max) return text

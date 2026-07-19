@@ -24,21 +24,20 @@ test('Verboo tab group title is "Verboo"', () => {
 })
 
 test('Verboo tab group color is chrome.tabGroups purple', () => {
-  // chrome.tabGroups.Color enum includes 'purple'
   assert.equal(VERBOO_TAB_GROUP_COLOR, 'purple')
 })
 
-test('presence action delay is brief (280–380ms range)', () => {
-  assert.equal(PRESENCE_ACTION_DELAY_MS_MIN, 280)
-  assert.equal(PRESENCE_ACTION_DELAY_MS_MAX, 380)
-  assert.ok(PRESENCE_ACTION_DELAY_MS >= 280)
-  assert.ok(PRESENCE_ACTION_DELAY_MS <= 380)
+test('presence action delay is visible long enough (cursor dwell)', () => {
+  assert.equal(PRESENCE_ACTION_DELAY_MS_MIN, 420)
+  assert.equal(PRESENCE_ACTION_DELAY_MS_MAX, 580)
+  assert.ok(PRESENCE_ACTION_DELAY_MS >= 420)
+  assert.ok(PRESENCE_ACTION_DELAY_MS <= 580)
 })
 
 test('randomBetween stays within [min, max]', () => {
   for (let i = 0; i < 40; i++) {
-    const n = randomBetween(280, 380)
-    assert.ok(n >= 280 && n <= 380, `got ${n}`)
+    const n = randomBetween(420, 580)
+    assert.ok(n >= 420 && n <= 580, `got ${n}`)
   }
 })
 
@@ -48,8 +47,15 @@ test('clearPresence and clearPresenceBestEffort are exported functions', () => {
   assert.equal(typeof clearPresenceOnAllTabs, 'function')
 })
 
+test('ensureAgentPresence and pulseAgentCursor are exported', async () => {
+  const mod = await import('./inject.js')
+  assert.equal(typeof mod.ensureAgentPresence, 'function')
+  assert.equal(typeof mod.pulseAgentCursor, 'function')
+  assert.equal(typeof mod.preparePresenceForAction, 'function')
+  assert.equal(typeof mod.showAgentCursor, 'function')
+})
+
 test('clearPresence no-ops without a numeric tabId', async () => {
-  // No chrome.scripting in node — non-numeric ids must not throw.
   await assert.doesNotReject(() => clearPresence(/** @type {any} */ (undefined)))
   await assert.doesNotReject(() => clearPresence(/** @type {any} */ (null)))
 })

@@ -9,8 +9,8 @@
 //! Multi-user: zero hardcoded paths/users/tokens. The client does not own a
 //! session; the extension owns `verbooSession` in `chrome.storage.local`.
 
-use serde_json::Value;
 use crate::browser_bridge::native_messaging::{decode_message, encode_message, FrameError};
+use serde_json::Value;
 
 /// Errors from the client layer.
 #[derive(Debug, thiserror::Error)]
@@ -31,15 +31,16 @@ pub enum ClientError {
 /// extension is the source of truth for tool result shapes; Desktop is a
 /// transport, not a validator.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolResult {
-    pub toolCallId: String,
+    pub tool_call_id: String,
     pub success: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(default)]
-    pub durationMs: u64,
+    pub duration_ms: u64,
 }
 
 /// Send a tool call to the extension and await the result.

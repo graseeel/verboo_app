@@ -293,6 +293,48 @@ export default {
   "activity_working": {
     "message": "Working…"
   },
+  "activity_details": {
+    "message": "{count} steps"
+  },
+  "activity_hide_details": {
+    "message": "Hide"
+  },
+  "activity_steps_completed": {
+    "message": "{count} steps completed"
+  },
+  "activity_step_completed": {
+    "message": "1 step completed"
+  },
+  "activity_stopped": {
+    "message": "Stopped"
+  },
+  "activity_incomplete": {
+    "message": "Could not complete"
+  },
+  "activity_analyzing": {
+    "message": "Analyzing…"
+  },
+  "activity_continuing": {
+    "message": "Continuing…"
+  },
+  "activity_quick_planner": {
+    "message": "Using quick planner…"
+  },
+  "activity_finishing_partial": {
+    "message": "Wrapping up…"
+  },
+  "activity_planning": {
+    "message": "Planning the next actions…"
+  },
+  "activity_thinking": {
+    "message": "Thinking…"
+  },
+  "activity_retrying": {
+    "message": "Trying another approach…"
+  },
+  "activity_stopping": {
+    "message": "Stopping…"
+  },
   "activity_navigating": {
     "message": "Navigating to {url}…"
   },
@@ -313,5 +355,41 @@ export default {
   },
   "activity_capture_failed": {
     "message": "Could not capture the page"
+  },
+  "chat_turnIdleTimeout": {
+    "message": "The agent stopped responding. Try again."
+  },
+  "chat_turnMaxTimeout": {
+    "message": "This turn took too long and was stopped. Try a shorter request."
+  },
+  "chat_turnStartFailed": {
+    "message": "Could not start the agent turn. Reload the extension and try again."
+  },
+  "chat_stopTitle": {
+    "message": "Stop Verboo"
+  },
+  "model_picker_label": {
+    "message": "Choose model"
+  },
+  "model_loading": {
+    "message": "Loading models…"
+  },
+  "model_unavailable": {
+    "message": "No model available"
+  },
+  "model_unavailable_help": {
+    "message": "Refresh your Verboo session"
+  },
+  "model_visual_badge": {
+    "message": "Visual"
+  },
+  "model_visual_description": {
+    "message": "Understands page images"
+  },
+  "model_text_description": {
+    "message": "Uses page text and structure"
+  },
+  "model_selection_failed": {
+    "message": "Could not change models. Try again."
   }
 }

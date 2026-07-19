@@ -24,16 +24,20 @@ const FRAME_ID = 'verboo-presence-frame'
 const FRAME_STYLE_ID = 'verboo-presence-frame-style'
 const CURSOR_ID = 'verboo-agent-cursor'
 const CURSOR_STYLE_ID = 'verboo-agent-cursor-style'
+const CURSOR_RIPPLE_ID = 'verboo-agent-cursor-ripple'
 
 /** Inclusive lower bound for the random presence pause (ms). */
-export const PRESENCE_ACTION_DELAY_MS_MIN = 280
+export const PRESENCE_ACTION_DELAY_MS_MIN = 420
 /** Inclusive upper bound for the random presence pause (ms). */
-export const PRESENCE_ACTION_DELAY_MS_MAX = 380
+export const PRESENCE_ACTION_DELAY_MS_MAX = 580
 /**
- * Representative delay in the [280, 380] range (for tests / docs).
- * Runtime uses {@link randomBetween}(280, 380) each action.
+ * Representative delay in the presence range (for tests / docs).
+ * Runtime uses {@link randomBetween} each action — long enough to see the cursor.
  */
-export const PRESENCE_ACTION_DELAY_MS = 330
+export const PRESENCE_ACTION_DELAY_MS = 500
+
+/** Cursor glide duration (ms) — matches in-page CSS transition. */
+export const CURSOR_MOVE_MS = 420
 
 /**
  * Inclusive integer random in [min, max].
@@ -140,6 +144,8 @@ export async function hidePresenceFrame(tabId) {
 /**
  * Show / move the agent cursor. Accepts viewport coords or a selector
  * (centers on the element's bounding rect; scrolls into view first).
+ * When target is null/omitted, places cursor near viewport center with
+ * a soft entrance (so presence is always visible during control).
  *
  * @param {number} tabId
  * @param {{ x: number; y: number } | { selector: string } | null | undefined} target
@@ -159,6 +165,21 @@ export async function showAgentCursor(tabId, target) {
 }
 
 /**
+ * Brief click pulse + ripple at the cursor tip (feedback before DOM click).
+ *
+ * @param {number} tabId
+ * @returns {Promise<void>}
+ */
+export async function pulseAgentCursor(tabId) {
+  if (typeof tabId !== 'number') return
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    func: pulseAgentCursorInPage,
+    args: [CURSOR_ID, CURSOR_RIPPLE_ID],
+  })
+}
+
+/**
  * Remove the agent cursor overlay.
  *
  * @param {number} tabId
@@ -169,7 +190,7 @@ export async function hideAgentCursor(tabId) {
   await chrome.scripting.executeScript({
     target: { tabId },
     func: removeByIdsInPage,
-    args: [[CURSOR_ID, CURSOR_STYLE_ID]],
+    args: [[CURSOR_ID, CURSOR_STYLE_ID, CURSOR_RIPPLE_ID]],
   })
 }
 
@@ -263,8 +284,28 @@ export async function clearPresenceOnAllTabs() {
 }
 
 /**
- * Best-effort presence prelude used by click/type: frame + cursor + delay.
- * Never throws. Delay is randomBetween(280, 380) unless reduced-motion (0).
+ * Frame + cursor for the whole control session (turn start / after navigate).
+ * Always shows the cursor (viewport center when no target) so presence is
+ * never "frame only".
+ *
+ * @param {number} tabId
+ * @param {{ x: number; y: number } | { selector: string } | null | undefined} [target]
+ * @returns {Promise<void>}
+ */
+export async function ensureAgentPresence(tabId, target) {
+  if (typeof tabId !== 'number') return
+  try {
+    await showPresenceFrame(tabId)
+    await showAgentCursor(tabId, target ?? null)
+  } catch {
+    // chrome:// pages, closed tabs, CSP — ignore.
+  }
+}
+
+/**
+ * Best-effort presence prelude used by click/type/read/screenshot:
+ * frame + cursor (selector or center) + delay. Never throws.
+ * Delay is randomBetween(280, 380) unless reduced-motion (0).
  *
  * @param {number} tabId
  * @param {string} [selector]
@@ -273,9 +314,11 @@ export async function clearPresenceOnAllTabs() {
 export async function preparePresenceForAction(tabId, selector) {
   try {
     await showPresenceFrame(tabId)
-    if (selector) {
-      await showAgentCursor(tabId, { selector })
-    }
+    // Always animate the cursor — even without a selector (center target).
+    await showAgentCursor(
+      tabId,
+      typeof selector === 'string' && selector ? { selector } : null,
+    )
     const delayMs = await resolvePresenceDelayMs(tabId)
     if (delayMs > 0) await sleep(delayMs)
   } catch {
@@ -309,7 +352,13 @@ async function resolvePresenceDelayMs(tabId) {
  * @param {string} styleId
  */
 function injectPresenceFrameInPage(frameId, styleId) {
-  if (document.getElementById(frameId)) return
+  // Must be self-contained (serialized into the page). Avoids innerHTML —
+  // YouTube Trusted Types can reject string HTML injection.
+  if (document.getElementById(frameId)) {
+    const existing = document.getElementById(frameId)
+    if (existing) existing.classList.add('verboo-frame-visible')
+    return
+  }
 
   const reduced =
     typeof matchMedia === 'function' &&
@@ -320,15 +369,22 @@ function injectPresenceFrameInPage(frameId, styleId) {
     style.id = styleId
     style.textContent = `
 #${frameId} {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 2147483646;
+  position: fixed !important;
+  inset: 0 !important;
+  pointer-events: none !important;
+  z-index: 2147483646 !important;
   box-shadow:
     inset 0 0 0 3px rgba(147, 85, 255, 0.55),
     inset 0 0 24px 4px rgba(169, 109, 255, 0.22),
-    0 0 18px 2px rgba(147, 85, 255, 0.18);
-  border-radius: 0;
+    0 0 18px 2px rgba(147, 85, 255, 0.18) !important;
+  border-radius: 0 !important;
+  opacity: 0;
+  transition: opacity 220ms cubic-bezier(0.23, 1, 0.32, 1);
+  margin: 0 !important;
+  padding: 0 !important;
+}
+#${frameId}.verboo-frame-visible {
+  opacity: 1 !important;
 }
 @keyframes verboo-presence-pulse {
   from {
@@ -336,14 +392,12 @@ function injectPresenceFrameInPage(frameId, styleId) {
       inset 0 0 0 3px rgba(147, 85, 255, 0.42),
       inset 0 0 16px 2px rgba(169, 109, 255, 0.14),
       0 0 10px 1px rgba(147, 85, 255, 0.10);
-    opacity: 0.88;
   }
   to {
     box-shadow:
       inset 0 0 0 3px rgba(147, 85, 255, 0.78),
       inset 0 0 32px 6px rgba(169, 109, 255, 0.34),
       0 0 26px 4px rgba(147, 85, 255, 0.28);
-    opacity: 1;
   }
 }
 #${frameId}.verboo-animate {
@@ -358,6 +412,10 @@ function injectPresenceFrameInPage(frameId, styleId) {
   frame.setAttribute('aria-hidden', 'true')
   if (!reduced) frame.classList.add('verboo-animate')
   ;(document.documentElement || document.body).appendChild(frame)
+  requestAnimationFrame(() => {
+    const f = document.getElementById(frameId)
+    if (f) f.classList.add('verboo-frame-visible')
+  })
 }
 
 /**
@@ -366,29 +424,47 @@ function injectPresenceFrameInPage(frameId, styleId) {
  * @param {{ x?: number; y?: number; selector?: string } | null} target
  */
 function injectAgentCursorInPage(cursorId, styleId, target) {
-  // Must be self-contained: chrome.scripting.executeScript serializes this
-  // function alone (no outer module scope). Classic pointer tip ≈ top-left.
-  const cursorSvgHtml =
-    '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">' +
-    '<path fill="#9355ff" stroke="#fff" stroke-width="0.8" d="M4 3 L4 19 L9 14 L12 21 L14.5 20 L11.5 13 L18 13 Z"/>' +
-    '</svg>'
+  // Self-contained (serialized into the page). No outer helpers, no innerHTML
+  // (YouTube Trusted Types rejects string HTML injection).
+  function buildPointerSvg() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    svg.setAttribute('width', '24')
+    svg.setAttribute('height', '24')
+    svg.setAttribute('viewBox', '0 0 24 24')
+    svg.setAttribute('aria-hidden', 'true')
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    path.setAttribute('fill', '#9355ff')
+    path.setAttribute('stroke', '#ffffff')
+    path.setAttribute('stroke-width', '0.9')
+    path.setAttribute('stroke-linejoin', 'round')
+    path.setAttribute('d', 'M4 3 L4 19 L9 14 L12 21 L14.5 20 L11.5 13 L18 13 Z')
+    svg.appendChild(path)
+    return svg
+  }
 
   const reduced =
     typeof matchMedia === 'function' &&
     matchMedia('(prefers-reduced-motion: reduce)').matches
 
-  let x = window.innerWidth / 2
-  let y = window.innerHeight / 2
+  let x = window.innerWidth * 0.5
+  let y = window.innerHeight * 0.42
 
   if (target && typeof target.selector === 'string') {
-    const el = document.querySelector(target.selector)
+    let el = null
+    try {
+      el = document.querySelector(target.selector)
+    } catch {
+      el = null
+    }
     if (el) {
-      // Instant scroll so getBoundingClientRect matches the final position
-      // before the action delay (smooth would leave coords mid-scroll).
       try {
         el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' })
       } catch {
-        el.scrollIntoView(true)
+        try {
+          el.scrollIntoView(true)
+        } catch {
+          /* ignore */
+        }
       }
       const rect = el.getBoundingClientRect()
       x = rect.left + rect.width / 2
@@ -408,65 +484,176 @@ function injectAgentCursorInPage(cursorId, styleId, target) {
   if (!document.getElementById(styleId)) {
     const style = document.createElement('style')
     style.id = styleId
-    // Classic SVG pointer: tip at transform-origin 0 0, soft purple drop-shadow.
     style.textContent = `
 #${cursorId} {
-  position: fixed;
-  left: 0;
-  top: 0;
-  width: 20px;
-  height: 20px;
-  pointer-events: none;
-  z-index: 2147483647;
-  opacity: 0.95;
+  position: fixed !important;
+  left: 0 !important;
+  top: 0 !important;
+  width: 28px !important;
+  height: 28px !important;
+  pointer-events: none !important;
+  z-index: 2147483647 !important;
+  opacity: 0;
   transform-origin: 0 0;
-  filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.3)) drop-shadow(0 0 8px rgba(147, 85, 255, 0.25));
-  will-change: transform;
-  line-height: 0;
+  filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.4)) drop-shadow(0 0 12px rgba(147, 85, 255, 0.55));
+  will-change: transform, opacity;
+  line-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: none !important;
+}
+#${cursorId}.verboo-cursor-visible {
+  opacity: 1 !important;
 }
 #${cursorId} svg {
-  display: block;
-  width: 20px;
-  height: 20px;
-  overflow: visible;
+  display: block !important;
+  width: 24px !important;
+  height: 24px !important;
+  overflow: visible !important;
 }
 #${cursorId}.verboo-cursor-animate {
-  transition: transform 380ms cubic-bezier(0.23, 1, 0.32, 1);
+  transition:
+    transform 420ms cubic-bezier(0.23, 1, 0.32, 1),
+    opacity 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+@keyframes verboo-cursor-idle {
+  0%, 100% {
+    filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.4)) drop-shadow(0 0 10px rgba(147, 85, 255, 0.4));
+  }
+  50% {
+    filter: drop-shadow(0 5px 10px rgba(0, 0, 0, 0.35)) drop-shadow(0 0 18px rgba(147, 85, 255, 0.75));
+  }
+}
+#${cursorId}.verboo-cursor-idle {
+  animation: verboo-cursor-idle 1.4s ease-in-out infinite;
+}
+#${cursorId}.verboo-cursor-click {
+  transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1) !important;
+  transform: var(--verboo-cursor-t) scale(0.86) !important;
+}
+@keyframes verboo-cursor-ripple {
+  from {
+    opacity: 0.65;
+    transform: translate(-50%, -50%) scale(0.3);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.85);
+  }
+}
+#${cursorId}-ripple {
+  position: fixed !important;
+  width: 36px !important;
+  height: 36px !important;
+  border-radius: 50% !important;
+  pointer-events: none !important;
+  z-index: 2147483646 !important;
+  border: 2px solid rgba(147, 85, 255, 0.85) !important;
+  background: rgba(147, 85, 255, 0.22) !important;
+  animation: verboo-cursor-ripple 480ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+  margin: 0 !important;
+  padding: 0 !important;
 }
 `.trim()
     ;(document.documentElement || document.body).appendChild(style)
   }
 
   let cursor = document.getElementById(cursorId)
-  // Tip of the arrow is the hotspot (origin 0,0) — no centering offset.
   const transform = `translate(${x}px, ${y}px)`
 
   if (!cursor) {
     cursor = document.createElement('div')
     cursor.id = cursorId
     cursor.setAttribute('aria-hidden', 'true')
-    cursor.innerHTML = cursorSvgHtml
-    // Place without transition first, then enable animation for later moves.
-    cursor.style.transform = transform
+    cursor.appendChild(buildPointerSvg())
+    const enterX = Math.max(0, x - 36)
+    const enterY = Math.max(0, y - 24)
+    cursor.style.transform = `translate(${enterX}px, ${enterY}px)`
+    cursor.style.setProperty('--verboo-cursor-t', transform)
     ;(document.documentElement || document.body).appendChild(cursor)
     if (!reduced) {
-      // Next frame: enable transition for subsequent moves.
       requestAnimationFrame(() => {
-        const c = document.getElementById(cursorId)
-        if (c) c.classList.add('verboo-cursor-animate')
+        requestAnimationFrame(() => {
+          const c = document.getElementById(cursorId)
+          if (!c) return
+          c.classList.add('verboo-cursor-animate', 'verboo-cursor-visible')
+          c.style.transform = transform
+          c.style.setProperty('--verboo-cursor-t', transform)
+          setTimeout(() => {
+            const live = document.getElementById(cursorId)
+            if (live) live.classList.add('verboo-cursor-idle')
+          }, 450)
+        })
       })
+    } else {
+      cursor.classList.add('verboo-cursor-visible')
+      cursor.style.transform = transform
     }
   } else {
     if (!cursor.querySelector('svg')) {
-      cursor.innerHTML = cursorSvgHtml
+      while (cursor.firstChild) cursor.removeChild(cursor.firstChild)
+      cursor.appendChild(buildPointerSvg())
     }
+    cursor.classList.remove('verboo-cursor-idle', 'verboo-cursor-click')
     if (reduced) {
       cursor.classList.remove('verboo-cursor-animate')
+      cursor.classList.add('verboo-cursor-visible')
     } else {
-      cursor.classList.add('verboo-cursor-animate')
+      cursor.classList.add('verboo-cursor-animate', 'verboo-cursor-visible')
     }
     cursor.style.transform = transform
+    cursor.style.setProperty('--verboo-cursor-t', transform)
+    if (!reduced) {
+      setTimeout(() => {
+        const live = document.getElementById(cursorId)
+        if (live) live.classList.add('verboo-cursor-idle')
+      }, 450)
+    }
   }
+}
+
+/**
+ * @param {string} cursorId
+ * @param {string} rippleId
+ */
+function pulseAgentCursorInPage(cursorId, rippleId) {
+  const cursor = document.getElementById(cursorId)
+  if (!cursor) return
+
+  const reduced =
+    typeof matchMedia === 'function' &&
+    matchMedia('(prefers-reduced-motion: reduce)').matches
+
+  const m = /translate\(\s*([-\d.]+)px\s*,\s*([-\d.]+)px\s*\)/.exec(
+    cursor.style.transform || '',
+  )
+  const x = m ? Number(m[1]) : window.innerWidth / 2
+  const y = m ? Number(m[2]) : window.innerHeight / 2
+  const base = `translate(${x}px, ${y}px)`
+  cursor.style.setProperty('--verboo-cursor-t', base)
+
+  if (!reduced) {
+    cursor.classList.remove('verboo-cursor-idle')
+    cursor.classList.add('verboo-cursor-click')
+    setTimeout(() => {
+      const c = document.getElementById(cursorId)
+      if (!c) return
+      c.classList.remove('verboo-cursor-click')
+      c.style.transform = base
+      c.classList.add('verboo-cursor-idle')
+    }, 160)
+  }
+
+  document.getElementById(rippleId)?.remove()
+  if (reduced) return
+  const ripple = document.createElement('div')
+  ripple.id = rippleId
+  ripple.setAttribute('aria-hidden', 'true')
+  ripple.style.left = `${x}px`
+  ripple.style.top = `${y}px`
+  ;(document.documentElement || document.body).appendChild(ripple)
+  setTimeout(() => ripple.remove(), 500)
 }
 
 /**

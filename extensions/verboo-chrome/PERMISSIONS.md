@@ -91,15 +91,15 @@ All of these are gated by the policy engine: scripts only execute after `evaluat
 
 ---
 
-## Host permissions (`http://*/*`, `https://*/*`)
+## Host permissions (`http://*/*`, `https://*/*`, `<all_urls>`)
 
-**What they are.** Two match patterns covering every HTTP and HTTPS page.
+**What they are.** Match patterns covering HTTP/HTTPS pages, plus `<all_urls>` required by Chrome for `chrome.tabs.captureVisibleTab` (viewport screenshots). Plain `http://*/*` / `https://*/*` alone are **not** accepted by `captureVisibleTab` — Chrome only grants capture with `<all_urls>` or temporary `activeTab`.
 
-**Why we need them.** `chrome.scripting.executeScript` and `chrome.tabs.update` both require host permissions for the targets they operate on. The tools we ship — read, click, type, screenshot, navigate — need to work on whatever page you point Verboo at. Restricting the patterns to a fixed list of domains would make the extension useless for legitimate research, automation, and form-filling tasks.
+**Why we need them.** `chrome.scripting.executeScript`, `chrome.tabs.update`, and viewport screenshots need host access for the page the agent is driving. Restricting patterns to a fixed domain list would make research/automation unusable. `<all_urls>` is required specifically so screenshot works from the side panel without a fresh toolbar-click gesture every turn.
 
 **What we don't do with them.**
 
-- We do not access `file://`, `ftp://`, `chrome://`, `chrome-extension://`, `about:`, or other non-HTTP schemes.
+- We do not use capture on `chrome://`, `chrome-extension://`, or other restricted schemes from the agent loop (the screenshot tool rejects non-http(s) URLs).
 - The script we inject never evaluates a string fetched from a network origin — it is a closed function bundled with the extension.
 - Each invocation is gated by `evaluateToolPolicy` and (in Manual mode) requires your explicit approval.
 

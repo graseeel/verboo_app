@@ -305,6 +305,48 @@ export default {
   "activity_working": {
     "message": "Trabalhando…"
   },
+  "activity_details": {
+    "message": "{count} etapas"
+  },
+  "activity_hide_details": {
+    "message": "Ocultar"
+  },
+  "activity_steps_completed": {
+    "message": "{count} etapas concluídas"
+  },
+  "activity_step_completed": {
+    "message": "1 etapa concluída"
+  },
+  "activity_stopped": {
+    "message": "Interrompido"
+  },
+  "activity_incomplete": {
+    "message": "Não foi possível concluir"
+  },
+  "activity_analyzing": {
+    "message": "Analisando…"
+  },
+  "activity_continuing": {
+    "message": "Continuando…"
+  },
+  "activity_quick_planner": {
+    "message": "Usando planejador rápido…"
+  },
+  "activity_finishing_partial": {
+    "message": "Finalizando…"
+  },
+  "activity_planning": {
+    "message": "Planejando as próximas ações…"
+  },
+  "activity_thinking": {
+    "message": "Pensando…"
+  },
+  "activity_retrying": {
+    "message": "Tentando outra abordagem…"
+  },
+  "activity_stopping": {
+    "message": "Interrompendo…"
+  },
   "activity_navigating": {
     "message": "Navegando para {url}…"
   },
@@ -325,5 +367,41 @@ export default {
   },
   "activity_capture_failed": {
     "message": "Não foi possível capturar a página"
+  },
+  "chat_turnIdleTimeout": {
+    "message": "O agente parou de responder. Tente de novo."
+  },
+  "chat_turnMaxTimeout": {
+    "message": "Este turno demorou demais e foi interrompido. Tente um pedido mais curto."
+  },
+  "chat_turnStartFailed": {
+    "message": "Não foi possível iniciar o turno. Recarregue a extensão e tente de novo."
+  },
+  "chat_stopTitle": {
+    "message": "Interromper Verboo"
+  },
+  "model_picker_label": {
+    "message": "Escolher modelo"
+  },
+  "model_loading": {
+    "message": "Carregando modelos…"
+  },
+  "model_unavailable": {
+    "message": "Nenhum modelo disponível"
+  },
+  "model_unavailable_help": {
+    "message": "Atualize sua sessão Verboo"
+  },
+  "model_visual_badge": {
+    "message": "Visual"
+  },
+  "model_visual_description": {
+    "message": "Entende imagens da página"
+  },
+  "model_text_description": {
+    "message": "Usa texto e estrutura da página"
+  },
+  "model_selection_failed": {
+    "message": "Não foi possível trocar o modelo. Tente de novo."
   }
 }

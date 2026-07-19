@@ -34,7 +34,8 @@
   ],
   "host_permissions": [
     "http://*/*",
-    "https://*/*"
+    "https://*/*",
+    "<all_urls>"
   ],
   "action": {
     "default_title": "__MSG_openSidePanel__",

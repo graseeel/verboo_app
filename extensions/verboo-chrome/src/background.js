@@ -24,13 +24,18 @@ import {
   loadModels,
   selectModel,
   getSelectedModelId,
+  resolveModelSelection,
 } from './auth/auth.js'
 import {
   ensureVerbooTabGroup,
-  showPresenceFrame,
+  ensureAgentPresence,
   clearPresenceOnAllTabs,
 } from './presence/inject.js'
-import { runLlmAgentTurn } from './agent/loop.js'
+import {
+  runLlmAgentTurn,
+  shouldOfferBrowserTools,
+  summarizePartialAgentTurn,
+} from './agent/loop.js'
 
 // ── Native Messaging host name ──────────────────────────────────
 // Matches the manifest at native-messaging/com.verboo.code.browser_extension.json.template
@@ -151,7 +156,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   switch (message.type) {
     case MSG.AGENT_TURN_START: {
-      void runAgentTurn(message.turnId, message.userMessage, sender.tab?.id)
+      // runAgentTurn always emits COMPLETE or ERROR in finally; this catch is
+      // a last-resort if the function itself rejects before that path runs.
+      void runAgentTurn(
+        message.turnId,
+        message.userMessage,
+        sender.tab?.id,
+        message.modelId,
+        message.conversationHistory,
+      )
         .catch((err) => {
           try {
             void clearPresenceOnAllTabs()
@@ -346,281 +359,432 @@ async function handleBrowserTool(toolCall) {
 const turnControllers = new Map()
 
 /**
+ * Strip heavy tool payloads (screenshots, full page text) before broadcast.
+ * Large chrome.runtime messages can fail silently and leave the panel on Working…
+ * @param {unknown} results
+ * @returns {Array<object>}
+ */
+function slimToolResultsForBroadcast(results) {
+  if (!Array.isArray(results)) return []
+  return results.map((r) => {
+    if (!r || typeof r !== 'object') return r
+    const row = /** @type {Record<string, unknown>} */ (r)
+    return {
+      toolCallId: row.toolCallId,
+      success: row.success,
+      error: row.error ?? null,
+      durationMs: row.durationMs ?? 0,
+    }
+  })
+}
+
+/**
  * @param {string} turnId
  * @param {string} userMessage
  * @param {number} [senderTabId]
+ * @param {string} [requestedModelId]
+ * @param {Array<object>} [conversationHistory]
  */
-async function runAgentTurn(turnId, userMessage, senderTabId) {
+async function runAgentTurn(
+  turnId,
+  userMessage,
+  senderTabId,
+  requestedModelId,
+  conversationHistory,
+) {
   const controller = new AbortController()
   turnControllers.set(turnId, controller)
+  const browserToolsRequested = shouldOfferBrowserTools(userMessage)
 
-  broadcast({ type: MSG.AGENT_TURN_STARTED, turnId, userMessage })
-
-  // Resolve the active tab up front so the planner can decide between
-  // a navigate (e.g. "abra o youtube" on chrome://extensions) and a
-  // read_page on the current tab.
-  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
-  const activeTabUrl = activeTab?.url
-  const selectedModelId = await getSelectedModelId()
-
-  // ── LLM path: try real multi-step agent when session + model exist.
-  // On any failure, fall back to the heuristic planMessage path below.
-  const session = await loadSession()
-  const apiKey = session?.accessToken
-
-  // Agent presence: purple Verboo tab group + viewport frame while we control.
-  // Presence is UX chrome — not a BrowserTool — so it does not go through
-  // execute()/evaluateToolPolicy. Failures (chrome:// etc.) are ignored.
-  const presenceTabId = activeTab?.id ?? senderTabId
-  if (typeof presenceTabId === 'number') {
+  // MV3 service workers can suspend mid-fetch; frozen timers then never fire the
+  // router 60s abort, and the panel never gets COMPLETE/ERROR → permanent Working…
+  // Periodic chrome API touch keeps the worker alive for the duration of the turn.
+  const keepAliveId = setInterval(() => {
     try {
-      await ensureVerbooTabGroup(presenceTabId)
-      await showPresenceFrame(presenceTabId)
+      chrome.runtime.getPlatformInfo(() => {})
     } catch {
-      // Non-controllable page or missing APIs — continue the turn.
+      /* ignore */
     }
+  }, 20_000)
+
+  /** @type {boolean} */
+  let terminalSent = false
+  /**
+   * Emit at most one COMPLETE or ERROR so the panel always leaves Working…
+   * @param {object} msg
+   */
+  const sendTerminal = (msg) => {
+    if (terminalSent) return
+    terminalSent = true
+    broadcast(msg)
   }
 
-  if (apiKey && selectedModelId) {
-    try {
-      const llmResult = await runLlmAgentTurn({
-        turnId,
-        userMessage,
-        apiKey,
-        modelId: selectedModelId,
-        broadcast: (msg) => broadcast(msg),
-        executeTool: async (tc) => {
-          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-          const mode = await loadMode()
-          const ctx = {
-            mode,
-            getSiteGrant: (host) => getGrant(host),
-            activeTabId: tab?.id ?? senderTabId,
-          }
-          return execute(tc, ctx)
-        },
-        getActiveTabMeta: async () => {
-          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-          return { url: tab?.url, title: tab?.title, id: tab?.id }
-        },
-        signal: controller.signal,
-      })
-      broadcast({
+  try {
+    broadcast({ type: MSG.AGENT_TURN_STARTED, turnId, userMessage })
+
+    // Resolve the active tab up front so the planner can decide between
+    // a navigate (e.g. "abra o youtube" on chrome://extensions) and a
+    // read_page on the current tab.
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const activeTabUrl = activeTab?.url
+    // ── LLM path: try real multi-step agent when session + model exist.
+    // On any failure, fall back to the heuristic planMessage path below.
+    const session = await loadSession()
+    const apiKey = session?.accessToken
+    const storedModelId = await getSelectedModelId()
+    let models = []
+    if (apiKey) {
+      try {
+        models = await loadModels(false)
+      } catch {
+        // A cached/stored selection can still run if the catalog refresh fails.
+      }
+    }
+    const selectedModel = resolveModelSelection(models, requestedModelId, storedModelId)
+    const selectedModelId = selectedModel?.id ?? (
+      models.length === 0 && typeof requestedModelId === 'string' && requestedModelId
+        ? requestedModelId
+        : storedModelId
+    )
+    const modelSupportsVision = selectedModel?.supportsVision === true
+
+    // Agent presence: purple Verboo tab group + viewport frame while we control.
+    // Presence is UX chrome — not a BrowserTool — so it does not go through
+    // execute()/evaluateToolPolicy. Failures (chrome:// etc.) are ignored.
+    const presenceTabId = activeTab?.id ?? senderTabId
+    if (browserToolsRequested && typeof presenceTabId === 'number') {
+      try {
+        await ensureVerbooTabGroup(presenceTabId)
+        // Frame + animated cursor from the first moment of control.
+        await ensureAgentPresence(presenceTabId)
+      } catch {
+        // Non-controllable page or missing APIs — continue the turn.
+      }
+    }
+
+    if (apiKey && selectedModelId) {
+      try {
+        const llmResult = await runLlmAgentTurn({
+          turnId,
+          userMessage,
+          apiKey,
+          modelId: selectedModelId,
+          modelSupportsVision,
+          conversationHistory,
+          broadcast: (msg) => broadcast(msg),
+          executeTool: async (tc) => {
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+            const mode = await loadMode()
+            const ctx = {
+              mode,
+              getSiteGrant: (host) => getGrant(host),
+              activeTabId: tab?.id ?? senderTabId,
+            }
+            return execute(tc, ctx)
+          },
+          getActiveTabMeta: async () => {
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+            return { url: tab?.url, title: tab?.title, id: tab?.id }
+          },
+          signal: controller.signal,
+        })
+        sendTerminal({
+          type: MSG.AGENT_TURN_COMPLETE,
+          turnId,
+          assistantMessage: llmResult.assistantMessage ?? 'Done.',
+          toolResults: slimToolResultsForBroadcast(llmResult.toolResults),
+        })
+        return
+      } catch (llmErr) {
+        if (controller.signal.aborted) {
+          sendTerminal({
+            type: MSG.AGENT_TURN_ERROR,
+            turnId,
+            error: 'cancelled',
+          })
+          return
+        }
+        // Partial progress attached on some errors (defensive).
+        const partial = llmErr?.partialToolResults
+        if (Array.isArray(partial) && partial.length > 0) {
+          sendTerminal({
+            type: MSG.AGENT_TURN_COMPLETE,
+            turnId,
+            assistantMessage: summarizePartialAgentTurn(userMessage, partial),
+            toolResults: slimToolResultsForBroadcast(partial),
+          })
+          return
+        }
+        // A failed conversational response must never fall through to the
+        // heuristic browser planner and start reading the unrelated active tab.
+        if (!browserToolsRequested) {
+          sendTerminal({
+            type: MSG.AGENT_TURN_COMPLETE,
+            turnId,
+            assistantMessage: summarizePartialAgentTurn(userMessage, []),
+            toolResults: [],
+          })
+          return
+        }
+        // LLM failed with zero tools → fall back to heuristic planMessage below.
+        broadcast({
+          type: MSG.AGENT_THOUGHT,
+          turnId,
+          text: `LLM agent unavailable (${llmErr?.message ?? llmErr}), using local planner…`,
+        })
+      }
+    }
+
+    // ── Heuristic fallback path (planMessage) ─────────────────────
+    // Without an available model we cannot synthesize a normal chat answer.
+    // Still never reinterpret that message as a request to control the page.
+    if (!browserToolsRequested) {
+      sendTerminal({
         type: MSG.AGENT_TURN_COMPLETE,
         turnId,
-        assistantMessage: llmResult.assistantMessage,
-        toolResults: llmResult.toolResults,
+        assistantMessage: summarizePartialAgentTurn(userMessage, []),
+        toolResults: [],
       })
-      try {
-        await clearPresenceOnAllTabs()
-      } catch {
-        /* presence cleanup is best-effort */
-      }
-      turnControllers.delete(turnId)
       return
-    } catch (llmErr) {
-      // LLM failed → fall back to heuristic planMessage below.
-      broadcast({
-        type: MSG.AGENT_THOUGHT,
-        turnId,
-        text: `LLM agent unavailable (${llmErr?.message ?? llmErr}), using local planner…`,
-      })
     }
-  }
 
-  // ── Heuristic fallback path (planMessage) ─────────────────────
-
-  const { plan, assistantMessage } = planForMessage(userMessage, activeTabUrl)
-
-  broadcast({
-    type: MSG.AGENT_THOUGHT,
-    turnId,
-    text:
-      plan.length > 0
-        ? `Planning ${plan.length} tool call(s) for: "${userMessage}"`
-        : `No tool action — replying directly for: "${userMessage}"`,
-    modelId: selectedModelId ?? undefined,
-  })
-
-  // Empty plan + assistantMessage → reply directly without executing
-  // anything (e.g. user is on chrome:// and asked a question with no
-  // navigate intent, or asked us to navigate to something unrecognised).
-  if (plan.length === 0) {
-    broadcast({
-      type: MSG.AGENT_TURN_COMPLETE,
-      turnId,
-      assistantMessage: assistantMessage ?? 'I have nothing to do for that request.',
-      toolResults: [],
-    })
+    // Prefer *current* tab URL so we don't re-search YouTube after the LLM
+    // already navigated (stale activeTabUrl is from turn start).
+    let planTabUrl = activeTabUrl
     try {
-      await clearPresenceOnAllTabs()
+      const [live] = await chrome.tabs.query({ active: true, currentWindow: true })
+      if (live?.url) planTabUrl = live.url
     } catch {
-      /* presence cleanup is best-effort */
-    }
-    turnControllers.delete(turnId)
-    return
-  }
-
-  /** @type {import('./controller/protocol.js').ToolResult[]} */
-  const toolResults = []
-
-  for (const toolCall of plan) {
-    if (controller.signal.aborted) break
-
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-    const mode = await loadMode()
-    const ctx = {
-      mode,
-      getSiteGrant: (host) => getGrant(host),
-      activeTabId: tab?.id ?? senderTabId,
+      /* keep turn-start URL */
     }
 
-    // Single chokepoint: execute() runs evaluateToolPolicy first, then
-    // dispatches to the real tool handler in src/controller/tools/*.js.
-    // We never call a second dispatcher — execute() is the only path to
-    // chrome.* APIs.
-    const policyCheck = await execute(toolCall, ctx)
-    const policy = policyCheck.policy
+    const { plan, assistantMessage } = planForMessage(userMessage, planTabUrl)
 
-    // Hard Block denial — surface without prompting.
-    if (!policyCheck.ok && policy?.reason === 'hard_block') {
-      broadcast({
-        type: MSG.AGENT_TOOL_REQUEST,
-        toolCall,
-        policyDecision: policy,
+    broadcast({
+      type: MSG.AGENT_THOUGHT,
+      turnId,
+      text:
+        plan.length > 0
+          ? `Planning ${plan.length} tool call(s) for: "${userMessage}"`
+          : `No tool action — replying directly for: "${userMessage}"`,
+      modelId: selectedModelId ?? undefined,
+    })
+
+    // Empty plan + assistantMessage → reply directly without executing
+    // anything (e.g. user is on chrome:// and asked a question with no
+    // navigate intent, or asked us to navigate to something unrecognised).
+    if (plan.length === 0) {
+      sendTerminal({
+        type: MSG.AGENT_TURN_COMPLETE,
+        turnId,
+        assistantMessage: assistantMessage ?? 'I have nothing to do for that request.',
+        toolResults: [],
       })
-      const tr = {
-        toolCallId: toolCall.id,
-        success: false,
-        error: `hard_block:${policy.hardBlockLabel ?? 'unknown'}`,
-        durationMs: 0,
+      return
+    }
+
+    /** @type {import('./controller/protocol.js').ToolResult[]} */
+    const toolResults = []
+
+    /** @type {string | null} */
+    let lastSucceededTool = null
+
+    for (const toolCall of plan) {
+      if (controller.signal.aborted) break
+
+      // YouTube SPA: give results a beat to render before clicking the first card.
+      if (
+        lastSucceededTool === 'navigate' &&
+        toolCall.name === 'click' &&
+        /youtube|video-title/i.test(String(toolCall.selector || toolCall.params?.selector || toolCall.input || ''))
+      ) {
+        await new Promise((r) => setTimeout(r, 700))
       }
-      broadcast({ type: MSG.AGENT_TOOL_RESULT, toolResult: tr })
-      toolResults.push(tr)
-      continue
-    }
 
-    // Site denied — surface as denial.
-    if (!policyCheck.ok && policy?.reason === 'site_denied') {
-      broadcast({
-        type: MSG.AGENT_TOOL_REQUEST,
-        toolCall,
-        policyDecision: policy,
-      })
-      const tr = {
-        toolCallId: toolCall.id,
-        success: false,
-        error: 'site_denied',
-        durationMs: 0,
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      const mode = await loadMode()
+      const ctx = {
+        mode,
+        getSiteGrant: (host) => getGrant(host),
+        activeTabId: tab?.id ?? senderTabId,
       }
-      broadcast({ type: MSG.AGENT_TOOL_RESULT, toolResult: tr })
-      toolResults.push(tr)
-      continue
-    }
 
-    // Needs approval — prompt the user via the panel, then re-execute
-    // with fresh grants (the panel upserts an 'always' grant before
-    // sending TOOL_APPROVE, so the second execute() dispatches without
-    // prompting).
-    if (policy?.needsApproval) {
-      broadcast({
-        type: MSG.AGENT_TOOL_REQUEST,
-        toolCall,
-        policyDecision: policy,
-      })
+      // Single chokepoint: execute() runs evaluateToolPolicy first, then
+      // dispatches to the real tool handler in src/controller/tools/*.js.
+      // We never call a second dispatcher — execute() is the only path to
+      // chrome.* APIs.
+      const policyCheck = await execute(toolCall, ctx)
+      const policy = policyCheck.policy
 
-      const decision = await waitForApproval(toolCall.id, controller.signal)
-
-      broadcast({
-        type: 'agent:approval_closed',
-        approvalId: toolCall.id,
-        decision,
-      })
-
-      if (decision === 'deny' || decision === 'cancelled') {
+      // Hard Block denial — surface without prompting.
+      if (!policyCheck.ok && policy?.reason === 'hard_block') {
+        broadcast({
+          type: MSG.AGENT_TOOL_REQUEST,
+          toolCall,
+          policyDecision: policy,
+        })
         const tr = {
           toolCallId: toolCall.id,
           success: false,
-          error: decision === 'deny' ? 'denied_by_user' : 'cancelled',
+          error: `hard_block:${policy.hardBlockLabel ?? 'unknown'}`,
           durationMs: 0,
         }
         broadcast({ type: MSG.AGENT_TOOL_RESULT, toolResult: tr })
         toolResults.push(tr)
+        lastSucceededTool = null
         continue
       }
 
-      // Re-resolve grants and re-execute. The panel may have upserted
-      // an 'always' grant; we re-read it so the second execute() sees
-      // the updated state and dispatches without prompting.
-      const ctx2 = {
-        ...ctx,
-        // Force re-read by passing a fresh closure (getGrant reads
-        // chrome.storage.local each call, so this is already live).
+      // Site denied — surface as denial.
+      if (!policyCheck.ok && policy?.reason === 'site_denied') {
+        broadcast({
+          type: MSG.AGENT_TOOL_REQUEST,
+          toolCall,
+          policyDecision: policy,
+        })
+        const tr = {
+          toolCallId: toolCall.id,
+          success: false,
+          error: 'site_denied',
+          durationMs: 0,
+        }
+        broadcast({ type: MSG.AGENT_TOOL_RESULT, toolResult: tr })
+        toolResults.push(tr)
+        lastSucceededTool = null
+        continue
       }
-      const recheck = await execute(toolCall, ctx2)
+
+      // Needs approval — prompt the user via the panel, then re-execute
+      // with fresh grants (the panel upserts an 'always' grant before
+      // sending TOOL_APPROVE, so the second execute() dispatches without
+      // prompting).
+      if (policy?.needsApproval) {
+        broadcast({
+          type: MSG.AGENT_TOOL_REQUEST,
+          toolCall,
+          policyDecision: policy,
+        })
+
+        const decision = await waitForApproval(toolCall.id, controller.signal)
+
+        broadcast({
+          type: 'agent:approval_closed',
+          approvalId: toolCall.id,
+          decision,
+        })
+
+        if (decision === 'deny' || decision === 'cancelled') {
+          const tr = {
+            toolCallId: toolCall.id,
+            success: false,
+            error: decision === 'deny' ? 'denied_by_user' : 'cancelled',
+            durationMs: 0,
+          }
+          broadcast({ type: MSG.AGENT_TOOL_RESULT, toolResult: tr })
+          toolResults.push(tr)
+          lastSucceededTool = null
+          continue
+        }
+
+        // Re-resolve grants and re-execute. The panel may have upserted
+        // an 'always' grant; we re-read it so the second execute() sees
+        // the updated state and dispatches without prompting.
+        const ctx2 = {
+          ...ctx,
+          // Force re-read by passing a fresh closure (getGrant reads
+          // chrome.storage.local each call, so this is already live).
+        }
+        const recheck = await execute(toolCall, ctx2)
+        broadcast({
+          type: MSG.AGENT_TOOL_EXECUTING,
+          turnId,
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+        })
+        const tr = recheck.ok
+          ? {
+              toolCallId: toolCall.id,
+              success: true,
+              data: recheck.result,
+              durationMs: 0,
+            }
+          : {
+              toolCallId: toolCall.id,
+              success: false,
+              error: recheck.error ?? 'execute_failed',
+              durationMs: 0,
+            }
+        broadcast({ type: MSG.AGENT_TOOL_RESULT, toolResult: tr })
+        toolResults.push(tr)
+        lastSucceededTool = recheck.ok ? toolCall.name : null
+        continue
+      }
+
+      // Allowed on first execute — use its result. No second dispatch.
       broadcast({
         type: MSG.AGENT_TOOL_EXECUTING,
         turnId,
         toolCallId: toolCall.id,
         toolName: toolCall.name,
       })
-      const tr = recheck.ok
+      const tr = policyCheck.ok
         ? {
             toolCallId: toolCall.id,
             success: true,
-            data: recheck.result,
+            data: policyCheck.result,
             durationMs: 0,
           }
         : {
             toolCallId: toolCall.id,
             success: false,
-            error: recheck.error ?? 'execute_failed',
+            error: policyCheck.error ?? 'execute_failed',
             durationMs: 0,
           }
       broadcast({ type: MSG.AGENT_TOOL_RESULT, toolResult: tr })
       toolResults.push(tr)
-      continue
+      lastSucceededTool = policyCheck.ok ? toolCall.name : null
     }
 
-    // Allowed on first execute — use its result. No second dispatch.
-    broadcast({
-      type: MSG.AGENT_TOOL_EXECUTING,
+    if (controller.signal.aborted) {
+      sendTerminal({
+        type: MSG.AGENT_TURN_ERROR,
+        turnId,
+        error: 'cancelled',
+      })
+      return
+    }
+
+    // Final assistant message summarising the turn.
+    const finalMessage = summarize(plan, toolResults, userMessage)
+    sendTerminal({
+      type: MSG.AGENT_TURN_COMPLETE,
       turnId,
-      toolCallId: toolCall.id,
-      toolName: toolCall.name,
+      assistantMessage: finalMessage,
+      toolResults: slimToolResultsForBroadcast(toolResults),
     })
-    const tr = policyCheck.ok
-      ? {
-          toolCallId: toolCall.id,
-          success: true,
-          data: policyCheck.result,
-          durationMs: 0,
-        }
-      : {
-          toolCallId: toolCall.id,
-          success: false,
-          error: policyCheck.error ?? 'execute_failed',
-          durationMs: 0,
-        }
-    broadcast({ type: MSG.AGENT_TOOL_RESULT, toolResult: tr })
-    toolResults.push(tr)
+  } catch (err) {
+    sendTerminal({
+      type: MSG.AGENT_TURN_ERROR,
+      turnId,
+      error: err?.message ?? String(err),
+    })
+  } finally {
+    clearInterval(keepAliveId)
+    try {
+      await clearPresenceOnAllTabs()
+    } catch {
+      /* presence cleanup is best-effort */
+    }
+    turnControllers.delete(turnId)
+    // Never leave the panel stuck if a path forgot to send a terminal event.
+    if (!terminalSent) {
+      broadcast({
+        type: MSG.AGENT_TURN_ERROR,
+        turnId,
+        error: 'Agent turn ended unexpectedly.',
+      })
+    }
   }
-
-  // Final assistant message summarising the turn.
-  const finalMessage = summarize(plan, toolResults)
-  broadcast({
-    type: MSG.AGENT_TURN_COMPLETE,
-    turnId,
-    assistantMessage: finalMessage,
-    toolResults,
-  })
-  try {
-    await clearPresenceOnAllTabs()
-  } catch {
-    /* presence cleanup is best-effort */
-  }
-
-  turnControllers.delete(turnId)
 }
 
 /**
@@ -668,18 +832,84 @@ function cancelTurn(turnId) {
 /**
  * @param {Array<import('./controller/protocol.js').ToolCall>} plan
  * @param {Array<import('./controller/protocol.js').ToolResult>} results
+ * @param {string} [userMessage]
  */
-function summarize(plan, results) {
+function summarize(plan, results, userMessage = '') {
   const ok = results.filter((r) => r.success).length
   const blocked = results.filter((r) => r.error?.startsWith('hard_block:')).length
   const denied = results.filter((r) => r.error === 'denied_by_user' || r.error === 'site_denied').length
+  const pt = looksLikePortuguese(userMessage)
+
   if (blocked > 0) {
-    return `Stopped — Hard Block denied ${blocked} action(s). ${ok} succeeded.`
+    return pt
+      ? `Parei — o Hard Block bloqueou ${blocked} ação(ões). ${ok} concluída(s).`
+      : `Stopped — Hard Block denied ${blocked} action(s). ${ok} succeeded.`
   }
   if (denied > 0) {
-    return `Stopped — ${denied} action(s) denied. ${ok} succeeded.`
+    return pt
+      ? `Parei — ${denied} ação(ões) negada(s). ${ok} concluída(s).`
+      : `Stopped — ${denied} action(s) denied. ${ok} succeeded.`
   }
-  return `Done — ${ok}/${plan.length} action(s) completed.`
+
+  const clicked = results.some(
+    (r, i) => r.success && plan[i]?.name === 'click',
+  )
+  const ytNav = plan.find(
+    (p) =>
+      p?.name === 'navigate' &&
+      /youtube\.com\/results/i.test(String(p?.url || p?.params?.url || '')),
+  )
+  const query = ytNav ? youtubeQueryFromResultsUrl(ytNav.url || ytNav.params?.url) : null
+
+  if (ok > 0 && clicked && (ytNav || query)) {
+    const q = query || '…'
+    return pt
+      ? `Abri o YouTube, busquei “${q}” e coloquei o primeiro resultado da lista para tocar. ` +
+        `Se não for o vídeo certo, diga o nome exato ou o link que eu ajusto.`
+      : `I opened YouTube, searched for “${q}”, and started the top result. ` +
+        `If that’s the wrong video, tell me the exact title or a link and I’ll fix it.`
+  }
+  if (ok > 0 && clicked) {
+    return pt
+      ? `Cliquei no elemento pedido. Se o resultado não for o que você queria, descreva o próximo passo.`
+      : `I clicked the target on the page. If that wasn’t right, tell me what to do next.`
+  }
+  if (ok > 0 && ytNav && !clicked) {
+    const q = query || '…'
+    return pt
+      ? `Abri os resultados do YouTube para “${q}”. Diga qual vídeo tocar se quiser continuar.`
+      : `Opened YouTube search results for “${q}”. Tell me which video to play if you want me to continue.`
+  }
+  return pt
+    ? `Pronto — ${ok}/${plan.length} ação(ões) concluída(s).`
+    : `Done — ${ok}/${plan.length} action(s) completed.`
+}
+
+/**
+ * @param {string} [url]
+ * @returns {string | null}
+ */
+function youtubeQueryFromResultsUrl(url) {
+  if (!url || typeof url !== 'string') return null
+  try {
+    const u = new URL(url)
+    const q = u.searchParams.get('search_query')
+    return q ? decodeURIComponent(q.replace(/\+/g, ' ')).trim() : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Lightweight PT detector for assistant copy (matches agent loop intent).
+ * @param {string} text
+ */
+function looksLikePortuguese(text) {
+  const s = String(text ?? '')
+  if (/[áàâãéêíóôõúçÁÀÂÃÉÊÍÓÔÕÚÇ]/.test(s)) return true
+  return /\b(abra|abre|abrir|coloque|coloca|procure|pesquis|toque|tocar|m[uú]sica|musica|quero|pode|obrigad)\w*\b/i.test(
+    s,
+  )
 }
 
 /**

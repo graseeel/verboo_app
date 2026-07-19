@@ -62,6 +62,16 @@ export async function chatCompletion({
 
     const json = await res.json()
     return parseCompletionResponse(json)
+  } catch (err) {
+    // Surface timeouts/cancels as plain Errors so the agent loop / fallback
+    // can recover instead of leaving the panel stuck on "Working…".
+    if (controller.signal.aborted) {
+      if (externalSignal?.aborted) {
+        throw new Error('Router request cancelled')
+      }
+      throw new Error(`Router timed out after ${timeoutMs}ms`)
+    }
+    throw err
   } finally {
     clearTimeout(timer)
     if (externalSignal?.removeEventListener) {

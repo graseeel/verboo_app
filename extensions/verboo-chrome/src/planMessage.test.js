@@ -214,6 +214,59 @@ test('extractYoutubeSearchQuery: free-form PT "coloque uma musica da …"', () =
   )
 })
 
+test('extractYoutubeSearchQuery: strips abra/e so query is not "abra e juno…"', () => {
+  const q = extractYoutubeSearchQuery(
+    'abra o youtube, e coloque a musica juno da sabrina carpenter',
+  )
+  assert.ok(q, 'expected a query')
+  assert.ok(!/\babra\b/i.test(q), `should not keep abra, got: ${q}`)
+  assert.ok(/\bjuno\b/i.test(q), `expected juno in: ${q}`)
+  assert.ok(/sabrina/i.test(q), `expected sabrina in: ${q}`)
+})
+
+test('extractYoutubeSearchQuery: strips ela/para from birds of feather phrase', () => {
+  const q = extractYoutubeSearchQuery(
+    'abra o youtube e coloque a musica birds of feather da billie eilish e coloque ela para tocar',
+  )
+  assert.ok(q)
+  assert.ok(!/\bela\b/i.test(q), `got: ${q}`)
+  assert.ok(!/\bpara\b/i.test(q), `got: ${q}`)
+  assert.match(q, /birds of feather/i)
+  assert.match(q, /billie/i)
+})
+
+test('extractYoutubeSearchQuery: "coloque a musica para tocar" is not a weak query "para"', () => {
+  assert.equal(extractYoutubeSearchQuery('coloque a musica para tocar'), null)
+})
+
+test('planForMessage: already on matching YouTube results → click first video only', () => {
+  const r = planForMessage(
+    'coloque a musica juno da sabrina carpenter',
+    'https://www.youtube.com/results?search_query=juno+sabrina+carpenter',
+  )
+  assert.equal(r.plan.length, 1)
+  assert.equal(r.plan[0].name, 'click')
+  assert.match(String(r.plan[0].selector || r.plan[0].params?.selector), /video-title/)
+})
+
+test('planForMessage: already on /watch → no re-search, friendly message', () => {
+  const r = planForMessage(
+    'abra o youtube e coloque juno sabrina',
+    'https://www.youtube.com/watch?v=abc123',
+  )
+  assert.equal(r.plan.length, 0)
+  assert.ok(r.assistantMessage)
+})
+
+test('planForMessage: play intent with no title on results → click first', () => {
+  const r = planForMessage(
+    'coloque a musica para tocar',
+    'https://www.youtube.com/results?search_query=manchild+sabrina+carpenter',
+  )
+  assert.equal(r.plan.length, 1)
+  assert.equal(r.plan[0].name, 'click')
+})
+
 test('extractYoutubeSearchQuery: free-form EN play / put on', () => {
   assert.equal(extractYoutubeSearchQuery('play stay kid laroi'), 'stay kid laroi')
   assert.equal(extractYoutubeSearchQuery('play me espresso sabrina carpenter'), 'espresso sabrina carpenter')
@@ -237,13 +290,15 @@ test('extractYoutubeSearchQuery: returns null without music/youtube intent', () 
 
 function assertYoutubeResultsNavigate(r, expectedQuery) {
   assert.equal(r.assistantMessage, undefined)
-  assert.equal(r.plan.length, 1)
+  // navigate + click first result (play intent)
+  assert.ok(r.plan.length >= 2, `expected navigate+click, got ${r.plan.length}`)
   assert.equal(r.plan[0].name, 'navigate')
   const expectedUrl =
     'https://www.youtube.com/results?search_query=' +
     encodeURIComponent(expectedQuery)
   assert.equal(r.plan[0].url, expectedUrl)
   assert.equal(r.plan[0].params.url, expectedUrl)
+  assert.equal(r.plan[1].name, 'click')
 }
 
 test('planForMessage: "search X on youtube" navigates to results URL', () => {

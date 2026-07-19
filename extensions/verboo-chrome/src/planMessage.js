@@ -115,7 +115,15 @@ const MUSIC_OR_YOUTUBE_INTENT_RE =
  * Keep artist/title tokens; drop verbs, articles, and "youtube" noise.
  */
 const MUSIC_QUERY_STRIP_RE =
-  /\b(coloque|coloca|toque|tocar|toca|play(?:\s+me)?|put\s+on|please|por\s+favor|pra\s+mim|para\s+mim|uma|um|uns|umas|a|o|os|as|da|de|do|das|dos|the|me|my|on|no|na|em|youtube|you\s+tube|m[uú]sica|music|song|songs|v[ií]deo\s+clipe|video\s+clipe|clipe|video|vídeo)\b/gi
+  /\b(abra|abrir|abre|abram|vamos|vai|ir|acesse|acessar|acesso|coloque|coloca|toque|tocar|toca|play(?:\s+me)?|put\s+on|please|por\s+favor|pra\s+mim|para\s+mim|para|por|com|ela|ele|eles|elas|isso|aqui|lá|la|e|and|uma|um|uns|umas|a|o|os|as|da|de|do|das|dos|the|me|my|on|no|na|em|youtube|you\s+tube|m[uú]sica|music|song|songs|v[ií]deo\s+clipe|video\s+clipe|clipe|video|vídeo)\b/gi
+
+/** First organic result title link on YouTube search results. */
+export const YOUTUBE_FIRST_RESULT_SELECTOR = 'ytd-video-renderer a#video-title'
+
+/** Weak leftover tokens that must never become a search query alone. */
+const WEAK_QUERY_TOKENS = new Set([
+  'para', 'por', 'com', 'ela', 'ele', 'eles', 'elas', 'isso', 'aqui', 'la', 'lá', 'the', 'a', 'o',
+])
 
 // ── Public API ───────────────────────────────────────────────
 
@@ -147,17 +155,53 @@ export function planForMessage(userMessage, activeTabUrl) {
   /** @type {ToolCall[]} */
   const plan = []
 
-  // 0) YouTube search / play-music — single navigate to results URL.
-  //    More reliable than home + type into the search box.
-  //    Takes priority over a bare navigate when a query was extracted.
-  if (youtubeQuery) {
-    const resultsUrl =
-      'https://www.youtube.com/results?search_query=' +
-      encodeURIComponent(youtubeQuery)
-    plan.push(
-      buildNavigateToolCall(resultsUrl, 'Open YouTube search results'),
-    )
-    return { plan }
+  // 0) YouTube search / play-music.
+  //    Root cause of "never plays": older code only navigated to /results and
+  //    stopped. Play intent requires navigate (if needed) + click first result.
+  //    When already on matching /results (or play intent on any results page),
+  //    only click — do not re-search.
+  const playIntent = wantsYoutubePlay(userMessage)
+  if (youtubeQuery || playIntent) {
+    const onWatch = isYoutubeWatchUrl(activeTabUrl)
+    const onResults = isYoutubeResultsUrl(activeTabUrl)
+    const matchingResults =
+      youtubeQuery != null && isAlreadyOnYoutubeResultsFor(activeTabUrl, youtubeQuery)
+
+    if (onWatch && playIntent) {
+      return {
+        plan: [],
+        assistantMessage: youtubeAlreadyPlayingMessage(userMessage),
+      }
+    }
+
+    // Already on results for this song, OR user said "play" while on any results page
+    // without a usable new query (e.g. "coloque a musica para tocar").
+    if (matchingResults || (onResults && playIntent && !youtubeQuery)) {
+      plan.push(buildClickFirstYoutubeResult('Play the first YouTube result'))
+      return { plan }
+    }
+
+    if (youtubeQuery) {
+      if (!matchingResults) {
+        const resultsUrl =
+          'https://www.youtube.com/results?search_query=' +
+          encodeURIComponent(youtubeQuery)
+        plan.push(
+          buildNavigateToolCall(resultsUrl, 'Open YouTube search results'),
+        )
+      }
+      plan.push(buildClickFirstYoutubeResult('Play the first YouTube result'))
+      return { plan }
+    }
+
+    // Play intent without a query and not on YouTube results — open YouTube home
+    // is wrong; ask for a title instead of inventing a search.
+    if (playIntent && !onResults) {
+      return {
+        plan: [],
+        assistantMessage: youtubeNeedTitleMessage(userMessage),
+      }
+    }
   }
 
   // 1) Navigate branch — explicit URL, OR explicit intent with a
@@ -313,6 +357,53 @@ function buildNavigateToolCall(url, reasoning) {
 }
 
 /**
+ * @param {string} reasoning
+ */
+function buildClickFirstYoutubeResult(reasoning) {
+  const selector = YOUTUBE_FIRST_RESULT_SELECTOR
+  return {
+    id: cryptoRandomId(),
+    name: 'click',
+    risk: 'mutate',
+    input: `click selector=${selector}`,
+    params: { selector },
+    selector,
+    reasoning,
+  }
+}
+
+/**
+ * @param {string} text
+ */
+function wantsYoutubePlay(text) {
+  return /\b(coloque|coloca|toque|tocar|toca|play(?:\s+me)?|put\s+on|m[uú]sica|music|song|songs)\b/i.test(
+    String(text ?? ''),
+  )
+}
+
+/** @param {string|undefined|null} url */
+function isYoutubeResultsUrl(url) {
+  if (!url || typeof url !== 'string') return false
+  try {
+    const u = new URL(url)
+    return /(^|\.)youtube\.com$/i.test(u.hostname) && /\/results/i.test(u.pathname)
+  } catch {
+    return false
+  }
+}
+
+/** @param {string|undefined|null} url */
+function isYoutubeWatchUrl(url) {
+  if (!url || typeof url !== 'string') return false
+  try {
+    const u = new URL(url)
+    return /(^|\.)youtube\.com$/i.test(u.hostname) && /\/watch/i.test(u.pathname)
+  } catch {
+    return false
+  }
+}
+
+/**
  * Extract a YouTube / music search query from EN/PT phrases.
  * Returns null when the message is not a YouTube/music-search intent.
  *
@@ -350,8 +441,25 @@ export function extractYoutubeSearchQuery(text) {
     .replace(MUSIC_QUERY_STRIP_RE, ' ')
     .replace(/[,;:!?.]+/g, ' ')
   const q = normalizeSearchQuery(stripped)
-  // Need at least one content token left after stripping intent words.
-  return q || null
+  // Need at least one meaningful content token left after stripping intent words.
+  if (!q || isWeakYoutubeQuery(q)) return null
+  return q
+}
+
+/**
+ * @param {string} q
+ */
+function isWeakYoutubeQuery(q) {
+  const tokens = String(q)
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length > 0)
+  if (tokens.length === 0) return true
+  // Single short filler, or every token is a stopword.
+  if (tokens.length === 1 && (tokens[0].length < 3 || WEAK_QUERY_TOKENS.has(tokens[0]))) {
+    return true
+  }
+  return tokens.every((t) => WEAK_QUERY_TOKENS.has(t) || t.length < 2)
 }
 
 /**
@@ -362,6 +470,58 @@ export function extractYoutubeSearchQuery(text) {
 function normalizeSearchQuery(s) {
   if (s == null) return ''
   return String(s).replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * True when the active tab is already YouTube results for a similar query.
+ * @param {string|undefined} activeTabUrl
+ * @param {string} youtubeQuery
+ */
+export function isAlreadyOnYoutubeResultsFor(activeTabUrl, youtubeQuery) {
+  if (!activeTabUrl || !youtubeQuery) return false
+  let u
+  try {
+    u = new URL(activeTabUrl)
+  } catch {
+    return false
+  }
+  if (!/(^|\.)youtube\.com$/i.test(u.hostname)) return false
+  // Only /results counts as "already searched" — /watch is handled separately.
+  if (!/\/results/i.test(u.pathname)) return false
+  const existing = (u.searchParams.get('search_query') || '').toLowerCase()
+  if (!existing) return false
+  const want = youtubeQuery.toLowerCase()
+  // Token overlap — "juno sabrina carpenter" vs noisy existing query.
+  const wantTokens = want.split(/\s+/).filter((t) => t.length > 2)
+  if (wantTokens.length === 0) return existing.includes(want)
+  const hits = wantTokens.filter((t) => existing.includes(t)).length
+  return hits >= Math.ceil(wantTokens.length * 0.6)
+}
+
+/**
+ * @param {string} userMessage
+ */
+function youtubeAlreadyPlayingMessage(userMessage) {
+  const pt =
+    /[áàâãéêíóôõúç]/i.test(userMessage) ||
+    /\b(abra|coloque|m[uú]sica|musica|procure|pesquise|toque)\b/i.test(userMessage)
+  if (pt) {
+    return 'Já estou em um vídeo do YouTube. Se quiser outra música, diga o nome.'
+  }
+  return 'Already on a YouTube video. Name another song if you want something else.'
+}
+
+/**
+ * @param {string} userMessage
+ */
+function youtubeNeedTitleMessage(userMessage) {
+  const pt =
+    /[áàâãéêíóôõúç]/i.test(userMessage) ||
+    /\b(abra|coloque|m[uú]sica|musica|procure|pesquise|toque)\b/i.test(userMessage)
+  if (pt) {
+    return 'Qual música ou artista você quer ouvir? Ex.: "coloque juno da sabrina carpenter".'
+  }
+  return 'Which song or artist should I play? Example: "play juno sabrina carpenter".'
 }
 
 function shortScheme(url) {

@@ -94,7 +94,8 @@ mod tests {
     fn encode_roundtrip_simple_object() {
         let msg = json!({ "type": "agent:turn_start", "turnId": "abc" });
         let frame = encode_message(&msg).unwrap();
-        assert_eq!(frame.len(), 4 + 47); // approximate; just sanity
+        let payload_len = serde_json::to_vec(&msg).unwrap().len();
+        assert_eq!(frame.len(), 4 + payload_len);
         let (decoded, consumed) = decode_message(&frame).unwrap();
         assert_eq!(consumed, frame.len());
         assert_eq!(decoded, msg);

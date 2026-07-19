@@ -5,6 +5,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test \"src/policy/**/*.test.js\" \"src/controller/execute.test.js\" \"src/planMessage.test.js\" \"src/auth/auth.test.js\" \"src/presence/**/*.test.js\" \"src/agent/**/*.test.js\""
+    "test": "node --test \"src/policy/**/*.test.js\" \"src/controller/execute.test.js\" \"src/planMessage.test.js\" \"src/auth/auth.test.js\" \"src/presence/**/*.test.js\" \"src/agent/**/*.test.js\" \"src/panel/**/*.test.js\""
   }
 }

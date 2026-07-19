@@ -108,7 +108,9 @@ async function dispatch(toolCall, ctx) {
     case 'type':
       return typeText(args)
     case 'screenshot':
-      return screenshot(args)
+      // Pass activeTabId so capture targets the tab the agent is driving
+      // (service workers have no reliable "current window").
+      return screenshot(args, ctx)
     case 'tabs':
       return tabs(args)
     case 'tab_group':

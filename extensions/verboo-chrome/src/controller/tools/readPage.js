@@ -11,6 +11,7 @@
  */
 
 import { isControllableUrl, nonControllablePageMessage } from '../../planMessage.js'
+import { preparePresenceForAction } from '../../presence/inject.js'
 
 /**
  * @param {{ name: 'read_page'; selector?: string; attribute?: string; risk?: string; input?: string }} tool
@@ -26,6 +27,9 @@ export async function readPage(tool) {
   if (!isControllableUrl(tab.url)) {
     throw new Error(nonControllablePageMessage(tab.url))
   }
+
+  // Cursor presence while reading so control never looks "invisible".
+  await preparePresenceForAction(tab.id, typeof selector === 'string' ? selector : undefined)
 
   const [result] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },

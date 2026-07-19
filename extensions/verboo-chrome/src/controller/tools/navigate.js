@@ -7,13 +7,13 @@
  * double-check here as defense-in-depth).
  *
  * Presence: after load, groups the tab under "Verboo" and shows the
- * purple viewport frame on the new page.
+ * purple viewport frame + animated agent cursor on the new page.
  *
  * @param {{ name: 'navigate'; url: string; risk?: string; input?: string }} tool
  * @returns {Promise<{ tabId: number; url: string }>}
  */
 
-import { ensureVerbooTabGroup, showPresenceFrame } from '../../presence/inject.js'
+import { ensureVerbooTabGroup, ensureAgentPresence } from '../../presence/inject.js'
 
 export async function navigate(tool) {
   const url = tool?.url
@@ -34,10 +34,13 @@ export async function navigate(tool) {
   // Wait for the tab to finish loading so the caller can chain reads.
   await waitForTabComplete(tab.id)
 
-  // Agent presence on the destination page.
+  // Agent presence on the destination page (frame + cursor always).
+  // YouTube SPA often paints after 'complete' — inject twice with a short gap.
   try {
     await ensureVerbooTabGroup(tab.id)
-    await showPresenceFrame(tab.id)
+    await ensureAgentPresence(tab.id)
+    await new Promise((r) => setTimeout(r, 350))
+    await ensureAgentPresence(tab.id)
   } catch {
     // Non-controllable / race — never block navigation success.
   }

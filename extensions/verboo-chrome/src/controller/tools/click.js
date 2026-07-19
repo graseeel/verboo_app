@@ -12,7 +12,7 @@
  * @returns {Promise<{ selector: string; clicked: boolean; url: string }>}
  */
 
-import { preparePresenceForAction } from '../../presence/inject.js'
+import { preparePresenceForAction, pulseAgentCursor } from '../../presence/inject.js'
 
 export async function click(tool) {
   const selector = tool?.selector
@@ -24,8 +24,13 @@ export async function click(tool) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
   if (!tab?.id) throw new Error('click: no active tab')
 
-  // Agent presence: frame + cursor at target, brief delay, then click.
+  // Agent presence: frame + cursor glide to target, dwell, click pulse, then DOM click.
   await preparePresenceForAction(tab.id, selector)
+  try {
+    await pulseAgentCursor(tab.id)
+  } catch {
+    /* presence is best-effort */
+  }
 
   const [result] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },

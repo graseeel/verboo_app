@@ -4,7 +4,7 @@
  * Responsibilities:
  * - Apply i18n strings to the DOM
  * - Render auth status (API key login via MSG.AUTH_LOGIN_API_KEY)
- * - Persist Chrome Permission Mode (manual/auto/skip) via the inline chip
+ * - Persist Chrome Permission Mode (manual/skip) via the inline chip
  * - Chat: send user message → AGENT_TURN_START; render agent events
  *   (thought, tool_request, tool_executing, tool_result, turn_complete,
  *   turn_error) as transcript cards
@@ -21,6 +21,11 @@
 import { loadMode, saveMode } from '../policy/modesStore.js'
 import { loadSession } from '../auth/auth.js'
 import { MSG } from '../controller/protocol.js'
+import {
+  escapeHtml,
+  modelDisplayName,
+  safeMarkdownToHtml,
+} from './presentation.js'
 
 // ── i18n ────────────────────────────────────────────────────────
 import EN_US from '../i18n/en-US.js'
@@ -117,7 +122,8 @@ function renderAuth(session) {
   const logoutBtn = document.getElementById('auth-action')
   if (logoutBtn) {
     logoutBtn.dataset.action = 'logout'
-    logoutBtn.textContent = t('auth_logout')
+    logoutBtn.setAttribute('title', t('auth_logout'))
+    logoutBtn.setAttribute('aria-label', t('auth_logout'))
   }
 
   // Empty chat greeting (CSS :empty::before pulls attr(data-empty))
@@ -173,52 +179,182 @@ function sendMessage(message) {
   })
 }
 
-// ── Models select ────────────────────────────────────────────────
+// ── Model picker ─────────────────────────────────────────────────
+
+/** @type {Array<{ id: string, name?: string, displayName?: string, supportsVision?: boolean, description?: string, provider?: string }>} */
+let availableModels = []
+let selectedModelId = null
+let modelSelectionPending = false
 
 /**
  * @param {Array<{ id: string, name?: string, displayName?: string, supportsVision?: boolean }>} models
  * @param {string | null | undefined} selectedId
  */
 function populateModelSelect(models, selectedId) {
-  const select = document.getElementById('model-select')
-  if (!select) return
-
-  select.innerHTML = ''
-  const list = Array.isArray(models) ? models : []
-  if (list.length === 0) {
-    select.disabled = true
-    return
-  }
-
-  for (const model of list) {
-    if (!model?.id) continue
-    const opt = document.createElement('option')
-    opt.value = model.id
-    const name = model.displayName || model.name || model.id
-    opt.textContent = model.supportsVision ? `${name} 👁` : name
-    select.appendChild(opt)
-  }
-
-  if (selectedId && list.some((m) => m.id === selectedId)) {
-    select.value = selectedId
-  }
-  select.disabled = select.options.length === 0
+  availableModels = Array.isArray(models) ? models.filter((model) => model?.id) : []
+  const hasSelected = selectedId && availableModels.some((model) => model.id === selectedId)
+  selectedModelId = hasSelected ? selectedId : (availableModels[0]?.id ?? null)
+  renderModelPicker()
+  updateSendEnabled()
 }
 
 function clearModelSelect() {
-  const select = document.getElementById('model-select')
-  if (!select) return
-  select.innerHTML = ''
-  select.disabled = true
+  availableModels = []
+  selectedModelId = null
+  modelSelectionPending = false
+  closeModelMenu()
+  renderModelPicker()
+  updateSendEnabled()
+}
+
+function renderModelPicker() {
+  const picker = document.getElementById('model-picker')
+  const trigger = document.getElementById('model-picker-trigger')
+  const nameEl = document.getElementById('model-picker-name')
+  const metaEl = document.getElementById('model-picker-meta')
+  const menu = document.getElementById('model-menu')
+  if (!picker || !trigger || !nameEl || !metaEl || !menu) return
+
+  const selected = availableModels.find((model) => model.id === selectedModelId) ?? null
+  trigger.disabled = availableModels.length === 0 || modelSelectionPending || turnInFlight
+  trigger.setAttribute('aria-busy', modelSelectionPending ? 'true' : 'false')
+  nameEl.textContent = selected ? modelDisplayName(selected) : t('model_unavailable')
+  metaEl.textContent = selected ? modelMetaText(selected) : t('model_unavailable_help')
+
+  menu.replaceChildren()
+  for (const model of availableModels) {
+    const option = document.createElement('button')
+    option.type = 'button'
+    option.className = 'model-option'
+    option.setAttribute('role', 'option')
+    option.dataset.modelId = model.id
+    option.setAttribute('aria-selected', model.id === selectedModelId ? 'true' : 'false')
+
+    const check = document.createElement('span')
+    check.className = 'model-option-check'
+    check.setAttribute('aria-hidden', 'true')
+    check.textContent = '✓'
+
+    const copy = document.createElement('span')
+    copy.className = 'model-option-copy'
+    const optionName = document.createElement('span')
+    optionName.className = 'model-option-name'
+    optionName.textContent = modelDisplayName(model)
+    const optionMeta = document.createElement('span')
+    optionMeta.className = 'model-option-meta'
+    optionMeta.textContent = modelMetaText(model)
+    copy.append(optionName, optionMeta)
+
+    option.append(check, copy)
+    if (model.supportsVision) {
+      const capability = document.createElement('span')
+      capability.className = 'model-capability'
+      capability.textContent = t('model_visual_badge')
+      option.appendChild(capability)
+    }
+    option.addEventListener('click', () => {
+      void chooseModel(model.id)
+    })
+    option.addEventListener('keydown', handleModelOptionKeydown)
+    menu.appendChild(option)
+  }
+}
+
+function modelMetaText(model) {
+  if (model.description) return String(model.description).replace(/\s+/g, ' ').trim().slice(0, 92)
+  const capability = model.supportsVision
+    ? t('model_visual_description')
+    : t('model_text_description')
+  return model.provider ? `${model.provider} · ${capability}` : capability
+}
+
+async function chooseModel(modelId) {
+  if (!modelId || modelSelectionPending || turnInFlight || modelId === selectedModelId) {
+    closeModelMenu()
+    return
+  }
+  const previousId = selectedModelId
+  selectedModelId = modelId
+  modelSelectionPending = true
+  closeModelMenu()
+  renderModelPicker()
+  updateSendEnabled()
+
+  const response = await sendMessage({ type: MSG.MODELS_SELECT, modelId })
+  modelSelectionPending = false
+  if (!response?.ok) {
+    selectedModelId = previousId
+    renderModelPicker()
+    appendTurnError(t('model_selection_failed'))
+    updateSendEnabled()
+    return
+  }
+  selectedModelId = response.selectedId || modelId
+  renderModelPicker()
+  updateSendEnabled()
+}
+
+function openModelMenu(focusDirection = 0) {
+  const picker = document.getElementById('model-picker')
+  const trigger = document.getElementById('model-picker-trigger')
+  const menu = document.getElementById('model-menu')
+  if (!picker || !trigger || !menu || trigger.disabled) return
+  menu.hidden = false
+  picker.dataset.open = 'true'
+  trigger.setAttribute('aria-expanded', 'true')
+  if (focusDirection !== 0) {
+    const options = Array.from(menu.querySelectorAll('.model-option'))
+    const selectedIndex = options.findIndex((option) => option.getAttribute('aria-selected') === 'true')
+    const fallback = focusDirection > 0 ? 0 : options.length - 1
+    options[selectedIndex >= 0 ? selectedIndex : fallback]?.focus()
+  }
+}
+
+function closeModelMenu({ restoreFocus = false } = {}) {
+  const picker = document.getElementById('model-picker')
+  const trigger = document.getElementById('model-picker-trigger')
+  const menu = document.getElementById('model-menu')
+  if (!picker || !trigger || !menu) return
+  menu.hidden = true
+  picker.dataset.open = 'false'
+  trigger.setAttribute('aria-expanded', 'false')
+  if (restoreFocus) trigger.focus()
+}
+
+function handleModelOptionKeydown(event) {
+  const options = Array.from(document.querySelectorAll('#model-menu .model-option'))
+  const index = options.indexOf(event.currentTarget)
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    const delta = event.key === 'ArrowDown' ? 1 : -1
+    options[(index + delta + options.length) % options.length]?.focus()
+  } else if (event.key === 'Home' || event.key === 'End') {
+    event.preventDefault()
+    options[event.key === 'Home' ? 0 : options.length - 1]?.focus()
+  } else if (event.key === 'Escape') {
+    event.preventDefault()
+    closeModelMenu({ restoreFocus: true })
+  }
 }
 
 function initModelSelect() {
-  const select = document.getElementById('model-select')
-  if (!select) return
-  select.addEventListener('change', () => {
-    const modelId = select.value
-    if (!modelId) return
-    void sendMessage({ type: MSG.MODELS_SELECT, modelId })
+  const trigger = document.getElementById('model-picker-trigger')
+  if (!trigger) return
+  trigger.addEventListener('click', () => {
+    const isOpen = document.getElementById('model-picker')?.dataset.open === 'true'
+    if (isOpen) closeModelMenu()
+    else openModelMenu()
+  })
+  trigger.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      openModelMenu(event.key === 'ArrowDown' ? 1 : -1)
+    } else if (event.key === 'Escape') {
+      closeModelMenu()
+    }
+  })
+  document.addEventListener('pointerdown', (event) => {
+    if (!document.getElementById('model-picker')?.contains(event.target)) closeModelMenu()
   })
 }
 
@@ -262,6 +398,8 @@ async function handleLogout() {
   }
   renderAuth(null)
   clearModelSelect()
+  conversationHistory = []
+  pendingConversation = null
 }
 
 function initApiKeyToggle() {
@@ -319,7 +457,7 @@ async function initModes() {
 
 // ── Chat transcript ──────────────────────────────────────────────
 //
-// Claude-like human activity model (not terminal dumps):
+// Verboo activity model (one current action + optional compact details):
 //   - user bubble
 //   - [Working…] header (pulse) while the turn is in flight
 //   - activity lines: Navigating… / Clicking… / Reading page…
@@ -333,6 +471,14 @@ const toolCards = new Map()
 
 /** @type {HTMLElement | null} live "Working…" header for the current turn */
 let workingHeaderEl = null
+/** @type {HTMLElement | null} */
+let activityCurrentEl = null
+/** @type {HTMLElement | null} */
+let activityDetailsEl = null
+/** @type {HTMLButtonElement | null} */
+let activityToggleEl = null
+/** @type {string[]} */
+let activityHistory = []
 
 function appendUserMessage(text) {
   const messages = document.getElementById('chat-messages')
@@ -344,15 +490,26 @@ function appendUserMessage(text) {
   messages.scrollTop = messages.scrollHeight
 }
 
-function appendAssistantMessage(text) {
-  clearWorkingHeader()
+function appendAssistantMessage(text, hasToolActivity = true) {
+  if (hasToolActivity) finishActivitySummary('complete')
+  else removeActivitySummary()
   const messages = document.getElementById('chat-messages')
   const msg = document.createElement('div')
   msg.className = 'chat-message'
   msg.dataset.role = 'assistant'
-  msg.textContent = text
+  msg.innerHTML = safeMarkdownToHtml(text)
   messages.appendChild(msg)
   messages.scrollTop = messages.scrollHeight
+}
+
+/** Remove transient thinking UI when the model answered without browser tools. */
+function removeActivitySummary() {
+  workingHeaderEl?.remove()
+  workingHeaderEl = null
+  activityCurrentEl = null
+  activityDetailsEl = null
+  activityToggleEl = null
+  activityHistory = []
 }
 
 /**
@@ -365,26 +522,75 @@ function ensureWorkingHeader() {
   const el = document.createElement('div')
   el.className = 'activity-working'
   el.setAttribute('aria-live', 'polite')
+  const row = document.createElement('div')
+  row.className = 'activity-summary-row'
   const glyph = document.createElement('span')
   glyph.className = 'activity-working-glyph'
   glyph.setAttribute('aria-hidden', 'true')
-  glyph.textContent = '●'
   const label = document.createElement('span')
+  label.className = 'activity-current'
   label.textContent = t('activity_working')
-  el.append(glyph, label)
+  const toggle = document.createElement('button')
+  toggle.type = 'button'
+  toggle.className = 'activity-details-toggle'
+  toggle.hidden = true
+  toggle.dataset.count = '0'
+  toggle.setAttribute('aria-expanded', 'false')
+  toggle.textContent = t('activity_details').replace('{count}', '0')
+  const details = document.createElement('div')
+  details.className = 'activity-details'
+  details.hidden = true
+  toggle.addEventListener('click', () => {
+    const open = details.hidden
+    details.hidden = !open
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false')
+    toggle.textContent = open
+      ? t('activity_hide_details')
+      : t('activity_details').replace('{count}', toggle.dataset.count || '0')
+  })
+  row.append(glyph, label, toggle)
+  el.append(row, details)
   messages.appendChild(el)
   workingHeaderEl = el
+  activityCurrentEl = label
+  activityDetailsEl = details
+  activityToggleEl = toggle
+  activityHistory = []
   messages.scrollTop = messages.scrollHeight
 }
 
 /**
- * Remove the working header when the turn ends (complete / error).
+ * Preserve one collapsed summary when the turn ends, then release references
+ * so the next turn creates its own activity block.
+ * @param {'complete'|'error'|'stopped'} state
  */
-function clearWorkingHeader() {
-  if (workingHeaderEl) {
-    workingHeaderEl.remove()
-    workingHeaderEl = null
+function finishActivitySummary(state) {
+  if (!workingHeaderEl) return
+  workingHeaderEl.classList.toggle('is-complete', state === 'complete')
+  workingHeaderEl.classList.toggle('is-stopped', state !== 'complete')
+  if (activityCurrentEl) {
+    if (state === 'complete') {
+      const count = Math.max(activityHistory.length, 1)
+      activityCurrentEl.textContent = t(
+        count === 1 ? 'activity_step_completed' : 'activity_steps_completed',
+      ).replace('{count}', String(count))
+    } else if (state === 'stopped') {
+      activityCurrentEl.textContent = t('activity_stopped')
+    } else {
+      activityCurrentEl.textContent = t('activity_incomplete')
+    }
   }
+  if (activityDetailsEl) activityDetailsEl.hidden = true
+  if (activityToggleEl) {
+    activityToggleEl.setAttribute('aria-expanded', 'false')
+    activityToggleEl.textContent = t('activity_details')
+      .replace('{count}', activityToggleEl.dataset.count || '0')
+  }
+  workingHeaderEl = null
+  activityCurrentEl = null
+  activityDetailsEl = null
+  activityToggleEl = null
+  activityHistory = []
 }
 
 /**
@@ -396,13 +602,24 @@ function appendActivityLine(text, variant) {
   if (!text) return
   ensureWorkingHeader()
   const messages = document.getElementById('chat-messages')
-  if (!messages) return
+  if (!messages || !activityDetailsEl || !activityCurrentEl) return
+  if (activityHistory.at(-1) === text) return
+  activityCurrentEl.textContent = text
+  activityHistory.push(text)
   const line = document.createElement('div')
   line.className = 'activity-line'
   if (variant === 'ok') line.classList.add('activity-ok')
   if (variant === 'err') line.classList.add('activity-err')
   line.textContent = text
-  messages.appendChild(line)
+  activityDetailsEl.appendChild(line)
+  if (activityToggleEl) {
+    activityToggleEl.hidden = activityHistory.length < 2
+    activityToggleEl.dataset.count = String(activityHistory.length)
+    if (activityToggleEl.getAttribute('aria-expanded') !== 'true') {
+      activityToggleEl.textContent = t('activity_details')
+        .replace('{count}', String(activityHistory.length))
+    }
+  }
   messages.scrollTop = messages.scrollHeight
 }
 
@@ -417,8 +634,8 @@ function humanizeThought(text) {
   const raw = text.trim()
   if (!raw) return null
 
-  // Step counters are noise in a product transcript.
-  if (/^Step \d+\/\d+/i.test(raw)) return null
+  // Soft progress — show something so Working… isn't the only signal during long router waits.
+  if (/^Step \d+\/\d+/i.test(raw)) return t('activity_continuing')
 
   if (/Calling navigate/i.test(raw)) {
     const m = raw.match(/→\s*(\S+?)(?:…|\.\.\.)?\s*$/)
@@ -431,19 +648,17 @@ function humanizeThought(text) {
   if (/Calling screenshot/i.test(raw)) return t('activity_capturing')
   if (/Calling read_page/i.test(raw)) return t('activity_reading')
 
-  // Covered by the Working… header alone.
-  if (/Analyzing request/i.test(raw)) return null
+  if (/Analyzing request/i.test(raw)) return t('activity_analyzing')
 
-  if (/LLM agent unavailable/i.test(raw)) return 'Using quick planner…'
+  if (/LLM agent unavailable/i.test(raw)) return t('activity_quick_planner')
+  if (/Router error after|finishing with what we have/i.test(raw)) {
+    return t('activity_finishing_partial')
+  }
 
-  // Soften remaining machine lines; strip CSS selectors after →.
-  let s = raw
-  s = s.replace(/\s*→\s*(?![hH][tT][tT][pP][sS]?:)[^\s…]+(?:…)?/g, '')
-  s = s.replace(/^Planning \d+ tool call\(s\) for:\s*".*"$/i, 'Planning…')
-  s = s.replace(/^No tool action — .*$/i, 'Thinking…')
-  s = s.replace(/Injected strategy hint.*/i, 'Trying a different approach…')
-  s = s.replace(/\s{2,}/g, ' ').trim()
-  return s || null
+  if (/^Planning \d+ tool call\(s\)/i.test(raw)) return t('activity_planning')
+  if (/^No tool action/i.test(raw)) return t('activity_thinking')
+  if (/Injected strategy hint/i.test(raw)) return t('activity_retrying')
+  return null
 }
 
 /**
@@ -456,8 +671,8 @@ function shortUrl(url) {
   let cleaned = String(url).replace(/…$/, '').replace(/\.\.\.$/, '')
   try {
     const u = new URL(cleaned)
-    let out = u.hostname + (u.pathname === '/' ? '' : u.pathname)
-    if (out.length > 48) out = out.slice(0, 45) + '…'
+    let out = u.hostname.replace(/^www\./i, '')
+    if (out.length > 40) out = out.slice(0, 37) + '…'
     return out
   } catch {
     cleaned = cleaned.replace(/^https?:\/\//i, '').replace(/\/$/, '')
@@ -467,7 +682,7 @@ function shortUrl(url) {
 }
 
 function appendTurnError(text) {
-  clearWorkingHeader()
+  finishActivitySummary('error')
   const messages = document.getElementById('chat-messages')
   const bubble = document.createElement('div')
   bubble.className = 'chat-message chat-error'
@@ -633,10 +848,7 @@ function renderToolResult(toolResult) {
     return
   }
 
-  if (toolResult.success) {
-    const detail = formatResultData(toolResult.data)
-    if (detail) appendActivityLine(detail, 'ok')
-  } else {
+  if (!toolResult.success) {
     appendActivityLine(formatErrorLine(toolResult.error) || t('tool_result_error'), 'err')
   }
 }
@@ -807,44 +1019,134 @@ function policyReasonLabel(decision) {
   }
 }
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
 // ── Chat send ────────────────────────────────────────────────────
 
 /** True while an agent turn is in flight (disables the send button). */
 let turnInFlight = false
+
+/** Bounded context sent with the next model turn while this panel stays open. */
+const MAX_PANEL_HISTORY_MESSAGES = 12
+/** @type {Array<{role:'user'|'assistant', content:string}>} */
+let conversationHistory = []
+/** @type {{turnId:string, userMessage:string} | null} */
+let pendingConversation = null
+
+/** @type {string | null} turn currently owned by the panel UI */
+let activeTurnId = null
+
+/** Idle ms without agent events → declare background dead (router is 60s). */
+const TURN_IDLE_MS = 90_000
+/** Hard cap even if events keep arriving. */
+const TURN_MAX_MS = 15 * 60_000
+
+/** @type {ReturnType<typeof setTimeout> | null} */
+let turnIdleTimer = null
+/** @type {ReturnType<typeof setTimeout> | null} */
+let turnMaxTimer = null
 
 function updateSendEnabled() {
   const input = document.getElementById('chat-input')
   const send = document.getElementById('chat-send')
   if (!input || !send) return
   const hasText = input.value.trim().length > 0
-  send.disabled = turnInFlight || !hasText
+  send.disabled = turnInFlight || modelSelectionPending || !selectedModelId || !hasText
 }
 
 function setTurnInFlight(inFlight) {
   turnInFlight = Boolean(inFlight)
+  if (turnInFlight) closeModelMenu()
+  const send = document.getElementById('chat-send')
+  const stop = document.getElementById('chat-stop')
+  if (send) send.hidden = turnInFlight
+  if (stop) {
+    stop.hidden = !turnInFlight
+    if (!turnInFlight) stop.disabled = false
+  }
+  renderModelPicker()
   updateSendEnabled()
+}
+
+function clearTurnWatchdogs() {
+  if (turnIdleTimer != null) {
+    clearTimeout(turnIdleTimer)
+    turnIdleTimer = null
+  }
+  if (turnMaxTimer != null) {
+    clearTimeout(turnMaxTimer)
+    turnMaxTimer = null
+  }
+}
+
+/**
+ * End the in-flight turn in the panel (Working… off, send re-enabled).
+ * Does not append a message — caller does that.
+ */
+function endTurnUi() {
+  clearTurnWatchdogs()
+  activeTurnId = null
+  setTurnInFlight(false)
+}
+
+/**
+ * Watch for a silent service worker / hung router so Working… cannot stick forever.
+ * Idle timer resets on every agent event for this turn.
+ * @param {string} turnId
+ */
+function armTurnWatchdogs(turnId) {
+  clearTurnWatchdogs()
+  activeTurnId = turnId
+
+  const failIdle = () => {
+    if (activeTurnId !== turnId || !turnInFlight) return
+    endTurnUi()
+    appendTurnError(t('chat_turnIdleTimeout'))
+    void chrome.runtime.sendMessage({ type: MSG.AGENT_TURN_CANCEL, turnId }).catch(() => {})
+  }
+  const failMax = () => {
+    if (activeTurnId !== turnId || !turnInFlight) return
+    endTurnUi()
+    appendTurnError(t('chat_turnMaxTimeout'))
+    void chrome.runtime.sendMessage({ type: MSG.AGENT_TURN_CANCEL, turnId }).catch(() => {})
+  }
+
+  turnIdleTimer = setTimeout(failIdle, TURN_IDLE_MS)
+  turnMaxTimer = setTimeout(failMax, TURN_MAX_MS)
+}
+
+/** Reset idle watchdog when the background is still producing events. */
+function bumpTurnIdleWatchdog() {
+  if (!turnInFlight || !activeTurnId) return
+  const turnId = activeTurnId
+  if (turnIdleTimer != null) clearTimeout(turnIdleTimer)
+  turnIdleTimer = setTimeout(() => {
+    if (activeTurnId !== turnId || !turnInFlight) return
+    endTurnUi()
+    appendTurnError(t('chat_turnIdleTimeout'))
+    void chrome.runtime.sendMessage({ type: MSG.AGENT_TURN_CANCEL, turnId }).catch(() => {})
+  }, TURN_IDLE_MS)
 }
 
 function initChat() {
   const form = document.getElementById('chat-form')
   const input = document.getElementById('chat-input')
+  const stop = document.getElementById('chat-stop')
 
   input.addEventListener('input', updateSendEnabled)
   updateSendEnabled()
+
+  stop?.addEventListener('click', async () => {
+    if (!turnInFlight || !activeTurnId) return
+    stop.disabled = true
+    appendActivityLine(t('activity_stopping'))
+    await sendMessage({ type: MSG.AGENT_TURN_CANCEL, turnId: activeTurnId })
+  })
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault()
     const text = input.value.trim()
     if (!text) return
+    // Ignore double-submit while a turn is already running.
+    if (turnInFlight) return
     input.value = ''
     updateSendEnabled()
 
@@ -857,12 +1159,24 @@ function initChat() {
     appendUserMessage(text)
 
     const turnId = crypto.randomUUID()
+    const priorConversation = conversationHistory.slice(-MAX_PANEL_HISTORY_MESSAGES)
+    pendingConversation = { turnId, userMessage: text }
     setTurnInFlight(true)
-    await chrome.runtime.sendMessage({
-      type: MSG.AGENT_TURN_START,
-      turnId,
-      userMessage: text,
-    })
+    ensureWorkingHeader()
+    armTurnWatchdogs(turnId)
+    try {
+      await chrome.runtime.sendMessage({
+        type: MSG.AGENT_TURN_START,
+        turnId,
+        userMessage: text,
+        modelId: selectedModelId,
+        conversationHistory: priorConversation,
+      })
+    } catch (err) {
+      if (pendingConversation?.turnId === turnId) pendingConversation = null
+      endTurnUi()
+      appendTurnError(err?.message ?? t('chat_turnStartFailed'))
+    }
   })
 }
 
@@ -884,39 +1198,78 @@ function initAgentEventListener() {
         populateModelSelect(message.models ?? [], message.selectedId)
         break
       }
+      case MSG.AGENT_TURN_STARTED: {
+        // Background confirmed the turn — keep Working… and reset idle clock.
+        if (message.turnId && activeTurnId && message.turnId !== activeTurnId) break
+        ensureWorkingHeader()
+        bumpTurnIdleWatchdog()
+        break
+      }
       case MSG.AGENT_THOUGHT: {
         ensureWorkingHeader()
+        bumpTurnIdleWatchdog()
         const humanized = humanizeThought(message.text)
         if (humanized) appendActivityLine(humanized)
         break
       }
       case MSG.AGENT_TOOL_REQUEST: {
+        // Approval can sit open longer than idle timeout — pause idle, keep absolute max.
+        if (message.policyDecision?.needsApproval) {
+          if (turnIdleTimer != null) {
+            clearTimeout(turnIdleTimer)
+            turnIdleTimer = null
+          }
+        } else {
+          bumpTurnIdleWatchdog()
+        }
         // Big tool cards only for approval / hard-denial flows.
         renderToolCard(message.toolCall, message.policyDecision)
         break
       }
       case MSG.AGENT_TOOL_EXECUTING: {
+        bumpTurnIdleWatchdog()
         markToolExecuting(message.toolCallId, message.toolName)
         break
       }
       case MSG.AGENT_TOOL_RESULT: {
+        bumpTurnIdleWatchdog()
         renderToolResult(message.toolResult)
         break
       }
       case 'agent:approval_closed': {
+        bumpTurnIdleWatchdog()
         closeApprovalCard(message.approvalId, message.decision)
         break
       }
       case MSG.AGENT_TURN_COMPLETE: {
-        clearWorkingHeader()
-        setTurnInFlight(false)
-        appendAssistantMessage(message.assistantMessage)
+        if (message.turnId && activeTurnId && message.turnId !== activeTurnId) break
+        const completed = pendingConversation?.turnId === message.turnId
+          ? pendingConversation
+          : null
+        endTurnUi()
+        appendAssistantMessage(
+          message.assistantMessage,
+          Array.isArray(message.toolResults) && message.toolResults.length > 0,
+        )
+        if (completed) {
+          conversationHistory.push(
+            { role: 'user', content: completed.userMessage },
+            { role: 'assistant', content: String(message.assistantMessage ?? '') },
+          )
+          conversationHistory = conversationHistory.slice(-MAX_PANEL_HISTORY_MESSAGES)
+          pendingConversation = null
+        }
         break
       }
       case MSG.AGENT_TURN_ERROR: {
-        clearWorkingHeader()
-        setTurnInFlight(false)
-        appendTurnError(message.error)
+        if (message.turnId && activeTurnId && message.turnId !== activeTurnId) break
+        if (pendingConversation?.turnId === message.turnId) pendingConversation = null
+        endTurnUi()
+        if (message.error === 'cancelled' || message.error === 'Turn cancelled.') {
+          finishActivitySummary('stopped')
+        } else {
+          appendTurnError(message.error)
+        }
         break
       }
       default:

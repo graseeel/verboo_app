@@ -20,6 +20,7 @@ import {
   selectModel,
   getSelectedModelId,
   normalizeModels,
+  resolveModelSelection,
   STORAGE_KEY,
   MODELS_CACHE_KEY,
   SELECTED_MODEL_KEY,
@@ -49,6 +50,38 @@ test('normalizeModels: accepts OpenAI / Router shape { data: [...] }', () => {
   assert.equal(out[0].displayName, 'GPT-4o')
   assert.equal(out[0].supportsVision, true)
   assert.equal(out[1].supportsVision, false)
+})
+
+test('normalizeModels: preserves optional presentation metadata from the router', () => {
+  const [model] = normalizeModels({
+    data: [{
+      id: 'visual-1',
+      display_name: 'Visual One',
+      description: 'Fast visual reasoning',
+      provider: { name: 'Example Provider' },
+      supports_vision: true,
+    }],
+  })
+  assert.equal(model.description, 'Fast visual reasoning')
+  assert.equal(model.provider, 'Example Provider')
+})
+
+test('resolveModelSelection: current panel choice wins over stale persisted choice', () => {
+  const models = normalizeModels({ data: [
+    { id: 'kimi-k2.7', supports_vision: true },
+    { id: 'minimax-m3', supports_vision: true },
+  ] })
+  const resolved = resolveModelSelection(models, 'kimi-k2.7', 'minimax-m3')
+  assert.equal(resolved?.id, 'kimi-k2.7')
+})
+
+test('resolveModelSelection: invalid panel choice falls back safely', () => {
+  const models = normalizeModels({ data: [
+    { id: 'kimi-k2.7' },
+    { id: 'minimax-m3' },
+  ] })
+  assert.equal(resolveModelSelection(models, 'unknown', 'minimax-m3')?.id, 'minimax-m3')
+  assert.equal(resolveModelSelection(models, 'unknown', 'missing')?.id, 'kimi-k2.7')
 })
 
 test('normalizeModels: accepts top-level array', () => {
