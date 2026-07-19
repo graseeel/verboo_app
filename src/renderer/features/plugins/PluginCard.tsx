@@ -5,6 +5,8 @@ import type { AvailablePlugin, Plugin } from '../../../shared/plugins'
 import { useI18n } from '../../i18n'
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss'
 import { usePluginIcon } from './usePluginIcon'
+import { OFFICIAL_MARKETPLACES } from '../../../shared/plugins'
+import verbooIconUrl from '../../../../assets/branding/verboo-mascot.png'
 
 // ── Monogram ────────────────────────────────────────────────────────
 // Deterministic initials + color from a plugin id/name. Gives each plugin
@@ -90,7 +92,18 @@ export function PluginMonogram({ name, id, size = 36, iconUrl }: { name: string;
 // PluginIcon — renders monogram immediately, swaps to <img> when the icon
 // URL arrives (opacity transition). Uses usePluginIcon hook with session
 // cache. `loadIcons` = false (privacy setting) → monogram only, no fetch.
+// ITEM D: plugins from OFFICIAL_MARKETPLACES get the bundled Verboo icon,
+// bypassing monogram and icon service entirely.
 export function PluginIcon({ name, id, size = 36, loadIcons = true }: { name: string; id: string; size?: number; loadIcons?: boolean }) {
+  const marketplace = id?.split('@')[1]
+  const isOfficial = marketplace ? OFFICIAL_MARKETPLACES.includes(marketplace) : false
+  if (isOfficial) {
+    return (
+      <span className="plugin-monogram" style={{ width: size, height: size }}>
+        <img src={verbooIconUrl} alt="" className="plugin-monogram-img" style={{ opacity: 1, borderRadius: size * 0.25 }} />
+      </span>
+    )
+  }
   const { iconUrl } = usePluginIcon(id, loadIcons)
   return <PluginMonogram name={name} id={id} size={size} iconUrl={iconUrl} />
 }

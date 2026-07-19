@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AvailablePlugin, Marketplace, MarketplaceManifestMap, Plugin, PluginError, PluginScope, PluginValidateResult } from '../../../shared/plugins'
+import { listen } from '@tauri-apps/api/event'
+import type { AvailablePlugin, Marketplace, MarketplaceManifestMap, MutationResult, Plugin, PluginError, PluginScope, PluginValidateResult } from '../../../shared/plugins'
 import { isPluginError } from '../../../shared/plugins'
 
 // ── State shape ──────────────────────────────────────────────────────
@@ -88,22 +89,60 @@ export function usePlugins() {
     void refreshAll()
   }, [refreshAll])
 
+  // ── Cross-window plugin-mutation listener (Feedback-6 OBJ 1) ──────
+  // When another window (or the backend itself) mutates plugins, the
+  // `plugin-mutation` Tauri event fires. We re-fetch so this hook's state
+  // stays in sync without the caller needing to wire anything up.
+  useEffect(() => {
+    let unlistenFn: (() => void) | undefined
+    const unlistenPromise = listen('plugin-mutation', () => {
+      void refreshAll()
+    })
+    unlistenPromise.then(fn => { unlistenFn = fn }).catch(() => {})
+    return () => {
+      unlistenFn?.()
+      // If the listener setup hasn't resolved yet, the then() above hasn't
+      // run — the cleanup runs synchronously, so we also drain the promise
+      // to avoid a dangling listener attaching after unmount.
+      unlistenPromise.then(fn => fn()).catch(() => {})
+    }
+  }, [refreshAll])
+
   // ── Mutations ──────────────────────────────────────────────────────
   const install = useCallback(async (plugin: AvailablePlugin, scope: PluginScope) => {
     if (mutatingIds.current.has(plugin.pluginId)) return
     mutatingIds.current.add(plugin.pluginId)
+    // Optimistic: build minimal installed Plugin entry from AvailablePlugin
+    // data so the list shows the plugin as installed immediately. refreshAll
+    // reconciles in background; a failure reverts via catch.
+    const optimisticPlugin: Plugin = {
+      id: plugin.pluginId,
+      name: plugin.name,
+      version: 'latest',
+      scope,
+      enabled: true,
+      installed: true,
+      installPath: '',
+      installedAt: new Date().toISOString(),
+      lastUpdated: new Date().toISOString(),
+      description: plugin.description,
+    }
+    setState(prev => ({ ...prev, installed: [...prev.installed, optimisticPlugin] }))
     try {
-      await window.verboo.pluginInstall(plugin.pluginId, scope)
-      // Re-fetch list to get the new installed row + merge.
-      const installed = await window.verboo.pluginList()
-      setState(prev => ({ ...prev, installed }))
+      const result = await window.verboo.pluginInstall(plugin.pluginId, scope) as MutationResult
+      if (!result.success) {
+        throw result.error ?? { kind: 'unknown', message: 'Install failed', } as PluginError
+      }
+      void refreshAll()
       return true
     } catch (err) {
+      // Revert optimistic (fires for IPC rejection OR success:false).
+      setState(prev => ({ ...prev, installed: prev.installed.filter(p => p.id !== plugin.pluginId) }))
       throw isPluginError(err) ? err : { kind: 'unknown', message: String(err) } as PluginError
     } finally {
       mutatingIds.current.delete(plugin.pluginId)
     }
-  }, [])
+  }, [refreshAll])
 
   const enable = useCallback(async (id: string, scope: PluginScope) => {
     // Optimistic: flip enabled immediately, revert on error.
@@ -142,17 +181,25 @@ export function usePlugins() {
   const uninstall = useCallback(async (id: string, scope: PluginScope, keepData = false) => {
     if (mutatingIds.current.has(id)) return
     mutatingIds.current.add(id)
+    // Optimistic: remove from installed list immediately.
+    setState(prev => ({ ...prev, installed: prev.installed.filter(p => p.id !== id) }))
     try {
-      await window.verboo.pluginUninstall(id, scope, keepData)
-      const installed = await window.verboo.pluginList()
-      setState(prev => ({ ...prev, installed }))
+      const result = await window.verboo.pluginUninstall(id, scope, keepData) as MutationResult
+      if (!result.success) {
+        // Revert: put back the plugin that was optimistically removed.
+        // The caller (PluginsView) will show the typed error toast.
+        void refreshAll()
+        throw result.error ?? { kind: 'unknown', message: 'Uninstall failed' } as PluginError
+      }
+      void refreshAll()
       return true
     } catch (err) {
+      if (!isPluginError(err)) void refreshAll()
       throw isPluginError(err) ? err : { kind: 'unknown', message: String(err) } as PluginError
     } finally {
       mutatingIds.current.delete(id)
     }
-  }, [])
+  }, [refreshAll])
 
   const update = useCallback(async (id: string, scope: PluginScope) => {
     if (mutatingIds.current.has(id)) return
