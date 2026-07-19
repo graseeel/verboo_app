@@ -5980,7 +5980,6 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-updater",
  "tempfile",
- "thiserror 1.0.69",
  "tokio",
  "uuid",
  "windows-sys 0.59.0",

@@ -7,7 +7,7 @@
  *       Every tool call passes through execute() → evaluateToolPolicy
  *       before any chrome.* API is touched.
  *
- * P3+: real agent client, Native Messaging host
+ * Standalone agent client; MCP bridge is added only with a packaged host.
  *
  * Multi-user: zero hardcoded accounts.
  */
@@ -38,11 +38,6 @@ import {
   summarizePartialAgentTurn,
 } from './agent/loop.js'
 
-// ── Native Messaging host name ──────────────────────────────────
-// Matches the manifest at native-messaging/com.verboo.code.browser_extension.json.template
-// and the install script scripts/install-chrome-native-host.sh.
-const NATIVE_HOST_NAME = 'com.verboo.code.browser_extension'
-
 // ── Open side panel on toolbar click ──────────────────────────────
 chrome.action.onClicked.addListener(async (tab) => {
   if (tab?.id) {
@@ -55,97 +50,7 @@ chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
     console.log('[Verboo] Extension installed. Opening side panel on next toolbar click.')
   }
-  // Probe the Desktop bridge on install/update so the panel shows the
-  // correct connection state without waiting for the first user action.
-  probeDesktopBridge()
 })
-
-// ── Desktop bridge (Native Messaging) ────────────────────────────
-//
-// The extension opens a persistent chrome.runtime.connectNative port to
-// the Verboo Code Desktop (Tauri) process. The Desktop side spawns the
-// native host binary (host.mjs) which relays browserTool messages to the
-// Tauri chrome_bridge service. Until the Desktop bridge ships, the port
-// will disconnect immediately — the extension degrades to the local
-// heuristic agent loop and broadcasts desktop:status=disconnected.
-//
-// Reconnect strategy: Desktop-owned. The extension does NOT auto-reconnect;
-// if the port drops, the next user action re-probes. This matches the
-// PROTOCOL.md invariant "Reconnect strategy: Desktop-owned".
-
-/** @type {chrome.runtime.Port | null} */
-let desktopPort = null
-/** @type {'connected' | 'disconnected' | 'unknown'} */
-let desktopState = 'unknown'
-
-/**
- * Probe the Desktop bridge by opening a connectNative port and sending a
- * ping. If the host is not installed or Desktop is not running, Chrome
- * fires onDisconnect almost immediately — we treat that as disconnected.
- */
-function probeDesktopBridge() {
-  try {
-    desktopPort = chrome.runtime.connectNative(NATIVE_HOST_NAME)
-    desktopState = 'unknown'
-    broadcast({ type: 'desktop:status', state: 'unknown' })
-
-    desktopPort.onMessage.addListener((msg) => {
-      if (msg?.type === 'pong') {
-        desktopState = 'connected'
-        broadcast({ type: 'desktop:status', state: 'connected' })
-      } else if (msg?.type === 'desktopStatus') {
-        desktopState = msg.connected ? 'connected' : 'disconnected'
-        broadcast({ type: 'desktop:status', state: desktopState, reason: msg.reason })
-      } else if (msg?.type === 'browserTool') {
-        // Desktop-originated tool call — route through execute() so the
-        // policy gate still applies. Result is sent back over the port.
-        handleBrowserTool(msg.tool)
-          .then((result) => {
-            try { desktopPort?.postMessage({ type: 'browserTool', result }) } catch { /* port closed */ }
-          })
-          .catch((err) => {
-            try {
-              desktopPort?.postMessage({
-                type: 'browserTool',
-                result: {
-                  ok: false,
-                  error: err?.message ?? String(err),
-                  policy: { allowed: false, needsApproval: false, reason: 'handler_exception' },
-                },
-              })
-            } catch { /* port closed */ }
-          })
-      }
-    })
-
-    desktopPort.onDisconnect.addListener(() => {
-      desktopPort = null
-      if (desktopState !== 'disconnected') {
-        desktopState = 'disconnected'
-        broadcast({ type: 'desktop:status', state: 'disconnected' })
-      }
-    })
-
-    // Send a ping to confirm the host is alive.
-    try {
-      desktopPort.postMessage({ type: 'ping' })
-    } catch {
-      // postMessage can throw if the port is already disconnected.
-      // onDisconnect will fire and update state.
-    }
-  } catch (err) {
-    desktopPort = null
-    desktopState = 'disconnected'
-    broadcast({ type: 'desktop:status', state: 'disconnected', reason: 'connect_failed' })
-  }
-}
-
-/**
- * @returns {'connected' | 'disconnected' | 'unknown'}
- */
-function getDesktopState() {
-  return desktopState
-}
 
 // ── Pending approvals (toolCallId → resolver) ────────────────────
 /** @type {Map<string, { resolve: (grant: 'once'|'always'|'deny'|'cancelled') => void }>} */
@@ -221,19 +126,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           })
         })
       return true
-    }
-
-    case 'desktop:probe': {
-      // Panel asks the background to re-probe the Desktop bridge.
-      probeDesktopBridge()
-      sendResponse({ ok: true, state: getDesktopState() })
-      return false
-    }
-
-    case 'desktop:status': {
-      // Panel asks for the current Desktop bridge state.
-      sendResponse({ ok: true, state: getDesktopState() })
-      return false
     }
 
     case MSG.AUTH_LOGIN: {

@@ -114,7 +114,7 @@ The single chokepoint is `controller.execute(toolCall, ctx)`. Tool handlers are 
 - **P1** (committed `13d499e`): MV3 extension, folder structure, TypeScript contracts, auth session shell, policy engine, side panel shell.
 - **P2** (committed `5bb13d2`): Browser Controller, agent turn loop, MVP tools (navigate, read_page, click, type, screenshot, tabs, tab_group), policy-gated execution.
 - **P3** (this phase): Store hardening — privacy policy, permission justifications, Store listing draft.
-- **P4** (future): Desktop bridge — Tauri ↔ Chrome extension IPC.
+- **P4** (future): packaged Verboo in Chrome MCP bridge — Rust Native Host ↔ Chrome extension, installed per user.
 - **P5** (future): Full catalog — error recovery, parallel tabs, advanced selectors, network interception, `debugger` permission for full-page screenshots.
 
 ## Development

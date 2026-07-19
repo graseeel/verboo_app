@@ -3,9 +3,7 @@
  *
  * Minimal settings page opened via chrome.runtime.openOptionsPage.
  * Owns: full permission mode selector, site grants CRUD, sign-out,
- * privacy link, and the desktop connection status card (the place
- * where unknown/disconnected states are surfaced — the panel stays
- * quiet on this).
+ * and privacy link.
  */
 
 import { loadMode, saveMode } from '../policy/modesStore.js'
@@ -170,24 +168,6 @@ async function handleAddGrant() {
   await renderGrants()
 }
 
-// ── Desktop connection status ───────────────────────────────────
-
-function renderDesktopStatus(state, reason) {
-  const dot = document.getElementById('desktop-status-dot')
-  const text = document.getElementById('desktop-status-text')
-  const reasonEl = document.getElementById('desktop-status-reason')
-  if (!dot || !text) return
-  const valid = ['connected', 'disconnected', 'unknown'].includes(state)
-  const next = valid ? state : 'unknown'
-  dot.dataset.state = next
-  text.textContent = t(`desktop_status_${next}`)
-  if (reasonEl) {
-    reasonEl.textContent = reason && next !== 'connected'
-      ? `(${reason})`
-      : ''
-  }
-}
-
 // ── Privacy ─────────────────────────────────────────────────────
 
 function openPrivacy() {
@@ -226,13 +206,6 @@ async function init() {
     void handleLogout()
   })
   document.getElementById('privacy-link')?.addEventListener('click', openPrivacy)
-
-  // Surface desktop state changes live.
-  chrome.runtime.onMessage.addListener((message) => {
-    if (message?.type === 'desktop:status') {
-      renderDesktopStatus(message.state, message.reason)
-    }
-  })
 
   // Re-render grants if any other pane mutated them.
   chrome.storage.onChanged.addListener((changes, area) => {

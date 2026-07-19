@@ -137,9 +137,6 @@ export default {
   "account_title": {
     "message": "Conta"
   },
-  "desktop_sectionTitle": {
-    "message": "Conexão com o Desktop"
-  },
   "mode_short_manual": {
     "message": "Pergunte antes"
   },
@@ -218,18 +215,6 @@ export default {
   "privacy_link": {
     "message": "Política de privacidade"
   },
-  "desktop_status_title": {
-    "message": "Desktop"
-  },
-  "desktop_status_connected": {
-    "message": "Desktop conectado"
-  },
-  "desktop_status_disconnected": {
-    "message": "Desktop desconectado"
-  },
-  "desktop_status_unknown": {
-    "message": "Desconhecido"
-  },
   "tool_name_navigate": {
     "message": "Navegar"
   },
@@ -277,18 +262,6 @@ export default {
   },
   "tool_result_error": {
     "message": "Erro"
-  },
-  "desktop_status_title": {
-    "message": "Desktop"
-  },
-  "desktop_status_connected": {
-    "message": "Desktop conectado"
-  },
-  "desktop_status_disconnected": {
-    "message": "Desktop desconectado"
-  },
-  "desktop_status_unknown": {
-    "message": "Desconhecido"
   },
   "activity_working": {
     "message": "Trabalhando…"

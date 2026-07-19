@@ -1,9 +1,0 @@
-{
-  "name": "com.verboo.code.browser_extension",
-  "description": "Verboo Code Desktop — Browser Extension bridge",
-  "path": "__HOST_PATH__",
-  "type": "stdio",
-  "allowed_origins": [
-    "chrome-extension://__EXTENSION_ID__/"
-  ]
-}

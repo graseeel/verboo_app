@@ -1,7 +1,7 @@
 /* options.css — Verboo settings page (chrome.runtime.openOptionsPage)
  *
  * Reuses panel.css tokens. Adds: options-shell, mode-stack (long
- * descriptions), grants-list in compact form, desktop-status card.
+ * descriptions), and grants-list in compact form.
  *
  * Standalone page; not bound by the side panel viewport. */
 
@@ -230,48 +230,6 @@
 .grant-remove:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
-}
-
-/* ── Desktop status card ─────────────────────────────────────── */
-.options-desktop {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--bg-elevated) 96%, transparent);
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.options-desktop-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-dim);
-  flex-shrink: 0;
-}
-
-.options-desktop-dot[data-state="connected"] {
-  background: var(--green);
-  box-shadow: 0 0 0 3px var(--green-soft);
-}
-
-.options-desktop-dot[data-state="disconnected"] {
-  background: var(--danger);
-  box-shadow: 0 0 0 3px var(--danger-soft);
-}
-
-.options-desktop-text {
-  font-weight: 650;
-  color: var(--text);
-}
-
-.options-desktop-reason {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--text-dim);
 }
 
 /* ── Account row ─────────────────────────────────────────────── */

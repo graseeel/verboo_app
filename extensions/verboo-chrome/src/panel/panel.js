@@ -1272,27 +1272,6 @@ function initAgentEventListener() {
   })
 }
 
-// ── Desktop connection status ────────────────────────────────────
-//
-// Background broadcasts 'desktop:status' messages with state
-// 'connected' | 'disconnected' | 'unknown'. Per the quiet-chrome rule,
-// we only react to 'connected' — unknown/disconnected stay silent in
-// the panel and surface (with reason) in the options page instead.
-// The function remains so the message channel stays wired; if the
-// element isn't present (default chrome has none) it's a no-op.
-
-function renderDesktopStatus(state) {
-  if (state !== 'connected') return
-  // Quiet by design — connected state is acknowledged but never
-  // shouted. If the design later adds a subtle indicator, the chip
-  // selector would be #desktop-status-chip.
-  const chip = document.getElementById('desktop-status-chip')
-  if (!chip) return
-  chip.dataset.state = 'connected'
-  const textEl = chip.querySelector('.desktop-status-text')
-  if (textEl) textEl.textContent = t('desktop_status_connected')
-}
-
 function openSettings() {
   // chrome.runtime.openOptionsPage falls back to options.html if no
   // options_ui is declared in the manifest.

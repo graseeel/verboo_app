@@ -137,9 +137,6 @@ export default {
   "account_title": {
     "message": "Account"
   },
-  "desktop_sectionTitle": {
-    "message": "Desktop connection"
-  },
   "mode_short_manual": {
     "message": "Ask before acting"
   },
@@ -217,18 +214,6 @@ export default {
   },
   "privacy_link": {
     "message": "Privacy policy"
-  },
-  "desktop_status_title": {
-    "message": "Desktop"
-  },
-  "desktop_status_connected": {
-    "message": "Desktop connected"
-  },
-  "desktop_status_disconnected": {
-    "message": "Desktop disconnected"
-  },
-  "desktop_status_unknown": {
-    "message": "Unknown"
   },
   "tool_name_navigate": {
     "message": "Navigate"
