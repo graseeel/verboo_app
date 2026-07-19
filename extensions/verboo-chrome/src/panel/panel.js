@@ -31,6 +31,9 @@ import {
 import EN_US from '../i18n/en-US.js'
 import PT_BR from '../i18n/pt-BR.js'
 
+const approvalSurfacePort = chrome.runtime.connect({ name: 'verboo-approval-surface' })
+window.addEventListener('unload', () => approvalSurfacePort.disconnect(), { once: true })
+
 const LOCALE_MAP = {
   'en': EN_US,
   'en-US': EN_US,

@@ -21,9 +21,10 @@
     "dev:renderer": "vite",
     "build:renderer": "tsc --noEmit && vite build",
     "fetch:tessdata": "node scripts/tauri/fetch-tessdata.mjs",
+    "build:chrome-helper": "node scripts/tauri/build-chrome-helper.mjs",
     "build:tauri-deps": "node scripts/verify/dedup-cli-package.mjs && node scripts/verify/copy-cli-resource.mjs && npm run fetch:tessdata && npm run build:renderer",
     "tauri:dev": "tauri dev",
-    "tauri:build": "npm run build:tauri-deps && cargo +1.89.0 tauri build",
+    "tauri:build": "npm run build:tauri-deps && npm run build:chrome-helper && cargo +1.89.0 tauri build",
     "tauri:icon": "tauri icon",
     "test": "vitest run",
     "test:watch": "vitest"

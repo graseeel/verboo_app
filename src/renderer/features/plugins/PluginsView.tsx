@@ -11,12 +11,14 @@ import { PluginInstallModal } from './PluginInstallModal'
 import { marketplaceFriendlyName } from './marketplaceNames'
 import { usePlugins } from './usePlugins'
 import { invalidatePluginIconCache } from './usePluginIcon'
+import { OfficialChromeIntegrationCard } from './OfficialChromeIntegrationCard'
 
 type PluginsViewProps = {
   onClose: () => void
   onSeedComposer?: (text: string) => void
   onUsePlugin?: (payload: { skillPath?: string; pluginId: string; pluginName: string; suggestion?: string }) => void
   loadIcons?: boolean
+  onManageChromeIntegration: () => void
 }
 
 // Cap of lines shown per section before the expander kicks in. Sections
@@ -79,7 +81,7 @@ function SectionExpander({ plugins, onExpand, loadIcons = true }: {
   )
 }
 
-export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = true }: PluginsViewProps) {
+export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = true, onManageChromeIntegration }: PluginsViewProps) {
   const { t } = useI18n()
   const { toast } = useToast()
   const {
@@ -520,6 +522,10 @@ export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = 
       {/* ── Plugins tab ──────────────────────────────────────────────── */}
       {activeTab === 'plugins' && (
       <div className="plugins-tab-content">
+      <section className="plugins-official-section">
+        <p className="plugins-section-label">{t('plugins.chrome.section')}</p>
+        <OfficialChromeIntegrationCard onManage={onManageChromeIntegration} />
+      </section>
       {/* Installed icon-only strip — 40px monograms, no names.
           Gear icon opens marketplace modal (replaces big header button). */}
       {!showSkeletons && installed.length > 0 && (

@@ -1,0 +1,357 @@
+use std::fs;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use serde_json::Value;
+use tempfile::TempDir;
+
+use super::cli_mcp::{CliMcpRunner, CliRunOutput};
+use super::manifest::write_native_manifest;
+use super::paths::{
+    linux_manifest_suffix, mac_manifest_suffix, windows_registry_key, ChromeIntegrationPaths,
+    IntegrationPlatform,
+};
+use super::{
+    ChromeComponentState, ChromeIntegrationRequest, ChromeIntegrationService, ChromeReleaseMetadata,
+};
+
+#[test]
+fn platform_paths_target_google_chrome_user_configuration_only() {
+    assert_eq!(
+        mac_manifest_suffix(),
+        "Google/Chrome/NativeMessagingHosts/com.verboo.code.browser_extension.json"
+    );
+    assert_eq!(
+        linux_manifest_suffix(),
+        "google-chrome/NativeMessagingHosts/com.verboo.code.browser_extension.json"
+    );
+    assert_eq!(
+        windows_registry_key(),
+        r"Software\Google\Chrome\NativeMessagingHosts\com.verboo.code.browser_extension"
+    );
+}
+
+#[test]
+fn injected_roots_never_depend_on_a_maintainer_home_directory() {
+    let temp = TempDir::new().unwrap();
+    let paths = ChromeIntegrationPaths::for_roots(
+        IntegrationPlatform::Macos,
+        temp.path().join("data"),
+        temp.path().join("config"),
+        temp.path().join("home"),
+        "0.5.2-beta.1",
+    );
+
+    assert!(paths.helper_path().starts_with(temp.path()));
+    assert!(paths.manifest_path().starts_with(temp.path()));
+    assert!(paths.installation_record_path().starts_with(temp.path()));
+    assert!(paths.cli_user_config_path().starts_with(temp.path()));
+}
+
+#[test]
+fn native_manifest_has_an_absolute_helper_and_one_allowed_origin() {
+    let temp = TempDir::new().unwrap();
+    let helper = temp.path().join("bin/verboo-in-chrome");
+    fs::create_dir_all(helper.parent().unwrap()).unwrap();
+    fs::write(&helper, b"helper").unwrap();
+    let manifest_path = temp.path().join("host.json");
+
+    write_native_manifest(&manifest_path, &helper, "abcdefghijklmnopabcdefghijklmnop").unwrap();
+
+    let manifest: Value = serde_json::from_slice(&fs::read(manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["path"], helper.to_string_lossy().as_ref());
+    assert_eq!(manifest["type"], "stdio");
+    assert_eq!(
+        manifest["allowed_origins"],
+        serde_json::json!(["chrome-extension://abcdefghijklmnopabcdefghijklmnop/"])
+    );
+}
+
+#[test]
+fn native_manifest_rejects_relative_paths_and_invalid_extension_ids() {
+    let temp = TempDir::new().unwrap();
+    assert!(write_native_manifest(
+        &temp.path().join("host.json"),
+        std::path::Path::new("relative/helper"),
+        "abcdefghijklmnopabcdefghijklmnop",
+    )
+    .is_err());
+    assert!(write_native_manifest(
+        &temp.path().join("host.json"),
+        &temp.path().join("helper"),
+        "not-a-chrome-id",
+    )
+    .is_err());
+}
+
+#[derive(Debug)]
+struct FakeCliRunner {
+    config_path: PathBuf,
+    calls: Mutex<Vec<Vec<String>>>,
+}
+
+impl FakeCliRunner {
+    fn new(config_path: PathBuf) -> Self {
+        Self {
+            config_path,
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn mutation_count(&self, command: &str) -> usize {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|args| args.get(1).map(String::as_str) == Some(command))
+            .count()
+    }
+
+    fn write_entry(&self, helper: &str, version: &str) {
+        fs::create_dir_all(self.config_path.parent().unwrap()).unwrap();
+        fs::write(
+            &self.config_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "mcpServers": {
+                    "verboo-in-chrome": {
+                        "type": "stdio",
+                        "command": helper,
+                        "args": ["mcp"],
+                        "env": {
+                            "VERBOO_IN_CHROME_MANAGED": "1",
+                            "VERBOO_IN_CHROME_VERSION": version
+                        }
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+impl CliMcpRunner for FakeCliRunner {
+    fn run(&self, args: &[String]) -> Result<CliRunOutput, String> {
+        self.calls.lock().unwrap().push(args.to_vec());
+        match args.get(1).map(String::as_str) {
+            Some("doctor") => Ok(CliRunOutput {
+                success: true,
+                stdout: "{\"servers\":[]}".into(),
+                stderr: String::new(),
+            }),
+            Some("add") => {
+                let separator = args.iter().position(|arg| arg == "--").unwrap();
+                let helper = &args[separator + 1];
+                let version = args
+                    .iter()
+                    .find_map(|arg| arg.strip_prefix("VERBOO_IN_CHROME_VERSION="))
+                    .unwrap();
+                self.write_entry(helper, version);
+                Ok(CliRunOutput::success())
+            }
+            Some("remove") => {
+                let mut config: Value =
+                    serde_json::from_slice(&fs::read(&self.config_path).unwrap()).unwrap();
+                config["mcpServers"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("verboo-in-chrome");
+                fs::write(
+                    &self.config_path,
+                    serde_json::to_vec_pretty(&config).unwrap(),
+                )
+                .unwrap();
+                Ok(CliRunOutput::success())
+            }
+            _ => Err("unexpected_cli_command".into()),
+        }
+    }
+}
+
+fn service_fixture() -> (
+    TempDir,
+    ChromeIntegrationPaths,
+    Arc<FakeCliRunner>,
+    ChromeIntegrationService,
+) {
+    let temp = TempDir::new().unwrap();
+    let paths = ChromeIntegrationPaths::for_roots(
+        IntegrationPlatform::Macos,
+        temp.path().join("data"),
+        temp.path().join("config"),
+        temp.path().join("home"),
+        "0.5.2-beta.1",
+    );
+    let source = temp.path().join("bundle/verboo-in-chrome");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(&source, b"helper-v1").unwrap();
+    let runner = Arc::new(FakeCliRunner::new(paths.cli_user_config_path()));
+    let service = ChromeIntegrationService::with_dependencies(
+        paths.clone(),
+        source,
+        ChromeReleaseMetadata {
+            extension_id: None,
+            web_store_url: None,
+        },
+        runner.clone(),
+    );
+    (temp, paths, runner, service)
+}
+
+fn service_for(
+    temp: &TempDir,
+    version: &str,
+    runner: Arc<FakeCliRunner>,
+    helper_contents: &[u8],
+) -> (ChromeIntegrationPaths, ChromeIntegrationService) {
+    let paths = ChromeIntegrationPaths::for_roots(
+        IntegrationPlatform::Macos,
+        temp.path().join("data"),
+        temp.path().join("config"),
+        temp.path().join("home"),
+        version,
+    );
+    let source = temp
+        .path()
+        .join("bundle")
+        .join(version)
+        .join("verboo-in-chrome");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(&source, helper_contents).unwrap();
+    let service = ChromeIntegrationService::with_dependencies(
+        paths.clone(),
+        source,
+        ChromeReleaseMetadata {
+            extension_id: None,
+            web_store_url: None,
+        },
+        runner,
+    );
+    (paths, service)
+}
+
+fn development_request() -> ChromeIntegrationRequest {
+    ChromeIntegrationRequest {
+        development_extension_id: Some("abcdefghijklmnopabcdefghijklmnop".into()),
+    }
+}
+
+#[test]
+fn fresh_and_repeated_configuration_are_owned_and_idempotent() {
+    let (_temp, paths, runner, service) = service_fixture();
+    let first = service.configure(development_request()).unwrap();
+    assert_eq!(first.bridge, ChromeComponentState::Managed);
+    assert_eq!(first.mcp, ChromeComponentState::Managed);
+    assert!(paths.helper_path().is_file());
+    assert!(paths.manifest_path().is_file());
+    assert!(paths.installation_record_path().is_file());
+
+    let second = service.configure(development_request()).unwrap();
+    assert_eq!(second.bridge, ChromeComponentState::Managed);
+    assert_eq!(runner.mutation_count("add"), 1);
+}
+
+#[test]
+fn foreign_helper_manifest_and_mcp_entries_are_never_overwritten() {
+    let (_temp, paths, _runner, service) = service_fixture();
+    fs::create_dir_all(paths.helper_path().parent().unwrap()).unwrap();
+    fs::write(paths.helper_path(), b"foreign").unwrap();
+    assert_eq!(
+        service.configure(development_request()).unwrap_err(),
+        "chrome_helper_conflict"
+    );
+
+    let (_temp, paths, _runner, service) = service_fixture();
+    fs::create_dir_all(paths.manifest_path().parent().unwrap()).unwrap();
+    fs::write(paths.manifest_path(), b"{\"foreign\":true}").unwrap();
+    assert_eq!(
+        service.configure(development_request()).unwrap_err(),
+        "chrome_manifest_conflict"
+    );
+
+    let (_temp, paths, runner, service) = service_fixture();
+    runner.write_entry("/foreign/verboo-in-chrome", "9.9.9");
+    assert_eq!(
+        service.configure(development_request()).unwrap_err(),
+        "chrome_mcp_conflict"
+    );
+    assert_eq!(runner.mutation_count("remove"), 0);
+    assert!(!paths.helper_path().exists());
+}
+
+#[test]
+fn remove_deletes_only_the_verified_managed_installation() {
+    let (_temp, paths, runner, service) = service_fixture();
+    service.configure(development_request()).unwrap();
+    let status = service.remove().unwrap();
+
+    assert_eq!(status.bridge, ChromeComponentState::Missing);
+    assert!(!paths.helper_path().exists());
+    assert!(!paths.manifest_path().exists());
+    assert!(!paths.installation_record_path().exists());
+    assert_eq!(runner.mutation_count("remove"), 1);
+}
+
+#[test]
+fn repair_replaces_a_damaged_managed_helper() {
+    let (_temp, paths, _runner, service) = service_fixture();
+    service.configure(development_request()).unwrap();
+    fs::write(paths.helper_path(), b"damaged").unwrap();
+
+    let status = service.repair(development_request()).unwrap();
+
+    assert_eq!(status.bridge, ChromeComponentState::Managed);
+    assert_eq!(fs::read(paths.helper_path()).unwrap(), b"helper-v1");
+}
+
+#[test]
+fn upgrade_moves_the_managed_helper_and_removes_the_old_version() {
+    let temp = TempDir::new().unwrap();
+    let config_path = temp.path().join("home/.verboo/.config.json");
+    let runner = Arc::new(FakeCliRunner::new(config_path));
+    let (old_paths, old_service) = service_for(&temp, "0.5.2-beta.1", runner.clone(), b"v1");
+    old_service.configure(development_request()).unwrap();
+    let old_helper = old_paths.helper_path();
+
+    let (new_paths, new_service) = service_for(&temp, "0.5.3", runner.clone(), b"v2");
+    let status = new_service.configure(development_request()).unwrap();
+
+    assert_eq!(status.installed_version.as_deref(), Some("0.5.3"));
+    assert_eq!(fs::read(new_paths.helper_path()).unwrap(), b"v2");
+    assert!(!old_helper.exists());
+    assert_eq!(runner.mutation_count("remove"), 1);
+    assert_eq!(runner.mutation_count("add"), 2);
+}
+
+#[test]
+fn upgrade_never_overwrites_an_unowned_new_version_path() {
+    let temp = TempDir::new().unwrap();
+    let config_path = temp.path().join("home/.verboo/.config.json");
+    let runner = Arc::new(FakeCliRunner::new(config_path));
+    let (_old_paths, old_service) = service_for(&temp, "0.5.2-beta.1", runner.clone(), b"v1");
+    old_service.configure(development_request()).unwrap();
+
+    let (new_paths, new_service) = service_for(&temp, "0.5.3", runner, b"v2");
+    fs::create_dir_all(new_paths.helper_path().parent().unwrap()).unwrap();
+    fs::write(new_paths.helper_path(), b"foreign").unwrap();
+
+    assert_eq!(
+        new_service.configure(development_request()).unwrap_err(),
+        "chrome_helper_conflict"
+    );
+    assert_eq!(fs::read(new_paths.helper_path()).unwrap(), b"foreign");
+}
+
+#[test]
+fn failed_atomic_manifest_write_rolls_back_new_managed_files() {
+    let (_temp, paths, runner, service) = service_fixture();
+    let manifest_path = paths.manifest_path();
+    let blocking_parent = manifest_path.ancestors().nth(3).unwrap();
+    fs::create_dir_all(blocking_parent.parent().unwrap()).unwrap();
+    fs::write(blocking_parent, b"not-a-directory").unwrap();
+
+    assert!(service.configure(development_request()).is_err());
+    assert!(!paths.helper_path().exists());
+    assert!(!paths.installation_record_path().exists());
+    assert_eq!(runner.mutation_count("add"), 0);
+}

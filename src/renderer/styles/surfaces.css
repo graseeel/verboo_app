@@ -2017,6 +2017,150 @@ button.change-summary-more:disabled {
   justify-content: flex-end;
 }
 
+/* Verboo in Chrome — compact diagnostics, aligned with the existing
+   settings surfaces. No component is visually promoted above the page. */
+.chrome-integration-loading,
+.chrome-integration-empty {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.chrome-integration-loading > svg,
+.chrome-integration-empty > svg {
+  color: var(--accent-strong);
+}
+
+.chrome-integration-loading > svg {
+  animation: spin 900ms linear infinite;
+}
+
+.chrome-integration-empty p,
+.chrome-integration-summary p,
+.chrome-development-panel p,
+.chrome-integration-actions-panel p {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.chrome-integration-summary {
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.chrome-integration-mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--bg) 45%, transparent);
+}
+
+.chrome-integration-mark--ready,
+.chrome-integration-mark--connected {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 32%, var(--border));
+  background: color-mix(in srgb, var(--green) 8%, transparent);
+}
+
+.chrome-refresh-button {
+  display: grid;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 !important;
+  place-items: center;
+}
+
+.chrome-integration-status-grid {
+  gap: 0;
+  padding-block: 6px;
+}
+
+.chrome-status-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 43px;
+  padding: 0 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  font-size: 13px;
+}
+
+.chrome-status-row:last-child {
+  border-bottom: 0;
+}
+
+.chrome-status-row > svg {
+  color: var(--text-dim);
+}
+
+.chrome-status-value {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.chrome-status-value.is-managed,
+.chrome-status-value.is-connected {
+  color: var(--green);
+}
+
+.chrome-status-value.is-invalid,
+.chrome-status-value.is-conflict,
+.chrome-status-value.is-incompatible,
+.chrome-status-value.is-ambiguous {
+  color: var(--danger);
+}
+
+.chrome-development-panel input {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.chrome-development-panel input.is-invalid {
+  border-color: color-mix(in srgb, var(--danger) 60%, var(--border));
+}
+
+.chrome-integration-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.chrome-integration-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.chrome-integration-error,
+.chrome-test-result {
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  color: var(--danger) !important;
+}
+
+.chrome-test-result.is-success {
+  background: color-mix(in srgb, var(--green) 8%, transparent);
+  color: var(--green) !important;
+}
+
 .settings-choice-row {
   display: flex;
   gap: 8px;

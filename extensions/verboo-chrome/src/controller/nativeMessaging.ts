@@ -1,9 +1,6 @@
 /**
- * Versioned contract reserved for the packaged Verboo in Chrome MCP bridge.
- *
- * This file is intentionally runtime-free. The current extension does not
- * request `nativeMessaging` or call `connectNative`; those paths are added only
- * when the Rust host, installer, and extension-ID configuration ship together.
+ * Type contract for the packaged Verboo in Chrome MCP bridge implemented by
+ * `src/native/bridge.js`.
  */
 
 export const NATIVE_MESSAGING_HOST_NAME = 'com.verboo.code.browser_extension' as const
@@ -16,6 +13,15 @@ export type BrowserBridgeMessageKind =
   | 'toolRequest'
   | 'toolResponse'
   | 'error'
+
+export type BrowserBridgeErrorCode =
+  | 'approval_rejected'
+  | 'approval_timeout'
+  | 'approval_ui_unavailable'
+  | 'connection_lost'
+  | 'execution_failed'
+  | 'malformed_envelope'
+  | 'protocol_version_mismatch'
 
 export interface BrowserBridgeEnvelope {
   version: typeof BROWSER_BRIDGE_PROTOCOL_VERSION

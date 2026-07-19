@@ -1,6 +1,6 @@
 # Verboo in Chrome bridge protocol
 
-This directory currently contains the contract only. The extension does not request `nativeMessaging`, connect to a native host, or advertise a desktop connection until the packaged Rust helper and per-user installation flow ship together.
+The packaged Rust helper implements both the stdio MCP server and Chrome Native Messaging host. The desktop app installs and diagnoses it, but is not part of the runtime path.
 
 ## Reserved contract
 
@@ -11,9 +11,13 @@ This directory currently contains the contract only. The extension does not requ
 - Host to Chrome maximum: 1 MiB
 - Chrome to host maximum: 64 MiB
 
-The extension remains the browser controller. Every relayed tool request must pass through the canonical catalog, policy gate, and shared approval executor. The local bridge must never receive or forward CLI/OAuth tokens.
+The MCP process discovers a live Native Host through a private, per-user record. Each record contains a random session secret. Local requests are authenticated with that secret, while the secret is removed before the request reaches the extension.
 
-The runtime implementation must ship atomically with:
+The extension remains the browser controller. Every relayed tool request passes through the canonical catalog, policy gate, and shared approval executor. If an approval is required while the side panel is closed, the extension returns `approval_ui_unavailable` and executes nothing. Disconnected in-flight requests are not replayed.
+
+The bridge never receives or forwards CLI or extension OAuth tokens. Standalone extension chat and CLI authentication remain separate.
+
+The runtime implementation ships atomically with:
 
 1. the Rust Native Messaging host and MCP server;
 2. per-user manifest installation for Google Chrome on macOS, Windows, and Linux;
@@ -21,4 +25,4 @@ The runtime implementation must ship atomically with:
 4. version checks, authenticated per-session local transport, and bounded framing;
 5. extension tests proving protocol mismatch, malformed-envelope, disconnect, and no-replay behavior.
 
-Until all five exist, `nativeMessaging` stays absent from `manifest.json`.
+The per-user installer writes `allowed_origins` for exactly one configured production or development extension ID.

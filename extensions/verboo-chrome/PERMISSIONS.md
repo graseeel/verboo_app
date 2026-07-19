@@ -47,6 +47,21 @@ When adding or removing a permission, update this file in the same PR.
 
 ---
 
+## `nativeMessaging`
+
+**What it is.** Lets the extension connect to the locally installed `com.verboo.code.browser_extension` host over Chrome's framed stdin/stdout protocol.
+
+**Why we need it.** The official `verboo-in-chrome` MCP server uses this host to relay browser-only tool requests from Verboo CLI to the extension while the desktop app is closed.
+
+**What we don't do with it.**
+
+- We do not send CLI credentials, extension OAuth tokens, filesystem data, terminal commands, or Git operations through the host.
+- The host cannot call Chrome APIs directly; every request still passes through the extension's canonical policy and approval executor.
+- A request that needs approval fails closed when the Verboo side panel is unavailable.
+- An in-flight request is never replayed after a native-port disconnect.
+
+---
+
 ## `scripting`
 
 **What it is.** Allows the extension to inject scripts into web pages you visit.
