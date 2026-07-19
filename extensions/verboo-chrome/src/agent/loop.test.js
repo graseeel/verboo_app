@@ -77,12 +77,10 @@ test('runLlmAgentTurn: one tool-call round-trip (navigate then text)', async () 
     assert.equal(executeCalls[0].name, 'navigate')
     assert.equal(executeCalls[0].params.url, 'https://example.com')
 
-    // Verify broadcast shapes match panel contract:
-    // AGENT_TOOL_EXECUTING: { toolCallId, toolName }
+    // Execution state is emitted by the shared controller only after policy
+    // approval; the model loop must not publish a premature duplicate.
     const executing = broadcastCalls.find(b => b.type === 'agent:tool_executing')
-    assert.ok(executing)
-    assert.equal(executing.toolCallId, 'tc_1')
-    assert.equal(executing.toolName, 'navigate')
+    assert.equal(executing, undefined)
 
     // AGENT_TOOL_RESULT: { toolResult: { toolCallId, success, data, error, durationMs } }
     const resultBroadcast = broadcastCalls.find(b => b.type === 'agent:tool_result')

@@ -190,3 +190,25 @@ test('execute: rejects tools outside the canonical catalog', async () => {
   assert.equal(r.error, 'unknown_tool')
   assert.equal(r.policy.reason, 'unknown_tool')
 })
+
+test('execute: an exact controller approval authorizes only that canonical call', async () => {
+  const approved = await execute(
+    { id: 'approved-call', name: 'read_page', params: { selector: 'h1' } },
+    makeCtx({
+      mode: 'manual',
+      approvedTool: { id: 'approved-call', input: 'read_page selector=h1' },
+    }),
+  )
+  assert.equal(approved.ok, true)
+  assert.equal(approved.policy.reason, 'approved_once')
+
+  const changed = await execute(
+    { id: 'approved-call', name: 'read_page', params: { selector: 'main' } },
+    makeCtx({
+      mode: 'manual',
+      approvedTool: { id: 'approved-call', input: 'read_page selector=h1' },
+    }),
+  )
+  assert.equal(changed.ok, false)
+  assert.equal(changed.policy.reason, 'manual_needs_approval')
+})

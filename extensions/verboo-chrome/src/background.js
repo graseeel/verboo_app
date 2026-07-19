@@ -12,7 +12,7 @@
  * Multi-user: zero hardcoded accounts.
  */
 
-import { execute } from './controller/execute.js'
+import { executeWithApproval } from './controller/approvedExecute.js'
 import { loadMode } from './policy/modesStore.js'
 import { getGrant } from './policy/siteGrantsStore.js'
 import { MSG } from './controller/protocol.js'
@@ -326,14 +326,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
  * @returns {Promise<import('./controller/execute.js').ExecutionResult>}
  */
 async function handleBrowserTool(toolCall) {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-  const mode = await loadMode()
-  const ctx = {
-    mode,
-    getSiteGrant: (host) => getGrant(host),
-    activeTabId: tab?.id,
-  }
-  return execute(toolCall, ctx)
+  const controller = new AbortController()
+  return executeWithApproval(
+    toolCall,
+    () => makeExecutionContext(undefined, undefined),
+    makeApprovalUi(undefined, controller.signal),
+  )
 }
 
 // ── Agent loop (P2 stub) ──────────────────────────────────────────
@@ -472,16 +470,11 @@ async function runAgentTurn(
           modelSupportsVision,
           conversationHistory,
           broadcast: (msg) => broadcast(msg),
-          executeTool: async (tc) => {
-            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-            const mode = await loadMode()
-            const ctx = {
-              mode,
-              getSiteGrant: (host) => getGrant(host),
-              activeTabId: tab?.id ?? senderTabId,
-            }
-            return execute(tc, ctx)
-          },
+          executeTool: (tc) => executeWithApproval(
+            tc,
+            () => makeExecutionContext(senderTabId, turnId),
+            makeApprovalUi(turnId, controller.signal),
+          ),
           getActiveTabMeta: async () => {
             const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
             return { url: tab?.url, title: tab?.title, id: tab?.id }
@@ -601,148 +594,31 @@ async function runAgentTurn(
         await new Promise((r) => setTimeout(r, 700))
       }
 
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-      const mode = await loadMode()
-      const ctx = {
-        mode,
-        getSiteGrant: (host) => getGrant(host),
-        activeTabId: tab?.id ?? senderTabId,
-      }
-
-      // Single chokepoint: execute() runs evaluateToolPolicy first, then
-      // dispatches to the real tool handler in src/controller/tools/*.js.
-      // We never call a second dispatcher — execute() is the only path to
-      // chrome.* APIs.
-      const policyCheck = await execute(toolCall, ctx)
-      const policy = policyCheck.policy
-
-      // Hard Block denial — surface without prompting.
-      if (!policyCheck.ok && policy?.reason === 'hard_block') {
-        broadcast({
-          type: MSG.AGENT_TOOL_REQUEST,
-          toolCall,
-          policyDecision: policy,
-        })
-        const tr = {
-          toolCallId: toolCall.id,
-          success: false,
-          error: `hard_block:${policy.hardBlockLabel ?? 'unknown'}`,
-          durationMs: 0,
-        }
-        broadcast({ type: MSG.AGENT_TOOL_RESULT, toolResult: tr })
-        toolResults.push(tr)
-        lastSucceededTool = null
-        continue
-      }
-
-      // Site denied — surface as denial.
-      if (!policyCheck.ok && policy?.reason === 'site_denied') {
-        broadcast({
-          type: MSG.AGENT_TOOL_REQUEST,
-          toolCall,
-          policyDecision: policy,
-        })
-        const tr = {
-          toolCallId: toolCall.id,
-          success: false,
-          error: 'site_denied',
-          durationMs: 0,
-        }
-        broadcast({ type: MSG.AGENT_TOOL_RESULT, toolResult: tr })
-        toolResults.push(tr)
-        lastSucceededTool = null
-        continue
-      }
-
-      // Needs approval — prompt the user via the panel, then re-execute
-      // with fresh grants (the panel upserts an 'always' grant before
-      // sending TOOL_APPROVE, so the second execute() dispatches without
-      // prompting).
-      if (policy?.needsApproval) {
-        broadcast({
-          type: MSG.AGENT_TOOL_REQUEST,
-          toolCall,
-          policyDecision: policy,
-        })
-
-        const decision = await waitForApproval(toolCall.id, controller.signal)
-
-        broadcast({
-          type: 'agent:approval_closed',
-          approvalId: toolCall.id,
-          decision,
-        })
-
-        if (decision === 'deny' || decision === 'cancelled') {
-          const tr = {
-            toolCallId: toolCall.id,
-            success: false,
-            error: decision === 'deny' ? 'denied_by_user' : 'cancelled',
-            durationMs: 0,
-          }
-          broadcast({ type: MSG.AGENT_TOOL_RESULT, toolResult: tr })
-          toolResults.push(tr)
-          lastSucceededTool = null
-          continue
-        }
-
-        // Re-resolve grants and re-execute. The panel may have upserted
-        // an 'always' grant; we re-read it so the second execute() sees
-        // the updated state and dispatches without prompting.
-        const ctx2 = {
-          ...ctx,
-          // Force re-read by passing a fresh closure (getGrant reads
-          // chrome.storage.local each call, so this is already live).
-        }
-        const recheck = await execute(toolCall, ctx2)
-        broadcast({
-          type: MSG.AGENT_TOOL_EXECUTING,
-          turnId,
-          toolCallId: toolCall.id,
-          toolName: toolCall.name,
-        })
-        const tr = recheck.ok
-          ? {
-              toolCallId: toolCall.id,
-              success: true,
-              data: recheck.result,
-              durationMs: 0,
-            }
-          : {
-              toolCallId: toolCall.id,
-              success: false,
-              error: recheck.error ?? 'execute_failed',
-              durationMs: 0,
-            }
-        broadcast({ type: MSG.AGENT_TOOL_RESULT, toolResult: tr })
-        toolResults.push(tr)
-        lastSucceededTool = recheck.ok ? toolCall.name : null
-        continue
-      }
-
-      // Allowed on first execute — use its result. No second dispatch.
-      broadcast({
-        type: MSG.AGENT_TOOL_EXECUTING,
-        turnId,
-        toolCallId: toolCall.id,
-        toolName: toolCall.name,
-      })
-      const tr = policyCheck.ok
+      const execution = await executeWithApproval(
+        toolCall,
+        () => makeExecutionContext(senderTabId, turnId),
+        makeApprovalUi(turnId, controller.signal),
+      )
+      const canonicalTool = execution.toolCall ?? toolCall
+      const error = execution.policy?.reason === 'hard_block'
+        ? `hard_block:${execution.policy.hardBlockLabel ?? 'unknown'}`
+        : execution.error
+      const tr = execution.ok
         ? {
-            toolCallId: toolCall.id,
+            toolCallId: canonicalTool.id,
             success: true,
-            data: policyCheck.result,
+            data: execution.result,
             durationMs: 0,
           }
         : {
-            toolCallId: toolCall.id,
+            toolCallId: canonicalTool.id,
             success: false,
-            error: policyCheck.error ?? 'execute_failed',
+            error: error ?? 'execute_failed',
             durationMs: 0,
           }
       broadcast({ type: MSG.AGENT_TOOL_RESULT, toolResult: tr })
       toolResults.push(tr)
-      lastSucceededTool = policyCheck.ok ? toolCall.name : null
+      lastSucceededTool = execution.ok ? canonicalTool.name : null
     }
 
     if (controller.signal.aborted) {
@@ -790,24 +666,76 @@ async function runAgentTurn(
 /**
  * @param {string} approvalId
  * @param {AbortSignal} signal
- * @returns {Promise<'once'|'always'|'deny'|'cancelled'>}
+ * @param {number} [timeoutMs]
+ * @returns {Promise<'once'|'always'|'deny'|'cancelled'|'timeout'>}
  */
-function waitForApproval(approvalId, signal) {
+function waitForApproval(approvalId, signal, timeoutMs = 60_000) {
   return new Promise((resolve) => {
     if (signal.aborted) {
       resolve('cancelled')
       return
     }
-    const cleanup = () => {
+    let settled = false
+    const finish = (decision) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeoutId)
       signal.removeEventListener('abort', onAbort)
+      if (pendingApprovals.get(approvalId)?.resolve === finish) {
+        pendingApprovals.delete(approvalId)
+      }
+      resolve(decision)
     }
     const onAbort = () => {
-      cleanup()
-      resolve('cancelled')
+      finish('cancelled')
     }
     signal.addEventListener('abort', onAbort)
-    pendingApprovals.set(approvalId, { resolve: (d) => { cleanup(); resolve(d) } })
+    const timeoutId = setTimeout(() => finish('timeout'), timeoutMs)
+    const existing = pendingApprovals.get(approvalId)
+    existing?.resolve('cancelled')
+    pendingApprovals.set(approvalId, { resolve: finish })
   })
+}
+
+async function makeExecutionContext(fallbackTabId, turnId) {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  return {
+    mode: await loadMode(),
+    getSiteGrant: (host) => getGrant(host),
+    activeTabId: tab?.id ?? fallbackTabId,
+    onExecuting: (toolCall) => broadcast({
+      type: MSG.AGENT_TOOL_EXECUTING,
+      ...(turnId ? { turnId } : {}),
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+    }),
+  }
+}
+
+function makeApprovalUi(turnId, signal) {
+  return {
+    request: ({ toolCall, policy }) => {
+      broadcast({
+        type: MSG.AGENT_TOOL_REQUEST,
+        ...(turnId ? { turnId } : {}),
+        toolCall,
+        policyDecision: policy,
+      })
+      return waitForApproval(toolCall.id, signal)
+    },
+    onApprovalClosed: ({ toolCall, decision }) => broadcast({
+      type: 'agent:approval_closed',
+      ...(turnId ? { turnId } : {}),
+      approvalId: toolCall.id,
+      decision,
+    }),
+    onPolicyDenied: ({ toolCall, policy }) => broadcast({
+      type: MSG.AGENT_TOOL_REQUEST,
+      ...(turnId ? { turnId } : {}),
+      toolCall,
+      policyDecision: policy,
+    }),
+  }
 }
 
 /**

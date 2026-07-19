@@ -18,6 +18,8 @@
  *   getSiteGrant: (host: string) => Promise<GrantDecision | undefined>;
  *   setSiteGrant: (host: string, decision: GrantDecision) => Promise<void>;
  *   activeTabId?: number;
+ *   approvedTool?: { id: string; input: string };
+ *   onExecuting?: (toolCall: ToolCall) => void | Promise<void>;
  * }} ExecutionContext
  *
  * @typedef {{ ok: true; result: unknown; policy: PolicyDecision } | { ok: false; error: string; policy: PolicyDecision }} ExecutionResult
@@ -71,7 +73,18 @@ export async function execute(toolCall, ctx) {
     }
   }
 
-  const policy = evaluateToolPolicy(ctx.mode, siteGrant, normalizedToolCall)
+  let policy = evaluateToolPolicy(ctx.mode, siteGrant, normalizedToolCall)
+
+  // A one-shot approval is created only by approvedExecute.js after the user
+  // approved this exact canonical id+input pair. It cannot override hard
+  // blocks, site denials, validation failures, or a different call.
+  if (
+    policy.needsApproval &&
+    ctx.approvedTool?.id === normalizedToolCall.id &&
+    ctx.approvedTool?.input === normalizedToolCall.input
+  ) {
+    policy = { allowed: true, needsApproval: false, reason: 'approved_once' }
+  }
 
   // Hard denials (allowed=false, needsApproval=false) never run.
   // needsApproval=true is returned to the caller — the controller does
@@ -82,6 +95,7 @@ export async function execute(toolCall, ctx) {
 
   // Dispatch to the tool implementation.
   try {
+    await ctx.onExecuting?.(normalizedToolCall)
     const result = await dispatch(normalizedToolCall, ctx)
     return { ok: true, result, policy, toolCall: normalizedToolCall }
   } catch (err) {

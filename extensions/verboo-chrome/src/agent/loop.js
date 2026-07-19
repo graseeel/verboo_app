@@ -18,7 +18,6 @@
  *
  * Broadcast shapes match panel.js expectations (see MSG constants):
  *   AGENT_THOUGHT       — { turnId, text, modelId? }
- *   AGENT_TOOL_EXECUTING— { turnId, toolCallId, toolName }
  *   AGENT_TOOL_RESULT   — { turnId, toolResult: { toolCallId, success, data?, error?, durationMs } }
  *
  * Multi-user: zero hardcoded accounts.
@@ -256,14 +255,8 @@ export async function runLlmAgentTurn({
         turnId,
         text: `Calling ${tc.name}${tc.params?.url ? ` → ${tc.params.url}` : tc.params?.selector ? ` → ${tc.params.selector}` : ''}…`,
       })
-      broadcast({
-        type: MSG.AGENT_TOOL_EXECUTING,
-        turnId,
-        toolCallId: tc.id,
-        toolName: tc.name,
-      })
-
-      // Execute via the existing policy-gated execute path.
+      // Execute through the background's shared approval-aware controller.
+      // That boundary emits AGENT_TOOL_EXECUTING only after policy approval.
       const execResult = await executeTool(tc)
       const durationMs = Date.now() - startedAt
 
