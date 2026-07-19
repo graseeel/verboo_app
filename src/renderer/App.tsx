@@ -4037,6 +4037,10 @@ export function App() {
             <PluginsView
               onClose={() => setActiveView('chat')}
               loadIcons={userSettings.loadWebIcons}
+              onManageChromeIntegration={() => {
+                setSettingsTab('verbooInChrome')
+                setActiveView('settings')
+              }}
               onUsePlugin={(payload) => {
                 setActiveView('chat')
                 const { pluginId, pluginName, suggestion } = payload
