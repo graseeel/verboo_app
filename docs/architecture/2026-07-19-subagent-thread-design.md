@@ -187,7 +187,7 @@ Turn completion releases correlation maps and watchers. It does not remove conve
 - Renders agent selection and the read-only event timeline.
 - Uses `MarkdownMessage` for `agent-message` and `final` events.
 - Uses compact expandable rows for tool events.
-- Emits select, close, and cancel actions; it does not mutate stored history directly.
+- Emits only select and close actions; monitoring is strictly read-only and it does not mutate stored history directly.
 
 ### Subagent thread reducer/store helpers
 
