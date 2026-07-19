@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Verboo — Settings</title>
+  <link rel="stylesheet" href="../panel/panel.css" />
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <main class="options" id="options" data-state="loading">
+    <header class="options-head">
+      <img
+        class="options-mascot"
+        id="options-mascot"
+        src="/icons/verboo-mascot.png"
+        width="32"
+        height="32"
+        alt=""
+        decoding="async"
+      />
+      <div class="options-head-meta">
+        <h1 class="options-title" data-i18n="options_title">Verboo settings</h1>
+        <p class="options-sub" id="options-user"></p>
+      </div>
+    </header>
+
+    <!-- Permission mode (long descriptions) -->
+    <section class="options-section" aria-labelledby="mode-title">
+      <h2 class="options-section-title" id="mode-title" data-i18n="mode_title">
+        Permission mode
+      </h2>
+      <div class="options-mode-stack" role="radiogroup" aria-labelledby="mode-title">
+        <label class="options-mode" data-mode="manual">
+          <input type="radio" name="mode" value="manual" checked />
+          <div class="options-mode-body">
+            <div class="options-mode-label" data-i18n="mode_manualLong">
+              Ask before acting
+            </div>
+            <div class="options-mode-desc" data-i18n="mode_manual_desc">
+              Review every action before it runs.
+            </div>
+          </div>
+        </label>
+        <label class="options-mode" data-mode="skip">
+          <input type="radio" name="mode" value="skip" />
+          <div class="options-mode-body">
+            <div class="options-mode-label" data-i18n="mode_skipLong">
+              Act without asking
+            </div>
+            <div class="options-mode-desc" data-i18n="mode_skip_desc">
+              No routine prompts; hard blocks still enforced.
+            </div>
+          </div>
+        </label>
+      </div>
+    </section>
+
+    <!-- Site grants -->
+    <section class="options-section" aria-labelledby="grants-title">
+      <h2 class="options-section-title" id="grants-title" data-i18n="siteGrants_title">
+        Site grants
+      </h2>
+      <div class="options-grants-add">
+        <input
+          type="text"
+          id="grants-host-input"
+          class="field-input"
+          data-i18n-placeholder="siteGrants_hostPlaceholder"
+          placeholder="example.com"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <select id="grants-decision-select" class="field-select" aria-label="Decision">
+          <option value="always" data-i18n="siteGrants_alwaysAllow">Always allow</option>
+          <option value="once" data-i18n="siteGrants_allowOnce">Allow once</option>
+          <option value="deny" data-i18n="siteGrants_deny">Deny</option>
+        </select>
+        <button
+          class="btn btn-secondary"
+          id="grants-add-btn"
+          type="button"
+          data-i18n="siteGrants_addHost"
+        >
+          Add
+        </button>
+      </div>
+      <ul class="options-grants-list" id="grants-list" aria-live="polite"></ul>
+      <p class="options-grants-empty" id="grants-empty" data-i18n="siteGrants_empty">
+        No site grants yet.
+      </p>
+    </section>
+
+    <!-- Account -->
+    <section class="options-section" aria-labelledby="account-title">
+      <h2 class="options-section-title" id="account-title" data-i18n="account_title">
+        Account
+      </h2>
+      <div class="options-account">
+        <button
+          type="button"
+          class="btn btn-secondary"
+          id="auth-action"
+          data-action="logout"
+          data-i18n="auth_logout"
+        >
+          Sign out
+        </button>
+        <button
+          type="button"
+          class="text-link"
+          id="privacy-link"
+          data-i18n="privacy_link"
+        >
+          Privacy policy
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>
