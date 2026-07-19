@@ -63,6 +63,10 @@ pub struct CliOAuthCredentials {
 /// Process-wide cache. Avoids re-reading the keychain on every API call.
 /// The CLI itself caches similarly (see `cliCredentials.ts:27`).
 static CACHE: Mutex<Option<CliOAuthCredentials>> = Mutex::new(None);
+/// Serializes refresh-token rotation across normal expiry refreshes and
+/// reactive 401 recovery. OAuth providers may rotate the refresh token, so
+/// two concurrent refreshes with the same old token can invalidate the winner.
+static REFRESH_LOCK: Mutex<()> = Mutex::new(());
 
 /// Resets the cache. Used by tests to avoid cross-test leakage.
 #[cfg(test)]
@@ -93,7 +97,19 @@ pub fn get_access_token() -> Option<String> {
         }
     }
 
-    // Slow path: read + refresh.
+    // Slow path: serialize the store read + possible refresh. Re-check the
+    // cache after taking the lock because another caller may have refreshed
+    // while this caller was waiting.
+    let _refresh_guard = REFRESH_LOCK.lock().ok()?;
+    {
+        let cached = CACHE.lock().ok()?;
+        if let Some(c) = cached.as_ref() {
+            if !should_refresh(c) {
+                return Some(c.access_token.clone());
+            }
+        }
+    }
+
     let credentials = match read_credentials_from_store() {
         Some(c) => c,
         None => return None,
@@ -130,6 +146,41 @@ pub fn get_access_token() -> Option<String> {
             }
         }
     }
+}
+
+/// Force-refreshes OAuth credentials after the CLI proves that the injected
+/// access token is invalid, even if its recorded expiry is still in the future.
+///
+/// The failed token is compared with the current credential store while the
+/// refresh lock is held. If they differ, another concurrent turn already
+/// refreshed successfully and its token is returned without rotating the
+/// refresh token again.
+pub fn refresh_after_auth_failure(failed_access_token: &str) -> Option<String> {
+    let failed_access_token = failed_access_token.trim();
+    if failed_access_token.is_empty() || failed_access_token.starts_with("vbk_") {
+        return None;
+    }
+
+    let _refresh_guard = REFRESH_LOCK.lock().ok()?;
+    let credentials = read_credentials_from_store()?;
+
+    if credentials.access_token != failed_access_token {
+        if let Ok(mut cached) = CACHE.lock() {
+            *cached = Some(credentials.clone());
+        }
+        return Some(credentials.access_token);
+    }
+
+    if !credentials_need_auth_failure_refresh(failed_access_token, &credentials) {
+        return None;
+    }
+
+    let refreshed = refresh_access_token(&credentials)?;
+    if let Ok(mut cached) = CACHE.lock() {
+        *cached = Some(refreshed.clone());
+    }
+    write_credentials_to_store(&refreshed);
+    Some(refreshed.access_token)
 }
 
 /// Returns the credentials blob path for Windows/Linux (mirror of the CLI's
@@ -358,6 +409,17 @@ fn should_refresh(creds: &CliOAuthCredentials) -> bool {
     now_ms() >= exp.saturating_sub(TOKEN_REFRESH_SKEW_MS)
 }
 
+fn credentials_need_auth_failure_refresh(
+    failed_access_token: &str,
+    credentials: &CliOAuthCredentials,
+) -> bool {
+    credentials.access_token == failed_access_token
+        && credentials
+            .refresh_token
+            .as_deref()
+            .is_some_and(|token| !token.trim().is_empty())
+}
+
 /// Returns true if the credentials are expired.
 fn is_expired(creds: &CliOAuthCredentials) -> bool {
     match creds.expires_at {
@@ -502,6 +564,26 @@ mod tests {
         reset_cache();
         let c = creds_with(Some(now_ms() + 60 * 60 * 1000), Some("rt"));
         assert!(!should_refresh(&c));
+    }
+
+    #[test]
+    fn auth_failure_refreshes_only_the_token_that_actually_failed() {
+        let mut current = creds_with(Some(now_ms() + 60 * 60 * 1000), Some("rt"));
+
+        assert!(credentials_need_auth_failure_refresh("tok", &current));
+
+        current.access_token = "already-refreshed".into();
+        assert!(
+            !credentials_need_auth_failure_refresh("tok", &current),
+            "a concurrent refresh winner must not have its rotated refresh token reused",
+        );
+    }
+
+    #[test]
+    fn auth_failure_cannot_refresh_without_a_refresh_token() {
+        let current = creds_with(Some(now_ms() + 60 * 60 * 1000), None);
+
+        assert!(!credentials_need_auth_failure_refresh("tok", &current));
     }
 
     #[test]

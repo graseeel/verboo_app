@@ -40,7 +40,6 @@
 .bottom-dock > .permission-approval-panel,
 .bottom-dock > .question-wizard,
 .bottom-dock > .question-chip,
-.bottom-dock > .subagent-summary-card,
 .bottom-dock > .vision-fallback-panel,
 .bottom-dock > .skill-approval-panel {
   width: min(var(--chat-lane-width), 100%);
@@ -378,7 +377,9 @@
   border: 0;
   outline: none;
   background: transparent;
-  color: var(--text);
+  /* Inverted visibility: textarea shows only caret; overlay shows text
+     (syntax-highlight-textarea pattern — user design Feedback-3). */
+  color: transparent;
   caret-color: var(--text);
   overflow-x: hidden;
   overflow-y: auto;
@@ -386,6 +387,15 @@
 
 .composer textarea:disabled {
   opacity: 0.62;
+}
+/* IME composition: swap visibility so dead-key text (' + e → é) is visible
+   during the composition session. onCompositionStart/End toggle the class. */
+.composer-text-wrap.is-composing textarea {
+  color: var(--text);
+  caret-color: var(--text);
+}
+.composer-text-wrap.is-composing .composer-highlight {
+  color: transparent;
 }
 
 .composer textarea::placeholder {
@@ -403,21 +413,44 @@
   inset: 0;
   pointer-events: none;
   overflow: hidden;
-  color: transparent;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-wrap: break-word;
 }
 
+/* @-skill tokens: distinction is COLOR ONLY (accent-strong). The overlay
+   MUST have identical font metrics to the textarea — no font-weight,
+   letter-spacing, font-style, or any property that changes glyph widths.
+   Any metric divergence makes the painted text drift vs. the textarea's
+   caret (BUG A: font-weight:600 widened glyphs → cumulative caret drift). */
 .composer-skill-token {
-  display: inline;
-  border-radius: 7px;
-  /* A committed purple pill: filled background plus a crisp accent ring so the
-     token reads as a selected operation, not a faint tint behind the text.
-     (Earlier values resolved to ~10-24% opacity — barely perceptible.) */
-  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  color: var(--accent-strong);
+}
+/* The @ glyph stays in the inline flow (preserves its width = caret aligns
+   with the textarea). color:transparent hides the glyph but keeps its box
+   AND lets absolutely-positioned children render visibly (opacity:0 would
+   hide descendants too — BUG B). The glyph box becomes the anchor for the
+   icon decoration. */
+.at-glyph {
+  position: relative;
   color: transparent;
-  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--accent-strong) 55%, transparent);
-  font-weight: inherit;
-  -webkit-box-decoration-break: clone;
-  box-decoration-break: clone;
+}
+/* Icon decoration: absolutely positioned inside the @ glyph's box, pinned to
+   the glyph's RIGHT edge with a 2px gap so the icon's right border sits 2px
+   before the first letter of the name. The icon overflows the glyph box to
+   the LEFT (into the composer's left padding) by ~8px — no clip because the
+   glyph box itself is in-flow and the composer's overflow is on the wrap,
+   not the highlight. pointer-events:none keeps the textarea interactive. */
+.at-icon-deco {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.at-icon-deco .plugin-monogram,
+.at-icon-deco .plugin-monogram-img {
+  display: block;
 }
 
 .composer-toolbar {
@@ -846,6 +879,7 @@
   cursor: pointer;
   font-size: 12px;
 }
+
 
 .attachment-chip {
   border-color: var(--border);

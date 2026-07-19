@@ -12,7 +12,8 @@ import {
   rankCustomCommands,
 } from './customSlashCommands'
 import { applyVoiceInterim, commitVoiceFinal, createVoiceInput, detectSupport, nextCatchUpStep, type VoiceInputHandle } from './voiceInput'
-import { getAtQuery, removeAtQuery, replaceAtQueryWithToken, rankFiles, extractAtTokens } from './atMention'
+import { getAtQuery, removeAtQuery, replaceAtQueryWithToken, rankSkills } from './atMention'
+import { PluginIcon } from '../plugins/PluginCard'
 
 // Reserved slash commands surfaced in the "/" palette, exactly like the skills
 // below them. Selecting one fills its token so the user can type any arguments.
@@ -31,10 +32,11 @@ type ComposerProps = {
   /** Controlled onChange — required when value is provided */
   onValueChange?: (value: string) => void
   skills: SkillSummary[]
-  selectedSkills: SkillSummary[]
+  /** Skills derived from / and @ tokens in text — managed by syncTokenSkills. */
+  tokenSkills: SkillSummary[]
+  onTokenSkillsChange: (skills: SkillSummary[]) => void
   attachments: AttachmentMeta[]
   ocrProcessingPaths?: string[]
-  onSelectedSkillsChange: (skills: SkillSummary[]) => void
   onAttachFiles: () => void
   onDropFiles: (paths: string[], files: File[]) => void
   onRemoveAttachment: (path: string) => void
@@ -64,11 +66,11 @@ export function Composer({
   value: externalValue,
   onValueChange,
   skills,
-  selectedSkills,
+  tokenSkills,
+  onTokenSkillsChange,
   attachments,
   ocrProcessingPaths = [],
   customSlashCommands = [],
-  onSelectedSkillsChange,
   onAttachFiles,
   onDropFiles,
   onRemoveAttachment,
@@ -94,8 +96,8 @@ export function Composer({
   const [atHighlighted, setAtHighlighted] = useState(0)
   const [dragDepth, setDragDepth] = useState(0)
   const [palettePos, setPalettePos] = useState<{ bottom: number; left: number; width: number } | null>(null)
-  const [atLoading, setAtLoading] = useState(false)
   const [voiceListening, setVoiceListening] = useState(false)
+  const [composing, setComposing] = useState(false)
   // SpeechRecognition support is captured once at mount — rechecking per
   // render would race with the bridge and could create handle churn.
   const voiceSupported = useMemo(() => detectSupport(), [])
@@ -189,11 +191,11 @@ export function Composer({
   }, [slashCommands, slashQuery])
   const matchingSkills = useMemo(() => {
     if (slashQuery === undefined) return []
-    return rankSkills(skills, slashQuery).slice(0, 8)
+    return rankSkills(skills, slashQuery)
   }, [skills, slashQuery])
   const matchingCustom = useMemo(() => {
     if (slashQuery === undefined) return []
-    return rankCustomCommands(customSlashCommands, slashQuery).slice(0, 8)
+    return rankCustomCommands(customSlashCommands, slashQuery)
   }, [customSlashCommands, slashQuery])
   const menuItems = useMemo<SlashMenuItem[]>(() => [
     ...matchingCommands.map(command => ({ kind: 'command' as const, command })),
@@ -208,40 +210,24 @@ export function Composer({
   const goalModeActive = isGoalCommandDraft(value)
   const dropActive = dragDepth > 0
 
-  // ── @-mention file palette ──────────────────────────────────────────────
+  // ── @-mention skill palette ─────────────────────────────────────────────
   const atQuery = getAtQuery(value)
-  const [cachedFiles, setCachedFiles] = useState<string[]>([])
-  const atSessionRef = useRef(false)
 
-  // Fetch file list on initial @ of each palette session; clear on close.
-  useEffect(() => {
-    if (atQuery !== undefined && !atSessionRef.current) {
-      atSessionRef.current = true
-      setCachedFiles([])
-      setAtHighlighted(0)
-      setAtLoading(true)
-      const listFn = (window.verboo as any)?.listWorkspaceFiles
-      if (listFn) {
-        listFn(workingDirectory || '')
-          .then((files: string[]) => setCachedFiles(files))
-          .catch(() => setCachedFiles([]))
-          .finally(() => setAtLoading(false))
-      } else {
-        setCachedFiles([])
-        setAtLoading(false)
-      }
-    }
-    if (atQuery === undefined) {
-      atSessionRef.current = false
-      setAtLoading(false)
-    }
-  }, [atQuery, workingDirectory])
-  const matchingFiles = useMemo(() => {
+  const matchingAtSkills = useMemo(() => {
     if (atQuery === undefined) return []
-    return rankFiles(cachedFiles, atQuery).slice(0, 8)
-  }, [cachedFiles, atQuery])
-  const atActiveIndex = matchingFiles.length ? Math.min(atHighlighted, matchingFiles.length - 1) : 0
+    return rankSkills(skills, atQuery)
+  }, [skills, atQuery])
+  const atActiveIndex = matchingAtSkills.length ? Math.min(atHighlighted, matchingAtSkills.length - 1) : 0
   const paletteOpen = slashQuery !== undefined || atQuery !== undefined
+
+  // Scroll the highlighted item into view on keyboard nav (D.3) — applies
+  // to both the @ skill palette and the / command/skill palette.
+  useEffect(() => {
+    atMenuRef.current?.querySelector('.highlighted')?.scrollIntoView({ block: 'nearest' })
+  }, [atHighlighted, atActiveIndex])
+  useEffect(() => {
+    slashMenuRef.current?.querySelector('.highlighted')?.scrollIntoView({ block: 'nearest' })
+  }, [highlighted, activeIndex])
 
   // Portal menus ABOVE the composer — `.composer { overflow: hidden }` clips
   // in-flow absolute menus (queue reveal needs that overflow). Same pattern as ModelSelector.
@@ -311,7 +297,7 @@ export function Composer({
 
     onSubmit(trimmed)
     setValue('')
-    onSelectedSkillsChange([])
+    onTokenSkillsChange([])
   }
 
   function selectMenuItem(item: SlashMenuItem) {
@@ -337,8 +323,8 @@ export function Composer({
     textareaRef.current?.focus()
   }
 
-  function selectAtFile(path: string) {
-    const nextValue = replaceAtQueryWithToken(value, `@${path} `)
+  function selectAtSkill(skill: SkillSummary) {
+    const nextValue = replaceAtQueryWithToken(value, `@${skill.name} `)
     setValue(nextValue)
     setAtHighlighted(0)
     textareaRef.current?.focus()
@@ -524,38 +510,50 @@ export function Composer({
   function selectSkill(skill: SkillSummary) {
     const nextValue = replaceSlashQueryWithToken(value, `/${skill.name} `)
     setValue(nextValue)
-    syncSelectedSkills(nextValue)
+    syncTokenSkills(nextValue)
     setHighlighted(0)
   }
 
   function updateValue(nextValue: string) {
     setValue(nextValue)
-    syncSelectedSkills(nextValue)
+    syncTokenSkills(nextValue)
   }
 
-  function syncSelectedSkills(nextValue: string) {
+  function syncTokenSkills(nextValue: string) {
     const nextSkillNames = extractSkillTokenNames(nextValue)
-    const nextSkills = skills.filter(skill => nextSkillNames.has(skill.name.toLowerCase()))
-    if (sameSkillIds(nextSkills, selectedSkills)) return
-    onSelectedSkillsChange(nextSkills)
+    const atSkillNames = extractAtSkillNames(nextValue, skills)
+    const combined = new Set([...nextSkillNames, ...atSkillNames])
+    const nextSkills = skills.filter(skill => combined.has(skill.name.toLowerCase()))
+    if (sameSkillIds(nextSkills, tokenSkills)) return
+    onTokenSkillsChange(nextSkills)
+  }
+
+  function extractAtSkillNames(value: string, mentionable: SkillSummary[]): Set<string> {
+    const names = new Set<string>()
+    const known = new Map(mentionable.map(s => [s.name.toLowerCase(), s]))
+    for (const match of value.matchAll(/(?:^|\s)@([A-Za-z0-9_.:-]+)/g)) {
+      const tokenName = match[1].toLowerCase()
+      if (known.has(tokenName)) names.add(tokenName)
+    }
+    return names
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    // @-palette open: arrows, Enter/Tab, Escape drive the file palette.
-    if (atQuery !== undefined && matchingFiles.length > 0) {
+    // @-palette open: arrows, Enter/Tab, Escape drive the skill palette.
+    if (atQuery !== undefined && matchingAtSkills.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
-        setAtHighlighted(index => (index + 1) % matchingFiles.length)
+        setAtHighlighted(prev => (prev + 1) % matchingAtSkills.length)
         return
       }
       if (event.key === 'ArrowUp') {
         event.preventDefault()
-        setAtHighlighted(index => (index - 1 + matchingFiles.length) % matchingFiles.length)
+        setAtHighlighted(prev => (prev - 1 + matchingAtSkills.length) % matchingAtSkills.length)
         return
       }
       if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
         event.preventDefault()
-        selectAtFile(matchingFiles[atActiveIndex] ?? matchingFiles[0])
+        selectAtSkill(matchingAtSkills[atActiveIndex] ?? matchingAtSkills[0])
         return
       }
       if (event.key === 'Escape') {
@@ -569,12 +567,12 @@ export function Composer({
     if (slashQuery !== undefined && menuItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
-        setHighlighted(index => (index + 1) % menuItems.length)
+        setHighlighted(prev => (prev + 1) % menuItems.length)
         return
       }
       if (event.key === 'ArrowUp') {
         event.preventDefault()
-        setHighlighted(index => (index - 1 + menuItems.length) % menuItems.length)
+        setHighlighted(prev => (prev - 1 + menuItems.length) % menuItems.length)
         return
       }
       if (event.key === 'Enter' && !event.shiftKey) {
@@ -751,27 +749,24 @@ export function Composer({
           data-origin="bottom-center"
           style={paletteStyle}
         >
-          {atLoading ? (
-            <div className="empty-menu">{t('composer.fileMenuLoading')}</div>
-          ) : matchingFiles.length === 0 ? (
-            <div className="empty-menu">{t('composer.emptyFileMenu')}</div>
+          {matchingAtSkills.length === 0 ? (
+            <div className="empty-menu">{t('composer.emptyPluginMenu')}</div>
           ) : (
-            matchingFiles.map((file, index) => {
-              const basename = file.split('/').pop() ?? file
-              return (
-                <button
-                  key={file}
-                  className={`skill-option ${index === atActiveIndex ? 'highlighted' : ''}`}
-                  type="button"
-                  onMouseEnter={() => setAtHighlighted(index)}
-                  onClick={() => selectAtFile(file)}
-                >
-                  <span className="skill-name">@{basename}</span>
-                  <span className="skill-description">{file}</span>
-                  <span className="skill-source command">{t('composer.file')}</span>
-                </button>
-              )
-            })
+            matchingAtSkills.map((skill, index) => (
+              <button
+                key={skill.id}
+                className={`skill-option ${index === atActiveIndex ? 'highlighted' : ''}`}
+                type="button"
+                onMouseEnter={() => setAtHighlighted(index)}
+                onClick={() => selectAtSkill(skill)}
+              >
+                <span className="skill-name">@{skill.name}</span>
+                <span className="skill-description">{skill.description}</span>
+                <span className={`skill-source ${skill.trusted ? '' : 'untrusted'}`}>
+                  {skill.pluginName ?? skill.source}
+                </span>
+              </button>
+            ))
           )}
         </div>,
         document.body,
@@ -833,7 +828,7 @@ export function Composer({
         </div>
       )}
 
-      <div className="composer-text-wrap">
+      <div className={`composer-text-wrap${composing ? ' is-composing' : ''}`}>
         <div ref={highlightRef} className="composer-highlight" aria-hidden="true">
           {highlightedValue}
           {value.endsWith('\n') ? '\u00a0' : null}
@@ -848,6 +843,8 @@ export function Composer({
           onScroll={event => {
             if (highlightRef.current) highlightRef.current.scrollTop = event.currentTarget.scrollTop
           }}
+          onCompositionStart={() => setComposing(true)}
+          onCompositionEnd={() => setComposing(false)}
           placeholder={busy ? t('composer.placeholder.busy') : t('composer.placeholder.idle')}
           rows={1}
           data-voice-listening={voiceListening || undefined}
@@ -951,6 +948,16 @@ function matchesSlashCommand(command: SlashCommand, query: string): boolean {
   )
 }
 
+function fuzzyMatch(value: string, query: string): boolean {
+  if (!query) return true
+  let index = 0
+  for (const char of value) {
+    if (char === query[index]) index += 1
+    if (index === query.length) return true
+  }
+  return false
+}
+
 function extractSkillTokenNames(value: string): Set<string> {
   const names = new Set<string>()
   for (const match of value.matchAll(/(?:^|\s)\/([A-Za-z0-9_:-]+)/g)) {
@@ -980,9 +987,10 @@ function renderHighlightedValue(
   const parts: ReactNode[] = []
   let cursor = 0
 
-  // Match both /slash tokens and @file tokens in a single pass.
-  // Group 1 = /slash name, Group 2 = @file path.
-  for (const match of value.matchAll(/(?:^|\s)(?:\/([A-Za-z0-9_:-]+)|@([^\s]+))/g)) {
+  // Match both /skill tokens and @skill tokens (Feedback-3 ITEM 2c).
+  // @tokens matching a known skill name render with accent + PluginIcon
+  // (when the skill originates from a plugin); unmatched @ are plain text.
+  for (const match of value.matchAll(/(?:^|\s)(?:\/([A-Za-z0-9_:-]+)|@([A-Za-z0-9_.:-]+))/g)) {
     const start = match.index ?? 0
     const text = match[0]
     const leadingSpace = text.startsWith(' ') ? ' ' : ''
@@ -991,16 +999,43 @@ function renderHighlightedValue(
     if (leadingSpace) parts.push(leadingSpace)
 
     const slashName = match[1]
-    const atPath = match[2]
-    const isKnown = slashName ? knownNames.has(slashName.toLowerCase()) : false
-    // @-path tokens are always highlighted (file references).
-    const shouldHighlight = isKnown || atPath !== undefined
+    const atName = match[2]
+    const skillName = slashName ?? atName
+    const isKnown = knownNames.has(skillName.toLowerCase())
 
-    parts.push(
-      <span key={`${start}:${token}`} className={shouldHighlight ? 'composer-skill-token' : undefined}>
-        {token}
-      </span>,
-    )
+    if (isKnown && atName) {
+      // @token: distinction is COLOR only (accent-strong) — no font-weight or
+      // any metric-changing property, so the overlay's painted text has
+      // identical glyph widths to the textarea (caret stays pixel-perfect).
+      // The @ glyph stays in the inline flow (preserves its width) but is
+      // hidden via color:transparent (NOT opacity:0 — opacity would hide the
+      // icon child too). The PluginIcon is an absolute child of the glyph
+      // box, pinned to its right edge with a 2px gap → icon's right border
+      // sits 2px before the first letter of the name, overflowing left into
+      // the composer's padding (no clip).
+      const skill = skills.find(s => s.name.toLowerCase() === atName.toLowerCase())
+      const atGlyph = token.startsWith('@') ? token[0] : ''
+      const tokenText = atGlyph ? token.slice(1) : token
+      parts.push(
+        <span key={`${start}:${token}`} className="composer-skill-token">
+          <span className="at-glyph">
+            {atGlyph}
+            {skill?.pluginId && (
+              <span className="at-icon-deco" aria-hidden="true">
+                <PluginIcon name={skill.pluginName ?? skill.name} id={skill.pluginId} size={16} loadIcons />
+              </span>
+            )}
+          </span>
+          {tokenText}
+        </span>,
+      )
+    } else if (isKnown && slashName) {
+      parts.push(
+        <span key={`${start}:${token}`} className="composer-skill-token">{token}</span>,
+      )
+    } else {
+      parts.push(<span key={`${start}:${token}`}>{token}</span>)
+    }
     cursor = start + text.length
   }
 
@@ -1008,32 +1043,3 @@ function renderHighlightedValue(
   return parts
 }
 
-function rankSkills(skills: SkillSummary[], query: string): SkillSummary[] {
-  const normalizedQuery = query.toLowerCase()
-  return skills
-    .map(skill => {
-      const name = skill.name.toLowerCase()
-      const description = skill.description.toLowerCase()
-      const score =
-        name === normalizedQuery ? 0 :
-        name.startsWith(normalizedQuery) ? 1 :
-        name.includes(normalizedQuery) ? 2 :
-        description.includes(normalizedQuery) ? 3 :
-        fuzzyMatch(name, normalizedQuery) || fuzzyMatch(description, normalizedQuery) ? 4 :
-        99
-      return { skill, score }
-    })
-    .filter(item => item.score < 99)
-    .sort((a, b) => a.score - b.score || a.skill.name.localeCompare(b.skill.name))
-    .map(item => item.skill)
-}
-
-function fuzzyMatch(value: string, query: string): boolean {
-  if (!query) return true
-  let index = 0
-  for (const char of value) {
-    if (char === query[index]) index += 1
-    if (index === query.length) return true
-  }
-  return false
-}

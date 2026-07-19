@@ -156,6 +156,15 @@ export type SkillSummary = {
   path: string
   source: SkillSource
   trusted: boolean
+  /** When the skill originates from a plugin, holds the plugin id for the
+   *  composer chip icon (PluginIcon). Undefined for filesystem skills. */
+  pluginId?: string
+  /** Display name of the source plugin, for chip rendering. */
+  pluginName?: string
+  /** When true, this entry represents a plugin-level mention (the whole
+   *  plugin, not a specific skill inside it). path is empty; Rust backend
+   *  emits the plugin mention line without a path. */
+  isPluginMention?: boolean
 }
 
 export type TranscriptItem = {
@@ -248,12 +257,56 @@ export type ChatProject = {
   archivedAt?: number
 }
 
+export type SubagentThreadStatus =
+  | 'queued'
+  | 'thinking'
+  | 'reading'
+  | 'searching'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+export type SubagentThreadEvent = {
+  id: string
+  kind: 'mission' | 'agent-message' | 'tool-call' | 'tool-result' | 'status' | 'final' | 'error'
+  text: string
+  timestamp: number
+  toolName?: string
+  toolUseId?: string
+  isError?: boolean
+}
+
+export type SubagentThread = {
+  id: string
+  runtimeAgentId?: string
+  parentTurnId: string
+  toolUseId?: string
+  label: string
+  mission: string
+  status: SubagentThreadStatus
+  events: SubagentThreadEvent[]
+  createdAt: number
+  updatedAt: number
+}
+
+export type SubagentThreadUpdate = {
+  threadId: string
+  runtimeAgentId?: string
+  toolUseId?: string
+  label?: string
+  mission?: string
+  status?: SubagentThreadStatus
+  event?: SubagentThreadEvent
+}
+
 export type StoredConversation = {
   id: string
   title: string
   cliSessionId?: string
   projectId?: string
   items: TranscriptItem[]
+  subagents: SubagentThread[]
   goal?: GoalState
   createdAt: number
   updatedAt: number
@@ -266,7 +319,7 @@ export type StoredConversation = {
 }
 
 export type ChatStore = {
-  version: 2
+  version: 3
   projects: ChatProject[]
   conversations: StoredConversation[]
 }
@@ -553,6 +606,7 @@ export type ResearchSubagentRequest = {
   id: string
   index: number
   total: number
+  label?: string
   topic: string
   baseRequest: AgentTurnRequest
 }
@@ -561,20 +615,8 @@ export type ResearchSubagentsRunRequest = {
   runId?: string
   count: number
   requestedCount?: number
+  labels?: string[]
   baseRequest: AgentTurnRequest
-}
-
-export type ResearchSubagentProgress = {
-  id: string
-  index: number
-  total?: number
-  runId?: string
-  status: 'queued' | 'running' | 'reading' | 'searching' | 'complete' | 'failed'
-  summary: string
-  activity?: string
-  detail?: string
-  mission?: string
-  label?: string
 }
 
 export type ResearchSubagentResult = {
@@ -637,14 +679,23 @@ export type RuntimeActivity = {
   diffPreview?: string
 }
 
+export type CliTerminalFailure = {
+  category: string
+  message: string
+  details: string[]
+  exitCode: number | null
+  sessionId?: string
+  recoveryReady: boolean
+}
+
 export type AgentEvent =
   | { type: 'started'; turnId: string; conversationId?: string }
   | { type: 'stdout'; turnId: string; conversationId?: string; text: string }
   | { type: 'stderr'; turnId: string; conversationId?: string; text: string }
   | { type: 'json'; turnId: string; conversationId?: string; payload: unknown; runtimeStatus?: RuntimeStatus; runtimeActivity?: RuntimeActivity }
   | { type: 'result'; turnId: string; conversationId?: string; result: AgentResultSnapshot }
-  | { type: 'subagent-progress'; progress: ResearchSubagentProgress }
-  | { type: 'error'; turnId: string; conversationId?: string; message: string }
+  | { type: 'subagent-thread'; turnId: string; conversationId: string; subagentThread: SubagentThreadUpdate }
+  | { type: 'error'; turnId: string; conversationId?: string; message: string; payload?: CliTerminalFailure; exitCode?: number | null }
   | { type: 'done'; turnId: string; conversationId?: string; exitCode: number | null }
 
 export type AppConfig = {

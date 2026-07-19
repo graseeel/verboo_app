@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
+  CHAT_STORE_KEY,
   visibleConversations,
   createConversation,
+  readChatStore,
   sanitizeConversation,
 } from './chatStore'
 import type { ChatStore, StoredConversation } from '../../shared/types'
@@ -23,7 +25,7 @@ function conversation(overrides: Partial<StoredConversation>): StoredConversatio
 }
 
 function storeWith(conversations: StoredConversation[]): ChatStore {
-  return { version: 2, projects: [], conversations }
+  return { version: 3, projects: [], conversations }
 }
 
 describe('visibleConversations — stable sidebar order', () => {
@@ -144,5 +146,23 @@ describe('sanitizeConversation — legacy migration', () => {
     const conv = conversation({ id: 'chat:x', updatedAt: 5_000, lastTurnEndedAt: 4_500 })
     const sanitized = sanitizeConversation(conv)
     expect(sanitized.lastTurnEndedAt).toBe(4_500)
+  })
+})
+
+describe('readChatStore — subagent persistence migration', () => {
+  it.each([1, 2])('migrates a v%s store to v3 with empty subagent collections', version => {
+    window.localStorage.setItem(CHAT_STORE_KEY, JSON.stringify({
+      version,
+      projects: [],
+      conversations: [{
+        ...createConversation(),
+        subagents: undefined,
+      }],
+    }))
+
+    const store = readChatStore()
+
+    expect(store.version).toBe(3)
+    expect(store.conversations[0].subagents).toEqual([])
   })
 })

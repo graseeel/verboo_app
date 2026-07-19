@@ -127,6 +127,15 @@ export type PluginError =
   | { kind: 'timeout'; command: string; seconds: number }
   | { kind: 'unknown'; message: string; exitCode?: number }
 
+/** Resolved payload returned by mutation commands (install/uninstall/enable/disable).
+ *  Fundição contract: all fields camelCase; None omitted; error typed when !success. */
+export type MutationResult = {
+  success: boolean
+  exitCode?: number
+  error?: PluginError
+  pluginId?: string
+}
+
 /** Human-readable message for a PluginError. PT-BR copy (P5 uses PT-BR). */
 export function describePluginError(err: PluginError): string {
   switch (err.kind) {
@@ -139,6 +148,7 @@ export function describePluginError(err: PluginError): string {
     case 'parse_error':
       return `Falha ao ler resposta do CLI: ${err.message}`
     case 'invalid_plugin':
+      if (!err.errors.length) return 'Plugin inválido — nenhum detalhe disponível.'
       return `Plugin inválido: ${err.errors.join('; ')}`
     case 'invalid_marketplace':
       return `Marketplace inválido: ${err.message}`
@@ -244,7 +254,15 @@ export interface MarketplacePluginEntry {
   keywords: string[]
   /** Tags array (some manifests carry this). */
   tags: string[]
+  /** Examples/usage suggestions (Fundição contract — optional examples[]
+   * from marketplace manifest). Used for hero pill descriptions and composer
+   * prefill when the marketplace is in OFFICIAL_MARKETPLACES. */
+  examples?: string[]
 }
+
+/** Marketplaces whose plugins get the official Verboo bundled icon and
+ * example-based prefill. Currently Verboo's own marketplace only. */
+export const OFFICIAL_MARKETPLACES = ['verboo-plugins']
 
 /** Map keyed by `pluginId` (`name@marketplaceName`) → rich metadata. */
 export type MarketplaceManifestMap = Record<string, MarketplacePluginEntry>

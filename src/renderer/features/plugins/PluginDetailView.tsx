@@ -1,7 +1,7 @@
-import { ArrowLeft, ChevronDown, Download, ExternalLink, Power, Trash2, Zap } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { ArrowLeft, ChevronDown, Download, ExternalLink, Play, Power, Trash2, Zap } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AvailablePlugin, MarketplaceManifestMap, Plugin, PluginDetail, PluginError, PluginScope, PluginSkill } from '../../../shared/plugins'
-import { describePluginError } from '../../../shared/plugins'
+import { describePluginError, OFFICIAL_MARKETPLACES } from '../../../shared/plugins'
 import { useI18n } from '../../i18n'
 import { monogramColor, pluginHue, PluginIcon } from './PluginCard'
 import { marketplaceFriendlyName } from './marketplaceNames'
@@ -18,6 +18,7 @@ type PluginDetailViewProps = {
   onInstall?: (scope: PluginScope) => Promise<void>
   onUninstall?: () => Promise<void>
   onToggle?: (enabled: boolean) => Promise<void>
+  onUsePlugin?: (payload: { skillPath?: string; pluginId: string; pluginName: string; suggestion?: string }) => void
   busy?: boolean
   error?: PluginError
 }
@@ -30,13 +31,16 @@ type PluginDetailViewProps = {
 // 5. Habilidades section (installed only, skill count gray)
 // 6. Informações table (Desenvolvedor/Categoria/Versão/Site — omit missing)
 // 7. Collapsible "Detalhes técnicos" (ID, path, dates)
-export function PluginDetailView({ target, manifests, loadIcons = true, onBack, onInstall, onUninstall, onToggle, busy, error }: PluginDetailViewProps) {
+export function PluginDetailView({ target, manifests, loadIcons = true, onBack, onInstall, onUninstall, onToggle, onUsePlugin, busy, error }: PluginDetailViewProps) {
   const { t } = useI18n()
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [detail, setDetail] = useState<PluginDetail | undefined>(undefined)
   const [skills, setSkills] = useState<PluginSkill[]>([])
-  const [resting, setResting] = useState(true)
   const isInstalled = target.kind === 'installed'
+  const [skillsLoading, setSkillsLoading] = useState(!isInstalled)
+  const [resting, setResting] = useState(true)
+  const [isHeaderStuck, setIsHeaderStuck] = useState(false)
+  const headerObserverRef = useRef<IntersectionObserver | undefined>(undefined)
 
   // ── Mouse parallax for hero mesh ──────────────────────────────────
   // pointermove (rAF-throttled to ~30fps) updates --mouse-x/--mouse-y (0-1)
@@ -123,17 +127,53 @@ export function PluginDetailView({ target, manifests, loadIcons = true, onBack, 
     if (!isInstalled) {
       setDetail(undefined)
       setSkills([])
+      setSkillsLoading(false)
       return
     }
     let cancelled = false
+    setSkillsLoading(true)
     window.verboo.pluginDetail(pluginId).then(d => { if (!cancelled) setDetail(d) }).catch(() => {})
-    window.verboo.pluginSkills(pluginId).then(s => { if (!cancelled) setSkills(s) }).catch(() => {})
+    window.verboo.pluginSkills(pluginId).then(s => { if (!cancelled) { setSkills(s); setSkillsLoading(false) } }).catch(() => { if (!cancelled) setSkillsLoading(false) })
     return () => { cancelled = true }
   }, [isInstalled, pluginId])
 
   // Chip phrase: 1st skill description (installed with skills), fallback
   // to plugin description. Empty desc → chip shows monogram+name only.
   const chipPhrase = skills[0]?.description ?? fullDescription
+
+  // Up to 3 suggestion pills derived from skills.
+  // ITEM C: prefill NUNCA mais recebe descrição. Se o manifest tiver examples
+  // (e marketplace ∈ OFFICIAL_MARKETPLACES) → primeiro exemplo vira prefill.
+  // Sem examples → suggestion = '' (só @token + espaço, usuário digita).
+  const isOfficial = pluginId.split('@')[1] ? OFFICIAL_MARKETPLACES.includes(pluginId.split('@')[1]) : false
+  const manifestEntry = manifests[pluginId]
+  const manifestExamples = isOfficial ? manifestEntry?.examples : undefined
+  const heroSuggestions = useMemo(() => {
+    if (skills.length > 0) {
+      return skills.slice(0, 3).map(s => {
+        const fullDesc = s.description ?? ''
+        const firstSentence = fullDesc.match(/^(.+?\.)(?:\s|$)/)?.[1] ?? fullDesc
+        const firstExample = manifestExamples?.[0]
+        return {
+          skillPath: s.skillPath,
+          pillLabel: s.name,
+          pillDesc: (firstExample ?? firstSentence).length > 56
+            ? (firstExample ?? firstSentence).slice(0, 56) + '…'
+            : (firstExample ?? firstSentence),
+          fullSuggestion: firstExample ?? '',
+        }
+      })
+    }
+    if (chipPhrase) {
+      return [{
+        skillPath: undefined,
+        pillLabel: name,
+        pillDesc: chipPhrase.length > 56 ? chipPhrase.slice(0, 56) + '…' : chipPhrase,
+        fullSuggestion: manifestExamples?.[0] ?? '',
+      }]
+    }
+    return []
+  }, [skills, pluginId, name, chipPhrase, manifestExamples])
 
   return (
     <div className="plugin-detail page-surface">
@@ -146,8 +186,21 @@ export function PluginDetailView({ target, manifests, loadIcons = true, onBack, 
         <span className="plugin-detail-crumb plugin-detail-crumb--current">{name}</span>
       </nav>
 
+      {/* Sticky header sentinel — callback ref per container (no dangling observer). */}
+      <div ref={node => {
+        headerObserverRef.current?.disconnect()
+        if (!node || typeof IntersectionObserver === 'undefined') return
+        const scrollContainer = node.closest<HTMLElement>('.workspace')
+        if (!scrollContainer) return
+        headerObserverRef.current = new IntersectionObserver(
+          entries => setIsHeaderStuck(!entries[0].isIntersecting),
+          { root: scrollContainer, threshold: 0 },
+        )
+        headerObserverRef.current.observe(node)
+      }} className="plugins-sticky-sentinel" />
+
       {/* Sticky header */}
-      <div className="plugin-detail-header">
+      <div className={`plugin-detail-header${isHeaderStuck ? ' is-stuck' : ''}`}>
         <div className="plugin-detail-header-left">
           <PluginIcon name={name} id={pluginId} size={56} loadIcons={loadIcons} />
           <div className="plugin-detail-header-text">
@@ -163,14 +216,24 @@ export function PluginDetailView({ target, manifests, loadIcons = true, onBack, 
         <div className="plugin-detail-header-actions">
           {isInstalled ? (
             <>
+              {onUsePlugin && skills.length > 0 && (
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => onUsePlugin({ skillPath: skills[0]?.skillPath, pluginId, pluginName: name, suggestion: '' })}
+                >
+                  <Play size={14} />
+                  {t('plugins.testNow')}
+                </button>
+              )}
               <button
                 type="button"
                 className="ghost-button"
                 onClick={() => void onToggle?.(!enabled)}
                 disabled={busy}
               >
-                <Power size={14} />
-                {enabled ? t('plugins.disable') : t('plugins.enable')}
+                {busy ? <span className="btn-spinner" /> : <Power size={14} />}
+                {busy ? t('plugins.disabling') : (enabled ? t('plugins.disable') : t('plugins.enable'))}
               </button>
               <button
                 type="button"
@@ -178,8 +241,8 @@ export function PluginDetailView({ target, manifests, loadIcons = true, onBack, 
                 onClick={() => void onUninstall?.()}
                 disabled={busy}
               >
-                <Trash2 size={14} />
-                {t('plugins.uninstall')}
+                {busy ? <span className="btn-spinner" /> : <Trash2 size={14} />}
+                {busy ? t('plugins.uninstalling') : t('plugins.uninstall')}
               </button>
             </>
           ) : (
@@ -189,8 +252,8 @@ export function PluginDetailView({ target, manifests, loadIcons = true, onBack, 
               onClick={() => void onInstall?.('user')}
               disabled={busy}
             >
-              <Download size={14} />
-              {t('plugins.install')}
+              {busy ? <span className="btn-spinner" /> : <Download size={14} />}
+              {busy ? t('plugins.installing') : t('plugins.install')}
             </button>
           )}
         </div>
@@ -212,21 +275,36 @@ export function PluginDetailView({ target, manifests, loadIcons = true, onBack, 
         onPointerLeave={handlePointerLeave}
       >
         <div className="plugin-detail-hero-mesh" aria-hidden="true" />
-        <div className="plugin-detail-hero-content">
-          <div className="plugin-hero-chip" role="group" aria-label={name}>
-            <PluginIcon name={name} id={pluginId} size={32} loadIcons={loadIcons} />
-            <div className="plugin-hero-chip-text">
-              <span className="plugin-hero-chip-name">{name}</span>
-              {chipPhrase && (
-                <span className="plugin-hero-chip-desc">
-                  {chipPhrase.length > 90 ? chipPhrase.slice(0, 90) + '…' : chipPhrase}
-                </span>
-              )}
+        <div className="plugin-detail-hero-content" style={{ minHeight: skillsLoading ? '120px' : heroSuggestions.length <= 1 ? '180px' : heroSuggestions.length === 2 ? '200px' : '224px' } as React.CSSProperties}>
+          {skillsLoading ? (
+            <div className="plugin-hero-pills"><div className="plugin-hero-pill plugin-skel-pulse" /></div>
+          ) : heroSuggestions.length > 0 && (
+            <div className="plugin-hero-pills">
+              {heroSuggestions.map(({ skillPath, pillLabel, pillDesc, fullSuggestion }: { skillPath: string | undefined; pillLabel: string; pillDesc: string; fullSuggestion: string }) => {
+                if (isInstalled && onUsePlugin) {
+                  return (
+                    <button key={skillPath ?? pillLabel} className="plugin-hero-pill" type="button" onClick={() => onUsePlugin({ skillPath, pluginId, pluginName: name, suggestion: fullSuggestion })}>
+                      <PluginIcon name={name} id={pluginId} size={20} loadIcons={loadIcons} />
+                      <div className="plugin-hero-pill-text">
+                        <span className="plugin-hero-pill-name">{pillLabel}</span>
+                        <span className="plugin-hero-pill-desc">{pillDesc}</span>
+                      </div>
+                      <ArrowLeft size={14} className="plugin-hero-pill-arrow" />
+                    </button>
+                  )
+                }
+                return (
+                  <div key={skillPath ?? pillLabel} className="plugin-hero-pill plugin-hero-pill-static">
+                    <PluginIcon name={name} id={pluginId} size={20} loadIcons={loadIcons} />
+                    <div className="plugin-hero-pill-text">
+                      <span className="plugin-hero-pill-name">{pillLabel}</span>
+                      <span className="plugin-hero-pill-desc">{pillDesc}</span>
+                    </div>
+                  </div>
+                )
+              })}
             </div>
-            <div className="plugin-hero-chip-arrow" aria-hidden="true">
-              <ArrowLeft size={16} />
-            </div>
-          </div>
+          )}
         </div>
       </div>
 

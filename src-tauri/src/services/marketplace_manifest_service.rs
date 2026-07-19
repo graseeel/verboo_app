@@ -68,6 +68,20 @@ pub struct MarketplacePluginEntry {
     /// Tags array (some manifests carry this). From manifest `plugins[].tags`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// GitHub owner derived from the marketplace's `repo` field (e.g.
+    /// "gabriel" from "gabriel/superpowers-marketplace"). Only populated
+    /// for GitHub-sourced marketplaces. Used by `plugin_icon_service` for
+    /// avatar fallback when the plugin's homepage yields no icon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_owner: Option<String>,
+    /// Example prompts/usage strings (optional). From manifest
+    /// `plugins[].examples`. Parsed LENIENTLY: wrong type (object, number,
+    /// nested array) → field ignored, entry survives. Third-party manifests
+    /// may carry `examples` with their own schema; we only consume the
+    /// string-array shape. Usage policy (official marketplaces only) lives
+    /// in the renderer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<String>,
 }
 
 /// The parsed `.claude-plugin/marketplace.json` for a single marketplace.
@@ -86,7 +100,9 @@ pub struct MarketplaceManifest {
     pub plugins: Vec<MarketplacePluginEntry>,
     /// The `installLocation` the CLI reported for this marketplace. Used
     /// by the FE to display the on-disk path; not part of the manifest itself.
+    /// Read in tests (`assert_eq!(manifest.install_location, ...)`).
     #[serde(skip)]
+    #[allow(dead_code)]
     pub install_location: String,
 }
 
@@ -131,9 +147,18 @@ pub fn read_all_manifests(
 ) -> std::collections::HashMap<String, MarketplacePluginEntry> {
     let mut map = std::collections::HashMap::new();
     for mp in marketplaces {
+        // Derive GitHub owner from repo field (first segment of "owner/repo").
+        let github_owner: Option<String> = mp
+            .repo
+            .as_deref()
+            .and_then(|r| r.split('/').next())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
         match read_marketplace_manifest(&mp.install_location) {
             Ok(manifest) => {
-                for entry in manifest.plugins {
+                for mut entry in manifest.plugins {
+                    entry.github_owner = github_owner.clone();
                     let plugin_id = format!("{}@{}", entry.name, mp.name);
                     map.insert(plugin_id, entry);
                 }
@@ -274,6 +299,12 @@ fn parse_one_entry(item: &serde_json::Value) -> Result<MarketplacePluginEntry, S
         })
         .unwrap_or_default();
 
+    // `examples`: lenient parse. Accept only array-of-strings; any other
+    // shape (object, number, nested array, mixed types) → empty vec.
+    // Never fails the entry — third-party manifests may use `examples`
+    // with their own schema.
+    let examples = parse_examples_lenient(obj.get("examples"));
+
     Ok(MarketplacePluginEntry {
         name,
         category,
@@ -285,7 +316,23 @@ fn parse_one_entry(item: &serde_json::Value) -> Result<MarketplacePluginEntry, S
         display_name,
         keywords,
         tags,
+        github_owner: None,
+        examples,
     })
+}
+
+/// Parses `examples` leniently. Returns `Vec<String>` only when the value
+/// is an array of strings. Any other shape (object, number, string, null,
+/// nested arrays, mixed types) → empty vec. Non-string elements are
+/// silently skipped (not errors).
+fn parse_examples_lenient(value: Option<&serde_json::Value>) -> Vec<String> {
+    let arr = match value {
+        Some(serde_json::Value::Array(a)) => a,
+        _ => return Vec::new(),
+    };
+    arr.iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect()
 }
 
 /// Truncates `s` to at most `max` chars (char-boundary-aware, no panic).
@@ -458,6 +505,48 @@ mod tests {
         }"#;
         let manifest = parse_manifest(raw, "/tmp/fake").expect("parse");
         assert_eq!(manifest.plugins[0].display_name.as_deref(), Some("Pretty P"));
+    }
+
+    #[test]
+    fn parse_manifest_examples_valid_string_array() {
+        let raw = r#"{
+            "name": "mp",
+            "plugins": [{
+                "name": "p",
+                "examples": ["Summarize this file", "Explain the bug in foo()"]
+            }]
+        }"#;
+        let manifest = parse_manifest(raw, "/tmp/fake").expect("parse");
+        assert_eq!(manifest.plugins.len(), 1);
+        assert_eq!(
+            manifest.plugins[0].examples,
+            vec!["Summarize this file", "Explain the bug in foo()"]
+        );
+    }
+
+    #[test]
+    fn parse_manifest_examples_wrong_type_entry_survives() {
+        // `examples` as an object (third-party schema) → field ignored,
+        // entry survives with empty examples. Same for number, string,
+        // nested array, and mixed types.
+        let cases: &[(&str, &[&str])] = &[
+            (r#""examples": {"prompt": "x", "schema": "y"}"#, &[]),   // object
+            (r#""examples": 42"#, &[]),                                // number
+            (r#""examples": "single string""#, &[]),                   // string
+            (r#""examples": [["nested"], ["array"]]"#, &[]),           // nested array
+            (r#""examples": ["ok", 42, {"obj": true}]"#, &["ok"]),    // mixed
+        ];
+        for (raw_examples, expected) in cases {
+            let raw = format!(
+                r#"{{"name": "mp", "plugins": [{{"name": "p", {}}}]}}"#,
+                raw_examples
+            );
+            let manifest = parse_manifest(&raw, "/tmp/fake").expect("parse");
+            assert_eq!(manifest.plugins.len(), 1, "entry must survive wrong-type examples: {raw_examples}");
+            assert_eq!(manifest.plugins[0].name, "p");
+            let expected_vec: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+            assert_eq!(manifest.plugins[0].examples, expected_vec, "raw_examples={raw_examples}");
+        }
     }
 
     // ── read_marketplace_manifest (filesystem) ────────────────────────

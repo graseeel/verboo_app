@@ -428,7 +428,7 @@
   overflow: hidden auto;
 }
 
-.research-subagent-panel {
+.subagent-thread-panel {
   grid-column: 3;
   grid-row: 1;
 }

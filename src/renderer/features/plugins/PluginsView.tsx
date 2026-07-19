@@ -15,6 +15,7 @@ import { invalidatePluginIconCache } from './usePluginIcon'
 type PluginsViewProps = {
   onClose: () => void
   onSeedComposer?: (text: string) => void
+  onUsePlugin?: (payload: { skillPath?: string; pluginId: string; pluginName: string; suggestion?: string }) => void
   loadIcons?: boolean
 }
 
@@ -78,7 +79,7 @@ function SectionExpander({ plugins, onExpand, loadIcons = true }: {
   )
 }
 
-export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: PluginsViewProps) {
+export function PluginsView({ onClose, onSeedComposer, onUsePlugin, loadIcons = true }: PluginsViewProps) {
   const { t } = useI18n()
   const { toast } = useToast()
   const {
@@ -146,7 +147,7 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
     )
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [])
+  }, [selectedPlugin === undefined])
 
   // Invalidate the icon cache when manifests arrive. A plugin that returned
   // null earlier (manifests not loaded yet on the backend → no homepage →
@@ -377,14 +378,18 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
           onBack={() => setSelectedPlugin(undefined)}
           onInstall={async (scope: PluginScope) => {
             if (selectedPlugin.kind !== 'available') return
+            const pid = selectedPlugin.plugin.pluginId
             setBusy(detailId, true)
             try {
               await install(selectedPlugin.plugin, scope)
               toast(t('plugins.install'), 'success')
-              setSelectedPlugin(undefined)
+              // Stay on detail — re-fetch and transition to installed state.
+              void window.verboo.pluginList().then(list => {
+                const np = list.find(p => p.id === pid)
+                if (np) setSelectedPlugin({ kind: 'installed', plugin: np })
+              }).finally(refreshAll)
             } catch (err) {
               toast(describePluginError(err as PluginError), 'error')
-              throw err
             } finally {
               setBusy(detailId, false)
             }
@@ -397,13 +402,18 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
             try {
               await uninstall(plugin.id, plugin.scope)
               toast(t('plugins.uninstall'), 'success')
-              setSelectedPlugin(undefined)
+              // Stay on detail as available — re-fetch and transition.
+              void window.verboo.pluginAvailable().then(pa => {
+                const ap = pa.available.find(p => p.pluginId === plugin.id)
+                if (ap) setSelectedPlugin({ kind: 'available', plugin: ap })
+              }).finally(refreshAll)
             } catch (err) {
               toast(describePluginError(err as PluginError), 'error')
             } finally {
               setBusy(detailId, false)
             }
           }}
+          onUsePlugin={onUsePlugin ? (skill) => onUsePlugin(skill) : undefined}
           onToggle={async (enabled: boolean) => {
             if (selectedPlugin.kind !== 'installed') return
             const plugin = selectedPlugin.plugin
@@ -416,6 +426,11 @@ export function PluginsView({ onClose, onSeedComposer, loadIcons = true }: Plugi
                 await disable(plugin.id, plugin.scope)
                 toast(t('plugins.disable'), 'success')
               }
+              // Re-fetch so the badge / enabled flag updates in-place.
+              void window.verboo.pluginList().then(list => {
+                const np = list.find(p => p.id === plugin.id)
+                if (np) setSelectedPlugin({ kind: 'installed', plugin: np })
+              }).finally(refreshAll)
             } catch (err) {
               toast(describePluginError(err as PluginError), 'error')
             } finally {

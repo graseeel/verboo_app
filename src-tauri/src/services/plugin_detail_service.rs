@@ -125,8 +125,9 @@ pub fn build_plugin_detail(plugin: Plugin) -> Result<PluginDetail, PluginError> 
     })
 }
 
-/// Discovers skills in `<install_path>/skills/*/SKILL.md`. Returns a list
-/// of `PluginSkill` with name + description parsed from YAML frontmatter.
+/// Discovers skills under `<install_path>/skills/`. Walks recursively so both
+/// flat layouts (`skills/<name>/SKILL.md` — superpowers) and nested layouts
+/// (`skills/<category>/<name>/SKILL.md` — mattpocock-skills) are supported.
 /// Skills without a valid SKILL.md are skipped with a warn log.
 pub fn discover_skills(install_path: &Path) -> (Vec<PluginSkill>,) {
     let skills_dir = install_path.join("skills");
@@ -136,14 +137,22 @@ pub fn discover_skills(install_path: &Path) -> (Vec<PluginSkill>,) {
         return (out,);
     }
 
-    let entries = match std::fs::read_dir(&skills_dir) {
+    walk_skills_dir(&skills_dir, &mut out);
+
+    // Sort by name for stable FE display.
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    (out,)
+}
+
+/// Recursively walks `dir` looking for `SKILL.md`. Each `SKILL.md` is parsed
+/// as a skill. Subdirectories that don't contain `SKILL.md` are recursed into
+/// to support category-grouped layouts (e.g. `skills/misc/setup-pre-commit/`).
+fn walk_skills_dir(dir: &Path, out: &mut Vec<PluginSkill>) {
+    let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!(
-                "[verboo:plugins] failed to read skills dir {}: {e}",
-                skills_dir.display()
-            );
-            return (out,);
+            eprintln!("[verboo:plugins] failed to read dir {}: {e}", dir.display());
+            return;
         }
     };
 
@@ -153,23 +162,22 @@ pub fn discover_skills(install_path: &Path) -> (Vec<PluginSkill>,) {
             continue;
         }
         let skill_md = path.join("SKILL.md");
-        if !skill_md.exists() {
-            continue;
-        }
-        match parse_skill_md(&skill_md) {
-            Ok(skill) => out.push(skill),
-            Err(e) => {
-                eprintln!(
-                    "[verboo:plugins] skipping skill {}: {e}",
-                    skill_md.display()
-                );
+        if skill_md.exists() {
+            // Leaf skill directory with SKILL.md.
+            match parse_skill_md(&skill_md) {
+                Ok(skill) => out.push(skill),
+                Err(e) => {
+                    eprintln!(
+                        "[verboo:plugins] skipping skill {}: {e}",
+                        skill_md.display()
+                    );
+                }
             }
+        } else {
+            // No SKILL.md → recurse into category directory.
+            walk_skills_dir(&path, out);
         }
     }
-
-    // Sort by name for stable FE display.
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    (out,)
 }
 
 // ════════════════════════════════════════════════════════════════════

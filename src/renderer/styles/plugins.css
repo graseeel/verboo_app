@@ -1029,6 +1029,29 @@
   border-bottom: 1px solid var(--border);
 }
 
+/* Sticky cover (ITEM 2) — opaque ::before prevents content above the header
+   (breadcrumbs / mesh overflow) from leaking when the header is stuck. The
+   ::after gradient softens the bottom edge where scrolled content passes under. */
+.plugin-detail-header.is-stuck::before,
+.plugin-detail-header.is-stuck::after {
+  content: '';
+  position: absolute;
+  left: -28px;
+  right: -28px;
+  pointer-events: none;
+  z-index: 0;
+}
+.plugin-detail-header.is-stuck::before {
+  top: -30px;
+  height: 30px;
+  background: var(--bg);
+}
+.plugin-detail-header.is-stuck::after {
+  top: 100%;
+  height: 10px;
+  background: linear-gradient(to bottom, var(--bg), transparent);
+}
+
 .plugin-detail-header-left {
   display: flex;
   align-items: center;
@@ -1226,75 +1249,95 @@
   padding: 24px;
 }
 
-/* Large glass chip ~60% hero width. Mini monogram + name + real desc
-   (truncated ~90 chars) + decorative circular arrow. Presentational only. */
-.plugin-hero-chip {
+/* Spinner for busy buttons — semantic icons never rotate. Small circle with
+   border-top accent, reusing the app's existing step-spin keyframe (flow.css).
+   Reduced-motion: static dot (no spin). */
+.btn-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--accent-strong) 30%, transparent);
+  border-top-color: var(--accent-strong);
+  border-radius: 50%;
+  animation: step-spin 800ms linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn-spinner { animation: none; opacity: 0.5; }
+}
+
+/* Vertical stack of clickable suggestion pills (Plan C — hero acionável).
+   Glass-style, ~min(560px, 78%) width. Each pill: mini icon + name (accent,
+   bold) + truncated desc + right arrow. No 'All skills' pill. */
+.plugin-hero-pills {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+.plugin-hero-pill {
   display: inline-flex;
   align-items: center;
-  gap: 12px;
-  width: 60%;
+  gap: 10px;
+  width: 78%;
   max-width: 560px;
-  padding: 12px 16px;
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--bg-elevated) 62%, transparent);
-  backdrop-filter: blur(16px) saturate(1.3);
-  -webkit-backdrop-filter: blur(16px) saturate(1.3);
-  border: 1px solid color-mix(in srgb, white 16%, transparent);
-  box-shadow: 0 8px 24px color-mix(in srgb, black 18%, transparent);
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-elevated) 56%, transparent);
+  backdrop-filter: blur(14px) saturate(1.25);
+  -webkit-backdrop-filter: blur(14px) saturate(1.25);
+  border: 1px solid color-mix(in srgb, white 14%, transparent);
+  box-shadow: 0 4px 16px color-mix(in srgb, black 12%, transparent);
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: background 120ms var(--dropdown-ease), transform 200ms var(--dropdown-ease), box-shadow 120ms var(--dropdown-ease);
+}
+/* Static variant (available / not-installed) — informational only,
+   no click, no arrow, no hover lift. */
+.plugin-hero-pill-static {
   cursor: default;
-  transition: transform 200ms var(--dropdown-ease), box-shadow 120ms var(--dropdown-ease), opacity 200ms var(--dropdown-ease);
-  @starting-style {
-    opacity: 0;
-    transform: translateY(6px);
-  }
+}
+.plugin-hero-pill-static:hover {
+  background: color-mix(in srgb, var(--bg-elevated) 56%, transparent);
+  transform: none;
+  box-shadow: 0 4px 16px color-mix(in srgb, black 12%, transparent);
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .plugin-hero-chip:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 12px 32px color-mix(in srgb, black 24%, transparent);
-  }
+.plugin-hero-pill:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px color-mix(in srgb, black 18%, transparent);
 }
-
-.plugin-hero-chip-text {
+.plugin-hero-pill-text {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
-
-.plugin-hero-chip-name {
-  font-size: 14px;
-  font-weight: 680;
-  color: var(--text);
+.plugin-hero-pill-name {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--accent-strong);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-.plugin-hero-chip-desc {
-  font-size: 12.5px;
-  line-height: 1.4;
+.plugin-hero-pill-desc {
+  font-size: 11.5px;
+  line-height: 1.35;
   color: var(--text-dim);
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-
-/* Decorative circular arrow — presentational, no click. */
-.plugin-hero-chip-arrow {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+.plugin-hero-pill-arrow {
   color: var(--accent-strong);
   flex-shrink: 0;
-  transform: rotate(180deg);
+  opacity: 0.6;
+  rotate: 180deg;
 }
 
 /* ── Body description ────────────────────────────────────────────── */
@@ -1551,7 +1594,7 @@
   .marketplace-modal-close,
   .marketplace-row-remove,
   .plugins-search input,
-  .plugin-hero-chip,
+  .plugin-hero-pill,
   .plugins-strip-icon,
   .plugin-detail-crumb--link,
   .plugin-detail-tech-trigger,
