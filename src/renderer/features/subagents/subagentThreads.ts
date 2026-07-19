@@ -37,7 +37,11 @@ export function applySubagentThreadUpdate(
   const existingIndex = currentThreads.findIndex(thread => thread.id === update.threadId)
   const receivedAt = update.event?.timestamp ?? Date.now()
   const existing = existingIndex >= 0 ? currentThreads[existingIndex] : undefined
-  const event = update.event ? sanitizeEvent(update.event) : undefined
+  const mission = clean(update.mission ?? existing?.mission ?? '')
+  const sanitizedEvent = update.event ? sanitizeEvent(update.event) : undefined
+  const event = sanitizedEvent && isMeaningfulAgentMessage(sanitizedEvent, mission)
+    ? sanitizedEvent
+    : undefined
 
   let events = existing?.events ?? []
   if (event && !events.some(current => current.id === event.id)) {
@@ -63,7 +67,6 @@ export function applySubagentThreadUpdate(
     events = [...events].sort(compareEvents)
   }
 
-  const mission = clean(update.mission ?? existing?.mission ?? '')
   const next: SubagentThread = {
     id: update.threadId,
     runtimeAgentId: cleanOptional(update.runtimeAgentId ?? existing?.runtimeAgentId),
@@ -112,10 +115,12 @@ function sanitizeThread(value: unknown): SubagentThread | undefined {
   if (!isString(value.mission) || !isStatus(value.status)) return undefined
   if (!isFiniteNumber(value.createdAt) || !isFiniteNumber(value.updatedAt)) return undefined
 
+  const mission = clean(value.mission)
   const events = Array.isArray(value.events)
     ? value.events
       .map(sanitizeEvent)
       .filter((event): event is SubagentThreadEvent => Boolean(event))
+      .filter(event => isMeaningfulAgentMessage(event, mission))
       .sort(compareEvents)
     : []
 
@@ -125,7 +130,7 @@ function sanitizeThread(value: unknown): SubagentThread | undefined {
     parentTurnId: clean(value.parentTurnId),
     toolUseId: cleanOptional(value.toolUseId),
     label: clean(value.label),
-    mission: clean(value.mission),
+    mission,
     status: value.status,
     events: dedupeEvents(events),
     createdAt: value.createdAt,
@@ -164,6 +169,18 @@ function dedupeEvents(events: SubagentThreadEvent[]): SubagentThreadEvent[] {
 
 function compareEvents(a: SubagentThreadEvent, b: SubagentThreadEvent): number {
   return a.timestamp - b.timestamp || a.id.localeCompare(b.id)
+}
+
+function isMeaningfulAgentMessage(event: SubagentThreadEvent, mission: string): boolean {
+  if (event.kind !== 'agent-message') return true
+
+  const normalized = normalizeMessage(event.text)
+  if (/^<\/?think>$/i.test(normalized)) return false
+  return normalized !== normalizeMessage(mission)
+}
+
+function normalizeMessage(value: string): string {
+  return value.trim().replace(/\s+/g, ' ')
 }
 
 function fallbackLabel(threadId: string): string {

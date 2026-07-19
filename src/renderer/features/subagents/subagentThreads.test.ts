@@ -89,6 +89,18 @@ describe('applySubagentThreadUpdate', () => {
     expect(withTool.subagents[0].events.find(event => event.id === 'assistant:long')?.text).toBe(markdown)
     expect(withTool.subagents[0].events.find(event => event.id === 'tool:long')?.text.length).toBeLessThan(4_000)
   })
+
+  it('drops duplicated mission messages and isolated thinking markers', () => {
+    const conversation = createConversation()
+    const withMissionEcho = applySubagentThreadUpdate(conversation, 'turn:1', update({
+      event: { id: 'assistant:mission', kind: 'agent-message', text: '  Inspect   the parser  ', timestamp: 20 },
+    }))
+    const withThinkingMarker = applySubagentThreadUpdate(withMissionEcho, 'turn:1', update({
+      event: { id: 'assistant:think', kind: 'agent-message', text: '</think>', timestamp: 30 },
+    }))
+
+    expect(withThinkingMarker.subagents[0].events).toEqual([])
+  })
 })
 
 describe('sanitizeSubagentThreads', () => {
@@ -103,5 +115,24 @@ describe('sanitizeSubagentThreads', () => {
     expect(sanitized).toHaveLength(1)
     expect(sanitized[0].mission).toBe('Inspect')
     expect(sanitized[0].events[0].text).toBe('Running')
+  })
+
+  it('removes previously persisted mission echoes and isolated thinking markers', () => {
+    const valid = applySubagentThreadUpdate(createConversation(), 'turn:1', update()).subagents[0]
+    valid.events = [
+      { id: 'assistant:mission', kind: 'agent-message', text: 'Inspect the parser', timestamp: 20 },
+      { id: 'assistant:think', kind: 'agent-message', text: '<think>', timestamp: 30 },
+      { id: 'assistant:result', kind: 'agent-message', text: '# Result', timestamp: 40 },
+    ]
+
+    const sanitized = sanitizeSubagentThreads([valid])
+
+    expect(sanitized[0].events).toHaveLength(1)
+    expect(sanitized[0].events[0]).toMatchObject({
+      id: 'assistant:result',
+      kind: 'agent-message',
+      text: '# Result',
+      timestamp: 40,
+    })
   })
 })
