@@ -361,6 +361,55 @@ pub enum ResearchSubagentStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubagentThreadStatus {
+    Queued,
+    Thinking,
+    Reading,
+    Searching,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubagentThreadEventKind {
+    Mission,
+    AgentMessage,
+    ToolCall,
+    ToolResult,
+    Status,
+    Final,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentThreadEvent {
+    pub id: String,
+    pub kind: SubagentThreadEventKind,
+    pub text: String,
+    pub timestamp: u64,
+    pub tool_name: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub is_error: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentThreadUpdate {
+    pub thread_id: String,
+    pub runtime_agent_id: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub label: Option<String>,
+    pub mission: Option<String>,
+    pub status: Option<SubagentThreadStatus>,
+    pub event: Option<SubagentThreadEvent>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum EventType {
@@ -369,7 +418,10 @@ pub enum EventType {
     Stderr,
     Json,
     Result,
+    #[serde(rename = "subagent-progress")]
     SubagentProgress,
+    #[serde(rename = "subagent-thread")]
+    SubagentThread,
     Error,
     #[default]
     Done,
@@ -999,6 +1051,7 @@ pub struct AgentEvent {
     pub payload: Option<serde_json::Value>,
     pub result: Option<AgentResultSnapshot>,
     pub progress: Option<ResearchSubagentProgress>,
+    pub subagent_thread: Option<SubagentThreadUpdate>,
     pub message: Option<String>,
     pub exit_code: Option<i32>,
     pub runtime_status: Option<RuntimeStatus>,
@@ -1428,6 +1481,7 @@ mod tests {
             exit_code: None,
             runtime_status: None,
             runtime_activity: None,
+            subagent_thread: None,
         };
         let json = serde_json::to_string(&event).expect("serialize");
         assert!(json.contains("\"type\":\"started\""));

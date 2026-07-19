@@ -26,6 +26,7 @@ pub mod research_subagent_service;
 pub mod settings_store;
 pub mod skills_service;
 pub mod stale_file_detector;
+pub mod subagent_events;
 pub mod terminal_service;
 pub mod tray_service;
 pub mod turn_service;

@@ -389,6 +389,7 @@ impl TurnService {
                 exit_code: None,
                 runtime_status: None,
                 runtime_activity: None,
+                subagent_thread: None,
             },
         );
 
