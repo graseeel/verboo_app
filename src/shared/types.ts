@@ -130,6 +130,7 @@ export type SettingsTab =
   | 'trustedCommands'
   | 'customCommands'
   | 'app'
+  | 'verbooInChrome'
   | 'notifications'
   | 'personalization'
   | 'memory'

@@ -15,6 +15,7 @@ import {
   MessageSquare,
   Moon,
   Palette,
+  PanelsTopLeft,
   RefreshCcw,
   RotateCcw,
   Shield,
@@ -40,6 +41,7 @@ import type {
 } from '../../../shared/types'
 import { ProjectInstructionsEditor } from './ProjectInstructionsEditor'
 import { CustomCommandsManager } from './CustomCommandsManager'
+import { ChromeIntegrationSettings } from './ChromeIntegrationSettings'
 import { LanguageSelector } from '../language/LanguageSelector'
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss'
 import { useToast } from '../../components/Toast'
@@ -114,6 +116,7 @@ export function SettingsView({
     { id: 'trustedCommands', label: t('settings.trustedCommands'), icon: ShieldCheck },
     { id: 'customCommands', label: t('settings.customCommands'), icon: SquareTerminal },
     { id: 'app', label: t('settings.app'), icon: Computer },
+    { id: 'verbooInChrome', label: t('chrome.title'), icon: PanelsTopLeft },
     { id: 'notifications', label: t('settings.notifications'), icon: Bell },
     { id: 'personalization', label: t('settings.personalization'), icon: UserCog },
     { id: 'memory', label: t('settings.memory'), icon: Brain },
@@ -477,6 +480,13 @@ export function SettingsView({
                 onChange={questionNotifications => onUserSettingsChange({ questionNotifications })}
               />
             </section>
+          </section>
+        )}
+
+        {activeTab === 'verbooInChrome' && (
+          <section className="settings-section-view">
+            <SettingsHeading title={t('chrome.title')} subtitle={t('chrome.subtitle')} />
+            <ChromeIntegrationSettings />
           </section>
         )}
 
