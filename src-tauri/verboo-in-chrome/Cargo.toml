@@ -1,0 +1,31 @@
+[package]
+name = "verboo-in-chrome"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "verboo_in_chrome"
+path = "src/lib.rs"
+
+[[bin]]
+name = "verboo-in-chrome"
+path = "src/main.rs"
+
+[dependencies]
+directories = "6"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = "3"
