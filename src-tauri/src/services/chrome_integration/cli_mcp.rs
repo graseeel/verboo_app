@@ -82,7 +82,7 @@ pub(crate) fn inspect(
         "user",
     ]);
     let doctor = runner.run(&doctor_args)?;
-    if !doctor.success || serde_json::from_str::<Value>(&doctor.stdout).is_err() {
+    if !doctor.success || !contains_json_value(&doctor.stdout) {
         let _ = doctor.stderr;
         return Ok((CliMcpState::Invalid, None));
     }
@@ -101,6 +101,16 @@ pub(crate) fn inspect(
     } else {
         Ok((CliMcpState::Outdated, Some(entry)))
     }
+}
+
+fn contains_json_value(output: &str) -> bool {
+    let Some(start) = output.find('{') else {
+        return false;
+    };
+    serde_json::Deserializer::from_str(&output[start..])
+        .into_iter::<Value>()
+        .next()
+        .is_some_and(|value| value.is_ok())
 }
 
 pub(crate) fn add(
@@ -195,4 +205,17 @@ fn strings(values: &[&str]) -> Vec<String> {
 
 fn to_string(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::contains_json_value;
+
+    #[test]
+    fn doctor_json_accepts_cli_terminal_wrappers_but_rejects_invalid_output() {
+        assert!(contains_json_value(
+            "\u{1b}[?2026h\n\u{1b}[?2026l{\"servers\":[]}\n"
+        ));
+        assert!(!contains_json_value("\u{1b}[?2026hnot-json"));
+    }
 }
