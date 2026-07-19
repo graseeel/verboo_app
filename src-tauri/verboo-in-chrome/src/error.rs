@@ -16,6 +16,8 @@ pub enum BridgeError {
     BrowserNotConnected,
     #[error("the requested helper mode is not available yet")]
     ModeUnavailable,
+    #[error("MCP server error: {0}")]
+    Mcp(String),
 }
 
 pub type Result<T> = std::result::Result<T, BridgeError>;
