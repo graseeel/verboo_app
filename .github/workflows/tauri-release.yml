@@ -116,6 +116,9 @@ jobs:
       # Clear RUSTFLAGS so cargo-tauri's default flags don't break proc-macro
       # linking (ctor-proc-macro "can't find crate" error on Rust 1.89).
       RUSTFLAGS: ""
+      # The builder caches only hash-verified source/build directories. It never
+      # caches the target-qualified binaries copied into src-tauri/binaries.
+      VERBOO_MEDIA_SIDECAR_CACHE: ${{ runner.temp }}/verboo-media-sidecars-cache
 
     steps:
       - name: Checkout repository
@@ -135,6 +138,21 @@ jobs:
           node-version: "20"
           cache: "npm"
 
+      - name: Install MSYS2 media build toolchain
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-pkgconf
+            autoconf
+            automake
+            libtool
+            make
+
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -145,10 +163,22 @@ jobs:
             patchelf \
             libssl-dev \
             libgtk-3-dev \
-            libayatana-appindicator3-dev
+            libayatana-appindicator3-dev \
+            build-essential \
+            cmake \
+            pkg-config \
+            autoconf \
+            automake \
+            libtool
 
       - name: Install npm dependencies
         run: npm ci
+
+      - name: Cache verified media sidecar source/build directories
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/verboo-media-sidecars-cache
+          key: media-sidecars-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('scripts/tauri/media-sidecars.json', 'scripts/tauri/build-media-sidecars.mjs') }}
 
       - name: Build renderer + bundle CLI (build:tauri-deps)
         # Mirrors local `npm run tauri:build` deps prep:
@@ -161,6 +191,31 @@ jobs:
 
       - name: Build Verboo in Chrome sidecar
         run: node scripts/tauri/build-chrome-helper.mjs --target ${{ matrix.target }}
+
+      - name: Build pinned media sidecars
+        if: runner.os != 'Windows'
+        run: npm run build:media-sidecars -- --target ${{ matrix.target }}
+
+      - name: Build pinned media sidecars (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: node scripts/tauri/build-media-sidecars.mjs --target ${{ matrix.target }}
+
+      - name: Verify target-qualified media sidecars
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="${{ matrix.target }}"
+          EXT=""
+          if [ "$TARGET" = "x86_64-pc-windows-msvc" ]; then EXT=".exe"; fi
+          BINARIES="src-tauri/binaries"
+          ls -lh "$BINARIES/verboo-ffmpeg-$TARGET$EXT" \
+            "$BINARIES/verboo-ffprobe-$TARGET$EXT" \
+            "$BINARIES/verboo-whisper-$TARGET$EXT"
+          "$BINARIES/verboo-ffmpeg-$TARGET$EXT" -version
+          "$BINARIES/verboo-ffprobe-$TARGET$EXT" -version
+          "$BINARIES/verboo-whisper-$TARGET$EXT" --help >/dev/null
+          test ! -e "$BINARIES/ggml-base.bin"
 
       - name: Install tauri-cli
         run: cargo +1.89.0 install tauri-cli --version "^2.0.0" --locked

@@ -220,7 +220,7 @@ git commit -m "feat(video): add media capability and consent contracts"
   "ffmpeg": {
     "version": "8.1.2",
     "url": "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz",
-    "sha256": "63a6d43859f5a899063aa35bcf34f91a614c80f38aac35afbac86b2de99273b5"
+    "sha256": "464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c"
   },
   "zimg": {
     "version": "3.0.6",

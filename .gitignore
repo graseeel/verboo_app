@@ -24,6 +24,10 @@ src-tauri/*.rlib
 
 # Generated Verboo in Chrome sidecar binaries (target-specific)
 src-tauri/binaries/verboo-in-chrome-*
+# Generated pinned media sidecars (target-specific)
+src-tauri/binaries/verboo-ffmpeg-*
+src-tauri/binaries/verboo-ffprobe-*
+src-tauri/binaries/verboo-whisper-*
 
 # Tauri bundled CLI resource (copied by copy-cli-resource.mjs from node_modules)
 src-tauri/resources/

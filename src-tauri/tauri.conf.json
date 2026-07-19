@@ -57,7 +57,10 @@
       "resources/cli-package/"
     ],
     "externalBin": [
-      "binaries/verboo-in-chrome"
+      "binaries/verboo-in-chrome",
+      "binaries/verboo-ffmpeg",
+      "binaries/verboo-ffprobe",
+      "binaries/verboo-whisper"
     ],
     "macOS": {
       "minimumSystemVersion": "12.0",
