@@ -606,6 +606,7 @@ export type ResearchSubagentRequest = {
   id: string
   index: number
   total: number
+  label?: string
   topic: string
   baseRequest: AgentTurnRequest
 }
@@ -614,20 +615,8 @@ export type ResearchSubagentsRunRequest = {
   runId?: string
   count: number
   requestedCount?: number
+  labels?: string[]
   baseRequest: AgentTurnRequest
-}
-
-export type ResearchSubagentProgress = {
-  id: string
-  index: number
-  total?: number
-  runId?: string
-  status: 'queued' | 'running' | 'reading' | 'searching' | 'complete' | 'failed'
-  summary: string
-  activity?: string
-  detail?: string
-  mission?: string
-  label?: string
 }
 
 export type ResearchSubagentResult = {
@@ -705,7 +694,6 @@ export type AgentEvent =
   | { type: 'stderr'; turnId: string; conversationId?: string; text: string }
   | { type: 'json'; turnId: string; conversationId?: string; payload: unknown; runtimeStatus?: RuntimeStatus; runtimeActivity?: RuntimeActivity }
   | { type: 'result'; turnId: string; conversationId?: string; result: AgentResultSnapshot }
-  | { type: 'subagent-progress'; progress: ResearchSubagentProgress }
   | { type: 'subagent-thread'; turnId: string; conversationId: string; subagentThread: SubagentThreadUpdate }
   | { type: 'error'; turnId: string; conversationId?: string; message: string; payload?: CliTerminalFailure; exitCode?: number | null }
   | { type: 'done'; turnId: string; conversationId?: string; exitCode: number | null }

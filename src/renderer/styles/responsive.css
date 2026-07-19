@@ -170,7 +170,8 @@
 
   .terminal-panel,
   .review-panel,
-  .research-subagent-panel {
+  .subagent-thread-panel,
+  .subagent-indicator {
     display: none !important;
   }
 

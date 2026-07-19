@@ -91,6 +91,21 @@ export function sanitizeSubagentThreads(value: unknown): SubagentThread[] {
     .filter((thread): thread is SubagentThread => Boolean(thread))
 }
 
+export function isSubagentThreadWorking(thread: SubagentThread): boolean {
+  return !['completed', 'failed', 'cancelled'].includes(thread.status)
+}
+
+export function latestSubagentThread(threads: SubagentThread[]): SubagentThread | undefined {
+  return [...threads].sort((a, b) => b.updatedAt - a.updatedAt)[0]
+}
+
+export function subagentThreadCounts(threads: SubagentThread[]): { total: number; working: number } {
+  return {
+    total: threads.length,
+    working: threads.filter(isSubagentThreadWorking).length,
+  }
+}
+
 function sanitizeThread(value: unknown): SubagentThread | undefined {
   if (!isRecord(value)) return undefined
   if (!isString(value.id) || !isString(value.parentTurnId) || !isString(value.label)) return undefined

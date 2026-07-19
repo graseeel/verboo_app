@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
-import { ArrowDown, CheckCircle2, ChevronDown, ChevronRight, FolderClosed, GitBranch, LoaderCircle, X, XCircle } from 'lucide-react'
+import { ArrowDown, FolderClosed, X } from 'lucide-react'
 import type {
   AccessMode,
   AgentEvent,
@@ -21,7 +21,6 @@ import type {
   MenuBarState,
   ModelDiscoveryResult,
   ProfileResult,
-  ResearchSubagentProgress,
   ResearchSubagentResult,
   RuntimeActivity,
   SettingsTab,
@@ -74,6 +73,9 @@ import { estimateTotalContextTokens } from './features/context/ContextPanel'
 import { TokenRateMeter } from './features/context/TokenRateMeter'
 import { isAuthenticationFailure, shouldAutoRecoverAuthentication } from './features/transcript/cliFailureRecovery'
 import { truncateToolOutput } from './features/transcript/toolOutput'
+import { applySubagentThreadUpdate, isSubagentThreadWorking, latestSubagentThread } from './features/subagents/subagentThreads'
+import { SubagentIndicator } from './features/subagents/SubagentIndicator'
+import { SubagentThreadPanel } from './features/subagents/SubagentThreadPanel'
 import { FeedbackDialog } from './features/feedback/FeedbackDialog'
 import { ModelSelector } from './features/models/ModelSelector'
 import { validOverride, displayEffort, migrateEffortPrefs } from './features/models/effortOverride'
@@ -82,8 +84,7 @@ import { PluginsView } from './features/plugins/PluginsView'
 import { loadPluginSkillSummaries } from './features/plugins/pluginSkillSummaries'
 import { ProjectPicker } from './features/projects/ProjectPicker'
 import { SettingsView } from './features/settings/SettingsView'
-import mascotUrl from '../../assets/branding/verboo-mascot.png'
-import { I18nProvider, createTranslator, useI18n, type Translator } from './i18n'
+import { I18nProvider, createTranslator, type Translator } from './i18n'
 import {
   DEFAULT_CONVERSATION_TITLE,
   activeProjects,
@@ -167,24 +168,6 @@ const EMPTY_LINE_KEYS = [
 ] as const
 
 type TurnActivity = RuntimeActivity
-
-type ActiveSubagent = {
-  id: string
-  runId?: string
-  label: string
-  detail?: string
-  mission?: string
-  history?: ActiveSubagentHistoryItem[]
-  status: 'thinking' | 'reading' | 'searching' | 'done' | 'failed'
-  updatedAt: number
-}
-
-type ActiveSubagentHistoryItem = {
-  id: string
-  label: string
-  text: string
-  timestamp: number
-}
 
 type TokenRateSample = {
   firstAt: number
@@ -383,12 +366,7 @@ export function App() {
   const petFlashTimer = useRef<number>(undefined)
   const { toast } = useToast()
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
-  const [activeSubagents, setActiveSubagents] = useState<ActiveSubagent[]>([])
   const [selectedSubagentId, setSelectedSubagentId] = useState<string | undefined>()
-  // Once the user closes the subagent panel, activity updates must not force
-  // it back open — it only reopens by explicit click or on a fresh turn.
-  const subagentPanelDismissed = useRef(false)
-  const [subagentSummaryExpanded, setSubagentSummaryExpanded] = useState(false)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshot | undefined>()
   // Context windows the CLI itself reported via result.modelUsage — the Verboo
@@ -494,8 +472,6 @@ export function App() {
     message: string
     alreadyRetriedWithoutSession: boolean
   }>>({})
-  const activeSubagentsRef = useRef<Record<string, ActiveSubagent>>({})
-  const pendingResearchSubagentsRef = useRef<ActiveSubagent[]>([])
   const autoApprovalSent = useRef<Set<string>>(new Set())
   const turnOpenTextSegment = useRef<Record<string, string | undefined>>({})
   const turnTextSegmentCount = useRef<Record<string, number>>({})
@@ -504,7 +480,6 @@ export function App() {
   // Commands go into turnCommandItemIds (legacy); this map covers the rest so
   // extractToolResults can attach real output to their activity rows.
   const turnToolUseItemIds = useRef<Record<string, Record<string, string>>>({})
-  const turnSubagentToolIds = useRef<Record<string, Record<string, string>>>({})
   const [thinkingTurnId, setThinkingTurnId] = useState<string | undefined>(undefined)
   const [compactingTurnId, setCompactingTurnId] = useState<string | undefined>(undefined)
   const [compactedTurnIds, setCompactedTurnIds] = useState<Set<string>>(new Set())
@@ -565,12 +540,12 @@ export function App() {
       : sidebarVisualMode === 'compact'
         ? SIDEBAR_COMPACT_WIDTH
         : sidebarWidth
-  const workingSubagents = useMemo(() => activeSubagents.filter(isActiveSubagentWorking), [activeSubagents])
+  const subagentThreads = activeConversation?.subagents ?? []
+  const workingSubagentCount = subagentThreads.filter(isSubagentThreadWorking).length
   const selectedSubagent = selectedSubagentId
-    ? activeSubagents.find(agent => agent.id === selectedSubagentId)
+    ? subagentThreads.find(agent => agent.id === selectedSubagentId)
     : undefined
   const showSubagentThreadPanel = activeView === 'chat' && Boolean(selectedSubagent) && !terminal.terminalOpen && !review.reviewOpen
-  const showSubagentSummary = activeView === 'chat' && workingSubagents.length > 0 && !terminal.terminalOpen && !review.reviewOpen
   const appLayoutStyle = {
     '--sidebar-width': `${effectiveSidebarWidth}px`,
     // Peek width is frozen at the user's sidebarWidth and used by the shell
@@ -586,16 +561,19 @@ export function App() {
 
   useEffect(() => {
     if (!selectedSubagentId) return
-    if (activeSubagents.some(agent => agent.id === selectedSubagentId)) return
+    if (subagentThreads.some(agent => agent.id === selectedSubagentId)) return
     setSelectedSubagentId(undefined)
-  }, [activeSubagents, selectedSubagentId])
+  }, [subagentThreads, selectedSubagentId])
 
   useEffect(() => {
-    const hasResearchSubagents = activeSubagents.some(agent => agent.id.startsWith('research:'))
-    if (runningTurnId || workingSubagents.length > 0 || hasResearchSubagents) return
-    setSelectedSubagentId(undefined)
-    setSubagentSummaryExpanded(false)
-  }, [activeSubagents, runningTurnId, workingSubagents.length])
+    const narrow = window.matchMedia('(max-width: 899px)')
+    const closeOnNarrow = () => {
+      if (narrow.matches) setSelectedSubagentId(undefined)
+    }
+    closeOnNarrow()
+    narrow.addEventListener('change', closeOnNarrow)
+    return () => narrow.removeEventListener('change', closeOnNarrow)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -1411,8 +1389,13 @@ export function App() {
   }
 
   async function handleAgentEvent(event: AgentEvent) {
-    if (event.type === 'subagent-progress') {
-      updateResearchSubagentProgress(event.progress)
+    if (event.type === 'subagent-thread') {
+      const conversationId = event.conversationId ?? turnConversationIds.current[event.turnId]
+      if (conversationId) {
+        updateConversation(conversationId, conversation =>
+          applySubagentThreadUpdate(conversation, event.turnId, event.subagentThread),
+        )
+      }
       return
     }
 
@@ -1421,19 +1404,11 @@ export function App() {
       if (conversationId) turnConversationIds.current[event.turnId] = conversationId
       turnStartedAt.current[event.turnId] = Date.now()
       beginTokenRateTracking(event.turnId)
-      subagentPanelDismissed.current = false
       turnActivityKeys.current[event.turnId] ??= new Set()
       turnActivityCounts.current[event.turnId] ??= {}
       turnTerminalErrors.current[event.turnId] = []
       turnCommands.current[event.turnId] = []
       turnReferences.current[event.turnId] = []
-      const hasResearchSubagents = Object.keys(activeSubagentsRef.current).some(id => id.startsWith('research:'))
-      if (pendingResearchSubagentsRef.current.length > 0) {
-        attachPendingResearchSubagents(event.turnId)
-      } else if (!hasResearchSubagents && !Object.keys(activeSubagentsRef.current).some(id => id.startsWith(`${event.turnId}:`))) {
-        activeSubagentsRef.current = {}
-        setActiveSubagents([])
-      }
       setRunningTurnId(event.turnId)
       setThinkingTurnId(event.turnId)
       if (conversationId) {
@@ -1498,7 +1473,6 @@ export function App() {
       updateTokenRateFromPayload(event.turnId, event.payload)
       // Capture thinking_delta text for real-time rotating snippet display
       collectThinkingText(event.turnId, event.payload)
-      routeSubagentChildEvent(event.turnId, event.payload)
       collectModelQuestions(event.turnId, event.payload)
       const reportedWindows = extractReportedContextWindows(event.payload)
       if (reportedWindows) {
@@ -1542,7 +1516,6 @@ export function App() {
       // Do NOT clear compactingTurnId here — it stays until the turn
       // completes (done/error handler), ensuring the user sees the
       // compaction marker long enough even if follow-up activities race in.
-      if (activity?.kind === 'subagent') trackActiveSubagent(event.turnId, activity)
       if (conversationId && activity) {
         if (activity.kind === 'command' && activity.detail) {
           turnLastCommand.current[event.turnId] = activity.detail
@@ -1569,7 +1542,6 @@ export function App() {
               updateActivityToolOutput(conversationId, toolItemId, result.output, result.isError)
             }
           }
-          updateSubagentResult(event.turnId, result)
         }
       }
       return
@@ -1669,7 +1641,6 @@ export function App() {
       setThinkingSnippets([])
       setCompactingTurnId(current => (current === event.turnId ? undefined : current))
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
-      clearActiveSubagentsForTurn(event.turnId)
       if (!willContinueAutomatically) flashPet('error')
       // A transparently recovered failure is not a completed error from the
       // user's perspective, so only notify when it will actually surface.
@@ -1822,7 +1793,6 @@ export function App() {
       setThinkingSnippets([])
       setCompactingTurnId(current => (current === event.turnId ? undefined : current))
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
-      clearActiveSubagentsForTurn(event.turnId)
       flashPet(event.exitCode === 0 ? 'success' : 'error')
       // Fire OS notification when the turn completed in a background
       // conversation (not the active one) or the window is not focused.
@@ -2197,9 +2167,11 @@ export function App() {
     setContextUsage(undefined)
     setTokenRate(undefined)
 
-    const request = await prepareRequestWithResearchSubagents(item)
+    const parentTurnId = item.request.turnId ?? crypto.randomUUID()
+    turnConversationIds.current[parentTurnId] = item.conversationId
+    const request = await prepareRequestWithResearchSubagents(item, parentTurnId)
     const resumeId = options?.skipResume ? undefined : conversationCliSessionId(item.conversationId)
-    const turnId = await sendTrackedTurn(request, resumeId)
+    const turnId = await sendTrackedTurn({ ...request, turnId: parentTurnId }, resumeId)
     turnConversationIds.current[turnId] = item.conversationId
     turnModels.current[turnId] = item.turnModel
     // Track last user text for one-shot session-resume recovery.
@@ -2208,7 +2180,6 @@ export function App() {
       message: item.message,
       alreadyRetriedWithoutSession: Boolean(options?.skipResume),
     }
-    attachPendingResearchSubagents(turnId)
     tagAssistantMessage(item.conversationId, turnId, item.turnModel)
     if (pendingConversationId.current === item.conversationId) pendingConversationId.current = undefined
   }
@@ -2222,170 +2193,37 @@ export function App() {
     return turnId
   }
 
-  async function prepareRequestWithResearchSubagents(item: QueuedFollowUp): Promise<AgentTurnRequest> {
+  async function prepareRequestWithResearchSubagents(
+    item: QueuedFollowUp,
+    parentTurnId: string,
+  ): Promise<AgentTurnRequest> {
     const researchRequest = parseResearchSubagentRequest(item.message)
-    if (!researchRequest) return item.request
+    if (!researchRequest) return { ...item.request, turnId: parentTurnId }
 
     const runId = `research:${item.id}`
-    const agents = Array.from({ length: researchRequest.count }, (_, index): ActiveSubagent => {
-      const mission = index === 0
-        ? t('subagent.localMission')
-        : t('subagent.complementaryMission')
-      const status = index === 0 ? 'reading' : 'searching'
-      return {
-        id: `research:${item.id}:${index + 1}`,
-        runId,
-        label: subagentNameFor(`${item.id}:${index}`, index),
-        detail: index === 0 ? t('subagent.localDetail') : t('subagent.complementaryDetail'),
-        mission,
-        history: [
-          {
-            id: `mission:${index + 1}`,
-            label: t('subagent.missionReceived'),
-            text: mission,
-            timestamp: Date.now() + index,
-          },
-          {
-            id: `status:${index + 1}:start`,
-            label: subagentStatusLabel(status, t),
-            text: index === 0 ? t('subagent.readingProject') : t('subagent.searchingSupport'),
-            timestamp: Date.now() + index + 1,
-          },
-        ],
-        status,
-        updatedAt: Date.now() + index,
-      }
-    })
-
-    activeSubagentsRef.current = Object.fromEntries(agents.map(agent => [agent.id, agent]))
-    pendingResearchSubagentsRef.current = agents
-    setActiveSubagents(agents)
-    autoSelectSubagent(agents[0]?.id)
-
-    appendConversationItem(item.conversationId, {
-      id: `research:${item.id}:activity:1`,
-      role: 'tool',
-      kind: 'activity',
-      activityKind: 'subagent',
-      text: t('subagent.researching', {
-        count: researchRequest.count,
-        label: t(researchRequest.count === 1 ? 'subagent.single' : 'subagent.plural'),
-      }),
-      activityDetail: researchRequest.requestedCount > researchRequest.count
-        ? t('subagent.limited', { count: researchRequest.count })
-        : t('subagent.readOnlyBeforeTurn'),
-      timestamp: Date.now(),
-    })
+    const labels = Array.from({ length: researchRequest.count }, (_, index) =>
+      subagentNameFor(`${item.id}:${index}`, index),
+    )
+    const baseRequest = { ...item.request, turnId: parentTurnId }
 
     try {
       const results = await window.verboo.runResearchSubagents({
         runId,
         count: researchRequest.count,
         requestedCount: researchRequest.requestedCount,
-        baseRequest: item.request,
+        labels,
+        baseRequest,
       })
-
-      appendConversationItem(item.conversationId, {
-        id: `research:${item.id}:activity:2`,
-        role: 'tool',
-        kind: 'activity',
-        activityKind: 'subagent',
-        text: t('subagent.completed'),
-        activityDetail: formatResearchResultsForTranscript(results, agents, t),
-        timestamp: Date.now(),
-      })
-
-      const finishedAgents = agents.map((agent, index) => {
-        const result = results[index]
-        const status = result?.status === 'complete' ? 'done' : 'failed'
-        const summary = result?.summary || (status === 'done' ? t('subagent.done') : t('subagent.failed'))
-        return {
-          ...agent,
-          status,
-          detail: summary,
-          updatedAt: Date.now() + index,
-          history: [
-            ...(agent.history ?? []),
-            {
-              id: `result:${index + 1}`,
-              label: subagentStatusLabel(status, t),
-              text: summary,
-              timestamp: Date.now() + index,
-            },
-          ],
-        } satisfies ActiveSubagent
-      })
-      const researchContext = buildResearchResultsContext(results, finishedAgents, t)
-      activeSubagentsRef.current = Object.fromEntries(finishedAgents.map(agent => [agent.id, agent]))
-      pendingResearchSubagentsRef.current = finishedAgents
-      setActiveSubagents(finishedAgents)
-      autoSelectSubagent(finishedAgents[0]?.id)
-      if (!researchContext) return item.request
+      const researchContext = buildResearchResultsContext(results, labels, t)
+      if (!researchContext) return baseRequest
 
       return {
-        ...item.request,
+        ...baseRequest,
         memoryContext: [item.request.memoryContext, researchContext].filter(Boolean).join('\n\n'),
       }
-    } catch (error) {
-      appendConversationItem(item.conversationId, {
-        id: `research:${item.id}:activity:2`,
-        role: 'tool',
-        kind: 'activity',
-        activityKind: 'subagent',
-        text: t('subagent.failed'),
-        activityDetail: error instanceof Error ? error.message : String(error),
-        timestamp: Date.now(),
-      })
-      const now = Date.now()
-      const detail = error instanceof Error ? error.message : String(error)
-      const failedAgents = agents.map((agent, index) => ({
-        ...agent,
-        status: 'failed',
-        detail,
-        updatedAt: now + index,
-        history: appendSubagentHistory(agent.history, {
-          id: `failed:${index + 1}:${now}`,
-          label: t('subagent.failed'),
-          text: detail,
-          timestamp: now + index,
-        }),
-      } satisfies ActiveSubagent))
-      activeSubagentsRef.current = Object.fromEntries(failedAgents.map(agent => [agent.id, agent]))
-      pendingResearchSubagentsRef.current = failedAgents
-      setActiveSubagents(failedAgents)
-      autoSelectSubagent(failedAgents[0]?.id)
-      return item.request
+    } catch {
+      return baseRequest
     }
-  }
-
-  async function cancelResearchSubagent(agent: ActiveSubagent) {
-    const now = Date.now()
-    const runId = agent.runId
-    if (runId) await window.verboo.cancelResearchSubagents(runId)
-
-    const next = Object.fromEntries(Object.entries(activeSubagentsRef.current).map(([id, current]) => {
-      const sameRun = runId ? current.runId === runId : current.id === agent.id
-      if (!sameRun) return [id, current]
-      return [id, {
-        ...current,
-        status: 'failed',
-        detail: t('subagent.cancelledDetail'),
-        updatedAt: now,
-        history: appendSubagentHistory(current.history, {
-          id: `${current.id}:cancelled:${now}`,
-          label: t('subagent.cancelledLabel'),
-          text: t('subagent.cancelledText'),
-          timestamp: now,
-        }),
-      } satisfies ActiveSubagent]
-    }))
-
-    activeSubagentsRef.current = next
-    pendingResearchSubagentsRef.current = pendingResearchSubagentsRef.current.filter(current =>
-      runId ? current.runId !== runId : current.id !== agent.id,
-    )
-    setActiveSubagents(Object.values(next).sort((a, b) => a.updatedAt - b.updatedAt))
-    setSelectedSubagentId(undefined)
   }
 
   function setQueuedFollowUpsList(updater: (current: QueuedFollowUp[]) => QueuedFollowUp[]) {
@@ -3551,6 +3389,11 @@ export function App() {
       turnActivityCounts.current[turnId] = counts
     }
 
+    // Subagent details live in the optional side panel. Keep the aggregate
+    // count for the parent turn summary, but do not insert a large standalone
+    // activity row into the main transcript.
+    if (activity.kind === 'subagent') return
+
     const itemId = `${turnId}:activity:${keys.size}`
     const command: CommandRun | undefined = activity.kind === 'command'
       ? { input: activity.detail ?? t('composer.command'), output: '', status: 'running' }
@@ -3661,252 +3504,6 @@ export function App() {
     }))
   }
 
-  function autoSelectSubagent(id: string | undefined) {
-    if (!id || subagentPanelDismissed.current) return
-    autoSelectSubagent(id)
-  }
-
-  // Child events of a running subagent arrive tagged with parent_tool_use_id.
-  // They carry the whole exchange: the orchestrator's prompt (user message),
-  // the agent's own text and tool calls (assistant messages). Routing them
-  // into the subagent history turns the side panel into a real conversation —
-  // model asks, agent works, agent answers.
-  function routeSubagentChildEvent(turnId: string, payload: unknown) {
-    if (!isRecord(payload) || typeof payload.parent_tool_use_id !== 'string') return
-    const subagentId = turnSubagentToolIds.current[turnId]?.[payload.parent_tool_use_id]
-    if (!subagentId) return
-    const previous = activeSubagentsRef.current[subagentId]
-    if (!previous) return
-    const message = isRecord(payload.message) ? payload.message : undefined
-    if (!message || !Array.isArray(message.content)) return
-
-    const now = Date.now()
-    let next = previous
-    for (const block of message.content) {
-      if (!isRecord(block)) continue
-      const text = typeof block.text === 'string' ? block.text.trim() : ''
-      if (payload.type === 'user' && block.type === 'text' && text) {
-        next = {
-          ...next,
-          mission: text,
-          updatedAt: now,
-          history: appendSubagentHistory(next.history, {
-            id: `${subagentId}:prompt:${now}`,
-            label: t('subagent.missionReceived'),
-            text,
-            timestamp: now,
-          }),
-        }
-      } else if (payload.type === 'assistant' && block.type === 'text' && text) {
-        next = {
-          ...next,
-          detail: snippet(text),
-          updatedAt: now,
-          history: appendSubagentHistory(next.history, {
-            id: `${subagentId}:say:${now}:${next.history?.length ?? 0}`,
-            label: next.label,
-            text,
-            timestamp: now,
-          }),
-        }
-      } else if (payload.type === 'assistant' && block.type === 'tool_use' && typeof block.name === 'string') {
-        const input = isRecord(block.input) ? block.input : undefined
-        const inputDetail = typeof input?.command === 'string'
-          ? input.command
-          : typeof input?.file_path === 'string'
-            ? input.file_path
-            : typeof input?.query === 'string' ? input.query : ''
-        next = {
-          ...next,
-          detail: snippet(`${block.name} ${inputDetail}`.trim()),
-          updatedAt: now,
-          history: appendSubagentHistory(next.history, {
-            id: `${subagentId}:tool:${now}:${next.history?.length ?? 0}`,
-            label: block.name,
-            text: snippet(inputDetail) || block.name,
-            timestamp: now,
-          }),
-        }
-      }
-    }
-
-    if (next === previous) return
-    activeSubagentsRef.current = { ...activeSubagentsRef.current, [subagentId]: next }
-    setActiveSubagents(Object.values(activeSubagentsRef.current).sort((a, b) => a.updatedAt - b.updatedAt))
-  }
-
-  function updateSubagentResult(turnId: string, result: { toolUseId: string; output: string; isError: boolean }) {
-    const subagentId = turnSubagentToolIds.current[turnId]?.[result.toolUseId]
-    if (!subagentId) return
-    const previous = activeSubagentsRef.current[subagentId]
-    if (!previous) return
-
-    const now = Date.now()
-    const text = snippet(result.output) || (result.isError ? t('subagent.failed') : t('subagent.completed'))
-    const status: ActiveSubagent['status'] = result.isError ? 'failed' : 'done'
-    const next: ActiveSubagent = {
-      ...previous,
-      status,
-      detail: text,
-      updatedAt: now,
-      history: appendSubagentHistory(previous.history, {
-        id: `${subagentId}:result:${now}`,
-        label: result.isError ? t('subagent.failed') : t('subagent.completed'),
-        text,
-        timestamp: now,
-      }),
-    }
-
-    activeSubagentsRef.current = {
-      ...activeSubagentsRef.current,
-      [subagentId]: next,
-    }
-    setActiveSubagents(Object.values(activeSubagentsRef.current).sort((a, b) => a.updatedAt - b.updatedAt))
-    autoSelectSubagent(subagentId)
-  }
-
-  function trackActiveSubagent(turnId: string, activity: TurnActivity) {
-    const isStop = /stop|stopp|finish|complete|done|finaliz/i.test(`${activity.key} ${activity.label}`)
-    const identity = normalizeSubagentIdentity(activity)
-    const id = `${turnId}:subagent:${identity}`
-    const previous = activeSubagentsRef.current[id]
-    if (isStop) {
-      if (!previous) return
-      activeSubagentsRef.current = {
-        ...activeSubagentsRef.current,
-        [id]: {
-          ...previous,
-          status: 'done',
-          detail: t('subagent.completed'),
-          updatedAt: Date.now(),
-          history: appendSubagentHistory(previous.history, {
-            id: `${id}:done:${Date.now()}`,
-            label: t('subagent.completed'),
-            text: activity.detail || t('subagent.completed'),
-            timestamp: Date.now(),
-          }),
-        },
-      }
-      setActiveSubagents(Object.values(activeSubagentsRef.current).sort((a, b) => a.updatedAt - b.updatedAt))
-      return
-    }
-
-    if (activity.toolUseId) {
-      const map = turnSubagentToolIds.current[turnId] ?? {}
-      map[activity.toolUseId] = id
-      turnSubagentToolIds.current[turnId] = map
-    }
-
-    const now = Date.now()
-    const mission = previous?.mission ?? activity.detail ?? t('subagent.readOnlyBeforeTurn')
-    const history = appendSubagentHistory(
-      previous?.history ?? (activity.detail ? [{
-        id: `${id}:mission:${now}`,
-        label: t('subagent.missionReceived'),
-        text: activity.detail,
-        timestamp: now,
-      }] : undefined),
-      {
-        id: `${id}:activity:${now}`,
-        label: activityDisplayLabel(activity, t),
-        text: activity.detail || compactSubagentDetail(activity, t),
-        timestamp: now,
-      },
-    )
-
-    const next = {
-      id,
-      label: previous?.label ?? subagentNameFor(identity, Object.keys(activeSubagentsRef.current).length),
-      detail: compactSubagentDetail(activity, t),
-      mission,
-      history,
-      status: subagentStatusForActivity(activity),
-      updatedAt: now,
-    }
-    activeSubagentsRef.current = {
-      ...activeSubagentsRef.current,
-      [id]: next,
-    }
-    setActiveSubagents(Object.values(activeSubagentsRef.current).sort((a, b) => a.updatedAt - b.updatedAt))
-    autoSelectSubagent(id)
-  }
-
-  function updateResearchSubagentProgress(progress: ResearchSubagentProgress) {
-    const previous = activeSubagentsRef.current[progress.id]
-    const now = Date.now()
-    const status = subagentStatusForResearchProgress(progress)
-    const label = progress.label
-      ?? previous?.label
-      ?? subagentNameFor(`${progress.runId ?? progress.id}:${progress.index}`, progress.index - 1)
-    const mission = progress.mission ?? previous?.mission ?? progress.summary ?? t('subagent.defaultMission')
-    const detail = progress.detail ?? progress.activity ?? progress.summary ?? previous?.detail
-    const next: ActiveSubagent = {
-      ...(previous ?? {}),
-      id: progress.id,
-      runId: progress.runId ?? previous?.runId,
-      label,
-      mission,
-      detail,
-      status,
-      updatedAt: now,
-      history: appendSubagentHistory(previous?.history, {
-        id: `${progress.id}:${progress.status}:${now}`,
-        label: subagentStatusLabel(status, t),
-        text: detail || mission,
-        timestamp: now,
-      }),
-    }
-
-    activeSubagentsRef.current = {
-      ...activeSubagentsRef.current,
-      [progress.id]: next,
-    }
-    pendingResearchSubagentsRef.current = pendingResearchSubagentsRef.current.map(agent =>
-      agent.id === progress.id ? next : agent,
-    )
-    setActiveSubagents(Object.values(activeSubagentsRef.current).sort((a, b) => a.updatedAt - b.updatedAt))
-    autoSelectSubagent(progress.id)
-  }
-
-  function attachPendingResearchSubagents(turnId: string) {
-    if (pendingResearchSubagentsRef.current.length === 0) return
-    const pending = pendingResearchSubagentsRef.current
-    const selectedIndex = selectedSubagentId
-      ? Math.max(0, pending.findIndex(agent => agent.id === selectedSubagentId))
-      : 0
-    const attached = pending.map((agent, index) => ({
-      ...agent,
-      id: `${turnId}:research:${index + 1}`,
-      updatedAt: agent.updatedAt + index,
-    }))
-    pendingResearchSubagentsRef.current = []
-    if (attached.length === 0) {
-      activeSubagentsRef.current = {}
-      setActiveSubagents([])
-      return
-    }
-    activeSubagentsRef.current = Object.fromEntries(attached.map(agent => [agent.id, agent]))
-    setActiveSubagents(attached)
-    setSelectedSubagentId(attached[selectedIndex]?.id)
-  }
-
-  function clearActiveSubagentsForTurn(turnId: string) {
-    const next = Object.fromEntries(
-      Object.entries(activeSubagentsRef.current).filter(([id]) => !id.startsWith(`${turnId}:`)),
-    )
-    pendingResearchSubagentsRef.current = []
-    activeSubagentsRef.current = next
-    setActiveSubagents(Object.values(next).sort((a, b) => a.updatedAt - b.updatedAt))
-  }
-
-  function normalizeSubagentIdentity(activity: TurnActivity): string {
-    return (activity.detail || activity.label || activity.key)
-      .toLowerCase()
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 96) || 'default'
-  }
-
   async function appendTurnSummary(conversationId: string, turnId: string, exitCode: number | null) {
     const startedAt = turnStartedAt.current[turnId]
     const elapsed = startedAt ? formatElapsed(Date.now() - startedAt) : t('transcript.someSeconds')
@@ -3984,7 +3581,6 @@ export function App() {
     delete turnTextSegmentCount.current[turnId]
     delete turnCommandItemIds.current[turnId]
     delete turnToolUseItemIds.current[turnId]
-    delete turnSubagentToolIds.current[turnId]
   }
 
   function appendTouchedFile(turnId: string, filePath: string) {
@@ -4092,8 +3688,21 @@ export function App() {
   const handleToggleTerminal = useCallback((cwd: string) => {
     setReviewUnavailableReason(undefined)
     review.close()
+    setSelectedSubagentId(undefined)
     void terminal.toggle(cwd)
   }, [review, terminal])
+
+  const handleToggleSubagents = useCallback(() => {
+    if (selectedSubagentId) {
+      setSelectedSubagentId(undefined)
+      return
+    }
+    const latest = latestSubagentThread(subagentThreads)
+    if (!latest) return
+    terminal.close()
+    review.close()
+    setSelectedSubagentId(latest.id)
+  }, [review, selectedSubagentId, subagentThreads, terminal])
 
   const handleToggleReview = useCallback(async () => {
     if (review.reviewOpen) {
@@ -4201,7 +3810,7 @@ export function App() {
   ])
 
   useEffect(() => {
-    const subagentsRunning = workingSubagents.length > 0
+    const subagentsRunning = workingSubagentCount > 0
     const state: Partial<MenuBarState> = {
       execution: runningTurnId ? subagentsRunning ? 'tool' : 'thinking' : 'idle',
       label: runningTurnId ? subagentsRunning ? 'subagent' : 'working' : 'ready',
@@ -4218,7 +3827,7 @@ export function App() {
     void window.verboo.updateMenuBar(state)
   }, [
     currentWorkspaceDirectory,
-    workingSubagents.length,
+    workingSubagentCount,
     cliAuth.email,
     cliAuth.loggedIn,
     effectiveContextUsage?.percentage,
@@ -4407,6 +4016,13 @@ export function App() {
               <span>{workspaceFolderName(workspaceDirectory, activeProject?.name, t('project.none'))}</span>
             </div>
           )}
+          {activeView === 'chat' && (
+            <SubagentIndicator
+              threads={subagentThreads}
+              open={showSubagentThreadPanel}
+              onOpen={handleToggleSubagents}
+            />
+          )}
           {activeView === 'profile' ? (
             <ProfileView
               profile={profile}
@@ -4517,13 +4133,11 @@ export function App() {
           )}
         </section>
         {showSubagentThreadPanel && selectedSubagent && (
-          <ResearchSubagentPanel
-            agent={selectedSubagent}
-            onClose={() => {
-              subagentPanelDismissed.current = true
-              setSelectedSubagentId(undefined)
-            }}
-            onCancel={cancelResearchSubagent}
+          <SubagentThreadPanel
+            threads={subagentThreads}
+            selectedId={selectedSubagent.id}
+            onSelect={setSelectedSubagentId}
+            onClose={() => setSelectedSubagentId(undefined)}
           />
         )}
         <LocalTerminalPanel
@@ -4591,18 +4205,6 @@ export function App() {
                 ×
               </button>
             </div>
-          )}
-          {showSubagentSummary && (
-            <SubagentSummaryCard
-              agents={workingSubagents}
-              expanded={subagentSummaryExpanded}
-              selectedAgentId={selectedSubagentId}
-              onToggleExpanded={() => setSubagentSummaryExpanded(current => !current)}
-              onSelectAgent={agentId => {
-                subagentPanelDismissed.current = false
-                setSelectedSubagentId(current => (current === agentId ? undefined : agentId))
-              }}
-            />
           )}
           {showJumpToLatest && hasConversation && (
             <button className="jump-to-latest" type="button" onClick={() => scrollToLatest('smooth')} title={t('workspace.jumpToLatest')}>
@@ -4789,133 +4391,6 @@ export function App() {
         )}
     </main>
     </I18nProvider>
-  )
-}
-
-function SubagentSummaryCard({
-  agents,
-  expanded,
-  selectedAgentId,
-  onToggleExpanded,
-  onSelectAgent,
-}: {
-  agents: ActiveSubagent[]
-  expanded: boolean
-  selectedAgentId?: string
-  onToggleExpanded: () => void
-  onSelectAgent: (agentId: string) => void
-}) {
-  const { t } = useI18n()
-  if (agents.length === 0) return null
-  const title = String(agents.length)
-
-  return (
-    <section className={`subagent-summary-card ${expanded ? 'expanded' : ''}`} aria-label={t('subagent.activeAria')}>
-      <button
-        className="subagent-summary-header"
-        type="button"
-        onClick={onToggleExpanded}
-        aria-expanded={expanded}
-      >
-        <span className="subagent-summary-title">
-          <GitBranch size={14} />
-          {t('subagent.summaryTitle')}
-        </span>
-        <span className="subagent-summary-count">{title}</span>
-        {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-      </button>
-
-      {expanded && (
-        <div className="subagent-summary-list">
-          {agents.map(agent => {
-            const Icon = subagentStatusIcon(agent.status)
-            return (
-              <button
-                key={agent.id}
-                className={`subagent-summary-item ${agent.id === selectedAgentId ? 'selected' : ''}`}
-                data-status={agent.status}
-                type="button"
-                onClick={() => onSelectAgent(agent.id)}
-              >
-                <span className="subagent-summary-avatar" aria-hidden="true">
-                  <img src={mascotUrl} alt="" />
-                </span>
-                <strong>{agent.label}</strong>
-                <span className="subagent-summary-state">
-                  <Icon size={13} />
-                  {subagentStatusLabel(agent.status, t)}
-                </span>
-              </button>
-            )
-          })}
-        </div>
-      )}
-    </section>
-  )
-}
-
-function ResearchSubagentPanel({
-  agent,
-  onClose,
-  onCancel,
-}: {
-  agent: ActiveSubagent
-  onClose: () => void
-  onCancel: (agent: ActiveSubagent) => Promise<void>
-}) {
-  const { t } = useI18n()
-  const Icon = subagentStatusIcon(agent.status)
-  const history = agent.history ?? []
-  const canCancel = isActiveSubagentWorking(agent)
-
-  return (
-    <aside className="research-subagent-panel" data-status={agent.status} aria-label={t('subagent.threadAria', { name: agent.label })}>
-      <header className="research-subagent-header">
-        <div className="research-subagent-header-row">
-          <span className="research-subagent-tab">
-            <GitBranch size={14} />
-            <strong>{agent.label}</strong>
-          </span>
-          <button
-            type="button"
-            className="research-subagent-close ui-tooltip"
-            data-tooltip={canCancel ? t('subagent.cancelSearch') : t('subagent.closePanel')}
-            data-tooltip-align="end"
-            onClick={() => {
-              if (canCancel) {
-                void onCancel(agent)
-                return
-              }
-              onClose()
-            }}
-            aria-label={canCancel ? t('subagent.cancelAria') : t('subagent.closeAria')}
-          >
-            <XCircle size={16} />
-          </button>
-        </div>
-        <span className="research-subagent-state">
-          <Icon size={13} />
-          {subagentStatusLabel(agent.status, t)}
-        </span>
-      </header>
-
-      <section className="research-subagent-thread" aria-label={t('subagent.historyAria', { name: agent.label })}>
-        <div className="research-subagent-message mission">
-          <small>{t('subagent.mission')}</small>
-          <p>{agent.mission || agent.detail || t('subagent.defaultMission')}</p>
-        </div>
-        {history.map(item => (
-          <div key={item.id} className="research-subagent-message">
-            <small>{item.label}</small>
-            <p>{item.text}</p>
-          </div>
-        ))}
-      </section>
-
-      <footer className="research-subagent-footer">
-        {t('subagent.readOnlyHistory')}
-      </footer>
-    </aside>
   )
 }
 
@@ -5158,25 +4633,9 @@ function inferResearchSubagentCount(normalizedMessage: string): 1 | 2 {
   return signals >= 2 || asksForTwoAngles || broadRequest ? 2 : 1
 }
 
-function formatResearchResultsForTranscript(
-  results: ResearchSubagentResult[],
-  agents: ActiveSubagent[],
-  t: Translator,
-): string {
-  if (results.length === 0) return t('subagent.noResults')
-  return results
-    .map(result => {
-      const agentName = agents[result.index - 1]?.label ?? `Subagente ${result.index}`
-      const status = result.status === 'complete' ? t('subagent.resultComplete') : t('subagent.resultFailed')
-      const sources = result.sources.length ? ` ${t('subagent.sources')}: ${result.sources.slice(0, 3).join('; ')}.` : ''
-      return `${agentName} ${status}: ${result.summary}${sources}`
-    })
-    .join('\n')
-}
-
 function buildResearchResultsContext(
   results: ResearchSubagentResult[],
-  agents: ActiveSubagent[],
+  labels: string[],
   t: Translator,
 ): string {
   if (results.length === 0) return ''
@@ -5184,20 +4643,12 @@ function buildResearchResultsContext(
     t('subagent.resultsContextTitle'),
     '',
     ...results.map(result => [
-      `${agents[result.index - 1]?.label ?? `Subagente ${result.index}`} (${result.status}):`,
+      `${labels[result.index - 1] ?? `Subagente ${result.index}`} (${result.status}):`,
       `${t('subagent.summary')}: ${result.summary}`,
       result.findings.length ? `${t('subagent.findings')}:\n${result.findings.map(finding => `- ${finding}`).join('\n')}` : '',
       result.sources.length ? `${t('subagent.sources')}:\n${result.sources.map(source => `- ${source}`).join('\n')}` : '',
     ].filter(Boolean).join('\n')),
   ].join('\n\n')
-}
-
-function subagentStatusLabel(status: ActiveSubagent['status'], t: Translator): string {
-  if (status === 'reading') return t('subagent.reading')
-  if (status === 'searching') return t('subagent.searching')
-  if (status === 'done') return t('subagent.done')
-  if (status === 'failed') return t('subagent.failed')
-  return t('subagent.thinking')
 }
 
 function subagentNameFor(seed: string, index: number): string {
@@ -5207,46 +4658,6 @@ function subagentNameFor(seed: string, index: number): string {
   }
   const offset = Math.abs(hash + index * 7) % SUBAGENT_NAMES.length
   return SUBAGENT_NAMES[offset]
-}
-
-function isActiveSubagentWorking(agent: ActiveSubagent): boolean {
-  return agent.status !== 'done' && agent.status !== 'failed'
-}
-
-function subagentStatusIcon(status: ActiveSubagent['status']) {
-  if (status === 'done') return CheckCircle2
-  if (status === 'failed') return XCircle
-  return LoaderCircle
-}
-
-function subagentStatusForActivity(activity: TurnActivity): ActiveSubagent['status'] {
-  const text = `${activity.key} ${activity.label} ${activity.detail ?? ''}`.toLowerCase()
-  if (/finish|complete|done|finaliz/.test(text)) return 'done'
-  if (/fail|erro|error/.test(text)) return 'failed'
-  if (/read|leu|lendo|file|arquivo/.test(text)) return 'reading'
-  if (/search|pesquis|grep|glob|internet/.test(text)) return 'searching'
-  return 'thinking'
-}
-
-function subagentStatusForResearchProgress(progress: ResearchSubagentProgress): ActiveSubagent['status'] {
-  if (progress.status === 'complete') return 'done'
-  if (progress.status === 'failed') return 'failed'
-  if (progress.status === 'reading') return 'reading'
-  if (progress.status === 'searching') return 'searching'
-
-  const text = `${progress.summary} ${progress.activity ?? ''} ${progress.detail ?? ''}`.toLowerCase()
-  if (/read|leu|lendo|file|arquivo/.test(text)) return 'reading'
-  if (/search|pesquis|grep|glob|internet/.test(text)) return 'searching'
-  return 'thinking'
-}
-
-function compactSubagentDetail(activity: TurnActivity, t: Translator): string {
-  const status = subagentStatusForActivity(activity)
-  if (status === 'reading') return t('subagent.readingProject')
-  if (status === 'searching') return t('subagent.searchingSupport')
-  if (status === 'done') return t('subagent.completed')
-  if (status === 'failed') return t('subagent.cancelledText')
-  return t('subagent.defaultMission')
 }
 
 function activityDisplayLabel(activity: TurnActivity, t: Translator): string {
@@ -5261,14 +4672,6 @@ function activityDisplayLabel(activity: TurnActivity, t: Translator): string {
   if (activity.kind === 'context') return activity.label
   if (activity.kind === 'thinking') return t('transcript.thinking')
   return t('transcript.toolOne')
-}
-
-function appendSubagentHistory(
-  current: ActiveSubagentHistoryItem[] | undefined,
-  item: ActiveSubagentHistoryItem,
-): ActiveSubagentHistoryItem[] {
-  const next = [...(current ?? []), item]
-  return next.slice(-8)
 }
 
 function mergeAssistantText(current: string, incoming: string): string {

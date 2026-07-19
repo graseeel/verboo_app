@@ -40,7 +40,6 @@
 .bottom-dock > .permission-approval-panel,
 .bottom-dock > .question-wizard,
 .bottom-dock > .question-chip,
-.bottom-dock > .subagent-summary-card,
 .bottom-dock > .vision-fallback-panel,
 .bottom-dock > .skill-approval-panel {
   width: min(var(--chat-lane-width), 100%);
