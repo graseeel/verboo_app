@@ -1,5 +1,6 @@
 pub mod auth_token;
 pub mod child_signal;
+pub mod chrome_integration;
 pub mod cli_credentials;
 pub mod cli_path;
 pub mod cli_service;
