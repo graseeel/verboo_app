@@ -1,10 +1,13 @@
 /**
- * Pure functions for the @-mention file palette in the composer.
+ * Pure functions for the @-mention skill palette in the composer.
  *
  * The @-mention regex mirrors getSlashQuery (/): it detects @query at the
- * cursor (end of text), shows a file palette, and on selection replaces the
- * @query with the full @relative/path token.
+ * cursor (end of text), shows a skill palette, and on selection adds the
+ * skill chip to selectedSkills while removing the @query from the text.
+ * No textual @tokens remain after selection (Plan D).
  */
+
+import type { SkillSummary } from '../../../shared/types'
 
 /** Detect an unfinished @-mention query at the cursor position.
  *  Returns the query string (possibly empty) or undefined if no @ is active. */
@@ -13,14 +16,17 @@ export function getAtQuery(value: string): string | undefined {
   return match ? match[1] : undefined
 }
 
-/** Replace the @-mention query at cursor with a concrete @path token.
- *  If no @-mention is active, appends the token with a leading space. */
+/** Replace the @-mention query at cursor with a token (Feedback-3 ITEM 2b).
+ *  When the user selects a skill from the @ palette, the @query is replaced
+ *  with `@<skill-name> ` so the text retains the reference as an inline token. */
 export function replaceAtQueryWithToken(value: string, token: string): string {
-  if (getAtQuery(value) === undefined) return `${value}${value.endsWith(' ') || !value ? '' : ' '}${token}`
-  return value.replace(/(?:^|\s)@[^\s]*$/, match => {
-    const prefix = match.startsWith(' ') ? ' ' : ''
-    return `${prefix}${token}`
-  })
+  const match = value.match(/(?:^|\s)@[^\s]*$/)
+  if (match) {
+    const prefix = match.index ? value.slice(0, match.index) : ''
+    const leadingSpace = prefix.length > 0 && !prefix.endsWith(' ') ? ' ' : ''
+    return prefix + leadingSpace + token
+  }
+  return value + ' ' + token
 }
 
 /** Remove the @-mention query (Escape). Preserves trailing space. */
@@ -28,28 +34,27 @@ export function removeAtQuery(value: string): string {
   return value.replace(/(?:^|\s)@[^\s]*$/, match => (match.startsWith(' ') ? ' ' : ''))
 }
 
-/** Fuzzy rank workspace files by @-mention query.
- *  Basename matches are weighted higher than full-path matches.
+/** Fuzzy rank skills by @-mention query (same ranking as / palette).
+ *  Name matches are weighted higher than description matches.
  *  Returns results sorted by relevance. */
-export function rankFiles(files: string[], query: string): string[] {
+export function rankSkills(skills: SkillSummary[], query: string): SkillSummary[] {
   const normalizedQuery = query.toLowerCase()
-  return files
-    .map(file => {
-      const basename = file.split('/').pop() ?? file
-      const base = basename.toLowerCase()
-      const full = file.toLowerCase()
+  return skills
+    .map(skill => {
+      const name = skill.name.toLowerCase()
+      const description = skill.description.toLowerCase()
       const score =
-        base === normalizedQuery ? 0 :
-        base.startsWith(normalizedQuery) ? 1 :
-        base.includes(normalizedQuery) ? 2 :
-        full.includes(normalizedQuery) ? 3 :
-        fuzzyMatch(base, normalizedQuery) || fuzzyMatch(full, normalizedQuery) ? 4 :
+        name === normalizedQuery ? 0 :
+        name.startsWith(normalizedQuery) ? 1 :
+        name.includes(normalizedQuery) ? 2 :
+        description.includes(normalizedQuery) ? 3 :
+        fuzzyMatch(name, normalizedQuery) || fuzzyMatch(description, normalizedQuery) ? 4 :
         99
-      return { file, score, base }
+      return { skill, score }
     })
     .filter(item => item.score < 99)
-    .sort((a, b) => a.score - b.score || a.base.localeCompare(b.base) || a.file.localeCompare(b.file))
-    .map(item => item.file)
+    .sort((a, b) => a.score - b.score || a.skill.name.localeCompare(b.skill.name))
+    .map(item => item.skill)
 }
 
 /** Fuzzy match: does every character of query appear in value in order? */
@@ -61,13 +66,4 @@ function fuzzyMatch(value: string, query: string): boolean {
     if (index === query.length) return true
   }
   return false
-}
-
-/** Extract @-mention file paths from text (for highlighting tokens). */
-export function extractAtTokens(value: string): Set<string> {
-  const tokens = new Set<string>()
-  for (const match of value.matchAll(/(?:^|\s)@([^\s]+)/g)) {
-    tokens.add(match[1].toLowerCase())
-  }
-  return tokens
 }
