@@ -3,13 +3,15 @@
  *
  * Mirrors desktop ModelService (model_service.rs):
  *   GET https://code.verboo.ai/router/v1/models
- *   Authorization: Bearer <api-key|token>
+ *   Authorization: Bearer <OAuth access token>
  *
  * Session is stored in chrome.storage.local so it survives browser restart.
  * When chrome is undefined (Node unit tests), an in-memory Map is used.
  *
- * Multi-user: zero hardcoded accounts; accountId is derived from the key.
+ * Multi-user: zero hardcoded accounts; identity comes from the OAuth response.
  */
+
+import { OAUTH_CONFIG } from './oauthConfig.js'
 
 export const ROUTER_URL = 'https://code.verboo.ai/router/v1/models'
 export const STORAGE_KEY = 'verbooSession'
@@ -17,7 +19,6 @@ export const MODELS_CACHE_KEY = 'verbooModelsCache'
 export const SELECTED_MODEL_KEY = 'verbooSelectedModelId'
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 /**
  * @typedef {Object} VerbooSession
@@ -26,7 +27,7 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
  * @property {string} accessToken
  * @property {string} [refreshToken]
  * @property {number} [expiresAt]
- * @property {'api-key'|'oauth'} source
+ * @property {'oauth'} source
  */
 
 /**
@@ -133,41 +134,102 @@ export async function isSignedIn() {
   return s.expiresAt > Date.now()
 }
 
+export function getAuthCapabilities(config = OAUTH_CONFIG) {
+  return {
+    methods: ['oauth'],
+    oauthConfigured: Boolean(config?.clientId),
+  }
+}
+
 /**
- * Login with a Verboo dashboard API key.
- * Validates the key against the Router models endpoint.
+ * Start a user-initiated OAuth Authorization Code + PKCE flow.
  *
- * @param {string} apiKey
- * @returns {Promise<{ session: VerbooSession, models: VerbooModel[] }>}
+ * @param {{clientId: string, authorizeUrl: string, tokenUrl: string, scopes: readonly string[]}} [config]
+ * @param {{identity?: typeof chrome.identity, fetch?: typeof fetch, crypto?: Crypto}} [dependencies]
+ * @returns {Promise<VerbooSession>}
  */
-export async function startApiKeyLogin(apiKey) {
-  const key = String(apiKey ?? '').trim()
-  if (!key) throw new Error('API key is required')
+export async function startOAuthLogin(config = OAUTH_CONFIG, dependencies = {}) {
+  if (!config?.clientId) throw new Error('oauth_not_configured')
 
-  const models = await fetchModelsFromRouter(key)
-  const now = Date.now()
-  const accountId = `api:${simpleHash8(key)}`
+  const identity = dependencies.identity ?? globalThis.chrome?.identity
+  const fetchImpl = dependencies.fetch ?? globalThis.fetch
+  const cryptoImpl = dependencies.crypto ?? globalThis.crypto
+  if (!identity?.getRedirectURL || !identity?.launchWebAuthFlow || !cryptoImpl?.subtle) {
+    throw new Error('oauth_unavailable')
+  }
 
-  /** @type {VerbooSession} */
+  const redirectUri = identity.getRedirectURL('oauth/callback')
+  const verifier = randomBase64Url(cryptoImpl, 48)
+  const state = randomBase64Url(cryptoImpl, 32)
+  const challenge = await sha256Base64Url(cryptoImpl, verifier)
+  const authorizeUrl = new URL(config.authorizeUrl)
+  authorizeUrl.searchParams.set('response_type', 'code')
+  authorizeUrl.searchParams.set('client_id', config.clientId)
+  authorizeUrl.searchParams.set('redirect_uri', redirectUri)
+  authorizeUrl.searchParams.set('scope', config.scopes.join(' '))
+  authorizeUrl.searchParams.set('state', state)
+  authorizeUrl.searchParams.set('code_challenge', challenge)
+  authorizeUrl.searchParams.set('code_challenge_method', 'S256')
+
+  const callbackValue = await identity.launchWebAuthFlow({
+    interactive: true,
+    url: authorizeUrl.toString(),
+  })
+  if (!callbackValue) throw new Error('oauth_invalid_redirect')
+  const callbackUrl = new URL(callbackValue)
+  const expectedRedirect = new URL(redirectUri)
+  if (
+    callbackUrl.origin !== expectedRedirect.origin ||
+    callbackUrl.pathname !== expectedRedirect.pathname
+  ) {
+    throw new Error('oauth_invalid_redirect')
+  }
+  const oauthError = callbackUrl.searchParams.get('error')
+  if (oauthError) throw new Error(`oauth_authorization_failed:${oauthError}`)
+  if (callbackUrl.searchParams.get('state') !== state) throw new Error('oauth_state_mismatch')
+  const code = callbackUrl.searchParams.get('code')
+  if (!code) throw new Error('oauth_code_missing')
+
+  const body = new URLSearchParams({
+    grant_type: 'authorization_code',
+    code,
+    client_id: config.clientId,
+    redirect_uri: redirectUri,
+    code_verifier: verifier,
+  })
+  const response = await fetchImpl(config.tokenUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'application/json',
+    },
+    body,
+  })
+  if (!response.ok) throw new Error(`oauth_token_exchange_failed:${response.status}`)
+  const token = await response.json()
+  if (!token?.access_token || typeof token.access_token !== 'string') {
+    throw new Error('oauth_access_token_missing')
+  }
+
+  const claims = readJwtClaims(token.id_token ?? token.access_token)
+  const expiresIn = Number(token.expires_in)
+  const accountId = firstNonEmpty(token.account_id, token.user_id, token.sub, claims.sub, claims.user_id) ??
+    `oauth:${(await sha256Base64Url(cryptoImpl, token.access_token)).slice(0, 12)}`
   const session = {
     accountId,
-    accessToken: key,
-    source: 'api-key',
-    expiresAt: now + SESSION_TTL_MS,
+    ...(firstNonEmpty(token.email, claims.email) ? { email: firstNonEmpty(token.email, claims.email) } : {}),
+    accessToken: token.access_token,
+    ...(typeof token.refresh_token === 'string' && token.refresh_token
+      ? { refreshToken: token.refresh_token }
+      : {}),
+    ...(Number.isFinite(expiresIn) && expiresIn > 0
+      ? { expiresAt: Date.now() + expiresIn * 1000 }
+      : {}),
+    source: 'oauth',
   }
 
   await saveSession(session)
-  await storageSet({
-    [MODELS_CACHE_KEY]: { models, fetchedAt: now },
-  })
-
-  const preferred =
-    models.find((m) => m.supportsVision) ?? models[0] ?? null
-  if (preferred?.id) {
-    await storageSet({ [SELECTED_MODEL_KEY]: preferred.id })
-  }
-
-  return { session, models }
+  return session
 }
 
 /**
@@ -219,29 +281,14 @@ export async function getSelectedModelId() {
 }
 
 /**
- * OAuth flow — not yet implemented for the extension.
- * @returns {Promise<never>}
- */
-export async function startOAuthFlow() {
-  throw new Error(
-    'not_implemented: OAuth login is not available in the extension yet. Use startApiKeyLogin with a Verboo dashboard API key.',
-  )
-}
-
-/**
- * Refresh session — only meaningful for OAuth; API-key sessions
- * re-validate by re-fetching models.
+ * Refresh is deliberately unavailable until the registered Chrome client is
+ * configured. Callers can restart the interactive OAuth flow after expiry.
  * @returns {Promise<VerbooSession|null>}
  */
 export async function refreshSession() {
   const current = await loadSession()
   if (!current?.accessToken) return null
-  if (current.source === 'api-key') {
-    // Re-validate key by refreshing models.
-    await loadModels(true)
-    return loadSession()
-  }
-  throw new Error('not_implemented: OAuth refresh is not available yet')
+  throw new Error('oauth_refresh_not_available')
 }
 
 // ── Router fetch + normalize ─────────────────────────────────
@@ -452,16 +499,36 @@ async function readModelsCache() {
   }
 }
 
-/**
- * First 8 hex chars of a simple FNV-1a-ish hash (stable, sync, no secrets logged).
- * @param {string} str
- * @returns {string}
- */
-function simpleHash8(str) {
-  let h = 2166136261
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i)
-    h = Math.imul(h, 16777619)
+function randomBase64Url(cryptoImpl, size) {
+  const bytes = new Uint8Array(size)
+  cryptoImpl.getRandomValues(bytes)
+  return bytesToBase64Url(bytes)
+}
+
+async function sha256Base64Url(cryptoImpl, value) {
+  const digest = await cryptoImpl.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return bytesToBase64Url(new Uint8Array(digest))
+}
+
+function bytesToBase64Url(bytes) {
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
+}
+
+function readJwtClaims(value) {
+  if (typeof value !== 'string') return {}
+  const payload = value.split('.')[1]
+  if (!payload) return {}
+  try {
+    const base64 = payload.replaceAll('-', '+').replaceAll('_', '/')
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=')
+    return JSON.parse(atob(padded))
+  } catch {
+    return {}
   }
-  return (h >>> 0).toString(16).padStart(8, '0').slice(0, 8)
+}
+
+function firstNonEmpty(...values) {
+  return values.find((value) => typeof value === 'string' && value.trim())?.trim()
 }

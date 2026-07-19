@@ -26,6 +26,7 @@
 import { chatCompletion } from './routerClient.js'
 import { OPENAI_TOOLS, toToolCall } from './toolCatalog.js'
 import { MSG } from '../controller/protocol.js'
+import { wrapUntrustedBrowserContent } from './untrustedContent.js'
 
 const MAX_STEPS = 20
 const MAX_RESULT_CHARS = 4000
@@ -90,13 +91,13 @@ IMPORTANT RULES:
 /**
  * Run a multi-step LLM agent turn.
  *
- * @param {{ turnId: string, userMessage: string, apiKey: string, modelId: string, modelSupportsVision?: boolean, conversationHistory?: Array<object>, broadcast: Function, executeTool: Function, getActiveTabMeta: Function, signal?: AbortSignal }} params
+ * @param {{ turnId: string, userMessage: string, accessToken: string, modelId: string, modelSupportsVision?: boolean, conversationHistory?: Array<object>, broadcast: Function, executeTool: Function, getActiveTabMeta: Function, signal?: AbortSignal }} params
  * @returns {Promise<{ assistantMessage: string, toolResults: Array<object> }>}
  */
 export async function runLlmAgentTurn({
   turnId,
   userMessage,
-  apiKey,
+  accessToken,
   modelId,
   modelSupportsVision,
   conversationHistory,
@@ -105,7 +106,7 @@ export async function runLlmAgentTurn({
   getActiveTabMeta,
   signal,
 }) {
-  if (!apiKey) throw new Error('LLM agent: apiKey is required')
+  if (!accessToken) throw new Error('LLM agent: accessToken is required')
   if (!modelId) throw new Error('LLM agent: modelId is required')
 
   const messages = [
@@ -132,7 +133,12 @@ export async function runLlmAgentTurn({
     if (tabMeta?.url && /^https?:\/\//i.test(tabMeta.url)) {
       messages.push({
         role: 'system',
-        content: `[Current page: ${tabMeta.url}${tabMeta.title ? ` — ${tabMeta.title}` : ''}]`,
+        content: wrapUntrustedBrowserContent({
+          currentPage: {
+            url: tabMeta.url,
+            ...(tabMeta.title ? { title: tabMeta.title } : {}),
+          },
+        }),
       })
     }
   }
@@ -176,7 +182,7 @@ export async function runLlmAgentTurn({
     let completion
     try {
       completion = await chatCompletion({
-        apiKey,
+        accessToken,
         model: modelId,
         messages,
         tools: browserActionsComplete ? [] : tools,
@@ -290,6 +296,9 @@ export async function runLlmAgentTurn({
         }
       } else {
         resultText = `Error: ${execResult.error}`
+      }
+      if (execResult.ok) {
+        resultText = wrapUntrustedBrowserContent(resultText)
       }
 
       // Keep heavy blobs out of in-memory toolResults (panel only needs slim status).

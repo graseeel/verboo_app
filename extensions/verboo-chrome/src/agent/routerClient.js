@@ -14,18 +14,18 @@ const DEFAULT_TIMEOUT_MS = 60_000
 /**
  * Send a chat completion request to the Verboo Router.
  *
- * @param {{ apiKey: string, model: string, messages: Array<object>, tools?: Array<object>, signal?: AbortSignal, timeoutMs?: number }} params
+ * @param {{ accessToken: string, model: string, messages: Array<object>, tools?: Array<object>, signal?: AbortSignal, timeoutMs?: number }} params
  * @returns {Promise<{ content: string|null, toolCalls: Array<{id:string,name:string,arguments:string}> }>}
  */
 export async function chatCompletion({
-  apiKey,
+  accessToken,
   model,
   messages,
   tools,
   signal: externalSignal,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 }) {
-  if (!apiKey) throw new Error('chatCompletion: apiKey is required')
+  if (!accessToken) throw new Error('chatCompletion: accessToken is required')
   if (!model) throw new Error('chatCompletion: model is required')
   if (!Array.isArray(messages)) throw new Error('chatCompletion: messages is required')
 
@@ -44,7 +44,7 @@ export async function chatCompletion({
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${accessToken}`,
       },
       body: JSON.stringify({
         model,

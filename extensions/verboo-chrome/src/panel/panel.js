@@ -3,7 +3,7 @@
  *
  * Responsibilities:
  * - Apply i18n strings to the DOM
- * - Render auth status (API key login via MSG.AUTH_LOGIN_API_KEY)
+ * - Render auth status (user-initiated OAuth via MSG.AUTH_LOGIN)
  * - Persist Chrome Permission Mode (manual/skip) via the inline chip
  * - Chat: send user message → AGENT_TURN_START; render agent events
  *   (thought, tool_request, tool_executing, tool_result, turn_complete,
@@ -19,7 +19,7 @@
  */
 
 import { loadMode, saveMode } from '../policy/modesStore.js'
-import { loadSession } from '../auth/auth.js'
+import { getAuthCapabilities, loadSession } from '../auth/auth.js'
 import { MSG } from '../controller/protocol.js'
 import {
   escapeHtml,
@@ -72,7 +72,7 @@ function applyI18n(root) {
 
 /**
  * Session is active when accessToken is present and not expired.
- * API-key sessions have no email — accessToken is the source of truth.
+ * OAuth accessToken is the source of truth.
  * @param {import('../auth/auth.js').VerbooSession | null | undefined} session
  */
 function isSessionActive(session) {
@@ -89,7 +89,7 @@ function sessionDisplayLabel(session) {
   if (!session) return ''
   if (session.email) return session.email
   if (session.accountId) return session.accountId
-  return t('auth_apiKeyLabel')
+  return t('branding_title')
 }
 
 /**
@@ -149,13 +149,23 @@ function showLoginError(message) {
 function setLoginLoading(loading) {
   const btn = document.getElementById('login-submit')
   if (!btn) return
-  btn.disabled = loading
+  btn.disabled = loading || !oauthConfigured
   btn.classList.toggle('is-loading', loading)
   btn.setAttribute('aria-busy', loading ? 'true' : 'false')
   const label = btn.querySelector('.btn-label')
   if (label) {
     label.textContent = loading ? t('auth_loginLoading') : t('auth_login')
   }
+}
+
+let oauthConfigured = false
+
+function renderAuthCapabilities(capabilities) {
+  oauthConfigured = capabilities?.methods?.includes('oauth') === true &&
+    capabilities?.oauthConfigured === true
+  const btn = document.getElementById('login-submit')
+  if (btn) btn.disabled = !oauthConfigured
+  if (!oauthConfigured) showLoginError(t('auth_oauthUnavailable'))
 }
 
 /**
@@ -361,20 +371,15 @@ function initModelSelect() {
 async function handleLoginSubmit(event) {
   event.preventDefault()
   showLoginError('')
-
-  const input = document.getElementById('login-api-key')
-  const apiKey = (input?.value ?? '').trim()
-  if (!apiKey) {
-    showLoginError(t('auth_apiKeyRequired'))
-    input?.focus()
+  if (!oauthConfigured) {
+    showLoginError(t('auth_oauthUnavailable'))
     return
   }
 
   setLoginLoading(true)
   try {
     const response = await sendMessage({
-      type: MSG.AUTH_LOGIN_API_KEY,
-      apiKey,
+      type: MSG.AUTH_LOGIN,
     })
     if (!response?.ok) {
       showLoginError(response?.error || t('auth_loginFailed'))
@@ -382,7 +387,6 @@ async function handleLoginSubmit(event) {
     }
     renderAuth(response.session)
     populateModelSelect(response.models ?? [], response.selectedId)
-    if (input) input.value = ''
   } catch (err) {
     showLoginError(err?.message ?? t('auth_loginFailed'))
   } finally {
@@ -402,22 +406,12 @@ async function handleLogout() {
   pendingConversation = null
 }
 
-function initApiKeyToggle() {
-  const toggle = document.getElementById('login-key-toggle')
-  const input = document.getElementById('login-api-key')
-  if (!toggle || !input) return
-  toggle.addEventListener('click', () => {
-    const show = input.type === 'password'
-    input.type = show ? 'text' : 'password'
-    toggle.setAttribute('aria-pressed', show ? 'true' : 'false')
-  })
-}
-
 /**
  * Ask the service worker for current auth + models on panel open.
  */
 async function hydrateAuthFromBackground() {
   const authRes = await sendMessage({ type: MSG.AUTH_STATE_REQUEST })
+  renderAuthCapabilities(authRes?.capabilities ?? getAuthCapabilities())
   if (authRes?.ok && isSessionActive(authRes.session)) {
     renderAuth(authRes.session)
     const modelsRes = await sendMessage({ type: MSG.MODELS_LIST })
@@ -1325,7 +1319,6 @@ async function init() {
 
   initAgentEventListener()
   initModelSelect()
-  initApiKeyToggle()
 
   await hydrateAuthFromBackground()
 

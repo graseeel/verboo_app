@@ -58,7 +58,7 @@ async function renderAuth(session) {
   const sub = document.getElementById('options-user')
   if (!sub) return
   if (isSessionActive(session)) {
-    const label = session.email || session.accountId || t('auth_apiKeyLabel')
+    const label = session.email || session.accountId || t('branding_title')
     sub.textContent = `${t('auth_signedInAs')} ${label}`
   } else {
     sub.textContent = t('auth_notSignedIn')

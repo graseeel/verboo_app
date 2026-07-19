@@ -10,8 +10,7 @@
   <div class="app" id="app" data-auth="signed-out">
 
     <!-- ═══════════════════════════════════════════════════════════
-         SIGNED-OUT: Verboo API key login.
-         Get the key from code.verboo.ai dashboard → account plan.
+         SIGNED-OUT: user-initiated Verboo OAuth login.
          ═══════════════════════════════════════════════════════════ -->
     <section class="login-gate" id="login-gate" aria-label="Sign in">
       <div class="login-card">
@@ -25,53 +24,11 @@
         />
         <h1 class="login-title" data-i18n="branding_title">Verboo</h1>
         <p class="login-tagline" data-i18n="branding_tagline">Control Chrome with Verboo</p>
-        <p class="login-copy" data-i18n="auth_apiKeyIntro">
-          Paste your Verboo API key from your account plan.
+        <p class="login-copy" data-i18n="auth_oauthIntro">
+          Continue with your Verboo account in a secure browser window.
         </p>
 
         <form class="login-form" id="login-form" novalidate>
-          <label class="field-label" for="login-api-key" data-i18n="auth_apiKeyLabel">
-            API key
-          </label>
-          <div class="field-input-wrap">
-            <input
-              type="password"
-              id="login-api-key"
-              class="field-input"
-              name="apiKey"
-              autocomplete="off"
-              spellcheck="false"
-              autocapitalize="off"
-              required
-              data-i18n-placeholder="auth_apiKeyPlaceholder"
-              placeholder="vboo_••••••••••••••••"
-            />
-            <button
-              type="button"
-              class="field-input-suffix"
-              id="login-key-toggle"
-              title="Show / hide key"
-              data-i18n-title="auth_apiKeyToggle"
-              data-i18n-aria-label="auth_apiKeyToggle"
-              aria-label="Show / hide key"
-              tabindex="-1"
-            >
-              <svg
-                viewBox="0 0 16 16"
-                width="16"
-                height="16"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M2 8s2.5-4.5 6-4.5S14 8 14 8s-2.5 4.5-6 4.5S2 8 2 8z" />
-                <circle cx="8" cy="8" r="2" />
-              </svg>
-            </button>
-          </div>
           <p class="field-error" id="login-error" role="alert" hidden></p>
 
           <button
@@ -111,9 +68,6 @@
           </a>
         </div>
       </div>
-      <p class="login-disclaimer" data-i18n="disclaimer_text">
-        Independent build. Authorized but not an official Verboo Inc. product.
-      </p>
     </section>
 
     <!-- ═══════════════════════════════════════════════════════════

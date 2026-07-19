@@ -6,7 +6,7 @@ Let Verboo control the browser: navigate, click, type, extract data, take screen
 
 ```
 extensions/verboo-chrome/
-├── manifest.json          # MV3: sidePanel, storage, scripting, tabs, tabGroups
+├── manifest.json          # MV3: identity, sidePanel, storage, scripting, tabs, tabGroups
 ├── package.json           # node --test runner
 ├── PRIVACY.md             # Privacy policy (Chrome Web Store)
 ├── PERMISSIONS.md         # Permission justifications (Chrome Web Store)
@@ -18,7 +18,8 @@ extensions/verboo-chrome/
 └── src/
     ├── background.js      # Service worker — message router, agent turn loop
     ├── auth/
-    │   └── auth.js        # Verboo account session (OAuth shell): loadSession, saveSession, startOAuthFlow, refreshSession, logout
+    │   ├── auth.js        # OAuth PKCE session, model catalog, and logout
+    │   └── oauthConfig.js # Registered Chrome OAuth public-client configuration
     ├── controller/
     │   ├── protocol.js    # MSG enum, ToolCall/ToolResult/PolicyDecision contracts, makeToolCall, TOOL_RISK_MAP
     │   ├── execute.js     # execute(toolCall, ctx) — single chokepoint; runs evaluateToolPolicy before dispatch
@@ -60,6 +61,7 @@ extensions/verboo-chrome/
 | Permission | Purpose |
 |-----------|---------|
 | `sidePanel` | Show the Verboo control panel in Chrome's side panel |
+| `identity` | Open the user-initiated Verboo OAuth PKCE flow and receive its extension callback |
 | `storage` | Persist Verboo session, permission mode, and per-site grants in `chrome.storage.local` |
 | `scripting` | Inject code into pages for DOM extraction, clicks, and typing |
 | `tabs` | Tab management (list, switch, close, navigate) |
@@ -80,16 +82,18 @@ The extension uses a **Verboo account session** (OAuth), not an API key. The ses
 
 ```ts
 interface VerbooSession {
-  accountId: string    // NOT an API key — Verboo account identifier
-  email: string
-  idToken: string      // OIDC ID token (P2+)
-  accessToken: string  // OAuth access token (P2+)
+  accountId: string
+  email?: string
+  accessToken: string
   refreshToken?: string
-  expiresAt: number    // ms since epoch
+  expiresAt?: number   // ms since epoch
+  source: 'oauth'
 }
 ```
 
-P1 ships a stub `startOAuthFlow()` that prompts for an email and synthesizes a session. P2+ wires the real Verboo OAuth popup. The session is stored in `chrome.storage.local` under the key `verbooSession`. There is no `apiKey` field anywhere in the codebase.
+`startOAuthLogin()` uses `chrome.identity.launchWebAuthFlow` with Authorization Code + PKCE. The release configuration deliberately contains an empty `clientId`, so standalone chat fails closed with `oauth_not_configured` until the Verboo backend registers the Chrome extension public client. It never falls back to a CLI credential or pasted key. The returned extension session is stored under `verbooSession`.
+
+After OAuth is configured and the user starts a chat turn, the extension sends the user's prompt, selected active-page context, and browser-tool results to the Verboo Router. Page-derived values are explicitly fenced as untrusted data before they are returned to the model. The separate MCP transport planned for Verboo in Chrome is local and never carries a CLI token into the extension.
 
 ## Policy gate
 
@@ -119,7 +123,7 @@ The single chokepoint is `controller.execute(toolCall, ctx)`. Tool handlers are 
 2. Enable "Developer mode"
 3. "Load unpacked" → point to `extensions/verboo-chrome/`
 4. Click the extension icon → "Open side panel"
-5. Click "Sign in" (P1 stub prompts for email; P2+ opens the Verboo OAuth flow)
+5. Click "Sign in". Until the registered Chrome OAuth `clientId` is supplied in `src/auth/oauthConfig.js`, the UI remains disabled with an explicit configuration message.
 
 ### Run tests
 
@@ -129,7 +133,3 @@ npm test
 ```
 
 Tests use Node's built-in test runner (`node --test`). No extra dependencies.
-
-## Independent build
-
-This extension is an independent build maintained by the Verboo Code contributors. It is authorized but is not an official product of Verboo Inc. or Anthropic.

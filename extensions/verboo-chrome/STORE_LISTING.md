@@ -41,19 +41,17 @@ Copy-paste-ready draft for the Chrome Web Store developer dashboard. Keep this f
 > - It does not run code fetched from a remote origin — every script is bundled in the extension.
 > - It does not touch `chrome://`, `chrome-extension://`, `about:`, or the Chrome Web Store pages.
 > - It does not leave a debugger session attached between tool calls.
-> - **In the current build, it does not send page content off-device.** The bundled agent turn loop is a local heuristic that plans and dispatches tools in your browser. A future phase may add an opt-in Verboo API client; when it does, only tool results from a turn you started will be sent to the Verboo API endpoint you configure.
+> - **Standalone chat is explicit.** After extension OAuth, only a turn you start sends your prompt, selected browser context, and browser-tool results to the Verboo Router. Browser text is fenced as untrusted data before model processing.
+> - **MCP stays local.** The Verboo in Chrome MCP transport does not copy or forward CLI tokens into the extension.
 >
 > ### Permissions, in plain English
 >
 > - **sidePanel** — shows the Verboo panel alongside the page.
+> - **identity** — opens the user-initiated Verboo OAuth PKCE flow.
 > - **storage** — keeps you signed in and remembers your permission mode and per-site grants, locally.
 > - **scripting** — runs small scripts in the page you approved to read, click, or fill.
 > - **tabs** — manages the tabs the agent works on.
 > - **tabGroups** — groups the tabs the agent opens so multi-step research stays organized.
->
-> ### Independent build
->
-> Verboo Code — Browser Control is an independent build maintained by the Verboo Code contributors. It is authorized but is not an official product of Verboo Inc. or Anthropic.
 >
 > Source: see the repository. Privacy policy: see `PRIVACY.md` in the package.
 
@@ -92,8 +90,8 @@ Copy-paste-ready draft for the Chrome Web Store developer dashboard. Keep this f
 
 | Question | Answer |
 |---------|--------|
-| Does this extension collect user data? | In the current build, no data leaves your device. A future phase may add an opt-in Verboo API client; when it does, only tool results from a turn you started will be sent to the Verboo API endpoint you configure. |
-| Is that data transmitted off-device? | Not in the current build. Future opt-in API client will send tool results only to the Verboo API endpoint you configure. |
+| Does this extension collect user data? | Standalone chat processes the user's prompt, selected browser context, and tool results for a turn the user started. OAuth state, model selection, and safety grants are stored locally. |
+| Is that data transmitted off-device? | Standalone chat sends active-turn data to the Verboo Router after extension OAuth. The MCP transport is local. |
 | Is the data sold or shared with third parties? | No. |
 | Does the extension read browsing history? | No. |
 | Does the extension run code from a remote origin? | No. |
@@ -111,4 +109,4 @@ Copy-paste-ready draft for the Chrome Web Store developer dashboard. Keep this f
 
 ## Reviewer notes (paste into the submission form)
 
-> This extension implements the `chrome.scripting`, `chrome.tabs`, `chrome.tabGroups`, `chrome.storage`, and `chrome.sidePanel` APIs to provide a browser-automation side panel. There is no remote-loaded code. All injected scripts are bundled in the package. The extension does not request the `debugger` permission at this time. A future release may add `debugger` for full-page screenshots and sandboxed evaluation; the Store listing will be updated before that release. The bundled agent turn loop in the current build is a local heuristic — it does not call any cloud API and does not transmit page content off-device. A future opt-in Verboo API client will be announced in a Store update before it ships. The full privacy policy is bundled at `PRIVACY.md` and `privacy.html`, and is also linked from the extension's side panel.
+> This extension implements `chrome.identity`, `chrome.scripting`, `chrome.tabs`, `chrome.tabGroups`, `chrome.storage`, and `chrome.sidePanel` to provide a browser-automation side panel. There is no remote-loaded code; all injected scripts are bundled. Standalone chat uses user-initiated OAuth PKCE and sends active-turn prompts, selected browser context, and tool results to the Verboo Router. Browser content is fenced as untrusted data. The separate MCP transport is local and carries no CLI token. The extension does not request `debugger` at this time. The full privacy policy is bundled at `PRIVACY.md` and `privacy.html` and linked from the side panel.

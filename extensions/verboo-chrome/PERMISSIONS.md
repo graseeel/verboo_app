@@ -16,22 +16,34 @@ When adding or removing a permission, update this file in the same PR.
 
 ---
 
+## `identity`
+
+**What it is.** Lets Chrome open and complete a user-initiated OAuth flow for the extension.
+
+**Why we need it.** Standalone chat authenticates with a Verboo account using Authorization Code + PKCE. Chrome supplies an extension-specific callback URL and returns that callback only to this extension.
+
+**What we don't do with it.** We do not reuse CLI credentials, silently start sign-in, or request a token unless the user clicks **Sign in**. If the registered Chrome OAuth client ID is absent, authentication fails closed.
+
+---
+
 ## `storage`
 
 **What it is.** Lets the extension persist data in `chrome.storage.local`.
 
-**Why we need it.** We store three keys in `chrome.storage.local`:
+**Why we need it.** We store these keys in `chrome.storage.local`:
 
 1. `verbooSession` — your Verboo **session token** (so you do not have to sign in every time Chrome restarts).
 2. `chromePermissionMode` — your **permission mode** (Manual / Auto / Skip — your chosen safety level).
 3. `siteGrants` — your **per-site grants** (which hosts you have approved or denied).
+4. `verbooModelsCache` — the model catalog returned by the Verboo Router.
+5. `verbooSelectedModelId` — the model selected in the side panel.
 
 **What we don't do with it.**
 
 - We do not store your browsing history.
 - We do not store passwords, form values, or page content.
 - We do not sync storage to your Google account.
-- The session token is sent **only** to the Verboo API endpoint you configure — never to any other origin.
+- The OAuth access token is sent only to the Verboo Router endpoints bundled with the extension.
 
 ---
 
@@ -52,7 +64,7 @@ All of these are gated by the policy engine: scripts only execute after `evaluat
 
 - We do not inject scripts on `chrome://`, `chrome-extension://`, or `about:` pages — these are hard-blocked.
 - We do not run code fetched from a remote origin. The injected functions are bundled in the extension.
-- We do not exfiltrate page content. Page content is only returned to the Verboo API for the active turn you started.
+- Page content is sent only to the Verboo Router during a chat turn the user started, and is fenced as untrusted browser data before model processing.
 
 ---
 

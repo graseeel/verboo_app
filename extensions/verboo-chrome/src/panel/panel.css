@@ -198,47 +198,6 @@ textarea {
   gap: 8px;
 }
 
-/* API-key input with show/hide toggle suffix. */
-.field-input-wrap {
-  position: relative;
-  display: block;
-}
-
-.field-input-wrap .field-input {
-  padding-right: 40px;
-}
-
-.field-input-suffix {
-  position: absolute;
-  top: 50%;
-  right: 6px;
-  transform: translateY(-50%);
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-dim);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition:
-    color var(--dur-fast) var(--ease-out),
-    background var(--dur-fast) var(--ease-out);
-}
-
-.field-input-suffix:hover {
-  color: var(--text);
-  background: var(--bg);
-}
-
-.field-input-suffix:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-
 /* Login links row (Create account / Open dashboard). */
 .login-links {
   display: flex;
@@ -339,15 +298,6 @@ textarea {
 
 .field-error[hidden] {
   display: none;
-}
-
-.login-disclaimer {
-  margin: 0;
-  max-width: 280px;
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--text-dim);
-  text-align: center;
 }
 
 /* ── Workspace (signed-in) ────────────────────────────────────── */

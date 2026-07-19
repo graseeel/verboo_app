@@ -43,8 +43,7 @@ export const MSG = Object.freeze({
   AGENT_TURN_CANCEL: 'agent:turn_cancel',     // user cancels in-flight turn
   TOOL_APPROVE: 'tool:approve',               // user approves a needsApproval tool
   TOOL_DENY: 'tool:deny',                     // user denies a needsApproval tool
-  AUTH_LOGIN: 'auth:login',                   // start OAuth flow (legacy)
-  AUTH_LOGIN_API_KEY: 'auth:login_api_key',   // login with Verboo dashboard API key
+  AUTH_LOGIN: 'auth:login',                   // start user-initiated OAuth PKCE flow
   AUTH_LOGOUT: 'auth:logout',
   AUTH_REFRESH: 'auth:refresh',
   AUTH_STATE_REQUEST: 'auth:state_request',   // panel asks SW for current session

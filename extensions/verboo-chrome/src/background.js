@@ -20,7 +20,8 @@ import { planForMessage } from './planMessage.js'
 import {
   loadSession,
   logout,
-  startApiKeyLogin,
+  startOAuthLogin,
+  getAuthCapabilities,
   loadModels,
   selectModel,
   getSelectedModelId,
@@ -235,10 +236,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false
     }
 
-    case MSG.AUTH_LOGIN_API_KEY: {
-      const apiKey = message.apiKey
-      startApiKeyLogin(apiKey)
-        .then(async ({ session, models }) => {
+    case MSG.AUTH_LOGIN: {
+      startOAuthLogin()
+        .then(async (session) => {
+          const models = await loadModels(true)
           const selectedId = await getSelectedModelId()
           broadcast({ type: MSG.AUTH_STATE_CHANGED, session })
           broadcast({
@@ -271,7 +272,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       loadSession()
         .then(async (session) => {
           broadcast({ type: MSG.AUTH_STATE_CHANGED, session })
-          sendResponse({ ok: true, session })
+          sendResponse({ ok: true, session, capabilities: getAuthCapabilities() })
         })
         .catch((err) => {
           sendResponse({ ok: false, error: err?.message ?? String(err) })
@@ -428,10 +429,10 @@ async function runAgentTurn(
     // ── LLM path: try real multi-step agent when session + model exist.
     // On any failure, fall back to the heuristic planMessage path below.
     const session = await loadSession()
-    const apiKey = session?.accessToken
+    const accessToken = session?.accessToken
     const storedModelId = await getSelectedModelId()
     let models = []
-    if (apiKey) {
+    if (accessToken) {
       try {
         models = await loadModels(false)
       } catch {
@@ -460,12 +461,12 @@ async function runAgentTurn(
       }
     }
 
-    if (apiKey && selectedModelId) {
+    if (accessToken && selectedModelId) {
       try {
         const llmResult = await runLlmAgentTurn({
           turnId,
           userMessage,
-          apiKey,
+          accessToken,
           modelId: selectedModelId,
           modelSupportsVision,
           conversationHistory,

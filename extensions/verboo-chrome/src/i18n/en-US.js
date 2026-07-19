@@ -14,9 +14,6 @@ export default {
   "branding_tagline": {
     "message": "Control Chrome with Verboo"
   },
-  "disclaimer_text": {
-    "message": "Independent build. Authorized but not an official Verboo Inc. product."
-  },
   "auth_login": {
     "message": "Sign in"
   },
@@ -24,7 +21,7 @@ export default {
     "message": "Signing in…"
   },
   "auth_loginFailed": {
-    "message": "Sign-in failed. Check your API key and try again."
+    "message": "Sign-in failed. Please try again."
   },
   "auth_logout": {
     "message": "Sign out"
@@ -38,20 +35,11 @@ export default {
   "auth_signInDescription": {
     "message": "Sign in with your Verboo account to control Chrome from this panel."
   },
-  "auth_apiKeyIntro": {
-    "message": "Paste your Verboo API key from your account plan."
+  "auth_oauthIntro": {
+    "message": "Continue with your Verboo account in a secure browser window."
   },
-  "auth_apiKeyLabel": {
-    "message": "API key"
-  },
-  "auth_apiKeyPlaceholder": {
-    "message": "vboo_••••••••••••••••"
-  },
-  "auth_apiKeyToggle": {
-    "message": "Show / hide key"
-  },
-  "auth_apiKeyRequired": {
-    "message": "Enter your Verboo API key."
+  "auth_oauthUnavailable": {
+    "message": "Verboo account sign-in is not configured for this build yet."
   },
   "auth_createAccount": {
     "message": "Create account"

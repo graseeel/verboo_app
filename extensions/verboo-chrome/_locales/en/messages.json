@@ -4,7 +4,6 @@
   "openSidePanel": { "message": "Open Verboo side panel" },
   "branding_title": { "message": "Verboo" },
   "branding_tagline": { "message": "Control Chrome with Verboo" },
-  "disclaimer_text": { "message": "Independent build. Authorized but not an official Verboo Inc. product." },
   "auth_login": { "message": "Sign in" },
   "auth_logout": { "message": "Sign out" },
   "auth_signedInAs": { "message": "Signed in as" },

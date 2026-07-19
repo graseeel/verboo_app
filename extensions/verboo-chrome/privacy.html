@@ -91,7 +91,7 @@
   <main class="container">
     <h1>Verboo Code — Privacy Policy</h1>
     <p class="meta">
-      <strong>Last updated:</strong> 2026-07-18 ·
+      <strong>Last updated:</strong> 2026-07-19 ·
       <strong>Extension:</strong> Verboo Code — Browser Control ·
       <span class="badge">v0.1.0</span>
     </p>
@@ -103,12 +103,13 @@
     </p>
 
     <h2>Summary</h2>
+    <p>The release OAuth client ID is not configured in this source snapshot, so standalone chat currently fails closed rather than accepting another credential type.</p>
     <ul>
       <li><strong>No data is sold.</strong></li>
-      <li><strong>No data is sent to third parties.</strong></li>
       <li><strong>You stay in control</strong> of every action: the extension asks before each potentially destructive step, and you can always deny.</li>
       <li><strong>Hard blocks cannot be bypassed.</strong> Actions like purchasing, financial trades, mass deletion, and credential exposure are blocked even in the most permissive permission mode.</li>
-      <li><strong>The current build is local-only.</strong> The bundled agent turn loop is a local heuristic (plan + dispatch). It does not call any cloud API. Page content does not leave your machine unless a future build wires a real Verboo API client and you are signed in.</li>
+      <li><strong>Standalone chat is explicit.</strong> After extension OAuth, a turn you start sends your prompt, selected browser context, and tool results to the Verboo Router. Browser text is fenced as untrusted data.</li>
+      <li><strong>MCP stays local.</strong> The Verboo in Chrome MCP transport does not carry CLI tokens into the extension.</li>
     </ul>
 
     <h2>What the extension accesses</h2>
@@ -120,22 +121,22 @@
         <tr>
           <td>Active tab URL and title</td>
           <td>Show context in the side panel and route tool calls</td>
-          <td>Stays local. Never sent off-device in the current build.</td>
+          <td>Sent to the Verboo Router only during a standalone chat turn after extension OAuth.</td>
         </tr>
         <tr>
           <td>Page content you read or click on</td>
           <td>Execute tools you approved</td>
-          <td>Stays local in the current build. A future phase may add an opt-in Verboo API client; when it does, only tool results from a turn you started will be sent to the API endpoint you configure.</td>
+          <td>Sent to the Verboo Router only for a turn you started; text is fenced as untrusted browser data.</td>
         </tr>
         <tr>
           <td>Chrome tabs and tab groups</td>
           <td>Manage your browsing during a turn (list, switch, close, open new)</td>
-          <td>Local only. Never sent anywhere.</td>
+          <td>Used locally for execution; selected tool results may be included in the active Router turn.</td>
         </tr>
         <tr>
           <td>Your Verboo account session</td>
-          <td>Authenticate you when a real API client is wired</td>
-          <td>Stored locally in <code>chrome.storage.local</code> as <code>verbooSession</code>. The current P1 OAuth flow is a stub; no real token is exchanged or sent anywhere yet.</td>
+          <td>Authenticate standalone chat</td>
+          <td>Stored locally as <code>verbooSession</code>; access tokens are sent only to bundled Verboo OAuth/Router endpoints and are never copied from the CLI.</td>
         </tr>
         <tr>
           <td>Permission mode (Manual / Auto / Skip) and per-site grants</td>
@@ -153,7 +154,7 @@
       <li>It does <strong>not</strong> read or modify pages on internal Chrome URLs (<code>chrome://</code>, <code>chrome-extension://</code>, <code>about:</code>) — these are hard-blocked.</li>
       <li>It does <strong>not</strong> read or modify content on <code>chrome.google.com/webstore</code>.</li>
       <li>It does <strong>not</strong> store your browsing history.</li>
-      <li>It does <strong>not</strong> call any remote origin from the current build. All scripts are bundled in the extension package.</li>
+      <li>It does <strong>not</strong> load executable code from a remote origin. All extension scripts are bundled.</li>
       <li>It does <strong>not</strong> request the <code>debugger</code> permission. Future full-page screenshots will re-add it with an updated listing.</li>
     </ul>
 
@@ -166,8 +167,14 @@
         <tr>
           <td><code>verbooSession</code></td>
           <td><code>src/auth/auth.js</code></td>
-          <td><code>{ accountId, email, idToken, accessToken, refreshToken, expiresAt }</code></td>
-          <td>Only to the Verboo API endpoint you configure, only when a real OAuth/API client is enabled in a future build. <strong>Not sent anywhere in the current build.</strong></td>
+          <td><code>{ accountId, email?, accessToken, refreshToken?, expiresAt?, source: 'oauth' }</code></td>
+          <td>Bundled Verboo OAuth/Router endpoints used by standalone chat.</td>
+        </tr>
+        <tr>
+          <td><code>verbooModelsCache</code> / <code>verbooSelectedModelId</code></td>
+          <td><code>src/auth/auth.js</code></td>
+          <td>Router model catalog, timestamp, and selected model ID</td>
+          <td>The selected model ID is included in Router requests.</td>
         </tr>
         <tr>
           <td><code>chromePermissionMode</code></td>
@@ -189,7 +196,8 @@
     <h2>Permissions explained</h2>
     <ul>
       <li><code>sidePanel</code> — Opens the Verboo control panel alongside the page you are on.</li>
-      <li><code>storage</code> — Persists the three local keys above. Nothing leaves your browser in the current build.</li>
+      <li><code>identity</code> — Opens the user-initiated Verboo OAuth PKCE flow and receives its Chrome callback.</li>
+      <li><code>storage</code> — Persists the extension session, model cache/selection, permission mode, and grants.</li>
       <li><code>scripting</code> — Injects small scripts into the active tab to read content, click elements, or fill form fields you approved. Scripts are bundled in the extension; the extension never evaluates strings fetched from a remote origin.</li>
       <li><code>tabs</code> — Lists, switches, closes, opens, and updates tabs. Used to manage browser state during a turn.</li>
       <li><code>tabGroups</code> — Groups browser tabs when you organize a multi-step task.</li>
@@ -203,14 +211,14 @@
 
     <h2>When you are not signed in</h2>
     <p>
-      If you are not signed in, the extension does not make any network requests.
-      The side panel still works for browsing your permission mode and site grants.
+      If you are not signed in, standalone chat does not call the Verboo Router.
+      The side panel still exposes local permission and site-grant controls.
     </p>
 
     <h2>Multi-user</h2>
     <p>
       Zero hardcoded paths, users, or tokens. <code>accountId</code> from the
-      session distinguishes users when a real OAuth flow ships. Every account
+      OAuth session distinguishes users. Every account
       on the same Chrome profile has an independent <code>verbooSession</code>,
       <code>chromePermissionMode</code>, and <code>siteGrants</code>.
     </p>
@@ -218,7 +226,8 @@
     <h2>Third parties</h2>
     <p>
       The extension embeds no third-party scripts, fonts, or trackers. All
-      assets are bundled in the extension package.
+      assets are bundled in the extension package. Standalone inference is
+      requested through the Verboo Router after OAuth.
     </p>
 
     <h2>Children</h2>
@@ -239,11 +248,6 @@
       publishing to the Web Store).
     </p>
 
-    <p class="disclaimer">
-      <strong>Independent build.</strong> This extension is an independent build
-      by the Verboo Code contributors. It is authorized but is not an official
-      product of Verboo Inc. or Anthropic.
-    </p>
   </main>
 </body>
 </html>

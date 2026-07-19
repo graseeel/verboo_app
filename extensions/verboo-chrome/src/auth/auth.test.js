@@ -15,7 +15,8 @@ import {
   saveSession,
   logout,
   isSignedIn,
-  startApiKeyLogin,
+  startOAuthLogin,
+  getAuthCapabilities,
   loadModels,
   selectModel,
   getSelectedModelId,
@@ -149,24 +150,24 @@ test('isSignedIn: false when no session', async () => {
 test('saveSession + loadSession roundtrip', async () => {
   await logout()
   await saveSession({
-    accountId: 'api:deadbeef',
+    accountId: 'user-1',
     accessToken: 'token-xyz',
-    source: 'api-key',
+    source: 'oauth',
     expiresAt: Date.now() + 60_000,
   })
   const s = await loadSession()
-  assert.equal(s?.accountId, 'api:deadbeef')
+  assert.equal(s?.accountId, 'user-1')
   assert.equal(s?.accessToken, 'token-xyz')
-  assert.equal(s?.source, 'api-key')
+  assert.equal(s?.source, 'oauth')
   assert.equal(await isSignedIn(), true)
 })
 
 test('isSignedIn: false when expired', async () => {
   await logout()
   await saveSession({
-    accountId: 'api:expired',
+    accountId: 'expired-user',
     accessToken: 'token-x',
-    source: 'api-key',
+    source: 'oauth',
     expiresAt: Date.now() - 1_000, // already past
   })
   assert.equal(await isSignedIn(), false)
@@ -175,9 +176,9 @@ test('isSignedIn: false when expired', async () => {
 test('isSignedIn: true when expiresAt is omitted (no-expiry session)', async () => {
   await logout()
   await saveSession({
-    accountId: 'api:noexp',
+    accountId: 'no-exp-user',
     accessToken: 'token-x',
-    source: 'api-key',
+    source: 'oauth',
   })
   assert.equal(await isSignedIn(), true)
 })
@@ -192,9 +193,9 @@ test('loadSession: returns stored blob as-is (no schema validation)', async () =
 
 test('logout: clears session + models cache + selected model', async () => {
   await saveSession({
-    accountId: 'api:test',
+    accountId: 'test-user',
     accessToken: 'token',
-    source: 'api-key',
+    source: 'oauth',
     expiresAt: Date.now() + 60_000,
   })
   await selectModel('m1')
@@ -219,7 +220,7 @@ test('selectModel: rejects empty / non-string id', async () => {
   await assert.rejects(() => selectModel(null), /modelId is required/)
 })
 
-// ── startApiKeyLogin (with mocked fetch) ────────────────────
+// ── OAuth PKCE ──────────────────────────────────────────────
 
 /** @type {{ url: string, init: RequestInit } | null} */
 let lastFetch = null
@@ -250,86 +251,79 @@ const ROUTER_PAYLOAD = {
   ],
 }
 
-test('startApiKeyLogin: validates API key against Router and persists session', async () => {
+test('production auth advertises OAuth only', () => {
+  assert.deepEqual(getAuthCapabilities().methods, ['oauth'])
+})
+
+test('OAuth fails closed when release client id is absent', async () => {
   await logout()
+  await assert.rejects(() => startOAuthLogin(), /oauth_not_configured/)
+  assert.equal(await isSignedIn(), false)
+})
+
+test('OAuth uses identity + PKCE and persists only the returned session', async () => {
+  await logout()
+  let authorizeUrl = null
+  const identity = {
+    getRedirectURL: (path) => `https://extension-id.chromiumapp.org/${path}`,
+    launchWebAuthFlow: async ({ url }) => {
+      authorizeUrl = new URL(url)
+      return `https://extension-id.chromiumapp.org/oauth/callback?code=auth-code&state=${authorizeUrl.searchParams.get('state')}`
+    },
+  }
   mockFetchOnce({
     ok: true,
     status: 200,
-    json: async () => ROUTER_PAYLOAD,
+    json: async () => ({
+      access_token: 'oauth-access',
+      refresh_token: 'oauth-refresh',
+      expires_in: 3600,
+      account_id: 'account-7',
+      email: 'user@example.com',
+    }),
   })
   try {
-    const { session, models } = await startApiKeyLogin('sk-test-12345678')
-    assert.equal(session.source, 'api-key')
-    assert.match(session.accountId, /^api:[0-9a-f]{8}$/)
-    assert.equal(session.accessToken, 'sk-test-12345678')
-    assert.equal(typeof session.expiresAt, 'number')
-    assert.equal(models.length, 3)
-    assert.equal(await isSignedIn(), true)
-    // Vision models first; preferred vision model auto-selected
-    assert.equal(models[0].supportsVision, true)
-    assert.equal(await getSelectedModelId(), 'vision-1')
+    const session = await startOAuthLogin({
+      clientId: 'chrome-client',
+      authorizeUrl: 'https://code.verboo.ai/oauth/authorize',
+      tokenUrl: 'https://code.verboo.ai/oauth/token',
+      scopes: ['user:profile', 'user:inference'],
+    }, { identity })
+
+    assert.equal(authorizeUrl.searchParams.get('response_type'), 'code')
+    assert.equal(authorizeUrl.searchParams.get('code_challenge_method'), 'S256')
+    assert.ok(authorizeUrl.searchParams.get('code_challenge'))
+    assert.equal(lastFetch.url, 'https://code.verboo.ai/oauth/token')
+    assert.match(String(lastFetch.init.body), /grant_type=authorization_code/)
+    assert.match(String(lastFetch.init.body), /code_verifier=/)
+    assert.equal(session.source, 'oauth')
+    assert.equal(session.accountId, 'account-7')
+    assert.equal(session.email, 'user@example.com')
+    assert.equal((await loadSession())?.accessToken, 'oauth-access')
   } finally {
     restoreFetch()
   }
 })
 
-test('startApiKeyLogin: sends Authorization Bearer header', async () => {
-  await logout()
-  mockFetchOnce({ ok: true, status: 200, json: async () => ROUTER_PAYLOAD })
-  try {
-    await startApiKeyLogin('  sk-with-spaces-12345  ') // whitespace trimmed
-    assert.equal(lastFetch.url, ROUTER_URL)
-    assert.match(String(lastFetch.init.headers?.Authorization), /^Bearer sk-with-spaces-12345$/)
-  } finally {
-    restoreFetch()
-  }
-})
-
-test('startApiKeyLogin: 401 surfaces HTTP error', async () => {
-  await logout()
-  mockFetchOnce({ ok: false, status: 401, json: async () => ({}) })
-  try {
-    await assert.rejects(
-      () => startApiKeyLogin('sk-bad-12345'),
-      /HTTP 401/,
-    )
-    assert.equal(await isSignedIn(), false)
-  } finally {
-    restoreFetch()
-  }
-})
-
-test('startApiKeyLogin: 5xx surfaces HTTP error', async () => {
-  await logout()
-  mockFetchOnce({ ok: false, status: 503, json: async () => ({}) })
-  try {
-    await assert.rejects(
-      () => startApiKeyLogin('sk-test-12345'),
-      /HTTP 503/,
-    )
-  } finally {
-    restoreFetch()
-  }
-})
-
-test('startApiKeyLogin: rejects empty key', async () => {
-  await logout()
-  await assert.rejects(() => startApiKeyLogin(''), /API key is required/)
-  await assert.rejects(() => startApiKeyLogin('   '), /API key is required/)
-})
-
-test('startApiKeyLogin: empty models list still persists session', async () => {
-  await logout()
-  mockFetchOnce({ ok: true, status: 200, json: async () => ({ data: [] }) })
-  try {
-    const { session, models } = await startApiKeyLogin('sk-test-12345')
-    assert.equal(session.source, 'api-key')
-    assert.equal(models.length, 0)
-    assert.equal(await isSignedIn(), true)
-    assert.equal(await getSelectedModelId(), null)
-  } finally {
-    restoreFetch()
-  }
+test('OAuth rejects a callback with a mismatched state before token exchange', async () => {
+  let fetched = false
+  await assert.rejects(
+    () => startOAuthLogin({
+      clientId: 'chrome-client',
+      authorizeUrl: 'https://code.verboo.ai/oauth/authorize',
+      tokenUrl: 'https://code.verboo.ai/oauth/token',
+      scopes: ['user:profile'],
+    }, {
+      identity: {
+        getRedirectURL: (path) => `https://extension-id.chromiumapp.org/${path}`,
+        launchWebAuthFlow: async () =>
+          'https://extension-id.chromiumapp.org/oauth/callback?code=auth-code&state=wrong',
+      },
+      fetch: async () => { fetched = true; throw new Error('must not fetch') },
+    }),
+    /oauth_state_mismatch/,
+  )
+  assert.equal(fetched, false)
 })
 
 // ── loadModels (uses cache via in-memory store) ─────────────
@@ -342,10 +336,16 @@ test('loadModels: empty when no session and no cache', async () => {
 
 test('loadModels: uses cache when present', async () => {
   await logout()
-  // Seed cache via a successful login (saveModelsCache is not exported)
+  await saveSession({
+    accountId: 'cached-user',
+    accessToken: 'oauth-cached',
+    source: 'oauth',
+    expiresAt: Date.now() + 60_000,
+  })
+  // Seed cache via a forced refresh (saveModelsCache is not exported).
   mockFetchOnce({ ok: true, status: 200, json: async () => ROUTER_PAYLOAD })
   try {
-    await startApiKeyLogin('sk-cached-12345')
+    await loadModels(true)
   } finally {
     restoreFetch()
   }
@@ -373,9 +373,9 @@ test('loadModels: uses cache when present', async () => {
 test('loadModels: fetches live when forceRefresh=true and persists cache', async () => {
   await logout()
   await saveSession({
-    accountId: 'api:live',
-    accessToken: 'sk-live-12345',
-    source: 'api-key',
+    accountId: 'live-user',
+    accessToken: 'oauth-live',
+    source: 'oauth',
     expiresAt: Date.now() + 60_000,
   })
   mockFetchOnce({ ok: true, status: 200, json: async () => ROUTER_PAYLOAD })
