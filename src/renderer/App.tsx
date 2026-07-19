@@ -85,6 +85,7 @@ import { loadPluginSkillSummaries } from './features/plugins/pluginSkillSummarie
 import { ProjectPicker } from './features/projects/ProjectPicker'
 import { SettingsView } from './features/settings/SettingsView'
 import { I18nProvider, createTranslator, type Translator } from './i18n'
+import { attachmentInspectionErrorKey } from './features/attachments/attachmentInspectionError'
 import {
   DEFAULT_CONVERSATION_TITLE,
   activeProjects,
@@ -2871,18 +2872,26 @@ export function App() {
   }
 
   async function attachFiles() {
-    const attachments = await window.verboo.pickFiles()
-    if (!attachments.length) return
-    appendAttachments(attachments)
+    try {
+      const attachments = await window.verboo.pickFiles()
+      if (!attachments.length) return
+      appendAttachments(attachments)
+    } catch (error) {
+      toast(t(attachmentInspectionErrorKey(error)), 'error')
+    }
   }
 
   async function attachDroppedFiles(paths: string[], files: File[]) {
     if (!paths.length && !files.length) return
-    const attachments = paths.length
-      ? await window.verboo.inspectFiles(paths)
-      : await window.verboo.inspectDroppedFiles(files)
-    if (!attachments.length) return
-    appendAttachments(attachments)
+    try {
+      const attachments = paths.length
+        ? await window.verboo.inspectFiles(paths)
+        : await window.verboo.inspectDroppedFiles(files)
+      if (!attachments.length) return
+      appendAttachments(attachments)
+    } catch (error) {
+      toast(t(attachmentInspectionErrorKey(error)), 'error')
+    }
   }
 
   // Paste handler: same pipeline as attachDroppedFiles, but also handles raw
@@ -2890,30 +2899,34 @@ export function App() {
   // base64 and sent to the backend via pasteImageBlob for temp-file creation.
   async function attachPastedFiles(paths: string[], files: File[]) {
     if (!paths.length && !files.length) return
-    let attachments: AttachmentMeta[] = []
-    if (paths.length) {
-      attachments = await window.verboo.inspectFiles(paths)
-    } else {
-      // Separate image blobs (no path) from regular files.
-      const blobs = files.filter(f => !(f as File & { path?: string }).path && f.type.startsWith('image/'))
-      const withPath = files.filter(f => (f as File & { path?: string }).path)
-      if (withPath.length) {
-        const p = withPath.map(f => (f as File & { path: string }).path)
-        attachments = await window.verboo.inspectFiles(p)
+    try {
+      let attachments: AttachmentMeta[] = []
+      if (paths.length) {
+        attachments = await window.verboo.inspectFiles(paths)
+      } else {
+        // Separate image blobs (no path) from regular files.
+        const blobs = files.filter(f => !(f as File & { path?: string }).path && f.type.startsWith('image/'))
+        const withPath = files.filter(f => (f as File & { path?: string }).path)
+        if (withPath.length) {
+          const p = withPath.map(f => (f as File & { path: string }).path)
+          attachments = await window.verboo.inspectFiles(p)
+        }
+        for (const blob of blobs) {
+          const reader = new FileReader()
+          const base64 = await new Promise<string>(resolve => {
+            reader.onload = () => resolve((reader.result as string).split(',')[1])
+            reader.readAsDataURL(blob)
+          })
+          const name = `pasted-${Date.now()}.${blob.type.split('/')[1] || 'png'}`
+          const meta = await window.verboo.pasteImageBlob(base64, name)
+          attachments.push(...meta)
+        }
       }
-      for (const blob of blobs) {
-        const reader = new FileReader()
-        const base64 = await new Promise<string>(resolve => {
-          reader.onload = () => resolve((reader.result as string).split(',')[1])
-          reader.readAsDataURL(blob)
-        })
-        const name = `pasted-${Date.now()}.${blob.type.split('/')[1] || 'png'}`
-        const meta = await window.verboo.pasteImageBlob(base64, name)
-        attachments.push(...meta)
-      }
+      if (!attachments.length) return
+      appendAttachments(attachments)
+    } catch (error) {
+      toast(t(attachmentInspectionErrorKey(error)), 'error')
     }
-    if (!attachments.length) return
-    appendAttachments(attachments)
   }
 
   function appendAttachments(attachments: AttachmentMeta[]) {

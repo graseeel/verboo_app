@@ -1,6 +1,8 @@
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::models::types::{AttachmentKind, AttachmentMeta, ExtractionStatus};
+use crate::services::video::{self, VideoValidationError};
 
 /// Maximum file size for which we attempt PDF text extraction. Larger files
 /// are skipped to avoid blocking the UI on huge PDFs (rare for chat
@@ -15,6 +17,22 @@ const MAX_TEXT_SIZE_FOR_EXTRACTION: u64 = 5 * 1024 * 1024;
 /// bounded so we don't blow context on textbook-sized PDFs. Truncation is
 /// clearly marked so the model knows content was cut.
 const MAX_EXTRACTED_TEXT_BYTES: usize = 50 * 1024;
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "kind", content = "details", rename_all = "camelCase")]
+pub enum FileInspectionError {
+    NotAFile,
+    Video(VideoValidationError),
+}
+
+impl fmt::Display for FileInspectionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotAFile => write!(f, "attachment_not_a_file"),
+            Self::Video(error) => error.fmt(f),
+        }
+    }
+}
 
 /// Returns true if the file extension is a well-known text format.
 /// Covers: markdown, plain text, data formats (json/csv/yaml/toml/xml),
@@ -202,6 +220,28 @@ fn detect_image_media_type(path: &Path, header: &[u8]) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+fn video_media_type_by_ext(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()?
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "mp4" | "m4v" => Some("video/mp4"),
+        "mov" => Some("video/quicktime"),
+        "webm" => Some("video/webm"),
+        "mkv" => Some("video/x-matroska"),
+        "avi" => Some("video/x-msvideo"),
+        _ => None,
+    }
+}
+
+fn looks_like_video_container(header: &[u8]) -> bool {
+    (header.len() >= 8 && &header[4..8] == b"ftyp")
+        || (header.len() >= 12 && &header[..4] == b"RIFF" && &header[8..12] == b"AVI ")
+        || header.starts_with(&[0x1a, 0x45, 0xdf, 0xa3])
+}
+
 /// Reads the first 16 bytes of a file for media type detection.
 fn read_header(path: &Path) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
@@ -316,11 +356,11 @@ fn extract_pdf_text(path: &Path, size: u64) -> (ExtractionStatus, String) {
 
 /// Inspects a single file path and returns its AttachmentMeta.
 /// Mirrors Electron's `inspectAttachment` (src/main/services/attachmentService.ts:60).
-pub fn inspect_attachment(path: &str) -> Option<AttachmentMeta> {
+pub fn inspect_attachment_result(path: &str) -> Result<AttachmentMeta, FileInspectionError> {
     let p = PathBuf::from(path);
-    let file_stat = std::fs::metadata(&p).ok()?;
+    let file_stat = std::fs::metadata(&p).map_err(|_| FileInspectionError::NotAFile)?;
     if !file_stat.is_file() {
-        return None;
+        return Err(FileInspectionError::NotAFile);
     }
     let size = file_stat.len() as u64;
     let name = p
@@ -330,6 +370,24 @@ pub fn inspect_attachment(path: &str) -> Option<AttachmentMeta> {
 
     let header = read_header(&p).unwrap_or_default();
     let media_type = detect_image_media_type(&p, &header);
+
+    if video_media_type_by_ext(&p).is_some() || looks_like_video_container(&header) {
+        let ffprobe = video::bundled_ffprobe_path().map_err(FileInspectionError::Video)?;
+        let video =
+            video::probe_and_validate(&p, size, &ffprobe).map_err(FileInspectionError::Video)?;
+        return Ok(AttachmentMeta {
+            path: path.to_string(),
+            name,
+            size,
+            kind: AttachmentKind::Video,
+            media_type: video_media_type_by_ext(&p).map(str::to_string),
+            width: Some(video.width),
+            height: Some(video.height),
+            extracted_text: None,
+            extraction_status: None,
+            video: Some(video),
+        });
+    }
 
     let (width, height, kind, extracted_text, extraction_status) = if media_type.is_some() {
         let dims = read_image_dimensions(&p);
@@ -389,7 +447,7 @@ pub fn inspect_attachment(path: &str) -> Option<AttachmentMeta> {
         }
     };
 
-    Some(AttachmentMeta {
+    Ok(AttachmentMeta {
         path: path.to_string(),
         name,
         size,
@@ -401,6 +459,13 @@ pub fn inspect_attachment(path: &str) -> Option<AttachmentMeta> {
         extraction_status,
         video: None,
     })
+}
+
+/// Compatibility wrapper for callers that intentionally drop unsupported
+/// attachments. New ingress paths should use [`inspect_attachment_result`] to
+/// preserve typed video validation failures.
+pub fn inspect_attachment(path: &str) -> Option<AttachmentMeta> {
+    inspect_attachment_result(path).ok()
 }
 
 /// Maximum decoded size for a pasted image (15 MB). Screenshots are rarely
@@ -568,9 +633,20 @@ pub fn inspect_files(paths: &[String]) -> Vec<AttachmentMeta> {
         .collect()
 }
 
+pub fn inspect_files_result(paths: &[String]) -> Result<Vec<AttachmentMeta>, FileInspectionError> {
+    paths
+        .iter()
+        .map(|path| inspect_attachment_result(path))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
+
+    static TEST_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn detect_png_signature() {
@@ -579,6 +655,26 @@ mod tests {
         assert_eq!(
             detect_image_media_type(path, &header),
             Some("image/png".into())
+        );
+    }
+
+    #[test]
+    fn file_inspection_error_serializes_a_typed_nested_video_error() {
+        let error = FileInspectionError::Video(VideoValidationError::TooLarge {
+            actual: 501,
+            maximum: 500,
+        });
+
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            serde_json::json!({
+                "kind": "video",
+                "details": {
+                    "kind": "tooLarge",
+                    "actual": 501,
+                    "maximum": 500,
+                }
+            })
         );
     }
 
@@ -647,13 +743,7 @@ mod tests {
 
     #[test]
     fn inspect_text_file_classified_as_file() {
-        let temp = std::env::temp_dir().join(format!(
-            "verboo-test-{}.txt",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let temp = temp_path("txt");
         std::fs::write(&temp, "hello world").unwrap();
         let meta = inspect_attachment(temp.to_str().unwrap()).unwrap();
         assert_eq!(meta.kind, AttachmentKind::File);
@@ -661,6 +751,18 @@ mod tests {
         assert!(meta.width.is_none());
         assert_eq!(meta.size, 11);
         let _ = std::fs::remove_file(&temp);
+    }
+
+    #[test]
+    fn inspect_rejects_a_renamed_text_file_with_a_video_extension() {
+        let path = temp_path("mp4");
+        std::fs::write(&path, "this is not a video").unwrap();
+
+        let error = inspect_attachment_result(path.to_str().unwrap())
+            .expect_err("a text file must never become a video attachment");
+        assert!(matches!(error, FileInspectionError::Video(_)));
+
+        let _ = std::fs::remove_file(&path);
     }
 
     // ── PDF extraction tests ───────────────────────────────────────
@@ -671,11 +773,15 @@ mod tests {
 
     /// Unique temp file path with the given suffix.
     fn temp_path(suffix: &str) -> PathBuf {
+        let sequence = TEST_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("verboo-test-{nanos}.{suffix}"))
+        std::env::temp_dir().join(format!(
+            "verboo-test-{}-{sequence}-{nanos}.{suffix}",
+            std::process::id()
+        ))
     }
 
     /// Builds a minimal valid PDF containing the given text on a single page.

@@ -34,6 +34,7 @@ pub mod tray_service;
 pub mod turn_service;
 pub mod update_service;
 pub mod vision_fallback_service;
+pub mod video;
 pub mod workspace_files_service;
 pub mod marketplace_manifest_service;
 pub mod manifest_cache;

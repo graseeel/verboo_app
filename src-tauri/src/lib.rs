@@ -946,12 +946,15 @@ fn evaluate_goal(
 // ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
-async fn pick_files(app: tauri::AppHandle) -> Result<Vec<AttachmentMeta>, String> {
+async fn pick_files(
+    app: tauri::AppHandle,
+) -> Result<Vec<AttachmentMeta>, services::file_service::FileInspectionError> {
     use tauri_plugin_dialog::DialogExt;
     let paths = app
         .dialog()
         .file()
         .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp", "heic", "heif"])
+        .add_filter("Videos", &["mp4", "mov", "webm", "mkv", "avi", "m4v"])
         .add_filter("All files", &["*"])
         .blocking_pick_files();
     let paths = paths.unwrap_or_default();
@@ -960,12 +963,14 @@ async fn pick_files(app: tauri::AppHandle) -> Result<Vec<AttachmentMeta>, String
         .filter_map(|p| p.into_path().ok())
         .map(|p| p.to_string_lossy().to_string())
         .collect();
-    Ok(services::file_service::inspect_files(&path_strings))
+    services::file_service::inspect_files_result(&path_strings)
 }
 
 #[tauri::command]
-fn inspect_files(paths: Vec<String>) -> Result<Vec<AttachmentMeta>, String> {
-    Ok(services::file_service::inspect_files(&paths))
+fn inspect_files(
+    paths: Vec<String>,
+) -> Result<Vec<AttachmentMeta>, services::file_service::FileInspectionError> {
+    services::file_service::inspect_files_result(&paths)
 }
 
 /// Inspects a pasted image (from clipboard base64) and returns its
