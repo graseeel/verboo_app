@@ -1,111 +1,28 @@
 /**
- * toolCatalog.js — OpenAI-style tool definitions for the LLM agent loop.
+ * OpenAI-style tool definitions for the standalone extension agent.
  *
- * These tools match the controller tools in src/controller/tools/.
- * The loop maps LLM tool_call → ToolCall (protocol shape) → execute().
- * Risk class is mapped from TOOL_RISK_MAP (protocol.js single source).
- *
- * Multi-user: zero hardcoded accounts/paths.
+ * The Browser Controller owns risk and validation. This adapter exposes the
+ * same versioned catalog to the model but deliberately omits policy metadata
+ * from model-produced calls.
  */
 
-import { TOOL_RISK_MAP } from '../controller/protocol.js'
+import {
+  BROWSER_TOOL_CATALOG,
+  TOOL_RISK_MAP,
+} from '../controller/protocol.js'
+
+export const OPENAI_TOOLS = BROWSER_TOOL_CATALOG.map((tool) => ({
+  type: 'function',
+  function: {
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.inputSchema,
+  },
+}))
 
 /**
- * OpenAI function tool definitions sent to the LLM.
- * @type {Array<Object>}
- */
-export const OPENAI_TOOLS = [
-  {
-    type: 'function',
-    function: {
-      name: 'navigate',
-      description: 'Navigate the active tab to a URL. Must be a valid http(s) URL. Never use chrome:// URLs.',
-      parameters: {
-        type: 'object',
-        required: ['url'],
-        properties: {
-          url: { type: 'string', description: 'Full URL to navigate to (https://...)' },
-        },
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'read_page',
-      description: 'Read the text content of the current page or a specific CSS selector. Returns extracted text for analysis.',
-      parameters: {
-        type: 'object',
-        properties: {
-          selector: { type: 'string', description: 'CSS selector to read (default: entire body)' },
-          attribute: { type: 'string', description: 'Optional attribute to read instead of textContent' },
-        },
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'click',
-      description: 'Click an element on the page by CSS selector. Use for buttons, links, video thumbnails.',
-      parameters: {
-        type: 'object',
-        required: ['selector'],
-        properties: {
-          selector: { type: 'string', description: 'CSS selector of the element to click' },
-          button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Mouse button (default: left)' },
-        },
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'type',
-      description: 'Type text into an input field or textarea by CSS selector.',
-      parameters: {
-        type: 'object',
-        required: ['selector', 'text'],
-        properties: {
-          selector: { type: 'string', description: 'CSS selector of the input element' },
-          text: { type: 'string', description: 'Text to type' },
-          clear: { type: 'boolean', description: 'Clear field before typing (default: false)' },
-        },
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'screenshot',
-      description: 'Take a screenshot of the current tab. Returns a data URL image. Useful to see visual state of the page.',
-      parameters: {
-        type: 'object',
-        properties: {},
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'tabs',
-      description: 'List, open new, or switch between browser tabs.',
-      parameters: {
-        type: 'object',
-        required: ['action'],
-        properties: {
-          action: { type: 'string', enum: ['list', 'new', 'switch'], description: 'Tab action' },
-          url: { type: 'string', description: 'URL for "new" action' },
-          tabId: { type: 'number', description: 'Tab id for "switch" action' },
-        },
-      },
-    },
-  },
-]
-
-/**
- * Get risk class for a tool name.
- * Falls back to 'elevated' (fail-safe — unknown tools always prompt).
+ * Display-only risk lookup. execute() always reconstructs risk from the
+ * controller catalog, so this helper cannot grant authority to a caller.
  *
  * @param {string} toolName
  * @returns {'read'|'mutate'|'elevated'}
@@ -115,51 +32,27 @@ export function getToolRisk(toolName) {
 }
 
 /**
- * Map an LLM tool_call to a protocol ToolCall object.
- * Ready to pass directly into execute().
+ * Convert an LLM function call to raw controller input. Risk and the string
+ * used for hard-block matching are intentionally absent.
  *
  * @param {{ id: string, name: string, arguments: string }} toolCall
- * @returns {import('../controller/protocol.js').ToolCall}
+ * @returns {{ id: string; name: string; params: Record<string, unknown> }}
  */
 export function toToolCall(toolCall) {
-  const params = parseArguments(toolCall.arguments)
   return {
     id: toolCall.id,
     name: toolCall.name,
-    risk: getToolRisk(toolCall.name),
-    input: formatInput(toolCall.name, params),
-    params,
+    params: parseArguments(toolCall.arguments),
   }
 }
 
-// ── Internal helpers ─────────────────────────────────────────
-
-/**
- * Parse the arguments string (may be JSON or may have issues).
- * Returns an empty object on failure.
- * @param {string} argStr
- * @returns {Record<string, unknown>}
- */
+/** @param {string} argStr */
 function parseArguments(argStr) {
   try {
     const parsed = JSON.parse(argStr)
-    if (parsed && typeof parsed === 'object') return parsed
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
     return {}
   } catch {
     return {}
   }
-}
-
-/**
- * Format a human-readable input string for the ToolCall.
- * @param {string} name
- * @param {Record<string, unknown>} params
- * @returns {string}
- */
-function formatInput(name, params) {
-  const parts = [name]
-  for (const [k, v] of Object.entries(params)) {
-    if (v != null && v !== '') parts.push(`${k}=${String(v).slice(0, 200)}`)
-  }
-  return parts.join(' ')
 }

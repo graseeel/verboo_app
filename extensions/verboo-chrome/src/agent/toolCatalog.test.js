@@ -6,10 +6,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { OPENAI_TOOLS, getToolRisk, toToolCall } from './toolCatalog.js'
 
-test('OPENAI_TOOLS: has 6 tools (navigate, read_page, click, type, screenshot, tabs)', () => {
-  assert.equal(OPENAI_TOOLS.length, 6)
+test('OPENAI_TOOLS: is derived from the seven executable browser tools', () => {
+  assert.equal(OPENAI_TOOLS.length, 7)
   const names = OPENAI_TOOLS.map(t => t.function.name)
-  assert.deepEqual(names, ['navigate', 'read_page', 'click', 'type', 'screenshot', 'tabs'])
+  assert.deepEqual(names, ['navigate', 'read_page', 'click', 'type', 'screenshot', 'tabs', 'tab_group'])
 })
 
 test('OPENAI_TOOLS: navigate has required url param', () => {
@@ -57,7 +57,7 @@ test('getToolRisk: falls back to elevated for unknown tools (fail-safe)', () => 
   assert.equal(getToolRisk(''), 'elevated')
 })
 
-test('toToolCall: maps LLM tool_call to protocol ToolCall shape', () => {
+test('toToolCall: leaves policy metadata for the controller to derive', () => {
   const tc = toToolCall({
     id: 'tc_abc',
     name: 'navigate',
@@ -65,26 +65,24 @@ test('toToolCall: maps LLM tool_call to protocol ToolCall shape', () => {
   })
   assert.equal(tc.id, 'tc_abc')
   assert.equal(tc.name, 'navigate')
-  assert.equal(tc.risk, 'mutate')
   assert.equal(tc.params.url, 'https://example.com')
-  assert.match(tc.input, /navigate/)
-  assert.match(tc.input, /example\.com/)
+  assert.equal('risk' in tc, false)
+  assert.equal('input' in tc, false)
 })
 
 test('toToolCall: handles malformed arguments gracefully', () => {
   const tc = toToolCall({ id: 'tc_bad', name: 'click', arguments: 'not json' })
   assert.deepEqual(tc.params, {})
   assert.equal(tc.name, 'click')
-  assert.equal(tc.risk, 'mutate')
 })
 
 test('toToolCall: screenshot with empty arguments', () => {
   const tc = toToolCall({ id: 'tc_ss', name: 'screenshot', arguments: '{}' })
-  assert.equal(tc.risk, 'read')
   assert.deepEqual(tc.params, {})
 })
 
-test('toToolCall: unknown tool gets elevated risk (fail-safe)', () => {
+test('toToolCall: unknown tool is passed without caller-owned risk metadata', () => {
   const tc = toToolCall({ id: 'tc_x', name: 'execute_sql', arguments: '{}' })
-  assert.equal(tc.risk, 'elevated')
+  assert.equal(tc.name, 'execute_sql')
+  assert.equal('risk' in tc, false)
 })

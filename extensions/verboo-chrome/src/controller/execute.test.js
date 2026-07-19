@@ -54,7 +54,7 @@ function makeCtx(overrides = {}) {
 
 test('execute: hard blocked tool returns policy denial (no dispatch)', async () => {
   const r = await execute(
-    { name: 'click', risk: 'mutate', input: 'click text=Buy Now' },
+    { name: 'click', params: { selector: 'button[aria-label="Buy Now"]' } },
     makeCtx(),
   )
   assert.equal(r.ok, false)
@@ -64,7 +64,7 @@ test('execute: hard blocked tool returns policy denial (no dispatch)', async () 
 
 test('execute: site denied returns policy denial', async () => {
   const r = await execute(
-    { name: 'read_page', risk: 'read', input: 'read_page selector=h1' },
+    { name: 'read_page', params: { selector: 'h1' } },
     makeCtx({ mode: 'skip', getSiteGrant: async () => 'deny' }),
   )
   assert.equal(r.ok, false)
@@ -73,7 +73,7 @@ test('execute: site denied returns policy denial', async () => {
 
 test('execute: manual + no grant + mutate returns needsApproval (no dispatch)', async () => {
   const r = await execute(
-    { name: 'click', risk: 'mutate', input: 'click text=Submit' },
+    { name: 'click', params: { selector: 'button[type="submit"]' } },
     makeCtx({ mode: 'manual' }),
   )
   assert.equal(r.ok, false)
@@ -83,7 +83,7 @@ test('execute: manual + no grant + mutate returns needsApproval (no dispatch)', 
 
 test('execute: skip + no grant + mutate dispatches and returns result', async () => {
   const r = await execute(
-    { name: 'read_page', risk: 'read', input: 'read_page selector=h1' },
+    { name: 'read_page', params: { selector: 'h1' } },
     makeCtx({ mode: 'skip' }),
   )
   assert.equal(r.ok, true)
@@ -93,21 +93,11 @@ test('execute: skip + no grant + mutate dispatches and returns result', async ()
 
 test('execute: site always + mutate dispatches', async () => {
   const r = await execute(
-    { name: 'read_page', risk: 'read', input: 'read_page selector=h1' },
+    { name: 'read_page', params: { selector: 'h1' } },
     makeCtx({ mode: 'manual', getSiteGrant: async () => 'always' }),
   )
   assert.equal(r.ok, true)
   assert.equal(r.policy.reason, 'site_always_allowed')
-})
-
-test('execute: elevated always needsApproval', async () => {
-  const r = await execute(
-    { name: 'file_upload', risk: 'elevated', input: 'file_upload path=/etc/passwd' },
-    makeCtx({ mode: 'skip', getSiteGrant: async () => 'always' }),
-  )
-  assert.equal(r.ok, false)
-  assert.equal(r.policy.reason, 'elevated_requires_approval')
-  assert.equal(r.policy.needsApproval, true)
 })
 
 test('execute: invalid tool call returns error', async () => {
@@ -118,18 +108,18 @@ test('execute: invalid tool call returns error', async () => {
 
 test('execute: unknown tool name returns error', async () => {
   const r = await execute(
-    { name: 'unknown_tool_xyz', risk: 'mutate', input: 'unknown_tool_xyz' },
+    { name: 'unknown_tool_xyz', params: {} },
     makeCtx({ mode: 'skip' }),
   )
   assert.equal(r.ok, false)
-  assert.ok(r.error.includes('unknown_tool_xyz'))
+  assert.equal(r.error, 'unknown_tool')
 })
 
 // ── Tests: execute returns policy in every response ─────────
 test('execute: policy field always present in result', async () => {
   // Allowed case
   const r = await execute(
-    { name: 'read_page', risk: 'read', input: 'read_page selector=h1' },
+    { name: 'read_page', params: { selector: 'h1' } },
     makeCtx({ mode: 'skip' }),
   )
   assert.ok(r.policy != null)
@@ -137,4 +127,66 @@ test('execute: policy field always present in result', async () => {
   // Denied case
   const d = await execute(null, makeCtx())
   assert.ok(d.policy != null)
+})
+
+test('execute: rebuilds risk and hard-block input instead of trusting the caller', async () => {
+  const r = await execute(
+    {
+      id: 'downgrade-attempt',
+      name: 'click',
+      risk: 'read',
+      input: 'harmless',
+      params: { selector: 'button[aria-label="Buy Now"]' },
+    },
+    makeCtx({ mode: 'skip', getSiteGrant: async () => 'always' }),
+  )
+
+  assert.equal(r.ok, false)
+  assert.equal(r.policy.reason, 'hard_block')
+  assert.equal(r.toolCall.risk, 'mutate')
+  assert.match(r.toolCall.input, /Buy Now/)
+})
+
+test('execute: resolves navigate grants from the destination origin', async () => {
+  const seen = []
+  const r = await execute(
+    {
+      id: 'navigate-destination',
+      name: 'navigate',
+      params: { url: 'https://destination.example/path' },
+    },
+    makeCtx({
+      mode: 'skip',
+      getSiteGrant: async (host) => {
+        seen.push(host)
+        return 'deny'
+      },
+    }),
+  )
+
+  assert.equal(r.ok, false)
+  assert.equal(r.policy.reason, 'site_denied')
+  assert.deepEqual(seen, ['destination.example'])
+})
+
+test('execute: rejects missing required parameters before approval', async () => {
+  const r = await execute(
+    { id: 'missing-selector', name: 'click', params: {} },
+    makeCtx({ mode: 'manual' }),
+  )
+
+  assert.equal(r.ok, false)
+  assert.equal(r.error, 'invalid_params:selector_required')
+  assert.equal(r.policy.reason, 'invalid_tool_call')
+})
+
+test('execute: rejects tools outside the canonical catalog', async () => {
+  const r = await execute(
+    { id: 'unknown', name: 'unknown_tool_xyz', risk: 'read', input: 'harmless', params: {} },
+    makeCtx({ mode: 'skip' }),
+  )
+
+  assert.equal(r.ok, false)
+  assert.equal(r.error, 'unknown_tool')
+  assert.equal(r.policy.reason, 'unknown_tool')
 })

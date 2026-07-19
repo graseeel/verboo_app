@@ -33,6 +33,8 @@
  * must never be exported.
  */
 
+import browserCatalog from './browserTools.json' with { type: 'json' }
+
 // ── Message types ──────────────────────────────────────────
 
 export const MSG = Object.freeze({
@@ -113,48 +115,23 @@ export const TOOL_RISK = Object.freeze({
   ELEVATED: 'elevated',
 })
 
-/** Bump on every catalog change (see comment above). */
-export const CATALOG_VERSION = '0.3.0'
+/** Bump in browserTools.json on every catalog change. */
+export const CATALOG_VERSION = browserCatalog.version
 
-// Risk classification per tool kind — single source of truth for the policy gate.
-// 'elevated' tools ALWAYS re-prompt, even with an 'always' site grant and even in
-// Auto/Skip mode (see policy/evaluateToolPolicy.js).
-export const TOOL_RISK_MAP = Object.freeze({
-  // ── MVP (P2) ─────────────────────────────────────────
-  navigate: 'mutate',
-  read_page: 'read',
-  click: 'mutate',
-  type: 'mutate',
-  screenshot: 'read',
-  tabs: 'mutate',
-  tab_group: 'mutate',
+/**
+ * Executable browser tools. Planned handlers that lack required Chrome
+ * permissions are deliberately absent so neither the LLM nor MCP can call
+ * them accidentally.
+ */
+export const BROWSER_TOOL_CATALOG = Object.freeze(browserCatalog.tools)
 
-  // ── P5: full catalog ────────────────────────────────
-  // Read-only additions. No new permissions required.
-  console_reader: 'read',       // chrome.scripting + console API override
-  network_reader: 'read',       // chrome.debugger Network domain
+const TOOL_BY_NAME = new Map(BROWSER_TOOL_CATALOG.map((tool) => [tool.name, tool]))
 
-  // Mutate additions. console_clear + session recording.
-  console_clear: 'mutate',
-  session_recording: 'mutate',  // recorded events for later replay
-  schedule_task: 'mutate',      // chrome.alarms — REQUIRES 'alarms' permission
-  workflow_record: 'mutate',    // record sequence of tool calls
-  workflow_replay: 'mutate',    // replay recorded sequence
-
-  // Elevated additions. ALWAYS re-prompt; NO always-allow override.
-  file_upload: 'elevated',      // chrome.debugger DOM.setFileInputFiles — filesystem access
-  history_read: 'elevated',    // chrome.history.search — REQUIRES 'history' permission
-  gif_recording: 'elevated',    // MediaRecorder in panel — captures screen (PII/passwords visible)
-
-  // Aliases (short names) — same risk as canonical long names
-  console: 'read',
-  network: 'read',
-  upload: 'elevated',
-  gif_record: 'elevated',
-
-  // Future (post-P5, do not implement yet):
-  // evaluate: 'elevated',     // Runtime.evaluate in isolated world — needs debugger permission
-})
+// Risk classification is derived from the catalog. Callers may display it,
+// but execute() reconstructs it and never trusts caller-provided metadata.
+export const TOOL_RISK_MAP = Object.freeze(Object.fromEntries(
+  BROWSER_TOOL_CATALOG.map((tool) => [tool.name, tool.risk]),
+))
 
 // ── Policy Decision (mirrors evaluateToolPolicy.js output) ──
 
@@ -219,17 +196,128 @@ export const MSG_SHAPES = Object.freeze({
  */
 export function makeToolCall(name, params, reasoning) {
   const id = crypto.randomUUID()
-  const risk = TOOL_RISK_MAP[name] ?? 'elevated' // fail safe — unknown tools prompt
-  const input = `${name} ${serializeParams(params)}`
-  return { id, name, risk, input, params, reasoning }
+  return { id, name, params, reasoning }
 }
 
-/** @param {Record<string, unknown>} params */
-function serializeParams(params) {
+/**
+ * Rebuild a raw caller request into the only ToolCall shape accepted by the
+ * policy engine and dispatcher.
+ *
+ * @param {unknown} raw
+ * @returns {{ ok: true; toolCall: import('./protocol.js').ToolCall; policyHost?: string } | { ok: false; error: string }}
+ */
+export function canonicalizeToolCall(raw) {
+  if (!raw || typeof raw !== 'object' || typeof raw.name !== 'string' || !raw.name) {
+    return { ok: false, error: 'invalid_tool_call' }
+  }
+
+  const definition = TOOL_BY_NAME.get(raw.name)
+  if (!definition) return { ok: false, error: 'unknown_tool' }
+
+  const params = raw.params && typeof raw.params === 'object' && !Array.isArray(raw.params)
+    ? { ...raw.params }
+    : {}
+  const validationError = validateToolParams(definition, params)
+  if (validationError) return { ok: false, error: validationError }
+
+  const toolCall = {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : crypto.randomUUID(),
+    name: definition.name,
+    risk: definition.risk,
+    input: serializeCanonicalInput(definition.name, params),
+    params,
+    ...(typeof raw.reasoning === 'string' ? { reasoning: raw.reasoning } : {}),
+  }
+  const policyHost = resolvePolicyHost(toolCall)
+  return { ok: true, toolCall, ...(policyHost ? { policyHost } : {}) }
+}
+
+/**
+ * @param {{ inputSchema: { required?: string[]; properties?: Record<string, {type?: string; enum?: unknown[]; items?: {type?: string}}> } }} definition
+ * @param {Record<string, unknown>} params
+ * @returns {string | null}
+ */
+function validateToolParams(definition, params) {
+  const schema = definition.inputSchema
+  const properties = schema.properties ?? {}
+
+  for (const key of schema.required ?? []) {
+    if (!(key in params) || params[key] == null || params[key] === '') {
+      return `invalid_params:${key}_required`
+    }
+  }
+
+  for (const [key, value] of Object.entries(params)) {
+    const property = properties[key]
+    if (!property) return `invalid_params:${key}_unknown`
+    if (!matchesJsonType(value, property.type, property.items?.type)) {
+      return `invalid_params:${key}_must_be_${property.type}`
+    }
+    if (property.enum && !property.enum.includes(value)) {
+      return `invalid_params:${key}_invalid`
+    }
+  }
+
+  if (definition.name === 'navigate') {
+    if (!httpHost(params.url)) return 'invalid_params:url_must_be_http'
+  }
+  if (definition.name === 'tabs') {
+    if ((params.action === 'switch' || params.action === 'close') && !Number.isInteger(params.tabId)) {
+      return 'invalid_params:tabId_required'
+    }
+    if (params.action === 'new' && params.url != null && params.url !== 'about:newtab' && !httpHost(params.url)) {
+      return 'invalid_params:url_must_be_http'
+    }
+  }
+  if (definition.name === 'tab_group') {
+    if (params.action === 'remove' && !Number.isInteger(params.groupId)) {
+      return 'invalid_params:groupId_required'
+    }
+    if (params.action === 'assign' && !Number.isInteger(params.groupId)) {
+      return 'invalid_params:groupId_required'
+    }
+    if (['create', 'assign', 'unassign'].includes(params.action) && (!Array.isArray(params.tabIds) || params.tabIds.length === 0)) {
+      return 'invalid_params:tabIds_required'
+    }
+  }
+
+  return null
+}
+
+/** @param {unknown} value @param {string|undefined} type @param {string|undefined} itemType */
+function matchesJsonType(value, type, itemType) {
+  if (!type) return true
+  if (type === 'integer') return Number.isInteger(value)
+  if (type === 'array') {
+    return Array.isArray(value) && (!itemType || value.every((item) => matchesJsonType(item, itemType)))
+  }
+  if (type === 'object') return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+  return typeof value === type
+}
+
+/** @param {string} name @param {Record<string, unknown>} params */
+export function serializeCanonicalInput(name, params) {
+  const entries = Object.entries(params)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`)
+  return [name, ...entries].join(' ')
+}
+
+/** @param {{name: string; params: Record<string, unknown>}} toolCall */
+export function resolvePolicyHost(toolCall) {
+  if (toolCall.name === 'navigate') return httpHost(toolCall.params.url)
+  if (toolCall.name === 'tabs' && toolCall.params.action === 'new') {
+    return httpHost(toolCall.params.url)
+  }
+  return ''
+}
+
+/** @param {unknown} value */
+function httpHost(value) {
+  if (typeof value !== 'string') return ''
   try {
-    return Object.entries(params)
-      .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
-      .join(' ')
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.host : ''
   } catch {
     return ''
   }

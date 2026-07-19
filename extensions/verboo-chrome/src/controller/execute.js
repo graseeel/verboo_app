@@ -24,6 +24,7 @@
  */
 
 import { evaluateToolPolicy } from '../policy/evaluateToolPolicy.js'
+import { canonicalizeToolCall } from './protocol.js'
 import { navigate } from './tools/navigate.js'
 import { readPage } from './tools/readPage.js'
 import { click } from './tools/click.js'
@@ -44,43 +45,51 @@ import { gifRecording } from './tools/gifRecording.js'
  * @returns {Promise<ExecutionResult>}
  */
 export async function execute(toolCall, ctx) {
-  if (!toolCall || typeof toolCall !== 'object' || !toolCall.name) {
+  const canonical = canonicalizeToolCall(toolCall)
+  if (!canonical.ok) {
+    const reason = canonical.error === 'unknown_tool' ? 'unknown_tool' : 'invalid_tool_call'
     return {
       ok: false,
-      error: 'invalid_tool_call',
-      policy: { allowed: false, needsApproval: false, reason: 'invalid_tool_call' },
+      error: canonical.error,
+      policy: { allowed: false, needsApproval: false, reason },
+      toolCall: null,
     }
   }
+  const normalizedToolCall = canonical.toolCall
 
-  // Resolve site grant for the active tab's host (if any).
+  // Navigation and new-tab grants belong to their destination. Other tools
+  // inherit the active tab host.
   let siteGrant = undefined
-  if (ctx.activeTabId != null && ctx.getSiteGrant) {
+  if (ctx.getSiteGrant) {
     try {
-      const host = await getActiveTabHost(ctx.activeTabId)
+      const host = canonical.policyHost || (
+        ctx.activeTabId != null ? await getActiveTabHost(ctx.activeTabId) : ''
+      )
       if (host) siteGrant = await ctx.getSiteGrant(host)
     } catch {
       // Non-fatal: treat as no grant.
     }
   }
 
-  const policy = evaluateToolPolicy(ctx.mode, siteGrant, toolCall)
+  const policy = evaluateToolPolicy(ctx.mode, siteGrant, normalizedToolCall)
 
   // Hard denials (allowed=false, needsApproval=false) never run.
   // needsApproval=true is returned to the caller — the controller does
   // not prompt the user directly; the panel/agent client handles it.
   if (!policy.allowed) {
-    return { ok: false, error: policy.reason, policy }
+    return { ok: false, error: policy.reason, policy, toolCall: normalizedToolCall }
   }
 
   // Dispatch to the tool implementation.
   try {
-    const result = await dispatch(toolCall, ctx)
-    return { ok: true, result, policy }
+    const result = await dispatch(normalizedToolCall, ctx)
+    return { ok: true, result, policy, toolCall: normalizedToolCall }
   } catch (err) {
     return {
       ok: false,
       error: err?.message ?? String(err),
       policy,
+      toolCall: normalizedToolCall,
     }
   }
 }
