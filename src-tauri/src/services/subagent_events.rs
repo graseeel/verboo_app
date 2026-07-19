@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde_json::Value;
 
 use crate::models::types::{
@@ -255,6 +257,74 @@ pub(crate) fn native_parent_signal(
     }
 
     None
+}
+
+pub(crate) fn native_parent_results(
+    parent_turn_id: &str,
+    payload: &Value,
+    known_tool_use_ids: &HashSet<String>,
+    received_at: u64,
+) -> Vec<SubagentThreadUpdate> {
+    let Some(content) = payload
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    let uuid = payload
+        .get("uuid")
+        .and_then(Value::as_str)
+        .unwrap_or("result");
+
+    content
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| {
+            if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                return None;
+            }
+            let tool_use_id = block.get("tool_use_id").and_then(Value::as_str)?;
+            if !known_tool_use_ids.contains(tool_use_id) {
+                return None;
+            }
+            let is_error = block
+                .get("is_error")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let text = extract_text(block.get("content")?)?;
+            let thread_id = native_thread_id(parent_turn_id, tool_use_id);
+            Some(SubagentThreadUpdate {
+                thread_id: thread_id.clone(),
+                runtime_agent_id: None,
+                tool_use_id: Some(tool_use_id.to_string()),
+                label: None,
+                mission: None,
+                status: Some(if is_error {
+                    SubagentThreadStatus::Failed
+                } else {
+                    SubagentThreadStatus::Completed
+                }),
+                event: Some(SubagentThreadEvent {
+                    id: format!("{thread_id}:{uuid}:{index}"),
+                    kind: if is_error {
+                        SubagentThreadEventKind::Error
+                    } else {
+                        SubagentThreadEventKind::Final
+                    },
+                    text: if is_error {
+                        truncate_tool_output(&text, true)
+                    } else {
+                        clean(&text)
+                    },
+                    timestamp: received_at,
+                    tool_name: None,
+                    tool_use_id: Some(tool_use_id.to_string()),
+                    is_error: Some(is_error),
+                }),
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn native_thread_id(parent_turn_id: &str, tool_use_id: &str) -> String {
@@ -542,5 +612,28 @@ mod tests {
         assert_eq!(reading.update.status, Some(SubagentThreadStatus::Reading));
         assert_eq!(done.update.status, Some(SubagentThreadStatus::Completed));
         assert!(done.stop_watcher);
+    }
+
+    #[test]
+    fn parent_tool_result_preserves_full_final_only_for_known_agent_call() {
+        let payload = json!({
+            "type": "user",
+            "uuid": "parent-result-1",
+            "message": {
+                "content": [
+                    { "type": "tool_result", "tool_use_id": "ordinary-tool", "content": "skip" },
+                    { "type": "tool_result", "tool_use_id": "agent-tool-1", "content": "# Full result\n\nDone" }
+                ]
+            }
+        });
+        let known = HashSet::from(["agent-tool-1".to_string()]);
+
+        let updates = native_parent_results("turn:1", &payload, &known, 90);
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].status, Some(SubagentThreadStatus::Completed));
+        let event = updates[0].event.as_ref().unwrap();
+        assert_eq!(event.kind, SubagentThreadEventKind::Final);
+        assert_eq!(event.text, "# Full result\n\nDone");
     }
 }

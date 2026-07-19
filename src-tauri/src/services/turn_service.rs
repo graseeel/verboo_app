@@ -1,19 +1,23 @@
+use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::io::{BufRead, BufReader};
 
 use tauri::{AppHandle, Emitter};
 
 use crate::models::types::{
-    access_mode_cli_args, AgentEvent, AgentResultSnapshot, AgentTurnRequest, AttachmentMeta,
-    AttachmentKind, EventType, LanguageCode, ModelReasoning, PersonalityMode, RuntimeActivity,
+    access_mode_cli_args, AgentEvent, AgentResultSnapshot, AgentTurnRequest, AttachmentKind,
+    AttachmentMeta, EventType, LanguageCode, ModelReasoning, PersonalityMode, RuntimeActivity,
     RuntimeStatus, RuntimeStatusKind, UserSettings,
 };
 use crate::services::auth_token::{inject_api_key, resolve_token};
+use crate::services::cli_subagent_transcript::CliSubagentTranscriptFollower;
 use crate::services::credentials_store::CredentialsStore;
 use crate::services::prevent_sleep::PreventSleepGuard;
 use crate::services::settings_store::SettingsStore;
+use crate::services::subagent_events::{
+    child_updates_from_payload, native_parent_results, native_parent_signal, native_thread_id,
+};
 
 const AGENT_EVENT_CHANNEL: &str = "agent:event";
 
@@ -168,16 +172,13 @@ impl TurnService {
         };
 
         // Resolve the vision helper model from the user's catalog.
-        let model_service =
-            crate::services::model_service::ModelService::new(app_data_dir.clone());
+        let model_service = crate::services::model_service::ModelService::new(app_data_dir.clone());
         let token = crate::services::auth_token::resolve_token(&self.credentials);
         let discovery = match model_service.list_models(token.as_deref(), false) {
             Ok(d) => d,
             Err(e) => {
                 // Non-silent: list_models failed — tell the user why.
-                eprintln!(
-                    "[verboo:vision-fallback] list_models failed: {e}"
-                );
+                eprintln!("[verboo:vision-fallback] list_models failed: {e}");
                 self.inject_fallback_warning(
                     request,
                     &format!(
@@ -208,22 +209,21 @@ impl TurnService {
             vision_count
         );
 
-        let helper = match crate::services::vision_fallback_service::resolve_vision_helper(
-            &discovery,
-        ) {
-            Some(m) => m,
-            None => {
-                // Non-silent: no vision model in the user's plan — tell them.
-                self.inject_fallback_warning(
-                    request,
-                    "Vision fallback could not run: no vision-capable model found \
+        let helper =
+            match crate::services::vision_fallback_service::resolve_vision_helper(&discovery) {
+                Some(m) => m,
+                None => {
+                    // Non-silent: no vision model in the user's plan — tell them.
+                    self.inject_fallback_warning(
+                        request,
+                        "Vision fallback could not run: no vision-capable model found \
                      in your plan. Tell the user their plan doesn't include a \
                      vision model, so the image can't be described. Suggest they \
                      upgrade their plan or paste the image content as text.",
-                );
-                return;
-            }
-        };
+                    );
+                    return;
+                }
+            };
 
         eprintln!(
             "[verboo:vision-fallback] resolved helper: {} ({})",
@@ -270,8 +270,7 @@ impl TurnService {
         // helper fails. Deterministic: same sort criteria as
         // `resolve_vision_helper`, minus the primary.
         let fallback_helper = crate::services::vision_fallback_service::resolve_fallback_helper(
-            &discovery,
-            &helper.id,
+            &discovery, &helper.id,
         );
         if let Some(fb) = &fallback_helper {
             eprintln!(
@@ -310,9 +309,8 @@ impl TurnService {
                 ) {
                     Ok(description) => {
                         att.extracted_text = Some(description);
-                        att.extraction_status = Some(
-                            crate::models::types::ExtractionStatus::Extracted,
-                        );
+                        att.extraction_status =
+                            Some(crate::models::types::ExtractionStatus::Extracted);
                     }
                     Err(e) => {
                         // Non-silent: describe_image failed (timeout, spawn
@@ -329,9 +327,8 @@ impl TurnService {
                              the image and suggest they try again, use a \
                              vision-capable model, or paste the content as text.]"
                         ));
-                        att.extraction_status = Some(
-                            crate::models::types::ExtractionStatus::Warning,
-                        );
+                        att.extraction_status =
+                            Some(crate::models::types::ExtractionStatus::Warning);
                     }
                 }
             }
@@ -348,8 +345,7 @@ impl TurnService {
             for att in list.iter_mut() {
                 if att.kind == AttachmentKind::Image && att.extracted_text.is_none() {
                     att.extracted_text = Some(warning.to_string());
-                    att.extraction_status =
-                        Some(crate::models::types::ExtractionStatus::Warning);
+                    att.extraction_status = Some(crate::models::types::ExtractionStatus::Warning);
                 }
             }
         }
@@ -384,7 +380,6 @@ impl TurnService {
                 text: None,
                 payload: None,
                 result: None,
-                progress: None,
                 message: None,
                 exit_code: None,
                 runtime_status: None,
@@ -553,7 +548,9 @@ impl TurnService {
         // We never pass `--effort` because its static allowlist rejects
         // "none" and unknown levels. Absent/stale override → env not set →
         // CLI applies the model's `default_effort`.
-        if let Some(level) = resolve_effort_arg(request.effort.as_deref(), request.reasoning.as_ref()) {
+        if let Some(level) =
+            resolve_effort_arg(request.effort.as_deref(), request.reasoning.as_ref())
+        {
             cmd.env("CLAUDE_CODE_EFFORT_LEVEL", level);
         }
 
@@ -574,7 +571,10 @@ impl TurnService {
         // the 13k buffer, causing double-compacts every turn.
         if let Some(context_window) = request.context_window {
             if context_window >= 40_000 {
-                cmd.env("CLAUDE_CODE_AUTO_COMPACT_WINDOW", context_window.to_string());
+                cmd.env(
+                    "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+                    context_window.to_string(),
+                );
             }
         }
 
@@ -662,6 +662,11 @@ impl TurnService {
             let mut emitted_stream_text = false;
             let mut result_snapshot: Option<AgentResultSnapshot> = None;
             let mut assistant_error: Option<serde_json::Value> = None;
+            let mut subagent_followers: std::collections::HashMap<
+                String,
+                CliSubagentTranscriptFollower,
+            > = std::collections::HashMap::new();
+            let mut subagent_tool_use_ids = std::collections::HashSet::new();
 
             for line in reader.lines() {
                 let line = match line {
@@ -671,14 +676,116 @@ impl TurnService {
                 let clean = clean_terminal_text(&line);
                 let parsed = parse_json_line(&clean);
                 if let Some(payload) = parsed {
+                    let received_at = timestamp_ms();
+                    if let Some(signal) =
+                        native_parent_signal(&turn_id_for_stdout, &payload, received_at)
+                    {
+                        subagent_tool_use_ids.insert(signal.tool_use_id.clone());
+                        let follower_key = signal.tool_use_id.clone();
+                        let follower_thread_id = signal.update.thread_id.clone();
+                        let start_follower = signal.start_watcher;
+                        let stop_follower = signal.stop_watcher;
+                        let runtime_agent_id = signal.runtime_agent_id.clone();
+                        let session_id = signal.session_id.clone();
+                        emit_event(
+                            &app_for_stdout,
+                            AgentEvent {
+                                event_type: EventType::SubagentThread,
+                                turn_id: Some(turn_id_for_stdout.clone()),
+                                conversation_id: Some(conversation_id_for_stdout.clone()),
+                                subagent_thread: Some(signal.update),
+                                ..Default::default()
+                            },
+                        );
+                        if start_follower && !subagent_followers.contains_key(&follower_key) {
+                            if let (Some(runtime_agent_id), Some(session_id)) =
+                                (runtime_agent_id, session_id)
+                            {
+                                let follower_app = app_for_stdout.clone();
+                                let follower_turn_id = turn_id_for_stdout.clone();
+                                let follower_conversation_id = conversation_id_for_stdout.clone();
+                                let callback_agent_id = runtime_agent_id.clone();
+                                let callback_tool_use_id = follower_key.clone();
+                                let follower = CliSubagentTranscriptFollower::spawn(
+                                    &working_dir_label,
+                                    &session_id,
+                                    &runtime_agent_id,
+                                    follower_thread_id,
+                                    move |mut update| {
+                                        update.runtime_agent_id = Some(callback_agent_id.clone());
+                                        update.tool_use_id = Some(callback_tool_use_id.clone());
+                                        emit_event(
+                                            &follower_app,
+                                            AgentEvent {
+                                                event_type: EventType::SubagentThread,
+                                                turn_id: Some(follower_turn_id.clone()),
+                                                conversation_id: Some(
+                                                    follower_conversation_id.clone(),
+                                                ),
+                                                subagent_thread: Some(update),
+                                                ..Default::default()
+                                            },
+                                        );
+                                    },
+                                );
+                                subagent_followers.insert(signal.tool_use_id, follower);
+                            }
+                        } else if stop_follower {
+                            if let Some(follower) = subagent_followers.remove(&follower_key) {
+                                follower.stop();
+                            }
+                        }
+                    }
+                    for update in native_parent_results(
+                        &turn_id_for_stdout,
+                        &payload,
+                        &subagent_tool_use_ids,
+                        received_at,
+                    ) {
+                        emit_event(
+                            &app_for_stdout,
+                            AgentEvent {
+                                event_type: EventType::SubagentThread,
+                                turn_id: Some(turn_id_for_stdout.clone()),
+                                conversation_id: Some(conversation_id_for_stdout.clone()),
+                                subagent_thread: Some(update),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                    if let Some(parent_tool_use_id) = payload
+                        .get("parent_tool_use_id")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|value| !value.is_empty())
+                    {
+                        let thread_id = native_thread_id(&turn_id_for_stdout, parent_tool_use_id);
+                        let runtime_agent_id = payload
+                            .get("agent_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string);
+                        for mut update in
+                            child_updates_from_payload(&thread_id, &payload, received_at)
+                        {
+                            update.runtime_agent_id = runtime_agent_id.clone();
+                            update.tool_use_id = Some(parent_tool_use_id.to_string());
+                            emit_event(
+                                &app_for_stdout,
+                                AgentEvent {
+                                    event_type: EventType::SubagentThread,
+                                    turn_id: Some(turn_id_for_stdout.clone()),
+                                    conversation_id: Some(conversation_id_for_stdout.clone()),
+                                    subagent_thread: Some(update),
+                                    ..Default::default()
+                                },
+                            );
+                        }
+                    }
                     if is_assistant_error_payload(&payload) {
                         assistant_error = Some(payload.clone());
                     }
                     if is_result_payload(&payload) {
-                        result_snapshot = Some(to_agent_result_snapshot(
-                            &turn_id_for_stdout,
-                            &payload,
-                        ));
+                        result_snapshot =
+                            Some(to_agent_result_snapshot(&turn_id_for_stdout, &payload));
                         emit_event(
                             &app_for_stdout,
                             AgentEvent {
@@ -734,6 +841,10 @@ impl TurnService {
                 }
             }
 
+            for (_, follower) in subagent_followers.drain() {
+                follower.stop();
+            }
+
             let exit_code = child_handle
                 .lock()
                 .ok()
@@ -757,9 +868,7 @@ impl TurnService {
                 // Only remove if it still points to OUR turn_id — if the
                 // user already started a new turn for this conversation,
                 // that new mapping must survive.
-                if conv_map.get(&conversation_id_for_stdout)
-                    == Some(&turn_id_for_stdout)
-                {
+                if conv_map.get(&conversation_id_for_stdout) == Some(&turn_id_for_stdout) {
                     conv_map.remove(&conversation_id_for_stdout);
                 }
             }
@@ -795,9 +904,8 @@ impl TurnService {
                 Some(code) => format!("exit={code}"),
                 None => "signal".to_string(),
             };
-            let diagnosis = format!(
-                "({exit_display}, runtime={runtime_label}, cwd={working_dir_label})"
-            );
+            let diagnosis =
+                format!("({exit_display}, runtime={runtime_label}, cwd={working_dir_label})");
             if let Some(mut failure) = terminal_failure_from_outcome(
                 assistant_error.as_ref(),
                 result_snapshot.as_ref(),
@@ -855,7 +963,10 @@ impl TurnService {
         // should not be used in multichat mode.
         let target_turn_id = match conversation_id {
             Some(conv_id) => {
-                let conv_map = self.active_by_conversation.lock().map_err(|e| e.to_string())?;
+                let conv_map = self
+                    .active_by_conversation
+                    .lock()
+                    .map_err(|e| e.to_string())?;
                 conv_map.get(&conv_id).cloned()
             }
             None => {
@@ -890,6 +1001,13 @@ impl Default for TurnService {
 
 fn emit_event(app: &AppHandle, event: AgentEvent) {
     let _ = app.emit(AGENT_EVENT_CHANNEL, event);
+}
+
+fn timestamp_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq)]
@@ -1050,10 +1168,7 @@ fn resolve_cli_path() -> String {
 /// ```json
 /// {"type":"user","session_id":"","message":{"role":"user","content":[{"type":"text","text":"..."},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"<b64>"}}]},"parent_tool_use_id":null}
 /// ```
-fn build_stream_json_input(
-    request: &AgentTurnRequest,
-    prompt: &str,
-) -> Option<String> {
+fn build_stream_json_input(request: &AgentTurnRequest, prompt: &str) -> Option<String> {
     if request.model_supports_vision != Some(true) {
         return None;
     }
@@ -1132,9 +1247,7 @@ fn build_prompt(request: &AgentTurnRequest, is_resume: bool) -> String {
 /// runner (services/research_subagent_runner.rs) can compose the same prompt
 /// format without duplicating the logic.
 pub(crate) fn build_prompt_internal(request: &AgentTurnRequest, is_resume: bool) -> String {
-    let language = request
-        .response_language
-        .unwrap_or(LanguageCode::EnUs);
+    let language = request.response_language.unwrap_or(LanguageCode::EnUs);
     let working_directory = safe_runtime_working_directory(&request.working_directory);
     let _ = request.response_language; // already copied via Copy
 
@@ -1183,10 +1296,7 @@ pub(crate) fn build_prompt_internal(request: &AgentTurnRequest, is_resume: bool)
             let trimmed = ci.trim();
             if !trimmed.is_empty() {
                 let (label, body) = if language == LanguageCode::PtBr {
-                    (
-                        "Instruções personalizadas do usuário:",
-                        trimmed.to_string(),
-                    )
+                    ("Instruções personalizadas do usuário:", trimmed.to_string())
                 } else {
                     ("User custom instructions:", trimmed.to_string())
                 };
@@ -1198,10 +1308,7 @@ pub(crate) fn build_prompt_internal(request: &AgentTurnRequest, is_resume: bool)
         let trimmed = mc.trim();
         if !trimmed.is_empty() {
             let (label, body) = if language == LanguageCode::PtBr {
-                (
-                    "Memória local relevante deste app:",
-                    trimmed.to_string(),
-                )
+                ("Memória local relevante deste app:", trimmed.to_string())
             } else {
                 ("Relevant local app memory:", trimmed.to_string())
             };
@@ -1350,7 +1457,10 @@ fn build_app_instructions() -> Vec<String> {
     .collect()
 }
 
-fn build_skill_lines(skills: &[crate::models::types::SkillSummary], language: LanguageCode) -> Vec<String> {
+fn build_skill_lines(
+    skills: &[crate::models::types::SkillSummary],
+    language: LanguageCode,
+) -> Vec<String> {
     if skills.is_empty() {
         return Vec::new();
     }
@@ -1368,7 +1478,10 @@ fn build_skill_lines(skills: &[crate::models::types::SkillSummary], language: La
             let line = if language == LanguageCode::PtBr {
                 format!("- Use o plugin \"{}\" — as ferramentas MCP/skills dele estão disponíveis nativamente", skill.name)
             } else {
-                format!("- Use the \"{}\" plugin — its MCP tools/skills are available natively", skill.name)
+                format!(
+                    "- Use the \"{}\" plugin — its MCP tools/skills are available natively",
+                    skill.name
+                )
             };
             lines.push(line);
         } else {
@@ -1421,7 +1534,9 @@ fn build_attachment_lines(
                 .unwrap_or(false);
             if has_text {
                 let text = a.extracted_text.as_deref().unwrap_or("");
-                entry.push_str(&format!("\n  <document-content>\n{text}\n  </document-content>"));
+                entry.push_str(&format!(
+                    "\n  <document-content>\n{text}\n  </document-content>"
+                ));
             } else if model_supports_vision == Some(false) {
                 // No usable extracted text AND the model explicitly doesn't
                 // support vision. Be explicit so the model doesn't hallucinate:
@@ -1521,9 +1636,7 @@ fn strip_ansi(value: &str) -> String {
             if i > run_start {
                 // SAFETY: we walked these bytes inside a valid &str; they are
                 // valid UTF-8.
-                out.push_str(unsafe {
-                    std::str::from_utf8_unchecked(&bytes[run_start..i])
-                });
+                out.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[run_start..i]) });
             }
             // ESC at end of string: drop it.
             if i + 1 >= bytes.len() {
@@ -1623,7 +1736,10 @@ fn to_agent_result_snapshot(turn_id: &str, payload: &serde_json::Value) -> Agent
         stop_reason,
         is_error,
         usage: usage.map(|u| crate::models::types::TokenUsage {
-            input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).map(|n| n as u32),
+            input_tokens: u
+                .get("input_tokens")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32),
             output_tokens: u
                 .get("output_tokens")
                 .and_then(|v| v.as_u64())
@@ -1772,12 +1888,18 @@ fn is_compaction_payload(payload: &serde_json::Value) -> bool {
     // Shape 2 & 3: CLI system messages with subtype or content matching compact.
     if payload.get("type").and_then(|v| v.as_str()) == Some("system") {
         // Check subtype for compact_boundary or any subtype containing "compact".
-        let subtype = payload.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
+        let subtype = payload
+            .get("subtype")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if subtype.to_lowercase().contains("compact") {
             return true;
         }
         // Check content for "Compacting conversation" (case-insensitive, handles …).
-        let content = payload.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        let content = payload
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if content.to_lowercase().contains("compacting") {
             return true;
         }
@@ -1813,7 +1935,11 @@ fn runtime_activity_from_payload(payload: &serde_json::Value) -> Option<RuntimeA
         } else {
             "Compacting context…"
         };
-        let detail = if is_boundary { Some("done".to_string()) } else { None };
+        let detail = if is_boundary {
+            Some("done".to_string())
+        } else {
+            None
+        };
         return Some(RuntimeActivity {
             key: "compaction".to_string(),
             label: label.to_string(),
@@ -1832,13 +1958,20 @@ fn runtime_activity_from_payload(payload: &serde_json::Value) -> Option<RuntimeA
         .or_else(|| block.get("tool_name").and_then(|v| v.as_str()))?
         .to_string();
     let input = tool_input(&block);
-    let id = block.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let id = block
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let detail = detail_for_tool(&name, input.as_ref());
     let stats = edit_stats_for_tool(&name, input.as_ref());
     let diff_preview = diff_preview_for_tool(&name, input.as_ref());
     let activity = activity_for_tool(&name);
     Some(RuntimeActivity {
-        key: format!("{}:{}", id.as_deref().unwrap_or(&name), detail.as_deref().unwrap_or("")),
+        key: format!(
+            "{}:{}",
+            id.as_deref().unwrap_or(&name),
+            detail.as_deref().unwrap_or("")
+        ),
         label: activity.0.to_string(),
         detail,
         kind: activity.1.to_string(),
@@ -1859,19 +1992,17 @@ fn tool_name_from_payload(payload: &serde_json::Value) -> Option<String> {
     }
     let message = payload.get("message")?;
     let content = message.get("content")?.as_array()?;
-    content
-        .iter()
-        .find_map(|item| {
-            let itype = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            if itype.to_lowercase().contains("tool_use") {
-                item.get("name")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| item.get("tool_name").and_then(|v| v.as_str()))
-                    .map(|s| s.to_string())
-            } else {
-                None
-            }
-        })
+    content.iter().find_map(|item| {
+        let itype = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if itype.to_lowercase().contains("tool_use") {
+            item.get("name")
+                .and_then(|v| v.as_str())
+                .or_else(|| item.get("tool_name").and_then(|v| v.as_str()))
+                .map(|s| s.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn label_for_tool_name(tool_name: &str) -> &'static str {
@@ -1889,7 +2020,9 @@ fn label_for_tool_name(tool_name: &str) -> &'static str {
     }
 }
 
-pub(crate) fn extract_tool_block(payload: &serde_json::Value) -> Option<serde_json::Map<String, serde_json::Value>> {
+pub(crate) fn extract_tool_block(
+    payload: &serde_json::Value,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
     if !payload.is_object() {
         return None;
     }
@@ -1948,7 +2081,10 @@ fn activity_for_tool(tool_name: &str) -> (&'static str, &'static str) {
     }
 }
 
-fn detail_for_tool(tool_name: &str, input: Option<&serde_json::Map<String, serde_json::Value>>) -> Option<String> {
+fn detail_for_tool(
+    tool_name: &str,
+    input: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<String> {
     let input = input?;
     let n = tool_name.to_lowercase();
     if is_subagent_tool_name(&n) {
@@ -2013,7 +2149,9 @@ fn is_subagent_tool_name(tool_name: &str) -> bool {
         || compact.contains("researchagent")
 }
 
-fn tool_input(block: &serde_json::Map<String, serde_json::Value>) -> Option<serde_json::Map<String, serde_json::Value>> {
+fn tool_input(
+    block: &serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
     if let Some(input) = block.get("input") {
         if let Some(obj) = input.as_object() {
             return Some(obj.clone());
@@ -2078,7 +2216,10 @@ fn edit_stats_for_tool(
         });
     }
 
-    if matches!(n.as_str(), "edit" | "str_replace" | "strreplace" | "replace" | "patch" | "update") {
+    if matches!(
+        n.as_str(),
+        "edit" | "str_replace" | "strreplace" | "replace" | "patch" | "update"
+    ) {
         let old_text = text_for(&[
             "old_string",
             "oldString",
@@ -2453,10 +2594,7 @@ mod tests {
 
         // Emoji after DECSET 2026 (common in real CLI stream-json output)
         let input = "\x1b[?2026h{\"result\":\"Hi! 👋\"}\x1b[?2026l";
-        assert_eq!(
-            clean_terminal_text(input),
-            "{\"result\":\"Hi! 👋\"}"
-        );
+        assert_eq!(clean_terminal_text(input), "{\"result\":\"Hi! 👋\"}");
     }
 
     #[test]
@@ -2516,7 +2654,10 @@ mod tests {
                 "delta": {"type": "text_delta", "text": "hello world"}
             }
         });
-        assert_eq!(extract_text(&payload, false), Some("hello world".to_string()));
+        assert_eq!(
+            extract_text(&payload, false),
+            Some("hello world".to_string())
+        );
     }
 
     #[test]
@@ -2525,7 +2666,10 @@ mod tests {
             "type": "result",
             "result": "Final answer"
         });
-        assert_eq!(extract_text(&payload, false), Some("Final answer".to_string()));
+        assert_eq!(
+            extract_text(&payload, false),
+            Some("Final answer".to_string())
+        );
     }
 
     #[test]
@@ -2539,7 +2683,10 @@ mod tests {
                 ]
             }
         });
-        assert_eq!(extract_text(&payload, false), Some("first second".to_string()));
+        assert_eq!(
+            extract_text(&payload, false),
+            Some("first second".to_string())
+        );
     }
 
     #[test]
@@ -2691,7 +2838,10 @@ mod tests {
             "(exit=0, runtime=node, cwd=/tmp)",
         );
 
-        assert!(failure.is_none(), "stderr alone must not turn a successful turn into an error");
+        assert!(
+            failure.is_none(),
+            "stderr alone must not turn a successful turn into an error"
+        );
     }
 
     #[test]
@@ -2807,7 +2957,10 @@ mod tests {
         let attachments = Some(vec![attachment_with_text("Joao da Silva\nRua X, 123")]);
         let lines = build_attachment_lines(&attachments, LanguageCode::EnUs, None);
         let joined = lines.join("\n");
-        assert!(joined.contains("Joao da Silva"), "should contain extracted text");
+        assert!(
+            joined.contains("Joao da Silva"),
+            "should contain extracted text"
+        );
         assert!(joined.contains("<document-content>"), "should wrap in tag");
     }
 
@@ -2937,7 +3090,10 @@ mod tests {
             reasoning: None,
         };
         let payload = build_stream_json_input(&request, "prompt text");
-        assert!(payload.is_none(), "non-vision model should not get stream-json");
+        assert!(
+            payload.is_none(),
+            "non-vision model should not get stream-json"
+        );
     }
 
     #[test]
@@ -2964,7 +3120,10 @@ mod tests {
             reasoning: None,
         };
         let payload = build_stream_json_input(&request, "prompt text");
-        assert!(payload.is_none(), "text-only turn should not get stream-json");
+        assert!(
+            payload.is_none(),
+            "text-only turn should not get stream-json"
+        );
     }
 
     #[test]
@@ -2991,7 +3150,10 @@ mod tests {
             reasoning: None,
         };
         let payload = build_stream_json_input(&request, "prompt text");
-        assert!(payload.is_none(), "unknown vision should not get stream-json");
+        assert!(
+            payload.is_none(),
+            "unknown vision should not get stream-json"
+        );
     }
 
     #[test]
@@ -3017,10 +3179,7 @@ mod tests {
             access_mode: crate::models::types::AccessMode::Approval,
             working_directory: "/tmp".into(),
             skills: Vec::new(),
-            attachments: Some(vec![image_attachment(
-                temp.to_str().unwrap(),
-                "image/png",
-            )]),
+            attachments: Some(vec![image_attachment(temp.to_str().unwrap(), "image/png")]),
             response_enhancements_enabled: None,
             personality: None,
             custom_instructions: None,
@@ -3030,7 +3189,10 @@ mod tests {
             reasoning: None,
         };
         let payload = build_stream_json_input(&request, "prompt text here");
-        assert!(payload.is_some(), "vision model + image should get stream-json");
+        assert!(
+            payload.is_some(),
+            "vision model + image should get stream-json"
+        );
         let payload = payload.unwrap();
         // The CLI's StructuredIO.processLine requires the envelope:
         // {type:"user", message:{role:"user", content:[...]}, parent_tool_use_id:null}
@@ -3088,7 +3250,10 @@ mod tests {
         };
         let payload = build_stream_json_input(&request, "prompt text");
         // No readable images → None (falls back to positional prompt).
-        assert!(payload.is_none(), "unreadable images should fall back to positional");
+        assert!(
+            payload.is_none(),
+            "unreadable images should fall back to positional"
+        );
     }
 
     // ── FASE 1: vision fallback wiring tests ─────────────────────────
@@ -3132,11 +3297,23 @@ mod tests {
     fn resolve_effort_arg_valid_override_returns_level() {
         // Scenario 2: override ∈ effort_levels → send --effort <level>.
         let r = reasoning(&["low", "medium", "high", "max"], Some("high"));
-        assert_eq!(resolve_effort_arg(Some("high"), Some(&r)), Some("high".into()));
-        assert_eq!(resolve_effort_arg(Some("max"), Some(&r)), Some("max".into()));
-        assert_eq!(resolve_effort_arg(Some("low"), Some(&r)), Some("low".into()));
+        assert_eq!(
+            resolve_effort_arg(Some("high"), Some(&r)),
+            Some("high".into())
+        );
+        assert_eq!(
+            resolve_effort_arg(Some("max"), Some(&r)),
+            Some("max".into())
+        );
+        assert_eq!(
+            resolve_effort_arg(Some("low"), Some(&r)),
+            Some("low".into())
+        );
         // Case-insensitive: user override "HIGH" matches level "high".
-        assert_eq!(resolve_effort_arg(Some("HIGH"), Some(&r)), Some("high".into()));
+        assert_eq!(
+            resolve_effort_arg(Some("HIGH"), Some(&r)),
+            Some("high".into())
+        );
     }
 
     #[test]
@@ -3144,9 +3321,15 @@ mod tests {
         // Scenario 3: "none" is a real level (offered by the model) →
         // send --effort none (do NOT discard as empty).
         let r = reasoning(&["none", "low", "medium", "high"], Some("none"));
-        assert_eq!(resolve_effort_arg(Some("none"), Some(&r)), Some("none".into()));
+        assert_eq!(
+            resolve_effort_arg(Some("none"), Some(&r)),
+            Some("none".into())
+        );
         // Case-insensitive.
-        assert_eq!(resolve_effort_arg(Some("None"), Some(&r)), Some("none".into()));
+        assert_eq!(
+            resolve_effort_arg(Some("None"), Some(&r)),
+            Some("none".into())
+        );
     }
 
     #[test]
@@ -3183,7 +3366,10 @@ mod tests {
     // `CliSpawn::new(&args)`). No process is spawned — we assert the
     // presence/absence of `--effort` in the final vector.
 
-    fn base_turn_request(effort: Option<&str>, reasoning: Option<ModelReasoning>) -> AgentTurnRequest {
+    fn base_turn_request(
+        effort: Option<&str>,
+        reasoning: Option<ModelReasoning>,
+    ) -> AgentTurnRequest {
         AgentTurnRequest {
             turn_id: None,
             conversation_id: "c1".into(),
@@ -3309,7 +3495,9 @@ mod tests {
         let svc = make_turn_service();
         let mut req = request_with_image(Some(true));
         // The attachment starts with no extracted_text.
-        assert!(req.attachments.as_ref().unwrap()[0].extracted_text.is_none());
+        assert!(req.attachments.as_ref().unwrap()[0]
+            .extracted_text
+            .is_none());
         // maybe_run_vision_fallback is only called when vision != Some(true),
         // so we simulate that check here.
         if req.model_supports_vision != Some(true) {
@@ -3317,7 +3505,9 @@ mod tests {
         }
         // Vision model → fallback not called → extracted_text still None.
         assert!(
-            req.attachments.as_ref().unwrap()[0].extracted_text.is_none(),
+            req.attachments.as_ref().unwrap()[0]
+                .extracted_text
+                .is_none(),
             "vision model should not trigger fallback"
         );
     }
@@ -3331,7 +3521,9 @@ mod tests {
         svc.maybe_run_vision_fallback(None, "test-turn", &mut req);
         // File attachment unchanged (no image to describe).
         assert!(
-            req.attachments.as_ref().unwrap()[0].extracted_text.as_deref()
+            req.attachments.as_ref().unwrap()[0]
+                .extracted_text
+                .as_deref()
                 == Some("text content"),
             "file attachment should be unchanged"
         );
@@ -3348,7 +3540,9 @@ mod tests {
         req.run_vision_fallback = Some(false);
         svc.maybe_run_vision_fallback(None, "test-turn", &mut req);
         assert!(
-            req.attachments.as_ref().unwrap()[0].extracted_text.is_none(),
+            req.attachments.as_ref().unwrap()[0]
+                .extracted_text
+                .is_none(),
             "run_vision_fallback=Some(false) → fallback must skip and leave extracted_text empty"
         );
     }
@@ -3462,7 +3656,10 @@ mod tests {
         // to any active turn). This is the core safety guarantee of A1.
         let svc = make_turn_service();
         let result = svc.interrupt(Some("unknown-conv".into())).unwrap();
-        assert!(!result, "interrupt for unknown conversation must be a no-op");
+        assert!(
+            !result,
+            "interrupt for unknown conversation must be a no-op"
+        );
     }
 
     #[test]
@@ -3480,7 +3677,10 @@ mod tests {
         // Since no child is registered in `active`, interrupt returns false
         // but the lookup itself proves the map is correct.
         let result = svc.interrupt(Some("conv-a".into())).unwrap();
-        assert!(!result, "no child registered → false, but lookup was correct");
+        assert!(
+            !result,
+            "no child registered → false, but lookup was correct"
+        );
 
         // Clear conv-a's mapping (simulating Done).
         {
@@ -3519,7 +3719,10 @@ mod tests {
         let activity = runtime_activity_from_payload(&payload).unwrap();
         assert_eq!(activity.kind, "compacting");
         assert_eq!(activity.label, "Compacting context…");
-        assert!(activity.detail.is_none(), "informational phase has no detail");
+        assert!(
+            activity.detail.is_none(),
+            "informational phase has no detail"
+        );
     }
 
     #[test]
@@ -3564,7 +3767,8 @@ mod tests {
         let lower = json!({"type":"system","subtype":"informational","content":"compacting conversation..."});
         assert!(is_compaction_payload(&lower));
 
-        let upper = json!({"type":"system","subtype":"INFORMATIONAL","content":"COMPACTING CONVERSATION…"});
+        let upper =
+            json!({"type":"system","subtype":"INFORMATIONAL","content":"COMPACTING CONVERSATION…"});
         assert!(is_compaction_payload(&upper));
     }
 
@@ -3600,9 +3804,8 @@ mod tests {
         let primary_display = "glm-5.2";
         let helper_id = "ultra/kimi-k2.7";
         let helper_display = "Kimi K2.7";
-        let detail = format!(
-            "vision-relay|{primary_id}|{primary_display}|{helper_id}|{helper_display}"
-        );
+        let detail =
+            format!("vision-relay|{primary_id}|{primary_display}|{helper_id}|{helper_display}");
         let parts: Vec<&str> = detail.split('|').collect();
         assert_eq!(parts.len(), 5, "must have exactly 5 pipe-delimited parts");
         assert_eq!(parts[0], "vision-relay");
@@ -3641,9 +3844,7 @@ mod tests {
         // If it's a warning (not a real description), it must contain
         // anti-hallucination language. If it's a real description (Extracted),
         // the check doesn't apply.
-        if att.extraction_status
-            == Some(crate::models::types::ExtractionStatus::Warning)
-        {
+        if att.extraction_status == Some(crate::models::types::ExtractionStatus::Warning) {
             assert!(
                 text.contains("Tell the user") || text.contains("model cannot read"),
                 "warning should instruct model to tell the user, got: {text}"
@@ -3659,7 +3860,10 @@ mod tests {
         svc.inject_fallback_warning(&mut req, "Test warning: no catalog.");
 
         let att = &req.attachments.as_ref().unwrap()[0];
-        assert_eq!(att.extracted_text.as_deref(), Some("Test warning: no catalog."));
+        assert_eq!(
+            att.extracted_text.as_deref(),
+            Some("Test warning: no catalog.")
+        );
         assert_eq!(
             att.extraction_status,
             Some(crate::models::types::ExtractionStatus::Warning)
@@ -3673,8 +3877,7 @@ mod tests {
         let svc = make_turn_service();
         let mut req = request_with_image(Some(false));
         // Pre-populate extracted_text on the image.
-        req.attachments.as_mut().unwrap()[0].extracted_text =
-            Some("Already described.".into());
+        req.attachments.as_mut().unwrap()[0].extracted_text = Some("Already described.".into());
         svc.inject_fallback_warning(&mut req, "Test warning.");
 
         let att = &req.attachments.as_ref().unwrap()[0];
@@ -3691,17 +3894,24 @@ mod tests {
         let svc = make_turn_service();
         let mut req = request_with_image(Some(false));
         // Add a file attachment alongside the image.
-        req.attachments.as_mut().unwrap().push(file_attachment("/tmp/doc.md"));
+        req.attachments
+            .as_mut()
+            .unwrap()
+            .push(file_attachment("/tmp/doc.md"));
         svc.inject_fallback_warning(&mut req, "Test warning.");
 
         // Image (index 0) gets the warning.
         assert_eq!(
-            req.attachments.as_ref().unwrap()[0].extracted_text.as_deref(),
+            req.attachments.as_ref().unwrap()[0]
+                .extracted_text
+                .as_deref(),
             Some("Test warning.")
         );
         // File (index 1) keeps its original text.
         assert_eq!(
-            req.attachments.as_ref().unwrap()[1].extracted_text.as_deref(),
+            req.attachments.as_ref().unwrap()[1]
+                .extracted_text
+                .as_deref(),
             Some("text content")
         );
     }

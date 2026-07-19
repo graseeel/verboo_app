@@ -3,6 +3,7 @@ pub mod child_signal;
 pub mod cli_credentials;
 pub mod cli_path;
 pub mod cli_service;
+pub mod cli_subagent_transcript;
 pub mod cli_spawn;
 pub mod credentials_store;
 pub mod feedback_service;

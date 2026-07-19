@@ -350,17 +350,6 @@ pub enum ProfileStatus {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum ResearchSubagentStatus {
-    Queued,
-    Running,
-    Reading,
-    Searching,
-    Complete,
-    Failed,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum SubagentThreadStatus {
@@ -418,8 +407,6 @@ pub enum EventType {
     Stderr,
     Json,
     Result,
-    #[serde(rename = "subagent-progress")]
-    SubagentProgress,
     #[serde(rename = "subagent-thread")]
     SubagentThread,
     Error,
@@ -939,6 +926,7 @@ pub struct ResearchSubagentRequest {
     pub id: String,
     pub index: u32,
     pub total: u32,
+    pub label: Option<String>,
     pub topic: String,
     pub base_request: AgentTurnRequest,
 }
@@ -949,22 +937,8 @@ pub struct ResearchSubagentsRunRequest {
     pub run_id: Option<String>,
     pub count: u32,
     pub requested_count: Option<u32>,
+    pub labels: Option<Vec<String>>,
     pub base_request: AgentTurnRequest,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResearchSubagentProgress {
-    pub id: String,
-    pub index: u32,
-    pub total: Option<u32>,
-    pub run_id: Option<String>,
-    pub status: ResearchSubagentStatus,
-    pub summary: String,
-    pub activity: Option<String>,
-    pub detail: Option<String>,
-    pub mission: Option<String>,
-    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1050,7 +1024,6 @@ pub struct AgentEvent {
     pub text: Option<String>,
     pub payload: Option<serde_json::Value>,
     pub result: Option<AgentResultSnapshot>,
-    pub progress: Option<ResearchSubagentProgress>,
     pub subagent_thread: Option<SubagentThreadUpdate>,
     pub message: Option<String>,
     pub exit_code: Option<i32>,
@@ -1315,9 +1288,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             working_directory: std::env::current_dir()
-                .unwrap_or_else(|_| {
-                    dirs::home_dir().unwrap_or_default()
-                })
+                .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default())
                 .to_string_lossy()
                 .to_string(),
             access_mode: AccessMode::Approval,
@@ -1389,7 +1360,10 @@ mod tests {
             "updates": { "channel": "beta", "autoCheck": true, "autoDownload": false }
         }"#;
         let s: UserSettings = serde_json::from_str(raw).expect("parse");
-        assert!(s.load_web_icons, "loadWebIcons must default to true when absent");
+        assert!(
+            s.load_web_icons,
+            "loadWebIcons must default to true when absent"
+        );
     }
 
     #[test]
@@ -1404,7 +1378,10 @@ mod tests {
         assert!(d.stay_signed_in);
         assert!(d.prevent_sleep_while_running);
         assert!(!d.include_verboo_co_author);
-        assert_eq!(d.completion_notifications, CompletionNotificationMode::Background);
+        assert_eq!(
+            d.completion_notifications,
+            CompletionNotificationMode::Background
+        );
         assert!(d.permission_notifications);
         assert!(d.question_notifications);
         assert!(!d.response_enhancements_enabled);
@@ -1438,10 +1415,7 @@ mod tests {
     #[test]
     fn enums_serialize_as_expected() {
         // kebab-case
-        assert_eq!(
-            serde_json::to_string(&ThemeMode::Dark).unwrap(),
-            "\"dark\""
-        );
+        assert_eq!(serde_json::to_string(&ThemeMode::Dark).unwrap(), "\"dark\"");
         assert_eq!(
             serde_json::to_string(&SettingsTab::TrustedCommands).unwrap(),
             "\"trusted-commands\""
@@ -1476,7 +1450,6 @@ mod tests {
             text: None,
             payload: None,
             result: None,
-            progress: None,
             message: None,
             exit_code: None,
             runtime_status: None,
@@ -1521,7 +1494,10 @@ mod tests {
         let avatar: AvatarSettings = serde_json::from_str(json).expect("deserialize");
         assert_eq!(avatar.kind, AvatarKind::Upload);
         assert_eq!(avatar.upload_path.as_deref(), Some("/appdata/avatar.png"));
-        assert_eq!(avatar.upload_version, None, "absent field must default to None");
+        assert_eq!(
+            avatar.upload_version, None,
+            "absent field must default to None"
+        );
     }
 
     #[test]
@@ -1568,7 +1544,10 @@ mod tests {
         // UserSettings doesn't derive PartialEq, so check the avatar fields.
         let back_avatar = back.avatar.expect("avatar must survive round-trip");
         assert_eq!(back_avatar.kind, AvatarKind::Upload);
-        assert_eq!(back_avatar.upload_path.as_deref(), Some("/appdata/avatar.webp"));
+        assert_eq!(
+            back_avatar.upload_path.as_deref(),
+            Some("/appdata/avatar.webp")
+        );
         assert_eq!(
             back_avatar.upload_version,
             Some(99),

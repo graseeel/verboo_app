@@ -5,19 +5,14 @@
 use std::collections::HashSet;
 
 use crate::models::types::{
-    AccessMode, AgentResultStatus, LanguageCode, ResearchSubagentRequest,
-    ResearchSubagentResult, ResearchSubagentStatus, ResearchSubagentsRunRequest,
+    AccessMode, AgentResultStatus, LanguageCode, ResearchSubagentRequest, ResearchSubagentResult,
+    ResearchSubagentsRunRequest,
 };
 
 const MAX_RESEARCH_SUBAGENTS: u32 = 2;
 const RESEARCH_SUBAGENT_TIMEOUT_MS: u64 = 90_000;
-const DISALLOWED_RESEARCH_TOOLS: &[&str] = &[
-    "edit",
-    "write",
-    "multiedit",
-    "multi_edit",
-    "notebookedit",
-];
+const DISALLOWED_RESEARCH_TOOLS: &[&str] =
+    &["edit", "write", "multiedit", "multi_edit", "notebookedit"];
 
 /// Service that runs up to N research subagents in parallel. Mirrors
 /// Electron's `ResearchSubagentService`
@@ -36,10 +31,7 @@ impl ResearchSubagentService {
     /// dispatches each request, then collects results.
     pub fn build_requests(payload: &ResearchSubagentsRunRequest) -> Vec<ResearchSubagentRequest> {
         let count = clamp_u32(payload.count.max(1), 1, MAX_RESEARCH_SUBAGENTS);
-        let run_id = payload
-            .run_id
-            .clone()
-            .unwrap_or_else(|| uuid_v4());
+        let run_id = payload.run_id.clone().unwrap_or_else(|| uuid_v4());
         let language = payload
             .base_request
             .response_language
@@ -53,12 +45,12 @@ impl ResearchSubagentService {
                     id: format!("{run_id}:{index}"),
                     index,
                     total: count,
-                    topic: research_topic_for(
-                        index,
-                        count,
-                        &base_request.message,
-                        &language,
-                    ),
+                    label: payload
+                        .labels
+                        .as_ref()
+                        .and_then(|labels| labels.get(i as usize))
+                        .cloned(),
+                    topic: research_topic_for(index, count, &base_request.message, &language),
                     base_request: base_request.clone(),
                 }
             })
@@ -171,38 +163,11 @@ impl ResearchSubagentService {
         is_read_only_shell_command(command)
     }
 
-    /// Builds the progress event payload for a subagent state transition.
-    /// Mirrors `emitProgress` (researchSubagentService.ts:171).
-    pub fn build_progress(
-        run_id: &str,
-        request: &ResearchSubagentRequest,
-        status: ResearchSubagentStatus,
-        summary: &str,
-        detail: Option<&str>,
-    ) -> crate::models::types::ResearchSubagentProgress {
-        crate::models::types::ResearchSubagentProgress {
-            id: request.id.clone(),
-            index: request.index,
-            total: Some(request.total),
-            run_id: Some(run_id.into()),
-            status,
-            summary: summary.into(),
-            activity: detail.map(|s| s.into()),
-            detail: detail.map(|s| s.into()),
-            mission: Some(request.topic.clone()),
-            label: None,
-        }
-    }
 }
 
 // ── Pure helpers (module-private) ──────────────────────────────────────
 
-fn research_topic_for(
-    index: u32,
-    total: u32,
-    message: &str,
-    language: &LanguageCode,
-) -> String {
+fn research_topic_for(index: u32, total: u32, message: &str, language: &LanguageCode) -> String {
     if *language == LanguageCode::PtBr {
         if total == 1 {
             return format!(
@@ -222,7 +187,8 @@ fn research_topic_for(
     if index == 1 {
         return "Research local code, relevant files, contracts, and implementation risks.".into();
     }
-    "Research complementary context, documentation, expected behavior, and validation points.".into()
+    "Research complementary context, documentation, expected behavior, and validation points."
+        .into()
 }
 
 pub fn request_language(request: &ResearchSubagentRequest) -> LanguageCode {
@@ -307,13 +273,9 @@ fn detect_read_only_violation(
         return None;
     }
     Some(if *language == LanguageCode::PtBr {
-        format!(
-            "Subagente tentou executar comando fora da lista somente leitura: {command}."
-        )
+        format!("Subagente tentou executar comando fora da lista somente leitura: {command}.")
     } else {
-        format!(
-            "Subagent tried to run a command outside the read-only allowlist: {command}."
-        )
+        format!("Subagent tried to run a command outside the read-only allowlist: {command}.")
     })
 }
 
@@ -323,14 +285,36 @@ fn is_read_only_shell_command(command: &str) -> bool {
         return false;
     }
     // Disallow shell metacharacters (pipes, redirects, sequencing).
-    if trimmed.chars().any(|c| c == '>' || c == '<' || c == '|' || c == ';' || c == '&') {
+    if trimmed
+        .chars()
+        .any(|c| c == '>' || c == '<' || c == '|' || c == ';' || c == '&')
+    {
         return false;
     }
     // Disallowed substrings — word-boundary check.
     let disallowed_substrings = [
-        "rm", "mv", "cp", "mkdir", "touch", "chmod", "chown", "npm", "pnpm", "yarn",
-        "bun", "node", "python", "python3", "pip", "uv", "make", "cargo", "go", "swift",
-        "xcodebuild", "electron-builder",
+        "rm",
+        "mv",
+        "cp",
+        "mkdir",
+        "touch",
+        "chmod",
+        "chown",
+        "npm",
+        "pnpm",
+        "yarn",
+        "bun",
+        "node",
+        "python",
+        "python3",
+        "pip",
+        "uv",
+        "make",
+        "cargo",
+        "go",
+        "swift",
+        "xcodebuild",
+        "electron-builder",
     ];
     for word in disallowed_substrings.iter() {
         if contains_word(trimmed, word) {
@@ -339,8 +323,8 @@ fn is_read_only_shell_command(command: &str) -> bool {
     }
     // Disallowed git subcommands.
     let git_disallowed = [
-        "commit", "push", "checkout", "reset", "clean", "merge", "rebase", "apply", "am",
-        "pull", "fetch",
+        "commit", "push", "checkout", "reset", "clean", "merge", "rebase", "apply", "am", "pull",
+        "fetch",
     ];
     if trimmed.starts_with("git ") {
         for sub in git_disallowed.iter() {
@@ -465,7 +449,10 @@ fn summarize_output(text: &str, language: &LanguageCode) -> String {
         paragraphs_joined.push(current);
     }
     let _ = (paragraphs, last_was_blank);
-    let first = paragraphs_joined.first().map(|s| s.as_str()).unwrap_or(text);
+    let first = paragraphs_joined
+        .first()
+        .map(|s| s.as_str())
+        .unwrap_or(text);
     snippet(first, 420)
 }
 
@@ -487,9 +474,12 @@ fn extract_findings(text: &str) -> Vec<String> {
         .collect();
     let keyword_test = |l: &str| {
         let lower = l.to_lowercase();
-        ["arquivo", "file", "risco", "risk", "encontr", "found", "precisa", "should", "deve", "source", "fonte", "valid"]
-            .iter()
-            .any(|k| lower.contains(k))
+        [
+            "arquivo", "file", "risco", "risk", "encontr", "found", "precisa", "should", "deve",
+            "source", "fonte", "valid",
+        ]
+        .iter()
+        .any(|k| lower.contains(k))
     };
     let preferred: Vec<String> = lines.iter().filter(|l| keyword_test(l)).cloned().collect();
     if !preferred.is_empty() {
@@ -559,10 +549,7 @@ fn cleanup_output(text: &str) -> String {
 /// Snips a string to `max_len` chars. Replaces runs of whitespace with a
 /// single space. Appends `...` if truncated.
 fn snippet(value: &str, max_len: usize) -> String {
-    let compact: String = value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let compact: String = value.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = compact.trim();
     if trimmed.chars().count() <= max_len {
         return trimmed.to_string();
@@ -572,7 +559,9 @@ fn snippet(value: &str, max_len: usize) -> String {
     format!("{snip}...")
 }
 
-fn extract_tool_block(payload: &serde_json::Value) -> Option<serde_json::Map<String, serde_json::Value>> {
+fn extract_tool_block(
+    payload: &serde_json::Value,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
     let obj = payload.as_object()?;
     if has_tool_shape(obj) {
         return Some(obj.clone());
@@ -608,7 +597,9 @@ fn has_tool_shape(obj: &serde_json::Map<String, serde_json::Value>) -> bool {
     has_name || has_tool_name
 }
 
-fn tool_input(block: &serde_json::Map<String, serde_json::Value>) -> Option<serde_json::Map<String, serde_json::Value>> {
+fn tool_input(
+    block: &serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
     if let Some(input) = block.get("input").and_then(|v| v.as_object()) {
         return Some(input.clone());
     }
@@ -646,8 +637,7 @@ fn uuid_v4() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     // 16 hex chars from nanos + random suffix from thread id + counter.
-    let thread_id = std::thread::current()
-        .id();
+    let thread_id = std::thread::current().id();
     let tid_hash = format!("{:?}", thread_id)
         .bytes()
         .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
@@ -699,6 +689,7 @@ mod tests {
             id: format!("run:{index}"),
             index,
             total,
+            label: None,
             topic: research_topic_for(index, total, "build a feature", &language),
             base_request: req,
         }
@@ -975,7 +966,10 @@ mod tests {
     #[test]
     fn summarize_takes_first_paragraph() {
         let text = "First paragraph here.\n\nSecond paragraph.";
-        assert_eq!(summarize_output(text, &LanguageCode::EnUs), "First paragraph here.");
+        assert_eq!(
+            summarize_output(text, &LanguageCode::EnUs),
+            "First paragraph here."
+        );
     }
 
     #[test]
@@ -1087,6 +1081,7 @@ mod tests {
             run_id: Some("r1".into()),
             count: 10,
             requested_count: Some(10),
+            labels: Some(vec!["Code scout".into(), "Docs scout".into()]),
             base_request: base_request(),
         };
         let requests = ResearchSubagentService::build_requests(&payload);
@@ -1095,6 +1090,8 @@ mod tests {
         assert_eq!(requests[1].index, 2);
         assert_eq!(requests[0].id, "r1:1");
         assert_eq!(requests[1].id, "r1:2");
+        assert_eq!(requests[0].label.as_deref(), Some("Code scout"));
+        assert_eq!(requests[1].label.as_deref(), Some("Docs scout"));
     }
 
     #[test]
@@ -1103,6 +1100,7 @@ mod tests {
             run_id: None,
             count: 1,
             requested_count: None,
+            labels: None,
             base_request: base_request(),
         };
         let requests = ResearchSubagentService::build_requests(&payload);
@@ -1155,35 +1153,14 @@ mod tests {
         assert_eq!(result.sources.len(), 8);
     }
 
-    // ── build_progress ─────────────────────────────────────────────────
-
-    #[test]
-    fn build_progress_carries_all_fields() {
-        let request = subagent_request(2, 3, LanguageCode::EnUs);
-        let progress = ResearchSubagentService::build_progress(
-            "run-1",
-            &request,
-            ResearchSubagentStatus::Running,
-            "investigating",
-            Some("looking at foo.rs"),
-        );
-        assert_eq!(progress.run_id.as_deref(), Some("run-1"));
-        assert_eq!(progress.id, "run:2");
-        assert_eq!(progress.index, 2);
-        assert_eq!(progress.total, Some(3));
-        assert_eq!(progress.status, ResearchSubagentStatus::Running);
-        assert_eq!(progress.summary, "investigating");
-        assert_eq!(progress.activity.as_deref(), Some("looking at foo.rs"));
-        assert_eq!(progress.detail.as_deref(), Some("looking at foo.rs"));
-        assert_eq!(progress.mission.as_deref(), Some(request.topic.as_str()));
-        assert!(progress.label.is_none());
-    }
-
     // ── access_mode ────────────────────────────────────────────────────
 
     #[test]
     fn research_access_mode_is_approval() {
-        assert_eq!(ResearchSubagentService::research_access_mode(), AccessMode::Approval);
+        assert_eq!(
+            ResearchSubagentService::research_access_mode(),
+            AccessMode::Approval
+        );
     }
 
     #[test]
