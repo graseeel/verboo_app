@@ -17,10 +17,91 @@ use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 
 use crate::models::plugins::{
-    AvailablePlugin, Marketplace, Plugin, PluginAvailablePayload, PluginError, PluginScope,
-    PluginValidateResult,
+    AvailablePlugin, Marketplace, MutationResult, Plugin, PluginAvailablePayload, PluginError,
+    PluginScope, PluginValidateResult,
 };
 use crate::services::cli_spawn::CliSpawn;
+
+// ════════════════════════════════════════════════════════════════════
+// In-memory cache for plugin_list / plugin_available (Feedback-3 Item 5)
+// ════════════════════════════════════════════════════════════════════
+//
+// Pattern follows manifest_cache (OnceCell + Mutex + Option) but WITHOUT
+// TTL: cache lasts until explicitly invalidated by a mutation. The state
+// only changes through our mutations or manual external edits — we accept
+// the latter risk (documented in spec §5.3).
+//
+// Single-flight is NOT needed here: plugin_list/plugin_available are
+// called once per FE navigation (not 83 concurrent requests like manifests).
+// A simple Mutex + Option guard suffices.
+
+use std::sync::OnceLock;
+use tokio::sync::Mutex;
+
+struct CachedList(Vec<Plugin>);
+struct CachedAvailable(PluginAvailablePayload);
+
+static LIST_CACHE: OnceLock<Mutex<Option<CachedList>>> = OnceLock::new();
+static AVAILABLE_CACHE: OnceLock<Mutex<Option<CachedAvailable>>> = OnceLock::new();
+
+/// Invalidates both caches. Called by every mutation so stale data is never
+/// served after install/uninstall/update/enable/disable/marketplace_add/remove.
+pub(crate) async fn invalidate_plugin_cache() {
+    if let Some(m) = LIST_CACHE.get() {
+        *m.lock().await = None;
+    }
+    if let Some(m) = AVAILABLE_CACHE.get() {
+        *m.lock().await = None;
+    }
+}
+
+/// Invalidação em CASCATA após mutação bem-sucedida. Invalida:
+///   1. `plugin_list` / `plugin_available` (in-memory cache)
+///   2. `manifest_cache` (marketplace manifests, 60s TTL)
+///   3. `plugin_detail` / `plugin_skills` (lê do disco — sem cache interno,
+///      mas o renderer pode ter cached o resultado; evento Tauri o notifica)
+///   4. Skill paths do `turn_service` — NÃO há cache no backend (skills vêm
+///      do renderer via `request.skills`), mas o renderer precisa re-fetch
+///      após mutação para não servir paths de plugin removido (objeção Verboo).
+///
+/// O backend não emite eventos Tauri diretamente daqui (services layer é
+/// agnóstica a Tauri). A camada de comando em `lib.rs` pode emitir um evento
+/// `plugin-mutation` após receber `MutationResult::success == true` para que
+/// o renderer invalide seus caches locais (skill paths, detail, etc.).
+pub(crate) async fn invalidate_all_caches() {
+    invalidate_plugin_cache().await;
+    crate::services::manifest_cache::invalidate().await;
+}
+
+/// Executa uma mutação CLI e constrói `MutationResult` inequívoco para o
+/// renderer (optimistic update + revert em falha). Em sucesso, retorna
+/// `success: true` + `exit_code` (quando disponível). Em falha, retorna
+/// `success: false` + `exit_code` + `error` tipado.
+///
+/// NÃO invalida caches — chamador deve chamar `invalidate_all_caches()`
+/// apenas quando `result.success == true`.
+async fn run_mutation(args: &[&str], timeout_secs: u64, plugin_id: Option<String>) -> MutationResult {
+    match run_cli_raw(args, timeout_secs).await {
+        Ok(output) => MutationResult {
+            success: true,
+            exit_code: output.exit_code,
+            error: None,
+            plugin_id,
+        },
+        Err(e) => {
+            let exit_code = match &e {
+                PluginError::Unknown { exit_code, .. } => *exit_code,
+                _ => None,
+            };
+            MutationResult {
+                success: false,
+                exit_code,
+                error: Some(e),
+                plugin_id,
+            }
+        }
+    }
+}
 
 // ════════════════════════════════════════════════════════════════════
 // Public command surface (11 Tauri commands)
@@ -32,12 +113,24 @@ use crate::services::cli_spawn::CliSpawn;
 /// enumerates installed plugins without an active session because it only
 /// reads files from disk.
 pub async fn plugin_list() -> Result<Vec<Plugin>, PluginError> {
+    // Fast path: return cached value if available.
+    {
+        let guard = LIST_CACHE.get_or_init(|| Mutex::new(None)).lock().await;
+        if let Some(cached) = guard.as_ref() {
+            return Ok(cached.0.clone());
+        }
+    }
+
     let raw = run_cli_json(&["plugin", "list", "--json"], 15).await?;
     let mut plugins: Vec<Plugin> = parse_json(&raw).map_err(|e| parse_err(&raw, &e))?;
     // The CLI's bare `list` payload omits `name` — fill from `id`.
     for p in &mut plugins {
         p.fill_name_from_id();
     }
+
+    // Populate cache before returning.
+    let mut guard = LIST_CACHE.get_or_init(|| Mutex::new(None)).lock().await;
+    *guard = Some(CachedList(plugins.clone()));
     Ok(plugins)
 }
 
@@ -53,6 +146,14 @@ pub async fn plugin_list() -> Result<Vec<Plugin>, PluginError> {
 /// half is parsed normally (it's the CLI's own state, not third-party
 /// manifests, so it's trusted).
 pub async fn plugin_available() -> Result<PluginAvailablePayload, PluginError> {
+    // Fast path: return cached value if available.
+    {
+        let guard = AVAILABLE_CACHE.get_or_init(|| Mutex::new(None)).lock().await;
+        if let Some(cached) = guard.as_ref() {
+            return Ok(cached.0.clone());
+        }
+    }
+
     let raw = run_cli_json(&["plugin", "list", "--json", "--available"], 30).await?;
     // Parse as generic Value first so we can deserialize each `available[]`
     // item individually without failing the whole payload.
@@ -88,6 +189,10 @@ pub async fn plugin_available() -> Result<PluginAvailablePayload, PluginError> {
     for p in &mut payload.installed {
         p.fill_name_from_id();
     }
+
+    // Populate cache before returning.
+    let mut guard = AVAILABLE_CACHE.get_or_init(|| Mutex::new(None)).lock().await;
+    *guard = Some(CachedAvailable(payload.clone()));
     Ok(payload)
 }
 
@@ -119,29 +224,40 @@ fn parse_available_items_tolerant(arr: &[serde_json::Value]) -> Vec<AvailablePlu
 /// After a successful exit, re-fetches `plugin_list` and returns the row
 /// matching `id`. If the row is missing (CLI drift), returns a synthesized
 /// `Plugin` with `version = "unknown"` and logs a warning.
-pub async fn plugin_install(id: String, scope: PluginScope) -> Result<Plugin, PluginError> {
+pub async fn plugin_install(id: String, scope: PluginScope) -> Result<MutationResult, PluginError> {
     require_auth()?;
     let args = ["plugin", "install", id.as_str(), "--scope", scope.as_cli_arg()];
-    run_cli_quiet(&args, 60).await?;
-    find_plugin_after_mutation(&id).await
+    let result = run_mutation(&args, 60, Some(id.clone())).await;
+    if result.success {
+        invalidate_all_caches().await;
+    }
+    Ok(result)
 }
 
 /// 4. `plugin_enable(id, scope)` → `verboo plugin enable <id> --scope <scope>` (10 s).
 ///
 /// Spec §3.1 allows `scope: Option<PluginScope>` (CLI auto-detects on None).
-pub async fn plugin_enable(id: String, scope: Option<PluginScope>) -> Result<(), PluginError> {
+pub async fn plugin_enable(id: String, scope: Option<PluginScope>) -> Result<MutationResult, PluginError> {
     require_auth()?;
     let mut args: Vec<&str> = vec!["plugin", "enable", id.as_str()];
     push_scope_arg(&mut args, scope);
-    run_cli_quiet(&args, 10).await
+    let result = run_mutation(&args, 10, Some(id.clone())).await;
+    if result.success {
+        invalidate_all_caches().await;
+    }
+    Ok(result)
 }
 
 /// 5. `plugin_disable(id, scope)` → `verboo plugin disable <id> --scope <scope>` (10 s).
-pub async fn plugin_disable(id: String, scope: Option<PluginScope>) -> Result<(), PluginError> {
+pub async fn plugin_disable(id: String, scope: Option<PluginScope>) -> Result<MutationResult, PluginError> {
     require_auth()?;
     let mut args: Vec<&str> = vec!["plugin", "disable", id.as_str()];
     push_scope_arg(&mut args, scope);
-    run_cli_quiet(&args, 10).await
+    let result = run_mutation(&args, 10, Some(id.clone())).await;
+    if result.success {
+        invalidate_all_caches().await;
+    }
+    Ok(result)
 }
 
 /// 6. `plugin_uninstall(id, scope, keep_data?)` →
@@ -150,23 +266,30 @@ pub async fn plugin_uninstall(
     id: String,
     scope: PluginScope,
     keep_data: Option<bool>,
-) -> Result<(), PluginError> {
+) -> Result<MutationResult, PluginError> {
     require_auth()?;
     let mut args: Vec<&str> = vec!["plugin", "uninstall", id.as_str(), "--scope", scope.as_cli_arg()];
     if keep_data.unwrap_or(false) {
         args.push("--keep-data");
     }
-    run_cli_quiet(&args, 15).await
+    let result = run_mutation(&args, 15, Some(id.clone())).await;
+    if result.success {
+        invalidate_all_caches().await;
+    }
+    Ok(result)
 }
 
 /// 7. `plugin_update(id, scope)` → `verboo plugin update <id> --scope <scope>` (60 s).
 ///
 /// Re-fetches `plugin_list` post-success and returns the updated row.
-pub async fn plugin_update(id: String, scope: PluginScope) -> Result<Plugin, PluginError> {
+pub async fn plugin_update(id: String, scope: PluginScope) -> Result<MutationResult, PluginError> {
     require_auth()?;
     let args = ["plugin", "update", id.as_str(), "--scope", scope.as_cli_arg()];
-    run_cli_quiet(&args, 60).await?;
-    find_plugin_after_mutation(&id).await
+    let result = run_mutation(&args, 60, Some(id.clone())).await;
+    if result.success {
+        invalidate_all_caches().await;
+    }
+    Ok(result)
 }
 
 /// 8. `plugin_validate(path)` → `verboo plugin validate <path>` (30 s).
@@ -197,44 +320,29 @@ pub async fn marketplace_list() -> Result<Vec<Marketplace>, PluginError> {
 /// Returns a synthesized `Marketplace` echo (spec §3.3). The FE follows up
 /// with `marketplace_list` to canonicalize. `name` is derived from `source`
 /// because the CLI does not echo JSON on mutation commands.
-pub async fn marketplace_add(source: String, scope: Option<String>) -> Result<Marketplace, PluginError> {
+pub async fn marketplace_add(source: String, scope: Option<String>) -> Result<MutationResult, PluginError> {
     require_auth()?;
     let mut args: Vec<&str> = vec!["plugin", "marketplace", "add", source.as_str()];
     if let Some(s) = scope.as_deref() {
         args.push("--scope");
         args.push(s);
     }
-    run_cli_quiet(&args, 60).await?;
-    // Invalidate the manifest cache so the new marketplace's plugins are
-    // visible immediately (don't wait for the 60s TTL).
-    crate::services::manifest_cache::invalidate().await;
-    Ok(Marketplace {
-        name: derive_marketplace_name(&source),
-        source: classify_marketplace_source(&source).to_string(),
-        repo: if classify_marketplace_source(&source) == "github" {
-            Some(strip_github_prefix(&source).to_string())
-        } else {
-            None
-        },
-        url: if classify_marketplace_source(&source) == "url" {
-            Some(source.clone())
-        } else {
-            None
-        },
-        install_location: String::new(),
-        plugin_count: None,
-    })
+    let result = run_mutation(&args, 60, None).await;
+    if result.success {
+        invalidate_all_caches().await;
+    }
+    Ok(result)
 }
 
 /// 11. `marketplace_remove(name)` →
 ///     `verboo plugin marketplace remove <name>` (15 s).
-pub async fn marketplace_remove(name: String) -> Result<(), PluginError> {
+pub async fn marketplace_remove(name: String) -> Result<MutationResult, PluginError> {
     require_auth()?;
-    run_cli_quiet(&["plugin", "marketplace", "remove", name.as_str()], 15).await?;
-    // Invalidate the manifest cache so the removed marketplace's plugins
-    // don't linger for 60s.
-    crate::services::manifest_cache::invalidate().await;
-    Ok(())
+    let result = run_mutation(&["plugin", "marketplace", "remove", name.as_str()], 15, None).await;
+    if result.success {
+        invalidate_all_caches().await;
+    }
+    Ok(result)
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -376,13 +484,6 @@ fn read_stdout_tempfile(mut file: std::fs::File) -> Result<String, PluginError> 
 async fn run_cli_json(args: &[&str], timeout_secs: u64) -> Result<String, PluginError> {
     let output = run_cli_raw(args, timeout_secs).await?;
     Ok(strip_ansi(&output.stdout))
-}
-
-/// Runs the CLI for a mutation command (no JSON output expected). Returns
-/// `()` on success, the mapped `PluginError` on non-zero exit.
-async fn run_cli_quiet(args: &[&str], timeout_secs: u64) -> Result<(), PluginError> {
-    let _ = run_cli_raw(args, timeout_secs).await?;
-    Ok(())
 }
 
 /// Pushes `--scope <scope>` to the args vec ONLY when `scope` is `Some`.
@@ -876,6 +977,10 @@ fn require_auth() -> Result<(), PluginError> {
 /// After `plugin_install` / `plugin_update`, re-fetches `plugin_list` and
 /// finds the row by `id`. On miss (CLI drift), returns a synthesized
 /// `Plugin` with `version = "unknown"` and logs a warning (spec §3.3).
+///
+/// Currently unused (mutations return `MutationResult`, not `Plugin`), but
+/// retained for tests and potential future use.
+#[allow(dead_code)]
 pub(crate) async fn find_plugin_after_mutation(id: &str) -> Result<Plugin, PluginError> {
     let plugins = plugin_list().await.unwrap_or_default();
     if let Some(p) = plugins.into_iter().find(|p| p.id == id) {
@@ -912,6 +1017,10 @@ pub(crate) async fn find_plugin_after_mutation(id: &str) -> Result<Plugin, Plugi
 /// Classifies a `marketplace_add` source string into `"github"`, `"url"`,
 /// or `"local"` based on prefix. The CLI does the actual resolution; this
 /// is only used to populate the synthesized echo `Marketplace` (spec §3.3).
+///
+/// Currently unused (marketplace_add returns MutationResult, not
+/// Marketplace), but retained for tests and potential future use.
+#[allow(dead_code)]
 pub(crate) fn classify_marketplace_source(source: &str) -> &'static str {
     let trimmed = source.trim();
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
@@ -943,16 +1052,15 @@ fn is_github_shorthand(s: &str) -> bool {
     })
 }
 
-/// Strips `github:owner/repo` → `owner/repo`. Leaves bare `owner/repo`
-/// untouched.
-fn strip_github_prefix(source: &str) -> &str {
-    source.strip_prefix("github:").unwrap_or(source)
-}
-
 /// Derives the marketplace `name` from `source`. For GitHub shorthand
 /// `owner/repo`, uses the repo's last segment. For URLs, uses the last
 /// path segment (sans `.json` suffix). Otherwise echoes the source
 /// verbatim. Pure string ops — no `url` crate dep.
+///
+/// Currently unused in production (marketplace_add returns MutationResult,
+/// not a synthesized Marketplace), but retained for tests and potential
+/// future use when the FE needs to derive a name from a source string.
+#[allow(dead_code)]
 pub(crate) fn derive_marketplace_name(source: &str) -> String {
     let trimmed = source.trim();
     if trimmed.starts_with("github:") {
@@ -1752,5 +1860,52 @@ mod tests {
     fn pick_unknown_both_empty_returns_empty() {
         let (msg, _) = pick_unknown_message("   ", "  ");
         assert_eq!(msg, "");
+    }
+
+    // ── MutationResult serialization (Feedback-6 Item 2) ──────────────
+
+    #[test]
+    fn mutation_result_success_serializes_camel_case() {
+        let r = MutationResult {
+            success: true,
+            exit_code: Some(0),
+            error: None,
+            plugin_id: Some("foo@bar".into()),
+        };
+        let json = serde_json::to_value(&r).expect("serialize");
+        assert_eq!(json["success"], serde_json::Value::Bool(true));
+        assert_eq!(json["exitCode"], 0);
+        assert!(json.get("error").is_none(), "None error must be skipped");
+        assert_eq!(json["pluginId"], "foo@bar");
+    }
+
+    #[test]
+    fn mutation_result_failure_carries_error_and_exit_code() {
+        let e = PluginError::AlreadyInstalled { plugin: "p@mp".into() };
+        let r = MutationResult {
+            success: false,
+            exit_code: Some(1),
+            error: Some(e),
+            plugin_id: Some("p@mp".into()),
+        };
+        let json = serde_json::to_value(&r).expect("serialize");
+        assert_eq!(json["success"], serde_json::Value::Bool(false));
+        assert_eq!(json["exitCode"], 1);
+        assert_eq!(json["error"]["kind"], "already_installed");
+        assert_eq!(json["error"]["plugin"], "p@mp");
+        assert_eq!(json["pluginId"], "p@mp");
+    }
+
+    #[test]
+    fn mutation_result_no_plugin_id_skipped() {
+        let r = MutationResult {
+            success: true,
+            exit_code: None,
+            error: None,
+            plugin_id: None,
+        };
+        let json = serde_json::to_value(&r).expect("serialize");
+        assert!(json.get("pluginId").is_none(), "None pluginId must be skipped");
+        assert!(json.get("exitCode").is_none(), "None exitCode must be skipped");
     }
 }

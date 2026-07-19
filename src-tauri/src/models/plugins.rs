@@ -260,6 +260,10 @@ pub struct Marketplace {
     /// Present when `source === "url"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Filesystem path where the marketplace is installed. Populated by
+    /// CLI's `marketplace list --json` and consumed by `read_marketplace_manifest`.
+    /// Not read directly by the app, but serialized to the FE for context.
+    #[allow(dead_code)]
     pub install_location: String,
     /// FE-derived (count of available plugins). Not emitted by CLI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -354,6 +358,29 @@ pub enum PluginError {
         #[serde(skip_serializing_if = "Option::is_none")]
         exit_code: Option<i32>,
     },
+}
+
+/// Resultado de uma mutação de plugin (install/uninstall/update/enable/
+/// disable/marketplace_add/marketplace_remove). Wrapper inequívoco para o
+/// renderer fazer optimistic update + revert em falha.
+///
+/// - `success: true` → CLI exit 0, mutação aplicada. Caches invalidados.
+/// - `success: false` → CLI non-zero exit. `exitCode` quando disponível.
+///   `error` carrega o `PluginError` tipado para diagnóstico.
+///
+/// O renderer NÃO precisa inspecionar `PluginError` para decidir revert —
+/// `success: false` basta. `exitCode` e `error` são para logging/UX.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MutationResult {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<PluginError>,
+    /// Plugin id afetado (quando aplicável) para reconcile direcionado.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_id: Option<String>,
 }
 
 impl std::fmt::Display for PluginError {

@@ -650,6 +650,11 @@ pub struct SkillSummary {
     pub path: String,
     pub source: SkillSource,
     pub trusted: bool,
+    /// `true` when the skill is actually a plugin mention (no path, just a
+    /// name + description referencing a plugin's MCP tools/skills).
+    /// Frontend sends `isPluginMention`; defaults to `false` for normal skills.
+    #[serde(default)]
+    pub is_plugin_mention: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
