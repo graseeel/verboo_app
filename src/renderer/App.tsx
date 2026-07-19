@@ -71,6 +71,7 @@ import { recognizeImage } from './features/ocr/ocrService'
 import { Composer } from './features/composer/Composer'
 import { estimateTotalContextTokens } from './features/context/ContextPanel'
 import { TokenRateMeter } from './features/context/TokenRateMeter'
+import { isAuthenticationFailure, shouldAutoRecoverAuthentication } from './features/transcript/cliFailureRecovery'
 import { FeedbackDialog } from './features/feedback/FeedbackDialog'
 import { ModelSelector } from './features/models/ModelSelector'
 import { validOverride, displayEffort, migrateEffortPrefs } from './features/models/effortOverride'
@@ -512,6 +513,7 @@ export function App() {
   // Conversations currently auto-recovering from a context overflow (see the
   // 'error' handler). Guards against an infinite compact→overflow→compact loop.
   const overflowRecovering = useRef<Set<string>>(new Set())
+  const authRecovering = useRef<Set<string>>(new Set())
   // Latest menu-bar state, re-pushed on a heartbeat so the tray never sticks
   // (async updateMenuBar invokes can arrive out of order — a lagging
   // 'thinking' landing after the 'idle' would freeze the menubar counter).
@@ -1598,6 +1600,58 @@ export function App() {
 
     if (event.type === 'error') {
       const conversationId = turnConversationIds.current[event.turnId]
+      const failure = event.payload
+      if (conversationId && failure?.sessionId) {
+        goalSessionId.current = failure.sessionId
+        updateConversationSession(conversationId, failure.sessionId)
+      }
+
+      const lowerMessage = event.message.toLowerCase()
+      const isContextOverflow =
+        failure?.category === 'context_overflow'
+        || lowerMessage.includes('too many tokens')
+        || lowerMessage.includes('max_tokens')
+        || lowerMessage.includes('prompt is too long')
+        || lowerMessage.includes('token limit')
+        || lowerMessage.includes('max length')
+        || (lowerMessage.includes('context')
+          && (lowerMessage.includes('exceed')
+            || lowerMessage.includes('too long')
+            || lowerMessage.includes('maximum')
+            || lowerMessage.includes('window')
+            || lowerMessage.includes('limit exceeded')
+            || lowerMessage.includes('overflow')
+            || lowerMessage.includes('too large')))
+        || /rate limit.*token/i.test(lowerMessage)
+        || /token.*rate.*limit/i.test(lowerMessage)
+      const authFailure = isAuthenticationFailure(failure, event.message)
+      const willRecoverAuth = Boolean(
+        conversationId
+        && shouldAutoRecoverAuthentication(
+          failure,
+          authRecovering.current.has(conversationId),
+        ),
+      )
+      const willRecoverContext = Boolean(
+        conversationId
+        && !authFailure
+        && isContextOverflow
+        && !overflowRecovering.current.has(conversationId),
+      )
+      const retryMeta = turnRetryPayload.current[event.turnId]
+      const sessionGone = /no conversation found with session/i.test(event.message)
+        || (/session id[:\s]/i.test(event.message) && /not found|não encontrad/i.test(event.message))
+      const willRetrySession = Boolean(
+        conversationId
+        && !willRecoverAuth
+        && !willRecoverContext
+        && sessionGone
+        && retryMeta
+        && !retryMeta.alreadyRetriedWithoutSession
+        && retryMeta.message.trim(),
+      )
+      const willContinueAutomatically = willRecoverAuth || willRecoverContext || willRetrySession
+
       // Bump lastTurnEndedAt on error too — a turn concluded even when it
       // errored, and the sidebar should reflect the updated order.
       if (conversationId) {
@@ -1614,9 +1668,10 @@ export function App() {
       setCompactingTurnId(current => (current === event.turnId ? undefined : current))
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
       clearActiveSubagentsForTurn(event.turnId)
-      flashPet('error')
-      // Fire OS notification for background error completion too.
-      if (conversationId) {
+      if (!willContinueAutomatically) flashPet('error')
+      // A transparently recovered failure is not a completed error from the
+      // user's perspective, so only notify when it will actually surface.
+      if (conversationId && !willContinueAutomatically) {
         const isActive = conversationId === activeConversationIdRef.current
         void window.verboo.fireCompletionNotification(
           1,
@@ -1629,9 +1684,13 @@ export function App() {
       // is intentionally NOT cleared (data contract).
       if (conversationId) commitTurnThinking(conversationId, event.turnId)
 
-      // Reject goal turn completion promise on error
-      if (turnCompletionDeferred.current?.turnId === event.turnId) {
-        turnCompletionDeferred.current.reject(new Error(event.message))
+      const completionDeferred = turnCompletionDeferred.current?.turnId === event.turnId
+        ? turnCompletionDeferred.current
+        : undefined
+      // Keep a goal turn pending across transparent recovery; the replacement
+      // turn will take ownership of the same deferred below.
+      if (completionDeferred && !willContinueAutomatically) {
+        completionDeferred.reject(new Error(event.message))
         turnCompletionDeferred.current = undefined
       }
       if (interjectDeferred.current?.turnId === event.turnId) {
@@ -1639,40 +1698,29 @@ export function App() {
         interjectDeferred.current = undefined
       }
 
-      const lowerMessage = event.message.toLowerCase()
-      const isContextOverflow =
-        lowerMessage.includes('too many tokens')
-        || lowerMessage.includes('max_tokens')
-        || lowerMessage.includes('prompt is too long')
-        || lowerMessage.includes('token limit')
-        || lowerMessage.includes('max length')
-        || (lowerMessage.includes('context')
-          && (lowerMessage.includes('exceed')
-            || lowerMessage.includes('too long')
-            || lowerMessage.includes('maximum')
-            || lowerMessage.includes('window')
-            || lowerMessage.includes('limit exceeded')
-            || lowerMessage.includes('overflow')
-            || lowerMessage.includes('too large')))
-        || /rate limit.*token/i.test(lowerMessage)
-        || /token.*rate.*limit/i.test(lowerMessage)
-      // Context overflow auto-recovery: in headless (--print) mode the CLI may
-      // error on API-level overflow instead of finishing an in-process compact.
-      // Recover once with a structured resume prompt (never the bare word
-      // "continue") + session resume so the model continues without a user bubble.
-      // Guarded per-conversation so a still-too-big context surfaces the error
-      // instead of looping.
-      const willAutoRecover = Boolean(
-        conversationId && isContextOverflow && !overflowRecovering.current.has(conversationId),
-      )
       if (conversationId) {
-        if (willAutoRecover) {
+        if (willRecoverAuth) {
+          authRecovering.current.add(conversationId)
+          appendActivityItem(conversationId, event.turnId, {
+            key: `auth-recovery:${event.turnId}`,
+            label: t('auth.recoveryActivity'),
+            detail: t('auth.recoveryDetail'),
+            kind: 'terminal',
+          })
+        } else if (authFailure) {
+          authRecovering.current.delete(conversationId)
+        }
+
+        if (willRecoverContext) {
           overflowRecovering.current.add(conversationId)
           // Show the compacting spinner under the interrupted turn briefly;
           // we flip to the "Conversation compacted" separator when resume starts.
           setCompactingTurnId(event.turnId)
-        } else {
+        } else if (isContextOverflow) {
           overflowRecovering.current.delete(conversationId)
+        }
+
+        if (!willContinueAutomatically) {
           appendConversationItem(conversationId, {
             id: `${event.turnId}:error`,
             role: 'system',
@@ -1687,31 +1735,69 @@ export function App() {
       // to the resume prompt as anchor context for the model.
       const partialText = turnAssistantText.current[event.turnId] ?? ''
       delete turnAssistantText.current[event.turnId]
+      delete turnRetryPayload.current[event.turnId]
+      if (conversationId) finishAssistantMessage(conversationId, event.turnId)
       cleanupTurnState(event.turnId)
-      // Auto-resume with structured prompt (no bare "continue", no user bubble).
-      // Uses runTurn so tracking (turnModels, runningConversations, baseline,
-      // retry payload) is preserved. createQueuedFollowUp does NOT create a
-      // user bubble in the transcript — the user never sees the resume prompt.
-      if (willAutoRecover && conversationId) {
+
+      if (willRetrySession && conversationId && retryMeta) {
+        clearConversationSession(conversationId)
+        removeTurnTranscriptItems(conversationId, event.turnId)
+        const retry = createQueuedFollowUp(conversationId, retryMeta.message)
+        retry.request.turnId = crypto.randomUUID()
+        if (completionDeferred) completionDeferred.turnId = retry.request.turnId
+        void runTurn(retry, { skipResume: true }).catch(error => {
+          const message = error instanceof Error ? error.message : String(error)
+          appendConversationItem(conversationId, {
+            id: `${retry.request.turnId}:error`,
+            role: 'system',
+            text: message,
+            timestamp: Date.now(),
+          })
+          if (turnCompletionDeferred.current === completionDeferred) {
+            completionDeferred?.reject(error)
+            turnCompletionDeferred.current = undefined
+          }
+        })
+        return
+      }
+
+      // Auto-resume with a structured hidden prompt. The original user message
+      // is never replayed, preventing completed tool calls from being repeated.
+      if ((willRecoverAuth || willRecoverContext) && conversationId) {
         const suffix = partialText.length > 50
           ? `\n\nLast partial assistant output (may be truncated):\n"""\n${partialText.slice(-800)}\n"""`
           : ''
-        const resumeMessage = t('context.resumePrompt') + suffix
+        const resumeMessage = t(willRecoverAuth ? 'auth.resumePrompt' : 'context.resumePrompt') + suffix
         const resume = createQueuedFollowUp(conversationId, resumeMessage)
-        // Mark the *interrupted* turn as compacted and clear its spinner so the
-        // separator shows under the last model content. Do not leave
-        // compactingTurnId stuck on a turnId that will never receive done/error
-        // again (cleanup already removed live tracking for that turn).
-        setCompactedTurnIds(prev => {
-          const next = new Set(prev)
-          next.add(event.turnId)
-          return next
+        resume.request.turnId = crypto.randomUUID()
+        if (completionDeferred) completionDeferred.turnId = resume.request.turnId
+
+        if (willRecoverContext) {
+          setCompactedTurnIds(prev => {
+            const next = new Set(prev)
+            next.add(event.turnId)
+            return next
+          })
+          setCompactingTurnId(current => (current === event.turnId ? undefined : current))
+          skipContextEstimateUntil.current = Date.now() + 15_000
+        }
+
+        void runTurn(resume).catch(error => {
+          const message = error instanceof Error ? error.message : String(error)
+          authRecovering.current.delete(conversationId)
+          overflowRecovering.current.delete(conversationId)
+          appendConversationItem(conversationId, {
+            id: `${resume.request.turnId}:error`,
+            role: 'system',
+            text: t(willRecoverAuth ? 'auth.recoveryFailed' : 'context.recoveryFailed', { message }),
+            timestamp: Date.now(),
+          })
+          flashPet('error')
+          if (turnCompletionDeferred.current === completionDeferred) {
+            completionDeferred?.reject(error)
+            turnCompletionDeferred.current = undefined
+          }
         })
-        setCompactingTurnId(current => (current === event.turnId ? undefined : current))
-        // Suppress local-estimate fallback for 15s so the meter doesn't show
-        // inflated % from pre-compact messages still in the local transcript.
-        skipContextEstimateUntil.current = Date.now() + 15_000
-        void runTurn(resume)
       }
       return
     }
@@ -1720,7 +1806,10 @@ export function App() {
       const conversationId = turnConversationIds.current[event.turnId]
       // A turn finished cleanly → clear any overflow-recovery guard so a future
       // overflow in this conversation can auto-recover again.
-      if (conversationId) overflowRecovering.current.delete(conversationId)
+      if (conversationId) {
+        overflowRecovering.current.delete(conversationId)
+        authRecovering.current.delete(conversationId)
+      }
       setRunningTurnId(undefined)
       setRunningConversations(prev => { const next = new Set(prev); next.delete(conversationId); return next })
       setTokenRate(undefined)

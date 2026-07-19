@@ -512,6 +512,10 @@ impl TurnService {
 
         let working_directory = safe_runtime_working_directory(&request.working_directory);
         let token = resolve_token(&credentials);
+        let injected_oauth_token = token
+            .as_deref()
+            .filter(|value| !value.trim().is_empty() && !value.trim().starts_with("vbk_"))
+            .map(str::to_string);
 
         let sleep_guard = match settings.as_ref() {
             Some(store) => store
@@ -586,16 +590,6 @@ impl TurnService {
                         ..Default::default()
                     },
                 );
-                emit_event(
-                    &app,
-                    AgentEvent {
-                        event_type: EventType::Done,
-                        turn_id: Some(turn_id.clone()),
-                        conversation_id: Some(conversation_id.clone()),
-                        exit_code: None,
-                        ..Default::default()
-                    },
-                );
                 return;
             }
         };
@@ -666,6 +660,7 @@ impl TurnService {
             let reader = BufReader::new(stdout);
             let mut emitted_stream_text = false;
             let mut result_snapshot: Option<AgentResultSnapshot> = None;
+            let mut assistant_error: Option<serde_json::Value> = None;
 
             for line in reader.lines() {
                 let line = match line {
@@ -675,6 +670,9 @@ impl TurnService {
                 let clean = clean_terminal_text(&line);
                 let parsed = parse_json_line(&clean);
                 if let Some(payload) = parsed {
+                    if is_assistant_error_payload(&payload) {
+                        assistant_error = Some(payload.clone());
+                    }
                     if is_result_payload(&payload) {
                         result_snapshot = Some(to_agent_result_snapshot(
                             &turn_id_for_stdout,
@@ -743,6 +741,11 @@ impl TurnService {
             if let Some(h) = stderr_handle {
                 let _ = h.join();
             }
+            let stderr_text = stderr_buf
+                .lock()
+                .ok()
+                .map(|buffer| buffer.trim().to_string())
+                .filter(|text| !text.is_empty());
             if let Some(mut map) = active_map_for_thread.lock().ok() {
                 map.remove(&turn_id_for_stdout);
             }
@@ -759,51 +762,19 @@ impl TurnService {
                     conv_map.remove(&conversation_id_for_stdout);
                 }
             }
-            if !emitted_stream_text && exit_code != Some(0) {
-                let exit_display = match exit_code {
-                    Some(code) => format!("exit={code}"),
-                    None => "signal".to_string(),
-                };
-                let diagnosis = format!(
-                    "({exit_display}, runtime={runtime_label}, cwd={working_dir_label})"
-                );
-                let stderr_text = stderr_buf
-                    .lock()
-                    .ok()
-                    .map(|b| b.trim().to_string())
-                    .filter(|s| !s.is_empty());
-                let result_err = result_snapshot.as_ref().and_then(|snap| {
-                    if snap.is_error.unwrap_or(false) {
-                        snap.errors
-                            .as_ref()
-                            .map(|errs| errs.join("\n"))
-                            .filter(|s| !s.trim().is_empty())
-                    } else {
-                        None
-                    }
-                });
-                let err = match (stderr_text, result_err) {
-                    (Some(stderr), Some(result)) => {
-                        format!("{stderr}\n{result}\n{diagnosis}")
-                    }
-                    (Some(stderr), None) => format!("{stderr}\n{diagnosis}"),
-                    (None, Some(result)) => format!("{result}\n{diagnosis}"),
-                    (None, None) => format!(
-                        "O CLI Verboo encerrou sem produzir resposta. {diagnosis}"
-                    ),
-                };
+            if let Some(stderr) = stderr_text.as_ref() {
                 emit_event(
                     &app_for_stdout,
                     AgentEvent {
-                        event_type: EventType::Stdout,
+                        event_type: EventType::Stderr,
                         turn_id: Some(turn_id_for_stdout.clone()),
                         conversation_id: Some(conversation_id_for_stdout.clone()),
-                        text: Some(format!("⚠️ CLI Verboo: {err}\n")),
+                        text: Some(stderr.clone()),
                         ..Default::default()
                     },
                 );
             }
-            if let Some(snap) = result_snapshot {
+            if let Some(snap) = result_snapshot.as_ref() {
                 emit_event(
                     &app_for_stdout,
                     AgentEvent {
@@ -812,11 +783,47 @@ impl TurnService {
                         conversation_id: Some(conversation_id_for_stdout.clone()),
                         result: Some(AgentResultSnapshot {
                             exit_code,
-                            ..snap
+                            ..snap.clone()
                         }),
                         ..Default::default()
                     },
                 );
+            }
+
+            let exit_display = match exit_code {
+                Some(code) => format!("exit={code}"),
+                None => "signal".to_string(),
+            };
+            let diagnosis = format!(
+                "({exit_display}, runtime={runtime_label}, cwd={working_dir_label})"
+            );
+            if let Some(mut failure) = terminal_failure_from_outcome(
+                assistant_error.as_ref(),
+                result_snapshot.as_ref(),
+                exit_code,
+                stderr_text.as_deref(),
+                &diagnosis,
+            ) {
+                if failure.category == "authentication_failed" {
+                    failure.recovery_ready = injected_oauth_token
+                        .as_deref()
+                        .and_then(crate::services::cli_credentials::refresh_after_auth_failure)
+                        .is_some();
+                }
+                let message = failure.message.clone();
+                emit_event(
+                    &app_for_stdout,
+                    AgentEvent {
+                        event_type: EventType::Error,
+                        turn_id: Some(turn_id_for_stdout.clone()),
+                        conversation_id: Some(conversation_id_for_stdout.clone()),
+                        message: Some(message),
+                        payload: serde_json::to_value(failure).ok(),
+                        exit_code,
+                        ..Default::default()
+                    },
+                );
+                return;
             }
             emit_event(
                 &app_for_stdout,
@@ -882,6 +889,140 @@ impl Default for TurnService {
 
 fn emit_event(app: &AppHandle, event: AgentEvent) {
     let _ = app.emit(AGENT_EVENT_CHANNEL, event);
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct CliTerminalFailure {
+    category: String,
+    message: String,
+    details: Vec<String>,
+    exit_code: Option<i32>,
+    session_id: Option<String>,
+    recovery_ready: bool,
+}
+
+fn is_assistant_error_payload(payload: &serde_json::Value) -> bool {
+    payload.get("type").and_then(|value| value.as_str()) == Some("assistant")
+        && (payload
+            .get("error")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.trim().is_empty())
+            || payload
+                .get("isApiErrorMessage")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false))
+}
+
+fn terminal_failure_from_outcome(
+    assistant_error: Option<&serde_json::Value>,
+    result_snapshot: Option<&AgentResultSnapshot>,
+    exit_code: Option<i32>,
+    stderr: Option<&str>,
+    diagnosis: &str,
+) -> Option<CliTerminalFailure> {
+    let result_is_error = result_snapshot
+        .and_then(|snapshot| snapshot.is_error)
+        .unwrap_or(false);
+    if assistant_error.is_none() && !result_is_error && exit_code == Some(0) {
+        return None;
+    }
+
+    fn push_detail(details: &mut Vec<String>, value: Option<&str>) {
+        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+            return;
+        };
+        if !details.iter().any(|existing| existing == value) {
+            details.push(value.to_string());
+        }
+    }
+
+    let mut details = Vec::<String>::new();
+
+    if let Some(payload) = assistant_error {
+        let assistant_text = extract_text(payload, false);
+        push_detail(&mut details, assistant_text.as_deref());
+    }
+    if let Some(errors) = result_snapshot.and_then(|snapshot| snapshot.errors.as_ref()) {
+        for error in errors {
+            push_detail(&mut details, Some(error));
+        }
+    }
+    push_detail(&mut details, stderr);
+    if exit_code != Some(0) {
+        push_detail(&mut details, Some(diagnosis));
+    }
+    if details.is_empty() {
+        push_detail(
+            &mut details,
+            Some("O CLI Verboo encerrou sem produzir resposta."),
+        );
+    }
+
+    let combined = details.join("\n");
+    let normalized = combined.to_lowercase();
+    let category = assistant_error
+        .and_then(|payload| payload.get("error"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            result_snapshot
+                .filter(|snapshot| snapshot.is_error.unwrap_or(false))
+                .and_then(|snapshot| snapshot.raw_result.as_ref())
+                .and_then(|raw| raw.get("subtype"))
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| infer_terminal_failure_category(&normalized).to_string());
+    let session_id = assistant_error
+        .and_then(|payload| payload.get("session_id"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .or_else(|| result_snapshot.and_then(|snapshot| snapshot.session_id.clone()));
+
+    Some(CliTerminalFailure {
+        category,
+        message: combined,
+        details,
+        exit_code,
+        session_id,
+        recovery_ready: false,
+    })
+}
+
+fn infer_terminal_failure_category(normalized: &str) -> &'static str {
+    if normalized.contains("authentication_failed")
+        || normalized.contains("failed to authenticate")
+        || normalized.contains("invalid or expired token")
+        || normalized.contains("oauth session expired")
+        || normalized.contains("api error: 401")
+    {
+        "authentication_failed"
+    } else if normalized.contains("too many tokens")
+        || normalized.contains("prompt is too long")
+        || normalized.contains("context overflow")
+        || normalized.contains("context window") && normalized.contains("exceed")
+    {
+        "context_overflow"
+    } else if normalized.contains("rate limit") || normalized.contains("api error: 429") {
+        "rate_limit"
+    } else if normalized.contains("billing") || normalized.contains("insufficient credit") {
+        "billing_error"
+    } else if normalized.contains("model not found") {
+        "model_not_found"
+    } else if normalized.contains("permission denied") || normalized.contains("eacces") {
+        "permission_denied"
+    } else if normalized.contains("network")
+        || normalized.contains("connection refused")
+        || normalized.contains("timed out")
+        || normalized.contains("dns")
+    {
+        "network_error"
+    } else {
+        "process_error"
+    }
 }
 
 /// Resolve the `verboo` CLI path: env override first, then PATH.
@@ -2467,6 +2608,89 @@ mod tests {
         let usage = snap.usage.unwrap();
         assert_eq!(usage.input_tokens, Some(100));
         assert_eq!(usage.output_tokens, Some(200));
+    }
+
+    #[test]
+    fn terminal_failure_captures_auth_error_after_partial_output() {
+        let assistant_error = json!({
+            "type": "assistant",
+            "error": "authentication_failed",
+            "session_id": "session-auth-1",
+            "message": {
+                "content": [{
+                    "type": "text",
+                    "text": "API Error: 401 {\"error\":\"invalid or expired token\"} · Failed to authenticate."
+                }]
+            }
+        });
+
+        let failure = terminal_failure_from_outcome(
+            Some(&assistant_error),
+            None,
+            Some(1),
+            None,
+            "(exit=1, runtime=node, cwd=/tmp)",
+        )
+        .expect("structured auth errors must remain terminal even after text streamed");
+
+        assert_eq!(failure.category, "authentication_failed");
+        assert_eq!(failure.session_id.as_deref(), Some("session-auth-1"));
+        assert!(failure.message.contains("invalid or expired token"));
+        assert_eq!(failure.exit_code, Some(1));
+    }
+
+    #[test]
+    fn terminal_failure_uses_result_error_even_with_zero_exit_code() {
+        let payload = json!({
+            "type": "result",
+            "subtype": "error_max_turns",
+            "session_id": "session-result-1",
+            "is_error": true,
+            "errors": ["Reached maximum number of turns (3)"]
+        });
+        let snapshot = to_agent_result_snapshot("turn-result-1", &payload);
+
+        let failure = terminal_failure_from_outcome(
+            None,
+            Some(&snapshot),
+            Some(0),
+            None,
+            "(exit=0, runtime=node, cwd=/tmp)",
+        )
+        .expect("result.is_error is authoritative even when the process exits zero");
+
+        assert_eq!(failure.category, "error_max_turns");
+        assert!(failure.message.contains("Reached maximum number of turns"));
+        assert_eq!(failure.session_id.as_deref(), Some("session-result-1"));
+    }
+
+    #[test]
+    fn terminal_failure_reports_unknown_nonzero_exit_after_partial_output() {
+        let failure = terminal_failure_from_outcome(
+            None,
+            None,
+            Some(2),
+            Some("provider process crashed"),
+            "(exit=2, runtime=node, cwd=/tmp)",
+        )
+        .expect("a nonzero exit must never be hidden by previously streamed text");
+
+        assert_eq!(failure.category, "process_error");
+        assert!(failure.message.contains("provider process crashed"));
+        assert!(failure.message.contains("exit=2"));
+    }
+
+    #[test]
+    fn terminal_failure_ignores_stderr_warning_on_success() {
+        let failure = terminal_failure_from_outcome(
+            None,
+            None,
+            Some(0),
+            Some("configuration warning"),
+            "(exit=0, runtime=node, cwd=/tmp)",
+        );
+
+        assert!(failure.is_none(), "stderr alone must not turn a successful turn into an error");
     }
 
     #[test]

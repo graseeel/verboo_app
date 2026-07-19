@@ -646,6 +646,15 @@ export type RuntimeActivity = {
   diffPreview?: string
 }
 
+export type CliTerminalFailure = {
+  category: string
+  message: string
+  details: string[]
+  exitCode: number | null
+  sessionId?: string
+  recoveryReady: boolean
+}
+
 export type AgentEvent =
   | { type: 'started'; turnId: string; conversationId?: string }
   | { type: 'stdout'; turnId: string; conversationId?: string; text: string }
@@ -653,7 +662,7 @@ export type AgentEvent =
   | { type: 'json'; turnId: string; conversationId?: string; payload: unknown; runtimeStatus?: RuntimeStatus; runtimeActivity?: RuntimeActivity }
   | { type: 'result'; turnId: string; conversationId?: string; result: AgentResultSnapshot }
   | { type: 'subagent-progress'; progress: ResearchSubagentProgress }
-  | { type: 'error'; turnId: string; conversationId?: string; message: string }
+  | { type: 'error'; turnId: string; conversationId?: string; message: string; payload?: CliTerminalFailure; exitCode?: number | null }
   | { type: 'done'; turnId: string; conversationId?: string; exitCode: number | null }
 
 export type AppConfig = {
