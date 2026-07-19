@@ -174,7 +174,7 @@ export type TranscriptItem = {
   text: string
   timestamp: number
   kind?: 'message' | 'activity' | 'summary'
-  activityKind?: 'thinking' | 'image' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool' | 'compacting'
+  activityKind?: 'thinking' | 'image' | 'video' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool' | 'compacting'
   activityDetail?: string
   activityAdditions?: number
   activityDeletions?: number
@@ -203,7 +203,7 @@ export type WorkspaceChangeEntry = {
 
 export type TurnActionKind =
   | 'read' | 'search' | 'edit' | 'create' | 'delete' | 'command'
-  | 'image' | 'terminal' | 'permission' | 'agent-open' | 'agent-close' | 'tool'
+  | 'image' | 'video' | 'terminal' | 'permission' | 'agent-open' | 'agent-close' | 'tool'
 
 export type CommandRun = { input: string; output: string; status: 'success' | 'failure' | 'running' }
 
@@ -392,6 +392,7 @@ export type UserSettings = {
   // Consent for vision fallback (spawn a vision-capable model to describe
   // images when the selected model can't see). Default: 'ask'.
   visionFallbackConsent: VisionFallbackConsent
+  videoFallbackConsent: VideoFallbackConsent
   // Paths of untrusted skills (project-root skills) the user has approved
   // with "Always Allow". Trusted skills (user/legacy roots) don't need
   // approval — they pass through directly.
@@ -438,6 +439,8 @@ export type AvatarSettings = {
 /// - 'always': always run the fallback without asking.
 /// - 'never': never run the fallback; images are ignored with a warning.
 export type VisionFallbackConsent = 'ask' | 'always' | 'never'
+
+export type VideoFallbackConsent = 'ask' | 'always' | 'never'
 
 /// State returned by `getVisionFallbackState` for Zelda's settings UI.
 export type VisionFallbackState = {
@@ -552,7 +555,54 @@ export type ProfileResult = {
   error?: string
 }
 
-export type AttachmentKind = 'image' | 'file'
+export type AttachmentKind = 'image' | 'video' | 'file'
+
+export type VideoHdrKind = 'sdr' | 'hlg' | 'pq' | 'dolbyVision' | 'unknown'
+
+export type VideoProgressStage =
+  | 'validating'
+  | 'preparing'
+  | 'transcribing'
+  | 'analyzing'
+  | 'consolidating'
+
+export type VideoStreamMetadata = {
+  durationMs: number
+  container: string
+  videoCodec: string
+  audioCodec?: string
+  width: number
+  height: number
+  avgFps: number
+  hasAudio: boolean
+  hdr: VideoHdrKind
+  colorPrimaries?: string
+  colorTransfer?: string
+  bitDepth?: number
+}
+
+export type ModelMediaCapabilities = {
+  image: boolean
+  video: boolean
+  audio: boolean
+  videoContainers: string[]
+  videoCodecs: string[]
+  acceptsHdrVideo: boolean
+}
+
+export type CliMediaCapabilities = {
+  imageBlocks: boolean
+  videoBlocks: boolean
+  audioBlocks: boolean
+}
+
+export type VideoProgress = {
+  jobId: string
+  turnId: string
+  stage: VideoProgressStage
+  completedUnits?: number
+  totalUnits?: number
+}
 
 // Outcome of attempting text extraction on an attachment.
 // - 'extracted': extractedText holds real content the model can reason about.
@@ -577,6 +627,7 @@ export type AttachmentMeta = {
   // string ('warning'). Frontend uses this to distinguish "model has real
   // content" from "model received a warning" without parsing the string.
   extractionStatus?: ExtractionStatus
+  video?: VideoStreamMetadata
 }
 
 export type AgentTurnRequest = {
@@ -586,6 +637,9 @@ export type AgentTurnRequest = {
   model?: string
   modelSupportsVision?: boolean
   runVisionFallback?: boolean
+  mediaCapabilities?: ModelMediaCapabilities
+  cliMediaCapabilities?: CliMediaCapabilities
+  runVideoAnalysis?: boolean
   contextWindow?: number
   effort?: string
   /** Reasoning config snapshot at request-build time. FE reads this on the
@@ -696,6 +750,7 @@ export type AgentEvent =
   | { type: 'json'; turnId: string; conversationId?: string; payload: unknown; runtimeStatus?: RuntimeStatus; runtimeActivity?: RuntimeActivity }
   | { type: 'result'; turnId: string; conversationId?: string; result: AgentResultSnapshot }
   | { type: 'subagent-thread'; turnId: string; conversationId: string; subagentThread: SubagentThreadUpdate }
+  | { type: 'video-progress'; turnId: string; conversationId?: string; videoProgress: VideoProgress }
   | { type: 'error'; turnId: string; conversationId?: string; message: string; payload?: CliTerminalFailure; exitCode?: number | null }
   | { type: 'done'; turnId: string; conversationId?: string; exitCode: number | null }
 

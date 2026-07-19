@@ -145,6 +145,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
     autoDownload: false,
   },
   visionFallbackConsent: 'ask',
+  videoFallbackConsent: 'ask',
   trustedSkills: [],
   avatar: undefined,
   includeVerbooCoAuthor: false,

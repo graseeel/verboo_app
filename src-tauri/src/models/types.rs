@@ -123,6 +123,7 @@ pub enum GoalStatus {
 #[serde(rename_all = "lowercase")]
 pub enum AttachmentKind {
     Image,
+    Video,
     File,
 }
 
@@ -165,6 +166,40 @@ impl Default for VisionFallbackConsent {
     fn default() -> Self {
         Self::Ask
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoFallbackConsent {
+    Ask,
+    Always,
+    Never,
+}
+
+impl Default for VideoFallbackConsent {
+    fn default() -> Self {
+        Self::Ask
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum VideoHdrKind {
+    Sdr,
+    Hlg,
+    Pq,
+    DolbyVision,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoProgressStage {
+    Validating,
+    Preparing,
+    Transcribing,
+    Analyzing,
+    Consolidating,
 }
 
 /// Avatar configuration: how the user's profile picture is rendered.
@@ -409,6 +444,8 @@ pub enum EventType {
     Result,
     #[serde(rename = "subagent-thread")]
     SubagentThread,
+    #[serde(rename = "video-progress")]
+    VideoProgress,
     Error,
     #[default]
     Done,
@@ -629,6 +666,8 @@ pub struct UserSettings {
     /// describe images when the selected model can't see). Default: Ask.
     #[serde(default)]
     pub vision_fallback_consent: VisionFallbackConsent,
+    #[serde(default)]
+    pub video_fallback_consent: VideoFallbackConsent,
     /// Paths of untrusted skills (project-root skills) the user has approved
     /// with "Always Allow". Trusted skills (user/legacy roots) don't need
     /// approval — they pass through directly. This list persists the user's
@@ -717,6 +756,54 @@ pub struct AttachmentMeta {
     /// when no extraction was attempted (non-PDF, image).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extraction_status: Option<ExtractionStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<VideoStreamMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoStreamMetadata {
+    pub duration_ms: u64,
+    pub container: String,
+    pub video_codec: String,
+    pub audio_codec: Option<String>,
+    pub width: u32,
+    pub height: u32,
+    pub avg_fps: f64,
+    pub has_audio: bool,
+    pub hdr: VideoHdrKind,
+    pub color_primaries: Option<String>,
+    pub color_transfer: Option<String>,
+    pub bit_depth: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelMediaCapabilities {
+    pub image: bool,
+    pub video: bool,
+    pub audio: bool,
+    pub video_containers: Vec<String>,
+    pub video_codecs: Vec<String>,
+    pub accepts_hdr_video: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliMediaCapabilities {
+    pub image_blocks: bool,
+    pub video_blocks: bool,
+    pub audio_blocks: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoProgress {
+    pub job_id: String,
+    pub turn_id: String,
+    pub stage: VideoProgressStage,
+    pub completed_units: Option<u32>,
+    pub total_units: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -729,6 +816,12 @@ pub struct AgentTurnRequest {
     pub model_supports_vision: Option<bool>,
     #[serde(default)]
     pub run_vision_fallback: Option<bool>,
+    #[serde(default)]
+    pub media_capabilities: Option<ModelMediaCapabilities>,
+    #[serde(default)]
+    pub cli_media_capabilities: Option<CliMediaCapabilities>,
+    #[serde(default)]
+    pub run_video_analysis: Option<bool>,
     /// Reasoning effort level for this turn (e.g. "low", "medium", "high",
     /// "max", "none"). Sent to the CLI as `--effort <level>` only when it is
     /// a valid override — i.e. present, non-empty, and listed in the model's
@@ -1029,6 +1122,8 @@ pub struct AgentEvent {
     pub exit_code: Option<i32>,
     pub runtime_status: Option<RuntimeStatus>,
     pub runtime_activity: Option<RuntimeActivity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_progress: Option<VideoProgress>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1275,6 +1370,7 @@ impl Default for UserSettings {
                 auto_download: false,
             },
             vision_fallback_consent: VisionFallbackConsent::Ask,
+            video_fallback_consent: VideoFallbackConsent::Ask,
             trusted_skills: Vec::new(),
             avatar: None,
             include_verboo_co_author: false,
@@ -1455,10 +1551,72 @@ mod tests {
             runtime_status: None,
             runtime_activity: None,
             subagent_thread: None,
+            video_progress: None,
         };
         let json = serde_json::to_string(&event).expect("serialize");
         assert!(json.contains("\"type\":\"started\""));
         assert!(!json.contains("eventType"));
+    }
+
+    #[test]
+    fn video_contract_round_trips_with_camel_case_wire_names() {
+        let attachment = AttachmentMeta {
+            path: "/tmp/clip.mov".into(),
+            name: "clip.mov".into(),
+            size: 42,
+            kind: AttachmentKind::Video,
+            media_type: Some("video/quicktime".into()),
+            width: Some(1920),
+            height: Some(1080),
+            extracted_text: None,
+            extraction_status: None,
+            video: Some(VideoStreamMetadata {
+                duration_ms: 1_000,
+                container: "mov".into(),
+                video_codec: "h264".into(),
+                audio_codec: Some("aac".into()),
+                width: 1920,
+                height: 1080,
+                avg_fps: 29.97,
+                has_audio: true,
+                hdr: VideoHdrKind::DolbyVision,
+                color_primaries: Some("bt2020".into()),
+                color_transfer: Some("smpte2084".into()),
+                bit_depth: Some(10),
+            }),
+        };
+        let attachment_json = serde_json::to_value(&attachment).expect("serialize attachment");
+        assert_eq!(attachment_json["kind"], "video");
+        assert_eq!(attachment_json["video"]["durationMs"], 1_000);
+        assert_eq!(attachment_json["video"]["videoCodec"], "h264");
+        assert_eq!(attachment_json["video"]["hdr"], "dolbyVision");
+        let attachment_back: AttachmentMeta =
+            serde_json::from_value(attachment_json).expect("deserialize attachment");
+        assert_eq!(attachment_back.video.expect("video metadata").bit_depth, Some(10));
+
+        let event = AgentEvent {
+            event_type: EventType::VideoProgress,
+            turn_id: Some("turn-1".into()),
+            conversation_id: None,
+            text: None,
+            payload: None,
+            result: None,
+            subagent_thread: None,
+            message: None,
+            exit_code: None,
+            runtime_status: None,
+            runtime_activity: None,
+            video_progress: Some(VideoProgress {
+                job_id: "job-1".into(),
+                turn_id: "turn-1".into(),
+                stage: VideoProgressStage::Analyzing,
+                completed_units: Some(2),
+                total_units: Some(4),
+            }),
+        };
+        let event_json = serde_json::to_value(&event).expect("serialize event");
+        assert_eq!(event_json["type"], "video-progress");
+        assert_eq!(event_json["videoProgress"]["completedUnits"], 2);
     }
 
     // ── AvatarSettings round-trip tests ──────────────────────────────

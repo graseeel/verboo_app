@@ -385,6 +385,7 @@ impl TurnService {
                 runtime_status: None,
                 runtime_activity: None,
                 subagent_thread: None,
+                video_progress: None,
             },
         );
 
@@ -1572,6 +1573,7 @@ fn build_attachment_lines(
 fn attachment_kind_label(kind: &AttachmentKind) -> &'static str {
     match kind {
         AttachmentKind::Image => "image",
+        AttachmentKind::Video => "video",
         AttachmentKind::File => "file",
     }
 }
@@ -2879,6 +2881,9 @@ mod tests {
             custom_instructions: None,
             memory_context: None,
             run_vision_fallback: None,
+            media_capabilities: None,
+            cli_media_capabilities: None,
+            run_video_analysis: None,
             effort: None,
             reasoning: None,
         };
@@ -2906,6 +2911,9 @@ mod tests {
             custom_instructions: Some("be brief".into()),
             memory_context: None,
             run_vision_fallback: None,
+            media_capabilities: None,
+            cli_media_capabilities: None,
+            run_video_analysis: None,
             effort: None,
             reasoning: None,
         };
@@ -2935,6 +2943,7 @@ mod tests {
             height: None,
             extracted_text: Some(text.into()),
             extraction_status: Some(crate::models::types::ExtractionStatus::Extracted),
+            video: None,
         }
     }
 
@@ -2949,6 +2958,7 @@ mod tests {
             height: None,
             extracted_text: None,
             extraction_status: None,
+            video: None,
         }
     }
 
@@ -3046,6 +3056,7 @@ mod tests {
             height: Some(100),
             extracted_text: None,
             extraction_status: None,
+            video: None,
         }
     }
 
@@ -3063,6 +3074,7 @@ mod tests {
             height: None,
             extracted_text: Some("text content".into()),
             extraction_status: Some(crate::models::types::ExtractionStatus::Extracted),
+            video: None,
         }
     }
 
@@ -3086,6 +3098,9 @@ mod tests {
             custom_instructions: None,
             memory_context: None,
             run_vision_fallback: None,
+            media_capabilities: None,
+            cli_media_capabilities: None,
+            run_video_analysis: None,
             effort: None,
             reasoning: None,
         };
@@ -3116,6 +3131,9 @@ mod tests {
             custom_instructions: None,
             memory_context: None,
             run_vision_fallback: None,
+            media_capabilities: None,
+            cli_media_capabilities: None,
+            run_video_analysis: None,
             effort: None,
             reasoning: None,
         };
@@ -3146,6 +3164,9 @@ mod tests {
             custom_instructions: None,
             memory_context: None,
             run_vision_fallback: None,
+            media_capabilities: None,
+            cli_media_capabilities: None,
+            run_video_analysis: None,
             effort: None,
             reasoning: None,
         };
@@ -3185,6 +3206,9 @@ mod tests {
             custom_instructions: None,
             memory_context: None,
             run_vision_fallback: None,
+            media_capabilities: None,
+            cli_media_capabilities: None,
+            run_video_analysis: None,
             effort: None,
             reasoning: None,
         };
@@ -3245,6 +3269,9 @@ mod tests {
             custom_instructions: None,
             memory_context: None,
             run_vision_fallback: None,
+            media_capabilities: None,
+            cli_media_capabilities: None,
+            run_video_analysis: None,
             effort: None,
             reasoning: None,
         };
@@ -3377,6 +3404,9 @@ mod tests {
             model: Some("ultra/glm-5.2".into()),
             model_supports_vision: None,
             run_vision_fallback: None,
+            media_capabilities: None,
+            cli_media_capabilities: None,
+            run_video_analysis: None,
             effort: effort.map(|s| s.to_string()),
             reasoning,
             context_window: None,
@@ -3483,6 +3513,9 @@ mod tests {
             custom_instructions: None,
             memory_context: None,
             run_vision_fallback: None,
+            media_capabilities: None,
+            cli_media_capabilities: None,
+            run_video_analysis: None,
             effort: None,
             reasoning: None,
         }

@@ -399,6 +399,7 @@ pub fn inspect_attachment(path: &str) -> Option<AttachmentMeta> {
         height,
         extracted_text,
         extraction_status,
+        video: None,
     })
 }
 
