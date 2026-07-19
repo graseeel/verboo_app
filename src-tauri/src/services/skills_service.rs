@@ -185,6 +185,7 @@ fn read_skill_directory(path: &Path, root: &SkillRoot) -> Option<SkillSummary> {
         path: skill_path_str,
         source: root.source.clone(),
         trusted: root.trusted,
+        is_plugin_mention: false,
     })
 }
 
@@ -407,6 +408,7 @@ mod tests {
                 path: "/u/z".into(),
                 source: SkillSource::User,
                 trusted: true,
+                is_plugin_mention: false,
             },
             SkillSummary {
                 id: "u2".into(),
@@ -415,6 +417,7 @@ mod tests {
                 path: "/u/a".into(),
                 source: SkillSource::User,
                 trusted: true,
+                is_plugin_mention: false,
             },
             SkillSummary {
                 id: "p1".into(),
@@ -423,6 +426,7 @@ mod tests {
                 path: "/p/a".into(),
                 source: SkillSource::Project,
                 trusted: false,
+                is_plugin_mention: false,
             },
         ];
         let result = dedupe_skills(skills);
@@ -522,6 +526,7 @@ mod tests {
                 path: "/a".into(),
                 source: SkillSource::User,
                 trusted: true,
+                is_plugin_mention: false,
             },
             SkillSummary {
                 id: "p1".into(),
@@ -530,6 +535,7 @@ mod tests {
                 path: "/b".into(),
                 source: SkillSource::Project,
                 trusted: false,
+                is_plugin_mention: false,
             },
         ]);
         assert_eq!(skills.len(), 1);
@@ -563,6 +569,7 @@ mod tests {
                 SkillSource::Project
             },
             trusted,
+            is_plugin_mention: false,
         }
     }
 

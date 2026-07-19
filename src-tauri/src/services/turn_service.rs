@@ -1222,7 +1222,16 @@ fn build_skill_lines(skills: &[crate::models::types::SkillSummary], language: La
         .to_string(),
     );
     for skill in skills {
-        lines.push(format!("- Use skill \"{}\" — {}", skill.name, skill.path));
+        if skill.is_plugin_mention {
+            let line = if language == LanguageCode::PtBr {
+                format!("- Use o plugin \"{}\" — as ferramentas MCP/skills dele estão disponíveis nativamente", skill.name)
+            } else {
+                format!("- Use the \"{}\" plugin — its MCP tools/skills are available natively", skill.name)
+            };
+            lines.push(line);
+        } else {
+            lines.push(format!("- Use skill \"{}\" — {}", skill.name, skill.path));
+        }
     }
     lines
 }

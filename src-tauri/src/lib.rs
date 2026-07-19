@@ -1273,24 +1273,39 @@ async fn plugin_available(
 async fn plugin_install(
     id: String,
     scope: models::plugins::PluginScope,
-) -> Result<models::plugins::Plugin, models::plugins::PluginError> {
-    services::plugins_service::plugin_install(id, scope).await
+    app: tauri::AppHandle,
+) -> Result<models::plugins::MutationResult, models::plugins::PluginError> {
+    let result = services::plugins_service::plugin_install(id, scope).await?;
+    if result.success {
+        let _ = tauri::Emitter::emit(&app, "plugin-mutation", &result);
+    }
+    Ok(result)
 }
 
 #[tauri::command]
 async fn plugin_enable(
     id: String,
     scope: Option<models::plugins::PluginScope>,
-) -> Result<(), models::plugins::PluginError> {
-    services::plugins_service::plugin_enable(id, scope).await
+    app: tauri::AppHandle,
+) -> Result<models::plugins::MutationResult, models::plugins::PluginError> {
+    let result = services::plugins_service::plugin_enable(id, scope).await?;
+    if result.success {
+        let _ = tauri::Emitter::emit(&app, "plugin-mutation", &result);
+    }
+    Ok(result)
 }
 
 #[tauri::command]
 async fn plugin_disable(
     id: String,
     scope: Option<models::plugins::PluginScope>,
-) -> Result<(), models::plugins::PluginError> {
-    services::plugins_service::plugin_disable(id, scope).await
+    app: tauri::AppHandle,
+) -> Result<models::plugins::MutationResult, models::plugins::PluginError> {
+    let result = services::plugins_service::plugin_disable(id, scope).await?;
+    if result.success {
+        let _ = tauri::Emitter::emit(&app, "plugin-mutation", &result);
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1298,16 +1313,26 @@ async fn plugin_uninstall(
     id: String,
     scope: models::plugins::PluginScope,
     keep_data: Option<bool>,
-) -> Result<(), models::plugins::PluginError> {
-    services::plugins_service::plugin_uninstall(id, scope, keep_data).await
+    app: tauri::AppHandle,
+) -> Result<models::plugins::MutationResult, models::plugins::PluginError> {
+    let result = services::plugins_service::plugin_uninstall(id, scope, keep_data).await?;
+    if result.success {
+        let _ = tauri::Emitter::emit(&app, "plugin-mutation", &result);
+    }
+    Ok(result)
 }
 
 #[tauri::command]
 async fn plugin_update(
     id: String,
     scope: models::plugins::PluginScope,
-) -> Result<models::plugins::Plugin, models::plugins::PluginError> {
-    services::plugins_service::plugin_update(id, scope).await
+    app: tauri::AppHandle,
+) -> Result<models::plugins::MutationResult, models::plugins::PluginError> {
+    let result = services::plugins_service::plugin_update(id, scope).await?;
+    if result.success {
+        let _ = tauri::Emitter::emit(&app, "plugin-mutation", &result);
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1327,15 +1352,25 @@ async fn marketplace_list(
 async fn marketplace_add(
     source: String,
     scope: Option<String>,
-) -> Result<models::plugins::Marketplace, models::plugins::PluginError> {
-    services::plugins_service::marketplace_add(source, scope).await
+    app: tauri::AppHandle,
+) -> Result<models::plugins::MutationResult, models::plugins::PluginError> {
+    let result = services::plugins_service::marketplace_add(source, scope).await?;
+    if result.success {
+        let _ = tauri::Emitter::emit(&app, "plugin-mutation", &result);
+    }
+    Ok(result)
 }
 
 #[tauri::command]
 async fn marketplace_remove(
     name: String,
-) -> Result<(), models::plugins::PluginError> {
-    services::plugins_service::marketplace_remove(name).await
+    app: tauri::AppHandle,
+) -> Result<models::plugins::MutationResult, models::plugins::PluginError> {
+    let result = services::plugins_service::marketplace_remove(name).await?;
+    if result.success {
+        let _ = tauri::Emitter::emit(&app, "plugin-mutation", &result);
+    }
+    Ok(result)
 }
 
 /// 12. `plugin_detail(id)` — rich detail for an installed plugin.
