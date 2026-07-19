@@ -73,6 +73,7 @@ import { Composer } from './features/composer/Composer'
 import { estimateTotalContextTokens } from './features/context/ContextPanel'
 import { TokenRateMeter } from './features/context/TokenRateMeter'
 import { isAuthenticationFailure, shouldAutoRecoverAuthentication } from './features/transcript/cliFailureRecovery'
+import { truncateToolOutput } from './features/transcript/toolOutput'
 import { FeedbackDialog } from './features/feedback/FeedbackDialog'
 import { ModelSelector } from './features/models/ModelSelector'
 import { validOverride, displayEffort, migrateEffortPrefs } from './features/models/effortOverride'
@@ -5556,18 +5557,6 @@ function cleanCliFailureLine(line: string): string {
 // the store small while preserving the most useful part (head of the output,
 // where the signal is). ANSI escape sequences are stripped first (same regex
 // as chatStore.stripTerminalControl) so the rendered detail is clean text.
-const TOOL_OUTPUT_MAX = 2000
-const TOOL_OUTPUT_MAX_ERROR = 3200
-function truncateToolOutput(output: string, isError: boolean): string {
-  const cleaned = output.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '').replace(/\u001b/g, '')
-  const trimmed = cleaned.trim()
-  const max = isError ? TOOL_OUTPUT_MAX_ERROR : TOOL_OUTPUT_MAX
-  if (trimmed.length <= max) return trimmed
-  const head = trimmed.slice(0, max)
-  const omitted = trimmed.length - max
-  return `${head}\n\n[… ${omitted} more characters truncated]`
-}
-
 function detectPermissionRequest(text: string): string | undefined {
   const normalized = text.toLowerCase()
   const asksForApproval = (

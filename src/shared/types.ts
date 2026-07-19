@@ -257,12 +257,56 @@ export type ChatProject = {
   archivedAt?: number
 }
 
+export type SubagentThreadStatus =
+  | 'queued'
+  | 'thinking'
+  | 'reading'
+  | 'searching'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+export type SubagentThreadEvent = {
+  id: string
+  kind: 'mission' | 'agent-message' | 'tool-call' | 'tool-result' | 'status' | 'final' | 'error'
+  text: string
+  timestamp: number
+  toolName?: string
+  toolUseId?: string
+  isError?: boolean
+}
+
+export type SubagentThread = {
+  id: string
+  runtimeAgentId?: string
+  parentTurnId: string
+  toolUseId?: string
+  label: string
+  mission: string
+  status: SubagentThreadStatus
+  events: SubagentThreadEvent[]
+  createdAt: number
+  updatedAt: number
+}
+
+export type SubagentThreadUpdate = {
+  threadId: string
+  runtimeAgentId?: string
+  toolUseId?: string
+  label?: string
+  mission?: string
+  status?: SubagentThreadStatus
+  event?: SubagentThreadEvent
+}
+
 export type StoredConversation = {
   id: string
   title: string
   cliSessionId?: string
   projectId?: string
   items: TranscriptItem[]
+  subagents: SubagentThread[]
   goal?: GoalState
   createdAt: number
   updatedAt: number
@@ -275,7 +319,7 @@ export type StoredConversation = {
 }
 
 export type ChatStore = {
-  version: 2
+  version: 3
   projects: ChatProject[]
   conversations: StoredConversation[]
 }
@@ -662,6 +706,7 @@ export type AgentEvent =
   | { type: 'json'; turnId: string; conversationId?: string; payload: unknown; runtimeStatus?: RuntimeStatus; runtimeActivity?: RuntimeActivity }
   | { type: 'result'; turnId: string; conversationId?: string; result: AgentResultSnapshot }
   | { type: 'subagent-progress'; progress: ResearchSubagentProgress }
+  | { type: 'subagent-thread'; turnId: string; conversationId: string; subagentThread: SubagentThreadUpdate }
   | { type: 'error'; turnId: string; conversationId?: string; message: string; payload?: CliTerminalFailure; exitCode?: number | null }
   | { type: 'done'; turnId: string; conversationId?: string; exitCode: number | null }
 
