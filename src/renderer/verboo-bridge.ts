@@ -21,6 +21,8 @@ import type {
   AppConfig,
   AttachmentMeta,
   CliAuthStatus,
+  ChromeIntegrationRequest,
+  ChromeIntegrationStatus,
   CredentialStatus,
   FeedbackRequest,
   FeedbackResult,
@@ -147,6 +149,18 @@ const api = {
   updateUserSettings: (patch: Partial<UserSettings>) =>
     invoke<UserSettings>('update_user_settings', { patch }),
   resetUserSettings: () => invoke<UserSettings>('reset_user_settings'),
+
+  // ── Verboo in Chrome ────────────────────────────────────────
+  chromeIntegrationStatus: () =>
+    invoke<ChromeIntegrationStatus>('chrome_integration_status'),
+  chromeIntegrationConfigure: (request: ChromeIntegrationRequest) =>
+    invoke<ChromeIntegrationStatus>('chrome_integration_configure', { request }),
+  chromeIntegrationRepair: (request: ChromeIntegrationRequest) =>
+    invoke<ChromeIntegrationStatus>('chrome_integration_repair', { request }),
+  chromeIntegrationTest: () => invoke<boolean>('chrome_integration_test'),
+  chromeIntegrationRemove: () =>
+    invoke<ChromeIntegrationStatus>('chrome_integration_remove'),
+  openChromeExtensionStore: () => invoke<boolean>('open_chrome_extension_store'),
 
   // ── Vision fallback (FASE 1) ───────────────────────────────────
   // Returns current consent + preview of which model would be picked.

@@ -5,6 +5,9 @@ use std::sync::Mutex;
 
 use models::types::*;
 use services::cli_service::CliService;
+use services::chrome_integration::{
+    ChromeIntegrationRequest, ChromeIntegrationService, ChromeIntegrationStatus,
+};
 use services::credentials_store::CredentialsStore;
 use services::model_service::ModelService;
 use services::profile_service::ProfileService;
@@ -131,6 +134,58 @@ fn open_external_url(app: &tauri::AppHandle, url: &str) -> Result<bool, String> 
         .open_url(url, None::<&str>)
         .map(|()| true)
         .map_err(|e| format!("Falha ao abrir URL: {e}"))
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Verboo in Chrome
+// ════════════════════════════════════════════════════════════════════
+
+#[tauri::command]
+fn chrome_integration_status(
+    service: tauri::State<'_, ChromeIntegrationService>,
+) -> Result<ChromeIntegrationStatus, String> {
+    service.status()
+}
+
+#[tauri::command]
+fn chrome_integration_configure(
+    request: ChromeIntegrationRequest,
+    service: tauri::State<'_, ChromeIntegrationService>,
+) -> Result<ChromeIntegrationStatus, String> {
+    service.configure(request)
+}
+
+#[tauri::command]
+fn chrome_integration_repair(
+    request: ChromeIntegrationRequest,
+    service: tauri::State<'_, ChromeIntegrationService>,
+) -> Result<ChromeIntegrationStatus, String> {
+    service.repair(request)
+}
+
+#[tauri::command]
+fn chrome_integration_test(
+    service: tauri::State<'_, ChromeIntegrationService>,
+) -> Result<bool, String> {
+    service.test_connection()
+}
+
+#[tauri::command]
+fn chrome_integration_remove(
+    service: tauri::State<'_, ChromeIntegrationService>,
+) -> Result<ChromeIntegrationStatus, String> {
+    service.remove()
+}
+
+#[tauri::command]
+fn open_chrome_extension_store(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, ChromeIntegrationService>,
+) -> Result<bool, String> {
+    let url = service
+        .store_url()
+        .ok_or("chrome_store_url_missing")?;
+    open_external_url(&app, url)
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1519,6 +1574,12 @@ pub fn run() {
             app.manage(CredentialsStore::new());
             // CliService — spawns `verboo` CLI for auth/turns/models
             app.manage(CliService::new());
+            // Verboo in Chrome — configuration and diagnostics only. The
+            // helper and Chrome extension communicate without the app open.
+            app.manage(
+                ChromeIntegrationService::new(env!("CARGO_PKG_VERSION"))
+                    .map_err(std::io::Error::other)?,
+            );
             // ModelService — fetches models from Verboo Router API with disk cache
             app.manage(ModelService::new(app_data_dir.clone()));
             // TurnService — spawns `verboo` CLI for agent turns with streaming
@@ -1690,6 +1751,13 @@ pub fn run() {
             open_dashboard,
             open_subscriptions,
             open_signup,
+            // Verboo in Chrome
+            chrome_integration_status,
+            chrome_integration_configure,
+            chrome_integration_repair,
+            chrome_integration_test,
+            chrome_integration_remove,
+            open_chrome_extension_store,
             // Credentials
             get_credential_status,
             set_api_key,

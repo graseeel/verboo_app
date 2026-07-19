@@ -705,6 +705,34 @@ export type AppConfig = {
   selectedModel?: string
 }
 
+// ── Verboo in Chrome integration ──────────────────────────────
+
+export type ChromeComponentState = 'missing' | 'managed' | 'outdated' | 'invalid' | 'conflict'
+export type ChromeConnectionState = 'connected' | 'waitingForChrome' | 'ambiguous' | 'incompatible'
+export type ChromeIntegrationAggregate = 'notConfigured' | 'incomplete' | 'ready' | 'connected'
+export type ChromeExtensionIdSource = 'none' | 'release' | 'development'
+
+export type ChromeIntegrationStatus = {
+  extension: ChromeComponentState
+  bridge: ChromeComponentState
+  mcp: ChromeComponentState
+  connection: ChromeConnectionState
+  aggregate: ChromeIntegrationAggregate
+  installedVersion?: string
+  availableVersion: string
+  canConfigure: boolean
+  canRepair: boolean
+  canRemove: boolean
+  storeUrlAvailable: boolean
+  developmentBuild: boolean
+  extensionIdSource: ChromeExtensionIdSource
+  errorCode?: string
+}
+
+export type ChromeIntegrationRequest = {
+  developmentExtensionId?: string
+}
+
 // ── Review types ────────────────────────────────────────────────
 
 export type WorkspaceReviewScope = 'github-repo' | 'git-repo' | 'local-folder'
