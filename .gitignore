@@ -22,6 +22,9 @@ src-tauri/target/
 src-tauri/gen/
 src-tauri/*.rlib
 
+# Generated Verboo in Chrome sidecar binaries (target-specific)
+src-tauri/binaries/verboo-in-chrome-*
+
 # Tauri bundled CLI resource (copied by copy-cli-resource.mjs from node_modules)
 src-tauri/resources/
 

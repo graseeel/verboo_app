@@ -159,6 +159,9 @@ jobs:
         # to avoid a double vite build locally, so CI must build the renderer here.
         run: npm run build:tauri-deps
 
+      - name: Build Verboo in Chrome sidecar
+        run: node scripts/tauri/build-chrome-helper.mjs --target ${{ matrix.target }}
+
       - name: Install tauri-cli
         run: cargo +1.89.0 install tauri-cli --version "^2.0.0" --locked
 
