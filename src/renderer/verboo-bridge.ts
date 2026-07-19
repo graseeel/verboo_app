@@ -56,6 +56,7 @@ import type {
 import type {
   Marketplace,
   MarketplaceManifestMap,
+  MutationResult,
   Plugin,
   PluginAvailablePayload,
   PluginDetail,
@@ -362,13 +363,13 @@ const api = {
   pluginList: () => invoke<Plugin[]>('plugin_list'),
   pluginAvailable: () => invoke<PluginAvailablePayload>('plugin_available'),
   pluginInstall: (id: string, scope: PluginScope) =>
-    invoke<Plugin>('plugin_install', { id, scope }),
+    invoke<MutationResult>('plugin_install', { id, scope }),
   pluginEnable: (id: string, scope?: PluginScope) =>
-    invoke<void>('plugin_enable', { id, scope }),
+    invoke<MutationResult>('plugin_enable', { id, scope }),
   pluginDisable: (id: string, scope?: PluginScope) =>
-    invoke<void>('plugin_disable', { id, scope }),
+    invoke<MutationResult>('plugin_disable', { id, scope }),
   pluginUninstall: (id: string, scope: PluginScope, keepData = false) =>
-    invoke<void>('plugin_uninstall', { id, scope, keepData }),
+    invoke<MutationResult>('plugin_uninstall', { id, scope, keepData }),
   pluginUpdate: (id: string, scope: PluginScope) =>
     invoke<Plugin>('plugin_update', { id, scope }),
   pluginValidate: (path: string) =>

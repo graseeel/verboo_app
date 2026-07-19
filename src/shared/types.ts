@@ -156,6 +156,15 @@ export type SkillSummary = {
   path: string
   source: SkillSource
   trusted: boolean
+  /** When the skill originates from a plugin, holds the plugin id for the
+   *  composer chip icon (PluginIcon). Undefined for filesystem skills. */
+  pluginId?: string
+  /** Display name of the source plugin, for chip rendering. */
+  pluginName?: string
+  /** When true, this entry represents a plugin-level mention (the whole
+   *  plugin, not a specific skill inside it). path is empty; Rust backend
+   *  emits the plugin mention line without a path. */
+  isPluginMention?: boolean
 }
 
 export type TranscriptItem = {

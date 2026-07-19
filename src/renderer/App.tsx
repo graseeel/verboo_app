@@ -76,6 +76,7 @@ import { ModelSelector } from './features/models/ModelSelector'
 import { validOverride, displayEffort, migrateEffortPrefs } from './features/models/effortOverride'
 import { ProfileView } from './features/profile/ProfileView'
 import { PluginsView } from './features/plugins/PluginsView'
+import { loadPluginSkillSummaries } from './features/plugins/pluginSkillSummaries'
 import { ProjectPicker } from './features/projects/ProjectPicker'
 import { SettingsView } from './features/settings/SettingsView'
 import mascotUrl from '../../assets/branding/verboo-mascot.png'
@@ -298,12 +299,39 @@ export function App() {
   })
   const [selectedModel, setSelectedModel] = useState<string | undefined>()
   const [skills, setSkills] = useState<SkillSummary[]>([])
+  const [pluginSkillSummaries, setPluginSkillSummaries] = useState<SkillSummary[]>([])
+
+  // Merged skill list: filesystem + plugin skills (codex‑style @ palette).
+  // Homonymous skills from different origins appear separately.
+  const mentionableSkills = useMemo(
+    () => skills.concat(pluginSkillSummaries),
+    [skills, pluginSkillSummaries],
+  )
+
+  // Load plugin skills on mount; refresh on return from 'plugins' view.
+  const prevActiveViewRef = useRef<AppView>('chat')
+  const loadPluginSummaries = useCallback(() => {
+    loadPluginSkillSummaries(
+      () => window.verboo.pluginList(),
+      (id) => window.verboo.pluginSkills(id),
+    ).then(setPluginSkillSummaries).catch(() => setPluginSkillSummaries([]))
+  }, [])
+  useEffect(() => { loadPluginSummaries() }, [loadPluginSummaries])
+  useEffect(() => {
+    if (prevActiveViewRef.current === 'plugins' && activeView === 'chat') loadPluginSummaries()
+    prevActiveViewRef.current = activeView
+  }, [activeView, loadPluginSummaries])
+
   const [effortByModel, setEffortByModel] = useState<Record<string, string>>(
     () => readEffortByModel(),
   )
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | undefined>(undefined)
   const [dismissedVersion, setDismissedVersion] = useState<string | undefined>(undefined)
-  const [selectedSkills, setSelectedSkills] = useState<SkillSummary[]>([])
+  // Skills derived from / and @ tokens in the composer text. syncTokenSkills
+  // (Composer) extracts both token types and sets this state. No parallel
+  // chip state — user REJECTED chips (decided Feedback-3 ITEM 2a).
+  const [tokenSkills, setTokenSkills] = useState<SkillSummary[]>([])
+  const selectedSkillsUnion = tokenSkills
   const [attachedFiles, setAttachedFiles] = useState<AttachmentMeta[]>([])
   const [ocrProcessingPaths, setOcrProcessingPaths] = useState<string[]>([])
   // Refs keyed by image path, resolved when OCR completes or fails.
@@ -840,7 +868,7 @@ export function App() {
   // the ContextPanel breakdown uses so the meter shows a live percentage.
   const estimatedContextUsage = useMemo<ContextUsageSnapshot | undefined>(() => {
     if (!selectedContextWindow) return undefined
-    const usedTokens = estimateTotalContextTokens(items, attachedFiles, selectedSkills, queuedFollowUps)
+    const usedTokens = estimateTotalContextTokens(items, attachedFiles, selectedSkillsUnion, queuedFollowUps)
     return {
       usedTokens,
       maxTokens: selectedContextWindow,
@@ -848,7 +876,7 @@ export function App() {
       source: 'estimated',
       updatedAt: Date.now(),
     }
-  }, [items, attachedFiles, selectedSkills, queuedFollowUps, selectedContextWindow])
+  }, [items, attachedFiles, selectedSkillsUnion, queuedFollowUps, selectedContextWindow])
   const effectiveContextUsage = contextUsage ?? (Date.now() < skipContextEstimateUntil.current ? undefined : estimatedContextUsage)
 
   useEffect(() => {
@@ -900,6 +928,7 @@ export function App() {
     if (previousKey !== nextKey) {
       composerDrafts.current[previousKey] = composerValue
       setComposerValue(composerDrafts.current[nextKey] ?? '')
+      setTokenSkills([])
     }
     prevConversationIdRef.current = activeConversationId
     activeConversationIdRef.current = activeConversationId
@@ -1852,8 +1881,8 @@ export function App() {
     }
 
     // ── Skill approval gate ───────────────────────────────────
-    if (selectedSkills.length) {
-      const unapproved = await window.verboo.checkSkillApproval(selectedSkills)
+    if (selectedSkillsUnion.length) {
+      const unapproved = await window.verboo.checkSkillApproval(selectedSkillsUnion)
       if (unapproved.length) {
         const choice = await new Promise<{ allowOnce: boolean } | { trust: string } | { cancel: true }>(resolve => {
           skillApprovalResolveRef.current = resolve
@@ -1865,7 +1894,7 @@ export function App() {
         if ('cancel' in choice) {
           // Remove the unapproved skills from the selection and warn the user.
           const unapprovedIds = new Set(unapproved.map(s => s.id))
-          setSelectedSkills(current => current.filter(s => !unapprovedIds.has(s.id)))
+          setTokenSkills(current => current.filter(s => !unapprovedIds.has(s.id)))
           toast(t('skillApproval.skippedWarning'))
         } else if ('trust' in choice) {
           // Persist trust and keep the skill for this turn.
@@ -1887,7 +1916,7 @@ export function App() {
       role: 'user',
       text: trimmed,
       timestamp: Date.now(),
-      skills: selectedSkills,
+      skills: selectedSkillsUnion,
       // Persist a slim version of attachments — just path/name/kind — so the
       // transcript can render chips/thumbnails on reload without base64 bloat.
       attachments: attachedFiles.length ? attachedFiles.map(slimMeta) : undefined,
@@ -1934,7 +1963,7 @@ export function App() {
         responseLanguage,
         accessMode: accessMode === 'full' && !userSettings.fullAccessEnabled ? 'approval' : accessMode,
         workingDirectory: workingDirectoryForConversation(conversationId),
-        skills: selectedSkills,
+        skills: selectedSkillsUnion,
         attachments: attachedFiles,
         responseEnhancementsEnabled: userSettings.responseEnhancementsEnabled,
         personality: userSettings.personality,
@@ -2743,7 +2772,7 @@ export function App() {
         modelId: selectedModel,
         modelDisplayName: selectedModelInfo?.displayName,
         workingDirectory: wd,
-        skills: selectedSkills,
+        skills: selectedSkillsUnion,
       })
 
       appendConversationItem(conversationId, goalSystemMessage(t('goal.systemStarted', { objective: command.objective })))
@@ -2754,7 +2783,7 @@ export function App() {
         role: 'user',
         text: message,
         timestamp: Date.now(),
-        skills: selectedSkills,
+        skills: selectedSkillsUnion,
       }, t('goal.systemObjective', { objective: command.objective }))
 
       setGoal(goalState)
@@ -3091,7 +3120,7 @@ export function App() {
     }
     setActiveConversationId(undefined)
     setSelectedProjectId(project?.id)
-    setSelectedSkills([])
+    setTokenSkills([])
     setAttachedFiles([])
     setActiveView('chat')
   }
@@ -4323,6 +4352,39 @@ export function App() {
             <PluginsView
               onClose={() => setActiveView('chat')}
               loadIcons={userSettings.loadWebIcons}
+              onUsePlugin={(payload) => {
+                setActiveView('chat')
+                const { pluginId, pluginName, suggestion } = payload
+
+                // ITEM B: sempre insere @token do payload (sem async).
+                const token = `@${pluginName}`
+                const extra = suggestion ? ` ${suggestion}` : ''
+                if (!composerValue?.trim()) {
+                  setComposerValue(`${token}${extra}`.trim())
+                } else {
+                  setComposerValue(`${token} ${composerValue}`)
+                }
+
+                // Optimistic mention entry — paint highlight instantly.
+                setPluginSkillSummaries(current => {
+                  if (current.some(s => s.id === `plugin-mention:${pluginId}`)) return current
+                  return [...current, {
+                    id: `plugin-mention:${pluginId}`,
+                    name: pluginName,
+                    description: '',
+                    path: '',
+                    source: 'managed',
+                    trusted: true,
+                    pluginId,
+                    pluginName,
+                    isPluginMention: true,
+                  } satisfies SkillSummary]
+                })
+
+                requestAnimationFrame(() => {
+                  window.dispatchEvent(new CustomEvent('verboo:focus-composer'))
+                })
+              }}
               onSeedComposer={(text: string) => {
                 setComposerValue(text)
                 setActiveView('chat')
@@ -4556,12 +4618,12 @@ export function App() {
           <Composer
             disabled={false}
             workingDirectory={config.workingDirectory}
-            skills={skills}
+            skills={mentionableSkills}
             customSlashCommands={userSettings.customSlashCommands}
-            selectedSkills={selectedSkills}
+            tokenSkills={tokenSkills}
+            onTokenSkillsChange={setTokenSkills}
             attachments={attachedFiles}
             ocrProcessingPaths={ocrProcessingPaths}
-            onSelectedSkillsChange={setSelectedSkills}
             onAttachFiles={attachFiles}
             onDropFiles={attachDroppedFiles}
             onPasteFiles={attachPastedFiles}
