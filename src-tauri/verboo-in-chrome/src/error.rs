@@ -18,6 +18,8 @@ pub enum BridgeError {
     ModeUnavailable,
     #[error("MCP server error: {0}")]
     Mcp(String),
+    #[error("Native Messaging host error: {0}")]
+    NativeHost(String),
 }
 
 pub type Result<T> = std::result::Result<T, BridgeError>;

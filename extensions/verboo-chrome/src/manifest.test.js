@@ -6,8 +6,8 @@ const manifest = JSON.parse(
   await readFile(new URL('../manifest.json', import.meta.url), 'utf8'),
 )
 
-test('manifest does not advertise Native Messaging without a packaged host', () => {
-  assert.equal(manifest.permissions.includes('nativeMessaging'), false)
+test('manifest advertises Native Messaging for the packaged MCP host', () => {
+  assert.equal(manifest.permissions.includes('nativeMessaging'), true)
 })
 
 test('manifest declares identity for user-initiated OAuth PKCE', () => {

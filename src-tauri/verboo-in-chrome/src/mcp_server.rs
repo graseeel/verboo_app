@@ -26,6 +26,7 @@ pub enum RelayErrorCode {
     MultipleBrowserSessions,
     ApprovalRejected,
     ApprovalTimeout,
+    ApprovalUiUnavailable,
     ProtocolVersionMismatch,
     ConnectionLost,
     InvalidResponse,
@@ -40,6 +41,7 @@ impl RelayErrorCode {
             Self::MultipleBrowserSessions => "multiple_browser_sessions",
             Self::ApprovalRejected => "approval_rejected",
             Self::ApprovalTimeout => "approval_timeout",
+            Self::ApprovalUiUnavailable => "approval_ui_unavailable",
             Self::ProtocolVersionMismatch => "protocol_version_mismatch",
             Self::ConnectionLost => "connection_lost",
             Self::InvalidResponse => "invalid_response",
@@ -50,6 +52,7 @@ impl RelayErrorCode {
         match value {
             "approval_rejected" => Self::ApprovalRejected,
             "approval_timeout" => Self::ApprovalTimeout,
+            "approval_ui_unavailable" => Self::ApprovalUiUnavailable,
             "protocol_version_mismatch" => Self::ProtocolVersionMismatch,
             "multiple_browser_sessions" => Self::MultipleBrowserSessions,
             "chrome_not_connected" => Self::ChromeNotConnected,

@@ -37,6 +37,23 @@ import {
   shouldOfferBrowserTools,
   summarizePartialAgentTurn,
 } from './agent/loop.js'
+import { createNativeBridge } from './native/bridge.js'
+
+const approvalSurfaces = new Set()
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'verboo-approval-surface') return
+  approvalSurfaces.add(port)
+  port.onDisconnect.addListener(() => approvalSurfaces.delete(port))
+})
+
+const nativeBridge = createNativeBridge({
+  executeWithApproval,
+  contextFactory: () => makeExecutionContext(undefined, undefined),
+  approvalUiFactory: () => makeApprovalUi(undefined, new AbortController().signal),
+  isApprovalUiAvailable: () => approvalSurfaces.size > 0,
+})
+nativeBridge.registerStartup()
+nativeBridge.connect()
 
 // ── Open side panel on toolbar click ──────────────────────────────
 chrome.action.onClicked.addListener(async (tab) => {

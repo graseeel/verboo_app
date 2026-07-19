@@ -26,6 +26,7 @@
   "permissions": [
     "activeTab",
     "identity",
+    "nativeMessaging",
     "sidePanel",
     "storage",
     "scripting",

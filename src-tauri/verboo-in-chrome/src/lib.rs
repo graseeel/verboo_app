@@ -4,6 +4,7 @@ pub mod error;
 pub mod framing;
 pub mod local_transport;
 pub mod mcp_server;
+pub mod native_host;
 pub mod protocol;
 
 use error::{BridgeError, Result};
@@ -27,7 +28,9 @@ pub async fn run_mcp() -> Result<()> {
 }
 
 pub async fn run_native_host(_extension_origin: String) -> Result<()> {
-    Err(BridgeError::ModeUnavailable)
+    native_host::run(_extension_origin)
+        .await
+        .map_err(|error| BridgeError::NativeHost(error.to_string()))
 }
 
 pub fn run_ping() -> Result<()> {
