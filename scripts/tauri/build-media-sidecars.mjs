@@ -254,12 +254,13 @@ async function sourceRoot(name, source, sourceDirectory) {
 
   const temporary = await mkdtemp(path.join(tmpdir(), `verboo-${name}-extract-`))
   try {
-    // MSYS2 tar treats "D:\..." as a remote host; --force-local keeps
-    // drive-letter paths local on Windows.
-    const tarArgs = process.platform === 'win32'
-      ? ['--force-local', '-xf', archive, '-C', temporary]
-      : ['-xf', archive, '-C', temporary]
-    inheritedCommand('tar', tarArgs)
+    // On Windows the MSYS2 GNU tar chokes on drive-letter paths (with and
+    // without --force-local); the System32 bsdtar handles them natively and
+    // reads .tar.gz/.tar.xz alike.
+    const tarBinary = process.platform === 'win32'
+      ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe')
+      : 'tar'
+    inheritedCommand(tarBinary, ['-xf', archive, '-C', temporary])
     const entries = await readdir(temporary, { withFileTypes: true })
     const directories = entries.filter((entry) => entry.isDirectory())
     if (directories.length !== 1) {
@@ -432,6 +433,9 @@ async function buildWhisper(source, target, staging) {
     '-DWHISPER_BUILD_SERVER=OFF',
     ...whisperCmakeArguments(target),
     ...cmakePlatformArgs(target),
+    // ggml defaults to -march=native-style host detection; on the arm64
+    // runner cross-building x86_64 that emits ARM flags into an x86 build.
+    '-DGGML_NATIVE=OFF',
   ], { env: buildEnvironment(target) })
   inheritedCommand('cmake', ['--build', build, '--target', 'whisper-cli', '--parallel', jobs()], {
     env: buildEnvironment(target),
