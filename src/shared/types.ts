@@ -442,6 +442,23 @@ export type VisionFallbackConsent = 'ask' | 'always' | 'never'
 
 export type VideoFallbackConsent = 'ask' | 'always' | 'never'
 
+export type VideoUnderstandingRoute =
+  | 'nativeOriginal'
+  | 'nativeSdrProxy'
+  | 'sampledFramesWithTranscript'
+
+export type VideoComponentState = {
+  asrModel: 'absent' | 'ready'
+  bytes?: number
+}
+
+export type VideoTranscriberProgress = {
+  state: 'downloading' | 'ready' | 'error'
+  bytesDownloaded: number
+  totalBytes: number
+  error?: string
+}
+
 /// State returned by `getVisionFallbackState` for Zelda's settings UI.
 export type VisionFallbackState = {
   consent: VisionFallbackConsent

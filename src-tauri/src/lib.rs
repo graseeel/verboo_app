@@ -1568,6 +1568,75 @@ async fn plugin_icon(
 }
 
 // ════════════════════════════════════════════════════════════════════
+// Video understanding components
+// ════════════════════════════════════════════════════════════════════
+
+#[tauri::command]
+async fn get_video_component_state(
+    store: tauri::State<'_, services::video::transcribe::VideoTranscriberStore>,
+) -> Result<services::video::transcribe::VideoComponentState, String> {
+    store.inner().clone().state().await
+}
+
+#[tauri::command]
+async fn download_video_transcriber(
+    app: tauri::AppHandle,
+    store: tauri::State<'_, services::video::transcribe::VideoTranscriberStore>,
+) -> Result<(), String> {
+    use services::video::transcribe::{VideoTranscriberProgress, WHISPER_BASE_BYTES};
+
+    let app_for_progress = app.clone();
+    let store = store.inner().clone();
+    let _ = app.emit(
+        "video-transcriber-progress",
+        VideoTranscriberProgress {
+            state: "downloading",
+            bytes_downloaded: 0,
+            total_bytes: WHISPER_BASE_BYTES,
+            error: None,
+        },
+    );
+    match store
+        .download(move |progress| {
+            let _ = app_for_progress.emit("video-transcriber-progress", progress);
+        })
+        .await
+    {
+        Ok(()) => {
+            let _ = app.emit(
+                "video-transcriber-progress",
+                VideoTranscriberProgress {
+                    state: "ready",
+                    bytes_downloaded: WHISPER_BASE_BYTES,
+                    total_bytes: WHISPER_BASE_BYTES,
+                    error: None,
+                },
+            );
+            Ok(())
+        }
+        Err(error) => {
+            let _ = app.emit(
+                "video-transcriber-progress",
+                VideoTranscriberProgress {
+                    state: "error",
+                    bytes_downloaded: 0,
+                    total_bytes: WHISPER_BASE_BYTES,
+                    error: Some(error.clone()),
+                },
+            );
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+async fn remove_video_transcriber(
+    store: tauri::State<'_, services::video::transcribe::VideoTranscriberStore>,
+) -> Result<(), String> {
+    store.inner().clone().remove().await
+}
+
+// ════════════════════════════════════════════════════════════════════
 // App entry point
 // ════════════════════════════════════════════════════════════════════
 
@@ -1635,6 +1704,9 @@ pub fn run() {
             );
             // ModelService — fetches models from Verboo Router API with disk cache
             app.manage(ModelService::new(app_data_dir.clone()));
+            app.manage(services::video::transcribe::VideoTranscriberStore::new(
+                app_data_dir.clone(),
+            ));
             // TurnService — spawns `verboo` CLI for agent turns with streaming
             app.manage(TurnService::new(std::sync::Arc::new(CredentialsStore::new())).with_settings(std::sync::Arc::new(settings_store_for_turn)).with_app_data_dir(app_data_dir.clone()));
             // ResearchSubagentRunner — spawns read-only CLI turns for research
@@ -1828,6 +1900,10 @@ pub fn run() {
             // Vision fallback (FASE 1)
             get_vision_fallback_state,
             set_vision_fallback_consent,
+            // Video understanding components
+            get_video_component_state,
+            download_video_transcriber,
+            remove_video_transcriber,
             // Menu bar
             update_menu_bar,
             force_idle_menu_bar,

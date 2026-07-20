@@ -65,8 +65,14 @@ import { UpdateBanner } from './components/UpdateBanner'
 import { AccessSelector } from './features/access/AccessSelector'
 import { PermissionApprovalPanel, type PendingPermissionPrompt } from './features/permission/PermissionApprovalPanel'
 import { VisionFallbackModal } from './features/vision/VisionFallbackModal'
+import {
+  DEFAULT_VIDEO_FALLBACK_CONSENT,
+  shouldBlockVideoBeforeCli,
+  VideoFallbackModal,
+  type VideoFallbackResponse,
+} from './features/video/VideoFallbackModal'
 import { SkillApprovalPanel } from './features/skills/SkillApprovalPanel'
-import type { ExtractionStatus, ModelReasoning, VisionFallbackConsent, VisionFallbackState } from '../shared/types'
+import type { ExtractionStatus, ModelReasoning, VideoUnderstandingRoute, VisionFallbackConsent, VisionFallbackState } from '../shared/types'
 import { recognizeImage } from './features/ocr/ocrService'
 import { Composer } from './features/composer/Composer'
 import { estimateTotalContextTokens } from './features/context/ContextPanel'
@@ -149,7 +155,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
     autoDownload: false,
   },
   visionFallbackConsent: 'ask',
-  videoFallbackConsent: 'ask',
+  videoFallbackConsent: DEFAULT_VIDEO_FALLBACK_CONSENT,
   trustedSkills: [],
   avatar: undefined,
   includeVerbooCoAuthor: false,
@@ -356,6 +362,9 @@ export function App() {
   // fn is called by the modal with the user's choice; awaiting code continues.
   const [visionFallbackState, setVisionFallbackState] = useState<VisionFallbackState | undefined>()
   const visionFallbackResolveRef = useRef<(value: { allowOnce: boolean } | { persist: VisionFallbackConsent }) => void>(undefined)
+
+  const [videoFallbackRoute, setVideoFallbackRoute] = useState<VideoUnderstandingRoute | undefined>()
+  const videoFallbackResolveRef = useRef<(value: VideoFallbackResponse) => void>(undefined)
 
   // Skill approval — deferred promise pattern matching vision fallback.
   // Set when sendMessage encounters unapproved project-root skills.
@@ -1932,6 +1941,30 @@ export function App() {
         // 'allowOnce' → proceed with images attached (existing behavior).
       }
     }
+
+    // ── Video fallback consent check ──────────────────────────
+    // The current truthful route sends sampled frames and a transcript made
+    // locally from the audio. It never sends the original video file.
+    const route: VideoUnderstandingRoute = 'sampledFramesWithTranscript'
+    const videoSendBlocked = await shouldBlockVideoBeforeCli(attachedFiles, {
+      consent: userSettings.videoFallbackConsent,
+      requestChoice: async () => {
+        const choice = await new Promise<VideoFallbackResponse>(resolve => {
+          videoFallbackResolveRef.current = resolve
+          setVideoFallbackRoute(route)
+        })
+        setVideoFallbackRoute(undefined)
+        videoFallbackResolveRef.current = undefined
+        return choice
+      },
+      persistConsent: async videoFallbackConsent => {
+        await updateUserSettings({ videoFallbackConsent })
+      },
+      onConsentUpdated: () => toast(t('videoConsent.updated')),
+      onDenied: () => toast(t('videoConsent.denied'), 'error'),
+      onPipelinePending: () => toast(t('videoConsent.pipelinePending')),
+    })
+    if (videoSendBlocked) return
 
     // ── OCR race gate ────────────────────────────────────────
     // Wait for pending OCR to finish (up to 15s) so images already in
@@ -4341,6 +4374,14 @@ export function App() {
               state={visionFallbackState}
               onRespond={choice => {
                 visionFallbackResolveRef.current?.(choice)
+              }}
+            />
+          )}
+          {videoFallbackRoute && videoFallbackResolveRef.current && (
+            <VideoFallbackModal
+              route={videoFallbackRoute}
+              onRespond={choice => {
+                videoFallbackResolveRef.current?.(choice)
               }}
             />
           )}

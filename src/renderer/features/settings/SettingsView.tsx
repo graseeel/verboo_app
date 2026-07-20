@@ -42,6 +42,7 @@ import type {
 import { ProjectInstructionsEditor } from './ProjectInstructionsEditor'
 import { CustomCommandsManager } from './CustomCommandsManager'
 import { ChromeIntegrationSettings } from './ChromeIntegrationSettings'
+import { VideoUnderstandingSettings } from './VideoUnderstandingSettings'
 import { LanguageSelector } from '../language/LanguageSelector'
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss'
 import { useToast } from '../../components/Toast'
@@ -317,6 +318,13 @@ export function SettingsView({
                 />
               </div>
             </section>
+
+            <VideoUnderstandingSettings
+              consent={userSettings.videoFallbackConsent}
+              onConsentChange={videoFallbackConsent => {
+                void onUserSettingsChange({ videoFallbackConsent })
+              }}
+            />
 
             <section className="settings-panel">
               <div className="settings-row">

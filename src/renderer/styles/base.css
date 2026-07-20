@@ -620,3 +620,55 @@ input[type="checkbox"]:disabled {
 .t-spin {
   animation: subagent-spin 1.1s linear infinite;
 }
+
+.video-fallback-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.video-fallback-modal {
+  width: min(520px, 100%);
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-elevated);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 28%);
+}
+
+.video-fallback-heading,
+.video-fallback-actions,
+.video-download-confirmation {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.video-fallback-actions,
+.video-download-confirmation {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.video-fallback-note,
+.video-artifact-note {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.video-fallback-never {
+  color: var(--danger);
+}
+
+.video-understanding-settings progress {
+  width: 100%;
+}
+
+.video-model-row > button {
+  margin-left: auto;
+}

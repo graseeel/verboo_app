@@ -44,6 +44,8 @@ import type {
   TerminalDataEvent,
   UpdateSnapshot,
   UserSettings,
+  VideoComponentState,
+  VideoTranscriberProgress,
   VisionFallbackConsent,
   VisionFallbackState,
   WorkspaceBranchInfo,
@@ -169,6 +171,16 @@ const api = {
   // Sets consent (always/ask/never). Zelda's UI calls this on toggle.
   setVisionFallbackConsent: (consent: VisionFallbackConsent) =>
     invoke<UserSettings>('set_vision_fallback_consent', { consent }),
+
+  // ── Video understanding ─────────────────────────────────────
+  getVideoComponentState: () =>
+    invoke<VideoComponentState>('get_video_component_state'),
+  downloadVideoTranscriber: () =>
+    invoke<void>('download_video_transcriber'),
+  removeVideoTranscriber: () =>
+    invoke<void>('remove_video_transcriber'),
+  onVideoTranscriberProgress: (handler: (progress: VideoTranscriberProgress) => void) =>
+    onEvent<VideoTranscriberProgress>('video-transcriber-progress', handler),
 
   // ── Menu bar ────────────────────────────────────────────────
   updateMenuBar: (state: Partial<MenuBarState>) =>
