@@ -72,9 +72,10 @@ import {
   type VideoFallbackResponse,
 } from './features/video/VideoFallbackModal'
 import { SkillApprovalPanel } from './features/skills/SkillApprovalPanel'
-import type { ExtractionStatus, ModelReasoning, VideoUnderstandingRoute, VisionFallbackConsent, VisionFallbackState } from '../shared/types'
+import type { ExtractionStatus, ModelReasoning, VideoProgress, VideoUnderstandingRoute, VisionFallbackConsent, VisionFallbackState } from '../shared/types'
 import { recognizeImage } from './features/ocr/ocrService'
 import { createVideoOcrCoordinator } from './features/video/VideoOcrCoordinator'
+import { applyVideoProgress, clearVideoProgress } from './features/video/videoProgressState'
 import { Composer } from './features/composer/Composer'
 import { estimateTotalContextTokens } from './features/context/ContextPanel'
 import { TokenRateMeter } from './features/context/TokenRateMeter'
@@ -394,6 +395,10 @@ export function App() {
   )
   const [goal, setGoal] = useState<GoalState | undefined>()
   const [imageReadingTurnId, setImageReadingTurnId] = useState<string | undefined>()
+  // Live video-analysis progress per turn. Explicit upsert keyed by turnId
+  // (never routed through appendActivityItem, whose dedup is not an upsert
+  // contract). Entries are deleted on done/error/cancel so the row vanishes.
+  const [videoProgressByTurn, setVideoProgressByTurn] = useState<Record<string, VideoProgress>>({})
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(initialSidebarPreference.current.mode)
   // Transient peek: only meaningful when sidebarMode === 'hidden'. The rail
   // hit-area (rendered in App) calls setSidebarPeek(true) on hover/focus;
@@ -1479,6 +1484,12 @@ export function App() {
       return
     }
 
+    if (event.type === 'video-progress') {
+      const incoming = event.videoProgress
+      setVideoProgressByTurn(prev => applyVideoProgress(prev, event.turnId, incoming))
+      return
+    }
+
     if (event.type === 'json') {
       let conversationId = turnConversationIds.current[event.turnId]
       // Always signal image-reading UI when a kind=image activity arrives,
@@ -1603,6 +1614,7 @@ export function App() {
 
     if (event.type === 'error') {
       const conversationId = turnConversationIds.current[event.turnId]
+      setVideoProgressByTurn(prev => clearVideoProgress(prev, event.turnId))
       const failure = event.payload
       if (conversationId && failure?.sessionId) {
         goalSessionId.current = failure.sessionId
@@ -1822,6 +1834,7 @@ export function App() {
       setThinkingSnippets([])
       setCompactingTurnId(current => (current === event.turnId ? undefined : current))
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
+      setVideoProgressByTurn(prev => clearVideoProgress(prev, event.turnId))
       flashPet(event.exitCode === 0 ? 'success' : 'error')
       // Fire OS notification when the turn completed in a background
       // conversation (not the active one) or the window is not focused.
@@ -4235,6 +4248,8 @@ export function App() {
                 compactingTurnId={compactingTurnId}
                 compactedTurnIds={compactedTurnIds}
                 imageReadingTurnId={imageReadingTurnId}
+                videoProgressByTurn={videoProgressByTurn}
+                onCancelVideo={() => { void window.verboo.interrupt(activeConversationId) }}
                 onEditSent={editSentMessage}
                 onUserExpand={handleUserExpand}
               />

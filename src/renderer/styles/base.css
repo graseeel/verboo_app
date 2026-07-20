@@ -672,3 +672,44 @@ input[type="checkbox"]:disabled {
 .video-model-row > button {
   margin-left: auto;
 }
+
+/* ── Video processing row (transient, in normal transcript flow) ── */
+.video-processing-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  margin: 2px 0;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-secondary, #8a8f98);
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+.video-processing-spinner {
+  animation: marker-spin 1s linear infinite;
+  flex-shrink: 0;
+}
+.video-processing-label {
+  white-space: nowrap;
+}
+.video-processing-cancel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0.75;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.video-processing-cancel:hover:not(:disabled) {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+.video-processing-cancel:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

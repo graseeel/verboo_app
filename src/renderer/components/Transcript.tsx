@@ -1,6 +1,7 @@
 import { Check, CheckCircle2, ChevronDown, ChevronRight, Clipboard, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { TranscriptItem, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
+import type { TranscriptItem, VideoProgress, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
+import { VideoProcessingRow } from '../features/video/VideoProcessingRow'
 import { MarkdownMessage } from '../features/transcript/MarkdownMessage'
 import { StepFlow } from '../features/transcript/StepFlow'
 import { ThinkingIcon } from '../features/transcript/TranscriptIcons'
@@ -24,12 +25,18 @@ type TranscriptProps = {
    *  — otherwise scrollToLatest/forceWorkspaceToBottom fire after the
    *  restore and override the user's viewport position. */
   onUserExpand?: () => void
+  /** Live video-analysis progress keyed by turnId. A turn with an entry
+   *  shows one compact transient row; removal deletes the row entirely. */
+  videoProgressByTurn?: Record<string, VideoProgress>
+  /** Cancels the active video analysis via the same conversation interrupt
+   *  the composer stop button uses. */
+  onCancelVideo?: () => void
 }
 
 const MAX_ACTIVITY_DETAIL_LINES = 8
 const MAX_SUMMARY_DETAIL_LINES = 3
 
-export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, compactedTurnIds, imageReadingTurnId, conversationId, onEditSent, onUserExpand }: TranscriptProps) {
+export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, compactedTurnIds, imageReadingTurnId, conversationId, onEditSent, onUserExpand, videoProgressByTurn, onCancelVideo }: TranscriptProps) {
   // `items` is a new array reference only when the conversation actually changes,
   // so this recomputes on real content changes but is skipped when the parent
   // re-renders for unrelated reasons (context-usage ticks, subagent updates…).
@@ -51,6 +58,8 @@ export const Transcript = memo(function Transcript({ items, onOpenReview, review
               compacting={compactingTurnId === entry.turnId}
               compacted={compactedTurnIds?.has(entry.turnId) ?? false}
               readingImage={imageReadingTurnId === entry.turnId}
+              videoProgress={videoProgressByTurn?.[entry.turnId]}
+              onCancelVideo={onCancelVideo}
               onOpenReview={onOpenReview}
               reviewMetadata={reviewMetadata}
               onUserExpand={handleUserExpand}
@@ -92,13 +101,15 @@ function ThinkingRotator({ snippets }: { snippets: string[] }) {
   )
 }
 
-function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, readingImage, onOpenReview, reviewMetadata, onUserExpand }: {
+function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, readingImage, videoProgress, onCancelVideo, onOpenReview, reviewMetadata, onUserExpand }: {
   entry: Extract<TranscriptEntry, { kind: 'assistant-turn' }>
   thinking: boolean
   thinkingSnippets?: string[]
   compacting: boolean
   compacted: boolean
   readingImage: boolean
+  videoProgress?: VideoProgress
+  onCancelVideo?: () => void
   onOpenReview?: TranscriptProps['onOpenReview']
   reviewMetadata?: WorkspaceReviewMetadata
   onUserExpand?: () => void
@@ -173,6 +184,10 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
             <span>{workedForMatch ? t('transcript.workedFor', { elapsed: workedForMatch[1] }) : summary?.text ?? t('transcript.worked')}</span>
           </span>
         )
+      )}
+
+      {videoProgress && (
+        <VideoProcessingRow progress={videoProgress} onCancel={() => onCancelVideo?.()} />
       )}
 
       {thinking && !hasText && !(readingImage && hasVisionRelay) && (
