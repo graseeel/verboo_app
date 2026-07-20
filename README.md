@@ -10,10 +10,10 @@ Official CLI upstream: [verbeux-ai/code](https://github.com/verbeux-ai/code).
 
 | | |
 |:---:|:---:|
-| ![Tela inicial do Verboo Code Desktop](docs/screenshots/welcome.png) | ![Composer do Verboo Code com prompt digitado](docs/screenshots/composer.png) |
-| **Tela inicial**<br>Projetos recentes e início rápido | **Composer**<br>Prompt digitado pronto para envio |
-| ![Resposta em markdown com painel de revisão e medidor de contexto a 33%](docs/screenshots/chat-response.png) | ![Painel de composição do contexto aberto com breakdown de mensagens, anexos e habilidades](docs/screenshots/context-panel.png) |
-| **Resposta em markdown**<br>Painel de revisão e medidor de contexto (33%) | **Composição do contexto**<br>Breakdown de mensagens, anexos, habilidades e fila |
+| ![Verboo Code welcome screen with the prompt "Em que devemos trabalhar agora?"](docs/screenshots/welcome.png) | ![The agent streaming a full design plan with color tokens, typography choices, and executed commands](docs/screenshots/agent-working.png) |
+| **Welcome** · Tela inicial<br>Start a chat or open a project in one step | **Agent at work** · Modelo trabalhando<br>Design plan, color tokens, and live command steps |
+| ![The Verboo mascot pet sitting in the sidebar while the agent keeps working](docs/screenshots/pet.png) | ![Video understanding consent modal over a blurred workspace, disclosing exactly what is sent](docs/screenshots/video-consent.png) |
+| **Pet** · Mascote invocável<br>Company in the sidebar while the agent works | **Video understanding** · Compreensão de vídeo<br>Explicit consent disclosing the exact route before analysis |
 
 ## Platform Support
 
