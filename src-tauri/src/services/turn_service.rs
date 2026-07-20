@@ -648,8 +648,9 @@ impl TurnService {
 
         emit_stage(&job_id, VideoProgressStage::Analyzing);
 
-        // OCR: renderer batch through the existing Tesseract worker.
-        let ocr: ChannelResult<Vec<crate::services::video::job::VideoOcrText>> = (|| {
+        // OCR and helper vision are independent channels; run them in
+        // parallel so wall-clock cost is max(ocr, vision), not the sum.
+        let ocr_channel = || -> ChannelResult<Vec<crate::services::video::job::VideoOcrText>> {
             if prepared.ocr_frames.is_empty() {
                 return ChannelResult::Absent;
             }
@@ -680,7 +681,11 @@ impl TurnService {
                 return ChannelResult::Failed("could not reach the renderer".to_string());
             }
             let mut receiver = receiver;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+            // Scale the wait to the batch size so a broken OCR channel degrades
+                // in seconds, not minutes: ~10s fixed + 3s per frame, capped at 180s.
+                let ocr_wait_secs = (10 + 3 * prepared.ocr_frames.len() as u64).min(180);
+                let deadline =
+                    std::time::Instant::now() + std::time::Duration::from_secs(ocr_wait_secs);
             loop {
                 if job.is_cancelled() {
                     waiters.release(&job_id);
@@ -701,26 +706,31 @@ impl TurnService {
                     }
                 }
             }
-        })();
+        };
 
         // Helper vision over labeled contact sheets — one call per sheet,
-        // never per frame, reusing the image-fallback helper policy.
-        let vision: ChannelResult<Vec<crate::services::video::analyze::VisionEntry>> = (|| {
+        // never per frame, reusing the image-fallback helper policy. Returns
+        // the channel plus how many sheets failed (warned after the join).
+        let vision_channel = || -> (
+            ChannelResult<Vec<crate::services::video::analyze::VisionEntry>>,
+            usize,
+        ) {
             if prepared.contact_sheets.is_empty() {
-                return ChannelResult::Absent;
+                return (ChannelResult::Absent, 0);
             }
             let model_service =
                 crate::services::model_service::ModelService::new(app_data_dir.clone());
             let token = crate::services::auth_token::resolve_token(credentials);
             let discovery = match model_service.list_models(token.as_deref(), false) {
                 Ok(discovery) => discovery,
-                Err(error) => return ChannelResult::Failed(error),
+                Err(error) => return (ChannelResult::Failed(error), 0),
             };
             let Some(helper) =
                 crate::services::vision_fallback_service::resolve_vision_helper(&discovery)
             else {
-                return ChannelResult::Failed(
-                    "no vision-capable helper model in the plan".to_string(),
+                return (
+                    ChannelResult::Failed("no vision-capable helper model in the plan".to_string()),
+                    0,
                 );
             };
             let fallback = crate::services::vision_fallback_service::resolve_fallback_helper(
@@ -730,7 +740,7 @@ impl TurnService {
             let mut sheet_failures = 0usize;
             for sheet in &prepared.contact_sheets {
                 if job.is_cancelled() {
-                    return ChannelResult::Failed("cancelled".to_string());
+                    return (ChannelResult::Failed("cancelled".to_string()), sheet_failures);
                 }
                 let prompt = sheet_prompt(&sheet.timestamps_ms);
                 let response =
@@ -762,18 +772,31 @@ impl TurnService {
                 }
             }
             if entries.is_empty() {
-                return ChannelResult::Failed(format!(
-                    "vision analysis failed on all {sheet_failures} contact sheets"
-                ));
+                return (
+                    ChannelResult::Failed(format!(
+                        "vision analysis failed on all {sheet_failures} contact sheets"
+                    )),
+                    sheet_failures,
+                );
             }
-            if sheet_failures > 0 {
-                warnings.push(VideoWarning::new(
-                    "vision_sheets_partial",
-                    format!("{sheet_failures} contact sheet(s) could not be analyzed"),
-                ));
-            }
-            ChannelResult::Ready(entries)
-        })();
+            (ChannelResult::Ready(entries), sheet_failures)
+        };
+
+        let (ocr, (vision, failed_sheets)) = std::thread::scope(|scope| {
+            let vision_handle = scope.spawn(vision_channel);
+            let ocr = ocr_channel();
+            let vision = vision_handle.join().unwrap_or((
+                ChannelResult::Failed("vision analysis thread panicked".to_string()),
+                0,
+            ));
+            (ocr, vision)
+        });
+        if failed_sheets > 0 && matches!(vision, ChannelResult::Ready(_)) {
+            warnings.push(VideoWarning::new(
+                "vision_sheets_partial",
+                format!("{failed_sheets} contact sheet(s) could not be analyzed"),
+            ));
+        }
 
         if job.is_cancelled() {
             return false;
