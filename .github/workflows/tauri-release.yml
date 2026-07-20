@@ -154,6 +154,7 @@ jobs:
             automake
             libtool
             make
+            gettext-devel
 
       - name: Install macOS media build toolchain
         if: runner.os == 'macOS'
