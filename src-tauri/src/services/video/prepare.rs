@@ -54,8 +54,8 @@ pub struct PreparedVideo {
 /// Resolves a Tauri-packaged media sidecar next to the app executable without
 /// consulting PATH. Mirrors the ffprobe resolution used by the probe module.
 pub fn bundled_media_tool(base: &str) -> Result<PathBuf, String> {
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("resolve app executable: {error}"))?;
+    let executable =
+        std::env::current_exe().map_err(|error| format!("resolve app executable: {error}"))?;
     let suffix = if cfg!(windows) { ".exe" } else { "" };
     let target = host_target();
     let mut candidates = Vec::new();
@@ -166,7 +166,9 @@ pub(crate) fn plan_uniform_timestamps(duration_ms: u64, maximum: usize) -> Vec<u
         return vec![0];
     }
     let adaptive = (duration_ms / TARGET_SAMPLE_INTERVAL_MS) as usize + 1;
-    let count = adaptive.clamp(MIN_UNIFORM_FRAMES.min(maximum), maximum).max(2);
+    let count = adaptive
+        .clamp(MIN_UNIFORM_FRAMES.min(maximum), maximum)
+        .max(2);
     let last = duration_ms.saturating_sub(1);
     let mut stamps: Vec<u64> = (0..count)
         .map(|index| (last as u128 * index as u128 / (count as u128 - 1)) as u64)
@@ -176,11 +178,7 @@ pub(crate) fn plan_uniform_timestamps(duration_ms: u64, maximum: usize) -> Vec<u
 }
 
 /// Merges scene-change candidates with uniform coverage, sorted and capped.
-pub(crate) fn merge_candidates(
-    scene_ms: &[u64],
-    uniform_ms: &[u64],
-    maximum: usize,
-) -> Vec<u64> {
+pub(crate) fn merge_candidates(scene_ms: &[u64], uniform_ms: &[u64], maximum: usize) -> Vec<u64> {
     let mut merged: Vec<u64> = scene_ms.iter().chain(uniform_ms.iter()).copied().collect();
     merged.sort_unstable();
     merged.dedup();
@@ -414,18 +412,42 @@ fn format_timestamp(timestamp_ms: u64) -> String {
 // 5x7 bitmap glyphs for the timestamp label characters (digits, colon, dot).
 fn glyph(character: char) -> [u8; 7] {
     match character {
-        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
-        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
-        '3' => [0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110],
-        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
-        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
-        '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
-        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
-        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
-        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
-        ':' => [0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000],
-        '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00110, 0b00110],
+        '0' => [
+            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+        ],
+        '1' => [
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        '2' => [
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
+        ],
+        '3' => [
+            0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110,
+        ],
+        '4' => [
+            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+        ],
+        '5' => [
+            0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110,
+        ],
+        '6' => [
+            0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+        ],
+        '7' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+        ],
+        '8' => [
+            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+        ],
+        '9' => [
+            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100,
+        ],
+        ':' => [
+            0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000,
+        ],
+        '.' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00110, 0b00110,
+        ],
         _ => [0; 7],
     }
 }
@@ -487,7 +509,12 @@ fn compose_contact_sheet(
         sheet
             .copy_from(&image, offset_x, offset_y)
             .map_err(|error| format!("compose contact sheet: {error}"))?;
-        draw_label(&mut sheet, &format_timestamp(frame.timestamp_ms), cell_x + 4, cell_y + 4);
+        draw_label(
+            &mut sheet,
+            &format_timestamp(frame.timestamp_ms),
+            cell_x + 4,
+            cell_y + 4,
+        );
         timestamps.push(frame.timestamp_ms);
     }
     sheet
@@ -631,7 +658,10 @@ pub fn prepare_video(
     ocr.sort_by_key(|frame| frame.timestamp_ms);
 
     for (index, sheet_stamps) in plan_contact_sheets(
-        &kept.iter().map(|frame| frame.timestamp_ms).collect::<Vec<_>>(),
+        &kept
+            .iter()
+            .map(|frame| frame.timestamp_ms)
+            .collect::<Vec<_>>(),
     )
     .iter()
     .enumerate()

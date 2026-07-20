@@ -486,8 +486,7 @@ impl TurnService {
             .cli_media_capabilities
             .clone()
             .unwrap_or_else(bundled_cli_0_13_0_media_capabilities);
-        let toolchain =
-            crate::services::video::router::detected_media_toolchain_capabilities();
+        let toolchain = crate::services::video::router::detected_media_toolchain_capabilities();
         let route = choose_video_route(&model_caps, &cli_caps, &toolchain, &metadata);
         let route_label = match &route {
             VideoRoute::NativeOriginal => "native_original",
@@ -508,10 +507,9 @@ impl TurnService {
             return;
         }
 
-        let asr_model_path = crate::services::video::transcribe::VideoTranscriberStore::new(
-            &app_data_dir,
-        )
-        .model_path();
+        let asr_model_path =
+            crate::services::video::transcribe::VideoTranscriberStore::new(&app_data_dir)
+                .model_path();
         let asr_installed = asr_model_path
             .metadata()
             .map(|m| m.len() == crate::services::video::transcribe::WHISPER_BASE_BYTES)
@@ -625,9 +623,9 @@ impl TurnService {
         let speech: ChannelResult<crate::services::video::transcribe::AudioTranscript> =
             match (&prepared.audio_wav, asr_installed) {
                 (None, _) => ChannelResult::Absent,
-                (Some(_), false) => ChannelResult::Failed(
-                    "local transcription model is not installed".to_string(),
-                ),
+                (Some(_), false) => {
+                    ChannelResult::Failed("local transcription model is not installed".to_string())
+                }
                 (Some(wav), true) => {
                     match crate::services::video::transcribe::bundled_whisper_path().and_then(
                         |whisper| {
@@ -816,8 +814,7 @@ impl TurnService {
         }) {
             Ok(context) => {
                 if let (Some(cache), Some(key)) = (cache.as_ref(), cache_key.as_ref()) {
-                    let entry =
-                        VideoCacheEntry::new(context.clone(), transcript_text, ocr_texts);
+                    let entry = VideoCacheEntry::new(context.clone(), transcript_text, ocr_texts);
                     let _ = cache.write(key, &entry, &[]);
                 }
                 if let Some(att) = request

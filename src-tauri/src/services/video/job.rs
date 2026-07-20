@@ -31,17 +31,19 @@ impl ManagedVideoChild {
     }
 
     pub(crate) fn with_child<T>(&self, operation: impl FnOnce(&mut Child) -> T) -> Option<T> {
-        self.child.lock().ok().map(|mut child| operation(&mut child))
+        self.child
+            .lock()
+            .ok()
+            .map(|mut child| operation(&mut child))
     }
 }
 
 impl VideoProcess for ManagedVideoChild {
     fn interrupt(&self) {
-        let _ = self
-            .child
-            .lock()
-            .ok()
-            .and_then(|mut child| crate::services::child_signal::interrupt_child(&mut child).ok());
+        let _ =
+            self.child.lock().ok().and_then(|mut child| {
+                crate::services::child_signal::interrupt_child(&mut child).ok()
+            });
     }
 }
 
@@ -85,9 +87,12 @@ impl VideoJobRegistry {
 
         let id = Uuid::new_v4().to_string();
         let directory = self.root.join(&id);
-        fs::create_dir(&directory).map_err(|error| format!("create video job directory: {error}"))?;
+        fs::create_dir(&directory)
+            .map_err(|error| format!("create video job directory: {error}"))?;
         let cancelled = Arc::new(AtomicBool::new(false));
-        state.jobs_by_conversation.insert(conversation_id.clone(), id.clone());
+        state
+            .jobs_by_conversation
+            .insert(conversation_id.clone(), id.clone());
         state.jobs.insert(
             id.clone(),
             ActiveJob {

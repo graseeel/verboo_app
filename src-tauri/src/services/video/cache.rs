@@ -157,9 +157,9 @@ impl VideoCache {
         }
         validate_entry(&entry)?;
 
-        let sheets_temp = self
-            .root
-            .join(format!(".{}-sheets-{}.tmp", key.as_str(), Uuid::new_v4()));
+        let sheets_temp =
+            self.root
+                .join(format!(".{}-sheets-{}.tmp", key.as_str(), Uuid::new_v4()));
         if !source_sheets.is_empty() {
             fs::create_dir(&sheets_temp)
                 .map_err(|error| format!("create temporary cache sheets: {error}"))?;
@@ -216,7 +216,9 @@ impl VideoCache {
 
     pub fn prune_stale(&self) -> Result<(), String> {
         let now = SystemTime::now();
-        for entry in fs::read_dir(&self.root).map_err(|error| format!("read video cache: {error}"))? {
+        for entry in
+            fs::read_dir(&self.root).map_err(|error| format!("read video cache: {error}"))?
+        {
             let entry = entry.map_err(|error| format!("read video cache entry: {error}"))?;
             let modified = entry
                 .metadata()
@@ -226,10 +228,16 @@ impl VideoCache {
                 continue;
             }
             let path = entry.path();
-            if entry.file_type().map_err(|error| error.to_string())?.is_dir() {
-                fs::remove_dir_all(path).map_err(|error| format!("prune video cache directory: {error}"))?;
+            if entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_dir()
+            {
+                fs::remove_dir_all(path)
+                    .map_err(|error| format!("prune video cache directory: {error}"))?;
             } else {
-                fs::remove_file(path).map_err(|error| format!("prune video cache file: {error}"))?;
+                fs::remove_file(path)
+                    .map_err(|error| format!("prune video cache file: {error}"))?;
             }
         }
         Ok(())
@@ -243,14 +251,17 @@ impl VideoCache {
         remove_if_present(&self.entry_path(key))?;
         let sheets = self.sheet_dir(key);
         if sheets.exists() {
-            fs::remove_dir_all(sheets).map_err(|error| format!("evict cached contact sheets: {error}"))?;
+            fs::remove_dir_all(sheets)
+                .map_err(|error| format!("evict cached contact sheets: {error}"))?;
         }
         Ok(())
     }
 }
 
 fn validate_entry(entry: &VideoCacheEntry) -> Result<(), String> {
-    if entry.description.len() + entry.transcript.len() + entry.ocr.iter().map(String::len).sum::<usize>()
+    if entry.description.len()
+        + entry.transcript.len()
+        + entry.ocr.iter().map(String::len).sum::<usize>()
         > MAX_CACHE_TEXT_BYTES
     {
         return Err("video cache text exceeds limit".to_string());
@@ -274,7 +285,9 @@ fn is_safe_file_name(value: &str) -> bool {
         && value.len() <= 64
         && !value.contains(['/', '\\'])
         && !value.starts_with('.')
-        && value.chars().all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
 }
 
 fn replace_file(temporary: &Path, destination: &Path) -> Result<(), String> {
@@ -369,8 +382,10 @@ mod tests {
         cache.write(&key, &entry, &[]).unwrap();
 
         assert_eq!(cache.read(&key), Some(entry));
-        assert!(fs::read_dir(cache.root())
+        assert!(fs::read_dir(cache.root()).unwrap().all(|entry| !entry
             .unwrap()
-            .all(|entry| !entry.unwrap().file_name().to_string_lossy().contains(".tmp")));
+            .file_name()
+            .to_string_lossy()
+            .contains(".tmp")));
     }
 }

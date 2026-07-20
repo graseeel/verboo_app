@@ -129,7 +129,9 @@ pub fn consolidate_context(input: ConsolidationInput<'_>) -> Result<String, Stri
     timeline.sort_by_key(|entry| (entry.start_ms, entry.end_ms));
     timeline.dedup_by(|current, previous| {
         overlaps(previous, current)
-            && current.description.eq_ignore_ascii_case(&previous.description)
+            && current
+                .description
+                .eq_ignore_ascii_case(&previous.description)
     });
 
     let speech_segments = input

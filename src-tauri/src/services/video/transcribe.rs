@@ -309,7 +309,11 @@ pub fn bundled_whisper_path() -> Result<PathBuf, String> {
     super::prepare::bundled_media_tool("verboo-whisper")
 }
 
-pub(crate) fn whisper_args(model: &Path, wav: &Path, output_prefix: &Path) -> Vec<std::ffi::OsString> {
+pub(crate) fn whisper_args(
+    model: &Path,
+    wav: &Path,
+    output_prefix: &Path,
+) -> Vec<std::ffi::OsString> {
     vec![
         std::ffi::OsString::from("-m"),
         model.into(),
@@ -342,8 +346,8 @@ pub fn transcribe_wav(
     let output_prefix = job.directory().join("transcript");
     super::prepare::run_media_tool(job, whisper, &whisper_args(model, wav, &output_prefix))?;
     let json_path = output_prefix.with_extension("json");
-    let data = std::fs::read(&json_path)
-        .map_err(|error| format!("read transcription output: {error}"))?;
+    let data =
+        std::fs::read(&json_path).map_err(|error| format!("read transcription output: {error}"))?;
     parse_whisper_json(&data)
 }
 
@@ -673,13 +677,9 @@ EOF
             let error = transcribe_wav(&job, &failing, &model, &wav).unwrap_err();
             assert!(error.contains("boom"));
 
-            let missing_model = transcribe_wav(
-                &job,
-                &failing,
-                Path::new("/does-not-exist/model.bin"),
-                &wav,
-            )
-            .unwrap_err();
+            let missing_model =
+                transcribe_wav(&job, &failing, Path::new("/does-not-exist/model.bin"), &wav)
+                    .unwrap_err();
             assert!(missing_model.contains("asr model"));
 
             job.cancel().unwrap();
