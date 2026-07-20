@@ -1636,6 +1636,35 @@ async fn remove_video_transcriber(
     store.inner().clone().remove().await
 }
 
+/// Streams one prepared video frame to the renderer for OCR. The webview's
+/// asset protocol does not reach Web Worker fetches, so the frame travels as
+/// raw bytes over IPC instead. Only files inside the app-private
+/// `video_jobs` tree are readable — never arbitrary paths.
+#[tauri::command]
+fn read_video_frame(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<tauri::ipc::Response, String> {
+    use tauri::Manager;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data dir: {error}"))?;
+    let allowed_root = app_data_dir
+        .join("video_jobs")
+        .canonicalize()
+        .map_err(|error| format!("resolve video jobs dir: {error}"))?;
+    let requested = std::path::Path::new(&path)
+        .canonicalize()
+        .map_err(|error| format!("resolve frame path: {error}"))?;
+    if !requested.starts_with(&allowed_root) {
+        return Err("frame path outside the video jobs directory".to_string());
+    }
+    let bytes =
+        std::fs::read(&requested).map_err(|error| format!("read frame: {error}"))?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 /// Renderer returns one OCR batch for a pending video job. Ownership is
 /// enforced by the waiter registry: only the job that registered a pending
 /// batch can be completed, exactly once.
@@ -1918,6 +1947,7 @@ pub fn run() {
             download_video_transcriber,
             remove_video_transcriber,
             complete_video_ocr_batch,
+            read_video_frame,
             // Menu bar
             update_menu_bar,
             force_idle_menu_bar,

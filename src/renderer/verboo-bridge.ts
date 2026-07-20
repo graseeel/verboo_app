@@ -184,16 +184,11 @@ const api = {
   onVideoTranscriberProgress: (handler: (progress: VideoTranscriberProgress) => void) =>
     onEvent<VideoTranscriberProgress>('video-transcriber-progress', handler),
   onVideoOcrRequest: (handler: (request: VideoOcrRequest) => void) =>
-    onEvent<VideoOcrRequest>('video:ocr-request', request =>
-      // The backend sends raw filesystem paths; the Tesseract worker can
-      // only fetch webview-loadable URLs, so convert here at the boundary.
-      handler({
-        ...request,
-        frames: request.frames.map(frame => ({
-          ...frame,
-          url: convertFileSrc(frame.url),
-        })),
-      })),
+    onEvent<VideoOcrRequest>('video:ocr-request', handler),
+  // Frame bytes travel over IPC because neither Web Workers nor main-thread
+  // fetch reliably reach the asset protocol for app-data files.
+  readVideoFrame: (path: string) =>
+    invoke<ArrayBuffer>('read_video_frame', { path }),
   completeVideoOcrBatch: (jobId: string, results: VideoOcrText[]) =>
     invoke<void>('complete_video_ocr_batch', { jobId, results }),
 
