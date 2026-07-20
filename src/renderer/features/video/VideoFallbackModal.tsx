@@ -20,7 +20,6 @@ export type VideoConsentBeforeSendOptions = {
   persistConsent: (consent: Extract<VideoFallbackConsent, 'always' | 'never'>) => Promise<void> | void
   onConsentUpdated: () => void
   onDenied: () => void
-  onPipelinePending: () => void
 }
 
 export type VideoConsentBeforeSendResult = 'blocked' | 'continue'
@@ -31,7 +30,6 @@ export async function resolveVideoConsentBeforeSend({
   persistConsent,
   onConsentUpdated,
   onDenied,
-  onPipelinePending,
 }: VideoConsentBeforeSendOptions): Promise<VideoConsentBeforeSendResult> {
   if (consent === 'never') {
     onDenied()
@@ -51,11 +49,10 @@ export async function resolveVideoConsentBeforeSend({
     }
   }
 
-  // Task 5 owns consent only. Returning blocked is the security boundary
-  // until the later media pipeline replaces the original attachment with the
-  // disclosed route's safe inputs.
-  onPipelinePending()
-  return 'blocked'
+  // Consent granted (allowOnce, persisted Always, or already Always). The
+  // backend pipeline replaces the original attachment content with the
+  // disclosed route's consolidated context before any prompt is built.
+  return 'continue'
 }
 
 export async function shouldBlockVideoBeforeCli(
@@ -63,8 +60,7 @@ export async function shouldBlockVideoBeforeCli(
   options: VideoConsentBeforeSendOptions,
 ): Promise<boolean> {
   if (!attachments.some(attachment => attachment.kind === 'video')) return false
-  await resolveVideoConsentBeforeSend(options)
-  return true
+  return (await resolveVideoConsentBeforeSend(options)) === 'blocked'
 }
 
 type VideoFallbackModalProps = {

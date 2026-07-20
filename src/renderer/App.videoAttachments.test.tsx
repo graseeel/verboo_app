@@ -81,7 +81,6 @@ describe('video consent gate at send time', () => {
     persistConsent: vi.fn(async () => {}),
     onConsentUpdated: vi.fn(),
     onDenied: vi.fn(),
-    onPipelinePending: vi.fn(),
   })
 
   it('image-only turns never trigger the video gate', async () => {
@@ -96,14 +95,13 @@ describe('video consent gate at send time', () => {
     expect(options.requestChoice).not.toHaveBeenCalled()
   })
 
-  it('a video under Ask consent goes through the modal before the CLI', async () => {
+  it('a video under Ask consent goes through the modal, then continues', async () => {
     const options = gate('ask')
 
     const blocked = await shouldBlockVideoBeforeCli([{ kind: 'video' }], options)
 
-    expect(blocked).toBe(true)
+    expect(blocked).toBe(false)
     expect(options.requestChoice).toHaveBeenCalledTimes(1)
-    expect(options.onPipelinePending).toHaveBeenCalledTimes(1)
   })
 
   it('Never consent denies without ever prompting', async () => {

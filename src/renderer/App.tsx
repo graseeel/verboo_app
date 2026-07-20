@@ -1988,7 +1988,6 @@ export function App() {
       },
       onConsentUpdated: () => toast(t('videoConsent.updated')),
       onDenied: () => toast(t('videoConsent.denied'), 'error'),
-      onPipelinePending: () => toast(t('videoConsent.pipelinePending')),
     })
     if (videoSendBlocked) return
 

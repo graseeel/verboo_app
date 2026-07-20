@@ -16,7 +16,6 @@ function createGateHarness(
   const persistConsent = vi.fn(async () => {})
   const onConsentUpdated = vi.fn()
   const onDenied = vi.fn()
-  const onPipelinePending = vi.fn()
   const sendTurn = vi.fn(async () => 'turn-1')
 
   return {
@@ -24,7 +23,6 @@ function createGateHarness(
     persistConsent,
     onConsentUpdated,
     onDenied,
-    onPipelinePending,
     sendTurn,
     async attemptSend(kind: 'video' | 'file' = 'video') {
       const blocked = await shouldBlockVideoBeforeCli([{ kind }], {
@@ -33,7 +31,6 @@ function createGateHarness(
         persistConsent,
         onConsentUpdated,
         onDenied,
-        onPipelinePending,
       })
       if (!blocked) await sendTurn()
       return blocked ? 'blocked' : 'continue'
@@ -50,26 +47,24 @@ describe('App video consent integration', () => {
     expect(DEFAULT_VIDEO_FALLBACK_CONSENT).toBe('ask')
   })
 
-  it('Ask + allow once prompts without persisting and blocks the original from the CLI', async () => {
+  it('Ask + allow once prompts without persisting and continues into the pipeline', async () => {
     const harness = createGateHarness('ask', { allowOnce: true })
 
-    expect(await harness.attemptSend()).toBe('blocked')
+    expect(await harness.attemptSend()).toBe('continue')
 
     expect(harness.requestChoice).toHaveBeenCalledTimes(1)
     expect(harness.persistConsent).not.toHaveBeenCalled()
-    expect(harness.onPipelinePending).toHaveBeenCalledTimes(1)
-    expectCliBlocked(harness)
+    expect(harness.sendTurn).toHaveBeenCalledTimes(1)
   })
 
-  it('Ask + Always persists independently, then blocks until the media pipeline exists', async () => {
+  it('Ask + Always persists independently and continues into the pipeline', async () => {
     const harness = createGateHarness('ask', { persist: 'always' })
 
-    expect(await harness.attemptSend()).toBe('blocked')
+    expect(await harness.attemptSend()).toBe('continue')
 
     expect(harness.persistConsent).toHaveBeenCalledWith('always')
     expect(harness.onConsentUpdated).toHaveBeenCalledTimes(1)
-    expect(harness.onPipelinePending).toHaveBeenCalledTimes(1)
-    expectCliBlocked(harness)
+    expect(harness.sendTurn).toHaveBeenCalledTimes(1)
   })
 
   it('Ask + Never persists denial and sends no video content to the CLI', async () => {
@@ -79,19 +74,17 @@ describe('App video consent integration', () => {
 
     expect(harness.persistConsent).toHaveBeenCalledWith('never')
     expect(harness.onDenied).toHaveBeenCalledTimes(1)
-    expect(harness.onPipelinePending).not.toHaveBeenCalled()
     expectCliBlocked(harness)
   })
 
-  it('stored Always skips the prompt but still blocks the unimplemented pipeline', async () => {
+  it('stored Always skips the prompt and continues into the pipeline', async () => {
     const harness = createGateHarness('always')
 
-    expect(await harness.attemptSend()).toBe('blocked')
+    expect(await harness.attemptSend()).toBe('continue')
 
     expect(harness.requestChoice).not.toHaveBeenCalled()
     expect(harness.persistConsent).not.toHaveBeenCalled()
-    expect(harness.onPipelinePending).toHaveBeenCalledTimes(1)
-    expectCliBlocked(harness)
+    expect(harness.sendTurn).toHaveBeenCalledTimes(1)
   })
 
   it('stored Never rejects without prompting or reaching the CLI', async () => {
@@ -102,7 +95,6 @@ describe('App video consent integration', () => {
     expect(harness.requestChoice).not.toHaveBeenCalled()
     expect(harness.persistConsent).not.toHaveBeenCalled()
     expect(harness.onDenied).toHaveBeenCalledTimes(1)
-    expect(harness.onPipelinePending).not.toHaveBeenCalled()
     expectCliBlocked(harness)
   })
 
