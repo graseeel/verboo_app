@@ -22,8 +22,10 @@ export function VideoProcessingRow({ progress, onCancel }: Props) {
   const { t } = useI18n()
   const [cancelRequested, setCancelRequested] = useState(false)
 
+  // The backend serializes absent counters as null; treat null and
+  // undefined the same so the row never renders "(null/null)".
   const units =
-    progress.completedUnits !== undefined && progress.totalUnits !== undefined
+    progress.completedUnits != null && progress.totalUnits != null
       ? ` (${progress.completedUnits}/${progress.totalUnits})`
       : ''
 

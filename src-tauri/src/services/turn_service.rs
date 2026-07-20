@@ -399,7 +399,7 @@ impl TurnService {
         credentials: &Arc<CredentialsStore>,
         app_data_dir: &Option<std::path::PathBuf>,
         video_jobs: &Option<crate::services::video::job::VideoJobRegistry>,
-    ) {
+    ) -> bool {
         use crate::models::types::{
             CliMediaCapabilities, ExtractionStatus, ModelMediaCapabilities, VideoFallbackConsent,
             VideoProgress, VideoProgressStage,
@@ -418,7 +418,7 @@ impl TurnService {
             list.iter()
                 .position(|a| a.kind == AttachmentKind::Video && a.video.is_some())
         }) else {
-            return;
+            return true;
         };
 
         let conversation_id = request.conversation_id.clone();
@@ -454,12 +454,12 @@ impl TurnService {
                 request,
                 "video analysis is disabled in Settings (consent: never)".to_string(),
             );
-            return;
+            return true;
         }
 
         let Some(app_data_dir) = app_data_dir.clone() else {
             fail_attachment(request, "app data directory unavailable".to_string());
-            return;
+            return true;
         };
 
         let (original_path, file_name, metadata) = {
@@ -504,7 +504,7 @@ impl TurnService {
                  serializer supports it yet"
                     .to_string(),
             );
-            return;
+            return true;
         }
 
         let asr_model_path =
@@ -576,19 +576,19 @@ impl TurnService {
                     "cache",
                     &[],
                 );
-                return;
+                return true;
             }
         }
 
         let Some(registry) = video_jobs.as_ref() else {
             fail_attachment(request, "video job registry unavailable".to_string());
-            return;
+            return true;
         };
         let job = match registry.start(&conversation_id) {
             Ok(job) => job,
             Err(error) => {
                 fail_attachment(request, error);
-                return;
+                return true;
             }
         };
         let job_id = job.id().to_string();
@@ -598,7 +598,7 @@ impl TurnService {
             Ok(path) => path,
             Err(error) => {
                 fail_attachment(request, error);
-                return;
+                return true;
             }
         };
         let prepared = match crate::services::video::prepare::prepare_video(
@@ -612,7 +612,7 @@ impl TurnService {
             Ok(prepared) => prepared,
             Err(error) => {
                 fail_attachment(request, error);
-                return;
+                return true;
             }
         };
         let mut warnings: Vec<VideoWarning> = prepared.warnings.clone();
@@ -643,8 +643,7 @@ impl TurnService {
                 }
             };
         if job.is_cancelled() {
-            fail_attachment(request, "analysis was cancelled".to_string());
-            return;
+            return false;
         }
 
         emit_stage(&job_id, VideoProgressStage::Analyzing);
@@ -777,8 +776,7 @@ impl TurnService {
         })();
 
         if job.is_cancelled() {
-            fail_attachment(request, "analysis was cancelled".to_string());
-            return;
+            return false;
         }
         emit_stage(&job_id, VideoProgressStage::Consolidating);
 
@@ -845,6 +843,7 @@ impl TurnService {
             Err(error) => fail_attachment(request, error),
         }
         let _ = job.finish();
+        true
     }
 
     /// One ordinary RuntimeActivity (kind `video`) rendered only inside
@@ -1009,7 +1008,7 @@ impl TurnService {
         // Video understanding runs before any prompt construction so the
         // consolidated `<video_context>` reaches build_attachment_lines like
         // any other extracted text. Runs on this background thread only.
-        Self::maybe_run_video_pipeline(
+        let video_pipeline_continues = Self::maybe_run_video_pipeline(
             &app,
             &turn_id,
             &mut request,
@@ -1018,6 +1017,26 @@ impl TurnService {
             &app_data_dir,
             &video_jobs,
         );
+        if !video_pipeline_continues {
+            // The user cancelled during media preparation: end the whole turn
+            // before any CLI is spawned, mirroring an interrupted CLI turn.
+            if let Ok(mut map) = active_by_conversation.lock() {
+                if map.get(&conversation_id) == Some(&turn_id) {
+                    map.remove(&conversation_id);
+                }
+            }
+            emit_event(
+                &app,
+                AgentEvent {
+                    event_type: EventType::Done,
+                    turn_id: Some(turn_id.clone()),
+                    conversation_id: Some(conversation_id.clone()),
+                    exit_code: Some(130),
+                    ..Default::default()
+                },
+            );
+            return;
+        }
 
         // FASE 1: vision fallback. When the selected model doesn't support
         // vision but the user attached images, spawn a secondary CLI with a
