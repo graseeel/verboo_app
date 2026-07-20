@@ -452,6 +452,25 @@ export type VideoComponentState = {
   bytes?: number
 }
 
+/// One frame the backend wants OCRed, addressed by a webview-loadable URL.
+export type VideoOcrFrame = {
+  timestampMs: number
+  url: string
+}
+
+/// Backend request to OCR up to 60 timestamped frames for one video job.
+export type VideoOcrRequest = {
+  jobId: string
+  frames: VideoOcrFrame[]
+}
+
+/// One recognized frame returned to the backend.
+export type VideoOcrText = {
+  timestampMs: number
+  text: string
+  confidence: number
+}
+
 export type VideoTranscriberProgress = {
   state: 'downloading' | 'ready' | 'error'
   bytesDownloaded: number

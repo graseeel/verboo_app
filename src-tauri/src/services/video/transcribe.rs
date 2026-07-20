@@ -263,6 +263,119 @@ fn inspect_model_state(
     })
 }
 
+// ── Local ASR execution ────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptSegment {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioTranscript {
+    pub language: Option<String>,
+    pub segments: Vec<TranscriptSegment>,
+    pub warnings: Vec<super::VideoWarning>,
+}
+
+#[derive(serde::Deserialize)]
+struct WhisperDocument {
+    result: Option<WhisperResult>,
+    #[serde(default)]
+    transcription: Vec<WhisperSegment>,
+}
+
+#[derive(serde::Deserialize)]
+struct WhisperResult {
+    language: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct WhisperSegment {
+    offsets: Option<WhisperOffsets>,
+    text: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct WhisperOffsets {
+    from: u64,
+    to: u64,
+}
+
+pub fn bundled_whisper_path() -> Result<PathBuf, String> {
+    super::prepare::bundled_media_tool("verboo-whisper")
+}
+
+pub(crate) fn whisper_args(model: &Path, wav: &Path, output_prefix: &Path) -> Vec<std::ffi::OsString> {
+    vec![
+        std::ffi::OsString::from("-m"),
+        model.into(),
+        std::ffi::OsString::from("-f"),
+        wav.into(),
+        std::ffi::OsString::from("-l"),
+        std::ffi::OsString::from("auto"),
+        std::ffi::OsString::from("-oj"),
+        std::ffi::OsString::from("-of"),
+        output_prefix.into(),
+        std::ffi::OsString::from("-np"),
+    ]
+}
+
+/// Runs the bundled whisper.cpp CLI against a prepared 16 kHz mono WAV under
+/// the job's cancellation token. The model must already be installed — this
+/// function never downloads anything.
+pub fn transcribe_wav(
+    job: &super::job::VideoJob,
+    whisper: &Path,
+    model: &Path,
+    wav: &Path,
+) -> Result<AudioTranscript, String> {
+    if !model.is_file() {
+        return Err("asr model is not installed".to_string());
+    }
+    if !wav.is_file() {
+        return Err("prepared audio is missing".to_string());
+    }
+    let output_prefix = job.directory().join("transcript");
+    super::prepare::run_media_tool(job, whisper, &whisper_args(model, wav, &output_prefix))?;
+    let json_path = output_prefix.with_extension("json");
+    let data = std::fs::read(&json_path)
+        .map_err(|error| format!("read transcription output: {error}"))?;
+    parse_whisper_json(&data)
+}
+
+pub(crate) fn parse_whisper_json(data: &[u8]) -> Result<AudioTranscript, String> {
+    let document: WhisperDocument = serde_json::from_slice(data)
+        .map_err(|error| format!("invalid transcription JSON: {error}"))?;
+    let segments = document
+        .transcription
+        .into_iter()
+        .filter_map(|segment| {
+            let text = segment.text?.trim().to_string();
+            if text.is_empty() {
+                return None;
+            }
+            let offsets = segment.offsets?;
+            Some(TranscriptSegment {
+                start_ms: offsets.from,
+                end_ms: offsets.to,
+                text,
+            })
+        })
+        .collect();
+    Ok(AudioTranscript {
+        language: document
+            .result
+            .and_then(|result| result.language)
+            .filter(|language| !language.trim().is_empty()),
+        segments,
+        warnings: Vec::new(),
+    })
+}
+
 #[derive(Debug)]
 struct OperationGuard(Arc<AtomicBool>);
 
@@ -458,6 +571,121 @@ mod tests {
         let state = store.state_for_spec(test_spec(b"correct")).await.unwrap();
 
         assert_eq!(state.asr_model, AsrModelState::Absent);
+    }
+
+    #[test]
+    fn whisper_json_parses_multilingual_segments_with_timestamps() {
+        let payload = br#"{
+          "result": { "language": "pt" },
+          "transcription": [
+            { "offsets": { "from": 1100, "to": 5900 }, "text": " ola mundo" },
+            { "offsets": { "from": 6000, "to": 7000 }, "text": "   " },
+            { "offsets": { "from": 7100, "to": 9000 }, "text": "hello world" }
+          ]
+        }"#;
+
+        let transcript = parse_whisper_json(payload).unwrap();
+
+        assert_eq!(transcript.language.as_deref(), Some("pt"));
+        assert_eq!(transcript.segments.len(), 2);
+        assert_eq!(transcript.segments[0].start_ms, 1100);
+        assert_eq!(transcript.segments[0].end_ms, 5900);
+        assert_eq!(transcript.segments[0].text, "ola mundo");
+        assert_eq!(transcript.segments[1].text, "hello world");
+    }
+
+    #[test]
+    fn whisper_json_without_speech_yields_no_segments() {
+        let payload = br#"{ "result": { "language": "en" }, "transcription": [] }"#;
+
+        let transcript = parse_whisper_json(payload).unwrap();
+
+        assert!(transcript.segments.is_empty());
+    }
+
+    #[test]
+    fn malformed_whisper_json_is_a_typed_error() {
+        let error = parse_whisper_json(b"{not-json").unwrap_err();
+
+        assert!(error.contains("invalid transcription JSON"));
+    }
+
+    #[cfg(unix)]
+    mod fake_whisper {
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::Path;
+
+        use tempfile::TempDir;
+
+        use crate::services::video::job::VideoJobRegistry;
+        use crate::services::video::transcribe::transcribe_wav;
+
+        fn write_fake_whisper(directory: &Path, script_body: &str) -> std::path::PathBuf {
+            let path = directory.join("fake-whisper");
+            std::fs::write(&path, format!("#!/bin/sh\n{script_body}\n")).unwrap();
+            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&path, permissions).unwrap();
+            path
+        }
+
+        #[test]
+        fn a_fake_whisper_run_round_trips_segments() {
+            let temp = TempDir::new().unwrap();
+            let registry = VideoJobRegistry::new(temp.path()).unwrap();
+            let job = registry.start("conversation-asr").unwrap();
+            let model = temp.path().join("model.bin");
+            std::fs::write(&model, b"model").unwrap();
+            let wav = temp.path().join("audio.wav");
+            std::fs::write(&wav, b"wav").unwrap();
+            // The fake echoes a valid whisper.cpp JSON document to the -of prefix.
+            let script = r#"
+prefix=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-of" ]; then prefix="$2"; fi
+  shift
+done
+cat > "$prefix.json" <<'EOF'
+{ "result": { "language": "en" },
+  "transcription": [ { "offsets": { "from": 0, "to": 900 }, "text": "hi" } ] }
+EOF
+"#;
+            let whisper = write_fake_whisper(temp.path(), script);
+
+            let transcript = transcribe_wav(&job, &whisper, &model, &wav).unwrap();
+
+            assert_eq!(transcript.language.as_deref(), Some("en"));
+            assert_eq!(transcript.segments.len(), 1);
+            assert_eq!(transcript.segments[0].text, "hi");
+        }
+
+        #[test]
+        fn nonzero_exit_missing_model_and_cancellation_fail_closed() {
+            let temp = TempDir::new().unwrap();
+            let registry = VideoJobRegistry::new(temp.path()).unwrap();
+            let model = temp.path().join("model.bin");
+            std::fs::write(&model, b"model").unwrap();
+            let wav = temp.path().join("audio.wav");
+            std::fs::write(&wav, b"wav").unwrap();
+            let failing = write_fake_whisper(temp.path(), "echo boom >&2; exit 3");
+
+            let job = registry.start("conversation-asr-fail").unwrap();
+            let error = transcribe_wav(&job, &failing, &model, &wav).unwrap_err();
+            assert!(error.contains("boom"));
+
+            let missing_model = transcribe_wav(
+                &job,
+                &failing,
+                Path::new("/does-not-exist/model.bin"),
+                &wav,
+            )
+            .unwrap_err();
+            assert!(missing_model.contains("asr model"));
+
+            job.cancel().unwrap();
+            let cancelled = transcribe_wav(&job, &failing, &model, &wav).unwrap_err();
+            assert!(cancelled.contains("cancelled"));
+        }
     }
 
     #[test]

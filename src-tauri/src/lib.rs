@@ -1636,6 +1636,18 @@ async fn remove_video_transcriber(
     store.inner().clone().remove().await
 }
 
+/// Renderer returns one OCR batch for a pending video job. Ownership is
+/// enforced by the waiter registry: only the job that registered a pending
+/// batch can be completed, exactly once.
+#[tauri::command]
+fn complete_video_ocr_batch(
+    waiters: tauri::State<'_, services::video::job::VideoOcrWaiters>,
+    job_id: String,
+    results: Vec<services::video::job::VideoOcrText>,
+) -> Result<(), String> {
+    waiters.complete(&job_id, results)
+}
+
 // ════════════════════════════════════════════════════════════════════
 // App entry point
 // ════════════════════════════════════════════════════════════════════
@@ -1707,6 +1719,7 @@ pub fn run() {
             app.manage(services::video::transcribe::VideoTranscriberStore::new(
                 app_data_dir.clone(),
             ));
+            app.manage(services::video::job::VideoOcrWaiters::default());
             // TurnService — spawns `verboo` CLI for agent turns with streaming
             app.manage(TurnService::new(std::sync::Arc::new(CredentialsStore::new())).with_settings(std::sync::Arc::new(settings_store_for_turn)).with_app_data_dir(app_data_dir.clone()));
             // ResearchSubagentRunner — spawns read-only CLI turns for research
@@ -1904,6 +1917,7 @@ pub fn run() {
             get_video_component_state,
             download_video_transcriber,
             remove_video_transcriber,
+            complete_video_ocr_batch,
             // Menu bar
             update_menu_bar,
             force_idle_menu_bar,

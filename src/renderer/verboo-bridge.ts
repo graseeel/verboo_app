@@ -45,6 +45,8 @@ import type {
   UpdateSnapshot,
   UserSettings,
   VideoComponentState,
+  VideoOcrRequest,
+  VideoOcrText,
   VideoTranscriberProgress,
   VisionFallbackConsent,
   VisionFallbackState,
@@ -181,6 +183,10 @@ const api = {
     invoke<void>('remove_video_transcriber'),
   onVideoTranscriberProgress: (handler: (progress: VideoTranscriberProgress) => void) =>
     onEvent<VideoTranscriberProgress>('video-transcriber-progress', handler),
+  onVideoOcrRequest: (handler: (request: VideoOcrRequest) => void) =>
+    onEvent<VideoOcrRequest>('video:ocr-request', handler),
+  completeVideoOcrBatch: (jobId: string, results: VideoOcrText[]) =>
+    invoke<void>('complete_video_ocr_batch', { jobId, results }),
 
   // ── Menu bar ────────────────────────────────────────────────
   updateMenuBar: (state: Partial<MenuBarState>) =>

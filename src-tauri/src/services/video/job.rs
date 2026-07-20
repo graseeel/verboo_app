@@ -249,6 +249,60 @@ impl Drop for VideoProcessRegistration {
     }
 }
 
+// ── OCR request/response bridge ────────────────────────────────────
+//
+// Rust emits `video:ocr-request` and awaits a renderer response on a
+// job-scoped oneshot. Only the job that registered the waiter can be
+// completed; unknown or repeated completions are rejected.
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoOcrText {
+    pub timestamp_ms: u64,
+    pub text: String,
+    pub confidence: f32,
+}
+
+#[derive(Default)]
+pub struct VideoOcrWaiters {
+    inner: Mutex<HashMap<String, tokio::sync::oneshot::Sender<Vec<VideoOcrText>>>>,
+}
+
+impl VideoOcrWaiters {
+    pub fn register(
+        &self,
+        job_id: &str,
+    ) -> Result<tokio::sync::oneshot::Receiver<Vec<VideoOcrText>>, String> {
+        let mut inner = self.inner.lock().map_err(|error| error.to_string())?;
+        if inner.contains_key(job_id) {
+            return Err("an OCR batch is already pending for this job".to_string());
+        }
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        inner.insert(job_id.to_string(), sender);
+        Ok(receiver)
+    }
+
+    pub fn complete(&self, job_id: &str, results: Vec<VideoOcrText>) -> Result<(), String> {
+        let sender = self
+            .inner
+            .lock()
+            .map_err(|error| error.to_string())?
+            .remove(job_id)
+            .ok_or_else(|| "no pending OCR batch for this job".to_string())?;
+        sender
+            .send(results)
+            .map_err(|_| "OCR waiter is no longer listening".to_string())
+    }
+
+    /// Releases the waiter after timeout/cancel so a late renderer response
+    /// cannot complete a job that already moved on.
+    pub fn release(&self, job_id: &str) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.remove(job_id);
+        }
+    }
+}
+
 fn remove_job_directory(path: &Path) -> Result<(), String> {
     match fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
@@ -330,6 +384,41 @@ mod tests {
 
         assert!(!registry.interrupt("conversation-a").unwrap());
         assert_eq!(first_child.0.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn ocr_waiters_complete_exactly_once_and_reject_foreign_jobs() {
+        let waiters = super::VideoOcrWaiters::default();
+        let receiver = waiters.register("job-a").unwrap();
+        assert!(waiters.register("job-a").is_err());
+
+        assert!(waiters.complete("job-b", Vec::new()).is_err());
+        waiters
+            .complete(
+                "job-a",
+                vec![super::VideoOcrText {
+                    timestamp_ms: 1_000,
+                    text: "hello".into(),
+                    confidence: 88.0,
+                }],
+            )
+            .unwrap();
+        assert!(waiters.complete("job-a", Vec::new()).is_err());
+
+        let results = receiver.await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].text, "hello");
+    }
+
+    #[tokio::test]
+    async fn released_ocr_waiters_ignore_late_responses() {
+        let waiters = super::VideoOcrWaiters::default();
+        let receiver = waiters.register("job-a").unwrap();
+        waiters.release("job-a");
+
+        assert!(waiters.complete("job-a", Vec::new()).is_err());
+        assert!(receiver.await.is_err());
+        assert!(waiters.register("job-a").is_ok());
     }
 
     #[test]

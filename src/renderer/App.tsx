@@ -74,6 +74,7 @@ import {
 import { SkillApprovalPanel } from './features/skills/SkillApprovalPanel'
 import type { ExtractionStatus, ModelReasoning, VideoUnderstandingRoute, VisionFallbackConsent, VisionFallbackState } from '../shared/types'
 import { recognizeImage } from './features/ocr/ocrService'
+import { createVideoOcrCoordinator } from './features/video/VideoOcrCoordinator'
 import { Composer } from './features/composer/Composer'
 import { estimateTotalContextTokens } from './features/context/ContextPanel'
 import { TokenRateMeter } from './features/context/TokenRateMeter'
@@ -718,6 +719,18 @@ export function App() {
 
   useEffect(() => {
     return window.verboo.onAgentEvent(handleAgentEvent)
+  }, [])
+
+  // Video OCR bridge: backend frame batches run serially through the
+  // existing Tesseract worker and return exactly one completion per job.
+  useEffect(() => {
+    const coordinator = createVideoOcrCoordinator({
+      recognize: recognizeImage,
+      complete: (jobId, results) => window.verboo.completeVideoOcrBatch(jobId, results),
+    })
+    return window.verboo.onVideoOcrRequest(request => {
+      void coordinator.handleRequest(request)
+    })
   }, [])
 
   useEffect(() => {
