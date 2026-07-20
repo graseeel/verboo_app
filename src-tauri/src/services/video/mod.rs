@@ -44,6 +44,7 @@ impl fmt::Display for VideoValidationError {
 }
 
 pub mod probe;
+pub mod router;
 pub mod transcribe;
 
 pub use probe::{bundled_ffprobe_path, probe_and_validate};

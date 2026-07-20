@@ -7,8 +7,8 @@ use tauri::{AppHandle, Emitter};
 
 use crate::models::types::{
     access_mode_cli_args, AgentEvent, AgentResultSnapshot, AgentTurnRequest, AttachmentKind,
-    AttachmentMeta, EventType, LanguageCode, ModelReasoning, PersonalityMode, RuntimeActivity,
-    RuntimeStatus, RuntimeStatusKind, UserSettings,
+    AttachmentMeta, CliMediaCapabilities, EventType, LanguageCode, ModelReasoning, PersonalityMode,
+    RuntimeActivity, RuntimeStatus, RuntimeStatusKind, UserSettings,
 };
 use crate::services::auth_token::{inject_api_key, resolve_token};
 use crate::services::cli_subagent_transcript::CliSubagentTranscriptFollower;
@@ -20,6 +20,17 @@ use crate::services::subagent_events::{
 };
 
 const AGENT_EVENT_CHANNEL: &str = "agent:event";
+
+/// Transport contract for the bundled CLI 0.13.0. Image blocks are explicit;
+/// video and audio must stay on the derived-media fallback until a versioned
+/// adapter proves that those block types are supported.
+pub(crate) fn bundled_cli_0_13_0_media_capabilities() -> CliMediaCapabilities {
+    CliMediaCapabilities {
+        image_blocks: true,
+        video_blocks: false,
+        audio_blocks: false,
+    }
+}
 
 /// Service that spawns the `verboo` CLI to execute agent turns, streaming
 /// JSON events back to the renderer through Tauri events.
