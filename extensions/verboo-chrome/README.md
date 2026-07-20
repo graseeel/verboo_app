@@ -133,3 +133,23 @@ npm test
 ```
 
 Tests use Node's built-in test runner (`node --test`). No extra dependencies.
+
+## Português (Brasil)
+
+Deixe o Verboo controlar o navegador: navegar, clicar, digitar, extrair dados, tirar screenshots e automatizar páginas — tudo pela sessão da sua conta Verboo. A árvore de arquivos comentada na seção **Structure** acima vale para os dois idiomas.
+
+### Permissões (manifest atual)
+
+`sidePanel` (painel de controle do Verboo no side panel do Chrome), `identity` (fluxo OAuth PKCE iniciado pelo usuário), `storage` (sessão, modo de permissão e concessões por site em `chrome.storage.local`), `scripting` (injeção para extração de DOM, cliques e digitação), `tabs` (gerenciar abas), `tabGroups` (agrupar abas) e acesso a hosts `http(s)`. Futuro (fora do manifest): `debugger` para screenshots de página inteira e avaliação isolada de JavaScript (P3+). Veja `PERMISSIONS.md` para as justificativas completas e `PRIVACY.md` para a política de privacidade.
+
+### Modelo de autenticação
+
+A extensão usa **sessão de conta Verboo** (OAuth PKCE via `chrome.identity.launchWebAuthFlow`), nunca chave de API nem credencial do CLI. A configuração de release traz `clientId` vazio de propósito: o chat avulso falha fechado com `oauth_not_configured` até o backend Verboo registrar o public client da extensão. Depois do OAuth, um turno iniciado pelo usuário envia prompt, contexto selecionado da página e resultados de ferramentas ao Verboo Router; valores derivados de página são cercados como dados não confiáveis antes de chegar ao modelo. O transporte MCP do Verboo no Chrome é local e nunca leva token do CLI para a extensão.
+
+### Portão de política
+
+Toda chamada de ferramenta passa por `evaluateToolPolicy(mode, siteGrant, toolCall)` antes de qualquer API do Chrome: (1) bloqueios rígidos (compras, trades, exposição de segredos, deleção em massa, criação de conta, obediência a prompt injection) valem em todos os modos; (2) ferramentas elevadas sempre repedem confirmação; (3) `deny` por site sempre bloqueia; (4) `always` permite sem prompt; (5) `once` vale para uma chamada; (6) sem concessão + Manual exige aprovação; (7) sem concessão + Auto/Skip permite (os bloqueios rígidos já retornaram antes). O único ponto de entrada é `controller.execute(toolCall, ctx)`.
+
+### Desenvolvimento
+
+`chrome://extensions` → ativar "Developer mode" → "Load unpacked" apontando para `extensions/verboo-chrome/` → abrir o side panel pelo ícone → "Sign in" (fica desabilitado com mensagem explícita até o `clientId` OAuth ser configurado em `src/auth/oauthConfig.js`). Testes: `cd extensions/verboo-chrome && npm test` (runner nativo do Node, sem dependências extras).

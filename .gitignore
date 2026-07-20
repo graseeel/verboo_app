@@ -37,3 +37,7 @@ src-tauri/resources/
 
 # Tauri Cargo config (has hardcoded local target-dir — must not be committed)
 src-tauri/.cargo/
+
+# Local agent/tool state
+.superpowers/
+.verboo/

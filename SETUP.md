@@ -139,4 +139,34 @@ npm run tauri:build
 npm test
 ```
 
-For cross-platform builds, push a tag and let the GitHub Actions matrix build each target — see [docs/release-github-actions.md](docs/release-github-actions.md).
+For cross-platform builds, push a tag and let the GitHub Actions matrix build each target — see [.github/workflows/tauri-release.yml](.github/workflows/tauri-release.yml).
+
+## Português (Brasil)
+
+### macOS (Estável)
+
+- Requisitos: macOS 12 Monterey ou superior; Apple Silicon (M1–M4) arm64.
+- O app empacotado é autossuficiente — Node.js e npm **não são necessários** para uso normal.
+- Para desenvolvimento: `xcode-select --install` (Command Line Tools, para módulos nativos).
+- Preflight de builds sem assinatura: `scripts/requirements/macos-arm64-preflight.sh "/Applications/Verboo Code.app"`.
+- Problemas conhecidos: builds sem assinatura podem ser bloqueados pelo Gatekeeper (use `--clear-quarantine` ou assinatura Developer ID para distribuição); a integração de terminal usa o crate Rust `portable-pty`.
+
+### Windows (Beta)
+
+- Requisitos: Windows 10 build 17763 (1809) ou superior; x64; suporte a ConPTY (embutido no 1809+).
+- O app empacotado é autossuficiente — Node.js e npm **não são necessários** para uso normal.
+- Para desenvolvimento: `winget install Git.Git` e Visual Studio Build Tools (workload "Desktop development with C++").
+- Preflight: `scripts/requirements/win-x64-preflight.ps1`.
+- Problemas conhecidos: credenciais criptografadas com DPAPI via plugin keyring do Tauri (presas à máquina/usuário); a detecção do Node procura `%PROGRAMFILES%\nodejs`, nvm-windows, fnm e Volta; o terminal usa `powershell.exe` por padrão (defina `$env:SHELL` como `pwsh.exe` se preferir); WSL: GUI requer WSLg (Windows 11) ou X server de terceiros.
+
+### Linux (Beta)
+
+- Requisitos: glibc 2.28+ (Ubuntu 20.04+, Debian 11+, Fedora 35+); x64; desktop compatível (GNOME, KDE etc.).
+- O app empacotado é autossuficiente — Node.js e npm **não são necessários** para uso normal.
+- Para desenvolvimento, instale as dependências listadas na seção em inglês (`build-essential`, `libsecret-1-dev` etc.).
+- Preflight: `scripts/requirements/linux-x64-preflight.sh`.
+- Problemas conhecidos: criptografia de credenciais requer `libsecret-1` (sem ele, fallback em arquivo texto `chmod 600`); terminal usa `$SHELL` ou `/bin/bash`; decorações de janela seguem o window manager; o Tauri usa o WebKitGTK do sistema (Wayland nativo nas distros modernas, fallback XWayland).
+
+### Armazenamento de credenciais, ícones e receitas de build
+
+As tabelas e comandos das seções em inglês valem igualmente: keyring por plataforma (Keychain/DPAPI/libsecret), ícones por formato (`.icns`/`.ico`/`.png`) e as receitas `npm install`, `npm run tauri:dev`, `npm run build:renderer`, `npm run tauri:build` e `npm test`. Para builds multiplataforma, publique uma tag e deixe a matriz do GitHub Actions construir cada alvo — veja [.github/workflows/tauri-release.yml](.github/workflows/tauri-release.yml).

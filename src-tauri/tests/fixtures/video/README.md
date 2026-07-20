@@ -27,3 +27,11 @@ never consulted by the app or its tests at runtime:
 All generated media is below 200 KB. The integration tests pass these checked
 fixtures through the bundled `ffprobe`; deterministic JSON remains for parser
 edge cases that do not need real media.
+
+## Português (Brasil)
+
+`renamed-text.mp4` é um fixture de texto deliberadamente inválido, usado para provar que uma extensão nunca transforma um arquivo em anexo de vídeo.
+
+O sidecar de produção foi verificado com `verboo-ffmpeg-aarch64-apple-darwin -formats` e `-encoders` (comandos exatos na seção em inglês). O sidecar LGPL, deliberadamente mínimo, não tem `lavfi`, `rawvideo`, demuxer de entrada PCM nem encoders HEVC/VP9 — portanto não consegue sintetizar esses streams sem ampliar o sidecar de produção. A geração única dos fixtures (comandos exatos acima) usou o FFmpeg 8.1.1 do Homebrew apenas nessa ocasião; ele nunca é consultado pelo app nem pelos testes em runtime.
+
+Toda a mídia gerada fica abaixo de 200 KB. Os testes de integração passam esses fixtures pelo `ffprobe` empacotado; JSONs determinísticos continuam cobrindo os casos de borda do parser que não precisam de mídia real.

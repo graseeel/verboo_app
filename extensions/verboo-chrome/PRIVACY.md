@@ -86,3 +86,37 @@ Material changes will be reflected by updating the date at the top. Continued us
 Open an issue on the repository's issues tab. (TODO: confirm the canonical Verboo Code issue tracker URL with the maintainer before publishing to the Store.)
 
 ---
+
+## Português (Brasil)
+
+**Última atualização:** 2026-07-19 · **Extensão:** Verboo Code — Browser Control · **Versão:** 0.1.0
+
+Esta política explica quais dados a extensão trata quando você a usa para controlar o Chrome com uma sessão de conta Verboo.
+
+### Resumo
+
+A extensão controla o Chrome em seu nome quando você permite. O chat avulso exige uma sessão OAuth própria da extensão; após o login, um turno envia o prompt, o contexto selecionado da página ativa e os resultados de ferramentas ao Verboo Router. Conteúdo derivado do navegador é cercado como dado não confiável antes do processamento pelo modelo. O client ID de release não está configurado neste snapshot, então o chat avulso falha fechado. O transporte MCP do Verboo no Chrome é local e não leva tokens do CLI à extensão.
+
+- **Nenhum dado é vendido.**
+- **Você mantém o controle** de cada ação: a extensão pergunta antes de cada passo potencialmente destrutivo e você sempre pode negar.
+- **Bloqueios rígidos não podem ser contornados** — compras, operações financeiras, deleção em massa e exposição de credenciais são bloqueadas mesmo no modo mais permissivo.
+
+### O que a extensão acessa
+
+URL/título da aba ativa (contexto de um turno iniciado por você); conteúdo de página e resultados de ferramentas (para executar e continuar o turno); abas e grupos (gerenciamento local durante o turno); sua sessão Verboo (ID de conta e tokens OAuth, guardados localmente em `verbooSession` e enviados apenas aos endpoints OAuth/Router do Verboo — nunca copiados do CLI); modo de permissão e concessões por site (guardados localmente, nunca enviados).
+
+### O que a extensão NÃO faz
+
+Não lê suas teclas fora de ferramentas aprovadas; não rastreia sites fora de um turno ativo; não coleta analytics, telemetria ou crash reports; não lê nem modifica `chrome://`, `chrome-extension://`, `about:` nem `chrome.google.com/webstore`; não armazena histórico de navegação.
+
+### Onde seus dados vivem
+
+Todo estado persistente fica em `chrome.storage.local`, restrito ao perfil desta extensão — limpar os dados da extensão o remove. Chaves exatas e destino de cada uma: veja a tabela da seção em inglês (`verbooSession`, `verbooModelsCache`, `verbooSelectedModelId`, `chromePermissionMode`, `siteGrants`). O token OAuth só vai aos endpoints Verboo embutidos; o transporte MCP local nunca recebe token do CLI; a extensão não roda servidor em segundo plano.
+
+### Sem login, terceiros, crianças e alterações
+
+Sem login, o chat avulso não chama o Router (os controles locais de permissão continuam disponíveis). A extensão não embute scripts, fontes ou rastreadores de terceiros. Não é direcionada a menores de 13 anos. Mudanças materiais são refletidas pela data no topo; o uso continuado indica aceitação.
+
+### Contato
+
+Abra uma issue na aba de issues do repositório.

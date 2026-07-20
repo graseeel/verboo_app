@@ -60,3 +60,29 @@ scripts/requirements/macos-arm64-preflight.sh "/Applications/Verboo Code.app" --
 
 For public distribution, the right fix is Developer ID signing and notarization,
 not asking users to clear quarantine manually.
+
+## Português (Brasil)
+
+Esta pasta documenta o contrato de runtime do build distribuído para Apple Silicon.
+
+O app empacotado é projetado para ser autossuficiente: o usuário não precisa de Node.js, npm, Homebrew nem de um CLI `@verboo/code` global para abrir o app.
+
+### Alvo suportado
+
+- macOS 12.0 ou superior; apenas Apple Silicon arm64 (MacBook Air M1 ou mais novo no escopo do pacote atual).
+
+### Obrigatório dentro do bundle
+
+O bundle Tauri inclui: o backend Rust compilado no binário nativo; o WebView do sistema (WKWebView) para o frontend — sem Chromium embutido; o `cli-package` embutido (CLI Verboo + dependências Node) em `src-tauri/resources/cli-package/`; o terminal local via crate Rust `portable-pty` e UI via `@xterm/xterm`; suporte a imagem/OCR via `sharp` e `tesseract.js`.
+
+### Ferramentas opcionais do usuário
+
+Git e Apple Command Line Tools são úteis quando o assistente trabalha em repositórios reais, mas não são necessários para abrir o app, autenticar, listar modelos ou conversar. Não instale nem rebaixe ferramentas do usuário automaticamente.
+
+### Primeira abertura
+
+A cada versão, o backend Rust valida na primeira abertura: plataforma macOS; arquitetura arm64; versão mínima do macOS; disponibilidade do CLI embutido; pacotes nativos obrigatórios. Falhas fatais mostram um diálogo bloqueante e o app encerra; lacunas opcionais são apenas avisos.
+
+### Preflight manual
+
+Para builds internos sem assinatura: `scripts/requirements/macos-arm64-preflight.sh "/Applications/Verboo Code.app"` (adicione `--clear-quarantine` para remover a quarentena de um build confiável). Para distribuição pública, o caminho correto é assinatura Developer ID e notarização — não pedir ao usuário para limpar a quarentena manualmente.

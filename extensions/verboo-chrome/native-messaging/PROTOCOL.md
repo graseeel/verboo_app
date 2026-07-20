@@ -26,3 +26,19 @@ The runtime implementation ships atomically with:
 5. extension tests proving protocol mismatch, malformed-envelope, disconnect, and no-replay behavior.
 
 The per-user installer writes `allowed_origins` for exactly one configured production or development extension ID.
+
+## Português (Brasil)
+
+O helper Rust empacotado implementa tanto o servidor MCP por stdio quanto o host de Native Messaging do Chrome. O app desktop o instala e diagnostica, mas não participa do caminho de runtime.
+
+### Contrato reservado
+
+- Nome do host: `com.verboo.code.browser_extension`
+- Versão do protocolo: `1`
+- Envelope: `{ version, id, kind, secret?, payload }`
+- Kinds: `hello`, `toolRequest`, `toolResponse`, `error`
+- Máximo host → Chrome: 1 MiB; máximo Chrome → host: 64 MiB
+
+O processo MCP descobre um Native Host vivo por um registro privado por usuário contendo um segredo de sessão aleatório. Requisições locais são autenticadas com esse segredo, que é removido antes de a requisição chegar à extensão.
+
+A extensão continua sendo a controladora do navegador: toda requisição relé passa pelo catálogo canônico, pelo portão de política e pelo executor de aprovações compartilhado. Se uma aprovação for necessária com o side panel fechado, a extensão retorna `approval_ui_unavailable` e nada executa. Requisições em voo desconectadas nunca são reexecutadas. A ponte nunca recebe nem encaminha tokens OAuth do CLI ou da extensão; o chat avulso da extensão e a autenticação do CLI permanecem separados. O instalador por usuário grava `allowed_origins` para exatamente um ID de extensão configurado (produção ou desenvolvimento).

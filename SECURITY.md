@@ -29,3 +29,35 @@ Never commit:
 ## High-Trust Mode
 
 The app can run the underlying Verboo CLI with broad local-machine permissions depending on the selected access mode. Users should only enable full access in trusted projects and machines.
+
+## Português (Brasil)
+
+### Status de suporte
+
+Este app é um build independente em desenvolvimento e deve ser tratado como experimental.
+
+### Reportando uma vulnerabilidade
+
+Não abra issues públicas contendo chaves de API, dados de conta, logs privados, caminhos de arquivo com informação sensível ou detalhes de exploits.
+
+Envie relatos sensíveis diretamente para:
+
+- E-mail: grasel.moura05@gmail.com
+- X: @grrL_
+
+Para bugs comuns ou feedback não sensível, use o formulário de feedback dentro do app.
+
+### Segredos
+
+Nunca commite:
+
+- Chaves de API do Verboo
+- Chaves service-role do Supabase
+- Senhas de banco do Supabase
+- Certificados de assinatura da Apple
+- Provisioning profiles
+- Arquivos `.env` com valores reais
+
+### Modo de alta confiança
+
+O app pode executar o Verboo CLI com permissões amplas na máquina local, dependendo do modo de acesso selecionado. Habilite acesso total apenas em projetos e máquinas confiáveis.

@@ -46,3 +46,15 @@ validated against the manifest size (147951465 bytes) and SHA-256
 Users can remove that separately downloaded model from the app's video/ASR model
 storage; doing so does not remove any bundled executable and causes a fresh,
 verified download only when transcription is requested again.
+
+## Português (Brasil)
+
+O Verboo Code constrói seus sidecars de processamento de vídeo a partir do código-fonte no momento do release. As entradas exatas (versões, URLs e SHA-256 de FFmpeg 8.1.2, zimg 3.0.6 e whisper.cpp 1.8.5) vivem em [`scripts/tauri/media-sidecars.json`](../../scripts/tauri/media-sidecars.json); o build recusa qualquer entrada cujo SHA-256 não bata com o manifesto. As flags fixas de configuração do FFmpeg estão listadas na seção em inglês acima.
+
+O zimg é compilado como dependência estática, habilitando os filtros `zscale` e `tonemap` do FFmpeg para conversão explícita de HDR para SDR. O macOS habilita adicionalmente o encoder não-GPL `h264_videotoolbox`; o Windows habilita `h264_mf`. O Linux deliberadamente não promete encoder H.264: originais incompatíveis são amostrados em frames em vez de virar proxy sintético.
+
+A configuração desabilita GPL, nonfree, rede e descoberta automática de bibliotecas externas, mantendo o build do FFmpeg sob LGPL-2.1-or-later — mas o código-fonte correspondente, a configuração de build e os avisos LGPL devem permanecer disponíveis aos destinatários, e substituir/relinkar o componente LGPL não pode ser tecnicamente proibido. Os avisos BSD-2-Clause do zimg e MIT do whisper.cpp também devem acompanhar as distribuições quando exigido.
+
+### Modelo Whisper
+
+O modelo `ggml-base.bin` intencionalmente não é incluído no bundle. Ele é baixado sob demanda de <https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin> e validado contra o tamanho do manifesto (147951465 bytes) e o SHA-256 `60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe`. O usuário pode remover esse modelo baixado separadamente pelo armazenamento de modelos de vídeo/ASR do app; isso não remove nenhum executável do bundle e apenas provoca um novo download verificado quando a transcrição for solicitada de novo.

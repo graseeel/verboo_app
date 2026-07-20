@@ -147,3 +147,34 @@ All of these are gated by the policy engine: scripts only execute after `evaluat
 - We will not use `debugger` to read or modify network requests.
 - We will not use `debugger` to read cookies or storage.
 - We will not leave a debugger session attached between tool calls.
+
+## Português (Brasil)
+
+Este documento é a fonte de verdade das justificativas de permissão exibidas na Chrome Web Store. Cada justificativa explica **o que** a permissão faz, **por que** precisamos dela e **o que NÃO fazemos** com ela. Ao adicionar ou remover uma permissão, atualize este arquivo no mesmo PR.
+
+### `sidePanel`
+Renderiza a UI no side panel do Chrome — é onde vivem o chat, as aprovações de ferramenta, o seletor de modo de permissão e as concessões por site. Não injetamos conteúdo em painéis de outras extensões nem substituímos UI nativa; o painel só aparece quando você clica no ícone do Verboo.
+
+### `identity`
+Permite ao Chrome abrir e concluir o fluxo OAuth (Authorization Code + PKCE) iniciado pelo usuário, com callback específico da extensão. Não reutilizamos credenciais do CLI, não iniciamos login silencioso e não pedimos token sem clique em **Sign in**; sem client ID registrado, a autenticação falha fechada.
+
+### `storage`
+Persiste em `chrome.storage.local`: `verbooSession` (token de sessão), `chromePermissionMode` (Manual/Auto/Skip), `siteGrants` (concessões por host), `verbooModelsCache` e `verbooSelectedModelId`. Não armazenamos histórico de navegação, senhas, valores de formulário nem conteúdo de página; nada é sincronizado com a conta Google; o access token só vai aos endpoints do Verboo Router embutidos.
+
+### `nativeMessaging`
+Conecta ao host local `com.verboo.code.browser_extension` pelo protocolo de frames do Chrome. O servidor MCP oficial `verboo-in-chrome` usa esse host para encaminhar requisições de ferramentas de navegador do Verboo CLI à extensão com o app desktop fechado. Não enviamos credenciais do CLI, tokens OAuth da extensão, dados de filesystem, comandos de terminal nem operações Git pelo host; o host não chama APIs do Chrome diretamente; aprovações sem side panel falham fechadas; requisições em voo nunca são reexecutadas após desconexão.
+
+### `scripting`
+Injeta código nas páginas para `read_page` (ler o DOM), `click`, `type` e medição de viewport para `screenshot` — sempre depois do portão de política (e, em Manual, da sua aprovação). Não injetamos em `chrome://`, `chrome-extension://` ou `about:`; não executamos código de origem remota (as funções são empacotadas na extensão); conteúdo de página só vai ao Verboo Router num turno iniciado por você, cercado como dado não confiável.
+
+### `tabs`
+Lista, troca, fecha e abre abas; `chrome.tabs.update` atende o `navigate` aprovado. Não monitoramos sites fora de um turno ativo, não lemos URLs sem necessidade de uma ferramenta aprovada e não mexemos em abas que você não pediu.
+
+### `tabGroups`
+Cria, nomeia e colore grupos para tarefas de pesquisa multi-etapas. Não lemos o conteúdo de grupos existentes nem renomeamos/recolorimos os seus, e só modificamos um grupo quando você pede explicitamente.
+
+### Permissões de host (`http://*/*`, `https://*/*`, `<all_urls>`)
+`chrome.scripting.executeScript`, `chrome.tabs.update` e screenshots de viewport precisam de acesso ao host da página conduzida; o Chrome só concede `captureVisibleTab` com `<all_urls>` ou `activeTab` temporário. Não capturamos esquemas restritos a partir do loop do agente; o script injetado nunca avalia string vinda da rede; cada invocação passa por `evaluateToolPolicy` e, em Manual, pela sua aprovação.
+
+### Permissão futura: `debugger`
+**AINDA NÃO SOLICITADA.** Será adicionada explicitamente quando o agente precisar de screenshots de página inteira (`Page.captureScreenshot` com `captureBeyondViewport: true`) ou avaliação de JavaScript em mundo isolado via CDP. Mesmo então: nunca para ler/modificar tráfego de rede, ler cookies/armazenamento ou manter sessão de debugger anexada entre chamadas. A listagem na Store será atualizada antes da publicação.

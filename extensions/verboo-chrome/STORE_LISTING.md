@@ -110,3 +110,31 @@ Copy-paste-ready draft for the Chrome Web Store developer dashboard. Keep this f
 ## Reviewer notes (paste into the submission form)
 
 > This extension implements `chrome.identity`, `chrome.scripting`, `chrome.tabs`, `chrome.tabGroups`, `chrome.storage`, and `chrome.sidePanel` to provide a browser-automation side panel. There is no remote-loaded code; all injected scripts are bundled. Standalone chat uses user-initiated OAuth PKCE and sends active-turn prompts, selected browser context, and tool results to the Verboo Router. Browser content is fenced as untrusted data. The separate MCP transport is local and carries no CLI token. The extension does not request `debugger` at this time. The full privacy policy is bundled at `PRIVACY.md` and `privacy.html` and linked from the side panel.
+
+## Português (Brasil) — rascunho da listagem pt-BR
+
+Rascunho pronto para o painel da Chrome Web Store no idioma pt-BR. Mantenha em sincronia com a listagem publicada.
+
+### Nome
+
+**Verboo Code — Controle do Navegador**
+
+### Descrição curta (até 132 caracteres)
+
+> Controle o Chrome com o Verboo — um painel lateral de IA que navega, clica, digita e extrai dados, com checagens de segurança.
+
+### Descrição detalhada
+
+> **Controle o Chrome com o Verboo** — um painel lateral de IA, calmo e consciente de permissões, que automatiza as partes chatas de pesquisa na web, preenchimento de formulários e malabarismo de abas.
+>
+> Abra o painel pela barra de ferramentas, digite o que quer ("puxe os 10 primeiros resultados desta busca", "preencha o formulário de checkout com estes valores") e o agente trabalha com você no controle de cada passo.
+>
+> **O que ele faz:** navega, clica, digita, extrai, tira screenshots e gerencia abas; portão de segurança por ferramenta (bloqueios rígidos a compras, trades, deleção em massa e exposição de credenciais valem em todos os modos); três modos de permissão (Manual, Auto, Skip); concessões por site (uma vez, sempre ou negar — guardadas localmente); sessão de conta Verboo (sem chave de API para copiar).
+>
+> **O que ele NÃO faz:** não coleta analytics nem telemetria; não lê seu histórico; não executa código de origem remota; não toca `chrome://`, `chrome-extension://`, `about:` nem a Chrome Web Store; não deixa sessão de debugger anexada; o chat avulso é explícito (só um turno iniciado por você envia dados ao Verboo Router, com o texto do navegador cercado como não confiável); o MCP permanece local, sem tokens do CLI.
+>
+> **Permissões em português claro:** sidePanel (mostra o painel), identity (OAuth PKCE iniciado por você), storage (sessão, modo e concessões, localmente), scripting (scripts pequenos na página aprovada), tabs (abas do trabalho do agente), tabGroups (organiza pesquisas multi-etapas).
+
+### Categoria, idioma e distribuição
+
+Categoria **Produtividade**; idiomas Inglês (principal) e Português (pt-BR); visibilidade pública, todas as regiões, gratuito. Ativos de imagem e plano de screenshots: mesma lista da seção em inglês.
