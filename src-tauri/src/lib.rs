@@ -973,6 +973,50 @@ fn inspect_files(
     services::file_service::inspect_files_result(&paths)
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BeginPastedFileUploadResult {
+    upload_id: String,
+}
+
+#[tauri::command]
+fn begin_pasted_file_upload(
+    name: String,
+    size: u64,
+    media_type: String,
+    uploads: tauri::State<'_, services::pasted_file_upload::PastedFileUploadService>,
+) -> Result<BeginPastedFileUploadResult, String> {
+    uploads
+        .begin(&name, size, &media_type)
+        .map(|upload_id| BeginPastedFileUploadResult { upload_id })
+}
+
+#[tauri::command]
+fn append_pasted_file_chunk(
+    upload_id: String,
+    offset: u64,
+    bytes: Vec<u8>,
+    uploads: tauri::State<'_, services::pasted_file_upload::PastedFileUploadService>,
+) -> Result<(), String> {
+    uploads.append(&upload_id, offset, &bytes)
+}
+
+#[tauri::command]
+fn finish_pasted_file_upload(
+    upload_id: String,
+    uploads: tauri::State<'_, services::pasted_file_upload::PastedFileUploadService>,
+) -> Result<AttachmentMeta, String> {
+    uploads.finish(&upload_id)
+}
+
+#[tauri::command]
+fn abort_pasted_file_upload(
+    upload_id: String,
+    uploads: tauri::State<'_, services::pasted_file_upload::PastedFileUploadService>,
+) -> Result<(), String> {
+    uploads.abort(&upload_id)
+}
+
 /// Inspects a pasted image (from clipboard base64) and returns its
 /// AttachmentMeta. Used by the renderer when the user pastes a screenshot
 /// (Ctrl+V / Cmd+V) — the renderer has the base64 from the clipboard API,
@@ -1548,6 +1592,10 @@ pub fn run() {
                 .expect("app data dir must be available");
             let _ = std::fs::create_dir_all(&app_data_dir);
             let settings_store = SettingsStore::new(app_data_dir.clone());
+            app.manage(
+                services::pasted_file_upload::PastedFileUploadService::new(app_data_dir.clone())
+                    .map_err(std::io::Error::other)?,
+            );
 
             // Request macOS notification permission. On macOS, notifications
             // are blocked by default until the app requests permission. This
@@ -1816,6 +1864,10 @@ pub fn run() {
             pick_files,
             inspect_files,
             inspect_pasted_image,
+            begin_pasted_file_upload,
+            append_pasted_file_chunk,
+            finish_pasted_file_upload,
+            abort_pasted_file_upload,
             save_avatar_blob,
             pick_folder,
             create_project_folder,

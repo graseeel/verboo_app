@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
-import type { SkillSummary } from '../../../shared/types'
+import type { AttachmentMeta, SkillSummary } from '../../../shared/types'
 
 // jsdom lacks matchMedia — Composer reads it at module-eval time for
 // prefers-reduced-motion. Stub before importing Composer.
@@ -142,6 +142,35 @@ describe('t2 — syncTokenSkills: / and @ tokens', () => {
     expect(onTokenSkillsChange).toHaveBeenCalled()
     const skills = onTokenSkillsChange.mock.calls[0][0] as SkillSummary[]
     expect(skills).toHaveLength(0)
+  })
+})
+
+describe('video attachment chip', () => {
+  it('shows name, duration, size, and remove action without an unreadable warning', () => {
+    const video: AttachmentMeta = {
+      path: '/uploads/clip.mp4',
+      name: 'clip.mp4',
+      size: 1_572_864,
+      kind: 'video',
+      video: {
+        durationMs: 65_000,
+        container: 'mp4',
+        videoCodec: 'h264',
+        width: 16,
+        height: 16,
+        avgFps: 1,
+        hasAudio: true,
+        hdr: 'sdr',
+      },
+    }
+    const onRemoveAttachment = vi.fn()
+    renderComposer({ attachments: [video], onRemoveAttachment })
+
+    const chip = screen.getByRole('button', { name: /clip\.mp4/i })
+    expect(chip.textContent).toContain('1:05 · 1.5 MB')
+    expect(chip.textContent).not.toContain('composer.attachmentUnreadable')
+    fireEvent.click(chip)
+    expect(onRemoveAttachment).toHaveBeenCalledWith('/uploads/clip.mp4')
   })
 })
 

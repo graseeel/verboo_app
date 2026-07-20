@@ -86,6 +86,9 @@ import { ProjectPicker } from './features/projects/ProjectPicker'
 import { SettingsView } from './features/settings/SettingsView'
 import { I18nProvider, createTranslator, type Translator } from './i18n'
 import { attachmentInspectionErrorKey } from './features/attachments/attachmentInspectionError'
+import { OrderedAttachmentQueue } from './features/attachments/orderedAttachmentQueue'
+import { uploadPastedFile } from './features/attachments/pastedFileUpload'
+import { inspectPathlessFiles } from './features/attachments/pathlessAttachmentIngestion'
 import {
   DEFAULT_CONVERSATION_TITLE,
   activeProjects,
@@ -321,6 +324,8 @@ export function App() {
   const [tokenSkills, setTokenSkills] = useState<SkillSummary[]>([])
   const selectedSkillsUnion = tokenSkills
   const [attachedFiles, setAttachedFiles] = useState<AttachmentMeta[]>([])
+  const attachmentQueueRef = useRef(new OrderedAttachmentQueue<AttachmentMeta>())
+  const attachmentUploadControllersRef = useRef(new Set<AbortController>())
   const [ocrProcessingPaths, setOcrProcessingPaths] = useState<string[]>([])
   // Refs keyed by image path, resolved when OCR completes or fails.
   // Used by sendMessage to await pending OCR before sending.
@@ -1901,7 +1906,7 @@ export function App() {
       const consent = userSettings.visionFallbackConsent
       if (consent === 'never') {
         // Strip images silently — the user opted out.
-        setAttachedFiles(current => current.filter(f => f.kind !== 'image'))
+        filterAttachments(file => file.kind !== 'image')
       } else if (consent === 'ask') {
         // Show consent modal — wait for user choice.
         const fbState: VisionFallbackState = await window.verboo.getVisionFallbackState()
@@ -1921,7 +1926,7 @@ export function App() {
           })
           toast(t('vision.consentUpdated'))
           if (choice.persist === 'never') {
-            setAttachedFiles(current => current.filter(f => f.kind !== 'image'))
+            filterAttachments(file => file.kind !== 'image')
           }
         }
         // 'allowOnce' → proceed with images attached (existing behavior).
@@ -1987,13 +1992,13 @@ export function App() {
 
     if (isConversationRunning(conversationId)) {
       enqueueFollowUp(queued)
-      setAttachedFiles([])
+      clearAttachments()
       return
     }
 
     appendDowngradeActivity(conversationId)
     await runTurn(queued)
-    setAttachedFiles([])
+    clearAttachments()
     } finally {
       sendMessageLock.current = false
     }
@@ -2872,24 +2877,26 @@ export function App() {
   }
 
   async function attachFiles() {
+    const batch = attachmentQueueRef.current.reserve()
     try {
       const attachments = await window.verboo.pickFiles()
-      if (!attachments.length) return
-      appendAttachments(attachments)
+      completeAttachmentBatch(batch, attachments)
     } catch (error) {
+      failAttachmentBatch(batch)
       toast(t(attachmentInspectionErrorKey(error)), 'error')
     }
   }
 
   async function attachDroppedFiles(paths: string[], files: File[]) {
     if (!paths.length && !files.length) return
+    const batch = attachmentQueueRef.current.reserve()
     try {
-      const attachments = paths.length
-        ? await window.verboo.inspectFiles(paths)
-        : await window.verboo.inspectDroppedFiles(files)
-      if (!attachments.length) return
-      appendAttachments(attachments)
+      const attachments = files.length
+        ? await inspectDroppedBrowserFiles(files)
+        : await window.verboo.inspectFiles(paths)
+      completeAttachmentBatch(batch, attachments)
     } catch (error) {
+      failAttachmentBatch(batch)
       toast(t(attachmentInspectionErrorKey(error)), 'error')
     }
   }
@@ -2899,42 +2906,98 @@ export function App() {
   // base64 and sent to the backend via pasteImageBlob for temp-file creation.
   async function attachPastedFiles(paths: string[], files: File[]) {
     if (!paths.length && !files.length) return
+    const batch = attachmentQueueRef.current.reserve()
     try {
-      let attachments: AttachmentMeta[] = []
-      if (paths.length) {
-        attachments = await window.verboo.inspectFiles(paths)
-      } else {
-        // Separate image blobs (no path) from regular files.
-        const blobs = files.filter(f => !(f as File & { path?: string }).path && f.type.startsWith('image/'))
-        const withPath = files.filter(f => (f as File & { path?: string }).path)
-        if (withPath.length) {
-          const p = withPath.map(f => (f as File & { path: string }).path)
-          attachments = await window.verboo.inspectFiles(p)
-        }
-        for (const blob of blobs) {
-          const reader = new FileReader()
-          const base64 = await new Promise<string>(resolve => {
-            reader.onload = () => resolve((reader.result as string).split(',')[1])
-            reader.readAsDataURL(blob)
-          })
-          const name = `pasted-${Date.now()}.${blob.type.split('/')[1] || 'png'}`
-          const meta = await window.verboo.pasteImageBlob(base64, name)
-          attachments.push(...meta)
-        }
-      }
-      if (!attachments.length) return
-      appendAttachments(attachments)
+      const attachments = files.length
+        ? await inspectBrowserFilesInOrder(files)
+        : await window.verboo.inspectFiles(paths)
+      completeAttachmentBatch(batch, attachments)
     } catch (error) {
+      failAttachmentBatch(batch)
       toast(t(attachmentInspectionErrorKey(error)), 'error')
     }
   }
 
-  function appendAttachments(attachments: AttachmentMeta[]) {
-    setAttachedFiles(current => {
-      const byPath = new Map(current.map(attachment => [attachment.path, attachment]))
-      for (const attachment of attachments) byPath.set(attachment.path, attachment)
-      return Array.from(byPath.values())
+  async function inspectDroppedBrowserFiles(files: File[]): Promise<AttachmentMeta[]> {
+    return inspectBrowserFilesInOrder(files)
+  }
+
+  async function inspectBrowserFilesInOrder(files: File[]): Promise<AttachmentMeta[]> {
+    const controller = new AbortController()
+    attachmentUploadControllersRef.current.add(controller)
+    try {
+      const attachments: AttachmentMeta[] = []
+      for (const file of files) {
+        controller.signal.throwIfAborted()
+        const path = (file as File & { path?: string }).path
+        const inspected = path
+          ? await window.verboo.inspectFiles([path])
+          : await inspectPathlessFiles(
+              [file],
+              inspectPastedImage,
+              item => uploadPastedFile(item, window.verboo, controller.signal),
+            )
+        controller.signal.throwIfAborted()
+        attachments.push(...inspected)
+      }
+      return attachments
+    } catch (error) {
+      controller.abort()
+      throw error
+    } finally {
+      attachmentUploadControllersRef.current.delete(controller)
+    }
+  }
+
+  async function inspectPastedImage(file: File): Promise<AttachmentMeta[]> {
+    const reader = new FileReader()
+    const base64 = await new Promise<string>((resolve, reject) => {
+      reader.onload = () => resolve((reader.result as string).split(',')[1])
+      reader.onerror = () => reject(reader.error ?? new Error('Failed to read pasted image'))
+      reader.onabort = () => reject(new Error('Pasted image read was aborted'))
+      reader.readAsDataURL(file)
     })
+    const name = `pasted-${Date.now()}.${file.type.split('/')[1] || 'png'}`
+    return window.verboo.pasteImageBlob(base64, name)
+  }
+
+  function completeAttachmentBatch(batch: number, attachments: AttachmentMeta[]) {
+    const outcome = attachmentQueueRef.current.complete(batch, attachments)
+    applyAttachmentOutcome(outcome)
+  }
+
+  function applyAttachmentOutcome(outcome: ReturnType<OrderedAttachmentQueue<AttachmentMeta>['complete']>) {
+    setAttachedFiles(outcome.attachments)
+    if (outcome.rejectedVideo) toast(t('attachments.error.secondVideo'), 'error')
+    if (outcome.added.length) processAddedAttachments(outcome.added)
+  }
+
+  function failAttachmentBatch(batch: number) {
+    const outcome = attachmentQueueRef.current.fail(batch)
+    applyAttachmentOutcome(outcome)
+  }
+
+  function clearAttachments() {
+    for (const controller of attachmentUploadControllersRef.current) controller.abort()
+    attachmentUploadControllersRef.current.clear()
+    attachmentQueueRef.current.reset()
+    setAttachedFiles([])
+  }
+
+  function removeAttachment(path: string) {
+    setAttachedFiles(attachmentQueueRef.current.remove(path))
+    setOcrProcessingPaths(current => current.filter(item => item !== path))
+  }
+
+  function filterAttachments(keep: (attachment: AttachmentMeta) => boolean) {
+    setAttachedFiles(attachmentQueueRef.current.filter(keep))
+  }
+
+  function updateAttachment(path: string, transform: (attachment: AttachmentMeta) => AttachmentMeta) {
+    setAttachedFiles(attachmentQueueRef.current.update(path, transform))
+  }
+
+  function processAddedAttachments(attachments: AttachmentMeta[]) {
     // Local OCR is a LAST RESORT — only runs when the selected model doesn't
     // support vision AND no vision-capable model exists in the catalog. If the
     // user switches to a vision model, the backend's vision_fallback handles
@@ -2969,33 +3032,18 @@ export function App() {
           setOcrProcessingPaths(current => current.filter(p => p !== att.path))
           if (!result) {
             // Worker failed (missing traineddata / CSP block) — mark warning.
-            setAttachedFiles(current =>
-              current.map(a => a.path === att.path
-                ? { ...a, extractionStatus: 'warning' as ExtractionStatus }
-                : a
-              )
-            )
+            updateAttachment(att.path, a => ({ ...a, extractionStatus: 'warning' as ExtractionStatus }))
             return
           }
           const status: ExtractionStatus = result.isEmpty ? 'warning' : 'extracted'
-          setAttachedFiles(current =>
-            current.map(a => a.path === att.path
-              ? { ...a, extractedText: result.text, extractionStatus: status }
-              : a
-            )
-          )
+          updateAttachment(att.path, a => ({ ...a, extractedText: result.text, extractionStatus: status }))
         })
         .catch(() => {
           // Unhandled rejection — worker crashed.
           ocrCompletionsRef.current[att.path]?.resolve()
           delete ocrCompletionsRef.current[att.path]
           setOcrProcessingPaths(current => current.filter(p => p !== att.path))
-          setAttachedFiles(current =>
-            current.map(a => a.path === att.path
-              ? { ...a, extractionStatus: 'warning' as ExtractionStatus }
-              : a
-            )
-          )
+          updateAttachment(att.path, a => ({ ...a, extractionStatus: 'warning' as ExtractionStatus }))
         })
     }
   }
@@ -3042,7 +3090,7 @@ export function App() {
     setActiveConversationId(undefined)
     setSelectedProjectId(project?.id)
     setTokenSkills([])
-    setAttachedFiles([])
+    clearAttachments()
     setActiveView('chat')
   }
 
@@ -4316,10 +4364,7 @@ export function App() {
             onAttachFiles={attachFiles}
             onDropFiles={attachDroppedFiles}
             onPasteFiles={attachPastedFiles}
-            onRemoveAttachment={path => {
-              setAttachedFiles(current => current.filter(item => item.path !== path))
-              setOcrProcessingPaths(current => current.filter(p => p !== path))
-            }}
+            onRemoveAttachment={removeAttachment}
             onSubmit={sendMessage}
             onGoalCommand={handleGoalCommand}
             queue={queuedFollowUpsRef.current}

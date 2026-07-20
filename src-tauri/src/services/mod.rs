@@ -9,6 +9,7 @@ pub mod cli_spawn;
 pub mod credentials_store;
 pub mod feedback_service;
 pub mod file_service;
+pub mod pasted_file_upload;
 pub mod git_service;
 pub mod goal_evaluator;
 pub mod lifecycle_service;

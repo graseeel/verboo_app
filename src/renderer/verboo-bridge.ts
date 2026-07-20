@@ -300,6 +300,14 @@ const api = {
       return []
     }
   },
+  beginPastedFileUpload: (input: { name: string; size: number; mediaType: string }) =>
+    invoke<{ uploadId: string }>('begin_pasted_file_upload', input),
+  appendPastedFileChunk: (input: { uploadId: string; offset: number; bytes: number[] }) =>
+    invoke<void>('append_pasted_file_chunk', input),
+  finishPastedFileUpload: (input: { uploadId: string }) =>
+    invoke<AttachmentMeta>('finish_pasted_file_upload', input),
+  abortPastedFileUpload: (input: { uploadId: string }) =>
+    invoke<void>('abort_pasted_file_upload', input),
   pickFolder: () => invoke<string | undefined>('pick_folder'),
   // Convert a local file path to a webview-accessible URL for <img> src.
   fileUrl: (path: string) => convertFileSrc(path),

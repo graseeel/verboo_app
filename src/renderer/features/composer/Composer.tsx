@@ -776,11 +776,12 @@ export function Composer({
         <div className="selected-skills">
           {attachments.map(attachment => {
             const isImage = attachment.kind === 'image'
+            const isVideo = attachment.kind === 'video'
             const status = attachment.extractionStatus
             const isOcrProcessing = ocrProcessingPaths.includes(attachment.path)
             // No extractionStatus + no extractedText + not image → definitively
             // unreadable (backends that don't set extractionStatus yet).
-            const isUnreadable = !isImage && !attachment.extractedText && !status && !isOcrProcessing
+            const isUnreadable = !isImage && !isVideo && !attachment.extractedText && !status && !isOcrProcessing
             // extractionStatus 'extracted' or legacy extractedText → content is real.
             const isExtracted = status === 'extracted' || (!status && Boolean(attachment.extractedText))
             // extractionStatus 'warning' → Ezio found the file but couldn't
@@ -800,6 +801,11 @@ export function Composer({
                 }
               >
                 {attachment.name}
+                {isVideo && (
+                  <span className="attachment-badge attachment-badge-video">
+                    {formatVideoAttachment(attachment)}
+                  </span>
+                )}
                 {isOcrProcessing && (
                   <span className="attachment-badge attachment-badge-ocr">{t('ocr.processing')}</span>
                 )}
@@ -886,6 +892,15 @@ export function Composer({
       </div>
     </form>
   )
+}
+
+function formatVideoAttachment(attachment: AttachmentMeta): string {
+  const seconds = Math.ceil((attachment.video?.durationMs ?? 0) / 1000)
+  const duration = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+  const size = attachment.size >= 1024 * 1024
+    ? `${(attachment.size / (1024 * 1024)).toFixed(1)} MB`
+    : `${Math.ceil(attachment.size / 1024)} KB`
+  return `${duration} · ${size}`
 }
 
 function dragEventHasFiles(event: DragEvent<HTMLElement>): boolean {
@@ -1042,4 +1057,3 @@ function renderHighlightedValue(
   if (cursor < value.length) parts.push(value.slice(cursor))
   return parts
 }
-
