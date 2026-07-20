@@ -141,14 +141,23 @@ jobs:
         with:
           msystem: MINGW64
           update: true
+          # inherit gives the MSYS2 shell the Windows PATH (setup-node's
+          # node.exe); without it the sidecar builder dies with
+          # "node: command not found".
+          path-type: inherit
           install: >-
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-nasm
             autoconf
             automake
             libtool
             make
+
+      - name: Install macOS media build toolchain
+        if: runner.os == 'macOS'
+        run: brew install autoconf automake libtool nasm
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -166,7 +175,8 @@ jobs:
             pkg-config \
             autoconf \
             automake \
-            libtool
+            libtool \
+            nasm
 
       - name: Install npm dependencies
         run: npm ci
