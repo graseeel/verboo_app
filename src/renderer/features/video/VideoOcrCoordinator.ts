@@ -37,7 +37,12 @@ export function createVideoOcrCoordinator(deps: VideoOcrDeps): VideoOcrCoordinat
     for (const frame of request.frames) {
       if (cancelledJobs.has(request.jobId)) break
       try {
-        const recognized = await deps.recognize(frame.url)
+        // A wedged worker (or IPC call) must cost seconds, not the whole
+        // batch: skip any frame that takes longer than 15s.
+        const recognized = await Promise.race([
+          deps.recognize(frame.url),
+          new Promise<null>(resolve => setTimeout(() => resolve(null), 15_000)),
+        ])
         if (recognized && recognized.text.trim().length > 0) {
           results.push({
             timestampMs: frame.timestampMs,

@@ -19,6 +19,9 @@ const TARGET_SAMPLE_INTERVAL_MS: u64 = 2_500;
 const MIN_UNIFORM_FRAMES: usize = 8;
 const MAX_CANDIDATE_FRAMES: usize = 180;
 const DUPLICATE_HAMMING_DISTANCE: u32 = 4;
+/// Even near-identical content keeps one frame at least this often so a
+/// mostly-static screen recording still gets temporal coverage.
+const DEDUP_MAX_GAP_MS: u64 = 5_000;
 const SHEET_COLUMNS: u32 = 4;
 const SHEET_ROWS: u32 = 3;
 const SHEET_CELL_WIDTH: u32 = 320;
@@ -635,6 +638,7 @@ pub fn prepare_video(
     // Perceptual dedup keeps the earliest of each near-identical run.
     let mut kept: Vec<TimestampedFrame> = Vec::new();
     let mut last_hash: Option<u64> = None;
+    let mut last_kept_ms: Option<u64> = None;
     for frame in extracted {
         if job.is_cancelled() {
             return Err("video job was cancelled".to_string());
@@ -649,7 +653,13 @@ pub fn prepare_video(
             }
         };
         let duplicate = last_hash.is_some_and(|previous| is_perceptual_duplicate(previous, hash));
-        if !duplicate {
+        // A long run of near-identical frames (static screen recordings)
+        // must not collapse to a single frame: keep one per gap window so
+        // the contact sheet retains temporal coverage.
+        let gap_elapsed = last_kept_ms
+            .is_none_or(|previous| frame.timestamp_ms.saturating_sub(previous) >= DEDUP_MAX_GAP_MS);
+        if !duplicate || gap_elapsed {
+            last_kept_ms = Some(frame.timestamp_ms);
             kept.push(frame.clone());
             last_hash = Some(hash);
         } else {

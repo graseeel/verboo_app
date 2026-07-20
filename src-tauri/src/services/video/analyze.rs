@@ -12,7 +12,7 @@ use super::VideoWarning;
 /// Documented budget for the final consolidated context.
 pub const MAX_VIDEO_CONTEXT_CHARS: usize = 24_000;
 /// Bump when derived output shapes change so caches invalidate.
-pub const PIPELINE_VERSION: &str = "video-pipeline-v1";
+pub const PIPELINE_VERSION: &str = "video-pipeline-v2";
 
 const MAX_LINE_CHARS: usize = 500;
 const MAX_VISIBLE_TEXT_ITEMS: usize = 120;
