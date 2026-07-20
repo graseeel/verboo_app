@@ -9,20 +9,22 @@
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Emitter};
 
 use crate::models::types::{
     AgentEvent, AgentResultStatus, AgentTurnRequest, EventType, LanguageCode,
-    ResearchSubagentProgress, ResearchSubagentRequest, ResearchSubagentResult,
-    ResearchSubagentStatus, ResearchSubagentsRunRequest,
+    ResearchSubagentRequest, ResearchSubagentResult, ResearchSubagentsRunRequest,
+    SubagentThreadEvent, SubagentThreadEventKind,
+    SubagentThreadStatus, SubagentThreadUpdate,
 };
 use crate::services::auth_token::{inject_api_key, resolve_token};
 use crate::services::credentials_store::CredentialsStore;
 use crate::services::research_subagent_service::ResearchSubagentService;
+use crate::services::subagent_events::child_updates_from_payload;
 use crate::services::turn_service::{clean_terminal_text, parse_json_line};
 
 const RESEARCH_SUBAGENT_TIMEOUT_MS: u64 = 90_000;
@@ -32,6 +34,12 @@ const AGENT_EVENT_CHANNEL: &str = "agent:event";
 struct RunningSubagent {
     child: Arc<Mutex<Child>>,
     cancelled: Arc<Mutex<bool>>,
+}
+
+enum ReaderEvent {
+    Line(String),
+    Error(String),
+    Eof,
 }
 
 /// State shared across all active research runs.
@@ -171,26 +179,26 @@ fn run_one(
     let request_id = request.id.clone();
     let language = ResearchSubagentService::request_language(&request);
 
-    // Emit "queued" and immediately "running" progress so the UI shows the
-    // subagent starting.
-    emit_progress(
+    emit_thread_update(
         &app,
-        ResearchSubagentService::build_progress(
-            run_id,
+        &request,
+        thread_update(
             &request,
-            ResearchSubagentStatus::Queued,
+            SubagentThreadStatus::Queued,
+            SubagentThreadEventKind::Mission,
             &request.topic,
-            None,
+            "mission",
         ),
     );
-    emit_progress(
+    emit_thread_update(
         &app,
-        ResearchSubagentService::build_progress(
-            run_id,
+        &request,
+        thread_update(
             &request,
-            ResearchSubagentStatus::Running,
+            SubagentThreadStatus::Running,
+            SubagentThreadEventKind::Status,
             &request.topic,
-            Some(&request.topic),
+            "running",
         ),
     );
 
@@ -249,11 +257,7 @@ fn run_one(
     }
 
     // Take stdout/stderr before wrapping in threads.
-    let stdout = match child_handle
-        .lock()
-        .ok()
-        .and_then(|mut c| c.stdout.take())
-    {
+    let stdout = match child_handle.lock().ok().and_then(|mut c| c.stdout.take()) {
         Some(s) => s,
         None => {
             return finish_failed(
@@ -265,10 +269,7 @@ fn run_one(
             );
         }
     };
-    let stderr = child_handle
-        .lock()
-        .ok()
-        .and_then(|mut c| c.stderr.take());
+    let stderr = child_handle.lock().ok().and_then(|mut c| c.stderr.take());
 
     let cancelled_for_thread = cancelled.clone();
     let request_id_for_thread = request_id.clone();
@@ -280,7 +281,10 @@ fn run_one(
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(Result::ok) {
-                eprintln!("[verboo-subagent-stderr {}] {}", request_id_for_thread, line);
+                eprintln!(
+                    "[verboo-subagent-stderr {}] {}",
+                    request_id_for_thread, line
+                );
                 if let Ok(mut b) = stderr_buf_for_thread.lock() {
                     b.push_str(&line);
                     b.push('\n');
@@ -289,32 +293,48 @@ fn run_one(
         });
     }
 
-    // Read stdout line-by-line, parse events, detect violations, collect
-    // sources, and enforce the 90s timeout.
-    let reader = BufReader::new(stdout);
+    // Drain stdout on a dedicated thread. The owner polls the channel so a
+    // silent child can still be cancelled or timed out.
+    let (reader_tx, reader_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(line) => {
+                    if reader_tx.send(ReaderEvent::Line(line)).is_err() {
+                        return;
+                    }
+                }
+                Err(error) => {
+                    let _ = reader_tx.send(ReaderEvent::Error(error.to_string()));
+                    return;
+                }
+            }
+        }
+        let _ = reader_tx.send(ReaderEvent::Eof);
+    });
+
     let start = Instant::now();
     let mut output: Vec<String> = Vec::new();
     let mut sources: HashSet<String> = HashSet::new();
     let mut violation: Option<String> = None;
     let mut last_progress_at = Instant::now();
+    let mut read_error: Option<String> = None;
 
-    for line in reader.lines().map_while(Result::ok) {
+    loop {
         // Timeout check.
         if start.elapsed().as_millis() as u64 >= RESEARCH_SUBAGENT_TIMEOUT_MS {
             if let Ok(mut c) = child_handle.lock() {
                 let _ = crate::services::child_signal::interrupt_child(&mut c);
             }
-            return finish_failed(
-                &app,
-                run_id,
-                &request,
-                &timeout_message(&language),
-                sources,
-            );
+            return finish_failed(&app, run_id, &request, &timeout_message(&language), sources);
         }
 
         // External cancellation check (from cancel_research_subagents).
-        if *cancelled_for_thread.lock().unwrap_or_else(|p| p.into_inner()) {
+        if *cancelled_for_thread
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+        {
             return finish_failed(
                 &app,
                 run_id,
@@ -324,12 +344,37 @@ fn run_one(
             );
         }
 
+        let line = match reader_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(ReaderEvent::Line(line)) => line,
+            Ok(ReaderEvent::Error(error)) => {
+                read_error = Some(error);
+                break;
+            }
+            Ok(ReaderEvent::Eof) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         let clean = clean_terminal_text(&line);
         if clean.trim().is_empty() {
             continue;
         }
 
         if let Some(payload) = parse_json_line(&clean) {
+            for update in child_updates_from_payload(&request.id, &payload, timestamp_ms()) {
+                if let Some(event) = update.event.as_ref() {
+                    if event.kind == SubagentThreadEventKind::AgentMessage {
+                        if output.last() != Some(&event.text) {
+                            output.push(event.text.clone());
+                        }
+                    }
+                }
+                emit_thread_update(&app, &request, update);
+            }
+            if let Some(result_text) = result_text_from_payload(&payload) {
+                if output.last() != Some(&result_text) {
+                    output.push(result_text);
+                }
+            }
             if let Some(source) = ResearchSubagentService::source_from_tool_payload(&payload) {
                 sources.insert(source);
             }
@@ -338,21 +383,24 @@ fn run_one(
                 let now = Instant::now();
                 if now.duration_since(last_progress_at).as_millis() >= 700 {
                     last_progress_at = now;
-                    emit_progress(
+                    emit_thread_update(
                         &app,
-                        ResearchSubagentService::build_progress(
-                            run_id,
+                        &request,
+                        thread_update(
                             &request,
                             runtime.status,
-                            &request.topic,
-                            Some(runtime.detail.as_str()),
+                            SubagentThreadEventKind::Status,
+                            &runtime.detail,
+                            "activity",
                         ),
                     );
                 }
             }
 
             if violation.is_none() {
-                if let Some(v) = ResearchSubagentService::detect_read_only_violation(&payload, &language) {
+                if let Some(v) =
+                    ResearchSubagentService::detect_read_only_violation(&payload, &language)
+                {
                     violation = Some(v.clone());
                     if let Ok(mut c) = child_handle.lock() {
                         let _ = crate::services::child_signal::interrupt_child(&mut c);
@@ -367,19 +415,24 @@ fn run_one(
                 let now = Instant::now();
                 if now.duration_since(last_progress_at).as_millis() >= 700 {
                     last_progress_at = now;
-                    emit_progress(
+                    emit_thread_update(
                         &app,
-                        ResearchSubagentService::build_progress(
-                            run_id,
+                        &request,
+                        thread_update(
                             &request,
-                            ResearchSubagentStatus::Running,
-                            &request.topic,
-                            Some(&snippet_text),
+                            SubagentThreadStatus::Running,
+                            SubagentThreadEventKind::AgentMessage,
+                            &snippet_text,
+                            "stdout",
                         ),
                     );
                 }
             }
         }
+    }
+
+    if let Some(error) = read_error {
+        return finish_failed(&app, run_id, &request, &error, sources);
     }
 
     // Wait for exit code.
@@ -403,7 +456,7 @@ fn run_one(
         return finish_failed(&app, run_id, &request, &err, sources);
     }
 
-    let text = ResearchSubagentService::cleanup_output(&output.join(""));
+    let text = ResearchSubagentService::cleanup_output(&output.join("\n"));
     let summary = ResearchSubagentService::summarize_output(&text, &language);
     let findings = ResearchSubagentService::extract_findings(&text);
     let mut sources_vec: Vec<String> = sources.iter().cloned().collect();
@@ -418,14 +471,19 @@ fn run_one(
         sources: sources_vec,
     };
 
-    emit_progress(
+    emit_thread_update(
         &app,
-        ResearchSubagentService::build_progress(
-            run_id,
+        &request,
+        thread_update(
             &request,
-            ResearchSubagentStatus::Complete,
-            &result.summary,
-            Some(&result.summary),
+            SubagentThreadStatus::Completed,
+            SubagentThreadEventKind::Final,
+            if text.is_empty() {
+                &result.summary
+            } else {
+                &text
+            },
+            "final",
         ),
     );
 
@@ -487,20 +545,21 @@ fn safe_runtime_working_directory(working_directory: &str) -> String {
 /// Convenience: emit a failed result and a final progress event.
 fn finish_failed(
     app: &AppHandle,
-    run_id: &str,
+    _run_id: &str,
     request: &ResearchSubagentRequest,
     reason: &str,
     sources: HashSet<String>,
 ) -> ResearchSubagentResult {
     let result = ResearchSubagentService::failed_result(request, reason, &sources);
-    emit_progress(
+    emit_thread_update(
         app,
-        ResearchSubagentService::build_progress(
-            run_id,
+        request,
+        thread_update(
             request,
-            ResearchSubagentStatus::Failed,
-            &result.summary,
-            Some(reason),
+            SubagentThreadStatus::Failed,
+            SubagentThreadEventKind::Error,
+            reason,
+            "error",
         ),
     );
     result
@@ -529,19 +588,19 @@ fn runtime_activity_for_progress(payload: &serde_json::Value) -> Option<Progress
                 .or_else(|| input.get("cmd").and_then(|v| v.as_str()))
                 .unwrap_or("");
             if ResearchSubagentService::is_read_only_shell_command(cmd) {
-                ResearchSubagentStatus::Running
+                SubagentThreadStatus::Running
             } else {
-                ResearchSubagentStatus::Reading
+                SubagentThreadStatus::Reading
             }
         } else {
-            ResearchSubagentStatus::Running
+            SubagentThreadStatus::Running
         }
     } else if n == "websearch" || n == "webfetch" {
-        ResearchSubagentStatus::Searching
+        SubagentThreadStatus::Searching
     } else if n == "read" || n == "ls" || n == "glob" || n == "grep" {
-        ResearchSubagentStatus::Reading
+        SubagentThreadStatus::Reading
     } else {
-        ResearchSubagentStatus::Running
+        SubagentThreadStatus::Running
     };
 
     let detail = detail_for_tool(&n, input_obj).unwrap_or_else(|| name.to_string());
@@ -549,7 +608,7 @@ fn runtime_activity_for_progress(payload: &serde_json::Value) -> Option<Progress
 }
 
 struct ProgressActivity {
-    status: ResearchSubagentStatus,
+    status: SubagentThreadStatus,
     detail: String,
 }
 
@@ -605,33 +664,86 @@ fn exit_code_message(language: &LanguageCode, exit_code: Option<i32>) -> String 
     if *language == LanguageCode::PtBr {
         format!(
             "Processo terminou com código {}.",
-            exit_code.map(|c| c.to_string()).unwrap_or_else(|| "desconhecido".into())
+            exit_code
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "desconhecido".into())
         )
     } else {
         format!(
             "Process exited with code {}.",
-            exit_code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into())
+            exit_code
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".into())
         )
     }
 }
 
-fn emit_progress(app: &AppHandle, progress: ResearchSubagentProgress) {
+fn emit_thread_update(
+    app: &AppHandle,
+    request: &ResearchSubagentRequest,
+    subagent_thread: SubagentThreadUpdate,
+) {
     let _ = app.emit(
         AGENT_EVENT_CHANNEL,
         AgentEvent {
-            event_type: EventType::SubagentProgress,
-            progress: Some(progress),
+            event_type: EventType::SubagentThread,
+            turn_id: request.base_request.turn_id.clone(),
+            conversation_id: Some(request.base_request.conversation_id.clone()),
+            subagent_thread: Some(subagent_thread),
             ..Default::default()
         },
     );
 }
 
+fn thread_update(
+    request: &ResearchSubagentRequest,
+    status: SubagentThreadStatus,
+    kind: SubagentThreadEventKind,
+    text: &str,
+    suffix: &str,
+) -> SubagentThreadUpdate {
+    let timestamp = timestamp_ms();
+    SubagentThreadUpdate {
+        thread_id: request.id.clone(),
+        runtime_agent_id: None,
+        tool_use_id: None,
+        label: request.label.clone(),
+        mission: Some(request.topic.clone()),
+        status: Some(status),
+        event: Some(SubagentThreadEvent {
+            id: format!("{}:{suffix}:{timestamp}", request.id),
+            kind,
+            text: clean_terminal_text(text),
+            timestamp,
+            tool_name: None,
+            tool_use_id: None,
+            is_error: None,
+        }),
+    }
+}
+
+fn timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn result_text_from_payload(payload: &serde_json::Value) -> Option<String> {
+    if payload.get("type").and_then(serde_json::Value::as_str) != Some("result") {
+        return None;
+    }
+    payload
+        .get("result")
+        .and_then(serde_json::Value::as_str)
+        .map(clean_terminal_text)
+        .filter(|text| !text.trim().is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::types::{
-        AccessMode, AgentTurnRequest, LanguageCode, PersonalityMode,
-    };
+    use crate::models::types::{AccessMode, AgentTurnRequest, LanguageCode, PersonalityMode};
 
     fn base_request() -> AgentTurnRequest {
         AgentTurnRequest {
@@ -641,6 +753,9 @@ mod tests {
             model: None,
             model_supports_vision: None,
             run_vision_fallback: None,
+            media_capabilities: None,
+            cli_media_capabilities: None,
+            run_video_analysis: None,
             effort: None,
             reasoning: None,
             context_window: None,
@@ -662,6 +777,7 @@ mod tests {
             id: "r:1".into(),
             index: 1,
             total: 1,
+            label: None,
             topic: "test".into(),
             base_request: base_request(),
         };
@@ -675,5 +791,16 @@ mod tests {
     fn exit_code_message_localized() {
         assert!(exit_code_message(&LanguageCode::EnUs, Some(1)).contains("code 1"));
         assert!(exit_code_message(&LanguageCode::PtBr, Some(1)).contains("código 1"));
+    }
+
+    #[test]
+    fn result_payload_keeps_complete_markdown_for_parent_summary() {
+        let markdown = format!("# Findings\n\n{}", "detail ".repeat(800));
+        let payload = serde_json::json!({ "type": "result", "result": markdown });
+
+        let extracted = result_text_from_payload(&payload).expect("result text");
+
+        assert!(extracted.starts_with("# Findings"));
+        assert!(extracted.len() > 4_000);
     }
 }

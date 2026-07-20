@@ -200,6 +200,25 @@ fn describe_image_once(
     helper_model: &str,
     credentials: &CredentialsStore,
 ) -> Result<String, String> {
+    describe_image_once_with_prompt(
+        image_path,
+        media_type,
+        "Describe this image in detail. Include all visible text, objects, people, colors, layout, and any other relevant details. Be thorough but concise.",
+        helper_model,
+        credentials,
+    )
+}
+
+/// Same one-shot helper turn as `describe_image_once`, but with a
+/// caller-supplied prompt. Used by the video pipeline to request strict JSON
+/// analysis of labeled contact sheets.
+pub fn describe_image_once_with_prompt(
+    image_path: &Path,
+    media_type: &str,
+    prompt: &str,
+    helper_model: &str,
+    credentials: &CredentialsStore,
+) -> Result<String, String> {
     // Read and base64-encode the image. The CLI expects raw base64 (no
     // `data:` URL prefix) inside an Anthropic-style `source.base64` block.
     let bytes = std::fs::read(image_path).map_err(|e| format!("read image: {e}"))?;
@@ -209,7 +228,6 @@ fn describe_image_once(
     // requires the envelope `{type:"user", message:{role:"user", content:[...]}}`
     // — a bare `{role, content}` is silently ignored, which was the root cause
     // of "vision model returned no description".
-    let prompt = "Describe this image in detail. Include all visible text, objects, people, colors, layout, and any other relevant details. Be thorough but concise.";
     let message = serde_json::json!({
         "type": "user",
         "session_id": "",

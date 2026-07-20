@@ -4,9 +4,9 @@
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   min-height: var(--titlebar-height);
-  padding: 0 18px 0 var(--mac-traffic-width);
+  padding: 0 14px 0 var(--mac-traffic-width);
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: blur(18px);
@@ -17,14 +17,14 @@
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   min-width: 0;
 }
 
 .brand-mark,
 .topbar-mark {
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
   object-fit: contain;
 }
 
@@ -35,16 +35,17 @@
 .topbar-brand-status {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
 }
 
 .topbar-status-text {
   color: var(--text-dim);
-  font-size: 12px;
-  font-weight: 720;
+  font-size: 11.5px;
+  font-weight: 680;
   letter-spacing: 0;
   text-transform: lowercase;
+  opacity: 0.82;
 }
 
 /* Let mousedown on the branding fall through to the `data-tauri-drag-region`
@@ -75,6 +76,120 @@
   background: color-mix(in srgb, var(--accent-soft) 42%, transparent);
 }
 
+/* On desktop (pointer: fine + hover: hover) the left-edge rail handles
+   re-opening the sidebar, so the topbar button is redundant — hide it.
+   Touch/narrow viewports keep the explicit button (hover is unreliable). */
+@media (hover: hover) and (pointer: fine) {
+  .topbar-sidebar-button--touch {
+    display: none;
+  }
+}
+
+/* Thin hit-area on the left edge when the sidebar is hidden. Hover/focus
+   expands the sidebar transiently (peek) without persisting. Click pins. */
+.sidebar-rail {
+  position: relative;
+  z-index: 80;
+  grid-column: 1;
+  grid-row: 1;
+  width: 8px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: default;
+}
+
+.sidebar-rail::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: transparent;
+  content: "";
+  transition: background-color 150ms ease-out;
+}
+
+.sidebar-rail:hover::after,
+.sidebar-rail:focus-visible::after {
+  background: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.sidebar-rail:focus-visible {
+  outline: none;
+}
+
+/* Wrapper around the sidebar + resizer so peek hover handlers can cover
+   both without the resizer gap causing flicker. */
+.sidebar-shell {
+  position: relative;
+  grid-column: 1;
+  grid-row: 1;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+}
+
+.sidebar-shell.is-peek {
+  /* Peek sidebar floats above the workspace so it doesn't push content. */
+  z-index: 90;
+  box-shadow: 4px 0 16px color-mix(in srgb, black 18%, transparent);
+  /* Explicit width so the shell never depends on --sidebar-width (which is 0
+     when peek is active, since sidebarVisualMode only expands the grid for
+     !leaving). Without this, .app-sidebar would grow to content width and
+     project names would lose truncation → ghost expand. */
+  width: var(--sidebar-peek-width, 292px);
+}
+
+/* During the leave fade, the shell detaches from the grid (position:absolute)
+   so the workspace can collapse underneath while the sidebar fades out on top.
+   Width is frozen at --sidebar-peek-width (set in JS to sidebarWidth) so the
+   shell doesn't collapse to content-width mid-fade. */
+.sidebar-shell.is-peek-leaving {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: var(--sidebar-peek-width, 292px);
+  z-index: 90;
+}
+
+.sidebar-shell.is-peek .app-sidebar,
+.sidebar-shell.is-peek-leaving .app-sidebar {
+  /* Slight transparency so the workspace peeking behind is hinted. */
+  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+  /* Disable the base .app-sidebar transition (which includes opacity 240ms)
+     so it doesn't fight the enter/leave keyframe animations. Keyframes own
+     opacity + transform during peek; the base transition would interpolate
+     opacity in parallel → visible flicker/stutter when classes swap. */
+  transition: none;
+}
+
+.sidebar-shell.is-peek .app-sidebar {
+  /* Peek enter: opacity 0→1 + translateX(-12px)→0, 260ms ease-out. GPU-only
+     (transform + opacity) so the sidebar slides in without layout thrash.
+     260ms is perceptible but not sluggish — the sidebar reads as "arriving". */
+  animation: sidebar-peek-enter 260ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.sidebar-shell.is-peek-leaving .app-sidebar {
+  /* Leave fade: opacity 1→0 + translateX(-10px), 220ms. Faster than enter
+     (exit < entrance) so the sidebar retreats snappily. The shell is
+     position:absolute now, so the grid collapses underneath simultaneously. */
+  animation: sidebar-peek-leave 220ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+}
+
+@keyframes sidebar-peek-enter {
+  from { opacity: 0; transform: translateX(-12px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes sidebar-peek-leave {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(-10px); }
+}
+
 /* Collapse button that lives next to "New chat" inside the sidebar. */
 .sidebar-newchat-row {
   display: flex;
@@ -102,6 +217,26 @@
 .sidebar-collapse-button:hover {
   border-color: var(--border-strong);
   color: var(--text);
+  background: color-mix(in srgb, var(--accent-soft) 42%, transparent);
+}
+
+/* Pin button — shown only while peeking. Mirrors the collapse button's
+   dimensions so the newchat-row doesn't shift when toggling peek/pin. */
+.sidebar-pin-button {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.sidebar-pin-button:hover {
+  border-color: var(--border-strong);
+  color: var(--accent-strong);
   background: color-mix(in srgb, var(--accent-soft) 42%, transparent);
 }
 
@@ -272,10 +407,12 @@
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  /* Same spring-like ease as dropdowns/modals. The sidebar column animates by
+  /* Same ease-out-strong as dropdowns/modals. The sidebar column animates by
      its --sidebar-width value only (like the terminal/review panels) — the
-     column list itself never changes, so the whole layout glides. */
-  transition: grid-template-columns 240ms cubic-bezier(0.22, 1, 0.36, 1);
+     column list itself never changes, so the whole layout glides. 220ms
+     matches the peek leave fade so the grid collapse and sidebar fade finish
+     together. */
+  transition: grid-template-columns 220ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 /* During a manual resize drag the panel must follow the pointer 1:1 —
@@ -291,7 +428,7 @@
   overflow: hidden auto;
 }
 
-.research-subagent-panel {
+.subagent-thread-panel {
   grid-column: 3;
   grid-row: 1;
 }
@@ -382,6 +519,26 @@
 .app-layout.settings-open > .app-sidebar::after,
 .settings-open .app-sidebar::after,
 .app-sidebar.is-dimmed::after {
+  opacity: 1;
+}
+
+/* Fullscreen views (Profile / Settings): sidebar + rail are not rendered, so
+   the workspace takes the full grid width. The sidebar column collapses to 0
+   via --sidebar-width=0 (set inline by App.tsx when activeView is fullscreen),
+   but we also neutralize the dim overlay and any residual sidebar chrome so
+   the view is truly full-bleed. */
+.app-layout.view-fullscreen {
+  grid-template-columns: 0 minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--review-width) var(--terminal-width);
+}
+
+.app-layout.view-fullscreen .workspace {
+  grid-column: 1 / -1;
+}
+
+/* No sidebar to dim when fullscreen — neutralize the settings-open dim rules. */
+.app-layout.view-fullscreen.settings-open .sidebar-scroll,
+.app-layout.view-fullscreen.settings-open .sidebar-account-wrap {
+  filter: none;
   opacity: 1;
 }
 
@@ -565,7 +722,8 @@
 
 .sidebar-action:hover,
 .sidebar-item:hover,
-.sidebar-item.active {
+.sidebar-item.active,
+.sidebar-action.active {
   background: color-mix(in srgb, var(--accent-soft) 76%, transparent);
   color: var(--text);
 }
@@ -758,8 +916,8 @@
 .sidebar-account-wrap {
   position: relative;
   flex: 0 0 auto;
-  margin-top: 12px;
-  padding-top: 12px;
+  margin-top: 8px;
+  padding-top: 8px;
   border-top: 1px solid var(--border);
   transition:
     filter 180ms ease-out,
@@ -769,9 +927,9 @@
 .sidebar-account {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
+  gap: 6px;
   width: 100%;
-  padding: 10px 9px;
+  padding: 8px 8px;
   border: 0;
   border-radius: var(--radius);
   background: transparent;
@@ -811,48 +969,60 @@
   min-width: 0;
 }
 
+/* Brand row: compact 1-line — mascot + name + version + disclaimer inline.
+   Hierarchy: account-profile (user) sits above, brand is a quiet footer. */
 .account-brand {
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .account-brand img {
-  width: 22px;
-  height: 22px;
+  width: 16px;
+  height: 16px;
   object-fit: contain;
+  opacity: 0.72;
 }
 
 .account-brand strong {
   overflow: hidden;
-  color: var(--text);
-  font-size: 13px;
-  font-weight: 760;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-weight: 680;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .account-brand strong span {
   color: var(--accent-strong);
+  opacity: 0.78;
 }
 
 .account-brand small {
   color: var(--text-dim);
-  font-size: 11px;
-  font-weight: 720;
+  font-size: 10.5px;
+  font-weight: 620;
+  opacity: 0.7;
 }
 
 .account-disclaimer {
   color: var(--amber) !important;
-  font-size: 11px;
-  line-height: 1.25;
-  white-space: normal !important;
+  font-size: 10px;
+  font-weight: 620;
+  line-height: 1.2;
+  white-space: nowrap !important;
+  opacity: 0.72;
 }
 
 .account-profile {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+}
+
+.account-profile .account-avatar {
+  width: 26px;
+  height: 26px;
 }
 
 .account-avatar {
@@ -1081,4 +1251,26 @@
   border-color: var(--border-strong);
   color: var(--text);
   background: var(--bg-soft);
+}
+
+/* Respect reduced-motion: sidebar peek/expand transitions become instant. */
+@media (prefers-reduced-motion: reduce) {
+  .app-layout,
+  .app-sidebar,
+  .sidebar-rail::after,
+  .sidebar-shell,
+  .sidebar-shell.is-peek .app-sidebar {
+    transition: none !important;
+  }
+  /* Peek animations become opacity-only 120ms, no translate. Leave delay is
+     capped at 100ms via SIDEBAR_PEEK_LEAVE_DELAY_MS (JS-side). */
+  .sidebar-shell.is-peek .app-sidebar,
+  .sidebar-shell.is-peek-leaving .app-sidebar {
+    animation: sidebar-peek-fade 120ms ease-out forwards !important;
+  }
+}
+
+@keyframes sidebar-peek-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }

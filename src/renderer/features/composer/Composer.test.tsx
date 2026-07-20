@@ -1,0 +1,297 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
+import type { AttachmentMeta, SkillSummary } from '../../../shared/types'
+
+// jsdom lacks matchMedia — Composer reads it at module-eval time for
+// prefers-reduced-motion. Stub before importing Composer.
+if (!window.matchMedia) {
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    value: (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }),
+  })
+}
+
+import { Composer } from './Composer'
+
+// ── Mocks ──────────────────────────────────────────────────────────────
+vi.mock('../../i18n', () => ({
+  useI18n: () => ({ t: (k: string) => k, language: 'en-US' as const }),
+}))
+vi.mock('../../components/Toast', () => ({ useToast: () => ({ toast: () => {} }) }))
+vi.mock('../queue/QueuePanel', () => ({ QueuePanel: () => null }))
+vi.mock('../plugins/PluginCard', () => ({ PluginIcon: ({ name }: { name: string }) => <span data-icon>{name}</span> }))
+vi.mock('./voiceInput', () => ({
+  createVoiceInput: () => ({ start: () => {}, stop: () => {}, destroy: () => {} }),
+  detectSupport: () => false,
+  applyVoiceInterim: (c: string) => c,
+  commitVoiceFinal: (c: string) => c,
+  nextCatchUpStep: () => null,
+}))
+
+if (!('innerHeight' in window) || (window as any).innerHeight === 0) {
+  Object.defineProperty(window, 'innerHeight', { value: 800, writable: true })
+}
+
+beforeEach(() => cleanup())
+
+// ── Helpers ─────────────────────────────────────────────────────────────
+type ComposerProps = React.ComponentProps<typeof Composer>
+
+const baseSkill: SkillSummary = {
+  id: 'skill:brainstorming',
+  name: 'brainstorming',
+  description: 'Brainstorm ideas before building',
+  path: '/skills/brainstorming/SKILL.md',
+  source: 'managed',
+  trusted: true,
+}
+
+const pluginSkill: SkillSummary = {
+  ...baseSkill,
+  id: 'plugin:superpowers:brainstorming',
+  pluginId: 'superpowers',
+  pluginName: 'superpowers',
+}
+
+function renderComposer(overrides: Partial<ComposerProps> = {}) {
+  const props: ComposerProps = {
+    disabled: false,
+    skills: [baseSkill, pluginSkill],
+    tokenSkills: [],
+    onTokenSkillsChange: vi.fn(),
+    attachments: [],
+    onAttachFiles: vi.fn(),
+    onDropFiles: vi.fn(),
+    onRemoveAttachment: vi.fn(),
+    onSubmit: vi.fn(),
+    onPasteFiles: vi.fn(),
+    onGoalCommand: vi.fn(),
+    onPetCommand: vi.fn(),
+    onCompactCommand: vi.fn(),
+    leftToolbar: null,
+    rightToolbar: null,
+    ...overrides,
+  } as ComposerProps
+  return { ...render(<Composer {...props} />), props }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────
+
+describe('t1 — @ palette inserts inline token', () => {
+  it('selects skill from @ palette → inserts @<name> in text and palette closes', () => {
+    let value = '@'
+    const onValueChange = vi.fn(v => { value = v })
+
+    renderComposer({ value, onValueChange })
+
+    // @ palette open — portal in document.body
+    const option = document.body.querySelector('.skill-option') as HTMLButtonElement
+    expect(option).toBeTruthy()
+    expect(option.textContent).toContain('brainstorming')
+
+    fireEvent.click(option)
+
+    // onValueChange called with @brainstorming (replaceAtQueryWithToken)
+    expect(onValueChange).toHaveBeenCalled()
+    const newVal = onValueChange.mock.calls[0][0] as string
+    expect(newVal).toMatch(/@brainstorming/)
+    expect(newVal).not.toMatch(/\s@$/)
+  })
+})
+
+describe('t2 — syncTokenSkills: / and @ tokens', () => {
+  it('typing @brainstorming calls onTokenSkillsChange with matched skill', () => {
+    const onTokenSkillsChange = vi.fn()
+
+    const { container } = renderComposer({
+      value: 'use @brainstorming',
+      onTokenSkillsChange,
+    })
+
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: 'use @brainstorming now' } })
+
+    // syncTokenSkills fires with the @-matched skill
+    expect(onTokenSkillsChange).toHaveBeenCalled()
+    const skills = onTokenSkillsChange.mock.calls[0][0] as SkillSummary[]
+    expect(skills.some(s => s.name === 'brainstorming')).toBe(true)
+  })
+
+  it('deleting @token from text → onTokenSkillsChange excludes it', () => {
+    const onTokenSkillsChange = vi.fn()
+
+    const { container } = renderComposer({
+      value: 'use @brainstorming',
+      tokenSkills: [baseSkill],
+      onTokenSkillsChange,
+    })
+
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: 'use ' } })
+
+    // syncTokenSkills fires with empty array (no tokens left)
+    expect(onTokenSkillsChange).toHaveBeenCalled()
+    const skills = onTokenSkillsChange.mock.calls[0][0] as SkillSummary[]
+    expect(skills).toHaveLength(0)
+  })
+})
+
+describe('video attachment chip', () => {
+  it('shows name, duration, size, and remove action without an unreadable warning', () => {
+    const video: AttachmentMeta = {
+      path: '/uploads/clip.mp4',
+      name: 'clip.mp4',
+      size: 1_572_864,
+      kind: 'video',
+      video: {
+        durationMs: 65_000,
+        container: 'mp4',
+        videoCodec: 'h264',
+        width: 16,
+        height: 16,
+        avgFps: 1,
+        hasAudio: true,
+        hdr: 'sdr',
+      },
+    }
+    const onRemoveAttachment = vi.fn()
+    renderComposer({ attachments: [video], onRemoveAttachment })
+
+    const chip = screen.getByRole('button', { name: /clip\.mp4/i })
+    expect(chip.textContent).toContain('1:05 · 1.5 MB')
+    expect(chip.textContent).not.toContain('composer.attachmentUnreadable')
+    fireEvent.click(chip)
+    expect(onRemoveAttachment).toHaveBeenCalledWith('/uploads/clip.mp4')
+  })
+})
+
+describe('t3 — dedupe /name + @name same skill → 1 entry', () => {
+  it('text with /brainstorming and @brainstorming → onTokenSkillsChange gives 1 entry (same skill id)', () => {
+    const singleSkill: SkillSummary = {
+      id: 's1', name: 'dedupe-skill',
+      description: 'dedupe', path: '/s1', source: 'managed', trusted: true,
+    }
+    const onTokenSkillsChange = vi.fn()
+
+    const { container } = renderComposer({
+      value: '',
+      skills: [singleSkill],
+      onTokenSkillsChange,
+    })
+
+    // Fire change with / and @ tokens for the same skill name
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: '/dedupe-skill and @dedupe-skill both' } })
+
+    // Both tokens match 'dedupe-skill' → combined Set has 1 name → filter
+    // returns the single matching skill (1 entry, not 2).
+    expect(onTokenSkillsChange).toHaveBeenCalled()
+    const skills = onTokenSkillsChange.mock.calls[0][0] as SkillSummary[]
+    expect(skills.filter(s => s.name === 'dedupe-skill')).toHaveLength(1)
+  })
+})
+
+describe('t4 — submit clears tokenSkills', () => {
+  it('submit calls onSubmit and onTokenSkillsChange([])', () => {
+    const onSubmit = vi.fn()
+    const onTokenSkillsChange = vi.fn()
+
+    const { container } = renderComposer({
+      value: 'ship it now',
+      tokenSkills: [baseSkill],
+      onSubmit,
+      onTokenSkillsChange,
+    })
+
+    const form = container.querySelector('form') as HTMLFormElement
+    fireEvent.submit(form)
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit.mock.calls[0][0]).toBe('ship it now')
+    expect(onTokenSkillsChange).toHaveBeenCalledWith([])
+  })
+})
+
+describe('t5 — overlay: @token with PluginIcon', () => {
+  it('renderHighlightedValue @token of plugin skill → at-glyph contains icon decoration', () => {
+    const { container } = renderComposer({
+      value: '@brainstorming',
+      skills: [pluginSkill, baseSkill],
+    })
+
+    const highlight = container.querySelector('.composer-highlight')
+    expect(highlight).toBeTruthy()
+    const token = highlight!.querySelector('.composer-skill-token')
+    expect(token).toBeTruthy()
+    expect(token!.textContent).toContain('brainstorming')
+
+    // @token has .at-glyph (hidden @, preserves inline width for caret)
+    const glyph = token!.querySelector('.at-glyph')
+    expect(glyph).toBeTruthy()
+    expect(glyph!.textContent).toContain('@')
+
+    // pluginSkill has pluginId → .at-icon-deco renders INSIDE the glyph box
+    // (child, not sibling) so the icon anchors to the glyph's right edge.
+    const deco = glyph!.querySelector('.at-icon-deco')
+    expect(deco).toBeTruthy()
+    expect(deco!.parentElement).toBe(glyph)
+    const icon = deco!.querySelector('[data-icon]')
+    expect(icon).toBeTruthy()
+  })
+
+  it('/token does NOT contain at-glyph or icon decoration', () => {
+    const { container } = renderComposer({
+      value: '/brainstorming',
+      skills: [baseSkill, pluginSkill],
+    })
+
+    const highlight = container.querySelector('.composer-highlight')
+    expect(highlight).toBeTruthy()
+    const tokenSpan = highlight!.querySelector('.composer-skill-token')
+    expect(tokenSpan).toBeTruthy()
+    // /tokens never get at-glyph or PluginIcon
+    expect(tokenSpan!.querySelector('.at-glyph')).toBeFalsy()
+    expect(tokenSpan!.querySelector('.at-icon-deco')).toBeFalsy()
+    expect(tokenSpan!.querySelector('[data-icon]')).toBeFalsy()
+  })
+
+  it('@token overlay has identical font metrics to textarea (no font-weight on token)', () => {
+    // BUG A regression guard: the overlay MUST NOT set font-weight (or any
+    // metric-changing property) on .composer-skill-token. Any divergence
+    // makes the painted text drift vs. the textarea's caret. jsdom doesn't
+    // load CSS, so we assert the inline-style contract: the token span has
+    // NO inline font-weight, letter-spacing, or font-style override.
+    const { container } = renderComposer({
+      value: '@brainstorming',
+      skills: [pluginSkill, baseSkill],
+    })
+
+    const token = container.querySelector('.composer-skill-token')! as HTMLElement
+    // No inline metric-changing styles on the token itself
+    expect(token.style.fontWeight).toBe('')
+    expect(token.style.letterSpacing).toBe('')
+    expect(token.style.fontStyle).toBe('')
+  })
+
+  it('@token without pluginId has no icon decoration (plain accent text)', () => {
+    const { container } = renderComposer({
+      value: '@brainstorming',
+      skills: [baseSkill, pluginSkill],
+    })
+
+    const token = container.querySelector('.composer-skill-token')!
+    // baseSkill has no pluginId → no .at-icon-deco rendered
+    expect(token.querySelector('.at-icon-deco')).toBeFalsy()
+    // but the @ glyph is still there (preserves caret alignment)
+    expect(token.querySelector('.at-glyph')).toBeTruthy()
+  })
+})

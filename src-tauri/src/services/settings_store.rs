@@ -168,10 +168,12 @@ impl SettingsStore {
                 auto_download: s.updates.auto_download,
             },
             vision_fallback_consent: s.vision_fallback_consent.clone(),
+            video_fallback_consent: s.video_fallback_consent.clone(),
             trusted_skills: s.trusted_skills.clone(),
             avatar: s.avatar.clone(),
             include_verboo_co_author: s.include_verboo_co_author,
             effort_by_model: s.effort_by_model.clone(),
+            load_web_icons: s.load_web_icons,
         }
     }
 }
@@ -332,5 +334,41 @@ mod tests {
             .update(json!({ "showInMenuBar": true }))
             .unwrap();
         assert!(restored.show_in_menu_bar);
+    }
+
+    #[test]
+    fn video_fallback_consent_defaults_to_ask_for_legacy_settings() {
+        let store = temp_store();
+        let mut legacy = serde_json::to_value(UserSettings::default()).unwrap();
+        legacy
+            .as_object_mut()
+            .expect("settings object")
+            .remove("videoFallbackConsent");
+        std::fs::write(store.file_path(), serde_json::to_string(&legacy).unwrap()).unwrap();
+
+        let loaded = store.get().unwrap();
+        assert_eq!(
+            loaded.video_fallback_consent,
+            crate::models::types::VideoFallbackConsent::Ask
+        );
+    }
+
+    #[test]
+    fn image_and_video_fallback_consents_serialize_independently() {
+        let store = temp_store();
+        let updated = store
+            .update(json!({
+                "visionFallbackConsent": "always",
+                "videoFallbackConsent": "never"
+            }))
+            .unwrap();
+        assert_eq!(
+            updated.vision_fallback_consent,
+            crate::models::types::VisionFallbackConsent::Always
+        );
+        assert_eq!(
+            updated.video_fallback_consent,
+            crate::models::types::VideoFallbackConsent::Never
+        );
     }
 }

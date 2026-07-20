@@ -1,4 +1,3 @@
-import { AlertTriangle, Gauge } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import type { ContextUsageSnapshot } from '../../../shared/types'
 import { formatCompactNumber, useI18n } from '../../i18n'
@@ -6,10 +5,21 @@ import { formatCompactNumber, useI18n } from '../../i18n'
 type ContextMeterProps = {
   usage?: ContextUsageSnapshot
   contextWindow?: number
-  onClick?: () => void
 }
 
-export function ContextMeter({ usage, contextWindow, onClick }: ContextMeterProps) {
+/**
+ * Ring-only context meter for the composer toolbar.
+ *
+ * Design (Codex-like): a single filled ring that grows with context usage —
+ * no rotation, no dropdown, no panel on click. The percent label sits in the
+ * ring center; the full `used/max` breakdown is exposed via the native
+ * `title` tooltip so it stays discoverable without adding composer chrome.
+ *
+ * The previous `onClick` / ContextPanel popover was disconnected from the
+ * composer (panel file retained for future Settings reuse). Pruning actions
+ * (clear attachments / skills) remain available in their own surfaces.
+ */
+export function ContextMeter({ usage, contextWindow }: ContextMeterProps) {
   const { language, t } = useI18n()
   const maxTokens = usage?.maxTokens ?? contextWindow
   const usedTokens = usage?.usedTokens
@@ -31,23 +41,20 @@ export function ContextMeter({ usage, contextWindow, onClick }: ContextMeterProp
   const title = overLimit
     ? t('context.overLimitTitle')
     : usage ? t('context.usageTitle') : t('context.waitingTitle')
+  // Compose a single informative tooltip: title + usage breakdown.
+  const tooltip = `${title} · ${usageLabel} · ${percentLabel}`
 
   return (
-    <button type="button"
-      className={`context-meter ${overLimit ? 'over-limit' : ''}`}
-      title={title}
+    <div
+      className={`context-meter context-meter--ring-only ${overLimit ? 'over-limit' : ''}`}
+      role="status"
       aria-label={t('context.aria', { value: percentLabel })}
-      onClick={onClick}
+      title={tooltip}
       style={{ '--context-progress': bounded ?? 0 } as CSSProperties}
     >
-      {overLimit ? <AlertTriangle className="context-meter-icon" size={15} /> : <Gauge className="context-meter-icon" size={15} />}
-      <span className="context-copy">
-        <strong>{t('context.label')}</strong>
-        <small>{usageLabel}</small>
-      </span>
       <span className="context-ring" aria-hidden="true">
         <span>{percentLabel}</span>
       </span>
-    </button>
+    </div>
   )
 }

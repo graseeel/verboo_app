@@ -21,6 +21,8 @@ import type {
   AppConfig,
   AttachmentMeta,
   CliAuthStatus,
+  ChromeIntegrationRequest,
+  ChromeIntegrationStatus,
   CredentialStatus,
   FeedbackRequest,
   FeedbackResult,
@@ -42,6 +44,10 @@ import type {
   TerminalDataEvent,
   UpdateSnapshot,
   UserSettings,
+  VideoComponentState,
+  VideoOcrRequest,
+  VideoOcrText,
+  VideoTranscriberProgress,
   VisionFallbackConsent,
   VisionFallbackState,
   WorkspaceBranchInfo,
@@ -52,6 +58,19 @@ import type {
   WorkspacePushResult,
   WorkspaceReviewMetadata,
 } from '../shared/types'
+
+import type {
+  Marketplace,
+  MarketplaceManifestMap,
+  MutationResult,
+  Plugin,
+  PluginAvailablePayload,
+  PluginDetail,
+  PluginIconResult,
+  PluginScope,
+  PluginSkill,
+  PluginValidateResult,
+} from '../shared/plugins'
 
 // ── Helper: subscribe to Tauri event, returns cleanup fn ────────
 function onEvent<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -135,6 +154,18 @@ const api = {
     invoke<UserSettings>('update_user_settings', { patch }),
   resetUserSettings: () => invoke<UserSettings>('reset_user_settings'),
 
+  // ── Verboo in Chrome ────────────────────────────────────────
+  chromeIntegrationStatus: () =>
+    invoke<ChromeIntegrationStatus>('chrome_integration_status'),
+  chromeIntegrationConfigure: (request: ChromeIntegrationRequest) =>
+    invoke<ChromeIntegrationStatus>('chrome_integration_configure', { request }),
+  chromeIntegrationRepair: (request: ChromeIntegrationRequest) =>
+    invoke<ChromeIntegrationStatus>('chrome_integration_repair', { request }),
+  chromeIntegrationTest: () => invoke<boolean>('chrome_integration_test'),
+  chromeIntegrationRemove: () =>
+    invoke<ChromeIntegrationStatus>('chrome_integration_remove'),
+  openChromeExtensionStore: () => invoke<boolean>('open_chrome_extension_store'),
+
   // ── Vision fallback (FASE 1) ───────────────────────────────────
   // Returns current consent + preview of which model would be picked.
   getVisionFallbackState: () =>
@@ -142,6 +173,24 @@ const api = {
   // Sets consent (always/ask/never). Zelda's UI calls this on toggle.
   setVisionFallbackConsent: (consent: VisionFallbackConsent) =>
     invoke<UserSettings>('set_vision_fallback_consent', { consent }),
+
+  // ── Video understanding ─────────────────────────────────────
+  getVideoComponentState: () =>
+    invoke<VideoComponentState>('get_video_component_state'),
+  downloadVideoTranscriber: () =>
+    invoke<void>('download_video_transcriber'),
+  removeVideoTranscriber: () =>
+    invoke<void>('remove_video_transcriber'),
+  onVideoTranscriberProgress: (handler: (progress: VideoTranscriberProgress) => void) =>
+    onEvent<VideoTranscriberProgress>('video-transcriber-progress', handler),
+  onVideoOcrRequest: (handler: (request: VideoOcrRequest) => void) =>
+    onEvent<VideoOcrRequest>('video:ocr-request', handler),
+  // Frame bytes travel over IPC because neither Web Workers nor main-thread
+  // fetch reliably reach the asset protocol for app-data files.
+  readVideoFrame: (path: string) =>
+    invoke<ArrayBuffer>('read_video_frame', { path }),
+  completeVideoOcrBatch: (jobId: string, results: VideoOcrText[]) =>
+    invoke<void>('complete_video_ocr_batch', { jobId, results }),
 
   // ── Menu bar ────────────────────────────────────────────────
   updateMenuBar: (state: Partial<MenuBarState>) =>
@@ -273,6 +322,14 @@ const api = {
       return []
     }
   },
+  beginPastedFileUpload: (input: { name: string; size: number; mediaType: string }) =>
+    invoke<{ uploadId: string }>('begin_pasted_file_upload', input),
+  appendPastedFileChunk: (input: { uploadId: string; offset: number; bytes: number[] }) =>
+    invoke<void>('append_pasted_file_chunk', input),
+  finishPastedFileUpload: (input: { uploadId: string }) =>
+    invoke<AttachmentMeta>('finish_pasted_file_upload', input),
+  abortPastedFileUpload: (input: { uploadId: string }) =>
+    invoke<void>('abort_pasted_file_upload', input),
   pickFolder: () => invoke<string | undefined>('pick_folder'),
   // Convert a local file path to a webview-accessible URL for <img> src.
   fileUrl: (path: string) => convertFileSrc(path),
@@ -342,6 +399,48 @@ const api = {
     onEvent<{ sessionId: string }>('terminal:exit', callback),
   onTerminalError: (callback: (event: { sessionId: string; error: string }) => void) =>
     onEvent<{ sessionId: string; error: string }>('terminal:error', callback),
+
+  // ── Plugins (P5 / Wave 2 — spec docs/plugins-marketplace.md) ──
+  // 11 wrappers. Reads (`pluginList`, `pluginAvailable`, `marketplaceList`,
+  // `pluginValidate`) bypass the Rust auth gate; mutations are gated both
+  // FE-side (via cliAuth) and Rust-side.
+  pluginList: () => invoke<Plugin[]>('plugin_list'),
+  pluginAvailable: () => invoke<PluginAvailablePayload>('plugin_available'),
+  pluginInstall: (id: string, scope: PluginScope) =>
+    invoke<MutationResult>('plugin_install', { id, scope }),
+  pluginEnable: (id: string, scope?: PluginScope) =>
+    invoke<MutationResult>('plugin_enable', { id, scope }),
+  pluginDisable: (id: string, scope?: PluginScope) =>
+    invoke<MutationResult>('plugin_disable', { id, scope }),
+  pluginUninstall: (id: string, scope: PluginScope, keepData = false) =>
+    invoke<MutationResult>('plugin_uninstall', { id, scope, keepData }),
+  pluginUpdate: (id: string, scope: PluginScope) =>
+    invoke<Plugin>('plugin_update', { id, scope }),
+  pluginValidate: (path: string) =>
+    invoke<PluginValidateResult>('plugin_validate', { path }),
+  marketplaceList: () => invoke<Marketplace[]>('marketplace_list'),
+  marketplaceAdd: (source: string, scope?: string) =>
+    invoke<Marketplace>('marketplace_add', { source, scope }),
+  marketplaceRemove: (name: string) =>
+    invoke<void>('marketplace_remove', { name }),
+
+  // ── Plugins — rich detail (Wave 2 P5+ — Codex parity) ──────────
+  // These read on-disk manifests the CLI's `--available` JSON discards:
+  // category, author, homepage, skills list, license, keywords.
+  pluginDetail: (id: string) =>
+    invoke<PluginDetail>('plugin_detail', { id }),
+  pluginSkills: (id: string) =>
+    invoke<PluginSkill[]>('plugin_skills', { id }),
+  marketplaceManifests: () =>
+    invoke<MarketplaceManifestMap>('marketplace_manifests'),
+
+  // ── Plugins — icon fetch (P5.1 — on-demand, cached, privacy-gated) ──
+  // Fetches the plugin's icon from its homepage domain (apple-touch-icon.png
+  // → favicon.ico). HTTPS only, on-demand only. Returns a local file path
+  // (use `convertFileSrc`) or null (FE renders monogram). Respects the
+  // `loadWebIcons` user setting — if false, returns null without network.
+  pluginIcon: (pluginId: string) =>
+    invoke<PluginIconResult>('plugin_icon', { pluginId }),
 }
 
 // ── Expose on window (Tauri only) ──────────────────────────────

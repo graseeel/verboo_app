@@ -21,6 +21,7 @@
  *   - listen() event wiring — same reason.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { invoke } from '@tauri-apps/api/core'
 
 // Mock @tauri-apps/api before importing the shim — otherwise the shim
 // calls getCurrentWebview() at module load, which throws in jsdom.
@@ -154,10 +155,37 @@ describe('verboo-bridge — API shape', () => {
       'openUserSkillsFolder',
       'getDefaultWorkingDirectory',
       'getBundledCliVersion',
+      'chromeIntegrationStatus',
+      'chromeIntegrationConfigure',
+      'chromeIntegrationRepair',
+      'chromeIntegrationTest',
+      'chromeIntegrationRemove',
+      'openChromeExtensionStore',
     ] as const
     for (const name of required) {
       expect(typeof (api as Record<string, unknown> | undefined)?.[name]).toBe('function')
     }
+  })
+
+  it('maps Chrome integration controls to exact Tauri commands and payloads', async () => {
+    const chrome = api as Record<string, (...args: unknown[]) => Promise<unknown>>
+    const request = { developmentExtensionId: 'abcdefghijklmnopabcdefghijklmnop' }
+
+    await chrome.chromeIntegrationStatus()
+    await chrome.chromeIntegrationConfigure(request)
+    await chrome.chromeIntegrationRepair(request)
+    await chrome.chromeIntegrationTest()
+    await chrome.chromeIntegrationRemove()
+    await chrome.openChromeExtensionStore()
+
+    expect(vi.mocked(invoke).mock.calls.slice(-6)).toEqual([
+      ['chrome_integration_status'],
+      ['chrome_integration_configure', { request }],
+      ['chrome_integration_repair', { request }],
+      ['chrome_integration_test'],
+      ['chrome_integration_remove'],
+      ['open_chrome_extension_store'],
+    ])
   })
 
   it('exposes every workspace/files/agent method', () => {
@@ -181,6 +209,10 @@ describe('verboo-bridge — API shape', () => {
       'pickFiles',
       'inspectFiles',
       'inspectDroppedFiles',
+      'beginPastedFileUpload',
+      'appendPastedFileChunk',
+      'finishPastedFileUpload',
+      'abortPastedFileUpload',
       'pickFolder',
       'createProjectFolder',
       'sendTurn',

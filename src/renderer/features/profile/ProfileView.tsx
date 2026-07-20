@@ -1,4 +1,4 @@
-import { ArrowUpRight, Camera, Loader2, RefreshCw, RotateCcw, ShieldCheck, X } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, Camera, Loader2, RefreshCw, RotateCcw, ShieldCheck, X } from 'lucide-react'
 import { type CSSProperties, useState } from 'react'
 import type { AvatarSettings, ProfileActivityDay, ProfileResult } from '../../../shared/types'
 import { formatStandardNumber, useI18n, type Translator } from '../../i18n'
@@ -13,9 +13,10 @@ type ProfileViewProps = {
   onRefresh: () => void
   onManagePlan: () => void
   onUpdateAvatar: (settings: AvatarSettings) => void
+  onClose: () => void
 }
 
-export function ProfileView({ profile, loading, avatarSettings, onRefresh, onManagePlan, onUpdateAvatar }: ProfileViewProps) {
+export function ProfileView({ profile, loading, avatarSettings, onRefresh, onManagePlan, onUpdateAvatar, onClose }: ProfileViewProps) {
   const { language, t } = useI18n()
   const { toast } = useToast()
   const summary = profile.summary
@@ -28,13 +29,22 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
     <div className="profile-view page-surface">
       <header className="view-heading">
         <div>
+          {/* Back button sits ABOVE the H1, left-aligned, as a quiet breadcrumb
+             ghost — not the heavy boxed .settings-back. Refresh stays on the
+             right in view-heading-actions. */}
+          <button className="profile-back" type="button" onClick={onClose}>
+            <ArrowLeft size={14} />
+            {t('profile.back')}
+          </button>
           <h1>{t('profile.title')}</h1>
           <p>{t('profile.subtitle')}</p>
         </div>
-        <button className="ghost-button" type="button" onClick={onRefresh} disabled={loading}>
-          <RefreshCw size={15} />
-          {loading ? t('profile.refreshing') : t('common.refresh')}
-        </button>
+        <div className="view-heading-actions">
+          <button className="ghost-button" type="button" onClick={onRefresh} disabled={loading}>
+            <RefreshCw size={15} />
+            {loading ? t('profile.refreshing') : t('common.refresh')}
+          </button>
+        </div>
       </header>
 
       {profile.status !== 'ready' && (
@@ -143,6 +153,7 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
           </div>
         </div>
 
+        <div className="avatar-editor-section-label">{t('settings.avatarColorLabel')}</div>
         <div className="avatar-editor-colors">
           {AVATAR_PALETTE.map(color => (
             <button key={color} type="button"
@@ -154,6 +165,7 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
           ))}
         </div>
 
+        <div className="avatar-editor-section-label">{t('settings.avatarIconLabel')}</div>
         <div className="avatar-editor-grid">
           {Object.entries(AVATAR_PRESETS).slice(0, 24).map(([id, preset]) => (
             <button key={id} type="button"

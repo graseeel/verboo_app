@@ -55,11 +55,13 @@
 .markdown-body li > ol { margin: 0.08em 0 0; }
 
 .markdown-body a {
-  color: var(--accent-strong);
+  color: var(--link);
   text-decoration: none;
+  text-underline-offset: 0.16em;
   cursor: pointer;
 }
-.markdown-body a:hover { text-decoration: underline; }
+.markdown-body a:hover,
+.markdown-body a:focus-visible { text-decoration: underline; }
 
 .markdown-body strong { font-weight: 700; color: var(--text); }
 .markdown-body em { font-style: italic; }
@@ -106,6 +108,139 @@
 .markdown-body pre code.hljs {
   padding: 0;
   background: transparent;
+}
+
+.markdown-link-backdrop {
+  top: var(--titlebar-height);
+  right: calc(var(--subagents-panel-width, 0px) + var(--review-width) + var(--terminal-width));
+  bottom: 0;
+  left: var(--sidebar-width);
+  z-index: 1100;
+}
+
+.markdown-link-dialog {
+  width: min(460px, 100%);
+  gap: 14px;
+}
+
+.markdown-link-dialog-head {
+  display: grid;
+  gap: 7px;
+}
+
+.markdown-link-dialog h2 {
+  font-size: 16px;
+}
+
+.markdown-link-kind {
+  width: fit-content;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-soft) 82%, transparent);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.markdown-link-kind.is-external {
+  border-color: color-mix(in srgb, var(--amber) 36%, var(--border));
+  color: color-mix(in srgb, var(--amber) 76%, var(--text));
+}
+
+.markdown-link-destination {
+  display: grid;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-soft) 58%, transparent);
+}
+
+.markdown-link-destination > span {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.markdown-link-destination code {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+/* highlight.js loads GitHub Dark globally. Keep its palette in dark mode, but
+   replace it in light mode so Bash and other fenced code stay readable. */
+:root[data-theme="light"] .markdown-body pre {
+  background: #f6f8fa;
+  border-color: rgba(31, 35, 40, 0.2);
+  color: #24292f;
+}
+:root[data-theme="light"] .markdown-body pre code.hljs {
+  color: #24292f;
+}
+:root[data-theme="light"] .markdown-body .hljs-comment,
+:root[data-theme="light"] .markdown-body .hljs-code,
+:root[data-theme="light"] .markdown-body .hljs-formula {
+  color: #57606a;
+}
+:root[data-theme="light"] .markdown-body .hljs-doctag,
+:root[data-theme="light"] .markdown-body .hljs-keyword,
+:root[data-theme="light"] .markdown-body .hljs-meta .hljs-keyword,
+:root[data-theme="light"] .markdown-body .hljs-template-tag,
+:root[data-theme="light"] .markdown-body .hljs-template-variable,
+:root[data-theme="light"] .markdown-body .hljs-type,
+:root[data-theme="light"] .markdown-body .hljs-variable.language_ {
+  color: #cf222e;
+}
+:root[data-theme="light"] .markdown-body .hljs-title,
+:root[data-theme="light"] .markdown-body .hljs-title.class_,
+:root[data-theme="light"] .markdown-body .hljs-title.class_.inherited__,
+:root[data-theme="light"] .markdown-body .hljs-title.function_ {
+  color: #8250df;
+}
+:root[data-theme="light"] .markdown-body .hljs-attr,
+:root[data-theme="light"] .markdown-body .hljs-attribute,
+:root[data-theme="light"] .markdown-body .hljs-literal,
+:root[data-theme="light"] .markdown-body .hljs-meta,
+:root[data-theme="light"] .markdown-body .hljs-number,
+:root[data-theme="light"] .markdown-body .hljs-operator,
+:root[data-theme="light"] .markdown-body .hljs-variable,
+:root[data-theme="light"] .markdown-body .hljs-selector-attr,
+:root[data-theme="light"] .markdown-body .hljs-selector-class,
+:root[data-theme="light"] .markdown-body .hljs-selector-id,
+:root[data-theme="light"] .markdown-body .hljs-section {
+  color: #0550ae;
+}
+:root[data-theme="light"] .markdown-body .hljs-regexp,
+:root[data-theme="light"] .markdown-body .hljs-string,
+:root[data-theme="light"] .markdown-body .hljs-meta .hljs-string {
+  color: #0a3069;
+}
+:root[data-theme="light"] .markdown-body .hljs-built_in,
+:root[data-theme="light"] .markdown-body .hljs-symbol,
+:root[data-theme="light"] .markdown-body .hljs-bullet {
+  color: #953800;
+}
+:root[data-theme="light"] .markdown-body .hljs-name,
+:root[data-theme="light"] .markdown-body .hljs-quote,
+:root[data-theme="light"] .markdown-body .hljs-selector-tag,
+:root[data-theme="light"] .markdown-body .hljs-selector-pseudo {
+  color: #116329;
+}
+:root[data-theme="light"] .markdown-body .hljs-subst,
+:root[data-theme="light"] .markdown-body .hljs-emphasis,
+:root[data-theme="light"] .markdown-body .hljs-strong {
+  color: #24292f;
+}
+:root[data-theme="light"] .markdown-body .hljs-addition {
+  color: #116329;
+  background-color: #dafbe1;
+}
+:root[data-theme="light"] .markdown-body .hljs-deletion {
+  color: #cf222e;
+  background-color: #ffebe9;
 }
 
 /* GFM tables */

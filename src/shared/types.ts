@@ -130,6 +130,7 @@ export type SettingsTab =
   | 'trustedCommands'
   | 'customCommands'
   | 'app'
+  | 'verbooInChrome'
   | 'notifications'
   | 'personalization'
   | 'memory'
@@ -156,6 +157,15 @@ export type SkillSummary = {
   path: string
   source: SkillSource
   trusted: boolean
+  /** When the skill originates from a plugin, holds the plugin id for the
+   *  composer chip icon (PluginIcon). Undefined for filesystem skills. */
+  pluginId?: string
+  /** Display name of the source plugin, for chip rendering. */
+  pluginName?: string
+  /** When true, this entry represents a plugin-level mention (the whole
+   *  plugin, not a specific skill inside it). path is empty; Rust backend
+   *  emits the plugin mention line without a path. */
+  isPluginMention?: boolean
 }
 
 export type TranscriptItem = {
@@ -164,7 +174,7 @@ export type TranscriptItem = {
   text: string
   timestamp: number
   kind?: 'message' | 'activity' | 'summary'
-  activityKind?: 'thinking' | 'image' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool' | 'compacting'
+  activityKind?: 'thinking' | 'image' | 'video' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool' | 'compacting'
   activityDetail?: string
   activityAdditions?: number
   activityDeletions?: number
@@ -193,7 +203,7 @@ export type WorkspaceChangeEntry = {
 
 export type TurnActionKind =
   | 'read' | 'search' | 'edit' | 'create' | 'delete' | 'command'
-  | 'image' | 'terminal' | 'permission' | 'agent-open' | 'agent-close' | 'tool'
+  | 'image' | 'video' | 'terminal' | 'permission' | 'agent-open' | 'agent-close' | 'tool'
 
 export type CommandRun = { input: string; output: string; status: 'success' | 'failure' | 'running' }
 
@@ -248,12 +258,56 @@ export type ChatProject = {
   archivedAt?: number
 }
 
+export type SubagentThreadStatus =
+  | 'queued'
+  | 'thinking'
+  | 'reading'
+  | 'searching'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+export type SubagentThreadEvent = {
+  id: string
+  kind: 'mission' | 'agent-message' | 'tool-call' | 'tool-result' | 'status' | 'final' | 'error'
+  text: string
+  timestamp: number
+  toolName?: string
+  toolUseId?: string
+  isError?: boolean
+}
+
+export type SubagentThread = {
+  id: string
+  runtimeAgentId?: string
+  parentTurnId: string
+  toolUseId?: string
+  label: string
+  mission: string
+  status: SubagentThreadStatus
+  events: SubagentThreadEvent[]
+  createdAt: number
+  updatedAt: number
+}
+
+export type SubagentThreadUpdate = {
+  threadId: string
+  runtimeAgentId?: string
+  toolUseId?: string
+  label?: string
+  mission?: string
+  status?: SubagentThreadStatus
+  event?: SubagentThreadEvent
+}
+
 export type StoredConversation = {
   id: string
   title: string
   cliSessionId?: string
   projectId?: string
   items: TranscriptItem[]
+  subagents: SubagentThread[]
   goal?: GoalState
   createdAt: number
   updatedAt: number
@@ -266,7 +320,7 @@ export type StoredConversation = {
 }
 
 export type ChatStore = {
-  version: 2
+  version: 3
   projects: ChatProject[]
   conversations: StoredConversation[]
 }
@@ -338,6 +392,7 @@ export type UserSettings = {
   // Consent for vision fallback (spawn a vision-capable model to describe
   // images when the selected model can't see). Default: 'ask'.
   visionFallbackConsent: VisionFallbackConsent
+  videoFallbackConsent: VideoFallbackConsent
   // Paths of untrusted skills (project-root skills) the user has approved
   // with "Always Allow". Trusted skills (user/legacy roots) don't need
   // approval — they pass through directly.
@@ -355,6 +410,13 @@ export type UserSettings = {
    *  Absent → model's defaultEffort applies. Promoted to UserSettings by
    *  Geralt; FE falls back to localStorage when the backend hasn't landed yet. */
   effortByModel?: Record<string, string>
+  /**
+   * When true (default), the plugins view fetches real icons from plugin
+   * homepages (apple-touch-icon / favicon) via the backend cache. When
+   * false, only monograms are rendered — no network calls for icons.
+   * Privacy toggle in Settings → Privacy.
+   */
+  loadWebIcons: boolean
 }
 
 /// Profile avatar configuration.
@@ -377,6 +439,44 @@ export type AvatarSettings = {
 /// - 'always': always run the fallback without asking.
 /// - 'never': never run the fallback; images are ignored with a warning.
 export type VisionFallbackConsent = 'ask' | 'always' | 'never'
+
+export type VideoFallbackConsent = 'ask' | 'always' | 'never'
+
+export type VideoUnderstandingRoute =
+  | 'nativeOriginal'
+  | 'nativeSdrProxy'
+  | 'sampledFramesWithTranscript'
+
+export type VideoComponentState = {
+  asrModel: 'absent' | 'ready'
+  bytes?: number
+}
+
+/// One frame the backend wants OCRed, addressed by a webview-loadable URL.
+export type VideoOcrFrame = {
+  timestampMs: number
+  url: string
+}
+
+/// Backend request to OCR up to 60 timestamped frames for one video job.
+export type VideoOcrRequest = {
+  jobId: string
+  frames: VideoOcrFrame[]
+}
+
+/// One recognized frame returned to the backend.
+export type VideoOcrText = {
+  timestampMs: number
+  text: string
+  confidence: number
+}
+
+export type VideoTranscriberProgress = {
+  state: 'downloading' | 'ready' | 'error'
+  bytesDownloaded: number
+  totalBytes: number
+  error?: string
+}
 
 /// State returned by `getVisionFallbackState` for Zelda's settings UI.
 export type VisionFallbackState = {
@@ -491,7 +591,54 @@ export type ProfileResult = {
   error?: string
 }
 
-export type AttachmentKind = 'image' | 'file'
+export type AttachmentKind = 'image' | 'video' | 'file'
+
+export type VideoHdrKind = 'sdr' | 'hlg' | 'pq' | 'dolbyVision' | 'unknown'
+
+export type VideoProgressStage =
+  | 'validating'
+  | 'preparing'
+  | 'transcribing'
+  | 'analyzing'
+  | 'consolidating'
+
+export type VideoStreamMetadata = {
+  durationMs: number
+  container: string
+  videoCodec: string
+  audioCodec?: string
+  width: number
+  height: number
+  avgFps: number
+  hasAudio: boolean
+  hdr: VideoHdrKind
+  colorPrimaries?: string
+  colorTransfer?: string
+  bitDepth?: number
+}
+
+export type ModelMediaCapabilities = {
+  image: boolean
+  video: boolean
+  audio: boolean
+  videoContainers: string[]
+  videoCodecs: string[]
+  acceptsHdrVideo: boolean
+}
+
+export type CliMediaCapabilities = {
+  imageBlocks: boolean
+  videoBlocks: boolean
+  audioBlocks: boolean
+}
+
+export type VideoProgress = {
+  jobId: string
+  turnId: string
+  stage: VideoProgressStage
+  completedUnits?: number
+  totalUnits?: number
+}
 
 // Outcome of attempting text extraction on an attachment.
 // - 'extracted': extractedText holds real content the model can reason about.
@@ -516,6 +663,7 @@ export type AttachmentMeta = {
   // string ('warning'). Frontend uses this to distinguish "model has real
   // content" from "model received a warning" without parsing the string.
   extractionStatus?: ExtractionStatus
+  video?: VideoStreamMetadata
 }
 
 export type AgentTurnRequest = {
@@ -525,6 +673,9 @@ export type AgentTurnRequest = {
   model?: string
   modelSupportsVision?: boolean
   runVisionFallback?: boolean
+  mediaCapabilities?: ModelMediaCapabilities
+  cliMediaCapabilities?: CliMediaCapabilities
+  runVideoAnalysis?: boolean
   contextWindow?: number
   effort?: string
   /** Reasoning config snapshot at request-build time. FE reads this on the
@@ -546,6 +697,7 @@ export type ResearchSubagentRequest = {
   id: string
   index: number
   total: number
+  label?: string
   topic: string
   baseRequest: AgentTurnRequest
 }
@@ -554,20 +706,8 @@ export type ResearchSubagentsRunRequest = {
   runId?: string
   count: number
   requestedCount?: number
+  labels?: string[]
   baseRequest: AgentTurnRequest
-}
-
-export type ResearchSubagentProgress = {
-  id: string
-  index: number
-  total?: number
-  runId?: string
-  status: 'queued' | 'running' | 'reading' | 'searching' | 'complete' | 'failed'
-  summary: string
-  activity?: string
-  detail?: string
-  mission?: string
-  label?: string
 }
 
 export type ResearchSubagentResult = {
@@ -630,14 +770,24 @@ export type RuntimeActivity = {
   diffPreview?: string
 }
 
+export type CliTerminalFailure = {
+  category: string
+  message: string
+  details: string[]
+  exitCode: number | null
+  sessionId?: string
+  recoveryReady: boolean
+}
+
 export type AgentEvent =
   | { type: 'started'; turnId: string; conversationId?: string }
   | { type: 'stdout'; turnId: string; conversationId?: string; text: string }
   | { type: 'stderr'; turnId: string; conversationId?: string; text: string }
   | { type: 'json'; turnId: string; conversationId?: string; payload: unknown; runtimeStatus?: RuntimeStatus; runtimeActivity?: RuntimeActivity }
   | { type: 'result'; turnId: string; conversationId?: string; result: AgentResultSnapshot }
-  | { type: 'subagent-progress'; progress: ResearchSubagentProgress }
-  | { type: 'error'; turnId: string; conversationId?: string; message: string }
+  | { type: 'subagent-thread'; turnId: string; conversationId: string; subagentThread: SubagentThreadUpdate }
+  | { type: 'video-progress'; turnId: string; conversationId?: string; videoProgress: VideoProgress }
+  | { type: 'error'; turnId: string; conversationId?: string; message: string; payload?: CliTerminalFailure; exitCode?: number | null }
   | { type: 'done'; turnId: string; conversationId?: string; exitCode: number | null }
 
 export type AppConfig = {
@@ -645,6 +795,34 @@ export type AppConfig = {
   accessMode: AccessMode
   platform: NodeJS.Platform
   selectedModel?: string
+}
+
+// ── Verboo in Chrome integration ──────────────────────────────
+
+export type ChromeComponentState = 'missing' | 'managed' | 'outdated' | 'invalid' | 'conflict'
+export type ChromeConnectionState = 'connected' | 'waitingForChrome' | 'ambiguous' | 'incompatible'
+export type ChromeIntegrationAggregate = 'notConfigured' | 'incomplete' | 'ready' | 'connected'
+export type ChromeExtensionIdSource = 'none' | 'release' | 'development'
+
+export type ChromeIntegrationStatus = {
+  extension: ChromeComponentState
+  bridge: ChromeComponentState
+  mcp: ChromeComponentState
+  connection: ChromeConnectionState
+  aggregate: ChromeIntegrationAggregate
+  installedVersion?: string
+  availableVersion: string
+  canConfigure: boolean
+  canRepair: boolean
+  canRemove: boolean
+  storeUrlAvailable: boolean
+  developmentBuild: boolean
+  extensionIdSource: ChromeExtensionIdSource
+  errorCode?: string
+}
+
+export type ChromeIntegrationRequest = {
+  developmentExtensionId?: string
 }
 
 // ── Review types ────────────────────────────────────────────────

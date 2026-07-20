@@ -1,10 +1,16 @@
-import type { ChatStore, StoredConversation, TranscriptItem } from '../../shared/types'
+import type { ChatProject, ChatStore, StoredConversation, TranscriptItem } from '../../shared/types'
+import { sanitizeSubagentThreads } from '../features/subagents/subagentThreads'
 
 export const CHAT_STORE_KEY = 'verboo:chat-store:v1'
 export const DEFAULT_CONVERSATION_TITLE = 'Novo chat'
 export const DEFAULT_PROJECT_NAME = 'Projeto'
 
-type LegacyChatStore = Omit<ChatStore, 'version'> & { version: 1 }
+type LegacyStoredConversation = Omit<StoredConversation, 'subagents'> & { subagents?: unknown }
+type LegacyChatStore = {
+  version: 1 | 2
+  projects: ChatProject[]
+  conversations: LegacyStoredConversation[]
+}
 type PersistedChatStore = ChatStore | LegacyChatStore
 
 export function readChatStore(): ChatStore {
@@ -29,7 +35,7 @@ export function persistChatStore(store: ChatStore): void {
 
 export function emptyChatStore(): ChatStore {
   return {
-    version: 2,
+    version: 3,
     projects: [],
     conversations: [],
   }
@@ -42,6 +48,7 @@ export function createConversation(projectId?: string): StoredConversation {
     title: DEFAULT_CONVERSATION_TITLE,
     projectId,
     items: [initialSystemMessage()],
+    subagents: [],
     createdAt: now,
     updatedAt: now,
     lastTurnEndedAt: now,
@@ -96,20 +103,21 @@ function isPersistedChatStore(value: unknown): value is PersistedChatStore {
   if (!value || typeof value !== 'object') return false
   const candidate = value as Partial<PersistedChatStore>
   return (
-    (candidate.version === 1 || candidate.version === 2) &&
+    (candidate.version === 1 || candidate.version === 2 || candidate.version === 3) &&
     Array.isArray(candidate.projects) &&
     Array.isArray(candidate.conversations)
   )
 }
 
 function migrateChatStore(store: PersistedChatStore): ChatStore {
-  if (store.version === 2) return store
+  if (store.version === 3) return store
   return {
     ...store,
-    version: 2,
+    version: 3,
     conversations: store.conversations.map(conversation => ({
       ...conversation,
-      goal: undefined,
+      goal: store.version === 1 ? undefined : conversation.goal,
+      subagents: [],
     })),
   }
 }
@@ -119,8 +127,11 @@ function migrateChatStore(store: PersistedChatStore): ChatStore {
  *  in visibleConversations falls back to updatedAt, but by filling it here
  *  we guarantee the invariant that all persisted conversations have the field. */
 export function sanitizeConversation(conversation: StoredConversation): StoredConversation {
-  if (conversation.lastTurnEndedAt !== undefined) return conversation
-  return { ...conversation, lastTurnEndedAt: conversation.updatedAt }
+  return {
+    ...conversation,
+    lastTurnEndedAt: conversation.lastTurnEndedAt ?? conversation.updatedAt,
+    subagents: sanitizeSubagentThreads(conversation.subagents),
+  }
 }
 
 function sanitizeChatStore(store: ChatStore): ChatStore {

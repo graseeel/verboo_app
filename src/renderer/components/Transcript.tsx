@@ -1,6 +1,7 @@
 import { Check, CheckCircle2, ChevronDown, ChevronRight, Clipboard, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { TranscriptItem, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import type { TranscriptItem, VideoProgress, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
+import { VideoProcessingRow } from '../features/video/VideoProcessingRow'
 import { MarkdownMessage } from '../features/transcript/MarkdownMessage'
 import { StepFlow } from '../features/transcript/StepFlow'
 import { ThinkingIcon } from '../features/transcript/TranscriptIcons'
@@ -19,16 +20,31 @@ type TranscriptProps = {
   compactedTurnIds?: ReadonlySet<string>
   imageReadingTurnId?: string
   onEditSent?: (conversationId: string, itemId: string, newText: string) => void
+  /** Fired when a user toggles expand/collapse on a turn. The parent uses
+   *  this to suppress stick-to-bottom autoscroll during the height change
+   *  — otherwise scrollToLatest/forceWorkspaceToBottom fire after the
+   *  restore and override the user's viewport position. */
+  onUserExpand?: () => void
+  /** Live video-analysis progress keyed by turnId. A turn with an entry
+   *  shows one compact transient row; removal deletes the row entirely. */
+  videoProgressByTurn?: Record<string, VideoProgress>
+  /** Cancels the active video analysis via the same conversation interrupt
+   *  the composer stop button uses. */
+  onCancelVideo?: () => void
 }
 
 const MAX_ACTIVITY_DETAIL_LINES = 8
 const MAX_SUMMARY_DETAIL_LINES = 3
 
-export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, compactedTurnIds, imageReadingTurnId, conversationId, onEditSent }: TranscriptProps) {
+export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, compactedTurnIds, imageReadingTurnId, conversationId, onEditSent, onUserExpand, videoProgressByTurn, onCancelVideo }: TranscriptProps) {
   // `items` is a new array reference only when the conversation actually changes,
   // so this recomputes on real content changes but is skipped when the parent
   // re-renders for unrelated reasons (context-usage ticks, subagent updates…).
   const visibleItems = useMemo(() => buildTranscriptEntries(items), [items])
+
+  const handleUserExpand = useCallback(() => {
+    onUserExpand?.()
+  }, [onUserExpand])
 
   return (
     <div className="transcript">
@@ -42,8 +58,11 @@ export const Transcript = memo(function Transcript({ items, onOpenReview, review
               compacting={compactingTurnId === entry.turnId}
               compacted={compactedTurnIds?.has(entry.turnId) ?? false}
               readingImage={imageReadingTurnId === entry.turnId}
+              videoProgress={videoProgressByTurn?.[entry.turnId]}
+              onCancelVideo={onCancelVideo}
               onOpenReview={onOpenReview}
               reviewMetadata={reviewMetadata}
+              onUserExpand={handleUserExpand}
             />
           : <MessageArticle key={entry.item.id} item={entry.item} conversationId={conversationId} onCopy={() => {}} onEditSent={onEditSent} />
       ))}
@@ -82,34 +101,69 @@ function ThinkingRotator({ snippets }: { snippets: string[] }) {
   )
 }
 
-function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, readingImage, onOpenReview, reviewMetadata }: {
+function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, readingImage, videoProgress, onCancelVideo, onOpenReview, reviewMetadata, onUserExpand }: {
   entry: Extract<TranscriptEntry, { kind: 'assistant-turn' }>
   thinking: boolean
   thinkingSnippets?: string[]
   compacting: boolean
   compacted: boolean
   readingImage: boolean
+  videoProgress?: VideoProgress
+  onCancelVideo?: () => void
   onOpenReview?: TranscriptProps['onOpenReview']
   reviewMetadata?: WorkspaceReviewMetadata
+  onUserExpand?: () => void
 }) {
   const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
   const streaming = entry.items.some(item => item.streaming)
   const textItems = entry.items.filter(item => item.role === 'assistant' && item.text.trim().length > 0)
   const hasText = textItems.length > 0
+
+  // Preserve scroll position when toggling expand — the grid-template-rows
+  // 0fr→1fr transition changes the container height, which can cause the
+  // browser to shift the user's viewport. Capture scrollTop before the
+  // state change and restore it in a layout effect so the user stays put.
+  const toggleExpand = useCallback(() => {
+    const workspace = document.querySelector<HTMLElement>('.workspace')
+    if (workspace) workspace.dataset.scrollBefore = String(workspace.scrollTop)
+    onUserExpand?.()
+    setExpanded(prev => !prev)
+  }, [onUserExpand])
+
+  useLayoutEffect(() => {
+    const workspace = document.querySelector<HTMLElement>('.workspace')
+    const saved = workspace?.dataset.scrollBefore
+    if (workspace && saved !== undefined) {
+      workspace.scrollTop = Number(saved)
+      delete workspace.dataset.scrollBefore
+    }
+  }, [expanded])
   // When a vision-relay activity is in the turn, the VisionRelayRow in
   // StepFlow replaces the "Lendo imagem…" live chip — no double status.
   const hasVisionRelay = entry.items.some(item =>
     item.activityDetail?.startsWith('vision-relay|') ?? false
   )
   // The collapsed summary is the model's own final message (natural language),
-  // not an app-generated action count. When expanded, the full flow already
-  // includes this text as its last block, so the standalone recap is hidden.
-  const finalText = hasText ? textItems[textItems.length - 1].text : ''
+  // not an app-generated action count. The recap is always visible below the
+  // panel; StepFlow uses hideFinalTextId to suppress the duplicate block.
+  const finalTextItem = hasText ? textItems[textItems.length - 1] : undefined
+  const finalText = finalTextItem?.text ?? ''
   const modelItem = entry.items.find(item => item.role === 'assistant' && item.modelDisplayName)
   const label = modelItem?.modelDisplayName ? `Verboo - ${modelItem.modelDisplayName}` : 'Verboo'
   const summary = entry.summary
-  const showFlow = streaming || expanded
+  // The backend always sends summary.text in English ("Worked for 8s").
+  // When the user's locale is not en, localise via the i18n key instead of
+  // displaying the raw English string. The regex extracts the elapsed portion
+  // (e.g. "8s", "1m 23s") and re-renders via t('transcript.workedFor').
+  const WORKED_FOR_RE = /^Worked for (.+)$/
+  const workedForMatch = summary?.text?.match(WORKED_FOR_RE)
+  // A turn has "steps" when it contains at least one non-thinking activity
+  // (read/search/edit/command/etc). Turns with only a final assistant message
+  // have nothing to expand — the chevron would open an empty panel.
+  const hasActions = entry.items.some(item =>
+    item.kind === 'activity' && item.activityKind !== 'thinking'
+  )
   return (
     <article className="message-row assistant turn-view">
       {/* No "generating" badge here: while streaming, the thinking marker and
@@ -120,10 +174,20 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
       </div>
 
       {!streaming && entry.items.length > 0 && (
-        <button type="button" className="turn-collapsed" onClick={() => setExpanded(value => !value)}>
-          <ChevronRight size={14} className={expanded ? 'is-open' : ''} />
-          <span>{summary?.text ?? t('transcript.worked')}</span>
-        </button>
+        hasActions ? (
+          <button type="button" className="turn-collapsed" onClick={toggleExpand}>
+            <ChevronRight size={14} className={expanded ? 'is-open' : ''} />
+            <span>{workedForMatch ? t('transcript.workedFor', { elapsed: workedForMatch[1] }) : summary?.text ?? t('transcript.worked')}</span>
+          </button>
+        ) : (
+          <span className="turn-collapsed is-static">
+            <span>{workedForMatch ? t('transcript.workedFor', { elapsed: workedForMatch[1] }) : summary?.text ?? t('transcript.worked')}</span>
+          </span>
+        )
+      )}
+
+      {videoProgress && (
+        <VideoProcessingRow progress={videoProgress} onCancel={() => onCancelVideo?.()} />
       )}
 
       {thinking && !hasText && !(readingImage && hasVisionRelay) && (
@@ -145,9 +209,15 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
         </div>
       )}
 
-      {showFlow && <StepFlow items={entry.items} streaming={streaming} imageReading={readingImage} />}
+      {streaming
+        ? <StepFlow items={entry.items} streaming={streaming} imageReading={readingImage} />
+        : entry.items.length > 0 && (
+            <div className={`turn-flow-panel ${expanded ? 'is-open' : ''}`} aria-hidden={!expanded}>
+              <div><StepFlow items={entry.items} streaming={false} imageReading={readingImage} hideFinalTextId={finalTextItem?.id} /></div>
+            </div>
+          )}
 
-      {!streaming && !expanded && finalText && (
+      {!streaming && finalText && (
         <div className="step-text turn-recap"><MarkdownMessage text={finalText} /></div>
       )}
 

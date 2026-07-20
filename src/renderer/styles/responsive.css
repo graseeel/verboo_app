@@ -103,6 +103,28 @@
     display: none;
   }
 
+  .chrome-integration-summary,
+  .chrome-integration-empty {
+    grid-template-columns: 40px minmax(0, 1fr) auto;
+  }
+
+  .chrome-status-row {
+    grid-template-columns: 20px minmax(0, 1fr);
+    padding-block: 8px;
+  }
+
+  .chrome-status-value {
+    grid-column: 2;
+  }
+
+  .chrome-integration-actions {
+    justify-content: stretch;
+  }
+
+  .chrome-integration-actions button {
+    flex: 1 1 180px;
+  }
+
   .composer-toolbar {
     align-items: stretch;
     flex-direction: column;
@@ -170,7 +192,8 @@
 
   .terminal-panel,
   .review-panel,
-  .research-subagent-panel {
+  .subagent-thread-panel,
+  .subagent-indicator {
     display: none !important;
   }
 

@@ -1,11 +1,8 @@
 import { FileSearch, PanelLeftOpen, Terminal as TerminalIcon } from 'lucide-react'
-import { SlotText } from 'slot-text/react'
-import mascotUrl from '../../../assets/branding/verboo-mascot.png'
 import { useI18n } from '../i18n'
 
 type TopBarProps = {
   sidebarVisible: boolean
-  statusLabel: string
   onToggleSidebar: () => void
   terminalOpen: boolean
   terminalUnavailableReason?: string
@@ -17,7 +14,6 @@ type TopBarProps = {
 
 export function TopBar({
   sidebarVisible,
-  statusLabel,
   onToggleSidebar,
   terminalOpen,
   terminalUnavailableReason,
@@ -34,12 +30,13 @@ export function TopBar({
       data-tauri-drag-region=""
       onDoubleClick={() => window.verboo.toggleWindowZoom()}
     >
-      {/* When the sidebar is collapsed, show a reopen button here. When it's
-          open, the collapse button lives next to "New chat" inside the sidebar
-          (see AppSidebar) — keeps it off the traffic-light area. */}
+      {/* When the sidebar is collapsed, show a reopen button here — but only
+          on touch/narrow viewports where hover is unreliable. On desktop
+          (pointer: fine, hover: hover) the left-edge rail handles re-opening,
+          so this button is hidden via CSS to avoid duplicate controls. */}
       {!sidebarVisible && (
         <button
-          className="topbar-sidebar-button ui-tooltip"
+          className="topbar-sidebar-button ui-tooltip topbar-sidebar-button--touch"
           type="button"
           onClick={event => {
             event.stopPropagation()
@@ -51,16 +48,8 @@ export function TopBar({
           <PanelLeftOpen size={15} />
         </button>
       )}
-      <div
-        className="topbar-brand-status"
-        data-tauri-drag-region=""
-        aria-label={`Verboo ${statusLabel}`}
-      >
-        <img className="topbar-mark" src={mascotUrl} alt="Verboo" />
-        <span className="topbar-status-text">
-          <SlotText text={statusLabel} options={{ direction: 'up', duration: 180, stagger: 14, bounce: 0.2, interrupt: true }} />
-        </span>
-      </div>
+      {/* Quiet drag spacer — no "ready/pronto" status near traffic lights. */}
+      <div className="topbar-brand-status" data-tauri-drag-region="" aria-hidden="true" />
       <div className="topbar-actions">
         {(terminalUnavailableReason || reviewUnavailableReason) && (
           <span className="topbar-terminal-notice" role="status">

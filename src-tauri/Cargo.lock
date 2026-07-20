@@ -5953,7 +5953,7 @@ dependencies = [
 
 [[package]]
 name = "verboo-desktop"
-version = "0.5.1-beta.1"
+version = "0.5.2-beta.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -5983,6 +5983,7 @@ dependencies = [
  "tokio",
  "uuid",
  "windows-sys 0.59.0",
+ "winreg 0.55.0",
 ]
 
 [[package]]

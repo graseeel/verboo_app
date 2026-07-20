@@ -87,11 +87,11 @@ export type OcrResult = {
  * @returns Parsed OCR result, or null if the worker failed to load
  *   (e.g. missing traineddata / CSP block).
  */
-export async function recognizeImage(imageUrl: string): Promise<OcrResult | null> {
+export async function recognizeImage(image: string | Blob): Promise<OcrResult | null> {
   try {
     const w = await ensureWorker()
     scheduleTeardown()
-    const { data } = await w.recognize(imageUrl)
+    const { data } = await w.recognize(image as Parameters<Worker['recognize']>[0])
     const text = (data.text ?? '').trim()
     return {
       text,

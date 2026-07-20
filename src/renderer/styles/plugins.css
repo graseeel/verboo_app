@@ -1,0 +1,1742 @@
+/* Plugins view — marketplace lines, skeletons, modals.
+   Motion: transform + opacity only (no transition: all). Stagger max 8 lines.
+   Reduced-motion: opacity-only. */
+
+/* ── View shell ─────────────────────────────────────────────────── */
+.plugins-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 18px;
+}
+
+.plugins-view-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.plugins-view-header h1 {
+  margin: 0 0 4px;
+  font-size: 26px;
+  line-height: 1.12;
+}
+
+.plugins-view-header p {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* ── Skill icon in flat line (Skills tab) ────────────────────────── */
+.plugin-skill-icon--line {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent-strong);
+  flex-shrink: 0;
+}
+
+/* ── Segmented control (Plugins | Habilidades) ──────────────────── */
+/* Codex-style pills: two buttons in a row, active = solid bg, inactive =
+   transparent. Crossfade 120ms opacity-only on tab content swap. */
+.plugins-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  width: fit-content;
+}
+
+.plugins-tab {
+  padding: 5px 16px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  font-weight: 680;
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease), color 120ms var(--dropdown-ease);
+}
+
+.plugins-tab:hover:not(.is-active) {
+  color: var(--text);
+}
+
+.plugins-tab.is-active {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* Tab content crossfade — 120ms opacity-only. Applied to the wrapper of
+   each tab's content so the swap feels smooth, not jarring. */
+.plugins-tab-content {
+  animation: plugins-tab-fade 120ms ease-out;
+}
+
+@keyframes plugins-tab-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── Skill group header (Skills tab) ────────────────────────────── */
+.plugin-skill-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.plugin-skill-group-name {
+  font-size: 13px;
+  font-weight: 680;
+  color: var(--text);
+}
+
+.plugin-skill-group-count {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+/* ── Sticky search ──────────────────────────────────────────────── */
+/* Stays fixed at top while the list scrolls. Header (title+subtitle)
+   scrolls away normally. App bg + subtle bottom border for separation. */
+.plugins-search {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: -18px;
+  padding: 26px 0 8px;
+  background: var(--bg);
+  backdrop-filter: none;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Sentinel helper — 1px spacer used by the IntersectionObserver in
+   PluginsView.tsx to detect when the sticky bar is pinned. Visually
+   invisible but must not collapse to zero height. The negative margins
+   cancel the 18px flex gap (above) and the 1px sentinel height (below),
+   preserving the exact vertical spacing between the tab bar and the
+   search input that existed before the sentinel was added. */
+.plugins-sticky-sentinel {
+  pointer-events: none;
+  margin: -18px 0 -1px;
+}
+
+/* Opaque overlay covering the .workspace padding area (30px top, 28px sides)
+   above the sticky search bar. Only paints when is-stuck is set — without
+   that guard the overlay would cover the tab buttons sitting directly above
+   the bar (Plugins/Habilidades) before any scroll happens. The values
+   mirror the .workspace padding exactly (surfaces.css:1). The ::before is
+   positioned absolutely relative to the sticky element's padding-box; with
+   top:-30px it sits in the padding area, and the negative left/right extend
+   it to cover the horizontal padding too. z-index:0 keeps it in front of
+   the parent's background layer. */
+.plugins-search.is-stuck::before {
+  content: '';
+  position: absolute;
+  left: -28px;
+  right: -28px;
+  top: -30px;
+  height: 30px;
+  background: var(--bg);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Bottom fade — only paints when is-stuck. A 10px gradient from var(--bg)
+   to transparent softens the hard bottom edge of the sticky bar, making
+   scrolled content blend in as it passes underneath. Replaces an earlier
+   CSS mask-image approach that clipped the ::before (mask operates on the
+   border-box and hides paint outside). */
+.plugins-search.is-stuck::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: -28px;
+  right: -28px;
+  height: 10px;
+  background: linear-gradient(to bottom, var(--bg), transparent);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Push interactive children above the pseudo-elements so the input,
+   icon, and button remain clickable. Positioned ancestor + z-index:1
+   lifts them into a child stacking context above z-index:0. */
+.plugins-search > * {
+  position: relative;
+  z-index: 1;
+}
+
+.plugins-search input {
+  flex: 1;
+  height: 36px;
+  padding: 0 12px 0 36px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 120ms var(--dropdown-ease), box-shadow 120ms var(--dropdown-ease);
+}
+
+.plugins-search input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.plugins-search-icon {
+  position: absolute;
+  left: 12px;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+/* ── Restart banner ─────────────────────────────────────────────── */
+.plugins-restart-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--text);
+  font-size: 13px;
+  animation: plugins-fade-in 200ms var(--dropdown-ease);
+}
+
+.plugins-restart-banner button {
+  margin-left: auto;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent-strong);
+  color: white;
+  font-size: 12px;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+/* ── Error banner ───────────────────────────────────────────────── */
+.plugins-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+  border: 1px solid color-mix(in srgb, #ef4444 28%, transparent);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.plugins-error-banner button {
+  margin-left: auto;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+/* ── Section label ───────────────────────────────────────────────── */
+.plugins-section-label {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* First-party integration — a single quiet row above marketplace content.
+   It is intentionally separate from catalog plugins and never enters search. */
+.plugins-official-section {
+  margin-bottom: 18px;
+}
+
+.official-chrome-card {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 13px;
+  padding: 13px 14px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--bg-elevated) 78%, transparent);
+}
+
+.official-chrome-icon {
+  position: relative;
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--bg-elevated);
+}
+
+.official-chrome-icon img {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+}
+
+.official-chrome-icon span {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 2px solid var(--bg-elevated);
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.official-chrome-body {
+  min-width: 0;
+}
+
+.official-chrome-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.official-chrome-title-row strong {
+  font-size: 14.5px;
+}
+
+.official-plugin-badge {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent-strong);
+  font-size: 9.5px;
+  font-weight: 730;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.official-chrome-body p {
+  margin: 3px 0 6px;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.official-chrome-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.official-chrome-status.is-ready,
+.official-chrome-status.is-connected {
+  color: var(--green);
+}
+
+.official-chrome-status.is-incomplete {
+  color: var(--danger);
+}
+
+.official-chrome-action {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 670;
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease), border-color 120ms var(--dropdown-ease);
+}
+
+.official-chrome-action:hover {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+  background: var(--bg-hover);
+}
+
+/* ── Lines grid (2-col, borderless) ──────────────────────────────── */
+.plugins-lines {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px 16px;
+}
+
+/* Grid items (the wrapper divs with animationDelay) must have min-width: 0
+   so the flex children inside can truncate. Without this, long descriptions
+   blow out the column width and the grid collapses to 1 col + overflows. */
+.plugins-lines > * {
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .plugins-lines {
+    grid-template-columns: 1fr;
+  }
+
+  .official-chrome-card {
+    grid-template-columns: 46px minmax(0, 1fr);
+  }
+
+  .official-chrome-action {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+}
+
+/* ── Line base (borderless row) ──────────────────────────────────── */
+.plugin-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  /* min-width: 0 + overflow: hidden so the flex child chain can truncate. */
+  min-width: 0;
+  overflow: hidden;
+  transition: background-color 120ms var(--dropdown-ease);
+  animation: plugin-card-enter 200ms var(--dropdown-ease) both;
+}
+
+.plugin-line:hover {
+  background: var(--bg-hover);
+}
+
+.plugin-line-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* overflow: hidden so the ellipsis on children has a bounded container. */
+  overflow: hidden;
+}
+
+.plugin-line-name {
+  font-size: 15px;
+  font-weight: 680;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-line-desc {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-line-meta {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  opacity: 0.7;
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-line-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+/* ── Monogram ────────────────────────────────────────────────────── */
+.plugin-monogram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+  /* Neutral theme-aware bg so transparent PNGs are legible in both themes.
+     Light: light surface; Dark: elevated surface. The colored gradient lives
+     on the initials layer and fades out when the icon arrives. */
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+
+:root[data-theme="dark"] .plugin-monogram {
+  background: color-mix(in srgb, var(--bg-elevated) 80%, black 20%);
+}
+
+/* Initials layer — the colored gradient + initials. Fades out (opacity 1→0)
+   when the icon arrives so the monogram doesn't leak behind transparent PNGs.
+   Crossfade is simultaneous: initials 1→0 while img 0→1, both 150ms. */
+.plugin-monogram-initials {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: inherit;
+  color: white;
+  font-size: 13px;
+  font-weight: 720;
+  letter-spacing: -0.02em;
+  text-shadow: 0 1px 2px color-mix(in srgb, black 30%, transparent);
+  opacity: 1;
+  transition: opacity 150ms var(--dropdown-ease);
+}
+
+/* When the icon is present, fade initials out. */
+.plugin-monogram.has-icon .plugin-monogram-initials {
+  opacity: 0;
+}
+
+/* Real icon overlay — fades in on top of the monogram when the URL arrives.
+   object-fit: cover so the icon fills the rounded square without stretching.
+   Opacity transition ~150ms for a smooth swap (no flicker). */
+.plugin-monogram-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 150ms var(--dropdown-ease);
+}
+
+.plugin-monogram-img:not([src=""]) {
+  opacity: 1;
+}
+
+/* ── Install button (pill outline) ───────────────────────────────── */
+.plugin-install-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 680;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 120ms var(--dropdown-ease), background-color 120ms var(--dropdown-ease), color 120ms var(--dropdown-ease), transform 150ms var(--dropdown-ease);
+}
+
+.plugin-install-btn:hover:not(:disabled) {
+  border-color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent-strong);
+}
+
+.plugin-install-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.plugin-install-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* Crossfade between Install and Installing states — icon + label swap
+   opacity instead of teleporting. Matches the monogram crossfade pattern
+   (plugins.css:351–361). 150ms is short enough to feel like a state change,
+   long enough to register the swap. */
+.plugin-install-btn > svg,
+.plugin-install-btn > span {
+  transition: opacity 150ms var(--dropdown-ease);
+}
+.plugin-install-btn.is-busy > svg,
+.plugin-install-btn.is-busy > span {
+  opacity: 0.85;
+}
+
+/* ── Line menu trigger (…) ───────────────────────────────────────── */
+.plugin-line-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease), color 120ms var(--dropdown-ease);
+}
+
+.plugin-line-menu-trigger:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* ── Portal menu ────────────────────────────────────────────────── */
+.plugin-card-menu {
+  min-width: 168px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-elevated);
+  box-shadow: 0 12px 32px color-mix(in srgb, black 32%, transparent);
+  animation: plugin-menu-pop 120ms var(--dropdown-ease);
+}
+
+.plugin-card-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease);
+}
+
+.plugin-card-menu-item:hover {
+  background: var(--bg-hover);
+}
+
+.plugin-card-menu-item--danger {
+  color: #ef4444;
+}
+
+/* ── Skeleton line ──────────────────────────────────────────────── */
+.plugin-line--skeleton {
+  pointer-events: none;
+  animation: plugin-skel-pulse 1.4s ease-in-out infinite;
+}
+
+.plugin-skel-monogram--44 {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+}
+
+.plugin-skel-line {
+  border-radius: 4px;
+  background: var(--bg-hover);
+}
+
+.plugin-skel-line--title { width: 50%; height: 14px; }
+.plugin-skel-line--desc { width: 80%; height: 11px; margin-top: 4px; }
+
+/* ── Empty states ───────────────────────────────────────────────── */
+.plugins-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 56px 24px;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.plugins-empty-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent-strong);
+}
+
+.plugins-empty-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 680;
+  color: var(--text);
+}
+
+.plugins-empty-body {
+  margin: 0;
+  font-size: 12.5px;
+  max-width: 320px;
+}
+
+/* ── Section expander ───────────────────────────────────────────── */
+.plugin-section-expander {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  margin-top: 4px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease), color 120ms var(--dropdown-ease);
+}
+
+.plugin-section-expander:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.plugin-expander-stack {
+  display: flex;
+  align-items: center;
+}
+
+.plugin-expander-mini {
+  border-radius: 999px;
+  overflow: hidden;
+  border: 2px solid var(--bg);
+}
+
+.plugin-expander-text {
+  flex: 1;
+  text-align: left;
+}
+
+.plugin-expander-chevron {
+  flex-shrink: 0;
+  transition: transform 160ms var(--dropdown-ease);
+}
+
+.plugin-expander-chevron.is-up {
+  transform: rotate(180deg);
+}
+
+/* ── Installed section (icon-only strip) ─────────────────────────── */
+.plugins-installed-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plugins-installed-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.plugins-installed-gear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease), color 120ms var(--dropdown-ease);
+}
+
+.plugins-installed-gear:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.plugins-installed-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px 0 8px;
+  scrollbar-width: thin;
+}
+
+.plugins-installed-strip::-webkit-scrollbar {
+  height: 4px;
+}
+
+.plugins-installed-strip::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+
+.plugins-strip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  transition: transform 120ms var(--dropdown-ease);
+}
+
+.plugins-strip-icon:active {
+  transform: scale(0.97);
+}
+
+.plugins-strip-icon.is-active {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 12px;
+}
+
+/* ── Install modal ───────────────────────────────────────────────── */
+.plugin-install-modal {
+  width: min(440px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.plugin-install-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.plugin-install-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-strong);
+  flex-shrink: 0;
+}
+
+.plugin-install-name {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 680;
+}
+
+.plugin-install-marketplace {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.plugin-install-desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+.plugin-install-scope {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plugin-install-scope-label {
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.plugin-install-scope-options {
+  display: flex;
+  gap: 6px;
+}
+
+.plugin-scope-option {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease), border-color 120ms var(--dropdown-ease);
+}
+
+.plugin-scope-option.is-active {
+  border-color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.plugin-install-error {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+  border: 1px solid color-mix(in srgb, #ef4444 28%, transparent);
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.plugin-install-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ── Trust badge ─────────────────────────────────────────────────── */
+.plugin-trust-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 680;
+  letter-spacing: 0.02em;
+}
+
+.plugin-trust-badge--official {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-strong);
+}
+
+/* ── Marketplace modal ───────────────────────────────────────────── */
+.marketplace-modal {
+  width: min(520px, 100%);
+  max-height: min(560px, 80vh);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.marketplace-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.marketplace-modal-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 680;
+}
+
+.marketplace-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease);
+}
+
+.marketplace-modal-close:hover {
+  background: var(--bg-hover);
+}
+
+.marketplace-add-row {
+  display: flex;
+  gap: 8px;
+}
+
+.marketplace-add-input {
+  flex: 1;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color 120ms var(--dropdown-ease);
+}
+
+.marketplace-add-input:focus {
+  border-color: var(--accent);
+}
+
+.marketplace-add-hint {
+  margin: -6px 0 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.marketplace-error {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+  border: 1px solid color-mix(in srgb, #ef4444 28%, transparent);
+  font-size: 12.5px;
+}
+
+.marketplace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.marketplace-empty {
+  margin: 0;
+  padding: 24px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.marketplace-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+
+.marketplace-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.marketplace-row-name {
+  font-size: 13px;
+  font-weight: 680;
+  color: var(--text);
+}
+
+.marketplace-row-source {
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marketplace-row-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease), color 120ms var(--dropdown-ease);
+}
+
+.marketplace-row-remove:hover:not(:disabled) {
+  background: color-mix(in srgb, #ef4444 14%, transparent);
+  color: #ef4444;
+}
+
+/* ── Confirm remove overlay ──────────────────────────────────────── */
+.marketplace-confirm-overlay {
+  position: absolute;
+}
+
+.marketplace-confirm {
+  width: min(360px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.marketplace-confirm h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 680;
+}
+
+.marketplace-confirm p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.marketplace-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ── Detail view ─────────────────────────────────────────────────── */
+.plugin-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  animation: plugin-detail-enter 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.plugin-detail-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.plugin-detail-crumb--link {
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  transition: color 120ms var(--dropdown-ease);
+}
+
+.plugin-detail-crumb--link:hover {
+  color: var(--text);
+}
+
+.plugin-detail-crumb--current {
+  color: var(--text);
+  font-weight: 680;
+}
+
+.plugin-detail-crumb-sep {
+  opacity: 0.5;
+}
+
+/* ── Detail header (sticky) ──────────────────────────────────────── */
+.plugin-detail-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+  /* Opaque background so skills/description scrolling behind don't bleed. */
+  background: color-mix(in srgb, var(--bg) 100%, var(--bg-elevated));
+  backdrop-filter: none;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Sticky cover (ITEM 2) — opaque ::before prevents content above the header
+   (breadcrumbs / mesh overflow) from leaking when the header is stuck. The
+   ::after gradient softens the bottom edge where scrolled content passes under. */
+.plugin-detail-header.is-stuck::before,
+.plugin-detail-header.is-stuck::after {
+  content: '';
+  position: absolute;
+  left: -28px;
+  right: -28px;
+  pointer-events: none;
+  z-index: 0;
+}
+.plugin-detail-header.is-stuck::before {
+  top: -30px;
+  height: 30px;
+  background: var(--bg);
+}
+.plugin-detail-header.is-stuck::after {
+  top: 100%;
+  height: 10px;
+  background: linear-gradient(to bottom, var(--bg), transparent);
+}
+
+.plugin-detail-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.plugin-detail-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.plugin-detail-name {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 680;
+  line-height: 1.15;
+  text-wrap: balance;
+}
+
+.plugin-detail-subtitle {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.plugin-detail-badge {
+  font-size: 11px;
+  font-weight: 680;
+  padding: 3px 9px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.plugin-detail-badge.is-on {
+  background: color-mix(in srgb, #22c55e 16%, transparent);
+  color: #16a34a;
+}
+
+.plugin-detail-badge.is-off {
+  background: color-mix(in srgb, var(--text-dim) 16%, transparent);
+  color: var(--text-dim);
+}
+
+.plugin-detail-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* ── Install pill (solid black / white in dark) ──────────────────── */
+.plugin-install-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border: 0;
+  border-radius: 999px;
+  background: #111;
+  color: white;
+  font-size: 13px;
+  font-weight: 680;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 150ms var(--dropdown-ease), opacity 120ms var(--dropdown-ease);
+}
+
+.plugin-install-pill:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.plugin-install-pill:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.plugin-install-pill:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* Dark mode: white pill, black text. */
+:root[data-theme="dark"] .plugin-install-pill {
+  background: white;
+  color: #111;
+}
+
+/* ── Uninstall button (red tint) ────────────────────────────────── */
+.plugin-uninstall-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid color-mix(in srgb, #ef4444 30%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, #ef4444 8%, transparent);
+  color: #ef4444;
+  font-size: 13px;
+  font-weight: 680;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 120ms var(--dropdown-ease), transform 150ms var(--dropdown-ease);
+}
+
+.plugin-uninstall-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, #ef4444 16%, transparent);
+}
+
+.plugin-uninstall-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.plugin-uninstall-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* ── Hero band (Verboo violet mesh — luminous, not dark) ────────── */
+/* Registered @property so the browser can interpolate --mouse-x/--mouse-y
+   during transitions (without @property, custom properties are discrete
+   and never lerp). Resting variant uses 700ms ease, active 160ms linear. */
+@property --mouse-x { syntax: '<number>'; inherits: true; initial-value: 0.5; }
+@property --mouse-y { syntax: '<number>'; inherits: true; initial-value: 0.5; }
+
+.plugin-detail-hero {
+  position: relative;
+  width: 100%;
+  min-height: 180px;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  /* Light lavender base — almost white with a violet tint. Luminous, not
+     dark/gray. The mesh blobs read as vibrant light sources on a bright
+     field. Dark mode handled below. */
+  background:
+    color-mix(in srgb, var(--accent) 14%, white 86%);
+}
+
+/* Dark mode: deep violet base but still luminous — blobs are bright violet
+   on dark violet, not gray. */
+:root[data-theme="dark"] .plugin-detail-hero {
+  background:
+    color-mix(in srgb, var(--accent) 24%, color-mix(in srgb, var(--bg-elevated) 70%, #1a0d2e 30%));
+}
+
+.plugin-detail-hero-mesh {
+  position: absolute;
+  inset: -20%;
+  background:
+    /* Layer 1: bright lavender (top-left, large, vibrant). Parallax ±3%. */
+    radial-gradient(ellipse 60% 70% at calc(15% + (var(--mouse-x, 0.5) - 0.5) * 6%) calc(25% + (var(--mouse-y, 0.5) - 0.5) * 6%), color-mix(in srgb, var(--accent) 65%, transparent), transparent 50%),
+    /* Layer 2: medium violet (center-right, adds body). Parallax ±6%. */
+    radial-gradient(ellipse 50% 60% at calc(70% + (var(--mouse-x, 0.5) - 0.5) * 12%) calc(55% + (var(--mouse-y, 0.5) - 0.5) * 12%), color-mix(in srgb, var(--accent) 48%, transparent), transparent 55%),
+    /* Layer 3: soft violet (bottom-center, gentle glow). Parallax ±9%. */
+    radial-gradient(ellipse 45% 55% at calc(40% + (var(--mouse-x, 0.5) - 0.5) * 18%) calc(85% + (var(--mouse-y, 0.5) - 0.5) * 18%), color-mix(in srgb, var(--accent) 35%, transparent), transparent 50%),
+    /* Layer 4: seeded hue accent (top-right corner, clearly visible).
+       Parallax ±6%. For superpowers (hue ~45) this reads as a golden glow. */
+    radial-gradient(ellipse 42% 52% at calc(85% + (var(--mouse-x, 0.5) - 0.5) * 12%) calc(18% + (var(--mouse-y, 0.5) - 0.5) * 12%), hsla(var(--plugin-hero-hue, 270), 72%, 58%, 0.55), transparent 48%),
+    /* Very light vignette — barely darkens edges, keeps it luminous. */
+    radial-gradient(ellipse 95% 100% at 50% 50%, transparent 65%, color-mix(in srgb, black 10%, transparent));
+  animation: plugin-hero-drift 12s ease-in-out infinite alternate;
+  will-change: transform;
+  transition: --mouse-x 160ms linear, --mouse-y 160ms linear;
+  /* Parallax moves positions inside background-image via calc() on
+     --mouse-x/--mouse-y, NOT via background-position — so a transition on
+     background-position was inert. Removed (003-2). */
+}
+
+/* Dark mode mesh: brighter blobs so they pop on the dark violet base. */
+:root[data-theme="dark"] .plugin-detail-hero-mesh {
+  background:
+    radial-gradient(ellipse 60% 70% at calc(15% + (var(--mouse-x, 0.5) - 0.5) * 6%) calc(25% + (var(--mouse-y, 0.5) - 0.5) * 6%), color-mix(in srgb, var(--accent) 70%, transparent), transparent 50%),
+    radial-gradient(ellipse 50% 60% at calc(70% + (var(--mouse-x, 0.5) - 0.5) * 12%) calc(55% + (var(--mouse-y, 0.5) - 0.5) * 12%), color-mix(in srgb, var(--accent) 55%, transparent), transparent 55%),
+    radial-gradient(ellipse 45% 55% at calc(40% + (var(--mouse-x, 0.5) - 0.5) * 18%) calc(85% + (var(--mouse-y, 0.5) - 0.5) * 18%), color-mix(in srgb, var(--accent) 40%, transparent), transparent 50%),
+    radial-gradient(ellipse 42% 52% at calc(85% + (var(--mouse-x, 0.5) - 0.5) * 12%) calc(18% + (var(--mouse-y, 0.5) - 0.5) * 12%), hsla(var(--plugin-hero-hue, 270), 72%, 60%, 0.6), transparent 48%),
+    radial-gradient(ellipse 95% 100% at 50% 50%, transparent 60%, color-mix(in srgb, black 22%, transparent));
+}
+
+/* Resting → tracking transition: @property interpolation enables smooth
+   700ms bounce-back on pointer leave. Active tracking keeps 160ms linear.
+   prefers-reduced-motion forces transition: none (see below). */
+.plugin-detail-hero.is-resting .plugin-detail-hero-mesh {
+  transition: --mouse-x 700ms var(--dropdown-ease), --mouse-y 700ms var(--dropdown-ease);
+}
+
+.plugin-detail-hero-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 180px;
+  padding: 24px;
+}
+
+/* Spinner for busy buttons — semantic icons never rotate. Small circle with
+   border-top accent, reusing the app's existing step-spin keyframe (flow.css).
+   Reduced-motion: static dot (no spin). */
+.btn-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--accent-strong) 30%, transparent);
+  border-top-color: var(--accent-strong);
+  border-radius: 50%;
+  animation: step-spin 800ms linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn-spinner { animation: none; opacity: 0.5; }
+}
+
+/* Vertical stack of clickable suggestion pills (Plan C — hero acionável).
+   Glass-style, ~min(560px, 78%) width. Each pill: mini icon + name (accent,
+   bold) + truncated desc + right arrow. No 'All skills' pill. */
+.plugin-hero-pills {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+.plugin-hero-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  width: 78%;
+  max-width: 560px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-elevated) 56%, transparent);
+  backdrop-filter: blur(14px) saturate(1.25);
+  -webkit-backdrop-filter: blur(14px) saturate(1.25);
+  border: 1px solid color-mix(in srgb, white 14%, transparent);
+  box-shadow: 0 4px 16px color-mix(in srgb, black 12%, transparent);
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: background 120ms var(--dropdown-ease), transform 200ms var(--dropdown-ease), box-shadow 120ms var(--dropdown-ease);
+}
+/* Static variant (available / not-installed) — informational only,
+   no click, no arrow, no hover lift. */
+.plugin-hero-pill-static {
+  cursor: default;
+}
+.plugin-hero-pill-static:hover {
+  background: color-mix(in srgb, var(--bg-elevated) 56%, transparent);
+  transform: none;
+  box-shadow: 0 4px 16px color-mix(in srgb, black 12%, transparent);
+}
+
+.plugin-hero-pill:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px color-mix(in srgb, black 18%, transparent);
+}
+.plugin-hero-pill-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.plugin-hero-pill-name {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--accent-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plugin-hero-pill-desc {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--text-dim);
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.plugin-hero-pill-arrow {
+  color: var(--accent-strong);
+  flex-shrink: 0;
+  opacity: 0.6;
+  rotate: 180deg;
+}
+
+/* ── Body description ────────────────────────────────────────────── */
+.plugin-detail-body-desc {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text);
+  text-wrap: pretty;
+}
+
+/* ── Skills section (installed only) ─────────────────────────────── */
+.plugin-detail-skills {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plugin-detail-skills-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.plugin-detail-skills-header .plugins-section-label {
+  margin: 0;
+}
+
+.plugin-detail-skills-count {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.plugin-detail-skills-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plugin-skill-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  transition: background-color 120ms var(--dropdown-ease);
+}
+
+.plugin-skill-row:hover {
+  background: var(--bg-hover);
+}
+
+.plugin-skill-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent-strong);
+  flex-shrink: 0;
+}
+
+.plugin-skill-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.plugin-skill-name {
+  font-size: 13px;
+  font-weight: 680;
+  color: var(--text);
+}
+
+.plugin-skill-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+/* ── Information section ─────────────────────────────────────────── */
+.plugin-detail-info-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plugin-detail-info-section .plugins-section-label {
+  margin: 0;
+}
+
+/* External link in info table */
+.plugin-detail-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent-strong);
+  text-decoration: none;
+  font-size: 12.5px;
+  word-break: break-all;
+  transition: opacity 120ms var(--dropdown-ease);
+}
+
+.plugin-detail-link:hover {
+  opacity: 0.8;
+}
+
+/* ── Collapsible tech details (accordion) ─────────────────────────── */
+.plugin-detail-tech {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.plugin-detail-tech-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  color: var(--text-dim);
+  font-size: 12.5px;
+  font-weight: 680;
+  cursor: pointer;
+  transition: background-color 120ms var(--dropdown-ease);
+}
+
+.plugin-detail-tech-trigger:hover {
+  background: var(--bg-hover);
+}
+
+.plugin-detail-tech-chevron {
+  transition: transform 160ms var(--dropdown-ease);
+}
+
+.plugin-detail-tech-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.plugin-detail-tech-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 200ms var(--dropdown-ease);
+}
+
+.plugin-detail-tech-panel.is-open {
+  grid-template-rows: 1fr;
+}
+
+.plugin-detail-tech-panel > .plugin-detail-info-grid {
+  overflow: hidden;
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+}
+
+.plugin-detail-info-grid {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) 1fr;
+  gap: 8px 16px;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+}
+
+.plugin-detail-info-key {
+  font-size: 12px;
+  font-weight: 680;
+  color: var(--text-dim);
+}
+
+.plugin-detail-info-val {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.plugin-detail-info-val code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-hover);
+}
+
+/* ── Keyframes ───────────────────────────────────────────────────── */
+@keyframes plugin-card-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes plugin-menu-pop {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes plugin-detail-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes plugin-hero-drift {
+  from { transform: translate(0, 0) rotate(0deg); }
+  to   { transform: translate(4%, -3%) rotate(2deg); }
+}
+
+@keyframes plugins-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes plugin-skel-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+
+/* ── Reduced motion ───────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .plugin-line,
+  .plugins-restart-banner,
+  .plugin-detail,
+  .plugin-detail-hero {
+    animation: plugins-fade-in 80ms ease-out both !important;
+  }
+  .plugin-card-menu {
+    animation: plugins-fade-in 80ms ease-out !important;
+  }
+  /* Tab crossfade: opacity-only 80ms under reduced-motion. */
+  .plugins-tab-content {
+    animation: plugins-fade-in 80ms ease-out !important;
+  }
+  .plugin-detail-hero-mesh {
+    animation: none !important;
+    /* Parallax transition off under reduced-motion (handler also disabled). */
+    transition: none !important;
+  }
+  .plugin-detail-tech-panel {
+    transition: none !important;
+  }
+  .plugin-install-btn,
+  .plugin-line-menu-trigger,
+  .plugin-card-menu-item,
+  .plugin-scope-option,
+  .marketplace-modal-close,
+  .marketplace-row-remove,
+  .plugins-search input,
+  .plugin-hero-pill,
+  .plugins-strip-icon,
+  .plugin-detail-crumb--link,
+  .plugin-detail-tech-trigger,
+  .plugin-detail-tech-chevron,
+  .plugin-install-pill,
+  .plugin-uninstall-btn,
+  .plugin-section-expander,
+  .plugins-installed-gear {
+    transition: none !important;
+  }
+  .plugin-install-btn:active:not(:disabled),
+  .plugin-install-pill:active:not(:disabled),
+  .plugin-uninstall-btn:active:not(:disabled),
+  .plugins-strip-icon:active,
+  .plugin-hero-chip:hover {
+    transform: none !important;
+  }
+}

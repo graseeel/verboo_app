@@ -1,0 +1,256 @@
+/* options.css — Verboo settings page (chrome.runtime.openOptionsPage)
+ *
+ * Reuses panel.css tokens. Adds: options-shell, mode-stack (long
+ * descriptions), and grants-list in compact form.
+ *
+ * Standalone page; not bound by the side panel viewport. */
+
+.options {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.options-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.options-mascot {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.options-head-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.options-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.options-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.options-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.options-section-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* ── Mode stack (long descriptions) ─────────────────────────── */
+.options-mode-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.options-mode {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-elevated) 96%, transparent);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
+}
+
+.options-mode:hover {
+  border-color: var(--border-strong);
+}
+
+.options-mode:has(input:checked) {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elevated));
+}
+
+.options-mode:has(input:focus-visible) {
+  box-shadow: var(--focus-ring);
+}
+
+.options-mode input {
+  margin-top: 3px;
+  accent-color: var(--accent-strong);
+  flex-shrink: 0;
+}
+
+.options-mode-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.options-mode-label {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.options-mode-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* ── Grants ──────────────────────────────────────────────────── */
+.options-grants-add {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+@media (min-width: 480px) {
+  .options-grants-add {
+    grid-template-columns: 1fr auto auto;
+  }
+}
+
+.options-grants-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.options-grants-empty {
+  margin: 0;
+  padding: 14px;
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  display: none;
+}
+
+.options-grants-list:empty + .options-grants-empty {
+  display: block;
+}
+
+.grant-item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
+.grant-host {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grant-decision {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.grant-decision[data-decision="always"] {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.grant-decision[data-decision="once"] {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.grant-decision[data-decision="deny"] {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.grant-remove {
+  min-width: 28px;
+  min-height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
+}
+
+.grant-remove:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.grant-remove:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ── Account row ─────────────────────────────────────────────── */
+.options-account {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.options-account .btn {
+  min-height: 36px;
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

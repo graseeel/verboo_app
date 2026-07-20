@@ -1,6 +1,6 @@
 [package]
 name = "verboo-desktop"
-version = "0.5.1-beta.1"
+version = "0.5.2-beta.1"
 description = "Verboo Code Desktop (Tauri v2)"
 authors = ["Gabriel Grasel de Moura <graseeel@users.noreply.github.com>"]
 license = "MIT"
@@ -97,7 +97,9 @@ libc = "0.2"
 security-framework = "3"
 
 [target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 windows-sys = { version = "0.59", features = [
+  "Win32_Storage_FileSystem",
   "Win32_System_Threading",
   "Win32_System_Console",
   "Win32_Foundation",
@@ -117,7 +119,10 @@ windows-sys = { version = "0.59", features = [
 # `cargo build --release` produces. The result is "can't find crate" errors
 # because the hash in the filename doesn't match the metadata inside.
 # Skipping LTO keeps proc-macro metadata stable across both invocations.
-# `strip` is omitted entirely. Even `strip = "debuginfo"` corrupts proc-macro
-# dylibs on macOS ("mis-aligned LINKEDIT string pool" — dlopen fails, breaking
-# tauri-macros and ctor-proc-macro). The binary size cost is ~5MB, acceptable
-# for now. We can strip the final binary post-build with `strip -x` if needed.
+# `strip` is set explicitly to `"none"`. Omitting it is NOT safe: since Cargo
+# 1.77 the default is `strip = "debuginfo"`, and that is exactly what corrupts
+# proc-macro dylibs on macOS ("mis-aligned LINKEDIT string pool" — dlopen
+# fails, breaking tauri-macros and ctor-proc-macro). The binary size cost is
+# ~5MB, acceptable for now. We can strip the final binary post-build with
+# `strip -x` if needed.
+strip = "none"

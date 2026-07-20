@@ -23,7 +23,8 @@ import {
   Trash2,
   UserCog,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { ChromeLogoIcon } from '../../components/ChromeLogoIcon'
+import { type ComponentType, useEffect, useRef, useState } from 'react'
 import type {
   AccessMode,
   CompletionNotificationMode,
@@ -40,6 +41,8 @@ import type {
 } from '../../../shared/types'
 import { ProjectInstructionsEditor } from './ProjectInstructionsEditor'
 import { CustomCommandsManager } from './CustomCommandsManager'
+import { ChromeIntegrationSettings } from './ChromeIntegrationSettings'
+import { VideoUnderstandingSettings } from './VideoUnderstandingSettings'
 import { LanguageSelector } from '../language/LanguageSelector'
 import { useOutsideDismiss } from '../../hooks/useOutsideDismiss'
 import { useToast } from '../../components/Toast'
@@ -109,11 +112,12 @@ export function SettingsView({
   const [saving, setSaving] = useState(false)
   const [customDraft, setCustomDraft] = useState(userSettings.customInstructions)
   const [confirmingFullAccess, setConfirmingFullAccess] = useState<'mode-selector' | 'capability' | false>(false)
-  const settingsTabs: Array<{ id: SettingsTab; label: string; icon: typeof Shield }> = [
+  const settingsTabs: Array<{ id: SettingsTab; label: string; icon: ComponentType<{ size?: number }> }> = [
     { id: 'permissions', label: t('settings.permissions'), icon: Shield },
     { id: 'trustedCommands', label: t('settings.trustedCommands'), icon: ShieldCheck },
     { id: 'customCommands', label: t('settings.customCommands'), icon: SquareTerminal },
     { id: 'app', label: t('settings.app'), icon: Computer },
+    { id: 'verbooInChrome', label: t('chrome.title'), icon: ChromeLogoIcon },
     { id: 'notifications', label: t('settings.notifications'), icon: Bell },
     { id: 'personalization', label: t('settings.personalization'), icon: UserCog },
     { id: 'memory', label: t('settings.memory'), icon: Brain },
@@ -315,6 +319,13 @@ export function SettingsView({
               </div>
             </section>
 
+            <VideoUnderstandingSettings
+              consent={userSettings.videoFallbackConsent}
+              onConsentChange={videoFallbackConsent => {
+                void onUserSettingsChange({ videoFallbackConsent })
+              }}
+            />
+
             <section className="settings-panel">
               <div className="settings-row">
                 <KeyRound size={16} />
@@ -431,6 +442,16 @@ export function SettingsView({
                 </div>
               )}
             </section>
+
+            <section className="settings-panel">
+              <SettingsHeading title={t('settings.privacy')} subtitle={t('settings.privacySubtitle')} />
+              <SettingToggle
+                title={t('settings.loadWebIcons')}
+                body={t('settings.loadWebIconsBody')}
+                checked={userSettings.loadWebIcons}
+                onChange={loadWebIcons => onUserSettingsChange({ loadWebIcons })}
+              />
+            </section>
           </section>
         )}
 
@@ -467,6 +488,13 @@ export function SettingsView({
                 onChange={questionNotifications => onUserSettingsChange({ questionNotifications })}
               />
             </section>
+          </section>
+        )}
+
+        {activeTab === 'verbooInChrome' && (
+          <section className="settings-section-view">
+            <SettingsHeading title={t('chrome.title')} subtitle={t('chrome.subtitle')} />
+            <ChromeIntegrationSettings />
           </section>
         )}
 

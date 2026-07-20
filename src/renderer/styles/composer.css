@@ -40,7 +40,6 @@
 .bottom-dock > .permission-approval-panel,
 .bottom-dock > .question-wizard,
 .bottom-dock > .question-chip,
-.bottom-dock > .subagent-summary-card,
 .bottom-dock > .vision-fallback-panel,
 .bottom-dock > .skill-approval-panel {
   width: min(var(--chat-lane-width), 100%);
@@ -378,7 +377,9 @@
   border: 0;
   outline: none;
   background: transparent;
-  color: var(--text);
+  /* Inverted visibility: textarea shows only caret; overlay shows text
+     (syntax-highlight-textarea pattern — user design Feedback-3). */
+  color: transparent;
   caret-color: var(--text);
   overflow-x: hidden;
   overflow-y: auto;
@@ -386,6 +387,15 @@
 
 .composer textarea:disabled {
   opacity: 0.62;
+}
+/* IME composition: swap visibility so dead-key text (' + e → é) is visible
+   during the composition session. onCompositionStart/End toggle the class. */
+.composer-text-wrap.is-composing textarea {
+  color: var(--text);
+  caret-color: var(--text);
+}
+.composer-text-wrap.is-composing .composer-highlight {
+  color: transparent;
 }
 
 .composer textarea::placeholder {
@@ -403,21 +413,44 @@
   inset: 0;
   pointer-events: none;
   overflow: hidden;
-  color: transparent;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-wrap: break-word;
 }
 
+/* @-skill tokens: distinction is COLOR ONLY (accent-strong). The overlay
+   MUST have identical font metrics to the textarea — no font-weight,
+   letter-spacing, font-style, or any property that changes glyph widths.
+   Any metric divergence makes the painted text drift vs. the textarea's
+   caret (BUG A: font-weight:600 widened glyphs → cumulative caret drift). */
 .composer-skill-token {
-  display: inline;
-  border-radius: 7px;
-  /* A committed purple pill: filled background plus a crisp accent ring so the
-     token reads as a selected operation, not a faint tint behind the text.
-     (Earlier values resolved to ~10-24% opacity — barely perceptible.) */
-  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  color: var(--accent-strong);
+}
+/* The @ glyph stays in the inline flow (preserves its width = caret aligns
+   with the textarea). color:transparent hides the glyph but keeps its box
+   AND lets absolutely-positioned children render visibly (opacity:0 would
+   hide descendants too — BUG B). The glyph box becomes the anchor for the
+   icon decoration. */
+.at-glyph {
+  position: relative;
   color: transparent;
-  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--accent-strong) 55%, transparent);
-  font-weight: inherit;
-  -webkit-box-decoration-break: clone;
-  box-decoration-break: clone;
+}
+/* Icon decoration: absolutely positioned inside the @ glyph's box, pinned to
+   the glyph's RIGHT edge with a 2px gap so the icon's right border sits 2px
+   before the first letter of the name. The icon overflows the glyph box to
+   the LEFT (into the composer's left padding) by ~8px — no clip because the
+   glyph box itself is in-flow and the composer's overflow is on the wrap,
+   not the highlight. pointer-events:none keeps the textarea interactive. */
+.at-icon-deco {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.at-icon-deco .plugin-monogram,
+.at-icon-deco .plugin-monogram-img {
+  display: block;
 }
 
 .composer-toolbar {
@@ -491,16 +524,17 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
+  gap: 6px;
   min-width: 0;
-  height: 32px;
+  height: 30px;
   max-width: 260px;
-  padding: 0 10px;
+  padding: 0 9px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
+  font-size: 12px;
   line-height: 1;
   white-space: nowrap;
 }
@@ -567,78 +601,96 @@
   background: var(--model-bg, transparent);
 }
 
-/* Effort footer section at the bottom of the model menu. Single dynamic
-   surface: shows "Usar padrão" + the selected model's effortLevels. No
-   per-row submenu or duplicated controls. */
-.model-menu-divider {
-  margin: 6px 8px;
-  border-top: 1px solid var(--border);
+/* Codex-style root menu: clean rows instead of a flat list + footer.
+   Each row is a drill-in affordance (Model / Effort). */
+.model-rows {
+  display: grid;
+  gap: 1px;
+  padding: 2px 2px;
 }
 
-.model-menu-effort-footer {
-  padding: 8px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.model-effort-footer-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.model-effort-footer-levels {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px;
-}
-
-.model-effort-option,
-.model-effort-footer-levels button {
-  display: inline-flex;
+.model-row {
+  display: grid;
+  grid-template-columns: minmax(64px, auto) minmax(0, 1fr) auto;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--radius);
   background: transparent;
-  color: var(--text-muted);
-  font-size: 12px;
-  cursor: pointer;
-  text-align: left;
-  transition: color 90ms ease, background 90ms ease;
-}
-
-.model-effort-option:hover,
-.model-effort-footer-levels button:hover {
   color: var(--text);
-  background: var(--bg-soft);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 90ms ease;
 }
 
-.model-effort-option.selected,
-.model-effort-footer-levels button.selected {
-  color: var(--accent-strong);
-  font-weight: 600;
+.model-row:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
-.model-effort-option svg,
-.model-effort-footer-levels button svg {
+.model-row-label {
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-weight: 720;
+}
+
+.model-row-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 640;
+}
+
+.model-row-chevron {
+  color: var(--text-dim);
   flex-shrink: 0;
 }
 
-/* "Usar padrão" pill — visually distinguished from concrete levels via a
-   subtle border so users can tell it's the "no override" affordance, not
-   just another effort tier. */
-.model-effort-default {
-  border: 1px solid var(--border);
-  padding: 3px 7px;
+.model-back-button svg {
+  transform: rotate(90deg);
 }
-.model-effort-default.selected {
-  border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
+
+/* Effort drill-in panel: vertical list (not inline footer pills). */
+.model-effort-list {
+  display: grid;
+  gap: 2px;
+  padding: 2px 4px;
+}
+
+.model-effort-list .model-effort-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 90ms ease;
+}
+
+.model-effort-list .model-effort-option:hover {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.model-effort-list .model-effort-option.selected {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-strong);
+  font-weight: 660;
+}
+
+.model-effort-list .model-effort-default.selected {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
 }
 
 .subagent-indicator-wrap {
@@ -775,14 +827,37 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 38px;
-  width: 38px;
-  height: 38px;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
   border: 0;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 84%, white);
+  /* Solid accent fill so the send ball reads as a committed primary action
+     in dark mode (earlier 84% accent + white mix washed it out against the
+     elevated composer surface). accent-strong is the same purple used for
+     selected rows / focus rings, so the toolbar has one clear visual anchor. */
+  background: var(--accent-strong);
   color: white;
   cursor: pointer;
+  transition: transform 120ms var(--dropdown-ease), background-color 120ms var(--dropdown-ease);
+}
+
+.send-button:hover {
+  background: color-mix(in srgb, var(--accent-strong) 88%, white);
+}
+
+.send-button:disabled {
+  /* Keep the purple ball visible even when disabled (empty composer). Earlier
+     login.css overrode `.send-button:disabled` with `background: transparent;
+     width: 100%` — that selector is now removed, but we re-assert the
+     composer's intent here so future cascade drift can't wash the ball out
+     again. Disabled = dimmed, never invisible. */
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--accent-strong);
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
 }
 
 .selected-skills {
@@ -804,6 +879,7 @@
   cursor: pointer;
   font-size: 12px;
 }
+
 
 .attachment-chip {
   border-color: var(--border);
@@ -926,9 +1002,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 8px 10px;
+  padding: 4px 6px 6px;
   color: var(--text-dim);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 720;
 }
 
@@ -1001,19 +1077,19 @@
 .access-menu {
   bottom: calc(100% + 10px);
   right: 0;
-  width: min(420px, calc(100vw - 32px));
-  min-width: min(360px, calc(100vw - 32px));
-  max-height: 460px;
+  width: min(320px, calc(100vw - 32px));
+  min-width: min(280px, calc(100vw - 32px));
+  max-height: 380px;
   overflow: auto;
-  padding: 8px;
+  padding: 6px;
 }
 
 /* Portaled above the composer so overflow:hidden cannot shrink the menu. */
 .model-menu.model-menu-portal {
   z-index: 10000;
-  width: min(420px, calc(100vw - 24px));
-  min-width: min(360px, calc(100vw - 24px));
-  max-height: min(460px, calc(100vh - 120px));
+  width: min(320px, calc(100vw - 24px));
+  min-width: min(280px, calc(100vw - 24px));
+  max-height: min(380px, calc(100vh - 120px));
   overflow-x: hidden;
   overflow-y: auto;
   box-sizing: border-box;
@@ -1022,20 +1098,33 @@
 .access-menu {
   left: 0;
   right: auto;
-  width: min(480px, calc(100vw - var(--sidebar-width) - 56px));
-  max-height: min(420px, calc(100vh - 220px));
+  width: min(340px, calc(100vw - var(--sidebar-width) - 56px));
+  max-height: min(360px, calc(100vh - 220px));
+}
+
+/* Portaled above the composer so overflow:hidden cannot clip the menu.
+   Mirrors `.model-menu.model-menu-portal`. Inline style fixes position to
+   the pill's bounding rect; this class handles z-index, sizing, and bounds. */
+.access-menu.access-menu-portal {
+  z-index: 10000;
+  width: min(340px, calc(100vw - 24px));
+  min-width: min(300px, calc(100vw - 24px));
+  max-height: min(360px, calc(100vh - 120px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .model-menu-status {
   display: grid;
   gap: 2px;
-  margin: 0 4px 6px;
-  padding: 8px 10px;
+  margin: 0 2px 4px;
+  padding: 6px 8px;
   border: 1px solid color-mix(in srgb, var(--amber) 28%, var(--border));
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--amber) 8%, transparent);
   color: var(--amber);
-  font-size: 12.5px;
+  font-size: 11.5px;
   line-height: 1.35;
 }
 
@@ -1050,31 +1139,31 @@
 }
 
 .model-menu-hint {
-  margin: 0 6px 7px;
+  margin: 0 4px 5px;
   color: var(--text-dim);
-  font-size: 11.5px;
+  font-size: 11px;
   line-height: 1.35;
 }
 
 .model-group {
   display: grid;
-  gap: 3px;
+  gap: 2px;
 }
 
 .group-label {
-  padding: 10px 8px 5px;
+  padding: 6px 6px 3px;
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 760;
   text-transform: uppercase;
 }
 
 .model-option {
   display: grid;
-  grid-template-columns: 26px minmax(0, 1fr) auto;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
-  padding: 9px 10px;
+  gap: 8px;
+  padding: 6px 8px;
   border: 1px solid transparent;
   border-radius: var(--radius);
 }
@@ -1082,10 +1171,10 @@
 .model-option-icon {
   display: inline-grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
+  width: 22px;
+  height: 22px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 7px;
   background: color-mix(in srgb, var(--bg-soft) 62%, transparent);
 }
 
@@ -1195,10 +1284,10 @@
 
 .access-option {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) 20px;
-  align-items: center;
-  gap: 12px;
-  padding: 11px 10px;
+  grid-template-columns: 22px minmax(0, 1fr) 18px;
+  align-items: start;
+  gap: 8px;
+  padding: 8px;
   border-radius: var(--radius);
 }
 
@@ -1226,29 +1315,48 @@
 .model-option span,
 .access-option span {
   display: grid;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
 }
 
-.model-option small,
-.access-option small {
+.model-option small {
   overflow: hidden;
   color: var(--text-muted);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* Access descriptions wrap fully — avoid mid-word ellipsis like "e usar a in..." */
+.access-option small {
+  overflow: visible;
+  color: var(--text-muted);
+  text-overflow: unset;
+  white-space: normal;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.access-option strong {
+  font-size: 12.5px;
+  line-height: 1.25;
+}
+
 .access-heading {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
-  padding: 8px 10px 12px;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 6px 8px;
   color: var(--text-muted);
+  font-size: 12px;
   font-weight: 650;
+  line-height: 1.3;
 }
 
 .access-heading a {
   color: var(--text-muted);
+  flex-shrink: 0;
+  font-size: 11.5px;
 }
 
 .token-rate-meter {
@@ -1305,23 +1413,22 @@
 }
 
 .context-meter {
-  display: inline-grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  display: inline-flex;
   align-items: center;
-  flex: 0 1 164px;
-  gap: 7px;
+  flex: 0 0 auto;
   height: 34px;
-  min-width: 164px;
-  max-width: 190px;
-  padding: 0 7px 0 9px;
-  border: 1px solid color-mix(in srgb, var(--border-strong) 76%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--bg-soft) 48%, transparent);
+  padding: 0;
+  border: none;
+  background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
   font: inherit;
 }
-.context-meter:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+
+/* Ring-only variant: no pill chrome, no chevron, no select-like width.
+   The ring fills (conic-gradient) as context grows — Codex-like. */
+.context-meter--ring-only {
+  cursor: default;
+}
 
 @media (max-width: 1180px) {
   .composer-tools.right {
@@ -1344,51 +1451,13 @@
     font-size: 9.5px;
   }
 
-  .context-meter {
-    min-width: 132px;
-    max-width: 154px;
-  }
-
   .model-pill {
     min-width: 126px;
     max-width: 172px;
   }
 }
 
-.context-meter-icon {
-  color: var(--accent-strong);
-}
-
-.context-copy {
-  display: grid;
-  gap: 0;
-  min-width: 0;
-  line-height: 1.05;
-}
-
-.context-copy strong {
-  color: var(--text);
-  font-size: 11.5px;
-  font-weight: 780;
-}
-
-.context-copy small {
-  overflow: hidden;
-  color: var(--text-dim);
-  font-size: 10.5px;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .context-meter.over-limit {
-  border-color: color-mix(in srgb, var(--danger) 42%, var(--border));
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 9%, transparent);
-}
-
-.context-meter.over-limit .context-meter-icon,
-.context-meter.over-limit .context-copy strong {
   color: var(--danger);
 }
 
@@ -1447,7 +1516,7 @@
   display: flex; height: 8px; border-radius: 999px; overflow: hidden;
   background: color-mix(in srgb, var(--border) 50%, transparent);
 }
-.context-panel-bar-seg { transition: width 0.2s; min-width: 2px; }
+.context-panel-bar-seg { transition: flex-grow 200ms var(--dropdown-ease); min-width: 2px; }
 .context-bar-user { background: var(--accent-strong); }
 .context-bar-assistant { background: color-mix(in srgb, var(--accent) 60%, var(--bg-soft)); }
 .context-bar-attachments { background: var(--amber); }

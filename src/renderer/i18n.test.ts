@@ -4,9 +4,8 @@ import { createTranslator } from './i18n'
 describe('@-mention + voice i18n keys', () => {
   it('has EN translations for the @ palette and voice input', () => {
     const t = createTranslator('en-US')
-    expect(t('composer.fileMenuLoading')).toBe('Loading files…')
-    expect(t('composer.emptyFileMenu')).toBe('No files match this name.')
-    expect(t('composer.file')).toBe('file')
+    expect(t('composer.emptyPluginMenu')).toBe('No plugin skill matches this name.')
+    expect(t('composer.pluginMenuLoading')).toBe('Loading plugin skills…')
     expect(t('composer.voiceStart')).toBe('Start voice input')
     expect(t('composer.voiceStop')).toBe('Stop voice input')
     // Mapped error keys must not echo the key back.
@@ -19,12 +18,10 @@ describe('@-mention + voice i18n keys', () => {
   it('has PT-BR translations for the @ palette and voice input', () => {
     const t = createTranslator('pt-BR')
     // Should be specific PT, not the fallback key echo.
-    expect(t('composer.fileMenuLoading')).not.toBe('composer.fileMenuLoading')
-    expect(t('composer.emptyFileMenu')).not.toBe('composer.emptyFileMenu')
-    expect(t('composer.fileMenuLoading').length).toBeGreaterThan(0)
-    expect(t('composer.emptyFileMenu').length).toBeGreaterThan(0)
-    // Badge copy must translate (Aloy QA).
-    expect(t('composer.file')).toBe('arquivo')
+    expect(t('composer.emptyPluginMenu')).not.toBe('composer.emptyPluginMenu')
+    expect(t('composer.pluginMenuLoading')).not.toBe('composer.pluginMenuLoading')
+    expect(t('composer.emptyPluginMenu').length).toBeGreaterThan(0)
+    expect(t('composer.pluginMenuLoading').length).toBeGreaterThan(0)
     // Voice copy in PT-BR, not the key echo.
     expect(t('composer.voiceStart')).not.toBe('composer.voiceStart')
     expect(t('composer.voiceStop')).not.toBe('composer.voiceStop')

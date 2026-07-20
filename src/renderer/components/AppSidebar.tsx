@@ -1,5 +1,6 @@
 import {
   Archive,
+  Blocks,
   Bug,
   ChevronDown,
   ChevronRight,
@@ -11,6 +12,7 @@ import {
   MessageSquareDashed,
   MessageSquarePlus,
   PanelLeftClose,
+  Pin,
   Pencil,
   Search,
   Settings,
@@ -28,7 +30,7 @@ import { DEFAULT_CONVERSATION_TITLE } from '../state/chatStore'
 import mascotUrl from '../../../assets/branding/verboo-mascot.png'
 import packageJson from '../../../package.json'
 
-export type AppView = 'chat' | 'profile' | 'settings'
+export type AppView = 'chat' | 'profile' | 'settings' | 'plugins'
 
 type AppSidebarProps = {
   activeView: AppView
@@ -40,13 +42,15 @@ type AppSidebarProps = {
   profile: ProfileResult
   cliAuth: CliAuthStatus
   compact?: boolean
+  peek?: boolean
   onSelectView: (view: AppView) => void
   onOpenSettings: () => void
-  onOpenArchivedChats: () => void
+  onOpenSearch: () => void
   onOpenFeedback: () => void
   onLogout: () => void
   onNewChat: (projectId?: string) => void
   onToggleSidebar: () => void
+  onPinSidebar?: () => void
   onOpenProject: () => void
   onSelectConversation: (conversationId: string) => void
   onToggleProject: (projectId: string) => void
@@ -69,13 +73,15 @@ export function AppSidebar({
   profile,
   cliAuth,
   compact = false,
+  peek = false,
   onSelectView,
   onOpenSettings,
-  onOpenArchivedChats,
+  onOpenSearch,
   onOpenFeedback,
   onLogout,
   onNewChat,
   onToggleSidebar,
+  onPinSidebar,
   onOpenProject,
   onSelectConversation,
   onToggleProject,
@@ -88,8 +94,6 @@ export function AppSidebar({
   avatarSettings,
 }: AppSidebarProps) {
   const { t } = useI18n()
-  const [searchOpen, setSearchOpen] = useState(false)
-  const [query, setQuery] = useState('')
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
   const [editingProjectId, setEditingProjectId] = useState<string | undefined>()
   const [projectDraft, setProjectDraft] = useState('')
@@ -99,19 +103,16 @@ export function AppSidebar({
   const profileMenuRef = useRef<HTMLDivElement | null>(null)
   const profileName = profile.user?.name ?? profile.user?.email ?? cliAuth.email ?? t('sidebar.profile')
   useOutsideDismiss(profileMenuRef, profileMenuOpen, () => setProfileMenuOpen(false))
-  const filteredConversations = useMemo(
-    () => filterConversations(conversations, query),
-    [conversations, query],
-  )
-  const filteredProjects = useMemo(
-    () => filterProjects(projects, filteredConversations, query),
-    [projects, filteredConversations, query],
-  )
-  const looseChats = filteredConversations.filter(conversation => !conversation.projectId)
+  // Search is now handled by the command palette (⌘K / ⌘P). The sidebar no
+  // longer keeps a local query or inline input — clicking "Pesquisar" opens
+  // the palette via onOpenSearch. Conversations/projects render unfiltered
+  // here; filtering happens in the palette.
+  const visibleConversations = useMemo(() => conversations, [conversations])
+  const visibleProjects = useMemo(() => projects, [projects])
+  const looseChats = visibleConversations.filter(conversation => !conversation.projectId)
 
   useEffect(() => {
     if (!compact) return
-    setSearchOpen(false)
     setProfileMenuOpen(false)
     setEditingProjectId(undefined)
   }, [compact])
@@ -168,7 +169,7 @@ export function AppSidebar({
   }
 
   return (
-    <aside className={`app-sidebar ${compact ? 'compact' : ''} ${activeView === 'settings' ? 'is-dimmed' : ''}`}>
+    <aside className={`app-sidebar ${compact ? 'compact' : ''} ${peek ? 'peek' : ''} ${activeView === 'settings' ? 'is-dimmed' : ''}`}>
       <div className="sidebar-scroll">
         <nav className="sidebar-primary" aria-label={t('sidebar.nav')}>
           <div className="sidebar-newchat-row">
@@ -176,30 +177,44 @@ export function AppSidebar({
               <MessageSquarePlus size={16} />
               <span>{t('sidebar.newChat')}</span>
             </button>
-            <button
-              className="sidebar-collapse-button ui-tooltip"
-              type="button"
-              onClick={onToggleSidebar}
-              data-tooltip={t('topbar.hideSidebar')}
-              aria-label={t('topbar.hideSidebar')}
-            >
-              <PanelLeftClose size={16} />
-            </button>
+            {peek ? (
+              // Pin button: persists expanded mode (clears peek). Only shown
+              // while peeking — in normal expanded mode the collapse button
+              // is the single control.
+              <button
+                className="sidebar-pin-button ui-tooltip"
+                type="button"
+                onClick={onPinSidebar}
+                data-tooltip={t('sidebar.pin')}
+                aria-label={t('sidebar.pin')}
+              >
+                <Pin size={16} />
+              </button>
+            ) : (
+              <button
+                className="sidebar-collapse-button ui-tooltip"
+                type="button"
+                onClick={onToggleSidebar}
+                data-tooltip={t('topbar.hideSidebar')}
+                aria-label={t('topbar.hideSidebar')}
+              >
+                <PanelLeftClose size={16} />
+              </button>
+            )}
           </div>
-          <button className="sidebar-action" type="button" onClick={() => setSearchOpen(open => !open)} title={t('sidebar.search')}>
+          <button className="sidebar-action" type="button" onClick={onOpenSearch} title={t('sidebar.search')}>
             <Search size={16} />
             <span>{t('sidebar.search')}</span>
           </button>
-          {searchOpen && (
-            <input
-              className="sidebar-search"
-              value={query}
-              onChange={event => setQuery(event.target.value)}
-              autoFocus
-              placeholder={t('sidebar.searchPlaceholder')}
-              aria-label={t('sidebar.searchPlaceholder')}
-            />
-          )}
+          <button
+            className={`sidebar-action ${activeView === 'plugins' ? 'active' : ''}`}
+            type="button"
+            onClick={() => onSelectView('plugins')}
+            title={t('sidebar.plugins')}
+          >
+            <Blocks size={16} />
+            <span>{t('sidebar.plugins')}</span>
+          </button>
         </nav>
 
         <section className="sidebar-section project-section">
@@ -210,15 +225,17 @@ export function AppSidebar({
             </button>
           </div>
 
-          {filteredProjects.length === 0 ? (
+          {visibleProjects.length === 0 ? (
             <p className="sidebar-empty">{t('sidebar.noProjects')}</p>
           ) : (
-            filteredProjects.map(project => {
-              const projectChats = filteredConversations.filter(conversation => conversation.projectId === project.id)
+            visibleProjects.map(project => {
+              const projectChats = visibleConversations.filter(conversation => conversation.projectId === project.id)
+              const isProjectActive = selectedProjectId === project.id
+                && (!activeConversationId || projectChats.some(c => c.id === activeConversationId))
               return (
                 <div key={project.id} className="sidebar-project">
                   <div
-                    className={`project-row ${selectedProjectId === project.id ? 'active' : ''}`}
+                    className={`project-row ${isProjectActive ? 'active' : ''}`}
                     onContextMenu={event => openProjectContextMenu(event, project)}
                   >
                     <button
@@ -338,10 +355,6 @@ export function AppSidebar({
               <Settings size={15} />
               {t('sidebar.settings')}
             </button>
-            <button type="button" onClick={() => { onOpenArchivedChats(); setProfileMenuOpen(false) }}>
-              <Archive size={15} />
-              {t('sidebar.archivedChats')}
-            </button>
             <button type="button" onClick={() => { onOpenFeedback(); setProfileMenuOpen(false) }}>
               <Bug size={15} />
               {t('sidebar.helpFeedback')}
@@ -359,18 +372,17 @@ export function AppSidebar({
           onClick={() => setProfileMenuOpen(open => !open)}
           aria-expanded={profileMenuOpen}
         >
-          <span className="account-brand">
-            <img src={mascotUrl} alt="" />
-            <strong>Verboo<span>:code</span></strong>
-            <small>{`v${packageJson.version}`}</small>
-          </span>
-          <small className="account-disclaimer">{t('sidebar.devBuild')}</small>
           <span className="account-profile">
             <AvatarIcon settings={avatarSettings} name={profileName} className="account-avatar" />
             <span>
               <strong>{profileName}</strong>
               <small>{profile.plan?.name ?? (cliAuth.loggedIn ? t('sidebar.cliConnected') : profile.status === 'unauthenticated' ? t('sidebar.noApiKey') : t('sidebar.planUnavailable'))}</small>
             </span>
+          </span>
+          <span className="account-brand">
+            <img src={mascotUrl} alt="" />
+            <strong>Verboo<span>:code</span></strong>
+            <small>{`v${packageJson.version}`}</small>
           </span>
         </button>
       </footer>
@@ -435,26 +447,8 @@ function ConversationRow({ conversation, active, running, editing, draft, onDraf
   )
 }
 
-function filterConversations(conversations: StoredConversation[], query: string): StoredConversation[] {
-  const normalized = query.trim().toLowerCase()
-  return conversations
-    .filter(conversation => !conversation.archivedAt)
-    .filter(conversation => !normalized || conversation.title.toLowerCase().includes(normalized))
-}
-
 function displayConversationTitle(title: string, t: (key: string) => string): string {
   return title === DEFAULT_CONVERSATION_TITLE ? t('sidebar.newChat') : title
-}
-
-function filterProjects(projects: ChatProject[], conversations: StoredConversation[], query: string): ChatProject[] {
-  const normalized = query.trim().toLowerCase()
-  return projects
-    .filter(project => !project.archivedAt)
-    .filter(project => {
-      if (!normalized) return true
-      if (project.name.toLowerCase().includes(normalized)) return true
-      return conversations.some(conversation => conversation.projectId === project.id)
-    })
 }
 
 function relativeTime(timestamp: number, t: (key: string, values?: Record<string, string | number | undefined>) => string): string {

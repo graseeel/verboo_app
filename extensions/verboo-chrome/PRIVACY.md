@@ -1,0 +1,122 @@
+# Verboo Code — Privacy Policy
+
+**Last updated:** 2026-07-19
+**Extension:** Verboo Code — Browser Control
+**Version:** 0.1.0
+
+This privacy policy explains what data the Verboo Code browser extension handles when you use it to control Chrome with a Verboo account session.
+
+## Summary
+
+The Verboo extension controls Chrome on your behalf when you give it permission. Standalone chat requires a separate extension OAuth session. After sign-in, a turn sends the user's prompt, selected active-page context, and browser-tool results to the Verboo Router so the selected model can respond. Browser-derived content is fenced as untrusted data before model processing.
+
+The release OAuth client ID is not configured in this source snapshot, so standalone chat currently fails closed instead of accepting another credential type. The separate Verboo in Chrome MCP transport is local and does not carry CLI tokens into the extension.
+
+- **No data is sold.**
+- **You stay in control** of every action: the extension asks before each potentially destructive step, and you can always deny.
+- **Hard blocks cannot be bypassed** — actions like purchasing, financial trades, mass deletion, and credential exposure are blocked even with the most permissive permission mode.
+
+## What the extension accesses
+
+| Data | Why | Where it goes |
+|------|-----|---------------|
+| Active tab URL and title | To provide selected browser context for a user-started turn | Sent to the Verboo Router only during a standalone chat turn after extension OAuth. |
+| Page content and tool results (when you read a page, take a screenshot, click, type, or manage tabs) | To execute tools and let the selected model continue the turn | Sent to the Verboo Router only for a turn you started; text is fenced as untrusted browser data before model processing. |
+| Chrome tabs and tab groups | To manage browsing during a turn | Used locally for execution; selected tool results may be included in the active Router turn. |
+| Your Verboo account session (account ID and OAuth tokens) | To authenticate standalone chat | Stored locally under `verbooSession`; access tokens are sent to Verboo OAuth/Router endpoints. They are never copied from the CLI. |
+| Permission mode (Manual / Auto / Skip) and per-site grants | To enforce your chosen safety level | Stored locally under `chromePermissionMode` and `siteGrants`; never sent anywhere |
+
+## What the extension does NOT do
+
+- It does not read your keystrokes outside of tools you explicitly approve.
+- It does not track you across sites that the extension is not active on.
+- It does not collect analytics, telemetry, or crash reports.
+- It does not read or modify pages on internal Chrome URLs (`chrome://`, `chrome-extension://`, `about:`) — these are hard-blocked.
+- It does not read or modify content on `chrome.google.com/webstore`.
+- It does not store your browsing history.
+
+## Permissions explained
+
+- **`sidePanel`** — Opens the Verboo control panel alongside the page you are on. Without this, the side panel cannot appear.
+- **`identity`** — Opens the user-initiated Verboo OAuth PKCE flow and receives its Chrome extension callback.
+- **`storage`** — Stores the extension OAuth session, model cache/selection, permission mode, and site grants in `chrome.storage.local`.
+- **`scripting`** — Injects small scripts into the active tab to read content, click elements, or fill form fields that you approved. Scripts run in the page's own context; the extension does not use `eval`.
+- **`tabs`** — Lists, switches, closes, opens, and updates tabs. Used to manage browser state during a turn.
+- **`tabGroups`** — Groups browser tabs when you organize a multi-step task.
+- **`host_permissions` (`http://*/*`, `https://*/*`)** — Required so `scripting` and `tabs` can work on any HTTP/HTTPS page you visit. The extension cannot read `file://` pages, `chrome://` pages, or other internal URLs.
+
+Future permissions (not yet requested, will be added when needed):
+
+- **`debugger`** — Used only if the agent needs to capture full-page screenshots via the Chrome DevTools Protocol or evaluate JavaScript in a sandbox. This permission will be re-added explicitly when that work ships, and the Store listing will be updated accordingly.
+
+## Where your data lives
+
+All persistent state lives in `chrome.storage.local`, scoped to this extension's profile. Clearing the extension's data removes it. The exact storage keys are:
+
+| Storage key | Module | Contents | Sent off-device? |
+|-------------|--------|----------|------------------|
+| `verbooSession` | `src/auth/auth.js` | `{ accountId, email?, accessToken, refreshToken?, expiresAt?, source: 'oauth' }` | OAuth/Router endpoints used by standalone chat. |
+| `verbooModelsCache` | `src/auth/auth.js` | Model catalog and fetch timestamp | Never directly; it is a local cache of Router metadata. |
+| `verbooSelectedModelId` | `src/auth/auth.js` | Selected model identifier | Included in Router requests for user-started turns. |
+| `chromePermissionMode` | `src/policy/modesStore.js` | One of `'manual'`, `'auto'`, `'skip'` | Never |
+| `siteGrants` | `src/policy/siteGrantsStore.js` | Array of `{ host, decision, updatedAt }` | Never |
+
+- The extension OAuth access token is sent only to the bundled Verboo OAuth/Router endpoints.
+- The local MCP transport never receives or forwards a CLI token.
+- The extension does not run a background server.
+
+## When you are not signed in
+
+If you are not signed in, standalone chat does not call the Verboo Router. The side panel still exposes local permission and site-grant controls.
+
+## Third parties
+
+The extension embeds no third-party scripts, fonts, or trackers. All extension assets are bundled. Standalone inference is requested through the Verboo Router after OAuth.
+
+## Children
+
+The extension is not directed at children under 13 and we do not knowingly collect data from children.
+
+## Changes to this policy
+
+Material changes will be reflected by updating the date at the top. Continued use after a change indicates acceptance of the updated policy.
+
+## Contact
+
+Open an issue on the repository's issues tab. (TODO: confirm the canonical Verboo Code issue tracker URL with the maintainer before publishing to the Store.)
+
+---
+
+## Português (Brasil)
+
+**Última atualização:** 2026-07-19 · **Extensão:** Verboo Code — Browser Control · **Versão:** 0.1.0
+
+Esta política explica quais dados a extensão trata quando você a usa para controlar o Chrome com uma sessão de conta Verboo.
+
+### Resumo
+
+A extensão controla o Chrome em seu nome quando você permite. O chat avulso exige uma sessão OAuth própria da extensão; após o login, um turno envia o prompt, o contexto selecionado da página ativa e os resultados de ferramentas ao Verboo Router. Conteúdo derivado do navegador é cercado como dado não confiável antes do processamento pelo modelo. O client ID de release não está configurado neste snapshot, então o chat avulso falha fechado. O transporte MCP do Verboo no Chrome é local e não leva tokens do CLI à extensão.
+
+- **Nenhum dado é vendido.**
+- **Você mantém o controle** de cada ação: a extensão pergunta antes de cada passo potencialmente destrutivo e você sempre pode negar.
+- **Bloqueios rígidos não podem ser contornados** — compras, operações financeiras, deleção em massa e exposição de credenciais são bloqueadas mesmo no modo mais permissivo.
+
+### O que a extensão acessa
+
+URL/título da aba ativa (contexto de um turno iniciado por você); conteúdo de página e resultados de ferramentas (para executar e continuar o turno); abas e grupos (gerenciamento local durante o turno); sua sessão Verboo (ID de conta e tokens OAuth, guardados localmente em `verbooSession` e enviados apenas aos endpoints OAuth/Router do Verboo — nunca copiados do CLI); modo de permissão e concessões por site (guardados localmente, nunca enviados).
+
+### O que a extensão NÃO faz
+
+Não lê suas teclas fora de ferramentas aprovadas; não rastreia sites fora de um turno ativo; não coleta analytics, telemetria ou crash reports; não lê nem modifica `chrome://`, `chrome-extension://`, `about:` nem `chrome.google.com/webstore`; não armazena histórico de navegação.
+
+### Onde seus dados vivem
+
+Todo estado persistente fica em `chrome.storage.local`, restrito ao perfil desta extensão — limpar os dados da extensão o remove. Chaves exatas e destino de cada uma: veja a tabela da seção em inglês (`verbooSession`, `verbooModelsCache`, `verbooSelectedModelId`, `chromePermissionMode`, `siteGrants`). O token OAuth só vai aos endpoints Verboo embutidos; o transporte MCP local nunca recebe token do CLI; a extensão não roda servidor em segundo plano.
+
+### Sem login, terceiros, crianças e alterações
+
+Sem login, o chat avulso não chama o Router (os controles locais de permissão continuam disponíveis). A extensão não embute scripts, fontes ou rastreadores de terceiros. Não é direcionada a menores de 13 anos. Mudanças materiais são refletidas pela data no topo; o uso continuado indica aceitação.
+
+### Contato
+
+Abra uma issue na aba de issues do repositório.

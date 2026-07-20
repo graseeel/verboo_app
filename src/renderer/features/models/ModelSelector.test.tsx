@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, within } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 
 // @lobehub/icons transitively imports @lobehub/fluent-emoji, whose ESM is
 // not resolvable in jsdom. Mock ModelIcon before importing ModelSelector.
@@ -8,22 +8,22 @@ vi.mock('./ModelIcon', () => ({ ModelIcon: () => null }))
 import type { ModelDiscoveryResult, VerbooModel } from '../../../shared/types'
 import { ModelSelector } from './ModelSelector'
 
-/** Footer queries must be scoped — pill text "Ultra · Max" would otherwise
- *  collide with the level button "Max". */
-function footer() {
-  const label = screen.getByText(/Nível de raciocínio|Reasoning effort/i)
-  return within(label.closest('.model-menu-effort-footer')!)
-}
-
 /**
- * Regression tests for the Option B refactor of ModelSelector.
+ * Regression tests for the Codex-style ModelSelector refactor.
  *
- * The footer is the single source of truth for reasoning effort:
- * - Renders only when the selected model exposes `effortLevels`.
- * - Shows "Usar padrão" + every dynamic level (no hardcoded list).
- * - "Usar padrão" clears the override; a level click persists it.
- * - Stale overrides (not in current effortLevels) fall back to default.
- * - No per-row arrow or submenu anywhere.
+ * Root menu shows rows (Model / Effort). Effort levels live behind a
+ * drill-in panel (`.model-effort-list`), not an inline footer.
+ *
+ * Coverage preserved from the footer-era tests:
+ * - Pill label "Model · effort" uses effective effort.
+ * - Effort row only renders when selected model exposes effortLevels.
+ * - Dynamic levels (no hardcoded list).
+ * - "Usar padrão" selected when no override; level selected when override exists.
+ * - Stale override falls back to "Usar padrão".
+ * - "none" tier handled.
+ * - onSelectEffort / onClearEffortOverride wired.
+ * - No legacy per-row arrow/submenu classes.
+ * - Effort buttons are focusable.
  */
 
 const baseModel: VerbooModel = {
@@ -74,11 +74,19 @@ function openMenu() {
   fireEvent.click(Pill())
 }
 
+/** Open the effort drill-in panel from the root menu. */
+function openEffortPanel() {
+  openMenu()
+  // Click the "Esforço" row (labelled with the effort row label).
+  const effortRow = screen.getByText(/Esforço|Effort/i).closest('button')!
+  fireEvent.click(effortRow)
+}
+
 beforeEach(() => {
   cleanup()
 })
 
-describe('ModelSelector — effort footer (Option B)', () => {
+describe('ModelSelector — Codex rows + effort drill-in', () => {
   it('renders pill label "Model · effort" using effective effort', () => {
     render(
       <ModelSelector
@@ -96,7 +104,7 @@ describe('ModelSelector — effort footer (Option B)', () => {
     expect(Pill()).toHaveTextContent(/Ultra.*·.*Alto|Máximo|High|Max/)
   })
 
-  it('does NOT render the footer when selected model has no reasoning capability', () => {
+  it('does NOT render the effort row when selected model has no reasoning capability', () => {
     render(
       <ModelSelector
         models={discoveryOk.models}
@@ -110,7 +118,8 @@ describe('ModelSelector — effort footer (Option B)', () => {
       />,
     )
     openMenu()
-    expect(screen.queryByText(/Nível de raciocínio|Reasoning effort/i)).toBeNull()
+    // Root menu shows the Model row but no Effort row.
+    expect(screen.queryByText(/Esforço|Effort/i)).toBeNull()
     expect(screen.queryByText(/Usar padrão|Use default/i)).toBeNull()
   })
 
@@ -127,15 +136,19 @@ describe('ModelSelector — effort footer (Option B)', () => {
         selectedEffort="medium"
       />,
     )
-    openMenu()
-    const f = footer()
-    // Every dynamic level rendered in the footer
-    expect(f.getByText(/Nenhum|None/i)).toBeTruthy()
-    expect(f.getByText(/Baixo|Low/i)).toBeTruthy()
-    expect(f.getByText(/Médio|Medium/i)).toBeTruthy()
-    expect(f.getByText(/Alto|High/i)).toBeTruthy()
-    // No phantom Máximo/Max — qwen3 does not offer it
-    expect(f.queryByText(/Máximo|Max/i)).toBeNull()
+    openEffortPanel()
+    // Every dynamic level rendered in the effort list (scoped to effort
+    // buttons to avoid collision with the pill text "Qwen3 · Médio").
+    const effortButtons = screen.getAllByRole('button').filter(btn =>
+      btn.classList.contains('model-effort-option'),
+    )
+    const labels = effortButtons.map(btn => btn.textContent ?? '')
+    expect(labels.some(l => /Nenhum|None/i.test(l))).toBe(true)
+    expect(labels.some(l => /Baixo|Low/i.test(l))).toBe(true)
+    expect(labels.some(l => /Médio|Medium/i.test(l))).toBe(true)
+    expect(labels.some(l => /Alto|High/i.test(l))).toBe(true)
+    // No phantom Máximo/Max — qwen3 does not offer it.
+    expect(labels.some(l => /Máximo|Max/i.test(l))).toBe(false)
   })
 
   it('highlights "Usar padrão" when no override is saved (default in effect)', () => {
@@ -151,12 +164,11 @@ describe('ModelSelector — effort footer (Option B)', () => {
         selectedEffort="high"
       />,
     )
-    openMenu()
-    const f = footer()
-    const useDefault = f.getByText(/Usar padrão|Use default/i).closest('button')!
+    openEffortPanel()
+    const useDefault = screen.getByText(/Usar padrão|Use default/i).closest('button')!
     expect(useDefault).toHaveClass('selected')
     // High is NOT marked selected — it coincides with default but isn't an override.
-    const highBtn = f.getByText(/Alto|High/i).closest('button')!
+    const highBtn = screen.getByText(/^Alto$|^High$/i).closest('button')!
     expect(highBtn).not.toHaveClass('selected')
   })
 
@@ -173,11 +185,14 @@ describe('ModelSelector — effort footer (Option B)', () => {
         selectedEffort="max"
       />,
     )
-    openMenu()
-    const f = footer()
-    const useDefault = f.getByText(/Usar padrão|Use default/i).closest('button')!
+    openEffortPanel()
+    const useDefault = screen.getByText(/Usar padrão|Use default/i).closest('button')!
     expect(useDefault).not.toHaveClass('selected')
-    const maxBtn = f.getByText(/Máximo|Max/i).closest('button')!
+    // Scope to effort buttons — the pill also shows "Ultra · Máximo".
+    const effortButtons = screen.getAllByRole('button').filter(btn =>
+      btn.classList.contains('model-effort-option'),
+    )
+    const maxBtn = effortButtons.find(btn => /Máximo|Max/i.test(btn.textContent ?? ''))!
     expect(maxBtn).toHaveClass('selected')
   })
 
@@ -196,12 +211,11 @@ describe('ModelSelector — effort footer (Option B)', () => {
         selectedEffort="high"
       />,
     )
-    openMenu()
-    const f = footer()
-    const useDefault = f.getByText(/Usar padrão|Use default/i).closest('button')!
+    openEffortPanel()
+    const useDefault = screen.getByText(/Usar padrão|Use default/i).closest('button')!
     expect(useDefault).toHaveClass('selected')
     // No "Máximo" rendered at all because it's not in the dynamic levels.
-    expect(f.queryByText(/Máximo|Max/i)).toBeNull()
+    expect(screen.queryByText(/Máximo|Max/i)).toBeNull()
   })
 
   it('handles "none" tier when the router advertises it', () => {
@@ -217,8 +231,8 @@ describe('ModelSelector — effort footer (Option B)', () => {
         selectedEffort="medium"
       />,
     )
-    openMenu()
-    expect(footer().getByText(/Nenhum|None/i)).toBeTruthy()
+    openEffortPanel()
+    expect(screen.getByText(/Nenhum|None/i)).toBeTruthy()
   })
 
   it('calls onSelectEffort when a level is clicked and closes the menu', () => {
@@ -236,10 +250,10 @@ describe('ModelSelector — effort footer (Option B)', () => {
         onSelectEffort={onSelectEffort}
       />,
     )
-    openMenu()
-    fireEvent.click(footer().getByText(/Máximo|Max/i))
+    openEffortPanel()
+    fireEvent.click(screen.getByText(/Máximo|Max/i))
     expect(onSelectEffort).toHaveBeenCalledWith('glm-5.2', 'max')
-    // Menu closed (footer unmounted)
+    // Menu closed (effort list unmounted)
     expect(screen.queryByText(/Usar padrão|Use default/i)).toBeNull()
   })
 
@@ -258,12 +272,12 @@ describe('ModelSelector — effort footer (Option B)', () => {
         onClearEffortOverride={onClearEffortOverride}
       />,
     )
-    openMenu()
-    fireEvent.click(footer().getByText(/Usar padrão|Use default/i))
+    openEffortPanel()
+    fireEvent.click(screen.getByText(/Usar padrão|Use default/i))
     expect(onClearEffortOverride).toHaveBeenCalledWith('glm-5.2')
   })
 
-  it('does not render any per-row effort arrow or submenu chevron', () => {
+  it('does not render any legacy per-row effort arrow or submenu classes', () => {
     const { container } = render(
       <ModelSelector
         models={discoveryOk.models}
@@ -281,9 +295,11 @@ describe('ModelSelector — effort footer (Option B)', () => {
     expect(container.querySelector('.model-option-effort-arrow')).toBeNull()
     expect(container.querySelector('.model-effort-submenu')).toBeNull()
     expect(container.querySelector('.model-option-wrap')).toBeNull()
+    // The old inline footer must not be present either.
+    expect(container.querySelector('.model-menu-effort-footer')).toBeNull()
   })
 
-  it('footer is keyboard-reachable: each level is a focusable button', () => {
+  it('effort panel buttons are keyboard-reachable: each level is a focusable button', () => {
     render(
       <ModelSelector
         models={discoveryOk.models}
@@ -296,16 +312,39 @@ describe('ModelSelector — effort footer (Option B)', () => {
         selectedEffort="high"
       />,
     )
-    openMenu()
+    openEffortPanel()
     // "Usar padrão" + 3 levels = 4 effort buttons total.
-    const footerButtons = screen.getAllByRole('button').filter(btn =>
+    const effortButtons = screen.getAllByRole('button').filter(btn =>
       btn.classList.contains('model-effort-option'),
     )
-    expect(footerButtons.length).toBe(4)
-    for (const btn of footerButtons) {
+    expect(effortButtons.length).toBe(4)
+    for (const btn of effortButtons) {
       expect(btn.tagName).toBe('BUTTON')
       // TabIndex default (0) — focusable via Tab.
       expect(btn).not.toHaveAttribute('tabindex', '-1')
     }
+  })
+
+  it('Escape from effort panel returns to root (does not close menu)', () => {
+    render(
+      <ModelSelector
+        models={discoveryOk.models}
+        selectedModel="glm-5.2"
+        modelResult={discoveryOk}
+        onSelect={() => {}}
+        onRefresh={() => {}}
+        effortByModel={{}}
+        selectedEffortLevels={['low', 'high', 'max']}
+        selectedEffort="high"
+      />,
+    )
+    openEffortPanel()
+    // Effort list visible.
+    expect(screen.getByText(/Usar padrão|Use default/i)).toBeTruthy()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    // Back to root — effort list gone, Model row visible again (the row
+    // label "Modelo" coexists with the popover title, so getAllByText).
+    expect(screen.queryByText(/Usar padrão|Use default/i)).toBeNull()
+    expect(screen.getAllByText(/Modelo|Model/i).length).toBeGreaterThan(0)
   })
 })

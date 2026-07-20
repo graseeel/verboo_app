@@ -1,10 +1,13 @@
-mod models;
-mod services;
+pub mod models;
+pub mod services;
 
 use std::sync::Mutex;
 
 use models::types::*;
 use services::cli_service::CliService;
+use services::chrome_integration::{
+    ChromeIntegrationRequest, ChromeIntegrationService, ChromeIntegrationStatus,
+};
 use services::credentials_store::CredentialsStore;
 use services::model_service::ModelService;
 use services::profile_service::ProfileService;
@@ -131,6 +134,75 @@ fn open_external_url(app: &tauri::AppHandle, url: &str) -> Result<bool, String> 
         .open_url(url, None::<&str>)
         .map(|()| true)
         .map_err(|e| format!("Falha ao abrir URL: {e}"))
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Verboo in Chrome
+// ════════════════════════════════════════════════════════════════════
+
+// These operations read manifests and spawn helper/CLI processes; on the
+// Tauri main thread they beachball the whole UI, so every command hops to
+// the blocking pool and the webview stays responsive.
+async fn with_chrome_service<T, F>(
+    service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
+    operation: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&ChromeIntegrationService) -> Result<T, String> + Send + 'static,
+{
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || operation(&service))
+        .await
+        .map_err(|error| format!("chrome integration task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn chrome_integration_status(
+    service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
+) -> Result<ChromeIntegrationStatus, String> {
+    with_chrome_service(service, |service| service.status()).await
+}
+
+#[tauri::command]
+async fn chrome_integration_configure(
+    request: ChromeIntegrationRequest,
+    service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
+) -> Result<ChromeIntegrationStatus, String> {
+    with_chrome_service(service, move |service| service.configure(request)).await
+}
+
+#[tauri::command]
+async fn chrome_integration_repair(
+    request: ChromeIntegrationRequest,
+    service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
+) -> Result<ChromeIntegrationStatus, String> {
+    with_chrome_service(service, move |service| service.repair(request)).await
+}
+
+#[tauri::command]
+async fn chrome_integration_test(
+    service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
+) -> Result<bool, String> {
+    with_chrome_service(service, |service| service.test_connection()).await
+}
+
+#[tauri::command]
+async fn chrome_integration_remove(
+    service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
+) -> Result<ChromeIntegrationStatus, String> {
+    with_chrome_service(service, |service| service.remove()).await
+}
+
+#[tauri::command]
+fn open_chrome_extension_store(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
+) -> Result<bool, String> {
+    let url = service
+        .store_url()
+        .ok_or("chrome_store_url_missing")?;
+    open_external_url(&app, url)
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -891,12 +963,15 @@ fn evaluate_goal(
 // ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
-async fn pick_files(app: tauri::AppHandle) -> Result<Vec<AttachmentMeta>, String> {
+async fn pick_files(
+    app: tauri::AppHandle,
+) -> Result<Vec<AttachmentMeta>, services::file_service::FileInspectionError> {
     use tauri_plugin_dialog::DialogExt;
     let paths = app
         .dialog()
         .file()
         .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp", "heic", "heif"])
+        .add_filter("Videos", &["mp4", "mov", "webm", "mkv", "avi", "m4v"])
         .add_filter("All files", &["*"])
         .blocking_pick_files();
     let paths = paths.unwrap_or_default();
@@ -905,12 +980,58 @@ async fn pick_files(app: tauri::AppHandle) -> Result<Vec<AttachmentMeta>, String
         .filter_map(|p| p.into_path().ok())
         .map(|p| p.to_string_lossy().to_string())
         .collect();
-    Ok(services::file_service::inspect_files(&path_strings))
+    services::file_service::inspect_files_result(&path_strings)
 }
 
 #[tauri::command]
-fn inspect_files(paths: Vec<String>) -> Result<Vec<AttachmentMeta>, String> {
-    Ok(services::file_service::inspect_files(&paths))
+fn inspect_files(
+    paths: Vec<String>,
+) -> Result<Vec<AttachmentMeta>, services::file_service::FileInspectionError> {
+    services::file_service::inspect_files_result(&paths)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BeginPastedFileUploadResult {
+    upload_id: String,
+}
+
+#[tauri::command]
+fn begin_pasted_file_upload(
+    name: String,
+    size: u64,
+    media_type: String,
+    uploads: tauri::State<'_, services::pasted_file_upload::PastedFileUploadService>,
+) -> Result<BeginPastedFileUploadResult, String> {
+    uploads
+        .begin(&name, size, &media_type)
+        .map(|upload_id| BeginPastedFileUploadResult { upload_id })
+}
+
+#[tauri::command]
+fn append_pasted_file_chunk(
+    upload_id: String,
+    offset: u64,
+    bytes: Vec<u8>,
+    uploads: tauri::State<'_, services::pasted_file_upload::PastedFileUploadService>,
+) -> Result<(), String> {
+    uploads.append(&upload_id, offset, &bytes)
+}
+
+#[tauri::command]
+fn finish_pasted_file_upload(
+    upload_id: String,
+    uploads: tauri::State<'_, services::pasted_file_upload::PastedFileUploadService>,
+) -> Result<AttachmentMeta, String> {
+    uploads.finish(&upload_id)
+}
+
+#[tauri::command]
+fn abort_pasted_file_upload(
+    upload_id: String,
+    uploads: tauri::State<'_, services::pasted_file_upload::PastedFileUploadService>,
+) -> Result<(), String> {
+    uploads.abort(&upload_id)
 }
 
 /// Inspects a pasted image (from clipboard base64) and returns its
@@ -1244,6 +1365,336 @@ fn clipboard_write_text(app: tauri::AppHandle, text: String) -> Result<bool, Str
 }
 
 // ════════════════════════════════════════════════════════════════════
+// Plugins (P5 / Wave 2 — spec docs/plugins-marketplace.md)
+// ════════════════════════════════════════════════════════════════════
+//
+// Thin shell-out wrappers around `verboo plugin …` and
+// `verboo plugin marketplace …`. Rust owns: command translation, timeout,
+// auth gate on mutations, ANSI/JSON normalization, and 9-variant error
+// mapping. The CLI is the only authority for filesystem state under
+// `~/.claude/plugins/` and `~/.verboo/plugins/`.
+//
+// Wrappers translate from the free-function shape in
+// `services::plugins_service` to `#[tauri::command]` async fns that Tauri
+// resolves via `invoke_handler`. The bridge converts PluginError → a
+// renderer-friendly error string automatically (via serde).
+
+#[tauri::command]
+async fn plugin_list() -> Result<Vec<models::plugins::Plugin>, models::plugins::PluginError> {
+    services::plugins_service::plugin_list().await
+}
+
+#[tauri::command]
+async fn plugin_available(
+) -> Result<models::plugins::PluginAvailablePayload, models::plugins::PluginError> {
+    services::plugins_service::plugin_available().await
+}
+
+#[tauri::command]
+async fn plugin_install(
+    id: String,
+    scope: models::plugins::PluginScope,
+    app: tauri::AppHandle,
+) -> Result<models::plugins::MutationResult, models::plugins::PluginError> {
+    let result = services::plugins_service::plugin_install(id, scope).await?;
+    if result.success {
+        let _ = tauri::Emitter::emit(&app, "plugin-mutation", &result);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn plugin_enable(
+    id: String,
+    scope: Option<models::plugins::PluginScope>,
+    app: tauri::AppHandle,
+) -> Result<models::plugins::MutationResult, models::plugins::PluginError> {
+    let result = services::plugins_service::plugin_enable(id, scope).await?;
+    if result.success {
+        let _ = tauri::Emitter::emit(&app, "plugin-mutation", &result);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn plugin_disable(
+    id: String,
+    scope: Option<models::plugins::PluginScope>,
+    app: tauri::AppHandle,
+) -> Result<models::plugins::MutationResult, models::plugins::PluginError> {
+    let result = services::plugins_service::plugin_disable(id, scope).await?;
+    if result.success {
+        let _ = tauri::Emitter::emit(&app, "plugin-mutation", &result);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn plugin_uninstall(
+    id: String,
+    scope: models::plugins::PluginScope,
+    keep_data: Option<bool>,
+    app: tauri::AppHandle,
+) -> Result<models::plugins::MutationResult, models::plugins::PluginError> {
+    let result = services::plugins_service::plugin_uninstall(id, scope, keep_data).await?;
+    if result.success {
+        let _ = tauri::Emitter::emit(&app, "plugin-mutation", &result);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn plugin_update(
+    id: String,
+    scope: models::plugins::PluginScope,
+    app: tauri::AppHandle,
+) -> Result<models::plugins::MutationResult, models::plugins::PluginError> {
+    let result = services::plugins_service::plugin_update(id, scope).await?;
+    if result.success {
+        let _ = tauri::Emitter::emit(&app, "plugin-mutation", &result);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn plugin_validate(
+    path: String,
+) -> Result<models::plugins::PluginValidateResult, models::plugins::PluginError> {
+    services::plugins_service::plugin_validate(path).await
+}
+
+#[tauri::command]
+async fn marketplace_list(
+) -> Result<Vec<models::plugins::Marketplace>, models::plugins::PluginError> {
+    services::plugins_service::marketplace_list().await
+}
+
+#[tauri::command]
+async fn marketplace_add(
+    source: String,
+    scope: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<models::plugins::MutationResult, models::plugins::PluginError> {
+    let result = services::plugins_service::marketplace_add(source, scope).await?;
+    if result.success {
+        let _ = tauri::Emitter::emit(&app, "plugin-mutation", &result);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn marketplace_remove(
+    name: String,
+    app: tauri::AppHandle,
+) -> Result<models::plugins::MutationResult, models::plugins::PluginError> {
+    let result = services::plugins_service::marketplace_remove(name).await?;
+    if result.success {
+        let _ = tauri::Emitter::emit(&app, "plugin-mutation", &result);
+    }
+    Ok(result)
+}
+
+/// 12. `plugin_detail(id)` — rich detail for an installed plugin.
+/// Reads `.claude-plugin/plugin.json` (author, homepage, version, license,
+/// keywords) and walks `skills/*/SKILL.md` (name + description per skill).
+/// The CLI's `plugin list --json` omits these fields; this command fills
+/// the gap for Codex parity.
+#[tauri::command]
+async fn plugin_detail(
+    id: String,
+) -> Result<services::plugin_detail_service::PluginDetail, models::plugins::PluginError> {
+    // Fetch the installed plugin row from the CLI, then enrich it.
+    let plugins = services::plugins_service::plugin_list().await?;
+    let plugin = plugins
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| models::plugins::PluginError::NotInstalled { plugin: id.clone() })?;
+    services::plugin_detail_service::build_plugin_detail(plugin)
+}
+
+/// 13. `plugin_skills(id)` — list of skills for an installed plugin.
+/// Walks `skills/*/SKILL.md` and parses frontmatter (name + description).
+/// Plugin without skills = empty list.
+#[tauri::command]
+async fn plugin_skills(
+    id: String,
+) -> Result<Vec<services::plugin_detail_service::PluginSkill>, models::plugins::PluginError> {
+    let plugins = services::plugins_service::plugin_list().await?;
+    let plugin = plugins
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| models::plugins::PluginError::NotInstalled { plugin: id.clone() })?;
+    let detail = services::plugin_detail_service::build_plugin_detail(plugin)?;
+    Ok(detail.skills)
+}
+
+/// 14. `marketplace_manifests()` — rich per-plugin metadata from all
+/// marketplaces' `.claude-plugin/marketplace.json` files. Returns a map
+/// keyed by `pluginId` (`name@marketplaceName`) with category, author,
+/// homepage, description, version, keywords, tags. The FE merges this
+/// with the CLI's `--available` JSON to reach Codex parity.
+#[tauri::command]
+async fn marketplace_manifests(
+) -> Result<std::collections::HashMap<String, services::marketplace_manifest_service::MarketplacePluginEntry>, models::plugins::PluginError> {
+    let marketplaces = services::plugins_service::marketplace_list().await?;
+    Ok(services::marketplace_manifest_service::read_all_manifests(&marketplaces))
+}
+
+/// 15. `plugin_icon(pluginId)` — fetches the plugin's icon from its homepage
+/// domain (apple-touch-icon.png → favicon.ico). HTTPS only, on-demand only
+/// (never preemptive). Cached at `<app_data_dir>/cache/plugin-icons/` with
+/// 7-day TTL, 50 MB LRU cap, dedupe by domain. Returns a local file path
+/// (FE uses `convertFileSrc`) or `None` (FE renders monogram).
+///
+/// Respects the `loadWebIcons` user setting — if false, returns `None`
+/// without any network request (privacy toggle).
+#[tauri::command]
+async fn plugin_icon(
+    app: tauri::AppHandle,
+    settings_store: tauri::State<'_, services::settings_store::SettingsStore>,
+    plugin_id: String,
+) -> Result<services::plugin_icon_service::PluginIconResult, models::plugins::PluginError> {
+    // Read the loadWebIcons toggle. If false, return None without network.
+    let load_web_icons = settings_store
+        .get()
+        .map(|s| s.load_web_icons)
+        .unwrap_or(true);
+
+    // Resolve cache dir: <app_data_dir>/cache/plugin-icons/
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| models::plugins::PluginError::Unknown {
+            message: format!("failed to resolve app_data_dir: {e}"),
+            exit_code: None,
+        })?;
+    let cache_dir = app_data_dir.join("cache").join("plugin-icons");
+
+    // Fetch marketplace manifests via the in-memory cache (TTL 60s +
+    // single-flight). This avoids spawning the CLI on every request —
+    // 83 concurrent requests share 1 fetch.
+    let manifests = services::manifest_cache::get_or_fetch_manifests().await?;
+
+    services::plugin_icon_service::resolve_plugin_icon(
+        &plugin_id,
+        &manifests,
+        cache_dir,
+        load_web_icons,
+    )
+    .await
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Video understanding components
+// ════════════════════════════════════════════════════════════════════
+
+#[tauri::command]
+async fn get_video_component_state(
+    store: tauri::State<'_, services::video::transcribe::VideoTranscriberStore>,
+) -> Result<services::video::transcribe::VideoComponentState, String> {
+    store.inner().clone().state().await
+}
+
+#[tauri::command]
+async fn download_video_transcriber(
+    app: tauri::AppHandle,
+    store: tauri::State<'_, services::video::transcribe::VideoTranscriberStore>,
+) -> Result<(), String> {
+    use services::video::transcribe::{VideoTranscriberProgress, WHISPER_BASE_BYTES};
+
+    let app_for_progress = app.clone();
+    let store = store.inner().clone();
+    let _ = app.emit(
+        "video-transcriber-progress",
+        VideoTranscriberProgress {
+            state: "downloading",
+            bytes_downloaded: 0,
+            total_bytes: WHISPER_BASE_BYTES,
+            error: None,
+        },
+    );
+    match store
+        .download(move |progress| {
+            let _ = app_for_progress.emit("video-transcriber-progress", progress);
+        })
+        .await
+    {
+        Ok(()) => {
+            let _ = app.emit(
+                "video-transcriber-progress",
+                VideoTranscriberProgress {
+                    state: "ready",
+                    bytes_downloaded: WHISPER_BASE_BYTES,
+                    total_bytes: WHISPER_BASE_BYTES,
+                    error: None,
+                },
+            );
+            Ok(())
+        }
+        Err(error) => {
+            let _ = app.emit(
+                "video-transcriber-progress",
+                VideoTranscriberProgress {
+                    state: "error",
+                    bytes_downloaded: 0,
+                    total_bytes: WHISPER_BASE_BYTES,
+                    error: Some(error.clone()),
+                },
+            );
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+async fn remove_video_transcriber(
+    store: tauri::State<'_, services::video::transcribe::VideoTranscriberStore>,
+) -> Result<(), String> {
+    store.inner().clone().remove().await
+}
+
+/// Streams one prepared video frame to the renderer for OCR. The webview's
+/// asset protocol does not reach Web Worker fetches, so the frame travels as
+/// raw bytes over IPC instead. Only files inside the app-private
+/// `video_jobs` tree are readable — never arbitrary paths.
+#[tauri::command]
+fn read_video_frame(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<tauri::ipc::Response, String> {
+    use tauri::Manager;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("resolve app data dir: {error}"))?;
+    let allowed_root = app_data_dir
+        .join("video_jobs")
+        .canonicalize()
+        .map_err(|error| format!("resolve video jobs dir: {error}"))?;
+    let requested = std::path::Path::new(&path)
+        .canonicalize()
+        .map_err(|error| format!("resolve frame path: {error}"))?;
+    if !requested.starts_with(&allowed_root) {
+        return Err("frame path outside the video jobs directory".to_string());
+    }
+    let bytes =
+        std::fs::read(&requested).map_err(|error| format!("read frame: {error}"))?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// Renderer returns one OCR batch for a pending video job. Ownership is
+/// enforced by the waiter registry: only the job that registered a pending
+/// batch can be completed, exactly once.
+#[tauri::command]
+fn complete_video_ocr_batch(
+    waiters: tauri::State<'_, services::video::job::VideoOcrWaiters>,
+    job_id: String,
+    results: Vec<services::video::job::VideoOcrText>,
+) -> Result<(), String> {
+    waiters.complete(&job_id, results)
+}
+
+// ════════════════════════════════════════════════════════════════════
 // App entry point
 // ════════════════════════════════════════════════════════════════════
 
@@ -1268,6 +1719,10 @@ pub fn run() {
                 .expect("app data dir must be available");
             let _ = std::fs::create_dir_all(&app_data_dir);
             let settings_store = SettingsStore::new(app_data_dir.clone());
+            app.manage(
+                services::pasted_file_upload::PastedFileUploadService::new(app_data_dir.clone())
+                    .map_err(std::io::Error::other)?,
+            );
 
             // Request macOS notification permission. On macOS, notifications
             // are blocked by default until the app requests permission. This
@@ -1299,8 +1754,18 @@ pub fn run() {
             app.manage(CredentialsStore::new());
             // CliService — spawns `verboo` CLI for auth/turns/models
             app.manage(CliService::new());
+            // Verboo in Chrome — configuration and diagnostics only. The
+            // helper and Chrome extension communicate without the app open.
+            app.manage(std::sync::Arc::new(
+                ChromeIntegrationService::new(env!("CARGO_PKG_VERSION"))
+                    .map_err(std::io::Error::other)?,
+            ));
             // ModelService — fetches models from Verboo Router API with disk cache
             app.manage(ModelService::new(app_data_dir.clone()));
+            app.manage(services::video::transcribe::VideoTranscriberStore::new(
+                app_data_dir.clone(),
+            ));
+            app.manage(services::video::job::VideoOcrWaiters::default());
             // TurnService — spawns `verboo` CLI for agent turns with streaming
             app.manage(TurnService::new(std::sync::Arc::new(CredentialsStore::new())).with_settings(std::sync::Arc::new(settings_store_for_turn)).with_app_data_dir(app_data_dir.clone()));
             // ResearchSubagentRunner — spawns read-only CLI turns for research
@@ -1470,6 +1935,13 @@ pub fn run() {
             open_dashboard,
             open_subscriptions,
             open_signup,
+            // Verboo in Chrome
+            chrome_integration_status,
+            chrome_integration_configure,
+            chrome_integration_repair,
+            chrome_integration_test,
+            chrome_integration_remove,
+            open_chrome_extension_store,
             // Credentials
             get_credential_status,
             set_api_key,
@@ -1487,6 +1959,12 @@ pub fn run() {
             // Vision fallback (FASE 1)
             get_vision_fallback_state,
             set_vision_fallback_consent,
+            // Video understanding components
+            get_video_component_state,
+            download_video_transcriber,
+            remove_video_transcriber,
+            complete_video_ocr_batch,
+            read_video_frame,
             // Menu bar
             update_menu_bar,
             force_idle_menu_bar,
@@ -1523,6 +2001,10 @@ pub fn run() {
             pick_files,
             inspect_files,
             inspect_pasted_image,
+            begin_pasted_file_upload,
+            append_pasted_file_chunk,
+            finish_pasted_file_upload,
+            abort_pasted_file_upload,
             save_avatar_blob,
             pick_folder,
             create_project_folder,
@@ -1551,6 +2033,23 @@ pub fn run() {
             // Clipboard
             clipboard_read_text,
             clipboard_write_text,
+            // Plugins (P5 / Wave 2)
+            plugin_list,
+            plugin_available,
+            plugin_install,
+            plugin_enable,
+            plugin_disable,
+            plugin_uninstall,
+            plugin_update,
+            plugin_validate,
+            marketplace_list,
+            marketplace_add,
+            marketplace_remove,
+            // Plugins — rich detail (Wave 2 P5+)
+            plugin_detail,
+            plugin_skills,
+            marketplace_manifests,
+            plugin_icon,
         ])
         .run(tauri::generate_context!())
         .expect("error while running verboo-desktop");

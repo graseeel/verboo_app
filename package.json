@@ -1,6 +1,6 @@
 {
   "name": "verboo-desktop",
-  "version": "0.5.1-beta.1",
+  "version": "0.5.2-beta.1",
   "description": "Multi-platform desktop app for the Verboo Code CLI (macOS, Windows, Linux)",
   "author": {
     "name": "Gabriel Grasel de Moura",
@@ -21,9 +21,12 @@
     "dev:renderer": "vite",
     "build:renderer": "tsc --noEmit && vite build",
     "fetch:tessdata": "node scripts/tauri/fetch-tessdata.mjs",
+    "build:chrome-helper": "node scripts/tauri/build-chrome-helper.mjs",
+    "build:media-sidecars": "node scripts/tauri/build-media-sidecars.mjs",
+    "test:media-sidecars": "node --test scripts/tauri/build-media-sidecars.test.mjs",
     "build:tauri-deps": "node scripts/verify/dedup-cli-package.mjs && node scripts/verify/copy-cli-resource.mjs && npm run fetch:tessdata && npm run build:renderer",
     "tauri:dev": "tauri dev",
-    "tauri:build": "npm run build:tauri-deps && cargo +1.89.0 tauri build",
+    "tauri:build": "npm run build:tauri-deps && npm run build:chrome-helper && cargo +1.89.0 tauri build",
     "tauri:icon": "tauri icon",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -39,7 +42,7 @@
     "@tauri-apps/plugin-updater": "^2.10.1",
     "@tesseract.js-data/eng": "^1.0.0",
     "@tesseract.js-data/por": "^1.0.0",
-    "@verboo/code": "0.12.0",
+    "@verboo/code": "0.13.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "highlight.js": "^11.11.1",

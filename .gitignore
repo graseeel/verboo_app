@@ -22,6 +22,13 @@ src-tauri/target/
 src-tauri/gen/
 src-tauri/*.rlib
 
+# Generated Verboo in Chrome sidecar binaries (target-specific)
+src-tauri/binaries/verboo-in-chrome-*
+# Generated pinned media sidecars (target-specific)
+src-tauri/binaries/verboo-ffmpeg-*
+src-tauri/binaries/verboo-ffprobe-*
+src-tauri/binaries/verboo-whisper-*
+
 # Tauri bundled CLI resource (copied by copy-cli-resource.mjs from node_modules)
 src-tauri/resources/
 
@@ -30,3 +37,9 @@ src-tauri/resources/
 
 # Tauri Cargo config (has hardcoded local target-dir — must not be committed)
 src-tauri/.cargo/
+
+# Local agent/tool state
+.superpowers/
+.verboo/
+extensions/verboo-chrome/dist/
+extensions/verboo-chrome/store-assets/*.zip

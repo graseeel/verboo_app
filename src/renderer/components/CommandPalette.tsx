@@ -1,4 +1,4 @@
-import { Ghost, MessageSquare, MessageSquarePlus, Moon, PanelLeft, Search, Settings, Shrink, SquareTerminal, FileDiff } from 'lucide-react'
+import { Blocks, Ghost, MessageSquare, MessageSquarePlus, Moon, PanelLeft, Search, Settings, Shrink, SquareTerminal, FileDiff } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { StoredConversation } from '../../shared/types'
 import { useI18n } from '../i18n'
@@ -42,23 +42,64 @@ export function CommandPalette({ open, conversations, actions, onSelectConversat
     [actions, normalizedQuery],
   )
 
+  // Search matches chat titles first, then falls back to message content so
+  // a term that only appears inside a conversation still finds it. Content
+  // matches carry a short snippet centered on the first hit.
   const visibleChats = useMemo(() => {
     const active = conversations.filter(conversation => !conversation.archivedAt)
-    const matches = normalizedQuery
-      ? active.filter(conversation => displayConversationTitle(conversation.title, t).toLowerCase().includes(normalizedQuery))
-      : active
-    return matches.slice(0, 8)
+    if (!normalizedQuery) return active.slice(0, 8).map(chat => ({ chat, snippet: undefined }))
+    const matches: Array<{ chat: StoredConversation; snippet?: string }> = []
+    for (const conversation of active) {
+      if (matches.length >= 8) break
+      const title = displayConversationTitle(conversation.title, t).toLowerCase()
+      if (title.includes(normalizedQuery)) {
+        matches.push({ chat: conversation, snippet: undefined })
+        continue
+      }
+      const hit = conversation.items.find(item =>
+        typeof item.text === 'string' && item.text.toLowerCase().includes(normalizedQuery))
+      if (!hit) continue
+      const flat = hit.text.replace(/\s+/g, ' ')
+      const at = flat.toLowerCase().indexOf(normalizedQuery)
+      const start = Math.max(0, at - 28)
+      const end = Math.min(flat.length, at + normalizedQuery.length + 48)
+      matches.push({
+        chat: conversation,
+        snippet: `${start > 0 ? '…' : ''}${flat.slice(start, end)}${end < flat.length ? '…' : ''}`,
+      })
+    }
+    return matches
   }, [conversations, normalizedQuery, t])
+
+  // Recents: top 5 chats by updatedAt, shown only when the query is empty.
+  // Gives the empty-state palette immediate utility — the user sees their most
+  // recent conversations without typing. Distinct from visibleChats (which is
+  // the filtered search list) so the two sections can render independently.
+  const recentChats = useMemo(() => {
+    if (normalizedQuery) return []
+    return conversations
+      .filter(conversation => !conversation.archivedAt)
+      .slice()
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 5)
+  }, [conversations, normalizedQuery])
 
   type Row = { kind: 'action'; action: PaletteAction } | { kind: 'chat'; chat: StoredConversation }
   const rows: Row[] = useMemo(() => [
     ...visibleActions.map(action => ({ kind: 'action' as const, action })),
-    ...visibleChats.map(chat => ({ kind: 'chat' as const, chat })),
-  ], [visibleActions, visibleChats])
+    ...recentChats.map(chat => ({ kind: 'chat' as const, chat })),
+    ...visibleChats.map(({ chat }) => ({ kind: 'chat' as const, chat })),
+  ], [visibleActions, recentChats, visibleChats])
 
   const activeIndex = rows.length ? Math.min(highlighted, rows.length - 1) : 0
 
+  // Scroll the highlighted row into view only for keyboard navigation.
+  // Hover must never scroll: pointing at a row near the fold would yank the
+  // list (and, before the grid fix, the whole palette) under the cursor.
+  const scrollOnHighlightRef = useRef(false)
   useEffect(() => {
+    if (!scrollOnHighlightRef.current) return
+    scrollOnHighlightRef.current = false
     listRef.current
       ?.querySelector(`[data-index="${activeIndex}"]`)
       ?.scrollIntoView({ block: 'nearest' })
@@ -77,9 +118,11 @@ export function CommandPalette({ open, conversations, actions, onSelectConversat
     if (!rows.length) return
     if (event.key === 'ArrowDown') {
       event.preventDefault()
+      scrollOnHighlightRef.current = true
       setHighlighted(index => (index + 1) % rows.length)
     } else if (event.key === 'ArrowUp') {
       event.preventDefault()
+      scrollOnHighlightRef.current = true
       setHighlighted(index => (index - 1 + rows.length) % rows.length)
     } else if (event.key === 'Enter') {
       event.preventDefault()
@@ -105,7 +148,32 @@ export function CommandPalette({ open, conversations, actions, onSelectConversat
         </div>
         <div ref={listRef} className="palette-list">
           {rows.length === 0 && <div className="palette-empty">{t('palette.empty')}</div>}
-          {visibleActions.length > 0 && <div className="palette-group-label">{t('palette.actions')}</div>}
+          {/* Empty query: Recents (top 5 chats by updatedAt) + Suggestions (all actions).
+              Typed query: filtered Actions + filtered Chats (no Recents — the
+              filtered chats list already serves that role). */}
+          {!normalizedQuery && recentChats.length > 0 && (
+            <>
+              <div className="palette-group-label">{t('palette.recents')}</div>
+              {recentChats.map(chat => {
+                cursor += 1
+                const index = cursor
+                return (
+                  <button
+                    key={`recent-${chat.id}`}
+                    type="button"
+                    data-index={index}
+                    className={`palette-item ${index === activeIndex ? 'highlighted' : ''}`}
+                    onMouseEnter={() => setHighlighted(index)}
+                    onClick={() => runRow({ kind: 'chat', chat })}
+                  >
+                    <span className="palette-item-icon" aria-hidden="true"><MessageSquare size={14} /></span>
+                    <span className="palette-item-label">{displayConversationTitle(chat.title, t)}</span>
+                  </button>
+                )
+              })}
+            </>
+          )}
+          {visibleActions.length > 0 && <div className="palette-group-label">{normalizedQuery ? t('palette.actions') : t('palette.suggestions')}</div>}
           {visibleActions.map(action => {
             cursor += 1
             const index = cursor
@@ -123,8 +191,8 @@ export function CommandPalette({ open, conversations, actions, onSelectConversat
               </button>
             )
           })}
-          {visibleChats.length > 0 && <div className="palette-group-label">{t('palette.chats')}</div>}
-          {visibleChats.map(chat => {
+          {normalizedQuery && visibleChats.length > 0 && <div className="palette-group-label">{t('palette.chats')}</div>}
+          {normalizedQuery && visibleChats.map(({ chat, snippet }) => {
             cursor += 1
             const index = cursor
             return (
@@ -137,7 +205,10 @@ export function CommandPalette({ open, conversations, actions, onSelectConversat
                 onClick={() => runRow({ kind: 'chat', chat })}
               >
                 <span className="palette-item-icon" aria-hidden="true"><MessageSquare size={14} /></span>
-                <span className="palette-item-label">{displayConversationTitle(chat.title, t)}</span>
+                <span className="palette-item-text">
+                  <span className="palette-item-label">{displayConversationTitle(chat.title, t)}</span>
+                  {snippet && <span className="palette-item-snippet">{snippet}</span>}
+                </span>
               </button>
             )
           })}
@@ -153,6 +224,7 @@ function displayConversationTitle(title: string, t: (key: string) => string): st
 
 export const paletteIcons = {
   newChat: <MessageSquarePlus size={14} />,
+  plugins: <Blocks size={14} />,
   settings: <Settings size={14} />,
   theme: <Moon size={14} />,
   terminal: <SquareTerminal size={14} />,

@@ -44,11 +44,6 @@ export function LocalTerminalPanel({
   const xtermRef = useRef<Terminal | undefined>(undefined)
   const fitAddonRef = useRef<FitAddon | undefined>(undefined)
   const lastSessionIdRef = useRef<string | undefined>(undefined)
-  const startupOutputRef = useRef<{ sessionId?: string; until: number; buffer: string; pending: boolean }>({
-    until: 0,
-    buffer: '',
-    pending: false,
-  })
   const resizerRef = useRef<HTMLDivElement | null>(null)
   const resizeObserverRef = useRef<ResizeObserver | undefined>(undefined)
   const [restarting, setRestarting] = useState(false)
@@ -111,7 +106,7 @@ export function LocalTerminalPanel({
       }
     })
 
-    // Send input from terminal to PTY
+    // Send input from terminal to PTY.
     term.onData((data: string) => {
       void onWrite(data)
     })
@@ -161,54 +156,20 @@ export function LocalTerminalPanel({
   useEffect(() => {
     if (!session?.id || lastSessionIdRef.current === session.id) return
     lastSessionIdRef.current = session.id
-    startupOutputRef.current = {
-      sessionId: session.id,
-      until: Date.now() + 1_500,
-      buffer: '',
-      pending: true,
-    }
     xtermRef.current?.reset()
     xtermRef.current?.clear()
   }, [session?.id])
-
-  useEffect(() => {
-    if (!terminalOpen || session?.id) return
-    startupOutputRef.current = {
-      until: Date.now() + 1_500,
-      buffer: '',
-      pending: true,
-    }
-  }, [terminalOpen, session?.id])
 
   // Handle terminal data from main process
   useEffect(() => {
     if (!xtermRef.current) return undefined
 
+    // PTY output goes to xterm verbatim. The old cosmetic startup filter
+    // (buffer + sanitize + reset + replay as plain text) desynced the
+    // shell's line editor from the screen whenever the user typed during
+    // startup — ghost characters that backspace could never erase. A real
+    // terminal never rewrites history, and neither do we.
     const cleanup = onTerminalData((data: string) => {
-      const startup = startupOutputRef.current
-      if (startup.pending) {
-        startup.buffer += data
-        const cleaned = sanitizeStartupTerminalOutput(startup.buffer)
-        const promptReady = startupPromptReady(cleaned)
-        if (Date.now() <= startup.until && !promptReady) {
-          return
-        }
-        startup.pending = false
-        startup.buffer = ''
-        if (cleaned) {
-          const startupText = promptReady ? startupPromptText(cleaned) : cleaned
-          if (promptReady) {
-            const term = xtermRef.current
-            term?.reset()
-            term?.clear()
-            requestAnimationFrame(() => term?.write(`\x1b[2J\x1b[H${startupText}`))
-          } else {
-            xtermRef.current?.write(startupText)
-          }
-        }
-        return
-      }
-
       xtermRef.current?.write(data)
     })
 
@@ -387,31 +348,4 @@ export function LocalTerminalPanel({
 function workspaceFolderName(path: string): string {
   if (!path) return ''
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
-}
-
-function sanitizeStartupTerminalOutput(data: string): string {
-  return data.replace(
-    /(?:\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]|[ \t]|%){12,}(?=(?:\x1b\[[0-?]*[ -/]*[@-~]|[ \t])*[^\s@]+@)/g,
-    '',
-  ).replace(
-    /^(?:\r|\n|\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f])+/,
-    '',
-  )
-}
-
-function startupPromptReady(data: string): boolean {
-  const visible = stripTerminalControls(data)
-  return /[^\s@]+@[^\s]+[^\r\n]*[$#%]\s?$/.test(visible)
-}
-
-function startupPromptText(data: string): string {
-  const visible = stripTerminalControls(data)
-  return visible.match(/[^\r\n]*@[^\r\n]*[$#%]\s?$/)?.[0] ?? visible
-}
-
-function stripTerminalControls(data: string): string {
-  return data
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
 }

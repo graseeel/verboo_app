@@ -9,10 +9,11 @@ import { CommandBlock } from './CommandBlock'
 import { MarkdownMessage, normalizeThinkingProse } from './MarkdownMessage'
 import mascotUrl from '../../../../assets/branding/verboo-mascot.png'
 
-export function StepFlow({ items, streaming = false, imageReading = false }: {
+export function StepFlow({ items, streaming = false, imageReading = false, hideFinalTextId }: {
   items: TranscriptItem[]
   streaming?: boolean
   imageReading?: boolean
+  hideFinalTextId?: string
 }) {
   const blocks = groupTurnBlocks(items)
   // While the turn streams, the last actions block is the one "in flight":
@@ -22,6 +23,10 @@ export function StepFlow({ items, streaming = false, imageReading = false }: {
   return (
     <div className="step-flow">
       {blocks.map(block => {
+        // When expanded, the parent shows the recap as a standalone paragraph
+        // below the panel. Hide the matching text block here by id identity
+        // Match by id identity (never by text equality or blind position).
+        if (block.kind === 'text' && hideFinalTextId && block.id === hideFinalTextId) return null
         if (block.kind === 'text') {
           return block.text
             ? <div key={block.id} className={`step-text ${block.streaming ? 'streaming-text' : ''}`}><MarkdownMessage text={block.text} /></div>

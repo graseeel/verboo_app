@@ -123,6 +123,7 @@ pub enum GoalStatus {
 #[serde(rename_all = "lowercase")]
 pub enum AttachmentKind {
     Image,
+    Video,
     File,
 }
 
@@ -165,6 +166,40 @@ impl Default for VisionFallbackConsent {
     fn default() -> Self {
         Self::Ask
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoFallbackConsent {
+    Ask,
+    Always,
+    Never,
+}
+
+impl Default for VideoFallbackConsent {
+    fn default() -> Self {
+        Self::Ask
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum VideoHdrKind {
+    Sdr,
+    Hlg,
+    Pq,
+    DolbyVision,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoProgressStage {
+    Validating,
+    Preparing,
+    Transcribing,
+    Analyzing,
+    Consolidating,
 }
 
 /// Avatar configuration: how the user's profile picture is rendered.
@@ -350,15 +385,53 @@ pub enum ProfileStatus {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum ResearchSubagentStatus {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubagentThreadStatus {
     Queued,
-    Running,
+    Thinking,
     Reading,
     Searching,
-    Complete,
+    Running,
+    Completed,
     Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SubagentThreadEventKind {
+    Mission,
+    AgentMessage,
+    ToolCall,
+    ToolResult,
+    Status,
+    Final,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentThreadEvent {
+    pub id: String,
+    pub kind: SubagentThreadEventKind,
+    pub text: String,
+    pub timestamp: u64,
+    pub tool_name: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub is_error: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentThreadUpdate {
+    pub thread_id: String,
+    pub runtime_agent_id: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub label: Option<String>,
+    pub mission: Option<String>,
+    pub status: Option<SubagentThreadStatus>,
+    pub event: Option<SubagentThreadEvent>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -369,7 +442,10 @@ pub enum EventType {
     Stderr,
     Json,
     Result,
-    SubagentProgress,
+    #[serde(rename = "subagent-thread")]
+    SubagentThread,
+    #[serde(rename = "video-progress")]
+    VideoProgress,
     Error,
     #[default]
     Done,
@@ -590,6 +666,8 @@ pub struct UserSettings {
     /// describe images when the selected model can't see). Default: Ask.
     #[serde(default)]
     pub vision_fallback_consent: VisionFallbackConsent,
+    #[serde(default)]
+    pub video_fallback_consent: VideoFallbackConsent,
     /// Paths of untrusted skills (project-root skills) the user has approved
     /// with "Always Allow". Trusted skills (user/legacy roots) don't need
     /// approval — they pass through directly. This list persists the user's
@@ -611,6 +689,19 @@ pub struct UserSettings {
     /// Keyed by model id; value is the effort level string. Empty by default.
     #[serde(default)]
     pub effort_by_model: std::collections::HashMap<String, String>,
+    /// When true (default), the backend fetches plugin icons from the
+    /// plugin's homepage domain on-demand (never preemptive). When false,
+    /// `plugin_icon` returns `None` without any network request — the FE
+    /// renders a monogram fallback. Privacy toggle: users who don't want
+    /// any outbound requests to third-party plugin sites can disable it.
+    #[serde(default = "default_true")]
+    pub load_web_icons: bool,
+}
+
+/// Default function for `load_web_icons`. Used by `#[serde(default = ...)]`
+/// so existing settings.json files without the field parse as `true`.
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -637,6 +728,11 @@ pub struct SkillSummary {
     pub path: String,
     pub source: SkillSource,
     pub trusted: bool,
+    /// `true` when the skill is actually a plugin mention (no path, just a
+    /// name + description referencing a plugin's MCP tools/skills).
+    /// Frontend sends `isPluginMention`; defaults to `false` for normal skills.
+    #[serde(default)]
+    pub is_plugin_mention: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -660,6 +756,54 @@ pub struct AttachmentMeta {
     /// when no extraction was attempted (non-PDF, image).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extraction_status: Option<ExtractionStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<VideoStreamMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoStreamMetadata {
+    pub duration_ms: u64,
+    pub container: String,
+    pub video_codec: String,
+    pub audio_codec: Option<String>,
+    pub width: u32,
+    pub height: u32,
+    pub avg_fps: f64,
+    pub has_audio: bool,
+    pub hdr: VideoHdrKind,
+    pub color_primaries: Option<String>,
+    pub color_transfer: Option<String>,
+    pub bit_depth: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelMediaCapabilities {
+    pub image: bool,
+    pub video: bool,
+    pub audio: bool,
+    pub video_containers: Vec<String>,
+    pub video_codecs: Vec<String>,
+    pub accepts_hdr_video: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliMediaCapabilities {
+    pub image_blocks: bool,
+    pub video_blocks: bool,
+    pub audio_blocks: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoProgress {
+    pub job_id: String,
+    pub turn_id: String,
+    pub stage: VideoProgressStage,
+    pub completed_units: Option<u32>,
+    pub total_units: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -672,6 +816,12 @@ pub struct AgentTurnRequest {
     pub model_supports_vision: Option<bool>,
     #[serde(default)]
     pub run_vision_fallback: Option<bool>,
+    #[serde(default)]
+    pub media_capabilities: Option<ModelMediaCapabilities>,
+    #[serde(default)]
+    pub cli_media_capabilities: Option<CliMediaCapabilities>,
+    #[serde(default)]
+    pub run_video_analysis: Option<bool>,
     /// Reasoning effort level for this turn (e.g. "low", "medium", "high",
     /// "max", "none"). Sent to the CLI as `--effort <level>` only when it is
     /// a valid override — i.e. present, non-empty, and listed in the model's
@@ -869,6 +1019,7 @@ pub struct ResearchSubagentRequest {
     pub id: String,
     pub index: u32,
     pub total: u32,
+    pub label: Option<String>,
     pub topic: String,
     pub base_request: AgentTurnRequest,
 }
@@ -879,22 +1030,8 @@ pub struct ResearchSubagentsRunRequest {
     pub run_id: Option<String>,
     pub count: u32,
     pub requested_count: Option<u32>,
+    pub labels: Option<Vec<String>>,
     pub base_request: AgentTurnRequest,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResearchSubagentProgress {
-    pub id: String,
-    pub index: u32,
-    pub total: Option<u32>,
-    pub run_id: Option<String>,
-    pub status: ResearchSubagentStatus,
-    pub summary: String,
-    pub activity: Option<String>,
-    pub detail: Option<String>,
-    pub mission: Option<String>,
-    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -980,11 +1117,13 @@ pub struct AgentEvent {
     pub text: Option<String>,
     pub payload: Option<serde_json::Value>,
     pub result: Option<AgentResultSnapshot>,
-    pub progress: Option<ResearchSubagentProgress>,
+    pub subagent_thread: Option<SubagentThreadUpdate>,
     pub message: Option<String>,
     pub exit_code: Option<i32>,
     pub runtime_status: Option<RuntimeStatus>,
     pub runtime_activity: Option<RuntimeActivity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_progress: Option<VideoProgress>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1231,10 +1370,12 @@ impl Default for UserSettings {
                 auto_download: false,
             },
             vision_fallback_consent: VisionFallbackConsent::Ask,
+            video_fallback_consent: VideoFallbackConsent::Ask,
             trusted_skills: Vec::new(),
             avatar: None,
             include_verboo_co_author: false,
             effort_by_model: std::collections::HashMap::new(),
+            load_web_icons: true,
         }
     }
 }
@@ -1243,9 +1384,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             working_directory: std::env::current_dir()
-                .unwrap_or_else(|_| {
-                    dirs::home_dir().unwrap_or_default()
-                })
+                .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default())
                 .to_string_lossy()
                 .to_string(),
             access_mode: AccessMode::Approval,
@@ -1290,6 +1429,40 @@ mod tests {
     }
 
     #[test]
+    fn load_web_icons_defaults_true_when_absent() {
+        // Backwards-compat: existing settings.json files without the
+        // `loadWebIcons` field must deserialize as `true` (privacy toggle
+        // defaults on — icons fetched on-demand). This is the
+        // `#[serde(default = "default_true")]` contract.
+        let raw = r#"{
+            "language": "en-US",
+            "defaultAccessMode": "approval",
+            "fullAccessEnabled": false,
+            "showInMenuBar": true,
+            "showMenuBarText": true,
+            "staySignedIn": true,
+            "preventSleepWhileRunning": true,
+            "completionNotifications": "background",
+            "permissionNotifications": true,
+            "questionNotifications": true,
+            "responseEnhancementsEnabled": false,
+            "personality": "pragmatic",
+            "customInstructions": "",
+            "trustedCommands": [],
+            "memoriesEnabled": false,
+            "chroniclePreview": false,
+            "ignoreToolChatsForMemory": true,
+            "goalMode": { "enabled": true, "maxTurns": 999, "maxElapsedMinutes": 99999, "allowAutoAccess": true },
+            "updates": { "channel": "beta", "autoCheck": true, "autoDownload": false }
+        }"#;
+        let s: UserSettings = serde_json::from_str(raw).expect("parse");
+        assert!(
+            s.load_web_icons,
+            "loadWebIcons must default to true when absent"
+        );
+    }
+
+    #[test]
     fn user_settings_defaults_match_electron() {
         // Mirror of Electron's defaultUserSettings (settingsService.ts).
         let d = UserSettings::default();
@@ -1301,7 +1474,10 @@ mod tests {
         assert!(d.stay_signed_in);
         assert!(d.prevent_sleep_while_running);
         assert!(!d.include_verboo_co_author);
-        assert_eq!(d.completion_notifications, CompletionNotificationMode::Background);
+        assert_eq!(
+            d.completion_notifications,
+            CompletionNotificationMode::Background
+        );
         assert!(d.permission_notifications);
         assert!(d.question_notifications);
         assert!(!d.response_enhancements_enabled);
@@ -1335,10 +1511,7 @@ mod tests {
     #[test]
     fn enums_serialize_as_expected() {
         // kebab-case
-        assert_eq!(
-            serde_json::to_string(&ThemeMode::Dark).unwrap(),
-            "\"dark\""
-        );
+        assert_eq!(serde_json::to_string(&ThemeMode::Dark).unwrap(), "\"dark\"");
         assert_eq!(
             serde_json::to_string(&SettingsTab::TrustedCommands).unwrap(),
             "\"trusted-commands\""
@@ -1373,15 +1546,77 @@ mod tests {
             text: None,
             payload: None,
             result: None,
-            progress: None,
             message: None,
             exit_code: None,
             runtime_status: None,
             runtime_activity: None,
+            subagent_thread: None,
+            video_progress: None,
         };
         let json = serde_json::to_string(&event).expect("serialize");
         assert!(json.contains("\"type\":\"started\""));
         assert!(!json.contains("eventType"));
+    }
+
+    #[test]
+    fn video_contract_round_trips_with_camel_case_wire_names() {
+        let attachment = AttachmentMeta {
+            path: "/tmp/clip.mov".into(),
+            name: "clip.mov".into(),
+            size: 42,
+            kind: AttachmentKind::Video,
+            media_type: Some("video/quicktime".into()),
+            width: Some(1920),
+            height: Some(1080),
+            extracted_text: None,
+            extraction_status: None,
+            video: Some(VideoStreamMetadata {
+                duration_ms: 1_000,
+                container: "mov".into(),
+                video_codec: "h264".into(),
+                audio_codec: Some("aac".into()),
+                width: 1920,
+                height: 1080,
+                avg_fps: 29.97,
+                has_audio: true,
+                hdr: VideoHdrKind::DolbyVision,
+                color_primaries: Some("bt2020".into()),
+                color_transfer: Some("smpte2084".into()),
+                bit_depth: Some(10),
+            }),
+        };
+        let attachment_json = serde_json::to_value(&attachment).expect("serialize attachment");
+        assert_eq!(attachment_json["kind"], "video");
+        assert_eq!(attachment_json["video"]["durationMs"], 1_000);
+        assert_eq!(attachment_json["video"]["videoCodec"], "h264");
+        assert_eq!(attachment_json["video"]["hdr"], "dolbyVision");
+        let attachment_back: AttachmentMeta =
+            serde_json::from_value(attachment_json).expect("deserialize attachment");
+        assert_eq!(attachment_back.video.expect("video metadata").bit_depth, Some(10));
+
+        let event = AgentEvent {
+            event_type: EventType::VideoProgress,
+            turn_id: Some("turn-1".into()),
+            conversation_id: None,
+            text: None,
+            payload: None,
+            result: None,
+            subagent_thread: None,
+            message: None,
+            exit_code: None,
+            runtime_status: None,
+            runtime_activity: None,
+            video_progress: Some(VideoProgress {
+                job_id: "job-1".into(),
+                turn_id: "turn-1".into(),
+                stage: VideoProgressStage::Analyzing,
+                completed_units: Some(2),
+                total_units: Some(4),
+            }),
+        };
+        let event_json = serde_json::to_value(&event).expect("serialize event");
+        assert_eq!(event_json["type"], "video-progress");
+        assert_eq!(event_json["videoProgress"]["completedUnits"], 2);
     }
 
     // ── AvatarSettings round-trip tests ──────────────────────────────
@@ -1417,7 +1652,10 @@ mod tests {
         let avatar: AvatarSettings = serde_json::from_str(json).expect("deserialize");
         assert_eq!(avatar.kind, AvatarKind::Upload);
         assert_eq!(avatar.upload_path.as_deref(), Some("/appdata/avatar.png"));
-        assert_eq!(avatar.upload_version, None, "absent field must default to None");
+        assert_eq!(
+            avatar.upload_version, None,
+            "absent field must default to None"
+        );
     }
 
     #[test]
@@ -1464,7 +1702,10 @@ mod tests {
         // UserSettings doesn't derive PartialEq, so check the avatar fields.
         let back_avatar = back.avatar.expect("avatar must survive round-trip");
         assert_eq!(back_avatar.kind, AvatarKind::Upload);
-        assert_eq!(back_avatar.upload_path.as_deref(), Some("/appdata/avatar.webp"));
+        assert_eq!(
+            back_avatar.upload_path.as_deref(),
+            Some("/appdata/avatar.webp")
+        );
         assert_eq!(
             back_avatar.upload_version,
             Some(99),

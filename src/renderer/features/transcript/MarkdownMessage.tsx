@@ -1,8 +1,10 @@
-import { memo, type ReactNode } from 'react'
+import { memo, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import { openUrl } from '@tauri-apps/plugin-opener'
+import { MarkdownLinkDialog } from './MarkdownLinkDialog'
+import { parseLinkDestination, type LinkDestination } from './markdownLink'
 
 // ── densifyMarkdown ──────────────────────────────────────────────────────
 // The model often emits blank lines between numbered list items (loose
@@ -89,15 +91,21 @@ export function normalizeThinkingProse(input: string): string {
 // unclosed ``` fence just renders as a growing code block instead of breaking.
 //   - remark-gfm: tables, task lists, strikethrough, autolinks
 //   - rehype-highlight: syntax highlighting for fenced code blocks (highlight.js)
-// Links open in the system browser instead of navigating the webview away.
+// Links are confirmed before opening in the system browser; the webview never
+// navigates away from the active conversation.
 
-function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
+function MarkdownLink({ href, children, onRequestOpen }: {
+  href?: string
+  children?: ReactNode
+  onRequestOpen: (destination: LinkDestination) => void
+}) {
   return (
     <a
       href={href}
       onClick={event => {
         event.preventDefault()
-        if (href) void openUrl(href).catch(() => undefined)
+        const destination = parseLinkDestination(href)
+        if (destination) onRequestOpen(destination)
       }}
     >
       {children}
@@ -106,15 +114,34 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 }
 
 export const MarkdownMessage = memo(function MarkdownMessage({ text }: { text: string }) {
+  const [destination, setDestination] = useState<LinkDestination | undefined>()
+
+  const openConfirmedLink = () => {
+    if (!destination) return
+    void openUrl(destination.href).catch(() => undefined)
+    setDestination(undefined)
+  }
+
   return (
     <div className="markdown-body">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-        components={{ a: MarkdownLink }}
+        components={{
+          a: ({ href, children }) => (
+            <MarkdownLink href={href} onRequestOpen={setDestination}>{children}</MarkdownLink>
+          ),
+        }}
       >
         {densifyMarkdown(text)}
       </ReactMarkdown>
+      {destination && (
+        <MarkdownLinkDialog
+          destination={destination}
+          onCancel={() => setDestination(undefined)}
+          onConfirm={openConfirmedLink}
+        />
+      )}
     </div>
   )
 })
