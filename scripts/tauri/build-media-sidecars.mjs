@@ -254,7 +254,12 @@ async function sourceRoot(name, source, sourceDirectory) {
 
   const temporary = await mkdtemp(path.join(tmpdir(), `verboo-${name}-extract-`))
   try {
-    inheritedCommand('tar', ['-xf', archive, '-C', temporary])
+    // MSYS2 tar treats "D:\..." as a remote host; --force-local keeps
+    // drive-letter paths local on Windows.
+    const tarArgs = process.platform === 'win32'
+      ? ['--force-local', '-xf', archive, '-C', temporary]
+      : ['-xf', archive, '-C', temporary]
+    inheritedCommand('tar', tarArgs)
     const entries = await readdir(temporary, { withFileTypes: true })
     const directories = entries.filter((entry) => entry.isDirectory())
     if (directories.length !== 1) {
@@ -289,7 +294,11 @@ function ffmpegPlatformArgs(target) {
 }
 
 function extraLibraries(target) {
-  return targetPlatform(target) === 'darwin' ? '-lc++' : '-lstdc++'
+  if (targetPlatform(target) === 'darwin') return '-lc++'
+  // The fully static Linux link (and ffmpeg's pkg-config probe, which links
+  // the same way) needs pthread and libm resolved explicitly.
+  if (targetPlatform(target) === 'linux') return '-lstdc++ -lpthread -lm'
+  return '-lstdc++'
 }
 
 function buildEnvironment(target, additions = {}) {
@@ -312,11 +321,17 @@ async function buildZimg(source, target, staging) {
   await cp(source, sourceCopy, { recursive: true })
   const environment = buildEnvironment(target)
   inheritedCommand('bash', ['autogen.sh'], { cwd: sourceCopy, env: environment })
-  inheritedCommand(path.join(sourceCopy, 'configure'), [
+  const zimgConfigure = [
     `--prefix=${prefix}`,
     '--disable-shared',
     '--enable-static',
-  ], { cwd: sourceCopy, env: environment })
+  ]
+  // Without an explicit --host, config.guess reports the arm64 build host
+  // and zimg enables ARM SIMD sources that cannot compile under
+  // "clang -arch x86_64" (NEON soft-float ABI errors).
+  if (target === 'x86_64-apple-darwin') zimgConfigure.push('--host=x86_64-apple-darwin')
+  if (target === 'aarch64-apple-darwin') zimgConfigure.push('--host=aarch64-apple-darwin')
+  inheritedCommand(path.join(sourceCopy, 'configure'), zimgConfigure, { cwd: sourceCopy, env: environment })
   inheritedCommand('make', ['-j', jobs()], { cwd: sourceCopy, env: environment })
   inheritedCommand('make', ['install'], { cwd: sourceCopy, env: environment })
   if (!(await exists(path.join(prefix, 'lib', 'libzimg.a')))) {
@@ -365,7 +380,19 @@ async function buildFfmpeg(source, target, zimgPrefix, staging) {
   const environment = buildEnvironment(target, {
     PKG_CONFIG_PATH: path.join(zimgPrefix, 'lib', 'pkgconfig'),
   })
-  inheritedCommand(path.join(sourceCopy, 'configure'), configure, { cwd: sourceCopy, env: environment })
+  try {
+    inheritedCommand(path.join(sourceCopy, 'configure'), configure, { cwd: sourceCopy, env: environment })
+  } catch (error) {
+    // Surface the real probe failure: configure only prints a summary line,
+    // the cause lives at the end of ffbuild/config.log.
+    try {
+      const log = await readFile(path.join(sourceCopy, 'ffbuild', 'config.log'), 'utf8')
+      process.stderr.write(`\n===== ffbuild/config.log (tail) =====\n${log.split('\n').slice(-120).join('\n')}\n`)
+    } catch {
+      // no log to show
+    }
+    throw error
+  }
   inheritedCommand('make', ['-j', jobs()], { cwd: sourceCopy, env: environment })
   const extension = isWindowsTarget(target) ? '.exe' : ''
   const ffmpeg = path.join(sourceCopy, `ffmpeg${extension}`)

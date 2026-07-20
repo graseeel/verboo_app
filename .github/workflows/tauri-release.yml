@@ -176,7 +176,8 @@ jobs:
             autoconf \
             automake \
             libtool \
-            nasm
+            nasm \
+            zlib1g-dev
 
       - name: Install npm dependencies
         run: npm ci
