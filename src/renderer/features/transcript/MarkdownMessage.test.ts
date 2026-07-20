@@ -1,5 +1,16 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { densifyMarkdown, normalizeThinkingProse } from './MarkdownMessage'
+
+const markdownCss = readFileSync(resolve(process.cwd(), 'src/renderer/styles/markdown.css'), 'utf8')
+
+describe('markdown code block themes', () => {
+  it('uses a legible syntax palette in light mode', () => {
+    expect(markdownCss).toContain(':root[data-theme="light"] .markdown-body pre code.hljs')
+    expect(markdownCss).toContain('color: #24292f')
+  })
+})
 
 describe('densifyMarkdown', () => {
   it('normalizes \\r\\n to \\n', () => {

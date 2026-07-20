@@ -1778,7 +1778,22 @@ fn terminal_failure_from_outcome(
     let result_is_error = result_snapshot
         .and_then(|snapshot| snapshot.is_error)
         .unwrap_or(false);
-    if assistant_error.is_none() && !result_is_error && exit_code == Some(0) {
+    let empty_success_after_tool_use = result_snapshot.is_some_and(|snapshot| {
+        snapshot.stop_reason.as_deref() == Some("tool_use")
+            && snapshot
+                .raw_result
+                .as_ref()
+                .and_then(|raw| raw.get("result"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+    });
+    let incomplete_turn = assistant_error.is_none()
+        && !result_is_error
+        && exit_code == Some(0)
+        && (result_snapshot.is_none() || empty_success_after_tool_use);
+    if assistant_error.is_none() && !result_is_error && exit_code == Some(0) && !incomplete_turn {
         return None;
     }
 
@@ -1815,21 +1830,25 @@ fn terminal_failure_from_outcome(
 
     let combined = details.join("\n");
     let normalized = combined.to_lowercase();
-    let category = assistant_error
-        .and_then(|payload| payload.get("error"))
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            result_snapshot
-                .filter(|snapshot| snapshot.is_error.unwrap_or(false))
-                .and_then(|snapshot| snapshot.raw_result.as_ref())
-                .and_then(|raw| raw.get("subtype"))
-                .and_then(|value| value.as_str())
-                .filter(|value| !value.trim().is_empty())
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| infer_terminal_failure_category(&normalized).to_string());
+    let category = if incomplete_turn {
+        "incomplete_turn".to_string()
+    } else {
+        assistant_error
+            .and_then(|payload| payload.get("error"))
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                result_snapshot
+                    .filter(|snapshot| snapshot.is_error.unwrap_or(false))
+                    .and_then(|snapshot| snapshot.raw_result.as_ref())
+                    .and_then(|raw| raw.get("subtype"))
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.trim().is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| infer_terminal_failure_category(&normalized).to_string())
+    };
     let session_id = assistant_error
         .and_then(|payload| payload.get("session_id"))
         .and_then(|value| value.as_str())
@@ -3549,6 +3568,47 @@ mod tests {
     }
 
     #[test]
+    fn terminal_failure_rejects_zero_exit_without_result_payload() {
+        let failure = terminal_failure_from_outcome(
+            None,
+            None,
+            Some(0),
+            None,
+            "(exit=0, runtime=node, cwd=/tmp)",
+        )
+        .expect("exit zero without a terminal result is an incomplete turn");
+
+        assert_eq!(failure.category, "incomplete_turn");
+        assert!(failure.message.contains("encerrou sem produzir resposta"));
+        assert_eq!(failure.exit_code, Some(0));
+    }
+
+    #[test]
+    fn terminal_failure_rejects_empty_success_after_tool_use() {
+        let payload = json!({
+            "type": "result",
+            "subtype": "success",
+            "session_id": "session-incomplete-1",
+            "is_error": false,
+            "result": "",
+            "stop_reason": "tool_use"
+        });
+        let snapshot = to_agent_result_snapshot("turn-incomplete-1", &payload);
+
+        let failure = terminal_failure_from_outcome(
+            None,
+            Some(&snapshot),
+            Some(0),
+            None,
+            "(exit=0, runtime=node, cwd=/tmp)",
+        )
+        .expect("a tool-only success without a final answer is incomplete");
+
+        assert_eq!(failure.category, "incomplete_turn");
+        assert_eq!(failure.session_id.as_deref(), Some("session-incomplete-1"));
+    }
+
+    #[test]
     fn terminal_failure_reports_unknown_nonzero_exit_after_partial_output() {
         let failure = terminal_failure_from_outcome(
             None,
@@ -3566,9 +3626,16 @@ mod tests {
 
     #[test]
     fn terminal_failure_ignores_stderr_warning_on_success() {
+        let payload = json!({
+            "type": "result",
+            "subtype": "success",
+            "session_id": "session-success-1",
+            "is_error": false
+        });
+        let snapshot = to_agent_result_snapshot("turn-success-1", &payload);
         let failure = terminal_failure_from_outcome(
             None,
-            None,
+            Some(&snapshot),
             Some(0),
             Some("configuration warning"),
             "(exit=0, runtime=node, cwd=/tmp)",
@@ -4427,6 +4494,22 @@ mod tests {
             !result,
             "interrupt for unknown conversation must be a no-op"
         );
+    }
+
+    #[test]
+    fn interrupt_cancels_the_matching_video_job_before_cli_lookup() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let registry = crate::services::video::job::VideoJobRegistry::new(temp.path()).unwrap();
+        let job = registry.start("video-conversation").unwrap();
+        let directory = job.directory().to_path_buf();
+        let service =
+            TurnService::new(Arc::new(CredentialsStore::new())).with_video_job_registry(registry);
+
+        assert!(service
+            .interrupt(Some("video-conversation".to_string()))
+            .unwrap());
+        assert!(job.is_cancelled());
+        assert!(!directory.exists());
     }
 
     #[test]

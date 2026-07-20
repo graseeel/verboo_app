@@ -11,6 +11,7 @@
   --accent: #9355ff;
   --accent-strong: #a96dff;
   --accent-soft: rgba(147, 85, 255, 0.14);
+  --link: #8ab4f8;
   --cyan: #5ed8ef;
   --green: #40c878;
   --amber: #ff8b4a;
@@ -84,6 +85,7 @@
   --accent: #7c3dff;
   --accent-strong: #6926ec;
   --accent-soft: rgba(124, 61, 255, 0.12);
+  --link: #2f65a7;
   --cyan: #007f9b;
   --green: #157b47;
   --amber: #c75d1b;

@@ -20,3 +20,10 @@ export function shouldAutoRecoverAuthentication(
     && isAuthenticationFailure(failure, failure.message),
   )
 }
+
+export function shouldRetryIncompleteTurn(
+  failure: CliTerminalFailure | undefined,
+  alreadyRetriedWithoutSession: boolean,
+): boolean {
+  return failure?.category === 'incomplete_turn' && !alreadyRetriedWithoutSession
+}

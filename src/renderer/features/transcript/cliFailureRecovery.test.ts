@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   isAuthenticationFailure,
   shouldAutoRecoverAuthentication,
+  shouldRetryIncompleteTurn,
 } from './cliFailureRecovery'
 
 describe('CLI authentication failure recovery', () => {
@@ -31,5 +32,17 @@ describe('CLI authentication failure recovery', () => {
       ...recoverableFailure,
       category: 'rate_limit',
     }, false)).toBe(false)
+  })
+
+  it('retries an incomplete turn only once without the stale session', () => {
+    const incompleteFailure = {
+      ...recoverableFailure,
+      category: 'incomplete_turn',
+      recoveryReady: false,
+    }
+
+    expect(shouldRetryIncompleteTurn(incompleteFailure, false)).toBe(true)
+    expect(shouldRetryIncompleteTurn(incompleteFailure, true)).toBe(false)
+    expect(shouldRetryIncompleteTurn(recoverableFailure, false)).toBe(false)
   })
 })

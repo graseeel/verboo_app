@@ -79,7 +79,11 @@ import { applyVideoProgress, clearVideoProgress } from './features/video/videoPr
 import { Composer } from './features/composer/Composer'
 import { estimateTotalContextTokens } from './features/context/ContextPanel'
 import { TokenRateMeter } from './features/context/TokenRateMeter'
-import { isAuthenticationFailure, shouldAutoRecoverAuthentication } from './features/transcript/cliFailureRecovery'
+import {
+  isAuthenticationFailure,
+  shouldAutoRecoverAuthentication,
+  shouldRetryIncompleteTurn,
+} from './features/transcript/cliFailureRecovery'
 import { truncateToolOutput } from './features/transcript/toolOutput'
 import { applySubagentThreadUpdate, isSubagentThreadWorking, latestSubagentThread } from './features/subagents/subagentThreads'
 import { SubagentIndicator } from './features/subagents/SubagentIndicator'
@@ -726,8 +730,16 @@ export function App() {
     return () => window.clearTimeout(timer)
   }, [reviewUnavailableReason])
 
+  // This subscription is intentionally installed only once. Keep its callback
+  // current so automatic recovery rebuilds a turn with the active project's
+  // directory instead of the state from the app's initial render.
+  const agentEventHandlerRef = useRef(handleAgentEvent)
+  agentEventHandlerRef.current = handleAgentEvent
+
   useEffect(() => {
-    return window.verboo.onAgentEvent(handleAgentEvent)
+    return window.verboo.onAgentEvent(event => {
+      void agentEventHandlerRef.current(event)
+    })
   }, [])
 
   // Video OCR bridge: backend frame batches run serially through the
@@ -1675,7 +1687,16 @@ export function App() {
         && !retryMeta.alreadyRetriedWithoutSession
         && retryMeta.message.trim(),
       )
-      const willContinueAutomatically = willRecoverAuth || willRecoverContext || willRetrySession
+      const willRetryIncomplete = Boolean(
+        conversationId
+        && !willRecoverAuth
+        && !willRecoverContext
+        && retryMeta
+        && retryMeta.message.trim()
+        && shouldRetryIncompleteTurn(failure, retryMeta.alreadyRetriedWithoutSession),
+      )
+      const willRestartSession = willRetrySession || willRetryIncomplete
+      const willContinueAutomatically = willRecoverAuth || willRecoverContext || willRestartSession
 
       // Bump lastTurnEndedAt on error too — a turn concluded even when it
       // errored, and the sidebar should reflect the updated order.
@@ -1763,7 +1784,7 @@ export function App() {
       if (conversationId) finishAssistantMessage(conversationId, event.turnId)
       cleanupTurnState(event.turnId)
 
-      if (willRetrySession && conversationId && retryMeta) {
+      if (willRestartSession && conversationId && retryMeta) {
         clearConversationSession(conversationId)
         removeTurnTranscriptItems(conversationId, event.turnId)
         const retry = createQueuedFollowUp(conversationId, retryMeta.message)
