@@ -140,47 +140,64 @@ fn open_external_url(app: &tauri::AppHandle, url: &str) -> Result<bool, String> 
 // Verboo in Chrome
 // ════════════════════════════════════════════════════════════════════
 
-#[tauri::command]
-fn chrome_integration_status(
-    service: tauri::State<'_, ChromeIntegrationService>,
-) -> Result<ChromeIntegrationStatus, String> {
-    service.status()
+// These operations read manifests and spawn helper/CLI processes; on the
+// Tauri main thread they beachball the whole UI, so every command hops to
+// the blocking pool and the webview stays responsive.
+async fn with_chrome_service<T, F>(
+    service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
+    operation: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&ChromeIntegrationService) -> Result<T, String> + Send + 'static,
+{
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || operation(&service))
+        .await
+        .map_err(|error| format!("chrome integration task failed: {error}"))?
 }
 
 #[tauri::command]
-fn chrome_integration_configure(
+async fn chrome_integration_status(
+    service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
+) -> Result<ChromeIntegrationStatus, String> {
+    with_chrome_service(service, |service| service.status()).await
+}
+
+#[tauri::command]
+async fn chrome_integration_configure(
     request: ChromeIntegrationRequest,
-    service: tauri::State<'_, ChromeIntegrationService>,
+    service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<ChromeIntegrationStatus, String> {
-    service.configure(request)
+    with_chrome_service(service, move |service| service.configure(request)).await
 }
 
 #[tauri::command]
-fn chrome_integration_repair(
+async fn chrome_integration_repair(
     request: ChromeIntegrationRequest,
-    service: tauri::State<'_, ChromeIntegrationService>,
+    service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<ChromeIntegrationStatus, String> {
-    service.repair(request)
+    with_chrome_service(service, move |service| service.repair(request)).await
 }
 
 #[tauri::command]
-fn chrome_integration_test(
-    service: tauri::State<'_, ChromeIntegrationService>,
+async fn chrome_integration_test(
+    service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<bool, String> {
-    service.test_connection()
+    with_chrome_service(service, |service| service.test_connection()).await
 }
 
 #[tauri::command]
-fn chrome_integration_remove(
-    service: tauri::State<'_, ChromeIntegrationService>,
+async fn chrome_integration_remove(
+    service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<ChromeIntegrationStatus, String> {
-    service.remove()
+    with_chrome_service(service, |service| service.remove()).await
 }
 
 #[tauri::command]
 fn open_chrome_extension_store(
     app: tauri::AppHandle,
-    service: tauri::State<'_, ChromeIntegrationService>,
+    service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<bool, String> {
     let url = service
         .store_url()
@@ -1739,10 +1756,10 @@ pub fn run() {
             app.manage(CliService::new());
             // Verboo in Chrome — configuration and diagnostics only. The
             // helper and Chrome extension communicate without the app open.
-            app.manage(
+            app.manage(std::sync::Arc::new(
                 ChromeIntegrationService::new(env!("CARGO_PKG_VERSION"))
                     .map_err(std::io::Error::other)?,
-            );
+            ));
             // ModelService — fetches models from Verboo Router API with disk cache
             app.manage(ModelService::new(app_data_dir.clone()));
             app.manage(services::video::transcribe::VideoTranscriberStore::new(

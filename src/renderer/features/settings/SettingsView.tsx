@@ -15,7 +15,6 @@ import {
   MessageSquare,
   Moon,
   Palette,
-  PanelsTopLeft,
   RefreshCcw,
   RotateCcw,
   Shield,
@@ -24,7 +23,8 @@ import {
   Trash2,
   UserCog,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { ChromeLogoIcon } from '../../components/ChromeLogoIcon'
+import { type ComponentType, useEffect, useRef, useState } from 'react'
 import type {
   AccessMode,
   CompletionNotificationMode,
@@ -112,12 +112,12 @@ export function SettingsView({
   const [saving, setSaving] = useState(false)
   const [customDraft, setCustomDraft] = useState(userSettings.customInstructions)
   const [confirmingFullAccess, setConfirmingFullAccess] = useState<'mode-selector' | 'capability' | false>(false)
-  const settingsTabs: Array<{ id: SettingsTab; label: string; icon: typeof Shield }> = [
+  const settingsTabs: Array<{ id: SettingsTab; label: string; icon: ComponentType<{ size?: number }> }> = [
     { id: 'permissions', label: t('settings.permissions'), icon: Shield },
     { id: 'trustedCommands', label: t('settings.trustedCommands'), icon: ShieldCheck },
     { id: 'customCommands', label: t('settings.customCommands'), icon: SquareTerminal },
     { id: 'app', label: t('settings.app'), icon: Computer },
-    { id: 'verbooInChrome', label: t('chrome.title'), icon: PanelsTopLeft },
+    { id: 'verbooInChrome', label: t('chrome.title'), icon: ChromeLogoIcon },
     { id: 'notifications', label: t('settings.notifications'), icon: Bell },
     { id: 'personalization', label: t('settings.personalization'), icon: UserCog },
     { id: 'memory', label: t('settings.memory'), icon: Brain },

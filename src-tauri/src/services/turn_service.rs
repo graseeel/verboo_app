@@ -811,6 +811,12 @@ impl TurnService {
                 (ocr, vision)
             })
         };
+        // The OCR channel is best-effort redundancy on top of the vision
+        // channel; when it fails (e.g. the bundled worker cannot start) the
+        // failure is recorded in the Worked for diagnostics only — the model
+        // must not narrate "OCR timed out" to the user.
+        let ocr_failed = matches!(ocr, ChannelResult::Failed(_));
+        let ocr = if ocr_failed { ChannelResult::Absent } else { ocr };
         if failed_sheets > 0 && matches!(vision, ChannelResult::Ready(_)) {
             warnings.push(VideoWarning::new(
                 "vision_sheets_partial",
@@ -933,8 +939,9 @@ impl TurnService {
                 } else {
                     "description"
                 };
+                let ocr_state = if ocr_failed { "failed-silenced" } else { "ok" };
                 let detail = format!(
-                    "route={route_label} delivery={delivery} duration_ms={} frames={frame_count} \
+                    "route={route_label} delivery={delivery} ocr={ocr_state} duration_ms={} frames={frame_count} \
                      ocr_frames={ocr_frame_count} language={} warnings={}",
                     metadata.duration_ms,
                     asr_language.as_deref().unwrap_or("-"),

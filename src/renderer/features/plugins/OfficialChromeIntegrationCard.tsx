@@ -1,4 +1,5 @@
-import { CheckCircle2, CircleAlert, CircleDashed, PanelsTopLeft } from 'lucide-react'
+import { CheckCircle2, CircleAlert, CircleDashed } from 'lucide-react'
+import { ChromeLogoIcon } from '../../components/ChromeLogoIcon'
 import type { ChromeIntegrationAggregate } from '../../../shared/types'
 import verbooIconUrl from '../../../../assets/branding/verboo-mascot.png'
 import { useI18n } from '../../i18n'
@@ -14,7 +15,7 @@ export function OfficialChromeIntegrationCard({ onManage }: { onManage: () => vo
     <article className="official-chrome-card" aria-label={t('plugins.chrome.title')}>
       <div className="official-chrome-icon" aria-hidden="true">
         <img src={verbooIconUrl} alt="" />
-        <span><PanelsTopLeft size={13} /></span>
+        <span><ChromeLogoIcon size={13} /></span>
       </div>
       <div className="official-chrome-body">
         <div className="official-chrome-title-row">

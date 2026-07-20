@@ -3,12 +3,12 @@ import {
   CircleAlert,
   CircleDashed,
   LoaderCircle,
-  PanelsTopLeft,
   PlugZap,
   RefreshCcw,
   ShieldCheck,
   Trash2,
 } from 'lucide-react'
+import { ChromeLogoIcon } from '../../components/ChromeLogoIcon'
 import { useState } from 'react'
 import type {
   ChromeComponentState,
@@ -56,7 +56,7 @@ export function ChromeIntegrationSettings() {
     <>
       <section className="settings-panel chrome-integration-summary">
         <div className={`chrome-integration-mark chrome-integration-mark--${status.aggregate}`}>
-          <PanelsTopLeft size={20} aria-hidden="true" />
+          <ChromeLogoIcon size={20} />
         </div>
         <div>
           <strong>{aggregateLabel(status.aggregate, status.connection, t)}</strong>
