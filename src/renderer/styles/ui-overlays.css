@@ -528,6 +528,10 @@
 
 .command-palette {
   display: grid;
+  /* The list is the ONLY scrollable region: without the explicit row
+     constraint it grows to content height and hover scrollIntoView ends up
+     scrolling the (overflow:hidden) palette itself, hiding the input row. */
+  grid-template-rows: auto minmax(0, 1fr);
   width: min(560px, calc(100vw - 48px));
   max-height: 420px;
   overflow: hidden;
@@ -567,7 +571,9 @@
 
 .palette-list {
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: grid;
+  align-content: start;
   gap: 2px;
   padding: 7px;
 }

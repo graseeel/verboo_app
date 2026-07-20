@@ -93,7 +93,13 @@ export function CommandPalette({ open, conversations, actions, onSelectConversat
 
   const activeIndex = rows.length ? Math.min(highlighted, rows.length - 1) : 0
 
+  // Scroll the highlighted row into view only for keyboard navigation.
+  // Hover must never scroll: pointing at a row near the fold would yank the
+  // list (and, before the grid fix, the whole palette) under the cursor.
+  const scrollOnHighlightRef = useRef(false)
   useEffect(() => {
+    if (!scrollOnHighlightRef.current) return
+    scrollOnHighlightRef.current = false
     listRef.current
       ?.querySelector(`[data-index="${activeIndex}"]`)
       ?.scrollIntoView({ block: 'nearest' })
@@ -112,9 +118,11 @@ export function CommandPalette({ open, conversations, actions, onSelectConversat
     if (!rows.length) return
     if (event.key === 'ArrowDown') {
       event.preventDefault()
+      scrollOnHighlightRef.current = true
       setHighlighted(index => (index + 1) % rows.length)
     } else if (event.key === 'ArrowUp') {
       event.preventDefault()
+      scrollOnHighlightRef.current = true
       setHighlighted(index => (index - 1 + rows.length) % rows.length)
     } else if (event.key === 'Enter') {
       event.preventDefault()
