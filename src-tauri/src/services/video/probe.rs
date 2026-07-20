@@ -15,9 +15,9 @@ const MAX_FFPROBE_JSON_BYTES: usize = 1024 * 1024;
 const MAX_FFPROBE_STDERR_BYTES: usize = 32 * 1024;
 const SUPPORTED_CODECS: &[&str] = &["h264", "hevc", "vp8", "vp9", "av1", "prores"];
 
-struct CappedDrain {
-    bytes: Vec<u8>,
-    truncated: bool,
+pub(crate) struct CappedDrain {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) truncated: bool,
 }
 
 #[derive(Deserialize)]
@@ -198,7 +198,7 @@ fn run_ffprobe(path: &Path, ffprobe: &Path) -> Result<String, VideoValidationErr
         .map_err(|error| VideoValidationError::ProbeFailed(error.to_string()))
 }
 
-fn drain_capped<R: Read>(mut reader: R, limit: usize) -> io::Result<CappedDrain> {
+pub(crate) fn drain_capped<R: Read>(mut reader: R, limit: usize) -> io::Result<CappedDrain> {
     let mut bytes = Vec::with_capacity(limit);
     let mut buffer = [0u8; 8192];
     let mut truncated = false;

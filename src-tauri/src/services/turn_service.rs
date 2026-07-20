@@ -70,6 +70,9 @@ pub struct TurnService {
     settings: Option<Arc<SettingsStore>>,
     /// App data dir for vision fallback cache. `None` in tests.
     app_data_dir: Option<std::path::PathBuf>,
+    /// Cancellable media preparation jobs, keyed by conversation. `None` in
+    /// focused service tests that do not configure an app-data directory.
+    video_jobs: Option<crate::services::video::job::VideoJobRegistry>,
 }
 
 impl TurnService {
@@ -80,6 +83,7 @@ impl TurnService {
             credentials,
             settings: None,
             app_data_dir: None,
+            video_jobs: None,
         }
     }
 
@@ -93,7 +97,24 @@ impl TurnService {
     /// Sets the app data dir for vision fallback cache storage.
     /// Called from `lib.rs` setup.
     pub fn with_app_data_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.video_jobs = match crate::services::video::job::VideoJobRegistry::new(&dir) {
+            Ok(registry) => Some(registry),
+            Err(error) => {
+                eprintln!("[verboo:video] unable to initialize job registry: {error}");
+                None
+            }
+        };
         self.app_data_dir = Some(dir);
+        self
+    }
+
+    /// Injects a registry in focused tests and is also available to the
+    /// pipeline coordinator when it needs to share one registry explicitly.
+    pub fn with_video_job_registry(
+        mut self,
+        registry: crate::services::video::job::VideoJobRegistry,
+    ) -> Self {
+        self.video_jobs = Some(registry);
         self
     }
 
@@ -497,6 +518,7 @@ impl TurnService {
                 credentials: credentials.clone(),
                 settings: settings.clone(),
                 app_data_dir: app_data_dir.clone(),
+                video_jobs: None,
             };
             fallback_svc.maybe_run_vision_fallback(Some(&app), &turn_id, &mut request);
         }
@@ -965,6 +987,14 @@ impl TurnService {
     /// true if a child was found and signaled, false if the turn wasn't
     /// running anymore.
     pub fn interrupt(&self, conversation_id: Option<String>) -> Result<bool, String> {
+        // Media preparation is owned by the same conversation identity as the
+        // CLI turn. Cancel it first so any ffmpeg/ffprobe/ASR descendants stop
+        // before the existing CLI interruption proceeds.
+        let video_interrupted = match (conversation_id.as_deref(), self.video_jobs.as_ref()) {
+            (Some(conversation_id), Some(video_jobs)) => video_jobs.interrupt(conversation_id)?,
+            _ => false,
+        };
+
         // Precise interrupt: look up the turn_id registered for this
         // conversation_id. If found, signal that specific child. If not
         // found, return false (no-op) — we do NOT fall back to "any active
@@ -991,7 +1021,7 @@ impl TurnService {
 
         let Some(turn_id) = target_turn_id else {
             // No turn registered for this conversation — safe no-op.
-            return Ok(false);
+            return Ok(video_interrupted);
         };
 
         let mut active = self.active.lock().map_err(|e| e.to_string())?;
@@ -1001,7 +1031,7 @@ impl TurnService {
                 return Ok(true);
             }
         }
-        Ok(false)
+        Ok(video_interrupted)
     }
 }
 

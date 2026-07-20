@@ -43,6 +43,26 @@ impl fmt::Display for VideoValidationError {
     }
 }
 
+/// A user-safe, non-fatal degradation notice produced by the pipeline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoWarning {
+    pub code: String,
+    pub message: String,
+}
+
+impl VideoWarning {
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+}
+
+pub mod cache;
+pub mod job;
+pub mod prepare;
 pub mod probe;
 pub mod router;
 pub mod transcribe;
