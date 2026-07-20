@@ -399,6 +399,9 @@ export function App() {
   // (never routed through appendActivityItem, whose dedup is not an upsert
   // contract). Entries are deleted on done/error/cancel so the row vanishes.
   const [videoProgressByTurn, setVideoProgressByTurn] = useState<Record<string, VideoProgress>>({})
+  // Dismissed state for the floating subagent chip: closing hides it for the
+  // current conversation until a new thread arrives (key changes).
+  const [dismissedSubagentKey, setDismissedSubagentKey] = useState<string | undefined>()
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>(initialSidebarPreference.current.mode)
   // Transient peek: only meaningful when sidebarMode === 'hidden'. The rail
   // hit-area (rendered in App) calls setSidebarPeek(true) on hover/focus;
@@ -563,6 +566,7 @@ export function App() {
         ? SIDEBAR_COMPACT_WIDTH
         : sidebarWidth
   const subagentThreads = activeConversation?.subagents ?? []
+  const subagentIndicatorKey = `${activeConversationId ?? 'none'}:${subagentThreads.length}`
   const workingSubagentCount = subagentThreads.filter(isSubagentThreadWorking).length
   const selectedSubagent = selectedSubagentId
     ? subagentThreads.find(agent => agent.id === selectedSubagentId)
@@ -4142,11 +4146,12 @@ export function App() {
               <span>{workspaceFolderName(workspaceDirectory, activeProject?.name, t('project.none'))}</span>
             </div>
           )}
-          {activeView === 'chat' && (
+          {activeView === 'chat' && dismissedSubagentKey !== subagentIndicatorKey && (
             <SubagentIndicator
               threads={subagentThreads}
               open={showSubagentThreadPanel}
               onOpen={handleToggleSubagents}
+              onDismiss={() => setDismissedSubagentKey(subagentIndicatorKey)}
             />
           )}
           {activeView === 'profile' ? (

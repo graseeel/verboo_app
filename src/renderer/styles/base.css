@@ -713,3 +713,171 @@ input[type="checkbox"]:disabled {
   opacity: 0.4;
   cursor: default;
 }
+
+/* ── Segmented control (app-style replacement for native selects) ── */
+.segmented-control {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-elevated) 74%, transparent);
+}
+.segmented-control button {
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 12px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.segmented-control button.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+/* ── Video understanding settings layout ── */
+.video-understanding-settings .video-consent-row {
+  align-items: center;
+}
+.video-understanding-settings .video-model-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.video-understanding-settings .video-model-row > svg {
+  flex-shrink: 0;
+}
+.video-understanding-settings .video-model-row > div {
+  flex: 1;
+  min-width: 0;
+}
+.video-understanding-settings progress {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  accent-color: var(--accent);
+}
+.video-understanding-settings .video-download-confirmation {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent-soft) 24%, transparent);
+}
+.video-understanding-settings .video-download-confirmation p {
+  flex: 1;
+  min-width: 200px;
+  margin: 0;
+}
+.video-understanding-settings .video-artifact-note {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+/* ── Command palette content-search snippet ── */
+.palette-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.palette-item-snippet {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Subagent indicator: dismissable chip ── */
+.subagent-indicator-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+.subagent-indicator-close {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+}
+.subagent-indicator-close:hover {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  color: var(--text);
+}
+
+/* ── Profile avatar editor polish ── */
+.avatar-editor-section-label {
+  margin-top: 14px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.avatar-editor-colors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.avatar-editor-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+.avatar-editor-swatch:hover {
+  transform: scale(1.12);
+}
+.avatar-editor-swatch.is-active {
+  border-color: var(--bg-elevated);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.avatar-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 6px;
+  max-width: 560px;
+}
+.avatar-editor-grid .avatar-editor-icon {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-elevated) 80%, transparent);
+  cursor: pointer;
+  padding: 0;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.avatar-editor-grid .avatar-editor-icon:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.avatar-editor-grid .avatar-editor-icon.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}

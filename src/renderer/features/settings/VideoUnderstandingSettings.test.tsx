@@ -71,7 +71,7 @@ describe('VideoUnderstandingSettings', () => {
   it('updates video consent independently', async () => {
     const onConsentChange = vi.fn()
     render(<VideoUnderstandingSettings consent="ask" onConsentChange={onConsentChange} />)
-    fireEvent.change(screen.getByLabelText('videoSettings.consent'), { target: { value: 'never' } })
+    fireEvent.click(screen.getByRole('radio', { name: 'videoSettings.never' }))
     expect(onConsentChange).toHaveBeenCalledWith('never')
   })
 })

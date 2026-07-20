@@ -383,7 +383,6 @@ export function AppSidebar({
             <img src={mascotUrl} alt="" />
             <strong>Verboo<span>:code</span></strong>
             <small>{`v${packageJson.version}`}</small>
-            <small className="account-disclaimer">{t('sidebar.devBuild')}</small>
           </span>
         </button>
       </footer>

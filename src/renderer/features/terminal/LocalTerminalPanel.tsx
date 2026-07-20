@@ -111,8 +111,19 @@ export function LocalTerminalPanel({
       }
     })
 
-    // Send input from terminal to PTY
+    // Send input from terminal to PTY. The first keystroke also ends the
+    // cosmetic startup filter and flushes its buffer verbatim: the filter
+    // repaints the prompt as sanitized plain text, and any echo baked into
+    // that repaint desyncs the shell's line editor (the ghost first letter
+    // backspace could never erase).
     term.onData((data: string) => {
+      const startup = startupOutputRef.current
+      if (startup.pending) {
+        startup.pending = false
+        const buffered = startup.buffer
+        startup.buffer = ''
+        if (buffered) term.write(buffered)
+      }
       void onWrite(data)
     })
 

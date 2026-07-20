@@ -153,6 +153,7 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
           </div>
         </div>
 
+        <div className="avatar-editor-section-label">{t('settings.avatarColorLabel')}</div>
         <div className="avatar-editor-colors">
           {AVATAR_PALETTE.map(color => (
             <button key={color} type="button"
@@ -164,6 +165,7 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
           ))}
         </div>
 
+        <div className="avatar-editor-section-label">{t('settings.avatarIconLabel')}</div>
         <div className="avatar-editor-grid">
           {Object.entries(AVATAR_PRESETS).slice(0, 24).map(([id, preset]) => (
             <button key={id} type="button"

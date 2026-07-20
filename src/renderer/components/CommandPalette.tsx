@@ -42,12 +42,33 @@ export function CommandPalette({ open, conversations, actions, onSelectConversat
     [actions, normalizedQuery],
   )
 
+  // Search matches chat titles first, then falls back to message content so
+  // a term that only appears inside a conversation still finds it. Content
+  // matches carry a short snippet centered on the first hit.
   const visibleChats = useMemo(() => {
     const active = conversations.filter(conversation => !conversation.archivedAt)
-    const matches = normalizedQuery
-      ? active.filter(conversation => displayConversationTitle(conversation.title, t).toLowerCase().includes(normalizedQuery))
-      : active
-    return matches.slice(0, 8)
+    if (!normalizedQuery) return active.slice(0, 8).map(chat => ({ chat, snippet: undefined }))
+    const matches: Array<{ chat: StoredConversation; snippet?: string }> = []
+    for (const conversation of active) {
+      if (matches.length >= 8) break
+      const title = displayConversationTitle(conversation.title, t).toLowerCase()
+      if (title.includes(normalizedQuery)) {
+        matches.push({ chat: conversation, snippet: undefined })
+        continue
+      }
+      const hit = conversation.items.find(item =>
+        typeof item.text === 'string' && item.text.toLowerCase().includes(normalizedQuery))
+      if (!hit) continue
+      const flat = hit.text.replace(/\s+/g, ' ')
+      const at = flat.toLowerCase().indexOf(normalizedQuery)
+      const start = Math.max(0, at - 28)
+      const end = Math.min(flat.length, at + normalizedQuery.length + 48)
+      matches.push({
+        chat: conversation,
+        snippet: `${start > 0 ? '…' : ''}${flat.slice(start, end)}${end < flat.length ? '…' : ''}`,
+      })
+    }
+    return matches
   }, [conversations, normalizedQuery, t])
 
   // Recents: top 5 chats by updatedAt, shown only when the query is empty.
@@ -67,7 +88,7 @@ export function CommandPalette({ open, conversations, actions, onSelectConversat
   const rows: Row[] = useMemo(() => [
     ...visibleActions.map(action => ({ kind: 'action' as const, action })),
     ...recentChats.map(chat => ({ kind: 'chat' as const, chat })),
-    ...visibleChats.map(chat => ({ kind: 'chat' as const, chat })),
+    ...visibleChats.map(({ chat }) => ({ kind: 'chat' as const, chat })),
   ], [visibleActions, recentChats, visibleChats])
 
   const activeIndex = rows.length ? Math.min(highlighted, rows.length - 1) : 0
@@ -163,7 +184,7 @@ export function CommandPalette({ open, conversations, actions, onSelectConversat
             )
           })}
           {normalizedQuery && visibleChats.length > 0 && <div className="palette-group-label">{t('palette.chats')}</div>}
-          {normalizedQuery && visibleChats.map(chat => {
+          {normalizedQuery && visibleChats.map(({ chat, snippet }) => {
             cursor += 1
             const index = cursor
             return (
@@ -176,7 +197,10 @@ export function CommandPalette({ open, conversations, actions, onSelectConversat
                 onClick={() => runRow({ kind: 'chat', chat })}
               >
                 <span className="palette-item-icon" aria-hidden="true"><MessageSquare size={14} /></span>
-                <span className="palette-item-label">{displayConversationTitle(chat.title, t)}</span>
+                <span className="palette-item-text">
+                  <span className="palette-item-label">{displayConversationTitle(chat.title, t)}</span>
+                  {snippet && <span className="palette-item-snippet">{snippet}</span>}
+                </span>
               </button>
             )
           })}

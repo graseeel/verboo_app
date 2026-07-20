@@ -88,21 +88,26 @@ export function VideoUnderstandingSettings({ consent, onConsentChange }: VideoUn
         </div>
       </div>
 
-      <label className="settings-select-row">
+      <div className="settings-select-row video-consent-row">
         <span>
           <strong>{t('videoSettings.consent')}</strong>
           <small>{t('videoSettings.consentDescription')}</small>
         </span>
-        <select
-          aria-label={t('videoSettings.consent')}
-          value={consent}
-          onChange={event => onConsentChange(event.target.value as VideoFallbackConsent)}
-        >
-          <option value="ask">{t('videoSettings.ask')}</option>
-          <option value="always">{t('videoSettings.always')}</option>
-          <option value="never">{t('videoSettings.never')}</option>
-        </select>
-      </label>
+        <div className="segmented-control" role="radiogroup" aria-label={t('videoSettings.consent')}>
+          {(['ask', 'always', 'never'] as const).map(value => (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={consent === value}
+              className={consent === value ? 'active' : ''}
+              onClick={() => onConsentChange(value)}
+            >
+              {t(`videoSettings.${value}`)}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <div className="settings-row video-model-row">
         {state.kind === 'downloading' ? <Loader2 className="t-spin" size={16} aria-hidden="true" /> : <Film size={16} aria-hidden="true" />}
