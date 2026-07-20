@@ -730,7 +730,14 @@ export function App() {
   // existing Tesseract worker and return exactly one completion per job.
   useEffect(() => {
     const coordinator = createVideoOcrCoordinator({
-      recognize: recognizeImage,
+      // The Tesseract worker cannot fetch asset:// URLs itself (custom
+      // scheme handlers don't reach Web Worker fetches on WKWebView), so
+      // load each frame on the main thread and hand the worker a Blob.
+      recognize: async url => {
+        const response = await fetch(url)
+        if (!response.ok) return null
+        return recognizeImage(await response.blob())
+      },
       complete: (jobId, results) => window.verboo.completeVideoOcrBatch(jobId, results),
     })
     return window.verboo.onVideoOcrRequest(request => {

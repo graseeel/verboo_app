@@ -289,7 +289,11 @@ pub(crate) fn frame_extract_args(
     ]
 }
 
-pub(crate) fn scene_detect_args(original: &Path) -> Vec<OsString> {
+/// Scene-change probing writes tiny 8x8 PNGs into a scratch directory:
+/// the bundled LGPL FFmpeg has no `null` muxer, so `image2` is the
+/// cheapest sink that exists on every target. Timestamps come from the
+/// showinfo lines on stderr; the probe frames themselves are discarded.
+pub(crate) fn scene_detect_args(original: &Path, probe_pattern: &Path) -> Vec<OsString> {
     vec![
         OsString::from("-hide_banner"),
         OsString::from("-nostdin"),
@@ -300,10 +304,15 @@ pub(crate) fn scene_detect_args(original: &Path) -> Vec<OsString> {
         OsString::from("-i"),
         original.into(),
         OsString::from("-vf"),
-        OsString::from(format!("select='gt(scene\\,{SCENE_THRESHOLD})',showinfo")),
+        OsString::from(format!(
+            "select='gt(scene\\,{SCENE_THRESHOLD})',showinfo,scale=8:8"
+        )),
+        OsString::from("-fps_mode"),
+        OsString::from("vfr"),
         OsString::from("-f"),
-        OsString::from("null"),
-        OsString::from("-"),
+        OsString::from("image2"),
+        OsString::from("-y"),
+        probe_pattern.into(),
     ]
 }
 
@@ -569,7 +578,17 @@ pub fn prepare_video(
     }
 
     // SampledFrames: scene detection is best-effort; uniform coverage is not.
-    let scene_stamps = match run_media_tool(job, ffmpeg, &scene_detect_args(original)) {
+    if job.is_cancelled() {
+        return Err("video job was cancelled".to_string());
+    }
+    let scene_probe_dir = job.directory().join("scene-probe");
+    std::fs::create_dir_all(&scene_probe_dir)
+        .map_err(|error| format!("create scene probe directory: {error}"))?;
+    let scene_stamps = match run_media_tool(
+        job,
+        ffmpeg,
+        &scene_detect_args(original, &scene_probe_dir.join("probe-%05d.png")),
+    ) {
         Ok(stderr) => parse_showinfo_timestamps(&stderr),
         Err(error) if error.contains("cancelled") => return Err(error),
         Err(error) => {
@@ -580,6 +599,7 @@ pub fn prepare_video(
             Vec::new()
         }
     };
+    let _ = std::fs::remove_dir_all(&scene_probe_dir);
     let uniform = plan_uniform_timestamps(metadata.duration_ms, MAX_VISUAL_FRAMES);
     let candidates = merge_candidates(&scene_stamps, &uniform, MAX_CANDIDATE_FRAMES);
 

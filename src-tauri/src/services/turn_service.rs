@@ -493,6 +493,16 @@ impl TurnService {
             VideoRoute::NativeSdrProxy { .. } => "native_sdr_proxy",
             VideoRoute::SampledFrames { .. } => "sampled_frames",
         };
+        // When the selected model can see images, the sampled contact sheets
+        // are attached directly to the main turn (the model looks at the
+        // frames itself) instead of being narrated by a helper model. Models
+        // without vision keep the helper-description fallback.
+        let deliver_frames_directly = request.model_supports_vision == Some(true);
+        let cache_route = if deliver_frames_directly {
+            "sampled_frames_direct"
+        } else {
+            route_label
+        };
 
         // The current bundled CLI has no video content-block serializer. The
         // native branches stay behind the capability gate as typed invariant
@@ -550,7 +560,7 @@ impl TurnService {
             VideoCache::key_for_file(VideoCacheKeyInput {
                 original: &original_path,
                 pipeline_version: PIPELINE_VERSION,
-                route: route_label,
+                route: cache_route,
                 model_capability_fingerprint: &model_fingerprint,
                 cli_capability_fingerprint: &cli_fingerprint,
                 asr_model_hash: asr_hash,
@@ -559,6 +569,10 @@ impl TurnService {
         });
         if let (Some(cache), Some(key)) = (cache.as_ref(), cache_key.as_ref()) {
             if let Some(entry) = cache.read(key) {
+                if deliver_frames_directly {
+                    let sheet_paths = cache.cached_sheet_paths(key, &entry);
+                    Self::attach_frame_images(request, attachment_index, &sheet_paths);
+                }
                 if let Some(att) = request
                     .attachments
                     .as_mut()
@@ -782,15 +796,21 @@ impl TurnService {
             (ChannelResult::Ready(entries), sheet_failures)
         };
 
-        let (ocr, (vision, failed_sheets)) = std::thread::scope(|scope| {
-            let vision_handle = scope.spawn(vision_channel);
-            let ocr = ocr_channel();
-            let vision = vision_handle.join().unwrap_or((
-                ChannelResult::Failed("vision analysis thread panicked".to_string()),
-                0,
-            ));
-            (ocr, vision)
-        });
+        let (ocr, (vision, failed_sheets)) = if deliver_frames_directly {
+            // The main model will look at the attached frames itself; no
+            // helper narration is needed. OCR still runs for exact text.
+            (ocr_channel(), (ChannelResult::Absent, 0))
+        } else {
+            std::thread::scope(|scope| {
+                let vision_handle = scope.spawn(vision_channel);
+                let ocr = ocr_channel();
+                let vision = vision_handle.join().unwrap_or((
+                    ChannelResult::Failed("vision analysis thread panicked".to_string()),
+                    0,
+                ));
+                (ocr, vision)
+            })
+        };
         if failed_sheets > 0 && matches!(vision, ChannelResult::Ready(_)) {
             warnings.push(VideoWarning::new(
                 "vision_sheets_partial",
@@ -824,7 +844,7 @@ impl TurnService {
         let frame_count = prepared.visual_frames.len();
         let ocr_frame_count = prepared.ocr_frames.len();
 
-        match consolidate_context(ConsolidationInput {
+        let consolidated = consolidate_context(ConsolidationInput {
             file_name: &file_name,
             duration_ms: metadata.duration_ms,
             route: route_label,
@@ -832,11 +852,73 @@ impl TurnService {
             ocr,
             speech,
             warnings: warnings.clone(),
-        }) {
+        });
+        // With direct frame delivery an empty audio/OCR result is not a
+        // failure — the attached images are the primary channel.
+        let consolidated = match consolidated {
+            Ok(context) if deliver_frames_directly => Ok(context.replacen(
+                "</video_context>",
+                "Frames: labeled contact-sheet images from this video are \
+                 attached to this message; read timestamps from the labels.\n</video_context>",
+                1,
+            )),
+            Err(_) if deliver_frames_directly => Ok(format!(
+                "<video_context name=\"{}\" duration_ms=\"{}\" route=\"sampled_frames\">\n\
+                 Frames: labeled contact-sheet images from this video are \
+                 attached to this message; read timestamps from the labels.\n\
+                 </video_context>",
+                crate::services::video::analyze::sanitize(&file_name).replace('"', "&quot;"),
+                metadata.duration_ms,
+            )),
+            other => other,
+        };
+        match consolidated {
             Ok(context) => {
+                let sheet_sources: Vec<std::path::PathBuf> = prepared
+                    .contact_sheets
+                    .iter()
+                    .map(|sheet| sheet.path.clone())
+                    .collect();
+                let mut cached_sheet_paths: Vec<std::path::PathBuf> = Vec::new();
                 if let (Some(cache), Some(key)) = (cache.as_ref(), cache_key.as_ref()) {
-                    let entry = VideoCacheEntry::new(context.clone(), transcript_text, ocr_texts);
-                    let _ = cache.write(key, &entry, &[]);
+                    let mut entry =
+                        VideoCacheEntry::new(context.clone(), transcript_text, ocr_texts);
+                    if deliver_frames_directly {
+                        entry.contact_sheets = prepared
+                            .contact_sheets
+                            .iter()
+                            .map(|sheet| crate::services::video::cache::CachedContactSheet {
+                                timestamps_ms: sheet.timestamps_ms.clone(),
+                                file_name: String::new(),
+                            })
+                            .collect();
+                        if cache.write(key, &entry, &sheet_sources).is_ok() {
+                            cached_sheet_paths = (0..sheet_sources.len())
+                                .map(|index| cache.sheet_dir(key).join(format!("sheet-{index}.png")))
+                                .filter(|path| path.is_file())
+                                .collect();
+                        }
+                    } else {
+                        let _ = cache.write(key, &entry, &[]);
+                    }
+                }
+                if deliver_frames_directly {
+                    // Fall back to a prunable scratch copy when the cache is
+                    // unavailable — the job directory dies with the job.
+                    if cached_sheet_paths.is_empty() && !sheet_sources.is_empty() {
+                        let scratch = app_data_dir
+                            .join("video_jobs")
+                            .join(uuid::Uuid::new_v4().to_string());
+                        if std::fs::create_dir_all(&scratch).is_ok() {
+                            for (index, source) in sheet_sources.iter().enumerate() {
+                                let destination = scratch.join(format!("sheet-{index}.png"));
+                                if std::fs::copy(source, &destination).is_ok() {
+                                    cached_sheet_paths.push(destination);
+                                }
+                            }
+                        }
+                    }
+                    Self::attach_frame_images(request, attachment_index, &cached_sheet_paths);
                 }
                 if let Some(att) = request
                     .attachments
@@ -846,8 +928,13 @@ impl TurnService {
                     att.extracted_text = Some(context);
                     att.extraction_status = Some(ExtractionStatus::Extracted);
                 }
+                let delivery = if deliver_frames_directly {
+                    "frames"
+                } else {
+                    "description"
+                };
                 let detail = format!(
-                    "route={route_label} duration_ms={} frames={frame_count} \
+                    "route={route_label} delivery={delivery} duration_ms={} frames={frame_count} \
                      ocr_frames={ocr_frame_count} language={} warnings={}",
                     metadata.duration_ms,
                     asr_language.as_deref().unwrap_or("-"),
@@ -867,6 +954,35 @@ impl TurnService {
         }
         let _ = job.finish();
         true
+    }
+
+    /// Appends contact-sheet PNGs as image attachments right after the video
+    /// attachment so a vision-capable main model sees the frames directly.
+    fn attach_frame_images(
+        request: &mut crate::models::types::AgentTurnRequest,
+        attachment_index: usize,
+        sheet_paths: &[std::path::PathBuf],
+    ) {
+        let Some(list) = request.attachments.as_mut() else {
+            return;
+        };
+        for (offset, path) in sheet_paths.iter().enumerate() {
+            let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let attachment = crate::models::types::AttachmentMeta {
+                path: path.to_string_lossy().to_string(),
+                name: format!("video-frames-{}.png", offset + 1),
+                size,
+                kind: AttachmentKind::Image,
+                media_type: Some("image/png".to_string()),
+                width: None,
+                height: None,
+                extracted_text: None,
+                extraction_status: None,
+                video: None,
+            };
+            let insert_at = (attachment_index + 1 + offset).min(list.len());
+            list.insert(insert_at, attachment);
+        }
     }
 
     /// One ordinary RuntimeActivity (kind `video`) rendered only inside

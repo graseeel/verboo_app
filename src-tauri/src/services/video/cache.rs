@@ -243,8 +243,19 @@ impl VideoCache {
         Ok(())
     }
 
-    fn sheet_dir(&self, key: &VideoCacheKey) -> PathBuf {
+    pub fn sheet_dir(&self, key: &VideoCacheKey) -> PathBuf {
         self.root.join(format!("{}-sheets", key.as_str()))
+    }
+
+    /// Absolute paths of an entry's cached contact sheets, existing files only.
+    pub fn cached_sheet_paths(&self, key: &VideoCacheKey, entry: &VideoCacheEntry) -> Vec<PathBuf> {
+        let directory = self.sheet_dir(key);
+        entry
+            .contact_sheets
+            .iter()
+            .map(|sheet| directory.join(&sheet.file_name))
+            .filter(|path| path.is_file())
+            .collect()
     }
 
     fn evict(&self, key: &VideoCacheKey) -> Result<(), String> {
