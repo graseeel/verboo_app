@@ -116,9 +116,6 @@ jobs:
       # Clear RUSTFLAGS so cargo-tauri's default flags don't break proc-macro
       # linking (ctor-proc-macro "can't find crate" error on Rust 1.89).
       RUSTFLAGS: ""
-      # The builder caches only hash-verified source/build directories. It never
-      # caches the target-qualified binaries copied into src-tauri/binaries.
-      VERBOO_MEDIA_SIDECAR_CACHE: ${{ runner.temp }}/verboo-media-sidecars-cache
 
     steps:
       - name: Checkout repository
@@ -194,11 +191,18 @@ jobs:
 
       - name: Build pinned media sidecars
         if: runner.os != 'Windows'
+        env:
+          # The builder caches only hash-verified source/build directories. It
+          # never caches the target-qualified binaries in src-tauri/binaries.
+          # (runner.* is a step-level context; job-level env rejects it.)
+          VERBOO_MEDIA_SIDECAR_CACHE: ${{ runner.temp }}/verboo-media-sidecars-cache
         run: npm run build:media-sidecars -- --target ${{ matrix.target }}
 
       - name: Build pinned media sidecars (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
+        env:
+          VERBOO_MEDIA_SIDECAR_CACHE: ${{ runner.temp }}/verboo-media-sidecars-cache
         run: node scripts/tauri/build-media-sidecars.mjs --target ${{ matrix.target }}
 
       - name: Verify target-qualified media sidecars
