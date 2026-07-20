@@ -383,6 +383,521 @@ impl TurnService {
         }
     }
 
+    /// Runs the full video-understanding pipeline for the (single) video
+    /// attachment before prompt construction: consent → route → cache →
+    /// preparation → local ASR → renderer OCR → helper vision → one bounded
+    /// consolidated `<video_context>` injected as `extracted_text`.
+    ///
+    /// Failures never invent content: any unrecoverable path injects an
+    /// explicit warning so the model tells the user instead of hallucinating.
+    #[allow(clippy::too_many_arguments)]
+    fn maybe_run_video_pipeline(
+        app: &AppHandle,
+        turn_id: &str,
+        request: &mut crate::models::types::AgentTurnRequest,
+        settings: &Option<Arc<SettingsStore>>,
+        credentials: &Arc<CredentialsStore>,
+        app_data_dir: &Option<std::path::PathBuf>,
+        video_jobs: &Option<crate::services::video::job::VideoJobRegistry>,
+    ) {
+        use crate::models::types::{
+            CliMediaCapabilities, ExtractionStatus, ModelMediaCapabilities, VideoFallbackConsent,
+            VideoProgress, VideoProgressStage,
+        };
+        use crate::services::video::analyze::{
+            consolidate_context, parse_sheet_response, sheet_prompt, ChannelResult,
+            ConsolidationInput, PIPELINE_VERSION,
+        };
+        use crate::services::video::cache::{VideoCache, VideoCacheEntry, VideoCacheKeyInput};
+        use crate::services::video::job::VideoOcrWaiters;
+        use crate::services::video::router::{choose_video_route, VideoRoute};
+        use crate::services::video::VideoWarning;
+        use tauri::Manager;
+
+        let Some(attachment_index) = request.attachments.as_ref().and_then(|list| {
+            list.iter()
+                .position(|a| a.kind == AttachmentKind::Video && a.video.is_some())
+        }) else {
+            return;
+        };
+
+        let conversation_id = request.conversation_id.clone();
+        let fail_attachment = |request: &mut crate::models::types::AgentTurnRequest,
+                               message: String| {
+            if let Some(att) = request
+                .attachments
+                .as_mut()
+                .and_then(|list| list.get_mut(attachment_index))
+            {
+                att.extracted_text = Some(format!(
+                    "[Video analysis unavailable: {message}. DO NOT invent the video's \
+                     content. Tell the user the video could not be analyzed.]"
+                ));
+                att.extraction_status = Some(ExtractionStatus::Warning);
+            }
+        };
+
+        // Consent: independent from image fallback. The FE pre-screens Ask;
+        // reaching here with the attachment intact means consent was granted
+        // unless the stored decision (or explicit override) says never.
+        let consent = settings
+            .as_ref()
+            .and_then(|s| s.get().ok())
+            .map(|s| s.video_fallback_consent)
+            .unwrap_or_default();
+        let should_run = match request.run_video_analysis {
+            Some(explicit) => explicit,
+            None => consent != VideoFallbackConsent::Never,
+        };
+        if !should_run {
+            fail_attachment(
+                request,
+                "video analysis is disabled in Settings (consent: never)".to_string(),
+            );
+            return;
+        }
+
+        let Some(app_data_dir) = app_data_dir.clone() else {
+            fail_attachment(request, "app data directory unavailable".to_string());
+            return;
+        };
+
+        let (original_path, file_name, metadata) = {
+            let att = &request.attachments.as_ref().unwrap()[attachment_index];
+            (
+                std::path::PathBuf::from(&att.path),
+                att.name.clone(),
+                att.video.clone().unwrap(),
+            )
+        };
+
+        let model_caps = request
+            .media_capabilities
+            .clone()
+            .unwrap_or(ModelMediaCapabilities {
+                image: false,
+                video: false,
+                audio: false,
+                video_containers: Vec::new(),
+                video_codecs: Vec::new(),
+                accepts_hdr_video: false,
+            });
+        let cli_caps = request
+            .cli_media_capabilities
+            .clone()
+            .unwrap_or_else(bundled_cli_0_13_0_media_capabilities);
+        let toolchain =
+            crate::services::video::router::detected_media_toolchain_capabilities();
+        let route = choose_video_route(&model_caps, &cli_caps, &toolchain, &metadata);
+        let route_label = match &route {
+            VideoRoute::NativeOriginal => "native_original",
+            VideoRoute::NativeSdrProxy { .. } => "native_sdr_proxy",
+            VideoRoute::SampledFrames { .. } => "sampled_frames",
+        };
+
+        // The current bundled CLI has no video content-block serializer. The
+        // native branches stay behind the capability gate as typed invariant
+        // errors until a compatible transport adapter exists.
+        if !matches!(route, VideoRoute::SampledFrames { .. }) {
+            fail_attachment(
+                request,
+                "a native video route was selected but no CLI content-block \
+                 serializer supports it yet"
+                    .to_string(),
+            );
+            return;
+        }
+
+        let asr_model_path = crate::services::video::transcribe::VideoTranscriberStore::new(
+            &app_data_dir,
+        )
+        .model_path();
+        let asr_installed = asr_model_path
+            .metadata()
+            .map(|m| m.len() == crate::services::video::transcribe::WHISPER_BASE_BYTES)
+            .unwrap_or(false);
+
+        let job_id_placeholder = turn_id.to_string();
+        let emit_stage = |job_id: &str, stage: VideoProgressStage| {
+            emit_event(
+                app,
+                AgentEvent {
+                    event_type: EventType::VideoProgress,
+                    turn_id: Some(turn_id.to_string()),
+                    conversation_id: Some(conversation_id.clone()),
+                    video_progress: Some(VideoProgress {
+                        job_id: job_id.to_string(),
+                        turn_id: turn_id.to_string(),
+                        stage,
+                        completed_units: None,
+                        total_units: None,
+                    }),
+                    ..Default::default()
+                },
+            );
+        };
+        emit_stage(&job_id_placeholder, VideoProgressStage::Validating);
+
+        // Cache lookup covers every derived artifact for this exact
+        // bytes/route/capabilities/ASR combination.
+        let model_fingerprint = serde_json::to_string(&model_caps).unwrap_or_default();
+        let cli_fingerprint = serde_json::to_string(&cli_caps).unwrap_or_default();
+        let asr_hash = if asr_installed {
+            crate::services::video::transcribe::WHISPER_BASE_SHA256
+        } else {
+            "absent"
+        };
+        let cache = VideoCache::new(&app_data_dir).ok();
+        let cache_key = cache.as_ref().and_then(|_| {
+            VideoCache::key_for_file(VideoCacheKeyInput {
+                original: &original_path,
+                pipeline_version: PIPELINE_VERSION,
+                route: route_label,
+                model_capability_fingerprint: &model_fingerprint,
+                cli_capability_fingerprint: &cli_fingerprint,
+                asr_model_hash: asr_hash,
+            })
+            .ok()
+        });
+        if let (Some(cache), Some(key)) = (cache.as_ref(), cache_key.as_ref()) {
+            if let Some(entry) = cache.read(key) {
+                if let Some(att) = request
+                    .attachments
+                    .as_mut()
+                    .and_then(|list| list.get_mut(attachment_index))
+                {
+                    att.extracted_text = Some(entry.description);
+                    att.extraction_status = Some(ExtractionStatus::Extracted);
+                }
+                Self::emit_video_activity(
+                    app,
+                    turn_id,
+                    &conversation_id,
+                    route_label,
+                    &metadata,
+                    "cache",
+                    &[],
+                );
+                return;
+            }
+        }
+
+        let Some(registry) = video_jobs.as_ref() else {
+            fail_attachment(request, "video job registry unavailable".to_string());
+            return;
+        };
+        let job = match registry.start(&conversation_id) {
+            Ok(job) => job,
+            Err(error) => {
+                fail_attachment(request, error);
+                return;
+            }
+        };
+        let job_id = job.id().to_string();
+        emit_stage(&job_id, VideoProgressStage::Preparing);
+
+        let ffmpeg = match crate::services::video::prepare::bundled_ffmpeg_path() {
+            Ok(path) => path,
+            Err(error) => {
+                fail_attachment(request, error);
+                return;
+            }
+        };
+        let prepared = match crate::services::video::prepare::prepare_video(
+            &job,
+            &ffmpeg,
+            &original_path,
+            &metadata,
+            &route,
+            None,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                fail_attachment(request, error);
+                return;
+            }
+        };
+        let mut warnings: Vec<VideoWarning> = prepared.warnings.clone();
+
+        // Local ASR — never downloads; a missing model is a recoverable
+        // channel failure with an explicit warning.
+        emit_stage(&job_id, VideoProgressStage::Transcribing);
+        let speech: ChannelResult<crate::services::video::transcribe::AudioTranscript> =
+            match (&prepared.audio_wav, asr_installed) {
+                (None, _) => ChannelResult::Absent,
+                (Some(_), false) => ChannelResult::Failed(
+                    "local transcription model is not installed".to_string(),
+                ),
+                (Some(wav), true) => {
+                    match crate::services::video::transcribe::bundled_whisper_path().and_then(
+                        |whisper| {
+                            crate::services::video::transcribe::transcribe_wav(
+                                &job,
+                                &whisper,
+                                &asr_model_path,
+                                wav,
+                            )
+                        },
+                    ) {
+                        Ok(transcript) => ChannelResult::Ready(transcript),
+                        Err(error) => ChannelResult::Failed(error),
+                    }
+                }
+            };
+        if job.is_cancelled() {
+            fail_attachment(request, "analysis was cancelled".to_string());
+            return;
+        }
+
+        emit_stage(&job_id, VideoProgressStage::Analyzing);
+
+        // OCR: renderer batch through the existing Tesseract worker.
+        let ocr: ChannelResult<Vec<crate::services::video::job::VideoOcrText>> = (|| {
+            if prepared.ocr_frames.is_empty() {
+                return ChannelResult::Absent;
+            }
+            let waiters = app.state::<VideoOcrWaiters>();
+            let receiver = match waiters.register(&job_id) {
+                Ok(receiver) => receiver,
+                Err(error) => return ChannelResult::Failed(error),
+            };
+            let frames: Vec<serde_json::Value> = prepared
+                .ocr_frames
+                .iter()
+                .map(|frame| {
+                    serde_json::json!({
+                        "timestampMs": frame.timestamp_ms,
+                        "url": frame.path.to_string_lossy(),
+                    })
+                })
+                .collect();
+            use tauri::Emitter;
+            if app
+                .emit(
+                    "video:ocr-request",
+                    serde_json::json!({ "jobId": job_id, "frames": frames }),
+                )
+                .is_err()
+            {
+                waiters.release(&job_id);
+                return ChannelResult::Failed("could not reach the renderer".to_string());
+            }
+            let mut receiver = receiver;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+            loop {
+                if job.is_cancelled() {
+                    waiters.release(&job_id);
+                    return ChannelResult::Failed("cancelled".to_string());
+                }
+                match receiver.try_recv() {
+                    Ok(results) => return ChannelResult::Ready(results),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                        if std::time::Instant::now() >= deadline {
+                            waiters.release(&job_id);
+                            return ChannelResult::Failed("OCR timed out".to_string());
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        waiters.release(&job_id);
+                        return ChannelResult::Failed("OCR channel closed".to_string());
+                    }
+                }
+            }
+        })();
+
+        // Helper vision over labeled contact sheets — one call per sheet,
+        // never per frame, reusing the image-fallback helper policy.
+        let vision: ChannelResult<Vec<crate::services::video::analyze::VisionEntry>> = (|| {
+            if prepared.contact_sheets.is_empty() {
+                return ChannelResult::Absent;
+            }
+            let model_service =
+                crate::services::model_service::ModelService::new(app_data_dir.clone());
+            let token = crate::services::auth_token::resolve_token(credentials);
+            let discovery = match model_service.list_models(token.as_deref(), false) {
+                Ok(discovery) => discovery,
+                Err(error) => return ChannelResult::Failed(error),
+            };
+            let Some(helper) =
+                crate::services::vision_fallback_service::resolve_vision_helper(&discovery)
+            else {
+                return ChannelResult::Failed(
+                    "no vision-capable helper model in the plan".to_string(),
+                );
+            };
+            let fallback = crate::services::vision_fallback_service::resolve_fallback_helper(
+                &discovery, &helper.id,
+            );
+            let mut entries = Vec::new();
+            let mut sheet_failures = 0usize;
+            for sheet in &prepared.contact_sheets {
+                if job.is_cancelled() {
+                    return ChannelResult::Failed("cancelled".to_string());
+                }
+                let prompt = sheet_prompt(&sheet.timestamps_ms);
+                let response =
+                    crate::services::vision_fallback_service::describe_image_once_with_prompt(
+                        &sheet.path,
+                        "image/png",
+                        &prompt,
+                        &helper.id,
+                        credentials,
+                    )
+                    .or_else(|first_error| {
+                        fallback
+                            .as_ref()
+                            .ok_or(first_error.clone())
+                            .and_then(|fallback| {
+                                crate::services::vision_fallback_service::describe_image_once_with_prompt(
+                                    &sheet.path,
+                                    "image/png",
+                                    &prompt,
+                                    &fallback.id,
+                                    credentials,
+                                )
+                                .map_err(|second| format!("{first_error}; retry: {second}"))
+                            })
+                    });
+                match response.and_then(|raw| parse_sheet_response(&raw)) {
+                    Ok(mut sheet_entries) => entries.append(&mut sheet_entries),
+                    Err(_) => sheet_failures += 1,
+                }
+            }
+            if entries.is_empty() {
+                return ChannelResult::Failed(format!(
+                    "vision analysis failed on all {sheet_failures} contact sheets"
+                ));
+            }
+            if sheet_failures > 0 {
+                warnings.push(VideoWarning::new(
+                    "vision_sheets_partial",
+                    format!("{sheet_failures} contact sheet(s) could not be analyzed"),
+                ));
+            }
+            ChannelResult::Ready(entries)
+        })();
+
+        if job.is_cancelled() {
+            fail_attachment(request, "analysis was cancelled".to_string());
+            return;
+        }
+        emit_stage(&job_id, VideoProgressStage::Consolidating);
+
+        let transcript_text = speech
+            .ready()
+            .map(|transcript| {
+                transcript
+                    .segments
+                    .iter()
+                    .map(|segment| segment.text.clone())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        let ocr_texts: Vec<String> = ocr
+            .ready()
+            .map(|items| items.iter().map(|item| item.text.clone()).collect())
+            .unwrap_or_default();
+        let asr_language = speech
+            .ready()
+            .and_then(|transcript| transcript.language.clone());
+        let frame_count = prepared.visual_frames.len();
+        let ocr_frame_count = prepared.ocr_frames.len();
+
+        match consolidate_context(ConsolidationInput {
+            file_name: &file_name,
+            duration_ms: metadata.duration_ms,
+            route: route_label,
+            vision,
+            ocr,
+            speech,
+            warnings: warnings.clone(),
+        }) {
+            Ok(context) => {
+                if let (Some(cache), Some(key)) = (cache.as_ref(), cache_key.as_ref()) {
+                    let entry =
+                        VideoCacheEntry::new(context.clone(), transcript_text, ocr_texts);
+                    let _ = cache.write(key, &entry, &[]);
+                }
+                if let Some(att) = request
+                    .attachments
+                    .as_mut()
+                    .and_then(|list| list.get_mut(attachment_index))
+                {
+                    att.extracted_text = Some(context);
+                    att.extraction_status = Some(ExtractionStatus::Extracted);
+                }
+                let detail = format!(
+                    "route={route_label} duration_ms={} frames={frame_count} \
+                     ocr_frames={ocr_frame_count} language={} warnings={}",
+                    metadata.duration_ms,
+                    asr_language.as_deref().unwrap_or("-"),
+                    warnings.len(),
+                );
+                Self::emit_video_activity(
+                    app,
+                    turn_id,
+                    &conversation_id,
+                    route_label,
+                    &metadata,
+                    &detail,
+                    &warnings,
+                );
+            }
+            Err(error) => fail_attachment(request, error),
+        }
+        let _ = job.finish();
+    }
+
+    /// One ordinary RuntimeActivity (kind `video`) rendered only inside
+    /// Worked for.
+    fn emit_video_activity(
+        app: &AppHandle,
+        turn_id: &str,
+        conversation_id: &str,
+        route_label: &str,
+        metadata: &crate::models::types::VideoStreamMetadata,
+        detail: &str,
+        warnings: &[crate::services::video::VideoWarning],
+    ) {
+        let warning_suffix = if warnings.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " | warnings: {}",
+                warnings
+                    .iter()
+                    .map(|warning| warning.code.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        emit_event(
+            app,
+            AgentEvent {
+                event_type: EventType::Json,
+                turn_id: Some(turn_id.to_string()),
+                conversation_id: Some(conversation_id.to_string()),
+                runtime_activity: Some(RuntimeActivity {
+                    key: format!("{turn_id}:video-analysis"),
+                    label: "video-analysis".to_string(),
+                    detail: Some(format!(
+                        "{detail} | container={} codec={}{warning_suffix}",
+                        metadata.container, metadata.video_codec
+                    )),
+                    kind: "video".to_string(),
+                    tool_use_id: None,
+                    additions: None,
+                    deletions: None,
+                    diff_preview: None,
+                }),
+                ..Default::default()
+            },
+        );
+        let _ = route_label;
+    }
+
     /// Spawn an agent turn. Returns the turn_id (existing or newly generated).
     /// Emits `agent:event` events to the renderer as the CLI produces output.
     ///
@@ -428,6 +943,7 @@ impl TurnService {
         let credentials = self.credentials.clone();
         let settings = self.settings.clone();
         let app_data_dir = self.app_data_dir.clone();
+        let video_jobs = self.video_jobs.clone();
         let app_for_thread = app.clone();
         let turn_id_for_thread = turn_id.clone();
         let conversation_id_for_thread = conversation_id.clone();
@@ -466,6 +982,7 @@ impl TurnService {
                     credentials,
                     settings,
                     app_data_dir,
+                    video_jobs,
                 );
             })
             .map_err(|e| format!("Falha ao iniciar thread do turn: {e}"))?;
@@ -487,9 +1004,23 @@ impl TurnService {
         credentials: Arc<CredentialsStore>,
         settings: Option<Arc<SettingsStore>>,
         app_data_dir: Option<std::path::PathBuf>,
+        video_jobs: Option<crate::services::video::job::VideoJobRegistry>,
     ) {
         // Set the turn_id on the request so downstream code can reference it.
         request.turn_id = Some(turn_id.clone());
+
+        // Video understanding runs before any prompt construction so the
+        // consolidated `<video_context>` reaches build_attachment_lines like
+        // any other extracted text. Runs on this background thread only.
+        Self::maybe_run_video_pipeline(
+            &app,
+            &turn_id,
+            &mut request,
+            &settings,
+            &credentials,
+            &app_data_dir,
+            &video_jobs,
+        );
 
         // FASE 1: vision fallback. When the selected model doesn't support
         // vision but the user attached images, spawn a secondary CLI with a

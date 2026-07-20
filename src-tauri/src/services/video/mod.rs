@@ -60,6 +60,7 @@ impl VideoWarning {
     }
 }
 
+pub mod analyze;
 pub mod cache;
 pub mod job;
 pub mod prepare;

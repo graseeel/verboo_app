@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use image::imageops::FilterType;
-use image::{GenericImage, GenericImageView, Rgb, RgbImage};
+use image::{GenericImage, Rgb, RgbImage};
 
 use crate::models::types::{VideoHdrKind, VideoStreamMetadata};
 
