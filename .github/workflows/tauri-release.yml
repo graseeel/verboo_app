@@ -116,6 +116,12 @@ jobs:
       # Clear RUSTFLAGS so cargo-tauri's default flags don't break proc-macro
       # linking (ctor-proc-macro "can't find crate" error on Rust 1.89).
       RUSTFLAGS: ""
+      # Published Chrome Web Store identity, read at compile time by
+      # option_env! (chrome_integration/models.rs, native_host.rs). Without
+      # these the shipped app reports "this build has no production extension
+      # metadata" and the integration cannot be configured.
+      VERBOO_CHROME_EXTENSION_ID: "nkfgdaoblgcbngpklgnmjkfdabpbmpee"
+      VERBOO_CHROME_WEB_STORE_URL: "https://chromewebstore.google.com/detail/nkfgdaoblgcbngpklgnmjkfdabpbmpee"
 
     steps:
       - name: Checkout repository
