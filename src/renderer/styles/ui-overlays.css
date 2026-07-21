@@ -360,7 +360,7 @@
 
 .toast-stack {
   position: fixed;
-  right: 18px;
+  right: calc(18px + var(--browser-width, 0px));
   bottom: 18px;
   z-index: 1100;
   display: grid;
@@ -373,7 +373,7 @@
    ══════════════════════════════════════════════════════════════ */
 .update-banner {
   position: fixed;
-  right: 18px;
+  right: calc(18px + var(--browser-width, 0px));
   bottom: 18px;
   z-index: 1200;
   display: flex;
