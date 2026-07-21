@@ -295,3 +295,43 @@ describe('t5 — overlay: @token with PluginIcon', () => {
     expect(token.querySelector('.at-glyph')).toBeTruthy()
   })
 })
+
+// ── Native drag overlay ─────────────────────────────────────────────────
+// Tauri relays window-level 'enter'/'over'/'leave'/'drop' as DOM CustomEvents.
+// 'over' repeats for every pointer move, so it must not feed a nesting
+// counter — otherwise one 'leave' can never undo N increments.
+function nativeDrag(type: string, paths: string[] = []) {
+  act(() => {
+    window.dispatchEvent(new CustomEvent('verboo:drag-event', { detail: { type, paths } }))
+  })
+}
+
+describe('native drag overlay', () => {
+  it('shows the overlay while a native drag hovers the composer', () => {
+    const { container } = renderComposer()
+    nativeDrag('enter', ['/tmp/clip.mov'])
+    expect(container.querySelector('.composer-drop-overlay')).toBeTruthy()
+  })
+
+  it('hides the overlay when the drag is abandoned after many over events', () => {
+    const { container } = renderComposer()
+
+    nativeDrag('enter', ['/tmp/clip.mov'])
+    for (let i = 0; i < 12; i += 1) nativeDrag('over')
+    nativeDrag('leave')
+
+    expect(container.querySelector('.composer-drop-overlay')).toBeFalsy()
+  })
+
+  it('hides the overlay after a drop', () => {
+    const onDropFiles = vi.fn()
+    const { container } = renderComposer({ onDropFiles })
+
+    nativeDrag('enter', ['/tmp/clip.mov'])
+    for (let i = 0; i < 5; i += 1) nativeDrag('over')
+    nativeDrag('drop', ['/tmp/clip.mov'])
+
+    expect(container.querySelector('.composer-drop-overlay')).toBeFalsy()
+    expect(onDropFiles).toHaveBeenCalledWith(['/tmp/clip.mov'], [])
+  })
+})

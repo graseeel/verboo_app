@@ -94,7 +94,11 @@ export function Composer({
   const setValue = onValueChange ?? setInternalValue
   const [highlighted, setHighlighted] = useState(0)
   const [atHighlighted, setAtHighlighted] = useState(0)
+  // Two independent drag models: HTML5 events nest (a child's dragenter fires
+  // dragleave on its parent) so they need a depth counter; Tauri's native
+  // events are window-level state, so they get a plain flag.
   const [dragDepth, setDragDepth] = useState(0)
+  const [nativeDragging, setNativeDragging] = useState(false)
   const [palettePos, setPalettePos] = useState<{ bottom: number; left: number; width: number } | null>(null)
   const [voiceListening, setVoiceListening] = useState(false)
   const [composing, setComposing] = useState(false)
@@ -139,12 +143,15 @@ export function Composer({
   useEffect(() => {
     function onTauriDrag(e: Event) {
       const detail = (e as CustomEvent).detail as { type: string; paths: string[] }
+      // 'over' repeats for every pointer move, so this must stay a flag: a
+      // counter would climb with each move and the single 'leave' emitted on
+      // abort could never bring it back to zero, pinning the overlay open.
       if (detail.type === 'enter' || detail.type === 'over') {
-        setDragDepth(d => d + 1)
+        setNativeDragging(true)
       } else if (detail.type === 'leave') {
-        setDragDepth(d => Math.max(0, d - 1))
+        setNativeDragging(false)
       } else if (detail.type === 'drop') {
-        setDragDepth(0)
+        setNativeDragging(false)
         if (!disabled && detail.paths.length) {
           onDropFiles(detail.paths, [])
         }
@@ -208,7 +215,7 @@ export function Composer({
     [skills, slashCommands, customSlashCommands, value],
   )
   const goalModeActive = isGoalCommandDraft(value)
-  const dropActive = dragDepth > 0
+  const dropActive = dragDepth > 0 || nativeDragging
 
   // ── @-mention skill palette ─────────────────────────────────────────────
   const atQuery = getAtQuery(value)
