@@ -141,10 +141,6 @@ jobs:
         with:
           msystem: MINGW64
           update: true
-          # inherit gives the MSYS2 shell the Windows PATH (setup-node's
-          # node.exe); without it the sidecar builder dies with
-          # "node: command not found".
-          path-type: inherit
           install: >-
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-cmake
@@ -215,7 +211,12 @@ jobs:
         shell: msys2 {0}
         env:
           VERBOO_MEDIA_SIDECAR_CACHE: ${{ runner.temp }}/verboo-media-sidecars-cache
-        run: node scripts/tauri/build-media-sidecars.mjs --target ${{ matrix.target }}
+        # Strict MSYS2 PATH keeps the perl autotools' prefix detection sane
+        # (path-type: inherit mangled the system aclocal dir); node is added
+        # explicitly from the runner image install.
+        run: |
+          export PATH="$PATH:/c/Program Files/nodejs"
+          node scripts/tauri/build-media-sidecars.mjs --target ${{ matrix.target }}
 
       - name: Verify target-qualified media sidecars
         shell: bash
