@@ -163,7 +163,10 @@ export function requiredFfmpegCapabilities(target) {
   assertSupportedTarget(target)
   const encoders = ['png', 'pcm_s16le', 'aac']
   if (targetPlatform(target) === 'darwin') encoders.push('h264_videotoolbox')
-  if (isWindowsTarget(target)) encoders.push('h264_mf')
+  // Windows deliberately ships no guaranteed H.264 encoder: h264_mf needs
+  // Media Foundation, which the minimal LGPL mingw build cannot link. Like
+  // Linux, Windows falls back to sampled frames; the runtime toolchain probe
+  // (router.rs) reports the encoder as unavailable and routes accordingly.
   return {
     encoders,
     filters: [
@@ -411,7 +414,6 @@ async function buildFfmpeg(source, target, zimgPrefix, staging) {
   if (targetPlatform(target) === 'darwin') {
     configure.push('--enable-videotoolbox', '--enable-encoder=h264_videotoolbox')
   }
-  if (isWindowsTarget(target)) configure.push('--enable-encoder=h264_mf')
   const environment = buildEnvironment(target, {
     PKG_CONFIG_PATH: path.join(zimgPrefix, 'lib', 'pkgconfig'),
   })
