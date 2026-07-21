@@ -2,6 +2,7 @@ export const NATIVE_MESSAGING_HOST_NAME = 'com.verboo.code.browser_extension'
 export const BROWSER_BRIDGE_PROTOCOL_VERSION = 1
 
 const DEFAULT_RECONNECT_DELAY_MS = 750
+const MAX_RECONNECT_DELAY_MS = 30_000
 
 /**
  * @param {{
@@ -23,8 +24,25 @@ export function createNativeBridge({
 }) {
   let port = null
   let stopped = false
-  let reconnectUsed = false
   let startupRegistered = false
+  let reconnectAttempt = 0
+  let reconnectTimer = null
+
+  // The host only exists after the desktop app configures the integration.
+  // A single retry meant an extension installed before that step gave up
+  // forever, so reconnection now backs off but never stops trying.
+  function scheduleReconnect() {
+    if (stopped || reconnectTimer) return
+    const delay = Math.min(
+      reconnectDelayMs * 2 ** reconnectAttempt,
+      MAX_RECONNECT_DELAY_MS,
+    )
+    reconnectAttempt += 1
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      if (!stopped) connect()
+    }, delay)
+  }
 
   function connect() {
     stopped = false
@@ -33,27 +51,36 @@ export function createNativeBridge({
       const nextPort = chromeApi.runtime.connectNative(NATIVE_MESSAGING_HOST_NAME)
       port = nextPort
       nextPort.onMessage.addListener((message) => {
+        // A real message proves the host is alive: restart the backoff.
+        reconnectAttempt = 0
         void handleMessage(nextPort, message)
       })
       nextPort.onDisconnect.addListener(() => {
         if (port !== nextPort) return
         port = null
-        if (!stopped && !reconnectUsed) {
-          reconnectUsed = true
-          setTimeout(() => {
-            if (!stopped) connect()
-          }, reconnectDelayMs)
+        const failure = chromeApi.runtime?.lastError
+        if (failure) {
+          console.warn('[verboo] native bridge disconnected:', failure.message)
         }
+        scheduleReconnect()
       })
       return true
-    } catch {
+    } catch (error) {
+      // Silent failure here hid the real cause (missing host, blocked
+      // executable) from anyone reading the service worker console.
+      console.warn('[verboo] connectNative failed:', error?.message ?? error)
       port = null
+      scheduleReconnect()
       return false
     }
   }
 
   function disconnect() {
     stopped = true
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
     const current = port
     port = null
     try {
@@ -67,7 +94,7 @@ export function createNativeBridge({
     if (startupRegistered) return
     startupRegistered = true
     chromeApi.runtime.onStartup.addListener(() => {
-      reconnectUsed = false
+      reconnectAttempt = 0
       connect()
     })
   }
