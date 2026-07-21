@@ -91,6 +91,7 @@ test('requires static whisper and the exact FFmpeg capabilities for each target'
     '-DBUILD_SHARED_LIBS=OFF',
     '-DGGML_STATIC=ON',
     '-DGGML_BACKEND_DL=OFF',
+    '-DGGML_OPENMP=OFF',
   ])
 
   const macos = requiredFfmpegCapabilities('aarch64-apple-darwin')
