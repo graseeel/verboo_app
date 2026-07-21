@@ -31,9 +31,10 @@ tauri-build = { version = "2", features = [] }
 # regenerated dylib is corrupted on Rust 1.89+ ("mis-aligned LINKEDIT
 # string pool" on dlopen).
 # `unstable` exposes the multiwebview API (Window::add_child) used by the
-# embedded Browser panel (ADR-0001). Pinned exact tauri version below so a
-# transparent upgrade can't silently change unstable behavior.
-tauri = { version = "2", features = ["tray-icon", "image-png", "custom-protocol", "protocol-asset", "unstable"] }
+# embedded Browser panel (ADR-0001). Pinned to =2.11.5 (the version
+# validated during the Fase 0 spike) so a transparent `cargo update`
+# can't silently change unstable behavior — see ADR-0001 consequences.
+tauri = { version = "=2.11.5", features = ["tray-icon", "image-png", "custom-protocol", "protocol-asset", "unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"

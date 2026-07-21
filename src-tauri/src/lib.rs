@@ -1929,15 +1929,17 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Config
             get_config,
-            // Browser panel (Fase 0 spike — gated by VERBOO_BROWSER_SPIKE=1)
-            services::browser_panel::browser_spike_enabled,
+            // Browser panel (Fase 1 — docked child webview, ADR-0001)
             services::browser_panel::browser_create,
-            services::browser_panel::browser_navigate,
             services::browser_panel::browser_set_bounds,
+            services::browser_panel::browser_navigate,
+            services::browser_panel::browser_back,
+            services::browser_panel::browser_forward,
+            services::browser_panel::browser_reload,
             services::browser_panel::browser_destroy,
+            services::browser_panel::browser_drain_messages,
             services::browser_panel::browser_snapshot,
-            services::browser_panel::browser_eval_roundtrip,
-            services::browser_panel::browser_poll_messages,
+            services::browser_panel::browser_evaluate_script,
             // Auth
             start_cli_login,
             get_cli_auth_status,
