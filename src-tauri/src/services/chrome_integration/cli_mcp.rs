@@ -3,7 +3,9 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use crate::services::auth_token::{augment_identity_env, inject_api_key, resolve_token};
 use crate::services::cli_spawn::CliSpawn;
+use crate::services::credentials_store::CredentialsStore;
 
 use super::paths::ChromeIntegrationPaths;
 
@@ -38,7 +40,15 @@ pub(crate) struct RealCliMcpRunner;
 
 impl CliMcpRunner for RealCliMcpRunner {
     fn run(&self, args: &[String]) -> Result<CliRunOutput, String> {
-        let output = CliSpawn::new(args)
+        let mut spawn = CliSpawn::new(args);
+        // Without the parent's credentials the CLI answers every subcommand
+        // with "not authenticated" and prints no JSON, so `mcp doctor` was
+        // read as an invalid config and configuration failed with a generic
+        // error. Mirror the turn spawn: identity env plus the resolved token.
+        augment_identity_env(&mut spawn.command);
+        let credentials = CredentialsStore::new();
+        let _guard = inject_api_key(resolve_token(&credentials).as_deref(), &mut spawn.command);
+        let output = spawn
             .command
             .output()
             .map_err(|error| error.to_string())?;
