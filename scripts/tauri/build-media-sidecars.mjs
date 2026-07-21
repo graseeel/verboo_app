@@ -132,6 +132,10 @@ export function whisperCmakeArguments(target) {
     '-DBUILD_SHARED_LIBS=OFF',
     '-DGGML_STATIC=ON',
     '-DGGML_BACKEND_DL=OFF',
+    // OpenMP pulls a dynamic libgomp-1.dll on mingw that breaks the fully
+    // static requirement; ggml's own pthread thread pool covers short-audio
+    // transcription without it.
+    '-DGGML_OPENMP=OFF',
     ...staticLinkerArguments(target).cmake,
   ]
 }
