@@ -128,16 +128,19 @@ pub(crate) fn add(
     helper_path: &Path,
     version: &str,
 ) -> Result<(), String> {
+    // `-e/--env` is variadic: any positional that follows it is swallowed as
+    // another env var ("Invalid environment variable format: verboo-in-chrome").
+    // The server name must therefore come before the flags.
     let args = vec![
         "mcp".into(),
         "add".into(),
+        MCP_NAME.into(),
         "--scope".into(),
         "user".into(),
         "-e".into(),
         format!("{MANAGED_MARKER}=1"),
         "-e".into(),
         format!("{VERSION_MARKER}={version}"),
-        MCP_NAME.into(),
         "--".into(),
         helper_path.to_string_lossy().into_owned(),
         "mcp".into(),
