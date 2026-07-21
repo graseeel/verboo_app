@@ -65,11 +65,16 @@ function unixBuildCommand(commandName, args, options = {}) {
   const posixCommand = toPosixPath(commandName)
   const cwd = options.cwd ?? repositoryRoot
   const environment = { ...(options.env ?? process.env) }
-  if (environment.PKG_CONFIG_PATH) environment.PKG_CONFIG_PATH = toPosixPath(environment.PKG_CONFIG_PATH)
   environment.CHERE_INVOKED = '1'
+  // A login shell (-l) is required for the perl autotools to derive their
+  // prefix correctly, but /etc/profile RESETS PKG_CONFIG_PATH. Carry it in a
+  // profile-safe custom var and re-export it inside, after profile has run.
+  if (environment.PKG_CONFIG_PATH) {
+    environment.VERBOO_PKG_CONFIG_PATH = toPosixPath(environment.PKG_CONFIG_PATH)
+  }
   inheritedCommand('bash', [
     '-leo', 'pipefail',
-    '-c', 'cd "$0" && exec "$@"',
+    '-c', 'cd "$0" && { [ -n "$VERBOO_PKG_CONFIG_PATH" ] && export PKG_CONFIG_PATH="$VERBOO_PKG_CONFIG_PATH"; }; exec "$@"',
     toPosixPath(cwd), posixCommand, ...posixArgs,
   ], { env: environment })
 }
