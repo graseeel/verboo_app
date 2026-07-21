@@ -407,6 +407,12 @@ export function SettingsView({
                 checked={userSettings.includeVerbooCoAuthor}
                 onChange={includeVerbooCoAuthor => onUserSettingsChange({ includeVerbooCoAuthor })}
               />
+              <SettingToggle
+                title={t('settings.browserVerification')}
+                body={t('settings.browserVerificationBody')}
+                checked={userSettings.browserVerificationEnabled}
+                onChange={browserVerificationEnabled => onUserSettingsChange({ browserVerificationEnabled })}
+              />
             </section>
 
             <section className="settings-panel">
