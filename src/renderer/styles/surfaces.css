@@ -1331,7 +1331,7 @@
   position: fixed;
   z-index: 116;
   top: calc(var(--titlebar-height, 52px) + 14px);
-  right: calc(var(--terminal-width) + var(--review-width) + var(--subagents-panel-width, 0px) + 16px);
+  right: calc(var(--terminal-width) + var(--review-width) + var(--browser-width) + var(--subagents-panel-width, 0px) + 16px);
   display: inline-flex;
   align-items: center;
   gap: 6px;

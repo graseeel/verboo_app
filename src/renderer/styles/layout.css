@@ -402,7 +402,7 @@
 .app-layout {
   position: relative;
   display: grid;
-  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--review-width) var(--terminal-width);
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--browser-width) var(--review-width) var(--terminal-width);
   grid-template-rows: minmax(0, 1fr);
   height: 100%;
   min-height: 0;
@@ -433,13 +433,18 @@
   grid-row: 1;
 }
 
-.review-panel {
+.browser-panel {
   grid-column: 4;
   grid-row: 1;
 }
 
-.terminal-panel {
+.review-panel {
   grid-column: 5;
+  grid-row: 1;
+}
+
+.terminal-panel {
+  grid-column: 6;
   grid-row: 1;
 }
 
@@ -528,7 +533,7 @@
    but we also neutralize the dim overlay and any residual sidebar chrome so
    the view is truly full-bleed. */
 .app-layout.view-fullscreen {
-  grid-template-columns: 0 minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--review-width) var(--terminal-width);
+  grid-template-columns: 0 minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--browser-width) var(--review-width) var(--terminal-width);
 }
 
 .app-layout.view-fullscreen .workspace {

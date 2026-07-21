@@ -1,4 +1,4 @@
-import { FileSearch, PanelLeftOpen, Terminal as TerminalIcon } from 'lucide-react'
+import { FileSearch, Globe, PanelLeftOpen, Terminal as TerminalIcon } from 'lucide-react'
 import { useI18n } from '../i18n'
 
 type TopBarProps = {
@@ -10,6 +10,8 @@ type TopBarProps = {
   reviewOpen: boolean
   reviewUnavailableReason?: string
   onToggleReview: () => void
+  browserOpen: boolean
+  onToggleBrowser: () => void
 }
 
 export function TopBar({
@@ -21,6 +23,8 @@ export function TopBar({
   reviewOpen,
   reviewUnavailableReason,
   onToggleReview,
+  browserOpen,
+  onToggleBrowser,
 }: TopBarProps) {
   const { t } = useI18n()
 
@@ -81,6 +85,19 @@ export function TopBar({
           aria-label={reviewOpen ? t('topbar.hideReview') : t('topbar.openReview')}
         >
           <FileSearch size={15} />
+        </button>
+        <button
+          className={`topbar-terminal-button ui-tooltip ${browserOpen ? 'active' : ''}`}
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            onToggleBrowser()
+          }}
+          data-tooltip={browserOpen ? t('topbar.hideBrowser') : t('topbar.openBrowser')}
+          data-tooltip-align="end"
+          aria-label={browserOpen ? t('topbar.hideBrowser') : t('topbar.openBrowser')}
+        >
+          <Globe size={15} />
         </button>
       </div>
     </header>

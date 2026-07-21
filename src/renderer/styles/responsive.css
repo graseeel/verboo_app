@@ -76,6 +76,7 @@
 
   .app-layout {
     --review-width: 0px !important;
+    --browser-width: 0px !important;
     --terminal-width: 0px !important;
   }
 
@@ -186,12 +187,14 @@
 @media (max-width: 900px) {
   :root {
     --terminal-width: 0px !important;
+    --browser-width: 0px !important;
     --review-width: 0px !important;
     --subagents-panel-width: 0px !important;
   }
 
   .terminal-panel,
   .review-panel,
+  .browser-panel,
   .subagent-thread-panel,
   .subagent-indicator {
     display: none !important;

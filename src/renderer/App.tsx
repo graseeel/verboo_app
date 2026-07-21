@@ -49,7 +49,8 @@ import { CommandPalette, paletteIcons, type PaletteAction } from './components/C
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { useToast } from './components/Toast'
 import { VerbooPet, PET_MIN_SIZE, PET_MAX_SIZE, type PetState } from './features/pet/VerbooPet'
-import { BrowserSpikePanel } from './features/browser/BrowserSpikePanel'
+import { BrowserPanel } from './features/browser/BrowserPanel'
+import { useBrowserPanel } from './features/browser/useBrowserPanel'
 import { QuestionWizard, type ModelQuestion, type QuestionAnswer, type QuestionPromptState } from './features/questions/QuestionWizard'
 import { detectTextQuestionPrompt, extractModelQuestionsFromPayload, mergeModelQuestions } from './features/questions/questionDetection'
 import { MessageCircleQuestion } from 'lucide-react'
@@ -166,6 +167,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   trustedSkills: [],
   avatar: undefined,
   includeVerbooCoAuthor: false,
+  browserVerificationEnabled: true,
   loadWebIcons: true,
 }
 const EMPTY_LINE_KEYS = [
@@ -432,6 +434,7 @@ export function App() {
   const [reviewUnavailableReason, setReviewUnavailableReason] = useState<string | undefined>()
   const terminal = useLocalTerminal()
   const review = useReviewPanel()
+  const browser = useBrowserPanel()
   const t = useMemo(() => createTranslator(userSettings.language), [userSettings.language])
   const [tokenRate, setTokenRate] = useState<TokenRateSnapshot | undefined>()
   const goalRef = useRef(goal)
@@ -626,6 +629,7 @@ export function App() {
         ...DEFAULT_USER_SETTINGS,
         ...settings,
         includeVerbooCoAuthor: settings.includeVerbooCoAuthor ?? false,
+        browserVerificationEnabled: settings.browserVerificationEnabled ?? true,
         loadWebIcons: settings.loadWebIcons ?? true,
       })
       // Reasoning effort prefs: backend is the durable source. When the
@@ -2643,6 +2647,7 @@ export function App() {
     { key: 'theme', label: t('palette.toggleTheme'), icon: paletteIcons.theme, run: () => cycleTheme() },
     { key: 'terminal', label: t('palette.toggleTerminal'), icon: paletteIcons.terminal, run: () => handleToggleTerminal(currentWorkspaceDirectory) },
     { key: 'review', label: t('palette.toggleReview'), icon: paletteIcons.review, run: () => { void handleToggleReview() } },
+    { key: 'browser', label: t('palette.toggleBrowser'), icon: paletteIcons.browser, run: () => handleToggleBrowser() },
     { key: 'sidebar', label: t('palette.toggleSidebar'), icon: paletteIcons.sidebar, run: toggleSidebarVisibility },
     { key: 'pet', label: t('palette.togglePet'), icon: paletteIcons.pet, run: togglePet },
     {
@@ -3840,9 +3845,10 @@ export function App() {
   const handleToggleTerminal = useCallback((cwd: string) => {
     setReviewUnavailableReason(undefined)
     review.close()
+    browser.close()
     setSelectedSubagentId(undefined)
     void terminal.toggle(cwd)
-  }, [review, terminal])
+  }, [review, terminal, browser])
 
   const handleToggleSubagents = useCallback(() => {
     if (selectedSubagentId) {
@@ -3853,14 +3859,19 @@ export function App() {
     if (!latest) return
     terminal.close()
     review.close()
+    browser.close()
     setSelectedSubagentId(latest.id)
-  }, [review, selectedSubagentId, subagentThreads, terminal])
+  }, [review, browser, selectedSubagentId, subagentThreads, terminal])
 
   const handleToggleReview = useCallback(async () => {
     if (review.reviewOpen) {
       review.close()
       return
     }
+
+    terminal.close()
+    browser.close()
+    setSelectedSubagentId(undefined)
 
     const workingDirectory = currentWorkspaceDirectory
     if (!workingDirectory) {
@@ -3887,15 +3898,27 @@ export function App() {
     terminal.close()
     setSelectedSubagentId(undefined)
     review.open(workingDirectory, summary.files, 0)
-  }, [currentWorkspaceDirectory, review, terminal, t])
+  }, [currentWorkspaceDirectory, review, terminal, browser, t])
 
   const handleOpenReview = useCallback((files: WorkspaceChangeEntry[], index: number) => {
     const workingDirectory = currentWorkspaceDirectory
     if (!workingDirectory) return
     terminal.close()
+    browser.close()
     setSelectedSubagentId(undefined)
     review.open(workingDirectory, files, index)
-  }, [currentWorkspaceDirectory, review, terminal])
+  }, [currentWorkspaceDirectory, review, terminal, browser])
+
+  const handleToggleBrowser = useCallback(() => {
+    if (browser.browserOpen) {
+      browser.close()
+      return
+    }
+    terminal.close()
+    review.close()
+    setSelectedSubagentId(undefined)
+    browser.open()
+  }, [browser, terminal, review])
 
   async function refreshWorkspaceReview() {
     if (!review.target) return
@@ -3931,6 +3954,18 @@ export function App() {
     window.addEventListener('keydown', handleTerminalShortcut, { capture: true })
     return () => window.removeEventListener('keydown', handleTerminalShortcut, { capture: true })
   }, [handleToggleTerminal, workspaceDirectory])
+
+  useEffect(() => {
+    function handleBrowserShortcut(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'b') return
+      event.preventDefault()
+      event.stopPropagation()
+      handleToggleBrowser()
+    }
+
+    window.addEventListener('keydown', handleBrowserShortcut, { capture: true })
+    return () => window.removeEventListener('keydown', handleBrowserShortcut, { capture: true })
+  }, [handleToggleBrowser])
 
   const feedbackDiagnostics = useMemo<FeedbackDiagnostics>(() => ({
     appVersion: packageJson.version,
@@ -4075,10 +4110,12 @@ export function App() {
         reviewOpen={review.reviewOpen}
         reviewUnavailableReason={reviewUnavailableReason}
         onToggleReview={handleToggleReview}
+        browserOpen={browser.browserOpen}
+        onToggleBrowser={handleToggleBrowser}
       />
 
       <div
-        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' || activeView === 'profile' ? 'view-fullscreen' : ''} ${terminal.terminalOpen ? 'terminal-open' : ''} ${review.reviewOpen ? 'review-open' : ''}`}
+        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' || activeView === 'profile' ? 'view-fullscreen' : ''} ${terminal.terminalOpen ? 'terminal-open' : ''} ${review.reviewOpen ? 'review-open' : ''} ${browser.browserOpen ? 'browser-open' : ''}`}
       >
         {activeView !== 'settings' && activeView !== 'profile' && sidebarMode === 'hidden' && !sidebarPeek && !sidebarPeekLeaving && (
           // Rail: thin hit-area on the left edge. Hover/focus expands the
@@ -4543,7 +4580,16 @@ export function App() {
 
       <VerbooPet visible={petEnabled} state={petState} size={petSize} onSizeChange={updatePetSize} />
 
-      <BrowserSpikePanel />
+      <BrowserPanel
+        browserOpen={browser.browserOpen}
+        browserWidth={browser.browserWidth}
+        annotationMode={browser.annotationMode}
+        onSetWidth={browser.setWidth}
+        onClose={browser.close}
+        onTogglePencil={browser.togglePencil}
+        onToggleArrow={browser.toggleArrow}
+        minWidth={browser.MIN_WIDTH}
+      />
 
       {updateSnapshot && updateSnapshot.status === 'available'
         && updateSnapshot.availableVersion

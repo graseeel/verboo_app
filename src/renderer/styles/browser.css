@@ -1,0 +1,206 @@
+/* ── Browser Panel ───────────────────────────────────────────── */
+
+.browser-panel {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto 38px minmax(0, 1fr);
+  height: 100%;
+  min-width: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.browser-panel.is-hidden {
+  width: 0 !important;
+  border-left-color: transparent;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.browser-resizer {
+  position: absolute;
+  z-index: 85;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 10px;
+  cursor: col-resize;
+}
+
+.browser-resizer::after {
+  position: absolute;
+  top: 18px;
+  bottom: 18px;
+  left: 1px;
+  width: 2px;
+  border-radius: 999px;
+  background: transparent;
+  content: "";
+  transition: background-color 150ms ease-out;
+}
+
+.browser-resizer:hover::after,
+.browser-resizer:active::after {
+  background: color-mix(in srgb, var(--accent) 56%, transparent);
+}
+
+/* ── Tab bar ──────────────────────────────────────────────── */
+
+.browser-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  height: 38px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-elevated) 62%, var(--bg));
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+
+.browser-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text);
+  cursor: default;
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.browser-tab-add {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: default;
+  opacity: 0.4;
+}
+
+.browser-tab-add:hover {
+  color: var(--text-muted);
+}
+
+/* ── Toolbar (navigation + URL) ───────────────────────────── */
+
+.browser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  height: 38px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+}
+
+.browser-nav-button {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.browser-nav-button:hover:not(:disabled) {
+  border-color: rgba(177, 185, 225, 0.14);
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent-soft) 36%, transparent);
+}
+
+.browser-nav-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.browser-nav-button.active {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 36%, transparent);
+}
+
+.browser-url-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-soft) 72%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 140ms ease-out;
+}
+
+.browser-url-input:focus {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.browser-url-input::placeholder {
+  color: var(--text-dim);
+}
+
+/* ── Content area ─────────────────────────────────────────── */
+
+.browser-content {
+  position: relative;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.browser-empty-state {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* ── Annotation modes ──────────────────────────────────────── */
+
+.browser-panel.mode-pencil .browser-content {
+  cursor: crosshair;
+}
+
+.browser-panel.mode-arrow .browser-content {
+  cursor: pointer;
+}
+
+/* ── Overlay shade (ADR-0002) ──────────────────────────────── */
+
+.browser-shade {
+  position: absolute;
+  inset: 0;
+  z-index: 999;
+  background: var(--bg);
+  opacity: 0;
+  transition: opacity 100ms ease-out;
+  pointer-events: none;
+}
+
+.browser-shade.is-active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.browser-shade-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
