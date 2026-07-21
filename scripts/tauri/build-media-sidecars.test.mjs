@@ -108,9 +108,10 @@ test('requires static whisper and the exact FFmpeg capabilities for each target'
     ['encoder: png'],
   )
 
+  // Windows joins Linux in promising no guaranteed H.264 encoder: h264_mf
+  // needs Media Foundation, which the minimal LGPL mingw build cannot link.
   const windows = requiredFfmpegCapabilities('x86_64-pc-windows-msvc')
-  assert.ok(windows.encoders.includes('h264_mf'))
-  assert.ok(!windows.encoders.includes('h264_videotoolbox'))
+  assert.ok(!windows.encoders.some((encoder) => encoder.startsWith('h264_')))
   const linux = requiredFfmpegCapabilities('x86_64-unknown-linux-gnu')
   assert.ok(!linux.encoders.some((encoder) => encoder.startsWith('h264_')))
 
