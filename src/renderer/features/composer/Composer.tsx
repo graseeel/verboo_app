@@ -784,30 +784,38 @@ export function Composer({
           {attachments.map(attachment => {
             const isImage = attachment.kind === 'image'
             const isVideo = attachment.kind === 'video'
+            const isAnnotation = attachment.kind === 'browser-annotation'
+            const annotation = isAnnotation ? attachment.browserAnnotation : undefined
             const status = attachment.extractionStatus
             const isOcrProcessing = ocrProcessingPaths.includes(attachment.path)
             // No extractionStatus + no extractedText + not image → definitively
             // unreadable (backends that don't set extractionStatus yet).
-            const isUnreadable = !isImage && !isVideo && !attachment.extractedText && !status && !isOcrProcessing
+            const isUnreadable = !isImage && !isVideo && !isAnnotation && !attachment.extractedText && !status && !isOcrProcessing
             // extractionStatus 'extracted' or legacy extractedText → content is real.
             const isExtracted = status === 'extracted' || (!status && Boolean(attachment.extractedText))
             // extractionStatus 'warning' → Ezio found the file but couldn't
             // read it (scanned/corrupt/too-large); extractedText holds a warning.
             const isWarning = status === 'warning' && !isOcrProcessing
+            const chipLabel = isAnnotation
+              ? annotation?.kind === 'element'
+                ? `${t('browser.annotationElement')} · ${annotation?.component || annotation?.selector || annotation?.url}`
+                : `${t('browser.annotationPen')} · ${annotation?.note || (() => { try { return new URL(annotation?.url || '').hostname } catch { return annotation?.url || '' } })()}`
+              : attachment.name
             return (
               <button
-                key={attachment.path}
-                className={`skill-chip attachment-chip${isUnreadable ? ' attachment-unreadable' : ''}${isWarning ? ' attachment-warning' : ''}${isOcrProcessing ? ' attachment-ocr' : ''}${isImage ? ' attachment-image' : ''}`}
+                key={isAnnotation ? `${attachment.path}-${annotation?.selector || annotation?.url}` : attachment.path}
+                className={`skill-chip attachment-chip${isUnreadable ? ' attachment-unreadable' : ''}${isWarning ? ' attachment-warning' : ''}${isOcrProcessing ? ' attachment-ocr' : ''}${isImage ? ' attachment-image' : ''}${isAnnotation ? ' attachment-annotation' : ''}`}
                 type="button"
                 onClick={() => onRemoveAttachment(attachment.path)}
                 title={
+                  isAnnotation ? `${annotation?.url}${annotation?.selector ? `\n${annotation.selector}` : ''}${annotation?.note ? `\n${annotation.note}` : ''}` :
                   isUnreadable ? `${attachment.path}\n${t('composer.attachmentUnreadable')}` :
                   isWarning ? `${attachment.path}\n${t('composer.attachmentWarningStatus')}` :
                   isOcrProcessing ? `${attachment.path}\n${t('ocr.processing')}` :
                   attachment.path
                 }
               >
-                {attachment.name}
+                {chipLabel}
                 {isVideo && (
                   <span className="attachment-badge attachment-badge-video">
                     {formatVideoAttachment(attachment)}

@@ -4,7 +4,7 @@
   /* Fill the main column (same box as .workspace), then center children at
      --chat-lane-width. Horizontal padding MUST match .workspace (28px) so the
      composer left/right edges align with message bubbles (impeccable layout). */
-  right: calc(var(--terminal-width) + var(--review-width) + var(--subagents-panel-width, 0px));
+  right: calc(var(--terminal-width) + var(--review-width) + var(--browser-width) + var(--subagents-panel-width, 0px));
   left: var(--sidebar-width);
   bottom: 16px;
   display: grid;
@@ -922,6 +922,9 @@
 .attachment-badge-ocr {
   color: var(--accent-strong);
   background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.attachment-annotation {
+  border-style: dashed;
 }
 
 .popover-panel {
