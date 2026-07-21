@@ -36,6 +36,9 @@ function command(commandName, args, options = {}) {
     cwd: repositoryRoot,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    // objdump -p on a statically linked ffmpeg.exe far exceeds the 1 MiB
+    // spawnSync default (ENOBUFS); 64 MiB covers every probe output.
+    maxBuffer: 64 * 1024 * 1024,
     ...options,
   })
   if (result.error) throw result.error
