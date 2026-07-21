@@ -45,6 +45,35 @@ function command(commandName, args, options = {}) {
   return `${result.stdout || ''}${result.stderr || ''}`
 }
 
+// ── Windows/MSYS2 support ─────────────────────────────────────────────
+// Windows node spawns MSYS2 tools as plain (non-login) children, where the
+// perl autotools mis-derive their prefix (aclocal loses the drive letter and
+// every system m4 macro "disappears"). unixBuildCommand reruns the command
+// inside a login bash with POSIX paths, the environment those tools are
+// actually tested in. cmake keeps direct invocation: mingw cmake wants
+// Windows paths.
+function toPosixPath(value) {
+  return value.replace(/([A-Za-z]):[\\/]/g, (_, drive) => `/${drive.toLowerCase()}/`).replace(/\\/g, '/')
+}
+
+function unixBuildCommand(commandName, args, options = {}) {
+  if (process.platform !== 'win32') {
+    inheritedCommand(commandName, args, options)
+    return
+  }
+  const posixArgs = args.map(argument => toPosixPath(argument))
+  const posixCommand = toPosixPath(commandName)
+  const cwd = options.cwd ?? repositoryRoot
+  const environment = { ...(options.env ?? process.env) }
+  if (environment.PKG_CONFIG_PATH) environment.PKG_CONFIG_PATH = toPosixPath(environment.PKG_CONFIG_PATH)
+  environment.CHERE_INVOKED = '1'
+  inheritedCommand('bash', [
+    '-leo', 'pipefail',
+    '-c', 'cd "$0" && exec "$@"',
+    toPosixPath(cwd), posixCommand, ...posixArgs,
+  ], { env: environment })
+}
+
 function inheritedCommand(commandName, args, options = {}) {
   process.stdout.write(`> ${[commandName, ...args].join(' ')}\n`)
   execFileSync(commandName, args, {
@@ -321,7 +350,7 @@ async function buildZimg(source, target, staging) {
   const prefix = path.join(staging, 'zimg-prefix')
   await cp(source, sourceCopy, { recursive: true })
   const environment = buildEnvironment(target)
-  inheritedCommand('bash', ['autogen.sh'], { cwd: sourceCopy, env: environment })
+  unixBuildCommand('bash', ['autogen.sh'], { cwd: sourceCopy, env: environment })
   const zimgConfigure = [
     `--prefix=${prefix}`,
     '--disable-shared',
@@ -332,9 +361,9 @@ async function buildZimg(source, target, staging) {
   // "clang -arch x86_64" (NEON soft-float ABI errors).
   if (target === 'x86_64-apple-darwin') zimgConfigure.push('--host=x86_64-apple-darwin')
   if (target === 'aarch64-apple-darwin') zimgConfigure.push('--host=aarch64-apple-darwin')
-  inheritedCommand(path.join(sourceCopy, 'configure'), zimgConfigure, { cwd: sourceCopy, env: environment })
-  inheritedCommand('make', ['-j', jobs()], { cwd: sourceCopy, env: environment })
-  inheritedCommand('make', ['install'], { cwd: sourceCopy, env: environment })
+  unixBuildCommand(path.join(sourceCopy, 'configure'), zimgConfigure, { cwd: sourceCopy, env: environment })
+  unixBuildCommand('make', ['-j', jobs()], { cwd: sourceCopy, env: environment })
+  unixBuildCommand('make', ['install'], { cwd: sourceCopy, env: environment })
   if (!(await exists(path.join(prefix, 'lib', 'libzimg.a')))) {
     throw new Error('zimg static install is missing libzimg.a')
   }
@@ -382,7 +411,7 @@ async function buildFfmpeg(source, target, zimgPrefix, staging) {
     PKG_CONFIG_PATH: path.join(zimgPrefix, 'lib', 'pkgconfig'),
   })
   try {
-    inheritedCommand(path.join(sourceCopy, 'configure'), configure, { cwd: sourceCopy, env: environment })
+    unixBuildCommand(path.join(sourceCopy, 'configure'), configure, { cwd: sourceCopy, env: environment })
   } catch (error) {
     // Surface the real probe failure: configure only prints a summary line,
     // the cause lives at the end of ffbuild/config.log.
@@ -394,7 +423,7 @@ async function buildFfmpeg(source, target, zimgPrefix, staging) {
     }
     throw error
   }
-  inheritedCommand('make', ['-j', jobs()], { cwd: sourceCopy, env: environment })
+  unixBuildCommand('make', ['-j', jobs()], { cwd: sourceCopy, env: environment })
   const extension = isWindowsTarget(target) ? '.exe' : ''
   const ffmpeg = path.join(sourceCopy, `ffmpeg${extension}`)
   const ffprobe = path.join(sourceCopy, `ffprobe${extension}`)
