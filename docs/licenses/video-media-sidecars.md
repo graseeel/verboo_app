@@ -25,9 +25,10 @@ FFmpeg is configured with the following fixed flags on every target:
 
 zimg is built as a static dependency, enabling FFmpeg's `zscale` and `tonemap`
 filters for explicit HDR-to-SDR conversion. macOS additionally enables the
-non-GPL `h264_videotoolbox` encoder; Windows enables `h264_mf`. Linux deliberately
-does not promise an H.264 encoder: incompatible originals are sampled into frames
-instead of being turned into a synthetic proxy.
+non-GPL `h264_videotoolbox` encoder. Neither Windows nor Linux promises a
+guaranteed H.264 encoder (Windows' `h264_mf` needs Media Foundation, which the
+minimal LGPL mingw build cannot link): on those platforms an incompatible
+original is sampled into frames instead of being turned into a synthetic proxy.
 
 The FFmpeg configuration disables GPL, nonfree, network, and automatic external
 library discovery. This keeps the shipped FFmpeg build under LGPL-2.1-or-later,
