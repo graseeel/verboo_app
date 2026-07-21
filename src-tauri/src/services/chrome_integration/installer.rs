@@ -73,9 +73,14 @@ impl ChromeIntegrationService {
         &self,
         request: ChromeIntegrationRequest,
     ) -> Result<ChromeIntegrationStatus, String> {
-        let (extension_id, source) = self.resolve_extension_id(&request)?;
-        let record = self.read_record()?;
-        self.reject_foreign_components(record.as_ref(), &extension_id)?;
+        let (extension_id, source) = self.resolve_extension_id(&request).inspect_err(|error| {
+            eprintln!("[verboo:chrome] resolve_extension_id failed: {error}")
+        })?;
+        let record = self
+            .read_record()
+            .inspect_err(|error| eprintln!("[verboo:chrome] read_record failed: {error}"))?;
+        self.reject_foreign_components(record.as_ref(), &extension_id)
+            .inspect_err(|error| eprintln!("[verboo:chrome] foreign components: {error}"))?;
 
         let old_record = record.clone();
         let result = (|| {
@@ -99,6 +104,9 @@ impl ChromeIntegrationService {
             Ok(())
         })();
         if let Err(error) = result {
+            // The UI collapses unknown codes into a generic message, so the
+            // real cause (an I/O path, a permission, a CLI stderr) was lost.
+            eprintln!("[verboo:chrome] configure failed: {error}");
             if old_record.is_none() {
                 self.rollback_fresh_install();
             }
