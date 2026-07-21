@@ -140,6 +140,24 @@ impl CliMcpRunner for FakeCliRunner {
                 stderr: String::new(),
             }),
             Some("add") => {
+                // The real CLI parses `-e/--env` as variadic, so a positional
+                // that follows it is swallowed as another env var. Reproduce
+                // that here: the server name must precede every flag.
+                let name_index = args
+                    .iter()
+                    .position(|arg| arg == "verboo-in-chrome")
+                    .expect("mcp add must name the server");
+                let first_flag = args
+                    .iter()
+                    .position(|arg| arg.starts_with('-') && arg != "--")
+                    .unwrap_or(usize::MAX);
+                if name_index > first_flag {
+                    return Ok(CliRunOutput {
+                        success: false,
+                        stdout: String::new(),
+                        stderr: "Invalid environment variable format: verboo-in-chrome".into(),
+                    });
+                }
                 let separator = args.iter().position(|arg| arg == "--").unwrap();
                 let helper = &args[separator + 1];
                 let version = args
