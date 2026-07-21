@@ -123,7 +123,9 @@ test('approval-required calls fail closed while the panel is unavailable', async
   assert.equal(ports[0].posted[0].payload.code, 'approval_ui_unavailable')
 })
 
-test('runtime startup connects and one disconnect gets one bounded reconnect', async () => {
+test('startup connects and every disconnect schedules another attempt', async () => {
+  // The host only exists once the desktop app configures the integration, so
+  // an extension installed first must keep retrying instead of giving up.
   const { bridge, chromeApi, ports } = fixture()
   bridge.registerStartup()
 
@@ -134,7 +136,22 @@ test('runtime startup connects and one disconnect gets one bounded reconnect', a
   assert.equal(ports.length, 2)
   ports[1].onDisconnect.emit()
   await tick()
-  assert.equal(ports.length, 2)
+  assert.equal(ports.length, 3)
+  ports[2].onDisconnect.emit()
+  await tick()
+  assert.equal(ports.length, 4)
+})
+
+test('an explicit disconnect stops the retry loop', async () => {
+  const { bridge, ports } = fixture()
+  bridge.connect()
+  assert.equal(ports.length, 1)
+
+  bridge.disconnect()
+  ports[0].onDisconnect.emit()
+  await tick()
+
+  assert.equal(ports.length, 1)
 })
 
 test('a disconnected in-flight request is never replayed onto a new port', async () => {
