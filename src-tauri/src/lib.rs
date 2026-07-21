@@ -1711,6 +1711,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         // ── State ──────────────────────────────────────────────
         .manage(AppState::new())
+        .manage(services::browser_panel::BrowserPanelState::default())
         .setup(|app| {
             // Initialize persistent settings store at {app_data_dir}/settings.json
             let app_data_dir = app
@@ -1928,6 +1929,15 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Config
             get_config,
+            // Browser panel (Fase 0 spike — gated by VERBOO_BROWSER_SPIKE=1)
+            services::browser_panel::browser_spike_enabled,
+            services::browser_panel::browser_create,
+            services::browser_panel::browser_navigate,
+            services::browser_panel::browser_set_bounds,
+            services::browser_panel::browser_destroy,
+            services::browser_panel::browser_snapshot,
+            services::browser_panel::browser_eval_roundtrip,
+            services::browser_panel::browser_poll_messages,
             // Auth
             start_cli_login,
             get_cli_auth_status,

@@ -30,7 +30,10 @@ tauri-build = { version = "2", features = [] }
 # regenerates tauri-macros with a different metadata hash — and the
 # regenerated dylib is corrupted on Rust 1.89+ ("mis-aligned LINKEDIT
 # string pool" on dlopen).
-tauri = { version = "2", features = ["tray-icon", "image-png", "custom-protocol", "protocol-asset"] }
+# `unstable` exposes the multiwebview API (Window::add_child) used by the
+# embedded Browser panel (ADR-0001). Pinned exact tauri version below so a
+# transparent upgrade can't silently change unstable behavior.
+tauri = { version = "2", features = ["tray-icon", "image-png", "custom-protocol", "protocol-asset", "unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -95,6 +98,14 @@ libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
+# Native WKWebView access for the Browser panel (snapshot, evaluateJS with
+# result, script message handler). Versions match what wry already pulls so
+# no duplicate objc2 stack is compiled.
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+objc2-web-kit = "0.3"
+block2 = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

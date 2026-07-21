@@ -49,6 +49,7 @@ import { CommandPalette, paletteIcons, type PaletteAction } from './components/C
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { useToast } from './components/Toast'
 import { VerbooPet, PET_MIN_SIZE, PET_MAX_SIZE, type PetState } from './features/pet/VerbooPet'
+import { BrowserSpikePanel } from './features/browser/BrowserSpikePanel'
 import { QuestionWizard, type ModelQuestion, type QuestionAnswer, type QuestionPromptState } from './features/questions/QuestionWizard'
 import { detectTextQuestionPrompt, extractModelQuestionsFromPayload, mergeModelQuestions } from './features/questions/questionDetection'
 import { MessageCircleQuestion } from 'lucide-react'
@@ -4541,6 +4542,8 @@ export function App() {
       />
 
       <VerbooPet visible={petEnabled} state={petState} size={petSize} onSizeChange={updatePetSize} />
+
+      <BrowserSpikePanel />
 
       {updateSnapshot && updateSnapshot.status === 'available'
         && updateSnapshot.availableVersion
