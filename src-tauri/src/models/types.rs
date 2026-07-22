@@ -119,12 +119,13 @@ pub enum GoalStatus {
     BudgetLimited,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
 pub enum AttachmentKind {
     Image,
     Video,
     File,
+    BrowserAnnotation,
 }
 
 /// Outcome of attempting text extraction on an attachment.

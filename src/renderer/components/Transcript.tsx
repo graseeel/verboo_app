@@ -318,7 +318,7 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onCo
         {item.attachments?.length ? (
           <div className="message-attachments">
             {item.attachments.map(att => {
-              const isImage = att.kind === 'image'
+              const isImage = att.kind === 'image' || att.kind === 'browser-annotation'
               return (
                 <button key={att.path} type="button" className={`message-attachment-chip ${isImage ? 'message-attachment-image' : 'message-attachment-file'}`}
                   onClick={() => window.verboo?.openExternalFile?.('', att.path)} title={att.path}>

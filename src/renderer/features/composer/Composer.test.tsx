@@ -219,6 +219,33 @@ describe('t4 — submit clears tokenSkills', () => {
     expect(onSubmit.mock.calls[0][0]).toBe('ship it now')
     expect(onTokenSkillsChange).toHaveBeenCalledWith([])
   })
+
+  it('submits a browser annotation without requiring extra composer text', () => {
+    const annotation: AttachmentMeta = {
+      path: '/tmp/browser-element.png',
+      name: 'browser-element.png',
+      size: 1,
+      kind: 'browser-annotation',
+      mediaType: 'image/png',
+      browserAnnotation: {
+        kind: 'element',
+        crop: '/tmp/browser-element.png',
+        url: 'http://localhost:5173',
+        selector: '#hero-cta',
+        note: 'Use a cyan border',
+        rect: { x: 1, y: 2, width: 3, height: 4 },
+        viewport: { width: 800, height: 600 },
+      },
+    }
+    const onSubmit = vi.fn()
+    const { container } = renderComposer({ attachments: [annotation], onSubmit })
+
+    expect(screen.getByRole('button', { name: 'browser.annotationElement · #hero-cta' })).toBeVisible()
+    expect(container.querySelector<HTMLButtonElement>('.send-button')).not.toBeDisabled()
+    fireEvent.submit(container.querySelector('form')!)
+
+    expect(onSubmit).toHaveBeenCalledWith('browser.annotationDefaultPrompt')
+  })
 })
 
 describe('t5 — overlay: @token with PluginIcon', () => {

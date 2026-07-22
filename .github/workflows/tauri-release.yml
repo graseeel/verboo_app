@@ -241,14 +241,25 @@ jobs:
           test ! -e "$BINARIES/ggml-base.bin"
 
       - name: Install tauri-cli
-        run: cargo +1.89.0 install tauri-cli --version "^2.0.0" --locked
+        # Keep the CLI aligned with package.json while the embedded browser
+        # depends on Tauri's unstable multiwebview API.
+        run: cargo +1.89.0 install tauri-cli --version "2.11.4" --locked
 
-      - name: Build Tauri bundle
+      - name: Build Tauri bundle (multiwebview compile smoke)
         env:
           # Clear RUSTFLAGS so cargo-tauri's default flags don't break proc-macro
           # linking (ctor-proc-macro "can't find crate" error on Rust 1.89).
           RUSTFLAGS: ""
         run: cargo +1.89.0 tauri build --target ${{ matrix.target }}
+
+      - name: Run packaged multiwebview runtime smoke
+        if: runner.os == 'macOS' && matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find "src-tauri/target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -type d -name '*.app' | head -1)
+          test -n "$APP_PATH"
+          node scripts/verify/browser-multiwebview-smoke.mjs "$APP_PATH"
 
       - name: List bundle tree (debug)
         if: always()

@@ -12,6 +12,7 @@ type TopBarProps = {
   onToggleReview: () => void
   browserOpen: boolean
   onToggleBrowser: () => void
+  workspacePanelsEnabled: boolean
 }
 
 export function TopBar({
@@ -25,6 +26,7 @@ export function TopBar({
   onToggleReview,
   browserOpen,
   onToggleBrowser,
+  workspacePanelsEnabled,
 }: TopBarProps) {
   const { t } = useI18n()
 
@@ -63,6 +65,7 @@ export function TopBar({
         <button
           className={`topbar-terminal-button ui-tooltip ${terminalOpen ? 'active' : ''}`}
           type="button"
+          disabled={!workspacePanelsEnabled}
           onClick={event => {
             event.stopPropagation()
             onToggleTerminal()
@@ -76,6 +79,7 @@ export function TopBar({
         <button
           className={`topbar-terminal-button ui-tooltip ${reviewOpen ? 'active' : ''}`}
           type="button"
+          disabled={!workspacePanelsEnabled}
           onClick={event => {
             event.stopPropagation()
             onToggleReview()
@@ -89,6 +93,7 @@ export function TopBar({
         <button
           className={`topbar-terminal-button ui-tooltip ${browserOpen ? 'active' : ''}`}
           type="button"
+          disabled={!workspacePanelsEnabled}
           onClick={event => {
             event.stopPropagation()
             onToggleBrowser()

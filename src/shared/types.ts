@@ -649,7 +649,7 @@ export type VideoProgress = {
 export type ExtractionStatus = 'extracted' | 'warning'
 
 // Browser annotation created via pencil (freehand) or arrow (element pick).
-// Crop is a data-URL PNG of the annotated region.
+// Crop and viewport snapshot are local PNGs produced by the native webview.
 export type BrowserAnnotation = {
   kind: 'pen' | 'element'
   crop: string
@@ -659,6 +659,7 @@ export type BrowserAnnotation = {
   component?: string
   rect: { x: number; y: number; width: number; height: number }
   viewport: { width: number; height: number }
+  viewportSnapshot?: { path: string; width: number; height: number; size: number }
 }
 
 export type AttachmentMeta = {

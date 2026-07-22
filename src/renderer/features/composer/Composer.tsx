@@ -14,6 +14,7 @@ import {
 import { applyVoiceInterim, commitVoiceFinal, createVoiceInput, detectSupport, nextCatchUpStep, type VoiceInputHandle } from './voiceInput'
 import { getAtQuery, removeAtQuery, replaceAtQueryWithToken, rankSkills } from './atMention'
 import { PluginIcon } from '../plugins/PluginCard'
+import { browserAnnotationLocationLabel } from '../browser/browserAnnotations'
 
 // Reserved slash commands surfaced in the "/" palette, exactly like the skills
 // below them. Selecting one fills its token so the user can type any arguments.
@@ -272,9 +273,11 @@ export function Composer({
   function submit(event: FormEvent) {
     event.preventDefault()
     const trimmed = value.trim()
-    if (!trimmed) return
+    const hasBrowserAnnotations = attachments.some(attachment => attachment.kind === 'browser-annotation')
+    if (!trimmed && !hasBrowserAnnotations) return
+    const submission = trimmed || t('browser.annotationDefaultPrompt')
 
-    const reserved = parseReservedSlashCommand(trimmed)
+    const reserved = parseReservedSlashCommand(submission)
     if (reserved?.kind === 'goal') {
       onGoalCommand(reserved)
       setValue('')
@@ -295,14 +298,14 @@ export function Composer({
     // treated as a goal start. This lets users invoke goal mode without
     // remembering the slash prefix. Any other text falls through to
     // normal chat.
-    const noSlashGoal = parseGoalCommand(trimmed)
+    const noSlashGoal = parseGoalCommand(submission)
     if (noSlashGoal?.kind === 'goal') {
       onGoalCommand(noSlashGoal)
       setValue('')
       return
     }
 
-    onSubmit(trimmed)
+    onSubmit(submission)
     setValue('')
     onTokenSkillsChange([])
   }
@@ -792,14 +795,14 @@ export function Composer({
             // unreadable (backends that don't set extractionStatus yet).
             const isUnreadable = !isImage && !isVideo && !isAnnotation && !attachment.extractedText && !status && !isOcrProcessing
             // extractionStatus 'extracted' or legacy extractedText → content is real.
-            const isExtracted = status === 'extracted' || (!status && Boolean(attachment.extractedText))
+            const isExtracted = !isAnnotation && (status === 'extracted' || (!status && Boolean(attachment.extractedText)))
             // extractionStatus 'warning' → Ezio found the file but couldn't
             // read it (scanned/corrupt/too-large); extractedText holds a warning.
             const isWarning = status === 'warning' && !isOcrProcessing
             const chipLabel = isAnnotation
               ? annotation?.kind === 'element'
                 ? `${t('browser.annotationElement')} · ${annotation?.component || annotation?.selector || annotation?.url}`
-                : `${t('browser.annotationPen')} · ${annotation?.note || (() => { try { return new URL(annotation?.url || '').hostname } catch { return annotation?.url || '' } })()}`
+                : `${t('browser.annotationPen')} · ${browserAnnotationLocationLabel(annotation?.url || '')}`
               : attachment.name
             return (
               <button
@@ -898,7 +901,7 @@ export function Composer({
           <button
             className="send-button"
             type="submit"
-            disabled={disabled || !value.trim()}
+            disabled={disabled || (!value.trim() && !attachments.some(attachment => attachment.kind === 'browser-annotation'))}
             title={busy ? t('composer.queue') : t('composer.send')}
           >
             <ArrowUp size={17} />

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+import { invoke } from '@tauri-apps/api/core'
 
 // Central registry for overlays that need to shade the browser webview.
 // When any overlay with shades:true opens, we capture a snapshot of the
@@ -17,7 +17,15 @@ let nextId = 0
 const listeners = new Set<() => void>()
 let overlays: OverlayEntry[] = []
 let snapshotDataUrl: string | null = null
+let snapshotPath: string | null = null
 let snapshotPending = false
+
+const MODAL_SELECTOR = [
+  '[role="dialog"][aria-modal="true"]',
+  '[role="alertdialog"][aria-modal="true"]',
+  '.modal-backdrop',
+  '.video-fallback-backdrop',
+].join(',')
 
 function subscribe(listener: () => void) {
   listeners.add(listener)
@@ -42,25 +50,40 @@ function unregisterOverlay(id: string) {
   emit()
 }
 
-async function captureSnapshotIfNeeded(browserOpen: boolean): Promise<void> {
-  if (!browserOpen || snapshotPending || snapshotDataUrl) return
+async function captureSnapshotIfNeeded(browserOpen: boolean, browserVisible: boolean): Promise<void> {
+  if (!browserOpen || !browserVisible || snapshotPending || snapshotDataUrl) return
   snapshotPending = true
   try {
     // Rust exposes browser_snapshot which returns { ms, bytes, path }.
     // Convert the temp file path to a URL the webview can load as an img src.
-    const result = await invoke<{ ms: number; bytes: number; path: string }>('browser_snapshot')
-    snapshotDataUrl = convertFileSrc(result.path)
+    const result = await invoke<{ ms: number; bytes: number; path: string; dataUrl: string }>('browser_snapshot')
+    if (hasShadingOverlays()) {
+      snapshotPath = result.path
+      snapshotDataUrl = result.dataUrl
+    } else {
+      void invoke('browser_delete_temp_files', { paths: [result.path] }).catch(() => {})
+    }
   } catch {
     // Snapshot failed — shade will be a blank area (acceptable fallback
     // per ADR-0002: "feio, mas nunca quebrado")
     snapshotDataUrl = null
   } finally {
     snapshotPending = false
+    emit()
+  }
+
+  // The native child sits above renderer DOM. Only hide it after the static
+  // replacement is ready, and only if the overlay is still open.
+  if (hasShadingOverlays() && browserOpen && browserVisible) {
+    await invoke('browser_set_visible', { visible: false }).catch(() => {})
   }
 }
 
 function clearSnapshot() {
+  const path = snapshotPath
+  snapshotPath = null
   snapshotDataUrl = null
+  if (path) void invoke('browser_delete_temp_files', { paths: [path] }).catch(() => {})
 }
 
 export type OverlayShadeState = {
@@ -72,31 +95,76 @@ export type OverlayShadeState = {
   register: (shades?: boolean) => () => void
 }
 
-export function useOverlayShade(browserOpen: boolean): OverlayShadeState {
+export function useOverlayShade(browserOpen: boolean, browserVisible = browserOpen): OverlayShadeState {
   const [, forceUpdate] = useState(0)
+  const [restorePending, setRestorePending] = useState(false)
   const idRef = useRef(`overlay-${++nextId}`)
+  const wasShadingRef = useRef(false)
 
   useEffect(() => {
     return subscribe(() => forceUpdate(n => n + 1))
   }, [])
 
-  const isShading = hasShadingOverlays()
+  // Native child webviews sit above renderer DOM. Observe true modal surfaces
+  // centrally so a newly added dialog cannot accidentally punch through just
+  // because its component forgot to register with the browser panel.
+  useEffect(() => {
+    if (!browserOpen) return
+    let release: (() => void) | null = null
+    const sync = () => {
+      const modalPresent = Boolean(document.querySelector(MODAL_SELECTOR))
+      if (modalPresent && !release) {
+        const entry = createOverlayShadeEntry(true)
+        release = entry.release
+      } else if (!modalPresent && release) {
+        release()
+        release = null
+      }
+    }
+    const observer = new MutationObserver(sync)
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['aria-modal', 'class', 'role'],
+    })
+    sync()
+    return () => {
+      observer.disconnect()
+      release?.()
+    }
+  }, [browserOpen])
+
+  const wantsShade = hasShadingOverlays()
+  const isShading = wantsShade || restorePending
 
   // Capture snapshot when first shading overlay opens
   useEffect(() => {
-    if (isShading && browserOpen) {
-      void captureSnapshotIfNeeded(browserOpen)
+    if (wantsShade && browserOpen && browserVisible) {
+      wasShadingRef.current = true
+      setRestorePending(false)
+      void captureSnapshotIfNeeded(browserOpen, browserVisible)
     }
-  }, [isShading, browserOpen])
+  }, [wantsShade, browserOpen, browserVisible])
 
   // Clear snapshot when all shading overlays close
   useEffect(() => {
-    if (!isShading) {
-      // Delay clear so the transition can use the snapshot
-      const timer = setTimeout(clearSnapshot, 300)
-      return () => clearTimeout(timer)
-    }
-  }, [isShading])
+    if (wantsShade || !wasShadingRef.current) return
+
+    // Keep the static shade visible through the overlay's exit transition;
+    // showing the native child earlier would punch through the fading DOM.
+    setRestorePending(true)
+    const timer = setTimeout(() => {
+      wasShadingRef.current = false
+      clearSnapshot()
+      emit()
+      if (browserOpen && browserVisible) {
+        void invoke('browser_set_visible', { visible: true }).catch(() => {})
+      }
+      setRestorePending(false)
+    }, 140)
+    return () => clearTimeout(timer)
+  }, [wantsShade, browserOpen, browserVisible])
 
   const register = useCallback((shades = false) => {
     const id = `${idRef.current}-${++nextId}`
@@ -121,6 +189,8 @@ export function createOverlayShadeEntry(shades = false): { id: string; release: 
 // Reset singleton state — for testing only
 export function _resetOverlayShadeForTests() {
   overlays = []
+  if (snapshotPath) void invoke('browser_delete_temp_files', { paths: [snapshotPath] }).catch(() => {})
+  snapshotPath = null
   snapshotDataUrl = null
   snapshotPending = false
   listeners.clear()

@@ -145,7 +145,7 @@ impl TurnService {
             .as_ref()
             .map(|list| {
                 list.iter()
-                    .any(|a| a.kind == AttachmentKind::Image && a.media_type.is_some())
+                    .any(|a| is_visual_attachment(a) && a.media_type.is_some())
             })
             .unwrap_or(false);
         if !has_images {
@@ -326,7 +326,7 @@ impl TurnService {
         // or a `None` `extracted_text`).
         if let Some(list) = request.attachments.as_mut() {
             for att in list.iter_mut() {
-                if att.kind != AttachmentKind::Image || att.media_type.is_none() {
+                if !is_visual_attachment(att) || att.media_type.is_none() {
                     continue;
                 }
                 let media_type = att.media_type.clone().unwrap_or_default();
@@ -340,7 +340,7 @@ impl TurnService {
                     &app_data_dir,
                 ) {
                     Ok(description) => {
-                        att.extracted_text = Some(description);
+                        merge_vision_description(att, description);
                         att.extraction_status =
                             Some(crate::models::types::ExtractionStatus::Extracted);
                     }
@@ -352,7 +352,7 @@ impl TurnService {
                             "[verboo:vision-fallback] describe_image failed for {}: {e}",
                             att.path
                         );
-                        att.extracted_text = Some(format!(
+                        merge_vision_description(att, format!(
                             "[Vision fallback failed: {e}. \
                              The model cannot read this image. \
                              Tell the user the vision helper couldn't describe \
@@ -375,7 +375,7 @@ impl TurnService {
     fn inject_fallback_warning(&self, request: &mut AgentTurnRequest, warning: &str) {
         if let Some(list) = request.attachments.as_mut() {
             for att in list.iter_mut() {
-                if att.kind == AttachmentKind::Image && att.extracted_text.is_none() {
+                if is_visual_attachment(att) && att.extracted_text.is_none() {
                     att.extracted_text = Some(warning.to_string());
                     att.extraction_status = Some(crate::models::types::ExtractionStatus::Warning);
                 }
@@ -1950,7 +1950,7 @@ fn build_stream_json_input(request: &AgentTurnRequest, prompt: &str) -> Option<S
     let attachments = request.attachments.as_ref()?;
     let images: Vec<&AttachmentMeta> = attachments
         .iter()
-        .filter(|a| a.kind == AttachmentKind::Image && a.media_type.is_some())
+        .filter(|a| is_visual_attachment(a) && a.media_type.is_some())
         .collect();
     if images.is_empty() {
         return None;
@@ -2349,7 +2349,33 @@ fn attachment_kind_label(kind: &AttachmentKind) -> &'static str {
         AttachmentKind::Image => "image",
         AttachmentKind::Video => "video",
         AttachmentKind::File => "file",
+        AttachmentKind::BrowserAnnotation => "browser annotation",
     }
+}
+
+fn is_visual_attachment(attachment: &AttachmentMeta) -> bool {
+    matches!(
+        attachment.kind,
+        AttachmentKind::Image | AttachmentKind::BrowserAnnotation
+    )
+}
+
+fn merge_vision_description(attachment: &mut AttachmentMeta, description: String) {
+    if matches!(attachment.kind, AttachmentKind::BrowserAnnotation) {
+        if let Some(structured_context) = attachment
+            .extracted_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            attachment.extracted_text = Some(format!(
+                "{structured_context}\n\n<visual-description>\n{}\n</visual-description>",
+                description.trim(),
+            ));
+            return;
+        }
+    }
+    attachment.extracted_text = Some(description);
 }
 
 fn personality_label(value: &PersonalityMode, language: LanguageCode) -> &'static str {
@@ -3785,6 +3811,35 @@ mod tests {
     }
 
     #[test]
+    fn vision_description_preserves_browser_annotation_instructions() {
+        let mut annotation = attachment_with_text(
+            "User note (authoritative instruction): Use a cyan border.\nSelector: #hero-cta.",
+        );
+        annotation.kind = AttachmentKind::BrowserAnnotation;
+
+        merge_vision_description(&mut annotation, "A violet outlined button is visible.".into());
+
+        let text = annotation.extracted_text.unwrap();
+        assert!(text.contains("authoritative instruction"));
+        assert!(text.contains("Selector: #hero-cta"));
+        assert!(text.contains("<visual-description>"));
+        assert!(text.contains("violet outlined button"));
+    }
+
+    #[test]
+    fn vision_description_remains_authoritative_for_plain_images() {
+        let mut image = attachment_with_text("noisy OCR");
+        image.kind = AttachmentKind::Image;
+
+        merge_vision_description(&mut image, "Authoritative visual description".into());
+
+        assert_eq!(
+            image.extracted_text.as_deref(),
+            Some("Authoritative visual description"),
+        );
+    }
+
+    #[test]
     fn attachment_lines_inject_extracted_text() {
         let attachments = Some(vec![attachment_with_text("Joao da Silva\nRua X, 123")]);
         let lines = build_attachment_lines(&attachments, LanguageCode::EnUs, None);
@@ -4000,8 +4055,8 @@ mod tests {
     }
 
     #[test]
-    fn stream_json_input_builds_payload_with_image_for_vision_model() {
-        // Vision model + image attachment → Some(payload) with image_url block.
+    fn stream_json_input_builds_payload_with_visual_attachments_for_vision_model() {
+        // Vision model + image/browser annotation → one image block per visual.
         // Use a real temp file so base64 encoding has data to read.
         let temp = std::env::temp_dir().join(format!(
             "verboo-test-stream-{}.png",
@@ -4011,6 +4066,9 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::write(&temp, b"fake-png-bytes").unwrap();
+        let mut annotation = image_attachment(temp.to_str().unwrap(), "image/png");
+        annotation.kind = AttachmentKind::BrowserAnnotation;
+        annotation.name = "browser-annotation.png".into();
         let request = AgentTurnRequest {
             turn_id: None,
             conversation_id: "c1".into(),
@@ -4022,7 +4080,10 @@ mod tests {
             access_mode: crate::models::types::AccessMode::Approval,
             working_directory: "/tmp".into(),
             skills: Vec::new(),
-            attachments: Some(vec![image_attachment(temp.to_str().unwrap(), "image/png")]),
+            attachments: Some(vec![
+                image_attachment(temp.to_str().unwrap(), "image/png"),
+                annotation,
+            ]),
             response_enhancements_enabled: None,
             personality: None,
             custom_instructions: None,
@@ -4049,7 +4110,7 @@ mod tests {
         let message = &parsed["message"];
         assert_eq!(message["role"], "user");
         let content = message["content"].as_array().unwrap();
-        assert!(content.len() >= 2, "should have text + image blocks");
+        assert_eq!(content.len(), 3, "should have text + two visual blocks");
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[0]["text"], "prompt text here");
         // Image block uses Anthropic-style source.base64 (raw b64, no data: URL).
@@ -4064,6 +4125,11 @@ mod tests {
         assert!(
             !data.starts_with("data:"),
             "base64 data must NOT be a data: URL — CLI expects raw base64"
+        );
+        assert_eq!(
+            content.iter().filter(|block| block["type"] == "image").count(),
+            2,
+            "browser annotation must use the same capability-based vision route",
         );
         let _ = std::fs::remove_file(&temp);
     }

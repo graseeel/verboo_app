@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { useBrowserPanel } from './useBrowserPanel'
+import { browserLayoutWidth, useBrowserPanel } from './useBrowserPanel'
 
 describe('useBrowserPanel', () => {
   beforeEach(() => {
@@ -53,10 +53,50 @@ describe('useBrowserPanel', () => {
     expect(result.current.browserWidth).toBe(maxWindow)
   })
 
+  it('reserves usable chat space when the fixed sidebar is visible', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1224 })
+    const { result } = renderHook(() => useBrowserPanel())
+
+    act(() => result.current.setWidth(99999, 384))
+
+    expect(result.current.browserWidth).toBe(520)
+  })
+
+  it('clamps the rendered width immediately when reserved space changes', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1224 })
+
+    expect(browserLayoutWidth(734, 384)).toBe(520)
+  })
+
   it('restores width from localStorage', () => {
     // Store a value within valid range (MIN_WIDTH=520 .. 60% of window)
     window.localStorage.setItem('verboo:browser-width', '580')
     const { result } = renderHook(() => useBrowserPanel())
     expect(result.current.browserWidth).toBe(580)
+  })
+
+  it('tracks the live URL and one post-edit reload request', () => {
+    const { result } = renderHook(() => useBrowserPanel())
+    act(() => result.current.setCurrentUrl('http://localhost:5173'))
+    act(() => result.current.requestReload({
+      id: 'turn-1', conversationId: 'chat-1', autoVerify: true,
+      url: 'http://localhost:5173',
+      targetRect: { x: 1, y: 2, width: 3, height: 4 },
+      verificationPrompt: 'verify',
+    }))
+
+    expect(result.current.currentUrl).toBe('http://localhost:5173')
+    expect(result.current.reloadRequest?.id).toBe('turn-1')
+    act(() => result.current.completeReload('turn-1'))
+    expect(result.current.reloadRequest).toBeUndefined()
+  })
+
+  it('tracks one automatic local navigation request until the panel handles it', () => {
+    const { result } = renderHook(() => useBrowserPanel())
+    act(() => result.current.requestNavigation('http://127.0.0.1:8765/'))
+
+    expect(result.current.navigationRequest?.url).toBe('http://127.0.0.1:8765/')
+    act(() => result.current.completeNavigation(result.current.navigationRequest!.id))
+    expect(result.current.navigationRequest).toBeUndefined()
   })
 })

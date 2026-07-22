@@ -46,7 +46,7 @@ describe('panel exclusivity (source analysis)', () => {
   })
 
   it('browser-open class is applied when browserOpen is true', () => {
-    expect(appSource).toMatch(/browser\.browserOpen \? 'browser-open' : ''/)
+    expect(appSource).toMatch(/visibleBrowserOpen \? 'browser-open' : ''/)
   })
 
   it('BrowserPanel is rendered instead of BrowserSpikePanel', () => {
@@ -55,11 +55,32 @@ describe('panel exclusivity (source analysis)', () => {
   })
 
   it('TopBar receives browserOpen and onToggleBrowser props', () => {
-    expect(appSource).toMatch(/browserOpen=\{browser\.browserOpen\}/)
+    expect(appSource).toMatch(/browserOpen=\{visibleBrowserOpen\}/)
     expect(appSource).toMatch(/onToggleBrowser=\{handleToggleBrowser\}/)
   })
 
   it('CommandPalette includes browser entry', () => {
     expect(appSource).toMatch(/key: 'browser'/)
+  })
+
+  it('uses the synchronously clamped browser width in layout and panel bounds', () => {
+    expect(appSource).toMatch(/const effectiveBrowserWidth = browserLayoutWidth\(browser\.browserWidth, effectiveSidebarWidth\)/)
+    expect(appSource).toMatch(/'--browser-width': visibleBrowserOpen \? `\$\{effectiveBrowserWidth\}px` : '0px'/)
+    expect(appSource).toMatch(/browserWidth=\{effectiveBrowserWidth\}/)
+  })
+
+  it('guards all rendered workspace panels while fullscreen', () => {
+    expect(appSource).toMatch(/const visibleTerminalOpen = workspacePanelsEnabled && terminal\.terminalOpen/)
+    expect(appSource).toMatch(/const visibleReviewOpen = workspacePanelsEnabled && review\.reviewOpen/)
+    expect(appSource).toMatch(/const visibleBrowserOpen = workspacePanelsEnabled && browser\.browserOpen/)
+    expect(appSource).toMatch(/terminalOpen=\{visibleTerminalOpen\}/)
+    expect(appSource).toMatch(/open=\{visibleReviewOpen\}/)
+    expect(appSource).toMatch(/browserOpen=\{visibleBrowserOpen\}/)
+  })
+
+  it('disables TopBar controls and guards the three toggle handlers', () => {
+    expect(appSource).toMatch(/workspacePanelsEnabled=\{workspacePanelsEnabled\}/)
+    const guards = appSource.match(/if \(!workspacePanelsEnabled\) return/g) ?? []
+    expect(guards.length).toBeGreaterThanOrEqual(3)
   })
 })

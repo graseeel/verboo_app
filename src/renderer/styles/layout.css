@@ -307,6 +307,17 @@
   background: color-mix(in srgb, var(--accent-soft) 56%, transparent);
 }
 
+.topbar-terminal-button:disabled {
+  opacity: 0.36;
+  cursor: default;
+}
+
+.topbar-terminal-button:disabled:hover {
+  border-color: transparent;
+  color: var(--text-dim);
+  background: transparent;
+}
+
 .topbar button,
 .app-sidebar button,
 .composer button,

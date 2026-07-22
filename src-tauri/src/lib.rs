@@ -1719,6 +1719,10 @@ pub fn run() {
                 .app_data_dir()
                 .expect("app data dir must be available");
             let _ = std::fs::create_dir_all(&app_data_dir);
+            app.manage(
+                services::browser_panel::BrowserCaptureStore::new(app_data_dir.clone())
+                    .map_err(std::io::Error::other)?,
+            );
             let settings_store = SettingsStore::new(app_data_dir.clone());
             app.manage(
                 services::pasted_file_upload::PastedFileUploadService::new(app_data_dir.clone())
@@ -1730,7 +1734,7 @@ pub fn run() {
             // is a no-op on Windows/Linux (permission is granted at install).
             // Must happen before any notification is shown, otherwise the OS
             // silently drops them.
-            {
+            if std::env::var_os("VERBOO_BROWSER_SMOKE_REPORT").is_none() {
                 use tauri_plugin_notification::NotificationExt;
                 match app.notification().request_permission() {
                     Ok(state) => eprintln!(
@@ -1923,6 +1927,13 @@ pub fn run() {
                 };
             }
 
+            if let Some(report_path) = std::env::var_os("VERBOO_BROWSER_SMOKE_REPORT") {
+                services::browser_panel::start_runtime_smoke(
+                    app.handle().clone(),
+                    std::path::PathBuf::from(report_path),
+                );
+            }
+
             Ok(())
         })
         // ── Commands (47) ──────────────────────────────────────
@@ -1932,6 +1943,7 @@ pub fn run() {
             // Browser panel (Fase 1 — docked child webview, ADR-0001)
             services::browser_panel::browser_create,
             services::browser_panel::browser_set_bounds,
+            services::browser_panel::browser_set_visible,
             services::browser_panel::browser_navigate,
             services::browser_panel::browser_back,
             services::browser_panel::browser_forward,
@@ -1939,7 +1951,13 @@ pub fn run() {
             services::browser_panel::browser_destroy,
             services::browser_panel::browser_drain_messages,
             services::browser_panel::browser_snapshot,
+            services::browser_panel::browser_capture_annotation,
+            services::browser_panel::browser_delete_temp_files,
+            services::browser_panel::browser_promote_temp_files,
+            services::browser_panel::browser_delete_capture_owner,
+            services::browser_panel::browser_cleanup_capture_owners,
             services::browser_panel::browser_evaluate_script,
+            services::browser_panel::browser_healthcheck,
             // Auth
             start_cli_login,
             get_cli_auth_status,

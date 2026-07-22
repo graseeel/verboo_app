@@ -8,7 +8,7 @@
   min-width: 0;
   border-left: 1px solid var(--border);
   background: var(--bg);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .browser-panel.is-hidden {
@@ -23,8 +23,8 @@
   z-index: 85;
   top: 0;
   bottom: 0;
-  left: 0;
-  width: 10px;
+  left: -6px;
+  width: 12px;
   cursor: col-resize;
 }
 
@@ -32,7 +32,7 @@
   position: absolute;
   top: 18px;
   bottom: 18px;
-  left: 1px;
+  left: 5px;
   width: 2px;
   border-radius: 999px;
   background: transparent;
@@ -43,6 +43,12 @@
 .browser-resizer:hover::after,
 .browser-resizer:active::after {
   background: color-mix(in srgb, var(--accent) 56%, transparent);
+}
+
+.browser-tabs,
+.browser-toolbar,
+.browser-content {
+  overflow: hidden;
 }
 
 /* ── Tab bar ──────────────────────────────────────────────── */
@@ -113,6 +119,11 @@
   background: transparent;
   color: var(--text-dim);
   cursor: pointer;
+  transition:
+    transform 120ms var(--dropdown-ease),
+    border-color 120ms var(--dropdown-ease),
+    background-color 120ms var(--dropdown-ease),
+    color 120ms var(--dropdown-ease);
 }
 
 .browser-nav-button:hover:not(:disabled) {
@@ -124,6 +135,10 @@
 .browser-nav-button:disabled {
   opacity: 0.35;
   cursor: default;
+}
+
+.browser-nav-button:not(:disabled):active {
+  transform: scale(0.94);
 }
 
 .browser-nav-button.active {
@@ -166,9 +181,44 @@
 .browser-empty-state {
   display: grid;
   place-items: center;
+  align-content: center;
+  gap: 10px;
   height: 100%;
+  padding: 24px;
   color: var(--text-dim);
   font-size: 13px;
+  text-align: center;
+}
+
+.browser-empty-state p {
+  margin: 0;
+}
+
+.browser-recreate-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-soft);
+  color: var(--text-muted);
+  cursor: pointer;
+  font: 600 12px/1 inherit;
+  transition:
+    transform 120ms var(--dropdown-ease),
+    border-color 120ms var(--dropdown-ease),
+    color 120ms var(--dropdown-ease);
+}
+
+.browser-recreate-button:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.browser-recreate-button:active {
+  transform: scale(0.97);
 }
 
 /* ── Annotation modes ──────────────────────────────────────── */
@@ -203,4 +253,38 @@
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .browser-resizer::after,
+  .browser-nav-button,
+  .browser-recreate-button,
+  .browser-url-input {
+    transition: none;
+  }
+
+  .browser-nav-button:not(:disabled):active {
+    transform: none;
+  }
+
+  .browser-recreate-button:active {
+    transform: none;
+  }
+
+  .browser-shade {
+    transition-duration: 80ms;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .attachment-annotation {
+    animation: browser-annotation-chip-in 160ms var(--dropdown-ease) both;
+  }
+}
+
+@keyframes browser-annotation-chip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
 }
