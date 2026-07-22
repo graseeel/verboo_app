@@ -15,9 +15,9 @@ on:
 permissions:
   contents: write
 
-# Avoid concurrent releases racing on the same tag.
+# Serialize releases so the rolling beta update pointer cannot race.
 concurrency:
-  group: tauri-release-${{ github.ref_name }}
+  group: tauri-release-publish
   cancel-in-progress: false
 
 jobs:
@@ -63,6 +63,9 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "is_prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release versions
+        run: node scripts/verify/verify-release-version.mjs --tag "${{ steps.release.outputs.tag }}"
 
   # ─────────────────────────────────────────────────────────────────────
   # Per-platform builds. Each job:
@@ -245,12 +248,19 @@ jobs:
         # depends on Tauri's unstable multiwebview API.
         run: cargo +1.89.0 install tauri-cli --version "2.11.4" --locked
 
-      - name: Build Tauri bundle (multiwebview compile smoke)
+      - name: Build Tauri bundle and signed updater artifacts
         env:
           # Clear RUSTFLAGS so cargo-tauri's default flags don't break proc-macro
           # linking (ctor-proc-macro "can't find crate" error on Rust 1.89).
           RUSTFLAGS: ""
-        run: cargo +1.89.0 tauri build --target ${{ matrix.target }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo "::error::TAURI_SIGNING_PRIVATE_KEY is missing"; exit 1; }
+          test -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" || { echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is missing"; exit 1; }
+          cargo +1.89.0 tauri build --target ${{ matrix.target }}
 
       - name: Run packaged multiwebview runtime smoke
         if: runner.os == 'macOS' && matrix.target == 'aarch64-apple-darwin'
@@ -301,7 +311,7 @@ jobs:
           FILES=$(
             find "$BUNDLE_ROOT" -type f \( \
               -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' -o \
-              -name '*.exe' -o -name '*.msi' -o -name '*.rpm' -o -name '*.zip' \
+              -name '*.exe' -o -name '*.msi' -o -name '*.rpm' \
             \) 2>/dev/null | sort -u
           )
           if [ -z "$FILES" ]; then
@@ -364,6 +374,43 @@ jobs:
             echo "Rename: $(basename "$f") → $name"
             cp -f "$f" "$OUT/$name"
           done
+
+          case "$TARGET" in
+            aarch64-apple-darwin)
+              UPDATE_PATTERN='*.app.tar.gz'
+              UPDATE_SUFFIX='darwin-aarch64.app.tar.gz'
+              ;;
+            x86_64-apple-darwin)
+              UPDATE_PATTERN='*.app.tar.gz'
+              UPDATE_SUFFIX='darwin-x86_64.app.tar.gz'
+              ;;
+            x86_64-pc-windows-msvc)
+              UPDATE_PATTERN='*.nsis.zip'
+              UPDATE_SUFFIX='windows-x86_64.nsis.zip'
+              ;;
+            x86_64-unknown-linux-gnu)
+              UPDATE_PATTERN='*.AppImage.tar.gz'
+              UPDATE_SUFFIX='linux-x86_64.AppImage.tar.gz'
+              ;;
+            *)
+              echo "::error::Unsupported updater target $TARGET"
+              exit 1
+              ;;
+          esac
+          UPDATE_SOURCE=$(find "$BUNDLE_ROOT" -type f -name "$UPDATE_PATTERN" | sort -u)
+          UPDATE_COUNT=$(printf '%s\n' "$UPDATE_SOURCE" | sed '/^$/d' | wc -l | tr -d ' ')
+          if [ "$UPDATE_COUNT" != "1" ]; then
+            echo "::error::Expected one updater payload for $TARGET, found $UPDATE_COUNT"
+            printf '%s\n' "$UPDATE_SOURCE"
+            exit 1
+          fi
+          if [ ! -s "${UPDATE_SOURCE}.sig" ]; then
+            echo "::error::Missing or empty updater signature for $TARGET"
+            exit 1
+          fi
+          UPDATE_NAME="Verboo-Code-${VERSION}-${UPDATE_SUFFIX}"
+          cp -f "$UPDATE_SOURCE" "$OUT/$UPDATE_NAME"
+          cp -f "${UPDATE_SOURCE}.sig" "$OUT/${UPDATE_NAME}.sig"
           echo "Prepared assets:"
           ls -la "$OUT"
           echo "dir=$OUT" >> "$GITHUB_OUTPUT"
@@ -468,12 +515,18 @@ jobs:
             --bundles-dir bundles \
             --output update-manifests
 
-      - name: Upload manifests to release
+      - name: Upload immutable and rolling update manifests
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TAG="${{ needs.resolve-tag.outputs.tag }}"
-          for f in update-manifests/*.json; do
-            gh release upload "$TAG" "$f" --clobber
-          done
+          MANIFEST="update-manifests/latest.json"
+          gh release upload "$TAG" "$MANIFEST" --clobber
+          if ! gh release view updater-beta >/dev/null 2>&1; then
+            gh release create updater-beta \
+              --prerelease \
+              --title "Verboo Code beta update channel" \
+              --notes "Rolling signed updater manifest."
+          fi
+          gh release upload updater-beta "$MANIFEST" --clobber
