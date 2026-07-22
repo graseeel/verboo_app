@@ -980,6 +980,20 @@ export type InstallUpdateResult = {
   activeTurns: number
 }
 
+export type SidebarUpdatePresentation = {
+  phase:
+    | 'available'
+    | 'downloading'
+    | 'ready'
+    | 'waiting'
+    | 'restarting'
+    | 'error'
+  version?: string
+  percent?: number
+  error?: string
+  actionEnabled: boolean
+}
+
 export type UpdateSettings = {
   channel: UpdateChannel
   autoCheck: boolean
