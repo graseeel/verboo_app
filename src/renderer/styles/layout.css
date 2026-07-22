@@ -1450,10 +1450,29 @@
   .app-sidebar,
   .sidebar-rail::after,
   .sidebar-shell,
-  .sidebar-shell.is-peek .app-sidebar,
-  .sidebar-update-button,
+  .sidebar-shell.is-peek .app-sidebar {
+    transition: none !important;
+  }
+
+  .sidebar-update-button {
+    transition:
+      background-color 100ms ease-out,
+      border-color 100ms ease-out,
+      color 100ms ease-out !important;
+  }
+
+  .sidebar-update-button:not(:disabled):active {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    transform: none;
+  }
+
   .sidebar-update-icon,
-  .sidebar-update-copy,
+  .sidebar-update-copy {
+    filter: none !important;
+    transform: none !important;
+    transition: opacity 100ms ease-out !important;
+  }
+
   .sidebar-update-progress-fill {
     transition: none !important;
   }
