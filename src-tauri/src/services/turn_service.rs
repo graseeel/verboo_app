@@ -1717,14 +1717,35 @@ impl TurnService {
             return Ok(video_interrupted);
         };
 
-        let mut active = self.active.lock().map_err(|e| e.to_string())?;
-        if let Some(child_handle) = active.get_mut(&turn_id) {
-            if let Ok(mut child) = child_handle.lock() {
-                let _ = crate::services::child_signal::interrupt_child(&mut child);
-                return Ok(true);
-            }
+        let child_handle = self
+            .active
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get(&turn_id)
+            .cloned();
+        let Some(child_handle) = child_handle else {
+            return Ok(video_interrupted);
+        };
+
+        {
+            let mut child = child_handle.lock().map_err(|e| e.to_string())?;
+            crate::services::child_signal::interrupt_child(&mut child)?;
         }
-        Ok(video_interrupted)
+
+        // Some CLI states (notably a completed subagent that left a
+        // background dev server behind) consume SIGINT without exiting. Give
+        // the process a short graceful window, then guarantee that the turn
+        // closes so the renderer can receive Done/Error and leave busy state.
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(750));
+            let Ok(mut child) = child_handle.lock() else {
+                return;
+            };
+            if matches!(child.try_wait(), Ok(None)) {
+                let _ = child.kill();
+            }
+        });
+        Ok(true)
     }
 }
 
@@ -4554,6 +4575,36 @@ mod tests {
         // interrupt conv-a (unknown) → false, NOT conv-b's turn.
         let result = svc.interrupt(Some("conv-a".into())).unwrap();
         assert!(!result, "must NOT fall back to conv-b's turn");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interrupt_escalates_when_cli_ignores_sigint() {
+        let service = make_turn_service();
+        let child = std::process::Command::new("sh")
+            .args(["-c", "trap '' INT; while :; do sleep 1; done"])
+            .spawn()
+            .unwrap();
+        let child_handle = Arc::new(Mutex::new(child));
+        service
+            .active
+            .lock()
+            .unwrap()
+            .insert("turn-stuck".into(), child_handle.clone());
+        service
+            .active_by_conversation
+            .lock()
+            .unwrap()
+            .insert("conversation-stuck".into(), "turn-stuck".into());
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        assert!(service
+            .interrupt(Some("conversation-stuck".into()))
+            .unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(1_200));
+
+        let status = child_handle.lock().unwrap().try_wait().unwrap();
+        assert!(status.is_some(), "stubborn CLI must be force-killed after the grace period");
     }
 
     #[test]
