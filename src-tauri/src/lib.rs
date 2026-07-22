@@ -1337,9 +1337,35 @@ fn install_update(
             active_turns,
         });
     }
-    // Tauri's built-in restart spawns a new instance and exits the current one.
-    // The updater plugin installs on quit, so this applies the update.
-    app.restart();
+    #[cfg(target_os = "macos")]
+    {
+        let executable = tauri::process::current_binary(&app.env())
+            .map_err(|e| format!("Falha ao localizar o app instalado: {e}"))?;
+        let bundle = crate::services::update_service::macos_bundle_path(&executable)
+            .ok_or_else(|| "O executável não está dentro de um bundle macOS válido".to_string())?;
+        std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(crate::services::update_service::macos_relaunch_script())
+            .arg("verboo-update-relaunch")
+            .arg(std::process::id().to_string())
+            .arg(bundle)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Falha ao reabrir o app atualizado: {e}"))?;
+        app.exit(0);
+        Ok(InstallUpdateResult {
+            status: InstallUpdateStatus::Restarting,
+            active_turns: 0,
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Tauri's native restart remains the correct relaunch path on Windows/Linux.
+        app.restart();
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════

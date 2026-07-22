@@ -2,6 +2,7 @@
 // commands that the renderer will call in a later wiring pass.
 #![allow(dead_code)]
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -270,6 +271,26 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+pub(crate) fn macos_bundle_path(executable: &Path) -> Option<PathBuf> {
+    let macos_dir = executable.parent()?;
+    if macos_dir.file_name()? != "MacOS" {
+        return None;
+    }
+    let contents_dir = macos_dir.parent()?;
+    if contents_dir.file_name()? != "Contents" {
+        return None;
+    }
+    let bundle = contents_dir.parent()?;
+    if bundle.extension()? != "app" {
+        return None;
+    }
+    Some(bundle.to_path_buf())
+}
+
+pub(crate) fn macos_relaunch_script() -> &'static str {
+    "while kill -0 \"$1\" 2>/dev/null; do sleep 0.1; done; exec /usr/bin/open -n \"$2\""
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,5 +439,25 @@ mod tests {
         let snap = s.reset();
         assert_eq!(snap.status, UpdateStatus::Idle);
         assert!(snap.error.is_none());
+    }
+
+    #[test]
+    fn resolves_macos_bundle_from_packaged_executable() {
+        let executable =
+            std::path::Path::new("/Applications/Verboo Code.app/Contents/MacOS/verboo-desktop");
+
+        assert_eq!(
+            macos_bundle_path(executable),
+            Some(std::path::PathBuf::from("/Applications/Verboo Code.app"))
+        );
+        assert_eq!(macos_bundle_path(std::path::Path::new("/tmp/verboo")), None);
+    }
+
+    #[test]
+    fn macos_relaunch_waits_for_the_previous_process_to_exit() {
+        assert_eq!(
+            macos_relaunch_script(),
+            "while kill -0 \"$1\" 2>/dev/null; do sleep 0.1; done; exec /usr/bin/open -n \"$2\""
+        );
     }
 }
