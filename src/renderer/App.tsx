@@ -591,6 +591,7 @@ export function App() {
     '--subagents-panel-width': showSubagentThreadPanel ? '320px' : '0px',
     '--terminal-width': terminal.terminalOpen ? `${terminal.terminalWidth}px` : '0px',
     '--review-width': review.reviewOpen ? `${review.reviewWidth}px` : '0px',
+    '--browser-width': browser.browserOpen ? `${browser.browserWidth}px` : '0px',
   } as CSSProperties
 
   useEffect(() => {
