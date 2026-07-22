@@ -1325,9 +1325,17 @@ async fn download_update(
 fn install_update(
     app: tauri::AppHandle,
     service: tauri::State<'_, crate::services::update_service::UpdateService>,
-) -> Result<bool, String> {
+    turns: tauri::State<'_, TurnService>,
+) -> Result<InstallUpdateResult, String> {
     if !service.can_install() {
         return Err("Atualização ainda não foi baixada".into());
+    }
+    let active_turns = turns.active_count()?;
+    if active_turns > 0 {
+        return Ok(InstallUpdateResult {
+            status: InstallUpdateStatus::Busy,
+            active_turns,
+        });
     }
     // Tauri's built-in restart spawns a new instance and exits the current one.
     // The updater plugin installs on quit, so this applies the update.

@@ -1675,6 +1675,20 @@ impl TurnService {
         });
     }
 
+    pub fn active_count(&self) -> Result<usize, String> {
+        let active_children = self
+            .active
+            .lock()
+            .map(|active| active.len())
+            .map_err(|_| "active turn registry is unavailable".to_string())?;
+        let active_turns = self
+            .active_by_conversation
+            .lock()
+            .map(|active| active.len())
+            .map_err(|_| "active conversation registry is unavailable".to_string())?;
+        Ok(active_children.max(active_turns))
+    }
+
     /// Interrupt a running turn by turn_id. Sends SIGINT on Unix, Ctrl+C
     /// (GenerateConsoleCtrlEvent) on Windows, falling back to kill(). Returns
     /// true if a child was found and signaled, false if the turn wasn't
@@ -4627,6 +4641,63 @@ mod tests {
         // Now interrupt conv-a → false (no mapping).
         let result = svc.interrupt(Some("conv-a".into())).unwrap();
         assert!(!result, "cleared mapping → false");
+    }
+
+    fn spawn_sleeping_test_child() -> std::process::Child {
+        #[cfg(unix)]
+        return Command::new("sh")
+            .args(["-c", "sleep 5"])
+            .spawn()
+            .unwrap();
+
+        #[cfg(windows)]
+        return Command::new("cmd")
+            .args(["/C", "ping -n 6 127.0.0.1 >NUL"])
+            .spawn()
+            .unwrap();
+    }
+
+    #[test]
+    fn active_count_reports_all_cli_children() {
+        let service = make_turn_service();
+        assert_eq!(service.active_count().unwrap(), 0);
+
+        let child = Arc::new(Mutex::new(spawn_sleeping_test_child()));
+        service
+            .active
+            .lock()
+            .unwrap()
+            .insert("turn-a".into(), child.clone());
+        assert_eq!(service.active_count().unwrap(), 1);
+
+        let mut child = child.lock().unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn active_count_includes_a_turn_before_its_cli_child_spawns() {
+        let service = make_turn_service();
+        service
+            .active_by_conversation
+            .lock()
+            .unwrap()
+            .insert("conversation-preparing".into(), "turn-preparing".into());
+
+        assert_eq!(service.active_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn active_count_fails_closed_when_registry_is_poisoned() {
+        let service = make_turn_service();
+        let active = service.active.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = active.lock().unwrap();
+            panic!("poison active turn registry");
+        })
+        .join();
+
+        assert!(service.active_count().is_err());
     }
 
     #[test]

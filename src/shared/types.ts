@@ -975,6 +975,11 @@ export type UpdateSnapshot = {
   error?: string
 }
 
+export type InstallUpdateResult = {
+  status: 'busy' | 'restarting'
+  activeTurns: number
+}
+
 export type UpdateSettings = {
   channel: UpdateChannel
   autoCheck: boolean

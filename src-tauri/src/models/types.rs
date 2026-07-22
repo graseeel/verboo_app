@@ -319,6 +319,20 @@ pub enum UpdateStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
+pub enum InstallUpdateStatus {
+    Busy,
+    Restarting,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallUpdateResult {
+    pub status: InstallUpdateStatus,
+    pub active_turns: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum TurnActionKind {
     Read,
     Search,
@@ -1534,6 +1548,18 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&UpdateStatus::NotAvailable).unwrap(),
             "\"not-available\""
+        );
+    }
+
+    #[test]
+    fn install_update_result_serializes_for_renderer() {
+        let result = InstallUpdateResult {
+            status: InstallUpdateStatus::Busy,
+            active_turns: 2,
+        };
+        assert_eq!(
+            serde_json::to_value(result).unwrap(),
+            serde_json::json!({ "status": "busy", "activeTurns": 2 })
         );
     }
 
