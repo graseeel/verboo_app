@@ -4367,6 +4367,16 @@ export function App() {
           branchInfo={branchInfo}
           includeVerbooCoAuthor={userSettings.includeVerbooCoAuthor}
         />
+      <BrowserPanel
+        browserOpen={browser.browserOpen}
+        browserWidth={browser.browserWidth}
+        annotationMode={browser.annotationMode}
+        onSetWidth={browser.setWidth}
+        onClose={browser.close}
+        onTogglePencil={browser.togglePencil}
+        onToggleArrow={browser.toggleArrow}
+        minWidth={browser.MIN_WIDTH}
+      />
       </div>
       {(() => {
         // GoalStatusBar only renders when GoalActivePanel is NOT visible.
@@ -4579,17 +4589,6 @@ export function App() {
       />
 
       <VerbooPet visible={petEnabled} state={petState} size={petSize} onSizeChange={updatePetSize} />
-
-      <BrowserPanel
-        browserOpen={browser.browserOpen}
-        browserWidth={browser.browserWidth}
-        annotationMode={browser.annotationMode}
-        onSetWidth={browser.setWidth}
-        onClose={browser.close}
-        onTogglePencil={browser.togglePencil}
-        onToggleArrow={browser.toggleArrow}
-        minWidth={browser.MIN_WIDTH}
-      />
 
       {updateSnapshot && updateSnapshot.status === 'available'
         && updateSnapshot.availableVersion
