@@ -406,7 +406,8 @@
 .composer textarea::placeholder {
   color: var(--text-dim);
   opacity: 1;
-  /* Keep long pt-BR placeholder inside the field */
+  /* Keep long pt-BR placeholder inside the field; text-overflow: ellipsis
+     truncates when the placeholder overflows the textarea's content box. */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -528,11 +529,11 @@
 /* ── Container queries: rodapé se adapta à largura do composer ──────
    Largura do composer = viewport − sidebar − painéis abertos
    (--browser-width, --terminal-width, --review-width).
-   Degraus do mais conservador (encolher rótulos) ao mais agressivo (wrap). */
+   Degraus progressivos: encolher → ocultar rótulos → wrap. */
 
 @container composer (max-width: 640px) {
-  /* Estágio 1: encolher pills e permitir ellipsis no texto.
-     Chips com botão de dropdown (model, access) encolhem; tokens/s mantém texto. */
+  /* Estágio 1: pills encolhem, texto com ellipsis.
+     Todos os chips (model, access, token-rate) recebem max-width menor. */
   .composer-toolbar {
     gap: 6px;
   }
@@ -544,6 +545,7 @@
   }
 
   .model-pill > span:nth-child(2),
+  .access-pill,
   .token-rate-meter .token-rate-copy {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -556,16 +558,32 @@
   }
 }
 
+@container composer (max-width: 580px) {
+  /* Estágio 1.5: max-widths progressivos — chips encolhem mais antes de
+     perder o texto. Transição suave entre "completo" e "só-ícone". */
+  .model-pill,
+  .access-pill {
+    max-width: 120px;
+  }
+
+  .token-rate-meter {
+    max-width: 90px;
+  }
+
+  .composer-toolbar {
+    gap: 5px;
+  }
+}
+
 @container composer (max-width: 520px) {
-  /* Estágio 2: rótulos vão a zero — sobram só ícones.
-     Label texto some; chip fica só com ícone + (no model) chevron.
+  /* Estágio 2: rótulos textuais somem — sobram só ícones.
      access-pill: text node direto (sem classe) — escondemos via font-size:0
      no botão e restauramos nos svg (font-size não afeta svg). */
   .access-pill {
     font-size: 0;
-    padding: 0 7px;
+    padding: 0 8px;
     min-width: 32px;
-    max-width: 110px;
+    max-width: 90px;
   }
 
   .model-pill > span:nth-child(2),
@@ -575,16 +593,20 @@
 
   .model-pill,
   .token-rate-meter {
-    padding: 0 7px;
+    padding: 0 8px;
   }
 
   .model-pill {
     min-width: 32px;
-    max-width: 110px;
+    max-width: 90px;
   }
 
   .token-rate-meter {
     max-width: 36px;
+  }
+
+  .composer-toolbar {
+    gap: 4px;
   }
 }
 
