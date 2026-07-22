@@ -102,6 +102,11 @@
   backdrop-filter: blur(10px);
   box-sizing: border-box;
   overflow: hidden;
+  /* Container query context: rodapé se adapta à largura do PRÓPRIO composer
+     (que muda com --browser-width, --terminal-width, --review-width),
+     não ao viewport. ADR implícito: composer's footer is width-aware. */
+  container-type: inline-size;
+  container-name: composer;
 }
 
 .composer[data-command-mode="goal"] {
@@ -518,6 +523,82 @@
   flex: 1 1 auto;
   justify-content: center;
   min-width: 0;
+}
+
+/* ── Container queries: rodapé se adapta à largura do composer ──────
+   Largura do composer = viewport − sidebar − painéis abertos
+   (--browser-width, --terminal-width, --review-width).
+   Degraus do mais conservador (encolher rótulos) ao mais agressivo (wrap). */
+
+@container composer (max-width: 640px) {
+  /* Estágio 1: encolher pills e permitir ellipsis no texto.
+     Chips com botão de dropdown (model, access) encolhem; tokens/s mantém texto. */
+  .composer-toolbar {
+    gap: 6px;
+  }
+
+  .model-pill,
+  .access-pill {
+    min-width: 0;
+    max-width: 160px;
+  }
+
+  .model-pill > span:nth-child(2),
+  .token-rate-meter .token-rate-copy {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .token-rate-meter {
+    max-width: 120px;
+  }
+}
+
+@container composer (max-width: 520px) {
+  /* Estágio 2: rótulos vão a zero — sobram só ícones.
+     Label texto some; chip fica só com ícone + (no model) chevron.
+     access-pill: text node direto (sem classe) — escondemos via font-size:0
+     no botão e restauramos nos svg (font-size não afeta svg). */
+  .access-pill {
+    font-size: 0;
+    padding: 0 7px;
+    min-width: 32px;
+    max-width: 110px;
+  }
+
+  .model-pill > span:nth-child(2),
+  .token-rate-meter .token-rate-copy {
+    display: none;
+  }
+
+  .model-pill,
+  .token-rate-meter {
+    padding: 0 7px;
+  }
+
+  .model-pill {
+    min-width: 32px;
+    max-width: 110px;
+  }
+
+  .token-rate-meter {
+    max-width: 36px;
+  }
+}
+
+@container composer (max-width: 380px) {
+  /* Estágio 3 (último recurso): flex-wrap. Linha quebra entre seções. */
+  .composer-toolbar {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .composer-tools.right {
+    flex-basis: 100%;
+    justify-content: flex-end;
+  }
 }
 
 .composer-pill {
