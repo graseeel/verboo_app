@@ -147,4 +147,19 @@ describe('useDeferredUpdateRestart', () => {
     )
     expect(install).not.toHaveBeenCalled()
   })
+
+  it('checks before retrying a user-initiated download error', async () => {
+    const check = vi.fn().mockResolvedValue(snapshot('available'))
+    const download = vi.fn().mockResolvedValue(snapshot('downloading'))
+    const test = setup({
+      snapshot: { ...snapshot('error'), error: 'offline' },
+      check,
+      download,
+    })
+
+    await act(async () => test.result.current.requestUpdate())
+
+    expect(check).toHaveBeenCalledWith(true)
+    expect(download).toHaveBeenCalledTimes(1)
+  })
 })

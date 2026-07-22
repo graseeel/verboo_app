@@ -64,7 +64,6 @@ import { EmptyChat } from './components/EmptyChat'
 import { LoginScreen } from './components/LoginScreen'
 import { TopBar } from './components/TopBar'
 import { Transcript } from './components/Transcript'
-import { UpdateBanner } from './components/UpdateBanner'
 import { AccessSelector } from './features/access/AccessSelector'
 import { PermissionApprovalPanel, type PendingPermissionPrompt } from './features/permission/PermissionApprovalPanel'
 import { VisionFallbackModal } from './features/vision/VisionFallbackModal'
@@ -99,6 +98,9 @@ import { PluginsView } from './features/plugins/PluginsView'
 import { loadPluginSkillSummaries } from './features/plugins/pluginSkillSummaries'
 import { ProjectPicker } from './features/projects/ProjectPicker'
 import { SettingsView } from './features/settings/SettingsView'
+import { clearUpdateDraftHandoff, consumeUpdateDraftHandoff, writeUpdateDraftHandoff } from './features/updates/updateDraftHandoff'
+import { useDeferredUpdateRestart } from './features/updates/useDeferredUpdateRestart'
+import { useUpdateAutomation } from './features/updates/useUpdateAutomation'
 import { I18nProvider, createTranslator, type Translator } from './i18n'
 import { attachmentInspectionErrorKey } from './features/attachments/attachmentInspectionError'
 import { OrderedAttachmentQueue } from './features/attachments/orderedAttachmentQueue'
@@ -302,6 +304,7 @@ export function App() {
   const [activeView, setActiveView] = useState<AppView>('chat')
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('permissions')
   const [userSettings, setUserSettings] = useState<UserSettings>(DEFAULT_USER_SETTINGS)
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [noticeAccepted, setNoticeAccepted] = useState(
     () => window.localStorage.getItem(DEVELOPMENT_NOTICE_KEY) === 'true',
   )
@@ -343,7 +346,7 @@ export function App() {
     () => readEffortByModel(),
   )
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | undefined>(undefined)
-  const [dismissedVersion, setDismissedVersion] = useState<string | undefined>(undefined)
+  const [restoredUpdateDrafts] = useState(() => consumeUpdateDraftHandoff(window.localStorage))
   // Skills derived from / and @ tokens in the composer text. syncTokenSkills
   // (Composer) extracts both token types and sets this state. No parallel
   // chip state — user REJECTED chips (decided Feedback-3 ITEM 2a).
@@ -359,7 +362,12 @@ export function App() {
   const [accessMode, setAccessMode] = useState<AccessMode>('approval')
   const [chatStore, setChatStore] = useState<ChatStore>(readChatStore)
   const [activeConversationId, setActiveConversationId] = useState<string | undefined>(() => {
-    return visibleConversations(readChatStore())[0]?.id
+    const restoredKey = restoredUpdateDrafts?.activeKey
+    if (restoredKey === '__new__') return undefined
+    if (restoredKey && visibleConversations(chatStore).some(conversation => conversation.id === restoredKey)) {
+      return restoredKey
+    }
+    return visibleConversations(chatStore)[0]?.id
   })
   const [selectedProjectId, setSelectedProjectId] = useState<string | undefined>()
   const [runningTurnId, setRunningTurnId] = useState<string | undefined>()
@@ -368,9 +376,11 @@ export function App() {
   const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedFollowUp[]>([])
   // Per-conversation composer drafts (in-memory). Survives chat switches and
   // settings navigation so each chat keeps its own composer text.
-  const composerDrafts = useRef<Record<string, string>>({})
-  const [composerValue, setComposerValue] = useState('')
-  const prevConversationIdRef = useRef<string | undefined>(undefined)
+  const composerDrafts = useRef<Record<string, string>>(restoredUpdateDrafts?.drafts ?? {})
+  const [composerValue, setComposerValue] = useState(
+    () => restoredUpdateDrafts?.drafts[activeConversationId ?? '__new__'] ?? '',
+  )
+  const prevConversationIdRef = useRef<string | undefined>(activeConversationId)
   const [pendingPermissionPrompt, setPendingPermissionPrompt] = useState<PendingPermissionPrompt | undefined>()
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | undefined>()
   const [questionPrompt, setQuestionPrompt] = useState<QuestionPromptState | undefined>()
@@ -477,7 +487,18 @@ export function App() {
   // Ref mirror of activeConversationId so the agent event handler (which has
   // a stale closure via useEffect []) can read the current value when a
   // turn completes — used to decide whether to fire a background notification.
-  const activeConversationIdRef = useRef<string | undefined>(undefined)
+  const activeConversationIdRef = useRef<string | undefined>(activeConversationId)
+  const persistUpdateDrafts = useCallback(() => {
+    const activeKey = activeConversationIdRef.current ?? '__new__'
+    writeUpdateDraftHandoff(
+      window.localStorage,
+      { ...composerDrafts.current, [activeKey]: composerValue },
+      activeKey,
+    )
+  }, [composerValue])
+  const clearPersistedUpdateDrafts = useCallback(() => {
+    clearUpdateDraftHandoff(window.localStorage)
+  }, [])
   const goalSessionId = useRef<string | undefined>(undefined)
   const goalAbortRef = useRef<AbortController | undefined>(undefined)
   const queuedFollowUpsRef = useRef<QueuedFollowUp[]>([])
@@ -686,6 +707,7 @@ export function App() {
         browserVerificationEnabled: settings.browserVerificationEnabled ?? true,
         loadWebIcons: settings.loadWebIcons ?? true,
       })
+      setSettingsLoaded(true)
       // Reasoning effort prefs: backend is the durable source. When the
       // backend already has prefs, use them and drop localStorage. When the
       // backend is empty but localStorage has prefs (user set them before
@@ -837,6 +859,25 @@ export function App() {
       unsubscribe()
     }
   }, [t, toast])
+
+  const updateRestart = useDeferredUpdateRestart({
+    snapshot: updateSnapshot,
+    runningCount: runningConversations.size,
+    check: window.verboo.checkForUpdates,
+    download: window.verboo.downloadUpdate,
+    install: window.verboo.installUpdate,
+    persistDrafts: persistUpdateDrafts,
+    clearDrafts: clearPersistedUpdateDrafts,
+  })
+
+  useUpdateAutomation({
+    autoCheck: settingsLoaded && userSettings.updates.autoCheck,
+    autoDownload: settingsLoaded && userSettings.updates.autoDownload,
+    channel: userSettings.updates.channel,
+    snapshot: updateSnapshot,
+    check: window.verboo.checkForUpdates,
+    download: window.verboo.downloadUpdate,
+  })
 
   useEffect(() => {
     return () => {
@@ -4331,6 +4372,8 @@ export function App() {
               profile={profile}
               cliAuth={cliAuth}
               avatarSettings={userSettings.avatar}
+              updatePresentation={updateRestart.presentation}
+              onRequestUpdate={() => { void updateRestart.requestUpdate() }}
               compact={sidebarMode === 'compact'}
               peek={sidebarPeek || sidebarPeekLeaving}
               onSelectView={setActiveView}
@@ -4771,16 +4814,6 @@ export function App() {
 
       <VerbooPet visible={petEnabled} state={petState} size={petSize} onSizeChange={updatePetSize} />
 
-      {updateSnapshot && updateSnapshot.status === 'available'
-        && updateSnapshot.availableVersion
-        && updateSnapshot.availableVersion !== dismissedVersion
-        && (
-          <UpdateBanner
-            snapshot={updateSnapshot}
-            onDownload={() => { void onDownloadUpdate() }}
-            onDismiss={() => setDismissedVersion(updateSnapshot.availableVersion)}
-          />
-        )}
     </main>
     </I18nProvider>
   )
