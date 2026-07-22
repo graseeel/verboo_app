@@ -22,6 +22,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 
 // Mock @tauri-apps/api before importing the shim — otherwise the shim
 // calls getCurrentWebview() at module load, which throws in jsdom.
@@ -270,5 +271,14 @@ describe('verboo-bridge — API shape', () => {
     const cleanup = (api as Record<string, (cb: () => void) => () => void>).onAgentEvent(() => {})
     expect(typeof cleanup).toBe('function')
     expect(() => cleanup()).not.toThrow()
+  })
+
+  it('subscribes update status to the backend snapshot event', () => {
+    expect(api).toBeDefined()
+    ;(api as Record<string, (cb: () => void) => () => void>).onUpdateStatus(() => {})
+    expect(vi.mocked(listen)).toHaveBeenLastCalledWith(
+      'update:snapshot',
+      expect.any(Function),
+    )
   })
 })

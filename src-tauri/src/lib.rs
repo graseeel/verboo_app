@@ -1205,10 +1205,22 @@ async fn check_for_updates(
     }
     service.mark_checking();
     let _ = app.emit("update:snapshot", service.snapshot());
-    let updater = match app.updater_builder().build() {
+    let endpoint: tauri::Url = match service.endpoint().parse() {
+        Ok(endpoint) => endpoint,
+        Err(e) => {
+            let snap = service.mark_error(format!("Endpoint de atualização inválido: {e}"));
+            let _ = app.emit("update:snapshot", snap.clone());
+            return Ok(snap);
+        }
+    };
+    let updater = match app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .and_then(|builder| builder.build())
+    {
         Ok(u) => u,
         Err(e) => {
-            let snap = service.mark_error(format!("Falha ao criar updater: {e}"));
+            let snap = service.mark_error(format!("Falha ao configurar updater: {e}"));
             let _ = app.emit("update:snapshot", snap.clone());
             return Ok(snap);
         }
@@ -1245,27 +1257,53 @@ async fn download_update(
     use tauri_plugin_updater::UpdaterExt;
     service.mark_downloading();
     let _ = app.emit("update:snapshot", service.snapshot());
-    let updater = app
+    let endpoint: tauri::Url = match service.endpoint().parse() {
+        Ok(endpoint) => endpoint,
+        Err(e) => {
+            let snap = service.mark_error(format!("Endpoint de atualização inválido: {e}"));
+            let _ = app.emit("update:snapshot", snap.clone());
+            return Ok(snap);
+        }
+    };
+    let updater = match app
         .updater_builder()
-        .build()
-        .map_err(|e| format!("Falha ao criar updater: {e}"))?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|e| format!("Falha ao verificar: {e}"))?
-        .ok_or_else(|| "Nenhuma atualização disponível".to_string())?;
+        .endpoints(vec![endpoint])
+        .and_then(|builder| builder.build())
+    {
+        Ok(updater) => updater,
+        Err(e) => {
+            let snap = service.mark_error(format!("Falha ao configurar updater: {e}"));
+            let _ = app.emit("update:snapshot", snap.clone());
+            return Ok(snap);
+        }
+    };
+    let update = match updater.check().await {
+        Ok(Some(update)) => update,
+        Ok(None) => {
+            let snap = service.mark_error("Nenhuma atualização disponível".into());
+            let _ = app.emit("update:snapshot", snap.clone());
+            return Ok(snap);
+        }
+        Err(e) => {
+            let snap = service.mark_error(format!("Falha ao verificar: {e}"));
+            let _ = app.emit("update:snapshot", snap.clone());
+            return Ok(snap);
+        }
+    };
     let app_for_chunk = app.clone();
     let service_handle = service.clone_handle();
+    let mut transferred = 0_u64;
+    let started = std::time::Instant::now();
     let result = update
         .download_and_install(
             move |chunk_len, total| {
+                transferred = transferred.saturating_add(chunk_len as u64);
                 if let Some(total) = total {
-                    let percent = (chunk_len as f64 / total as f64) * 100.0;
+                    let seconds = started.elapsed().as_secs_f64().max(0.001);
                     let snap = service_handle.mark_download_progress(
-                        percent,
-                        chunk_len as u64,
-                        total as u64,
-                        0.0,
+                        transferred,
+                        total,
+                        transferred as f64 / seconds,
                     );
                     let _ = app_for_chunk.emit("update:snapshot", snap);
                 }
@@ -1786,7 +1824,7 @@ pub fn run() {
             app.manage(crate::services::tray_service::TrayService::new());
             // UpdateService — owns the updater snapshot + auto-check timer logic
             app.manage(crate::services::update_service::UpdateService::new(
-                env!("CARGO_PKG_VERSION").into(),
+                app.package_info().version.to_string(),
                 cfg!(debug_assertions) == false,
             ));
             // LifecycleService — owns the first-launch requirements flag

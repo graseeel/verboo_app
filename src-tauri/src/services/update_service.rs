@@ -8,6 +8,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::models::types::{UpdateChannel, UpdateSettings, UpdateSnapshot, UpdateStatus};
 
 const CHECK_INTERVAL_MS: u64 = 6 * 60 * 60 * 1000;
+pub const STABLE_UPDATE_ENDPOINT: &str =
+    "https://github.com/graseeel/verboo_app/releases/latest/download/latest.json";
+pub const BETA_UPDATE_ENDPOINT: &str =
+    "https://github.com/graseeel/verboo_app/releases/download/updater-beta/latest.json";
 
 /// Pure state machine for the updater UI. The actual Tauri updater calls
 /// (`UpdaterExt::updater_builder().check()`, `Update::download_and_install`)
@@ -90,6 +94,13 @@ impl UpdateService {
                 auto_check: true,
                 auto_download: false,
             })
+    }
+
+    pub fn endpoint(&self) -> &'static str {
+        match self.settings().channel {
+            UpdateChannel::Stable => STABLE_UPDATE_ENDPOINT,
+            UpdateChannel::Beta => BETA_UPDATE_ENDPOINT,
+        }
     }
 
     /// Applies a new settings patch (channel / autoCheck / autoDownload).
@@ -187,14 +198,18 @@ impl UpdateService {
     /// Records a download-progress event.
     pub fn mark_download_progress(
         &self,
-        percent: f64,
         transferred: u64,
         total: u64,
         bytes_per_second: f64,
     ) -> UpdateSnapshot {
+        let percent = if total == 0 {
+            0.0
+        } else {
+            (transferred as f64 / total as f64) * 100.0
+        };
         if let Ok(mut state) = self.state.lock() {
             state.snapshot.status = UpdateStatus::Downloading;
-            state.snapshot.percent = Some(percent);
+            state.snapshot.percent = Some(percent.clamp(0.0, 100.0));
             state.snapshot.transferred_bytes = Some(transferred);
             state.snapshot.total_bytes = Some(total);
             state.snapshot.bytes_per_second = Some(bytes_per_second);
@@ -294,6 +309,26 @@ mod tests {
     }
 
     #[test]
+    fn stable_and_beta_use_distinct_https_endpoints() {
+        let s = service(true);
+        s.configure(UpdateSettings {
+            channel: UpdateChannel::Stable,
+            auto_check: true,
+            auto_download: false,
+        });
+        assert_eq!(s.endpoint(), STABLE_UPDATE_ENDPOINT);
+
+        s.configure(UpdateSettings {
+            channel: UpdateChannel::Beta,
+            auto_check: true,
+            auto_download: false,
+        });
+        assert_eq!(s.endpoint(), BETA_UPDATE_ENDPOINT);
+        assert_ne!(STABLE_UPDATE_ENDPOINT, BETA_UPDATE_ENDPOINT);
+        assert!(s.endpoint().starts_with("https://"));
+    }
+
+    #[test]
     fn mark_checking_transitions_state() {
         let s = service(true);
         let snap = s.mark_checking();
@@ -338,12 +373,12 @@ mod tests {
     }
 
     #[test]
-    fn mark_download_progress_tracks_bytes() {
+    fn progress_receives_cumulative_transferred_bytes() {
         let s = service(true);
-        let snap = s.mark_download_progress(45.5, 455_000, 1_000_000, 100_000.0);
-        assert_eq!(snap.percent, Some(45.5));
-        assert_eq!(snap.transferred_bytes, Some(455_000));
-        assert_eq!(snap.total_bytes, Some(1_000_000));
+        let snap = s.mark_download_progress(750, 1_000, 100_000.0);
+        assert_eq!(snap.percent, Some(75.0));
+        assert_eq!(snap.transferred_bytes, Some(750));
+        assert_eq!(snap.total_bytes, Some(1_000));
         assert_eq!(snap.bytes_per_second, Some(100_000.0));
     }
 
