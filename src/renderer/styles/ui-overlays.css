@@ -1,12 +1,14 @@
 /* ══════════════════════════════════════════════════════════════
-   Verboo pet
-   Fluidity rules: the float loop never restarts; states cross-fade
-   accessory layers and (at most) layer body animations whose
-   keyframes begin and end at a neutral transform. Transform/opacity
-   only — nothing here touches layout.
+   Verboo pet — Expressive Premium
+   Every state follows action → reaction → pause. The branded bitmap is
+   preserved as the silhouette while the SVG face and props move separately.
    ══════════════════════════════════════════════════════════════ */
 
 .verboo-pet {
+  --pet-brand: #ad34fe;
+  --pet-ink: #11131a;
+  --pet-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --pet-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   position: fixed;
   z-index: 900;
   width: var(--pet-size, 96px);
@@ -16,342 +18,503 @@
   -webkit-user-select: none;
   touch-action: none;
   opacity: 1;
-  transition: opacity 380ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform: translateY(0) scale(1);
+  transition:
+    opacity 180ms var(--pet-ease-out),
+    transform 220ms var(--pet-ease-out);
 }
 
-.verboo-pet:active {
-  cursor: grabbing;
-}
+.verboo-pet:active { cursor: grabbing; }
 
-.verboo-pet.is-waking .pet-float {
-  animation:
-    pet-wake 760ms cubic-bezier(0.22, 1, 0.36, 1),
-    pet-float 3.6s ease-in-out 760ms infinite,
-    pet-glow 4.2s ease-in-out infinite;
-}
+.verboo-pet.is-waking { animation: pet-wake 560ms var(--pet-ease-out) both; }
 
 .verboo-pet.is-leaving {
   opacity: 0;
+  transform: translateY(6%) scale(0.94);
 }
 
-.verboo-pet.is-leaving .pet-float {
-  transform: translateY(10px) scale(0.7);
-  transition: transform 400ms cubic-bezier(0.5, 0, 0.75, 0.4);
+.pet-float,
+.pet-sway,
+.pet-body,
+.pet-rig {
+  position: relative;
+  width: 100%;
+  height: 100%;
 }
 
 .pet-float {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  /* The breathing aura lives here (with the levitation) because this layer is
-     never re-declared by states — its phase can't jump on a state change. */
-  animation:
-    pet-float 3.6s ease-in-out infinite,
-    pet-glow 4.2s ease-in-out infinite;
-  will-change: transform, filter;
+  animation: pet-ambient-float 7.2s var(--pet-ease-in-out) infinite;
 }
 
-/* Slow drift on a different period than the vertical float: the two loops
-   compose into a Lissajous-like orbit that never repeats exactly — the
-   hovering reads as alive rather than metronomic. */
 .pet-sway {
-  width: 100%;
-  height: 100%;
-  animation: pet-sway 5.4s ease-in-out infinite;
+  animation: pet-ambient-sway 9.6s var(--pet-ease-in-out) infinite;
 }
 
-@keyframes pet-wake {
-  0% { transform: translateY(18px) scale(0.5); opacity: 0; filter: blur(6px); }
-  55% { opacity: 1; filter: blur(0); }
-  74% { transform: translateY(-4px) scale(1.06); }
-  100% { transform: translateY(0) scale(1); opacity: 1; filter: blur(0); }
-}
+.pet-body { z-index: 2; }
 
-@keyframes pet-float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(calc(var(--pet-size, 96px) * -0.07)); }
-}
-
-@keyframes pet-sway {
-  0%, 100% { transform: translateX(-1.5%) rotate(-1.6deg); }
-  50% { transform: translateX(1.5%) rotate(1.6deg); }
-}
-
-.pet-body {
-  position: relative;
-  z-index: 2;
-  width: 100%;
-  height: 100%;
-  /* Poses live here as TRANSITIONS only (no animations), so every state
-     change eases into its tilt — loops run one layer down, on the img. */
-  transition: transform 520ms cubic-bezier(0.34, 1.3, 0.5, 1), filter 320ms ease-out;
-}
-
-.pet-body img {
+.pet-rig {
   display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  pointer-events: none;
+  overflow: visible;
+  filter: drop-shadow(0 7px 12px color-mix(in srgb, var(--accent) 28%, transparent));
 }
 
-/* The aura breathes with the hover. */
-@keyframes pet-glow {
-  0%, 100% { filter: drop-shadow(0 6px 14px color-mix(in srgb, var(--accent) 26%, transparent)); }
-  50% { filter: drop-shadow(0 10px 22px color-mix(in srgb, var(--accent) 46%, transparent)); }
+.pet-rig-body,
+.pet-rig-eyes,
+.pet-rig-mouth,
+.pet-prop,
+.pet-prop > *,
+.pet-prop path,
+.pet-prop rect,
+.pet-prop circle {
+  transform-box: fill-box;
 }
 
-/* Ground shadow, breathing in the same rhythm as the float. */
+.pet-rig-body { transform-origin: center 78%; }
+.pet-rig-eyes { transform-origin: center; }
+.pet-rig-silhouette { pointer-events: none; }
+.pet-rig-face-plate { fill: var(--pet-brand); }
+.pet-eye { fill: var(--pet-ink); transform-origin: center; }
+
+.pet-mouth {
+  fill: none;
+  stroke: var(--pet-ink);
+  stroke-width: 5;
+  stroke-linecap: round;
+  opacity: 1;
+  transition: opacity 140ms var(--pet-ease-out);
+}
+
+.pet-mouth-error { opacity: 0; }
+
 .pet-shadow {
   position: absolute;
-  left: 18%;
-  bottom: calc(var(--pet-size, 96px) * -0.12);
-  width: 64%;
-  height: calc(var(--pet-size, 96px) * 0.12);
+  left: 19%;
+  bottom: calc(var(--pet-size, 96px) * -0.09);
+  width: 62%;
+  height: calc(var(--pet-size, 96px) * 0.1);
   border-radius: 50%;
-  background: color-mix(in srgb, var(--accent) 36%, black);
-  opacity: 0.3;
+  background: color-mix(in srgb, var(--accent) 34%, black);
+  opacity: 0.28;
   filter: blur(4px);
-  animation: pet-shadow 3.6s ease-in-out infinite;
+  animation: pet-shadow-rest 7.2s var(--pet-ease-in-out) infinite;
 }
-
-@keyframes pet-shadow {
-  0%, 100% { transform: scaleX(1); opacity: 0.3; }
-  50% { transform: scaleX(0.82); opacity: 0.2; }
-}
-
-/* ── Accessory layers (cross-fade per state) ─────────────────── */
 
 .pet-prop {
-  position: absolute;
-  z-index: 3;
-  color: var(--accent-strong);
   opacity: 0;
-  transform: translateY(8px) scale(0.7);
-  /* Springy pop-in (slight overshoot), gentle ease-out on the way back. */
-  transition:
-    opacity 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 460ms cubic-bezier(0.34, 1.42, 0.5, 1);
   pointer-events: none;
+  transform: translateY(4%) scale(0.96);
+  transform-origin: center;
+  transition:
+    opacity 160ms var(--pet-ease-out),
+    transform 220ms var(--pet-ease-out);
 }
 
-/* Each accessory grows out of the point where it "attaches" to the mascot. */
-.pet-prop-think { top: -38%; right: -26%; width: 62%; height: 56%; transform-origin: 12% 92%; }
-.pet-prop-edit { right: -30%; bottom: 4%; width: 56%; height: 56%; transform-origin: 8% 80%; }
-.pet-prop-delete { left: -34%; bottom: -4%; width: 56%; height: 56%; transform-origin: 88% 84%; }
-.pet-prop-laptop { left: -8%; bottom: -18%; width: 116%; height: 72%; z-index: 4; transform-origin: 50% 90%; }
-.pet-prop-read { top: -20%; left: -26%; width: 52%; height: 52%; transform-origin: 86% 86%; }
-.pet-prop-done { top: -26%; right: -16%; width: 44%; height: 44%; color: var(--green); transform-origin: 30% 90%; }
-.pet-prop-error { top: -26%; right: -16%; width: 44%; height: 44%; color: var(--danger); transform-origin: 30% 90%; }
-
 .verboo-pet[data-state='thinking'] .pet-prop-think,
+.verboo-pet[data-state='reading'] .pet-prop-read,
 .verboo-pet[data-state='editing'] .pet-prop-edit,
 .verboo-pet[data-state='deleting'] .pet-prop-delete,
-.verboo-pet[data-state='command'] .pet-prop-laptop,
-.verboo-pet[data-state='reading'] .pet-prop-read,
+.verboo-pet[data-state='command'] .pet-prop-command,
 .verboo-pet[data-state='success'] .pet-prop-done,
 .verboo-pet[data-state='error'] .pet-prop-error {
   opacity: 1;
   transform: translateY(0) scale(1);
 }
 
-/* ── Per-state poses: pure transitions on .pet-body, so entering ANY state
-      eases into its tilt (the spring curve gives a tiny natural overshoot). */
-
-.verboo-pet[data-state='thinking'] .pet-body { transform: rotate(-7deg) translateY(-2%); }
-.verboo-pet[data-state='reading'] .pet-body { transform: rotate(5deg); }
-.verboo-pet[data-state='editing'] .pet-body { transform: rotate(2deg); }
-.verboo-pet[data-state='deleting'] .pet-body { transform: rotate(-3deg) translateX(-2%); }
-.verboo-pet[data-state='command'] .pet-body { transform: rotate(3deg) translateY(2%); }
-.verboo-pet[data-state='error'] .pet-body { filter: saturate(1.3) hue-rotate(-38deg); }
-
-/* ── Per-state loops: run on the img (one layer below the pose), composed
-      with the breathing glow. Every loop starts and ends at a neutral
-      transform, so starting/stopping one can never produce a jump. */
-
-.verboo-pet[data-state='editing'] .pet-body img {
-  animation: pet-scribble 1.7s ease-in-out infinite;
+@keyframes pet-wake {
+  0% { opacity: 0; transform: translateY(10%) scale(0.92); }
+  62% { opacity: 1; transform: translateY(-2%) scale(1.015); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-.verboo-pet[data-state='deleting'] .pet-body img {
-  animation: pet-toss 1.5s ease-in-out infinite;
+@keyframes pet-ambient-float {
+  0%, 7%, 47%, 100% { transform: translateY(0); }
+  18% { transform: translateY(-3.4%); }
+  30% { transform: translateY(-2.1%); }
+  38% { transform: translateY(0.4%); }
 }
 
-.verboo-pet[data-state='command'] .pet-body img {
-  animation: pet-type 620ms ease-in-out infinite;
+@keyframes pet-ambient-sway {
+  0%, 46%, 100% { transform: rotate(0); }
+  12% { transform: rotate(-0.8deg); }
+  28% { transform: rotate(0.65deg); }
 }
 
-.verboo-pet[data-state='thinking'] .pet-body img {
-  animation: pet-ponder 3.2s ease-in-out infinite;
+@keyframes pet-shadow-rest {
+  0%, 7%, 47%, 100% { opacity: 0.28; transform: scaleX(1); }
+  18% { opacity: 0.2; transform: scaleX(0.86); }
+  38% { opacity: 0.3; transform: scaleX(1.025); }
 }
 
-.verboo-pet[data-state='success'] .pet-body img {
-  animation: pet-hop 760ms cubic-bezier(0.34, 1.3, 0.5, 1) 2;
+/* Idle: one breath and one glance, followed by a long readable rest. */
+.verboo-pet[data-state='idle'] .pet-rig-body {
+  animation: pet-idle-premium 6.8s var(--pet-ease-in-out) infinite;
 }
 
-.verboo-pet[data-state='error'] .pet-body img {
-  animation: pet-shake 460ms ease-in-out 2;
+.verboo-pet[data-state='idle'] .pet-rig-eyes {
+  animation: pet-idle-eyes 6.8s var(--pet-ease-in-out) infinite;
 }
 
-/* Writing wiggle: quick little strokes with pauses, like a hand scribbling. */
-@keyframes pet-scribble {
-  0%, 100% { transform: rotate(0deg); }
-  12% { transform: rotate(-2.6deg) translateY(1%); }
-  24% { transform: rotate(1.8deg); }
-  36% { transform: rotate(-2.2deg) translateY(0.8%); }
-  48% { transform: rotate(0.8deg); }
-  62% { transform: rotate(0deg); }
+@keyframes pet-idle-premium {
+  0%, 8%, 48%, 100% { transform: translateY(0) rotate(0) scale(1); }
+  18% { transform: translateY(-1.5%) rotate(-0.7deg) scale(0.996, 1.008); }
+  30% { transform: translateY(0) rotate(0.45deg) scale(1.003, 0.997); }
+  40% { transform: translateY(0) rotate(0) scale(1); }
 }
 
-/* Toss: wind up toward the bin, flick, settle. */
-@keyframes pet-toss {
-  0%, 100% { transform: rotate(0deg) translateX(0); }
-  30% { transform: rotate(-6deg) translateX(-4%); }
-  46% { transform: rotate(4deg) translateX(2.5%); }
-  60% { transform: rotate(-1deg) translateX(0); }
+@keyframes pet-idle-eyes {
+  0%, 43%, 69%, 100% { transform: translate(0, 0); }
+  50%, 61% { transform: translate(3px, -1px); }
 }
 
-/* Typing: fast, small vertical taps with a squash hint. */
-@keyframes pet-type {
-  0%, 100% { transform: translateY(0) scale(1, 1); }
-  50% { transform: translateY(3%) scale(1.015, 0.985); }
+/* Thinking: eyes lead, the body follows, thoughts form, then everything rests. */
+.verboo-pet[data-state='thinking'] .pet-rig-body {
+  animation: pet-thinking-premium 5.6s var(--pet-ease-in-out) infinite;
 }
 
-/* Pondering: slow weight shift while thinking. */
-@keyframes pet-ponder {
-  0%, 100% { transform: rotate(0deg); }
-  50% { transform: rotate(2.4deg) translateY(1.2%); }
+.verboo-pet[data-state='thinking'] .pet-rig-eyes {
+  animation: pet-thinking-eyes 5.6s var(--pet-ease-out) infinite;
 }
 
-@keyframes pet-hop {
-  0%, 100% { transform: translateY(0) scale(1); }
-  35% { transform: translateY(-16%) scale(1.06, 0.94); }
-  62% { transform: translateY(1%) scale(0.96, 1.05); }
-  80% { transform: translateY(-3%) scale(1.01, 0.99); }
-}
-
-@keyframes pet-shake {
-  0%, 100% { transform: translateX(0); }
-  20% { transform: translateX(-5%) rotate(-2deg); }
-  55% { transform: translateX(4.5%) rotate(1.8deg); }
-  80% { transform: translateX(-2%) rotate(-0.8deg); }
-}
-
-/* ── Accessory micro-animations ──────────────────────────────── */
-
-.think-dot { animation: think-pulse 1.6s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
-.think-dot-2 { animation-delay: 200ms; }
-.think-cloud { opacity: 0.2; }
-.think-question {
-  fill: var(--accent-strong);
-  animation: think-bob 1.6s ease-in-out infinite;
-  transform-box: fill-box;
-  transform-origin: center;
-}
-
-@keyframes think-pulse {
-  0%, 100% { transform: scale(1); opacity: 0.55; }
-  50% { transform: scale(1.28); opacity: 1; }
-}
-
-@keyframes think-bob {
-  0%, 100% { transform: translateY(0) rotate(-4deg); }
-  50% { transform: translateY(-2.5px) rotate(5deg); }
-}
-
-.edit-pencil {
-  animation: edit-write 900ms ease-in-out infinite;
-  transform-box: fill-box;
-  transform-origin: 80% 20%;
-}
-
-@keyframes edit-write {
-  0%, 100% { transform: rotate(0deg) translateX(0); }
-  50% { transform: rotate(6deg) translateX(2px); }
-}
-
-.edit-spark { animation: edit-spark 1.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
-.edit-spark-2 { animation-delay: 240ms; }
-.edit-spark-3 { animation-delay: 480ms; }
-
-@keyframes edit-spark {
-  0%, 100% { opacity: 0.2; transform: scale(0.7); }
-  50% { opacity: 1; transform: scale(1.15); }
-}
-
-.delete-bin { transform-box: fill-box; transform-origin: bottom center; animation: delete-wiggle 1.5s ease-in-out infinite; }
-.delete-lid { transform-box: fill-box; transform-origin: left center; animation: delete-lid 1.5s ease-in-out infinite; }
-.delete-scrap { animation: delete-fall 1.5s ease-in infinite; }
-.delete-scrap-2 { animation-delay: 320ms; }
-
-@keyframes delete-wiggle {
-  0%, 100% { transform: rotate(0deg); }
-  45% { transform: rotate(-3deg); }
-}
-
-@keyframes delete-lid {
-  0%, 30%, 100% { transform: rotate(0deg); }
-  45%, 70% { transform: rotate(-24deg); }
-}
-
-@keyframes delete-fall {
-  0%, 25% { opacity: 0; transform: translateY(-6px); }
-  45% { opacity: 1; }
-  80%, 100% { opacity: 0; transform: translateY(14px) rotate(60deg); }
-}
-
-/* Lid back facing the viewer (the mascot types on the far side). */
-.laptop-lid {
-  fill: color-mix(in srgb, var(--bg-soft) 46%, var(--accent-strong));
-  stroke: color-mix(in srgb, var(--accent-strong) 60%, transparent);
-  stroke-width: 1.2;
-}
-
-.laptop-logo {
-  fill: color-mix(in srgb, var(--accent-strong) 40%, var(--bg-soft));
-}
-
-/* Screen light spilling over the top edge of the lid, flickering softly. */
-.laptop-glow {
-  fill: color-mix(in srgb, var(--accent-strong) 72%, white);
-  opacity: 0.55;
-  animation: laptop-glow 1.4s ease-in-out infinite;
-}
-
-@keyframes laptop-glow {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 0.8; }
-}
-
-/* Code glyphs typed out behind the lid, rising and fading. */
-.laptop-glyph {
-  fill: var(--accent-strong);
+.pet-thought { fill: var(--accent-strong); opacity: 0; transform-origin: center; }
+.pet-thought-cloud { opacity: 0; }
+.pet-thought-mark {
+  fill: none;
+  stroke: var(--bg);
+  stroke-width: 4;
+  stroke-linecap: round;
   opacity: 0;
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: laptop-glyph 2.1s ease-out infinite;
 }
 
-.laptop-glyph-2 { animation-delay: 700ms; }
-.laptop-glyph-3 { animation-delay: 1400ms; }
-
-@keyframes laptop-glyph {
-  0% { opacity: 0; transform: translateY(7px) scale(0.8); }
-  25% { opacity: 1; }
-  70% { opacity: 0.9; }
-  100% { opacity: 0; transform: translateY(-7px) scale(1.02); }
+.verboo-pet[data-state='thinking'] .pet-thought,
+.verboo-pet[data-state='thinking'] .pet-thought-mark {
+  animation: pet-thought-form 5.6s var(--pet-ease-out) infinite both;
 }
 
-.read-lens {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: read-sweep 2.4s ease-in-out infinite;
+.verboo-pet[data-state='thinking'] .pet-thought-2 { animation-delay: 90ms; }
+.verboo-pet[data-state='thinking'] .pet-thought-cloud,
+.verboo-pet[data-state='thinking'] .pet-thought-mark { animation-delay: 180ms; }
+
+@keyframes pet-thinking-premium {
+  0%, 7%, 83%, 100% { transform: translateY(0) rotate(0); }
+  13%, 72% { transform: translateY(-2%) rotate(-1.2deg); }
 }
 
-@keyframes read-sweep {
-  0%, 100% { transform: translate(0, 0); }
-  35% { transform: translate(5px, 3px); }
-  70% { transform: translate(-3px, 5px); }
+@keyframes pet-thinking-eyes {
+  0%, 5%, 84%, 100% { transform: translate(0, 0); }
+  9%, 73% { transform: translate(4px, -2px); }
+}
+
+@keyframes pet-thought-form {
+  0%, 10%, 88%, 100% { opacity: 0; transform: translateY(5px) scale(0.92); }
+  17%, 76% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Reading: the document approaches, eyes scan twice with a line drop, pause. */
+.pet-read-paper rect:first-child {
+  fill: color-mix(in srgb, var(--bg-elevated) 90%, white);
+  stroke: color-mix(in srgb, var(--accent-strong) 58%, var(--border));
+  stroke-width: 3;
+}
+
+.pet-read-paper > path {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text-dim) 72%, transparent);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.pet-read-focus { fill: color-mix(in srgb, var(--accent-strong) 24%, transparent); }
+
+.verboo-pet[data-state='reading'] .pet-read-paper {
+  animation: pet-reading-premium 4.8s var(--pet-ease-in-out) infinite;
+}
+
+.verboo-pet[data-state='reading'] .pet-rig-eyes {
+  animation: pet-reading-eyes 4.8s var(--pet-ease-in-out) infinite;
+}
+
+.verboo-pet[data-state='reading'] .pet-read-focus {
+  animation: pet-reading-focus 4.8s var(--pet-ease-in-out) infinite;
+}
+
+@keyframes pet-reading-premium {
+  0%, 6%, 82%, 100% { transform: translate(8px, 3px) rotate(4deg); }
+  13%, 72% { transform: translate(0, 0) rotate(-1deg); }
+}
+
+@keyframes pet-reading-eyes {
+  0%, 14%, 69%, 100% { transform: translate(0, 1px); }
+  25% { transform: translate(5px, 1px); }
+  36% { transform: translate(-4px, 1px); }
+  43% { transform: translate(5px, 4px); }
+  55% { transform: translate(-4px, 4px); }
+}
+
+@keyframes pet-reading-focus {
+  0%, 14%, 69%, 100% { opacity: 0; transform: translateY(0); }
+  20%, 36% { opacity: 1; transform: translateY(0); }
+  43%, 59% { opacity: 1; transform: translateY(13px); }
+}
+
+/* Editing: the pencil plants, draws three synchronized strokes, then lifts. */
+.pet-edit-paper rect {
+  fill: color-mix(in srgb, var(--bg-elevated) 90%, white);
+  stroke: color-mix(in srgb, var(--accent-strong) 54%, var(--border));
+  stroke-width: 3;
+}
+
+.pet-ink {
+  fill: none;
+  stroke: var(--accent-strong);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-dasharray: 54;
+  stroke-dashoffset: 54;
+}
+
+.pet-edit-pencil { transform-origin: center bottom; }
+.pet-edit-pencil rect { fill: #5ed8ef; }
+.pet-edit-pencil path { fill: color-mix(in srgb, #5ed8ef 68%, white); }
+
+.verboo-pet[data-state='editing'] .pet-rig-eyes {
+  animation: pet-editing-eyes 4.4s var(--pet-ease-out) infinite;
+}
+
+.verboo-pet[data-state='editing'] .pet-edit-pencil {
+  animation: pet-editing-premium 4.4s var(--pet-ease-in-out) infinite;
+}
+
+.verboo-pet[data-state='editing'] .pet-ink-1 { animation: pet-ink-one 4.4s linear infinite; }
+.verboo-pet[data-state='editing'] .pet-ink-2 { animation: pet-ink-two 4.4s linear infinite; }
+.verboo-pet[data-state='editing'] .pet-ink-3 { animation: pet-ink-three 4.4s linear infinite; }
+
+@keyframes pet-editing-premium {
+  0%, 8%, 76%, 100% { transform: translate(10px, -11px) rotate(38deg); }
+  15% { transform: translate(-22px, 7px) rotate(31deg); }
+  26% { transform: translate(12px, 5px) rotate(31deg); }
+  33% { transform: translate(-22px, 20px) rotate(31deg); }
+  45% { transform: translate(18px, 17px) rotate(31deg); }
+  52% { transform: translate(-22px, 33px) rotate(31deg); }
+  64% { transform: translate(20px, 30px) rotate(31deg); }
+  72% { transform: translate(10px, -11px) rotate(38deg); }
+}
+
+@keyframes pet-editing-eyes {
+  0%, 8%, 78%, 100% { transform: translate(0, 0); }
+  14%, 70% { transform: translate(4px, 3px); }
+}
+
+@keyframes pet-ink-one {
+  0%, 15% { stroke-dashoffset: 54; }
+  27%, 68% { stroke-dashoffset: 0; }
+  76%, 100% { stroke-dashoffset: 54; }
+}
+
+@keyframes pet-ink-two {
+  0%, 33% { stroke-dashoffset: 54; }
+  46%, 68% { stroke-dashoffset: 0; }
+  76%, 100% { stroke-dashoffset: 54; }
+}
+
+@keyframes pet-ink-three {
+  0%, 52% { stroke-dashoffset: 54; }
+  65%, 68% { stroke-dashoffset: 0; }
+  76%, 100% { stroke-dashoffset: 54; }
+}
+
+/* Deleting: anticipation, paper arc, lid impact and a controlled settle. */
+.pet-delete-paper rect {
+  fill: color-mix(in srgb, var(--bg-elevated) 92%, white);
+  stroke: color-mix(in srgb, var(--danger) 52%, var(--border));
+  stroke-width: 2.5;
+}
+
+.pet-delete-paper path {
+  fill: none;
+  stroke: var(--text-dim);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.pet-delete-bin > path:first-child { fill: color-mix(in srgb, var(--danger) 28%, var(--bg-soft)); }
+.pet-delete-lid {
+  fill: none;
+  stroke: var(--danger);
+  stroke-width: 5;
+  stroke-linecap: round;
+  transform-origin: right center;
+}
+
+.verboo-pet[data-state='deleting'] .pet-delete-paper {
+  animation: pet-deleting-premium 1.45s var(--pet-ease-in-out) 1 both;
+}
+
+.verboo-pet[data-state='deleting'] .pet-delete-lid {
+  animation: pet-deleting-lid 1.45s var(--pet-ease-out) 1 both;
+}
+
+.verboo-pet[data-state='deleting'] .pet-rig-body {
+  animation: pet-deleting-body 1.45s var(--pet-ease-in-out) 1 both;
+}
+
+@keyframes pet-deleting-premium {
+  0%, 7% { opacity: 1; transform: translate(0, 0) rotate(-4deg); }
+  19% { opacity: 1; transform: translate(-7px, 5px) rotate(-10deg); }
+  47% { opacity: 1; transform: translate(31px, -42px) rotate(52deg); }
+  68% { opacity: 1; transform: translate(54px, 15px) rotate(118deg); }
+  79%, 100% { opacity: 0; transform: translate(54px, 54px) rotate(142deg); }
+}
+
+@keyframes pet-deleting-lid {
+  0%, 62%, 100% { transform: translateY(0) rotate(0); }
+  70% { transform: translateY(-7px) rotate(-8deg); }
+  84% { transform: translateY(1px) rotate(1deg); }
+}
+
+@keyframes pet-deleting-body {
+  0%, 6%, 100% { transform: translateX(0) rotate(0) scale(1); }
+  19% { transform: translateX(-3%) rotate(-2deg) scale(0.99, 1.01); }
+  48% { transform: translateX(1.5%) rotate(1deg) scale(1.006, 0.994); }
+  76% { transform: translateX(0) rotate(0) scale(1); }
+}
+
+/* Command: three tactile key bursts, each producing exactly one glyph. */
+.pet-command-screen rect {
+  fill: color-mix(in srgb, var(--bg-soft) 92%, black);
+  stroke: color-mix(in srgb, var(--accent-strong) 74%, transparent);
+  stroke-width: 3;
+}
+
+.pet-command-screen path,
+.pet-command-keyboard > path {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent-strong) 76%, white);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.pet-command-keyboard > rect:first-child {
+  fill: color-mix(in srgb, var(--bg-soft) 92%, black);
+  stroke: color-mix(in srgb, var(--accent-strong) 72%, transparent);
+  stroke-width: 3;
+}
+
+.pet-command-key { fill: var(--accent-strong); opacity: 0; }
+.pet-command-glyph { opacity: 0; }
+
+.verboo-pet[data-state='command'] .pet-rig-body {
+  animation: pet-command-premium 3.6s var(--pet-ease-in-out) infinite;
+}
+
+.verboo-pet[data-state='command'] .pet-command-key,
+.verboo-pet[data-state='command'] .pet-command-glyph {
+  animation: pet-command-hit 3.6s var(--pet-ease-out) infinite both;
+}
+
+.verboo-pet[data-state='command'] .pet-command-key-2,
+.verboo-pet[data-state='command'] .pet-command-glyph-2 { animation-delay: 420ms; }
+.verboo-pet[data-state='command'] .pet-command-key-3,
+.verboo-pet[data-state='command'] .pet-command-glyph-3 { animation-delay: 840ms; }
+
+@keyframes pet-command-premium {
+  0%, 6%, 51%, 100% { transform: translateY(0) scale(1); }
+  10%, 22%, 34% { transform: translateY(1.8%) scale(1.008, 0.992); }
+  14%, 26%, 38% { transform: translateY(0) scale(1); }
+}
+
+@keyframes pet-command-hit {
+  0%, 6%, 18%, 100% { opacity: 0; transform: translateY(3px) scale(0.94); }
+  9%, 13% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Success: one pre-compression, jump, landing and check on contact. */
+.pet-prop-done circle { fill: var(--green); }
+.pet-prop-done path {
+  fill: none;
+  stroke: var(--bg);
+  stroke-width: 6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.verboo-pet[data-state='success'] .pet-rig-body {
+  animation: pet-success-premium 900ms var(--pet-ease-out) 1 both;
+}
+
+.verboo-pet[data-state='success'] .pet-prop-done {
+  animation: pet-success-check 900ms var(--pet-ease-out) 1 both;
+}
+
+.verboo-pet[data-state='success'] .pet-shadow {
+  animation: pet-success-shadow 900ms var(--pet-ease-out) 1 both;
+}
+
+@keyframes pet-success-premium {
+  0% { transform: translateY(0) scale(1); }
+  13% { transform: translateY(4%) scale(1.05, 0.92); }
+  35% { transform: translateY(-24%) scale(0.95, 1.07); }
+  47% { transform: translateY(-27%) scale(1); }
+  67% { transform: translateY(2%) scale(1.08, 0.9); }
+  82% { transform: translateY(-2%) scale(0.99, 1.015); }
+  100% { transform: translateY(0) scale(1); }
+}
+
+@keyframes pet-success-check {
+  0%, 60% { opacity: 0; transform: translateY(8px) scale(0.92); }
+  76%, 100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes pet-success-shadow {
+  0% { opacity: 0.28; transform: scaleX(1); }
+  35%, 47% { opacity: 0.15; transform: scaleX(0.68); }
+  67% { opacity: 0.4; transform: scaleX(1.12); }
+  100% { opacity: 0.28; transform: scaleX(1); }
+}
+
+/* Error: eyes widen first, one damped shake, then a clear neutral recovery. */
+.pet-prop-error > path:first-child { fill: var(--danger); }
+.pet-error-mark {
+  fill: none;
+  stroke: var(--bg);
+  stroke-width: 6;
+  stroke-linecap: round;
+}
+
+.verboo-pet[data-state='error'] .pet-rig-body {
+  animation: pet-error-premium 620ms var(--pet-ease-out) 1 both;
+}
+
+.verboo-pet[data-state='error'] .pet-rig-eyes {
+  animation: pet-error-eyes 620ms var(--pet-ease-out) 1 both;
+}
+
+.verboo-pet[data-state='error'] .pet-prop-error {
+  animation: pet-error-alert 620ms var(--pet-ease-out) 1 both;
+}
+
+.verboo-pet[data-state='error'] .pet-mouth-smile { opacity: 0; }
+.verboo-pet[data-state='error'] .pet-mouth-error { opacity: 1; }
+
+@keyframes pet-error-premium {
+  0%, 17% { transform: translateX(0) rotate(0); }
+  29% { transform: translateX(-4%) rotate(-4deg); }
+  42% { transform: translateX(3%) rotate(3deg); }
+  55% { transform: translateX(-1.5%) rotate(-1.5deg); }
+  69% { transform: translateX(0.5%) rotate(0.5deg); }
+  84%, 100% { transform: translateX(0) rotate(0); }
+}
+
+@keyframes pet-error-eyes {
+  0% { transform: scale(1); }
+  17%, 70% { transform: scale(1.14, 1.2); }
+  100% { transform: scale(1); }
+}
+
+@keyframes pet-error-alert {
+  0%, 12% { opacity: 0; transform: translateY(8px) scale(0.92); }
+  28%, 74% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0.74; transform: translateY(0) scale(0.97); }
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -830,16 +993,18 @@
   border-color: color-mix(in srgb, var(--danger) 44%, var(--border));
 }
 
-/* ── Reduced motion: everything freezes gracefully ───────────── */
+/* ── Reduced motion: preserve state legibility, remove displacement ─ */
 
 @media (prefers-reduced-motion: reduce) {
   .pet-float,
   .pet-sway,
   .pet-shadow,
   .pet-body,
-  .pet-body img,
+  .pet-rig,
+  .pet-rig-body,
+  .pet-rig-eyes,
   .pet-prop,
-  .pet-prop * ,
+  .pet-prop *,
   .toast,
   .question-wizard,
   .question-wizard-step,
@@ -850,7 +1015,26 @@
     transition: none !important;
   }
 
-  .pet-prop {
-    transform: none;
+  .verboo-pet,
+  .pet-prop,
+  .pet-mouth {
+    transition: opacity 140ms cubic-bezier(0.22, 1, 0.36, 1) !important;
   }
+
+  .pet-float,
+  .pet-sway,
+  .pet-rig-body,
+  .pet-rig-eyes,
+  .pet-prop {
+    transform: none !important;
+  }
+
+  .verboo-pet[data-state='thinking'] .pet-thought,
+  .verboo-pet[data-state='thinking'] .pet-thought-mark,
+  .verboo-pet[data-state='command'] .pet-command-glyph {
+    opacity: 1;
+  }
+
+  .verboo-pet[data-state='command'] .pet-command-key { opacity: 0.24; }
+  .verboo-pet[data-state='editing'] .pet-ink { stroke-dashoffset: 0; }
 }

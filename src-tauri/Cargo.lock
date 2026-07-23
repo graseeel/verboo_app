@@ -5997,7 +5997,7 @@ dependencies = [
 
 [[package]]
 name = "verboo-desktop"
-version = "0.5.2-beta.2"
+version = "0.6.0-beta.1"
 dependencies = [
  "base64 0.22.1",
  "block2",
