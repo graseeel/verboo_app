@@ -67,6 +67,9 @@ jobs:
       - name: Verify release versions
         run: node scripts/verify/verify-release-version.mjs --tag "${{ steps.release.outputs.tag }}"
 
+      - name: Test release contracts
+        run: node --test scripts/verify/update-manifest.test.mjs scripts/verify/verify-release-version.test.mjs
+
   # ─────────────────────────────────────────────────────────────────────
   # Per-platform builds. Each job:
   #   1. Installs Rust 1.89.0 (pinned per team memory — proc-macro ABI fix)
@@ -260,7 +263,30 @@ jobs:
           set -euo pipefail
           test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo "::error::TAURI_SIGNING_PRIVATE_KEY is missing"; exit 1; }
           test -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" || { echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is missing"; exit 1; }
-          cargo +1.89.0 tauri build --target ${{ matrix.target }}
+          BUILD_LOG="$RUNNER_TEMP/tauri-build-${{ matrix.target }}.log"
+          set +e
+          cargo +1.89.0 tauri build --target ${{ matrix.target }} 2>&1 | tee "$BUILD_LOG"
+          BUILD_STATUS="${PIPESTATUS[0]}"
+          set -e
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            exit "$BUILD_STATUS"
+          fi
+          if grep -Fq "does not match the public key from" "$BUILD_LOG"; then
+            echo "::error::Updater private key does not match the exact public key in tauri.conf.json"
+            exit 1
+          fi
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then
+            BUNDLE_ROOT="src-tauri/target/${{ matrix.target }}/release/bundle"
+            for package_dir in deb rpm; do
+              PACKAGES=$(find "$BUNDLE_ROOT/$package_dir" -maxdepth 1 -type f -name "*.$package_dir" | sort -u)
+              PACKAGE_COUNT=$(printf '%s\n' "$PACKAGES" | sed '/^$/d' | wc -l | tr -d ' ')
+              if [ "$PACKAGE_COUNT" != "1" ]; then
+                echo "::error::Expected one .$package_dir package, found $PACKAGE_COUNT"
+                exit 1
+              fi
+              cargo +1.89.0 tauri signer sign "$PACKAGES"
+            done
+          fi
 
       - name: Run packaged multiwebview runtime smoke
         if: runner.os == 'macOS' && matrix.target == 'aarch64-apple-darwin'
@@ -375,42 +401,53 @@ jobs:
             cp -f "$f" "$OUT/$name"
           done
 
+          prepare_update() {
+            local search_dir="$1"
+            local pattern="$2"
+            local update_name="$3"
+            local update_source
+            local update_count
+            update_source=$(find "$search_dir" -maxdepth 1 -type f -name "$pattern" | sort -u)
+            update_count=$(printf '%s\n' "$update_source" | sed '/^$/d' | wc -l | tr -d ' ')
+            if [ "$update_count" != "1" ]; then
+              echo "::error::Expected one updater payload matching $pattern, found $update_count"
+              printf '%s\n' "$update_source"
+              exit 1
+            fi
+            if [ ! -s "${update_source}.sig" ]; then
+              echo "::error::Missing or empty updater signature for $update_name"
+              exit 1
+            fi
+            cp -f "$update_source" "$OUT/$update_name"
+            cp -f "${update_source}.sig" "$OUT/${update_name}.sig"
+          }
+
           case "$TARGET" in
             aarch64-apple-darwin)
-              UPDATE_PATTERN='*.app.tar.gz'
-              UPDATE_SUFFIX='darwin-aarch64.app.tar.gz'
+              prepare_update "$BUNDLE_ROOT/macos" '*.app.tar.gz' \
+                "Verboo-Code-${VERSION}-darwin-aarch64.app.tar.gz"
               ;;
             x86_64-apple-darwin)
-              UPDATE_PATTERN='*.app.tar.gz'
-              UPDATE_SUFFIX='darwin-x86_64.app.tar.gz'
+              prepare_update "$BUNDLE_ROOT/macos" '*.app.tar.gz' \
+                "Verboo-Code-${VERSION}-darwin-x86_64.app.tar.gz"
               ;;
             x86_64-pc-windows-msvc)
-              UPDATE_PATTERN='*.nsis.zip'
-              UPDATE_SUFFIX='windows-x86_64.nsis.zip'
+              prepare_update "$BUNDLE_ROOT/nsis" '*.exe' \
+                "Verboo-Code-${VERSION}-windows-x86_64-setup.exe"
               ;;
             x86_64-unknown-linux-gnu)
-              UPDATE_PATTERN='*.AppImage.tar.gz'
-              UPDATE_SUFFIX='linux-x86_64.AppImage.tar.gz'
+              prepare_update "$BUNDLE_ROOT/appimage" '*.AppImage' \
+                "Verboo-Code-${VERSION}-linux-x86_64.AppImage"
+              prepare_update "$BUNDLE_ROOT/deb" '*.deb' \
+                "Verboo-Code-${VERSION}-linux-x86_64.deb"
+              prepare_update "$BUNDLE_ROOT/rpm" '*.rpm' \
+                "Verboo-Code-${VERSION}-linux-x86_64.rpm"
               ;;
             *)
               echo "::error::Unsupported updater target $TARGET"
               exit 1
               ;;
           esac
-          UPDATE_SOURCE=$(find "$BUNDLE_ROOT" -type f -name "$UPDATE_PATTERN" | sort -u)
-          UPDATE_COUNT=$(printf '%s\n' "$UPDATE_SOURCE" | sed '/^$/d' | wc -l | tr -d ' ')
-          if [ "$UPDATE_COUNT" != "1" ]; then
-            echo "::error::Expected one updater payload for $TARGET, found $UPDATE_COUNT"
-            printf '%s\n' "$UPDATE_SOURCE"
-            exit 1
-          fi
-          if [ ! -s "${UPDATE_SOURCE}.sig" ]; then
-            echo "::error::Missing or empty updater signature for $TARGET"
-            exit 1
-          fi
-          UPDATE_NAME="Verboo-Code-${VERSION}-${UPDATE_SUFFIX}"
-          cp -f "$UPDATE_SOURCE" "$OUT/$UPDATE_NAME"
-          cp -f "${UPDATE_SOURCE}.sig" "$OUT/${UPDATE_NAME}.sig"
           echo "Prepared assets:"
           ls -la "$OUT"
           echo "dir=$OUT" >> "$GITHUB_OUTPUT"
@@ -479,9 +516,7 @@ jobs:
           done
 
   # ─────────────────────────────────────────────────────────────────────
-  # Aggregate `latest.json` for the Tauri updater. One file per platform
-  # (latest-mac.yml, latest.yml, latest-linux.yml) so the existing Electron
-  # release assets don't collide.
+  # Aggregate one `latest.json` with installer-specific signed artifacts.
   # ─────────────────────────────────────────────────────────────────────
   publish-updates-manifest:
     name: Publish Tauri update manifests

@@ -13,7 +13,7 @@ use services::model_service::ModelService;
 use services::profile_service::ProfileService;
 use services::settings_store::SettingsStore;
 use services::terminal_service::TerminalService;
-use services::turn_service::TurnService;
+use services::turn_service::{TurnService, UpdateInstallAdmission};
 use tauri::{Emitter, Manager};
 
 // ════════════════════════════════════════════════════════════════════
@@ -1255,12 +1255,22 @@ async fn download_update(
     service: tauri::State<'_, crate::services::update_service::UpdateService>,
 ) -> Result<UpdateSnapshot, String> {
     use tauri_plugin_updater::UpdaterExt;
-    service.mark_downloading();
+    let ticket = match service.begin_download()? {
+        Some(ticket) => ticket,
+        None => return Ok(service.snapshot()),
+    };
     let _ = app.emit("update:snapshot", service.snapshot());
-    let endpoint: tauri::Url = match service.endpoint().parse() {
+    let endpoint: tauri::Url = match crate::services::update_service::UpdateService::endpoint_for(
+        &ticket,
+    )
+    .parse()
+    {
         Ok(endpoint) => endpoint,
         Err(e) => {
-            let snap = service.mark_error(format!("Endpoint de atualização inválido: {e}"));
+            let snap = service.finish_download_error(
+                &ticket,
+                format!("Endpoint de atualização inválido: {e}"),
+            );
             let _ = app.emit("update:snapshot", snap.clone());
             return Ok(snap);
         }
@@ -1272,7 +1282,8 @@ async fn download_update(
     {
         Ok(updater) => updater,
         Err(e) => {
-            let snap = service.mark_error(format!("Falha ao configurar updater: {e}"));
+            let snap = service
+                .finish_download_error(&ticket, format!("Falha ao configurar updater: {e}"));
             let _ = app.emit("update:snapshot", snap.clone());
             return Ok(snap);
         }
@@ -1280,43 +1291,62 @@ async fn download_update(
     let update = match updater.check().await {
         Ok(Some(update)) => update,
         Ok(None) => {
-            let snap = service.mark_error("Nenhuma atualização disponível".into());
+            let snap = service
+                .finish_download_error(&ticket, "Nenhuma atualização disponível".into());
             let _ = app.emit("update:snapshot", snap.clone());
             return Ok(snap);
         }
         Err(e) => {
-            let snap = service.mark_error(format!("Falha ao verificar: {e}"));
+            let snap =
+                service.finish_download_error(&ticket, format!("Falha ao verificar: {e}"));
             let _ = app.emit("update:snapshot", snap.clone());
             return Ok(snap);
         }
     };
+    if !service.bind_download_version(&ticket, &update.version)? {
+        return Ok(service.snapshot());
+    }
     let app_for_chunk = app.clone();
     let service_handle = service.clone_handle();
+    let ticket_for_chunk = ticket.clone();
     let mut transferred = 0_u64;
     let started = std::time::Instant::now();
     let result = update
-        .download_and_install(
+        .download(
             move |chunk_len, total| {
                 transferred = transferred.saturating_add(chunk_len as u64);
                 if let Some(total) = total {
                     let seconds = started.elapsed().as_secs_f64().max(0.001);
-                    let snap = service_handle.mark_download_progress(
+                    let snap = service_handle.mark_download_progress_for(
+                        &ticket_for_chunk,
                         transferred,
                         total,
                         transferred as f64 / seconds,
                     );
-                    let _ = app_for_chunk.emit("update:snapshot", snap);
+                    if let Some(snap) = snap {
+                        let _ = app_for_chunk.emit("update:snapshot", snap);
+                    }
                 }
             },
             || {},
         )
         .await;
-    if let Err(e) = result {
-        let snap = service.mark_error(format!("Falha ao baixar: {e}"));
-        let _ = app.emit("update:snapshot", snap.clone());
-        return Ok(snap);
-    }
-    let snap = service.mark_downloaded();
+    let bytes = match result {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            let snap = service.finish_download_error(&ticket, format!("Falha ao baixar: {e}"));
+            let _ = app.emit("update:snapshot", snap.clone());
+            return Ok(snap);
+        }
+    };
+    let snap = match service.stage_downloaded(&ticket, update, bytes) {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => service.snapshot(),
+        Err(error) => service.finish_download_error(
+            &ticket,
+            format!("Falha ao preparar atualização: {error}"),
+        ),
+    };
     let _ = app.emit("update:snapshot", snap.clone());
     Ok(snap)
 }
@@ -1330,30 +1360,65 @@ fn install_update(
     if !service.can_install() {
         return Err("Atualização ainda não foi baixada".into());
     }
-    let active_turns = turns.active_count()?;
-    if active_turns > 0 {
-        return Ok(InstallUpdateResult {
-            status: InstallUpdateStatus::Busy,
-            active_turns,
-        });
+    let _install_lease = match turns.begin_update_install()? {
+        UpdateInstallAdmission::Ready(lease) => lease,
+        UpdateInstallAdmission::Busy { active_turns } => {
+            return Ok(InstallUpdateResult {
+                status: InstallUpdateStatus::Busy,
+                active_turns,
+            });
+        }
+    };
+    let staged = service
+        .take_staged_update()?
+        .ok_or_else(|| "Atualização baixada não está mais disponível".to_string())?;
+    let bytes = match staged.read_verified() {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let snapshot = service.mark_error(error.clone());
+            let _ = app.emit("update:snapshot", snapshot);
+            return Err(error);
+        }
+    };
+    #[cfg(target_os = "macos")]
+    let macos_bundle = match tauri::process::current_binary(&app.env())
+        .map_err(|e| format!("Falha ao localizar o app instalado: {e}"))
+        .and_then(|executable| {
+            crate::services::update_service::macos_bundle_path(&executable)
+                .ok_or_else(|| "O executável não está dentro de um bundle macOS válido".to_string())
+        }) {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            service.restore_staged_update(staged)?;
+            return Err(error);
+        }
+    };
+    if let Err(error) = std::fs::remove_file(&staged.artifact) {
+        service.restore_staged_update(staged)?;
+        return Err(format!("Falha ao preparar instalação: {error}"));
+    }
+    let update = staged.update;
+    if let Err(error) = update.install(&bytes) {
+        service.restore_failed_install(update, bytes)?;
+        return Err(format!("Falha ao instalar atualização: {error}"));
     }
     #[cfg(target_os = "macos")]
     {
-        let executable = tauri::process::current_binary(&app.env())
-            .map_err(|e| format!("Falha ao localizar o app instalado: {e}"))?;
-        let bundle = crate::services::update_service::macos_bundle_path(&executable)
-            .ok_or_else(|| "O executável não está dentro de um bundle macOS válido".to_string())?;
-        std::process::Command::new("/bin/sh")
+        let relaunch = std::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(crate::services::update_service::macos_relaunch_script())
             .arg("verboo-update-relaunch")
             .arg(std::process::id().to_string())
-            .arg(bundle)
+            .arg(macos_bundle)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("Falha ao reabrir o app atualizado: {e}"))?;
+            .spawn();
+        if let Err(error) = relaunch {
+            eprintln!("[verboo:update] relaunch helper failed, using native restart: {error}");
+            app.restart();
+        }
+        _install_lease.keep_until_process_exit();
         app.exit(0);
         Ok(InstallUpdateResult {
             status: InstallUpdateStatus::Restarting,

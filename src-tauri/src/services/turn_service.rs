@@ -1,6 +1,6 @@
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
 use tauri::{AppHandle, Emitter};
@@ -50,6 +50,74 @@ pub(crate) fn bundled_cli_0_13_0_media_capabilities() -> CliMediaCapabilities {
 /// while holding the inner mutex.
 type ChildHandle = Arc<Mutex<Child>>;
 
+#[derive(Clone, Default)]
+struct UpdateInstallGate {
+    installing: Arc<Mutex<bool>>,
+}
+
+struct TurnRegistrationGuard<'a> {
+    _guard: MutexGuard<'a, bool>,
+}
+
+pub(crate) struct UpdateInstallLease {
+    gate: UpdateInstallGate,
+}
+
+pub(crate) enum UpdateInstallAdmission {
+    Ready(UpdateInstallLease),
+    Busy { active_turns: usize },
+}
+
+impl UpdateInstallLease {
+    /// A successful updater install must keep rejecting new turns after the
+    /// exit request is queued and until the operating system ends the process.
+    pub(crate) fn keep_until_process_exit(self) {
+        std::mem::forget(self);
+    }
+}
+
+impl UpdateInstallGate {
+    fn begin_turn_registration(&self) -> Result<TurnRegistrationGuard<'_>, String> {
+        let guard = self
+            .installing
+            .lock()
+            .map_err(|_| "update install gate is unavailable".to_string())?;
+        if *guard {
+            return Err("Uma atualização está sendo instalada; aguarde o app reiniciar".into());
+        }
+        Ok(TurnRegistrationGuard { _guard: guard })
+    }
+
+    fn begin_install(
+        &self,
+        active_count: impl FnOnce() -> Result<usize, String>,
+    ) -> Result<UpdateInstallAdmission, String> {
+        let mut installing = self
+            .installing
+            .lock()
+            .map_err(|_| "update install gate is unavailable".to_string())?;
+        if *installing {
+            return Err("Uma atualização já está sendo instalada".into());
+        }
+        let active_turns = active_count()?;
+        if active_turns > 0 {
+            return Ok(UpdateInstallAdmission::Busy { active_turns });
+        }
+        *installing = true;
+        Ok(UpdateInstallAdmission::Ready(UpdateInstallLease {
+            gate: self.clone(),
+        }))
+    }
+}
+
+impl Drop for UpdateInstallLease {
+    fn drop(&mut self) {
+        if let Ok(mut installing) = self.gate.installing.lock() {
+            *installing = false;
+        }
+    }
+}
+
 /// Auth: the API key (if stored) is injected via `OAUTH_TOKEN_FILE` env var
 /// pointing at a 0600 temp file. This matches Electron's behavior of
 /// "API key has precedence over OAuth token" (verbooCliService.ts:306) and
@@ -64,6 +132,9 @@ pub struct TurnService {
     /// Registered on `send_turn`, cleared on `Done`/`Error` in the reader
     /// thread.
     active_by_conversation: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    /// Serializes turn registration with the updater's final install/restart
+    /// window so a healthy turn can never begin after the busy check.
+    update_install_gate: UpdateInstallGate,
     credentials: Arc<CredentialsStore>,
     /// Optional settings store for reading `prevent_sleep_while_running`.
     /// When `None`, sleep prevention is disabled (used in tests).
@@ -80,6 +151,7 @@ impl TurnService {
         Self {
             active: Arc::new(Mutex::new(std::collections::HashMap::new())),
             active_by_conversation: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            update_install_gate: UpdateInstallGate::default(),
             credentials,
             settings: None,
             app_data_dir: None,
@@ -1054,6 +1126,7 @@ impl TurnService {
         request: AgentTurnRequest,
         resume_session_id: Option<String>,
     ) -> Result<String, String> {
+        let registration = self.update_install_gate.begin_turn_registration()?;
         let turn_id = request
             .turn_id
             .clone()
@@ -1094,11 +1167,10 @@ impl TurnService {
         // replaces the old fragile fallback ("any active turn") that could
         // kill the wrong chat in multichat. Cleared on Done/Error in the
         // reader thread.
-        {
-            if let Ok(mut map) = active_by_conversation.lock() {
-                map.insert(conversation_id.clone(), turn_id.clone());
-            }
-        }
+        active_by_conversation
+            .lock()
+            .map_err(|_| "active conversation registry is unavailable".to_string())?
+            .insert(conversation_id.clone(), turn_id.clone());
 
         // Spawn a background thread for ALL heavy work. This is the structural
         // fix for the beachball freeze: the Tauri command thread returns
@@ -1111,7 +1183,8 @@ impl TurnService {
         // `creation_flags` (see below). Interrupt via `child_signal` works
         // on all three (SIGINT on Unix, GenerateConsoleCtrlEvent on Windows).
         let builder = std::thread::Builder::new().name(format!("verboo-turn-{turn_id}"));
-        builder
+        let active_by_conversation_for_thread = active_by_conversation.clone();
+        let spawn_result = builder
             .spawn(move || {
                 Self::run_turn_background(
                     app_for_thread,
@@ -1120,14 +1193,22 @@ impl TurnService {
                     turn_id_for_thread,
                     conversation_id_for_thread,
                     active,
-                    active_by_conversation,
+                    active_by_conversation_for_thread,
                     credentials,
                     settings,
                     app_data_dir,
                     video_jobs,
                 );
-            })
-            .map_err(|e| format!("Falha ao iniciar thread do turn: {e}"))?;
+            });
+        drop(registration);
+        if let Err(error) = spawn_result {
+            if let Ok(mut map) = active_by_conversation.lock() {
+                if map.get(&conversation_id) == Some(&turn_id) {
+                    map.remove(&conversation_id);
+                }
+            }
+            return Err(format!("Falha ao iniciar thread do turn: {error}"));
+        }
 
         Ok(turn_id)
     }
@@ -1208,6 +1289,7 @@ impl TurnService {
             let fallback_svc = TurnService {
                 active: active.clone(),
                 active_by_conversation: active_by_conversation.clone(),
+                update_install_gate: UpdateInstallGate::default(),
                 credentials: credentials.clone(),
                 settings: settings.clone(),
                 app_data_dir: app_data_dir.clone(),
@@ -1687,6 +1769,11 @@ impl TurnService {
             .map(|active| active.len())
             .map_err(|_| "active conversation registry is unavailable".to_string())?;
         Ok(active_children.max(active_turns))
+    }
+
+    pub(crate) fn begin_update_install(&self) -> Result<UpdateInstallAdmission, String> {
+        self.update_install_gate
+            .begin_install(|| self.active_count())
     }
 
     /// Interrupt a running turn by turn_id. Sends SIGINT on Unix, Ctrl+C
@@ -4698,6 +4785,83 @@ mod tests {
         .join();
 
         assert!(service.active_count().is_err());
+    }
+
+    #[test]
+    fn update_install_admission_observes_a_turn_registered_in_parallel() {
+        use std::sync::Barrier;
+
+        let service = Arc::new(make_turn_service());
+        let registered = Arc::new(Barrier::new(2));
+        let release_registration = Arc::new(Barrier::new(2));
+
+        let turn_service = service.clone();
+        let turn_registered = registered.clone();
+        let turn_release = release_registration.clone();
+        let turn = std::thread::spawn(move || {
+            let _registration = turn_service
+                .update_install_gate
+                .begin_turn_registration()
+                .unwrap();
+            turn_service
+                .active_by_conversation
+                .lock()
+                .unwrap()
+                .insert("conversation".into(), "turn".into());
+            turn_registered.wait();
+            turn_release.wait();
+        });
+
+        registered.wait();
+        let install_service = service.clone();
+        let install =
+            std::thread::spawn(move || install_service.begin_update_install());
+
+        release_registration.wait();
+        turn.join().unwrap();
+        match install.join().unwrap().unwrap() {
+            UpdateInstallAdmission::Busy { active_turns } => assert_eq!(active_turns, 1),
+            UpdateInstallAdmission::Ready(_) => panic!("install bypassed turn registration"),
+        }
+    }
+
+    #[test]
+    fn active_update_install_blocks_new_turn_registration_until_lease_drops() {
+        let service = make_turn_service();
+        let lease = match service
+            .update_install_gate
+            .begin_install(|| Ok(0))
+            .unwrap()
+        {
+            UpdateInstallAdmission::Ready(lease) => lease,
+            UpdateInstallAdmission::Busy { .. } => panic!("unexpected active turn"),
+        };
+
+        assert!(service
+            .update_install_gate
+            .begin_turn_registration()
+            .is_err());
+        drop(lease);
+        assert!(service
+            .update_install_gate
+            .begin_turn_registration()
+            .is_ok());
+    }
+
+    #[test]
+    fn committed_update_install_keeps_turn_gate_closed_until_process_exit() {
+        let service = make_turn_service();
+        let lease = match service.begin_update_install().unwrap() {
+            UpdateInstallAdmission::Ready(lease) => lease,
+            UpdateInstallAdmission::Busy { .. } => panic!("unexpected active turn"),
+        };
+
+        lease.keep_until_process_exit();
+
+        assert!(service
+            .update_install_gate
+            .begin_turn_registration()
+            .is_err());
     }
 
     #[test]

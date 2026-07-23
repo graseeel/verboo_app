@@ -2,11 +2,13 @@
 // commands that the renderer will call in a later wiring pass.
 #![allow(dead_code)]
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::models::types::{UpdateChannel, UpdateSettings, UpdateSnapshot, UpdateStatus};
+use sha2::{Digest, Sha256};
 
 const CHECK_INTERVAL_MS: u64 = 6 * 60 * 60 * 1000;
 pub const STABLE_UPDATE_ENDPOINT: &str =
@@ -14,8 +16,9 @@ pub const STABLE_UPDATE_ENDPOINT: &str =
 pub const BETA_UPDATE_ENDPOINT: &str =
     "https://github.com/graseeel/verboo_app/releases/download/updater-beta/latest.json";
 
-/// Pure state machine for the updater UI. The actual Tauri updater calls
-/// (`UpdaterExt::updater_builder().check()`, `Update::download_and_install`)
+/// State machine and verified-download staging for the updater UI. The actual
+/// Tauri updater calls (`UpdaterExt::updater_builder().check()`,
+/// `Update::download`, and `Update::install`)
 /// live in `lib.rs` because they're async + need an `AppHandle`. This struct
 /// owns the snapshot, channel configuration, and periodic-check timer logic.
 ///
@@ -24,6 +27,113 @@ pub const BETA_UPDATE_ENDPOINT: &str =
 #[derive(Clone)]
 pub struct UpdateService {
     state: Arc<Mutex<State>>,
+    pending_update: Arc<PendingUpdateStore<tauri_plugin_updater::Update>>,
+}
+
+pub(crate) struct StagedUpdate<U> {
+    pub(crate) update: U,
+    pub(crate) artifact: tempfile::TempPath,
+    digest: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DownloadTicket {
+    pub(crate) id: u64,
+    pub(crate) channel: UpdateChannel,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveDownload {
+    ticket: DownloadTicket,
+    version: Option<String>,
+}
+
+struct PendingUpdateStore<U> {
+    value: Mutex<Option<StagedUpdate<U>>>,
+}
+
+impl<U> Default for PendingUpdateStore<U> {
+    fn default() -> Self {
+        Self {
+            value: Mutex::new(None),
+        }
+    }
+}
+
+impl<U> PendingUpdateStore<U> {
+    fn prepare(update: U, bytes: Vec<u8>) -> Result<StagedUpdate<U>, String> {
+        let digest: [u8; 32] = Sha256::digest(&bytes).into();
+        let mut artifact = tempfile::Builder::new()
+            .prefix("verboo-update-")
+            .suffix(".bin")
+            .tempfile()
+            .map_err(|error| format!("Falha ao preparar atualização: {error}"))?;
+        artifact
+            .write_all(&bytes)
+            .map_err(|error| format!("Falha ao armazenar atualização: {error}"))?;
+        Ok(StagedUpdate {
+            update,
+            artifact: artifact.into_temp_path(),
+            digest,
+        })
+    }
+
+    fn replace(&self, staged: StagedUpdate<U>) -> Result<(), String> {
+        let mut value = self
+            .value
+            .lock()
+            .map_err(|_| "Estado da atualização pendente indisponível".to_string())?;
+        *value = Some(staged);
+        Ok(())
+    }
+
+    fn stage(&self, update: U, bytes: Vec<u8>) -> Result<(), String> {
+        self.replace(Self::prepare(update, bytes)?)
+    }
+
+    fn take(&self) -> Result<Option<StagedUpdate<U>>, String> {
+        self.value
+            .lock()
+            .map(|mut value| value.take())
+            .map_err(|_| "Estado da atualização pendente indisponível".to_string())
+    }
+
+    fn restore(&self, staged: StagedUpdate<U>) -> Result<(), String> {
+        let mut value = self
+            .value
+            .lock()
+            .map_err(|_| "Estado da atualização pendente indisponível".to_string())?;
+        *value = Some(staged);
+        Ok(())
+    }
+
+    fn clear(&self) -> Result<(), String> {
+        let mut value = self
+            .value
+            .lock()
+            .map_err(|_| "Estado da atualização pendente indisponível".to_string())?;
+        *value = None;
+        Ok(())
+    }
+
+    fn is_ready(&self) -> bool {
+        self.value
+            .lock()
+            .map(|value| value.is_some())
+            .unwrap_or(false)
+    }
+}
+
+impl<U> StagedUpdate<U> {
+    pub(crate) fn read_verified(&self) -> Result<Vec<u8>, String> {
+        let bytes = std::fs::read(&self.artifact)
+            .map_err(|error| format!("Falha ao abrir atualização baixada: {error}"))?;
+        let actual: [u8; 32] = Sha256::digest(&bytes).into();
+        if actual != self.digest {
+            return Err("A integridade da atualização baixada foi alterada".into());
+        }
+        Ok(bytes)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +144,8 @@ struct State {
     checking: bool,
     downloaded: bool,
     last_timer_at_ms: Option<i64>,
+    next_download_id: u64,
+    active_download: Option<ActiveDownload>,
 }
 
 impl UpdateService {
@@ -70,7 +182,10 @@ impl UpdateService {
                 checking: false,
                 downloaded: false,
                 last_timer_at_ms: None,
+                next_download_id: 0,
+                active_download: None,
             })),
+            pending_update: Arc::new(PendingUpdateStore::default()),
         }
     }
 
@@ -104,13 +219,35 @@ impl UpdateService {
         }
     }
 
+    pub(crate) fn endpoint_for(ticket: &DownloadTicket) -> &'static str {
+        match ticket.channel {
+            UpdateChannel::Stable => STABLE_UPDATE_ENDPOINT,
+            UpdateChannel::Beta => BETA_UPDATE_ENDPOINT,
+        }
+    }
+
     /// Applies a new settings patch (channel / autoCheck / autoDownload).
     /// Returns the resulting snapshot. Mirrors Electron's `UpdateService.configure`.
     pub fn configure(&self, settings: UpdateSettings) -> UpdateSnapshot {
         if let Ok(mut state) = self.state.lock() {
+            let channel_changed = state.settings.channel != settings.channel;
             state.settings = settings.clone();
             state.snapshot.channel = settings.channel;
-            // Stays in Idle/Unsupported unless an explicit check changes it.
+            if channel_changed {
+                state.active_download = None;
+                state.downloaded = false;
+                state.snapshot.status = UpdateStatus::Idle;
+                state.snapshot.available_version = None;
+                state.snapshot.release_name = None;
+                state.snapshot.release_date = None;
+                state.snapshot.release_notes = None;
+                state.snapshot.percent = None;
+                state.snapshot.transferred_bytes = None;
+                state.snapshot.total_bytes = None;
+                state.snapshot.bytes_per_second = None;
+                state.snapshot.downloaded_at = None;
+                let _ = self.pending_update.clear();
+            }
         }
         self.snapshot()
     }
@@ -196,6 +333,70 @@ impl UpdateService {
         self.snapshot()
     }
 
+    pub(crate) fn begin_download(&self) -> Result<Option<DownloadTicket>, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "Estado da atualização indisponível".to_string())?;
+        if state.active_download.is_some() {
+            return Ok(None);
+        }
+        state.next_download_id = state.next_download_id.saturating_add(1);
+        let ticket = DownloadTicket {
+            id: state.next_download_id,
+            channel: state.settings.channel.clone(),
+        };
+        state.active_download = Some(ActiveDownload {
+            ticket: ticket.clone(),
+            version: None,
+        });
+        state.snapshot.status = UpdateStatus::Downloading;
+        state.snapshot.error = None;
+        Ok(Some(ticket))
+    }
+
+    pub(crate) fn bind_download_version(
+        &self,
+        ticket: &DownloadTicket,
+        version: &str,
+    ) -> Result<bool, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "Estado da atualização indisponível".to_string())?;
+        let current_channel = state.settings.channel.clone();
+        let Some(active) = state.active_download.as_mut() else {
+            return Ok(false);
+        };
+        if active.ticket != *ticket || current_channel != ticket.channel {
+            return Ok(false);
+        }
+        active.version = Some(version.to_string());
+        Ok(true)
+    }
+
+    pub(crate) fn finish_download_error(
+        &self,
+        ticket: &DownloadTicket,
+        error: String,
+    ) -> UpdateSnapshot {
+        if let Ok(mut state) = self.state.lock() {
+            let is_current = state
+                .active_download
+                .as_ref()
+                .map(|active| active.ticket == *ticket)
+                .unwrap_or(false);
+            if is_current {
+                state.active_download = None;
+                state.snapshot.status = UpdateStatus::Error;
+                state.snapshot.error = Some(error);
+                state.snapshot.last_checked_at = Some(now_ms());
+            }
+            return state.snapshot.clone();
+        }
+        self.snapshot()
+    }
+
     /// Records a download-progress event.
     pub fn mark_download_progress(
         &self,
@@ -218,6 +419,37 @@ impl UpdateService {
         self.snapshot()
     }
 
+    pub(crate) fn mark_download_progress_for(
+        &self,
+        ticket: &DownloadTicket,
+        transferred: u64,
+        total: u64,
+        bytes_per_second: f64,
+    ) -> Option<UpdateSnapshot> {
+        let Ok(mut state) = self.state.lock() else {
+            return None;
+        };
+        let is_current = state
+            .active_download
+            .as_ref()
+            .map(|active| active.ticket == *ticket)
+            .unwrap_or(false);
+        if !is_current {
+            return None;
+        }
+        let percent = if total == 0 {
+            0.0
+        } else {
+            (transferred as f64 / total as f64) * 100.0
+        };
+        state.snapshot.status = UpdateStatus::Downloading;
+        state.snapshot.percent = Some(percent.clamp(0.0, 100.0));
+        state.snapshot.transferred_bytes = Some(transferred);
+        state.snapshot.total_bytes = Some(total);
+        state.snapshot.bytes_per_second = Some(bytes_per_second);
+        Some(state.snapshot.clone())
+    }
+
     /// Records that the download has completed.
     pub fn mark_downloaded(&self) -> UpdateSnapshot {
         if let Ok(mut state) = self.state.lock() {
@@ -229,20 +461,79 @@ impl UpdateService {
         self.snapshot()
     }
 
+    pub(crate) fn stage_downloaded(
+        &self,
+        ticket: &DownloadTicket,
+        update: tauri_plugin_updater::Update,
+        bytes: Vec<u8>,
+    ) -> Result<Option<UpdateSnapshot>, String> {
+        let version = update.version.clone();
+        let staged = PendingUpdateStore::prepare(update, bytes)?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "Estado da atualização indisponível".to_string())?;
+        let is_current = state
+            .active_download
+            .as_ref()
+            .map(|active| {
+                active.ticket == *ticket
+                    && active.version.as_deref() == Some(version.as_str())
+                    && state.settings.channel == ticket.channel
+            })
+            .unwrap_or(false);
+        if !is_current {
+            return Ok(None);
+        }
+        self.pending_update.replace(staged)?;
+        state.active_download = None;
+        state.downloaded = true;
+        state.snapshot.status = UpdateStatus::Downloaded;
+        state.snapshot.available_version = Some(version);
+        state.snapshot.downloaded_at = Some(now_ms());
+        state.snapshot.percent = Some(100.0);
+        Ok(Some(state.snapshot.clone()))
+    }
+
+    pub(crate) fn restore_failed_install(
+        &self,
+        update: tauri_plugin_updater::Update,
+        bytes: Vec<u8>,
+    ) -> Result<(), String> {
+        self.pending_update.stage(update, bytes)
+    }
+
+    pub(crate) fn take_staged_update(
+        &self,
+    ) -> Result<Option<StagedUpdate<tauri_plugin_updater::Update>>, String> {
+        self.pending_update.take()
+    }
+
+    pub(crate) fn restore_staged_update(
+        &self,
+        staged: StagedUpdate<tauri_plugin_updater::Update>,
+    ) -> Result<(), String> {
+        self.pending_update.restore(staged)
+    }
+
     /// Returns true if the snapshot indicates the download has completed and
     /// the user can quit-and-install.
     pub fn can_install(&self) -> bool {
-        self.state
+        let downloaded = self
+            .state
             .lock()
             .map(|s| s.snapshot.status == UpdateStatus::Downloaded)
-            .unwrap_or(false)
+            .unwrap_or(false);
+        downloaded && self.pending_update.is_ready()
     }
 
     /// Resets to Idle after the user dismisses an error or decline an update.
     pub fn reset(&self) -> UpdateSnapshot {
         if let Ok(mut state) = self.state.lock() {
+            state.active_download = None;
             state.snapshot.status = UpdateStatus::Idle;
             state.snapshot.error = None;
+            let _ = self.pending_update.clear();
         }
         self.snapshot()
     }
@@ -383,14 +674,84 @@ mod tests {
     }
 
     #[test]
-    fn mark_downloaded_sets_percent_100_and_can_install() {
+    fn downloaded_status_without_verified_bytes_cannot_install() {
         let s = service(true);
         s.mark_downloading();
         s.mark_downloaded();
         let snap = s.snapshot();
         assert_eq!(snap.status, UpdateStatus::Downloaded);
         assert_eq!(snap.percent, Some(100.0));
-        assert!(s.can_install());
+        assert!(!s.can_install());
+    }
+
+    #[test]
+    fn pending_update_store_keeps_verified_bytes_until_install() {
+        let store = PendingUpdateStore::default();
+
+        store.stage("verified update", vec![1, 2, 3]).unwrap();
+
+        assert!(store.is_ready());
+        let staged = store.take().unwrap().unwrap();
+        let artifact_path = staged.artifact.to_path_buf();
+        assert_eq!(staged.update, "verified update");
+        assert_eq!(std::fs::read(&artifact_path).unwrap(), vec![1, 2, 3]);
+        assert!(!store.is_ready());
+
+        drop(staged);
+        assert!(!artifact_path.exists());
+    }
+
+    #[test]
+    fn staged_update_rejects_bytes_changed_after_signature_verification() {
+        let store = PendingUpdateStore::default();
+        store.stage("verified update", vec![1, 2, 3]).unwrap();
+        let staged = store.take().unwrap().unwrap();
+
+        std::fs::write(&staged.artifact, [9, 9, 9]).unwrap();
+
+        assert!(staged.read_verified().unwrap_err().contains("integridade"));
+    }
+
+    #[test]
+    fn pending_update_can_be_restored_after_install_failure() {
+        let store = PendingUpdateStore::default();
+        store.stage("verified update", vec![4, 5, 6]).unwrap();
+        let staged = store.take().unwrap().unwrap();
+
+        store.restore(staged).unwrap();
+
+        assert!(store.is_ready());
+    }
+
+    #[test]
+    fn pending_update_store_clears_stale_download() {
+        let store = PendingUpdateStore::default();
+        store.stage("old update", vec![7, 8, 9]).unwrap();
+
+        store.clear().unwrap();
+
+        assert!(!store.is_ready());
+        assert!(store.take().unwrap().is_none());
+    }
+
+    #[test]
+    fn updater_download_and_install_are_separate_phases() {
+        let source = include_str!("../lib.rs");
+        let download = source
+            .split("async fn download_update")
+            .nth(1)
+            .and_then(|rest| rest.split("fn install_update").next())
+            .expect("download_update command source");
+        let install = source
+            .split("fn install_update")
+            .nth(1)
+            .and_then(|rest| rest.split("// ═══════════════════════════════════").next())
+            .expect("install_update command source");
+
+        assert!(download.contains(".download("));
+        assert!(!download.contains("download_and_install"));
+        assert!(download.contains("Falha ao preparar atualização"));
+        assert!(install.contains(".install("));
     }
 
     #[test]
@@ -401,6 +762,34 @@ mod tests {
         assert_eq!(snap.transferred_bytes, Some(750));
         assert_eq!(snap.total_bytes, Some(1_000));
         assert_eq!(snap.bytes_per_second, Some(100_000.0));
+    }
+
+    #[test]
+    fn downloads_are_single_flight() {
+        let s = service(true);
+
+        let first = s.begin_download().unwrap().expect("first download ticket");
+
+        assert!(s.begin_download().unwrap().is_none());
+        assert!(s.bind_download_version(&first, "2.0.0").unwrap());
+    }
+
+    #[test]
+    fn changing_channel_invalidates_an_in_flight_download() {
+        let s = service(true);
+        let beta = s.begin_download().unwrap().expect("beta download ticket");
+        assert!(s.bind_download_version(&beta, "2.0.0-beta.1").unwrap());
+
+        s.configure(UpdateSettings {
+            channel: UpdateChannel::Stable,
+            auto_check: true,
+            auto_download: false,
+        });
+
+        assert!(!s.bind_download_version(&beta, "2.0.0-beta.1").unwrap());
+        let stable = s.begin_download().unwrap().expect("stable download ticket");
+        assert_eq!(stable.channel, UpdateChannel::Stable);
+        assert_ne!(stable.id, beta.id);
     }
 
     #[test]

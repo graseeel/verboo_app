@@ -2,14 +2,18 @@ import { readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 
 export const TARGET_ARTIFACTS = Object.freeze({
-  "darwin-aarch64": (version) =>
+  "darwin-aarch64-app": (version) =>
     `Verboo-Code-${version}-darwin-aarch64.app.tar.gz`,
-  "darwin-x86_64": (version) =>
+  "darwin-x86_64-app": (version) =>
     `Verboo-Code-${version}-darwin-x86_64.app.tar.gz`,
-  "windows-x86_64": (version) =>
-    `Verboo-Code-${version}-windows-x86_64.nsis.zip`,
-  "linux-x86_64": (version) =>
-    `Verboo-Code-${version}-linux-x86_64.AppImage.tar.gz`,
+  "windows-x86_64-nsis": (version) =>
+    `Verboo-Code-${version}-windows-x86_64-setup.exe`,
+  "linux-x86_64-appimage": (version) =>
+    `Verboo-Code-${version}-linux-x86_64.AppImage`,
+  "linux-x86_64-deb": (version) =>
+    `Verboo-Code-${version}-linux-x86_64.deb`,
+  "linux-x86_64-rpm": (version) =>
+    `Verboo-Code-${version}-linux-x86_64.rpm`,
 });
 
 export async function buildUpdateManifest({
