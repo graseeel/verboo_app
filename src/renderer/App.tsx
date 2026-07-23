@@ -50,6 +50,7 @@ import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { useToast } from './components/Toast'
 import { VerbooPet, PET_MIN_SIZE, PET_MAX_SIZE, type PetState } from './features/pet/VerbooPet'
 import { BrowserPanel } from './features/browser/BrowserPanel'
+import { supportsEmbeddedBrowser } from './features/browser/browserAvailability'
 import { browserLayoutWidth, browserMaxWidth, useBrowserPanel } from './features/browser/useBrowserPanel'
 import { QuestionWizard, type ModelQuestion, type QuestionAnswer, type QuestionPromptState } from './features/questions/QuestionWizard'
 import { detectTextQuestionPrompt, extractModelQuestionsFromPayload, mergeModelQuestions } from './features/questions/questionDetection'
@@ -297,6 +298,7 @@ export function App() {
     accessMode: 'approval',
     platform: 'darwin',
   })
+  const [configLoaded, setConfigLoaded] = useState(false)
   const [credentials, setCredentials] = useState<CredentialStatus>({ hasApiKey: false })
   const [cliAuth, setCliAuth] = useState<CliAuthStatus>({ loggedIn: false })
   const [profile, setProfile] = useState<ProfileResult>({ status: 'unauthenticated' })
@@ -456,6 +458,7 @@ export function App() {
   const terminal = useLocalTerminal()
   const review = useReviewPanel()
   const browser = useBrowserPanel()
+  const browserAvailable = configLoaded && supportsEmbeddedBrowser(config.platform)
   const t = useMemo(() => createTranslator(userSettings.language), [userSettings.language])
   const [tokenRate, setTokenRate] = useState<TokenRateSnapshot | undefined>()
   const goalRef = useRef(goal)
@@ -616,8 +619,8 @@ export function App() {
       if (target) review.open(target.workingDirectory, target.files, target.index)
       return
     }
-    browser.open()
-  }, [browser.open, currentWorkspaceDirectory, review.open, review.target, terminal.open])
+    if (browserAvailable) browser.open()
+  }, [browser.open, browserAvailable, currentWorkspaceDirectory, review.open, review.target, terminal.open])
   const { workspacePanelsEnabled } = useWorkspacePanelSuspension({
     isFullscreenView,
     isChatView: activeView === 'chat',
@@ -629,7 +632,7 @@ export function App() {
   })
   const visibleTerminalOpen = workspacePanelsEnabled && terminal.terminalOpen
   const visibleReviewOpen = workspacePanelsEnabled && review.reviewOpen
-  const visibleBrowserOpen = workspacePanelsEnabled && browser.browserOpen
+  const visibleBrowserOpen = browserAvailable && workspacePanelsEnabled && browser.browserOpen
   const effectiveSidebarWidth = isFullscreenView
     ? 0
     : sidebarVisualMode === 'hidden'
@@ -642,6 +645,10 @@ export function App() {
   const setBrowserWidth = useCallback((width: number) => {
     browser.setWidth(width, effectiveSidebarWidth)
   }, [browser.setWidth, effectiveSidebarWidth])
+
+  useEffect(() => {
+    if (!browserAvailable) browser.close()
+  }, [browser.close, browserAvailable])
 
   useEffect(() => {
     if (!browser.browserOpen || browser.browserWidth <= browserWidthLimit) return
@@ -727,6 +734,7 @@ export function App() {
       setSelectedModel(settings.lastSelectedModelId)
       setAccessMode(settings.defaultAccessMode)
       setConfig(nextConfig)
+      setConfigLoaded(true)
       setAccessMode(nextConfig.accessMode)
       document.documentElement.dataset.platform = nextConfig.platform
       if (settings.staySignedIn && readRememberedAuthSession()) {
@@ -2469,7 +2477,8 @@ export function App() {
 
     const localPreviewUrl = findLocalBrowserUrl(combined)
     if (
-      localPreviewUrl
+      browserAvailable
+      && localPreviewUrl
       && activeConversationIdRef.current === conversationId
       && (!browser.browserOpen || browser.currentUrl !== localPreviewUrl)
       && browser.navigationRequest?.url !== localPreviewUrl
@@ -2776,7 +2785,9 @@ export function App() {
     { key: 'theme', label: t('palette.toggleTheme'), icon: paletteIcons.theme, run: () => cycleTheme() },
     { key: 'terminal', label: t('palette.toggleTerminal'), icon: paletteIcons.terminal, run: () => handleToggleTerminal(currentWorkspaceDirectory) },
     { key: 'review', label: t('palette.toggleReview'), icon: paletteIcons.review, run: () => { void handleToggleReview() } },
-    { key: 'browser', label: t('palette.toggleBrowser'), icon: paletteIcons.browser, run: () => handleToggleBrowser() },
+    ...(browserAvailable
+      ? [{ key: 'browser', label: t('palette.toggleBrowser'), icon: paletteIcons.browser, run: () => handleToggleBrowser() }]
+      : []),
     { key: 'sidebar', label: t('palette.toggleSidebar'), icon: paletteIcons.sidebar, run: toggleSidebarVisibility },
     { key: 'pet', label: t('palette.togglePet'), icon: paletteIcons.pet, run: togglePet },
     {
@@ -2786,7 +2797,7 @@ export function App() {
       run: () => handleCompactCommand({ kind: 'compact', raw: '/compact' }),
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [t, currentWorkspaceDirectory])
+  ], [t, currentWorkspaceDirectory, browserAvailable])
 
   function handleEditObjective(newObjective: string) {
     const conversationId = activeConversation?.id
@@ -3117,6 +3128,7 @@ export function App() {
   }
 
   function scheduleBrowserPostEditReload(turnId: string, conversationId: string, workspaceChangeCount: number) {
+    if (!browserAvailable) return
     const annotations = turnBrowserAnnotations.current[turnId]
     if (!shouldScheduleBrowserReload({
       annotationCount: annotations?.length ?? 0,
@@ -4120,7 +4132,7 @@ export function App() {
   }, [currentWorkspaceDirectory, review, terminal, browser])
 
   const handleToggleBrowser = useCallback(() => {
-    if (!workspacePanelsEnabled) return
+    if (!browserAvailable || !workspacePanelsEnabled) return
     if (browser.browserOpen) {
       browser.close()
       return
@@ -4129,7 +4141,7 @@ export function App() {
     review.close()
     setSelectedSubagentId(undefined)
     browser.open()
-  }, [browser, terminal, review, workspacePanelsEnabled])
+  }, [browser, browserAvailable, terminal, review, workspacePanelsEnabled])
 
   async function refreshWorkspaceReview() {
     if (!review.target) return
@@ -4170,6 +4182,7 @@ export function App() {
   useEffect(() => {
     function handleBrowserShortcut(event: KeyboardEvent) {
       if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.key.toLowerCase() !== 'b') return
+      if (!browserAvailable) return
       event.preventDefault()
       event.stopPropagation()
       if (!workspacePanelsEnabled) return
@@ -4178,7 +4191,7 @@ export function App() {
 
     window.addEventListener('keydown', handleBrowserShortcut, { capture: true })
     return () => window.removeEventListener('keydown', handleBrowserShortcut, { capture: true })
-  }, [handleToggleBrowser, workspacePanelsEnabled])
+  }, [browserAvailable, handleToggleBrowser, workspacePanelsEnabled])
 
   const feedbackDiagnostics = useMemo<FeedbackDiagnostics>(() => ({
     appVersion: packageJson.version,
@@ -4323,6 +4336,7 @@ export function App() {
         reviewOpen={visibleReviewOpen}
         reviewUnavailableReason={reviewUnavailableReason}
         onToggleReview={handleToggleReview}
+        browserAvailable={browserAvailable}
         browserOpen={visibleBrowserOpen}
         onToggleBrowser={handleToggleBrowser}
         workspacePanelsEnabled={workspacePanelsEnabled}
@@ -4504,6 +4518,7 @@ export function App() {
               onPetToggle={togglePet}
               onPetSizeChange={updatePetSize}
               archivedConversations={archivedChats}
+              browserAvailable={browserAvailable}
               onOpenDashboard={() => window.verboo.openDashboard()}
               onSaveApiKey={async apiKey => {
                 await saveApiKey(apiKey)
@@ -4583,24 +4598,26 @@ export function App() {
           branchInfo={branchInfo}
           includeVerbooCoAuthor={userSettings.includeVerbooCoAuthor}
         />
-      <BrowserPanel
-        browserOpen={visibleBrowserOpen}
-        browserWidth={effectiveBrowserWidth}
-        annotationMode={browser.annotationMode}
-        onSetWidth={setBrowserWidth}
-        onClose={browser.close}
-        onTogglePencil={browser.togglePencil}
-        onToggleArrow={browser.toggleArrow}
-        onAddAnnotation={addBrowserAnnotation}
-        navigationRequest={browser.navigationRequest}
-        onNavigationHandled={browser.completeNavigation}
-        reloadRequest={browser.reloadRequest}
-        onUrlChange={browser.setCurrentUrl}
-        onReloadSnapshot={handleBrowserReloadSnapshot}
-        onReloadHandled={browser.completeReload}
-        minWidth={browser.MIN_WIDTH}
-        maxWidth={browserWidthLimit}
-      />
+      {browserAvailable && (
+        <BrowserPanel
+          browserOpen={visibleBrowserOpen}
+          browserWidth={effectiveBrowserWidth}
+          annotationMode={browser.annotationMode}
+          onSetWidth={setBrowserWidth}
+          onClose={browser.close}
+          onTogglePencil={browser.togglePencil}
+          onToggleArrow={browser.toggleArrow}
+          onAddAnnotation={addBrowserAnnotation}
+          navigationRequest={browser.navigationRequest}
+          onNavigationHandled={browser.completeNavigation}
+          reloadRequest={browser.reloadRequest}
+          onUrlChange={browser.setCurrentUrl}
+          onReloadSnapshot={handleBrowserReloadSnapshot}
+          onReloadHandled={browser.completeReload}
+          minWidth={browser.MIN_WIDTH}
+          maxWidth={browserWidthLimit}
+        />
+      )}
       </div>
       {(() => {
         // GoalStatusBar only renders when GoalActivePanel is NOT visible.

@@ -14,6 +14,7 @@ describe('TopBar workspace panel controls', () => {
           onToggleTerminal={vi.fn()}
           reviewOpen={false}
           onToggleReview={vi.fn()}
+          browserAvailable
           browserOpen={false}
           onToggleBrowser={vi.fn()}
           workspacePanelsEnabled={false}
@@ -36,6 +37,7 @@ describe('TopBar workspace panel controls', () => {
           onToggleTerminal={vi.fn()}
           reviewOpen={false}
           onToggleReview={vi.fn()}
+          browserAvailable
           browserOpen={false}
           onToggleBrowser={vi.fn()}
           workspacePanelsEnabled
@@ -46,5 +48,28 @@ describe('TopBar workspace panel controls', () => {
     expect(screen.getByRole('button', { name: 'Abrir terminal local' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Abrir revisão de arquivos' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Abrir navegador' })).toBeEnabled()
+  })
+
+  it('hides only the embedded browser control outside macOS', () => {
+    render(
+      <I18nProvider language="pt-BR">
+        <TopBar
+          sidebarVisible
+          onToggleSidebar={vi.fn()}
+          terminalOpen={false}
+          onToggleTerminal={vi.fn()}
+          reviewOpen={false}
+          onToggleReview={vi.fn()}
+          browserAvailable={false}
+          browserOpen={false}
+          onToggleBrowser={vi.fn()}
+          workspacePanelsEnabled
+        />
+      </I18nProvider>,
+    )
+
+    expect(screen.getByRole('button', { name: 'Abrir terminal local' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Abrir revisão de arquivos' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Abrir navegador' })).not.toBeInTheDocument()
   })
 })

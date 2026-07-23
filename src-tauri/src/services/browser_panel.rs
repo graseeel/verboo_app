@@ -29,9 +29,9 @@
 //!
 //! ## Plataforma
 //!
-//! macOS tem snapshot e evaluateJS nativos (WKWebView). Windows/Linux
-//! compilam mas retornam erro explícito nesses comandos — Fase 5 decide
-//! se o port sai antes do release.
+//! O navegador embutido é uma feature exclusiva do macOS nesta versão.
+//! Windows e Linux compilam o módulo, mas `browser_create` recusa a criação
+//! até que o port multiplataforma esteja pronto para lançamento.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -291,6 +291,10 @@ const MAX_PAGE_MESSAGE_BYTES: usize = 64 * 1024;
 
 // ── Commands ─────────────────────────────────────────────────────────
 
+const fn embedded_browser_supported() -> bool {
+    cfg!(target_os = "macos")
+}
+
 #[tauri::command]
 pub fn browser_create(
     app: AppHandle,
@@ -298,6 +302,10 @@ pub fn browser_create(
     bounds: BrowserBounds,
     url: Option<String>,
 ) -> Result<BrowserCreateReport, String> {
+    if !embedded_browser_supported() {
+        return Err("navegador embutido disponível apenas no macOS nesta versão".into());
+    }
+
     if !bounds.is_valid() {
         return Err(format!(
             "bounds inválidos: width={} height={}",
@@ -1230,6 +1238,11 @@ mod tests {
             height: 800.0,
         };
         assert!(good.is_valid());
+    }
+
+    #[test]
+    fn embedded_browser_support_matches_the_macos_release_scope() {
+        assert_eq!(embedded_browser_supported(), cfg!(target_os = "macos"));
     }
 
     #[test]

@@ -59,6 +59,7 @@ type SettingsViewProps = {
   activeTab: SettingsTab
   userSettings: UserSettings
   archivedConversations: StoredConversation[]
+  browserAvailable: boolean
   petEnabled: boolean
   petSize: number
   updateSnapshot?: UpdateSnapshot
@@ -87,6 +88,7 @@ export function SettingsView({
   activeTab,
   userSettings,
   archivedConversations,
+  browserAvailable,
   petEnabled,
   petSize,
   updateSnapshot,
@@ -407,12 +409,14 @@ export function SettingsView({
                 checked={userSettings.includeVerbooCoAuthor}
                 onChange={includeVerbooCoAuthor => onUserSettingsChange({ includeVerbooCoAuthor })}
               />
-              <SettingToggle
-                title={t('settings.browserVerification')}
-                body={t('settings.browserVerificationBody')}
-                checked={userSettings.browserVerificationEnabled}
-                onChange={browserVerificationEnabled => onUserSettingsChange({ browserVerificationEnabled })}
-              />
+              {browserAvailable && (
+                <SettingToggle
+                  title={t('settings.browserVerification')}
+                  body={t('settings.browserVerificationBody')}
+                  checked={userSettings.browserVerificationEnabled}
+                  onChange={browserVerificationEnabled => onUserSettingsChange({ browserVerificationEnabled })}
+                />
+              )}
             </section>
 
             <section className="settings-panel">

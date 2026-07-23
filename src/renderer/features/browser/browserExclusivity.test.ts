@@ -51,10 +51,11 @@ describe('panel exclusivity (source analysis)', () => {
 
   it('BrowserPanel is rendered instead of BrowserSpikePanel', () => {
     expect(appSource).not.toMatch(/BrowserSpikePanel/)
-    expect(appSource).toMatch(/<BrowserPanel/)
+    expect(appSource).toMatch(/browserAvailable && \(\s*<BrowserPanel/)
   })
 
-  it('TopBar receives browserOpen and onToggleBrowser props', () => {
+  it('TopBar receives browser availability, open state, and toggle props', () => {
+    expect(appSource).toMatch(/browserAvailable=\{browserAvailable\}/)
     expect(appSource).toMatch(/browserOpen=\{visibleBrowserOpen\}/)
     expect(appSource).toMatch(/onToggleBrowser=\{handleToggleBrowser\}/)
   })
@@ -72,7 +73,7 @@ describe('panel exclusivity (source analysis)', () => {
   it('guards all rendered workspace panels while fullscreen', () => {
     expect(appSource).toMatch(/const visibleTerminalOpen = workspacePanelsEnabled && terminal\.terminalOpen/)
     expect(appSource).toMatch(/const visibleReviewOpen = workspacePanelsEnabled && review\.reviewOpen/)
-    expect(appSource).toMatch(/const visibleBrowserOpen = workspacePanelsEnabled && browser\.browserOpen/)
+    expect(appSource).toMatch(/const visibleBrowserOpen = browserAvailable && workspacePanelsEnabled && browser\.browserOpen/)
     expect(appSource).toMatch(/terminalOpen=\{visibleTerminalOpen\}/)
     expect(appSource).toMatch(/open=\{visibleReviewOpen\}/)
     expect(appSource).toMatch(/browserOpen=\{visibleBrowserOpen\}/)
@@ -82,5 +83,9 @@ describe('panel exclusivity (source analysis)', () => {
     expect(appSource).toMatch(/workspacePanelsEnabled=\{workspacePanelsEnabled\}/)
     const guards = appSource.match(/if \(!workspacePanelsEnabled\) return/g) ?? []
     expect(guards.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it('derives embedded browser availability from the runtime platform', () => {
+    expect(appSource).toMatch(/supportsEmbeddedBrowser\(config\.platform\)/)
   })
 })

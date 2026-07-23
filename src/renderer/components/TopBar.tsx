@@ -10,6 +10,7 @@ type TopBarProps = {
   reviewOpen: boolean
   reviewUnavailableReason?: string
   onToggleReview: () => void
+  browserAvailable: boolean
   browserOpen: boolean
   onToggleBrowser: () => void
   workspacePanelsEnabled: boolean
@@ -24,6 +25,7 @@ export function TopBar({
   reviewOpen,
   reviewUnavailableReason,
   onToggleReview,
+  browserAvailable,
   browserOpen,
   onToggleBrowser,
   workspacePanelsEnabled,
@@ -90,20 +92,22 @@ export function TopBar({
         >
           <FileSearch size={15} />
         </button>
-        <button
-          className={`topbar-terminal-button ui-tooltip ${browserOpen ? 'active' : ''}`}
-          type="button"
-          disabled={!workspacePanelsEnabled}
-          onClick={event => {
-            event.stopPropagation()
-            onToggleBrowser()
-          }}
-          data-tooltip={browserOpen ? t('topbar.hideBrowser') : t('topbar.openBrowser')}
-          data-tooltip-align="end"
-          aria-label={browserOpen ? t('topbar.hideBrowser') : t('topbar.openBrowser')}
-        >
-          <Globe size={15} />
-        </button>
+        {browserAvailable && (
+          <button
+            className={`topbar-terminal-button ui-tooltip ${browserOpen ? 'active' : ''}`}
+            type="button"
+            disabled={!workspacePanelsEnabled}
+            onClick={event => {
+              event.stopPropagation()
+              onToggleBrowser()
+            }}
+            data-tooltip={browserOpen ? t('topbar.hideBrowser') : t('topbar.openBrowser')}
+            data-tooltip-align="end"
+            aria-label={browserOpen ? t('topbar.hideBrowser') : t('topbar.openBrowser')}
+          >
+            <Globe size={15} />
+          </button>
+        )}
       </div>
     </header>
   )
