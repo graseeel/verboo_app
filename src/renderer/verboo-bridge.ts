@@ -30,6 +30,7 @@ import type {
   FileDiffStatus,
   GoalEvaluationInput,
   GoalEvaluationResult,
+  InstallUpdateResult,
   LocalTerminalSession,
   LocalTerminalStartRequest,
   LoginResult,
@@ -361,9 +362,9 @@ const api = {
   checkForUpdates: (userInitiated = false) =>
     invoke<UpdateSnapshot>('check_for_updates', { userInitiated }),
   downloadUpdate: () => invoke<UpdateSnapshot>('download_update'),
-  installUpdate: () => invoke<boolean>('install_update'),
+  installUpdate: () => invoke<InstallUpdateResult>('install_update'),
   onUpdateStatus: (callback: (snapshot: UpdateSnapshot) => void) =>
-    onEvent<UpdateSnapshot>('updates:status', callback),
+    onEvent<UpdateSnapshot>('update:snapshot', callback),
 
   // ── Terminal ────────────────────────────────────────────────
   terminalStart: (request: LocalTerminalStartRequest) =>

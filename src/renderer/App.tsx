@@ -49,11 +49,15 @@ import { CommandPalette, paletteIcons, type PaletteAction } from './components/C
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { useToast } from './components/Toast'
 import { VerbooPet, PET_MIN_SIZE, PET_MAX_SIZE, type PetState } from './features/pet/VerbooPet'
+import { BrowserPanel } from './features/browser/BrowserPanel'
+import { supportsEmbeddedBrowser } from './features/browser/browserAvailability'
+import { browserLayoutWidth, browserMaxWidth, useBrowserPanel } from './features/browser/useBrowserPanel'
 import { QuestionWizard, type ModelQuestion, type QuestionAnswer, type QuestionPromptState } from './features/questions/QuestionWizard'
 import { detectTextQuestionPrompt, extractModelQuestionsFromPayload, mergeModelQuestions } from './features/questions/questionDetection'
 import { MessageCircleQuestion } from 'lucide-react'
 import { useLocalTerminal } from './features/terminal/useLocalTerminal'
 import { LocalTerminalPanel } from './features/terminal/LocalTerminalPanel'
+import { useWorkspacePanelSuspension, type WorkspacePanelKind } from './features/workspace/useWorkspacePanelSuspension'
 import { useTheme } from './features/theme/useTheme'
 import { ReviewPanel } from './features/review/ReviewPanel'
 import { useReviewPanel } from './features/review/useReviewPanel'
@@ -61,7 +65,6 @@ import { EmptyChat } from './components/EmptyChat'
 import { LoginScreen } from './components/LoginScreen'
 import { TopBar } from './components/TopBar'
 import { Transcript } from './components/Transcript'
-import { UpdateBanner } from './components/UpdateBanner'
 import { AccessSelector } from './features/access/AccessSelector'
 import { PermissionApprovalPanel, type PendingPermissionPrompt } from './features/permission/PermissionApprovalPanel'
 import { VisionFallbackModal } from './features/vision/VisionFallbackModal'
@@ -96,11 +99,24 @@ import { PluginsView } from './features/plugins/PluginsView'
 import { loadPluginSkillSummaries } from './features/plugins/pluginSkillSummaries'
 import { ProjectPicker } from './features/projects/ProjectPicker'
 import { SettingsView } from './features/settings/SettingsView'
+import { clearUpdateDraftHandoff, consumeUpdateDraftHandoff, writeUpdateDraftHandoff } from './features/updates/updateDraftHandoff'
+import { useDeferredUpdateRestart } from './features/updates/useDeferredUpdateRestart'
+import { useUpdateAutomation } from './features/updates/useUpdateAutomation'
 import { I18nProvider, createTranslator, type Translator } from './i18n'
 import { attachmentInspectionErrorKey } from './features/attachments/attachmentInspectionError'
 import { OrderedAttachmentQueue } from './features/attachments/orderedAttachmentQueue'
 import { uploadPastedFile } from './features/attachments/pastedFileUpload'
 import { inspectPathlessFiles } from './features/attachments/pathlessAttachmentIngestion'
+import {
+  cleanupBrowserCaptureOwners,
+  deleteBrowserCaptureOwner,
+  deleteBrowserTempFiles,
+  expandBrowserAnnotationSnapshots,
+  isVisualAttachment,
+  promoteBrowserAttachments,
+} from './features/browser/browserAnnotations'
+import { findLocalBrowserUrl, postEditVerificationPrompt, shouldScheduleBrowserReload } from './features/browser/browserPostEdit'
+import type { BrowserReloadRequest } from './features/browser/useBrowserPanel'
 import {
   DEFAULT_CONVERSATION_TITLE,
   activeProjects,
@@ -165,6 +181,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   trustedSkills: [],
   avatar: undefined,
   includeVerbooCoAuthor: false,
+  browserVerificationEnabled: true,
   loadWebIcons: true,
 }
 const EMPTY_LINE_KEYS = [
@@ -281,6 +298,7 @@ export function App() {
     accessMode: 'approval',
     platform: 'darwin',
   })
+  const [configLoaded, setConfigLoaded] = useState(false)
   const [credentials, setCredentials] = useState<CredentialStatus>({ hasApiKey: false })
   const [cliAuth, setCliAuth] = useState<CliAuthStatus>({ loggedIn: false })
   const [profile, setProfile] = useState<ProfileResult>({ status: 'unauthenticated' })
@@ -288,6 +306,7 @@ export function App() {
   const [activeView, setActiveView] = useState<AppView>('chat')
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('permissions')
   const [userSettings, setUserSettings] = useState<UserSettings>(DEFAULT_USER_SETTINGS)
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [noticeAccepted, setNoticeAccepted] = useState(
     () => window.localStorage.getItem(DEVELOPMENT_NOTICE_KEY) === 'true',
   )
@@ -329,7 +348,7 @@ export function App() {
     () => readEffortByModel(),
   )
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | undefined>(undefined)
-  const [dismissedVersion, setDismissedVersion] = useState<string | undefined>(undefined)
+  const [restoredUpdateDrafts] = useState(() => consumeUpdateDraftHandoff(window.localStorage))
   // Skills derived from / and @ tokens in the composer text. syncTokenSkills
   // (Composer) extracts both token types and sets this state. No parallel
   // chip state — user REJECTED chips (decided Feedback-3 ITEM 2a).
@@ -345,7 +364,12 @@ export function App() {
   const [accessMode, setAccessMode] = useState<AccessMode>('approval')
   const [chatStore, setChatStore] = useState<ChatStore>(readChatStore)
   const [activeConversationId, setActiveConversationId] = useState<string | undefined>(() => {
-    return visibleConversations(readChatStore())[0]?.id
+    const restoredKey = restoredUpdateDrafts?.activeKey
+    if (restoredKey === '__new__') return undefined
+    if (restoredKey && visibleConversations(chatStore).some(conversation => conversation.id === restoredKey)) {
+      return restoredKey
+    }
+    return visibleConversations(chatStore)[0]?.id
   })
   const [selectedProjectId, setSelectedProjectId] = useState<string | undefined>()
   const [runningTurnId, setRunningTurnId] = useState<string | undefined>()
@@ -354,9 +378,11 @@ export function App() {
   const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedFollowUp[]>([])
   // Per-conversation composer drafts (in-memory). Survives chat switches and
   // settings navigation so each chat keeps its own composer text.
-  const composerDrafts = useRef<Record<string, string>>({})
-  const [composerValue, setComposerValue] = useState('')
-  const prevConversationIdRef = useRef<string | undefined>(undefined)
+  const composerDrafts = useRef<Record<string, string>>(restoredUpdateDrafts?.drafts ?? {})
+  const [composerValue, setComposerValue] = useState(
+    () => restoredUpdateDrafts?.drafts[activeConversationId ?? '__new__'] ?? '',
+  )
+  const prevConversationIdRef = useRef<string | undefined>(activeConversationId)
   const [pendingPermissionPrompt, setPendingPermissionPrompt] = useState<PendingPermissionPrompt | undefined>()
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | undefined>()
   const [questionPrompt, setQuestionPrompt] = useState<QuestionPromptState | undefined>()
@@ -431,6 +457,8 @@ export function App() {
   const [reviewUnavailableReason, setReviewUnavailableReason] = useState<string | undefined>()
   const terminal = useLocalTerminal()
   const review = useReviewPanel()
+  const browser = useBrowserPanel()
+  const browserAvailable = configLoaded && supportsEmbeddedBrowser(config.platform)
   const t = useMemo(() => createTranslator(userSettings.language), [userSettings.language])
   const [tokenRate, setTokenRate] = useState<TokenRateSnapshot | undefined>()
   const goalRef = useRef(goal)
@@ -462,7 +490,18 @@ export function App() {
   // Ref mirror of activeConversationId so the agent event handler (which has
   // a stale closure via useEffect []) can read the current value when a
   // turn completes — used to decide whether to fire a background notification.
-  const activeConversationIdRef = useRef<string | undefined>(undefined)
+  const activeConversationIdRef = useRef<string | undefined>(activeConversationId)
+  const persistUpdateDrafts = useCallback(() => {
+    const activeKey = activeConversationIdRef.current ?? '__new__'
+    writeUpdateDraftHandoff(
+      window.localStorage,
+      { ...composerDrafts.current, [activeKey]: composerValue },
+      activeKey,
+    )
+  }, [composerValue])
+  const clearPersistedUpdateDrafts = useCallback(() => {
+    clearUpdateDraftHandoff(window.localStorage)
+  }, [])
   const goalSessionId = useRef<string | undefined>(undefined)
   const goalAbortRef = useRef<AbortController | undefined>(undefined)
   const queuedFollowUpsRef = useRef<QueuedFollowUp[]>([])
@@ -495,6 +534,9 @@ export function App() {
   const turnChangeBaselines = useRef<Record<string, WorkspaceChangeSummary | undefined>>({})
   const turnWorkingDirectories = useRef<Record<string, string>>({})
   const turnTouchedFiles = useRef<Record<string, Set<string>>>({})
+  const turnBrowserAnnotations = useRef<Record<string, AttachmentMeta[]>>({})
+  const turnBrowserTempFiles = useRef<Record<string, string[]>>({})
+  const pendingBrowserSnapshots = useRef<Record<string, AttachmentMeta[]>>({})
   /** One-shot recovery when CLI rejects a stale --resume session id. */
   const turnRetryPayload = useRef<Record<string, {
     conversationId: string
@@ -562,6 +604,35 @@ export function App() {
   // Fullscreen views (Profile / Settings) don't render the sidebar at all —
   // collapse the column to 0 so the workspace takes the full grid width.
   const isFullscreenView = activeView === 'settings' || activeView === 'profile'
+  const closeWorkspacePanels = useCallback(() => {
+    terminal.close()
+    review.close()
+    browser.close()
+  }, [browser.close, review.close, terminal.close])
+  const restoreWorkspacePanel = useCallback((panel: WorkspacePanelKind) => {
+    if (panel === 'terminal') {
+      void terminal.open(currentWorkspaceDirectory)
+      return
+    }
+    if (panel === 'review') {
+      const target = review.target
+      if (target) review.open(target.workingDirectory, target.files, target.index)
+      return
+    }
+    if (browserAvailable) browser.open()
+  }, [browser.open, browserAvailable, currentWorkspaceDirectory, review.open, review.target, terminal.open])
+  const { workspacePanelsEnabled } = useWorkspacePanelSuspension({
+    isFullscreenView,
+    isChatView: activeView === 'chat',
+    terminalOpen: terminal.terminalOpen,
+    reviewOpen: review.reviewOpen,
+    browserOpen: browser.browserOpen,
+    closeAll: closeWorkspacePanels,
+    restorePanel: restoreWorkspacePanel,
+  })
+  const visibleTerminalOpen = workspacePanelsEnabled && terminal.terminalOpen
+  const visibleReviewOpen = workspacePanelsEnabled && review.reviewOpen
+  const visibleBrowserOpen = browserAvailable && workspacePanelsEnabled && browser.browserOpen
   const effectiveSidebarWidth = isFullscreenView
     ? 0
     : sidebarVisualMode === 'hidden'
@@ -569,6 +640,20 @@ export function App() {
       : sidebarVisualMode === 'compact'
         ? SIDEBAR_COMPACT_WIDTH
         : sidebarWidth
+  const browserWidthLimit = browserMaxWidth(effectiveSidebarWidth)
+  const effectiveBrowserWidth = browserLayoutWidth(browser.browserWidth, effectiveSidebarWidth)
+  const setBrowserWidth = useCallback((width: number) => {
+    browser.setWidth(width, effectiveSidebarWidth)
+  }, [browser.setWidth, effectiveSidebarWidth])
+
+  useEffect(() => {
+    if (!browserAvailable) browser.close()
+  }, [browser.close, browserAvailable])
+
+  useEffect(() => {
+    if (!browser.browserOpen || browser.browserWidth <= browserWidthLimit) return
+    browser.setWidth(browserWidthLimit, effectiveSidebarWidth)
+  }, [browser.browserOpen, browser.browserWidth, browser.setWidth, browserWidthLimit, effectiveSidebarWidth])
   const subagentThreads = activeConversation?.subagents ?? []
   const subagentIndicatorKey = `${activeConversationId ?? 'none'}:${subagentThreads.length}`
   const workingSubagentCount = subagentThreads.filter(isSubagentThreadWorking).length
@@ -585,8 +670,9 @@ export function App() {
     // content width → ghost expand with untruncated project names.
     '--sidebar-peek-width': `${sidebarMode === 'hidden' && (sidebarPeek || sidebarPeekLeaving) ? sidebarWidth : 0}px`,
     '--subagents-panel-width': showSubagentThreadPanel ? '320px' : '0px',
-    '--terminal-width': terminal.terminalOpen ? `${terminal.terminalWidth}px` : '0px',
-    '--review-width': review.reviewOpen ? `${review.reviewWidth}px` : '0px',
+    '--terminal-width': visibleTerminalOpen ? `${terminal.terminalWidth}px` : '0px',
+    '--review-width': visibleReviewOpen ? `${review.reviewWidth}px` : '0px',
+    '--browser-width': visibleBrowserOpen ? `${effectiveBrowserWidth}px` : '0px',
   } as CSSProperties
 
   useEffect(() => {
@@ -625,8 +711,10 @@ export function App() {
         ...DEFAULT_USER_SETTINGS,
         ...settings,
         includeVerbooCoAuthor: settings.includeVerbooCoAuthor ?? false,
+        browserVerificationEnabled: settings.browserVerificationEnabled ?? true,
         loadWebIcons: settings.loadWebIcons ?? true,
       })
+      setSettingsLoaded(true)
       // Reasoning effort prefs: backend is the durable source. When the
       // backend already has prefs, use them and drop localStorage. When the
       // backend is empty but localStorage has prefs (user set them before
@@ -646,6 +734,7 @@ export function App() {
       setSelectedModel(settings.lastSelectedModelId)
       setAccessMode(settings.defaultAccessMode)
       setConfig(nextConfig)
+      setConfigLoaded(true)
       setAccessMode(nextConfig.accessMode)
       document.documentElement.dataset.platform = nextConfig.platform
       if (settings.staySignedIn && readRememberedAuthSession()) {
@@ -697,7 +786,7 @@ export function App() {
 
   useEffect(() => {
     function handleSidebarShortcut(event: KeyboardEvent) {
-      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'b') return
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.key.toLowerCase() !== 'b') return
       event.preventDefault()
       event.stopPropagation()
       toggleSidebarVisibility()
@@ -779,6 +868,25 @@ export function App() {
     }
   }, [t, toast])
 
+  const updateRestart = useDeferredUpdateRestart({
+    snapshot: updateSnapshot,
+    runningCount: runningConversations.size,
+    check: window.verboo.checkForUpdates,
+    download: window.verboo.downloadUpdate,
+    install: window.verboo.installUpdate,
+    persistDrafts: persistUpdateDrafts,
+    clearDrafts: clearPersistedUpdateDrafts,
+  })
+
+  useUpdateAutomation({
+    autoCheck: settingsLoaded && userSettings.updates.autoCheck,
+    autoDownload: settingsLoaded && userSettings.updates.autoDownload,
+    channel: userSettings.updates.channel,
+    snapshot: updateSnapshot,
+    check: window.verboo.checkForUpdates,
+    download: window.verboo.downloadUpdate,
+  })
+
   useEffect(() => {
     return () => {
       if (scrollSettleTimer.current) window.clearTimeout(scrollSettleTimer.current)
@@ -801,6 +909,10 @@ export function App() {
     const timer = window.setTimeout(() => persistChatStore(chatStore), 400)
     return () => window.clearTimeout(timer)
   }, [chatStore])
+
+  useEffect(() => {
+    void cleanupBrowserCaptureOwners(chatStoreRef.current.conversations.map(conversation => conversation.id)).catch(() => {})
+  }, [])
 
   // Guarantee the latest store is flushed when the window closes or the app
   // unmounts, so debouncing never drops the final state.
@@ -947,6 +1059,7 @@ export function App() {
         return
       }
       lastEscapeAt.current = now
+      toast(t('composer.escapeAgainToStop'), 'info')
     }
 
     window.addEventListener('keydown', handleEscapeInterrupt, { capture: true })
@@ -970,6 +1083,15 @@ export function App() {
     }
     prevConversationIdRef.current = activeConversationId
     activeConversationIdRef.current = activeConversationId
+  }, [activeConversationId])
+
+  useEffect(() => {
+    if (!activeConversationId) return
+    const pending = pendingBrowserSnapshots.current[activeConversationId]
+    if (!pending?.length) return
+    delete pendingBrowserSnapshots.current[activeConversationId]
+    const batch = attachmentQueueRef.current.reserve()
+    completeAttachmentBatch(batch, pending)
   }, [activeConversationId])
 
   useEffect(() => {
@@ -1931,6 +2053,11 @@ export function App() {
       if (conversationId) finishAssistantMessage(conversationId, event.turnId)
       if (conversationId) {
         void appendTurnSummary(conversationId, event.turnId, event.exitCode)
+          .then(changeSummary => {
+            if (event.exitCode === 0) {
+              scheduleBrowserPostEditReload(event.turnId, conversationId, changeSummary?.totalFiles ?? 0)
+            }
+          })
           .finally(() => cleanupTurnState(event.turnId))
           .catch(() => undefined)
       } else {
@@ -1964,15 +2091,17 @@ export function App() {
     sendMessageLock.current = true
     try {
     const conversationId = ensureActiveConversation()
+    let turnAttachments = attachedFiles
 
     // ── Vision fallback consent check ──
-    const hasImages = attachedFiles.some(f => f.kind === 'image')
+    const hasImages = turnAttachments.some(isVisualAttachment)
     const modelNeedsFallback = hasImages && !selectedModelInfo?.supportsVision
     if (modelNeedsFallback) {
       const consent = userSettings.visionFallbackConsent
       if (consent === 'never') {
         // Strip images silently — the user opted out.
-        filterAttachments(file => file.kind !== 'image')
+        turnAttachments = turnAttachments.filter(file => !isVisualAttachment(file))
+        filterAttachments(file => !isVisualAttachment(file))
       } else if (consent === 'ask') {
         // Show consent modal — wait for user choice.
         const fbState: VisionFallbackState = await window.verboo.getVisionFallbackState()
@@ -1992,7 +2121,8 @@ export function App() {
           })
           toast(t('vision.consentUpdated'))
           if (choice.persist === 'never') {
-            filterAttachments(file => file.kind !== 'image')
+            turnAttachments = turnAttachments.filter(file => !isVisualAttachment(file))
+            filterAttachments(file => !isVisualAttachment(file))
           }
         }
         // 'allowOnce' → proceed with images attached (existing behavior).
@@ -2003,7 +2133,7 @@ export function App() {
     // The current truthful route sends sampled frames and a transcript made
     // locally from the audio. It never sends the original video file.
     const route: VideoUnderstandingRoute = 'sampledFramesWithTranscript'
-    const videoSendBlocked = await shouldBlockVideoBeforeCli(attachedFiles, {
+    const videoSendBlocked = await shouldBlockVideoBeforeCli(turnAttachments, {
       consent: userSettings.videoFallbackConsent,
       requestChoice: async () => {
         const choice = await new Promise<VideoFallbackResponse>(resolve => {
@@ -2026,7 +2156,7 @@ export function App() {
     // Wait for pending OCR to finish (up to 15s) so images already in
     // the process don't go unread. Non-blocking for attachments that
     // haven't started OCR yet.
-    const pendingOcr = attachedFiles
+    const pendingOcr = turnAttachments
       .filter(f => f.kind === 'image' && !f.extractedText)
       .map(f => ocrCompletionsRef.current[f.path]?.promise)
       .filter(Boolean) as Promise<void>[]
@@ -2062,7 +2192,8 @@ export function App() {
       }
     }
 
-    const queued = createQueuedFollowUp(conversationId, trimmed)
+    turnAttachments = await promoteBrowserAttachments(turnAttachments, conversationId)
+    const queued = createQueuedFollowUp(conversationId, trimmed, turnAttachments)
     setActiveView('chat')
     stickToBottomRef.current = true
     setShowJumpToLatest(false)
@@ -2076,18 +2207,18 @@ export function App() {
       skills: selectedSkillsUnion,
       // Persist a slim version of attachments — just path/name/kind — so the
       // transcript can render chips/thumbnails on reload without base64 bloat.
-      attachments: attachedFiles.length ? attachedFiles.map(slimMeta) : undefined,
+      attachments: turnAttachments.length ? turnAttachments.map(slimMeta) : undefined,
     }, titleFromMessage(trimmed))
 
     if (isConversationRunning(conversationId)) {
       enqueueFollowUp(queued)
-      clearAttachments()
+      clearAttachments(true)
       return
     }
 
     appendDowngradeActivity(conversationId)
     await runTurn(queued)
-    clearAttachments()
+    clearAttachments(true)
     } finally {
       sendMessageLock.current = false
     }
@@ -2097,7 +2228,11 @@ export function App() {
     return Object.values(turnConversationIds.current).includes(conversationId)
   }
 
-  function createQueuedFollowUp(conversationId: string, message: string): QueuedFollowUp {
+  function createQueuedFollowUp(
+    conversationId: string,
+    message: string,
+    attachments: AttachmentMeta[] = attachedFiles,
+  ): QueuedFollowUp {
     const turnModel = {
       modelId: selectedModel,
       modelDisplayName: selectedModelInfo?.displayName ?? selectedModel,
@@ -2121,7 +2256,7 @@ export function App() {
         accessMode: accessMode === 'full' && !userSettings.fullAccessEnabled ? 'approval' : accessMode,
         workingDirectory: workingDirectoryForConversation(conversationId),
         skills: selectedSkillsUnion,
-        attachments: attachedFiles,
+        attachments: expandBrowserAnnotationSnapshots(attachments),
         responseEnhancementsEnabled: userSettings.responseEnhancementsEnabled,
         personality: userSettings.personality,
         customInstructions: userSettings.customInstructions,
@@ -2157,10 +2292,11 @@ export function App() {
   // end, then send the message with the conversation's sessionId so the model
   // resumes with the new input as context. The model sees the interjection
   // in its history and can pivot or continue as it sees fit.
-  async function interjectMessage(conversationId: string, queueItemId: string) {
+  async function interjectMessage(queueItemId: string) {
     if (interjectDeferred.current) return // already interjecting
     const item = queuedFollowUpsRef.current.find(q => q.id === queueItemId)
     if (!item) return
+    const conversationId = item.conversationId
 
     // Find the active turnId for this conversation
     const activeTurnEntry = Object.entries(turnConversationIds.current).find(([, convId]) => convId === conversationId)
@@ -2180,11 +2316,21 @@ export function App() {
       return
     }
 
-    // Wait for the current turn to end (interrupt triggers done/error event)
-    await new Promise<void>(resolve => {
-      interjectDeferred.current = { turnId: currentTurnId, resolve }
-      window.verboo.interrupt(conversationId)
+    // Wait for the current turn to end (interrupt triggers done/error event).
+    // Register the waiter before invoking IPC so a very fast Done event cannot
+    // race past it. If the backend reports no active child, release the stale
+    // frontend state and send the queued message normally instead of hanging.
+    const deferred = { turnId: currentTurnId, resolve: () => {} }
+    const interruptedTurn = new Promise<void>(resolve => {
+      deferred.resolve = resolve
+      interjectDeferred.current = deferred
     })
+    const interrupted = await window.verboo.interrupt(conversationId).catch(() => false)
+    if (!interrupted) {
+      deferred.resolve()
+      interjectDeferred.current = undefined
+    }
+    await interruptedTurn
 
     // Now send the interjected message with the conversation's sessionId
     appendDowngradeActivity(conversationId)
@@ -2194,6 +2340,7 @@ export function App() {
   function removeQueuedItem(queueItemId: string) {
     const item = queuedFollowUpsRef.current.find(q => q.id === queueItemId)
     if (!item) return
+    void deleteBrowserTempFiles(browserTempPaths(item.request.attachments ?? [])).catch(() => {})
     setQueuedFollowUpsList(current => current.filter(q => q.id !== queueItemId))
   }
 
@@ -2236,28 +2383,6 @@ export function App() {
     enqueueFollowUp(queued)
   }
 
-  // "Direcionar agora": move item to front of queue. If no turn is running,
-  // remove from queue and send now. If a turn IS running, the item becomes
-  // first in queue — next flush (after the turn) picks it up.
-  function sendNow(conversationId: string, queueItemId: string) {
-    const current = queuedFollowUpsRef.current
-    const idx = current.findIndex(q => q.id === queueItemId)
-    if (idx === -1) return
-    const item = current[idx]
-    if (!runningTurnId) {
-      // Nothing running — send now.
-      queuedFollowUpsRef.current = current.filter(q => q.id !== queueItemId)
-      setQueuedFollowUpsList(() => queuedFollowUpsRef.current)
-      runTurn(item)
-    } else {
-      // Turn active — move to front.
-      const next = current.filter(q => q.id !== queueItemId)
-      next.unshift(item)
-      queuedFollowUpsRef.current = next
-      setQueuedFollowUpsList(() => next)
-    }
-  }
-
   async function runTurn(item: QueuedFollowUp, options?: { skipResume?: boolean }) {
     pendingConversationId.current = item.conversationId
     setContextUsage(undefined)
@@ -2286,6 +2411,10 @@ export function App() {
     const turnId = await window.verboo.sendTurn({ ...request, turnId: clientTurnId }, resumeSessionId)
     turnChangeBaselines.current[turnId] = baseline
     turnWorkingDirectories.current[turnId] = request.workingDirectory
+    const browserAnnotations = request.attachments?.filter(attachment => attachment.kind === 'browser-annotation') ?? []
+    if (browserAnnotations.length) turnBrowserAnnotations.current[turnId] = browserAnnotations
+    const browserTempFiles = browserTempPaths(request.attachments ?? [])
+    if (browserTempFiles.length) turnBrowserTempFiles.current[turnId] = browserTempFiles
     return turnId
   }
 
@@ -2345,6 +2474,20 @@ export function App() {
   function trackPermissionPrompt(conversationId: string, turnId: string, text: string) {
     const combined = `${turnAssistantText.current[turnId] ?? ''}${text}`
     turnAssistantText.current[turnId] = combined
+
+    const localPreviewUrl = findLocalBrowserUrl(combined)
+    if (
+      browserAvailable
+      && localPreviewUrl
+      && activeConversationIdRef.current === conversationId
+      && (!browser.browserOpen || browser.currentUrl !== localPreviewUrl)
+      && browser.navigationRequest?.url !== localPreviewUrl
+    ) {
+      terminal.close()
+      review.close()
+      setSelectedSubagentId(undefined)
+      browser.requestNavigation(localPreviewUrl)
+    }
 
     const detail = detectPermissionRequest(combined)
     if (!detail) return
@@ -2642,6 +2785,9 @@ export function App() {
     { key: 'theme', label: t('palette.toggleTheme'), icon: paletteIcons.theme, run: () => cycleTheme() },
     { key: 'terminal', label: t('palette.toggleTerminal'), icon: paletteIcons.terminal, run: () => handleToggleTerminal(currentWorkspaceDirectory) },
     { key: 'review', label: t('palette.toggleReview'), icon: paletteIcons.review, run: () => { void handleToggleReview() } },
+    ...(browserAvailable
+      ? [{ key: 'browser', label: t('palette.toggleBrowser'), icon: paletteIcons.browser, run: () => handleToggleBrowser() }]
+      : []),
     { key: 'sidebar', label: t('palette.toggleSidebar'), icon: paletteIcons.sidebar, run: toggleSidebarVisibility },
     { key: 'pet', label: t('palette.togglePet'), icon: paletteIcons.pet, run: togglePet },
     {
@@ -2651,7 +2797,7 @@ export function App() {
       run: () => handleCompactCommand({ kind: 'compact', raw: '/compact' }),
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [t, currentWorkspaceDirectory])
+  ], [t, currentWorkspaceDirectory, browserAvailable])
 
   function handleEditObjective(newObjective: string) {
     const conversationId = activeConversation?.id
@@ -2685,7 +2831,7 @@ export function App() {
       // create a queued follow-up first, then interject with its ID.
       const queued = createQueuedFollowUp(conversationId, prompt)
       enqueueFollowUp(queued)
-      void interjectMessage(conversationId, queued.id).catch(err => {
+      void interjectMessage(queued.id).catch(err => {
         console.error('[goal] failed to interject objective update:', err)
       })
     }
@@ -2976,6 +3122,58 @@ export function App() {
     }
   }
 
+  function addBrowserAnnotation(attachment: AttachmentMeta) {
+    const batch = attachmentQueueRef.current.reserve()
+    completeAttachmentBatch(batch, [attachment])
+  }
+
+  function scheduleBrowserPostEditReload(turnId: string, conversationId: string, workspaceChangeCount: number) {
+    if (!browserAvailable) return
+    const annotations = turnBrowserAnnotations.current[turnId]
+    if (!shouldScheduleBrowserReload({
+      annotationCount: annotations?.length ?? 0,
+      workspaceChangeCount,
+      browserOpen: browser.browserOpen,
+      browserUrl: browser.currentUrl,
+    })) return
+    const firstAnnotation = annotations[0].browserAnnotation
+    if (!firstAnnotation?.rect || firstAnnotation.url !== browser.currentUrl) return
+    browser.requestReload({
+      id: turnId,
+      conversationId,
+      url: firstAnnotation.url,
+      targetRect: firstAnnotation.rect,
+      autoVerify: userSettingsRef.current.browserVerificationEnabled,
+      verificationPrompt: postEditVerificationPrompt(annotations, userSettingsRef.current.language),
+    })
+  }
+
+  function handleBrowserReloadSnapshot(attachment: AttachmentMeta, request: BrowserReloadRequest) {
+    if (!request.autoVerify) {
+      if (activeConversationIdRef.current !== request.conversationId) {
+        const previous = pendingBrowserSnapshots.current[request.conversationId] ?? []
+        if (previous.length) void deleteBrowserTempFiles(browserTempPaths(previous)).catch(() => {})
+        pendingBrowserSnapshots.current[request.conversationId] = [attachment]
+        return
+      }
+      const batch = attachmentQueueRef.current.reserve()
+      completeAttachmentBatch(batch, [attachment])
+      return
+    }
+    appendConversationItem(request.conversationId, {
+      id: `browser-verification:${request.id}`,
+      role: 'tool',
+      kind: 'activity',
+      activityKind: 'image',
+      text: t('browser.verificationActivity'),
+      activityDetail: t('browser.verificationActivityDetail'),
+      timestamp: Date.now(),
+    })
+    const verification = createQueuedFollowUp(request.conversationId, request.verificationPrompt)
+    verification.request.attachments = [attachment]
+    enqueueFollowUp(verification)
+  }
+
   async function attachDroppedFiles(paths: string[], files: File[]) {
     if (!paths.length && !files.length) return
     const batch = attachmentQueueRef.current.reserve()
@@ -3066,20 +3264,28 @@ export function App() {
     applyAttachmentOutcome(outcome)
   }
 
-  function clearAttachments() {
+  function clearAttachments(preserveBrowserTempFiles = false) {
+    const current = attachmentQueueRef.current.snapshot()
     for (const controller of attachmentUploadControllersRef.current) controller.abort()
     attachmentUploadControllersRef.current.clear()
     attachmentQueueRef.current.reset()
     setAttachedFiles([])
+    if (!preserveBrowserTempFiles) {
+      void deleteBrowserTempFiles(browserTempPaths(current)).catch(() => {})
+    }
   }
 
   function removeAttachment(path: string) {
+    const removed = attachmentQueueRef.current.snapshot().find(attachment => attachment.path === path)
     setAttachedFiles(attachmentQueueRef.current.remove(path))
     setOcrProcessingPaths(current => current.filter(item => item !== path))
+    if (removed) void deleteBrowserTempFiles(browserTempPaths([removed])).catch(() => {})
   }
 
   function filterAttachments(keep: (attachment: AttachmentMeta) => boolean) {
+    const removed = attachmentQueueRef.current.snapshot().filter(attachment => !keep(attachment))
     setAttachedFiles(attachmentQueueRef.current.filter(keep))
+    void deleteBrowserTempFiles(browserTempPaths(removed)).catch(() => {})
   }
 
   function updateAttachment(path: string, transform: (attachment: AttachmentMeta) => AttachmentMeta) {
@@ -3315,6 +3521,11 @@ export function App() {
       confirmLabel: t('common.delete'),
       danger: true,
       onConfirm: () => {
+        const pending = pendingBrowserSnapshots.current[conversationId] ?? []
+        if (pending.length) void deleteBrowserTempFiles(browserTempPaths(pending)).catch(() => {})
+        delete pendingBrowserSnapshots.current[conversationId]
+        setQueuedFollowUpsList(current => current.filter(item => item.conversationId !== conversationId))
+        void deleteBrowserCaptureOwner(conversationId).catch(() => {})
         updateChatStore(store => ({
           ...store,
           conversations: store.conversations.filter(conversation => conversation.id !== conversationId),
@@ -3676,6 +3887,7 @@ export function App() {
       changeSummary,
       timestamp: Date.now(),
     })
+    return changeSummary
   }
 
   async function buildTurnChangeSummary(turnId: string): Promise<WorkspaceChangeSummary | undefined> {
@@ -3712,6 +3924,8 @@ export function App() {
   }
 
   function cleanupTurnState(turnId: string) {
+    const tempFiles = turnBrowserTempFiles.current[turnId]
+    if (tempFiles?.length) void deleteBrowserTempFiles(tempFiles).catch(() => {})
     delete turnConversationIds.current[turnId]
     delete turnStartedAt.current[turnId]
     delete turnTokenRates.current[turnId]
@@ -3728,10 +3942,22 @@ export function App() {
     delete turnChangeBaselines.current[turnId]
     delete turnWorkingDirectories.current[turnId]
     delete turnTouchedFiles.current[turnId]
+    delete turnBrowserAnnotations.current[turnId]
+    delete turnBrowserTempFiles.current[turnId]
     delete turnOpenTextSegment.current[turnId]
     delete turnTextSegmentCount.current[turnId]
     delete turnCommandItemIds.current[turnId]
     delete turnToolUseItemIds.current[turnId]
+  }
+
+  function browserTempPaths(attachments: AttachmentMeta[]): string[] {
+    const paths = attachments.flatMap(attachment => [
+      attachment.path,
+      attachment.browserAnnotation?.viewportSnapshot?.path,
+    ])
+    return [...new Set(paths.filter((path): path is string =>
+      typeof path === 'string' && path.replaceAll('\\', '/').includes('/verboo-browser/'),
+    ))]
   }
 
   function appendTouchedFile(turnId: string, filePath: string) {
@@ -3837,11 +4063,13 @@ export function App() {
   const archivedChats = archivedConversations(chatStore)
 
   const handleToggleTerminal = useCallback((cwd: string) => {
+    if (!workspacePanelsEnabled) return
     setReviewUnavailableReason(undefined)
     review.close()
+    browser.close()
     setSelectedSubagentId(undefined)
     void terminal.toggle(cwd)
-  }, [review, terminal])
+  }, [review, terminal, browser, workspacePanelsEnabled])
 
   const handleToggleSubagents = useCallback(() => {
     if (selectedSubagentId) {
@@ -3852,14 +4080,20 @@ export function App() {
     if (!latest) return
     terminal.close()
     review.close()
+    browser.close()
     setSelectedSubagentId(latest.id)
-  }, [review, selectedSubagentId, subagentThreads, terminal])
+  }, [review, browser, selectedSubagentId, subagentThreads, terminal])
 
   const handleToggleReview = useCallback(async () => {
+    if (!workspacePanelsEnabled) return
     if (review.reviewOpen) {
       review.close()
       return
     }
+
+    terminal.close()
+    browser.close()
+    setSelectedSubagentId(undefined)
 
     const workingDirectory = currentWorkspaceDirectory
     if (!workingDirectory) {
@@ -3886,15 +4120,28 @@ export function App() {
     terminal.close()
     setSelectedSubagentId(undefined)
     review.open(workingDirectory, summary.files, 0)
-  }, [currentWorkspaceDirectory, review, terminal, t])
+  }, [currentWorkspaceDirectory, review, terminal, browser, t, workspacePanelsEnabled])
 
   const handleOpenReview = useCallback((files: WorkspaceChangeEntry[], index: number) => {
     const workingDirectory = currentWorkspaceDirectory
     if (!workingDirectory) return
     terminal.close()
+    browser.close()
     setSelectedSubagentId(undefined)
     review.open(workingDirectory, files, index)
-  }, [currentWorkspaceDirectory, review, terminal])
+  }, [currentWorkspaceDirectory, review, terminal, browser])
+
+  const handleToggleBrowser = useCallback(() => {
+    if (!browserAvailable || !workspacePanelsEnabled) return
+    if (browser.browserOpen) {
+      browser.close()
+      return
+    }
+    terminal.close()
+    review.close()
+    setSelectedSubagentId(undefined)
+    browser.open()
+  }, [browser, browserAvailable, terminal, review, workspacePanelsEnabled])
 
   async function refreshWorkspaceReview() {
     if (!review.target) return
@@ -3924,12 +4171,27 @@ export function App() {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'j') return
       event.preventDefault()
       event.stopPropagation()
+      if (!workspacePanelsEnabled) return
       handleToggleTerminal(workspaceDirectory || '')
     }
 
     window.addEventListener('keydown', handleTerminalShortcut, { capture: true })
     return () => window.removeEventListener('keydown', handleTerminalShortcut, { capture: true })
-  }, [handleToggleTerminal, workspaceDirectory])
+  }, [handleToggleTerminal, workspaceDirectory, workspacePanelsEnabled])
+
+  useEffect(() => {
+    function handleBrowserShortcut(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.key.toLowerCase() !== 'b') return
+      if (!browserAvailable) return
+      event.preventDefault()
+      event.stopPropagation()
+      if (!workspacePanelsEnabled) return
+      handleToggleBrowser()
+    }
+
+    window.addEventListener('keydown', handleBrowserShortcut, { capture: true })
+    return () => window.removeEventListener('keydown', handleBrowserShortcut, { capture: true })
+  }, [browserAvailable, handleToggleBrowser, workspacePanelsEnabled])
 
   const feedbackDiagnostics = useMemo<FeedbackDiagnostics>(() => ({
     appVersion: packageJson.version,
@@ -4068,16 +4330,20 @@ export function App() {
       <TopBar
         sidebarVisible={sidebarMode !== 'hidden'}
         onToggleSidebar={toggleSidebarVisibility}
-        terminalOpen={terminal.terminalOpen}
+        terminalOpen={visibleTerminalOpen}
         terminalUnavailableReason={terminal.terminalUnavailableReason}
         onToggleTerminal={() => handleToggleTerminal(workspaceDirectory || '')}
-        reviewOpen={review.reviewOpen}
+        reviewOpen={visibleReviewOpen}
         reviewUnavailableReason={reviewUnavailableReason}
         onToggleReview={handleToggleReview}
+        browserAvailable={browserAvailable}
+        browserOpen={visibleBrowserOpen}
+        onToggleBrowser={handleToggleBrowser}
+        workspacePanelsEnabled={workspacePanelsEnabled}
       />
 
       <div
-        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' || activeView === 'profile' ? 'view-fullscreen' : ''} ${terminal.terminalOpen ? 'terminal-open' : ''} ${review.reviewOpen ? 'review-open' : ''}`}
+        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' || activeView === 'profile' ? 'view-fullscreen' : ''} ${visibleTerminalOpen ? 'terminal-open' : ''} ${visibleReviewOpen ? 'review-open' : ''} ${visibleBrowserOpen ? 'browser-open' : ''}`}
       >
         {activeView !== 'settings' && activeView !== 'profile' && sidebarMode === 'hidden' && !sidebarPeek && !sidebarPeekLeaving && (
           // Rail: thin hit-area on the left edge. Hover/focus expands the
@@ -4120,6 +4386,8 @@ export function App() {
               profile={profile}
               cliAuth={cliAuth}
               avatarSettings={userSettings.avatar}
+              updatePresentation={updateRestart.presentation}
+              onRequestUpdate={() => { void updateRestart.requestUpdate() }}
               compact={sidebarMode === 'compact'}
               peek={sidebarPeek || sidebarPeekLeaving}
               onSelectView={setActiveView}
@@ -4250,6 +4518,7 @@ export function App() {
               onPetToggle={togglePet}
               onPetSizeChange={updatePetSize}
               archivedConversations={archivedChats}
+              browserAvailable={browserAvailable}
               onOpenDashboard={() => window.verboo.openDashboard()}
               onSaveApiKey={async apiKey => {
                 await saveApiKey(apiKey)
@@ -4299,7 +4568,7 @@ export function App() {
           />
         )}
         <LocalTerminalPanel
-          terminalOpen={terminal.terminalOpen}
+          terminalOpen={visibleTerminalOpen}
           terminalWidth={terminal.terminalWidth}
           onSetWidth={terminal.setWidth}
           onWrite={terminal.write}
@@ -4315,7 +4584,7 @@ export function App() {
           maxWidth={terminal.MAX_WIDTH}
         />
         <ReviewPanel
-          open={review.reviewOpen}
+          open={visibleReviewOpen}
           width={review.reviewWidth}
           target={review.target}
           onSetWidth={review.setWidth}
@@ -4329,6 +4598,26 @@ export function App() {
           branchInfo={branchInfo}
           includeVerbooCoAuthor={userSettings.includeVerbooCoAuthor}
         />
+      {browserAvailable && (
+        <BrowserPanel
+          browserOpen={visibleBrowserOpen}
+          browserWidth={effectiveBrowserWidth}
+          annotationMode={browser.annotationMode}
+          onSetWidth={setBrowserWidth}
+          onClose={browser.close}
+          onTogglePencil={browser.togglePencil}
+          onToggleArrow={browser.toggleArrow}
+          onAddAnnotation={addBrowserAnnotation}
+          navigationRequest={browser.navigationRequest}
+          onNavigationHandled={browser.completeNavigation}
+          reloadRequest={browser.reloadRequest}
+          onUrlChange={browser.setCurrentUrl}
+          onReloadSnapshot={handleBrowserReloadSnapshot}
+          onReloadHandled={browser.completeReload}
+          minWidth={browser.MIN_WIDTH}
+          maxWidth={browserWidthLimit}
+        />
+      )}
       </div>
       {(() => {
         // GoalStatusBar only renders when GoalActivePanel is NOT visible.
@@ -4467,8 +4756,8 @@ export function App() {
             onRemoveAttachment={removeAttachment}
             onSubmit={sendMessage}
             onGoalCommand={handleGoalCommand}
-            queue={queuedFollowUpsRef.current}
-            onQueueSendNow={queueItemId => sendNow(activeConversationId ?? '', queueItemId)}
+            queue={queuedFollowUpsRef.current.filter(item => item.conversationId === activeConversationId)}
+            onQueueSendNow={queueItemId => { void interjectMessage(queueItemId) }}
             onQueueEdit={editQueuedItem}
             onQueueRemove={removeQueuedItem}
             onPetCommand={togglePet}
@@ -4542,16 +4831,6 @@ export function App() {
 
       <VerbooPet visible={petEnabled} state={petState} size={petSize} onSizeChange={updatePetSize} />
 
-      {updateSnapshot && updateSnapshot.status === 'available'
-        && updateSnapshot.availableVersion
-        && updateSnapshot.availableVersion !== dismissedVersion
-        && (
-          <UpdateBanner
-            snapshot={updateSnapshot}
-            onDownload={() => { void onDownloadUpdate() }}
-            onDismiss={() => setDismissedVersion(updateSnapshot.availableVersion)}
-          />
-        )}
     </main>
     </I18nProvider>
   )
@@ -5111,8 +5390,15 @@ function buildCliFailureMessage(lines: string[] | undefined, t: Translator): str
 // Strip non-essential fields from AttachmentMeta before persisting in a
 // TranscriptItem. Keeps path/name/kind (enough for chips + thumbnails) and
 // drops extractedText/extractionStatus which can be re-derived on re-attach.
-function slimMeta(a: AttachmentMeta): Pick<AttachmentMeta, 'path' | 'name' | 'kind' | 'size' | 'mediaType'> {
-  return { path: a.path, name: a.name, kind: a.kind, size: a.size, mediaType: a.mediaType }
+function slimMeta(a: AttachmentMeta): Pick<AttachmentMeta, 'path' | 'name' | 'kind' | 'size' | 'mediaType' | 'browserAnnotation'> {
+  return {
+    path: a.path,
+    name: a.name,
+    kind: a.kind,
+    size: a.size,
+    mediaType: a.mediaType,
+    browserAnnotation: a.browserAnnotation,
+  }
 }
 
 function cleanCliFailureLine(line: string): string {

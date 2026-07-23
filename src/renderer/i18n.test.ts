@@ -29,3 +29,23 @@ describe('@-mention + voice i18n keys', () => {
     expect(t('composer.voiceError', { message: 'no-speech' })).toContain('no-speech')
   })
 })
+
+describe('sidebar updater i18n keys', () => {
+  it.each(['en-US', 'pt-BR'] as const)('provides complete %s update copy', language => {
+    const t = createTranslator(language)
+    const keys = [
+      'updates.sidebarAvailable',
+      'updates.sidebarDownloading',
+      'updates.sidebarReady',
+      'updates.sidebarWaiting',
+      'updates.sidebarRestarting',
+      'updates.sidebarError',
+      'updates.retryAria',
+    ]
+
+    for (const key of keys) {
+      expect(t(key)).not.toBe(key)
+    }
+    expect(t('updates.downloadAria', { version: '0.6.0' })).toContain('0.6.0')
+  })
+})

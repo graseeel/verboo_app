@@ -4,7 +4,7 @@
   /* Fill the main column (same box as .workspace), then center children at
      --chat-lane-width. Horizontal padding MUST match .workspace (28px) so the
      composer left/right edges align with message bubbles (impeccable layout). */
-  right: calc(var(--terminal-width) + var(--review-width) + var(--subagents-panel-width, 0px));
+  right: calc(var(--terminal-width) + var(--review-width) + var(--browser-width) + var(--subagents-panel-width, 0px));
   left: var(--sidebar-width);
   bottom: 16px;
   display: grid;
@@ -102,6 +102,11 @@
   backdrop-filter: blur(10px);
   box-sizing: border-box;
   overflow: hidden;
+  /* Container query context: rodapé se adapta à largura do PRÓPRIO composer
+     (que muda com --browser-width, --terminal-width, --review-width),
+     não ao viewport. ADR implícito: composer's footer is width-aware. */
+  container-type: inline-size;
+  container-name: composer;
 }
 
 .composer[data-command-mode="goal"] {
@@ -401,7 +406,8 @@
 .composer textarea::placeholder {
   color: var(--text-dim);
   opacity: 1;
-  /* Keep long pt-BR placeholder inside the field */
+  /* Keep long pt-BR placeholder inside the field; text-overflow: ellipsis
+     truncates when the placeholder overflows the textarea's content box. */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -518,6 +524,103 @@
   flex: 1 1 auto;
   justify-content: center;
   min-width: 0;
+}
+
+/* ── Container queries: rodapé se adapta à largura do composer ──────
+   Largura do composer = viewport − sidebar − painéis abertos
+   (--browser-width, --terminal-width, --review-width).
+   Degraus progressivos: encolher → ocultar rótulos → wrap. */
+
+@container composer (max-width: 640px) {
+  /* Estágio 1: pills encolhem, texto com ellipsis.
+     Todos os chips (model, access, token-rate) recebem max-width menor. */
+  .composer-toolbar {
+    gap: 6px;
+  }
+
+  .model-pill,
+  .access-pill {
+    min-width: 0;
+    max-width: 160px;
+  }
+
+  .model-pill > span:nth-child(2),
+  .access-pill,
+  .token-rate-meter .token-rate-copy {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .token-rate-meter {
+    max-width: 120px;
+  }
+}
+
+@container composer (max-width: 580px) {
+  /* Estágio 1.5: max-widths progressivos — chips encolhem mais antes de
+     perder o texto. Transição suave entre "completo" e "só-ícone". */
+  .model-pill,
+  .access-pill {
+    max-width: 120px;
+  }
+
+  .token-rate-meter {
+    max-width: 90px;
+  }
+
+  .composer-toolbar {
+    gap: 5px;
+  }
+}
+
+@container composer (max-width: 520px) {
+  /* Estágio 2: rótulos textuais somem — sobram só ícones.
+     access-pill: text node direto (sem classe) — escondemos via font-size:0
+     no botão e restauramos nos svg (font-size não afeta svg). */
+  .access-pill {
+    font-size: 0;
+    padding: 0 8px;
+    min-width: 32px;
+    max-width: 90px;
+  }
+
+  .model-pill > span:nth-child(2),
+  .token-rate-meter .token-rate-copy {
+    display: none;
+  }
+
+  .model-pill,
+  .token-rate-meter {
+    padding: 0 8px;
+  }
+
+  .model-pill {
+    min-width: 32px;
+    max-width: 90px;
+  }
+
+  .token-rate-meter {
+    max-width: 36px;
+  }
+
+  .composer-toolbar {
+    gap: 4px;
+  }
+}
+
+@container composer (max-width: 380px) {
+  /* Estágio 3 (último recurso): flex-wrap. Linha quebra entre seções. */
+  .composer-toolbar {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .composer-tools.right {
+    flex-basis: 100%;
+    justify-content: flex-end;
+  }
 }
 
 .composer-pill {
@@ -922,6 +1025,9 @@
 .attachment-badge-ocr {
   color: var(--accent-strong);
   background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.attachment-annotation {
+  border-style: dashed;
 }
 
 .popover-panel {

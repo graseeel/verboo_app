@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
-import mascotUrl from '../../../../assets/branding/verboo-mascot.png'
 import { useI18n } from '../../i18n'
+import { VerbooPetRig } from './VerbooPetRig'
 
 export type PetState =
   | 'idle'
@@ -125,92 +125,13 @@ export function VerbooPet({ visible, state, size, onSizeChange }: VerbooPetProps
       onPointerUp={endGesture}
       onPointerCancel={endGesture}
     >
-      {/* Layered motion: float (levitation, never stops) → sway (slow drift,
-          never stops) → body (pose TRANSITIONS between states) → img (state
-          LOOPS with neutral start/end keyframes). Loops living on the img
-          keep CSS animations from overriding the body's pose transition, so
-          every state change glides instead of snapping. */}
+      {/* Ambient motion lives above the rig, while the body, face and props
+          remain independently addressable inside the SVG. */}
       <div className="pet-float">
         <div className="pet-sway">
-        <div className="pet-body">
-          <img src={mascotUrl} alt={t('pet.title')} draggable={false} />
-        </div>
-
-        {/* thinking: thought bubbles + drifting question mark */}
-        <div className="pet-prop pet-prop-think" aria-hidden="true">
-          <svg viewBox="0 0 44 40" width="100%" height="100%">
-            <circle className="think-dot think-dot-1" cx="8" cy="34" r="2.4" fill="currentColor" />
-            <circle className="think-dot think-dot-2" cx="15" cy="26" r="3.4" fill="currentColor" />
-            <ellipse className="think-cloud" cx="29" cy="13" rx="13" ry="9.5" fill="currentColor" />
-            <text className="think-question" x="29" y="17" textAnchor="middle" fontSize="11" fontWeight="800">?</text>
-          </svg>
-        </div>
-
-        {/* editing: pencil writing sparks */}
-        <div className="pet-prop pet-prop-edit" aria-hidden="true">
-          <svg viewBox="0 0 44 44" width="100%" height="100%">
-            <g className="edit-pencil">
-              <rect x="18" y="6" width="7" height="20" rx="2" fill="currentColor" transform="rotate(38 22 16)" />
-              <path d="M13.4 27.5 L18.6 31.6 L11.5 34.4 Z" fill="currentColor" />
-            </g>
-            <circle className="edit-spark edit-spark-1" cx="9" cy="36" r="1.6" fill="currentColor" />
-            <circle className="edit-spark edit-spark-2" cx="16" cy="39" r="1.3" fill="currentColor" />
-            <circle className="edit-spark edit-spark-3" cx="23" cy="37" r="1.1" fill="currentColor" />
-          </svg>
-        </div>
-
-        {/* deleting: trash bin + falling scraps */}
-        <div className="pet-prop pet-prop-delete" aria-hidden="true">
-          <svg viewBox="0 0 44 44" width="100%" height="100%">
-            <g className="delete-bin">
-              <rect x="14" y="20" width="16" height="17" rx="2.5" fill="currentColor" />
-              <rect className="delete-lid" x="12" y="15" width="20" height="4" rx="2" fill="currentColor" />
-            </g>
-            <rect className="delete-scrap delete-scrap-1" x="20" y="4" width="4.4" height="4.4" rx="1" fill="currentColor" />
-            <rect className="delete-scrap delete-scrap-2" x="26" y="2" width="3.4" height="3.4" rx="1" fill="currentColor" />
-          </svg>
-        </div>
-
-        {/* command: the mascot sits BEHIND an open laptop (we see the lid's
-            back, like someone typing across from us); screen light spills
-            over the top edge and code glyphs rise while it types. */}
-        <div className="pet-prop pet-prop-laptop" aria-hidden="true">
-          <svg viewBox="0 0 72 44" width="100%" height="100%">
-            <text className="laptop-glyph laptop-glyph-1" x="15" y="16" textAnchor="middle" fontSize="8" fontWeight="800">{'{ }'}</text>
-            <text className="laptop-glyph laptop-glyph-2" x="57" y="13" textAnchor="middle" fontSize="8" fontWeight="800">{'</>'}</text>
-            <text className="laptop-glyph laptop-glyph-3" x="36" y="10" textAnchor="middle" fontSize="8" fontWeight="800">{'$_'}</text>
-            <rect className="laptop-glow" x="12" y="17.5" width="48" height="5" rx="2.5" />
-            <rect className="laptop-lid" x="8" y="20" width="56" height="22" rx="4.5" />
-            <circle className="laptop-logo" cx="36" cy="31" r="4.2" />
-          </svg>
-        </div>
-
-        {/* reading: magnifier sweep */}
-        <div className="pet-prop pet-prop-read" aria-hidden="true">
-          <svg viewBox="0 0 44 44" width="100%" height="100%">
-            <g className="read-lens">
-              <circle cx="19" cy="19" r="10" fill="none" stroke="currentColor" strokeWidth="3.4" />
-              <line x1="27" y1="27" x2="36" y2="36" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
-            </g>
-          </svg>
-        </div>
-
-        {/* success: check pop */}
-        <div className="pet-prop pet-prop-done" aria-hidden="true">
-          <svg viewBox="0 0 32 32" width="100%" height="100%">
-            <circle cx="16" cy="16" r="13" fill="currentColor" opacity="0.18" />
-            <path d="M9.5 16.5 L14 21 L23 11.5" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </div>
-
-        {/* error: exclamation */}
-        <div className="pet-prop pet-prop-error" aria-hidden="true">
-          <svg viewBox="0 0 32 32" width="100%" height="100%">
-            <path d="M16 4 L29 27 L3 27 Z" fill="currentColor" opacity="0.2" />
-            <line x1="16" y1="12" x2="16" y2="20" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" />
-            <circle cx="16" cy="24" r="1.8" fill="currentColor" />
-          </svg>
-        </div>
+          <div className="pet-body">
+            <VerbooPetRig label={t('pet.title')} />
+          </div>
         </div>
       </div>
       <div className="pet-shadow" aria-hidden="true" />

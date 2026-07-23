@@ -13,7 +13,7 @@ use services::model_service::ModelService;
 use services::profile_service::ProfileService;
 use services::settings_store::SettingsStore;
 use services::terminal_service::TerminalService;
-use services::turn_service::TurnService;
+use services::turn_service::{TurnService, UpdateInstallAdmission};
 use tauri::{Emitter, Manager};
 
 // ════════════════════════════════════════════════════════════════════
@@ -1205,10 +1205,22 @@ async fn check_for_updates(
     }
     service.mark_checking();
     let _ = app.emit("update:snapshot", service.snapshot());
-    let updater = match app.updater_builder().build() {
+    let endpoint: tauri::Url = match service.endpoint().parse() {
+        Ok(endpoint) => endpoint,
+        Err(e) => {
+            let snap = service.mark_error(format!("Endpoint de atualização inválido: {e}"));
+            let _ = app.emit("update:snapshot", snap.clone());
+            return Ok(snap);
+        }
+    };
+    let updater = match app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .and_then(|builder| builder.build())
+    {
         Ok(u) => u,
         Err(e) => {
-            let snap = service.mark_error(format!("Falha ao criar updater: {e}"));
+            let snap = service.mark_error(format!("Falha ao configurar updater: {e}"));
             let _ = app.emit("update:snapshot", snap.clone());
             return Ok(snap);
         }
@@ -1243,42 +1255,98 @@ async fn download_update(
     service: tauri::State<'_, crate::services::update_service::UpdateService>,
 ) -> Result<UpdateSnapshot, String> {
     use tauri_plugin_updater::UpdaterExt;
-    service.mark_downloading();
+    let ticket = match service.begin_download()? {
+        Some(ticket) => ticket,
+        None => return Ok(service.snapshot()),
+    };
     let _ = app.emit("update:snapshot", service.snapshot());
-    let updater = app
+    let endpoint: tauri::Url = match crate::services::update_service::UpdateService::endpoint_for(
+        &ticket,
+    )
+    .parse()
+    {
+        Ok(endpoint) => endpoint,
+        Err(e) => {
+            let snap = service.finish_download_error(
+                &ticket,
+                format!("Endpoint de atualização inválido: {e}"),
+            );
+            let _ = app.emit("update:snapshot", snap.clone());
+            return Ok(snap);
+        }
+    };
+    let updater = match app
         .updater_builder()
-        .build()
-        .map_err(|e| format!("Falha ao criar updater: {e}"))?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|e| format!("Falha ao verificar: {e}"))?
-        .ok_or_else(|| "Nenhuma atualização disponível".to_string())?;
+        .endpoints(vec![endpoint])
+        .and_then(|builder| builder.build())
+    {
+        Ok(updater) => updater,
+        Err(e) => {
+            let snap = service
+                .finish_download_error(&ticket, format!("Falha ao configurar updater: {e}"));
+            let _ = app.emit("update:snapshot", snap.clone());
+            return Ok(snap);
+        }
+    };
+    let update = match updater.check().await {
+        Ok(Some(update)) => update,
+        Ok(None) => {
+            let snap = service
+                .finish_download_error(&ticket, "Nenhuma atualização disponível".into());
+            let _ = app.emit("update:snapshot", snap.clone());
+            return Ok(snap);
+        }
+        Err(e) => {
+            let snap =
+                service.finish_download_error(&ticket, format!("Falha ao verificar: {e}"));
+            let _ = app.emit("update:snapshot", snap.clone());
+            return Ok(snap);
+        }
+    };
+    if !service.bind_download_version(&ticket, &update.version)? {
+        return Ok(service.snapshot());
+    }
     let app_for_chunk = app.clone();
     let service_handle = service.clone_handle();
+    let ticket_for_chunk = ticket.clone();
+    let mut transferred = 0_u64;
+    let started = std::time::Instant::now();
     let result = update
-        .download_and_install(
+        .download(
             move |chunk_len, total| {
+                transferred = transferred.saturating_add(chunk_len as u64);
                 if let Some(total) = total {
-                    let percent = (chunk_len as f64 / total as f64) * 100.0;
-                    let snap = service_handle.mark_download_progress(
-                        percent,
-                        chunk_len as u64,
-                        total as u64,
-                        0.0,
+                    let seconds = started.elapsed().as_secs_f64().max(0.001);
+                    let snap = service_handle.mark_download_progress_for(
+                        &ticket_for_chunk,
+                        transferred,
+                        total,
+                        transferred as f64 / seconds,
                     );
-                    let _ = app_for_chunk.emit("update:snapshot", snap);
+                    if let Some(snap) = snap {
+                        let _ = app_for_chunk.emit("update:snapshot", snap);
+                    }
                 }
             },
             || {},
         )
         .await;
-    if let Err(e) = result {
-        let snap = service.mark_error(format!("Falha ao baixar: {e}"));
-        let _ = app.emit("update:snapshot", snap.clone());
-        return Ok(snap);
-    }
-    let snap = service.mark_downloaded();
+    let bytes = match result {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            let snap = service.finish_download_error(&ticket, format!("Falha ao baixar: {e}"));
+            let _ = app.emit("update:snapshot", snap.clone());
+            return Ok(snap);
+        }
+    };
+    let snap = match service.stage_downloaded(&ticket, update, bytes) {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => service.snapshot(),
+        Err(error) => service.finish_download_error(
+            &ticket,
+            format!("Falha ao preparar atualização: {error}"),
+        ),
+    };
     let _ = app.emit("update:snapshot", snap.clone());
     Ok(snap)
 }
@@ -1287,13 +1355,82 @@ async fn download_update(
 fn install_update(
     app: tauri::AppHandle,
     service: tauri::State<'_, crate::services::update_service::UpdateService>,
-) -> Result<bool, String> {
+    turns: tauri::State<'_, TurnService>,
+) -> Result<InstallUpdateResult, String> {
     if !service.can_install() {
         return Err("Atualização ainda não foi baixada".into());
     }
-    // Tauri's built-in restart spawns a new instance and exits the current one.
-    // The updater plugin installs on quit, so this applies the update.
-    app.restart();
+    let _install_lease = match turns.begin_update_install()? {
+        UpdateInstallAdmission::Ready(lease) => lease,
+        UpdateInstallAdmission::Busy { active_turns } => {
+            return Ok(InstallUpdateResult {
+                status: InstallUpdateStatus::Busy,
+                active_turns,
+            });
+        }
+    };
+    let staged = service
+        .take_staged_update()?
+        .ok_or_else(|| "Atualização baixada não está mais disponível".to_string())?;
+    let bytes = match staged.read_verified() {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let snapshot = service.mark_error(error.clone());
+            let _ = app.emit("update:snapshot", snapshot);
+            return Err(error);
+        }
+    };
+    #[cfg(target_os = "macos")]
+    let macos_bundle = match tauri::process::current_binary(&app.env())
+        .map_err(|e| format!("Falha ao localizar o app instalado: {e}"))
+        .and_then(|executable| {
+            crate::services::update_service::macos_bundle_path(&executable)
+                .ok_or_else(|| "O executável não está dentro de um bundle macOS válido".to_string())
+        }) {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            service.restore_staged_update(staged)?;
+            return Err(error);
+        }
+    };
+    if let Err(error) = std::fs::remove_file(&staged.artifact) {
+        service.restore_staged_update(staged)?;
+        return Err(format!("Falha ao preparar instalação: {error}"));
+    }
+    let update = staged.update;
+    if let Err(error) = update.install(&bytes) {
+        service.restore_failed_install(update, bytes)?;
+        return Err(format!("Falha ao instalar atualização: {error}"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let relaunch = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(crate::services::update_service::macos_relaunch_script())
+            .arg("verboo-update-relaunch")
+            .arg(std::process::id().to_string())
+            .arg(macos_bundle)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        if let Err(error) = relaunch {
+            eprintln!("[verboo:update] relaunch helper failed, using native restart: {error}");
+            app.restart();
+        }
+        _install_lease.keep_until_process_exit();
+        app.exit(0);
+        Ok(InstallUpdateResult {
+            status: InstallUpdateStatus::Restarting,
+            active_turns: 0,
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Tauri's native restart remains the correct relaunch path on Windows/Linux.
+        app.restart();
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1711,6 +1848,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         // ── State ──────────────────────────────────────────────
         .manage(AppState::new())
+        .manage(services::browser_panel::BrowserPanelState::default())
         .setup(|app| {
             // Initialize persistent settings store at {app_data_dir}/settings.json
             let app_data_dir = app
@@ -1718,6 +1856,10 @@ pub fn run() {
                 .app_data_dir()
                 .expect("app data dir must be available");
             let _ = std::fs::create_dir_all(&app_data_dir);
+            app.manage(
+                services::browser_panel::BrowserCaptureStore::new(app_data_dir.clone())
+                    .map_err(std::io::Error::other)?,
+            );
             let settings_store = SettingsStore::new(app_data_dir.clone());
             app.manage(
                 services::pasted_file_upload::PastedFileUploadService::new(app_data_dir.clone())
@@ -1729,7 +1871,7 @@ pub fn run() {
             // is a no-op on Windows/Linux (permission is granted at install).
             // Must happen before any notification is shown, otherwise the OS
             // silently drops them.
-            {
+            if std::env::var_os("VERBOO_BROWSER_SMOKE_REPORT").is_none() {
                 use tauri_plugin_notification::NotificationExt;
                 match app.notification().request_permission() {
                     Ok(state) => eprintln!(
@@ -1781,7 +1923,7 @@ pub fn run() {
             app.manage(crate::services::tray_service::TrayService::new());
             // UpdateService — owns the updater snapshot + auto-check timer logic
             app.manage(crate::services::update_service::UpdateService::new(
-                env!("CARGO_PKG_VERSION").into(),
+                app.package_info().version.to_string(),
                 cfg!(debug_assertions) == false,
             ));
             // LifecycleService — owns the first-launch requirements flag
@@ -1922,12 +2064,37 @@ pub fn run() {
                 };
             }
 
+            if let Some(report_path) = std::env::var_os("VERBOO_BROWSER_SMOKE_REPORT") {
+                services::browser_panel::start_runtime_smoke(
+                    app.handle().clone(),
+                    std::path::PathBuf::from(report_path),
+                );
+            }
+
             Ok(())
         })
         // ── Commands (47) ──────────────────────────────────────
         .invoke_handler(tauri::generate_handler![
             // Config
             get_config,
+            // Browser panel (Fase 1 — docked child webview, ADR-0001)
+            services::browser_panel::browser_create,
+            services::browser_panel::browser_set_bounds,
+            services::browser_panel::browser_set_visible,
+            services::browser_panel::browser_navigate,
+            services::browser_panel::browser_back,
+            services::browser_panel::browser_forward,
+            services::browser_panel::browser_reload,
+            services::browser_panel::browser_destroy,
+            services::browser_panel::browser_drain_messages,
+            services::browser_panel::browser_snapshot,
+            services::browser_panel::browser_capture_annotation,
+            services::browser_panel::browser_delete_temp_files,
+            services::browser_panel::browser_promote_temp_files,
+            services::browser_panel::browser_delete_capture_owner,
+            services::browser_panel::browser_cleanup_capture_owners,
+            services::browser_panel::browser_evaluate_script,
+            services::browser_panel::browser_healthcheck,
             // Auth
             start_cli_login,
             get_cli_auth_status,

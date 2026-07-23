@@ -191,7 +191,7 @@ export type TranscriptItem = {
   skills?: SkillSummary[]
   // Attachments sent with this message — thumbnail metadata only (paths,
   // names, kinds), no base64 blobs. Survives conversation reload.
-  attachments?: Pick<AttachmentMeta, 'path' | 'name' | 'kind' | 'size' | 'mediaType'>[]
+  attachments?: Pick<AttachmentMeta, 'path' | 'name' | 'kind' | 'size' | 'mediaType' | 'browserAnnotation'>[]
 }
 
 export type WorkspaceChangeEntry = {
@@ -405,6 +405,8 @@ export type UserSettings = {
    * Default: false (opt-in).
    */
   includeVerbooCoAuthor: boolean
+  /** When true, a verification mini-turn fires after edits that affect the browser. */
+  browserVerificationEnabled: boolean
   /** Per-model reasoning effort preference. Keyed by model id; value is one
    *  of the model's raw.reasoning.effortLevels (e.g. "low", "medium", "high").
    *  Absent → model's defaultEffort applies. Promoted to UserSettings by
@@ -591,7 +593,7 @@ export type ProfileResult = {
   error?: string
 }
 
-export type AttachmentKind = 'image' | 'video' | 'file'
+export type AttachmentKind = 'image' | 'video' | 'file' | 'browser-annotation'
 
 export type VideoHdrKind = 'sdr' | 'hlg' | 'pq' | 'dolbyVision' | 'unknown'
 
@@ -646,6 +648,20 @@ export type VideoProgress = {
 // Absent when no extraction was attempted (non-PDF, image).
 export type ExtractionStatus = 'extracted' | 'warning'
 
+// Browser annotation created via pencil (freehand) or arrow (element pick).
+// Crop and viewport snapshot are local PNGs produced by the native webview.
+export type BrowserAnnotation = {
+  kind: 'pen' | 'element'
+  crop: string
+  note?: string
+  url: string
+  selector?: string
+  component?: string
+  rect: { x: number; y: number; width: number; height: number }
+  viewport: { width: number; height: number }
+  viewportSnapshot?: { path: string; width: number; height: number; size: number }
+}
+
 export type AttachmentMeta = {
   path: string
   name: string
@@ -664,6 +680,7 @@ export type AttachmentMeta = {
   // content" from "model received a warning" without parsing the string.
   extractionStatus?: ExtractionStatus
   video?: VideoStreamMetadata
+  browserAnnotation?: BrowserAnnotation
 }
 
 export type AgentTurnRequest = {
@@ -956,6 +973,25 @@ export type UpdateSnapshot = {
   lastCheckedAt?: number
   downloadedAt?: number
   error?: string
+}
+
+export type InstallUpdateResult = {
+  status: 'busy' | 'restarting'
+  activeTurns: number
+}
+
+export type SidebarUpdatePresentation = {
+  phase:
+    | 'available'
+    | 'downloading'
+    | 'ready'
+    | 'waiting'
+    | 'restarting'
+    | 'error'
+  version?: string
+  percent?: number
+  error?: string
+  actionEnabled: boolean
 }
 
 export type UpdateSettings = {

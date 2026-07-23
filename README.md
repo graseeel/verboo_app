@@ -21,8 +21,8 @@ Official CLI upstream: [verbeux-ai/code](https://github.com/verbeux-ai/code).
 |----------|--------------|--------|-----------|
 | macOS | arm64 (Apple Silicon) | Stable | DMG, `.app` |
 | macOS | x64 (Intel) | Beta | DMG, `.app` |
-| Windows | x64 | Beta | NSIS `.exe`, MSI |
-| Linux | x64 | Beta | AppImage, `.deb` |
+| Windows | x64 | Beta | NSIS `.exe` |
+| Linux | x64 | Beta | AppImage, `.deb`, `.rpm` |
 
 The packaged app is self-contained for normal use on all three platforms. The
 Tauri bundle ships the Rust backend, the embedded `cli-package` (the Verboo CLI
@@ -117,7 +117,7 @@ npm run tauri:build
 
 The `tauri:build` script runs `build:tauri-deps` (dedup the cli-package, copy
 it into `src-tauri/resources/cli-package/`, and build the renderer) and then
-`cargo +1.89.0 tauri build`. The resulting `.app`/`.dmg`/`.exe`/`.AppImage`
+`cargo +1.89.0 tauri build`. The resulting `.app`/`.dmg`/`.exe`/`.AppImage`/`.deb`/`.rpm`
 artifacts land in `src-tauri/target/release/bundle/`.
 
 ### GitHub Releases
@@ -128,8 +128,8 @@ publishes:
 
 - macOS arm64: `.app`, `.dmg`
 - macOS x64: `.app`, `.dmg`
-- Windows x64: NSIS `.exe`, `.msi`
-- Linux x64: `.AppImage`, `.deb`
+- Windows x64: NSIS `.exe`
+- Linux x64: `.AppImage`, `.deb`, `.rpm`
 
 The Tauri updater downloads a per-release `latest.json` manifest and verifies
 each update bundle against the public key in `src-tauri/tauri.conf.json`.
@@ -259,7 +259,7 @@ npm run tauri:build
 
 O script `tauri:build` roda `build:tauri-deps` (dedup do cli-package, cópia
 para `src-tauri/resources/cli-package/` e build do renderer) e depois
-`cargo +1.89.0 tauri build`. Os artefatos `.app`/`.dmg`/`.exe`/`.AppImage`
+`cargo +1.89.0 tauri build`. Os artefatos `.app`/`.dmg`/`.exe`/`.AppImage`/`.deb`/`.rpm`
 ficam em `src-tauri/target/release/bundle/`.
 
 ### GitHub Releases
@@ -270,8 +270,8 @@ publica:
 
 - macOS arm64: `.app`, `.dmg`
 - macOS x64: `.app`, `.dmg`
-- Windows x64: NSIS `.exe`, `.msi`
-- Linux x64: `.AppImage`, `.deb`
+- Windows x64: NSIS `.exe`
+- Linux x64: `.AppImage`, `.deb`, `.rpm`
 
 O updater do Tauri baixa um manifesto `latest.json` por release e verifica cada
 bundle de atualização contra a chave pública em `src-tauri/tauri.conf.json`.

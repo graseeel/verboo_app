@@ -21,9 +21,10 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
-import type { ChatProject, CliAuthStatus, ProfileResult, StoredConversation, AvatarSettings } from '../../shared/types'
+import type { AvatarSettings, ChatProject, CliAuthStatus, ProfileResult, SidebarUpdatePresentation, StoredConversation } from '../../shared/types'
 import { AvatarIcon } from './AvatarIcon'
 import { ContextMenu, type ContextMenuState } from './ContextMenu'
+import { SidebarUpdateControl } from './SidebarUpdateControl'
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss'
 import { useI18n } from '../i18n'
 import { DEFAULT_CONVERSATION_TITLE } from '../state/chatStore'
@@ -61,6 +62,8 @@ type AppSidebarProps = {
   onDeleteConversation: (conversationId: string) => void
   onRenameConversation: (conversationId: string, title: string) => void
   avatarSettings?: AvatarSettings
+  updatePresentation?: SidebarUpdatePresentation
+  onRequestUpdate?: () => void
 }
 
 export function AppSidebar({
@@ -92,6 +95,8 @@ export function AppSidebar({
   onDeleteConversation,
   onRenameConversation,
   avatarSettings,
+  updatePresentation,
+  onRequestUpdate,
 }: AppSidebarProps) {
   const { t } = useI18n()
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
@@ -366,6 +371,9 @@ export function AppSidebar({
             </button>
           </div>
         )}
+        {updatePresentation && onRequestUpdate && (
+          <SidebarUpdateControl presentation={updatePresentation} onAction={onRequestUpdate} />
+        )}
         <button
           className={`sidebar-account ${profileMenuOpen ? 'active' : ''}`}
           type="button"
@@ -460,4 +468,3 @@ function relativeTime(timestamp: number, t: (key: string, values?: Record<string
   if (hours < 24) return t('sidebar.hours', { count: hours })
   return t('sidebar.days', { count: Math.floor(hours / 24) })
 }
-

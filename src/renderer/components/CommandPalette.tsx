@@ -1,8 +1,9 @@
-import { Blocks, Ghost, MessageSquare, MessageSquarePlus, Moon, PanelLeft, Search, Settings, Shrink, SquareTerminal, FileDiff } from 'lucide-react'
+import { Blocks, Ghost, Globe, MessageSquare, MessageSquarePlus, Moon, PanelLeft, Search, Settings, Shrink, SquareTerminal, FileDiff } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { StoredConversation } from '../../shared/types'
 import { useI18n } from '../i18n'
 import { DEFAULT_CONVERSATION_TITLE } from '../state/chatStore'
+import { createOverlayShadeEntry } from '../features/browser/useOverlayShade'
 
 export type PaletteAction = {
   key: string
@@ -33,6 +34,13 @@ export function CommandPalette({ open, conversations, actions, onSelectConversat
     setQuery('')
     setHighlighted(0)
     inputRef.current?.focus()
+  }, [open])
+
+  // Register with overlay shade system when palette is open
+  useEffect(() => {
+    if (!open) return
+    const entry = createOverlayShadeEntry(true)
+    return entry.release
   }, [open])
 
   const normalizedQuery = query.trim().toLowerCase()
@@ -229,6 +237,7 @@ export const paletteIcons = {
   theme: <Moon size={14} />,
   terminal: <SquareTerminal size={14} />,
   review: <FileDiff size={14} />,
+  browser: <Globe size={14} />,
   sidebar: <PanelLeft size={14} />,
   pet: <Ghost size={14} />,
   compact: <Shrink size={14} />,

@@ -1,4 +1,4 @@
-import { FileSearch, PanelLeftOpen, Terminal as TerminalIcon } from 'lucide-react'
+import { FileSearch, Globe, PanelLeftOpen, Terminal as TerminalIcon } from 'lucide-react'
 import { useI18n } from '../i18n'
 
 type TopBarProps = {
@@ -10,6 +10,10 @@ type TopBarProps = {
   reviewOpen: boolean
   reviewUnavailableReason?: string
   onToggleReview: () => void
+  browserAvailable: boolean
+  browserOpen: boolean
+  onToggleBrowser: () => void
+  workspacePanelsEnabled: boolean
 }
 
 export function TopBar({
@@ -21,6 +25,10 @@ export function TopBar({
   reviewOpen,
   reviewUnavailableReason,
   onToggleReview,
+  browserAvailable,
+  browserOpen,
+  onToggleBrowser,
+  workspacePanelsEnabled,
 }: TopBarProps) {
   const { t } = useI18n()
 
@@ -59,6 +67,7 @@ export function TopBar({
         <button
           className={`topbar-terminal-button ui-tooltip ${terminalOpen ? 'active' : ''}`}
           type="button"
+          disabled={!workspacePanelsEnabled}
           onClick={event => {
             event.stopPropagation()
             onToggleTerminal()
@@ -72,6 +81,7 @@ export function TopBar({
         <button
           className={`topbar-terminal-button ui-tooltip ${reviewOpen ? 'active' : ''}`}
           type="button"
+          disabled={!workspacePanelsEnabled}
           onClick={event => {
             event.stopPropagation()
             onToggleReview()
@@ -82,6 +92,22 @@ export function TopBar({
         >
           <FileSearch size={15} />
         </button>
+        {browserAvailable && (
+          <button
+            className={`topbar-terminal-button ui-tooltip ${browserOpen ? 'active' : ''}`}
+            type="button"
+            disabled={!workspacePanelsEnabled}
+            onClick={event => {
+              event.stopPropagation()
+              onToggleBrowser()
+            }}
+            data-tooltip={browserOpen ? t('topbar.hideBrowser') : t('topbar.openBrowser')}
+            data-tooltip-align="end"
+            aria-label={browserOpen ? t('topbar.hideBrowser') : t('topbar.openBrowser')}
+          >
+            <Globe size={15} />
+          </button>
+        )}
       </div>
     </header>
   )

@@ -1,6 +1,6 @@
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
 use tauri::{AppHandle, Emitter};
@@ -50,6 +50,74 @@ pub(crate) fn bundled_cli_0_13_0_media_capabilities() -> CliMediaCapabilities {
 /// while holding the inner mutex.
 type ChildHandle = Arc<Mutex<Child>>;
 
+#[derive(Clone, Default)]
+struct UpdateInstallGate {
+    installing: Arc<Mutex<bool>>,
+}
+
+struct TurnRegistrationGuard<'a> {
+    _guard: MutexGuard<'a, bool>,
+}
+
+pub(crate) struct UpdateInstallLease {
+    gate: UpdateInstallGate,
+}
+
+pub(crate) enum UpdateInstallAdmission {
+    Ready(UpdateInstallLease),
+    Busy { active_turns: usize },
+}
+
+impl UpdateInstallLease {
+    /// A successful updater install must keep rejecting new turns after the
+    /// exit request is queued and until the operating system ends the process.
+    pub(crate) fn keep_until_process_exit(self) {
+        std::mem::forget(self);
+    }
+}
+
+impl UpdateInstallGate {
+    fn begin_turn_registration(&self) -> Result<TurnRegistrationGuard<'_>, String> {
+        let guard = self
+            .installing
+            .lock()
+            .map_err(|_| "update install gate is unavailable".to_string())?;
+        if *guard {
+            return Err("Uma atualização está sendo instalada; aguarde o app reiniciar".into());
+        }
+        Ok(TurnRegistrationGuard { _guard: guard })
+    }
+
+    fn begin_install(
+        &self,
+        active_count: impl FnOnce() -> Result<usize, String>,
+    ) -> Result<UpdateInstallAdmission, String> {
+        let mut installing = self
+            .installing
+            .lock()
+            .map_err(|_| "update install gate is unavailable".to_string())?;
+        if *installing {
+            return Err("Uma atualização já está sendo instalada".into());
+        }
+        let active_turns = active_count()?;
+        if active_turns > 0 {
+            return Ok(UpdateInstallAdmission::Busy { active_turns });
+        }
+        *installing = true;
+        Ok(UpdateInstallAdmission::Ready(UpdateInstallLease {
+            gate: self.clone(),
+        }))
+    }
+}
+
+impl Drop for UpdateInstallLease {
+    fn drop(&mut self) {
+        if let Ok(mut installing) = self.gate.installing.lock() {
+            *installing = false;
+        }
+    }
+}
+
 /// Auth: the API key (if stored) is injected via `OAUTH_TOKEN_FILE` env var
 /// pointing at a 0600 temp file. This matches Electron's behavior of
 /// "API key has precedence over OAuth token" (verbooCliService.ts:306) and
@@ -64,6 +132,9 @@ pub struct TurnService {
     /// Registered on `send_turn`, cleared on `Done`/`Error` in the reader
     /// thread.
     active_by_conversation: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    /// Serializes turn registration with the updater's final install/restart
+    /// window so a healthy turn can never begin after the busy check.
+    update_install_gate: UpdateInstallGate,
     credentials: Arc<CredentialsStore>,
     /// Optional settings store for reading `prevent_sleep_while_running`.
     /// When `None`, sleep prevention is disabled (used in tests).
@@ -80,6 +151,7 @@ impl TurnService {
         Self {
             active: Arc::new(Mutex::new(std::collections::HashMap::new())),
             active_by_conversation: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            update_install_gate: UpdateInstallGate::default(),
             credentials,
             settings: None,
             app_data_dir: None,
@@ -145,7 +217,7 @@ impl TurnService {
             .as_ref()
             .map(|list| {
                 list.iter()
-                    .any(|a| a.kind == AttachmentKind::Image && a.media_type.is_some())
+                    .any(|a| is_visual_attachment(a) && a.media_type.is_some())
             })
             .unwrap_or(false);
         if !has_images {
@@ -326,7 +398,7 @@ impl TurnService {
         // or a `None` `extracted_text`).
         if let Some(list) = request.attachments.as_mut() {
             for att in list.iter_mut() {
-                if att.kind != AttachmentKind::Image || att.media_type.is_none() {
+                if !is_visual_attachment(att) || att.media_type.is_none() {
                     continue;
                 }
                 let media_type = att.media_type.clone().unwrap_or_default();
@@ -340,7 +412,7 @@ impl TurnService {
                     &app_data_dir,
                 ) {
                     Ok(description) => {
-                        att.extracted_text = Some(description);
+                        merge_vision_description(att, description);
                         att.extraction_status =
                             Some(crate::models::types::ExtractionStatus::Extracted);
                     }
@@ -352,7 +424,7 @@ impl TurnService {
                             "[verboo:vision-fallback] describe_image failed for {}: {e}",
                             att.path
                         );
-                        att.extracted_text = Some(format!(
+                        merge_vision_description(att, format!(
                             "[Vision fallback failed: {e}. \
                              The model cannot read this image. \
                              Tell the user the vision helper couldn't describe \
@@ -375,7 +447,7 @@ impl TurnService {
     fn inject_fallback_warning(&self, request: &mut AgentTurnRequest, warning: &str) {
         if let Some(list) = request.attachments.as_mut() {
             for att in list.iter_mut() {
-                if att.kind == AttachmentKind::Image && att.extracted_text.is_none() {
+                if is_visual_attachment(att) && att.extracted_text.is_none() {
                     att.extracted_text = Some(warning.to_string());
                     att.extraction_status = Some(crate::models::types::ExtractionStatus::Warning);
                 }
@@ -1054,6 +1126,7 @@ impl TurnService {
         request: AgentTurnRequest,
         resume_session_id: Option<String>,
     ) -> Result<String, String> {
+        let registration = self.update_install_gate.begin_turn_registration()?;
         let turn_id = request
             .turn_id
             .clone()
@@ -1094,11 +1167,10 @@ impl TurnService {
         // replaces the old fragile fallback ("any active turn") that could
         // kill the wrong chat in multichat. Cleared on Done/Error in the
         // reader thread.
-        {
-            if let Ok(mut map) = active_by_conversation.lock() {
-                map.insert(conversation_id.clone(), turn_id.clone());
-            }
-        }
+        active_by_conversation
+            .lock()
+            .map_err(|_| "active conversation registry is unavailable".to_string())?
+            .insert(conversation_id.clone(), turn_id.clone());
 
         // Spawn a background thread for ALL heavy work. This is the structural
         // fix for the beachball freeze: the Tauri command thread returns
@@ -1111,7 +1183,8 @@ impl TurnService {
         // `creation_flags` (see below). Interrupt via `child_signal` works
         // on all three (SIGINT on Unix, GenerateConsoleCtrlEvent on Windows).
         let builder = std::thread::Builder::new().name(format!("verboo-turn-{turn_id}"));
-        builder
+        let active_by_conversation_for_thread = active_by_conversation.clone();
+        let spawn_result = builder
             .spawn(move || {
                 Self::run_turn_background(
                     app_for_thread,
@@ -1120,14 +1193,22 @@ impl TurnService {
                     turn_id_for_thread,
                     conversation_id_for_thread,
                     active,
-                    active_by_conversation,
+                    active_by_conversation_for_thread,
                     credentials,
                     settings,
                     app_data_dir,
                     video_jobs,
                 );
-            })
-            .map_err(|e| format!("Falha ao iniciar thread do turn: {e}"))?;
+            });
+        drop(registration);
+        if let Err(error) = spawn_result {
+            if let Ok(mut map) = active_by_conversation.lock() {
+                if map.get(&conversation_id) == Some(&turn_id) {
+                    map.remove(&conversation_id);
+                }
+            }
+            return Err(format!("Falha ao iniciar thread do turn: {error}"));
+        }
 
         Ok(turn_id)
     }
@@ -1208,6 +1289,7 @@ impl TurnService {
             let fallback_svc = TurnService {
                 active: active.clone(),
                 active_by_conversation: active_by_conversation.clone(),
+                update_install_gate: UpdateInstallGate::default(),
                 credentials: credentials.clone(),
                 settings: settings.clone(),
                 app_data_dir: app_data_dir.clone(),
@@ -1675,6 +1757,25 @@ impl TurnService {
         });
     }
 
+    pub fn active_count(&self) -> Result<usize, String> {
+        let active_children = self
+            .active
+            .lock()
+            .map(|active| active.len())
+            .map_err(|_| "active turn registry is unavailable".to_string())?;
+        let active_turns = self
+            .active_by_conversation
+            .lock()
+            .map(|active| active.len())
+            .map_err(|_| "active conversation registry is unavailable".to_string())?;
+        Ok(active_children.max(active_turns))
+    }
+
+    pub(crate) fn begin_update_install(&self) -> Result<UpdateInstallAdmission, String> {
+        self.update_install_gate
+            .begin_install(|| self.active_count())
+    }
+
     /// Interrupt a running turn by turn_id. Sends SIGINT on Unix, Ctrl+C
     /// (GenerateConsoleCtrlEvent) on Windows, falling back to kill(). Returns
     /// true if a child was found and signaled, false if the turn wasn't
@@ -1717,14 +1818,35 @@ impl TurnService {
             return Ok(video_interrupted);
         };
 
-        let mut active = self.active.lock().map_err(|e| e.to_string())?;
-        if let Some(child_handle) = active.get_mut(&turn_id) {
-            if let Ok(mut child) = child_handle.lock() {
-                let _ = crate::services::child_signal::interrupt_child(&mut child);
-                return Ok(true);
-            }
+        let child_handle = self
+            .active
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get(&turn_id)
+            .cloned();
+        let Some(child_handle) = child_handle else {
+            return Ok(video_interrupted);
+        };
+
+        {
+            let mut child = child_handle.lock().map_err(|e| e.to_string())?;
+            crate::services::child_signal::interrupt_child(&mut child)?;
         }
-        Ok(video_interrupted)
+
+        // Some CLI states (notably a completed subagent that left a
+        // background dev server behind) consume SIGINT without exiting. Give
+        // the process a short graceful window, then guarantee that the turn
+        // closes so the renderer can receive Done/Error and leave busy state.
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(750));
+            let Ok(mut child) = child_handle.lock() else {
+                return;
+            };
+            if matches!(child.try_wait(), Ok(None)) {
+                let _ = child.kill();
+            }
+        });
+        Ok(true)
     }
 }
 
@@ -1929,7 +2051,7 @@ fn build_stream_json_input(request: &AgentTurnRequest, prompt: &str) -> Option<S
     let attachments = request.attachments.as_ref()?;
     let images: Vec<&AttachmentMeta> = attachments
         .iter()
-        .filter(|a| a.kind == AttachmentKind::Image && a.media_type.is_some())
+        .filter(|a| is_visual_attachment(a) && a.media_type.is_some())
         .collect();
     if images.is_empty() {
         return None;
@@ -2328,7 +2450,33 @@ fn attachment_kind_label(kind: &AttachmentKind) -> &'static str {
         AttachmentKind::Image => "image",
         AttachmentKind::Video => "video",
         AttachmentKind::File => "file",
+        AttachmentKind::BrowserAnnotation => "browser annotation",
     }
+}
+
+fn is_visual_attachment(attachment: &AttachmentMeta) -> bool {
+    matches!(
+        attachment.kind,
+        AttachmentKind::Image | AttachmentKind::BrowserAnnotation
+    )
+}
+
+fn merge_vision_description(attachment: &mut AttachmentMeta, description: String) {
+    if matches!(attachment.kind, AttachmentKind::BrowserAnnotation) {
+        if let Some(structured_context) = attachment
+            .extracted_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            attachment.extracted_text = Some(format!(
+                "{structured_context}\n\n<visual-description>\n{}\n</visual-description>",
+                description.trim(),
+            ));
+            return;
+        }
+    }
+    attachment.extracted_text = Some(description);
 }
 
 fn personality_label(value: &PersonalityMode, language: LanguageCode) -> &'static str {
@@ -3764,6 +3912,35 @@ mod tests {
     }
 
     #[test]
+    fn vision_description_preserves_browser_annotation_instructions() {
+        let mut annotation = attachment_with_text(
+            "User note (authoritative instruction): Use a cyan border.\nSelector: #hero-cta.",
+        );
+        annotation.kind = AttachmentKind::BrowserAnnotation;
+
+        merge_vision_description(&mut annotation, "A violet outlined button is visible.".into());
+
+        let text = annotation.extracted_text.unwrap();
+        assert!(text.contains("authoritative instruction"));
+        assert!(text.contains("Selector: #hero-cta"));
+        assert!(text.contains("<visual-description>"));
+        assert!(text.contains("violet outlined button"));
+    }
+
+    #[test]
+    fn vision_description_remains_authoritative_for_plain_images() {
+        let mut image = attachment_with_text("noisy OCR");
+        image.kind = AttachmentKind::Image;
+
+        merge_vision_description(&mut image, "Authoritative visual description".into());
+
+        assert_eq!(
+            image.extracted_text.as_deref(),
+            Some("Authoritative visual description"),
+        );
+    }
+
+    #[test]
     fn attachment_lines_inject_extracted_text() {
         let attachments = Some(vec![attachment_with_text("Joao da Silva\nRua X, 123")]);
         let lines = build_attachment_lines(&attachments, LanguageCode::EnUs, None);
@@ -3979,8 +4156,8 @@ mod tests {
     }
 
     #[test]
-    fn stream_json_input_builds_payload_with_image_for_vision_model() {
-        // Vision model + image attachment → Some(payload) with image_url block.
+    fn stream_json_input_builds_payload_with_visual_attachments_for_vision_model() {
+        // Vision model + image/browser annotation → one image block per visual.
         // Use a real temp file so base64 encoding has data to read.
         let temp = std::env::temp_dir().join(format!(
             "verboo-test-stream-{}.png",
@@ -3990,6 +4167,9 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::write(&temp, b"fake-png-bytes").unwrap();
+        let mut annotation = image_attachment(temp.to_str().unwrap(), "image/png");
+        annotation.kind = AttachmentKind::BrowserAnnotation;
+        annotation.name = "browser-annotation.png".into();
         let request = AgentTurnRequest {
             turn_id: None,
             conversation_id: "c1".into(),
@@ -4001,7 +4181,10 @@ mod tests {
             access_mode: crate::models::types::AccessMode::Approval,
             working_directory: "/tmp".into(),
             skills: Vec::new(),
-            attachments: Some(vec![image_attachment(temp.to_str().unwrap(), "image/png")]),
+            attachments: Some(vec![
+                image_attachment(temp.to_str().unwrap(), "image/png"),
+                annotation,
+            ]),
             response_enhancements_enabled: None,
             personality: None,
             custom_instructions: None,
@@ -4028,7 +4211,7 @@ mod tests {
         let message = &parsed["message"];
         assert_eq!(message["role"], "user");
         let content = message["content"].as_array().unwrap();
-        assert!(content.len() >= 2, "should have text + image blocks");
+        assert_eq!(content.len(), 3, "should have text + two visual blocks");
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[0]["text"], "prompt text here");
         // Image block uses Anthropic-style source.base64 (raw b64, no data: URL).
@@ -4043,6 +4226,11 @@ mod tests {
         assert!(
             !data.starts_with("data:"),
             "base64 data must NOT be a data: URL — CLI expects raw base64"
+        );
+        assert_eq!(
+            content.iter().filter(|block| block["type"] == "image").count(),
+            2,
+            "browser annotation must use the same capability-based vision route",
         );
         let _ = std::fs::remove_file(&temp);
     }
@@ -4542,6 +4730,140 @@ mod tests {
         assert!(!result, "cleared mapping → false");
     }
 
+    fn spawn_sleeping_test_child() -> std::process::Child {
+        #[cfg(unix)]
+        return Command::new("sh")
+            .args(["-c", "sleep 5"])
+            .spawn()
+            .unwrap();
+
+        #[cfg(windows)]
+        return Command::new("cmd")
+            .args(["/C", "ping -n 6 127.0.0.1 >NUL"])
+            .spawn()
+            .unwrap();
+    }
+
+    #[test]
+    fn active_count_reports_all_cli_children() {
+        let service = make_turn_service();
+        assert_eq!(service.active_count().unwrap(), 0);
+
+        let child = Arc::new(Mutex::new(spawn_sleeping_test_child()));
+        service
+            .active
+            .lock()
+            .unwrap()
+            .insert("turn-a".into(), child.clone());
+        assert_eq!(service.active_count().unwrap(), 1);
+
+        let mut child = child.lock().unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn active_count_includes_a_turn_before_its_cli_child_spawns() {
+        let service = make_turn_service();
+        service
+            .active_by_conversation
+            .lock()
+            .unwrap()
+            .insert("conversation-preparing".into(), "turn-preparing".into());
+
+        assert_eq!(service.active_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn active_count_fails_closed_when_registry_is_poisoned() {
+        let service = make_turn_service();
+        let active = service.active.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = active.lock().unwrap();
+            panic!("poison active turn registry");
+        })
+        .join();
+
+        assert!(service.active_count().is_err());
+    }
+
+    #[test]
+    fn update_install_admission_observes_a_turn_registered_in_parallel() {
+        use std::sync::Barrier;
+
+        let service = Arc::new(make_turn_service());
+        let registered = Arc::new(Barrier::new(2));
+        let release_registration = Arc::new(Barrier::new(2));
+
+        let turn_service = service.clone();
+        let turn_registered = registered.clone();
+        let turn_release = release_registration.clone();
+        let turn = std::thread::spawn(move || {
+            let _registration = turn_service
+                .update_install_gate
+                .begin_turn_registration()
+                .unwrap();
+            turn_service
+                .active_by_conversation
+                .lock()
+                .unwrap()
+                .insert("conversation".into(), "turn".into());
+            turn_registered.wait();
+            turn_release.wait();
+        });
+
+        registered.wait();
+        let install_service = service.clone();
+        let install =
+            std::thread::spawn(move || install_service.begin_update_install());
+
+        release_registration.wait();
+        turn.join().unwrap();
+        match install.join().unwrap().unwrap() {
+            UpdateInstallAdmission::Busy { active_turns } => assert_eq!(active_turns, 1),
+            UpdateInstallAdmission::Ready(_) => panic!("install bypassed turn registration"),
+        }
+    }
+
+    #[test]
+    fn active_update_install_blocks_new_turn_registration_until_lease_drops() {
+        let service = make_turn_service();
+        let lease = match service
+            .update_install_gate
+            .begin_install(|| Ok(0))
+            .unwrap()
+        {
+            UpdateInstallAdmission::Ready(lease) => lease,
+            UpdateInstallAdmission::Busy { .. } => panic!("unexpected active turn"),
+        };
+
+        assert!(service
+            .update_install_gate
+            .begin_turn_registration()
+            .is_err());
+        drop(lease);
+        assert!(service
+            .update_install_gate
+            .begin_turn_registration()
+            .is_ok());
+    }
+
+    #[test]
+    fn committed_update_install_keeps_turn_gate_closed_until_process_exit() {
+        let service = make_turn_service();
+        let lease = match service.begin_update_install().unwrap() {
+            UpdateInstallAdmission::Ready(lease) => lease,
+            UpdateInstallAdmission::Busy { .. } => panic!("unexpected active turn"),
+        };
+
+        lease.keep_until_process_exit();
+
+        assert!(service
+            .update_install_gate
+            .begin_turn_registration()
+            .is_err());
+    }
+
     #[test]
     fn interrupt_does_not_fallback_to_any_active_turn() {
         // CRITICAL: even if there IS an active turn for conv-b, interrupting
@@ -4554,6 +4876,36 @@ mod tests {
         // interrupt conv-a (unknown) → false, NOT conv-b's turn.
         let result = svc.interrupt(Some("conv-a".into())).unwrap();
         assert!(!result, "must NOT fall back to conv-b's turn");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interrupt_escalates_when_cli_ignores_sigint() {
+        let service = make_turn_service();
+        let child = std::process::Command::new("sh")
+            .args(["-c", "trap '' INT; while :; do sleep 1; done"])
+            .spawn()
+            .unwrap();
+        let child_handle = Arc::new(Mutex::new(child));
+        service
+            .active
+            .lock()
+            .unwrap()
+            .insert("turn-stuck".into(), child_handle.clone());
+        service
+            .active_by_conversation
+            .lock()
+            .unwrap()
+            .insert("conversation-stuck".into(), "turn-stuck".into());
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        assert!(service
+            .interrupt(Some("conversation-stuck".into()))
+            .unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(1_200));
+
+        let status = child_handle.lock().unwrap().try_wait().unwrap();
+        assert!(status.is_some(), "stubborn CLI must be force-killed after the grace period");
     }
 
     #[test]

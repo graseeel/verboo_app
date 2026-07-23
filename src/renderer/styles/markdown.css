@@ -112,7 +112,7 @@
 
 .markdown-link-backdrop {
   top: var(--titlebar-height);
-  right: calc(var(--subagents-panel-width, 0px) + var(--review-width) + var(--terminal-width));
+  right: calc(var(--subagents-panel-width, 0px) + var(--browser-width) + var(--review-width) + var(--terminal-width));
   bottom: 0;
   left: var(--sidebar-width);
   z-index: 1100;

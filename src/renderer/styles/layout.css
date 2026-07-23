@@ -307,6 +307,17 @@
   background: color-mix(in srgb, var(--accent-soft) 56%, transparent);
 }
 
+.topbar-terminal-button:disabled {
+  opacity: 0.36;
+  cursor: default;
+}
+
+.topbar-terminal-button:disabled:hover {
+  border-color: transparent;
+  color: var(--text-dim);
+  background: transparent;
+}
+
 .topbar button,
 .app-sidebar button,
 .composer button,
@@ -373,6 +384,7 @@
 .project-name-button:focus-visible,
 .conversation-main:focus-visible,
 .sidebar-row-actions button:focus-visible,
+.sidebar-update-button:focus-visible,
 .sidebar-account:focus-visible,
 .profile-menu button:focus-visible {
   outline: none;
@@ -389,6 +401,7 @@
 .project-name-button:not(:disabled):active,
 .conversation-main:not(:disabled):active,
 .sidebar-row-actions button:not(:disabled):active,
+.sidebar-update-button:not(:disabled):active,
 .sidebar-account:not(:disabled):active,
 .profile-menu button:not(:disabled):active {
   transform: scale(var(--press-scale));
@@ -402,7 +415,7 @@
 .app-layout {
   position: relative;
   display: grid;
-  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--review-width) var(--terminal-width);
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--browser-width) var(--review-width) var(--terminal-width);
   grid-template-rows: minmax(0, 1fr);
   height: 100%;
   min-height: 0;
@@ -433,13 +446,18 @@
   grid-row: 1;
 }
 
-.review-panel {
+.browser-panel {
   grid-column: 4;
   grid-row: 1;
 }
 
-.terminal-panel {
+.review-panel {
   grid-column: 5;
+  grid-row: 1;
+}
+
+.terminal-panel {
+  grid-column: 6;
   grid-row: 1;
 }
 
@@ -528,7 +546,7 @@
    but we also neutralize the dim overlay and any residual sidebar chrome so
    the view is truly full-bleed. */
 .app-layout.view-fullscreen {
-  grid-template-columns: 0 minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--review-width) var(--terminal-width);
+  grid-template-columns: 0 minmax(0, 1fr) var(--subagents-panel-width, 0px) var(--browser-width) var(--review-width) var(--terminal-width);
 }
 
 .app-layout.view-fullscreen .workspace {
@@ -654,6 +672,8 @@
 .app-sidebar .account-brand strong,
 .app-sidebar .account-brand small,
 .app-sidebar .account-disclaimer,
+.app-sidebar .sidebar-update-copy,
+.app-sidebar .sidebar-update-meta,
 .app-sidebar .account-profile > span:last-child {
   transition:
     opacity 200ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -673,6 +693,8 @@
   .app-sidebar .account-brand strong,
   .app-sidebar .account-brand small,
   .app-sidebar .account-disclaimer,
+  .app-sidebar .sidebar-update-copy,
+  .app-sidebar .sidebar-update-meta,
   .app-sidebar .account-profile > span:last-child {
     opacity: 0;
   }
@@ -693,6 +715,8 @@
 .app-sidebar.compact .account-brand strong,
 .app-sidebar.compact .account-brand small,
 .app-sidebar.compact .account-disclaimer,
+.app-sidebar.compact .sidebar-update-copy,
+.app-sidebar.compact .sidebar-update-meta,
 .app-sidebar.compact .account-profile > span:last-child,
 .app-sidebar.compact .profile-menu {
   display: none;
@@ -922,6 +946,173 @@
   transition:
     filter 180ms ease-out,
     opacity 180ms ease-out;
+}
+
+.sidebar-update {
+  min-width: 0;
+  margin-bottom: 6px;
+}
+
+.sidebar-update-button {
+  position: relative;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 52px;
+  overflow: hidden;
+  padding: 7px 8px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background-color 150ms ease-out,
+    border-color 150ms ease-out,
+    color 150ms ease-out,
+    transform 120ms ease-out;
+}
+
+.sidebar-update-button:disabled {
+  cursor: default;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .sidebar-update-button:not(:disabled):hover {
+    border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+  }
+}
+
+.sidebar-update-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent-strong);
+  transition:
+    opacity var(--text-swap-dur) var(--text-swap-ease),
+    transform var(--text-swap-dur) var(--text-swap-ease),
+    filter var(--text-swap-dur) var(--text-swap-ease);
+}
+
+.sidebar-update-icon.is-pending svg {
+  animation: sidebar-update-spin 900ms linear infinite;
+}
+
+.sidebar-update-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  transition:
+    opacity var(--text-swap-dur) var(--text-swap-ease),
+    transform var(--text-swap-dur) var(--text-swap-ease),
+    filter var(--text-swap-dur) var(--text-swap-ease),
+    display var(--text-swap-dur) allow-discrete;
+}
+
+@starting-style {
+  .sidebar-update-icon,
+  .sidebar-update-copy {
+    opacity: 0;
+    filter: blur(var(--text-swap-blur));
+    transform: translateY(var(--text-swap-translate-y));
+  }
+}
+
+.sidebar-update-copy strong,
+.sidebar-update-copy small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-update-copy strong {
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 720;
+  letter-spacing: -0.01em;
+}
+
+.sidebar-update-copy small {
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
+.sidebar-update-meta {
+  min-width: 23px;
+  color: var(--accent-strong);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 720;
+  text-align: right;
+}
+
+.sidebar-update-progress {
+  position: absolute;
+  right: 8px;
+  bottom: 4px;
+  left: 46px;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, var(--border));
+}
+
+.sidebar-update-progress-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transform-origin: left center;
+  transition: transform 150ms linear;
+}
+
+.sidebar-update--error .sidebar-update-button {
+  border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+
+.sidebar-update--error .sidebar-update-icon,
+.sidebar-update--error .sidebar-update-meta {
+  color: var(--danger);
+}
+
+.sidebar-update--error .sidebar-update-icon {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.app-sidebar.compact .sidebar-update-button {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  min-height: 44px;
+  padding: 6px 0;
+}
+
+.app-sidebar.compact .sidebar-update-icon {
+  width: 32px;
+  height: 32px;
+}
+
+@media (max-height: 700px) {
+  .sidebar-update-button {
+    min-height: 44px;
+  }
+
+  .sidebar-update-copy small {
+    display: none;
+  }
+}
+
+@keyframes sidebar-update-spin {
+  to { transform: rotate(360deg); }
 }
 
 .sidebar-account {
@@ -1261,6 +1452,33 @@
   .sidebar-shell,
   .sidebar-shell.is-peek .app-sidebar {
     transition: none !important;
+  }
+
+  .sidebar-update-button {
+    transition:
+      background-color 100ms ease-out,
+      border-color 100ms ease-out,
+      color 100ms ease-out !important;
+  }
+
+  .sidebar-update-button:not(:disabled):active {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    transform: none;
+  }
+
+  .sidebar-update-icon,
+  .sidebar-update-copy {
+    filter: none !important;
+    transform: none !important;
+    transition: opacity 100ms ease-out !important;
+  }
+
+  .sidebar-update-progress-fill {
+    transition: none !important;
+  }
+
+  .sidebar-update-icon.is-pending svg {
+    animation: none !important;
   }
   /* Peek animations become opacity-only 120ms, no translate. Leave delay is
      capped at 100ms via SIDEBAR_PEEK_LEAVE_DELAY_MS (JS-side). */

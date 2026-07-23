@@ -1,6 +1,7 @@
 import { TriangleAlert } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import { useI18n } from '../i18n'
+import { createOverlayShadeEntry } from '../features/browser/useOverlayShade'
 
 export type ConfirmRequest = {
   title: string
@@ -25,6 +26,13 @@ export function ConfirmDialog({ request, onClose }: { request?: ConfirmRequest; 
     document.addEventListener('keydown', handleKeyDown, true)
     return () => document.removeEventListener('keydown', handleKeyDown, true)
   }, [request, onClose])
+
+  // Register with overlay shade system when dialog is open
+  useEffect(() => {
+    if (!request) return
+    const entry = createOverlayShadeEntry(true)
+    return entry.release
+  }, [request])
 
   if (!request) return null
 

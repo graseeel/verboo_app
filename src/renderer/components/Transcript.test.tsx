@@ -68,4 +68,28 @@ describe('TurnView — .turn-recap stays mounted after expand', () => {
     // Text-only turns still show the recap (the "static" span variant)
     expect(container.querySelector('.turn-recap')).toBeTruthy()
   })
+
+  it('renders persisted browser annotations as image thumbnails', () => {
+    const items: TranscriptItem[] = [{
+      id: 'user:annotation',
+      role: 'user',
+      text: 'Use this visual context',
+      timestamp: 0,
+      attachments: [{
+        path: '/app/browser_captures/owner/crop.png',
+        name: 'browser-annotation.png',
+        size: 100,
+        kind: 'browser-annotation',
+        browserAnnotation: {
+          kind: 'pen', crop: '/app/browser_captures/owner/crop.png', url: 'http://localhost:3000',
+          rect: { x: 1, y: 2, width: 3, height: 4 }, viewport: { width: 800, height: 600 },
+        },
+      }],
+    }]
+
+    const { container } = render(<Transcript items={items} />)
+
+    expect(container.querySelector('.message-attachment-image img')).toBeTruthy()
+    expect(container.querySelector('.message-attachment-file')).toBeNull()
+  })
 })
