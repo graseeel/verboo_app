@@ -88,25 +88,25 @@ jobs:
           # src-tauri/target/<triple>/release/bundle/ — NOT target/release/bundle/.
           - os: macos-15
             target: aarch64-apple-darwin
-            label: macOS-arm64
+            label: macOS-Apple-Silicon
             artifact_glob: |
               src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
               src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           - os: macos-15
             target: x86_64-apple-darwin
-            label: macOS-x64
+            label: macOS-Intel
             artifact_glob: |
               src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
               src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            label: Windows-x64
+            label: Windows
             # NSIS only — MSI fails on SemVer prerelease tags (hyphen in version).
             artifact_glob: |
               src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            label: Linux-x64
+            label: Linux
             artifact_glob: |
               src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
               src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
