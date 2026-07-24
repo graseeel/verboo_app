@@ -650,6 +650,17 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
     // creating a child webview or waiting for its navigation callbacks.
     tokio::time::sleep(Duration::from_millis(750)).await;
 
+    // Cold-start warmup: CI aarch64 runners are slower than local
+    // machines to bring the WKWebView subsystem up. The very first
+    // webview.with_webview() call waits for the main thread to be
+    // free, which on cold CI can eat the entire 10s step timeout.
+    // Create and destroy a throwaway tab to pay this cost once.
+    let _ = tokio::time::timeout(SMOKE_STEP_TIMEOUT, on_main_thread(app, |handle| {
+        let _ = browser_session_open(handle.state(), BrowserBounds { x: 0.0, y: 0.0, width: 64.0, height: 64.0 });
+        let _ = browser_tab_create(handle.clone(), handle.state(), None);
+        browser_session_destroy(handle.state())
+    })).await;
+
     // ── step: open session with bounds ────────────────────────
     let session_bounds = BrowserBounds { x: 40.0, y: 80.0, width: 480.0, height: 360.0 };
     if let Err(e) = tokio::time::timeout(SMOKE_STEP_TIMEOUT, on_main_thread(app, move |handle| {
@@ -1858,6 +1869,21 @@ mod tests {
         assert!(
             err.contains("browser_session_open"),
             "error message must mention browser_session_open: {err}"
+        );
+    }
+
+    #[test]
+    fn smoke_warmup_phase_runs_before_measured_steps() {
+        // The smoke prelude must create+destroy a throwaway webview before
+        // any measured step. This pins the warmup contract so the next
+        // "30s timeout" regression does not reappear.
+        let source = include_str!("browser_panel.rs");
+        let prelude_start = source.find("async fn run_runtime_smoke").expect("smoke fn exists");
+        let prelude_end = source.find("// ── step: open session").expect("first step marker exists");
+        let prelude = &source[prelude_start..prelude_end];
+        assert!(
+            prelude.contains("warmup") || prelude.contains("dummy_webview"),
+            "run_runtime_smoke prelude must include a cold-start warmup; got:\n{prelude}"
         );
     }
 }
