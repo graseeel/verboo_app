@@ -1,8 +1,11 @@
-(function installVerbooBrowser() {
+(function installVerbooBrowser(nativeTransport) {
   if (window.__verbooBrowser) {
     window.__verbooBrowser.announce();
     return;
   }
+
+  if (!nativeTransport || typeof nativeTransport.post !== 'function') return;
+  try { delete globalThis.__VERBOO_NATIVE_TRANSPORT__; } catch (_) {}
 
   function start() {
     if (window.__verbooBrowser) return;
@@ -112,9 +115,7 @@
     function flushMessages() {
       if (!sendQueue.length) return;
       try {
-        var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.verboo;
-        if (!handler) throw new Error('bridge unavailable');
-        while (sendQueue.length) handler.postMessage(sendQueue.shift());
+        while (sendQueue.length) nativeTransport.post(sendQueue.shift());
         clearTimeout(flushTimer);
         flushTimer = 0;
       } catch (_) {
@@ -124,7 +125,12 @@
     }
 
     function post(message) {
-      sendQueue.push(JSON.stringify(message));
+      sendQueue.push(JSON.stringify({
+        tabId: nativeTransport.tabId,
+        bridgeToken: nativeTransport.bridgeToken,
+        documentToken: nativeTransport.documentToken,
+        payload: JSON.stringify(message),
+      }));
       flushMessages();
     }
 
@@ -187,7 +193,7 @@
     }
 
     function beginDrawing(event) {
-      if (mode !== 'pencil' || event.button !== 0 || activeToken) return;
+      if (mode !== 'pencil' || event.button !== 0 || activeToken || !event.isTrusted) return;
       drawing = true;
       clearInk();
       points.push(pointFromEvent(event));
@@ -200,6 +206,7 @@
       var point = pointFromEvent(event);
       points.push(point);
       drawSegment(points[points.length - 2], point);
+      if (points.length >= 8192) endDrawing(event);
       event.preventDefault();
     }
 
@@ -305,7 +312,7 @@
     }
 
     function pickElement(event) {
-      if (mode !== 'arrow' || activeToken || event.button !== 0) return;
+      if (mode !== 'arrow' || activeToken || event.button !== 0 || !event.isTrusted) return;
       var element = underlyingElement(event) || selectedElement;
       if (!element) return;
       showPicker(element);
@@ -521,4 +528,4 @@
 
   if (document.documentElement) start();
   else document.addEventListener('DOMContentLoaded', start, { once: true });
-})();
+})(globalThis.__VERBOO_NATIVE_TRANSPORT__);

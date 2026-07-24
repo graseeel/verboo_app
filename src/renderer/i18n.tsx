@@ -551,6 +551,8 @@ const enUS: Record<string, string> = {
   'terminal.ended': 'Terminal session ended',
 
   'browser.newTab': 'New tab',
+  'browser.closeTab': 'Close tab',
+  'browser.tabs': 'Browser tabs',
   'browser.tabsComingSoon': 'Multiple tabs coming soon',
   'browser.back': 'Go back',
   'browser.forward': 'Go forward',
@@ -1691,6 +1693,8 @@ const ptBR: Record<string, string> = {
   'terminal.ended': 'Sessão do terminal encerrada',
 
   'browser.newTab': 'Nova aba',
+  'browser.closeTab': 'Fechar aba',
+  'browser.tabs': 'Abas do navegador',
   'browser.tabsComingSoon': 'Múltiplas abas em breve',
   'browser.back': 'Voltar',
   'browser.forward': 'Avançar',

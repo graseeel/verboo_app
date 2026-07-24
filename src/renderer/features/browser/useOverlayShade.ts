@@ -50,13 +50,15 @@ function unregisterOverlay(id: string) {
   emit()
 }
 
-async function captureSnapshotIfNeeded(browserOpen: boolean, browserVisible: boolean): Promise<void> {
+async function captureSnapshotIfNeeded(browserOpen: boolean, browserVisible: boolean, activeTabId?: string, activeTabGeneration?: number): Promise<void> {
   if (!browserOpen || !browserVisible || snapshotPending || snapshotDataUrl) return
+  if (!activeTabId) return  // No active webview to capture
   snapshotPending = true
   try {
-    // Rust exposes browser_snapshot which returns { ms, bytes, path }.
-    // Convert the temp file path to a URL the webview can load as an img src.
-    const result = await invoke<{ ms: number; bytes: number; path: string; dataUrl: string }>('browser_snapshot')
+    const result = await invoke<{ ms: number; bytes: number; path: string; dataUrl: string }>('browser_snapshot', {
+      tabId: activeTabId,
+      generation: activeTabGeneration ?? 0,
+    })
     if (hasShadingOverlays()) {
       snapshotPath = result.path
       snapshotDataUrl = result.dataUrl
@@ -75,7 +77,7 @@ async function captureSnapshotIfNeeded(browserOpen: boolean, browserVisible: boo
   // The native child sits above renderer DOM. Only hide it after the static
   // replacement is ready, and only if the overlay is still open.
   if (hasShadingOverlays() && browserOpen && browserVisible) {
-    await invoke('browser_set_visible', { visible: false }).catch(() => {})
+    await invoke('browser_session_set_visible', { visible: false }).catch(() => {})
   }
 }
 
@@ -95,7 +97,7 @@ export type OverlayShadeState = {
   register: (shades?: boolean) => () => void
 }
 
-export function useOverlayShade(browserOpen: boolean, browserVisible = browserOpen): OverlayShadeState {
+export function useOverlayShade(browserOpen: boolean, browserVisible = browserOpen, activeTabId?: string, activeTabGeneration?: number): OverlayShadeState {
   const [, forceUpdate] = useState(0)
   const [restorePending, setRestorePending] = useState(false)
   const idRef = useRef(`overlay-${++nextId}`)
@@ -143,7 +145,7 @@ export function useOverlayShade(browserOpen: boolean, browserVisible = browserOp
     if (wantsShade && browserOpen && browserVisible) {
       wasShadingRef.current = true
       setRestorePending(false)
-      void captureSnapshotIfNeeded(browserOpen, browserVisible)
+      void captureSnapshotIfNeeded(browserOpen, browserVisible, activeTabId, activeTabGeneration)
     }
   }, [wantsShade, browserOpen, browserVisible])
 
@@ -159,7 +161,7 @@ export function useOverlayShade(browserOpen: boolean, browserVisible = browserOp
       clearSnapshot()
       emit()
       if (browserOpen && browserVisible) {
-        void invoke('browser_set_visible', { visible: true }).catch(() => {})
+        void invoke('browser_session_set_visible', { visible: true }).catch(() => {})
       }
       setRestorePending(false)
     }, 140)

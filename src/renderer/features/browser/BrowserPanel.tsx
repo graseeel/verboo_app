@@ -1,19 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { ArrowLeft, ArrowRight, Globe, MousePointer2, PanelRightClose, Pencil, Plus, RefreshCw, RotateCcw } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Globe, MousePointer2, PanelRightClose, Pencil, Plus, RefreshCw, RotateCcw, X } from 'lucide-react'
 import { useI18n } from '../../i18n'
 import { useOverlayShade } from './useOverlayShade'
+import { browserApi } from './browserApi'
 import type { AnnotationMode, BrowserNavigationRequest, BrowserReloadRequest } from './useBrowserPanel'
 import { browserContentBounds } from './browserBounds'
+import type { BrowserSessionSnapshot, BrowserTabSnapshot } from './browserTabs'
 import {
+  annotationStillCurrent,
   createAnnotationAttachment,
   deleteBrowserCapture,
   deleteBrowserTempFiles,
   parseBrowserPageMessage,
   type AnnotationCandidate,
   type AnnotationCaptureReport,
+  type BrowserAnnotationIdentity,
   type BrowserPageMessage,
 } from './browserAnnotations'
+import { routePreview } from './browserPostEdit'
 import type { AttachmentMeta } from '../../../shared/types'
 
 type BrowserPanelProps = {
@@ -33,6 +38,11 @@ type BrowserPanelProps = {
   onReloadHandled: (id: string) => void
   minWidth: number
   maxWidth: number
+  session: BrowserSessionSnapshot
+  activeTab: BrowserTabSnapshot | undefined
+  onCreateTab: () => void
+  onActivateTab: (id: string) => void
+  onCloseTab: (id: string) => void
 }
 
 export function BrowserPanel({
@@ -52,13 +62,18 @@ export function BrowserPanel({
   onReloadHandled,
   minWidth,
   maxWidth,
+  session,
+  activeTab,
+  onCreateTab,
+  onActivateTab,
+  onCloseTab,
 }: BrowserPanelProps) {
   const { t } = useI18n()
   const panelRef = useRef<HTMLElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
   const resizerRef = useRef<HTMLDivElement | null>(null)
   const [url, setUrl] = useState('')
-  const { isShading, snapshotDataUrl } = useOverlayShade(browserOpen, Boolean(url))
+  const { isShading, snapshotDataUrl } = useOverlayShade(browserOpen, Boolean(url), activeTab?.id, activeTab?.generation)
   const [inputValue, setInputValue] = useState('')
   const [canGoBack, setCanGoBack] = useState(false)
   const [canGoForward, setCanGoForward] = useState(false)
@@ -72,6 +87,7 @@ export function BrowserPanel({
   const pendingAnnotationsRef = useRef(new Map<string, {
     candidate: AnnotationCandidate
     capture: Promise<AnnotationCaptureReport>
+    identity: BrowserAnnotationIdentity
   }>())
   const pendingReloadRef = useRef<{ request: BrowserReloadRequest; processing: boolean } | null>(null)
   const lastAnnotationRectRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null)
@@ -80,8 +96,9 @@ export function BrowserPanel({
   const reloadTimerRef = useRef(0)
 
   const evaluateBrowser = useCallback((script: string) => {
-    return invoke('browser_evaluate_script', { script }).catch(() => undefined)
-  }, [])
+    if (!activeTab) return Promise.resolve(undefined)
+    return invoke('browser_evaluate_script', { tabId: activeTab.id, script }).catch(() => undefined)
+  }, [activeTab])
 
   const syncInjectedState = useCallback(() => {
     const copy = {
@@ -113,7 +130,7 @@ export function BrowserPanel({
     window.clearTimeout(reloadTimerRef.current)
     reloadTimerRef.current = window.setTimeout(() => {
       if (pendingReloadRef.current?.request.id !== request.id) return
-      void invoke<{ ms: number; bytes: number; path: string }>('browser_snapshot')
+      void invoke<{ ms: number; bytes: number; path: string }>('browser_snapshot', { tabId: request.tabId })
         .then(snapshot => {
           if (pendingReloadRef.current?.request.id !== request.id) {
             void deleteBrowserTempFiles([snapshot.path]).catch(() => {})
@@ -196,11 +213,19 @@ export function BrowserPanel({
     if (message.type === 'annotation-candidate') {
       const expectedMode: AnnotationMode = message.kind === 'pen' ? 'pencil' : 'arrow'
       if (annotationMode !== expectedMode || pendingAnnotationsRef.current.size > 0 || message.url !== url) return
+      if (!activeTab) return
       lastAnnotationRectRef.current = message.rect
+      const identity: BrowserAnnotationIdentity = {
+        tabId: activeTab.id,
+        generation: activeTab.generation,
+        url: message.url,
+      }
       const capture = invoke<AnnotationCaptureReport>('browser_capture_annotation', {
+        tabId: activeTab.id,
+        generation: activeTab.generation,
         request: { rect: message.rect, viewport: message.viewport },
       })
-      pendingAnnotationsRef.current.set(message.token, { candidate: message, capture })
+      pendingAnnotationsRef.current.set(message.token, { candidate: message, capture, identity })
       void capture.then(() => evaluateBrowser(
         `window.__verbooBrowser && window.__verbooBrowser.openNoteModal(${JSON.stringify(message.token)});`,
       )).catch(() => {
@@ -222,15 +247,17 @@ export function BrowserPanel({
     if (!pending) return
     pendingAnnotationsRef.current.delete(message.token)
     void pending.capture.then(capture => {
+      // Stale async result: discard silently if the originating tab navigated or closed.
+      if (!activeTab || !annotationStillCurrent(pending.identity, activeTab)) {
+        void deleteBrowserCapture(capture).catch(() => {})
+        completeInjectedAnnotation(message.token)
+        return
+      }
       onAddAnnotation(createAnnotationAttachment(pending.candidate, message.note, capture))
       completeInjectedAnnotation(message.token)
     }).catch(() => completeInjectedAnnotation(message.token))
-  }, [annotationMode, completeInjectedAnnotation, evaluateBrowser, finishPostEditReload, onAddAnnotation, onReloadHandled, onUrlChange, syncInjectedState, url])
+  }, [activeTab, annotationMode, completeInjectedAnnotation, evaluateBrowser, finishPostEditReload, onAddAnnotation, onReloadHandled, onUrlChange, syncInjectedState, url])
 
-  // A webview nativa deve cobrir SÓ a caixa .browser-content (abaixo de
-  // tabs+toolbar), medida ao vivo, pra nunca sobrepor a chrome React. O
-  // fallback cobre o tick pré-layout (contentRef ainda sem medida); ele é
-  // corrigido logo em seguida pelo ResizeObserver → browser_set_bounds.
   const computeBounds = useCallback(() => {
     const rect = contentRef.current?.getBoundingClientRect()
     return browserContentBounds({
@@ -246,7 +273,7 @@ export function BrowserPanel({
     const key = `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}`
     if (key === lastBoundsKeyRef.current) return
     lastBoundsKeyRef.current = key
-    void invoke('browser_set_bounds', { bounds }).catch(() => {})
+    void browserApi.openSession(bounds).catch(() => {})
   }, [computeBounds])
 
   const trackBoundsThroughTransition = useCallback(() => {
@@ -265,7 +292,7 @@ export function BrowserPanel({
     transitionRafRef.current = requestAnimationFrame(tick)
   }, [syncBounds])
 
-  // ── ResizeObserver → throttle rAF → browser_set_bounds ──
+  // ── ResizeObserver → throttle rAF → browser_session_open (bounds update) ──
   useEffect(() => {
     if (!browserOpen || !contentRef.current) return
     const content = contentRef.current
@@ -381,8 +408,8 @@ export function BrowserPanel({
         aliveRef.current = false
         setAlive(false)
         setError(t('browser.error'))
-        void invoke('browser_set_visible', { visible: false }).catch(() => {})
-        void invoke('browser_destroy').catch(() => {})
+        void browserApi.setVisible(false).catch(() => {})
+        void browserApi.destroy().catch(() => {})
       })
     }, 2_500)
     return () => {
@@ -394,27 +421,33 @@ export function BrowserPanel({
   useEffect(() => {
     if (!alive || !reloadRequest || !url || handledReloadIdsRef.current.has(reloadRequest.id)) return
     handledReloadIdsRef.current.add(reloadRequest.id)
+    // Post-edit reload targets ONLY the tab that originated the annotation.
+    // If the active tab is no longer the source, the reload is a no-op.
+    if (!activeTab || activeTab.id !== reloadRequest.tabId || activeTab.generation !== reloadRequest.generation) {
+      onReloadHandled(reloadRequest.id)
+      return
+    }
     if (url !== reloadRequest.url) {
       onReloadHandled(reloadRequest.id)
       return
     }
     pendingReloadRef.current = { request: reloadRequest, processing: false }
-    void invoke('browser_reload').catch(() => {
+    void browserApi.reload(reloadRequest.tabId).catch(() => {
       pendingReloadRef.current = null
       onReloadHandled(reloadRequest.id)
     })
-  }, [alive, onReloadHandled, reloadRequest, url])
+  }, [activeTab, alive, onReloadHandled, reloadRequest, url])
 
-  // ── Create / destroy webview on open/close ──
+  // ── Create / destroy session on open/close ──
   useEffect(() => {
     if (browserOpen && !aliveRef.current) {
       setError(null)
       lastBoundsKeyRef.current = ''
-      void invoke('browser_create', { bounds: computeBounds(), url: url || null }).then(() => {
+      void browserApi.openSession(computeBounds()).then(() => {
         aliveRef.current = true
         setAlive(true)
         trackBoundsThroughTransition()
-        return invoke('browser_set_visible', { visible: Boolean(url) })
+        return browserApi.setVisible(Boolean(url))
       }).catch((err) => {
         setError(String(err))
       })
@@ -430,7 +463,7 @@ export function BrowserPanel({
       if (pendingReload) onReloadHandled(pendingReload.request.id)
       pendingReloadRef.current = null
       window.clearTimeout(reloadTimerRef.current)
-      void invoke('browser_destroy').catch(() => {})
+      void browserApi.destroy().catch(() => {})
     }
   }, [browserOpen, browserWidth, computeBounds, onReloadHandled, trackBoundsThroughTransition, url])
 
@@ -439,12 +472,12 @@ export function BrowserPanel({
     aliveRef.current = false
     setAlive(false)
     lastBoundsKeyRef.current = ''
-    void invoke('browser_destroy').catch(() => {}).finally(() => {
-      void invoke('browser_create', { bounds: computeBounds(), url: url || null }).then(() => {
+    void browserApi.destroy().catch(() => {}).finally(() => {
+      void browserApi.openSession(computeBounds()).then(() => {
         aliveRef.current = true
         setAlive(true)
         trackBoundsThroughTransition()
-        return invoke('browser_set_visible', { visible: Boolean(url) })
+        return browserApi.setVisible(Boolean(url))
       }).catch((err) => {
         setError(String(err))
       })
@@ -456,7 +489,7 @@ export function BrowserPanel({
     return () => {
       if (aliveRef.current) {
         aliveRef.current = false
-        void invoke('browser_destroy').catch(() => {})
+        void browserApi.destroy().catch(() => {})
       }
       if (transitionRafRef.current) {
         cancelAnimationFrame(transitionRafRef.current)
@@ -470,31 +503,62 @@ export function BrowserPanel({
     }
   }, [])
 
+  // ── Cancel pending annotations when the active tab changes or closes ──
+  // Drawing, selection, and popover die with the tab that started them.
+  useEffect(() => {
+    if (!activeTab) {
+      for (const pending of pendingAnnotationsRef.current.values()) {
+        void pending.capture.then(deleteBrowserCapture).catch(() => {})
+      }
+      pendingAnnotationsRef.current.clear()
+      return
+    }
+    // When the active tab id changes, discard annotations from other tabs.
+    for (const [token, pending] of pendingAnnotationsRef.current) {
+      if (pending.identity.tabId !== activeTab.id || pending.identity.generation !== activeTab.generation) {
+        pendingAnnotationsRef.current.delete(token)
+        void pending.capture.then(deleteBrowserCapture).catch(() => {})
+        completeInjectedAnnotation(token)
+      }
+    }
+  }, [activeTab, completeInjectedAnnotation])
+
   // ── Navigation ──
   const handleNavigate = useCallback((targetUrl: string) => {
     const finalUrl = normalizeBrowserUrl(targetUrl)
     if (!finalUrl) {
       setError(t('browser.invalidUrl'))
-      void invoke('browser_set_visible', { visible: false }).catch(() => {})
+      void browserApi.setVisible(false).catch(() => {})
       return
     }
+    if (!activeTab) return
     setUrl(finalUrl)
     setInputValue(finalUrl)
     setCanGoForward(false)
     setError(null)
-    void invoke('browser_navigate', { url: finalUrl })
-      .then(() => invoke('browser_set_visible', { visible: true }))
+    void browserApi.navigateTab(activeTab.id, finalUrl)
+      .then(() => browserApi.setVisible(true))
       .catch((err) => {
         setError(String(err))
-        void invoke('browser_set_visible', { visible: false }).catch(() => {})
+        void browserApi.setVisible(false).catch(() => {})
       })
-  }, [t])
+  }, [t, activeTab])
 
+  // ── Local preview routing: activate matching tab → navigate blank → create ──
   useEffect(() => {
     if (!alive || !navigationRequest) return
-    handleNavigate(navigationRequest.url)
+    const route = routePreview(session, navigationRequest.url)
+    if (route.kind === 'activate') {
+      onActivateTab(route.tabId)
+    } else if (route.kind === 'navigate') {
+      handleNavigate(navigationRequest.url)
+    } else {
+      onCreateTab()
+      // The new tab will navigate once it becomes active; for now, defer.
+      // The navigationRequest will be re-handled when the new tab is active.
+    }
     onNavigationHandled(navigationRequest.id)
-  }, [alive, handleNavigate, navigationRequest, onNavigationHandled])
+  }, [alive, handleNavigate, navigationRequest, onActivateTab, onCreateTab, onNavigationHandled, session])
 
   const handleUrlKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
@@ -503,23 +567,24 @@ export function BrowserPanel({
   }, [inputValue, handleNavigate])
 
   const handleBack = useCallback(() => {
-    void invoke('browser_back').then(() => setCanGoForward(true)).catch(() => {})
-  }, [])
+    if (!activeTab) return
+    void browserApi.back(activeTab.id).then(() => setCanGoForward(true)).catch(() => {})
+  }, [activeTab])
 
   const handleForward = useCallback(() => {
-    void invoke('browser_forward').then(() => setCanGoForward(false)).catch(() => {})
-  }, [])
+    if (!activeTab) return
+    void browserApi.forward(activeTab.id).then(() => setCanGoForward(false)).catch(() => {})
+  }, [activeTab])
 
   const handleReload = useCallback(() => {
-    if (url) {
-      manualPresenceRef.current = lastAnnotationRectRef.current
-      setError(null)
-      void invoke('browser_reload').catch((err) => {
-        setError(String(err))
-        void invoke('browser_set_visible', { visible: false }).catch(() => {})
-      })
-    }
-  }, [url])
+    if (!activeTab || !url) return
+    manualPresenceRef.current = lastAnnotationRectRef.current
+    setError(null)
+    void browserApi.reload(activeTab.id).catch((err) => {
+      setError(String(err))
+      void browserApi.setVisible(false).catch(() => {})
+    })
+  }, [activeTab, url])
 
   // ── Resizer drag ──
   const handleResizerPointerDown = useCallback((event: React.PointerEvent) => {
@@ -562,20 +627,25 @@ export function BrowserPanel({
       />
 
       {/* Tab bar */}
-      <div className="browser-tabs">
-        <button type="button" className="browser-tab" disabled>
-          <Globe size={12} />
-          {url ? browserTabLabel(url) : t('browser.newTab')}
-        </button>
-        <button
-          type="button"
-          className="browser-tab-add ui-tooltip"
-          disabled
-          data-tooltip={t('browser.tabsComingSoon')}
-          data-tooltip-align="end"
-        >
-          <Plus size={13} />
-        </button>
+      <div className="browser-tabs" role="tablist" aria-label={t('browser.tabs')}>
+        {session.tabs.map(tab => (
+          <div className={`browser-tab-shell ${tab.id === session.activeTabId ? 'active' : ''}`} key={tab.id}>
+            <button type="button" role="tab"
+              aria-selected={tab.id === session.activeTabId}
+              className="browser-tab"
+              onClick={() => onActivateTab(tab.id)}>
+              <Globe size={12} />
+              <span>{browserTabLabel(tab.url, tab.title)}</span>
+            </button>
+            <button type="button" className="browser-tab-close"
+              aria-label={`${t('browser.closeTab')} ${browserTabLabel(tab.url, tab.title)}`}
+              onClick={() => onCloseTab(tab.id)}>
+              <X size={11} />
+            </button>
+          </div>
+        ))}
+        <button type="button" className="browser-tab-add" aria-label={t('browser.newTab')}
+          onClick={onCreateTab}><Plus size={13} /></button>
         <div style={{ flex: 1 }} />
         <button
           type="button"
@@ -705,7 +775,8 @@ function normalizeBrowserUrl(rawValue: string): string | null {
   }
 }
 
-function browserTabLabel(url: string): string {
+function browserTabLabel(url: string, title?: string): string {
+  if (title) return title
   try {
     const parsed = new URL(url)
     return parsed.hostname || parsed.pathname || parsed.protocol.replace(':', '')

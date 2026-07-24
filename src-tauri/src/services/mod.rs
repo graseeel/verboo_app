@@ -1,5 +1,8 @@
 pub mod auth_token;
+pub mod browser_bridge;
 pub mod browser_panel;
+pub mod browser_platform;
+pub mod browser_session;
 pub mod child_signal;
 pub mod chrome_integration;
 pub mod cli_credentials;

@@ -116,6 +116,19 @@ windows-sys = { version = "0.59", features = [
   "Win32_System_Console",
   "Win32_Foundation",
 ] }
+webview2-com = "=0.38.2"
+windows = { version = "=0.61.3", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Memory",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
+cairo-rs = { version = "=0.18.5", features = ["png"] }
+glib = "=0.18.5"
+gio = "=0.18.4"
 
 [profile.release]
 # NOTE: `panic = "abort"` was removed because `arboard` (a transitive dep of

@@ -3145,6 +3145,8 @@ export function App() {
       targetRect: firstAnnotation.rect,
       autoVerify: userSettingsRef.current.browserVerificationEnabled,
       verificationPrompt: postEditVerificationPrompt(annotations, userSettingsRef.current.language),
+      tabId: browser.activeTab?.id ?? '',
+      generation: browser.activeTab?.generation ?? 0,
     })
   }
 
@@ -4616,6 +4618,11 @@ export function App() {
           onReloadHandled={browser.completeReload}
           minWidth={browser.MIN_WIDTH}
           maxWidth={browserWidthLimit}
+          session={browser.session}
+          activeTab={browser.activeTab}
+          onCreateTab={browser.createTab}
+          onActivateTab={browser.activateTab}
+          onCloseTab={browser.closeTab}
         />
       )}
       </div>

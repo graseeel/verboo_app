@@ -6001,9 +6001,12 @@ version = "0.6.0-beta.1"
 dependencies = [
  "base64 0.22.1",
  "block2",
+ "cairo-rs",
  "chrono",
  "ctor 1.0.8",
  "dirs",
+ "gio",
+ "glib",
  "image",
  "keepawake",
  "keyring",
@@ -6031,6 +6034,9 @@ dependencies = [
  "tempfile",
  "tokio",
  "uuid",
+ "webkit2gtk",
+ "webview2-com",
+ "windows 0.61.3",
  "windows-sys 0.59.0",
  "winreg 0.55.0",
 ]

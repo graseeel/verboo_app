@@ -1,0 +1,36 @@
+name: Browser Linux Build Check
+
+# Pre-release / PR gate for the WebKitGTK (Linux) adapter. The native
+# WebKitGTK sysroot is not available on macOS workstations — only the
+# Ubuntu runner (and the Docker image used by browser-linux-check.sh) can
+# prove the adapter compiles and its lib tests pass. Running this on PRs
+# before tauri-release.yml saves the heavy release-matrix runner hours
+# when the Linux adapter breaks.
+
+on:
+  pull_request:
+    paths:
+      - "src-tauri/**"
+      - "scripts/verify/browser-linux-check.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-browser-build:
+    name: cargo check + test (Linux/WebKitGTK)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run browser-linux-check.sh
+        # Mounts src-tauri into a Ubuntu 22.04 container, installs
+        # libwebkit2gtk-4.1-dev and friends, runs `cargo check --locked`
+        # and `cargo test --locked --lib` against the browser adapter.
+        # Failures here mean the Linux adapter does not compile or its
+        # tests regressed — blocking PR merge.
+        shell: bash
+        run: bash scripts/verify/browser-linux-check.sh

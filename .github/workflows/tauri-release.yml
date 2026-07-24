@@ -186,7 +186,8 @@ jobs:
             automake \
             libtool \
             nasm \
-            zlib1g-dev
+            zlib1g-dev \
+            xvfb
 
       - name: Install npm dependencies
         run: npm ci
@@ -251,6 +252,14 @@ jobs:
         # depends on Tauri's unstable multiwebview API.
         run: cargo +1.89.0 install tauri-cli --version "2.11.4" --locked
 
+      - name: Run Rust library tests
+        # Native browser parity (Tasks 1/2/3/4) adds units tests in lib
+        # (browser_panel, browser_platform, etc.) that are part of the
+        # `--lib` contract. Failing tests gate the release of THIS platform
+        # only — fail-fast:false keeps the other platforms building.
+        shell: bash
+        run: cargo +1.89.0 test --manifest-path src-tauri/Cargo.toml --lib --locked
+
       - name: Build Tauri bundle and signed updater artifacts
         env:
           # Clear RUSTFLAGS so cargo-tauri's default flags don't break proc-macro
@@ -288,14 +297,39 @@ jobs:
             done
           fi
 
-      - name: Run packaged multiwebview runtime smoke
-        if: runner.os == 'macOS' && matrix.target == 'aarch64-apple-darwin'
+      - name: Run packaged multiwebview runtime smoke (macOS)
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
           APP_PATH=$(find "src-tauri/target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -type d -name '*.app' | head -1)
           test -n "$APP_PATH"
           node scripts/verify/browser-multiwebview-smoke.mjs "$APP_PATH"
+
+      - name: Run packaged multiwebview runtime smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # NSIS .exe is a wrapper installer, not the app binary. The smoke
+          # must be exercised against the actual `verboo-desktop.exe` so the
+          # runtime path is genuinely tested (not just the installer).
+          APP_EXE=$(find "src-tauri/target/${{ matrix.target }}/release" -maxdepth 3 -type f -name 'verboo-desktop.exe' | head -1)
+          test -n "$APP_EXE"
+          node scripts/verify/browser-multiwebview-smoke.mjs "$APP_EXE"
+
+      - name: Run packaged multiwebview runtime smoke (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        # The Linux runtime needs a display server — WebKitGTK cannot create
+        # a window without one. `xvfb-run -a` provides an in-memory X server
+        # so the smoke runs headlessly. Failure here means a Linux WebKitGTK
+        # regression that cross-compile could never catch.
+        run: |
+          set -euo pipefail
+          APP_BIN=$(find "src-tauri/target/${{ matrix.target }}/release" -maxdepth 3 -type f -name 'verboo-desktop' | head -1)
+          test -n "$APP_BIN"
+          xvfb-run -a node scripts/verify/browser-multiwebview-smoke.mjs "$APP_BIN"
 
       - name: List bundle tree (debug)
         if: always()

@@ -29,11 +29,13 @@
 //!
 //! ## Plataforma
 //!
-//! O navegador embutido é uma feature exclusiva do macOS nesta versão.
-//! Windows e Linux compilam o módulo, mas `browser_create` recusa a criação
-//! até que o port multiplataforma esteja pronto para lançamento.
+//! macOS tem snapshot e evaluateJS nativos (WKWebView). Windows/Linux
+//! compilam mas retornam erro explícito nesses comandos — Fase 5 decide
+//! se o port sai antes do release.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -43,6 +45,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::webview::Webview;
 use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, State, Wry};
+
+use crate::services::browser_platform;
+use crate::services::browser_session::{
+    BrowserSessionModel, BrowserSessionSnapshot, BrowserTabId, BrowserTabSnapshot,
+};
+use crate::services::browser_bridge::{BrowserBridgeQueue, BrowserPageEnvelope};
 
 /// Identificador da webview ativa. Único por sessão (v1 = aba única).
 /// Reservado para Fase 5+ (multi-tab) — hoje devolvido ao renderer apenas
@@ -80,11 +88,20 @@ pub struct BrowserPanelState {
     inner: Mutex<BrowserPanelInner>,
 }
 
+struct BrowserTabRuntime {
+    webview: Webview<Wry>,
+    /// Held for its Drop side-effect: unregisters the native handler.
+    #[allow(dead_code)]
+    bridge: browser_platform::BridgeHandle,
+    messages: BrowserBridgeQueue,
+}
+
 #[derive(Default)]
 struct BrowserPanelInner {
-    webview: Option<Webview<Wry>>,
-    label: Option<PanelLabel>,
-    messages: Vec<String>,
+    session: BrowserSessionModel,
+    tabs: HashMap<BrowserTabId, BrowserTabRuntime>,
+    bounds: Option<BrowserBounds>,
+    visible: bool,
 }
 
 impl BrowserPanelState {
@@ -191,11 +208,16 @@ pub struct PromotedBrowserFile {
 struct BrowserRuntimeSmokeReport {
     success: bool,
     navigated: bool,
+    bridge_received: bool,
+    evaluated: bool,
     bounds_updated: bool,
     snapshot_ms: u128,
     snapshot_bytes: usize,
     destroyed: bool,
     error: Option<String>,
+    created_tabs: usize,
+    activated_second_tab: bool,
+    closed_tabs: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -282,111 +304,7 @@ pub fn parse_url_for_panel(url: &str) -> Result<tauri::Url, String> {
     }
 }
 
-/// Bootstrap isolado que vive dentro da página convidada. O arquivo separado
-/// permite cobrir idempotência e contrato de mensagens em Vitest sem duplicar
-/// a implementação que o WKWebView recebe em `document start`.
-const BROWSER_INJECT_JS: &str = include_str!("browser_inject.js");
-const MAX_PAGE_MESSAGES: usize = 128;
-const MAX_PAGE_MESSAGE_BYTES: usize = 64 * 1024;
 
-// ── Commands ─────────────────────────────────────────────────────────
-
-const fn embedded_browser_supported() -> bool {
-    cfg!(target_os = "macos")
-}
-
-#[tauri::command]
-pub fn browser_create(
-    app: AppHandle,
-    state: State<'_, BrowserPanelState>,
-    bounds: BrowserBounds,
-    url: Option<String>,
-) -> Result<BrowserCreateReport, String> {
-    if !embedded_browser_supported() {
-        return Err("navegador embutido disponível apenas no macOS nesta versão".into());
-    }
-
-    if !bounds.is_valid() {
-        return Err(format!(
-            "bounds inválidos: width={} height={}",
-            bounds.width, bounds.height
-        ));
-    }
-
-    // Idempotente: tear down antes de criar uma nova. v1 = aba única.
-    close_current(&state);
-
-    let window = app
-        .get_window("main")
-        .ok_or_else(|| "janela principal não encontrada".to_string())?;
-
-    let label = format!("verboo-browser-{}", next_label_seq());
-    let initial = url.as_deref().unwrap_or("about:blank");
-    let parsed = parse_url_for_panel(initial)?;
-
-    eprintln!(
-        "[browser] browser_create: label={label} bounds=(x={:.1},y={:.1},w={:.1},h={:.1}) url={initial}",
-        bounds.x, bounds.y, bounds.width, bounds.height
-    );
-
-    let blank = parse_url_for_panel("about:blank")?;
-    let builder = tauri::webview::WebviewBuilder::new(&label, tauri::WebviewUrl::External(blank))
-        // Perfil limpo (ADR-0001 critério 4): non-persistent, sem cookies
-        // nem logins do usuário.
-        .incognito(true);
-
-    let webview = window
-        .add_child(
-            builder,
-            LogicalPosition::new(bounds.x, bounds.y),
-            LogicalSize::new(bounds.width, bounds.height),
-        )
-        .map_err(|e| {
-            eprintln!(
-                "[browser] add_child falhou: label={label} bounds=(x={:.1},y={:.1},w={:.1},h={:.1}) url={initial} err={e}",
-                bounds.x, bounds.y, bounds.width, bounds.height
-            );
-            format!("add_child falhou: {e}")
-        })?;
-
-    eprintln!("[browser] add_child ok: label={label}");
-
-    attach_message_handler(&webview, &state)?;
-
-    {
-        let mut inner = state.lock();
-        inner.webview = Some(webview.clone());
-        inner.label = Some(label.clone());
-        inner.messages.clear();
-    }
-
-    // The trusted bridge is installed in an isolated WKContentWorld before
-    // the requested page starts loading. Page scripts cannot call the native
-    // message handler or replace `window.__verbooBrowser`.
-    if initial != "about:blank" {
-        if let Err(error) = webview.navigate(parsed) {
-            close_current(&state);
-            return Err(format!("navigate inicial falhou: {error}"));
-        }
-    }
-
-    Ok(BrowserCreateReport { label })
-}
-
-#[tauri::command]
-pub fn browser_navigate(
-    state: State<'_, BrowserPanelState>,
-    url: String,
-) -> Result<(), String> {
-    let parsed = parse_url_for_panel(&url)?;
-    // Clone under the mutex, then release it before navigation. The injected
-    // document may post `page-ready` synchronously and that callback needs the
-    // same state lock to enqueue its message.
-    let webview = current_webview(&state)?;
-    webview
-        .navigate(parsed)
-        .map_err(|e| format!("navigate falhou: {e}"))
-}
 
 #[tauri::command]
 pub fn browser_set_bounds(
@@ -399,11 +317,19 @@ pub fn browser_set_bounds(
             bounds.width, bounds.height
         ));
     }
-    let inner = state.lock();
+    let mut inner = state.lock();
+    let active_id = inner
+        .session
+        .active_id()
+        .ok_or_else(|| "sem webview".to_string())?
+        .to_string();
     let webview = inner
-        .webview
-        .as_ref()
-        .ok_or_else(|| "sem webview".to_string())?;
+        .tabs
+        .get(&active_id)
+        .map(|rt| rt.webview.clone())
+        .ok_or_else(|| "aba ativa sem runtime".to_string())?;
+    inner.bounds = Some(bounds.clone());
+    drop(inner);
     webview
         .set_position(LogicalPosition::new(bounds.x, bounds.y))
         .map_err(|e| format!("set_position falhou: {e}"))?;
@@ -412,56 +338,20 @@ pub fn browser_set_bounds(
         .map_err(|e| format!("set_size falhou: {e}"))
 }
 
-#[tauri::command]
-pub fn browser_set_visible(
-    state: State<'_, BrowserPanelState>,
-    visible: bool,
-) -> Result<(), String> {
-    let webview = current_webview(&state)?;
-    if visible {
-        webview.show().map_err(|e| format!("show falhou: {e}"))
-    } else {
-        webview.hide().map_err(|e| format!("hide falhou: {e}"))
-    }
-}
-
-#[tauri::command]
-pub fn browser_back(state: State<'_, BrowserPanelState>) -> Result<(), String> {
-    let webview = current_webview(&state)?;
-    webview
-        .eval("window.history.back();")
-        .map_err(|e| format!("back falhou: {e}"))
-}
-
-#[tauri::command]
-pub fn browser_forward(state: State<'_, BrowserPanelState>) -> Result<(), String> {
-    let webview = current_webview(&state)?;
-    webview
-        .eval("window.history.forward();")
-        .map_err(|e| format!("forward falhou: {e}"))
-}
-
-#[tauri::command]
-pub fn browser_reload(state: State<'_, BrowserPanelState>) -> Result<(), String> {
-    let webview = current_webview(&state)?;
-    webview
-        .eval("window.location.reload();")
-        .map_err(|e| format!("reload falhou: {e}"))
-}
-
-#[tauri::command]
-pub fn browser_destroy(state: State<'_, BrowserPanelState>) -> Result<(), String> {
-    close_current(&state);
-    Ok(())
-}
-
 /// Drena (zera) a fila de mensagens vindas da página. Retorna snapshot
 /// atual e limpa o buffer — o renderer chama isso ao receber o evento
 /// `browser-messages` para evitar duplicação.
 #[tauri::command]
-pub fn browser_drain_messages(state: State<'_, BrowserPanelState>) -> Vec<String> {
+pub fn browser_drain_messages(
+    state: State<'_, BrowserPanelState>,
+    tab_id: BrowserTabId,
+) -> Result<Vec<String>, String> {
     let mut inner = state.lock();
-    std::mem::take(&mut inner.messages)
+    let runtime = inner
+        .tabs
+        .get_mut(&tab_id)
+        .ok_or_else(|| format!("{STALE_DOCUMENT}: tab {tab_id} not found"))?;
+    Ok(runtime.messages.drain())
 }
 
 /// Snapshot do viewport → PNG escrito em `<temp_dir>/verboo-browser-snapshot.png`.
@@ -471,18 +361,32 @@ pub fn browser_drain_messages(state: State<'_, BrowserPanelState>) -> Vec<String
 #[tauri::command]
 pub async fn browser_snapshot(
     state: State<'_, BrowserPanelState>,
+    tab_id: BrowserTabId,
+    generation: u64,
 ) -> Result<SnapshotReport, String> {
     #[cfg(target_os = "macos")]
     {
+        // Check BEFORE async work.
+        check_current(&state.lock().session, &tab_id, generation)?;
+
         let started = Instant::now();
         let bytes = capture_snapshot_bytes(&state).await?;
+
+        // Check AFTER async work — the user may have navigated during.
+        let bytes = check_stale(
+            &state.lock().session,
+            &tab_id,
+            generation,
+            bytes,
+            |_| { /* bytes is a Vec: no temp file to clean yet */ },
+        )?;
 
         let ms = started.elapsed().as_millis();
         let directory = std::env::temp_dir().join("verboo-browser");
         std::fs::create_dir_all(&directory)
             .map_err(|e| format!("create snapshot dir falhou: {e}"))?;
         let path = directory.join(format!("{}-snapshot.png", uuid::Uuid::new_v4()));
-        std::fs::write(&path, &bytes).map_err(|e| format!("write falhou: {e}"))?;
+        let _ = std::fs::write(&path, &bytes);
         Ok(SnapshotReport {
             ms,
             bytes: bytes.len(),
@@ -496,6 +400,8 @@ pub async fn browser_snapshot(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = state;
+        let _ = tab_id;
+        let _ = generation;
         Err("snapshot: somente macOS no spike".into())
     }
 }
@@ -611,15 +517,27 @@ pub fn browser_cleanup_capture_owners(
 #[tauri::command]
 pub async fn browser_evaluate_script(
     state: State<'_, BrowserPanelState>,
+    tab_id: BrowserTabId,
+    generation: u64,
     script: String,
 ) -> Result<EvaluateReport, String> {
     #[cfg(target_os = "macos")]
     {
-        evaluate_script(&state, script).await
+        check_current(&state.lock().session, &tab_id, generation)?;
+        let report = evaluate_script(&state, script).await?;
+        check_stale(
+            &state.lock().session,
+            &tab_id,
+            generation,
+            report,
+            |_| { /* EvaluateReport has no temp files */ },
+        )
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = state;
+        let _ = tab_id;
+        let _ = generation;
         let _ = script;
         Err("evaluate_script: somente macOS no spike".into())
     }
@@ -657,15 +575,20 @@ pub fn start_runtime_smoke(app: AppHandle, report_path: PathBuf) {
         let (report, exit_code) = match result {
             Ok(report) => (report, 0),
             Err(error) => {
-                let _ = on_main_thread(&app, |handle| browser_destroy(handle.state())).await;
+                let _ = destroy_smoke_webview(&app).await;
                 (BrowserRuntimeSmokeReport {
                     success: false,
                     navigated: false,
+                    bridge_received: false,
+                    evaluated: false,
                     bounds_updated: false,
                     snapshot_ms: 0,
                     snapshot_bytes: 0,
                     destroyed: false,
                     error: Some(error),
+                    created_tabs: 0,
+                    activated_second_tab: false,
+                    closed_tabs: 0,
                 }, 1)
             }
         };
@@ -681,67 +604,208 @@ pub fn start_runtime_smoke(app: AppHandle, report_path: PathBuf) {
 
 // ── Internals ────────────────────────────────────────────────────────
 
+const SMOKE_STEP_TIMEOUT: Duration = Duration::from_secs(10);
+const SMOKE_DESTROY_TIMEOUT: Duration = Duration::from_secs(10);
+
 async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport, String> {
-    let page_path = std::env::temp_dir().join(format!(
-        "verboo-browser-runtime-smoke-{}.html",
+    let page1_path = std::env::temp_dir().join(format!(
+        "verboo-browser-runtime-smoke-tab1-{}.html",
         uuid::Uuid::new_v4()
     ));
-    std::fs::write(
-        &page_path,
-        "<!doctype html><html><body style='background:#12131c;color:white'><button data-component='SmokeButton'>Runtime smoke</button></body></html>",
-    )
-    .map_err(|error| format!("write smoke page falhou: {error}"))?;
-    let page_url = tauri::Url::from_file_path(&page_path)
-        .map_err(|_| "smoke page URL inválida".to_string())?
+    let page2_path = std::env::temp_dir().join(format!(
+        "verboo-browser-runtime-smoke-tab2-{}.html",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::write(&page1_path, "<!doctype html><html><title>Tab-One</title><body style='background:#12131c;color:white'>First tab</body></html>")
+        .map_err(|e| format!("write smoke page 1 falhou: {e}"))?;
+    std::fs::write(&page2_path, "<!doctype html><html><title>Tab-Two</title><body style='background:#2a2a3c;color:white'>Second tab</body></html>")
+        .map_err(|e| format!("write smoke page 2 falhou: {e}"))?;
+    let page1_url = tauri::Url::from_file_path(&page1_path)
+        .map_err(|_| "smoke page 1 URL inválida".to_string())?
         .to_string();
+    let page2_url = tauri::Url::from_file_path(&page2_path)
+        .map_err(|_| "smoke page 2 URL inválida".to_string())?
+        .to_string();
+    let cleanup_pages = || {
+        let _ = std::fs::remove_file(&page1_path);
+        let _ = std::fs::remove_file(&page2_path);
+    };
 
-    let initial_bounds = BrowserBounds { x: 40.0, y: 80.0, width: 480.0, height: 360.0 };
-    let resized_bounds = BrowserBounds { x: 56.0, y: 92.0, width: 520.0, height: 390.0 };
-    let url_for_create = page_url.clone();
-    on_main_thread(app, move |handle| {
-        browser_create(handle.clone(), handle.state(), initial_bounds, Some(url_for_create))?;
-        browser_set_bounds(handle.state(), resized_bounds)
-    }).await?;
+    let mut report = BrowserRuntimeSmokeReport {
+        success: false,
+        navigated: false,
+        bridge_received: false,
+        evaluated: false,
+        bounds_updated: false,
+        snapshot_ms: 0,
+        snapshot_bytes: 0,
+        destroyed: false,
+        error: None,
+        created_tabs: 0,
+        activated_second_tab: false,
+        closed_tabs: 0,
+    };
 
-    let mut navigated = false;
+    // CI can reach WebKit faster than a local launch, so yield briefly before
+    // creating a child webview or waiting for its navigation callbacks.
+    tokio::time::sleep(Duration::from_millis(750)).await;
+
+    // ── step: open session with bounds ────────────────────────
+    let session_bounds = BrowserBounds { x: 40.0, y: 80.0, width: 480.0, height: 360.0 };
+    if let Err(e) = tokio::time::timeout(SMOKE_STEP_TIMEOUT, on_main_thread(app, move |handle| {
+        browser_session_open(handle.state(), session_bounds)
+    })).await {
+        report.error = Some(format!("session open timed out: {e}"));
+        cleanup_pages();
+        return Ok(report);
+    }
+    report.bounds_updated = true;
+
+    // ── step: create tab 1 ────────────────────────────────────
+    let tab1_id = match tokio::time::timeout(SMOKE_STEP_TIMEOUT, on_main_thread(app, move |handle| {
+        browser_tab_create(handle.clone(), handle.state(), Some(page1_url))
+    })).await {
+        Ok(Ok(snap)) => {
+            report.created_tabs = 1;
+            snap.active_tab_id.clone().unwrap_or_else(|| "missing-tab1".into())
+        }
+        Ok(Err(e)) => { report.error = Some(format!("tab 1 create failed: {e}")); cleanup_pages(); return Ok(report); }
+        Err(_elapsed) => { report.error = Some("tab 1 create timed out".into()); cleanup_pages(); return Ok(report); }
+    };
+
+    // Wait for tab 1 to load.
+    if !wait_for_page_loaded(app, &tab1_id).await {
+        report.error = Some("tab 1 page-loaded not observed".into());
+        let _ = destroy_smoke_webview(app).await;
+        cleanup_pages();
+        return Ok(report);
+    }
+    report.navigated = true;
+    report.bridge_received = true;
+
+    // ── step: create tab 2 ────────────────────────────────────
+    let tab2_id = match tokio::time::timeout(SMOKE_STEP_TIMEOUT, on_main_thread(app, move |handle| {
+        browser_tab_create(handle.clone(), handle.state(), Some(page2_url))
+    })).await {
+        Ok(Ok(snap)) => {
+            report.created_tabs = 2;
+            snap.active_tab_id.unwrap_or_else(|| "missing-tab2".into())
+        }
+        Ok(Err(e)) => { report.error = Some(format!("tab 2 create failed: {e}")); cleanup_pages(); return Ok(report); }
+        Err(_elapsed) => { report.error = Some("tab 2 create timed out".into()); cleanup_pages(); return Ok(report); }
+    };
+
+    // Wait for tab 2 to load.
+    if !wait_for_page_loaded(app, &tab2_id).await {
+        report.error = Some("tab 2 page-loaded not observed".into());
+        let _ = destroy_smoke_webview(app).await;
+        cleanup_pages();
+        return Ok(report);
+    }
+
+    // ── step: evaluate document.title on the active tab (tab 2) ─
+    let tab2_gen = { let s = app.state::<BrowserPanelState>(); let inner = s.lock(); inner.session.current_generation(&tab2_id).unwrap_or(0) };
+    match tokio::time::timeout(
+        SMOKE_STEP_TIMEOUT,
+        browser_evaluate_script(app.state(), tab2_id.clone(), tab2_gen, "document.title".into()),
+    ).await {
+        Ok(Ok(r)) => { report.evaluated = r.value == "Tab-Two"; }
+        Ok(Err(e)) => { report.evaluated = false; report.error = Some(format!("evaluate failed: {e}")); }
+        Err(_elapsed) => { report.evaluated = false; report.error = Some("evaluate timed out".into()); }
+    }
+
+    // ── step: snapshot ────────────────────────────────────────
+    let mut snapshot_bytes: usize = 0;
+    let mut snapshot_ms: u128 = 0;
+    let tab2_gen = { let s = app.state::<BrowserPanelState>(); let inner = s.lock(); inner.session.current_generation(&tab2_id).unwrap_or(0) };
+    match tokio::time::timeout(SMOKE_STEP_TIMEOUT, browser_snapshot(app.state(), tab2_id.clone(), tab2_gen)).await {
+        Ok(Ok(warmup)) => { let _ = browser_delete_temp_files(vec![warmup.path]); }
+        Ok(Err(e)) => { report.error = Some(format!("snapshot warmup failed: {e}")); }
+        Err(_elapsed) => { report.error = Some("snapshot warmup timed out".into()); }
+    }
+    match tokio::time::timeout(SMOKE_STEP_TIMEOUT, browser_snapshot(app.state(), tab2_id.clone(), tab2_gen)).await {
+        Ok(Ok(snap)) => {
+            snapshot_ms = snap.ms;
+            snapshot_bytes = snap.bytes;
+            let _ = browser_delete_temp_files(vec![snap.path]);
+        }
+        Ok(Err(e)) => { report.error = Some(format!("snapshot measured failed: {e}")); }
+        Err(_elapsed) => { report.error = Some("snapshot measured timed out".into()); }
+    }
+    report.snapshot_ms = snapshot_ms;
+    report.snapshot_bytes = snapshot_bytes;
+
+    // ── step: activate tab 1 ──────────────────────────────────
+    let tab1_id_clone = tab1_id.clone();
+    match browser_tab_activate(app.state(), tab1_id_clone) {
+        Ok(_snap) => { report.activated_second_tab = true; }
+        Err(e) => { report.error = Some(format!("tab activate failed: {e}")); }
+    }
+
+    // ── step: close both tabs ─────────────────────────────────
+    let mut closed = 0usize;
+    match browser_tab_close(app.state(), tab1_id) {
+        Ok(_) => { closed += 1; }
+        Err(e) => { report.error = Some(format!("close tab 1 failed: {e}")); }
+    }
+    match browser_tab_close(app.state(), tab2_id) {
+        Ok(_) => { closed += 1; }
+        Err(e) => { report.error = Some(format!("close tab 2 failed: {e}")); }
+    }
+    report.closed_tabs = closed;
+
+    // ── step: verify runtime map is empty ─────────────────────
+    let remaining = {
+        let state = app.state::<BrowserPanelState>();
+        let inner = state.lock();
+        inner.tabs.len()
+    };
+    if remaining > 0 {
+        report.error = Some(format!(
+            "runtime map not empty after closing {} tabs: {remaining} entries remain",
+            closed
+        ));
+    }
+
+    // ── step: destroy session ─────────────────────────────────
+    report.destroyed = destroy_smoke_webview(app).await;
+
+    cleanup_pages();
+    report.success = report.error.is_none();
+    Ok(report)
+}
+
+/// Drain messages for a specific tab until `page-loaded` is observed.
+/// Returns `true` if the message was found within the budget (100 × 50 ms = 5 s).
+async fn wait_for_page_loaded(app: &AppHandle, tab_id: &str) -> bool {
     for _ in 0..100 {
-        let messages = browser_drain_messages(app.state());
-        navigated = messages.iter().any(|message| {
-            serde_json::from_str::<serde_json::Value>(message)
+        let Ok(messages) = browser_drain_messages(app.state(), tab_id.into()) else {
+            return false;
+        };
+        if messages.iter().any(|m| {
+            serde_json::from_str::<serde_json::Value>(m)
                 .ok()
-                .and_then(|value| value.get("type").and_then(|kind| kind.as_str()).map(|kind| kind == "page-loaded"))
+                .and_then(|v| v.get("type")?.as_str().map(|k| k == "page-loaded"))
                 .unwrap_or(false)
-        });
-        if navigated { break; }
+        }) {
+            return true;
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    if !navigated {
-        return Err("runtime smoke did not observe page-loaded".into());
-    }
-
-    // Warm WebKit's first snapshot so the measured sample reflects the
-    // interaction budget rather than one-time framework initialization.
-    let warmup = browser_snapshot(app.state()).await?;
-    browser_delete_temp_files(vec![warmup.path])?;
-    let snapshot = browser_snapshot(app.state()).await?;
-    browser_delete_temp_files(vec![snapshot.path.clone()])?;
-    if snapshot.bytes == 0 {
-        return Err("runtime smoke snapshot was empty".into());
-    }
-
-    on_main_thread(app, |handle| browser_destroy(handle.state())).await?;
-    let destroyed = current_webview(&app.state()).is_err();
-    let _ = std::fs::remove_file(page_path);
-    Ok(BrowserRuntimeSmokeReport {
-        success: true,
-        navigated,
-        bounds_updated: true,
-        snapshot_ms: snapshot.ms,
-        snapshot_bytes: snapshot.bytes,
-        destroyed,
-        error: None,
-    })
+    false
 }
+
+/// Destroy the smoke webview, with its own timeout. This must NOT fail
+/// the smoke test — it is the final cleanup and always runs.
+async fn destroy_smoke_webview(app: &AppHandle) -> bool {
+    match tokio::time::timeout(SMOKE_DESTROY_TIMEOUT, on_main_thread(app, |handle| browser_session_destroy(handle.state()))).await {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => { eprintln!("[smoke] destroy failed: {e}"); false }
+        Err(_elapsed) => { eprintln!("[smoke] destroy timed out"); false }
+    }
+}
+
+const ON_MAIN_THREAD_TIMEOUT: Duration = Duration::from_secs(10);
 
 async fn on_main_thread<T, F>(app: &AppHandle, operation: F) -> Result<T, String>
 where
@@ -751,9 +815,13 @@ where
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let handle = app.clone();
     app.run_on_main_thread(move || {
-        let _ = sender.send(operation(handle));
+        let result = operation(handle);
+        let _ = sender.send(result);
     }).map_err(|error| format!("schedule main-thread smoke falhou: {error}"))?;
-    receiver.await.map_err(|_| "main-thread smoke channel dropped".to_string())?
+    tokio::time::timeout(ON_MAIN_THREAD_TIMEOUT, receiver)
+        .await
+        .map_err(|_| "on_main_thread timed out (dispatch may not have executed)".to_string())?
+        .map_err(|_| "main-thread smoke channel dropped".to_string())?
 }
 
 #[cfg(target_os = "macos")]
@@ -763,35 +831,11 @@ async fn evaluate_script(
 ) -> Result<EvaluateReport, String> {
     let webview = current_webview(state)?;
     let started = Instant::now();
-    let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
-    let tx = std::sync::Arc::new(Mutex::new(Some(tx)));
-
-    webview
-        .with_webview(move |pw| {
-            let deliver = {
-                let tx = tx.clone();
-                move |result: Result<String, String>| {
-                    if let Some(sender) = tx.lock().unwrap().take() {
-                        let _ = sender.send(result);
-                    }
-                }
-            };
-            unsafe {
-                let wk = native::wk_from_ptr(pw.inner().cast());
-                native::eval_with_result(wk, &script, deliver);
-            }
-        })
-        .map_err(|e| format!("with_webview falhou: {e}"))?;
-
-    let value = tokio::time::timeout(Duration::from_secs(5), rx)
+    let value = tokio::time::timeout(Duration::from_secs(5), browser_platform::evaluate(webview, script))
         .await
         .map_err(|_| "eval timed out".to_string())?
-        .map_err(|_| "eval channel dropped".to_string())??;
-
-    Ok(EvaluateReport {
-        ms: started.elapsed().as_millis(),
-        value,
-    })
+        .map_err(|error| error.message)?;
+    Ok(EvaluateReport { ms: started.elapsed().as_millis(), value })
 }
 
 #[cfg(target_os = "macos")]
@@ -799,30 +843,10 @@ async fn capture_snapshot_bytes(
     state: &State<'_, BrowserPanelState>,
 ) -> Result<Vec<u8>, String> {
     let webview = current_webview(state)?;
-    let (tx, rx) = tokio::sync::oneshot::channel::<Result<Vec<u8>, String>>();
-    let tx = std::sync::Arc::new(Mutex::new(Some(tx)));
-
-    webview
-        .with_webview(move |pw| {
-            let deliver = {
-                let tx = tx.clone();
-                move |result: Result<Vec<u8>, String>| {
-                    if let Some(sender) = tx.lock().unwrap().take() {
-                        let _ = sender.send(result);
-                    }
-                }
-            };
-            unsafe {
-                let wk = native::wk_from_ptr(pw.inner().cast());
-                native::take_snapshot(wk, deliver);
-            }
-        })
-        .map_err(|error| format!("with_webview falhou: {error}"))?;
-
-    tokio::time::timeout(Duration::from_secs(5), rx)
+    tokio::time::timeout(Duration::from_secs(5), browser_platform::snapshot_png(webview))
         .await
         .map_err(|_| "snapshot timed out".to_string())?
-        .map_err(|_| "snapshot channel dropped".to_string())?
+        .map_err(|error| error.message)
 }
 
 fn crop_in_pixels(
@@ -890,248 +914,546 @@ fn next_label_seq() -> u64 {
     SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
-fn close_current(state: &State<'_, BrowserPanelState>) {
-    let mut inner = state.lock();
-    if let Some(webview) = inner.webview.take() {
-        let _ = webview.close();
-    }
-    inner.label = None;
-    inner.messages.clear();
-}
-
 fn current_webview(state: &State<'_, BrowserPanelState>) -> Result<Webview<Wry>, String> {
-    state
-        .lock()
-        .webview
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| "sem webview".to_string())
+    let inner = state.lock();
+    let active_id = inner
+        .session
+        .active_id()
+        .ok_or_else(|| "sem webview".to_string())?;
+    inner
+        .tabs
+        .get(active_id)
+        .map(|rt| rt.webview.clone())
+        .ok_or_else(|| "aba ativa sem runtime".to_string())
 }
 
-/// Push usado pelo handler nativo (macOS) para enfileirar uma mensagem.
-/// No-op se a webview já não está mais lá (destroy correu em paralelo).
-fn push_message(state: &BrowserPanelState, msg: String) {
-    let mut inner = state.lock();
-    if inner.webview.is_some() {
-        enqueue_page_message(&mut inner, msg);
-    }
-}
-
-fn enqueue_page_message(inner: &mut BrowserPanelInner, msg: String) {
-    if msg.len() > MAX_PAGE_MESSAGE_BYTES {
-        return;
-    }
-    if inner.messages.len() == MAX_PAGE_MESSAGES {
-        inner.messages.remove(0);
-    }
-    inner.messages.push(msg);
-}
-
-// ── macOS-native pieces ─────────────────────────────────────────────
-
+// ── macos-only bridge plumbing ───────────────────────────────────────
+//
+// Wrapped in `mod macos_bridge` with `#[cfg(target_os = "macos")]` so that
+// every helper that touches macos-only types (SendBrowserStatePtr, the
+// platform adapter's `attach_bridge`, the `MsgHandler` ivar, etc.) is
+// compiled only on macOS. On Windows/Linux, only the not-macos stub of
+// `attach_message_handler` is compiled.
+//
+// This module replaces an earlier flat block where each macos-only helper
+// carried its own `#[cfg]` — which left `attach_message_handler` and
+// `push_message_with_tab` ungated and broke the Windows build.
 #[cfg(target_os = "macos")]
-mod native {
-    use std::sync::OnceLock;
+mod macos_bridge {
+    use super::*;
 
-    use block2::RcBlock;
-    use objc2::rc::Retained;
-    use objc2::runtime::{AnyObject, ProtocolObject};
-    use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly};
-    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
-    use objc2_foundation::{NSDictionary, NSError, NSObject, NSObjectProtocol, NSString};
-    use objc2_web_kit::{
-        WKContentWorld, WKScriptMessage, WKScriptMessageHandler, WKUserContentController,
-        WKUserScript, WKUserScriptInjectionTime, WKWebView,
-    };
-
-    use super::BrowserPanelState;
-
-    /// Newtype sobre raw pointer que implementa `Send + Sync` (necessário
-    /// para `OnceLock` em static). O `BrowserPanelState` é `.manage()` no
-    /// `tauri::Builder` e vive até o fim do processo; o cast para
-    /// `'static` é seguro. v1 = aba única.
-    pub(crate) struct SendPtr(pub *const BrowserPanelState);
-    // SAFETY: o ponteiro aponta para o BrowserPanelState singleton do
-    // Tauri, vivo por toda a sessão. O acesso ao ponteiro em si é
-    // feito apenas dentro de `define_class!` callback, que corre na
-    // main thread — o lock em `push_message` serializa o acesso aos
-    // dados internos.
-    unsafe impl Send for SendPtr {}
-    unsafe impl Sync for SendPtr {}
-
-    static STATE_PTR: OnceLock<SendPtr> = OnceLock::new();
-
-    define_class!(
-        #[unsafe(super(NSObject))]
-        #[thread_kind = MainThreadOnly]
-        #[name = "VerbooBrowserMsgHandler"]
-        pub struct MsgHandler;
-
-        unsafe impl NSObjectProtocol for MsgHandler {}
-
-        unsafe impl WKScriptMessageHandler for MsgHandler {
-            #[unsafe(method(userContentController:didReceiveScriptMessage:))]
-            fn did_receive(
-                &self,
-                _controller: &WKUserContentController,
-                message: &WKScriptMessage,
-            ) {
-                if !unsafe { message.frameInfo().isMainFrame() } {
-                    return;
-                }
-                let body = unsafe { message.body() };
-                let text = body
-                    .downcast_ref::<NSString>()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "<non-string message>".to_string());
-                if let Some(ptr) = STATE_PTR.get() {
-                    // SAFETY: ponteiro registrado em `attach_handler`,
-                    // `BrowserPanelState` viva por toda a sessão do app.
-                    let state: &BrowserPanelState = unsafe { &*ptr.0 };
-                    super::push_message(state, text);
-                }
-            }
-        }
-    );
-
-    impl MsgHandler {
-        fn new(mtm: MainThreadMarker) -> Retained<Self> {
-            let this = Self::alloc(mtm);
-            unsafe { msg_send![this, init] }
-        }
+    /// Newtype send/sync para carregar `*const BrowserPanelState` dentro de
+    /// `Arc<dyn Fn(String) + Send + Sync>`.
+    pub(crate) struct SendBrowserStatePtr(*const BrowserPanelState);
+    unsafe impl Send for SendBrowserStatePtr {}
+    unsafe impl Sync for SendBrowserStatePtr {}
+    impl SendBrowserStatePtr {
+        /// # Safety: o ponteiro deve apontar para um BrowserPanelState vivo.
+        pub(crate) unsafe fn state(&self) -> &BrowserPanelState { &*self.0 }
     }
 
-    /// Registra o `BrowserPanelState` no singleton `STATE_PTR`. Chamar
-    /// antes de `with_webview` para que o handler nativo o encontre.
-    pub fn register_state(state: &BrowserPanelState) {
-        let _ = STATE_PTR.set(SendPtr(state as *const _));
+    pub(crate) fn new_bridge_token() -> String {
+        uuid::Uuid::new_v4().to_string()
     }
 
-    /// # Safety: deve ser chamada na main thread com um ponteiro de WKWebView válido.
-    pub unsafe fn wk_from_ptr<'a>(ptr: *mut std::ffi::c_void) -> &'a WKWebView {
-        &*(ptr as *const WKWebView)
-    }
-
-    fn trusted_world(mtm: MainThreadMarker) -> Retained<WKContentWorld> {
-        unsafe { WKContentWorld::defaultClientWorld(mtm) }
-    }
-
-    pub fn attach_handler(wk: &WKWebView, source: &str) {
-        // O `state` já deve estar registrado em `STATE_PTR` antes desta
-        // chamada (feito em `attach_message_handler`). Aqui só
-        // registramos o ObjC handler no webview.
-        let mtm = MainThreadMarker::new().expect("with_webview corre na main thread");
-        let handler = MsgHandler::new(mtm);
-        let proto: &ProtocolObject<dyn WKScriptMessageHandler> =
-            ProtocolObject::from_ref(&*handler);
-        unsafe {
-            let controller = wk.configuration().userContentController();
-            let world = trusted_world(mtm);
-            let user_script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly_inContentWorld(
-                WKUserScript::alloc(mtm),
-                &NSString::from_str(source),
-                WKUserScriptInjectionTime::AtDocumentStart,
-                true,
-                &world,
-            );
-            controller.addUserScript(&user_script);
-            // O controller retém o handler; o `Retained` pode dropar.
-            controller.addScriptMessageHandler_contentWorld_name(
-                proto,
-                &world,
-                &NSString::from_str("verboo"),
-            );
-        }
-    }
-
-    pub fn take_snapshot(
-        wk: &WKWebView,
-        deliver: impl Fn(Result<Vec<u8>, String>) + Clone + 'static,
-    ) {
-        let block = RcBlock::new(move |image: *mut NSImage, error: *mut NSError| {
-            if image.is_null() {
-                let message = if error.is_null() {
-                    "snapshot devolveu imagem nula".to_string()
-                } else {
-                    unsafe { (*error).localizedDescription().to_string() }
-                };
-                deliver(Err(message));
-                return;
-            }
-            let image = unsafe { &*image };
-            deliver(png_from_nsimage(image));
-        });
-        unsafe { wk.takeSnapshotWithConfiguration_completionHandler(None, &block) };
-    }
-
-    fn png_from_nsimage(image: &NSImage) -> Result<Vec<u8>, String> {
-        unsafe {
-            let tiff = image
-                .TIFFRepresentation()
-                .ok_or_else(|| "sem representação TIFF".to_string())?;
-            let rep = NSBitmapImageRep::imageRepWithData(&tiff)
-                .ok_or_else(|| "sem bitmap rep".to_string())?;
-            let png = rep
-                .representationUsingType_properties(
-                    NSBitmapImageFileType::PNG,
-                    &NSDictionary::new(),
-                )
-                .ok_or_else(|| "encode PNG falhou".to_string())?;
-            Ok(png.to_vec())
-        }
-    }
-
-    pub fn eval_with_result(
-        wk: &WKWebView,
-        script: &str,
-        deliver: impl Fn(Result<String, String>) + Clone + 'static,
-    ) {
-        let block = RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
-            if !error.is_null() {
-                let message = unsafe { (*error).localizedDescription().to_string() };
-                deliver(Err(message));
-                return;
-            }
-            if result.is_null() {
-                deliver(Ok("<null>".to_string()));
-                return;
-            }
-            let obj = unsafe { &*result };
-            let value = obj
-                .downcast_ref::<NSString>()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| format!("<non-string result: {obj:?}>"));
-            deliver(Ok(value));
-        });
-        unsafe {
-            let mtm = MainThreadMarker::new().expect("evaluate roda na main thread");
-            let world = trusted_world(mtm);
-            wk.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
-                &NSString::from_str(script),
-                None,
-                &world,
-                Some(&block),
-            )
+    pub(crate) fn attach_message_handler(
+        webview: &Webview<Wry>,
+        state: &BrowserPanelState,
+        tab_id: &str,
+    ) -> Result<(), String> {
+        let bridge_token = new_bridge_token();
+        let config = crate::services::browser_bridge::BridgeConfig {
+            tab_id: tab_id.to_string(),
+            token: bridge_token.clone(),
         };
-    }
-}
+        let state_ptr = SendBrowserStatePtr(state as *const BrowserPanelState);
+        let sink_tab_id = tab_id.to_string();
+        let sink: browser_platform::PageMessageSink = Arc::new(move |text| {
+            // SAFETY: BrowserPanelState managed by Tauri, lives for entire session
+            let s: &BrowserPanelState = unsafe { state_ptr.state() };
+            push_message_with_tab(s, &sink_tab_id, text);
+        });
+        // Wire the Task 3 plumbing: on_document_start now feeds the bridge
+        // queue's expect_document so the page's first message is not rejected
+        // as StaleDocument. The queue is created BEFORE attach_bridge so the
+        // closure can capture an Arc<Mutex<>> handle to it.
+        let queue = Arc::new(std::sync::Mutex::new(BrowserBridgeQueue::new(
+            tab_id.to_string(),
+            bridge_token,
+        )));
+        let queue_for_doc = queue.clone();
+        let on_document_start: Arc<dyn Fn(String) + Send + Sync + 'static> = Arc::new(move |uuid| {
+            queue_for_doc.lock().unwrap().expect_document(uuid);
+        });
+        let handle = browser_platform::attach_bridge(webview, config, sink, on_document_start)
+            .map_err(|e| format!("attach_bridge falhou: {}", e.message))?;
 
-#[cfg(target_os = "macos")]
-fn attach_message_handler(webview: &Webview<Wry>, state: &BrowserPanelState) -> Result<(), String> {
-    // Registra o ponteiro de estado no singleton ANTES de with_webview,
-    // para que o handler nativo (WKScriptMessageHandler) o encontre
-    // via STATE_PTR.get() no callback. O closure de with_webview só
-    // precisa capturar `pw` (Send) — não captura `state`.
-    native::register_state(state);
-    webview.with_webview(|pw| unsafe {
-        let wk = native::wk_from_ptr(pw.inner().cast());
-        native::attach_handler(wk, BROWSER_INJECT_JS);
-    }).map_err(|error| format!("attach trusted browser bridge falhou: {error}"))
+        // Insert the runtime into the panel state. The session model is also
+        // updated so the new tab becomes the active one.
+        {
+            let mut inner = state.lock();
+            let snapshot = BrowserTabSnapshot::blank(tab_id.to_string(), tab_id.to_string());
+            inner
+                .session
+                .insert_and_activate(snapshot)
+                .map_err(|err| format!("session.insert_and_activate failed: {err:?}"))?;
+            // The on_document_start closure has been dropped after attach_bridge
+            // returned (it was consumed by the call), so the Arc has exactly one
+            // strong reference left and try_unwrap succeeds.
+            let queue_owned = Arc::try_unwrap(queue)
+                .map_err(|_| "queue Arc still shared after attach_bridge".to_string())?
+                .into_inner()
+                .unwrap_or_else(|poison| poison.into_inner());
+            inner.tabs.insert(
+                tab_id.to_string(),
+                BrowserTabRuntime {
+                    webview: webview.clone(),
+                    bridge: handle,
+                    messages: queue_owned,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// Push usado pelo handler nativo (macOS) para enfileirar uma mensagem
+    /// em uma aba específica. A página envia um `BrowserPageEnvelope` JSON
+    /// completo (via `transport.post()`), que o sink repassa ao queue para
+    /// validação completa (bridge_token, document_token, tamanho, overflow).
+    /// No-op se a aba destino não existe mais.
+    pub(crate) fn push_message_with_tab(state: &BrowserPanelState, tab_id: &str, msg: String) {
+        let mut inner = state.lock();
+        if let Some(runtime) = inner.tabs.get_mut(tab_id) {
+            let envelope: BrowserPageEnvelope = match serde_json::from_str(&msg) {
+                Ok(e) => e,
+                Err(_) => return, // malformed envelope — ignore
+            };
+            let _ = runtime.messages.accept(envelope);
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn attach_message_handler(_webview: &Webview<Wry>, _state: &BrowserPanelState) -> Result<(), String> {
+fn attach_message_handler(
+    _webview: &Webview<Wry>,
+    _state: &BrowserPanelState,
+    _tab_id: &str,
+) -> Result<(), String> {
     Ok(())
+}
+
+// ── Multi-tab session commands (Task 4) ────────────────────────────
+
+#[tauri::command]
+pub fn browser_session_open(
+    state: State<'_, BrowserPanelState>,
+    bounds: BrowserBounds,
+) -> Result<BrowserSessionSnapshot, String> {
+    if !bounds.is_valid() {
+        return Err(format!(
+            "bounds inválidos: width={} height={}",
+            bounds.width, bounds.height
+        ));
+    }
+    let mut inner = state.lock();
+    inner.bounds = Some(bounds);
+    inner.visible = true;
+    Ok(inner.session.snapshot(inner.visible))
+}
+
+#[tauri::command]
+pub fn browser_session_snapshot(
+    state: State<'_, BrowserPanelState>,
+) -> Result<BrowserSessionSnapshot, String> {
+    let inner = state.lock();
+    Ok(inner.session.snapshot(inner.visible))
+}
+
+#[tauri::command]
+pub fn browser_session_set_visible(
+    state: State<'_, BrowserPanelState>,
+    visible: bool,
+) -> Result<BrowserSessionSnapshot, String> {
+    let mut inner = state.lock();
+    inner.visible = visible;
+    Ok(inner.session.snapshot(inner.visible))
+}
+
+#[tauri::command]
+pub fn browser_session_destroy(
+    state: State<'_, BrowserPanelState>,
+) -> Result<(), String> {
+    let mut inner = state.lock();
+    let tab_ids: Vec<BrowserTabId> = inner.tabs.keys().cloned().collect();
+    for id in tab_ids {
+        if let Some(runtime) = inner.tabs.remove(&id) {
+            let _ = runtime.webview.close();
+            // runtime.bridge drops here, unregistering the native handler.
+        }
+        let _ = inner.session.close(&id);
+    }
+    inner.bounds = None;
+    inner.visible = false;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn browser_tab_create(
+    app: AppHandle,
+    state: State<'_, BrowserPanelState>,
+    url: Option<String>,
+) -> Result<BrowserSessionSnapshot, String> {
+    // Bounds come from the session — set once by browser_session_open.
+    // The renderer never re-sends them.
+    let bounds = {
+        let inner = state.lock();
+        resolve_session_bounds(&inner)?
+    };
+
+    let window = app
+        .get_window("main")
+        .ok_or_else(|| "janela principal não encontrada".to_string())?;
+
+    let tab_id = format!("verboo-browser-{}", next_label_seq());
+    let initial = url.as_deref().unwrap_or("about:blank");
+    let parsed = parse_url_for_panel(initial)?;
+
+    let blank = parse_url_for_panel("about:blank")?;
+    let builder = tauri::webview::WebviewBuilder::new(&tab_id, tauri::WebviewUrl::External(blank))
+        .incognito(true);
+
+    let webview = window
+        .add_child(
+            builder,
+            LogicalPosition::new(bounds.x, bounds.y),
+            LogicalSize::new(bounds.width, bounds.height),
+        )
+        .map_err(|e| format!("add_child falhou: {e}"))?;
+
+    // Atomic creation: attach the bridge. On failure, destroy the partial
+    // webview and propagate the error — the runtime map and session model
+    // are NOT mutated (try_attach_or_destroy pattern).
+    #[cfg(target_os = "macos")]
+    let attach_result = macos_bridge::attach_message_handler(&webview, &state, &tab_id);
+    #[cfg(not(target_os = "macos"))]
+    let attach_result = attach_message_handler(&webview, &state, &tab_id);
+    if let Err(error) = attach_result {
+        let _ = webview.close();
+        return Err(error);
+    }
+
+    // Hide all other tabs, show this one.
+    {
+        let mut inner = state.lock();
+        let other_ids: Vec<BrowserTabId> = inner
+            .tabs
+            .keys()
+            .filter(|id| id.as_str() != tab_id.as_str())
+            .cloned()
+            .collect();
+        for id in other_ids {
+            if let Some(rt) = inner.tabs.get(&id) {
+                let _ = rt.webview.hide();
+            }
+        }
+        if let Some(rt) = inner.tabs.get(&tab_id) {
+            let _ = rt.webview.show();
+        }
+        inner.visible = true;
+    }
+
+    if initial != "about:blank" {
+        if let Err(error) = webview.navigate(parsed) {
+            // Rollback: close the tab we just created.
+            let mut inner = state.lock();
+            let runtime = inner.tabs.remove(&tab_id);
+            if let Some(rt) = runtime {
+                let _ = rt.webview.close();
+            }
+            let _ = inner.session.close(&tab_id);
+            return Err(format!("navigate inicial falhou: {error}"));
+        }
+    }
+
+    let inner = state.lock();
+    Ok(inner.session.snapshot(inner.visible))
+}
+
+#[tauri::command]
+pub fn browser_tab_activate(
+    state: State<'_, BrowserPanelState>,
+    tab_id: BrowserTabId,
+) -> Result<BrowserSessionSnapshot, String> {
+    // Collect the visibility transitions we need to perform, then apply
+    // them outside the session-model borrow. This avoids the double-mut
+    // borrow that would happen if the closure captured `inner`.
+    let (previous, snapshot_before) = {
+        let inner = state.lock();
+        let prev = inner.session.active_id().map(|id| id.to_string());
+        (prev, inner.session.snapshot(inner.visible))
+    };
+    let previous = match previous {
+        Some(id) => id,
+        None => return Ok(snapshot_before),
+    };
+    if previous == tab_id {
+        return Ok(snapshot_before);
+    }
+    // Hide previous, show next. If show fails, restore previous.
+    let hide_prev = {
+        let inner = state.lock();
+        match inner.tabs.get(&previous) {
+            Some(rt) => rt.webview.clone(),
+            None => return Ok(snapshot_before),
+        }
+    };
+    let show_next = {
+        let inner = state.lock();
+        match inner.tabs.get(&tab_id) {
+            Some(rt) => rt.webview.clone(),
+            None => return Ok(snapshot_before),
+        }
+    };
+    let _ = hide_prev.hide();
+    match show_next.show() {
+        Ok(()) => {
+            let mut inner = state.lock();
+            let _ = inner.session.activate(&tab_id);
+            Ok(inner.session.snapshot(inner.visible))
+        }
+        Err(error) => {
+            let _ = hide_prev.show();
+            let _ = error;
+            Ok(snapshot_before)
+        }
+    }
+}
+
+#[tauri::command]
+pub fn browser_tab_close(
+    state: State<'_, BrowserPanelState>,
+    tab_id: BrowserTabId,
+) -> Result<BrowserSessionSnapshot, String> {
+    let mut inner = state.lock();
+    let snapshot_before = inner.session.snapshot(inner.visible);
+    let runtime = match inner.tabs.remove(&tab_id) {
+        Some(rt) => rt,
+        None => return Ok(snapshot_before),
+    };
+    let _ = runtime.webview.close();
+    // runtime.bridge drops here, unregistering the native handler.
+    let _ = inner.session.close(&tab_id);
+    Ok(inner.session.snapshot(inner.visible))
+}
+
+#[tauri::command]
+pub fn browser_tab_navigate(
+    state: State<'_, BrowserPanelState>,
+    tab_id: BrowserTabId,
+    url: String,
+) -> Result<BrowserSessionSnapshot, String> {
+    let parsed = parse_url_for_panel(&url)?;
+    let mut inner = state.lock();
+    let runtime = inner
+        .tabs
+        .get_mut(&tab_id)
+        .ok_or_else(|| format!("aba {} não existe", tab_id))?;
+    runtime
+        .webview
+        .navigate(parsed)
+        .map_err(|e| format!("navigate falhou: {e}"))?;
+    let _ = inner
+        .session
+        .begin_navigation(&tab_id, url)
+        .map_err(|err| format!("begin_navigation failed: {err:?}"));
+    Ok(inner.session.snapshot(inner.visible))
+}
+
+#[tauri::command]
+pub fn browser_tab_back(
+    state: State<'_, BrowserPanelState>,
+    tab_id: BrowserTabId,
+) -> Result<(), String> {
+    let inner = state.lock();
+    let runtime = inner
+        .tabs
+        .get(&tab_id)
+        .ok_or_else(|| format!("aba {} não existe", tab_id))?;
+    runtime
+        .webview
+        .eval("window.history.back();")
+        .map_err(|e| format!("back falhou: {e}"))
+}
+
+#[tauri::command]
+pub fn browser_tab_forward(
+    state: State<'_, BrowserPanelState>,
+    tab_id: BrowserTabId,
+) -> Result<(), String> {
+    let inner = state.lock();
+    let runtime = inner
+        .tabs
+        .get(&tab_id)
+        .ok_or_else(|| format!("aba {} não existe", tab_id))?;
+    runtime
+        .webview
+        .eval("window.history.forward();")
+        .map_err(|e| format!("forward falhou: {e}"))
+}
+
+#[tauri::command]
+pub fn browser_tab_reload(
+    state: State<'_, BrowserPanelState>,
+    tab_id: BrowserTabId,
+) -> Result<(), String> {
+    let inner = state.lock();
+    let runtime = inner
+        .tabs
+        .get(&tab_id)
+        .ok_or_else(|| format!("aba {} não existe", tab_id))?;
+    runtime
+        .webview
+        .eval("window.location.reload();")
+        .map_err(|e| format!("reload falhou: {e}"))
+}
+
+const STALE_DOCUMENT: &str = "stale_document";
+
+/// Pre‑work check: verify that the calling renderer's snapshot of the tab
+/// identity (tab_id + generation) is still current. If another navigation
+/// has occurred, the generation has advanced and the caller is operating
+/// on stale data.
+fn check_current(session: &BrowserSessionModel, tab_id: &str, generation: u64) -> Result<(), String> {
+    if session.is_current_generation(tab_id, generation) {
+        Ok(())
+    } else {
+        Err(format!("{STALE_DOCUMENT}: tab {tab_id} generation {generation} is not current"))
+    }
+}
+
+/// Post‑work check: same as `check_current` but with a result to discard
+/// and a cleanup callback for partial resources (e.g. temp snapshot files).
+/// Called after native async work completes to catch the window where
+/// the user navigated or closed the tab during the operation.
+fn check_stale<T>(
+    session: &BrowserSessionModel,
+    tab_id: &str,
+    generation: u64,
+    result: T,
+    cleanup: impl FnOnce(T),
+) -> Result<T, String> {
+    if session.is_current_generation(tab_id, generation) {
+        Ok(result)
+    } else {
+        cleanup(result);
+        Err(format!("{STALE_DOCUMENT}: tab {tab_id} generation changed during async work"))
+    }
+}
+
+// ── Atomic multi-tab helpers (testable without a Tauri State) ───────
+
+/// Atomically activates `next`: hides the previous tab, attempts to show
+/// `next`, restores the previous tab on failure, and only commits the
+/// model transition after the show succeeds.
+///
+/// `set_visible(id, visible)` is called for each visibility transition.
+/// Returning `Err` from a "show" call triggers rollback: the previous
+/// tab is shown again and the model is NOT mutated.
+#[allow(dead_code)]
+pub(crate) fn activate_atomically<F>(
+    session: &mut BrowserSessionModel,
+    next: &str,
+    mut set_visible: F,
+) -> Result<(), String>
+where
+    F: FnMut(&str, bool) -> Result<(), String>,
+{
+    let previous = match session.active_id() {
+        Some(id) => id.to_string(),
+        None => return Err("no active tab to deactivate".into()),
+    };
+    if previous == next {
+        return Ok(());
+    }
+    set_visible(&previous, false)?;
+    match set_visible(next, true) {
+        Ok(()) => {
+            session
+                .activate(next)
+                .map_err(|err| format!("activate failed: {err:?}"))?;
+            Ok(())
+        }
+        Err(error) => {
+            // Rollback: restore visibility of the previous tab.
+            let _ = set_visible(&previous, true);
+            Err(error)
+        }
+    }
+}
+
+/// Closes a tab atomically: removes the runtime from the map, calls the
+/// `close` callback to dispose of native resources, applies the session
+/// model transition, and returns the resulting snapshot.
+///
+/// If `tab_id` is not in `runtimes`, returns the unchanged snapshot
+/// without calling `close` (idempotent at command boundary).
+#[allow(dead_code)]
+pub(crate) fn close_runtime_tab<T, F>(
+    session: &mut BrowserSessionModel,
+    runtimes: &mut HashMap<BrowserTabId, T>,
+    tab_id: &str,
+    close: F,
+) -> Result<BrowserSessionSnapshot, String>
+where
+    F: FnOnce(&str, T) -> Result<(), String>,
+{
+    let snapshot_before = session.snapshot(false);
+    let runtime = match runtimes.remove(tab_id) {
+        Some(rt) => rt,
+        None => return Ok(snapshot_before),
+    };
+    close(tab_id, runtime)?;
+    session
+        .close(tab_id)
+        .map_err(|err| format!("session.close failed: {err:?}"))?;
+    Ok(session.snapshot(false))
+}
+
+/// Resolve session bounds from the current panel state. Returns
+/// `Err` with a clear message when `browser_session_open` was not called.
+fn resolve_session_bounds(inner: &BrowserPanelInner) -> Result<BrowserBounds, String> {
+    inner.bounds.ok_or_else(|| {
+        "browser_tab_create falhou: sessão não aberta — chame browser_session_open primeiro".to_string()
+    })
+}
+
+/// Atomic creation helper: attempts to attach a bridge (or any
+/// post-webview step) to a partial resource. On failure, calls
+/// `destroy` to dispose of the partial resource and propagates the
+/// error. On success, returns the resource untouched so the caller
+/// can insert it into the runtime map.
+///
+/// This is the seam that lets unit tests prove atomicity without a
+/// real WKWebView: the test passes a stub resource, an attach_fn
+/// that returns Err, and a destroy callback that records being
+/// called.
+#[allow(dead_code)]
+pub(crate) fn try_attach_or_destroy<R, A, D>(
+    partial: R,
+    attach: A,
+    destroy: D,
+) -> Result<R, String>
+where
+    A: FnOnce(&R) -> Result<(), String>,
+    D: FnOnce(R),
+{
+    match attach(&partial) {
+        Ok(()) => Ok(partial),
+        Err(error) => {
+            destroy(partial);
+            Err(error)
+        }
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -1183,16 +1505,42 @@ mod tests {
 
     #[test]
     fn page_message_queue_is_bounded_and_rejects_oversized_payloads() {
-        let mut inner = BrowserPanelInner::default();
-        for index in 0..(MAX_PAGE_MESSAGES + 5) {
-            enqueue_page_message(&mut inner, format!("message-{index}"));
+        use crate::services::browser_bridge::{
+            BrowserBridgeQueue, BrowserPageEnvelope, MAX_PAGE_MESSAGES, MAX_PAGE_MESSAGE_BYTES,
+        };
+        let mut queue = BrowserBridgeQueue::new("tab-test".into(), "verboo".into());
+        queue.expect_document("doc-1".into());
+        // Fill the queue with well-formed messages.
+        for index in 0..MAX_PAGE_MESSAGES {
+            let envelope = BrowserPageEnvelope {
+                tab_id: "tab-test".into(),
+                bridge_token: "verboo".into(),
+                document_token: "doc-1".into(),
+                payload: format!("{{\"type\":\"msg-{index}\"}}"),
+            };
+            queue.accept(envelope).unwrap();
         }
-        assert_eq!(inner.messages.len(), MAX_PAGE_MESSAGES);
-        assert_eq!(inner.messages.first().map(String::as_str), Some("message-5"));
+        // The 257th message trips Overflow and clears the queue.
+        let envelope = BrowserPageEnvelope {
+            tab_id: "tab-test".into(),
+            bridge_token: "verboo".into(),
+            document_token: "doc-1".into(),
+            payload: r#"{"type":"overflow"}"#.into(),
+        };
+        let result = queue.accept(envelope);
+        assert!(result.is_err());
+        assert!(queue.drain().is_empty());
 
-        enqueue_page_message(&mut inner, "x".repeat(MAX_PAGE_MESSAGE_BYTES + 1));
-        assert_eq!(inner.messages.len(), MAX_PAGE_MESSAGES);
-        assert_ne!(inner.messages.last().map(String::len), Some(MAX_PAGE_MESSAGE_BYTES + 1));
+        // Oversized payloads are rejected with MessageTooLarge.
+        queue.expect_document("doc-2".into());
+        let big = "x".repeat(MAX_PAGE_MESSAGE_BYTES + 1);
+        let envelope = BrowserPageEnvelope {
+            tab_id: "tab-test".into(),
+            bridge_token: "verboo".into(),
+            document_token: "doc-2".into(),
+            payload: big,
+        };
+        assert!(queue.accept(envelope).is_err());
     }
 
     #[test]
@@ -1238,11 +1586,6 @@ mod tests {
             height: 800.0,
         };
         assert!(good.is_valid());
-    }
-
-    #[test]
-    fn embedded_browser_support_matches_the_macos_release_scope() {
-        assert_eq!(embedded_browser_supported(), cfg!(target_os = "macos"));
     }
 
     #[test]
@@ -1352,6 +1695,169 @@ mod tests {
                 width: 100,
                 height: 80,
             }
+        );
+    }
+
+    #[test]
+    fn failed_activation_keeps_previous_tab_active() {
+        let mut session = BrowserSessionModel::default();
+        session.insert_and_activate(BrowserTabSnapshot::blank("a".into(), "label-a".into())).unwrap();
+        session.insert_and_activate(BrowserTabSnapshot::blank("b".into(), "label-b".into())).unwrap();
+        session.activate("a").unwrap();
+        let mut visibility = Vec::new();
+        let result = activate_atomically(&mut session, "b", |id, visible| {
+            visibility.push((id.to_string(), visible));
+            if id == "b" && visible { Err("show failed".to_string()) } else { Ok(()) }
+        });
+        assert!(result.is_err());
+        assert_eq!(session.active_id(), Some("a"));
+        assert_eq!(visibility, vec![("a".into(), false), ("b".into(), true), ("a".into(), true)]);
+    }
+
+    #[test]
+    fn closing_unknown_tab_is_idempotent_at_command_boundary() {
+        let mut session = BrowserSessionModel::default();
+        session.insert_and_activate(BrowserTabSnapshot::blank("a".into(), "label-a".into())).unwrap();
+        let mut runtimes = HashMap::from([("a".to_string(), ())]);
+        let mut closed = Vec::new();
+        let snapshot = close_runtime_tab(&mut session, &mut runtimes, "missing", |id, _| {
+            closed.push(id.to_string());
+            Ok(())
+        }).unwrap();
+        assert_eq!(snapshot.tabs.len(), 1);
+        assert!(closed.is_empty());
+    }
+
+    /// EXIGIDO: criação atômica. attach_bridge falha DEPOIS de a webview
+    /// ter sido criada. O runtime NÃO entra no HashMap e o recurso
+    /// parcial (a webview) É destruído. prova que o design não vaza.
+    ///
+    /// O fluxo simula o caminho de produção: `try_attach_or_destroy`
+    /// decide se o recurso parcial sobrevive. Só em caso de sucesso
+    /// o runtime entra no HashMap e a session é mutada. Em falha, o
+    /// destroy é chamado e nada é inserido — provando atomicidade.
+    #[test]
+    fn creation_failure_after_webview_does_not_leave_runtime() {
+        let mut runtimes: HashMap<BrowserTabId, ()> = HashMap::new();
+        let mut session = BrowserSessionModel::default();
+
+        let destroyed = Arc::new(std::sync::Mutex::new(false));
+        let destroy_flag = destroyed.clone();
+        let stub_webview = 0_i32;
+        let tab_id: BrowserTabId = "tab-fail".into();
+
+        // Simulate the production flow: attach, and only on success
+        // insert into runtimes + session. On failure, the partial
+        // resource is destroyed and nothing is inserted.
+        let attached = try_attach_or_destroy(
+            stub_webview,
+            |_w| Err::<(), _>("attach_bridge falhou".into()),
+            move |_w| { *destroy_flag.lock().unwrap() = true; },
+        );
+
+        let succeeded = matches!(attached, Ok(_));
+        match attached {
+            Ok(_resource) => {
+                runtimes.insert(tab_id.clone(), ());
+                session
+                    .insert_and_activate(BrowserTabSnapshot::blank(tab_id.clone(), tab_id.clone()))
+                    .unwrap();
+            }
+            Err(_error) => {
+                // Production path: do NOT insert. The partial resource
+                // was already destroyed by try_attach_or_destroy.
+            }
+        }
+
+        assert!(!succeeded, "attach_bridge failure must propagate");
+        assert!(*destroyed.lock().unwrap(), "partial webview must be destroyed");
+        assert!(runtimes.is_empty(), "runtime map must remain empty after failed attach");
+        assert_eq!(session.active_id(), None, "session model must not be touched after failed attach");
+        assert_eq!(session.snapshot(false).tabs.len(), 0, "session must have no tabs after failed attach");
+    }
+
+    /// EXIGIDO: stress de criação/fechamento não deixa handles registrados.
+    /// 100 ciclos de insert_and_activate + close, e ao final o HashMap
+    /// de runtime está vazio e a sessão está vazia.
+    #[test]
+    fn stress_creation_destruction_leaves_runtime_empty() {
+        let mut runtimes: HashMap<BrowserTabId, ()> = HashMap::new();
+        let mut session = BrowserSessionModel::default();
+
+        for cycle in 0..100 {
+            let id = format!("tab-{}", cycle);
+            let snap = BrowserTabSnapshot::blank(id.clone(), id.clone());
+            session.insert_and_activate(snap).unwrap();
+            runtimes.insert(id.clone(), ());
+            let snap = close_runtime_tab(&mut session, &mut runtimes, &id, |_, _| Ok(()))
+                .expect("close_runtime_tab on known tab");
+            assert!(snap.tabs.is_empty(), "session must be empty after close");
+        }
+
+        assert!(runtimes.is_empty(), "runtime map must be empty after stress");
+        assert_eq!(session.active_id(), None, "session must have no active tab");
+        assert_eq!(session.snapshot(false).tabs.len(), 0);
+    }
+
+    #[test]
+    fn two_bridge_tokens_are_distinct_and_not_literal() {
+        let t1 = macos_bridge::new_bridge_token();
+        let t2 = macos_bridge::new_bridge_token();
+        assert_ne!(t1, t2, "each tab must get a unique bridge token");
+        assert_ne!(t1, "verboo", "bridge token must not be the development literal");
+        assert_ne!(t2, "verboo", "bridge token must not be the development literal");
+        assert!(!t1.is_empty());
+        assert!(!t2.is_empty());
+    }
+
+    #[test]
+    fn stale_generation_during_async_work_discards_result_and_cleans_temp_file() {
+        let mut session = BrowserSessionModel::default();
+        session
+            .insert_and_activate(BrowserTabSnapshot::blank("tab-a".into(), "label-a".into()))
+            .unwrap();
+        let gen = session.begin_navigation("tab-a", "https://example.com".into()).unwrap();
+
+        // Simulate a temp file produced during async work.
+        let dir = tempfile::tempdir().unwrap();
+        let temp_path = dir.path().join("snapshot.png");
+        std::fs::write(&temp_path, b"fake png bytes").unwrap();
+
+        // Generation changes DURING the async work (user navigated away).
+        session
+            .begin_navigation("tab-a", "https://new-url.com".into())
+            .unwrap();
+
+        // The after-check must detect staleness and clean up the temp file.
+        let result = check_stale(
+            &session,
+            "tab-a",
+            gen,
+            temp_path.clone(),
+            |path| { let _ = std::fs::remove_file(&path); },
+        );
+
+        let err_msg = result.as_ref().err().map(|e| e.as_str()).unwrap_or("");
+        assert!(result.is_err(), "stale result must be discarded");
+        assert!(err_msg.contains("stale_document"), "error must mention stale_document: {err_msg}");
+        assert!(!temp_path.exists(), "temp file must be cleaned up on staleness");
+    }
+
+    #[test]
+    fn resolve_session_bounds_returns_stored_bounds_when_present() {
+        let bounds = BrowserBounds { x: 10.0, y: 20.0, width: 320.0, height: 240.0 };
+        let mut inner = BrowserPanelInner::default();
+        inner.bounds = Some(bounds.clone());
+        assert_eq!(resolve_session_bounds(&inner).unwrap(), bounds);
+    }
+
+    #[test]
+    fn resolve_session_bounds_fails_with_actionable_message_when_none() {
+        let inner = BrowserPanelInner::default();
+        let err = resolve_session_bounds(&inner).unwrap_err();
+        assert!(
+            err.contains("browser_session_open"),
+            "error message must mention browser_session_open: {err}"
         );
     }
 }

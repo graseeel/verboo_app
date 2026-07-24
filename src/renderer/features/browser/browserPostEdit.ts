@@ -45,6 +45,67 @@ export function shouldScheduleBrowserReload(input: {
     && isLocalBrowserUrl(input.browserUrl)
 }
 
+export type PreviewRoute =
+  | { kind: 'activate'; tabId: string }
+  | { kind: 'navigate'; tabId: string }
+  | { kind: 'create' }
+
+/**
+ * Normalize a URL solely for comparison: lowercase scheme + host, strip
+ * default port (80/443), preserve path + query + fragment, remove trailing
+ * slash for root path. Returns null on parse failure.
+ */
+export function normalizeUrlForComparison(raw: string): string | null {
+  try {
+    const u = new URL(raw)
+    const port = u.port && (u.port !== '80' || u.protocol !== 'http:') && (u.port !== '443' || u.protocol !== 'https:') ? `:${u.port}` : ''
+    let pathname = u.pathname
+    if (pathname === '/') pathname = ''
+    else if (pathname.endsWith('/')) pathname = pathname.slice(0, -1)
+    return `${u.protocol}//${u.hostname.toLowerCase()}${port}${pathname}${u.search}${u.hash}`
+  } catch { return null }
+}
+
+/**
+ * Deterministic preview routing:
+ * 1. Activate tab already at the SAME normalized URL
+ * 2. Navigate the active tab if it's blank
+ * 3. Create a new tab
+ */
+export function routePreview(
+  session: { tabs: Array<{ id: string; url: string }>; activeTabId: string | null },
+  previewUrl: string,
+): PreviewRoute {
+  const normalized = normalizeUrlForComparison(previewUrl)
+  if (!normalized) return { kind: 'navigate', tabId: session.activeTabId ?? '' }
+
+  // 1. Activate existing tab at the same normalized URL
+  for (const tab of session.tabs) {
+    if (tab.id === session.activeTabId) continue
+    if (normalizeUrlForComparison(tab.url) === normalized) {
+      return { kind: 'activate', tabId: tab.id }
+    }
+  }
+  // Also check the active tab
+  if (session.activeTabId) {
+    const active = session.tabs.find(t => t.id === session.activeTabId)
+    if (active && normalizeUrlForComparison(active.url) === normalized) {
+      return { kind: 'activate', tabId: active.id }
+    }
+  }
+
+  // 2. Navigate active tab if blank
+  if (session.activeTabId) {
+    const active = session.tabs.find(t => t.id === session.activeTabId)
+    if (active && (active.url === 'about:blank' || active.url === '')) {
+      return { kind: 'navigate', tabId: active.id }
+    }
+  }
+
+  // 3. Create new tab
+  return { kind: 'create' }
+}
+
 export function postEditVerificationPrompt(
   annotations: AttachmentMeta[],
   language: 'en-US' | 'pt-BR',

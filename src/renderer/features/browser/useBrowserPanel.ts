@@ -1,4 +1,7 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
+import { activeBrowserTab, emptyBrowserSession } from './browserTabs'
+import type { BrowserSessionSnapshot, BrowserTabSnapshot } from './browserTabs'
+import { browserApi } from './browserApi'
 
 const BROWSER_WIDTH_KEY = 'verboo:browser-width'
 const DEFAULT_WIDTH = 680
@@ -13,6 +16,8 @@ export type BrowserReloadRequest = {
   targetRect: { x: number; y: number; width: number; height: number }
   autoVerify: boolean
   verificationPrompt: string
+  tabId: string
+  generation: number
 }
 
 export type BrowserNavigationRequest = {
@@ -27,7 +32,21 @@ export function useBrowserPanel() {
   const [currentUrl, setCurrentUrl] = useState('')
   const [reloadRequest, setReloadRequest] = useState<BrowserReloadRequest | undefined>()
   const [navigationRequest, setNavigationRequest] = useState<BrowserNavigationRequest | undefined>()
+  const [session, setSession] = useState<BrowserSessionSnapshot>(emptyBrowserSession)
   const navigationSequenceRef = useRef(0)
+
+  const activeTab: BrowserTabSnapshot | undefined = useMemo(
+    () => activeBrowserTab(session),
+    [session],
+  )
+
+  const applySession = useCallback((next: BrowserSessionSnapshot) => {
+    setSession(next)
+    if (next.tabs.length === 0) {
+      setBrowserOpen(false)
+      setAnnotationMode('idle')
+    }
+  }, [])
 
   const open = useCallback(() => {
     setBrowserOpen(true)
@@ -83,10 +102,24 @@ export function useBrowserPanel() {
     setNavigationRequest(current => current?.id === id ? undefined : current)
   }, [])
 
+  const createTab = useCallback((url?: string) => {
+    void browserApi.createTab(url).then(applySession).catch(() => {})
+  }, [applySession])
+
+  const activateTab = useCallback((tabId: string) => {
+    void browserApi.activateTab(tabId).then(applySession).catch(() => {})
+  }, [applySession])
+
+  const closeTab = useCallback((tabId: string) => {
+    void browserApi.closeTab(tabId).then(applySession).catch(() => {})
+  }, [applySession])
+
   return {
     browserOpen, browserWidth, annotationMode, currentUrl, reloadRequest, navigationRequest,
+    session, activeTab, applySession,
     open, close, toggle, setWidth, togglePencil, toggleArrow,
     setCurrentUrl, requestReload, completeReload, requestNavigation, completeNavigation,
+    createTab, activateTab, closeTab,
     MIN_WIDTH,
   }
 }
