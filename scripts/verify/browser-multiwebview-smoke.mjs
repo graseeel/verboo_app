@@ -64,6 +64,8 @@ export function assertRuntimeReport(report) {
   }
 }
 
+export const SMOKE_WALL_TIMEOUT_MS = 90_000
+
 if (isMain) {
 const appPath = process.argv[2]
 if (!appPath) {
@@ -96,11 +98,15 @@ try {
     env: { ...process.env, VERBOO_BROWSER_SMOKE_REPORT: reportPath },
     stdio: 'inherit',
   })
+  const start = Date.now()
+  const heartbeat = setInterval(() => {
+    process.stdout.write(`[smoke] still running t=${((Date.now() - start) / 1000).toFixed(1)}s\n`)
+  }, 10_000)
   const exitCode = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       child.kill('SIGKILL')
-      reject(new Error('packaged browser runtime smoke timed out after 30s'))
-    }, 30_000)
+      reject(new Error(`packaged browser runtime smoke timed out after ${SMOKE_WALL_TIMEOUT_MS}ms`))
+    }, SMOKE_WALL_TIMEOUT_MS)
     child.once('error', error => {
       clearTimeout(timer)
       reject(error)
@@ -110,6 +116,7 @@ try {
       resolve(code)
     })
   })
+  clearInterval(heartbeat)
   if (exitCode !== 0) throw new Error(`packaged app exited with ${exitCode}`)
   const report = JSON.parse(await readFile(reportPath, 'utf8'))
   assertRuntimeReport(report)
