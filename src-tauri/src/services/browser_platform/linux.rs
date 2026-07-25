@@ -8,11 +8,10 @@ use tauri::webview::Webview;
 use tauri::Wry;
 
 use gio::Cancellable;
-use glib::MainContext;
-use webkit2gtk::prelude::*;
+use glib::signal::signal_handler_disconnect;
 use webkit2gtk::{
     LoadEvent, SnapshotOptions, SnapshotRegion, UserContentInjectedFrames, UserScript,
-    UserScriptInjectionTime,
+    UserScriptInjectionTime, UserContentManagerExt, WebView, WebViewExt,
 };
 
 use super::{BrowserPlatformError, PageMessageSink, PlatformFuture};
@@ -25,8 +24,8 @@ const HANDLER_NAME: &str = "verboo";
 const WORLD_NAME: &str = "verboo-trusted";
 const EVAL_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn wk_from_ptr<'a>(ptr: *const std::ffi::c_void) -> &'a webkit2gtk::WebView {
-    unsafe { &*(ptr as *const webkit2gtk::WebView) }
+fn wk_from_ptr<'a>(ptr: *const std::ffi::c_void) -> &'a WebView {
+    unsafe { &*(ptr as *const WebView) }
 }
 
 pub struct BridgeHandle {
@@ -150,7 +149,7 @@ pub fn attach_bridge(
                         Some(world),
                         None::<&str>,
                         None::<&Cancellable>,
-                        |_r: Result<glib::Variant, glib::Error>| {},
+                        |_r| {},
                     );
                 }
             });
@@ -166,7 +165,7 @@ pub fn attach_bridge(
         if let Some(sid) = load_sig_id.lock().unwrap().take() {
             let _ = wv_for_unreg.with_webview(move |pw| unsafe {
                 let wk = wk_from_ptr(pw.inner().cast());
-                wk.disconnect(sid);
+                signal_handler_disconnect(wk, sid);
                 if *msg_registered.lock().unwrap() {
                     let cm = wk.user_content_manager();
                     cm.unregister_script_message_handler_in_world(name, WORLD_NAME);
@@ -195,9 +194,9 @@ pub fn evaluate(webview: Webview<Wry>, script: String) -> PlatformFuture<String>
                     Some(WORLD_NAME),
                     None::<&str>,
                     None::<&Cancellable>,
-                    move |result: Result<glib::Variant, glib::Error>| {
+                    move |result| {
                         let value = match result {
-                            Ok(v) => js_variant_to_string(&v),
+                            Ok(ref v) => js_value_to_string(v),
                             Err(e) => format!("eval erro: {e}"),
                         };
                         if let Some(s) = tx_eval.lock().unwrap().take() {
@@ -235,7 +234,7 @@ pub fn snapshot_png(webview: Webview<Wry>) -> PlatformFuture<Vec<u8>> {
                     SnapshotRegion::Visible,
                     SnapshotOptions::NONE,
                     None::<&Cancellable>,
-                    move |result: Result<cairo::Surface, glib::Error>| {
+                    move |result| {
                         let result = match result {
                             Ok(surface) => {
                                 let mut png_bytes = Vec::new();
@@ -295,15 +294,6 @@ fn js_value_to_string(val: &javascriptcore::Value) -> String {
         val.to_boolean().to_string()
     } else {
         String::new()
-    }
-}
-
-/// Converte glib::Variant (resultado de evaluate_javascript) para string.
-fn js_variant_to_string(variant: &glib::Variant) -> String {
-    if variant.is_of_type(glib::VariantTy::STRING) {
-        variant.str().map(|s| s.to_string()).unwrap_or_default()
-    } else {
-        variant.print(false)
     }
 }
 

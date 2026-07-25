@@ -1824,6 +1824,7 @@ mod tests {
         assert_eq!(session.snapshot(false).tabs.len(), 0);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn two_bridge_tokens_are_distinct_and_not_literal() {
         let t1 = macos_bridge::new_bridge_token();

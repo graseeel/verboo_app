@@ -253,12 +253,17 @@ jobs:
         run: cargo +1.89.0 install tauri-cli --version "2.11.4" --locked
 
       - name: Run Rust library tests
-        # Native browser parity (Tasks 1/2/3/4) adds units tests in lib
+        # Native browser parity (Tasks 1/2/3/4) adds unit tests in lib
         # (browser_panel, browser_platform, etc.) that are part of the
         # `--lib` contract. Failing tests gate the release of THIS platform
         # only — fail-fast:false keeps the other platforms building.
+        # Run with the matrix.target so the Tauri build script can locate
+        # the matching sidecar (e.g. binaries/verboo-in-chrome-<target>);
+        # without --target, x86_64 macOS builds on Apple-Silicon runners
+        # fail because the host triple resolves to aarch64 but the sidecar
+        # built earlier was x86_64.
         shell: bash
-        run: cargo +1.89.0 test --manifest-path src-tauri/Cargo.toml --lib --locked
+        run: cargo +1.89.0 test --target ${{ matrix.target }} --manifest-path src-tauri/Cargo.toml --lib --locked
 
       - name: Build Tauri bundle and signed updater artifacts
         env:
