@@ -738,29 +738,40 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
         Err(_elapsed) => { eprintln!("[smoke] step: evaluate failed/timeout: timed out"); report.evaluated = false; report.error = Some("evaluate timed out".into()); }
     }
 
-    // ── step: snapshot ────────────────────────────────────────
+    // ── step: snapshot (skippable via env var) ────────────────
+    // In headless CI runners, `takeSnapshot` may block indefinitely because
+    // no frame is ever composited. Setting `VERBOO_SMOKE_SKIP_SNAPSHOT=1`
+    // skips both warmup + measured steps and reports `snapshotBytes: 0`
+    // with an error mentioning "snapshot" — the launcher's CI gate is
+    // configured to treat this as non-fatal.
     let mut snapshot_bytes: usize = 0;
     let mut snapshot_ms: u128 = 0;
-    let tab2_gen = { let s = app.state::<BrowserPanelState>(); let inner = s.lock(); inner.session.current_generation(&tab2_id).unwrap_or(0) };
-    eprintln!("[smoke] step: snapshot warmup starting");
-    match tokio::time::timeout(SMOKE_STEP_TIMEOUT, browser_snapshot(app.state(), tab2_id.clone(), tab2_gen)).await {
-        Ok(Ok(warmup)) => { eprintln!("[smoke] step: snapshot warmup ok"); let _ = browser_delete_temp_files(vec![warmup.path]); }
-        Ok(Err(e)) => { eprintln!("[smoke] step: snapshot warmup failed/timeout: {e}"); report.error = Some(format!("snapshot warmup failed: {e}")); }
-        Err(_elapsed) => { eprintln!("[smoke] step: snapshot warmup failed/timeout: timed out"); report.error = Some("snapshot warmup timed out".into()); }
-    }
-    eprintln!("[smoke] step: snapshot measured starting");
-    match tokio::time::timeout(SMOKE_STEP_TIMEOUT, browser_snapshot(app.state(), tab2_id.clone(), tab2_gen)).await {
-        Ok(Ok(snap)) => {
-            eprintln!("[smoke] step: snapshot measured ok");
-            snapshot_ms = snap.ms;
-            snapshot_bytes = snap.bytes;
-            let _ = browser_delete_temp_files(vec![snap.path]);
+    let skip_snapshot = std::env::var("VERBOO_SMOKE_SKIP_SNAPSHOT").as_deref() == Ok("1");
+    if skip_snapshot {
+        eprintln!("[smoke] step: snapshot skipped (VERBOO_SMOKE_SKIP_SNAPSHOT=1)");
+        report.error = Some("snapshot skipped (headless environment)".into());
+    } else {
+        let tab2_gen = { let s = app.state::<BrowserPanelState>(); let inner = s.lock(); inner.session.current_generation(&tab2_id).unwrap_or(0) };
+        eprintln!("[smoke] step: snapshot warmup starting");
+        match tokio::time::timeout(SMOKE_STEP_TIMEOUT, browser_snapshot(app.state(), tab2_id.clone(), tab2_gen)).await {
+            Ok(Ok(warmup)) => { eprintln!("[smoke] step: snapshot warmup ok"); let _ = browser_delete_temp_files(vec![warmup.path]); }
+            Ok(Err(e)) => { eprintln!("[smoke] step: snapshot warmup failed/timeout: {e}"); report.error = Some(format!("snapshot warmup failed: {e}")); }
+            Err(_elapsed) => { eprintln!("[smoke] step: snapshot warmup failed/timeout: timed out"); report.error = Some("snapshot warmup timed out".into()); }
         }
-        Ok(Err(e)) => { eprintln!("[smoke] step: snapshot measured failed/timeout: {e}"); report.error = Some(format!("snapshot measured failed: {e}")); }
-        Err(_elapsed) => { eprintln!("[smoke] step: snapshot measured failed/timeout: timed out"); report.error = Some("snapshot measured timed out".into()); }
+        eprintln!("[smoke] step: snapshot measured starting");
+        match tokio::time::timeout(SMOKE_STEP_TIMEOUT, browser_snapshot(app.state(), tab2_id.clone(), tab2_gen)).await {
+            Ok(Ok(snap)) => {
+                eprintln!("[smoke] step: snapshot measured ok");
+                snapshot_ms = snap.ms;
+                snapshot_bytes = snap.bytes;
+                let _ = browser_delete_temp_files(vec![snap.path]);
+            }
+            Ok(Err(e)) => { eprintln!("[smoke] step: snapshot measured failed/timeout: {e}"); report.error = Some(format!("snapshot measured failed: {e}")); }
+            Err(_elapsed) => { eprintln!("[smoke] step: snapshot measured failed/timeout: timed out"); report.error = Some("snapshot measured timed out".into()); }
+        }
+        report.snapshot_ms = snapshot_ms;
+        report.snapshot_bytes = snapshot_bytes;
     }
-    report.snapshot_ms = snapshot_ms;
-    report.snapshot_bytes = snapshot_bytes;
 
     // ── step: activate tab 1 ──────────────────────────────────
     eprintln!("[smoke] step: tab_activate starting");
@@ -878,23 +889,10 @@ async fn capture_snapshot_bytes(
     tab_id: BrowserTabId,
 ) -> Result<Vec<u8>, String> {
     let webview = current_webview(state, tab_id.as_str())?;
-    // `snapshot_png` internally calls `webview.with_webview(...)`, which is
-    // SYNCHRONOUS and blocks the calling thread until the closure returns
-    // on the main thread. On headless CI runners, `takeSnapshot` may wait
-    // indefinitely for a frame that never composites. Spawn into
-    // `spawn_blocking` so tokio's timers can fire during the block.
-    tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current().block_on(
-            tokio::time::timeout(
-                Duration::from_secs(10),
-                browser_platform::snapshot_png(webview),
-            ),
-        )
-    })
-    .await
-    .map_err(|_| "snapshot task panicked".to_string())?
-    .map_err(|_| "snapshot timed out (headless?)".to_string())?
-    .map_err(|error| error.message)
+    tokio::time::timeout(Duration::from_secs(5), browser_platform::snapshot_png(webview))
+        .await
+        .map_err(|_| "snapshot timed out".to_string())?
+        .map_err(|error| error.message)
 }
 
 fn crop_in_pixels(
