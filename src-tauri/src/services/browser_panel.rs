@@ -570,6 +570,7 @@ pub async fn browser_healthcheck(state: State<'_, BrowserPanelState>) -> Result<
 /// Runs the packaged-app multiwebview path for CI. This is intentionally
 /// activated only by an explicit environment variable in `run()`.
 pub fn start_runtime_smoke(app: AppHandle, report_path: PathBuf) {
+    eprintln!("[smoke] start_runtime_smoke spawned");
     tauri::async_runtime::spawn(async move {
         let result = run_runtime_smoke(&app).await;
         let (report, exit_code) = match result {
@@ -608,6 +609,7 @@ const SMOKE_STEP_TIMEOUT: Duration = Duration::from_secs(10);
 const SMOKE_DESTROY_TIMEOUT: Duration = Duration::from_secs(10);
 
 async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport, String> {
+    eprintln!("[smoke] run_runtime_smoke starting");
     let page1_path = std::env::temp_dir().join(format!(
         "verboo-browser-runtime-smoke-tab1-{}.html",
         uuid::Uuid::new_v4()
@@ -650,118 +652,127 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
     // creating a child webview or waiting for its navigation callbacks.
     tokio::time::sleep(Duration::from_millis(750)).await;
 
-    // Cold-start warmup: CI aarch64 runners are slower than local
-    // machines to bring the WKWebView subsystem up. The very first
-    // webview.with_webview() call waits for the main thread to be
-    // free, which on cold CI can eat the entire 10s step timeout.
-    // Create and destroy a throwaway tab to pay this cost once.
-    let _ = tokio::time::timeout(SMOKE_STEP_TIMEOUT, on_main_thread(app, |handle| {
-        let _ = browser_session_open(handle.state(), BrowserBounds { x: 0.0, y: 0.0, width: 64.0, height: 64.0 });
-        let _ = browser_tab_create(handle.clone(), handle.state(), None);
-        browser_session_destroy(handle.state())
-    })).await;
-
     // ── step: open session with bounds ────────────────────────
+    eprintln!("[smoke] step: session_open starting");
     let session_bounds = BrowserBounds { x: 40.0, y: 80.0, width: 480.0, height: 360.0 };
     if let Err(e) = tokio::time::timeout(SMOKE_STEP_TIMEOUT, on_main_thread(app, move |handle| {
         browser_session_open(handle.state(), session_bounds)
     })).await {
+        eprintln!("[smoke] step: session_open failed/timeout: {e}");
         report.error = Some(format!("session open timed out: {e}"));
         cleanup_pages();
         return Ok(report);
     }
+    eprintln!("[smoke] step: session_open ok");
     report.bounds_updated = true;
 
     // ── step: create tab 1 ────────────────────────────────────
+    eprintln!("[smoke] step: tab1 create starting");
     let tab1_id = match tokio::time::timeout(SMOKE_STEP_TIMEOUT, on_main_thread(app, move |handle| {
         browser_tab_create(handle.clone(), handle.state(), Some(page1_url))
     })).await {
         Ok(Ok(snap)) => {
+            eprintln!("[smoke] step: tab1 create ok");
             report.created_tabs = 1;
             snap.active_tab_id.clone().unwrap_or_else(|| "missing-tab1".into())
         }
-        Ok(Err(e)) => { report.error = Some(format!("tab 1 create failed: {e}")); cleanup_pages(); return Ok(report); }
-        Err(_elapsed) => { report.error = Some("tab 1 create timed out".into()); cleanup_pages(); return Ok(report); }
+        Ok(Err(e)) => { eprintln!("[smoke] step: tab1 create failed/timeout: {e}"); report.error = Some(format!("tab 1 create failed: {e}")); cleanup_pages(); return Ok(report); }
+        Err(_elapsed) => { eprintln!("[smoke] step: tab1 create failed/timeout: timed out"); report.error = Some("tab 1 create timed out".into()); cleanup_pages(); return Ok(report); }
     };
 
     // Wait for tab 1 to load.
+    eprintln!("[smoke] step: wait_for_page_loaded tab1 starting");
     if !wait_for_page_loaded(app, &tab1_id).await {
+        eprintln!("[smoke] step: wait_for_page_loaded tab1 failed/timeout: page-loaded not observed");
         report.error = Some("tab 1 page-loaded not observed".into());
         let _ = destroy_smoke_webview(app).await;
         cleanup_pages();
         return Ok(report);
     }
+    eprintln!("[smoke] step: wait_for_page_loaded tab1 ok");
     report.navigated = true;
     report.bridge_received = true;
 
     // ── step: create tab 2 ────────────────────────────────────
+    eprintln!("[smoke] step: tab2 create starting");
     let tab2_id = match tokio::time::timeout(SMOKE_STEP_TIMEOUT, on_main_thread(app, move |handle| {
         browser_tab_create(handle.clone(), handle.state(), Some(page2_url))
     })).await {
         Ok(Ok(snap)) => {
+            eprintln!("[smoke] step: tab2 create ok");
             report.created_tabs = 2;
             snap.active_tab_id.unwrap_or_else(|| "missing-tab2".into())
         }
-        Ok(Err(e)) => { report.error = Some(format!("tab 2 create failed: {e}")); cleanup_pages(); return Ok(report); }
-        Err(_elapsed) => { report.error = Some("tab 2 create timed out".into()); cleanup_pages(); return Ok(report); }
+        Ok(Err(e)) => { eprintln!("[smoke] step: tab2 create failed/timeout: {e}"); report.error = Some(format!("tab 2 create failed: {e}")); cleanup_pages(); return Ok(report); }
+        Err(_elapsed) => { eprintln!("[smoke] step: tab2 create failed/timeout: timed out"); report.error = Some("tab 2 create timed out".into()); cleanup_pages(); return Ok(report); }
     };
 
     // Wait for tab 2 to load.
+    eprintln!("[smoke] step: wait_for_page_loaded tab2 starting");
     if !wait_for_page_loaded(app, &tab2_id).await {
+        eprintln!("[smoke] step: wait_for_page_loaded tab2 failed/timeout: page-loaded not observed");
         report.error = Some("tab 2 page-loaded not observed".into());
         let _ = destroy_smoke_webview(app).await;
         cleanup_pages();
         return Ok(report);
     }
+    eprintln!("[smoke] step: wait_for_page_loaded tab2 ok");
 
     // ── step: evaluate document.title on the active tab (tab 2) ─
+    eprintln!("[smoke] step: evaluate starting");
     let tab2_gen = { let s = app.state::<BrowserPanelState>(); let inner = s.lock(); inner.session.current_generation(&tab2_id).unwrap_or(0) };
     match tokio::time::timeout(
         SMOKE_STEP_TIMEOUT,
         browser_evaluate_script(app.state(), tab2_id.clone(), tab2_gen, "document.title".into()),
     ).await {
-        Ok(Ok(r)) => { report.evaluated = r.value == "Tab-Two"; }
-        Ok(Err(e)) => { report.evaluated = false; report.error = Some(format!("evaluate failed: {e}")); }
-        Err(_elapsed) => { report.evaluated = false; report.error = Some("evaluate timed out".into()); }
+        Ok(Ok(r)) => { eprintln!("[smoke] step: evaluate ok"); report.evaluated = r.value == "Tab-Two"; }
+        Ok(Err(e)) => { eprintln!("[smoke] step: evaluate failed/timeout: {e}"); report.evaluated = false; report.error = Some(format!("evaluate failed: {e}")); }
+        Err(_elapsed) => { eprintln!("[smoke] step: evaluate failed/timeout: timed out"); report.evaluated = false; report.error = Some("evaluate timed out".into()); }
     }
 
     // ── step: snapshot ────────────────────────────────────────
     let mut snapshot_bytes: usize = 0;
     let mut snapshot_ms: u128 = 0;
     let tab2_gen = { let s = app.state::<BrowserPanelState>(); let inner = s.lock(); inner.session.current_generation(&tab2_id).unwrap_or(0) };
+    eprintln!("[smoke] step: snapshot warmup starting");
     match tokio::time::timeout(SMOKE_STEP_TIMEOUT, browser_snapshot(app.state(), tab2_id.clone(), tab2_gen)).await {
-        Ok(Ok(warmup)) => { let _ = browser_delete_temp_files(vec![warmup.path]); }
-        Ok(Err(e)) => { report.error = Some(format!("snapshot warmup failed: {e}")); }
-        Err(_elapsed) => { report.error = Some("snapshot warmup timed out".into()); }
+        Ok(Ok(warmup)) => { eprintln!("[smoke] step: snapshot warmup ok"); let _ = browser_delete_temp_files(vec![warmup.path]); }
+        Ok(Err(e)) => { eprintln!("[smoke] step: snapshot warmup failed/timeout: {e}"); report.error = Some(format!("snapshot warmup failed: {e}")); }
+        Err(_elapsed) => { eprintln!("[smoke] step: snapshot warmup failed/timeout: timed out"); report.error = Some("snapshot warmup timed out".into()); }
     }
+    eprintln!("[smoke] step: snapshot measured starting");
     match tokio::time::timeout(SMOKE_STEP_TIMEOUT, browser_snapshot(app.state(), tab2_id.clone(), tab2_gen)).await {
         Ok(Ok(snap)) => {
+            eprintln!("[smoke] step: snapshot measured ok");
             snapshot_ms = snap.ms;
             snapshot_bytes = snap.bytes;
             let _ = browser_delete_temp_files(vec![snap.path]);
         }
-        Ok(Err(e)) => { report.error = Some(format!("snapshot measured failed: {e}")); }
-        Err(_elapsed) => { report.error = Some("snapshot measured timed out".into()); }
+        Ok(Err(e)) => { eprintln!("[smoke] step: snapshot measured failed/timeout: {e}"); report.error = Some(format!("snapshot measured failed: {e}")); }
+        Err(_elapsed) => { eprintln!("[smoke] step: snapshot measured failed/timeout: timed out"); report.error = Some("snapshot measured timed out".into()); }
     }
     report.snapshot_ms = snapshot_ms;
     report.snapshot_bytes = snapshot_bytes;
 
     // ── step: activate tab 1 ──────────────────────────────────
+    eprintln!("[smoke] step: tab_activate starting");
     let tab1_id_clone = tab1_id.clone();
     match browser_tab_activate(app.state(), tab1_id_clone) {
-        Ok(_snap) => { report.activated_second_tab = true; }
-        Err(e) => { report.error = Some(format!("tab activate failed: {e}")); }
+        Ok(_snap) => { eprintln!("[smoke] step: tab_activate ok"); report.activated_second_tab = true; }
+        Err(e) => { eprintln!("[smoke] step: tab_activate failed/timeout: {e}"); report.error = Some(format!("tab activate failed: {e}")); }
     }
 
     // ── step: close both tabs ─────────────────────────────────
     let mut closed = 0usize;
+    eprintln!("[smoke] step: close tab1 starting");
     match browser_tab_close(app.state(), tab1_id) {
-        Ok(_) => { closed += 1; }
-        Err(e) => { report.error = Some(format!("close tab 1 failed: {e}")); }
+        Ok(_) => { eprintln!("[smoke] step: close tab1 ok"); closed += 1; }
+        Err(e) => { eprintln!("[smoke] step: close tab1 failed/timeout: {e}"); report.error = Some(format!("close tab 1 failed: {e}")); }
     }
+    eprintln!("[smoke] step: close tab2 starting");
     match browser_tab_close(app.state(), tab2_id) {
-        Ok(_) => { closed += 1; }
-        Err(e) => { report.error = Some(format!("close tab 2 failed: {e}")); }
+        Ok(_) => { eprintln!("[smoke] step: close tab2 ok"); closed += 1; }
+        Err(e) => { eprintln!("[smoke] step: close tab2 failed/timeout: {e}"); report.error = Some(format!("close tab 2 failed: {e}")); }
     }
     report.closed_tabs = closed;
 
@@ -779,7 +790,10 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
     }
 
     // ── step: destroy session ─────────────────────────────────
+    eprintln!("[smoke] step: destroy starting");
     report.destroyed = destroy_smoke_webview(app).await;
+    eprintln!("[smoke] step: destroy {}",
+        if report.destroyed { "ok" } else { "failed/timeout" });
 
     cleanup_pages();
     report.success = report.error.is_none();
@@ -1869,21 +1883,6 @@ mod tests {
         assert!(
             err.contains("browser_session_open"),
             "error message must mention browser_session_open: {err}"
-        );
-    }
-
-    #[test]
-    fn smoke_warmup_phase_runs_before_measured_steps() {
-        // The smoke prelude must create+destroy a throwaway webview before
-        // any measured step. This pins the warmup contract so the next
-        // "30s timeout" regression does not reappear.
-        let source = include_str!("browser_panel.rs");
-        let prelude_start = source.find("async fn run_runtime_smoke").expect("smoke fn exists");
-        let prelude_end = source.find("// ── step: open session").expect("first step marker exists");
-        let prelude = &source[prelude_start..prelude_end];
-        assert!(
-            prelude.contains("warmup") || prelude.contains("dummy_webview"),
-            "run_runtime_smoke prelude must include a cold-start warmup; got:\n{prelude}"
         );
     }
 }
