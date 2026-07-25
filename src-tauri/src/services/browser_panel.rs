@@ -878,10 +878,23 @@ async fn capture_snapshot_bytes(
     tab_id: BrowserTabId,
 ) -> Result<Vec<u8>, String> {
     let webview = current_webview(state, tab_id.as_str())?;
-    tokio::time::timeout(Duration::from_secs(5), browser_platform::snapshot_png(webview))
-        .await
-        .map_err(|_| "snapshot timed out".to_string())?
-        .map_err(|error| error.message)
+    // `snapshot_png` internally calls `webview.with_webview(...)`, which is
+    // SYNCHRONOUS and blocks the calling thread until the closure returns
+    // on the main thread. On headless CI runners, `takeSnapshot` may wait
+    // indefinitely for a frame that never composites. Spawn into
+    // `spawn_blocking` so tokio's timers can fire during the block.
+    tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                browser_platform::snapshot_png(webview),
+            ),
+        )
+    })
+    .await
+    .map_err(|_| "snapshot task panicked".to_string())?
+    .map_err(|_| "snapshot timed out (headless?)".to_string())?
+    .map_err(|error| error.message)
 }
 
 fn crop_in_pixels(

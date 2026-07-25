@@ -72,11 +72,33 @@ describe('resolveLaunch', () => {
 // ── assertRuntimeReport ────────────────────────────────────────────────
 
 describe('assertRuntimeReport', () => {
-  test('accepts a complete valid report', () => {
+  test('accepts a complete valid report with snapshot ok', () => {
     assert.doesNotThrow(() => assertRuntimeReport(validReport()))
   })
 
-  test('rejects bridgeReceived = false', () => {
+  test('tolerates snapshot-only failure (headless) and emits WARNING', () => {
+    // Headless CI runners never compose a WKWebView frame, so the Rust side
+    // sets error = "snapshot ... timed out" and success = false. The launcher
+    // must NOT block on this — only warn.
+    const headlessReport = validReport({
+      success: false,
+      snapshotBytes: 0,
+      snapshotMs: 0,
+      error: 'snapshot measured timed out',
+    })
+    // Capture stderr to assert the WARNING is emitted.
+    const originalWrite = process.stderr.write.bind(process.stderr)
+    let captured = ''
+    process.stderr.write = (chunk) => { captured += String(chunk); return true }
+    try {
+      assert.doesNotThrow(() => assertRuntimeReport(headlessReport))
+    } finally {
+      process.stderr.write = originalWrite
+    }
+    assert.match(captured, /WARNING: snapshot unavailable/)
+  })
+
+  test('rejects bridgeReceived = false even with snapshot ok', () => {
     assert.throws(
       () => assertRuntimeReport(validReport({ bridgeReceived: false })),
       { message: /bridge not received/ },
@@ -104,9 +126,17 @@ describe('assertRuntimeReport', () => {
     )
   })
 
-  test('rejects non-null error', () => {
+  test('rejects non-snapshot error (e.g. bridge timeout)', () => {
+    // An error that is NOT about snapshot must still block, even if
+    // snapshotBytes happens to be 0 — this is the regression the gate exists
+    // to catch.
     assert.throws(
-      () => assertRuntimeReport(validReport({ error: 'WKWebView creation timed out' })),
+      () => assertRuntimeReport(validReport({
+        success: false,
+        snapshotBytes: 0,
+        snapshotMs: 0,
+        error: 'tab 2 create timed out',
+      })),
       { message: /smoke reported error/ },
     )
   })
@@ -118,17 +148,31 @@ describe('assertRuntimeReport', () => {
     )
   })
 
-  test('rejects snapshotBytes = 0', () => {
+  test('rejects snapshotMs over budget when snapshot succeeded', () => {
+    // snapshotBytes > 0 means the snapshot ran; then the 100ms budget applies.
     assert.throws(
-      () => assertRuntimeReport(validReport({ snapshotBytes: 0 })),
+      () => assertRuntimeReport(validReport({ snapshotMs: 200 })),
       { message: /snapshot budget failed/ },
     )
   })
 
-  test('rejects snapshotMs over budget (200 > 100)', () => {
+  test('rejects snapshotBytes = 0 with NO error (silent snapshot failure)', () => {
+    // No error string + 0 bytes = the smoke lost information. Block.
     assert.throws(
-      () => assertRuntimeReport(validReport({ snapshotMs: 200 })),
-      { message: /snapshot budget failed/ },
+      () => assertRuntimeReport(validReport({ snapshotBytes: 0, snapshotMs: 0 })),
+      { message: /snapshot produced no bytes and no snapshot error/ },
+    )
+  })
+
+  test('does NOT tolerate snapshot error when snapshotBytes > 0', () => {
+    // If bytes were produced, an error mentioning snapshot is suspicious —
+    // treat it as a real error, not a headless artifact.
+    assert.throws(
+      () => assertRuntimeReport(validReport({
+        success: false,
+        error: 'snapshot measured failed: partial write',
+      })),
+      { message: /smoke reported error/ },
     )
   })
 })

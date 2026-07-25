@@ -9,6 +9,7 @@ use tauri::Wry;
 
 use gio::Cancellable;
 use glib::signal::signal_handler_disconnect;
+use javascriptcore::ValueExt;
 use webkit2gtk::{
     LoadEvent, SnapshotOptions, SnapshotRegion, UserContentInjectedFrames, UserScript,
     UserScriptInjectionTime, UserContentManagerExt, WebView, WebViewExt,
@@ -23,10 +24,6 @@ const WEBKIT_TRANSPORT_TEMPLATE: &str = include_str!("webkit_transport_setup.js"
 const HANDLER_NAME: &str = "verboo";
 const WORLD_NAME: &str = "verboo-trusted";
 const EVAL_TIMEOUT: Duration = Duration::from_secs(5);
-
-fn wk_from_ptr<'a>(ptr: *const std::ffi::c_void) -> &'a WebView {
-    unsafe { &*(ptr as *const WebView) }
-}
 
 pub struct BridgeHandle {
     pub(crate) handler_name: String,
@@ -71,8 +68,8 @@ pub fn attach_bridge(
     let msg_flag = msg_registered.clone();
 
     webview
-        .with_webview(move |pw| unsafe {
-            let wk = wk_from_ptr(pw.inner());
+        .with_webview(move |pw| {
+            let wk: &WebView = &pw.inner();
             let content_manager = wk
                 .user_content_manager()
                 .expect("webkit webview has no UserContentManager");
@@ -112,7 +109,7 @@ pub fn attach_bridge(
 
             // 2. Handler de mensagens.
             if !content_manager.register_script_message_handler_in_world(
-                install_handler,
+                &install_handler,
                 world,
             ) {
                 *err_slot.lock().unwrap() = Some(BrowserPlatformError::new(
@@ -126,7 +123,7 @@ pub fn attach_bridge(
 
             let ms_sink = install_sink;
             let _ = content_manager.connect_script_message_received(
-                Some(install_handler),
+                Some(&install_handler),
                 move |_cm, js_result| {
                     if let Some(val) = js_result.js_value() {
                         let s = js_value_to_string(&val);
@@ -165,12 +162,13 @@ pub fn attach_bridge(
 
     let unreg: Box<dyn FnOnce(&str) + Send> = Box::new(move |name| {
         if let Some(sid) = load_sig_id.lock().unwrap().take() {
-            let _ = wv_for_unreg.with_webview(move |pw| unsafe {
-                let wk = wk_from_ptr(pw.inner());
+            let name_owned = name.to_string();
+            let _ = wv_for_unreg.with_webview(move |pw| {
+                let wk: &WebView = &pw.inner();
                 signal_handler_disconnect(wk, sid);
                 if *msg_registered.lock().unwrap() {
                     if let Some(cm) = wk.user_content_manager() {
-                        cm.unregister_script_message_handler_in_world(name, WORLD_NAME);
+                        cm.unregister_script_message_handler_in_world(&name_owned, WORLD_NAME);
                     }
                 }
             });
@@ -185,12 +183,12 @@ pub fn attach_bridge(
 
 pub fn evaluate(webview: Webview<Wry>, script: String) -> PlatformFuture<String> {
     Box::pin(async move {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx): (oneshot::Sender<String>, oneshot::Receiver<String>) = oneshot::channel();
         let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
 
         webview
-            .with_webview(move |pw| unsafe {
-                let wk = wk_from_ptr(pw.inner());
+            .with_webview(move |pw| {
+                let wk: &WebView = &pw.inner();
                 let tx_eval = tx.clone();
                 wk.evaluate_javascript(
                     &script,
@@ -203,7 +201,7 @@ pub fn evaluate(webview: Webview<Wry>, script: String) -> PlatformFuture<String>
                             Err(e) => format!("eval erro: {e}"),
                         };
                         if let Some(s) = tx_eval.lock().unwrap().take() {
-                            let _ = s.send(Ok(value));
+                            let _ = s.send(value);
                         }
                     },
                 );
@@ -212,26 +210,29 @@ pub fn evaluate(webview: Webview<Wry>, script: String) -> PlatformFuture<String>
                 BrowserPlatformError::new("evaluate", "linux", e.to_string())
             })?;
 
-        tokio::time::timeout(EVAL_TIMEOUT, rx)
+        let inner = tokio::time::timeout(EVAL_TIMEOUT, rx)
             .await
             .map_err(|_| {
                 BrowserPlatformError::new("evaluate", "linux", "timed out")
-            })?
-            .map_err(|_| {
-                BrowserPlatformError::new("evaluate", "linux", "channel dropped")
-            })?
-            .map_err(|e| BrowserPlatformError::new("evaluate", "linux", e))
+            })?;
+        let value = inner.map_err(|_| {
+            BrowserPlatformError::new("evaluate", "linux", "channel dropped")
+        })?;
+        Ok(value)
     })
 }
 
 pub fn snapshot_png(webview: Webview<Wry>) -> PlatformFuture<Vec<u8>> {
     Box::pin(async move {
-        let (tx, rx) = oneshot::channel();
+        let (tx, rx): (
+            oneshot::Sender<Result<Vec<u8>, String>>,
+            oneshot::Receiver<Result<Vec<u8>, String>>,
+        ) = oneshot::channel();
         let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
 
         webview
-            .with_webview(move |pw| unsafe {
-                let wk = wk_from_ptr(pw.inner());
+            .with_webview(move |pw| {
+                let wk: &WebView = &pw.inner();
                 let tx_snap = tx.clone();
                 wk.snapshot(
                     SnapshotRegion::Visible,
@@ -269,15 +270,15 @@ pub fn snapshot_png(webview: Webview<Wry>) -> PlatformFuture<Vec<u8>> {
                 BrowserPlatformError::new("snapshot", "linux", e.to_string())
             })?;
 
-        tokio::time::timeout(EVAL_TIMEOUT, rx)
+        let inner = tokio::time::timeout(EVAL_TIMEOUT, rx)
             .await
             .map_err(|_| {
                 BrowserPlatformError::new("snapshot", "linux", "timed out")
-            })?
-            .map_err(|_| {
-                BrowserPlatformError::new("snapshot", "linux", "channel dropped")
-            })?
-            .map_err(|e| BrowserPlatformError::new("snapshot", "linux", e))
+            })?;
+        let result = inner.map_err(|_| {
+            BrowserPlatformError::new("snapshot", "linux", "channel dropped")
+        })?;
+        result.map_err(|e| BrowserPlatformError::new("snapshot", "linux", e))
     })
 }
 
