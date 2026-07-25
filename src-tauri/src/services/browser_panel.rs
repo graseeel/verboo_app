@@ -258,9 +258,10 @@ pub struct BrowserViewport {
     pub height: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnnotationCaptureRequest {
+    pub tab_id: BrowserTabId,
     pub rect: BrowserRect,
     pub viewport: BrowserViewport,
 }
@@ -370,7 +371,7 @@ pub async fn browser_snapshot(
         check_current(&state.lock().session, &tab_id, generation)?;
 
         let started = Instant::now();
-        let bytes = capture_snapshot_bytes(&state).await?;
+        let bytes = capture_snapshot_bytes(&state, tab_id.clone()).await?;
 
         // Check AFTER async work — the user may have navigated during.
         let bytes = check_stale(
@@ -415,7 +416,7 @@ pub async fn browser_capture_annotation(
 ) -> Result<AnnotationCaptureReport, String> {
     #[cfg(target_os = "macos")]
     {
-        let bytes = capture_snapshot_bytes(&state).await?;
+        let bytes = capture_snapshot_bytes(&state, request.tab_id.clone()).await?;
         let image = image::load_from_memory(&bytes)
             .map_err(|error| format!("decode snapshot falhou: {error}"))?;
         let (viewport_width, viewport_height) = image.dimensions();
@@ -524,7 +525,7 @@ pub async fn browser_evaluate_script(
     #[cfg(target_os = "macos")]
     {
         check_current(&state.lock().session, &tab_id, generation)?;
-        let report = evaluate_script(&state, script).await?;
+        let report = evaluate_script(&state, tab_id.clone(), script).await?;
         check_stale(
             &state.lock().session,
             &tab_id,
@@ -550,8 +551,15 @@ pub async fn browser_evaluate_script(
 pub async fn browser_healthcheck(state: State<'_, BrowserPanelState>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
+        let active_id = state
+            .lock()
+            .session
+            .active_id()
+            .ok_or_else(|| "sem aba ativa".to_string())?
+            .to_string();
         let report = evaluate_script(
             &state,
+            active_id,
             "window.__verbooBrowser && window.__verbooBrowser.ping()".into(),
         )
         .await?;
@@ -563,7 +571,7 @@ pub async fn browser_healthcheck(state: State<'_, BrowserPanelState>) -> Result<
     }
     #[cfg(not(target_os = "macos"))]
     {
-        current_webview(&state).map(|_| ())
+        current_webview(&state, "").map(|_| ())
     }
 }
 
@@ -852,11 +860,12 @@ where
 #[cfg(target_os = "macos")]
 async fn evaluate_script(
     state: &State<'_, BrowserPanelState>,
+    tab_id: BrowserTabId,
     script: String,
 ) -> Result<EvaluateReport, String> {
-    let webview = current_webview(state)?;
+    let webview = current_webview(state, tab_id.as_str())?;
     let started = Instant::now();
-    let value = tokio::time::timeout(Duration::from_secs(5), browser_platform::evaluate(webview, script))
+    let value = tokio::time::timeout(Duration::from_secs(5), browser_platform::evaluate(webview, tab_id, script))
         .await
         .map_err(|_| "eval timed out".to_string())?
         .map_err(|error| error.message)?;
@@ -866,8 +875,9 @@ async fn evaluate_script(
 #[cfg(target_os = "macos")]
 async fn capture_snapshot_bytes(
     state: &State<'_, BrowserPanelState>,
+    tab_id: BrowserTabId,
 ) -> Result<Vec<u8>, String> {
-    let webview = current_webview(state)?;
+    let webview = current_webview(state, tab_id.as_str())?;
     tokio::time::timeout(Duration::from_secs(5), browser_platform::snapshot_png(webview))
         .await
         .map_err(|_| "snapshot timed out".to_string())?
@@ -939,17 +949,13 @@ fn next_label_seq() -> u64 {
     SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
-fn current_webview(state: &State<'_, BrowserPanelState>) -> Result<Webview<Wry>, String> {
+fn current_webview(state: &State<'_, BrowserPanelState>, tab_id: &str) -> Result<Webview<Wry>, String> {
     let inner = state.lock();
-    let active_id = inner
-        .session
-        .active_id()
-        .ok_or_else(|| "sem webview".to_string())?;
     inner
         .tabs
-        .get(active_id)
+        .get(tab_id)
         .map(|rt| rt.webview.clone())
-        .ok_or_else(|| "aba ativa sem runtime".to_string())
+        .ok_or_else(|| format!("{tab_id} sem runtime"))
 }
 
 // ── macos-only bridge plumbing ───────────────────────────────────────

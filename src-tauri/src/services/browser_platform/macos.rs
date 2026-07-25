@@ -97,8 +97,15 @@ pub unsafe fn wk_from_ptr<'a>(ptr: *mut std::ffi::c_void) -> &'a WKWebView {
     &*(ptr as *const WKWebView)
 }
 
-fn trusted_world(mtm: MainThreadMarker) -> Retained<WKContentWorld> {
-    unsafe { WKContentWorld::defaultClientWorld(mtm) }
+/// Returns the per-tab content world. Each tab gets its OWN named world
+/// so that `addScriptMessageHandler_contentWorld_name` registers with a
+/// unique (world, name) key — the singleton `defaultClientWorld` collides
+/// across tabs when two webviews share a processPool, which causes the
+/// second registration to either throw an NSException or silently replace
+/// the first handler. The name must be unique and stable per tab.
+fn trusted_world(mtm: MainThreadMarker, tab_id: &str) -> Retained<WKContentWorld> {
+    let world_name = NSString::from_str(&format!("verboo-{}", tab_id));
+    unsafe { WKContentWorld::worldWithName(&world_name, mtm) }
 }
 
 /// Script injetado. Mantido aqui enquanto a Task 7 não reformula o formato
@@ -115,23 +122,28 @@ const BROWSER_INJECT_JS: &str = include_str!("../browser_inject.js");
 /// marks this as a WebKit implementation.
 const WEBKIT_TRANSPORT_TEMPLATE: &str = include_str!("webkit_transport_setup.js");
 
-/// Name registered in `WKUserContentController` as the
-/// `addScriptMessageHandler` key and read by
-/// `window.webkit.messageHandlers.<NAME>` in `browser_inject.js`.
-///
-/// DO NOT per-tab this. Each WKWebView owns its own
-/// `WKUserContentController`, so the same name in different webviews is
-/// already isolated by construction. Per-tab destinations are
-/// disambiguated by the sink inside the handler's ivars (one MsgHandler
-/// per `attach_bridge` call, each carrying its own closure back to its
-/// own `BrowserBridgeQueue`).
-///
-/// This name MUST stay in sync with `browser_inject.js`. The test
-/// `rust_and_inject_agree_on_handler_name` enforces that.
-const HANDLER_NAME: &str = "verboo";
+/// Sanitize a tab_id to be safe as a JavaScript identifier. Only
+/// alphanumerics and underscores remain; everything else is collapsed to
+/// `_`. The result is unique per tab because `tab_id` is unique
+/// (`verboo-browser-<n>` and friends) and sanitization is stable.
+fn sanitize_tab_id_for_handler_name(tab_id: &str) -> String {
+    tab_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
 
-fn handler_name_for(_config: &BridgeConfig) -> &'static str {
-    HANDLER_NAME
+/// Per-tab message-handler name. Combined with the per-tab
+/// `WKContentWorld` returned by `trusted_world`, this gives a unique
+/// (world, name) key for `addScriptMessageHandler_contentWorld_name`.
+///
+/// Empirically (CI macOS ARM, cold headless runner): when the key is shared
+/// between two webviews that share a processPool, the second
+/// registration either throws an NSException or silently replaces the
+/// first, breaking page-bridge delivery for the second tab. Per-tab key
+/// isolates them.
+fn handler_name_for(config: &BridgeConfig) -> String {
+    format!("verboo_{}", sanitize_tab_id_for_handler_name(&config.tab_id))
 }
 
 /// Anexa o bridge a um webview: instala handler nativo + script injetado
@@ -161,11 +173,14 @@ pub fn attach_bridge(
     let install_document_token = document_uuid.clone();
     let install_sink = sink.clone();
     let wv = webview.clone();
+    let name_for_install = name.clone();
+    let name_for_unregister = name.clone();
+    let install_tab_id_for_install = install_tab_id.clone();
 
     webview
         .with_webview(move |pw| unsafe {
             let wk = wk_from_ptr(pw.inner().cast());
-            install_handler(wk, &install_tab_id, &install_bridge_token, &install_document_token, name, install_sink);
+            install_handler(wk, &install_tab_id_for_install, &install_bridge_token, &install_document_token, &name_for_install, install_sink);
         })
         .map_err(|error| {
             BrowserPlatformError::new("attach_bridge", "macos", error.to_string())
@@ -177,14 +192,16 @@ pub fn attach_bridge(
             let controller = wk.configuration().userContentController();
             let mtm = MainThreadMarker::new()
                 .expect("unregister roda na main thread");
-            let world = trusted_world(mtm);
-            let ns_name = NSString::from_str(name);
+            // Same per-tab world as install_handler — otherwise we leak
+            // the handler registration on drop.
+            let world = trusted_world(mtm, &install_tab_id);
+            let ns_name = NSString::from_str(&name_for_unregister);
             let _: () = msg_send![&*controller, removeScriptMessageHandlerForContentWorld: &*world, name: &*ns_name];
         });
     }));
 
     Ok(BridgeHandle {
-        handler_name: name.to_string(),
+        handler_name: name,
         unregister,
     })
 }
@@ -213,7 +230,9 @@ fn install_handler(
         ProtocolObject::from_ref(&*handler);
     unsafe {
         let controller = wk.configuration().userContentController();
-        let world = trusted_world(mtm);
+        // Per-tab content world — paired with the per-tab `name` to give
+        // a unique (world, name) key for the script message handler.
+        let world = trusted_world(mtm, tab_id);
 
         // 1. Transport factory script (runs BEFORE inject.js).
         // Serialize each value via JSON so special characters (quotes,
@@ -266,10 +285,12 @@ fn install_handler(
 
 /// Avalia JS no `WKContentWorld` isolado. O timeout externo de 5 s
 /// permanece no caller (browser_panel).
-pub fn evaluate(webview: Webview<Wry>, script: String) -> PlatformFuture<String> {
+pub fn evaluate(webview: Webview<Wry>, tab_id: String, script: String) -> PlatformFuture<String> {
     Box::pin(async move {
         let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
         let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
+        let script_for_closure = script.clone();
+        let tab_id_for_closure = tab_id.clone();
 
         webview
             .with_webview(move |pw| {
@@ -283,7 +304,7 @@ pub fn evaluate(webview: Webview<Wry>, script: String) -> PlatformFuture<String>
                 };
                 unsafe {
                     let wk = wk_from_ptr(pw.inner().cast());
-                    eval_with_result(wk, &script, deliver);
+                    eval_with_result(wk, &tab_id_for_closure, &script_for_closure, deliver);
                 }
             })
             .map_err(|e| BrowserPlatformError::new("evaluate", "macos", e.to_string()))?;
@@ -329,6 +350,7 @@ pub fn snapshot_png(webview: Webview<Wry>) -> PlatformFuture<Vec<u8>> {
 
 fn eval_with_result(
     wk: &WKWebView,
+    tab_id: &str,
     script: &str,
     deliver: impl Fn(Result<String, String>) + Clone + 'static,
 ) {
@@ -359,7 +381,11 @@ fn eval_with_result(
     });
     unsafe {
         let mtm = MainThreadMarker::new().expect("evaluate roda na main thread");
-        let world = trusted_world(mtm);
+        // `evaluate` is invoked per-tab via browser_evaluate_script(state,
+        // tab_id, ...). The world must match the per-tab world installed
+        // by install_handler so JS runs in the same isolated scope that
+        // owns the message handler.
+        let world = trusted_world(mtm, tab_id);
         wk.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
             &NSString::from_str(script),
             None,
@@ -412,27 +438,43 @@ mod tests {
     use std::sync::Mutex;
 
     /// Cross-artifact contract: the handler name that Rust registers via
-    /// `addScriptMessageHandler_contentWorld_name` MUST match the handler
-    /// name that `webkit_transport_setup.js` embeds via `%HANDLER_NAME%`.
-    /// The test verifies that the WebKit template has the placeholder AND
-    /// that the Rust constant is non-empty.
+    /// `addScriptMessageHandler_contentWorld_name` MUST be derived from
+    /// `tab_id` so the transport factory embeds the SAME name into the
+    /// page-side `globalThis.__VERBOO_NATIVE_TRANSPORT__.post(...)` call.
+    /// The handler name is per-tab (not a global constant) because
+    /// sharing the (world, name) key across tabs breaks the second
+    /// tab's bridge in shared-processPool scenarios (CI macOS ARM).
     #[test]
     fn rust_and_inject_agree_on_handler_name() {
         let transport_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src/services/browser_platform/webkit_transport_setup.js");
         let source = std::fs::read_to_string(&transport_path)
             .unwrap_or_else(|err| panic!("could not read {}: {err}", transport_path.display()));
-        // The template uses `%HANDLER_NAME%` which Rust resolves at injection time.
+        // The template embeds `%HANDLER_NAME%` which Rust resolves to a
+        // per-tab name at injection time. Both sides must agree on the
+        // placeholder contract.
         assert!(
             source.contains("%HANDLER_NAME%"),
-            "webkit_transport_setup.js must have a `%HANDLER_NAME%` placeholder for the \
-             handler name, but it was not found."
+            "webkit_transport_setup.js must have a `%HANDLER_NAME%` placeholder"
         );
-        // The Rust constant must not be empty — it will never resolve to a valid name.
-        assert!(
-            !super::HANDLER_NAME.is_empty(),
-            "HANDLER_NAME must not be empty"
-        );
+        // Sanitization must yield a valid JS identifier — alphanumeric
+        // and underscore, never starting with a digit (we prefix with
+        // `verboo_`, which starts with a letter, so this is satisfied).
+        let cfg = crate::services::browser_bridge::BridgeConfig {
+            tab_id: "verboo-browser-0".into(),
+            token: "irrelevant".into(),
+        };
+        let name = super::handler_name_for(&cfg);
+        assert!(name.starts_with("verboo_"), "name must start with prefix: {name}");
+        assert!(name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "name must be a valid JS identifier (only alnum + _): {name}");
+        // Two distinct tabs must produce distinct names — the whole point
+        // of the per-tab key.
+        let cfg2 = crate::services::browser_bridge::BridgeConfig {
+            tab_id: "verboo-browser-1".into(),
+            token: "irrelevant".into(),
+        };
+        assert_ne!(super::handler_name_for(&cfg), super::handler_name_for(&cfg2));
     }
 
     /// Regression test for the use-after-free + OnceLock bug: two handlers
