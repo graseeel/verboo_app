@@ -6008,6 +6008,7 @@ dependencies = [
  "gio",
  "glib",
  "image",
+ "javascriptcore-rs",
  "keepawake",
  "keyring",
  "libc",

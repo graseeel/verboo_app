@@ -72,8 +72,10 @@ pub fn attach_bridge(
 
     webview
         .with_webview(move |pw| unsafe {
-            let wk = wk_from_ptr(pw.inner().cast());
-            let content_manager = wk.user_content_manager();
+            let wk = wk_from_ptr(pw.inner());
+            let content_manager = wk
+                .user_content_manager()
+                .expect("webkit webview has no UserContentManager");
             let world = WORLD_NAME;
 
             // 1. UserScript (transport + inject) no mundo privado.
@@ -164,11 +166,12 @@ pub fn attach_bridge(
     let unreg: Box<dyn FnOnce(&str) + Send> = Box::new(move |name| {
         if let Some(sid) = load_sig_id.lock().unwrap().take() {
             let _ = wv_for_unreg.with_webview(move |pw| unsafe {
-                let wk = wk_from_ptr(pw.inner().cast());
+                let wk = wk_from_ptr(pw.inner());
                 signal_handler_disconnect(wk, sid);
                 if *msg_registered.lock().unwrap() {
-                    let cm = wk.user_content_manager();
-                    cm.unregister_script_message_handler_in_world(name, WORLD_NAME);
+                    if let Some(cm) = wk.user_content_manager() {
+                        cm.unregister_script_message_handler_in_world(name, WORLD_NAME);
+                    }
                 }
             });
         }
@@ -187,7 +190,7 @@ pub fn evaluate(webview: Webview<Wry>, script: String) -> PlatformFuture<String>
 
         webview
             .with_webview(move |pw| unsafe {
-                let wk = wk_from_ptr(pw.inner().cast());
+                let wk = wk_from_ptr(pw.inner());
                 let tx_eval = tx.clone();
                 wk.evaluate_javascript(
                     &script,
@@ -228,7 +231,7 @@ pub fn snapshot_png(webview: Webview<Wry>) -> PlatformFuture<Vec<u8>> {
 
         webview
             .with_webview(move |pw| unsafe {
-                let wk = wk_from_ptr(pw.inner().cast());
+                let wk = wk_from_ptr(pw.inner());
                 let tx_snap = tx.clone();
                 wk.snapshot(
                     SnapshotRegion::Visible,
