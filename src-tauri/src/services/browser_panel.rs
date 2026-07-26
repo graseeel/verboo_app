@@ -93,7 +93,18 @@ struct BrowserTabRuntime {
     /// Held for its Drop side-effect: unregisters the native handler.
     #[allow(dead_code)]
     bridge: browser_platform::BridgeHandle,
-    messages: BrowserBridgeQueue,
+    /// Arc<Mutex<>> because some platform adapters (Linux) retain the
+    /// on_document_start callback across navigations, keeping a clone
+    /// of the queue Arc. Stored shared so attach_message_handler never
+    /// needs Arc::try_unwrap.
+    ///
+    /// Regression protection: changing this back to bare
+    /// `BrowserBridgeQueue` breaks type-checking at the
+    /// `inner.tabs.insert(..., messages: queue)` call site,
+    /// since `queue` is `Arc<Mutex<BrowserBridgeQueue>>` and
+    /// no `Arc::try_unwrap` remains. The compiler enforces this,
+    /// not a test.
+    messages: Arc<Mutex<BrowserBridgeQueue>>,
 }
 
 #[derive(Default)]
@@ -342,6 +353,8 @@ pub fn browser_set_bounds(
 /// Drena (zera) a fila de mensagens vindas da página. Retorna snapshot
 /// atual e limpa o buffer — o renderer chama isso ao receber o evento
 /// `browser-messages` para evitar duplicação.
+///
+/// Lock order: panel mutex → queue mutex (NAV-20).
 #[tauri::command]
 pub fn browser_drain_messages(
     state: State<'_, BrowserPanelState>,
@@ -350,9 +363,10 @@ pub fn browser_drain_messages(
     let mut inner = state.lock();
     let runtime = inner
         .tabs
-        .get_mut(&tab_id)
+        .get(&tab_id)
         .ok_or_else(|| format!("{STALE_DOCUMENT}: tab {tab_id} not found"))?;
-    Ok(runtime.messages.drain())
+    let mut queue = runtime.messages.lock().unwrap_or_else(|e| e.into_inner());
+    Ok(queue.drain())
 }
 
 /// Snapshot do viewport → PNG escrito em `<temp_dir>/verboo-browser-snapshot.png`.
@@ -981,7 +995,7 @@ mod bridge_plumbing {
         )));
         let queue_for_doc = queue.clone();
         let on_document_start: Arc<dyn Fn(String) + Send + Sync + 'static> = Arc::new(move |uuid| {
-            queue_for_doc.lock().unwrap().expect_document(uuid);
+            queue_for_doc.lock().unwrap_or_else(|e| e.into_inner()).expect_document(uuid);
         });
         let handle = browser_platform::attach_bridge(webview, config, sink, on_document_start)
             .map_err(|e| format!("attach_bridge falhou: {}", e.message))?;
@@ -995,19 +1009,17 @@ mod bridge_plumbing {
                 .session
                 .insert_and_activate(snapshot)
                 .map_err(|err| format!("session.insert_and_activate failed: {err:?}"))?;
-            // The on_document_start closure has been dropped after attach_bridge
-            // returned (it was consumed by the call), so the Arc has exactly one
-            // strong reference left and try_unwrap succeeds.
-            let queue_owned = Arc::try_unwrap(queue)
-                .map_err(|_| "queue Arc still shared after attach_bridge".to_string())?
-                .into_inner()
-                .unwrap_or_else(|poison| poison.into_inner());
+            // NOTE (NAV-20): some platform adapters (Linux) retain the
+            // on_document_start callback across navigations, keeping a
+            // clone of the queue Arc. Storing the Arc directly avoids
+            // Arc::try_unwrap which would fail in that case.
+            // Canonical lock order: panel mutex → queue mutex.
             inner.tabs.insert(
                 tab_id.to_string(),
                 BrowserTabRuntime {
                     webview: webview.clone(),
                     bridge: handle,
-                    messages: queue_owned,
+                    messages: queue,
                 },
             );
         }
@@ -1019,6 +1031,7 @@ mod bridge_plumbing {
     /// completo (via `transport.post()`), que o sink repassa ao queue para
     /// validação completa (bridge_token, document_token, tamanho, overflow).
     /// No-op se a aba destino não existe mais.
+    /// Lock order: panel mutex → queue mutex (NAV-20).
     pub(crate) fn push_message_with_tab(state: &BrowserPanelState, tab_id: &str, msg: String) {
         let mut inner = state.lock();
         if let Some(runtime) = inner.tabs.get_mut(tab_id) {
@@ -1026,7 +1039,8 @@ mod bridge_plumbing {
                 Ok(e) => e,
                 Err(_) => return, // malformed envelope — ignore
             };
-            let _ = runtime.messages.accept(envelope);
+            let mut queue = runtime.messages.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = queue.accept(envelope);
         }
     }
 }
@@ -1917,6 +1931,70 @@ mod tests {
             "\"somente macOS\" error message found in production code. \
              All stubs that announce being macOS-only must be deleted.",
         );
+    }
+
+    /// Prove that an `Arc<Mutex<BrowserBridgeQueue>>` shared between the
+    /// runtime and a retained callback (as Linux does with
+    /// `on_document_start` in a `connect_load_changed` handler) can be
+    /// used from both sides.
+    ///
+    /// This documents the QUEUE-SHARING contract, not the regression
+    /// protection — the real anti-regression guard is the COMPILER:
+    /// `messages` is `Arc<Mutex<BrowserBridgeQueue>>`, and reverting
+    /// to bare `BrowserBridgeQueue` breaks the assign at the insert
+    /// site since no `Arc::try_unwrap` remains.
+    #[test]
+    fn shared_queue_works_when_callback_retains_clone() {
+        let queue = Arc::new(Mutex::new(BrowserBridgeQueue::new(
+            "tab-test".into(),
+            "secret".into(),
+        )));
+
+        // Simulate Linux: on_document_start callback retains a clone
+        // (connect_load_changed keeps the Fn alive across navigations).
+        let retained = queue.clone();
+        let callback: Arc<dyn Fn(String) + Send + Sync> =
+            Arc::new(move |uuid| {
+                retained.lock().unwrap().expect_document(uuid);
+            });
+
+        // After "attach_bridge returns", the runtime stores queue.
+        // With old Arc::try_unwrap this would fail (ref count: 2).
+        let stored = queue; // moves the Arc (strong refs: runtime + callback)
+        assert_eq!(
+            Arc::strong_count(&stored),
+            2,
+            "runtime ref + retained callback ref = 2"
+        );
+
+        // Runtime accesses the queue via its Arc.
+        stored
+            .lock()
+            .unwrap()
+            .expect_document("doc-1".into());
+        assert_eq!(
+            stored.lock().unwrap().current_document_token(),
+            Some("doc-1")
+        );
+
+        // The retained callback also accesses the same underlying queue.
+        callback("doc-2".into());
+        assert_eq!(
+            stored.lock().unwrap().current_document_token(),
+            Some("doc-2"),
+            "observer mutation visible through shared Arc"
+        );
+
+        // Queue can also accept/process messages normally.
+        let envelope = BrowserPageEnvelope {
+            tab_id: "tab-test".into(),
+            bridge_token: "secret".into(),
+            document_token: "doc-2".into(),
+            payload: r#"{"type":"test"}"#.into(),
+        };
+        stored.lock().unwrap().accept(envelope).unwrap();
+        let drained = stored.lock().unwrap().drain();
+        assert_eq!(drained.len(), 1, "message accepted and drainable");
     }
 
     #[test]
