@@ -1035,6 +1035,7 @@ mod bridge_plumbing {
         let state_ptr = SendBrowserStatePtr(state as *const BrowserPanelState);
         let sink_tab_id = tab_id.to_string();
         let sink: browser_platform::PageMessageSink = Arc::new(move |text| {
+            eprintln!("[bridge] sink recebeu {} bytes para tab {sink_tab_id}", text.len());
             // SAFETY: BrowserPanelState managed by Tauri, lives for entire session
             let s: &BrowserPanelState = unsafe { state_ptr.state() };
             push_message_with_tab(s, &sink_tab_id, text);
@@ -1091,12 +1092,25 @@ mod bridge_plumbing {
         if let Some(runtime) = inner.tabs.get_mut(tab_id) {
             let envelope: BrowserPageEnvelope = match serde_json::from_str(&msg) {
                 Ok(e) => e,
-                Err(_) => return, // malformed envelope — ignore
+                Err(error) => {
+                    eprintln!(
+                        "[bridge] tab {tab_id}: envelope malformado ({error}); \
+                         msg prefix: {}",
+                        &msg[..msg.len().min(200)]
+                    );
+                    return;
+                }
             };
             let mut queue = runtime.messages.lock().unwrap_or_else(|e| e.into_inner());
             if let Err(reason) = queue.accept(envelope) {
                 eprintln!("[bridge] tab {tab_id}: envelope rejeitado: {reason:?}");
             }
+        } else {
+            let known: Vec<&str> = inner.tabs.keys().map(|k| k.as_str()).collect();
+            eprintln!(
+                "[bridge] tab {tab_id} não encontrada entre {} tab(s) conhecida(s): {known:?}",
+                inner.tabs.len()
+            );
         }
     }
 }
