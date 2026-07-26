@@ -252,11 +252,25 @@ jobs:
         # depends on Tauri's unstable multiwebview API.
         run: cargo +1.89.0 install tauri-cli --version "2.11.4" --locked
 
-      - name: Run Rust library tests
-        # Native browser parity (Tasks 1/2/3/4) adds unit tests in lib
-        # (browser_panel, browser_platform, etc.) that are part of the
-        # `--lib` contract. Failing tests gate the release of THIS platform
-        # only — fail-fast:false keeps the other platforms building.
+      - name: Run Rust library tests (Windows)
+        # STATUS_ENTRYPOINT_NOT_FOUND on Windows cargo test is caused by MinGW
+        # DLLs from Git Bash (/mingw64/bin, /usr/bin) shadowing MSVC runtime
+        # imports. pwsh does NOT inject Git Bash paths, so it avoids the
+        # collision. Changing shell per-platform requires splitting the step.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Dump PATH for forensics (mandatory — cannot reproduce locally).
+          Write-Host "::group::PATH"
+          $env:PATH -split ";" | ForEach-Object { Write-Host $_ }
+          Write-Host "::endgroup::"
+
+          cargo +1.89.0 test --target ${{ matrix.target }} --manifest-path src-tauri/Cargo.toml --lib --locked
+          if ($LASTEXITCODE -ne 0) { throw "cargo test failed with exit $LASTEXITCODE" }
+
+      - name: Run Rust library tests (Unix)
+        # macOS and Linux use bash — no MinGW DLL collision.
+        if: runner.os != 'Windows'
         # Run with the matrix.target so the Tauri build script can locate
         # the matching sidecar (e.g. binaries/verboo-in-chrome-<target>);
         # without --target, x86_64 macOS builds on Apple-Silicon runners
@@ -265,31 +279,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          # ── Windows: MSYS2 DLL poisoning mitigation ──────────
-          # The msys2/setup-msys2 step above prepends mingw64/usr/bin to PATH.
-          # Those directories contain MinGW DLLs (zlib1.dll, libwinpthread-1,
-          # etc.) that shadow the MSVC runtime DLLs the cargo test binary
-          # imports, causing STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139).
-          # We dump PATH for forensic evidence (mandatory — cannot reproduce
-          # locally) then strip the MSYS2 entry for cargo test only. The
-          # MSYS2 step remains untouched because the sidecar build needs it.
-          # Only /msys64/ is filtered (the MSYS2 root); `mingw64` alone would
-          # also remove Git for Windows's own mingw64/bin, which provides
-          # git.exe.
-          if [ '${{ runner.os }}' = 'Windows' ]; then
-            echo '::group::PATH before sanitization'
-            echo "$PATH" | tr ':' '\n'
-            echo '::endgroup::'
-
-            PATH="$(echo "$PATH" | tr ':' '\n' | grep -ivE '/msys64/' | tr '\n' ':')"
-            export PATH="${PATH%:}"
-
-            echo '::group::PATH after sanitization (MSYS2 removed)'
-            echo "$PATH" | tr ':' '\n'
-            echo '::endgroup::'
-          fi
-
+          echo '::group::PATH'
+          echo "$PATH" | tr ':' '\n'
+          echo '::endgroup::'
           cargo +1.89.0 test --target ${{ matrix.target }} --manifest-path src-tauri/Cargo.toml --lib --locked
 
       - name: Build Tauri bundle and signed updater artifacts
