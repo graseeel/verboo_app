@@ -220,13 +220,16 @@ mod contract_tests {
     }
 
     #[test]
-    fn windows_document_script_registration_waits_for_completion() {
+    fn windows_document_script_registration_completes_without_a_nested_message_pump() {
         let source = include_str!("windows.rs");
         assert!(
-            source.contains(
-                "AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation"
-            ),
-            "WebView2 must finish registering the document script before navigation"
+            !source.contains("wait_for_async_operation"),
+            "WebView2 registration must not nest a Win32 message pump inside Tauri's UI loop"
+        );
+        assert!(
+            source.contains("AddScriptToExecuteOnDocumentCreatedCompletedHandler::create")
+                && source.contains("recv_timeout"),
+            "the worker must await WebView2 script registration before navigation"
         );
         assert!(
             !source.contains("let _ = cwv.AddScriptToExecuteOnDocumentCreated"),

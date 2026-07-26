@@ -16,7 +16,7 @@
 //!
 //! The UUID is NEVER generated in JavaScript — only Rust creates it.
 
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use serde_json;
@@ -56,6 +56,7 @@ const BROWSER_INJECT_JS: &str = include_str!("../browser_inject.js");
 const WEBVIEW2_TRANSPORT_TEMPLATE: &str = include_str!("webview2_transport_setup.js");
 
 const EVAL_TIMEOUT: Duration = Duration::from_secs(5);
+const BRIDGE_ATTACH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Possui os três EventRegistrationToken (NavigationStarting,
 /// ContentLoading, WebMessageReceived) e o Webview<Wry> clonado. Drop
@@ -104,9 +105,11 @@ pub fn attach_bridge(
     let install_handler = super::handler_name_for(&install_tab);
     let install_handler_return = install_handler.clone();
 
-    let inner_err: Arc<std::sync::Mutex<Option<BrowserPlatformError>>> =
-        Arc::new(std::sync::Mutex::new(None));
-    let err_slot = inner_err.clone();
+    // `with_webview` dispatches onto Tauri's UI thread and returns before the
+    // closure completes. Wait on this worker thread for WebView2's completion
+    // callback instead of using webview2-com's nested Win32 message pump on
+    // the UI thread; the nested pump can starve the next `Window::add_child`.
+    let (registration_tx, registration_rx) = mpsc::channel::<Result<(), String>>();
 
     // Capturado fora da closure para o unregister; clonado para dentro.
     let wv_for_unregister = webview.clone();
@@ -120,9 +123,7 @@ pub fn attach_bridge(
             let cwv = match pw.controller().CoreWebView2() {
                 Ok(c) => c,
                 Err(e) => {
-                    *err_slot.lock().unwrap() = Some(
-                        BrowserPlatformError::new("attach_bridge", "windows", e.to_string()),
-                    );
+                    let _ = registration_tx.send(Err(e.to_string()));
                     return;
                 }
             };
@@ -143,8 +144,7 @@ pub fn attach_bridge(
                 Ok(())
             }));
             if let Err(e) = cwv.add_NavigationStarting(&nh, &mut nav_tok as *mut i64) {
-                *err_slot.lock().unwrap() =
-                    Some(BrowserPlatformError::new("attach_bridge", "windows", e.to_string()));
+                let _ = registration_tx.send(Err(e.to_string()));
                 return;
             }
 
@@ -163,8 +163,7 @@ pub fn attach_bridge(
                 Ok(())
             }));
             if let Err(e) = cwv.add_ContentLoading(&ch, &mut content_tok as *mut i64) {
-                *err_slot.lock().unwrap() =
-                    Some(BrowserPlatformError::new("attach_bridge", "windows", e.to_string()));
+                let _ = registration_tx.send(Err(e.to_string()));
                 return;
             }
 
@@ -181,8 +180,7 @@ pub fn attach_bridge(
                 Ok(())
             }));
             if let Err(e) = cwv.add_WebMessageReceived(&mh, &mut msg_tok as *mut i64) {
-                *err_slot.lock().unwrap() =
-                    Some(BrowserPlatformError::new("attach_bridge", "windows", e.to_string()));
+                let _ = registration_tx.send(Err(e.to_string()));
                 return;
             }
 
@@ -195,34 +193,35 @@ pub fn attach_bridge(
                 &install_doc,
             );
             let full = format!("{tpl}\n{BROWSER_INJECT_JS}");
-            let cwv_for_script = cwv.clone();
-            if let Err(e) =
-                AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation(
-                    Box::new(move |handler| unsafe {
-                        let script = windows::core::HSTRING::from(full);
-                        cwv_for_script
-                            .AddScriptToExecuteOnDocumentCreated(&script, &handler)
-                            .map_err(Into::into)
-                    }),
-                    Box::new(|error, _| error),
-                )
-            {
-                *err_slot.lock().unwrap() = Some(BrowserPlatformError::new(
-                    "attach_bridge",
-                    "windows",
-                    e.to_string(),
-                ));
+            let completion_tx = registration_tx.clone();
+            let handler = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
+                move |error, _id| {
+                    let _ = completion_tx.send(error.map_err(|e| e.to_string()));
+                    Ok(())
+                },
+            ));
+
+            // Persist before dispatch: WebView2 may invoke the completion
+            // callback synchronously, allowing the worker to resume at once.
+            *tokens_slot.lock().unwrap() = (nav_tok, content_tok, msg_tok);
+            let script = windows::core::HSTRING::from(full);
+            if let Err(e) = cwv.AddScriptToExecuteOnDocumentCreated(&script, &handler) {
+                let _ = registration_tx.send(Err(e.to_string()));
                 return;
             }
-
-            // Persiste os três tokens para o unregister do BridgeHandle.
-            *tokens_slot.lock().unwrap() = (nav_tok, content_tok, msg_tok);
         })
         .map_err(|e| BrowserPlatformError::new("attach_bridge", "windows", e.to_string()))?;
 
-    if let Some(e) = inner_err.lock().unwrap().take() {
-        return Err(e);
-    }
+    registration_rx
+        .recv_timeout(BRIDGE_ATTACH_TIMEOUT)
+        .map_err(|error| {
+            BrowserPlatformError::new(
+                "attach_bridge",
+                "windows",
+                format!("document script registration did not complete: {error}"),
+            )
+        })?
+        .map_err(|error| BrowserPlatformError::new("attach_bridge", "windows", error))?;
 
     // Unregister: chama remove_NavigationStarting/ContentLoading/WebMessageReceived
     // no CoreWebView2. Best-effort — se o controller já foi destruído
