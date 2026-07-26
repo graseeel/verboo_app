@@ -263,7 +263,34 @@ jobs:
         # fail because the host triple resolves to aarch64 but the sidecar
         # built earlier was x86_64.
         shell: bash
-        run: cargo +1.89.0 test --target ${{ matrix.target }} --manifest-path src-tauri/Cargo.toml --lib --locked
+        run: |
+          set -euo pipefail
+
+          # ── Windows: MSYS2 DLL poisoning mitigation ──────────
+          # The msys2/setup-msys2 step above prepends mingw64/usr/bin to PATH.
+          # Those directories contain MinGW DLLs (zlib1.dll, libwinpthread-1,
+          # etc.) that shadow the MSVC runtime DLLs the cargo test binary
+          # imports, causing STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139).
+          # We dump PATH for forensic evidence (mandatory — cannot reproduce
+          # locally) then strip the MSYS2 entry for cargo test only. The
+          # MSYS2 step remains untouched because the sidecar build needs it.
+          # Only /msys64/ is filtered (the MSYS2 root); `mingw64` alone would
+          # also remove Git for Windows's own mingw64/bin, which provides
+          # git.exe.
+          if [ '${{ runner.os }}' = 'Windows' ]; then
+            echo '::group::PATH before sanitization'
+            echo "$PATH" | tr ':' '\n'
+            echo '::endgroup::'
+
+            PATH="$(echo "$PATH" | tr ':' '\n' | grep -ivE '/msys64/' | tr '\n' ':')"
+            export PATH="${PATH%:}"
+
+            echo '::group::PATH after sanitization (MSYS2 removed)'
+            echo "$PATH" | tr ':' '\n'
+            echo '::endgroup::'
+          fi
+
+          cargo +1.89.0 test --target ${{ matrix.target }} --manifest-path src-tauri/Cargo.toml --lib --locked
 
       - name: Build Tauri bundle and signed updater artifacts
         env:
