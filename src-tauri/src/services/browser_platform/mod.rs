@@ -218,4 +218,19 @@ mod contract_tests {
         let r = render_transport(tpl, "tab-id", "tok", "hdl", "doc123");
         assert!(!r.contains('%'), "surviving placeholder in webview2 template: {r}");
     }
+
+    #[test]
+    fn windows_document_script_registration_waits_for_completion() {
+        let source = include_str!("windows.rs");
+        assert!(
+            source.contains(
+                "AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation"
+            ),
+            "WebView2 must finish registering the document script before navigation"
+        );
+        assert!(
+            !source.contains("let _ = cwv.AddScriptToExecuteOnDocumentCreated"),
+            "WebView2 script registration errors must not be discarded"
+        );
+    }
 }

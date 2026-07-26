@@ -36,6 +36,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -555,6 +556,18 @@ pub async fn browser_healthcheck(state: State<'_, BrowserPanelState>) -> Result<
 
 /// Runs the packaged-app multiwebview path for CI. This is intentionally
 /// activated only by an explicit environment variable in `run()`.
+pub(crate) fn claim_runtime_smoke_launch(
+    configured: bool,
+    app_is_ready: bool,
+    launched: &AtomicBool,
+) -> bool {
+    configured
+        && app_is_ready
+        && launched
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+}
+
 pub fn start_runtime_smoke(app: AppHandle, report_path: PathBuf) {
     eprintln!("[smoke] start_runtime_smoke spawned");
     tauri::async_runtime::spawn(async move {
@@ -2137,5 +2150,22 @@ mod tests {
             err.contains("browser_session_open"),
             "error message must mention browser_session_open: {err}"
         );
+    }
+
+    #[test]
+    fn runtime_smoke_launch_waits_for_app_ready() {
+        let launched = std::sync::atomic::AtomicBool::new(false);
+
+        assert!(!claim_runtime_smoke_launch(false, true, &launched));
+        assert!(!claim_runtime_smoke_launch(true, false, &launched));
+        assert!(claim_runtime_smoke_launch(true, true, &launched));
+    }
+
+    #[test]
+    fn runtime_smoke_launch_is_claimed_only_once() {
+        let launched = std::sync::atomic::AtomicBool::new(false);
+
+        assert!(claim_runtime_smoke_launch(true, true, &launched));
+        assert!(!claim_runtime_smoke_launch(true, true, &launched));
     }
 }

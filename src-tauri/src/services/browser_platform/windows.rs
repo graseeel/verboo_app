@@ -195,10 +195,25 @@ pub fn attach_bridge(
                 &install_doc,
             );
             let full = format!("{tpl}\n{BROWSER_INJECT_JS}");
-            let full_buf = BufPcwstr::new(&full);
-            let noop_script =
-                AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(|_, _| Ok(())));
-            let _ = cwv.AddScriptToExecuteOnDocumentCreated(full_buf.ptr, &noop_script);
+            let cwv_for_script = cwv.clone();
+            if let Err(e) =
+                AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation(
+                    Box::new(move |handler| unsafe {
+                        let script = windows::core::HSTRING::from(full);
+                        cwv_for_script
+                            .AddScriptToExecuteOnDocumentCreated(&script, &handler)
+                            .map_err(Into::into)
+                    }),
+                    Box::new(|error, _| error),
+                )
+            {
+                *err_slot.lock().unwrap() = Some(BrowserPlatformError::new(
+                    "attach_bridge",
+                    "windows",
+                    e.to_string(),
+                ));
+                return;
+            }
 
             // Persiste os três tokens para o unregister do BridgeHandle.
             *tokens_slot.lock().unwrap() = (nav_tok, content_tok, msg_tok);
