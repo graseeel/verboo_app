@@ -858,6 +858,13 @@ async fn wait_for_page_loaded(app: &AppHandle, tab_id: &str) -> bool {
             eprintln!("[smoke] drain failed: tab_id={tab_id}");
             return false;
         };
+        if !messages.is_empty() {
+            eprintln!("[smoke] drain devolveu {} msg(s) para tab {tab_id}", messages.len());
+            for m in &messages {
+                let preview = &m[..m.len().min(200)];
+                eprintln!("[smoke]   msg: {preview}");
+            }
+        }
         if messages.iter().any(|m| {
             serde_json::from_str::<serde_json::Value>(m)
                 .ok()
