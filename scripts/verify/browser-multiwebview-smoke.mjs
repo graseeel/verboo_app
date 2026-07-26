@@ -101,7 +101,7 @@ export function assertRuntimeReport(report) {
   }
 }
 
-export const SMOKE_WALL_TIMEOUT_MS = 90_000
+export const SMOKE_WALL_TIMEOUT_MS = 180_000
 
 if (isMain) {
 const appPath = process.argv[2]

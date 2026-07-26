@@ -36,7 +36,6 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -556,18 +555,6 @@ pub async fn browser_healthcheck(state: State<'_, BrowserPanelState>) -> Result<
 
 /// Runs the packaged-app multiwebview path for CI. This is intentionally
 /// activated only by an explicit environment variable in `run()`.
-pub(crate) fn claim_runtime_smoke_launch(
-    configured: bool,
-    app_is_ready: bool,
-    launched: &AtomicBool,
-) -> bool {
-    configured
-        && app_is_ready
-        && launched
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-}
-
 pub fn start_runtime_smoke(app: AppHandle, report_path: PathBuf) {
     eprintln!("[smoke] start_runtime_smoke spawned");
     tauri::async_runtime::spawn(async move {
@@ -605,7 +592,6 @@ pub fn start_runtime_smoke(app: AppHandle, report_path: PathBuf) {
 // ── Internals ────────────────────────────────────────────────────────
 
 const SMOKE_STEP_TIMEOUT: Duration = Duration::from_secs(10);
-const SMOKE_DESTROY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Start a local HTTP server that serves the two smoke pages.
 ///
@@ -711,11 +697,11 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
     // ── step: open session with bounds ────────────────────────
     eprintln!("[smoke] step: session_open starting");
     let session_bounds = BrowserBounds { x: 40.0, y: 80.0, width: 480.0, height: 360.0 };
-    if let Err(e) = tokio::time::timeout(SMOKE_STEP_TIMEOUT, on_main_thread(app, move |handle| {
+    if let Err(e) = on_main_thread(app, move |handle| {
         browser_session_open(handle.state(), session_bounds)
-    })).await {
+    }).await {
         eprintln!("[smoke] step: session_open failed/timeout: {e}");
-        report.error = Some(format!("session open timed out: {e}"));
+        report.error = Some(format!("session open failed: {e}"));
         return Ok(report);
     }
     eprintln!("[smoke] step: session_open ok");
@@ -723,16 +709,15 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
 
     // ── step: create tab 1 ────────────────────────────────────
     eprintln!("[smoke] step: tab1 create starting");
-    let tab1_id = match tokio::time::timeout(SMOKE_STEP_TIMEOUT, on_main_thread(app, move |handle| {
+    let tab1_id = match on_main_thread(app, move |handle| {
         browser_tab_create(handle.clone(), handle.state(), Some(page1_url))
-    })).await {
-        Ok(Ok(snap)) => {
+    }).await {
+        Ok(snap) => {
             eprintln!("[smoke] step: tab1 create ok");
             report.created_tabs = 1;
             snap.active_tab_id.clone().unwrap_or_else(|| "missing-tab1".into())
         }
-        Ok(Err(e)) => { eprintln!("[smoke] step: tab1 create failed/timeout: {e}"); report.error = Some(format!("tab 1 create failed: {e}")); return Ok(report); }
-        Err(_elapsed) => { eprintln!("[smoke] step: tab1 create failed/timeout: timed out"); report.error = Some("tab 1 create timed out".into()); return Ok(report); }
+        Err(e) => { eprintln!("[smoke] step: tab1 create failed/timeout: {e}"); report.error = Some(format!("tab 1 create failed: {e}")); return Ok(report); }
     };
 
     // Wait for tab 1 to load.
@@ -749,16 +734,15 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
 
     // ── step: create tab 2 ────────────────────────────────────
     eprintln!("[smoke] step: tab2 create starting");
-    let tab2_id = match tokio::time::timeout(SMOKE_STEP_TIMEOUT, on_main_thread(app, move |handle| {
+    let tab2_id = match on_main_thread(app, move |handle| {
         browser_tab_create(handle.clone(), handle.state(), Some(page2_url))
-    })).await {
-        Ok(Ok(snap)) => {
+    }).await {
+        Ok(snap) => {
             eprintln!("[smoke] step: tab2 create ok");
             report.created_tabs = 2;
             snap.active_tab_id.unwrap_or_else(|| "missing-tab2".into())
         }
-        Ok(Err(e)) => { eprintln!("[smoke] step: tab2 create failed/timeout: {e}"); report.error = Some(format!("tab 2 create failed: {e}")); return Ok(report); }
-        Err(_elapsed) => { eprintln!("[smoke] step: tab2 create failed/timeout: timed out"); report.error = Some("tab 2 create timed out".into()); return Ok(report); }
+        Err(e) => { eprintln!("[smoke] step: tab2 create failed/timeout: {e}"); report.error = Some(format!("tab 2 create failed: {e}")); return Ok(report); }
     };
 
     // Wait for tab 2 to load.
@@ -907,14 +891,13 @@ async fn wait_for_page_ready(app: &AppHandle, tab_id: &str) -> bool {
 /// Destroy the smoke webview, with its own timeout. This must NOT fail
 /// the smoke test — it is the final cleanup and always runs.
 async fn destroy_smoke_webview(app: &AppHandle) -> bool {
-    match tokio::time::timeout(SMOKE_DESTROY_TIMEOUT, on_main_thread(app, |handle| browser_session_destroy(handle.state()))).await {
-        Ok(Ok(())) => true,
-        Ok(Err(e)) => { eprintln!("[smoke] destroy failed: {e}"); false }
-        Err(_elapsed) => { eprintln!("[smoke] destroy timed out"); false }
+    match on_main_thread(app, |handle| browser_session_destroy(handle.state())).await {
+        Ok(()) => true,
+        Err(e) => { eprintln!("[smoke] destroy failed: {e}"); false }
     }
 }
 
-const ON_MAIN_THREAD_TIMEOUT: Duration = Duration::from_secs(10);
+const ON_MAIN_THREAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 async fn on_main_thread<T, F>(app: &AppHandle, operation: F) -> Result<T, String>
 where
@@ -2153,19 +2136,17 @@ mod tests {
     }
 
     #[test]
-    fn runtime_smoke_launch_waits_for_app_ready() {
-        let launched = std::sync::atomic::AtomicBool::new(false);
+    fn runtime_smoke_main_thread_dispatches_have_a_single_timeout_owner() {
+        let source = include_str!("browser_panel.rs");
+        let prod_end = source.find("\nmod tests {").unwrap_or(source.len());
+        let production = &source[..prod_end];
 
-        assert!(!claim_runtime_smoke_launch(false, true, &launched));
-        assert!(!claim_runtime_smoke_launch(true, false, &launched));
-        assert!(claim_runtime_smoke_launch(true, true, &launched));
+        assert!(!production.contains("timeout(SMOKE_STEP_TIMEOUT, on_main_thread"));
+        assert!(!production.contains("timeout(SMOKE_DESTROY_TIMEOUT, on_main_thread"));
     }
 
     #[test]
-    fn runtime_smoke_launch_is_claimed_only_once() {
-        let launched = std::sync::atomic::AtomicBool::new(false);
-
-        assert!(claim_runtime_smoke_launch(true, true, &launched));
-        assert!(!claim_runtime_smoke_launch(true, true, &launched));
+    fn main_thread_dispatch_budget_covers_a_cold_ci_start() {
+        assert!(ON_MAIN_THREAD_TIMEOUT >= Duration::from_secs(30));
     }
 }

@@ -1837,7 +1837,7 @@ fn complete_video_ocr_batch(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app = tauri::Builder::default()
+    tauri::Builder::default()
         // ── Plugins ────────────────────────────────────────────
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -2064,6 +2064,13 @@ pub fn run() {
                 };
             }
 
+            if let Some(report_path) = std::env::var_os("VERBOO_BROWSER_SMOKE_REPORT") {
+                services::browser_panel::start_runtime_smoke(
+                    app.handle().clone(),
+                    std::path::PathBuf::from(report_path),
+                );
+            }
+
             Ok(())
         })
         // ── Commands (47) ──────────────────────────────────────
@@ -2216,25 +2223,6 @@ pub fn run() {
             marketplace_manifests,
             plugin_icon,
         ])
-        .build(tauri::generate_context!())
-        .expect("error while building verboo-desktop");
-
-    let runtime_smoke_report =
-        std::env::var_os("VERBOO_BROWSER_SMOKE_REPORT").map(std::path::PathBuf::from);
-    let runtime_smoke_launched = std::sync::atomic::AtomicBool::new(false);
-
-    app.run(move |app_handle, event| {
-        if services::browser_panel::claim_runtime_smoke_launch(
-            runtime_smoke_report.is_some(),
-            matches!(event, tauri::RunEvent::Ready),
-            &runtime_smoke_launched,
-        ) {
-            services::browser_panel::start_runtime_smoke(
-                app_handle.clone(),
-                runtime_smoke_report
-                    .clone()
-                    .expect("runtime smoke path must exist after launch is claimed"),
-            );
-        }
-    });
+        .run(tauri::generate_context!())
+        .expect("error while running verboo-desktop");
 }

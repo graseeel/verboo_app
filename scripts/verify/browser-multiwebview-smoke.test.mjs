@@ -1,7 +1,11 @@
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { resolveLaunch, assertRuntimeReport } from './browser-multiwebview-smoke.mjs'
+import {
+  SMOKE_WALL_TIMEOUT_MS,
+  resolveLaunch,
+  assertRuntimeReport,
+} from './browser-multiwebview-smoke.mjs'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -68,6 +72,10 @@ describe('resolveLaunch', () => {
       args: [],
     })
   })
+})
+
+test('wall timeout covers a cold native startup and two slow webview creations', () => {
+  assert.ok(SMOKE_WALL_TIMEOUT_MS >= 180_000)
 })
 
 // ── assertRuntimeReport ────────────────────────────────────────────────
