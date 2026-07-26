@@ -864,7 +864,7 @@ async fn wait_for_page_ready(app: &AppHandle, tab_id: &str) -> bool {
                 eprintln!("[smoke]   msg: {preview}");
             }
         }
-        if messages.iter().any(|m| {
+        let ready = messages.iter().any(|m| {
             serde_json::from_str::<serde_json::Value>(m)
                 .ok()
                 .and_then(|v| {
@@ -872,12 +872,42 @@ async fn wait_for_page_ready(app: &AppHandle, tab_id: &str) -> bool {
                     Some(kind == "page-ready" || kind == "page-loaded")
                 })
                 .unwrap_or(false)
-        }) {
-            return true;
+        });
+        if ready {
+            // The bridge callback enqueues before it returns. Confirm a later
+            // UI turn so creating the next child never races that callback.
+            return wait_for_ui_turn(app).await;
+        }
+        // `navigate` is dispatched asynchronously. A confirmed UI turn keeps
+        // headless Tao/Wry runners from sleeping with that message pending.
+        if !wait_for_ui_turn(app).await {
+            return false;
         }
         tokio::time::sleep(SMOKE_PAGE_READY_POLL).await;
     }
     false
+}
+
+async fn wait_for_ui_turn(app: &AppHandle) -> bool {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if let Err(error) = app.run_on_main_thread(move || {
+        let _ = tx.send(());
+    }) {
+        eprintln!("[smoke] UI turn dispatch failed: {error}");
+        return false;
+    }
+
+    match tokio::time::timeout(SMOKE_STEP_TIMEOUT, rx).await {
+        Ok(Ok(())) => true,
+        Ok(Err(_closed)) => {
+            eprintln!("[smoke] UI turn channel closed");
+            false
+        }
+        Err(_elapsed) => {
+            eprintln!("[smoke] UI turn timed out");
+            false
+        }
+    }
 }
 
 /// Destroy the smoke webviews after the lifecycle assertions finish.
@@ -2156,6 +2186,27 @@ mod tests {
             .expect("first tab creation");
 
         assert!(!production[smoke_start..first_tab].contains("sleep("));
+    }
+
+    #[test]
+    fn page_ready_waiter_advances_only_after_a_confirmed_ui_turn() {
+        let source = include_str!("browser_panel.rs");
+        let prod_end = source.find("\nmod tests {").unwrap_or(source.len());
+        let production = &source[..prod_end];
+        let waiter_start = production
+            .find("async fn wait_for_page_ready")
+            .expect("page-ready waiter");
+        let waiter_end = production[waiter_start..]
+            .find("\n/// Destroy the smoke webviews")
+            .map(|offset| waiter_start + offset)
+            .expect("page-ready waiter end");
+        let waiter = &production[waiter_start..waiter_end];
+
+        assert!(production.contains("async fn wait_for_ui_turn"));
+        assert!(
+            waiter.matches("wait_for_ui_turn(app).await").count() >= 2,
+            "the waiter must nudge idle navigation and flush the ready callback"
+        );
     }
 
     #[test]
