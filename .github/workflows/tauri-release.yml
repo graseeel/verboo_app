@@ -344,8 +344,54 @@ jobs:
           Dump-DllResolution
           Write-Host "::endgroup::"
 
-          cargo +1.89.0 test --target ${{ matrix.target }} --manifest-path src-tauri/Cargo.toml --lib --locked
-          if ($LASTEXITCODE -ne 0) { throw "cargo test failed with exit $LASTEXITCODE" }
+          $testExit = 0
+          try {
+            # Set link flags for the test binary via CARGO_ENCODED_RUSTFLAGS
+            # (0x1F-delimited, unlike RUSTFLAGS which uses space delimiter
+            # and would break on the spaces inside /MANIFESTDEPENDENCY).
+            # This must be step-local (not in env:) to limit scope — the
+            # bundle build is a different step and won't see these flags.
+            $USEP = [char]0x1F
+            # No space between -C and link-arg: CARGO_ENCODED_RUSTFLAGS
+            # splits on 0x1F, and each element becomes a single argv to
+            # rustc. A space inside an element causes "unknown codegen option"
+            # because rustc reads the space as part of the option name.
+            $env:CARGO_ENCODED_RUSTFLAGS = "-Clink-arg=/MANIFEST:EMBED$USEP-Clink-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+
+            cargo +1.89.0 test --target ${{ matrix.target }} --manifest-path src-tauri/Cargo.toml --lib --locked
+            $testExit = $LASTEXITCODE
+          } finally {
+            # ── Manifest embedding verification ──────────────────
+            # Proves whether the /MANIFEST:EMBED + /MANIFESTDEPENDENCY
+            # link flags actually embedded Common-Controls 6.0 into the
+            # test binary. Runs even if cargo test fails (finally), so
+            # we know which half broke: missing manifest = linker issue,
+            # manifest present but test failed = different root cause.
+            Write-Host "::group::Manifest embedding verification"
+            $testExe = Get-ChildItem -Path "src-tauri/target/${{ matrix.target }}/debug/deps/verboo_desktop_lib-*.exe" `
+              -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($testExe) {
+              $content = [System.IO.File]::ReadAllBytes($testExe.FullName)
+              # Search BOTH UTF-8 and UTF-16LE — the linker may embed the
+              # manifest in either encoding depending on its configuration.
+              $utf8Str = [System.Text.Encoding]::UTF8.GetString($content)
+              $utf16Str = [System.Text.Encoding]::Unicode.GetString($content)
+              $pattern = "Microsoft.Windows.Common-Controls"
+              $found8 = $utf8Str.Contains($pattern)
+              $found16 = $utf16Str.Contains($pattern)
+              if ($found8 -or $found16) {
+                $enc = if ($found8 -and $found16) { "UTF-8 + UTF-16" } elseif ($found8) { "UTF-8" } else { "UTF-16LE" }
+                Write-Host "ACHADO: Common-Controls 6.0 manifest confirmed in $($testExe.Name) ($enc)"
+              } else {
+                Write-Host "NAO ACHADO: Common-Controls manifest MISSING from $($testExe.Name)"
+                Write-Host "Not found in UTF-8 or UTF-16LE — the linker likely ignored /MANIFESTDEPENDENCY."
+              }
+            } else {
+              Write-Host "NAO ACHADO: no test exe found at debug/deps/verboo_desktop_lib-*.exe"
+            }
+            Write-Host "::endgroup::"
+          }
+          if ($testExit -ne 0) { throw "cargo test failed with exit $testExit" }
 
       - name: Run Rust library tests (Unix)
         # macOS and Linux use bash — no MinGW DLL collision.
@@ -502,7 +548,17 @@ jobs:
             elif [ -n "$CORE_EXE" ]; then
               echo "Binary from core note: $CORE_EXE (file not found — path may differ; using saved path)"
             fi
-            gdb -batch -ex "thread apply all bt full" "$APP_BIN" "$CORE_FILE" 2>&1 | head -120
+            # Command 1: bt full on the crashing thread only — gdb
+            # auto-selects the thread that received the signal (confirmed
+            # SIGABRT, signal 6, by core dump — not SIGSEGV). This gives
+            # the complete stack with local variables for the abort site.
+            echo "--- bt full (crashing thread) ---"
+            gdb -batch -ex "bt full" "$APP_BIN" "$CORE_FILE" 2>&1
+            # Command 2: compact backtrace of ALL threads — shows which
+            # thread crashed and what others were doing. No "full" to
+            # keep output manageable.
+            echo "--- thread apply all bt (compact, all threads) ---"
+            gdb -batch -ex "thread apply all bt" "$APP_BIN" "$CORE_FILE" 2>&1 | head -600
           else
             echo "No core dump found at /tmp/smoke-core.*"
             echo "Checking kernel ring buffer for segfault signature..."
