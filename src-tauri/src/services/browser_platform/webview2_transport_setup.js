@@ -1,4 +1,10 @@
 (function() {
+    // NOTA: o placeholder HANDLER_NAME  (com percentuais, no WebKit)
+    // NÃO está neste template. WebView2 não usa messageHandlers nomeados
+    // como o WebKit; o método de postagem é fixo:
+    //   window.chrome.webview.postMessage(text)
+    // O handler_name derivado do tab_id ainda existe em Rust (BridgeHandle)
+    // para consistência de contrato, mas não aparece no JS do Windows.
     globalThis.__VERBOO_NATIVE_TRANSPORT__ = {
         tabId: "%TAB_ID%",
         bridgeToken: "%BRIDGE_TOKEN%",
@@ -14,7 +20,7 @@
                 delete globalThis.__verboo_pending_doc_token__;
                 return t;
             }
-            return "";
+            return "%DOCUMENT_TOKEN%";
         },
         post: function(text) {
             window.chrome.webview.postMessage(text);

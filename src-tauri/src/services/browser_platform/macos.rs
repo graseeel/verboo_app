@@ -122,30 +122,6 @@ const BROWSER_INJECT_JS: &str = include_str!("../browser_inject.js");
 /// marks this as a WebKit implementation.
 const WEBKIT_TRANSPORT_TEMPLATE: &str = include_str!("webkit_transport_setup.js");
 
-/// Sanitize a tab_id to be safe as a JavaScript identifier. Only
-/// alphanumerics and underscores remain; everything else is collapsed to
-/// `_`. The result is unique per tab because `tab_id` is unique
-/// (`verboo-browser-<n>` and friends) and sanitization is stable.
-fn sanitize_tab_id_for_handler_name(tab_id: &str) -> String {
-    tab_id
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect()
-}
-
-/// Per-tab message-handler name. Combined with the per-tab
-/// `WKContentWorld` returned by `trusted_world`, this gives a unique
-/// (world, name) key for `addScriptMessageHandler_contentWorld_name`.
-///
-/// Empirically (CI macOS ARM, cold headless runner): when the key is shared
-/// between two webviews that share a processPool, the second
-/// registration either throws an NSException or silently replaces the
-/// first, breaking page-bridge delivery for the second tab. Per-tab key
-/// isolates them.
-fn handler_name_for(config: &BridgeConfig) -> String {
-    format!("verboo_{}", sanitize_tab_id_for_handler_name(&config.tab_id))
-}
-
 /// Anexa o bridge a um webview: instala handler nativo + script injetado
 /// num `WKContentWorld` isolado.
 ///
@@ -167,7 +143,7 @@ pub fn attach_bridge(
     let document_uuid = uuid::Uuid::new_v4().to_string();
     on_document_start(document_uuid.clone());
 
-    let name = handler_name_for(&config);
+    let name = super::handler_name_for(&config.tab_id);
     let install_tab_id = config.tab_id.clone();
     let install_bridge_token = config.token.clone();
     let install_document_token = document_uuid.clone();
@@ -238,23 +214,13 @@ fn install_handler(
         // Serialize each value via JSON so special characters (quotes,
         // backslashes, etc.) are escaped — NEVER concatenate untrusted
         // input directly into JavaScript source.
-        let transport_js = WEBKIT_TRANSPORT_TEMPLATE
-            .replace(
-                r#""%TAB_ID%""#,
-                &serde_json::to_string(tab_id).unwrap_or_default(),
-            )
-            .replace(
-                r#""%BRIDGE_TOKEN%""#,
-                &serde_json::to_string(bridge_token).unwrap_or_default(),
-            )
-            .replace(
-                r#""%DOCUMENT_TOKEN%""#,
-                &serde_json::to_string(document_token).unwrap_or_default(),
-            )
-            .replace(
-                r#""%HANDLER_NAME%""#,
-                &serde_json::to_string(handler_name).unwrap_or_default(),
-            );
+        let transport_js = super::render_transport(
+            WEBKIT_TRANSPORT_TEMPLATE,
+            tab_id,
+            bridge_token,
+            handler_name,
+            document_token,
+        );
         let transport_script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly_inContentWorld(
             WKUserScript::alloc(mtm),
             &NSString::from_str(&transport_js),
@@ -464,7 +430,7 @@ mod tests {
             tab_id: "verboo-browser-0".into(),
             token: "irrelevant".into(),
         };
-        let name = super::handler_name_for(&cfg);
+        let name = crate::services::browser_platform::handler_name_for(&cfg.tab_id);
         assert!(name.starts_with("verboo_"), "name must start with prefix: {name}");
         assert!(name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
             "name must be a valid JS identifier (only alnum + _): {name}");
@@ -474,7 +440,9 @@ mod tests {
             tab_id: "verboo-browser-1".into(),
             token: "irrelevant".into(),
         };
-        assert_ne!(super::handler_name_for(&cfg), super::handler_name_for(&cfg2));
+        assert_ne!(
+    crate::services::browser_platform::handler_name_for(&cfg.tab_id),
+    crate::services::browser_platform::handler_name_for(&cfg2.tab_id));
     }
 
     /// Regression test for the use-after-free + OnceLock bug: two handlers

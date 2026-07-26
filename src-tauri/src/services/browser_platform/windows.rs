@@ -55,7 +55,6 @@ const BROWSER_INJECT_JS: &str = include_str!("../browser_inject.js");
 /// lado nativo em `ContentLoading`. O UUID é SEMPRE gerado em Rust.
 const WEBVIEW2_TRANSPORT_TEMPLATE: &str = include_str!("webview2_transport_setup.js");
 
-const HANDLER_NAME: &str = "verboo";
 const EVAL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Possui os três EventRegistrationToken (NavigationStarting,
@@ -96,11 +95,14 @@ pub fn attach_bridge(
     sink: PageMessageSink,
     on_document_start: Arc<dyn Fn(String) + Send + Sync + 'static>,
 ) -> Result<BridgeHandle, BrowserPlatformError> {
-    on_document_start(Uuid::new_v4().to_string());
+    let install_doc = Uuid::new_v4().to_string();
+    on_document_start(install_doc.clone());
 
     let install_tab = config.tab_id.clone();
     let install_token = config.token.clone();
     let install_sink = sink.clone();
+    let install_handler = super::handler_name_for(&install_tab);
+    let install_handler_return = install_handler.clone();
 
     let inner_err: Arc<std::sync::Mutex<Option<BrowserPlatformError>>> =
         Arc::new(std::sync::Mutex::new(None));
@@ -185,13 +187,13 @@ pub fn attach_bridge(
             }
 
             // 4. Transport + inject
-            let tpl = WEBVIEW2_TRANSPORT_TEMPLATE
-                .replace("\"%TAB_ID%\"", &serde_json::to_string(&install_tab).unwrap_or_default())
-                .replace("\"%BRIDGE_TOKEN%\"", &serde_json::to_string(&install_token).unwrap_or_default())
-                .replace(
-                    "\"%HANDLER_NAME%\"",
-                    &serde_json::to_string(HANDLER_NAME).unwrap_or_default(),
-                );
+            let tpl = super::render_transport(
+                WEBVIEW2_TRANSPORT_TEMPLATE,
+                &install_tab,
+                &install_token,
+                &install_handler,
+                &install_doc,
+            );
             let full = format!("{tpl}\n{BROWSER_INJECT_JS}");
             let full_buf = BufPcwstr::new(&full);
             let noop_script =
@@ -224,13 +226,15 @@ pub fn attach_bridge(
     });
 
     Ok(BridgeHandle {
-        handler_name: HANDLER_NAME.to_string(),
+        handler_name: install_handler_return,
         unregister: Some(unregister),
     })
 }
 
 /// Avalia JS no documento via `ExecuteScript`.
-pub fn evaluate(webview: Webview<Wry>, script: String) -> PlatformFuture<String> {
+/// `_tab_id` é ignorado — WebView2 não tem content worlds — mas faz
+/// parte da assinatura compartilhada entre as 3 plataformas.
+pub fn evaluate(webview: Webview<Wry>, _tab_id: String, script: String) -> PlatformFuture<String> {
     Box::pin(async move {
         let (tx, rx) = oneshot::channel();
         let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
@@ -464,11 +468,4 @@ mod tests {
         assert!(t.contains("__verboo_pending_doc_token__"));
     }
 
-    #[test]
-    fn transport_template_carries_static_placeholders() {
-        let t = WEBVIEW2_TRANSPORT_TEMPLATE;
-        assert!(t.contains("%TAB_ID%"));
-        assert!(t.contains("%BRIDGE_TOKEN%"));
-        assert!(t.contains("%HANDLER_NAME%"));
-    }
 }

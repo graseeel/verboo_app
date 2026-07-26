@@ -21,8 +21,6 @@ use crate::services::browser_bridge::BridgeConfig;
 const BROWSER_INJECT_JS: &str = include_str!("../browser_inject.js");
 const WEBKIT_TRANSPORT_TEMPLATE: &str = include_str!("webkit_transport_setup.js");
 
-const HANDLER_NAME: &str = "verboo";
-const WORLD_NAME: &str = "verboo-trusted";
 const EVAL_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct BridgeHandle {
@@ -49,9 +47,12 @@ pub fn attach_bridge(
 
     let install_tab = config.tab_id.clone();
     let install_token = config.token.clone();
-    let install_handler = HANDLER_NAME.to_string();
     let install_sink = sink.clone();
     let install_doc = doc_uuid0.clone();
+    let install_handler = super::handler_name_for(&install_tab);
+    let install_world = super::world_name_for(&install_tab);
+    let install_handler_return = install_handler.clone();
+    let unreg_world = install_world.clone();
 
     let inner_err: Arc<std::sync::Mutex<Option<BrowserPlatformError>>> =
         Arc::new(std::sync::Mutex::new(None));
@@ -73,35 +74,24 @@ pub fn attach_bridge(
             let content_manager = wk
                 .user_content_manager()
                 .expect("webkit webview has no UserContentManager");
-            let world = WORLD_NAME;
 
             // 1. UserScript (transport + inject) no mundo privado.
             let combined = format!(
                 "{}\n{}",
-                WEBKIT_TRANSPORT_TEMPLATE
-                    .replace(
-                        "\"%TAB_ID%\"",
-                        &serde_json::to_string(&install_tab).unwrap_or_default(),
-                    )
-                    .replace(
-                        "\"%BRIDGE_TOKEN%\"",
-                        &serde_json::to_string(&install_token).unwrap_or_default(),
-                    )
-                    .replace(
-                        "\"%HANDLER_NAME%\"",
-                        &serde_json::to_string(&install_handler).unwrap_or_default(),
-                    )
-                    .replace(
-                        "\"%DOCUMENT_TOKEN%\"",
-                        &serde_json::to_string(&install_doc).unwrap_or_default(),
-                    ),
+                super::render_transport(
+                    WEBKIT_TRANSPORT_TEMPLATE,
+                    &install_tab,
+                    &install_token,
+                    &install_handler,
+                    &install_doc,
+                ),
                 BROWSER_INJECT_JS,
             );
             let uscript = UserScript::for_world(
                 &combined,
                 UserContentInjectedFrames::TopFrame,
                 UserScriptInjectionTime::Start,
-                world,
+                &install_world,
                 &[],
                 &[],
             );
@@ -110,7 +100,7 @@ pub fn attach_bridge(
             // 2. Handler de mensagens.
             if !content_manager.register_script_message_handler_in_world(
                 &install_handler,
-                world,
+                &install_world,
             ) {
                 *err_slot.lock().unwrap() = Some(BrowserPlatformError::new(
                     "attach_bridge",
@@ -134,6 +124,7 @@ pub fn attach_bridge(
 
             // 3. load-changed(Started) — UUID por navegacao.
             let ods = on_document_start.clone();
+            let lc_world = install_world.clone();
             let load_id = wk.connect_load_changed(move |webview, event| {
                 if event == LoadEvent::Started {
                     let uuid = Uuid::new_v4().to_string();
@@ -145,7 +136,7 @@ pub fn attach_bridge(
                     );
                     webview.evaluate_javascript(
                         &js,
-                        Some(world),
+                        Some(&lc_world),
                         None::<&str>,
                         None::<&Cancellable>,
                         |_r| {},
@@ -161,6 +152,7 @@ pub fn attach_bridge(
     }
 
     let unreg: Box<dyn FnOnce(&str) + Send> = Box::new(move |name| {
+        let uw = unreg_world.clone();
         if let Some(sid) = load_sig_id.lock().unwrap().take() {
             let name_owned = name.to_string();
             let _ = wv_for_unreg.with_webview(move |pw| {
@@ -168,7 +160,7 @@ pub fn attach_bridge(
                 signal_handler_disconnect(wk, sid);
                 if *msg_registered.lock().unwrap() {
                     if let Some(cm) = wk.user_content_manager() {
-                        cm.unregister_script_message_handler_in_world(&name_owned, WORLD_NAME);
+                        cm.unregister_script_message_handler_in_world(&name_owned, &uw);
                     }
                 }
             });
@@ -176,13 +168,14 @@ pub fn attach_bridge(
     });
 
     Ok(BridgeHandle {
-        handler_name: HANDLER_NAME.to_string(),
+        handler_name: install_handler_return,
         unregister: Some(unreg),
     })
 }
 
-pub fn evaluate(webview: Webview<Wry>, script: String) -> PlatformFuture<String> {
+pub fn evaluate(webview: Webview<Wry>, tab_id: String, script: String) -> PlatformFuture<String> {
     Box::pin(async move {
+        let eval_world = super::world_name_for(&tab_id);
         let (tx, rx): (oneshot::Sender<String>, oneshot::Receiver<String>) = oneshot::channel();
         let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
 
@@ -192,7 +185,7 @@ pub fn evaluate(webview: Webview<Wry>, script: String) -> PlatformFuture<String>
                 let tx_eval = tx.clone();
                 wk.evaluate_javascript(
                     &script,
-                    Some(WORLD_NAME),
+                    Some(&eval_world),
                     None::<&str>,
                     None::<&Cancellable>,
                     move |result| {
@@ -325,14 +318,5 @@ mod tests {
         assert!(!t.contains("Uuid") && !t.contains("new_v4"));
         assert!(t.contains("__verboo_pending_doc_token__")
             || t.contains("%DOCUMENT_TOKEN%"));
-    }
-
-    #[test]
-    fn transport_template_carries_placeholders() {
-        let t = WEBKIT_TRANSPORT_TEMPLATE;
-        assert!(t.contains("%TAB_ID%"));
-        assert!(t.contains("%BRIDGE_TOKEN%"));
-        assert!(t.contains("%HANDLER_NAME%"));
-        assert!(t.contains("%DOCUMENT_TOKEN%"));
     }
 }
