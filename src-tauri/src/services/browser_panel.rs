@@ -592,7 +592,6 @@ pub fn start_runtime_smoke(app: AppHandle, report_path: PathBuf) {
 // ── Internals ────────────────────────────────────────────────────────
 
 const SMOKE_STEP_TIMEOUT: Duration = Duration::from_secs(10);
-const SMOKE_TAB_SETTLE_DELAY: Duration = Duration::from_millis(750);
 const SMOKE_PAGE_READY_POLL: Duration = Duration::from_millis(50);
 const SMOKE_PAGE_READY_ATTEMPTS: usize = 400;
 
@@ -730,12 +729,6 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
     eprintln!("[smoke] step: wait_for_page_ready tab1 ok");
     report.navigated = true;
     report.bridge_received = true;
-
-    // WebKitGTK can momentarily stop servicing the UI loop when a second
-    // child webview is created in the same tick as the first page-ready
-    // callback. Real users cannot open tabs this quickly; pace the smoke so
-    // it still exercises multi-tab behavior without manufacturing that race.
-    tokio::time::sleep(SMOKE_TAB_SETTLE_DELAY).await;
 
     // ── step: create tab 2 ────────────────────────────────────
     eprintln!("[smoke] step: tab2 create starting");
@@ -2138,8 +2131,19 @@ mod tests {
     }
 
     #[test]
-    fn runtime_smoke_allows_webkit_to_settle_between_tabs() {
-        assert!(SMOKE_TAB_SETTLE_DELAY >= Duration::from_millis(500));
+    fn runtime_smoke_uses_page_ready_instead_of_an_arbitrary_tab_delay() {
+        let source = include_str!("browser_panel.rs");
+        let prod_end = source.find("\nmod tests {").unwrap_or(source.len());
+        let production = &source[..prod_end];
+        let first_ready = production
+            .find("report.bridge_received = true")
+            .expect("first tab page-ready checkpoint");
+        let second_tab = production[first_ready..]
+            .find("// ── step: create tab 2")
+            .map(|offset| first_ready + offset)
+            .expect("second tab creation");
+
+        assert!(!production[first_ready..second_tab].contains("sleep("));
     }
 
     #[test]
