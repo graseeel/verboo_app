@@ -239,16 +239,23 @@ mod contract_tests {
 
     #[test]
     fn webview2_controller_wait_preserves_com_sta_reentrancy() {
-        let source = include_str!("../../../vendor/webview2-com/src/lib.rs");
+        let source = include_str!("../../../vendor/wry/src/webview2/mod.rs");
+        let manifest = include_str!("../../../Cargo.toml");
         assert!(
             source.contains("CoWaitForMultipleHandles")
                 && source.contains("COWAIT_DISPATCH_CALLS")
-                && source.contains("COWAIT_DISPATCH_WINDOW_MESSAGES"),
+                && source.contains("COWAIT_DISPATCH_WINDOW_MESSAGES")
+                && source.contains("CreateEventW")
+                && source.contains("SetEvent"),
             "WebView2 controller creation must dispatch COM calls and window messages"
         );
         assert!(
-            !source.contains("WindowsAndMessaging::GetMessageA"),
-            "a nested Win32-only pump can deadlock the second WebView2 controller"
+            !source.contains("wait_with_pump") && !source.contains("sync::mpsc"),
+            "WebView2 completion must signal a waitable event instead of polling a channel"
+        );
+        assert!(
+            manifest.contains("wry = { path = \"vendor/wry\" }"),
+            "Cargo must use the pinned Wry source containing the COM wait correction"
         );
     }
 }

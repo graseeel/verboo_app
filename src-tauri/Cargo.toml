@@ -153,9 +153,9 @@ javascriptcore-rs = "=1.1.2"
 # `strip -x` if needed.
 strip = "none"
 
-# WebView2 completes controller creation through COM re-entrancy. The
-# crates.io 0.38.2 wait loop dispatches only Win32 messages, which can
-# deadlock while creating a second child webview. Keep the same audited
-# release locally and patch only that wait primitive until upstream ships it.
+# WebView2 completes controller creation through COM re-entrancy. Wry 0.55.1
+# waits through a channel and a nested Win32 message pump, which can deadlock
+# while creating a second controller. Keep that exact release locally and
+# patch only its Windows async completion waits until upstream ships the fix.
 [patch.crates-io]
-webview2-com = { path = "vendor/webview2-com" }
+wry = { path = "vendor/wry" }
