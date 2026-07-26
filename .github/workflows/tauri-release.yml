@@ -68,7 +68,7 @@ jobs:
         run: node scripts/verify/verify-release-version.mjs --tag "${{ steps.release.outputs.tag }}"
 
       - name: Test release contracts
-        run: node --test scripts/verify/update-manifest.test.mjs scripts/verify/verify-release-version.test.mjs
+        run: node --test scripts/verify/update-manifest.test.mjs scripts/verify/verify-release-version.test.mjs scripts/verify/tauri-release-signing.test.mjs
 
   # ─────────────────────────────────────────────────────────────────────
   # Per-platform builds. Each job:
@@ -112,11 +112,9 @@ jobs:
               src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
               src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # Disable code signing by default — secrets can opt-in later.
-      CSC_IDENTITY_AUTO_DISCOVERY: "false"
       # Prevent Rust 1.95 (system default) from breaking tauri-cli proc-macros.
       RUSTUP_TOOLCHAIN: "1.89.0"
       # Clear RUSTFLAGS so cargo-tauri's default flags don't break proc-macro
@@ -409,6 +407,37 @@ jobs:
           echo '::endgroup::'
           cargo +1.89.0 test --target ${{ matrix.target }} --manifest-path src-tauri/Cargo.toml --lib --locked
 
+      - name: Prepare Apple notarization credentials
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for required_name in \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_API_PRIVATE_KEY \
+            APPLE_API_KEY \
+            APPLE_API_ISSUER
+          do
+            if [ -z "${!required_name:-}" ]; then
+              echo "::error::$required_name is missing"
+              exit 1
+            fi
+          done
+
+          umask 077
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          openssl pkey -in "$KEY_PATH" -check -noout
+          echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
       - name: Build Tauri bundle and signed updater artifacts
         env:
           # Clear RUSTFLAGS so cargo-tauri's default flags don't break proc-macro
@@ -416,6 +445,12 @@ jobs:
           RUSTFLAGS: ""
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # These resolve to empty strings outside macOS, so Apple credentials
+          # are never exposed to the Windows or Linux matrix jobs.
+          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_API_KEY: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -445,6 +480,49 @@ jobs:
               cargo +1.89.0 tauri signer sign "$PACKAGES"
             done
           fi
+
+      - name: Verify and notarize macOS release artifacts
+        if: runner.os == 'macOS'
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE_ROOT="src-tauri/target/${{ matrix.target }}/release/bundle"
+          APP_PATH=$(find "$BUNDLE_ROOT/macos" -maxdepth 1 -type d -name '*.app' | head -1)
+          DMG_PATH=$(find "$BUNDLE_ROOT/dmg" -maxdepth 1 -type f -name '*.dmg' | head -1)
+          test -n "$APP_PATH"
+          test -n "$DMG_PATH"
+
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          CODESIGN_INFO=$(codesign --display --verbose=4 "$APP_PATH" 2>&1)
+          printf '%s\n' "$CODESIGN_INFO"
+          printf '%s\n' "$CODESIGN_INFO" | grep -F 'Authority=Developer ID Application:'
+          TEAM_IDENTIFIER=$(printf '%s\n' "$CODESIGN_INFO" | sed -n 's/^TeamIdentifier=//p' | head -1)
+          test -n "$TEAM_IDENTIFIER"
+          test "$TEAM_IDENTIFIER" != "not set"
+          spctl --assess --type execute --verbose=4 "$APP_PATH"
+          xcrun stapler validate -v "$APP_PATH"
+
+          codesign --verify --strict --verbose=2 "$DMG_PATH"
+          xcrun notarytool submit "$DMG_PATH" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait \
+            --output-format json
+          xcrun stapler staple -v "$DMG_PATH"
+          xcrun stapler validate -v "$DMG_PATH"
+          spctl --assess --type open \
+            --context context:primary-signature \
+            --verbose=4 \
+            "$DMG_PATH"
+
+      - name: Remove Apple notarization credentials
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: rm -f "${APPLE_API_KEY_PATH:-}"
 
       - name: Run packaged multiwebview runtime smoke (macOS)
         if: runner.os == 'macOS'
