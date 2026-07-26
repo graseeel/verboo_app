@@ -703,7 +703,7 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
     })).await {
         eprintln!("[smoke] step: session_open failed/timeout: {e}");
         report.error = Some(format!("session open timed out: {e}"));
-                return Ok(report);
+        return Ok(report);
     }
     eprintln!("[smoke] step: session_open ok");
     report.bounds_updated = true;
@@ -723,14 +723,14 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
     };
 
     // Wait for tab 1 to load.
-    eprintln!("[smoke] step: wait_for_page_loaded tab1 starting");
-    if !wait_for_page_loaded(app, &tab1_id).await {
-        eprintln!("[smoke] step: wait_for_page_loaded tab1 failed/timeout: page-loaded not observed");
-        report.error = Some("tab 1 page-loaded not observed".into());
+    eprintln!("[smoke] step: wait_for_page_ready tab1 starting");
+    if !wait_for_page_ready(app, &tab1_id).await {
+        eprintln!("[smoke] step: wait_for_page_ready tab1 failed/timeout: page not ready");
+        report.error = Some("tab 1 page-ready not observed".into());
         let _ = destroy_smoke_webview(app).await;
-                return Ok(report);
+        return Ok(report);
     }
-    eprintln!("[smoke] step: wait_for_page_loaded tab1 ok");
+    eprintln!("[smoke] step: wait_for_page_ready tab1 ok");
     report.navigated = true;
     report.bridge_received = true;
 
@@ -749,14 +749,14 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
     };
 
     // Wait for tab 2 to load.
-    eprintln!("[smoke] step: wait_for_page_loaded tab2 starting");
-    if !wait_for_page_loaded(app, &tab2_id).await {
-        eprintln!("[smoke] step: wait_for_page_loaded tab2 failed/timeout: page-loaded not observed");
-        report.error = Some("tab 2 page-loaded not observed".into());
+    eprintln!("[smoke] step: wait_for_page_ready tab2 starting");
+    if !wait_for_page_ready(app, &tab2_id).await {
+        eprintln!("[smoke] step: wait_for_page_ready tab2 failed/timeout: page not ready");
+        report.error = Some("tab 2 page-ready not observed".into());
         let _ = destroy_smoke_webview(app).await;
-                return Ok(report);
+        return Ok(report);
     }
-    eprintln!("[smoke] step: wait_for_page_loaded tab2 ok");
+    eprintln!("[smoke] step: wait_for_page_ready tab2 ok");
 
     // ── step: evaluate document.title on the active tab (tab 2) ─
     eprintln!("[smoke] step: evaluate starting");
@@ -850,9 +850,19 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
     Ok(report)
 }
 
-/// Drain messages for a specific tab until `page-loaded` is observed.
-/// Returns `true` if the message was found within the budget (100 × 50 ms = 5 s).
-async fn wait_for_page_loaded(app: &AppHandle, tab_id: &str) -> bool {
+/// Drain messages for a specific tab until the page signals readiness.
+/// Accepts either `page-ready` (posts on DOMContentLoaded, works in
+/// headless CI) or `page-loaded` (posts after a double rAF — needs
+/// frame composition, never fires in headless xvfb).
+///
+/// In headless CI the browser never composes a frame, so `page-loaded`
+/// (wrapped in `requestAnimationFrame`) never fires. `page-ready` is
+/// posted synchronously when the document is ready and carries url,
+/// title and viewport — it is the authoritative signal.
+///
+/// Returns `true` if a ready/loaded message was found within the budget
+/// (100 × 50 ms = 5 s).
+async fn wait_for_page_ready(app: &AppHandle, tab_id: &str) -> bool {
     for _ in 0..100 {
         let Ok(messages) = browser_drain_messages(app.state(), tab_id.into()) else {
             eprintln!("[smoke] drain failed: tab_id={tab_id}");
@@ -868,7 +878,10 @@ async fn wait_for_page_loaded(app: &AppHandle, tab_id: &str) -> bool {
         if messages.iter().any(|m| {
             serde_json::from_str::<serde_json::Value>(m)
                 .ok()
-                .and_then(|v| v.get("type")?.as_str().map(|k| k == "page-loaded"))
+                .and_then(|v| {
+                    let kind = v.get("type")?.as_str()?;
+                    Some(kind == "page-ready" || kind == "page-loaded")
+                })
                 .unwrap_or(false)
         }) {
             return true;
@@ -1894,8 +1907,8 @@ mod tests {
     ///
     /// The stub returned `Ok(())` without registering the tab in
     /// `inner.tabs` or `inner.session`. Outside macOS, `browser_drain_messages`
-    /// returned `Err("stale document: tab X not found")` and `wait_for_page_loaded`
-    /// silently swallowed it — the Linux CI smoke "page-loaded not observed"
+    /// returned `Err("stale document: tab X not found")` and `wait_for_page_ready`
+    /// silently swallowed it — the Linux CI smoke "page-ready not observed"
     /// failure.
     ///
     /// We cannot instantiate `Webview<Wry>` in a unit test to run the real
