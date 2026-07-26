@@ -253,16 +253,95 @@ jobs:
         run: cargo +1.89.0 install tauri-cli --version "2.11.4" --locked
 
       - name: Run Rust library tests (Windows)
-        # STATUS_ENTRYPOINT_NOT_FOUND on Windows cargo test is caused by MinGW
-        # DLLs from Git Bash (/mingw64/bin, /usr/bin) shadowing MSVC runtime
-        # imports. pwsh does NOT inject Git Bash paths, so it avoids the
-        # collision. Changing shell per-platform requires splitting the step.
+        # STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139) on Windows cargo test is
+        # caused by the DLL loader finding a stale VCRUNTIME140.dll from an
+        # embedded app (MySQL, MongoDB, R, OpenSSL, Chocolatey) before the
+        # system copy in C:\Windows\System32. The test binary imports only
+        # system DLLs + VCRUNTIME140.dll + api-ms-win-crt-*; no MinGW DLLs.
+        # We dump DLL resolution paths for forensics, then prepend System32
+        # to PATH so the system copy wins.
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # Dump PATH for forensics (mandatory — cannot reproduce locally).
-          Write-Host "::group::PATH"
+          # ── DLL resolution diagnostics ────────────────────────
+          # KnownDLLs (kernel32, ntdll, user32, gdi32, ole32, shell32,
+          # comctl32, ws2_32, etc.) resolve from the registry, not PATH.
+          # Only VCRUNTIME140.dll and bcryptprimitives.dll are searched by
+          # PATH. api-ms-win-crt-* are API sets resolved by the apiset
+          # schema — they are NEVER found in PATH; "not found" is normal
+          # and noted inline to avoid noise.
+          $searchableDlls = @(
+            "VCRUNTIME140.dll",
+            "api-ms-win-crt-runtime-l1-1-0.dll",
+            "api-ms-win-crt-stdio-l1-1-0.dll",
+            "api-ms-win-crt-math-l1-1-0.dll",
+            "api-ms-win-crt-locale-l1-1-0.dll",
+            "api-ms-win-crt-heap-l1-1-0.dll",
+            "bcryptprimitives.dll"
+          )
+          $apiSetDlls = @("api-ms-win-crt-runtime-l1-1-0.dll","api-ms-win-crt-stdio-l1-1-0.dll",
+                          "api-ms-win-crt-math-l1-1-0.dll","api-ms-win-crt-locale-l1-1-0.dll",
+                          "api-ms-win-crt-heap-l1-1-0.dll")
+          # where.exe finds files by exact name in PATH + CWD (unlike
+          # Get-Command which only resolves PATHEXT executables). It prints
+          # ALL matches in search order — the first is what the loader picks.
+          function Dump-DllResolution {
+            foreach ($dll in $searchableDlls) {
+              $found = & where.exe $dll 2>$null
+              if ($LASTEXITCODE -eq 0) {
+                foreach ($p in $found) {
+                  try {
+                    $ver = (Get-Item $p -ErrorAction SilentlyContinue).VersionInfo.FileVersion
+                    Write-Host "$dll -> $p ($ver)"
+                  } catch {
+                    Write-Host "$dll -> $p (version unknown: $_)"
+                  }
+                }
+              } elseif ($apiSetDlls -contains $dll) {
+                Write-Host "$dll -> (API set — resolved by schema, not PATH; not found here is expected)"
+              } else {
+                Write-Host "$dll -> não encontrado no PATH"
+              }
+            }
+          }
+
+          Write-Host "::group::DLL resolution ANTES do prepend System32"
+          Dump-DllResolution
+          Write-Host "::endgroup::"
+
+          # ── Ponto cego: DLLs ao lado do executável ─────────────
+          # The Windows loader searches the DIRECTORY OF THE EXE before
+          # PATH and even before System32. where.exe does NOT search
+          # this directory. A stale VCRUNTIME140.dll sitting next to
+          # the test binary is the most likely root cause.
+          $testExeDir = "src-tauri/target/${{ matrix.target }}/debug/deps"
+          if (Test-Path $testExeDir) {
+            Write-Host "::group::DLLs next to test binary ($testExeDir)"
+            Get-ChildItem -Path $testExeDir -Filter *.dll -ErrorAction SilentlyContinue |
+              ForEach-Object {
+                try {
+                  $ver = $_.VersionInfo.FileVersion
+                  Write-Host "$($_.Name) -> $($_.FullName) ($ver)"
+                } catch {
+                  Write-Host "$($_.Name) -> $($_.FullName) (version unknown: $_)"
+                }
+              }
+            Write-Host "::endgroup::"
+          }
+
+          # ── Mitigation: system copy wins over app-bundled copies ──
+          Write-Host "::group::PATH (antes do prepend)"
           $env:PATH -split ";" | ForEach-Object { Write-Host $_ }
+          Write-Host "::endgroup::"
+
+          $env:PATH = "C:\Windows\System32;$env:PATH"
+
+          Write-Host "::group::PATH (depois do prepend)"
+          $env:PATH -split ";" | ForEach-Object { Write-Host $_ }
+          Write-Host "::endgroup::"
+
+          Write-Host "::group::DLL resolution DEPOIS do prepend System32"
+          Dump-DllResolution
           Write-Host "::endgroup::"
 
           cargo +1.89.0 test --target ${{ matrix.target }} --manifest-path src-tauri/Cargo.toml --lib --locked
@@ -368,9 +447,71 @@ jobs:
         # regression that cross-compile could never catch.
         run: |
           set -euo pipefail
+
+          # Enable core dumps so a crash produces a core file for gdb.
+          ulimit -c unlimited
+          # %e = executable name, %p = PID — core file is named after the
+          # actual crashing binary, not the launcher (xvfb-run/node).
+          echo "/tmp/smoke-core.%e.%p" | sudo tee /proc/sys/kernel/core_pattern 2>/dev/null || true
+
           APP_BIN=$(find "src-tauri/target/${{ matrix.target }}/release" -maxdepth 3 -type f -name 'verboo-desktop' | head -1)
           test -n "$APP_BIN"
+          echo "$APP_BIN" | sudo tee /tmp/smoke-app-bin-path.txt >/dev/null || true
+
           xvfb-run -a node scripts/verify/browser-multiwebview-smoke.mjs "$APP_BIN"
+
+      - name: Debug Linux smoke crash (core dump analysis)
+        if: failure() && runner.os == 'Linux'
+        continue-on-error: true
+        shell: bash
+        # Captures a backtrace when the Linux smoke crashes with SIGSEGV.
+        # Does NOT change the job outcome (continue-on-error: true) — the job
+        # stays red from the smoke failure. The data here replaces guesswork
+        # with the actual crash site.
+        run: |
+          set +e
+          APP_BIN="$(cat /tmp/smoke-app-bin-path.txt 2>/dev/null || true)"
+          if [ -z "$APP_BIN" ] || [ ! -f "$APP_BIN" ]; then
+            APP_BIN=$(find "src-tauri/target/${{ matrix.target }}/release" -maxdepth 3 -type f -name 'verboo-desktop' | head -1)
+          fi
+
+          echo "::group::Linux crash diagnostics"
+          echo "Binary (from saved path): $APP_BIN"
+
+          # Install gdb quietly.
+          sudo apt-get update -qq && sudo apt-get install -y -qq gdb >/dev/null 2>&1
+
+          # Find the most recent core dump — named after the crashing exe
+          # (%e) and PID (%p) by the core_pattern we set earlier.
+          CORE_FILE="$(ls -t /tmp/smoke-core.* 2>/dev/null | head -1)"
+          if [ -n "$CORE_FILE" ] && [ -f "$CORE_FILE" ]; then
+            CORE_SIZE="$(stat -c%s "$CORE_FILE" 2>/dev/null || echo '?')"
+            echo "Core: $CORE_FILE (${CORE_SIZE}b)"
+
+            # Identify the binary that actually crashed from the core.
+            # `file` on an ELF core shows "from '<exe>'" — this is the
+            # process that generated the core (NT_PRSTATUS note), not our
+            # guess. Backtrace without correct symbols is useless noise.
+            echo "Core file info:"
+            file "$CORE_FILE"
+            CORE_EXE="$(file "$CORE_FILE" | grep -oP "from '\K[^']+")"
+            if [ -n "$CORE_EXE" ] && [ -f "$CORE_EXE" ]; then
+              echo "Binary from core note: $CORE_EXE"
+              echo "  matches saved path: $([ "$CORE_EXE" = "$APP_BIN" ] && echo 'yes' || echo 'no — using core note binary')"
+              APP_BIN="$CORE_EXE"
+            elif [ -n "$CORE_EXE" ]; then
+              echo "Binary from core note: $CORE_EXE (file not found — path may differ; using saved path)"
+            fi
+            gdb -batch -ex "thread apply all bt full" "$APP_BIN" "$CORE_FILE" 2>&1 | head -120
+          else
+            echo "No core dump found at /tmp/smoke-core.*"
+            echo "Checking kernel ring buffer for segfault signature..."
+            sudo dmesg 2>/dev/null | grep -i "segfault\|verboo-desktop\|smoke" | tail -15 || echo "(no segfault in dmesg — may have been cleared)"
+          fi
+
+          # Clean up regardless.
+          rm -f /tmp/smoke-core.* /tmp/smoke-app-bin-path.txt
+          echo "::endgroup::"
 
       - name: List bundle tree (debug)
         if: always()
