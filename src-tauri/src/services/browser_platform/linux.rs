@@ -122,26 +122,19 @@ pub fn attach_bridge(
                 },
             );
 
-            // 3. load-changed(Started) — UUID por navegacao.
-            let ods = on_document_start.clone();
-            let lc_world = install_world.clone();
-            let load_id = wk.connect_load_changed(move |webview, event| {
-                if event == LoadEvent::Started {
-                    let uuid = Uuid::new_v4().to_string();
-                    ods(uuid.clone());
-                    let js = format!(
-                        "globalThis.__verboo_pending_doc_token__={};",
-                        serde_json::to_string(&uuid)
-                            .unwrap_or_else(|_| "null".into()),
-                    );
-                    webview.evaluate_javascript(
-                        &js,
-                        Some(&lc_world),
-                        None::<&str>,
-                        None::<&Cancellable>,
-                        |_r| {},
-                    );
-                }
+            // 3. load-changed(Started) — antigamente tentava girar o
+            //    document_token via evaluate_javascript, mas a execução
+            //    JS precisa de IPC UI→Web→WebKit enquanto o UserScript
+            //    é injetado localmente no web process — o UserScript
+            //    sempre vence a corrida e recebe o token velho, fazendo
+            //    accept() rejeitar StaleDocument. O document_token fica
+            //    fixo no valor do attach (install_doc), como no Windows.
+            let load_id = wk.connect_load_changed(move |_webview, _event| {
+                // No-op: document_token rotation happens only on macOS
+                // (synchronous WKUserScript injection) and on Windows
+                // (synchronous NavigationStarting). On Linux, WebKitGTK's
+                // IPC model makes rotation inherently racy, so we keep
+                // the attach-time token for all navigations.
             });
             *load_sig_slot.lock().unwrap() = Some(load_id);
         })

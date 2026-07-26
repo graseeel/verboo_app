@@ -3,15 +3,9 @@
         tabId: "%TAB_ID%",
         bridgeToken: "%BRIDGE_TOKEN%",
         get documentToken() {
-            // The document token can be injected per navigation by the
-            // native side via evaluate_javascript on load-changed.
-            // If not set, falls back to the initial UUID (macOS setup)
-            // or the NavigationStarting-generated token (Windows).
-            var t = globalThis.__verboo_pending_doc_token__;
-            if (t) {
-                delete globalThis.__verboo_pending_doc_token__;
-                return t;
-            }
+            // macOS and Windows rotate the document token per navigation.
+            // Linux cannot rotate (IPC races with UserScript injection in
+            // WebKitGTK), so the token is fixed at attach time.
             return "%DOCUMENT_TOKEN%";
         },
         post: function(text) {
