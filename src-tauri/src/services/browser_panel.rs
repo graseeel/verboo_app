@@ -1094,7 +1094,9 @@ mod bridge_plumbing {
                 Err(_) => return, // malformed envelope — ignore
             };
             let mut queue = runtime.messages.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = queue.accept(envelope);
+            if let Err(reason) = queue.accept(envelope) {
+                eprintln!("[bridge] tab {tab_id}: envelope rejeitado: {reason:?}");
+            }
         }
     }
 }
