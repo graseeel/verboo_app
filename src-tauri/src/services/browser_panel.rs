@@ -2169,4 +2169,17 @@ mod tests {
         let budget = SMOKE_PAGE_READY_POLL * SMOKE_PAGE_READY_ATTEMPTS as u32;
         assert!(budget >= Duration::from_secs(20));
     }
+
+    #[test]
+    fn runtime_smoke_starts_only_after_the_event_loop_is_pumping() {
+        let source = include_str!("../lib.rs");
+        let setup_start = source.find(".setup(|app|").expect("setup callback");
+        let invoke_start = source
+            .find(".invoke_handler(tauri::generate_handler!")
+            .expect("invoke handler");
+        let setup = &source[setup_start..invoke_start];
+
+        assert!(!setup.contains("start_runtime_smoke"));
+        assert!(source.contains("tauri::RunEvent::MainEventsCleared"));
+    }
 }
