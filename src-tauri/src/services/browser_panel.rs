@@ -692,10 +692,6 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
         closed_tabs: 0,
     };
 
-    // CI can reach WebKit faster than a local launch, so yield briefly before
-    // creating a child webview or waiting for its navigation callbacks.
-    tokio::time::sleep(Duration::from_millis(750)).await;
-
     // ── step: open session with bounds ────────────────────────
     eprintln!("[smoke] step: session_open starting");
     let session_bounds = BrowserBounds { x: 40.0, y: 80.0, width: 480.0, height: 360.0 };
@@ -2144,6 +2140,22 @@ mod tests {
             .expect("second tab creation");
 
         assert!(!production[first_ready..second_tab].contains("sleep("));
+    }
+
+    #[test]
+    fn runtime_smoke_does_not_idle_before_creating_the_first_tab() {
+        let source = include_str!("browser_panel.rs");
+        let prod_end = source.find("\nmod tests {").unwrap_or(source.len());
+        let production = &source[..prod_end];
+        let smoke_start = production
+            .find("async fn run_runtime_smoke")
+            .expect("runtime smoke");
+        let first_tab = production[smoke_start..]
+            .find("// ── step: create tab 1")
+            .map(|offset| smoke_start + offset)
+            .expect("first tab creation");
+
+        assert!(!production[smoke_start..first_tab].contains("sleep("));
     }
 
     #[test]
