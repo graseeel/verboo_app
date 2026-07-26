@@ -622,30 +622,51 @@ fn start_smoke_http_server() -> Result<(String, String), String> {
         .port();
     let page1_url = format!("http://127.0.0.1:{port}/page1.html");
     let page2_url = format!("http://127.0.0.1:{port}/page2.html");
+    eprintln!("[smoke] http: listening on 127.0.0.1:{port}");
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let mut stream = match stream {
                 Ok(s) => s,
                 Err(_) => return,
             };
-            let mut buf = [0u8; 4096];
-            let n = match stream.read(&mut buf) {
-                Ok(n) if n > 0 => n,
-                _ => continue,
-            };
-            let request = String::from_utf8_lossy(&buf[..n]);
-            let body = if request.contains("page1.html") {
-                html1
-            } else if request.contains("page2.html") {
-                html2
-            } else {
-                continue;
-            };
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(response.as_bytes());
+            // Per-connection thread so a slow/corrupt connection from
+            // one page (or a parallel request like favicon) does not
+            // block the entire server.
+            std::thread::spawn(move || {
+                // 5s read timeout prevents a stalled connection from
+                // hanging the thread.
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut buf = [0u8; 4096];
+                let n = match stream.read(&mut buf) {
+                    Ok(n) if n > 0 => n,
+                    _ => return,
+                };
+                let request = String::from_utf8_lossy(&buf[..n]);
+                let first_line = request.lines().next().unwrap_or("(empty)");
+                let _ = first_line; // used in the log below
+                eprintln!("[smoke] http: request {first_line}");
+                let body = if request.contains("page1.html") {
+                    html1
+                } else if request.contains("page2.html") {
+                    html2
+                } else {
+                    eprintln!("[smoke] http: 404 for {first_line}");
+                    let not_found = "404 Not Found";
+                    let response = format!(
+                        "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{not_found}",
+                        not_found.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    eprintln!("[smoke] http: served 404 ({not_found} bytes)");
+                    return;
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                eprintln!("[smoke] http: served page ({} bytes)", body.len());
+                let _ = stream.write_all(response.as_bytes());
+            });
         }
     });
     Ok((page1_url, page2_url))
