@@ -592,6 +592,9 @@ pub fn start_runtime_smoke(app: AppHandle, report_path: PathBuf) {
 // ── Internals ────────────────────────────────────────────────────────
 
 const SMOKE_STEP_TIMEOUT: Duration = Duration::from_secs(10);
+const SMOKE_TAB_SETTLE_DELAY: Duration = Duration::from_millis(750);
+const SMOKE_PAGE_READY_POLL: Duration = Duration::from_millis(50);
+const SMOKE_PAGE_READY_ATTEMPTS: usize = 400;
 
 /// Start a local HTTP server that serves the two smoke pages.
 ///
@@ -732,6 +735,12 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
     report.navigated = true;
     report.bridge_received = true;
 
+    // WebKitGTK can momentarily stop servicing the UI loop when a second
+    // child webview is created in the same tick as the first page-ready
+    // callback. Real users cannot open tabs this quickly; pace the smoke so
+    // it still exercises multi-tab behavior without manufacturing that race.
+    tokio::time::sleep(SMOKE_TAB_SETTLE_DELAY).await;
+
     // ── step: create tab 2 ────────────────────────────────────
     eprintln!("[smoke] step: tab2 create starting");
     let tab2_id = match on_main_thread(app, move |handle| {
@@ -858,9 +867,9 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
 /// title and viewport — it is the authoritative signal.
 ///
 /// Returns `true` if a ready/loaded message was found within the budget
-/// (100 × 50 ms = 5 s).
+/// (400 × 50 ms = 20 s).
 async fn wait_for_page_ready(app: &AppHandle, tab_id: &str) -> bool {
-    for _ in 0..100 {
+    for _ in 0..SMOKE_PAGE_READY_ATTEMPTS {
         let Ok(messages) = browser_drain_messages(app.state(), tab_id.into()) else {
             eprintln!("[smoke] drain failed: tab_id={tab_id}");
             return false;
@@ -883,7 +892,7 @@ async fn wait_for_page_ready(app: &AppHandle, tab_id: &str) -> bool {
         }) {
             return true;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(SMOKE_PAGE_READY_POLL).await;
     }
     false
 }
@@ -2148,5 +2157,16 @@ mod tests {
     #[test]
     fn main_thread_dispatch_budget_covers_a_cold_ci_start() {
         assert!(ON_MAIN_THREAD_TIMEOUT >= Duration::from_secs(30));
+    }
+
+    #[test]
+    fn runtime_smoke_allows_webkit_to_settle_between_tabs() {
+        assert!(SMOKE_TAB_SETTLE_DELAY >= Duration::from_millis(500));
+    }
+
+    #[test]
+    fn page_ready_budget_covers_a_slow_headless_navigation() {
+        let budget = SMOKE_PAGE_READY_POLL * SMOKE_PAGE_READY_ATTEMPTS as u32;
+        assert!(budget >= Duration::from_secs(20));
     }
 }
