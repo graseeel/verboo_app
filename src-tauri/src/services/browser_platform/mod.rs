@@ -236,4 +236,19 @@ mod contract_tests {
             "WebView2 script registration errors must not be discarded"
         );
     }
+
+    #[test]
+    fn webview2_controller_wait_preserves_com_sta_reentrancy() {
+        let source = include_str!("../../../vendor/webview2-com/src/lib.rs");
+        assert!(
+            source.contains("CoWaitForMultipleHandles")
+                && source.contains("COWAIT_DISPATCH_CALLS")
+                && source.contains("COWAIT_DISPATCH_WINDOW_MESSAGES"),
+            "WebView2 controller creation must dispatch COM calls and window messages"
+        );
+        assert!(
+            !source.contains("WindowsAndMessaging::GetMessageA"),
+            "a nested Win32-only pump can deadlock the second WebView2 controller"
+        );
+    }
 }

@@ -152,3 +152,10 @@ javascriptcore-rs = "=1.1.2"
 # ~5MB, acceptable for now. We can strip the final binary post-build with
 # `strip -x` if needed.
 strip = "none"
+
+# WebView2 completes controller creation through COM re-entrancy. The
+# crates.io 0.38.2 wait loop dispatches only Win32 messages, which can
+# deadlock while creating a second child webview. Keep the same audited
+# release locally and patch only that wait primitive until upstream ships it.
+[patch.crates-io]
+webview2-com = { path = "vendor/webview2-com" }
