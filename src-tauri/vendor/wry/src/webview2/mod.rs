@@ -75,6 +75,12 @@ fn co_wait_for_handle(event: HANDLE) -> Result<()> {
   Ok(())
 }
 
+fn smoke_trace(message: &str) {
+  if std::env::var_os("VERBOO_BROWSER_SMOKE_REPORT").is_some() {
+    eprintln!("[smoke:wry] {message}");
+  }
+}
+
 pub(crate) struct InnerWebView {
   id: String,
   parent: RefCell<HWND>,
@@ -153,11 +159,15 @@ impl InnerWebView {
     };
 
     let env = if let Some(env) = &pl_attrs.environment {
+      smoke_trace("reusing WebView2 environment");
       env.clone()
     } else {
+      smoke_trace("creating WebView2 environment");
       Self::create_environment(&attributes, pl_attrs.clone())?
     };
+    smoke_trace("creating WebView2 controller");
     let controller = Self::create_controller(hwnd, &env, attributes.incognito, background_color)?;
+    smoke_trace("WebView2 controller ready");
     let webview = Self::init_webview(
       parent,
       hwnd,
@@ -306,6 +316,7 @@ impl InnerWebView {
     attributes: &WebViewAttributes,
     pl_attrs: super::PlatformSpecificWebViewAttributes,
   ) -> Result<ICoreWebView2Environment> {
+    smoke_trace("create_environment started");
     let data_directory = attributes
       .context
       .as_deref()
@@ -372,6 +383,7 @@ impl InnerWebView {
         &ICoreWebView2EnvironmentOptions::from(options),
         &CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(
           move |error_code, environment| {
+            smoke_trace("create_environment callback received");
             *result_clone.borrow_mut() = Some((move || {
               error_code?;
               environment.ok_or_else(|| windows::core::Error::from(E_POINTER))
@@ -384,6 +396,7 @@ impl InnerWebView {
     }
 
     co_wait_for_handle(event)?;
+    smoke_trace("create_environment wait completed");
     let environment = result
       .borrow_mut()
       .take()
@@ -398,6 +411,7 @@ impl InnerWebView {
     incognito: bool,
     background_color: Option<(u8, u8, u8, u8)>,
   ) -> Result<ICoreWebView2Controller> {
+    smoke_trace("create_controller started");
     let event = unsafe { CreateEventW(None, true, false, PCWSTR::null())? };
     let result: Rc<RefCell<Option<windows::core::Result<ICoreWebView2Controller>>>> =
       Rc::new(RefCell::new(None));
@@ -406,6 +420,7 @@ impl InnerWebView {
 
     let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
       move |error_code, controller| {
+        smoke_trace("create_controller callback received");
         *result_clone.borrow_mut() = Some((move || {
           error_code?;
           controller.ok_or_else(|| windows::core::Error::from(E_POINTER))
@@ -441,6 +456,7 @@ impl InnerWebView {
     }
 
     co_wait_for_handle(event)?;
+    smoke_trace("create_controller wait completed");
     let controller = result
       .borrow_mut()
       .take()

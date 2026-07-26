@@ -1213,6 +1213,38 @@ pub fn browser_tab_create(
     let builder = tauri::webview::WebviewBuilder::new(&tab_id, tauri::WebviewUrl::External(blank))
         .incognito(true);
 
+    // A tabbed WebView2 host must create separate controllers from one shared
+    // environment. Creating an environment per tab can block the second
+    // `add_child` while WebView2 is already serving the same user-data folder.
+    // The first browser tab establishes the environment; every later tab
+    // receives a clone of it. macOS/Linux keep their existing builder path.
+    #[cfg(windows)]
+    let builder = {
+        let environment_source = {
+            let inner = state.lock();
+            inner
+                .tabs
+                .values()
+                .next()
+                .map(|runtime| runtime.webview.clone())
+        };
+
+        if let Some(environment_source) = environment_source {
+            let (builder_tx, builder_rx) = std::sync::mpsc::sync_channel(1);
+            environment_source
+                .with_webview(move |platform_webview| {
+                    let _ = builder_tx
+                        .send(builder.with_environment(platform_webview.environment()));
+                })
+                .map_err(|error| format!("obter ambiente WebView2 falhou: {error}"))?;
+            builder_rx
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(|error| format!("obter ambiente WebView2 expirou: {error}"))?
+        } else {
+            builder
+        }
+    };
+
     let webview = window
         .add_child(
             builder,
@@ -2206,6 +2238,24 @@ mod tests {
         assert!(
             waiter.matches("wait_for_ui_turn(app).await").count() >= 2,
             "the waiter must nudge idle navigation and flush the ready callback"
+        );
+    }
+
+    #[test]
+    fn windows_browser_tabs_reuse_the_existing_webview2_environment() {
+        let source = include_str!("browser_panel.rs");
+        let create_start = source
+            .find("pub fn browser_tab_create")
+            .expect("browser_tab_create");
+        let create_end = source[create_start..]
+            .find("\n#[tauri::command]\npub fn browser_tab_activate")
+            .map(|offset| create_start + offset)
+            .expect("browser_tab_create end");
+        let create = &source[create_start..create_end];
+
+        assert!(
+            create.contains(".environment()") && create.contains(".with_environment("),
+            "Windows tabs must share one CoreWebView2Environment instead of creating one per tab"
         );
     }
 
