@@ -593,6 +593,26 @@ pub fn start_runtime_smoke(app: AppHandle, report_path: PathBuf) {
 const SMOKE_STEP_TIMEOUT: Duration = Duration::from_secs(10);
 const SMOKE_DESTROY_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Build a smoke page URL from a filesystem path, ensuring the
+/// resulting string is valid for use in `http::Uri` (wry-0.55.1
+/// webkitgtk IPC handler does `http::Request::builder().uri(url)`)
+/// by setting `localhost` as the authority instead of leaving it
+/// empty (`file://localhost/` vs `file:///`).
+///
+/// KNOWN UNCERTAINTY (NAV-23): per WHATWG URL standard, `localhost`
+/// host in a `file:` URL SHOULD be normalized to empty — if
+/// `webkit_web_view_get_uri` normalizes it back to `file:///` before
+/// wry reads it, the SIGABRT may reappear. If it does, the suspect
+/// is WHATWG normalization of `file://localhost/` → `file:///`.
+/// CI core dumps capture this.
+pub(crate) fn smoke_page_url(path: &std::path::Path) -> Result<String, String> {
+    let mut url = tauri::Url::from_file_path(path)
+        .map_err(|_| "URL inválida a partir do caminho".to_string())?;
+    url.set_host(Some("localhost"))
+        .map_err(|_| "set localhost authority falhou".to_string())?;
+    Ok(url.to_string())
+}
+
 async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport, String> {
     eprintln!("[smoke] run_runtime_smoke starting");
     let page1_path = std::env::temp_dir().join(format!(
@@ -607,12 +627,10 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
         .map_err(|e| format!("write smoke page 1 falhou: {e}"))?;
     std::fs::write(&page2_path, "<!doctype html><html><title>Tab-Two</title><body style='background:#2a2a3c;color:white'>Second tab</body></html>")
         .map_err(|e| format!("write smoke page 2 falhou: {e}"))?;
-    let page1_url = tauri::Url::from_file_path(&page1_path)
-        .map_err(|_| "smoke page 1 URL inválida".to_string())?
-        .to_string();
-    let page2_url = tauri::Url::from_file_path(&page2_path)
-        .map_err(|_| "smoke page 2 URL inválida".to_string())?
-        .to_string();
+    let page1_url = smoke_page_url(&page1_path)
+        .map_err(|e| format!("smoke page 1: {e}"))?;
+    let page2_url = smoke_page_url(&page2_path)
+        .map_err(|e| format!("smoke page 2: {e}"))?;
     let cleanup_pages = || {
         let _ = std::fs::remove_file(&page1_path);
         let _ = std::fs::remove_file(&page2_path);
@@ -1995,6 +2013,41 @@ mod tests {
         stored.lock().unwrap().accept(envelope).unwrap();
         let drained = stored.lock().unwrap().drain();
         assert_eq!(drained.len(), 1, "message accepted and drainable");
+    }
+
+    /// Calls the same `smoke_page_url` function used in production.
+    /// Removing `set_host` from that function causes this test to fail
+    /// (file:/// has host_str() == None, smoke_page_url returns an
+    /// authority-having URL string only when set_host is called).
+    ///
+    /// NOTE: we assert on the STRING, not on Url::parse of the result,
+    /// because the url crate's parser normalizes `file://localhost/` to
+    /// `file:///` per WHATWG spec. The wry webkitgtk IPC handler calls
+    /// http::Uri::from_str directly on the string, not through url crate.
+    ///
+    /// wry-0.55.1 webkitgtk IPC handler calls http::Uri::from_str on
+    /// the URL string. http::Uri rejects file:/// (empty authority)
+    /// with SIGABRT (panic in extern-C callback). See KNOWN UNCERTAINTY
+    /// in the `smoke_page_url` docstring regarding WHATWG normalization.
+    #[test]
+    fn smoke_url_has_authority() {
+        let path = std::env::temp_dir().join("verboo-smoke-url-test.html");
+        let result = smoke_page_url(&path).expect("smoke_page_url should succeed");
+        assert!(
+            result.starts_with("file://localhost/"),
+            "smoke_page_url must produce file://localhost/ URL with non-empty authority, got: {result}"
+        );
+        // Also prove that set_host is load-bearing: without it, from_file_path
+        // would give host_str() == None (file:///).
+        let mut raw = tauri::Url::from_file_path(&path).expect("from_file_path");
+        assert_eq!(raw.host_str(), None, "precondition: from_file_path produces empty authority");
+        // Calling set_host changes the host so host_str() differs from raw.
+        raw.set_host(Some("localhost")).expect("set_host falhou");
+        assert!(
+            raw.as_str().starts_with("file://localhost/"),
+            "after set_host, url string must have authority, got: {}",
+            raw
+        );
     }
 
     #[test]
