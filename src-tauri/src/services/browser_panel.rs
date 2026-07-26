@@ -365,46 +365,36 @@ pub async fn browser_snapshot(
     tab_id: BrowserTabId,
     generation: u64,
 ) -> Result<SnapshotReport, String> {
-    #[cfg(target_os = "macos")]
-    {
-        // Check BEFORE async work.
-        check_current(&state.lock().session, &tab_id, generation)?;
+    // Check BEFORE async work.
+    check_current(&state.lock().session, &tab_id, generation)?;
 
-        let started = Instant::now();
-        let bytes = capture_snapshot_bytes(&state, tab_id.clone()).await?;
+    let started = Instant::now();
+    let bytes = capture_snapshot_bytes(&state, tab_id.clone()).await?;
 
-        // Check AFTER async work — the user may have navigated during.
-        let bytes = check_stale(
-            &state.lock().session,
-            &tab_id,
-            generation,
-            bytes,
-            |_| { /* bytes is a Vec: no temp file to clean yet */ },
-        )?;
+    // Check AFTER async work — the user may have navigated during.
+    let bytes = check_stale(
+        &state.lock().session,
+        &tab_id,
+        generation,
+        bytes,
+        |_| { /* bytes is a Vec: no temp file to clean yet */ },
+    )?;
 
-        let ms = started.elapsed().as_millis();
-        let directory = std::env::temp_dir().join("verboo-browser");
-        std::fs::create_dir_all(&directory)
-            .map_err(|e| format!("create snapshot dir falhou: {e}"))?;
-        let path = directory.join(format!("{}-snapshot.png", uuid::Uuid::new_v4()));
-        let _ = std::fs::write(&path, &bytes);
-        Ok(SnapshotReport {
-            ms,
-            bytes: bytes.len(),
-            path: path.to_string_lossy().into_owned(),
-            data_url: format!(
-                "data:image/png;base64,{}",
-                base64::engine::general_purpose::STANDARD.encode(&bytes)
-            ),
-        })
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = state;
-        let _ = tab_id;
-        let _ = generation;
-        Err("snapshot: somente macOS no spike".into())
-    }
+    let ms = started.elapsed().as_millis();
+    let directory = std::env::temp_dir().join("verboo-browser");
+    std::fs::create_dir_all(&directory)
+        .map_err(|e| format!("create snapshot dir falhou: {e}"))?;
+    let path = directory.join(format!("{}-snapshot.png", uuid::Uuid::new_v4()));
+    let _ = std::fs::write(&path, &bytes);
+    Ok(SnapshotReport {
+        ms,
+        bytes: bytes.len(),
+        path: path.to_string_lossy().into_owned(),
+        data_url: format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        ),
+    })
 }
 
 /// Captura o viewport sem mini-modal e salva tanto o PNG completo quanto um
@@ -414,48 +404,39 @@ pub async fn browser_capture_annotation(
     state: State<'_, BrowserPanelState>,
     request: AnnotationCaptureRequest,
 ) -> Result<AnnotationCaptureReport, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let bytes = capture_snapshot_bytes(&state, request.tab_id.clone()).await?;
-        let image = image::load_from_memory(&bytes)
-            .map_err(|error| format!("decode snapshot falhou: {error}"))?;
-        let (viewport_width, viewport_height) = image.dimensions();
-        let crop = crop_in_pixels(request.rect, request.viewport, viewport_width, viewport_height)?;
-        let cropped = image.crop_imm(crop.x, crop.y, crop.width, crop.height);
-        let mut crop_bytes = std::io::Cursor::new(Vec::new());
-        cropped
-            .write_to(&mut crop_bytes, image::ImageFormat::Png)
-            .map_err(|error| format!("encode crop falhou: {error}"))?;
-        let crop_bytes = crop_bytes.into_inner();
+    let bytes = capture_snapshot_bytes(&state, request.tab_id.clone()).await?;
+    let image = image::load_from_memory(&bytes)
+        .map_err(|error| format!("decode snapshot falhou: {error}"))?;
+    let (viewport_width, viewport_height) = image.dimensions();
+    let crop = crop_in_pixels(request.rect, request.viewport, viewport_width, viewport_height)?;
+    let cropped = image.crop_imm(crop.x, crop.y, crop.width, crop.height);
+    let mut crop_bytes = std::io::Cursor::new(Vec::new());
+    cropped
+        .write_to(&mut crop_bytes, image::ImageFormat::Png)
+        .map_err(|error| format!("encode crop falhou: {error}"))?;
+    let crop_bytes = crop_bytes.into_inner();
 
-        let directory = std::env::temp_dir().join("verboo-browser");
-        std::fs::create_dir_all(&directory)
-            .map_err(|error| format!("create snapshot dir falhou: {error}"))?;
-        let id = uuid::Uuid::new_v4();
-        let viewport_path = directory.join(format!("{id}-viewport.png"));
-        let crop_path = directory.join(format!("{id}-crop.png"));
-        std::fs::write(&viewport_path, &bytes)
-            .map_err(|error| format!("write viewport falhou: {error}"))?;
-        std::fs::write(&crop_path, &crop_bytes)
-            .map_err(|error| format!("write crop falhou: {error}"))?;
+    let directory = std::env::temp_dir().join("verboo-browser");
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("create snapshot dir falhou: {error}"))?;
+    let id = uuid::Uuid::new_v4();
+    let viewport_path = directory.join(format!("{id}-viewport.png"));
+    let crop_path = directory.join(format!("{id}-crop.png"));
+    std::fs::write(&viewport_path, &bytes)
+        .map_err(|error| format!("write viewport falhou: {error}"))?;
+    std::fs::write(&crop_path, &crop_bytes)
+        .map_err(|error| format!("write crop falhou: {error}"))?;
 
-        Ok(AnnotationCaptureReport {
-            crop_path: crop_path.to_string_lossy().into_owned(),
-            viewport_path: viewport_path.to_string_lossy().into_owned(),
-            crop_width: crop.width,
-            crop_height: crop.height,
-            viewport_width,
-            viewport_height,
-            crop_bytes: crop_bytes.len(),
-            viewport_bytes: bytes.len(),
-        })
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = state;
-        let _ = request;
-        Err("capture_annotation: somente macOS no v1".into())
-    }
+    Ok(AnnotationCaptureReport {
+        crop_path: crop_path.to_string_lossy().into_owned(),
+        viewport_path: viewport_path.to_string_lossy().into_owned(),
+        crop_width: crop.width,
+        crop_height: crop.height,
+        viewport_width,
+        viewport_height,
+        crop_bytes: crop_bytes.len(),
+        viewport_bytes: bytes.len(),
+    })
 }
 
 /// Remove only PNGs created by the embedded-browser capture pipeline. The
@@ -522,26 +503,15 @@ pub async fn browser_evaluate_script(
     generation: u64,
     script: String,
 ) -> Result<EvaluateReport, String> {
-    #[cfg(target_os = "macos")]
-    {
-        check_current(&state.lock().session, &tab_id, generation)?;
-        let report = evaluate_script(&state, tab_id.clone(), script).await?;
-        check_stale(
-            &state.lock().session,
-            &tab_id,
-            generation,
-            report,
-            |_| { /* EvaluateReport has no temp files */ },
-        )
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = state;
-        let _ = tab_id;
-        let _ = generation;
-        let _ = script;
-        Err("evaluate_script: somente macOS no spike".into())
-    }
+    check_current(&state.lock().session, &tab_id, generation)?;
+    let report = evaluate_script(&state, tab_id.clone(), script).await?;
+    check_stale(
+        &state.lock().session,
+        &tab_id,
+        generation,
+        report,
+        |_| { /* EvaluateReport has no temp files */ },
+    )
 }
 
 /// Confirma que o processo de conteúdo ainda responde e que o bridge
@@ -549,29 +519,22 @@ pub async fn browser_evaluate_script(
 /// encerram a instância morta e expõem a ação explícita de recriação.
 #[tauri::command]
 pub async fn browser_healthcheck(state: State<'_, BrowserPanelState>) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let active_id = state
-            .lock()
-            .session
-            .active_id()
-            .ok_or_else(|| "sem aba ativa".to_string())?
-            .to_string();
-        let report = evaluate_script(
-            &state,
-            active_id,
-            "window.__verbooBrowser && window.__verbooBrowser.ping()".into(),
-        )
-        .await?;
-        if report.value.starts_with("pong:") {
-            Ok(())
-        } else {
-            Err("browser bridge did not answer health check".into())
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        current_webview(&state, "").map(|_| ())
+    let active_id = state
+        .lock()
+        .session
+        .active_id()
+        .ok_or_else(|| "sem aba ativa".to_string())?
+        .to_string();
+    let report = evaluate_script(
+        &state,
+        active_id,
+        "window.__verbooBrowser && window.__verbooBrowser.ping()".into(),
+    )
+    .await?;
+    if report.value.starts_with("pong:") {
+        Ok(())
+    } else {
+        Err("browser bridge did not answer health check".into())
     }
 }
 
@@ -824,6 +787,7 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
 async fn wait_for_page_loaded(app: &AppHandle, tab_id: &str) -> bool {
     for _ in 0..100 {
         let Ok(messages) = browser_drain_messages(app.state(), tab_id.into()) else {
+            eprintln!("[smoke] drain failed: tab_id={tab_id}");
             return false;
         };
         if messages.iter().any(|m| {
@@ -868,7 +832,6 @@ where
         .map_err(|_| "main-thread smoke channel dropped".to_string())?
 }
 
-#[cfg(target_os = "macos")]
 async fn evaluate_script(
     state: &State<'_, BrowserPanelState>,
     tab_id: BrowserTabId,
@@ -883,7 +846,6 @@ async fn evaluate_script(
     Ok(EvaluateReport { ms: started.elapsed().as_millis(), value })
 }
 
-#[cfg(target_os = "macos")]
 async fn capture_snapshot_bytes(
     state: &State<'_, BrowserPanelState>,
     tab_id: BrowserTabId,
@@ -969,19 +931,13 @@ fn current_webview(state: &State<'_, BrowserPanelState>, tab_id: &str) -> Result
         .ok_or_else(|| format!("{tab_id} sem runtime"))
 }
 
-// ── macos-only bridge plumbing ───────────────────────────────────────
+// ── bridge plumbing (ungated — 3 SOs) ────────────────────────────
 //
-// Wrapped in `mod macos_bridge` with `#[cfg(target_os = "macos")]` so that
-// every helper that touches macos-only types (SendBrowserStatePtr, the
-// platform adapter's `attach_bridge`, the `MsgHandler` ivar, etc.) is
-// compiled only on macOS. On Windows/Linux, only the not-macos stub of
-// `attach_message_handler` is compiled.
-//
-// This module replaces an earlier flat block where each macos-only helper
-// carried its own `#[cfg]` — which left `attach_message_handler` and
-// `push_message_with_tab` ungated and broke the Windows build.
-#[cfg(target_os = "macos")]
-mod macos_bridge {
+// Each of these helpers was originally inside `#[cfg(target_os = "macos")]`
+// `mod macos_bridge` because the platform adapter was macOS-only. Since the
+// Meridiano cycle landed `browser_platform::attach_bridge` for Windows and
+// Linux, nothing in this module is macOS-specific.
+mod bridge_plumbing {
     use super::*;
 
     /// Newtype send/sync para carregar `*const BrowserPanelState` dentro de
@@ -1075,15 +1031,6 @@ mod macos_bridge {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn attach_message_handler(
-    _webview: &Webview<Wry>,
-    _state: &BrowserPanelState,
-    _tab_id: &str,
-) -> Result<(), String> {
-    Ok(())
-}
-
 // ── Multi-tab session commands (Task 4) ────────────────────────────
 
 #[tauri::command]
@@ -1175,10 +1122,7 @@ pub fn browser_tab_create(
     // Atomic creation: attach the bridge. On failure, destroy the partial
     // webview and propagate the error — the runtime map and session model
     // are NOT mutated (try_attach_or_destroy pattern).
-    #[cfg(target_os = "macos")]
-    let attach_result = macos_bridge::attach_message_handler(&webview, &state, &tab_id);
-    #[cfg(not(target_os = "macos"))]
-    let attach_result = attach_message_handler(&webview, &state, &tab_id);
+    let attach_result = bridge_plumbing::attach_message_handler(&webview, &state, &tab_id);
     if let Err(error) = attach_result {
         let _ = webview.close();
         return Err(error);
@@ -1841,16 +1785,138 @@ mod tests {
         assert_eq!(session.snapshot(false).tabs.len(), 0);
     }
 
-    #[cfg(target_os = "macos")]
+    // bridge_plumbing is ungated (3 SOs now have browser_platform::attach_bridge).
+    // This test runs everywhere to prove the module compiled.
     #[test]
     fn two_bridge_tokens_are_distinct_and_not_literal() {
-        let t1 = macos_bridge::new_bridge_token();
-        let t2 = macos_bridge::new_bridge_token();
+        let t1 = bridge_plumbing::new_bridge_token();
+        let t2 = bridge_plumbing::new_bridge_token();
         assert_ne!(t1, t2, "each tab must get a unique bridge token");
         assert_ne!(t1, "verboo", "bridge token must not be the development literal");
         assert_ne!(t2, "verboo", "bridge token must not be the development literal");
         assert!(!t1.is_empty());
         assert!(!t2.is_empty());
+    }
+
+    /// Regression tripwire for the `#[cfg(not(target_os = "macos"))]`
+    /// `attach_message_handler` stub that was deleted in NAV-13.
+    ///
+    /// The stub returned `Ok(())` without registering the tab in
+    /// `inner.tabs` or `inner.session`. Outside macOS, `browser_drain_messages`
+    /// returned `Err("stale document: tab X not found")` and `wait_for_page_loaded`
+    /// silently swallowed it — the Linux CI smoke "page-loaded not observed"
+    /// failure.
+    ///
+    /// We cannot instantiate `Webview<Wry>` in a unit test to run the real
+    /// `attach_message_handler`, so we **pin the source contract**: exactly one
+    /// definition of `fn attach_message_handler(` must exist — the ungated
+    /// `bridge_plumbing::attach_message_handler`. A second definition (the stub,
+    /// regardless of cfg gate spelling or formatting) will be caught.
+    ///
+    /// The real implementation lives in ungated `mod bridge_plumbing` and
+    /// compiles on all 3 platforms (enforced by `cargo test` on each host).
+    ///
+    /// Format-proof: counts only non-comment lines that look like function
+    /// definitions (start with `fn `, `pub `, `pub(crate) `, or similar).
+    #[test]
+    fn no_stub_attach_message_handler() {
+        let source = include_str!("browser_panel.rs");
+        let count = source
+            .lines()
+            .filter(|line| {
+                let t = line.trim();
+                // skip doc-comments and line comments
+                if t.starts_with("//") {
+                    return false;
+                }
+                // must contain the function name
+                if !t.contains("fn attach_message_handler(") {
+                    return false;
+                }
+                // must be an actual function definition, not a string reference
+                t.starts_with("fn ") || t.starts_with("pub")
+            })
+            .count();
+        assert_eq!(
+            count, 1,
+            "expected exactly 1 fn attach_message_handler definition (the ungated \
+             bridge_plumbing impl), found {count}. If a second definition reappears, \
+             delete the cfg-gated stub."
+        );
+    }
+
+    /// Count how many times `fn_name` appears as a function definition
+    /// (non-comment, starts with `fn ` or `pub`) in `browser_panel.rs`.
+    /// Used by tripwire tests to detect reintroduced cfg-gated stubs.
+    fn count_fn_defs_in_source(fn_name: &str) -> usize {
+        let source = include_str!("browser_panel.rs");
+        let pattern = format!("fn {fn_name}(");
+        source
+            .lines()
+            .filter(|line| {
+                let t = line.trim();
+                if t.starts_with("//") {
+                    return false; // skip comments and doc-comments
+                }
+                if !t.contains(&pattern) {
+                    return false;
+                }
+                // Must be a real function definition, not a string literal.
+                // Valid Rust forms: `fn `, `async fn `, `pub fn `, `pub(crate) fn `, etc.
+                t.starts_with("fn ")
+                    || t.starts_with("async ")
+                    || t.starts_with("pub")
+            })
+            .count()
+    }
+
+    #[test]
+    fn no_stub_evaluate_script() {
+        let count = count_fn_defs_in_source("evaluate_script");
+        assert_eq!(
+            count, 1,
+            "expected exactly 1 fn evaluate_script definition (ungated), found {count}"
+        );
+    }
+
+    #[test]
+    fn no_stub_capture_snapshot_bytes() {
+        let count = count_fn_defs_in_source("capture_snapshot_bytes");
+        assert_eq!(
+            count, 1,
+            "expected exactly 1 fn capture_snapshot_bytes definition (ungated), found {count}"
+        );
+    }
+
+    /// Class-level assertion: no `#[cfg(not(target_os = "macos"))]` stub
+    /// and no `"somente macOS"` error message may exist anywhere in
+    /// non-comment code. Catches ANY reintroduction of the cfg-gated
+    /// stub pattern, not just the specific functions already tripwired.
+    ///
+    /// Comment lines (///, //) are excluded so historical doc comments
+    /// in the tripwire tests don't trigger false positives.
+    #[test]
+    fn no_cfg_gated_stubs_anywhere() {
+        let source = include_str!("browser_panel.rs");
+        // Search only in production code (before `mod tests {`), so the
+        // test assertions and doc comments cannot self-reference.
+        let prod_end = source.find("\nmod tests {").unwrap_or(source.len());
+        let production = &source[..prod_end];
+        let non_comment: String = production
+            .lines()
+            .filter(|line| !line.trim().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !non_comment.contains("cfg(not(target_os = \"macos\")"),
+            "cfg(not(macos)) block found in production code. \
+             All platform dispatch must go through ungated browser_platform::*.",
+        );
+        assert!(
+            !non_comment.contains("somente macOS"),
+            "\"somente macOS\" error message found in production code. \
+             All stubs that announce being macOS-only must be deleted.",
+        );
     }
 
     #[test]
