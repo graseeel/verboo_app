@@ -41,3 +41,35 @@ test("notarization key exists only for macOS build steps and is always removed",
   );
   assert.match(workflow, /rm -f "\$\{APPLE_API_KEY_PATH:-\}"/);
 });
+
+test("embedded CLI Mach-O binaries receive Developer ID hardened signatures", async () => {
+  const workflow = await readFile(workflowPath, "utf8");
+
+  assert.match(workflow, /security import "\$CERTIFICATE_PATH"/);
+  assert.match(workflow, /find "\$RESOURCE_ROOT" -type f -print0/);
+  assert.match(workflow, /FILE_DESCRIPTION=.*file -b "\$candidate"/);
+  assert.match(workflow, /FILE_DESCRIPTION.*Mach-O/);
+  assert.match(workflow, /EXPECTED_MACHO_ARCH/);
+  assert.match(
+    workflow,
+    /FILE_DESCRIPTION.*EXPECTED_MACHO_ARCH[\s\S]*?exit 1/,
+  );
+  assert.match(
+    workflow,
+    /codesign --force --options runtime --timestamp[\s\S]*?"\$candidate"/,
+  );
+  assert.doesNotMatch(workflow, /ripgrep|libvips|sharp-darwin/);
+});
+
+test("macOS target architectures use matching native runners", async () => {
+  const workflow = await readFile(workflowPath, "utf8");
+
+  assert.match(
+    workflow,
+    /- os: macos-15\n\s+target: aarch64-apple-darwin/,
+  );
+  assert.match(
+    workflow,
+    /- os: macos-15-intel\n\s+target: x86_64-apple-darwin/,
+  );
+});

@@ -92,7 +92,8 @@ jobs:
             artifact_glob: |
               src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
               src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-          - os: macos-15
+          # macos-15 is arm64; use the Intel runner so native npm modules match.
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             label: macOS-Intel
             artifact_glob: |
@@ -437,6 +438,74 @@ jobs:
           chmod 600 "$KEY_PATH"
           openssl pkey -in "$KEY_PATH" -check -noout
           echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+          CERTIFICATE_PATH="$RUNNER_TEMP/verboo-developer-id-${{ matrix.target }}.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/verboo-code-signing-${{ matrix.target }}.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+
+          cleanup_codesign_keychain() {
+            security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
+            rm -f "$CERTIFICATE_PATH"
+          }
+          trap cleanup_codesign_keychain EXIT
+
+          printf '%s' "$APPLE_CERTIFICATE" | openssl base64 -d -A -out "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          SIGNING_IDENTITY=$(
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" |
+              awk '/Developer ID Application:/ { print $2; exit }'
+          )
+          if [ -z "$SIGNING_IDENTITY" ]; then
+            echo "::error::No Developer ID Application identity found in the imported certificate"
+            exit 1
+          fi
+
+          RESOURCE_ROOT="src-tauri/resources/cli-package"
+          test -d "$RESOURCE_ROOT"
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin) EXPECTED_MACHO_ARCH="arm64" ;;
+            x86_64-apple-darwin) EXPECTED_MACHO_ARCH="x86_64" ;;
+            *)
+              echo "::error::Unsupported macOS target ${{ matrix.target }}"
+              exit 1
+              ;;
+          esac
+          SIGNED_MACHO_COUNT=0
+          while IFS= read -r -d '' candidate; do
+            FILE_DESCRIPTION="$(file -b "$candidate")"
+            if [[ "$FILE_DESCRIPTION" == *"Mach-O"* ]]; then
+              if [[ "$FILE_DESCRIPTION" != *"$EXPECTED_MACHO_ARCH"* ]]; then
+                echo "::error file=$candidate::Expected $EXPECTED_MACHO_ARCH Mach-O, found: $FILE_DESCRIPTION"
+                exit 1
+              fi
+              codesign --force --options runtime --timestamp \
+                --keychain "$KEYCHAIN_PATH" \
+                --sign "$SIGNING_IDENTITY" \
+                "$candidate"
+              codesign --verify --strict --verbose=2 "$candidate"
+              SIGNED_MACHO_COUNT=$((SIGNED_MACHO_COUNT + 1))
+            fi
+          done < <(find "$RESOURCE_ROOT" -type f -print0)
+          if [ "$SIGNED_MACHO_COUNT" -eq 0 ]; then
+            echo "::error::No Mach-O binaries found in the embedded CLI resources"
+            exit 1
+          fi
+          echo "Signed $SIGNED_MACHO_COUNT embedded CLI Mach-O binaries"
 
       - name: Build Tauri bundle and signed updater artifacts
         env:
