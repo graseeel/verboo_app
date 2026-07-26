@@ -489,7 +489,9 @@ mod tests {
         // Sorted by name.
         assert_eq!(skills[0].name, "systematic-debugging");
         assert_eq!(skills[1].name, "test-driven-development");
-        assert!(skills[0].skill_path.ends_with("systematic-debugging/SKILL.md"));
+        // Path::ends_with compares path COMPONENTS (cross-platform separator),
+        // unlike String::ends_with which compares literal characters.
+        assert!(std::path::Path::new(&skills[0].skill_path).ends_with("systematic-debugging/SKILL.md"));
     }
 
     #[test]
