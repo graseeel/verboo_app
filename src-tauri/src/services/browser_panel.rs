@@ -2248,7 +2248,7 @@ mod tests {
             .find("pub fn browser_tab_create")
             .expect("browser_tab_create");
         let create_end = source[create_start..]
-            .find("\n#[tauri::command]\npub fn browser_tab_activate")
+            .find("pub fn browser_tab_activate")
             .map(|offset| create_start + offset)
             .expect("browser_tab_create end");
         let create = &source[create_start..create_end];
