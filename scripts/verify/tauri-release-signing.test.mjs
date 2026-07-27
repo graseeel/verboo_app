@@ -53,6 +53,30 @@ test("macOS build does not let Tauri synchronously notarize the app", async () =
   assert.doesNotMatch(buildStep, /--wait/);
 });
 
+test("macOS builds the app with Tauri and creates the signed DMG in a bounded retry step", async () => {
+  const workflow = await readFile(workflowPath, "utf8");
+  const buildStart = workflow.indexOf(
+    "- name: Build Tauri bundle and signed updater artifacts",
+  );
+  const buildEnd = workflow.indexOf("\n      - name:", buildStart + 1);
+  const buildStep = workflow.slice(buildStart, buildEnd);
+  const dmgStart = workflow.indexOf(
+    "- name: Create signed macOS DMG with bounded retry",
+  );
+  const dmgEnd = workflow.indexOf("\n      - name:", dmgStart + 1);
+  const dmgStep = workflow.slice(dmgStart, dmgEnd);
+
+  assert.match(buildStep, /runner\.os.*macOS[\s\S]*?--bundles app/);
+  assert.notEqual(dmgStart, -1, "the workflow must create the DMG outside Tauri");
+  assert.match(dmgStep, /"hdiutil"[\s\S]*?"create"/);
+  assert.match(dmgStep, /timeout\s*=/);
+  assert.match(dmgStep, /attempts\s*=/);
+  assert.match(dmgStep, /codesign --force --timestamp/);
+  assert.match(dmgStep, /--keychain "\$APPLE_CODESIGN_KEYCHAIN"/);
+  assert.match(dmgStep, /--sign "\$APPLE_SIGNING_IDENTITY"/);
+  assert.match(dmgStep, /hdiutil verify "\$DMG_PATH"/);
+});
+
 test("notarization key exists only for macOS build steps and is always removed", async () => {
   const workflow = await readFile(workflowPath, "utf8");
 

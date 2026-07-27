@@ -470,6 +470,7 @@ jobs:
 
           CERTIFICATE_PATH="$RUNNER_TEMP/verboo-developer-id-${{ matrix.target }}.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/verboo-code-signing-${{ matrix.target }}.keychain-db"
+          ORIGINAL_KEYCHAINS_PATH="$RUNNER_TEMP/verboo-original-keychains-${{ matrix.target }}.txt"
           KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
           echo "::add-mask::$KEYCHAIN_PASSWORD"
           ORIGINAL_KEYCHAINS=()
@@ -481,6 +482,7 @@ jobs:
             security list-keychains -d user |
               sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//'
           )
+          printf '%s\n' "${ORIGINAL_KEYCHAINS[@]}" > "$ORIGINAL_KEYCHAINS_PATH"
 
           cleanup_codesign_keychain() {
             if [ "${#ORIGINAL_KEYCHAINS[@]}" -gt 0 ]; then
@@ -490,7 +492,7 @@ jobs:
               security list-keychains -d user -s >/dev/null 2>&1 || true
             fi
             security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
-            rm -f "$CERTIFICATE_PATH"
+            rm -f "$CERTIFICATE_PATH" "$ORIGINAL_KEYCHAINS_PATH"
           }
           trap cleanup_codesign_keychain EXIT
 
@@ -556,6 +558,13 @@ jobs:
             exit 1
           fi
           echo "Signed $SIGNED_MACHO_COUNT embedded CLI Mach-O binaries"
+          rm -f "$CERTIFICATE_PATH"
+          {
+            echo "APPLE_CODESIGN_KEYCHAIN=$KEYCHAIN_PATH"
+            echo "APPLE_SIGNING_IDENTITY=$SIGNING_IDENTITY"
+            echo "APPLE_ORIGINAL_KEYCHAINS_PATH=$ORIGINAL_KEYCHAINS_PATH"
+          } >> "$GITHUB_ENV"
+          trap - EXIT
 
       - name: Build Tauri bundle and signed updater artifacts
         env:
@@ -576,8 +585,15 @@ jobs:
           test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo "::error::TAURI_SIGNING_PRIVATE_KEY is missing"; exit 1; }
           test -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" || { echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is missing"; exit 1; }
           BUILD_LOG="$RUNNER_TEMP/tauri-build-${{ matrix.target }}.log"
+          BUILD_ARGS=(--target "${{ matrix.target }}")
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            # Tauri's create-dmg helper can block indefinitely inside
+            # DiskImages. Keep its signed app/updater output, then create the
+            # DMG in the bounded step below.
+            BUILD_ARGS+=(--bundles app)
+          fi
           set +e
-          cargo +1.89.0 tauri build --target ${{ matrix.target }} 2>&1 | tee "$BUILD_LOG"
+          cargo +1.89.0 tauri build "${BUILD_ARGS[@]}" 2>&1 | tee "$BUILD_LOG"
           BUILD_STATUS="${PIPESTATUS[0]}"
           set -e
           if [ "$BUILD_STATUS" -ne 0 ]; then
@@ -599,6 +615,96 @@ jobs:
               cargo +1.89.0 tauri signer sign "$PACKAGES"
             done
           fi
+
+      - name: Create signed macOS DMG with bounded retry
+        if: runner.os == 'macOS'
+        env:
+          VERSION: ${{ needs.resolve-tag.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE_ROOT="src-tauri/target/${{ matrix.target }}/release/bundle"
+          APP_PATH=$(find "$BUNDLE_ROOT/macos" -maxdepth 1 -type d -name '*.app' | head -1)
+          test -n "$APP_PATH"
+          test -n "${APPLE_CODESIGN_KEYCHAIN:-}"
+          test -f "$APPLE_CODESIGN_KEYCHAIN"
+          test -n "${APPLE_SIGNING_IDENTITY:-}"
+
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin) DMG_ARCH="aarch64" ;;
+            x86_64-apple-darwin) DMG_ARCH="x64" ;;
+            *)
+              echo "::error::Unsupported macOS target ${{ matrix.target }}"
+              exit 1
+              ;;
+          esac
+
+          DMG_SOURCE="$RUNNER_TEMP/verboo-dmg-source-${{ matrix.target }}"
+          DMG_PATH="$BUNDLE_ROOT/dmg/Verboo Code_${VERSION}_${DMG_ARCH}.dmg"
+          rm -rf "$DMG_SOURCE"
+          rm -f "$DMG_PATH"
+          mkdir -p "$DMG_SOURCE" "$(dirname "$DMG_PATH")"
+          ditto "$APP_PATH" "$DMG_SOURCE/$(basename "$APP_PATH")"
+          ln -s /Applications "$DMG_SOURCE/Applications"
+
+          python3 - "$DMG_SOURCE" "$DMG_PATH" <<'PY'
+          import pathlib
+          import subprocess
+          import sys
+          import time
+
+          source = sys.argv[1]
+          dmg = pathlib.Path(sys.argv[2])
+          timeout = 600
+          attempts = 2
+          command = [
+              "hdiutil",
+              "create",
+              "-volname",
+              "Verboo Code",
+              "-srcfolder",
+              source,
+              "-format",
+              "UDZO",
+              "-imagekey",
+              "zlib-level=9",
+              "-ov",
+              str(dmg),
+          ]
+
+          for attempt in range(1, attempts + 1):
+              started_at = time.monotonic()
+              print(
+                  f"Creating DMG (attempt {attempt}/{attempts}, timeout {timeout}s): "
+                  + " ".join(command),
+                  flush=True,
+              )
+              try:
+                  subprocess.run(command, check=True, timeout=timeout)
+                  print(
+                      f"DMG created in {time.monotonic() - started_at:.1f}s",
+                      flush=True,
+                  )
+                  break
+              except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                  print(f"DMG attempt {attempt} failed: {error}", file=sys.stderr)
+                  subprocess.run(["hdiutil", "info"], check=False)
+                  subprocess.run(
+                      ["pkill", "-f", "diskimages-helper"],
+                      check=False,
+                  )
+                  dmg.unlink(missing_ok=True)
+                  if attempt == attempts:
+                      raise
+                  time.sleep(5)
+          PY
+
+          codesign --force --timestamp \
+            --keychain "$APPLE_CODESIGN_KEYCHAIN" \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            "$DMG_PATH"
+          codesign --verify --strict --verbose=2 "$DMG_PATH"
+          hdiutil verify "$DMG_PATH"
 
       - name: Verify and submit macOS artifacts for asynchronous notarization
         id: notarization
@@ -698,7 +804,26 @@ jobs:
       - name: Remove Apple notarization credentials
         if: always() && runner.os == 'macOS'
         shell: bash
-        run: rm -f "${APPLE_API_KEY_PATH:-}"
+        run: |
+          set +e
+          ORIGINAL_KEYCHAINS=()
+          if [ -f "${APPLE_ORIGINAL_KEYCHAINS_PATH:-}" ]; then
+            while IFS= read -r keychain; do
+              if [ -n "$keychain" ]; then
+                ORIGINAL_KEYCHAINS+=("$keychain")
+              fi
+            done < "$APPLE_ORIGINAL_KEYCHAINS_PATH"
+          fi
+          if [ "${#ORIGINAL_KEYCHAINS[@]}" -gt 0 ]; then
+            security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}"
+          else
+            security list-keychains -d user -s
+          fi
+          if [ -n "${APPLE_CODESIGN_KEYCHAIN:-}" ]; then
+            security delete-keychain "$APPLE_CODESIGN_KEYCHAIN"
+          fi
+          rm -f "${APPLE_API_KEY_PATH:-}"
+          rm -f "${APPLE_ORIGINAL_KEYCHAINS_PATH:-}"
 
       - name: Run packaged multiwebview runtime smoke (macOS)
         if: runner.os == 'macOS' && needs.resolve-tag.outputs.is_prerelease != 'true'
