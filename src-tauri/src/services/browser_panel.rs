@@ -87,6 +87,7 @@ impl BrowserBounds {
 #[derive(Default)]
 pub struct BrowserPanelState {
     inner: Mutex<BrowserPanelInner>,
+    tab_creation: Mutex<()>,
 }
 
 struct BrowserTabRuntime {
@@ -123,6 +124,10 @@ impl BrowserPanelState {
         // provavelmente já morreu junto com o thread); preferimos
         // retornar estado potencialmente inconsistente a abortar o app.
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn lock_tab_creation(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.tab_creation.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -1135,6 +1140,12 @@ mod bridge_plumbing {
 
 // ── Multi-tab session commands (Task 4) ────────────────────────────
 
+fn smoke_create_trace(message: &str) {
+    if std::env::var_os("VERBOO_BROWSER_SMOKE_REPORT").is_some() {
+        eprintln!("[smoke:create] {message}");
+    }
+}
+
 #[tauri::command]
 pub fn browser_session_open(
     state: State<'_, BrowserPanelState>,
@@ -1188,12 +1199,17 @@ pub fn browser_session_destroy(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn browser_tab_create(
     app: AppHandle,
     state: State<'_, BrowserPanelState>,
     url: Option<String>,
 ) -> Result<BrowserSessionSnapshot, String> {
+    // The async command wrapper leaves the WebView2 IPC callback, while this
+    // gate preserves the single-file creation order needed to reuse the first
+    // tab's environment when multiple create requests arrive together.
+    let _creation_guard = state.lock_tab_creation();
+
     // Bounds come from the session — set once by browser_session_open.
     // The renderer never re-sends them.
     let bounds = {
@@ -1245,6 +1261,7 @@ pub fn browser_tab_create(
         }
     };
 
+    smoke_create_trace("window.add_child starting");
     let webview = window
         .add_child(
             builder,
@@ -1252,17 +1269,21 @@ pub fn browser_tab_create(
             LogicalSize::new(bounds.width, bounds.height),
         )
         .map_err(|e| format!("add_child falhou: {e}"))?;
+    smoke_create_trace("window.add_child completed");
 
     // Atomic creation: attach the bridge. On failure, destroy the partial
     // webview and propagate the error — the runtime map and session model
     // are NOT mutated (try_attach_or_destroy pattern).
+    smoke_create_trace("bridge attach starting");
     let attach_result = bridge_plumbing::attach_message_handler(&webview, &state, &tab_id);
     if let Err(error) = attach_result {
         let _ = webview.close();
         return Err(error);
     }
+    smoke_create_trace("bridge attach completed");
 
     // Hide all other tabs, show this one.
+    smoke_create_trace("visibility update starting");
     {
         let mut inner = state.lock();
         let other_ids: Vec<BrowserTabId> = inner
@@ -1281,8 +1302,10 @@ pub fn browser_tab_create(
         }
         inner.visible = true;
     }
+    smoke_create_trace("visibility update completed");
 
     if initial != "about:blank" {
+        smoke_create_trace("initial navigation starting");
         if let Err(error) = webview.navigate(parsed) {
             // Rollback: close the tab we just created.
             let mut inner = state.lock();
@@ -1293,9 +1316,11 @@ pub fn browser_tab_create(
             let _ = inner.session.close(&tab_id);
             return Err(format!("navigate inicial falhou: {error}"));
         }
+        smoke_create_trace("initial navigation completed");
     }
 
     let inner = state.lock();
+    smoke_create_trace("browser_tab_create returning");
     Ok(inner.session.snapshot(inner.visible))
 }
 
@@ -2257,6 +2282,45 @@ mod tests {
             create.contains(".environment()") && create.contains(".with_environment("),
             "Windows tabs must share one CoreWebView2Environment instead of creating one per tab"
         );
+        assert!(
+            create
+                .find("let _creation_guard = state.lock_tab_creation();")
+                .is_some_and(|gate| gate < create.find("let environment_source").unwrap()),
+            "tab creation must be serialized before selecting the shared WebView2 environment"
+        );
+    }
+
+    #[test]
+    fn windows_tab_creation_runs_outside_the_webview2_ipc_callback() {
+        let source = include_str!("browser_panel.rs");
+        assert!(
+            source.contains("#[tauri::command(async)]\npub fn browser_tab_create"),
+            "tab creation must leave the WebView2 IPC callback before waiting on main-thread work"
+        );
+    }
+
+    #[test]
+    fn tab_creation_gate_serializes_concurrent_requests() {
+        let state = Arc::new(BrowserPanelState::default());
+        let first_guard = state.lock_tab_creation();
+        let second_state = Arc::clone(&state);
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+
+        let second_request = std::thread::spawn(move || {
+            let _guard = second_state.lock_tab_creation();
+            entered_tx.send(()).unwrap();
+        });
+
+        assert!(
+            matches!(
+                entered_rx.recv_timeout(Duration::from_millis(50)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "a second creation request must wait for the first"
+        );
+        drop(first_guard);
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        second_request.join().unwrap();
     }
 
     #[test]

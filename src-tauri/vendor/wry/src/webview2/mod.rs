@@ -143,6 +143,7 @@ impl InnerWebView {
     let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
 
     let hwnd = Self::create_container_hwnd(parent, &attributes, is_child)?;
+    smoke_trace("container HWND ready");
 
     let drop_handler = attributes.drag_drop_handler.take();
     let bounds = attributes.bounds;
@@ -168,6 +169,7 @@ impl InnerWebView {
     smoke_trace("creating WebView2 controller");
     let controller = Self::create_controller(hwnd, &env, attributes.incognito, background_color)?;
     smoke_trace("WebView2 controller ready");
+    smoke_trace("init_webview starting");
     let webview = Self::init_webview(
       parent,
       hwnd,
@@ -178,15 +180,19 @@ impl InnerWebView {
       pl_attrs,
       is_child,
     )?;
+    smoke_trace("init_webview completed");
 
     let drag_drop_controller = drop_handler.map(|handler| {
+      smoke_trace("drag-drop setup starting");
       // Disable file drops, so our handler can capture it
       unsafe {
         let _ = controller
           .cast::<ICoreWebView2Controller4>()
           .and_then(|c| c.SetAllowExternalDrop(false));
       }
-      DragDropController::new(hwnd, handler)
+      let drag_drop_controller = DragDropController::new(hwnd, handler);
+      smoke_trace("drag-drop setup completed");
+      drag_drop_controller
     });
 
     let w = Self {
@@ -201,11 +207,14 @@ impl InnerWebView {
     };
 
     if is_child {
+      smoke_trace("setting child bounds");
       w.set_bounds(bounds.unwrap_or_default())?;
+      smoke_trace("child bounds set");
     } else {
       w.resize_to_parent()?;
     }
 
+    smoke_trace("InnerWebView ready");
     Ok(w)
   }
 
@@ -476,7 +485,9 @@ impl InnerWebView {
     pl_attrs: super::PlatformSpecificWebViewAttributes,
     is_child: bool,
   ) -> Result<ICoreWebView2> {
+    smoke_trace("init: CoreWebView2 starting");
     let webview = unsafe { controller.CoreWebView2()? };
+    smoke_trace("init: CoreWebView2 completed");
 
     // Theme
     if let Some(theme) = pl_attrs.theme {
@@ -510,13 +521,19 @@ impl InnerWebView {
     let mut token = EventRegistrationToken::default();
 
     // Webview Settings
+    smoke_trace("init: settings starting");
     unsafe { Self::set_webview_settings(&webview, &attributes, &pl_attrs)? };
+    smoke_trace("init: settings completed");
 
     // Webview handlers
+    smoke_trace("init: handlers starting");
     unsafe { Self::attach_handlers(hwnd, &webview, &mut attributes, &mut token, env)? };
+    smoke_trace("init: handlers completed");
 
     // IPC handler
+    smoke_trace("init: IPC handler starting");
     unsafe { Self::attach_ipc_handler(&webview, &mut attributes, &mut token)? };
+    smoke_trace("init: IPC handler completed");
 
     // Custom protocols handler
     let http_or_https = if pl_attrs.use_https { "https" } else { "http" };
@@ -525,6 +542,7 @@ impl InnerWebView {
       .iter()
       .map(|n| n.0.clone())
       .collect();
+    smoke_trace("init: custom protocols starting");
     if !attributes.custom_protocols.is_empty() {
       unsafe {
         Self::attach_custom_protocol_handler(
@@ -538,13 +556,17 @@ impl InnerWebView {
         )?
       };
     }
+    smoke_trace("init: custom protocols completed");
 
     // Initialize main and subframe scripts
+    smoke_trace("init: initialization scripts starting");
     for init_script in attributes.initialization_scripts {
       Self::add_script_to_execute_on_document_created(&webview, init_script.script)?;
     }
+    smoke_trace("init: initialization scripts completed");
 
     // Enable clipboard
+    smoke_trace("init: clipboard handler starting");
     if attributes.clipboard {
       unsafe {
         webview.add_PermissionRequested(
@@ -563,8 +585,10 @@ impl InnerWebView {
         )?;
       }
     }
+    smoke_trace("init: clipboard handler completed");
 
     // Navigation
+    smoke_trace("init: navigation starting");
     if let Some(mut url) = attributes.url {
       if let Some((protocol, _)) = url.split_once("://") {
         if custom_protocols.contains(protocol) {
@@ -584,6 +608,7 @@ impl InnerWebView {
       let html = HSTRING::from(html);
       unsafe { webview.NavigateToString(&html)? };
     }
+    smoke_trace("init: navigation completed");
 
     // Subclass parent for resizing and focus
     if !is_child {
@@ -591,14 +616,19 @@ impl InnerWebView {
     }
 
     unsafe {
+      smoke_trace("init: visibility starting");
       controller.SetIsVisible(attributes.visible)?;
+      smoke_trace("init: visibility completed");
 
       if attributes.focused {
+        smoke_trace("init: focus starting");
         controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)?;
+        smoke_trace("init: focus completed");
       }
     }
 
     // Extension loading
+    smoke_trace("init: extension loading starting");
     if pl_attrs.browser_extensions_enabled {
       if let Some(extension_path) = pl_attrs.extension_path {
         unsafe {
@@ -606,7 +636,9 @@ impl InnerWebView {
         }
       }
     }
+    smoke_trace("init: extension loading completed");
 
+    smoke_trace("init: returning");
     Ok(webview)
   }
 
@@ -1354,17 +1386,33 @@ impl InnerWebView {
 
   #[inline]
   fn add_script_to_execute_on_document_created(webview: &ICoreWebView2, js: String) -> Result<()> {
-    let webview = webview.clone();
-    AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation(
-      Box::new(move |handler| unsafe {
-        let js = HSTRING::from(js);
-        webview
-          .AddScriptToExecuteOnDocumentCreated(&js, &handler)
-          .map_err(Into::into)
-      }),
-      Box::new(|e, _| e),
-    )
-    .map_err(Into::into)
+    smoke_trace("add_script: dispatch starting");
+    let event = unsafe { CreateEventW(None, true, false, PCWSTR::null())? };
+    let result: Rc<RefCell<Option<windows::core::Result<()>>>> = Rc::new(RefCell::new(None));
+    let result_clone = result.clone();
+    let event_handle = event.0 as isize;
+    let handler = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
+      move |error_code, _id| {
+        smoke_trace("add_script: callback received");
+        *result_clone.borrow_mut() = Some(error_code);
+        unsafe { SetEvent(HANDLE(event_handle as *mut _)).ok() };
+        Ok(())
+      },
+    ));
+
+    let js = HSTRING::from(js);
+    if let Err(error) = unsafe { webview.AddScriptToExecuteOnDocumentCreated(&js, &handler) } {
+      let _ = unsafe { CloseHandle(event) };
+      return Err(error.into());
+    }
+
+    co_wait_for_handle(event)?;
+    smoke_trace("add_script: wait completed");
+    let registration = result
+      .borrow_mut()
+      .take()
+      .unwrap_or_else(|| Err(windows::core::Error::from(E_UNEXPECTED)));
+    registration.map_err(Into::into)
   }
 
   #[inline]

@@ -258,4 +258,25 @@ mod contract_tests {
             "Cargo must use the pinned Wry source containing the COM wait correction"
         );
     }
+
+    #[test]
+    fn webview2_document_script_wait_preserves_com_sta_reentrancy() {
+        let source = include_str!("../../../vendor/wry/src/webview2/mod.rs");
+        let helper = source
+            .split_once("fn add_script_to_execute_on_document_created")
+            .and_then(|(_, tail)| tail.split_once("\n  #[inline]\n  fn execute_script"))
+            .map(|(helper, _)| helper)
+            .expect("vendored Wry document-script helper must remain inspectable");
+        assert!(
+            !helper.contains("wait_for_async_operation"),
+            "WebView2 document scripts must not use webview2-com's nested message pump"
+        );
+        assert!(
+            helper.contains("CreateEventW")
+                && helper.contains("AddScriptToExecuteOnDocumentCreatedCompletedHandler::create")
+                && helper.contains("SetEvent")
+                && helper.contains("co_wait_for_handle(event)"),
+            "WebView2 document script registration must use the COM-aware wait helper"
+        );
+    }
 }

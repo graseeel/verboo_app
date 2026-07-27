@@ -44,8 +44,41 @@ test("notarization key exists only for macOS build steps and is always removed",
 
 test("embedded CLI Mach-O binaries receive Developer ID hardened signatures", async () => {
   const workflow = await readFile(workflowPath, "utf8");
+  const prepareStart = workflow.indexOf(
+    "- name: Prepare Apple notarization credentials",
+  );
+  const prepareEnd = workflow.indexOf(
+    "- name: Build Tauri bundle and signed updater artifacts",
+    prepareStart,
+  );
+  const prepareStep = workflow.slice(prepareStart, prepareEnd);
 
   assert.match(workflow, /security import "\$CERTIFICATE_PATH"/);
+  assert.match(prepareStep, /-T \/usr\/bin\/codesign/);
+  assert.doesNotMatch(prepareStep, /^\s+-A\s*\\$/m);
+  assert.match(workflow, /ORIGINAL_KEYCHAINS=\(\)/);
+  assert.match(
+    workflow,
+    /security list-keychains -d user -s "\$KEYCHAIN_PATH" "\$\{ORIGINAL_KEYCHAINS\[@\]\}"/,
+  );
+  assert.match(
+    workflow,
+    /security list-keychains -d user -s "\$\{ORIGINAL_KEYCHAINS\[@\]\}"/,
+  );
+  const partitionIndex = prepareStep.indexOf(
+    "security set-key-partition-list",
+  );
+  const searchListIndex = prepareStep.indexOf(
+    'security list-keychains -d user -s "$KEYCHAIN_PATH"',
+  );
+  const identityIndex = prepareStep.indexOf("security find-identity");
+  const codesignIndex = prepareStep.indexOf("codesign --force");
+  assert.ok(
+    partitionIndex < searchListIndex &&
+      searchListIndex < identityIndex &&
+      identityIndex < codesignIndex,
+    "the prepared identity must enter the user search list before codesign",
+  );
   assert.match(workflow, /find "\$RESOURCE_ROOT" -type f -print0/);
   assert.match(workflow, /FILE_DESCRIPTION=.*file -b "\$candidate"/);
   assert.match(workflow, /FILE_DESCRIPTION.*Mach-O/);

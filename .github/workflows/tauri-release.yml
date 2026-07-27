@@ -443,8 +443,23 @@ jobs:
           KEYCHAIN_PATH="$RUNNER_TEMP/verboo-code-signing-${{ matrix.target }}.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
           echo "::add-mask::$KEYCHAIN_PASSWORD"
+          ORIGINAL_KEYCHAINS=()
+          while IFS= read -r keychain; do
+            if [ -n "$keychain" ]; then
+              ORIGINAL_KEYCHAINS+=("$keychain")
+            fi
+          done < <(
+            security list-keychains -d user |
+              sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//'
+          )
 
           cleanup_codesign_keychain() {
+            if [ "${#ORIGINAL_KEYCHAINS[@]}" -gt 0 ]; then
+              security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}" \
+                >/dev/null 2>&1 || true
+            else
+              security list-keychains -d user -s >/dev/null 2>&1 || true
+            fi
             security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
             rm -f "$CERTIFICATE_PATH"
           }
@@ -456,7 +471,7 @@ jobs:
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security import "$CERTIFICATE_PATH" \
             -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -A \
+            -T /usr/bin/codesign \
             -t cert \
             -f pkcs12 \
             -k "$KEYCHAIN_PATH"
@@ -465,6 +480,11 @@ jobs:
             -s \
             -k "$KEYCHAIN_PASSWORD" \
             "$KEYCHAIN_PATH"
+          if [ "${#ORIGINAL_KEYCHAINS[@]}" -gt 0 ]; then
+            security list-keychains -d user -s "$KEYCHAIN_PATH" "${ORIGINAL_KEYCHAINS[@]}"
+          else
+            security list-keychains -d user -s "$KEYCHAIN_PATH"
+          fi
 
           SIGNING_IDENTITY=$(
             security find-identity -v -p codesigning "$KEYCHAIN_PATH" |
@@ -493,6 +513,7 @@ jobs:
                 echo "::error file=$candidate::Expected $EXPECTED_MACHO_ARCH Mach-O, found: $FILE_DESCRIPTION"
                 exit 1
               fi
+              echo "Signing embedded Mach-O: $candidate ($FILE_DESCRIPTION)"
               codesign --force --options runtime --timestamp \
                 --keychain "$KEYCHAIN_PATH" \
                 --sign "$SIGNING_IDENTITY" \
