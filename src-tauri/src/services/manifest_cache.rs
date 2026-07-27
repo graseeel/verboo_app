@@ -33,6 +33,7 @@
 //! never across the CLI spawn. This is the standard single-flight pattern.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -83,7 +84,17 @@ async fn cache() -> &'static Mutex<Option<FetchState>> {
 /// before awaiting the watch channel.
 pub async fn get_or_fetch_manifests() -> Result<HashMap<String, MarketplacePluginEntry>, PluginError> {
     let cache_mutex = cache().await;
+    get_or_fetch_with(cache_mutex, fetch_manifests_inner).await
+}
 
+async fn get_or_fetch_with<F, Fut>(
+    cache_mutex: &Mutex<Option<FetchState>>,
+    fetch: F,
+) -> Result<HashMap<String, MarketplacePluginEntry>, PluginError>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<HashMap<String, MarketplacePluginEntry>, PluginError>>,
+{
     // ── Phase 1: brief lock to check state ─────────────────────────────
     let action = {
         let mut guard = cache_mutex.lock().await;
@@ -128,23 +139,23 @@ pub async fn get_or_fetch_manifests() -> Result<HashMap<String, MarketplacePlugi
                         _ => {
                             // Leader failed or cache still stale. Fall through
                             // to a direct fetch (rare path).
-                            fetch_direct().await
+                            fetch().await
                         }
                     }
                 }
                 Ok(Err(_)) => {
                     // watch sender dropped (leader panicked/errored). Direct fetch.
-                    fetch_direct().await
+                    fetch().await
                 }
                 Err(_) => {
                     // Timeout. Direct fetch (don't hang the command).
-                    fetch_direct().await
+                    fetch().await
                 }
             }
         }
         Action::LeadFetch(tx) => {
             // We're the leader. Do the fetch OUTSIDE the lock.
-            let result = fetch_manifests_inner().await;
+            let result = fetch().await;
 
             // Re-acquire the lock to publish the result.
             let mut guard = cache_mutex.lock().await;
@@ -185,13 +196,6 @@ enum Action {
     LeadFetch(watch::Sender<Option<Arc<CachedManifests>>>),
 }
 
-/// Direct fetch fallback (no caching). Used when the leader fails or times
-/// out — the waiter does its own fetch without trying to cache (avoids
-/// thundering herd on failure, since failures are rare).
-async fn fetch_direct() -> Result<HashMap<String, MarketplacePluginEntry>, PluginError> {
-    fetch_manifests_inner().await
-}
-
 /// Inner fetch: calls `marketplace_list` (CLI) + `read_all_manifests` (disk).
 async fn fetch_manifests_inner() -> Result<HashMap<String, MarketplacePluginEntry>, PluginError> {
     let marketplaces = crate::services::plugins_service::marketplace_list().await?;
@@ -213,6 +217,7 @@ pub async fn invalidate() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn ttl_is_60_seconds() {
@@ -267,62 +272,41 @@ mod tests {
         }
     }
 
-    /// Single-flight correctness test: N concurrent calls must produce
-    /// exactly 1 leader fetch (not N). The previous test only asserted
-    /// "no timeout" — this one asserts "1 fetch" by counting leader
-    /// publications via the watch channel.
-    ///
-    /// This test uses a mock fetch path by pre-populating the cache as
-    /// a "leader" would, then verifying that concurrent callers all see
-    /// the same cached result without triggering additional fetches.
+    /// Single-flight correctness test: N concurrent calls must share one
+    /// deterministic fetch instead of depending on the real CLI or filesystem.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn single_flight_produces_one_fetch_not_n() {
-        // Invalidate any existing cache.
-        invalidate().await;
-
-        // Spawn 10 concurrent calls. In the real CLI environment, the leader
-        // fetch may succeed or fail. The key assertion: we don't see 10
-        // "direct fetch (no cache)" fallbacks (which would mean single-flight
-        // is broken — every waiter did its own fetch).
+        let cache = Arc::new(Mutex::new(None));
+        let fetch_count = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(tokio::sync::Barrier::new(10));
         let mut handles = Vec::new();
-        for i in 0..10 {
+
+        for _ in 0..10 {
+            let cache = Arc::clone(&cache);
+            let fetch_count = Arc::clone(&fetch_count);
+            let start = Arc::clone(&start);
             handles.push(tokio::spawn(async move {
-                tokio::time::timeout(Duration::from_secs(30), get_or_fetch_manifests()).await
+                start.wait().await;
+                get_or_fetch_with(cache.as_ref(), || {
+                    let fetch_count = Arc::clone(&fetch_count);
+                    async move {
+                        fetch_count.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        Ok::<_, PluginError>(HashMap::new())
+                    }
+                })
+                .await
             }));
         }
 
-        let mut ok_count = 0;
-        let mut err_count = 0;
-        let mut timeout_count = 0;
         for handle in handles {
-            let result = tokio::time::timeout(Duration::from_secs(60), handle)
+            let result = tokio::time::timeout(Duration::from_secs(2), handle)
                 .await
-                .expect("task hung > 60s")
+                .expect("single-flight task hung")
                 .expect("join failed");
-            match result {
-                Ok(Ok(_)) => ok_count += 1,
-                Ok(Err(_)) => err_count += 1,
-                Err(_) => timeout_count += 1,
-            }
+            assert!(result.is_ok());
         }
 
-        // All must complete (no timeouts = no deadlock).
-        assert_eq!(timeout_count, 0, "no calls should time out (deadlock?)");
-
-        // At least one call must have succeeded or errored (the leader).
-        // The rest are either waiters (Ok if leader published, Err if fallback)
-        // or direct fetchers (if single-flight is broken).
-        eprintln!(
-            "[test] single_flight: ok={ok_count}, err={err_count}, timeout={timeout_count}"
-        );
-
-        // If the CLI is available, the leader fetch succeeds and all 10
-        // callers get Ok (1 leader + 9 waiters via tx.send). If the CLI
-        // is NOT available, the leader errors and all 10 callers get Err
-        // (1 leader error + 9 waiter fallbacks). Either way, no timeouts.
-        // The single-flight bug would manifest as 10 separate "direct fetch"
-        // log lines — we can't assert on those here without capturing stderr,
-        // but the concurrent_calls_do_not_deadlock test + the tx.send fix
-        // together cover the property.
+        assert_eq!(fetch_count.load(Ordering::SeqCst), 1);
     }
 }
