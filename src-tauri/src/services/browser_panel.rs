@@ -1206,8 +1206,8 @@ pub fn browser_tab_create(
     url: Option<String>,
 ) -> Result<BrowserSessionSnapshot, String> {
     // The async command wrapper leaves the WebView2 IPC callback, while this
-    // gate preserves the single-file creation order needed to reuse the first
-    // tab's environment when multiple create requests arrive together.
+    // gate preserves the single-file creation order when multiple create
+    // requests arrive together.
     let _creation_guard = state.lock_tab_creation();
 
     // Bounds come from the session — set once by browser_session_open.
@@ -1228,38 +1228,6 @@ pub fn browser_tab_create(
     let blank = parse_url_for_panel("about:blank")?;
     let builder = tauri::webview::WebviewBuilder::new(&tab_id, tauri::WebviewUrl::External(blank))
         .incognito(true);
-
-    // A tabbed WebView2 host must create separate controllers from one shared
-    // environment. Creating an environment per tab can block the second
-    // `add_child` while WebView2 is already serving the same user-data folder.
-    // The first browser tab establishes the environment; every later tab
-    // receives a clone of it. macOS/Linux keep their existing builder path.
-    #[cfg(windows)]
-    let builder = {
-        let environment_source = {
-            let inner = state.lock();
-            inner
-                .tabs
-                .values()
-                .next()
-                .map(|runtime| runtime.webview.clone())
-        };
-
-        if let Some(environment_source) = environment_source {
-            let (builder_tx, builder_rx) = std::sync::mpsc::sync_channel(1);
-            environment_source
-                .with_webview(move |platform_webview| {
-                    let _ = builder_tx
-                        .send(builder.with_environment(platform_webview.environment()));
-                })
-                .map_err(|error| format!("obter ambiente WebView2 falhou: {error}"))?;
-            builder_rx
-                .recv_timeout(Duration::from_secs(10))
-                .map_err(|error| format!("obter ambiente WebView2 expirou: {error}"))?
-        } else {
-            builder
-        }
-    };
 
     smoke_create_trace("window.add_child starting");
     let webview = window
@@ -2267,8 +2235,9 @@ mod tests {
     }
 
     #[test]
-    fn windows_browser_tabs_reuse_the_existing_webview2_environment() {
+    fn windows_browser_tabs_keep_the_webview2_environment_on_the_ui_thread() {
         let source = include_str!("browser_panel.rs");
+        let wry_source = include_str!("../../vendor/wry/src/webview2/mod.rs").replace("\r\n", "\n");
         let create_start = source
             .find("pub fn browser_tab_create")
             .expect("browser_tab_create");
@@ -2279,14 +2248,20 @@ mod tests {
         let create = &source[create_start..create_end];
 
         assert!(
-            create.contains(".environment()") && create.contains(".with_environment("),
-            "Windows tabs must share one CoreWebView2Environment instead of creating one per tab"
+            !create.contains(".environment()") && !create.contains(".with_environment("),
+            "CoreWebView2Environment must never round-trip through the async command thread"
+        );
+        assert!(
+            wry_source.contains("EMBEDDED_BROWSER_ENVIRONMENT")
+                && wry_source.contains("EmbeddedBrowserEnvironmentLease")
+                && wry_source.contains("acquire_embedded_browser_environment"),
+            "vendored Wry must share the embedded-browser environment entirely on its UI STA"
         );
         assert!(
             create
                 .find("let _creation_guard = state.lock_tab_creation();")
-                .is_some_and(|gate| gate < create.find("let environment_source").unwrap()),
-            "tab creation must be serialized before selecting the shared WebView2 environment"
+                .is_some_and(|gate| gate < create.find("let bounds").unwrap()),
+            "tab creation must be serialized before reading or mutating session state"
         );
     }
 

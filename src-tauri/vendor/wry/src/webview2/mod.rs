@@ -51,6 +51,53 @@ const MAIN_THREAD_DISPATCHER_SUBCLASS_ID: u32 = WM_USER + 0x66;
 const IPC_INIT_SCRIPT: &str = r#"Object.defineProperty(window, 'ipc', { value: Object.freeze({ postMessage: s=> window.chrome.webview.postMessage(s) }) });"#;
 static EXEC_MSG_ID: Lazy<u32> = Lazy::new(|| unsafe { RegisterWindowMessageA(s!("Wry::ExecMsg")) });
 
+// WebView2 COM objects are apartment-affine. Keep the shared private-browser
+// environment on the UI STA instead of round-tripping it through Tauri's async
+// command thread. The final lease clears it when the last browser tab closes.
+thread_local! {
+  static EMBEDDED_BROWSER_ENVIRONMENT: RefCell<Option<(ICoreWebView2Environment, usize)>> =
+    const { RefCell::new(None) };
+}
+
+struct EmbeddedBrowserEnvironmentLease;
+
+impl Drop for EmbeddedBrowserEnvironmentLease {
+  fn drop(&mut self) {
+    EMBEDDED_BROWSER_ENVIRONMENT.with(|slot| {
+      let mut slot = slot.borrow_mut();
+      let should_clear = if let Some((_, leases)) = slot.as_mut() {
+        *leases = leases.saturating_sub(1);
+        *leases == 0
+      } else {
+        false
+      };
+      if should_clear {
+        *slot = None;
+      }
+    });
+  }
+}
+
+fn acquire_embedded_browser_environment(
+) -> Option<(ICoreWebView2Environment, EmbeddedBrowserEnvironmentLease)> {
+  EMBEDDED_BROWSER_ENVIRONMENT.with(|slot| {
+    let mut slot = slot.borrow_mut();
+    let (environment, leases) = slot.as_mut()?;
+    *leases += 1;
+    Some((environment.clone(), EmbeddedBrowserEnvironmentLease))
+  })
+}
+
+fn retain_embedded_browser_environment(
+  environment: &ICoreWebView2Environment,
+) -> EmbeddedBrowserEnvironmentLease {
+  EMBEDDED_BROWSER_ENVIRONMENT.with(|slot| {
+    let previous = slot.borrow_mut().replace((environment.clone(), 1));
+    debug_assert!(previous.is_none());
+  });
+  EmbeddedBrowserEnvironmentLease
+}
+
 impl From<webview2_com::Error> for Error {
   fn from(err: webview2_com::Error) -> Self {
     Error::WebView2Error(err)
@@ -100,6 +147,7 @@ pub(crate) struct InnerWebView {
   // the webview gets dropped, otherwise we'll have a memory leak
   #[allow(dead_code)]
   drag_drop_controller: Option<DragDropController>,
+  _embedded_browser_environment_lease: Option<EmbeddedBrowserEnvironmentLease>,
 }
 
 impl Drop for InnerWebView {
@@ -166,12 +214,30 @@ impl InnerWebView {
       attributes.background_color
     };
 
-    let env = if let Some(env) = &pl_attrs.environment {
+    let is_embedded_browser = id.starts_with("verboo-browser-");
+    let (env, embedded_browser_environment_lease) = if is_embedded_browser {
+      if let Some((environment, lease)) = acquire_embedded_browser_environment() {
+        smoke_trace("reusing UI-thread WebView2 environment");
+        (environment, Some(lease))
+      } else {
+        smoke_trace("creating UI-thread WebView2 environment");
+        let environment = if let Some(environment) = &pl_attrs.environment {
+          environment.clone()
+        } else {
+          Self::create_environment(&attributes, pl_attrs.clone())?
+        };
+        let lease = retain_embedded_browser_environment(&environment);
+        (environment, Some(lease))
+      }
+    } else if let Some(env) = &pl_attrs.environment {
       smoke_trace("reusing WebView2 environment");
-      env.clone()
+      (env.clone(), None)
     } else {
       smoke_trace("creating WebView2 environment");
-      Self::create_environment(&attributes, pl_attrs.clone())?
+      (
+        Self::create_environment(&attributes, pl_attrs.clone())?,
+        None,
+      )
     };
     smoke_trace("creating WebView2 controller");
     let controller = Self::create_controller(hwnd, &env, attributes.incognito, background_color)?;
@@ -211,6 +277,7 @@ impl InnerWebView {
       webview,
       env,
       drag_drop_controller,
+      _embedded_browser_environment_lease: embedded_browser_environment_lease,
     };
 
     if is_child {
