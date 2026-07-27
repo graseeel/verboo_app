@@ -519,7 +519,7 @@ jobs:
 
           SIGNING_IDENTITY=$(
             security find-identity -v -p codesigning "$KEYCHAIN_PATH" |
-              awk '/Developer ID Application:/ { print $2; exit }'
+              awk -F'"' '/Developer ID Application:/ { print $2; exit }'
           )
           if [ -z "$SIGNING_IDENTITY" ]; then
             echo "::error::No Developer ID Application identity found in the imported certificate"
