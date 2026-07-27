@@ -274,32 +274,32 @@ mod contract_tests {
     }
 
     #[test]
-    fn webview2_document_scripts_use_one_ordered_completion_pump() {
+    fn webview2_document_scripts_use_one_registration() {
         let source =
             include_str!("../../../vendor/wry/src/webview2/mod.rs").replace("\r\n", "\n");
         let helper = source
-            .split_once("fn finish_script_registration")
+            .split_once("fn add_script_to_execute_on_document_created")
             .and_then(|(_, tail)| tail.split_once("\n  #[inline]\n  fn execute_script"))
             .map(|(helper, _)| helper)
             .expect("vendored Wry document-script helper must remain inspectable");
         assert!(
             helper.contains("AddScriptToExecuteOnDocumentCreatedCompletedHandler::create")
                 && helper.contains(".AddScriptToExecuteOnDocumentCreated")
-                && helper.contains("wait_with_pump")
-                && helper.contains("Self::dispatch_handler")
-                && helper.contains("VecDeque"),
-            "document scripts must be registered in one posted, ordered callback chain"
+                && helper.contains("co_wait_for_handle(event)"),
+            "the combined document script must use one COM-aware registration wait"
         );
         assert!(
             !helper.contains("wait_for_async_operation")
-                && !helper.contains("co_wait_for_handle")
-                && !helper.contains("CreateEventW"),
-            "the script chain must not start a nested wait for each individual script"
+                && !helper.contains("wait_with_pump")
+                && !helper.contains("Self::dispatch_handler")
+                && !helper.contains("VecDeque"),
+            "document script registration must not chain nested callbacks or message pumps"
         );
         assert!(
-            source.matches("Self::add_scripts_to_execute_on_document_created").count() == 1
-                && source.contains("initialization_scripts.push(String::from(IPC_INIT_SCRIPT))"),
-            "the IPC shim and all initialization scripts must share the same ordered batch"
+            source.matches("Self::add_script_to_execute_on_document_created").count() == 1
+                && source.contains("initialization_scripts.push(String::from(IPC_INIT_SCRIPT))")
+                && source.contains("initialization_scripts.join(\"\\n;\\n\")"),
+            "the IPC shim and all initialization scripts must be combined in one ordered registration"
         );
     }
 

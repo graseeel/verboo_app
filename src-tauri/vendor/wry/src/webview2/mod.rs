@@ -8,7 +8,7 @@ mod util;
 use std::{
   borrow::Cow,
   cell::RefCell,
-  collections::{HashSet, VecDeque},
+  collections::HashSet,
   fmt::Write,
   fs,
   path::PathBuf,
@@ -576,7 +576,13 @@ impl InnerWebView {
         .into_iter()
         .map(|init_script| init_script.script),
     );
-    Self::add_scripts_to_execute_on_document_created(hwnd, &webview, initialization_scripts)?;
+    // WebView2 completes document-script registration asynchronously. Registering
+    // each script from the previous script's completion callback can strand a
+    // later callback while a second child webview is being created. A single
+    // ordered program keeps Tauri's initialization order without nesting async
+    // registrations inside WebView2 callbacks.
+    let initialization_script = initialization_scripts.join("\n;\n");
+    Self::add_script_to_execute_on_document_created(&webview, initialization_script)?;
     smoke_trace("init: initialization scripts completed");
 
     // Enable clipboard
@@ -1398,78 +1404,34 @@ impl InnerWebView {
   }
 
   #[inline]
-  fn finish_script_registration(
-    completion: &Rc<RefCell<Option<std::sync::mpsc::Sender<webview2_com::Result<()>>>>>,
-    result: webview2_com::Result<()>,
-  ) {
-    if let Some(completion) = completion.borrow_mut().take() {
-      let _ = completion.send(result);
-    }
-  }
-
-  fn register_next_document_script(
-    hwnd: HWND,
-    webview: ICoreWebView2,
-    scripts: Rc<RefCell<VecDeque<String>>>,
-    completion: Rc<RefCell<Option<std::sync::mpsc::Sender<webview2_com::Result<()>>>>>,
-  ) -> windows::core::Result<()> {
-    let Some(js) = scripts.borrow_mut().pop_front() else {
-      Self::finish_script_registration(&completion, Ok(()));
-      return Ok(());
-    };
-
+  fn add_script_to_execute_on_document_created(webview: &ICoreWebView2, js: String) -> Result<()> {
     smoke_trace("add_script: dispatch starting");
-    let next_webview = webview.clone();
-    let next_scripts = Rc::clone(&scripts);
-    let next_completion = Rc::clone(&completion);
+    let event = unsafe { CreateEventW(None, true, false, PCWSTR::null())? };
+    let result: Rc<RefCell<Option<windows::core::Result<()>>>> = Rc::new(RefCell::new(None));
+    let result_clone = Rc::clone(&result);
+    let event_handle = event.0 as isize;
     let handler = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
       move |error_code, _id| {
         smoke_trace("add_script: callback received");
-        if let Err(error) = error_code {
-          Self::finish_script_registration(&next_completion, Err(error.into()));
-          return Ok(());
-        }
-
-        let posted_webview = next_webview.clone();
-        let posted_scripts = Rc::clone(&next_scripts);
-        let posted_completion = Rc::clone(&next_completion);
-        let dispatch_result = unsafe {
-          Self::dispatch_handler(hwnd, move || {
-            if let Err(error) = Self::register_next_document_script(
-              hwnd,
-              posted_webview,
-              posted_scripts,
-              Rc::clone(&posted_completion),
-            ) {
-              Self::finish_script_registration(&posted_completion, Err(error.into()));
-            }
-          })
-        };
-        if let Err(error) = dispatch_result {
-          Self::finish_script_registration(&next_completion, Err(error.into()));
-        }
+        *result_clone.borrow_mut() = Some(error_code);
+        unsafe { SetEvent(HANDLE(event_handle as *mut _)).ok() };
         Ok(())
       },
     ));
 
     let js = HSTRING::from(js);
-    unsafe { webview.AddScriptToExecuteOnDocumentCreated(&js, &handler) }
-  }
+    if let Err(error) = unsafe { webview.AddScriptToExecuteOnDocumentCreated(&js, &handler) } {
+      let _ = unsafe { CloseHandle(event) };
+      return Err(error.into());
+    }
 
-  #[inline]
-  fn add_scripts_to_execute_on_document_created(
-    hwnd: HWND,
-    webview: &ICoreWebView2,
-    scripts: Vec<String>,
-  ) -> Result<()> {
-    let scripts = Rc::new(RefCell::new(VecDeque::from(scripts)));
-    let (completion_tx, completion_rx) = std::sync::mpsc::channel();
-    let completion = Rc::new(RefCell::new(Some(completion_tx)));
-
-    Self::register_next_document_script(hwnd, webview.clone(), scripts, completion)?;
-    webview2_com::wait_with_pump(completion_rx)??;
-    smoke_trace("add_scripts: wait completed");
-    Ok(())
+    co_wait_for_handle(event)?;
+    smoke_trace("add_script: wait completed");
+    let registration = result
+      .borrow_mut()
+      .take()
+      .unwrap_or_else(|| Err(windows::core::Error::from(E_UNEXPECTED)));
+    registration.map_err(Into::into)
   }
 
   #[inline]
