@@ -503,12 +503,23 @@ impl InnerWebView {
 
     let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
       move |error_code, controller| {
-        smoke_trace("create_controller callback received");
+        smoke_trace(&format!(
+          "create_controller callback received on {:?}",
+          std::thread::current().id()
+        ));
+        smoke_trace("create_controller callback storing result");
         *result_clone.borrow_mut() = Some((move || {
           error_code?;
           controller.ok_or_else(|| windows::core::Error::from(E_POINTER))
         })());
-        unsafe { SetEvent(HANDLE(event_handle as *mut _)).ok() };
+        smoke_trace("create_controller callback result stored");
+        match unsafe { SetEvent(HANDLE(event_handle as *mut _)) } {
+          Ok(()) => smoke_trace("create_controller callback event signaled"),
+          Err(error) => smoke_trace(&format!(
+            "create_controller callback event signal failed: {error}"
+          )),
+        }
+        smoke_trace("create_controller callback returning");
         Ok(())
       },
     ));
@@ -538,6 +549,10 @@ impl InnerWebView {
       }
     }
 
+    smoke_trace(&format!(
+      "create_controller waiting on {:?}",
+      std::thread::current().id()
+    ));
     co_wait_for_handle(event)?;
     smoke_trace("create_controller wait completed");
     let controller = result
