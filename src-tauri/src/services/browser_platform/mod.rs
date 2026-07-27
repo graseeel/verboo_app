@@ -274,7 +274,7 @@ mod contract_tests {
     }
 
     #[test]
-    fn webview2_document_scripts_use_one_registration() {
+    fn webview2_browser_tabs_skip_the_tauri_initialization_runtime() {
         let source =
             include_str!("../../../vendor/wry/src/webview2/mod.rs").replace("\r\n", "\n");
         let helper = source
@@ -286,20 +286,29 @@ mod contract_tests {
             helper.contains("AddScriptToExecuteOnDocumentCreatedCompletedHandler::create")
                 && helper.contains(".AddScriptToExecuteOnDocumentCreated")
                 && helper.contains("co_wait_for_handle(event)"),
-            "the combined document script must use one COM-aware registration wait"
+            "each required document script must use a COM-aware registration wait"
         );
         assert!(
             !helper.contains("wait_for_async_operation")
                 && !helper.contains("wait_with_pump")
                 && !helper.contains("Self::dispatch_handler")
                 && !helper.contains("VecDeque"),
-            "document script registration must not chain nested callbacks or message pumps"
+            "each required document script must use the direct COM-aware wait"
         );
         assert!(
-            source.matches("Self::add_script_to_execute_on_document_created").count() == 1
+            source.contains(
+                "let skip_tauri_initialization_scripts =\n      webview_id.starts_with(\"verboo-browser-\");"
+            ) && source.contains("if !skip_tauri_initialization_scripts")
                 && source.contains("initialization_scripts.push(String::from(IPC_INIT_SCRIPT))")
-                && source.contains("initialization_scripts.join(\"\\n;\\n\")"),
-            "the IPC shim and all initialization scripts must be combined in one ordered registration"
+                && !source.contains("initialization_scripts.join(\"\\n;\\n\")"),
+            "embedded browser tabs must keep the Wry IPC shim without exposing the Tauri runtime"
+        );
+        let bridge = include_str!("webview2_transport_setup.js");
+        assert!(
+            bridge.contains("window.chrome.webview.postMessage")
+                && !bridge.contains("__TAURI_INTERNALS__")
+                && !bridge.contains("window.ipc"),
+            "the isolated browser bridge must remain independent of the skipped Tauri runtime"
         );
     }
 

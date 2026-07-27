@@ -495,6 +495,13 @@ impl InnerWebView {
     smoke_trace("init: CoreWebView2 starting");
     let webview = unsafe { controller.CoreWebView2()? };
     smoke_trace("init: CoreWebView2 completed");
+    // Verboo's embedded browser hosts untrusted external pages. Those pages use
+    // the isolated native bridge registered after creation and never need
+    // `__TAURI_INTERNALS__`. Avoiding the Tauri runtime here also avoids the
+    // repeated WebView2 document-script registrations that can strand a later
+    // child controller's completion callback.
+    let skip_tauri_initialization_scripts =
+      webview_id.starts_with("verboo-browser-");
 
     // Theme
     if let Some(theme) = pl_attrs.theme {
@@ -570,19 +577,19 @@ impl InnerWebView {
     let mut initialization_scripts =
       Vec::with_capacity(attributes.initialization_scripts.len() + 1);
     initialization_scripts.push(String::from(IPC_INIT_SCRIPT));
-    initialization_scripts.extend(
-      attributes
-        .initialization_scripts
-        .into_iter()
-        .map(|init_script| init_script.script),
-    );
-    // WebView2 completes document-script registration asynchronously. Registering
-    // each script from the previous script's completion callback can strand a
-    // later callback while a second child webview is being created. A single
-    // ordered program keeps Tauri's initialization order without nesting async
-    // registrations inside WebView2 callbacks.
-    let initialization_script = initialization_scripts.join("\n;\n");
-    Self::add_script_to_execute_on_document_created(&webview, initialization_script)?;
+    if !skip_tauri_initialization_scripts {
+      initialization_scripts.extend(
+        attributes
+          .initialization_scripts
+          .into_iter()
+          .map(|init_script| init_script.script),
+      );
+    } else {
+      smoke_trace("init: skipping Tauri runtime scripts for embedded browser tab");
+    }
+    for initialization_script in initialization_scripts {
+      Self::add_script_to_execute_on_document_created(&webview, initialization_script)?;
+    }
     smoke_trace("init: initialization scripts completed");
 
     // Enable clipboard
