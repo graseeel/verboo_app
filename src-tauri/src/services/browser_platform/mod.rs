@@ -261,7 +261,8 @@ mod contract_tests {
 
     #[test]
     fn webview2_document_script_wait_preserves_com_sta_reentrancy() {
-        let source = include_str!("../../../vendor/wry/src/webview2/mod.rs");
+        let source =
+            include_str!("../../../vendor/wry/src/webview2/mod.rs").replace("\r\n", "\n");
         let helper = source
             .split_once("fn add_script_to_execute_on_document_created")
             .and_then(|(_, tail)| tail.split_once("\n  #[inline]\n  fn execute_script"))

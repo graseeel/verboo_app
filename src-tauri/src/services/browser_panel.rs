@@ -2292,7 +2292,7 @@ mod tests {
 
     #[test]
     fn windows_tab_creation_runs_outside_the_webview2_ipc_callback() {
-        let source = include_str!("browser_panel.rs");
+        let source = include_str!("browser_panel.rs").replace("\r\n", "\n");
         assert!(
             source.contains("#[tauri::command(async)]\npub fn browser_tab_create"),
             "tab creation must leave the WebView2 IPC callback before waiting on main-thread work"
