@@ -275,9 +275,52 @@ mod contract_tests {
         assert!(
             helper.contains("CreateEventW")
                 && helper.contains("AddScriptToExecuteOnDocumentCreatedCompletedHandler::create")
-                && helper.contains("SetEvent")
+                && helper.contains("defer_webview_completion")
                 && helper.contains("co_wait_for_handle(event)"),
             "WebView2 document script registration must use the COM-aware wait helper"
+        );
+        assert!(
+            !helper.contains("SetEvent("),
+            "the completion callback must not wake CoWait before it has fully returned"
+        );
+        let completion_barrier = source
+            .split_once("fn defer_webview_completion")
+            .and_then(|(_, tail)| {
+                tail.split_once("\n  #[inline]\n  fn add_script_to_execute_on_document_created")
+            })
+            .map(|(helper, _)| helper)
+            .expect("vendored Wry completion barrier must remain inspectable");
+        assert!(
+            completion_barrier.contains("Self::dispatch_handler")
+                && completion_barrier.contains("SetEvent")
+                && completion_barrier.contains("if let Err(error) = dispatch_result")
+                && completion_barrier.contains("return Err(error)"),
+            "script completion must be posted, with a signalling error fallback"
+        );
+        let dispatcher = source
+            .split_once("unsafe fn dispatch_handler")
+            .and_then(|(_, tail)| {
+                tail.split_once("\n  unsafe extern \"system\" fn main_thread_dispatcher_proc")
+            })
+            .map(|(helper, _)| helper)
+            .expect("vendored Wry window dispatcher must remain inspectable");
+        assert!(
+            dispatcher.contains("windows::core::Result<()>")
+                && dispatcher.contains("drop(Box::from_raw(raw))")
+                && dispatcher.contains("return Err(err)"),
+            "a failed PostMessage must free its closure and surface the error"
+        );
+        let dispatcher_install = source
+            .split_once("unsafe fn attach_main_thread_dispatcher")
+            .and_then(|(_, tail)| tail.split_once("\n\n  fn parent_bounds"))
+            .map(|(helper, _)| helper)
+            .expect("vendored Wry dispatcher installation must remain inspectable");
+        assert!(
+            dispatcher_install.contains("windows::core::Result<()>")
+                && dispatcher_install.contains("SetWindowSubclass")
+                && dispatcher_install.contains(".ok()")
+                && source.matches("Self::attach_main_thread_dispatcher(hwnd)?;").count() == 2,
+            "dispatcher installation must fail before any message can be posted without a consumer"
         );
     }
 }

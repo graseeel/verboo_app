@@ -532,7 +532,7 @@ impl InnerWebView {
 
     // IPC handler
     smoke_trace("init: IPC handler starting");
-    unsafe { Self::attach_ipc_handler(&webview, &mut attributes, &mut token)? };
+    unsafe { Self::attach_ipc_handler(hwnd, &webview, &mut attributes, &mut token)? };
     smoke_trace("init: IPC handler completed");
 
     // Custom protocols handler
@@ -561,7 +561,7 @@ impl InnerWebView {
     // Initialize main and subframe scripts
     smoke_trace("init: initialization scripts starting");
     for init_script in attributes.initialization_scripts {
-      Self::add_script_to_execute_on_document_created(&webview, init_script.script)?;
+      Self::add_script_to_execute_on_document_created(hwnd, &webview, init_script.script)?;
     }
     smoke_trace("init: initialization scripts completed");
 
@@ -845,21 +845,22 @@ impl InnerWebView {
           // Use `dispatch_handler` to schedule the run on the message loop after this callback completes,
           // this is needed for `new_window_req_handler` to create new webviews for `NewWindowResponse::Create`
           // or it will deadlock, see https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/threading-model#reentrancy
-          Self::dispatch_handler(hwnd, move || match new_window_req_handler(uri, features) {
-            NewWindowResponse::Allow => {
-              let _ = args.SetHandled(false);
-              let _ = deferral.Complete();
-            }
-            NewWindowResponse::Create { webview } => {
-              let _ = args.SetHandled(true);
-              let _ = args.SetNewWindow(&webview);
-              let _ = deferral.Complete();
-            }
-            NewWindowResponse::Deny => {
-              let _ = args.SetHandled(true);
-              let _ = deferral.Complete();
-            }
-          });
+          let _ =
+            Self::dispatch_handler(hwnd, move || match new_window_req_handler(uri, features) {
+              NewWindowResponse::Allow => {
+                let _ = args.SetHandled(false);
+                let _ = deferral.Complete();
+              }
+              NewWindowResponse::Create { webview } => {
+                let _ = args.SetHandled(true);
+                let _ = args.SetNewWindow(&webview);
+                let _ = deferral.Complete();
+              }
+              NewWindowResponse::Deny => {
+                let _ = args.SetHandled(true);
+                let _ = deferral.Complete();
+              }
+            });
         } else {
           args.SetHandled(true)?;
         }
@@ -868,7 +869,7 @@ impl InnerWebView {
       })),
       token,
     )?;
-    Self::attach_main_thread_dispatcher(hwnd);
+    Self::attach_main_thread_dispatcher(hwnd)?;
 
     // Download handler
     if attributes.download_started_handler.is_some()
@@ -957,11 +958,13 @@ impl InnerWebView {
 
   #[inline]
   unsafe fn attach_ipc_handler(
+    hwnd: HWND,
     webview: &ICoreWebView2,
     attributes: &mut WebViewAttributes,
     token: &mut EventRegistrationToken,
   ) -> Result<()> {
     Self::add_script_to_execute_on_document_created(
+      hwnd,
       webview,
       String::from(
         r#"Object.defineProperty(window, 'ipc', { value: Object.freeze({ postMessage: s=> window.chrome.webview.postMessage(s) }) });"#,
@@ -1094,7 +1097,7 @@ impl InnerWebView {
             if std::thread::current().id() == main_thread_id {
               handler();
             } else {
-              Self::dispatch_handler(hwnd, handler);
+              let _ = Self::dispatch_handler(hwnd, handler);
             }
           });
 
@@ -1114,7 +1117,7 @@ impl InnerWebView {
       token,
     )?;
 
-    Self::attach_main_thread_dispatcher(hwnd);
+    Self::attach_main_thread_dispatcher(hwnd)?;
 
     Ok(())
   }
@@ -1232,7 +1235,7 @@ impl InnerWebView {
   /// the caller must call this function on the same thread as `hwnd`
   /// or ensure the function is safe to send to and called on `hwnd`'s thread
   #[inline]
-  unsafe fn dispatch_handler<F>(hwnd: HWND, function: F)
+  unsafe fn dispatch_handler<F>(hwnd: HWND, function: F) -> windows::core::Result<()>
   where
     F: FnOnce() + 'static,
   {
@@ -1242,10 +1245,11 @@ impl InnerWebView {
 
     let raw = Box::into_raw(boxed2);
 
-    let _res = PostMessageW(Some(hwnd), *EXEC_MSG_ID, WPARAM(raw as _), LPARAM(0));
+    let result = PostMessageW(Some(hwnd), *EXEC_MSG_ID, WPARAM(raw as _), LPARAM(0));
 
-    #[cfg(any(debug_assertions, feature = "tracing"))]
-    if let Err(err) = _res {
+    if let Err(err) = result {
+      drop(Box::from_raw(raw));
+      #[cfg(any(debug_assertions, feature = "tracing"))]
       let msg = format!(
         "PostMessage failed ; is the messages queue full? Error code {} - {}",
         err.code(),
@@ -1255,7 +1259,10 @@ impl InnerWebView {
       tracing::error!("{msg}");
       #[cfg(debug_assertions)]
       eprintln!("{msg}");
+      return Err(err);
     }
+
+    Ok(())
   }
 
   unsafe extern "system" fn main_thread_dispatcher_proc(
@@ -1276,13 +1283,14 @@ impl InnerWebView {
     DefSubclassProc(hwnd, msg, wparam, lparam)
   }
 
-  unsafe fn attach_main_thread_dispatcher(hwnd: HWND) {
-    let _ = SetWindowSubclass(
+  unsafe fn attach_main_thread_dispatcher(hwnd: HWND) -> windows::core::Result<()> {
+    SetWindowSubclass(
       hwnd,
       Some(Self::main_thread_dispatcher_proc),
       MAIN_THREAD_DISPATCHER_SUBCLASS_ID as _,
       0,
-    );
+    )
+    .ok()
   }
 
   fn parent_bounds(hwnd: HWND) -> Result<PhysicalSize<i32>> {
@@ -1385,17 +1393,43 @@ impl InnerWebView {
   }
 
   #[inline]
-  fn add_script_to_execute_on_document_created(webview: &ICoreWebView2, js: String) -> Result<()> {
+  fn defer_webview_completion(hwnd: HWND, event_handle: isize) -> windows::core::Result<()> {
+    let dispatch_result = unsafe {
+      Self::dispatch_handler(hwnd, move || {
+        smoke_trace("add_script: completion barrier reached");
+        SetEvent(HANDLE(event_handle as *mut _)).ok();
+      })
+    };
+
+    if let Err(error) = dispatch_result {
+      unsafe { SetEvent(HANDLE(event_handle as *mut _))? };
+      return Err(error);
+    }
+
+    Ok(())
+  }
+
+  #[inline]
+  fn add_script_to_execute_on_document_created(
+    hwnd: HWND,
+    webview: &ICoreWebView2,
+    js: String,
+  ) -> Result<()> {
     smoke_trace("add_script: dispatch starting");
     let event = unsafe { CreateEventW(None, true, false, PCWSTR::null())? };
     let result: Rc<RefCell<Option<windows::core::Result<()>>>> = Rc::new(RefCell::new(None));
     let result_clone = result.clone();
     let event_handle = event.0 as isize;
+    let hwnd_handle = hwnd.0 as isize;
     let handler = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
       move |error_code, _id| {
         smoke_trace("add_script: callback received");
         *result_clone.borrow_mut() = Some(error_code);
-        unsafe { SetEvent(HANDLE(event_handle as *mut _)).ok() };
+        if let Err(error) =
+          Self::defer_webview_completion(HWND(hwnd_handle as *mut _), event_handle)
+        {
+          *result_clone.borrow_mut() = Some(Err(error));
+        }
         Ok(())
       },
     ));
