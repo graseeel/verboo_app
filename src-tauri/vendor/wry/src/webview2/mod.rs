@@ -6,7 +6,13 @@ mod drag_drop;
 mod util;
 
 use std::{
-  borrow::Cow, cell::RefCell, collections::HashSet, fmt::Write, fs, path::PathBuf, rc::Rc,
+  borrow::Cow,
+  cell::RefCell,
+  collections::{HashSet, VecDeque},
+  fmt::Write,
+  fs,
+  path::PathBuf,
+  rc::Rc,
 };
 
 use dpi::{PhysicalPosition, PhysicalSize};
@@ -42,6 +48,7 @@ type EventRegistrationToken = i64;
 const PARENT_SUBCLASS_ID: u32 = WM_USER + 0x64;
 const PARENT_DESTROY_MESSAGE: u32 = WM_USER + 0x65;
 const MAIN_THREAD_DISPATCHER_SUBCLASS_ID: u32 = WM_USER + 0x66;
+const IPC_INIT_SCRIPT: &str = r#"Object.defineProperty(window, 'ipc', { value: Object.freeze({ postMessage: s=> window.chrome.webview.postMessage(s) }) });"#;
 static EXEC_MSG_ID: Lazy<u32> = Lazy::new(|| unsafe { RegisterWindowMessageA(s!("Wry::ExecMsg")) });
 
 impl From<webview2_com::Error> for Error {
@@ -560,9 +567,16 @@ impl InnerWebView {
 
     // Initialize main and subframe scripts
     smoke_trace("init: initialization scripts starting");
-    for init_script in attributes.initialization_scripts {
-      Self::add_script_to_execute_on_document_created(&webview, init_script.script)?;
-    }
+    let mut initialization_scripts =
+      Vec::with_capacity(attributes.initialization_scripts.len() + 1);
+    initialization_scripts.push(String::from(IPC_INIT_SCRIPT));
+    initialization_scripts.extend(
+      attributes
+        .initialization_scripts
+        .into_iter()
+        .map(|init_script| init_script.script),
+    );
+    Self::add_scripts_to_execute_on_document_created(hwnd, &webview, initialization_scripts)?;
     smoke_trace("init: initialization scripts completed");
 
     // Enable clipboard
@@ -962,13 +976,6 @@ impl InnerWebView {
     attributes: &mut WebViewAttributes,
     token: &mut EventRegistrationToken,
   ) -> Result<()> {
-    Self::add_script_to_execute_on_document_created(
-      webview,
-      String::from(
-        r#"Object.defineProperty(window, 'ipc', { value: Object.freeze({ postMessage: s=> window.chrome.webview.postMessage(s) }) });"#,
-      ),
-    )?;
-
     let ipc_handler = attributes.ipc_handler.take();
     webview.add_WebMessageReceived(
       &WebMessageReceivedEventHandler::create(Box::new(move |_, args| {
@@ -1391,26 +1398,78 @@ impl InnerWebView {
   }
 
   #[inline]
-  fn add_script_to_execute_on_document_created(webview: &ICoreWebView2, js: String) -> Result<()> {
-    smoke_trace("add_script: dispatch starting");
-    let webview = webview.clone();
-    let registration =
-      AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation(
-        Box::new(move |handler| unsafe {
-          let js = HSTRING::from(js);
-          webview
-            .AddScriptToExecuteOnDocumentCreated(&js, &handler)
-            .map_err(Into::into)
-        }),
-        Box::new(|error_code, _id| {
-          smoke_trace("add_script: callback received");
-          error_code
-        }),
-      );
-    if registration.is_ok() {
-      smoke_trace("add_script: wait completed");
+  fn finish_script_registration(
+    completion: &Rc<RefCell<Option<std::sync::mpsc::Sender<webview2_com::Result<()>>>>>,
+    result: webview2_com::Result<()>,
+  ) {
+    if let Some(completion) = completion.borrow_mut().take() {
+      let _ = completion.send(result);
     }
-    registration.map_err(Into::into)
+  }
+
+  fn register_next_document_script(
+    hwnd: HWND,
+    webview: ICoreWebView2,
+    scripts: Rc<RefCell<VecDeque<String>>>,
+    completion: Rc<RefCell<Option<std::sync::mpsc::Sender<webview2_com::Result<()>>>>>,
+  ) -> windows::core::Result<()> {
+    let Some(js) = scripts.borrow_mut().pop_front() else {
+      Self::finish_script_registration(&completion, Ok(()));
+      return Ok(());
+    };
+
+    smoke_trace("add_script: dispatch starting");
+    let next_webview = webview.clone();
+    let next_scripts = Rc::clone(&scripts);
+    let next_completion = Rc::clone(&completion);
+    let handler = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
+      move |error_code, _id| {
+        smoke_trace("add_script: callback received");
+        if let Err(error) = error_code {
+          Self::finish_script_registration(&next_completion, Err(error.into()));
+          return Ok(());
+        }
+
+        let posted_webview = next_webview.clone();
+        let posted_scripts = Rc::clone(&next_scripts);
+        let posted_completion = Rc::clone(&next_completion);
+        let dispatch_result = unsafe {
+          Self::dispatch_handler(hwnd, move || {
+            if let Err(error) = Self::register_next_document_script(
+              hwnd,
+              posted_webview,
+              posted_scripts,
+              Rc::clone(&posted_completion),
+            ) {
+              Self::finish_script_registration(&posted_completion, Err(error.into()));
+            }
+          })
+        };
+        if let Err(error) = dispatch_result {
+          Self::finish_script_registration(&next_completion, Err(error.into()));
+        }
+        Ok(())
+      },
+    ));
+
+    let js = HSTRING::from(js);
+    unsafe { webview.AddScriptToExecuteOnDocumentCreated(&js, &handler) }
+  }
+
+  #[inline]
+  fn add_scripts_to_execute_on_document_created(
+    hwnd: HWND,
+    webview: &ICoreWebView2,
+    scripts: Vec<String>,
+  ) -> Result<()> {
+    let scripts = Rc::new(RefCell::new(VecDeque::from(scripts)));
+    let (completion_tx, completion_rx) = std::sync::mpsc::channel();
+    let completion = Rc::new(RefCell::new(Some(completion_tx)));
+
+    Self::register_next_document_script(hwnd, webview.clone(), scripts, completion)?;
+    webview2_com::wait_with_pump(completion_rx)??;
+    smoke_trace("add_scripts: wait completed");
+    Ok(())
   }
 
   #[inline]

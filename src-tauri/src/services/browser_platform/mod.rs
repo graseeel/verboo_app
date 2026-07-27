@@ -239,19 +239,33 @@ mod contract_tests {
 
     #[test]
     fn webview2_controller_wait_preserves_com_sta_reentrancy() {
-        let source = include_str!("../../../vendor/wry/src/webview2/mod.rs");
+        let source =
+            include_str!("../../../vendor/wry/src/webview2/mod.rs").replace("\r\n", "\n");
         let manifest = include_str!("../../../Cargo.toml");
+        let environment_helper = source
+            .split_once("fn create_environment")
+            .and_then(|(_, tail)| tail.split_once("\n  #[inline]\n  fn create_controller"))
+            .map(|(helper, _)| helper)
+            .expect("vendored Wry environment helper must remain inspectable");
+        let controller_helper = source
+            .split_once("fn create_controller")
+            .and_then(|(_, tail)| tail.split_once("\n  #[allow(clippy::too_many_arguments)]"))
+            .map(|(helper, _)| helper)
+            .expect("vendored Wry controller helper must remain inspectable");
         assert!(
-            source.contains("CoWaitForMultipleHandles")
+            environment_helper.contains("co_wait_for_handle(event)")
+                && controller_helper.contains("co_wait_for_handle(event)")
+                && source.contains("CoWaitForMultipleHandles")
                 && source.contains("COWAIT_DISPATCH_CALLS")
-                && source.contains("COWAIT_DISPATCH_WINDOW_MESSAGES")
-                && source.contains("CreateEventW")
-                && source.contains("SetEvent"),
+                && source.contains("COWAIT_DISPATCH_WINDOW_MESSAGES"),
             "WebView2 controller creation must dispatch COM calls and window messages"
         );
         assert!(
-            !source.contains("wait_with_pump") && !source.contains("sync::mpsc"),
-            "WebView2 completion must signal a waitable event instead of polling a channel"
+            !environment_helper.contains("wait_with_pump")
+                && !controller_helper.contains("wait_with_pump")
+                && !environment_helper.contains("sync::mpsc")
+                && !controller_helper.contains("sync::mpsc"),
+            "environment/controller completion must signal a waitable event instead of polling a channel"
         );
         assert!(
             manifest.contains("wry = { path = \"vendor/wry\" }"),
@@ -260,25 +274,32 @@ mod contract_tests {
     }
 
     #[test]
-    fn webview2_document_script_registration_uses_the_upstream_completion_pump() {
+    fn webview2_document_scripts_use_one_ordered_completion_pump() {
         let source =
             include_str!("../../../vendor/wry/src/webview2/mod.rs").replace("\r\n", "\n");
         let helper = source
-            .split_once("fn add_script_to_execute_on_document_created")
+            .split_once("fn finish_script_registration")
             .and_then(|(_, tail)| tail.split_once("\n  #[inline]\n  fn execute_script"))
             .map(|(helper, _)| helper)
             .expect("vendored Wry document-script helper must remain inspectable");
         assert!(
-            helper.contains(
-                "AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation"
-            ) && helper.contains(".AddScriptToExecuteOnDocumentCreated"),
-            "document-script registration must use Wry's upstream completion pump"
+            helper.contains("AddScriptToExecuteOnDocumentCreatedCompletedHandler::create")
+                && helper.contains(".AddScriptToExecuteOnDocumentCreated")
+                && helper.contains("wait_with_pump")
+                && helper.contains("Self::dispatch_handler")
+                && helper.contains("VecDeque"),
+            "document scripts must be registered in one posted, ordered callback chain"
         );
         assert!(
-            !helper.contains("co_wait_for_handle")
-                && !helper.contains("CreateEventW")
-                && !helper.contains("defer_webview_completion"),
-            "document-script registration must not reuse the CoWait path that stalls sequential callbacks"
+            !helper.contains("wait_for_async_operation")
+                && !helper.contains("co_wait_for_handle")
+                && !helper.contains("CreateEventW"),
+            "the script chain must not start a nested wait for each individual script"
+        );
+        assert!(
+            source.matches("Self::add_scripts_to_execute_on_document_created").count() == 1
+                && source.contains("initialization_scripts.push(String::from(IPC_INIT_SCRIPT))"),
+            "the IPC shim and all initialization scripts must share the same ordered batch"
         );
     }
 
