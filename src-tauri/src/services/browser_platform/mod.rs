@@ -260,7 +260,7 @@ mod contract_tests {
     }
 
     #[test]
-    fn webview2_document_script_wait_preserves_com_sta_reentrancy() {
+    fn webview2_document_script_registration_uses_the_upstream_completion_pump() {
         let source =
             include_str!("../../../vendor/wry/src/webview2/mod.rs").replace("\r\n", "\n");
         let helper = source
@@ -269,33 +269,26 @@ mod contract_tests {
             .map(|(helper, _)| helper)
             .expect("vendored Wry document-script helper must remain inspectable");
         assert!(
-            !helper.contains("wait_for_async_operation"),
-            "WebView2 document scripts must not use webview2-com's nested message pump"
+            helper.contains(
+                "AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation"
+            ) && helper.contains(".AddScriptToExecuteOnDocumentCreated"),
+            "document-script registration must use Wry's upstream completion pump"
         );
         assert!(
-            helper.contains("CreateEventW")
-                && helper.contains("AddScriptToExecuteOnDocumentCreatedCompletedHandler::create")
-                && helper.contains("defer_webview_completion")
-                && helper.contains("co_wait_for_handle(event)"),
-            "WebView2 document script registration must use the COM-aware wait helper"
+            !helper.contains("co_wait_for_handle")
+                && !helper.contains("CreateEventW")
+                && !helper.contains("defer_webview_completion"),
+            "document-script registration must not reuse the CoWait path that stalls sequential callbacks"
         );
+    }
+
+    #[test]
+    fn webview2_window_dispatcher_surfaces_install_and_post_failures() {
+        let source =
+            include_str!("../../../vendor/wry/src/webview2/mod.rs").replace("\r\n", "\n");
         assert!(
-            !helper.contains("SetEvent("),
-            "the completion callback must not wake CoWait before it has fully returned"
-        );
-        let completion_barrier = source
-            .split_once("fn defer_webview_completion")
-            .and_then(|(_, tail)| {
-                tail.split_once("\n  #[inline]\n  fn add_script_to_execute_on_document_created")
-            })
-            .map(|(helper, _)| helper)
-            .expect("vendored Wry completion barrier must remain inspectable");
-        assert!(
-            completion_barrier.contains("Self::dispatch_handler")
-                && completion_barrier.contains("SetEvent")
-                && completion_barrier.contains("if let Err(error) = dispatch_result")
-                && completion_barrier.contains("return Err(error)"),
-            "script completion must be posted, with a signalling error fallback"
+            !source.contains("fn defer_webview_completion"),
+            "the failed CoWait completion barrier must stay removed"
         );
         let dispatcher = source
             .split_once("unsafe fn dispatch_handler")

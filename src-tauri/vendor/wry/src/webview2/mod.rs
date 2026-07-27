@@ -532,7 +532,7 @@ impl InnerWebView {
 
     // IPC handler
     smoke_trace("init: IPC handler starting");
-    unsafe { Self::attach_ipc_handler(hwnd, &webview, &mut attributes, &mut token)? };
+    unsafe { Self::attach_ipc_handler(&webview, &mut attributes, &mut token)? };
     smoke_trace("init: IPC handler completed");
 
     // Custom protocols handler
@@ -561,7 +561,7 @@ impl InnerWebView {
     // Initialize main and subframe scripts
     smoke_trace("init: initialization scripts starting");
     for init_script in attributes.initialization_scripts {
-      Self::add_script_to_execute_on_document_created(hwnd, &webview, init_script.script)?;
+      Self::add_script_to_execute_on_document_created(&webview, init_script.script)?;
     }
     smoke_trace("init: initialization scripts completed");
 
@@ -958,13 +958,11 @@ impl InnerWebView {
 
   #[inline]
   unsafe fn attach_ipc_handler(
-    hwnd: HWND,
     webview: &ICoreWebView2,
     attributes: &mut WebViewAttributes,
     token: &mut EventRegistrationToken,
   ) -> Result<()> {
     Self::add_script_to_execute_on_document_created(
-      hwnd,
       webview,
       String::from(
         r#"Object.defineProperty(window, 'ipc', { value: Object.freeze({ postMessage: s=> window.chrome.webview.postMessage(s) }) });"#,
@@ -1393,59 +1391,25 @@ impl InnerWebView {
   }
 
   #[inline]
-  fn defer_webview_completion(hwnd: HWND, event_handle: isize) -> windows::core::Result<()> {
-    let dispatch_result = unsafe {
-      Self::dispatch_handler(hwnd, move || {
-        smoke_trace("add_script: completion barrier reached");
-        SetEvent(HANDLE(event_handle as *mut _)).ok();
-      })
-    };
-
-    if let Err(error) = dispatch_result {
-      unsafe { SetEvent(HANDLE(event_handle as *mut _))? };
-      return Err(error);
-    }
-
-    Ok(())
-  }
-
-  #[inline]
-  fn add_script_to_execute_on_document_created(
-    hwnd: HWND,
-    webview: &ICoreWebView2,
-    js: String,
-  ) -> Result<()> {
+  fn add_script_to_execute_on_document_created(webview: &ICoreWebView2, js: String) -> Result<()> {
     smoke_trace("add_script: dispatch starting");
-    let event = unsafe { CreateEventW(None, true, false, PCWSTR::null())? };
-    let result: Rc<RefCell<Option<windows::core::Result<()>>>> = Rc::new(RefCell::new(None));
-    let result_clone = result.clone();
-    let event_handle = event.0 as isize;
-    let hwnd_handle = hwnd.0 as isize;
-    let handler = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
-      move |error_code, _id| {
-        smoke_trace("add_script: callback received");
-        *result_clone.borrow_mut() = Some(error_code);
-        if let Err(error) =
-          Self::defer_webview_completion(HWND(hwnd_handle as *mut _), event_handle)
-        {
-          *result_clone.borrow_mut() = Some(Err(error));
-        }
-        Ok(())
-      },
-    ));
-
-    let js = HSTRING::from(js);
-    if let Err(error) = unsafe { webview.AddScriptToExecuteOnDocumentCreated(&js, &handler) } {
-      let _ = unsafe { CloseHandle(event) };
-      return Err(error.into());
+    let webview = webview.clone();
+    let registration =
+      AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation(
+        Box::new(move |handler| unsafe {
+          let js = HSTRING::from(js);
+          webview
+            .AddScriptToExecuteOnDocumentCreated(&js, &handler)
+            .map_err(Into::into)
+        }),
+        Box::new(|error_code, _id| {
+          smoke_trace("add_script: callback received");
+          error_code
+        }),
+      );
+    if registration.is_ok() {
+      smoke_trace("add_script: wait completed");
     }
-
-    co_wait_for_handle(event)?;
-    smoke_trace("add_script: wait completed");
-    let registration = result
-      .borrow_mut()
-      .take()
-      .unwrap_or_else(|| Err(windows::core::Error::from(E_UNEXPECTED)));
     registration.map_err(Into::into)
   }
 
