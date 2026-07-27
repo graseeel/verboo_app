@@ -125,3 +125,12 @@ test("prerelease builds do not block publishing on packaged runtime smoke", asyn
     );
   }
 });
+
+test("release jobs leave enough time for Apple notarization queues", async () => {
+  const workflow = await readFile(workflowPath, "utf8");
+  const buildJobStart = workflow.indexOf("\n  build-tauri:");
+  const buildStepsStart = workflow.indexOf("\n    steps:", buildJobStart);
+  const buildJob = workflow.slice(buildJobStart, buildStepsStart);
+
+  assert.match(buildJob, /timeout-minutes: 240/);
+});

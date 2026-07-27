@@ -113,7 +113,9 @@ jobs:
               src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
               src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    # Apple notarization can remain queued for longer than two hours. Keep the
+    # security gate mandatory and give the matrix enough time to receive it.
+    timeout-minutes: 240
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # Prevent Rust 1.95 (system default) from breaking tauri-cli proc-macros.
