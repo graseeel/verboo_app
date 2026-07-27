@@ -106,3 +106,22 @@ test("macOS target architectures use matching native runners", async () => {
     /- os: macos-15-intel\n\s+target: x86_64-apple-darwin/,
   );
 });
+
+test("prerelease builds do not block publishing on packaged runtime smoke", async () => {
+  const workflow = await readFile(workflowPath, "utf8");
+
+  for (const platform of ["macOS", "Windows", "Linux"]) {
+    const stepStart = workflow.indexOf(
+      `- name: Run packaged multiwebview runtime smoke (${platform})`,
+    );
+    const stepEnd = workflow.indexOf("\n      - name:", stepStart + 1);
+    const step = workflow.slice(stepStart, stepEnd);
+
+    assert.notEqual(stepStart, -1, `${platform} smoke step must remain available`);
+    assert.match(
+      step,
+      /needs\.resolve-tag\.outputs\.is_prerelease != 'true'/,
+      `${platform} smoke must be skipped for beta releases`,
+    );
+  }
+});

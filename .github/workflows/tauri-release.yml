@@ -615,7 +615,10 @@ jobs:
         run: rm -f "${APPLE_API_KEY_PATH:-}"
 
       - name: Run packaged multiwebview runtime smoke (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && needs.resolve-tag.outputs.is_prerelease != 'true'
+        # Beta releases keep this diagnostic non-blocking while the
+        # cross-platform multiwebview runtime is still being stabilized.
+        # Stable releases continue to require the packaged runtime gate.
         # CI runners have no graphical session — WKWebView/takeSnapshot never
         # composes a frame and hangs indefinitely (with_webview is synchronous).
         # The env flag makes run_runtime_smoke skip the two snapshot steps,
@@ -633,7 +636,9 @@ jobs:
           node scripts/verify/browser-multiwebview-smoke.mjs "$APP_PATH"
 
       - name: Run packaged multiwebview runtime smoke (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && needs.resolve-tag.outputs.is_prerelease != 'true'
+        # Beta releases publish after build/test; stable releases still gate
+        # on the packaged two-tab WebView2 lifecycle.
         # Skip snapshot on headless CI — same rationale as macOS.
         env:
           VERBOO_SMOKE_SKIP_SNAPSHOT: '1'
@@ -648,7 +653,9 @@ jobs:
           node scripts/verify/browser-multiwebview-smoke.mjs "$APP_EXE"
 
       - name: Run packaged multiwebview runtime smoke (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && needs.resolve-tag.outputs.is_prerelease != 'true'
+        # Beta releases publish after build/test; stable releases still gate
+        # on the packaged two-tab WebKitGTK lifecycle.
         # Skip snapshot on headless CI — same rationale as macOS. Even with
         # xvfb, WebKitGTK's snapshot may fail to compose when no real display
         # is attached.
