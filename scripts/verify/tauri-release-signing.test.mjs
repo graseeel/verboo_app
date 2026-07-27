@@ -18,14 +18,39 @@ test("macOS releases require Developer ID signing and API-key notarization", asy
   assert.match(workflow, /APPLE_API_KEY_PATH/);
 });
 
-test("macOS release gate verifies the app and notarizes the distributed DMG", async () => {
+test("macOS release build submits once without waiting and persists the exact artifacts", async () => {
   const workflow = await readFile(workflowPath, "utf8");
+  const submitStart = workflow.indexOf(
+    "- name: Verify and submit macOS artifacts for asynchronous notarization",
+  );
+  const submitEnd = workflow.indexOf("\n      - name:", submitStart + 1);
+  const submitStep = workflow.slice(submitStart, submitEnd);
 
   assert.match(workflow, /codesign --verify --deep --strict/);
-  assert.match(workflow, /spctl .*--type execute/);
-  assert.match(workflow, /notarytool submit "\$DMG_PATH"/);
-  assert.match(workflow, /stapler staple .*"\$DMG_PATH"/);
-  assert.match(workflow, /stapler validate .*"\$DMG_PATH"/);
+  assert.match(submitStep, /notarytool submit "\$DMG_PATH"/);
+  assert.doesNotMatch(submitStep, /--wait/);
+  assert.match(submitStep, /submission_id/);
+  assert.match(submitStep, /ditto -c -k --keepParent --sequesterRsrc/);
+  assert.match(workflow, /Notarization-\$\{\{ matrix\.label \}\}/);
+  assert.match(workflow, /retention-days: 30/);
+  assert.equal(
+    [...workflow.matchAll(/notarytool submit/g)].length,
+    1,
+    "the workflow template must submit only the final DMG for each macOS architecture",
+  );
+});
+
+test("macOS build does not let Tauri synchronously notarize the app", async () => {
+  const workflow = await readFile(workflowPath, "utf8");
+  const buildStart = workflow.indexOf(
+    "- name: Build Tauri bundle and signed updater artifacts",
+  );
+  const buildEnd = workflow.indexOf("\n      - name:", buildStart + 1);
+  const buildStep = workflow.slice(buildStart, buildEnd);
+
+  assert.doesNotMatch(buildStep, /APPLE_API_KEY:/);
+  assert.doesNotMatch(buildStep, /APPLE_API_ISSUER:/);
+  assert.doesNotMatch(buildStep, /--wait/);
 });
 
 test("notarization key exists only for macOS build steps and is always removed", async () => {
@@ -126,11 +151,24 @@ test("prerelease builds do not block publishing on packaged runtime smoke", asyn
   }
 });
 
-test("release jobs leave enough time for Apple notarization queues", async () => {
-  const workflow = await readFile(workflowPath, "utf8");
-  const buildJobStart = workflow.indexOf("\n  build-tauri:");
-  const buildStepsStart = workflow.indexOf("\n    steps:", buildJobStart);
-  const buildJob = workflow.slice(buildJobStart, buildStepsStart);
+test("notarization finalizer polls the saved IDs and republishes only after stapling", async () => {
+  const releaseWorkflow = await readFile(workflowPath, "utf8");
+  const workflow = await readFile(
+    new URL("../../.github/workflows/tauri-notarization.yml", import.meta.url),
+    "utf8",
+  );
 
-  assert.match(buildJob, /timeout-minutes: 240/);
+  assert.match(
+    releaseWorkflow,
+    /uses: \.\/\.github\/workflows\/tauri-notarization\.yml/,
+  );
+  assert.match(releaseWorkflow, /-f operation="notarization"/);
+  assert.match(workflow, /notarytool info "\$SUBMISSION_ID"/);
+  assert.match(workflow, /name: apple-notarization-retry/);
+  assert.match(workflow, /gh workflow run tauri-release\.yml/);
+  assert.match(workflow, /stapler staple -v "\$APP_PATH"/);
+  assert.match(workflow, /stapler staple -v "\$DMG_PATH"/);
+  assert.match(workflow, /tauri signer sign "\$UPDATER_PATH"/);
+  assert.match(workflow, /generate-tauri-update-manifest\.mjs/);
+  assert.match(workflow, /gh release upload updater-beta "\$MANIFEST"/);
 });

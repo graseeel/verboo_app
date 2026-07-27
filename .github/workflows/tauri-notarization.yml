@@ -1,0 +1,389 @@
+name: Finalize macOS Notarization
+
+on:
+  workflow_call:
+    inputs:
+      build_run_id:
+        description: "Tauri Release run that owns the signed macOS artifacts"
+        required: true
+        type: string
+      source_ref:
+        description: "Branch or tag containing this workflow"
+        required: true
+        type: string
+      source_sha:
+        description: "Exact source commit used by the release build"
+        required: true
+        type: string
+      attempt:
+        description: "Polling attempt, incremented automatically"
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  inspect:
+    name: Inspect saved Apple submission IDs
+    runs-on: macos-15
+    timeout-minutes: 20
+    outputs:
+      all_accepted: ${{ steps.status.outputs.all_accepted }}
+      has_invalid: ${{ steps.status.outputs.has_invalid }}
+    steps:
+      - name: Prepare Apple notarization credentials
+        env:
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for required_name in APPLE_API_PRIVATE_KEY APPLE_API_KEY APPLE_API_ISSUER; do
+            if [ -z "${!required_name:-}" ]; then
+              echo "::error::$required_name is missing"
+              exit 1
+            fi
+          done
+          umask 077
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          openssl pkey -in "$KEY_PATH" -check -noout
+          echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Download notarization records from the original build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p pending
+          gh run download "$BUILD_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "Verboo-Code-*-Notarization-*" \
+            --dir pending
+          METADATA_COUNT=$(find pending -type f -name metadata.json | wc -l | tr -d ' ')
+          if [ "$METADATA_COUNT" != "2" ]; then
+            echo "::error::Expected two macOS notarization records, found $METADATA_COUNT"
+            find pending -maxdepth 4 -type f -print
+            exit 1
+          fi
+
+      - name: Query Apple without waiting
+        id: status
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ALL_ACCEPTED="true"
+          HAS_INVALID="false"
+          INVALID_IDS="$RUNNER_TEMP/invalid-notarization-ids.txt"
+          : > "$INVALID_IDS"
+
+          while IFS= read -r METADATA_PATH; do
+            SUBMISSION_ID=$(
+              node -e \
+                'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).submission_id);' \
+                "$METADATA_PATH"
+            )
+            TARGET=$(
+              node -e \
+                'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).target);' \
+                "$METADATA_PATH"
+            )
+            INFO_PATH="$RUNNER_TEMP/notary-info-${TARGET}.json"
+            xcrun notarytool info "$SUBMISSION_ID" \
+              --key "$APPLE_API_KEY_PATH" \
+              --key-id "$APPLE_API_KEY" \
+              --issuer "$APPLE_API_ISSUER" \
+              --output-format json > "$INFO_PATH"
+            cat "$INFO_PATH"
+            STATUS=$(
+              node -e \
+                'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).status);' \
+                "$INFO_PATH"
+            )
+            echo "$TARGET: $SUBMISSION_ID -> $STATUS"
+            case "$STATUS" in
+              Accepted)
+                ;;
+              "In Progress")
+                ALL_ACCEPTED="false"
+                ;;
+              Invalid|Rejected)
+                ALL_ACCEPTED="false"
+                HAS_INVALID="true"
+                printf '%s\n' "$SUBMISSION_ID" >> "$INVALID_IDS"
+                ;;
+              *)
+                echo "::error::Unexpected Apple notarization status '$STATUS' for $SUBMISSION_ID"
+                exit 1
+                ;;
+            esac
+          done < <(find pending -type f -name metadata.json | sort)
+
+          echo "all_accepted=$ALL_ACCEPTED" >> "$GITHUB_OUTPUT"
+          echo "has_invalid=$HAS_INVALID" >> "$GITHUB_OUTPUT"
+
+      - name: Report rejected submissions
+        if: steps.status.outputs.has_invalid == 'true'
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        shell: bash
+        run: |
+          set +e
+          while IFS= read -r SUBMISSION_ID; do
+            [ -n "$SUBMISSION_ID" ] || continue
+            echo "::group::Apple notarization log $SUBMISSION_ID"
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --key "$APPLE_API_KEY_PATH" \
+              --key-id "$APPLE_API_KEY" \
+              --issuer "$APPLE_API_ISSUER"
+            echo "::endgroup::"
+          done < "$RUNNER_TEMP/invalid-notarization-ids.txt"
+          exit 1
+
+      - name: Remove Apple notarization credentials
+        if: always()
+        shell: bash
+        run: rm -f "${APPLE_API_KEY_PATH:-}"
+
+  retry-later:
+    name: Schedule another status check
+    needs: inspect
+    if: needs.inspect.result == 'success' && needs.inspect.outputs.all_accepted != 'true' && needs.inspect.outputs.has_invalid != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: apple-notarization-retry
+    steps:
+      - name: Enforce the seven-day artifact window
+        env:
+          ATTEMPT: ${{ inputs.attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$ATTEMPT" | grep -Eq '^[0-9]+$'; then
+            echo "::error::Invalid polling attempt: $ATTEMPT"
+            exit 1
+          fi
+          if [ "$ATTEMPT" -ge 672 ]; then
+            echo "::error::Apple notarization is still pending after seven days; escalate to Apple Developer Support."
+            exit 1
+          fi
+
+      - name: Dispatch the next poll with the same submission IDs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          ATTEMPT: ${{ inputs.attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEXT_ATTEMPT=$((ATTEMPT + 1))
+          gh workflow run tauri-release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$SOURCE_REF" \
+            -f operation="notarization" \
+            -f build_run_id="$BUILD_RUN_ID" \
+            -f source_ref="$SOURCE_REF" \
+            -f source_sha="$SOURCE_SHA" \
+            -f attempt="$NEXT_ATTEMPT"
+
+  finalize:
+    name: Staple, publish, and generate latest.json
+    needs: inspect
+    if: needs.inspect.result == 'success' && needs.inspect.outputs.all_accepted == 'true' && needs.inspect.outputs.has_invalid != 'true'
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - name: Checkout the exact release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install updater signing tools
+        run: npm ci
+
+      - name: Download original build artifacts
+        env:
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p pending nonmac
+          gh run download "$BUILD_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "Verboo-Code-*-Notarization-*" \
+            --dir pending
+          gh run download "$BUILD_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "Verboo-Code-*-Windows" \
+            --dir nonmac
+          gh run download "$BUILD_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "Verboo-Code-*-Linux" \
+            --dir nonmac
+
+      - name: Staple the saved app and DMG, then rebuild signed updater payloads
+        id: assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo "::error::TAURI_SIGNING_PRIVATE_KEY is missing"; exit 1; }
+          test -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" || { echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is missing"; exit 1; }
+          rm -rf release-assets finalize-work
+          mkdir -p release-assets finalize-work
+          RELEASE_TAG=""
+          RELEASE_VERSION=""
+
+          while IFS= read -r METADATA_PATH; do
+            METADATA_DIR=$(dirname "$METADATA_PATH")
+            METADATA_VALUES=$(
+              node -e '
+                const fs=require("fs");
+                const m=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+                process.stdout.write([
+                  m.target,
+                  m.label,
+                  m.version,
+                  m.tag,
+                  m.submission_id,
+                  m.app_archive,
+                  m.dmg_archive,
+                ].join("\t"));
+              ' "$METADATA_PATH"
+            )
+            IFS=$'\t' read -r TARGET LABEL VERSION TAG SUBMISSION_ID APP_ARCHIVE DMG_ARCHIVE <<< "$METADATA_VALUES"
+
+            if [ -z "$RELEASE_TAG" ]; then
+              RELEASE_TAG="$TAG"
+              RELEASE_VERSION="$VERSION"
+            elif [ "$RELEASE_TAG" != "$TAG" ] || [ "$RELEASE_VERSION" != "$VERSION" ]; then
+              echo "::error::macOS notarization records refer to different releases"
+              exit 1
+            fi
+
+            WORK_DIR="finalize-work/$TARGET"
+            mkdir -p "$WORK_DIR"
+            ditto -x -k "$METADATA_DIR/$APP_ARCHIVE" "$WORK_DIR"
+            APP_PATH=$(find "$WORK_DIR" -maxdepth 2 -type d -name '*.app' | head -1)
+            DMG_PATH="$METADATA_DIR/$DMG_ARCHIVE"
+            test -n "$APP_PATH"
+            test -f "$DMG_PATH"
+
+            xcrun stapler staple -v "$APP_PATH"
+            xcrun stapler validate -v "$APP_PATH"
+            codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+            spctl --assess --type execute --verbose=4 "$APP_PATH"
+
+            xcrun stapler staple -v "$DMG_PATH"
+            xcrun stapler validate -v "$DMG_PATH"
+            codesign --verify --strict --verbose=2 "$DMG_PATH"
+            hdiutil verify "$DMG_PATH"
+            spctl --assess --type open \
+              --context context:primary-signature \
+              --verbose=4 \
+              "$DMG_PATH"
+
+            case "$TARGET" in
+              aarch64-apple-darwin)
+                FRIENDLY_DMG="Verboo-Code-${VERSION}-macOS-Apple-Silicon.dmg"
+                UPDATER_NAME="Verboo-Code-${VERSION}-darwin-aarch64.app.tar.gz"
+                ;;
+              x86_64-apple-darwin)
+                FRIENDLY_DMG="Verboo-Code-${VERSION}-macOS-Intel.dmg"
+                UPDATER_NAME="Verboo-Code-${VERSION}-darwin-x86_64.app.tar.gz"
+                ;;
+              *)
+                echo "::error::Unsupported macOS target $TARGET"
+                exit 1
+                ;;
+            esac
+
+            cp -f "$DMG_PATH" "release-assets/$FRIENDLY_DMG"
+            UPDATER_PATH="release-assets/$UPDATER_NAME"
+            COPYFILE_DISABLE=1 tar -czf "$UPDATER_PATH" \
+              -C "$(dirname "$APP_PATH")" \
+              "$(basename "$APP_PATH")"
+            npx --no-install tauri signer sign "$UPDATER_PATH"
+            test -s "${UPDATER_PATH}.sig"
+            echo "Finalized $LABEL from Apple submission $SUBMISSION_ID"
+          done < <(find pending -type f -name metadata.json | sort)
+
+          test -n "$RELEASE_TAG"
+          test -n "$RELEASE_VERSION"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          ls -la release-assets
+
+      - name: Publish notarized macOS assets
+        env:
+          TAG: ${{ steps.assets.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for asset in release-assets/*; do
+            [ -f "$asset" ] || continue
+            gh release upload "$TAG" "$asset" --clobber
+          done
+
+      - name: Generate and publish complete updater manifest
+        env:
+          TAG: ${{ steps.assets.outputs.tag }}
+          VERSION: ${{ steps.assets.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf bundles update-manifests
+          mkdir -p bundles
+          while IFS= read -r artifact; do
+            cp -f "$artifact" "bundles/$(basename "$artifact")"
+          done < <(find nonmac -type f | sort)
+          cp -f release-assets/*.app.tar.gz bundles/
+          cp -f release-assets/*.app.tar.gz.sig bundles/
+
+          node scripts/verify/generate-tauri-update-manifest.mjs \
+            --tag "$TAG" \
+            --version "$VERSION" \
+            --bundles-dir bundles \
+            --output update-manifests
+
+          MANIFEST="update-manifests/latest.json"
+          gh release upload "$TAG" "$MANIFEST" --clobber
+          if ! gh release view updater-beta >/dev/null 2>&1; then
+            gh release create updater-beta \
+              --prerelease \
+              --title "Verboo Code beta update channel" \
+              --notes "Rolling signed updater manifest."
+          fi
+          gh release upload updater-beta "$MANIFEST" --clobber
+
+      - name: Upload finalized macOS and manifest artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Verboo-Code-${{ steps.assets.outputs.version }}-macOS-Notarized
+          path: |
+            release-assets/*
+            update-manifests/latest.json
+          if-no-files-found: error
+          retention-days: 14

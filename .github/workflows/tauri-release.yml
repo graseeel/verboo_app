@@ -7,17 +7,43 @@ on:
       - "v*.*.*-beta.*"
   workflow_dispatch:
     inputs:
+      operation:
+        description: "Internal workflow mode"
+        required: true
+        default: "release"
+        type: choice
+        options:
+          - release
+          - notarization
       tag:
         description: "Release tag to publish, for example v0.3.0-beta.1"
-        required: true
+        required: false
+        type: string
+      build_run_id:
+        description: "Internal: release run that owns notarization artifacts"
+        required: false
+        type: string
+      source_ref:
+        description: "Internal: branch or tag containing the release workflow"
+        required: false
+        type: string
+      source_sha:
+        description: "Internal: exact commit used by the release build"
+        required: false
+        type: string
+      attempt:
+        description: "Internal: notarization polling attempt"
+        required: false
+        default: "1"
         type: string
 
 permissions:
+  actions: write
   contents: write
 
 # Serialize releases so the rolling beta update pointer cannot race.
 concurrency:
-  group: tauri-release-publish
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'notarization' && format('tauri-notarization-{0}', inputs.build_run_id) || 'tauri-release-publish' }}
   cancel-in-progress: false
 
 jobs:
@@ -27,6 +53,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   resolve-tag:
     name: Resolve release tag
+    if: github.event_name != 'workflow_dispatch' || inputs.operation != 'notarization'
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.release.outputs.tag }}
@@ -113,9 +140,9 @@ jobs:
               src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
               src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm
     runs-on: ${{ matrix.os }}
-    # Apple notarization can remain queued for longer than two hours. Keep the
-    # security gate mandatory and give the matrix enough time to receive it.
-    timeout-minutes: 240
+    # Notarization is submitted asynchronously and finalized by
+    # tauri-notarization.yml, so this timeout covers builds only.
+    timeout-minutes: 120
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # Prevent Rust 1.95 (system default) from breaking tauri-cli proc-macros.
@@ -538,11 +565,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # These resolve to empty strings outside macOS, so Apple credentials
-          # are never exposed to the Windows or Linux matrix jobs.
+          # are never exposed to the Windows or Linux matrix jobs. The API
+          # credentials are intentionally omitted here so Tauri signs the app
+          # without waiting synchronously for Apple's notarization service.
           APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
           APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_API_KEY: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY || '' }}
-          APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -573,7 +600,8 @@ jobs:
             done
           fi
 
-      - name: Verify and notarize macOS release artifacts
+      - name: Verify and submit macOS artifacts for asynchronous notarization
+        id: notarization
         if: runner.os == 'macOS'
         env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -594,22 +622,78 @@ jobs:
           TEAM_IDENTIFIER=$(printf '%s\n' "$CODESIGN_INFO" | sed -n 's/^TeamIdentifier=//p' | head -1)
           test -n "$TEAM_IDENTIFIER"
           test "$TEAM_IDENTIFIER" != "not set"
-          spctl --assess --type execute --verbose=4 "$APP_PATH"
-          xcrun stapler validate -v "$APP_PATH"
-
           codesign --verify --strict --verbose=2 "$DMG_PATH"
+          hdiutil verify "$DMG_PATH"
+
+          SUBMISSION_JSON="$RUNNER_TEMP/notary-submit-${{ matrix.target }}.json"
           xcrun notarytool submit "$DMG_PATH" \
             --key "$APPLE_API_KEY_PATH" \
             --key-id "$APPLE_API_KEY" \
             --issuer "$APPLE_API_ISSUER" \
-            --wait \
-            --output-format json
-          xcrun stapler staple -v "$DMG_PATH"
-          xcrun stapler validate -v "$DMG_PATH"
-          spctl --assess --type open \
-            --context context:primary-signature \
-            --verbose=4 \
-            "$DMG_PATH"
+            --output-format json > "$SUBMISSION_JSON"
+          cat "$SUBMISSION_JSON"
+
+          SUBMISSION_ID=$(
+            node -e \
+              'const fs=require("fs"); const value=JSON.parse(fs.readFileSync(process.argv[1],"utf8")).id; if(!value) process.exit(1); process.stdout.write(value);' \
+              "$SUBMISSION_JSON"
+          )
+          if ! printf '%s' "$SUBMISSION_ID" | grep -Eq '^[0-9a-fA-F-]{36}$'; then
+            echo "::error::Invalid Apple notarization submission ID: $SUBMISSION_ID"
+            exit 1
+          fi
+
+          TAG="${{ needs.resolve-tag.outputs.tag }}"
+          VERSION="${{ needs.resolve-tag.outputs.version }}"
+          TARGET="${{ matrix.target }}"
+          LABEL="${{ matrix.label }}"
+          PENDING_DIR="notarization-pending"
+          APP_ARCHIVE="Verboo-Code-${VERSION}-${TARGET}.app.zip"
+          DMG_ARCHIVE=$(basename "$DMG_PATH")
+          rm -rf "$PENDING_DIR"
+          mkdir -p "$PENDING_DIR"
+          ditto -c -k --keepParent --sequesterRsrc \
+            "$APP_PATH" \
+            "$PENDING_DIR/$APP_ARCHIVE"
+          cp -f "$DMG_PATH" "$PENDING_DIR/$DMG_ARCHIVE"
+
+          # shellcheck disable=SC2016
+          TAG="$TAG" \
+          VERSION="$VERSION" \
+          TARGET="$TARGET" \
+          LABEL="$LABEL" \
+          SUBMISSION_ID="$SUBMISSION_ID" \
+          APP_ARCHIVE="$APP_ARCHIVE" \
+          DMG_ARCHIVE="$DMG_ARCHIVE" \
+          PENDING_DIR="$PENDING_DIR" \
+            node -e '
+              const fs = require("fs");
+              const path = require("path");
+              const metadata = {
+                tag: process.env.TAG,
+                version: process.env.VERSION,
+                target: process.env.TARGET,
+                label: process.env.LABEL,
+                submission_id: process.env.SUBMISSION_ID,
+                app_archive: process.env.APP_ARCHIVE,
+                dmg_archive: process.env.DMG_ARCHIVE,
+              };
+              fs.writeFileSync(
+                path.join(process.env.PENDING_DIR, "metadata.json"),
+                `${JSON.stringify(metadata, null, 2)}\n`,
+              );
+            '
+          echo "dir=$PENDING_DIR" >> "$GITHUB_OUTPUT"
+          echo "submission_id=$SUBMISSION_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Upload pending macOS notarization artifacts
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Verboo-Code-${{ needs.resolve-tag.outputs.version }}-Notarization-${{ matrix.label }}
+          path: ${{ steps.notarization.outputs.dir }}/*
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Remove Apple notarization credentials
         if: always() && runner.os == 'macOS'
@@ -767,6 +851,7 @@ jobs:
       # (Tauri's default names like *_aarch64.dmg / *_x64.dmg are easy to mix up.)
       - name: Rename installers (human-readable)
         id: rename
+        if: runner.os != 'macOS'
         shell: bash
         run: |
           set -euo pipefail
@@ -902,6 +987,7 @@ jobs:
           echo "dir=$OUT" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifacts
+        if: runner.os != 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: Verboo-Code-${{ needs.resolve-tag.outputs.version }}-${{ matrix.label }}
@@ -910,7 +996,7 @@ jobs:
           retention-days: 14
 
       - name: Publish to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        if: runner.os != 'macOS' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')
         shell: bash
         run: |
           set -euo pipefail
@@ -974,52 +1060,37 @@ jobs:
           done
 
   # ─────────────────────────────────────────────────────────────────────
-  # Aggregate one `latest.json` with installer-specific signed artifacts.
+  # The macOS build jobs have submitted exactly one DMG per architecture and
+  # persisted the signed inputs. A lightweight follow-up workflow polls those
+  # same submission IDs and publishes macOS + latest.json after acceptance.
   # ─────────────────────────────────────────────────────────────────────
-  publish-updates-manifest:
-    name: Publish Tauri update manifests
+  queue-macos-notarization:
+    name: Queue asynchronous macOS notarization finalizer
     needs: [resolve-tag, build-tauri]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          # Matches Verboo-Code-<version>-<macOS-arm64|macOS-x64|Windows-x64|Linux-x64>
-          pattern: Verboo-Code-*
-          merge-multiple: true
-          path: bundles
-
-      - name: Generate update manifests
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.resolve-tag.outputs.tag }}
-          VERSION: ${{ needs.resolve-tag.outputs.version }}
-          IS_PRE: ${{ needs.resolve-tag.outputs.is_prerelease }}
-        run: |
-          set -euo pipefail
-          node scripts/verify/generate-tauri-update-manifest.mjs \
-            --tag "$TAG" \
-            --version "$VERSION" \
-            --prerelease "$IS_PRE" \
-            --bundles-dir bundles \
-            --output update-manifests
-
-      - name: Upload immutable and rolling update manifests
+      - name: Dispatch finalizer for this exact build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="${{ needs.resolve-tag.outputs.tag }}"
-          MANIFEST="update-manifests/latest.json"
-          gh release upload "$TAG" "$MANIFEST" --clobber
-          if ! gh release view updater-beta >/dev/null 2>&1; then
-            gh release create updater-beta \
-              --prerelease \
-              --title "Verboo Code beta update channel" \
-              --notes "Rolling signed updater manifest."
-          fi
-          gh release upload updater-beta "$MANIFEST" --clobber
+          gh workflow run tauri-release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF_NAME" \
+            -f operation="notarization" \
+            -f build_run_id="$GITHUB_RUN_ID" \
+            -f source_ref="$GITHUB_REF_NAME" \
+            -f source_sha="$GITHUB_SHA" \
+            -f attempt="1"
+
+  finalize-macos-notarization:
+    name: Continue asynchronous macOS notarization
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'notarization'
+    uses: ./.github/workflows/tauri-notarization.yml
+    with:
+      build_run_id: ${{ inputs.build_run_id }}
+      source_ref: ${{ inputs.source_ref }}
+      source_sha: ${{ inputs.source_sha }}
+      attempt: ${{ inputs.attempt }}
+    secrets: inherit
