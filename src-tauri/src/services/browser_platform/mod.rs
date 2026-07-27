@@ -220,16 +220,20 @@ mod contract_tests {
     }
 
     #[test]
-    fn windows_document_script_registration_completes_without_a_nested_message_pump() {
+    fn windows_document_script_registration_uses_webview2_completion_helper() {
         let source = include_str!("windows.rs");
         assert!(
-            !source.contains("wait_for_async_operation"),
-            "WebView2 registration must not nest a Win32 message pump inside Tauri's UI loop"
+            source.contains(
+                "AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation"
+            ),
+            "WebView2 registration must pump its STA callback on Tauri's UI thread"
         );
         assert!(
-            source.contains("AddScriptToExecuteOnDocumentCreatedCompletedHandler::create")
-                && source.contains("recv_timeout"),
-            "the worker must await WebView2 script registration before navigation"
+            source.contains("recv_timeout")
+                && !source.contains(
+                    "AddScriptToExecuteOnDocumentCreatedCompletedHandler::create"
+                ),
+            "the worker must await the completed UI-thread registration before navigation"
         );
         assert!(
             !source.contains("let _ = cwv.AddScriptToExecuteOnDocumentCreated"),

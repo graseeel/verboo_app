@@ -106,9 +106,9 @@ pub fn attach_bridge(
     let install_handler_return = install_handler.clone();
 
     // `with_webview` dispatches onto Tauri's UI thread and returns before the
-    // closure completes. Wait on this worker thread for WebView2's completion
-    // callback instead of using webview2-com's nested Win32 message pump on
-    // the UI thread; the nested pump can starve the next `Window::add_child`.
+    // closure completes. WebView2 completion callbacks belong to that STA, so
+    // the closure must pump the registration callback before notifying this
+    // worker thread that the bridge is ready.
     let (registration_tx, registration_rx) = mpsc::channel::<Result<(), String>>();
 
     // Capturado fora da closure para o unregister; clonado para dentro.
@@ -193,22 +193,21 @@ pub fn attach_bridge(
                 &install_doc,
             );
             let full = format!("{tpl}\n{BROWSER_INJECT_JS}");
-            let completion_tx = registration_tx.clone();
-            let handler = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
-                move |error, _id| {
-                    let _ = completion_tx.send(error.map_err(|e| e.to_string()));
-                    Ok(())
-                },
-            ));
 
             // Persist before dispatch: WebView2 may invoke the completion
-            // callback synchronously, allowing the worker to resume at once.
+            // callback synchronously.
             *tokens_slot.lock().unwrap() = (nav_tok, content_tok, msg_tok);
-            let script = windows::core::HSTRING::from(full);
-            if let Err(e) = cwv.AddScriptToExecuteOnDocumentCreated(&script, &handler) {
-                let _ = registration_tx.send(Err(e.to_string()));
-                return;
-            }
+            let registration =
+                AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation(
+                    Box::new(move |handler| unsafe {
+                        let script = windows::core::HSTRING::from(full);
+                        cwv.AddScriptToExecuteOnDocumentCreated(&script, &handler)
+                            .map_err(webview2_com::Error::WindowsError)
+                    }),
+                    Box::new(|error, _id| error),
+                )
+                .map_err(|error| error.to_string());
+            let _ = registration_tx.send(registration);
         })
         .map_err(|e| BrowserPlatformError::new("attach_bridge", "windows", e.to_string()))?;
 
