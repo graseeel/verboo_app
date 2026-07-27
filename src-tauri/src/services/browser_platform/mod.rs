@@ -283,17 +283,19 @@ mod contract_tests {
             .map(|(helper, _)| helper)
             .expect("vendored Wry document-script helper must remain inspectable");
         assert!(
-            helper.contains("AddScriptToExecuteOnDocumentCreatedCompletedHandler::create")
+            helper.contains(
+                "AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation"
+            )
                 && helper.contains(".AddScriptToExecuteOnDocumentCreated")
-                && helper.contains("co_wait_for_handle(event)"),
-            "each required document script must use a COM-aware registration wait"
+                && !helper.contains("co_wait_for_handle(event)"),
+            "each required document script must use Wry's supported WebView2 completion helper"
         );
         assert!(
-            !helper.contains("wait_for_async_operation")
-                && !helper.contains("wait_with_pump")
+            !helper.contains("CreateEventW")
+                && !helper.contains("SetEvent")
                 && !helper.contains("Self::dispatch_handler")
                 && !helper.contains("VecDeque"),
-            "each required document script must use the direct COM-aware wait"
+            "document-script registration must not duplicate controller wait plumbing"
         );
         assert!(
             source.contains(

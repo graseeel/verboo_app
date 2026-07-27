@@ -1495,32 +1495,22 @@ impl InnerWebView {
   #[inline]
   fn add_script_to_execute_on_document_created(webview: &ICoreWebView2, js: String) -> Result<()> {
     smoke_trace("add_script: dispatch starting");
-    let event = unsafe { CreateEventW(None, true, false, PCWSTR::null())? };
-    let result: Rc<RefCell<Option<windows::core::Result<()>>>> = Rc::new(RefCell::new(None));
-    let result_clone = Rc::clone(&result);
-    let event_handle = event.0 as isize;
-    let handler = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
-      move |error_code, _id| {
-        smoke_trace("add_script: callback received");
-        *result_clone.borrow_mut() = Some(error_code);
-        unsafe { SetEvent(HANDLE(event_handle as *mut _)).ok() };
-        Ok(())
-      },
-    ));
-
-    let js = HSTRING::from(js);
-    if let Err(error) = unsafe { webview.AddScriptToExecuteOnDocumentCreated(&js, &handler) } {
-      let _ = unsafe { CloseHandle(event) };
-      return Err(error.into());
+    let webview = webview.clone();
+    let registration =
+      AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation(
+        Box::new(move |handler| unsafe {
+          let js = HSTRING::from(js);
+          webview
+            .AddScriptToExecuteOnDocumentCreated(&js, &handler)
+            .map_err(Into::into)
+        }),
+        Box::new(|error_code, _id| error_code),
+      )
+      .map_err(Into::into);
+    if registration.is_ok() {
+      smoke_trace("add_script: wait completed");
     }
-
-    co_wait_for_handle(event)?;
-    smoke_trace("add_script: wait completed");
-    let registration = result
-      .borrow_mut()
-      .take()
-      .unwrap_or_else(|| Err(windows::core::Error::from(E_UNEXPECTED)));
-    registration.map_err(Into::into)
+    registration
   }
 
   #[inline]
