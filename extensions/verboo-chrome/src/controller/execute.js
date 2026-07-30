@@ -62,11 +62,13 @@ export async function execute(toolCall, ctx) {
   // Navigation and new-tab grants belong to their destination. Other tools
   // inherit the active tab host.
   let siteGrant = undefined
+  let policyHost = canonical.policyHost || ''
   if (ctx.getSiteGrant) {
     try {
-      const host = canonical.policyHost || (
+      const host = policyHost || (
         ctx.activeTabId != null ? await getActiveTabHost(ctx.activeTabId) : ''
       )
+      policyHost = host
       if (host) siteGrant = await ctx.getSiteGrant(host)
     } catch {
       // Non-fatal: treat as no grant.
@@ -90,20 +92,21 @@ export async function execute(toolCall, ctx) {
   // needsApproval=true is returned to the caller — the controller does
   // not prompt the user directly; the panel/agent client handles it.
   if (!policy.allowed) {
-    return { ok: false, error: policy.reason, policy, toolCall: normalizedToolCall }
+    return { ok: false, error: policy.reason, policy, toolCall: normalizedToolCall, policyHost }
   }
 
   // Dispatch to the tool implementation.
   try {
     await ctx.onExecuting?.(normalizedToolCall)
     const result = await dispatch(normalizedToolCall, ctx)
-    return { ok: true, result, policy, toolCall: normalizedToolCall }
+    return { ok: true, result, policy, toolCall: normalizedToolCall, policyHost }
   } catch (err) {
     return {
       ok: false,
       error: err?.message ?? String(err),
       policy,
       toolCall: normalizedToolCall,
+      policyHost,
     }
   }
 }

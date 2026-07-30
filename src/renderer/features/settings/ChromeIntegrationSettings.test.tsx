@@ -71,6 +71,16 @@ describe('ChromeIntegrationSettings', () => {
     expect(actions.openStore).not.toHaveBeenCalled()
   })
 
+  it('distinguishes the extension account login from the CLI connection', () => {
+    render(<ChromeIntegrationSettings />)
+
+    const explanation = screen.getByRole('region', { name: 'chrome.identityAndCli' })
+    expect(explanation).toHaveTextContent('chrome.accountLogin')
+    expect(explanation).toHaveTextContent('chrome.accountLoginBody')
+    expect(explanation).toHaveTextContent('chrome.cliConnection')
+    expect(explanation).toHaveTextContent('chrome.cliConnectionBody')
+  })
+
   it('shows only actions enabled by the backend state', () => {
     mockHook({
       ...baseStatus,

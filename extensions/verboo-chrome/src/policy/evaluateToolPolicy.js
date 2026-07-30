@@ -47,7 +47,7 @@ export function evaluateToolPolicy(mode, siteGrant, toolCall) {
   }
 
   // 1. Hard Blocks — always apply, including under Skip.
-  const hb = checkHardBlock(toolCall.input || toolCall.name)
+  const hb = checkHardBlock(toolCall)
   if (hb.blocked) {
     return {
       allowed: false,

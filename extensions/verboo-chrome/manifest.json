@@ -3,8 +3,9 @@
   "name": "__MSG_appName__",
   "short_name": "Verboo",
   "description": "__MSG_appDesc__",
-  "version": "0.1.1",
-  "version_name": "0.1.1-p4",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2RFg28rPRcECIAgbWDDlm7aMbJnkF3jxiZetmRd4sgu6muRLEtLqK+XK4t3r1U485UhCzeBLMnFs9XYmRw+zjt2SATtUvRk/eUJRk4EaTimK/GCnoygTTYBA4H+GfvJU+BX8lKSoKZ2F5udsPZ46P3lp4lqjnwuarz/oF98tm5AlDULDI7ubNSh+fLV9zJw9sn//E/O4mnsoZ4sMpZVgCEmBR6TPHrh9muAo90aZDT/rn2CnGksQFch81THOIWwN9hRyWqz5sRsMM40VP8UxSSWjXp1H4VzN1V7vYhlpgprG8S7jSiB/psi55madv/xKJlH674sRuV9YGqymsEjbPQIDAQAB",
+  "version": "0.1.2",
+  "version_name": "0.1.2-p1",
   "default_locale": "en",
   "minimum_chrome_version": "123",
   "icons": {
@@ -23,10 +24,19 @@
     "service_worker": "src/background.js",
     "type": "module"
   },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["src/routines/recording/inject.js"],
+      "run_at": "document_start"
+    }
+  ],
   "permissions": [
     "activeTab",
+    "alarms",
     "identity",
     "nativeMessaging",
+    "notifications",
     "sidePanel",
     "storage",
     "scripting",

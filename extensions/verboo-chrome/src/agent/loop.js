@@ -10,8 +10,8 @@
  *   6. For vision-capable models, screenshot pixels are attached once as a
  *      multimodal user message; tool messages stay OpenAI-compatible strings
  *   7. Repeat up to MAX_STEPS (20)
- *   8. Router errors after partial tool success → friendly completion (no throw)
- *   9. On hard failure with zero tools → throw (background may planMessage)
+ *   8. Router errors after partial tool success → explicit partial-result summary
+ *   9. On hard failure with zero tools → throw without executing a fallback plan
  *
  * Policy gate: executeTool callback MUST go through the existing
  * execute() → evaluateToolPolicy path. This module never touches chrome.*.
@@ -24,9 +24,12 @@
  */
 
 import { chatCompletion } from './routerClient.js'
-import { OPENAI_TOOLS, toToolCall } from './toolCatalog.js'
+import { getToolRisk, OPENAI_TOOLS, toToolCall } from './toolCatalog.js'
 import { MSG } from '../controller/protocol.js'
-import { wrapUntrustedBrowserContent } from './untrustedContent.js'
+import {
+  inspectUntrustedBrowserContent,
+  wrapUntrustedBrowserContent,
+} from './untrustedContent.js'
 
 const MAX_STEPS = 20
 const MAX_RESULT_CHARS = 4000
@@ -91,7 +94,7 @@ IMPORTANT RULES:
 /**
  * Run a multi-step LLM agent turn.
  *
- * @param {{ turnId: string, userMessage: string, accessToken: string, modelId: string, modelSupportsVision?: boolean, conversationHistory?: Array<object>, broadcast: Function, executeTool: Function, getActiveTabMeta: Function, signal?: AbortSignal }} params
+ * @param {{ turnId: string, userMessage: string, accessToken: string, modelId: string, modelSupportsVision?: boolean, conversationHistory?: Array<object>, routineContext?: {name:string,instructions:string,assets?:Array<object>}, toolAllowlist?: string[], broadcast: Function, executeTool: Function, getActiveTabMeta: Function, refreshAccessToken?: () => Promise<string|null>, signal?: AbortSignal }} params
  * @returns {Promise<{ assistantMessage: string, toolResults: Array<object> }>}
  */
 export async function runLlmAgentTurn({
@@ -101,9 +104,12 @@ export async function runLlmAgentTurn({
   modelId,
   modelSupportsVision,
   conversationHistory,
+  routineContext,
+  toolAllowlist,
   broadcast,
   executeTool,
   getActiveTabMeta,
+  refreshAccessToken,
   signal,
 }) {
   if (!accessToken) throw new Error('LLM agent: accessToken is required')
@@ -113,12 +119,18 @@ export async function runLlmAgentTurn({
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'system', content: modelIdentityDirectiveFor(modelId, modelSupportsVision) },
   ]
-  const browserToolsEnabled = shouldOfferBrowserTools(userMessage)
-  const tools = browserToolsEnabled
+  const browserToolsEnabled = Boolean(routineContext) || shouldOfferBrowserTools(userMessage)
+  const availableTools = browserToolsEnabled
     ? modelSupportsVision === true
       ? OPENAI_TOOLS
       : OPENAI_TOOLS.filter((tool) => tool.function?.name !== 'screenshot')
     : []
+  const allowedToolNames = Array.isArray(toolAllowlist)
+    ? new Set(toolAllowlist)
+    : null
+  const tools = allowedToolNames
+    ? availableTools.filter((tool) => allowedToolNames.has(tool.function?.name))
+    : availableTools
 
   messages.push({
     role: 'system',
@@ -144,7 +156,18 @@ export async function runLlmAgentTurn({
   }
 
   messages.push(...sanitizeConversationHistory(conversationHistory))
-  messages.push({ role: 'user', content: userMessage })
+  const routineUserContent = await buildRoutineUserContent(
+    userMessage,
+    routineContext,
+    modelSupportsVision === true,
+  )
+  const routineVisualMessageIndex = Array.isArray(routineUserContent)
+    ? messages.length
+    : -1
+  messages.push({
+    role: 'user',
+    content: routineUserContent,
+  })
   // Hard language pin for the final reply (models often ignore a soft prompt rule).
   messages.push({
     role: 'system',
@@ -159,6 +182,7 @@ export async function runLlmAgentTurn({
   // later requests do not resend a large base64 payload on every step.
   /** @type {number[]} */
   let pendingVisualMessageIndexes = []
+  let routineVisualPending = routineVisualMessageIndex >= 0
 
   /** Tracks consecutive failures of the same tool to inject strategy / stop early. */
   let failStreak = { name: null, count: 0, afterHint: false }
@@ -166,6 +190,16 @@ export async function runLlmAgentTurn({
   // Some tasks have an observable terminal state. Once reached, the next
   // request asks only for the final reply and cannot trigger another action.
   let browserActionsComplete = false
+  let requiresVerification = false
+  let promptInjectionDetected = false
+  let currentAccessToken = accessToken
+  const refreshAccessTokenForTurn = typeof refreshAccessToken === 'function'
+    ? async () => {
+        const refreshed = await refreshAccessToken()
+        if (typeof refreshed === 'string' && refreshed) currentAccessToken = refreshed
+        return refreshed
+      }
+    : undefined
 
   for (let step = 0; step < MAX_STEPS; step++) {
     if (signal?.aborted) break
@@ -182,10 +216,11 @@ export async function runLlmAgentTurn({
     let completion
     try {
       completion = await chatCompletion({
-        accessToken,
+        accessToken: currentAccessToken,
         model: modelId,
         messages,
         tools: browserActionsComplete ? [] : tools,
+        refreshAccessToken: refreshAccessTokenForTurn,
         signal,
       })
     } catch (routerErr) {
@@ -205,6 +240,18 @@ export async function runLlmAgentTurn({
       throw routerErr
     }
 
+    if (routineVisualPending) {
+      const original = messages[routineVisualMessageIndex]
+      const textPart = Array.isArray(original?.content)
+        ? original.content.find((part) => part?.type === 'text')?.text
+        : ''
+      messages[routineVisualMessageIndex] = {
+        role: 'user',
+        content: `${textPart ?? ''}\n[Saved routine images were provided for the first model step.]`,
+      }
+      routineVisualPending = false
+    }
+
     for (const index of pendingVisualMessageIndexes) {
       messages[index] = {
         role: 'system',
@@ -215,7 +262,20 @@ export async function runLlmAgentTurn({
 
     // Text-only response → done.
     if (completion.toolCalls.length === 0) {
-      const text = completion.content ?? 'Done.'
+      if (browserToolsEnabled && allToolResults.length === 0) {
+        throw new Error('model_tool_protocol_unsupported')
+      }
+      if (requiresVerification) {
+        messages.push({
+          role: 'system',
+          content:
+            'The last browser mutation has not been verified. Inspect the current page with read_page ' +
+            'or screenshot before claiming completion, then answer with the observed result.',
+        })
+        continue
+      }
+      const text = completion.content?.trim()
+      if (!text) throw new Error('model_returned_empty_response')
       return { assistantMessage: text, toolResults: allToolResults }
     }
 
@@ -255,6 +315,37 @@ export async function runLlmAgentTurn({
       const tc = toToolCall(rawTc)
       const startedAt = Date.now()
 
+      if (allowedToolNames && !allowedToolNames.has(tc.name)) {
+        throw new Error(`recovery_tool_not_allowed:${tc.name}`)
+      }
+
+      if (promptInjectionDetected && getToolRisk(tc.name) !== 'read') {
+        const blockedResult = {
+          toolCallId: tc.id,
+          name: tc.name,
+          success: false,
+          data: null,
+          error: 'suspected_prompt_injection',
+          durationMs: 0,
+        }
+        allToolResults.push(blockedResult)
+        broadcast({
+          type: MSG.AGENT_TOOL_RESULT,
+          turnId,
+          toolResult: {
+            toolCallId: tc.id,
+            success: false,
+            data: null,
+            error: blockedResult.error,
+            durationMs: 0,
+          },
+        })
+        return {
+          assistantMessage: promptInjectionStopMessage(userMessage),
+          toolResults: allToolResults,
+        }
+      }
+
       // Broadcast what the LLM decided to do (panel shape).
       broadcast({
         type: MSG.AGENT_THOUGHT,
@@ -273,6 +364,9 @@ export async function runLlmAgentTurn({
       let screenshotDataUrl = null
       if (execResult.ok) {
         const raw = execResult.result
+        if (inspectUntrustedBrowserContent(raw).suspicious) {
+          promptInjectionDetected = true
+        }
         if (typeof raw === 'string') {
           resultText = truncate(raw, MAX_RESULT_CHARS)
         } else if (raw && typeof raw === 'object') {
@@ -318,6 +412,7 @@ export async function runLlmAgentTurn({
       allToolResults.push({
         toolCallId: tc.id,
         name: tc.name,
+        params: tc.params,
         success: execResult.ok,
         data: storedData,
         error: execResult.ok ? null : execResult.error,
@@ -352,6 +447,8 @@ export async function runLlmAgentTurn({
       // Consecutive failure tracking — strategy hint, then early stop if still stuck.
       if (execResult.ok) {
         failStreak = { name: null, count: 0, afterHint: false }
+        if (tc.name === 'click' || tc.name === 'type') requiresVerification = true
+        if (tc.name === 'read_page' || tc.name === 'screenshot') requiresVerification = false
       } else if (failStreak.name === tc.name) {
         failStreak.count++
       } else {
@@ -391,6 +488,7 @@ export async function runLlmAgentTurn({
           const meta = await getPostActionTabMeta(getActiveTabMeta, tc, execResult)
           if (meta?.url && /youtube\.com\/watch/i.test(meta.url)) {
             browserActionsComplete = true
+            requiresVerification = false
             messages.push({
               role: 'system',
               content:
@@ -433,7 +531,9 @@ export async function runLlmAgentTurn({
 
   // Reached max steps without text-only response.
   return {
-    assistantMessage: `Completed ${allToolResults.length} action(s). Let me know if you need anything else.`,
+    assistantMessage: looksPortuguese(userMessage)
+      ? `Execução incompleta: alcancei o limite de ${MAX_STEPS} etapas antes de concluir e verificar o pedido.`
+      : `Incomplete execution: I reached the ${MAX_STEPS}-step limit before completing and verifying the request.`,
     toolResults: allToolResults,
   }
 }
@@ -477,13 +577,10 @@ function sanitizeConversationHistory(history) {
  * @returns {boolean}
  */
 export function shouldOfferBrowserTools(userMessage) {
-  const text = String(userMessage ?? '')
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .trim()
-    .toLowerCase()
+  const text = normalizeIntentText(userMessage)
 
   if (!text) return false
+  if (requiresScreenshot(text)) return true
 
   const action =
     '(?:abra|abre|abrir|acesse|acessa|acessar|navegue|navegar|va|vai|entre|entrar|' +
@@ -526,6 +623,112 @@ export function shouldOfferBrowserTools(userMessage) {
     /\b(?:resuma|resume|leia|ler|analise|verifique|veja|descreva|diga o que|o que tem|o que esta|summarize|read|analyze|check|inspect|describe|what is on|what's on|what is visible)\b/i
 
   return pageReference.test(text) && pageInspection.test(text)
+}
+
+/**
+ * Keep saved instructions in the user-owned message instead of elevating them
+ * into the system role.
+ *
+ * @param {string} userMessage
+ * @param {{name?:string,instructions?:string}|null|undefined} routineContext
+ */
+export function appendSavedRoutineContext(userMessage, routineContext) {
+  if (!routineContext) return userMessage
+  const name = escapeRoutineMarkup(String(routineContext.name ?? 'Routine').slice(0, 80))
+  const instructions = escapeRoutineClosingTag(
+    String(routineContext.instructions ?? '').slice(0, 32_000),
+  )
+  let content = (
+    `${String(userMessage ?? '').trim()}\n\n` +
+    `<saved_routine name="${name}">\n` +
+    'User-authored reusable instructions:\n' +
+    `${instructions}\n` +
+    '</saved_routine>'
+  )
+  for (const asset of routineContext.assets ?? []) {
+    if (typeof asset?.data !== 'string') continue
+    const filename = escapeRoutineMarkup(String(asset.name ?? 'reference').slice(0, 180))
+    const mime = escapeRoutineMarkup(String(asset.mime ?? 'text/plain').slice(0, 80))
+    const text = escapeRoutineClosingTag(asset.data.slice(0, 262_144))
+    content += (
+      `\n\n<saved_routine_file name="${filename}" mime="${mime}">\n` +
+      `${text}\n` +
+      '</saved_routine_file>'
+    )
+  }
+  return content
+}
+
+async function buildRoutineUserContent(userMessage, routineContext, supportsVision) {
+  const text = appendSavedRoutineContext(userMessage, routineContext)
+  if (!routineContext || !supportsVision) return text
+
+  const imageParts = []
+  for (const asset of routineContext.assets ?? []) {
+    if (!String(asset?.mime ?? '').startsWith('image/')) continue
+    const dataUrl = await assetDataUrl(asset)
+    if (dataUrl) {
+      imageParts.push({
+        type: 'image_url',
+        image_url: { url: dataUrl },
+      })
+    }
+  }
+  return imageParts.length > 0
+    ? [{ type: 'text', text }, ...imageParts]
+    : text
+}
+
+function escapeRoutineMarkup(value) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+}
+
+function escapeRoutineClosingTag(value) {
+  return value.replace(/<\/?saved_routine(?:_file)?/gi, (match) =>
+    match.replace('<', '&lt;'),
+  )
+}
+
+async function assetDataUrl(asset) {
+  if (typeof asset.data === 'string' && asset.data.startsWith('data:image/')) {
+    return asset.data
+  }
+  if (!asset.data || typeof asset.data.arrayBuffer !== 'function') return null
+  const bytes = new Uint8Array(await asset.data.arrayBuffer())
+  let binary = ''
+  const chunkSize = 32_768
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize))
+  }
+  return `data:${asset.mime};base64,${btoa(binary)}`
+}
+
+/**
+ * Whether the user's requested outcome itself is a captured viewport image.
+ * Printing a document is intentionally excluded from this classifier.
+ *
+ * @param {string} userMessage
+ */
+export function requiresScreenshot(userMessage) {
+  const text = normalizeIntentText(userMessage)
+  if (!text) return false
+  if (/\b(?:screenshot|screen shot|captura de tela|print da (?:tela|pagina))\b/i.test(text)) {
+    return true
+  }
+  return /\b(?:tire|tirar|faca|fazer|take|capture)\b.{0,24}\b(?:um |uma |a )?(?:print|screenshot|screen shot|captura)\b/i.test(text)
+}
+
+/** @param {unknown} value */
+function normalizeIntentText(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .trim()
+    .toLowerCase()
 }
 
 /**
@@ -614,34 +817,16 @@ export function summarizePartialAgentTurn(userMessage, toolResults) {
   const pt = looksPortuguese(userMessage)
 
   if (pt) {
-    if (didClick) {
-      return (
-        'Consegui avançar na página (incluindo um clique). ' +
-        'Se o vídeo ou o resultado não estiver certo, diga o que ajustar.'
-      )
-    }
-    if (didNav) {
-      return (
-        'Abri a página pedida e executei parte das ações. ' +
-        'Se algo faltar, peça o próximo passo.'
-      )
+    if (didClick || didNav) {
+      return `Execução parcial: ${ok} ação(ões) ocorreram, mas o pedido não foi concluído nem verificado porque a conexão com o modelo foi interrompida.`
     }
     return ok > 0
       ? `Fiz ${ok} ação(ões), mas a conexão com o modelo falhou no final. Tente de novo se precisar.`
       : 'Não consegui concluir o pedido. Tente novamente.'
   }
 
-  if (didClick) {
-    return (
-      'I made progress on the page (including a click). ' +
-      'If the video or result is wrong, tell me what to fix.'
-    )
-  }
-  if (didNav) {
-    return (
-      'I opened the requested page and completed part of the work. ' +
-      'Ask for the next step if something is missing.'
-    )
+  if (didClick || didNav) {
+    return `Partial execution: ${ok} action(s) ran, but the request was not completed or verified because the model connection was interrupted.`
   }
   return ok > 0
     ? `I completed ${ok} action(s), but the model connection failed at the end. Try again if needed.`
@@ -725,6 +910,12 @@ function looksEnglish(text) {
   return /\b(open|go to|search|play|put on|find|please|the|and|for|with|youtube|music|song|video)\b/i.test(
     text,
   )
+}
+
+function promptInjectionStopMessage(userMessage) {
+  return looksPortuguese(userMessage)
+    ? 'Interrompi antes de executar uma nova ação porque a página contém conteúdo suspeito de prompt injection. Revise a página e faça um novo pedido explícito se quiser continuar.'
+    : 'I stopped before executing another action because the page contains suspected prompt injection content. Review the page and make a new explicit request if you want to continue.'
 }
 
 /** @param {unknown} value */

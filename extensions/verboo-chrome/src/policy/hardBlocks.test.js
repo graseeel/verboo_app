@@ -69,6 +69,25 @@ test('benign action does not match any hard block', () => {
   assert.equal(r.matchedLabel, undefined)
 })
 
+test('navigation URL substrings do not become purchase intent', () => {
+  const r = checkHardBlock({
+    name: 'navigate',
+    input: 'navigate url=https://example.com/buy',
+    params: { url: 'https://example.com/buy' },
+  })
+  assert.equal(r.blocked, false)
+})
+
+test('a click selector with explicit purchase intent remains blocked', () => {
+  const r = checkHardBlock({
+    name: 'click',
+    input: 'click selector=button#buy-now',
+    params: { selector: 'button#buy-now' },
+  })
+  assert.equal(r.blocked, true)
+  assert.equal(r.matchedLabel, 'purchase')
+})
+
 test('read_page does not match purchase despite "buy" absence', () => {
   const r = checkHardBlock('tool:read_page selector=h1')
   assert.equal(r.blocked, false)

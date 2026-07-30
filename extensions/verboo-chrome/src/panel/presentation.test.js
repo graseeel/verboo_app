@@ -6,6 +6,7 @@ import {
   modelDisplayName,
   safeMarkdownToHtml,
 } from './presentation.js'
+import * as presentation from './presentation.js'
 
 test('modelDisplayName: prefers router presentation metadata', () => {
   assert.equal(
@@ -31,4 +32,57 @@ test('safeMarkdownToHtml: escapes model-provided markup before formatting', () =
   assert.doesNotMatch(html, /<img/i)
   assert.match(html, /&lt;img/)
   assert.match(html, /<strong>ok<\/strong>/)
+})
+
+test('translatedErrorMessage: translates known backend codes and hides unknown codes', () => {
+  assert.equal(typeof presentation.translatedErrorMessage, 'function')
+  const translate = (key) => ({
+    routine_recording_page_unavailable: 'Open a website before recording a workflow.',
+    routine_record_failed: 'Could not change workflow recording.',
+  })[key] ?? key
+
+  assert.equal(
+    presentation.translatedErrorMessage(
+      'routine_recording_page_unavailable',
+      'routine_record_failed',
+      translate,
+    ),
+    'Open a website before recording a workflow.',
+  )
+  assert.equal(
+    presentation.translatedErrorMessage('internal_backend_code', 'routine_record_failed', translate),
+    'Could not change workflow recording.',
+  )
+})
+
+test('shouldAppendError: suppresses only an identical consecutive error', () => {
+  assert.equal(typeof presentation.shouldAppendError, 'function')
+  assert.equal(presentation.shouldAppendError('Same error', 'Same error'), false)
+  assert.equal(presentation.shouldAppendError('Different error', 'Same error'), true)
+  assert.equal(presentation.shouldAppendError('', 'Same error'), true)
+})
+
+test('shouldSubmitComposerKey: plain Enter submits', () => {
+  assert.equal(presentation.shouldSubmitComposerKey?.({ key: 'Enter' }), true)
+})
+
+test('shouldSubmitComposerKey: Shift+Enter inserts a line break', () => {
+  assert.equal(
+    presentation.shouldSubmitComposerKey?.({ key: 'Enter', shiftKey: true }),
+    false,
+  )
+})
+
+test('shouldSubmitComposerKey: IME composition never submits', () => {
+  assert.equal(
+    presentation.shouldSubmitComposerKey?.({ key: 'Enter', isComposing: true }),
+    false,
+  )
+})
+
+test('shouldSubmitComposerKey: an already handled slash command never submits', () => {
+  assert.equal(
+    presentation.shouldSubmitComposerKey?.({ key: 'Enter', defaultPrevented: true }),
+    false,
+  )
 })

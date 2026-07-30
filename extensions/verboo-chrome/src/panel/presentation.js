@@ -46,6 +46,45 @@ export function safeMarkdownToHtml(value) {
     .replace(/\r?\n/g, '<br>')
 }
 
+/**
+ * Translate a backend error code without leaking unknown internal codes.
+ * @param {unknown} errorCode
+ * @param {string} fallbackKey
+ * @param {(key: string) => string} translate
+ * @returns {string}
+ */
+export function translatedErrorMessage(errorCode, fallbackKey, translate) {
+  const code = String(errorCode ?? '').trim()
+  if (!code) return translate(fallbackKey)
+  const translated = translate(code)
+  return translated && translated !== code ? translated : translate(fallbackKey)
+}
+
+/**
+ * Avoid stacking the same error twice when the user repeats an action.
+ * @param {unknown} previousError
+ * @param {unknown} nextError
+ * @returns {boolean}
+ */
+export function shouldAppendError(previousError, nextError) {
+  const previous = String(previousError ?? '')
+  const next = String(nextError ?? '')
+  return !previous || previous !== next
+}
+
+/**
+ * Submit only for an unmodified Enter that was not already handled by
+ * another interaction, such as the slash menu or an IME composition.
+ * @param {{key?: string, shiftKey?: boolean, isComposing?: boolean, defaultPrevented?: boolean}} event
+ * @returns {boolean}
+ */
+export function shouldSubmitComposerKey(event) {
+  return event?.key === 'Enter'
+    && !event.shiftKey
+    && !event.isComposing
+    && !event.defaultPrevented
+}
+
 /** @param {unknown} value */
 export function escapeHtml(value) {
   return String(value ?? '')

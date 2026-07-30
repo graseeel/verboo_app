@@ -9,6 +9,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { OAUTH_CONFIG } from './oauthConfig.js'
 
 import {
   loadSession,
@@ -16,6 +17,8 @@ import {
   logout,
   isSignedIn,
   startOAuthLogin,
+  refreshSession,
+  ensureFreshSession,
   getAuthCapabilities,
   loadModels,
   selectModel,
@@ -65,6 +68,22 @@ test('normalizeModels: preserves optional presentation metadata from the router'
   })
   assert.equal(model.description, 'Fast visual reasoning')
   assert.equal(model.provider, 'Example Provider')
+})
+
+test('normalizeModels: preserves explicit browser tool protocol capabilities', () => {
+  const models = normalizeModels({ data: [
+    {
+      id: 'tool-model',
+      capabilities: { supports_tools: true, tool_protocol: 'openai' },
+    },
+    {
+      id: 'text-model',
+      capabilities: { supports_tools: false },
+    },
+  ] })
+  assert.equal(models[0].supportsTools, true)
+  assert.equal(models[0].toolProtocol, 'openai')
+  assert.equal(models[1].supportsTools, false)
 })
 
 test('resolveModelSelection: current panel choice wins over stale persisted choice', () => {
@@ -255,10 +274,9 @@ test('production auth advertises OAuth only', () => {
   assert.deepEqual(getAuthCapabilities().methods, ['oauth'])
 })
 
-test('OAuth fails closed when release client id is absent', async () => {
-  await logout()
-  await assert.rejects(() => startOAuthLogin(), /oauth_not_configured/)
-  assert.equal(await isSignedIn(), false)
+test('release OAuth config exposes the registered Chrome public client', () => {
+  assert.equal(OAUTH_CONFIG.clientId, 'verboo-code-chrome-extension')
+  assert.equal(getAuthCapabilities().oauthConfigured, true)
 })
 
 test('OAuth uses identity + PKCE and persists only the returned session', async () => {
@@ -326,6 +344,92 @@ test('OAuth rejects a callback with a mismatched state before token exchange', a
   assert.equal(fetched, false)
 })
 
+test('refreshSession rotates the access token and preserves an omitted refresh token', async () => {
+  await logout()
+  await saveSession({
+    accountId: 'refresh-user',
+    email: 'refresh@example.com',
+    accessToken: 'access-old',
+    refreshToken: 'refresh-old',
+    expiresAt: Date.now() - 1,
+    source: 'oauth',
+  })
+
+  let request = null
+  const refreshed = await refreshSession({
+    clientId: 'chrome-client',
+    authorizeUrl: 'https://code.verboo.ai/oauth/authorize',
+    tokenUrl: 'https://code.verboo.ai/oauth/token',
+    scopes: ['user:profile'],
+  }, {
+    fetch: async (url, init) => {
+      request = { url: String(url), init }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ access_token: 'access-new', expires_in: 3600 }),
+      }
+    },
+  })
+
+  assert.equal(request.url, 'https://code.verboo.ai/oauth/token')
+  assert.match(String(request.init.body), /grant_type=refresh_token/)
+  assert.match(String(request.init.body), /refresh_token=refresh-old/)
+  assert.equal(refreshed.accessToken, 'access-new')
+  assert.equal(refreshed.refreshToken, 'refresh-old')
+  assert.equal(refreshed.accountId, 'refresh-user')
+  assert.equal(refreshed.email, 'refresh@example.com')
+  assert.ok(refreshed.expiresAt > Date.now())
+  assert.equal((await loadSession()).accessToken, 'access-new')
+})
+
+test('ensureFreshSession refreshes before expiry and returns null when renewal is impossible', async () => {
+  await logout()
+  await saveSession({
+    accountId: 'refresh-user',
+    accessToken: 'access-old',
+    refreshToken: 'refresh-old',
+    expiresAt: Date.now() + 10_000,
+    source: 'oauth',
+  })
+
+  let refreshCalls = 0
+  const fresh = await ensureFreshSession({
+    minValidityMs: 60_000,
+    config: {
+      clientId: 'chrome-client',
+      authorizeUrl: 'https://code.verboo.ai/oauth/authorize',
+      tokenUrl: 'https://code.verboo.ai/oauth/token',
+      scopes: ['user:profile'],
+    },
+    dependencies: {
+      fetch: async () => {
+        refreshCalls += 1
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            access_token: 'access-fresh',
+            refresh_token: 'refresh-rotated',
+            expires_in: 120,
+          }),
+        }
+      },
+    },
+  })
+  assert.equal(refreshCalls, 1)
+  assert.equal(fresh.accessToken, 'access-fresh')
+  assert.equal(fresh.refreshToken, 'refresh-rotated')
+
+  await saveSession({
+    accountId: 'expired-without-refresh',
+    accessToken: 'expired',
+    expiresAt: Date.now() - 1,
+    source: 'oauth',
+  })
+  assert.equal(await ensureFreshSession(), null)
+})
+
 // ── loadModels (uses cache via in-memory store) ─────────────
 
 test('loadModels: empty when no session and no cache', async () => {
@@ -362,7 +466,8 @@ test('loadModels: uses cache when present', async () => {
   })
   try {
     const models = await loadModels(false)
-    assert.equal(models.length, 3)
+    assert.equal(models.length, 2)
+    assert.deepEqual(models.map((model) => model.id), ['vision-1', 'vision-2'])
     assert.equal(models[0].supportsVision, true)
     assert.equal(fetchCalled, false)
   } finally {
@@ -381,12 +486,49 @@ test('loadModels: fetches live when forceRefresh=true and persists cache', async
   mockFetchOnce({ ok: true, status: 200, json: async () => ROUTER_PAYLOAD })
   try {
     const models = await loadModels(true)
-    assert.equal(models.length, 3)
-    // vision-first: Vision One + Vision Two before Text One.
-    assert.equal(models[0].supportsVision, true)
-    assert.equal(models[1].supportsVision, true)
-    assert.equal(models[2].supportsVision, false)
+    assert.equal(models.length, 2)
+    assert.deepEqual(models.map((model) => model.id), ['vision-1', 'vision-2'])
+    assert.equal(models.every((model) => model.supportsVision), true)
   } finally {
     restoreFetch()
+  }
+})
+
+test('loadModels: refreshes and retries once after an unauthorized catalog request', async () => {
+  await logout()
+  await saveSession({
+    accountId: 'retry-user',
+    accessToken: 'access-old',
+    refreshToken: 'refresh-old',
+    expiresAt: Date.now() + 5 * 60_000,
+    source: 'oauth',
+  })
+  const originalFetch = globalThis.fetch
+  const requests = []
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), authorization: init?.headers?.Authorization, body: String(init?.body ?? '') })
+    if (String(url) === ROUTER_URL && requests.filter((r) => r.url === ROUTER_URL).length === 1) {
+      return { ok: false, status: 401, text: async () => 'expired' }
+    }
+    if (String(url).endsWith('/oauth/token')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ access_token: 'access-new', refresh_token: 'refresh-new', expires_in: 3600 }),
+      }
+    }
+    return { ok: true, status: 200, json: async () => ROUTER_PAYLOAD }
+  }
+  try {
+    const models = await loadModels(true)
+    assert.equal(models.length, 2)
+    assert.equal(models.every((model) => model.supportsVision), true)
+    assert.deepEqual(
+      requests.filter((request) => request.url === ROUTER_URL).map((request) => request.authorization),
+      ['Bearer access-old', 'Bearer access-new'],
+    )
+    assert.match(requests.find((request) => request.url.endsWith('/oauth/token')).body, /grant_type=refresh_token/)
+  } finally {
+    globalThis.fetch = originalFetch
   }
 })

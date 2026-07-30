@@ -25,7 +25,13 @@ import {
   escapeHtml,
   modelDisplayName,
   safeMarkdownToHtml,
+  shouldAppendError,
+  shouldSubmitComposerKey,
+  translatedErrorMessage,
 } from './presentation.js'
+import { approvalMessage } from './approvalActions.js'
+import { stripUntrustedBrowserBoundaryForDisplay } from '../agent/untrustedContent.js'
+import { matchSlashQuery, parseSlashInvocation } from '../routines/slashCommands.js'
 
 // ── i18n ────────────────────────────────────────────────────────
 import EN_US from '../i18n/en-US.js'
@@ -452,6 +458,350 @@ async function initModes() {
   }
 }
 
+// ── Routines and slash commands ─────────────────────────────────
+
+/** @type {Array<Record<string, any>>} */
+let routines = []
+/** @type {Array<Record<string, any>>} */
+let slashMatches = []
+let activeSlashIndex = -1
+/** @type {Record<string, any> | null} */
+let pendingRoutine = null
+/** @type {HTMLElement | null} */
+let routineVariableOpener = null
+/** @type {Record<string, any>} */
+let recordingState = { active: false }
+/** @type {ReturnType<typeof setInterval> | null} */
+let recordingTimer = null
+
+async function loadRoutines() {
+  const response = await sendMessage({ type: MSG.ROUTINE_LIST })
+  routines = response?.ok && Array.isArray(response.routines) ? response.routines : []
+  const input = document.getElementById('chat-input')
+  if (input?.value.startsWith('/')) renderSlashMenu(input.value)
+}
+
+function renderSlashMenu(query, forceOpen = false) {
+  const menu = document.getElementById('routine-slash-menu')
+  const list = document.getElementById('routine-slash-list')
+  const trigger = document.getElementById('routines-btn')
+  if (!menu || !list || !trigger) return
+
+  slashMatches = matchSlashQuery(query.startsWith('/') ? query : '/', routines)
+  if (activeSlashIndex < 0 || activeSlashIndex >= slashMatches.length) {
+    activeSlashIndex = slashMatches.length > 0 ? 0 : -1
+  }
+  list.replaceChildren()
+
+  for (const [index, routine] of slashMatches.entries()) {
+    const option = document.createElement('button')
+    option.type = 'button'
+    option.id = `routine-slash-option-${index}`
+    option.className = 'routine-slash-option'
+    option.setAttribute('role', 'menuitem')
+    option.dataset.active = index === activeSlashIndex ? 'true' : 'false'
+
+    const copy = document.createElement('span')
+    copy.className = 'routine-slash-copy'
+    const name = document.createElement('span')
+    name.className = 'routine-slash-name'
+    name.textContent = routine.name
+    const description = document.createElement('span')
+    description.className = 'routine-slash-description'
+    description.textContent = routine.description || routine.instructions
+    copy.append(name, description)
+
+    const command = document.createElement('code')
+    command.className = 'routine-slash-command'
+    command.textContent = `/${routine.command}`
+    option.append(copy, command)
+    option.addEventListener('pointermove', () => {
+      activeSlashIndex = index
+      updateActiveSlashOption()
+    })
+    option.addEventListener('click', () => {
+      void chooseRoutine(routine)
+    })
+    list.appendChild(option)
+  }
+
+  const shouldOpen = forceOpen || String(query).startsWith('/')
+  menu.hidden = !shouldOpen
+  trigger.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false')
+  document.getElementById('chat-input')?.setAttribute(
+    'aria-expanded',
+    shouldOpen ? 'true' : 'false',
+  )
+  updateActiveSlashOption()
+}
+
+function updateActiveSlashOption() {
+  const options = document.querySelectorAll('#routine-slash-list .routine-slash-option')
+  for (const [index, option] of Array.from(options).entries()) {
+    option.dataset.active = index === activeSlashIndex ? 'true' : 'false'
+  }
+  const active = activeSlashIndex >= 0 ? options[activeSlashIndex] : null
+  const input = document.getElementById('chat-input')
+  if (active?.id) input?.setAttribute('aria-activedescendant', active.id)
+  else input?.removeAttribute('aria-activedescendant')
+}
+
+function closeSlashMenu() {
+  const menu = document.getElementById('routine-slash-menu')
+  if (menu) menu.hidden = true
+  document.getElementById('routines-btn')?.setAttribute('aria-expanded', 'false')
+  const input = document.getElementById('chat-input')
+  input?.setAttribute('aria-expanded', 'false')
+  input?.removeAttribute('aria-activedescendant')
+  slashMatches = []
+  activeSlashIndex = -1
+}
+
+function toggleRoutinesMenu() {
+  const menu = document.getElementById('routine-slash-menu')
+  const input = document.getElementById('chat-input')
+  if (!menu || !input) return
+  if (!menu.hidden) {
+    closeSlashMenu()
+  } else {
+    activeSlashIndex = 0
+    renderSlashMenu(input.value.startsWith('/') ? input.value : '/', true)
+    input.focus()
+  }
+}
+
+function handleSlashKeydown(event) {
+  const menu = document.getElementById('routine-slash-menu')
+  if (!menu || menu.hidden) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeSlashMenu()
+    return
+  }
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    if (slashMatches.length === 0) return
+    const direction = event.key === 'ArrowDown' ? 1 : -1
+    activeSlashIndex =
+      (activeSlashIndex + direction + slashMatches.length) % slashMatches.length
+    updateActiveSlashOption()
+    return
+  }
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && activeSlashIndex >= 0) {
+    event.preventDefault()
+    void chooseRoutine(slashMatches[activeSlashIndex])
+  }
+}
+
+async function chooseRoutine(routine) {
+  const input = document.getElementById('chat-input')
+  if (input) {
+    input.value = ''
+    resizeChatInput(input)
+  }
+  closeSlashMenu()
+  updateSendEnabled()
+
+  const requiredVariables = (routine.variables ?? []).filter(
+    (variable) => variable.required !== false && !variable.defaultValue,
+  )
+  if (requiredVariables.length > 0) {
+    openVariableDialog(routine, requiredVariables)
+    return
+  }
+  const variables = Object.fromEntries(
+    (routine.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? '']),
+  )
+  await runRoutine(routine, variables)
+}
+
+function openVariableDialog(routine, variables) {
+  const dialog = document.getElementById('routine-variable-dialog')
+  const fields = document.getElementById('routine-variable-fields')
+  if (!dialog || !fields) return
+  routineVariableOpener = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null
+  pendingRoutine = routine
+  fields.replaceChildren()
+  document.getElementById('routine-variable-description').textContent =
+    routine.description || `/${routine.command}`
+  setVariableError('')
+
+  for (const variable of variables) {
+    const label = document.createElement('label')
+    label.className = 'routine-variable-field'
+    const caption = document.createElement('span')
+    caption.textContent = variable.name
+    const field = document.createElement('input')
+    field.className = 'field-input'
+    field.name = variable.name
+    field.required = true
+    field.autocomplete = 'off'
+    label.append(caption, field)
+    fields.appendChild(label)
+  }
+  dialog.showModal()
+  fields.querySelector('input')?.focus()
+}
+
+function closeVariableDialog() {
+  pendingRoutine = null
+  document.getElementById('routine-variable-dialog')?.close()
+}
+
+async function submitRoutineVariables(event) {
+  event.preventDefault()
+  if (!pendingRoutine) return
+  const form = event.currentTarget
+  const values = Object.fromEntries(new FormData(form).entries())
+  const variables = Object.fromEntries(
+    (pendingRoutine.variables ?? []).map((variable) => [
+      variable.name,
+      values[variable.name] ?? variable.defaultValue ?? '',
+    ]),
+  )
+  if (Object.values(variables).some((value) => !String(value).trim())) {
+    setVariableError(t('routine_variables_required'))
+    return
+  }
+  const routine = pendingRoutine
+  closeVariableDialog()
+  await runRoutine(routine, variables)
+}
+
+async function runRoutine(routine, variables) {
+  const response = await sendMessage({
+    type: MSG.ROUTINE_RUN,
+    routineId: routine.id,
+    expectedRevision: routine.revision,
+    variables,
+  })
+  if (!response?.ok) {
+    appendTurnError(response?.error ?? t('routine_run_failed'))
+    return
+  }
+  const runId = response.run?.id
+  if (runId) {
+    appendUserMessage(`/${routine.command}`)
+    activeTurnId = runId
+    setTurnInFlight(true)
+    ensureWorkingHeader()
+    armTurnWatchdogs(runId)
+  }
+}
+
+function setVariableError(message) {
+  const error = document.getElementById('routine-variable-error')
+  if (!error) return
+  error.hidden = !message
+  error.textContent = message
+}
+
+function openRoutineSettings() {
+  closeSlashMenu()
+  void chrome.tabs.create({
+    url: chrome.runtime.getURL('src/panel/options.html#routines'),
+  })
+}
+
+async function toggleWorkflowRecording() {
+  const button = document.getElementById('record-workflow')
+  if (button) button.disabled = true
+  const response = recordingState.active
+    ? await sendMessage({ type: MSG.ROUTINE_RECORD_STOP })
+    : await sendMessage({ type: MSG.ROUTINE_RECORD_START })
+  if (button) button.disabled = false
+  if (!response?.ok) {
+    appendTurnError(
+      translatedErrorMessage(response?.error, 'routine_record_failed', t),
+    )
+    return
+  }
+  if (response.draftId) openRoutineDraft(response.draftId)
+  if (response.state) renderRecordingState(response.state)
+}
+
+async function cancelWorkflowRecording() {
+  const response = await sendMessage({ type: MSG.ROUTINE_RECORD_CANCEL })
+  if (!response?.ok) {
+    appendTurnError(
+      translatedErrorMessage(response?.error, 'routine_record_failed', t),
+    )
+  }
+}
+
+function renderRecordingState(state) {
+  recordingState = state?.active ? state : { active: false }
+  const status = document.getElementById('recording-status')
+  const button = document.getElementById('record-workflow')
+  if (status) status.hidden = !recordingState.active
+  if (button) {
+    button.dataset.recording = recordingState.active ? 'true' : 'false'
+    button.setAttribute('aria-pressed', recordingState.active ? 'true' : 'false')
+    button.setAttribute(
+      'title',
+      recordingState.active ? t('routine_record_stop') : t('routine_record'),
+    )
+    button.setAttribute(
+      'aria-label',
+      recordingState.active ? t('routine_record_stop') : t('routine_record'),
+    )
+  }
+  if (recordingTimer != null) {
+    clearInterval(recordingTimer)
+    recordingTimer = null
+  }
+  updateRecordingTime()
+  if (recordingState.active) {
+    recordingTimer = setInterval(updateRecordingTime, 1_000)
+  }
+}
+
+function updateRecordingTime() {
+  const time = document.getElementById('recording-time')
+  if (!time) return
+  const elapsed = recordingState.active
+    ? Math.max(0, Date.now() - Number(recordingState.startedAt ?? Date.now()))
+    : 0
+  const seconds = Math.floor(elapsed / 1_000)
+  const minutes = Math.floor(seconds / 60)
+  time.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
+}
+
+async function initRoutines() {
+  await loadRoutines()
+  document.getElementById('routines-btn')?.addEventListener('click', toggleRoutinesMenu)
+  document.getElementById('record-workflow')?.addEventListener('click', () => {
+    void toggleWorkflowRecording()
+  })
+  document.getElementById('recording-cancel')?.addEventListener('click', () => {
+    void cancelWorkflowRecording()
+  })
+  document.getElementById('routine-manage')?.addEventListener('click', openRoutineSettings)
+  document.getElementById('routine-variable-form')?.addEventListener('submit', (event) => {
+    void submitRoutineVariables(event)
+  })
+  for (const id of ['routine-variable-close', 'routine-variable-cancel']) {
+    document.getElementById(id)?.addEventListener('click', closeVariableDialog)
+  }
+  document.getElementById('routine-variable-dialog')?.addEventListener('close', () => {
+    pendingRoutine = null
+    ;(routineVariableOpener ?? document.getElementById('chat-input'))?.focus()
+    routineVariableOpener = null
+  })
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type === MSG.ROUTINE_STATE_CHANGED) void loadRoutines()
+    if (message?.type === MSG.ROUTINE_RECORD_STATE_CHANGED) {
+      renderRecordingState(message.state)
+    }
+  })
+  const recordingResponse = await sendMessage({
+    type: MSG.ROUTINE_RECORD_STATE_REQUEST,
+  })
+  if (recordingResponse?.ok) renderRecordingState(recordingResponse.state)
+}
+
 // ── Chat transcript ──────────────────────────────────────────────
 //
 // Verboo activity model (one current action + optional compact details):
@@ -482,7 +832,16 @@ function appendUserMessage(text) {
   const msg = document.createElement('div')
   msg.className = 'chat-message'
   msg.dataset.role = 'user'
-  msg.textContent = text
+  const content = document.createElement('div')
+  content.className = 'chat-message-content'
+  content.textContent = text
+  msg.appendChild(content)
+  if (!String(text).startsWith('/')) {
+    msg.appendChild(routineDraftAction(
+      t('routine_save_message'),
+      (button) => createDraftFromMessage(text, button),
+    ))
+  }
   messages.appendChild(msg)
   messages.scrollTop = messages.scrollHeight
 }
@@ -494,9 +853,63 @@ function appendAssistantMessage(text, hasToolActivity = true) {
   const msg = document.createElement('div')
   msg.className = 'chat-message'
   msg.dataset.role = 'assistant'
-  msg.innerHTML = safeMarkdownToHtml(text)
+  const content = document.createElement('div')
+  content.className = 'chat-message-content'
+  content.innerHTML = safeMarkdownToHtml(text)
+  msg.append(
+    content,
+    routineDraftAction(
+      t('routine_convert_conversation'),
+      createDraftFromConversation,
+    ),
+  )
   messages.appendChild(msg)
   messages.scrollTop = messages.scrollHeight
+}
+
+function routineDraftAction(label, handler) {
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'chat-message-routine-action'
+  button.textContent = label
+  button.addEventListener('click', () => void handler(button))
+  return button
+}
+
+async function createDraftFromMessage(text, button) {
+  button.disabled = true
+  const response = await sendMessage({
+    type: MSG.ROUTINE_DRAFT_FROM_MESSAGE,
+    text,
+  })
+  button.disabled = false
+  if (!response?.ok) {
+    appendTurnError(response?.error ?? t('routine_draft_failed'))
+    return
+  }
+  openRoutineDraft(response.draftId)
+}
+
+async function createDraftFromConversation(button) {
+  button.disabled = true
+  const response = await sendMessage({
+    type: MSG.ROUTINE_DRAFT_FROM_CONVERSATION,
+    history: conversationHistory,
+  })
+  button.disabled = false
+  if (!response?.ok) {
+    appendTurnError(response?.error ?? t('routine_draft_failed'))
+    return
+  }
+  openRoutineDraft(response.draftId)
+}
+
+function openRoutineDraft(draftId) {
+  void chrome.tabs.create({
+    url: chrome.runtime.getURL(
+      `src/panel/options.html#routines?draft=${encodeURIComponent(draftId)}`,
+    ),
+  })
 }
 
 /** Remove transient thinking UI when the model answered without browser tools. */
@@ -681,6 +1094,14 @@ function shortUrl(url) {
 function appendTurnError(text) {
   finishActivitySummary('error')
   const messages = document.getElementById('chat-messages')
+  const previous = messages.lastElementChild
+  const previousError = previous?.classList.contains('chat-error')
+    ? previous.textContent
+    : ''
+  if (!shouldAppendError(previousError, text)) {
+    messages.scrollTop = messages.scrollHeight
+    return
+  }
   const bubble = document.createElement('div')
   bubble.className = 'chat-message chat-error'
   bubble.dataset.role = 'assistant'
@@ -778,10 +1199,7 @@ function renderToolCard(toolCall, policyDecision) {
     onceBtn.className = 'btn btn-secondary tool-once'
     onceBtn.textContent = t('siteGrants_allowOnce')
     onceBtn.addEventListener('click', () => {
-      void chrome.runtime.sendMessage({
-        type: MSG.TOOL_APPROVE,
-        toolCallId: toolCall.id,
-      })
+      void chrome.runtime.sendMessage(approvalMessage(toolCall.id, 'once'))
     })
 
     const alwaysBtn = document.createElement('button')
@@ -789,10 +1207,7 @@ function renderToolCard(toolCall, policyDecision) {
     alwaysBtn.className = 'btn btn-primary tool-always'
     alwaysBtn.textContent = t('siteGrants_alwaysAllow')
     alwaysBtn.addEventListener('click', () => {
-      void chrome.runtime.sendMessage({
-        type: MSG.TOOL_APPROVE,
-        toolCallId: toolCall.id,
-      })
+      void chrome.runtime.sendMessage(approvalMessage(toolCall.id, 'always'))
     })
 
     actions.append(denyBtn, onceBtn, alwaysBtn)
@@ -888,6 +1303,9 @@ function formatParams(toolCall) {
  */
 function formatResultData(data) {
   if (data == null) return ''
+
+  const displayData = stripUntrustedBrowserBoundaryForDisplay(data)
+  if (displayData !== data) return formatResultData(displayData)
 
   // dataUrl / base64 blobs
   if (typeof data === 'string') {
@@ -1035,6 +1453,7 @@ let activeTurnId = null
 const TURN_IDLE_MS = 90_000
 /** Hard cap even if events keep arriving. */
 const TURN_MAX_MS = 15 * 60_000
+const CHAT_INPUT_MAX_HEIGHT = 120
 
 /** @type {ReturnType<typeof setTimeout> | null} */
 let turnIdleTimer = null
@@ -1049,18 +1468,38 @@ function updateSendEnabled() {
   send.disabled = turnInFlight || modelSelectionPending || !selectedModelId || !hasText
 }
 
+function resizeChatInput(input) {
+  input.style.height = 'auto'
+  const scrollHeight = input.scrollHeight
+  input.style.height = `${Math.min(scrollHeight, CHAT_INPUT_MAX_HEIGHT)}px`
+  input.dataset.overflow = scrollHeight > CHAT_INPUT_MAX_HEIGHT ? 'true' : 'false'
+}
+
 function setTurnInFlight(inFlight) {
   turnInFlight = Boolean(inFlight)
   if (turnInFlight) closeModelMenu()
   const send = document.getElementById('chat-send')
   const stop = document.getElementById('chat-stop')
+  const clear = document.getElementById('clear-chat')
   if (send) send.hidden = turnInFlight
   if (stop) {
     stop.hidden = !turnInFlight
     if (!turnInFlight) stop.disabled = false
   }
+  if (clear) clear.disabled = turnInFlight
   renderModelPicker()
   updateSendEnabled()
+}
+
+function clearConversation() {
+  if (turnInFlight) return
+
+  conversationHistory = []
+  pendingConversation = null
+  toolCards.clear()
+  removeActivitySummary()
+  document.getElementById('chat-messages')?.replaceChildren()
+  document.getElementById('chat-input')?.focus()
 }
 
 function clearTurnWatchdogs() {
@@ -1128,7 +1567,22 @@ function initChat() {
   const input = document.getElementById('chat-input')
   const stop = document.getElementById('chat-stop')
 
-  input.addEventListener('input', updateSendEnabled)
+  input.addEventListener('input', () => {
+    resizeChatInput(input)
+    updateSendEnabled()
+    if (input.value.startsWith('/')) {
+      renderSlashMenu(input.value)
+    } else {
+      closeSlashMenu()
+    }
+  })
+  input.addEventListener('keydown', (event) => {
+    handleSlashKeydown(event)
+    if (!shouldSubmitComposerKey(event)) return
+    event.preventDefault()
+    form.requestSubmit()
+  })
+  resizeChatInput(input)
   updateSendEnabled()
 
   stop?.addEventListener('click', async () => {
@@ -1144,10 +1598,23 @@ function initChat() {
     if (!text) return
     // Ignore double-submit while a turn is already running.
     if (turnInFlight) return
+
+    const slashInvocation = parseSlashInvocation(text)
+    if (slashInvocation) {
+      const routine = routines.find((item) => item.command === slashInvocation.command)
+      if (routine) {
+        await chooseRoutine(routine)
+        return
+      }
+    }
+
     input.value = ''
+    resizeChatInput(input)
+    closeSlashMenu()
     updateSendEnabled()
 
-    const session = await loadSession()
+    const authState = await sendMessage({ type: MSG.AUTH_STATE_REQUEST })
+    const session = authState?.session ?? await loadSession()
     if (!isSessionActive(session)) {
       appendTurnError(t('chat_signInRequired'))
       return
@@ -1178,6 +1645,37 @@ function initChat() {
 }
 
 // ── Agent event listener ─────────────────────────────────────────
+
+function handleToolRequest(message) {
+  if (!message.toolCall?.id) return
+
+  if (message.policyDecision?.needsApproval) {
+    if (message.turnId && !activeTurnId) {
+      activeTurnId = message.turnId
+      setTurnInFlight(true)
+      ensureWorkingHeader()
+    }
+    // Approval can sit open longer than idle timeout — pause idle, keep absolute max.
+    if (turnIdleTimer != null) {
+      clearTimeout(turnIdleTimer)
+      turnIdleTimer = null
+    }
+  } else {
+    bumpTurnIdleWatchdog()
+  }
+
+  // A notification may broadcast while hydration is also running.
+  if (toolCards.has(message.toolCall.id)) return
+  renderToolCard(message.toolCall, message.policyDecision)
+}
+
+async function hydratePendingApprovals() {
+  const response = await sendMessage({ type: MSG.TOOL_PENDING_LIST })
+  if (!response?.ok || !Array.isArray(response.approvals)) return
+  for (const approval of response.approvals) {
+    handleToolRequest(approval)
+  }
+}
 
 function initAgentEventListener() {
   chrome.runtime.onMessage.addListener((message) => {
@@ -1210,17 +1708,7 @@ function initAgentEventListener() {
         break
       }
       case MSG.AGENT_TOOL_REQUEST: {
-        // Approval can sit open longer than idle timeout — pause idle, keep absolute max.
-        if (message.policyDecision?.needsApproval) {
-          if (turnIdleTimer != null) {
-            clearTimeout(turnIdleTimer)
-            turnIdleTimer = null
-          }
-        } else {
-          bumpTurnIdleWatchdog()
-        }
-        // Big tool cards only for approval / hard-denial flows.
-        renderToolCard(message.toolCall, message.policyDecision)
+        handleToolRequest(message)
         break
       }
       case MSG.AGENT_TOOL_EXECUTING: {
@@ -1269,6 +1757,32 @@ function initAgentEventListener() {
         }
         break
       }
+      case MSG.ROUTINE_RUN_CHANGED: {
+        const run = message.run
+        if (!run?.id || (activeTurnId && run.id !== activeTurnId)) break
+        if (run.status === 'queued' || run.status === 'running') {
+          bumpTurnIdleWatchdog()
+          break
+        }
+        if (run.status === 'waiting_approval') {
+          if (turnIdleTimer != null) {
+            clearTimeout(turnIdleTimer)
+            turnIdleTimer = null
+          }
+          break
+        }
+        if (run.status === 'completed') {
+          endTurnUi()
+          appendAssistantMessage(run.assistantMessage || t('activity_done_short'))
+        } else if (run.status === 'failed') {
+          endTurnUi()
+          appendTurnError(run.error || t('routine_run_failed'))
+        } else if (run.status === 'cancelled') {
+          endTurnUi()
+          finishActivitySummary('stopped')
+        }
+        break
+      }
       default:
         break
     }
@@ -1303,9 +1817,11 @@ async function init() {
   initModelSelect()
 
   await hydrateAuthFromBackground()
+  await hydratePendingApprovals()
 
   await initModes()
   initChat()
+  await initRoutines()
 
   document.getElementById('login-form')?.addEventListener('submit', (e) => {
     void handleLoginSubmit(e)
@@ -1314,6 +1830,7 @@ async function init() {
     void handleLogout()
   })
   document.getElementById('settings-btn')?.addEventListener('click', openSettings)
+  document.getElementById('clear-chat')?.addEventListener('click', clearConversation)
 
   document.getElementById('privacy-link-login')?.addEventListener('click', openPrivacy)
 

@@ -38,6 +38,18 @@ export default {
   "auth_oauthIntro": {
     "message": "Continue with your Verboo account in a secure browser window."
   },
+  "auth_accountLoginLabel": {
+    "message": "Verboo account"
+  },
+  "auth_accountLoginBody": {
+    "message": "This signs in only this Chrome extension."
+  },
+  "auth_cliConnectionLabel": {
+    "message": "CLI connection"
+  },
+  "auth_cliConnectionBody": {
+    "message": "Configure it separately in the Verboo desktop app."
+  },
   "auth_oauthUnavailable": {
     "message": "Verboo account sign-in is not configured for this build yet."
   },
@@ -341,6 +353,9 @@ export default {
   "chat_stopTitle": {
     "message": "Stop Verboo"
   },
+  "chat_clearTitle": {
+    "message": "New conversation"
+  },
   "model_picker_label": {
     "message": "Choose model"
   },
@@ -364,5 +379,239 @@ export default {
   },
   "model_selection_failed": {
     "message": "Could not change models. Try again."
+  },
+  "routines_title": {
+    "message": "Routines and Skills"
+  },
+  "routines_description": {
+    "message": "Save reusable instructions and run them from the chat with a slash command."
+  },
+  "routines_empty": {
+    "message": "No routines yet."
+  },
+  "routine_create": {
+    "message": "New routine"
+  },
+  "routine_edit": {
+    "message": "Edit routine"
+  },
+  "routine_editor_title": {
+    "message": "Routine"
+  },
+  "routine_editor_description": {
+    "message": "Instructions stay in this Chrome profile and are scoped to your Verboo account."
+  },
+  "routine_name": {
+    "message": "Name"
+  },
+  "routine_command": {
+    "message": "Slash command"
+  },
+  "routine_description": {
+    "message": "Description"
+  },
+  "routine_instructions": {
+    "message": "Instructions"
+  },
+  "routine_variables_help": {
+    "message": "Use {{name}} to request a value before the routine starts."
+  },
+  "routine_start_url": {
+    "message": "Starting URL"
+  },
+  "routine_allowed_origins": {
+    "message": "Allowed sites"
+  },
+  "routine_origins_help": {
+    "message": "One origin per line. Scheduled runs never leave this list."
+  },
+  "routine_model": {
+    "message": "Preferred model"
+  },
+  "routine_model_default": {
+    "message": "Use the current visual model"
+  },
+  "routine_cleanup_tabs": {
+    "message": "Close tabs created by the routine when it finishes"
+  },
+  "routine_files": {
+    "message": "Reference files"
+  },
+  "routine_files_help": {
+    "message": "Markdown, text, JSON, CSV, PNG, JPEG, or WebP."
+  },
+  "routine_recorded_steps": {
+    "message": "Recorded steps"
+  },
+  "routine_recorded_steps_help": {
+    "message": "Review selectors and variable placeholders before saving."
+  },
+  "routine_schedule": {
+    "message": "Schedule"
+  },
+  "routine_schedule_enable": {
+    "message": "Run on a schedule"
+  },
+  "routine_schedule_requirements": {
+    "message": "Scheduled routines require a valid starting URL and matching allowed site."
+  },
+  "routine_frequency": {
+    "message": "Frequency"
+  },
+  "routine_daily": {
+    "message": "Daily"
+  },
+  "routine_weekly": {
+    "message": "Weekly"
+  },
+  "routine_monthly": {
+    "message": "Monthly"
+  },
+  "routine_annual": {
+    "message": "Annually"
+  },
+  "routine_weekday": {
+    "message": "Day of week"
+  },
+  "routine_monday": {
+    "message": "Monday"
+  },
+  "routine_tuesday": {
+    "message": "Tuesday"
+  },
+  "routine_wednesday": {
+    "message": "Wednesday"
+  },
+  "routine_thursday": {
+    "message": "Thursday"
+  },
+  "routine_friday": {
+    "message": "Friday"
+  },
+  "routine_saturday": {
+    "message": "Saturday"
+  },
+  "routine_sunday": {
+    "message": "Sunday"
+  },
+  "routine_month": {
+    "message": "Month"
+  },
+  "routine_day": {
+    "message": "Day"
+  },
+  "routine_time": {
+    "message": "Time"
+  },
+  "routine_save": {
+    "message": "Save routine"
+  },
+  "routine_cancel": {
+    "message": "Cancel"
+  },
+  "routine_run": {
+    "message": "Run routine"
+  },
+  "routine_duplicate": {
+    "message": "Duplicate"
+  },
+  "routine_delete": {
+    "message": "Delete"
+  },
+  "routine_delete_confirm": {
+    "message": "Delete this routine? This cannot be undone."
+  },
+  "routine_last_run": {
+    "message": "Last run"
+  },
+  "routine_update_saved_step": {
+    "message": "Update saved step"
+  },
+  "routine_recovery_apply_failed": {
+    "message": "The saved step could not be updated."
+  },
+  "routine_status_draft": {
+    "message": "Draft"
+  },
+  "routine_status_ready": {
+    "message": "Ready"
+  },
+  "routine_status_queued": {
+    "message": "Queued"
+  },
+  "routine_status_running": {
+    "message": "Running"
+  },
+  "routine_status_waiting_approval": {
+    "message": "Waiting for approval"
+  },
+  "routine_status_completed": {
+    "message": "Completed"
+  },
+  "routine_status_failed": {
+    "message": "Failed"
+  },
+  "routine_status_cancelled": {
+    "message": "Cancelled"
+  },
+  "routine_manage": {
+    "message": "Manage routines"
+  },
+  "routine_record": {
+    "message": "Record workflow"
+  },
+  "routine_variables_title": {
+    "message": "Complete routine details"
+  },
+  "routine_variables_required": {
+    "message": "Complete every required field."
+  },
+  "routine_auth_required": {
+    "message": "Sign in to manage routines."
+  },
+  "routine_load_failed": {
+    "message": "Could not load routines."
+  },
+  "routine_save_failed": {
+    "message": "Could not save the routine."
+  },
+  "routine_duplicate_failed": {
+    "message": "Could not duplicate the routine."
+  },
+  "routine_delete_failed": {
+    "message": "Could not delete the routine."
+  },
+  "routine_run_failed": {
+    "message": "Could not start the routine."
+  },
+  "routine_variables_open_panel": {
+    "message": "Open the Verboo panel and run this routine to complete its variables."
+  },
+  "routine_save_message": {
+    "message": "Save as routine"
+  },
+  "routine_convert_conversation": {
+    "message": "Convert conversation to routine"
+  },
+  "routine_draft_failed": {
+    "message": "Could not create the routine draft."
+  },
+  "routine_file_remove": {
+    "message": "Remove reference file"
+  },
+  "routine_file_remove_failed": {
+    "message": "Could not remove the reference file."
+  },
+  "routine_recording": {
+    "message": "Recording workflow"
+  },
+  "routine_record_stop": {
+    "message": "Stop and review recording"
+  },
+  "routine_record_failed": {
+    "message": "Could not change workflow recording."
+  },
+  "routine_recording_page_unavailable": {
+    "message": "Open a website before recording a workflow."
   }
 }

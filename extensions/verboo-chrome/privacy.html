@@ -91,9 +91,9 @@
   <main class="container">
     <h1>Verboo Code — Privacy Policy</h1>
     <p class="meta">
-      <strong>Last updated:</strong> 2026-07-19 ·
+      <strong>Last updated:</strong> 2026-07-29 ·
       <strong>Extension:</strong> Verboo Code — Browser Control ·
-      <span class="badge">v0.1.0</span>
+      <span class="badge">v0.1.2</span>
     </p>
 
     <p>
@@ -103,7 +103,7 @@
     </p>
 
     <h2>Summary</h2>
-    <p>The release OAuth client ID is not configured in this source snapshot, so standalone chat currently fails closed rather than accepting another credential type.</p>
+    <p>Saved routines stay scoped to the signed-in Verboo account and this Chrome profile. Routine instructions and user-selected reference content are sent to the Verboo Router only when that routine runs.</p>
     <ul>
       <li><strong>No data is sold.</strong></li>
       <li><strong>You stay in control</strong> of every action: the extension asks before each potentially destructive step, and you can always deny.</li>
@@ -142,6 +142,11 @@
           <td>Permission mode (Manual / Auto / Skip) and per-site grants</td>
           <td>Enforce your chosen safety level</td>
           <td>Stored locally under <code>chromePermissionMode</code> and <code>siteGrants</code>. Never sent anywhere.</td>
+        </tr>
+        <tr>
+          <td>Saved routines, variable defaults, recorded steps, schedules, and selected reference files</td>
+          <td>Repeat a browser task from a slash command or optional local schedule</td>
+          <td>Definitions and files stay in this Chrome profile. Instructions and required reference content are sent to the selected model only while the routine runs.</td>
         </tr>
       </tbody>
     </table>
@@ -188,16 +193,30 @@
           <td>Array of <code>{ host, decision, updatedAt }</code></td>
           <td>Never.</td>
         </tr>
+        <tr>
+          <td><code>verbooRoutinesV1</code></td>
+          <td><code>src/routines/store.js</code></td>
+          <td>Account-scoped routine definitions, schedules, variables, and recorded steps</td>
+          <td>Routine instructions are sent only while that routine runs.</td>
+        </tr>
+        <tr>
+          <td><code>verbooRoutineRunsV1</code></td>
+          <td><code>src/routines/runStore.js</code></td>
+          <td>Bounded run history, status, checkpoints, and optional recovery suggestions</td>
+          <td>Never directly.</td>
+        </tr>
       </tbody>
     </table>
 
-    <p>All persistent state lives in <code>chrome.storage.local</code>, scoped to this extension's profile. Clearing the extension's data removes everything. Nothing is synced to your Google account.</p>
+    <p>Persistent definitions live in <code>chrome.storage.local</code>. Routine files live in the extension-only IndexedDB database <code>verboo-routines</code>; deleting a routine deletes its files. Temporary drafts and active recording state use <code>chrome.storage.session</code>. Nothing is synced to your Google account. Recording listeners remain inert until you start recording, discard password/payment/token fields, and do not save safe input literals until you explicitly resolve them.</p>
 
     <h2>Permissions explained</h2>
     <ul>
       <li><code>sidePanel</code> — Opens the Verboo control panel alongside the page you are on.</li>
       <li><code>identity</code> — Opens the user-initiated Verboo OAuth PKCE flow and receives its Chrome callback.</li>
-      <li><code>storage</code> — Persists the extension session, model cache/selection, permission mode, and grants.</li>
+      <li><code>storage</code> — Persists the extension session, model cache/selection, permission mode, grants, routines, checkpoints, and temporary recording state.</li>
+      <li><code>alarms</code> — Wakes Chrome for an optional local routine schedule. Missed occurrences run at most once.</li>
+      <li><code>notifications</code> — Alerts you when a routine pauses for sign-in, a compatible model, a variable, an allowed site, a normal window, or approval.</li>
       <li><code>scripting</code> — Injects small scripts into the active tab to read content, click elements, or fill form fields you approved. Scripts are bundled in the extension; the extension never evaluates strings fetched from a remote origin.</li>
       <li><code>tabs</code> — Lists, switches, closes, opens, and updates tabs. Used to manage browser state during a turn.</li>
       <li><code>tabGroups</code> — Groups browser tabs when you organize a multi-step task.</li>
@@ -218,9 +237,9 @@
     <h2>Multi-user</h2>
     <p>
       Zero hardcoded paths, users, or tokens. <code>accountId</code> from the
-      OAuth session distinguishes users. Every account
-      on the same Chrome profile has an independent <code>verbooSession</code>,
-      <code>chromePermissionMode</code>, and <code>siteGrants</code>.
+      OAuth session distinguishes users. Every routine is keyed by that
+      account ID; session, permission mode, and site grants remain local to
+      this extension profile.
     </p>
 
     <h2>Third parties</h2>

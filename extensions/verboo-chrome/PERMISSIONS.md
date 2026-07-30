@@ -37,13 +37,36 @@ When adding or removing a permission, update this file in the same PR.
 3. `siteGrants` — your **per-site grants** (which hosts you have approved or denied).
 4. `verbooModelsCache` — the model catalog returned by the Verboo Router.
 5. `verbooSelectedModelId` — the model selected in the side panel.
+6. `verbooRoutinesV1` — account-scoped saved routines, variable defaults, schedules, and recorded steps.
+7. `verbooRoutineRunsV1` — bounded run status/history and restart-safe checkpoints.
 
 **What we don't do with it.**
 
 - We do not store your browsing history.
-- We do not store passwords, form values, or page content.
+- We discard password, payment, token, and other sensitive recording fields.
+- Routine instructions, explicit variable defaults, and files selected by the user are stored only for that routine in this Chrome profile.
 - We do not sync storage to your Google account.
 - The OAuth access token is sent only to the Verboo Router endpoints bundled with the extension.
+
+---
+
+## `alarms`
+
+**What it is.** Lets Chrome wake the service worker at a locally stored routine time.
+
+**Why we need it.** Users can opt into daily, weekly, monthly, or annual execution. Calendar recurrence is calculated in the selected IANA timezone, and a missed occurrence runs at most once when Chrome becomes available.
+
+**What we don't do with it.** We do not create schedules without an explicit saved routine, run multiple catch-up copies, or send a schedule to a remote scheduling service.
+
+---
+
+## `notifications`
+
+**What it is.** Shows a Chrome notification from the extension.
+
+**Why we need it.** A scheduled or resumed routine may need the user to sign in, approve a site, provide a variable, select a compatible model, or open a normal browser window. The notification brings the user back to Verboo without bypassing the policy gate.
+
+**What we don't do with it.** We do not send marketing notifications or use notifications for tracking.
 
 ---
 
@@ -159,7 +182,10 @@ Renderiza a UI no side panel do Chrome — é onde vivem o chat, as aprovações
 Permite ao Chrome abrir e concluir o fluxo OAuth (Authorization Code + PKCE) iniciado pelo usuário, com callback específico da extensão. Não reutilizamos credenciais do CLI, não iniciamos login silencioso e não pedimos token sem clique em **Sign in**; sem client ID registrado, a autenticação falha fechada.
 
 ### `storage`
-Persiste em `chrome.storage.local`: `verbooSession` (token de sessão), `chromePermissionMode` (Manual/Auto/Skip), `siteGrants` (concessões por host), `verbooModelsCache` e `verbooSelectedModelId`. Não armazenamos histórico de navegação, senhas, valores de formulário nem conteúdo de página; nada é sincronizado com a conta Google; o access token só vai aos endpoints do Verboo Router embutidos.
+Persiste em `chrome.storage.local`: sessão, modo, concessões, catálogo/seleção de modelos, rotinas e checkpoints. Arquivos escolhidos pelo usuário ficam no IndexedDB da extensão; rascunhos temporários e a gravação ativa usam `chrome.storage.session`. Campos de senha, pagamento e segredo são descartados. Nada é sincronizado com a conta Google; o access token só vai aos endpoints do Verboo Router embutidos.
+
+### `alarms` e `notifications`
+`alarms` desperta o service worker para horários de rotinas salvas localmente; ocorrências perdidas executam no máximo uma vez. `notifications` avisa quando uma execução precisa de login, modelo, variável, site permitido, janela ou aprovação. Não há agenda remota nem notificações de marketing.
 
 ### `nativeMessaging`
 Conecta ao host local `com.verboo.code.browser_extension` pelo protocolo de frames do Chrome. O servidor MCP oficial `verboo-in-chrome` usa esse host para encaminhar requisições de ferramentas de navegador do Verboo CLI à extensão com o app desktop fechado. Não enviamos credenciais do CLI, tokens OAuth da extensão, dados de filesystem, comandos de terminal nem operações Git pelo host; o host não chama APIs do Chrome diretamente; aprovações sem side panel falham fechadas; requisições em voo nunca são reexecutadas após desconexão.

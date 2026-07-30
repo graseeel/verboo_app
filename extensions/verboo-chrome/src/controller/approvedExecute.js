@@ -24,7 +24,7 @@ export function createApprovalExecutor(executeTool) {
       toolCall: first.toolCall,
       policy: first.policy,
     })
-    approvalUi.onApprovalClosed?.({
+    await approvalUi.onApprovalClosed?.({
       toolCall: first.toolCall,
       decision,
     })
@@ -48,6 +48,17 @@ export function createApprovalExecutor(executeTool) {
     }
 
     const context = await contextFactory()
+    if (decision === 'always') {
+      if (!first.policyHost || typeof context.setSiteGrant !== 'function') {
+        return {
+          ok: false,
+          error: 'persistent_grant_unavailable',
+          policy: first.policy,
+          toolCall: first.toolCall,
+        }
+      }
+      await context.setSiteGrant(first.policyHost, 'always')
+    }
     return executeTool(first.toolCall, {
       ...context,
       approvedTool: {

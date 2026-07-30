@@ -41,6 +41,8 @@ test('OPENAI_TOOLS: tabs has required action', () => {
   const tabs = OPENAI_TOOLS.find(t => t.function.name === 'tabs')
   assert.ok(tabs)
   assert.deepEqual(tabs.function.parameters.required, ['action'])
+  assert.match(tabs.function.description, /new tab/i)
+  assert.match(tabs.function.description, /do not use navigate/i)
 })
 
 test('getToolRisk: returns correct risk class for known tools', () => {

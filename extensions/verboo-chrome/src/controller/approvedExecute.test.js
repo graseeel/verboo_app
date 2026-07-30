@@ -17,8 +17,37 @@ function approvalRequired() {
     error: 'manual_needs_approval',
     policy: { allowed: false, needsApproval: true, reason: 'manual_needs_approval' },
     toolCall: structuredClone(TOOL),
+    policyHost: 'example.com',
   }
 }
+
+test('approval executor persists an always grant before dispatching the approved call', async () => {
+  const calls = []
+  const grants = []
+  const executeWithApproval = createApprovalExecutor(async (toolCall, context) => {
+    calls.push({ toolCall, context })
+    if (calls.length === 1) return approvalRequired()
+    return {
+      ok: true,
+      result: 'clicked',
+      policy: { allowed: true, needsApproval: false, reason: 'site_always_allowed' },
+      toolCall,
+    }
+  })
+
+  const result = await executeWithApproval(
+    TOOL,
+    async () => ({
+      mode: 'manual',
+      setSiteGrant: async (host, decision) => grants.push({ host, decision }),
+    }),
+    { request: async () => 'always' },
+  )
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(grants, [{ host: 'example.com', decision: 'always' }])
+  assert.equal(calls.length, 2)
+})
 
 test('approval executor waits for approval and dispatches the exact canonical call once', async () => {
   const calls = []

@@ -68,7 +68,7 @@
     },
     {
       "name": "tabs",
-      "description": "List, open, switch, or close tabs in the current Chrome window.",
+      "description": "List, open a new tab, switch, or close tabs in the current Chrome window. When the user explicitly asks for a new tab, use action=new; do not use navigate because navigate replaces the active tab.",
       "risk": "mutate",
       "inputSchema": {
         "type": "object",

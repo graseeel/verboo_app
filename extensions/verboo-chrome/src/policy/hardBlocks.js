@@ -86,8 +86,27 @@ export const HARD_BLOCKS = [
  * @returns {{ blocked: boolean; matchedLabel?: string }}
  */
 export function checkHardBlock(input) {
-  const match = HARD_BLOCKS.find((rule) => rule.match(input))
+  const subject = hardBlockSubject(input)
+  const match = HARD_BLOCKS.find((rule) => rule.match(subject))
   return match
     ? { blocked: true, matchedLabel: match.label }
     : { blocked: false }
+}
+
+function hardBlockSubject(input) {
+  if (!input || typeof input !== 'object') return String(input ?? '')
+  const name = typeof input.name === 'string' ? input.name : ''
+  const params = input.params && typeof input.params === 'object' ? input.params : {}
+  if (name === 'click') {
+    return params.selector == null
+      ? String(input.input ?? name)
+      : `click selector=${String(params.selector)}`
+  }
+  if (name === 'type') {
+    if (params.selector == null && params.text == null) return String(input.input ?? name)
+    return `type selector=${String(params.selector ?? '')} text=${String(params.text ?? '')}`
+  }
+  // URLs are destinations, not proof of a purchase/account/trade action.
+  // Navigating to /buy or /register may be needed for harmless inspection.
+  return name
 }

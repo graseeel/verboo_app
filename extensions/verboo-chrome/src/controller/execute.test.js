@@ -169,6 +169,16 @@ test('execute: resolves navigate grants from the destination origin', async () =
   assert.deepEqual(seen, ['destination.example'])
 })
 
+test('execute: returns the resolved policy host to the approval state machine', async () => {
+  const r = await execute(
+    { id: 'approval-host', name: 'read_page', params: { selector: 'h1' } },
+    makeCtx({ mode: 'manual' }),
+  )
+
+  assert.equal(r.policy.needsApproval, true)
+  assert.equal(r.policyHost, 'example.com')
+})
+
 test('execute: rejects missing required parameters before approval', async () => {
   const r = await execute(
     { id: 'missing-selector', name: 'click', params: {} },

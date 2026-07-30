@@ -14,12 +14,13 @@
 
 import { executeWithApproval } from './controller/approvedExecute.js'
 import { loadMode } from './policy/modesStore.js'
-import { getGrant } from './policy/siteGrantsStore.js'
+import { getGrant, upsertGrant } from './policy/siteGrantsStore.js'
 import { MSG } from './controller/protocol.js'
-import { planForMessage } from './planMessage.js'
 import {
+  ensureFreshSession,
   loadSession,
   logout,
+  refreshSession,
   startOAuthLogin,
   getAuthCapabilities,
   loadModels,
@@ -31,13 +32,131 @@ import {
   ensureVerbooTabGroup,
   ensureAgentPresence,
   clearPresenceOnAllTabs,
+  disableGlobalVerbooPanel,
+  openVerbooWorkspace,
 } from './presence/inject.js'
 import {
   runLlmAgentTurn,
+  requiresScreenshot,
   shouldOfferBrowserTools,
   summarizePartialAgentTurn,
 } from './agent/loop.js'
 import { createNativeBridge } from './native/bridge.js'
+import { chatCompletion } from './agent/routerClient.js'
+import { createRoutinesStore } from './routines/store.js'
+import { createRoutineMessageHandler } from './routines/messageHandler.js'
+import { createRunQueue } from './routines/runQueue.js'
+import { createRunStore } from './routines/runStore.js'
+import { createRoutineRunner } from './routines/runner.js'
+import { buildConversationDraft, buildPromptDraft } from './routines/draftBuilder.js'
+import { createAssetsStore } from './routines/assetsStore.js'
+import { createTemporaryDraftStore } from './routines/temporaryDraftStore.js'
+import { createRecordingController } from './routines/recording/controller.js'
+import { createScheduler } from './routines/scheduler.js'
+import { applyRecoverySuggestion } from './routines/recoverySuggestion.js'
+
+const ROUTINE_MESSAGE_TYPES = new Set([
+  MSG.ROUTINE_LIST,
+  MSG.ROUTINE_GET,
+  MSG.ROUTINE_CREATE,
+  MSG.ROUTINE_UPDATE,
+  MSG.ROUTINE_DUPLICATE,
+  MSG.ROUTINE_DELETE,
+])
+
+const alarmsApi = chrome.alarms ?? {
+  create() {
+    throw new Error('routine_scheduling_unavailable')
+  },
+  clear: async () => false,
+}
+
+const routinesStore = createRoutinesStore(chrome.storage.local)
+const routineAssetsStore = createAssetsStore()
+const temporaryDraftStore = createTemporaryDraftStore(
+  chrome.storage.session ?? chrome.storage.local,
+)
+const recordingController = createRecordingController({
+  storage: chrome.storage.session ?? chrome.storage.local,
+  sendToTab: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
+  onState: (state) => broadcast({
+    type: MSG.ROUTINE_RECORD_STATE_CHANGED,
+    state,
+  }),
+})
+let routineScheduler
+const routineMessageHandler = createRoutineMessageHandler({
+  store: routinesStore,
+  loadSession,
+  broadcast,
+  removeRoutineAssets: (accountId, routineId) =>
+    routineAssetsStore.removeRoutineAssets(accountId, routineId),
+  onRoutineChanged: async (routine, change) => {
+    const updated = await routineScheduler?.reconcileRoutine(routine, change) ?? routine
+    broadcast({
+      type: MSG.ROUTINE_SCHEDULE_CHANGED,
+      change,
+      routine: updated,
+    })
+    return updated
+  },
+})
+const browserControlQueue = createRunQueue()
+const routineRunStore = createRunStore(chrome.storage.local)
+const routineRunner = createRoutineRunner({
+  routinesStore,
+  runStore: routineRunStore,
+  queue: browserControlQueue,
+  loadSession,
+  loadModels,
+  getSelectedModelId,
+  getActiveTabMeta: queryActiveTabMeta,
+  executeRecordedStep: (toolCall, request, signal) => executeWithApproval(
+    toolCall,
+    () => makeExecutionContext(
+      request?.senderTabId,
+      request?.runId,
+      request?.routineAllowedOrigins,
+    ),
+    makeApprovalUi(request?.runId, signal),
+  ),
+  runAgent: (input) => runLlmAgentTurn({
+    ...input,
+    broadcast,
+    executeTool: (toolCall) => executeWithApproval(
+      toolCall,
+      () => makeExecutionContext(
+        input.senderTabId,
+        input.turnId,
+        input.routineAllowedOrigins,
+      ),
+      makeApprovalUi(input.turnId, input.signal),
+    ),
+    getActiveTabMeta: queryActiveTabMeta,
+    refreshAccessToken: async () => {
+      const refreshed = await refreshSession()
+      return refreshed?.accessToken ?? null
+    },
+  }),
+  assetsStore: routineAssetsStore,
+  broadcast,
+})
+routineScheduler = createScheduler({
+  routinesStore,
+  loadSession,
+  ensureFreshSession,
+  getSelectedModelId,
+  loadModels,
+  getNormalWindow: queryNormalWindow,
+  createRunTab: createScheduledRoutineTab,
+  runRoutine: (request) => routineRunner.run(request),
+  occurrenceExists: async (accountId, key) =>
+    (await routineRunStore.list(accountId)).some((run) => run.occurrenceKey === key),
+  loadMode,
+  getSiteGrant: getGrant,
+  alarms: alarmsApi,
+  notify: notifyRoutinePaused,
+})
 
 const approvalSurfaces = new Set()
 chrome.runtime.onConnect.addListener((port) => {
@@ -55,10 +174,18 @@ const nativeBridge = createNativeBridge({
 nativeBridge.registerStartup()
 nativeBridge.connect()
 
+void disableGlobalVerbooPanel().catch((error) => {
+  console.warn('[Verboo] Could not disable the global side panel:', error)
+})
+
 // ── Open side panel on toolbar click ──────────────────────────────
 chrome.action.onClicked.addListener(async (tab) => {
   if (tab?.id) {
-    await chrome.sidePanel.open({ tabId: tab.id })
+    try {
+      await openVerbooWorkspace(tab.id)
+    } catch (error) {
+      console.error('[Verboo] Could not open the tab workspace:', error)
+    }
   }
 })
 
@@ -67,7 +194,31 @@ chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
     console.log('[Verboo] Extension installed. Opening side panel on next toolbar click.')
   }
+  void restoreRoutineExecutionState()
 })
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === 'complete') {
+    void recordingController.reinject(tabId)
+  }
+})
+
+chrome.runtime.onStartup.addListener(() => {
+  void restoreRoutineExecutionState()
+})
+
+chrome.alarms?.onAlarm?.addListener((alarm) => {
+  void routineScheduler.handleAlarm(alarm).catch((error) => {
+    console.error('[Verboo] Scheduled routine failed:', error)
+  })
+})
+
+chrome.notifications?.onClicked?.addListener((notificationId) => {
+  if (!notificationId.startsWith('verboo-routine:')) return
+  void openRoutineNotification()
+})
+
+void restoreRoutineExecutionState()
 
 // ── Pending approvals (toolCallId → resolver) ────────────────────
 /** @type {Map<string, { resolve: (grant: 'once'|'always'|'deny'|'cancelled') => void }>} */
@@ -77,17 +228,34 @@ const pendingApprovals = new Map()
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== 'object') return false
 
+  if (ROUTINE_MESSAGE_TYPES.has(message.type)) {
+    routineMessageHandler(message)
+      .then(sendResponse)
+      .catch((error) => {
+        sendResponse({ ok: false, error: error?.message ?? String(error) })
+      })
+    return true
+  }
+
   switch (message.type) {
     case MSG.AGENT_TURN_START: {
       // runAgentTurn always emits COMPLETE or ERROR in finally; this catch is
       // a last-resort if the function itself rejects before that path runs.
-      void runAgentTurn(
+      const executeTurn = () => runAgentTurn(
         message.turnId,
         message.userMessage,
         sender.tab?.id,
         message.modelId,
         message.conversationHistory,
       )
+      const turnPromise = shouldOfferBrowserTools(message.userMessage)
+        ? browserControlQueue.enqueue({
+            id: message.turnId,
+            execute: executeTurn,
+            cancel: () => abortTurnController(message.turnId),
+          })
+        : executeTurn()
+      void turnPromise
         .catch((err) => {
           try {
             void clearPresenceOnAllTabs()
@@ -110,12 +278,199 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false
     }
 
+    case MSG.TOOL_PENDING_LIST: {
+      const approvals = [...pendingApprovals.values()]
+        .filter((pending) => pending.toolCall)
+        .map((pending) => ({
+          ...(pending.turnId ? { turnId: pending.turnId } : {}),
+          toolCall: pending.toolCall,
+          policyDecision: pending.policy,
+        }))
+      sendResponse({ ok: true, approvals })
+      return false
+    }
+
+    case MSG.ROUTINE_RUN: {
+      routineRunner.run({
+        ...message,
+        senderTabId: sender.tab?.id,
+        waitForCompletion: false,
+      })
+        .then((run) => sendResponse({ ok: true, run }))
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_CANCEL: {
+      loadSession()
+        .then(async (session) => {
+          if (!session?.accountId) {
+            sendResponse({ ok: false, error: 'auth_required' })
+            return
+          }
+          const cancelled = await routineRunner.cancel(session.accountId, message.runId)
+          sendResponse({ ok: true, cancelled })
+        })
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_RUN_LIST: {
+      listRoutineRuns()
+        .then((runs) => sendResponse({ ok: true, runs }))
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_RECOVERY_APPLY: {
+      applyRoutineRecoverySuggestion(message.runId)
+        .then((result) => sendResponse({ ok: true, ...result }))
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_SCHEDULE_UPSERT: {
+      updateRoutineSchedule(message, false)
+        .then((routine) => sendResponse({ ok: true, routine }))
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_SCHEDULE_REMOVE: {
+      updateRoutineSchedule(message, true)
+        .then((routine) => sendResponse({ ok: true, routine }))
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_DRAFT_FROM_MESSAGE: {
+      createTemporaryDraftFromMessage(message.text)
+        .then(({ entry }) => {
+          sendResponse({ ok: true, draftId: entry.id, draft: entry.draft })
+        })
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_DRAFT_FROM_CONVERSATION: {
+      createTemporaryDraftFromConversation(message.history)
+        .then(({ entry }) => {
+          sendResponse({ ok: true, draftId: entry.id, draft: entry.draft })
+        })
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_DRAFT_GET: {
+      loadSession()
+        .then(async (session) => {
+          if (!session?.accountId) {
+            sendResponse({ ok: false, error: 'auth_required' })
+            return
+          }
+          const draft = await temporaryDraftStore.get(session.accountId, message.draftId)
+          sendResponse(draft
+            ? { ok: true, draft }
+            : { ok: false, error: 'routine_draft_not_found' })
+        })
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_ASSET_ADD: {
+      addRoutineAsset(message)
+        .then((result) => sendResponse({ ok: true, ...result }))
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_ASSET_DELETE: {
+      removeRoutineAsset(message)
+        .then((result) => sendResponse({ ok: true, ...result }))
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_RECORD_START: {
+      startRoutineRecording(sender.tab?.id)
+        .then((state) => sendResponse({ ok: true, state }))
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_RECORD_STOP: {
+      stopRoutineRecording()
+        .then((result) => sendResponse({ ok: true, ...result }))
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_RECORD_CANCEL: {
+      cancelRoutineRecording()
+        .then((cancelled) => sendResponse({ ok: true, cancelled }))
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_RECORD_STATE_REQUEST: {
+      recordingController.state()
+        .then((state) => sendResponse({
+          ok: true,
+          state: state ? {
+            active: true,
+            id: state.id,
+            tabId: state.tabId,
+            startedAt: state.startedAt,
+            eventCount: state.events?.length ?? 0,
+          } : { active: false },
+        }))
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_RECORD_EVENT: {
+      recordingController.recordEvent(sender.tab?.id, message.event)
+        .then((accepted) => sendResponse({ ok: true, accepted }))
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
     case MSG.TOOL_APPROVE: {
       const pending = pendingApprovals.get(message.toolCallId)
       if (pending) {
-        // 'always' upgrade is decided by the panel via POLICY_GRANT_UPSERT
-        // before sending TOOL_APPROVE; here we just resolve with 'once'.
-        pending.resolve('once')
+        pending.resolve(message.decision === 'always' ? 'always' : 'once')
         pendingApprovals.delete(message.toolCallId)
       }
       sendResponse({ ok: true })
@@ -156,6 +511,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             models,
             selectedId: selectedId ?? undefined,
           })
+          await routineScheduler.syncAccount(session.accountId)
+          await recoverInterruptedRoutines(session.accountId)
           sendResponse({ ok: true, session, models, selectedId })
         })
         .catch((err) => {
@@ -165,7 +522,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     case MSG.AUTH_LOGOUT: {
-      logout()
+      loadSession()
+        .then(async (session) => {
+          if (session?.accountId) {
+            await routineScheduler.suspendAccount(session.accountId)
+          }
+          await logout()
+        })
         .then(async () => {
           broadcast({ type: MSG.AUTH_STATE_CHANGED, session: null })
           broadcast({ type: MSG.MODELS_STATE_CHANGED, models: [], selectedId: undefined })
@@ -177,8 +540,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true
     }
 
+    case MSG.AUTH_REFRESH: {
+      ensureFreshSession()
+        .then((session) => {
+          broadcast({ type: MSG.AUTH_STATE_CHANGED, session })
+          sendResponse({ ok: Boolean(session), session })
+        })
+        .catch((err) => {
+          broadcast({ type: MSG.AUTH_STATE_CHANGED, session: null })
+          sendResponse({ ok: false, session: null, error: err?.message ?? String(err) })
+        })
+      return true
+    }
+
     case MSG.AUTH_STATE_REQUEST: {
-      loadSession()
+      ensureFreshSession()
         .then(async (session) => {
           broadcast({ type: MSG.AUTH_STATE_CHANGED, session })
           sendResponse({ ok: true, session, capabilities: getAuthCapabilities() })
@@ -244,11 +620,7 @@ async function handleBrowserTool(toolCall) {
   )
 }
 
-// ── Agent loop (P2 stub) ──────────────────────────────────────────
-//
-// Stub that emits a plausible sequence of events for a chat turn. P3
-// replaces the plan generation with a real LLM call; P2 only needs to
-// prove the panel <-> background <-> controller wiring.
+// ── Agent loop ────────────────────────────────────────────────────
 //
 // Flow per turn:
 //   1. AGENT_TURN_STARTED
@@ -330,14 +702,12 @@ async function runAgentTurn(
   try {
     broadcast({ type: MSG.AGENT_TURN_STARTED, turnId, userMessage })
 
-    // Resolve the active tab up front so the planner can decide between
+    // Resolve the active tab up front so the model can decide between
     // a navigate (e.g. "abra o youtube" on chrome://extensions) and a
     // read_page on the current tab.
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
-    const activeTabUrl = activeTab?.url
-    // ── LLM path: try real multi-step agent when session + model exist.
-    // On any failure, fall back to the heuristic planMessage path below.
-    const session = await loadSession()
+    // Run the real multi-step agent only when a current session and model exist.
+    const session = await ensureFreshSession()
     const accessToken = session?.accessToken
     const storedModelId = await getSelectedModelId()
     let models = []
@@ -355,6 +725,24 @@ async function runAgentTurn(
         : storedModelId
     )
     const modelSupportsVision = selectedModel?.supportsVision === true
+
+    if (browserToolsRequested && selectedModel?.supportsTools === false) {
+      sendTerminal({
+        type: MSG.AGENT_TURN_ERROR,
+        turnId,
+        error: browserAgentErrorMessage(userMessage, 'model_tool_protocol_unsupported'),
+      })
+      return
+    }
+
+    if (requiresScreenshot(userMessage) && !modelSupportsVision) {
+      sendTerminal({
+        type: MSG.AGENT_TURN_ERROR,
+        turnId,
+        error: browserAgentErrorMessage(userMessage, 'screenshot_requires_visual_model'),
+      })
+      return
+    }
 
     // Agent presence: purple Verboo tab group + viewport frame while we control.
     // Presence is UX chrome — not a BrowserTool — so it does not go through
@@ -388,6 +776,10 @@ async function runAgentTurn(
           getActiveTabMeta: async () => {
             const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
             return { url: tab?.url, title: tab?.title, id: tab?.id }
+          },
+          refreshAccessToken: async () => {
+            const refreshed = await refreshSession()
+            return refreshed?.accessToken ?? null
           },
           signal: controller.signal,
         })
@@ -429,125 +821,25 @@ async function runAgentTurn(
           })
           return
         }
-        // LLM failed with zero tools → fall back to heuristic planMessage below.
-        broadcast({
-          type: MSG.AGENT_THOUGHT,
+        sendTerminal({
+          type: MSG.AGENT_TURN_ERROR,
           turnId,
-          text: `LLM agent unavailable (${llmErr?.message ?? llmErr}), using local planner…`,
+          error: browserAgentErrorMessage(userMessage, llmErr?.message ?? String(llmErr)),
         })
+        return
       }
     }
 
-    // ── Heuristic fallback path (planMessage) ─────────────────────
-    // Without an available model we cannot synthesize a normal chat answer.
-    // Still never reinterpret that message as a request to control the page.
-    if (!browserToolsRequested) {
-      sendTerminal({
-        type: MSG.AGENT_TURN_COMPLETE,
-        turnId,
-        assistantMessage: summarizePartialAgentTurn(userMessage, []),
-        toolResults: [],
-      })
-      return
-    }
-
-    // Prefer *current* tab URL so we don't re-search YouTube after the LLM
-    // already navigated (stale activeTabUrl is from turn start).
-    let planTabUrl = activeTabUrl
-    try {
-      const [live] = await chrome.tabs.query({ active: true, currentWindow: true })
-      if (live?.url) planTabUrl = live.url
-    } catch {
-      /* keep turn-start URL */
-    }
-
-    const { plan, assistantMessage } = planForMessage(userMessage, planTabUrl)
-
-    broadcast({
-      type: MSG.AGENT_THOUGHT,
-      turnId,
-      text:
-        plan.length > 0
-          ? `Planning ${plan.length} tool call(s) for: "${userMessage}"`
-          : `No tool action — replying directly for: "${userMessage}"`,
-      modelId: selectedModelId ?? undefined,
-    })
-
-    // Empty plan + assistantMessage → reply directly without executing
-    // anything (e.g. user is on chrome:// and asked a question with no
-    // navigate intent, or asked us to navigate to something unrecognised).
-    if (plan.length === 0) {
-      sendTerminal({
-        type: MSG.AGENT_TURN_COMPLETE,
-        turnId,
-        assistantMessage: assistantMessage ?? 'I have nothing to do for that request.',
-        toolResults: [],
-      })
-      return
-    }
-
-    /** @type {import('./controller/protocol.js').ToolResult[]} */
-    const toolResults = []
-
-    /** @type {string | null} */
-    let lastSucceededTool = null
-
-    for (const toolCall of plan) {
-      if (controller.signal.aborted) break
-
-      // YouTube SPA: give results a beat to render before clicking the first card.
-      if (
-        lastSucceededTool === 'navigate' &&
-        toolCall.name === 'click' &&
-        /youtube|video-title/i.test(String(toolCall.selector || toolCall.params?.selector || toolCall.input || ''))
-      ) {
-        await new Promise((r) => setTimeout(r, 700))
-      }
-
-      const execution = await executeWithApproval(
-        toolCall,
-        () => makeExecutionContext(senderTabId, turnId),
-        makeApprovalUi(turnId, controller.signal),
-      )
-      const canonicalTool = execution.toolCall ?? toolCall
-      const error = execution.policy?.reason === 'hard_block'
-        ? `hard_block:${execution.policy.hardBlockLabel ?? 'unknown'}`
-        : execution.error
-      const tr = execution.ok
-        ? {
-            toolCallId: canonicalTool.id,
-            success: true,
-            data: execution.result,
-            durationMs: 0,
-          }
-        : {
-            toolCallId: canonicalTool.id,
-            success: false,
-            error: error ?? 'execute_failed',
-            durationMs: 0,
-          }
-      broadcast({ type: MSG.AGENT_TOOL_RESULT, toolResult: tr })
-      toolResults.push(tr)
-      lastSucceededTool = execution.ok ? canonicalTool.name : null
-    }
-
-    if (controller.signal.aborted) {
-      sendTerminal({
-        type: MSG.AGENT_TURN_ERROR,
-        turnId,
-        error: 'cancelled',
-      })
-      return
-    }
-
-    // Final assistant message summarising the turn.
-    const finalMessage = summarize(plan, toolResults, userMessage)
     sendTerminal({
-      type: MSG.AGENT_TURN_COMPLETE,
+      type: MSG.AGENT_TURN_ERROR,
       turnId,
-      assistantMessage: finalMessage,
-      toolResults: slimToolResultsForBroadcast(toolResults),
+      error: browserAgentErrorMessage(
+        userMessage,
+        accessToken ? 'browser_model_unavailable' : 'authentication_required',
+      ),
     })
+    return
+
   } catch (err) {
     sendTerminal({
       type: MSG.AGENT_TURN_ERROR,
@@ -579,7 +871,12 @@ async function runAgentTurn(
  * @param {number} [timeoutMs]
  * @returns {Promise<'once'|'always'|'deny'|'cancelled'|'timeout'>}
  */
-function waitForApproval(approvalId, signal, timeoutMs = 60_000) {
+function waitForApproval(
+  approvalId,
+  signal,
+  timeoutMs = 60_000,
+  pendingMetadata = {},
+) {
   return new Promise((resolve) => {
     if (signal.aborted) {
       resolve('cancelled')
@@ -603,15 +900,30 @@ function waitForApproval(approvalId, signal, timeoutMs = 60_000) {
     const timeoutId = setTimeout(() => finish('timeout'), timeoutMs)
     const existing = pendingApprovals.get(approvalId)
     existing?.resolve('cancelled')
-    pendingApprovals.set(approvalId, { resolve: finish })
+    pendingApprovals.set(approvalId, { resolve: finish, ...pendingMetadata })
   })
 }
 
-async function makeExecutionContext(fallbackTabId, turnId) {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+async function makeExecutionContext(fallbackTabId, turnId, routineAllowedOrigins) {
+  const tab = Number.isInteger(fallbackTabId)
+    ? await chrome.tabs.get(fallbackTabId).catch(() => null)
+    : (await chrome.tabs.query({ active: true, currentWindow: true }))[0]
   return {
     mode: await loadMode(),
-    getSiteGrant: (host) => getGrant(host),
+    getSiteGrant: async (host) => {
+      const allowedHosts = new Set(
+        (routineAllowedOrigins ?? []).flatMap((origin) => {
+          try {
+            return [new URL(origin).hostname]
+          } catch {
+            return []
+          }
+        }),
+      )
+      if (allowedHosts.size > 0 && !allowedHosts.has(host)) return 'deny'
+      return getGrant(host)
+    },
+    setSiteGrant: (host, decision) => upsertGrant(host, decision),
     activeTabId: tab?.id ?? fallbackTabId,
     onExecuting: (toolCall) => broadcast({
       type: MSG.AGENT_TOOL_EXECUTING,
@@ -622,23 +934,205 @@ async function makeExecutionContext(fallbackTabId, turnId) {
   }
 }
 
+async function queryActiveTabMeta(preferredTabId) {
+  const tab = Number.isInteger(preferredTabId)
+    ? await chrome.tabs.get(preferredTabId).catch(() => null)
+    : (await chrome.tabs.query({ active: true, currentWindow: true }))[0]
+  return {
+    id: tab?.id,
+    url: tab?.url,
+    title: tab?.title,
+  }
+}
+
+async function queryNormalWindow() {
+  const windows = await chrome.windows.getAll({ windowTypes: ['normal'] })
+  return windows.find((window) => window.focused) ?? windows[0] ?? null
+}
+
+async function createScheduledRoutineTab(url, window) {
+  if (!url || !window?.id) return null
+  const tab = await chrome.tabs.create({
+    windowId: window.id,
+    url,
+    active: false,
+  })
+  if (tab?.id) {
+    await ensureVerbooTabGroup(tab.id).catch(() => {})
+  }
+  return tab
+}
+
+async function notifyRoutinePaused(notification) {
+  if (!chrome.notifications?.create) {
+    console.warn('[Verboo] Routine notifications are unavailable in this install.')
+    return
+  }
+  const reason = String(notification?.reason ?? '')
+    .replace(/^routine_variable_missing:/, 'missing variable: ')
+    .replaceAll('_', ' ')
+  const notificationId = `verboo-routine:${notification.routineId}:${Date.now()}`
+  await chrome.notifications.create(notificationId, {
+    type: 'basic',
+    iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+    title: `Verboo — ${notification.title || 'Routine paused'}`,
+    message: `Routine paused: ${reason}. Open Verboo to continue.`,
+  })
+}
+
+async function openRoutineNotification() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  if (tab?.id) await openVerbooWorkspace(tab.id)
+  for (const pending of pendingApprovals.values()) {
+    if (!pending.toolCall) continue
+    broadcast({
+      type: MSG.AGENT_TOOL_REQUEST,
+      ...(pending.turnId ? { turnId: pending.turnId } : {}),
+      toolCall: pending.toolCall,
+      policyDecision: pending.policy,
+    })
+  }
+}
+
+async function syncScheduledRoutines() {
+  try {
+    const session = await loadSession()
+    if (session?.accountId) await routineScheduler.syncAccount(session.accountId)
+  } catch (error) {
+    console.warn('[Verboo] Could not restore routine alarms:', error)
+  }
+}
+
+async function restoreRoutineExecutionState() {
+  await syncScheduledRoutines()
+  const session = await loadSession()
+  if (session?.accountId) await recoverInterruptedRoutines(session.accountId)
+}
+
+async function recoverInterruptedRoutines(accountId) {
+  const recovered = await routineRunStore.recoverInterrupted(accountId)
+  for (const run of recovered) {
+    try {
+      const senderTabId = await resolveRecoveredRunTab(accountId, run)
+      await routineRunner.resume(accountId, run.id, {
+        senderTabId,
+        waitForCompletion: false,
+      })
+    } catch (error) {
+      console.warn(`[Verboo] Could not resume routine run ${run.id}:`, error)
+    }
+  }
+}
+
+async function resolveRecoveredRunTab(accountId, run) {
+  if (Number.isInteger(run.senderTabId)) {
+    const existing = await chrome.tabs.get(run.senderTabId).catch(() => null)
+    if (existing?.id) return existing.id
+  }
+  const routine = await routinesStore.get(accountId, run.routineId)
+  if (routine?.startUrl) {
+    const window = await queryNormalWindow()
+    const tab = await createScheduledRoutineTab(routine.startUrl, window)
+    if (tab?.id) return tab.id
+  }
+  const active = await queryActiveTabMeta()
+  if (!active?.id) throw new Error('run_tab_unavailable')
+  return active.id
+}
+
+async function updateRoutineSchedule(message, remove) {
+  const session = await loadSession()
+  if (!session?.accountId) throw new Error('auth_required')
+  const routine = remove
+    ? await routineScheduler.remove(
+        session.accountId,
+        message.routineId,
+        message.expectedRevision,
+      )
+    : await routineScheduler.upsert(
+        session.accountId,
+        message.routineId,
+        message.schedule,
+        message.expectedRevision,
+      )
+  broadcast({
+    type: MSG.ROUTINE_SCHEDULE_CHANGED,
+    change: remove ? 'removed' : 'updated',
+    routine,
+  })
+  broadcast({
+    type: MSG.ROUTINE_STATE_CHANGED,
+    change: 'updated',
+    routine,
+  })
+  return routine
+}
+
+async function listRoutineRuns() {
+  const session = await loadSession()
+  if (!session?.accountId) throw new Error('auth_required')
+  return routineRunStore.list(session.accountId)
+}
+
+async function applyRoutineRecoverySuggestion(runId) {
+  const session = await loadSession()
+  if (!session?.accountId) throw new Error('auth_required')
+  const result = await applyRecoverySuggestion({
+    accountId: session.accountId,
+    runId,
+    runStore: routineRunStore,
+    routinesStore,
+  })
+  broadcast({
+    type: MSG.ROUTINE_STATE_CHANGED,
+    change: 'updated',
+    routine: result.routine,
+  })
+  broadcast({ type: MSG.ROUTINE_RUN_CHANGED, run: result.run })
+  return result
+}
+
 function makeApprovalUi(turnId, signal) {
   return {
-    request: ({ toolCall, policy }) => {
+    request: async ({ toolCall, policy }) => {
+      await setRoutineApprovalState(turnId, 'waiting_approval')
       broadcast({
         type: MSG.AGENT_TOOL_REQUEST,
         ...(turnId ? { turnId } : {}),
         toolCall,
         policyDecision: policy,
       })
-      return waitForApproval(toolCall.id, signal)
+      if (turnId && approvalSurfaces.size === 0) {
+        const session = await loadSession()
+        const run = session?.accountId
+          ? await routineRunStore.get(session.accountId, turnId)
+          : null
+        const routine = run
+          ? await routinesStore.get(session.accountId, run.routineId)
+          : null
+        if (routine) {
+          await notifyRoutinePaused({
+            routineId: routine.id,
+            title: routine.name,
+            reason: 'routine_approval_required',
+          })
+        }
+      }
+      return waitForApproval(toolCall.id, signal, 60_000, {
+        turnId,
+        toolCall,
+        policy,
+      })
     },
-    onApprovalClosed: ({ toolCall, decision }) => broadcast({
-      type: 'agent:approval_closed',
-      ...(turnId ? { turnId } : {}),
-      approvalId: toolCall.id,
-      decision,
-    }),
+    onApprovalClosed: async ({ toolCall, decision }) => {
+      await setRoutineApprovalState(turnId, 'running')
+      broadcast({
+        type: 'agent:approval_closed',
+        ...(turnId ? { turnId } : {}),
+        approvalId: toolCall.id,
+        decision,
+      })
+    },
     onPolicyDenied: ({ toolCall, policy }) => broadcast({
       type: MSG.AGENT_TOOL_REQUEST,
       ...(turnId ? { turnId } : {}),
@@ -648,12 +1142,28 @@ function makeApprovalUi(turnId, signal) {
   }
 }
 
+async function setRoutineApprovalState(runId, status) {
+  if (!runId) return
+  const session = await loadSession()
+  if (!session?.accountId) return
+  const run = await routineRunStore.get(session.accountId, runId)
+  if (!run) return
+  if (
+    (status === 'waiting_approval' && run.status !== 'running') ||
+    (status === 'running' && run.status !== 'waiting_approval')
+  ) {
+    return
+  }
+  const updated = await routineRunStore.transition(session.accountId, runId, status)
+  broadcast({ type: MSG.ROUTINE_RUN_CHANGED, run: updated })
+}
+
 /**
  * @param {string} turnId
  */
 function cancelTurn(turnId) {
-  const c = turnControllers.get(turnId)
-  if (c) c.abort()
+  browserControlQueue.cancel(turnId)
+  abortTurnController(turnId)
   // Resolve any pending approvals as cancelled.
   for (const [id, p] of pendingApprovals.entries()) {
     p.resolve('cancelled')
@@ -667,75 +1177,36 @@ function cancelTurn(turnId) {
   }
 }
 
-/**
- * @param {Array<import('./controller/protocol.js').ToolCall>} plan
- * @param {Array<import('./controller/protocol.js').ToolResult>} results
- * @param {string} [userMessage]
- */
-function summarize(plan, results, userMessage = '') {
-  const ok = results.filter((r) => r.success).length
-  const blocked = results.filter((r) => r.error?.startsWith('hard_block:')).length
-  const denied = results.filter((r) => r.error === 'denied_by_user' || r.error === 'site_denied').length
-  const pt = looksLikePortuguese(userMessage)
-
-  if (blocked > 0) {
-    return pt
-      ? `Parei — o Hard Block bloqueou ${blocked} ação(ões). ${ok} concluída(s).`
-      : `Stopped — Hard Block denied ${blocked} action(s). ${ok} succeeded.`
-  }
-  if (denied > 0) {
-    return pt
-      ? `Parei — ${denied} ação(ões) negada(s). ${ok} concluída(s).`
-      : `Stopped — ${denied} action(s) denied. ${ok} succeeded.`
-  }
-
-  const clicked = results.some(
-    (r, i) => r.success && plan[i]?.name === 'click',
-  )
-  const ytNav = plan.find(
-    (p) =>
-      p?.name === 'navigate' &&
-      /youtube\.com\/results/i.test(String(p?.url || p?.params?.url || '')),
-  )
-  const query = ytNav ? youtubeQueryFromResultsUrl(ytNav.url || ytNav.params?.url) : null
-
-  if (ok > 0 && clicked && (ytNav || query)) {
-    const q = query || '…'
-    return pt
-      ? `Abri o YouTube, busquei “${q}” e coloquei o primeiro resultado da lista para tocar. ` +
-        `Se não for o vídeo certo, diga o nome exato ou o link que eu ajusto.`
-      : `I opened YouTube, searched for “${q}”, and started the top result. ` +
-        `If that’s the wrong video, tell me the exact title or a link and I’ll fix it.`
-  }
-  if (ok > 0 && clicked) {
-    return pt
-      ? `Cliquei no elemento pedido. Se o resultado não for o que você queria, descreva o próximo passo.`
-      : `I clicked the target on the page. If that wasn’t right, tell me what to do next.`
-  }
-  if (ok > 0 && ytNav && !clicked) {
-    const q = query || '…'
-    return pt
-      ? `Abri os resultados do YouTube para “${q}”. Diga qual vídeo tocar se quiser continuar.`
-      : `Opened YouTube search results for “${q}”. Tell me which video to play if you want me to continue.`
-  }
-  return pt
-    ? `Pronto — ${ok}/${plan.length} ação(ões) concluída(s).`
-    : `Done — ${ok}/${plan.length} action(s) completed.`
+function abortTurnController(turnId) {
+  turnControllers.get(turnId)?.abort()
 }
 
-/**
- * @param {string} [url]
- * @returns {string | null}
- */
-function youtubeQueryFromResultsUrl(url) {
-  if (!url || typeof url !== 'string') return null
-  try {
-    const u = new URL(url)
-    const q = u.searchParams.get('search_query')
-    return q ? decodeURIComponent(q.replace(/\+/g, ' ')).trim() : null
-  } catch {
-    return null
+function browserAgentErrorMessage(userMessage, code) {
+  const pt = looksLikePortuguese(userMessage)
+  const detail = String(code ?? 'unknown_error')
+  if (detail === 'authentication_required') {
+    return pt
+      ? 'Sua sessão expirou e não pôde ser renovada. Entre novamente para continuar.'
+      : 'Your session expired and could not be renewed. Sign in again to continue.'
   }
+  if (detail === 'browser_model_unavailable') {
+    return pt
+      ? 'Nenhum modelo está disponível para controlar o navegador.'
+      : 'No model is available for browser control.'
+  }
+  if (/model_tool_protocol_unsupported|malformed text tool call/i.test(detail)) {
+    return pt
+      ? 'O modelo selecionado não respondeu no protocolo de ferramentas do navegador. Escolha outro modelo e tente novamente.'
+      : 'The selected model did not respond with the browser tool protocol. Choose another model and try again.'
+  }
+  if (detail === 'screenshot_requires_visual_model') {
+    return pt
+      ? 'O modelo selecionado não aceita imagens. Escolha um modelo marcado como Visual para capturar e analisar a tela.'
+      : 'The selected model does not accept images. Choose a model marked Visual to capture and analyze the screen.'
+  }
+  return pt
+    ? `O agente do navegador parou antes de concluir: ${detail}`
+    : `The browser agent stopped before completion: ${detail}`
 }
 
 /**
@@ -748,6 +1219,152 @@ function looksLikePortuguese(text) {
   return /\b(abra|abre|abrir|coloque|coloca|procure|pesquis|toque|tocar|m[uú]sica|musica|quero|pode|obrigad)\w*\b/i.test(
     s,
   )
+}
+
+async function createTemporaryDraftFromMessage(text) {
+  const session = await ensureFreshSession()
+  if (!session?.accountId) throw new Error('auth_required')
+  const page = await queryActiveTabMeta()
+  const draft = buildPromptDraft(text, page)
+  return {
+    entry: await temporaryDraftStore.save(session.accountId, draft),
+  }
+}
+
+async function startRoutineRecording(senderTabId) {
+  const session = await ensureFreshSession()
+  if (!session?.accountId) throw new Error('auth_required')
+  const tab = Number.isInteger(senderTabId)
+    ? await chrome.tabs.get(senderTabId)
+    : await queryActiveTabMeta()
+  const tabId = tab?.id
+  if (!Number.isInteger(tabId) || !/^https?:\/\//i.test(tab?.url ?? '')) {
+    throw new Error('routine_recording_page_unavailable')
+  }
+  return recordingController.start(session.accountId, tabId)
+}
+
+async function stopRoutineRecording() {
+  const session = await loadSession()
+  if (!session?.accountId) throw new Error('auth_required')
+  const stopped = await recordingController.stop(session.accountId)
+  const entry = await temporaryDraftStore.save(session.accountId, stopped.draft)
+  return { draftId: entry.id, draft: entry.draft }
+}
+
+async function cancelRoutineRecording() {
+  const session = await loadSession()
+  if (!session?.accountId) throw new Error('auth_required')
+  return recordingController.cancel(session.accountId)
+}
+
+async function createTemporaryDraftFromConversation(history) {
+  const session = await ensureFreshSession()
+  if (!session?.accountId || !session?.accessToken) throw new Error('auth_required')
+  const selectedModelId = await getSelectedModelId()
+  if (!selectedModelId) throw new Error('routine_model_missing')
+
+  let modelDraft = null
+  try {
+    const completion = await chatCompletion({
+      accessToken: session.accessToken,
+      model: selectedModelId,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Convert the conversation into one editable browser routine draft. ' +
+            'Return JSON only with name, command, description, instructions, startUrl, ' +
+            'allowedOrigins, modelId, and cleanupCreatedTabs. Do not include account data, ' +
+            'secrets, assistant commentary, selectors, or executable code.',
+        },
+        {
+          role: 'user',
+          content: JSON.stringify((Array.isArray(history) ? history : []).slice(-12)),
+        },
+      ],
+      tools: [],
+      refreshAccessToken: async () => {
+        const refreshed = await refreshSession()
+        return refreshed?.accessToken ?? null
+      },
+    })
+    modelDraft = completion.content
+  } catch {
+    // Deterministic user-message-only fallback remains available offline.
+  }
+
+  const draft = buildConversationDraft(history, modelDraft)
+  return {
+    entry: await temporaryDraftStore.save(session.accountId, draft),
+  }
+}
+
+async function addRoutineAsset(message) {
+  const session = await loadSession()
+  if (!session?.accountId) throw new Error('auth_required')
+  const routine = await routinesStore.get(session.accountId, message.routineId)
+  if (!routine) throw new Error('routine_not_found')
+  const file = assetPayloadToFile(message.asset)
+  const asset = await routineAssetsStore.add(session.accountId, routine.id, file)
+  try {
+    const updated = await routinesStore.update(
+      session.accountId,
+      routine.id,
+      routine.revision,
+      { assets: [...(routine.assets ?? []), asset] },
+    )
+    broadcast({
+      type: MSG.ROUTINE_STATE_CHANGED,
+      change: 'updated',
+      routine: updated,
+    })
+    return { asset, routine: updated }
+  } catch (error) {
+    await routineAssetsStore.remove(session.accountId, asset.id)
+    throw error
+  }
+}
+
+async function removeRoutineAsset(message) {
+  const session = await loadSession()
+  if (!session?.accountId) throw new Error('auth_required')
+  const asset = await routineAssetsStore.get(session.accountId, message.assetId)
+  if (!asset) throw new Error('routine_asset_not_found')
+  const routine = await routinesStore.get(session.accountId, asset.routineId)
+  if (!routine) throw new Error('routine_not_found')
+  const updated = await routinesStore.update(
+    session.accountId,
+    routine.id,
+    routine.revision,
+    {
+      assets: (routine.assets ?? []).filter((item) => item.id !== asset.id),
+    },
+  )
+  await routineAssetsStore.remove(session.accountId, asset.id)
+  broadcast({
+    type: MSG.ROUTINE_STATE_CHANGED,
+    change: 'updated',
+    routine: updated,
+  })
+  return { removed: true, routine: updated }
+}
+
+function assetPayloadToFile(payload) {
+  if (!payload || typeof payload.dataBase64 !== 'string') {
+    throw new Error('asset_invalid')
+  }
+  const binary = atob(payload.dataBase64)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+  return {
+    name: String(payload.name ?? 'asset'),
+    type: String(payload.type ?? ''),
+    size: bytes.byteLength,
+    arrayBuffer: async () => bytes.buffer,
+  }
 }
 
 /**

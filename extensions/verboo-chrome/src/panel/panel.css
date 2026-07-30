@@ -131,6 +131,7 @@ textarea {
   align-items: center;
   justify-content: center;
   gap: 20px;
+  overflow-y: auto;
   padding: 28px 20px 24px;
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 48%),
@@ -188,9 +189,63 @@ textarea {
   max-width: 28ch;
 }
 
+.login-connection-note {
+  width: 100%;
+  margin-top: 16px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--bg-soft));
+  text-align: left;
+}
+
+.login-connection-row {
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 10px 11px;
+}
+
+.login-connection-row + .login-connection-row {
+  border-top: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+}
+
+.login-connection-dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.login-connection-dot--muted {
+  background: var(--text-dim);
+  box-shadow: none;
+}
+
+.login-connection-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.login-connection-copy strong {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text);
+}
+
+.login-connection-copy > span {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
 .login-form {
   width: 100%;
-  margin-top: 22px;
+  margin-top: 18px;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -580,10 +635,15 @@ textarea {
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .icon-btn:hover {
+  .icon-btn:hover:not(:disabled) {
     color: var(--text);
     background: var(--bg-soft);
   }
+}
+
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .icon-btn:active:not(:disabled) {
@@ -597,6 +657,66 @@ textarea {
 
 .icon-btn-glyph {
   flex-shrink: 0;
+}
+
+#record-workflow[data-recording="true"] {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.recording-status {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--danger) 28%, var(--border));
+  background: color-mix(in srgb, var(--danger-soft) 62%, var(--bg-elevated));
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.recording-status[hidden] {
+  display: none;
+}
+
+.recording-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger) 14%, transparent);
+  animation: recording-pulse 1.5s var(--ease-in-out) infinite;
+}
+
+.recording-status time {
+  margin-left: auto;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.recording-status button {
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--danger);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.recording-status button:hover,
+.recording-status button:focus-visible {
+  outline: none;
+  background: var(--danger-soft);
+}
+
+@keyframes recording-pulse {
+  50% {
+    transform: scale(0.82);
+    opacity: 0.68;
+  }
 }
 
 /* ── Buttons (kept for login form) ────────────────────────────── */
@@ -748,6 +868,9 @@ textarea {
 }
 
 .chat-message {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   padding: 8px 12px;
   border-radius: var(--radius);
   font-size: 13px;
@@ -757,11 +880,44 @@ textarea {
   animation: msg-in var(--dur-ui) var(--ease-out) both;
 }
 
+.chat-message-routine-action {
+  align-self: flex-start;
+  min-height: 24px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.chat-message[data-role="user"] .chat-message-routine-action {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.chat-message-routine-action:hover,
+.chat-message-routine-action:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: inherit;
+}
+
+.chat-message-routine-action:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
 .chat-message[data-role="user"] {
   align-self: flex-end;
   background: linear-gradient(135deg, var(--accent), var(--accent-strong));
   color: #fff;
   border-bottom-right-radius: 4px;
+}
+
+.chat-message[data-role="user"] .chat-message-content {
+  white-space: pre-wrap;
 }
 
 .chat-message[data-role="assistant"] {
@@ -946,12 +1102,182 @@ textarea {
 
 /* ── Chat foot — sticky mode chip + composer ──────────────────── */
 .chat-foot {
+  position: relative;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   padding: 10px 12px 12px;
   border-top: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-elevated) 96%, transparent);
+}
+
+.routine-slash-menu {
+  position: absolute;
+  z-index: 30;
+  left: 12px;
+  right: 12px;
+  bottom: calc(100% - 5px);
+  max-height: min(340px, 46vh);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--bg-elevated) 98%, var(--accent-soft));
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+  transform-origin: bottom center;
+  animation: routine-menu-in var(--dur-ui) var(--ease-modal) both;
+}
+
+.routine-slash-menu[hidden] {
+  display: none;
+}
+
+.routine-slash-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.routine-slash-option,
+.routine-manage {
+  width: 100%;
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.routine-slash-option[data-active="true"],
+.routine-slash-option:hover,
+.routine-slash-option:focus-visible,
+.routine-manage:hover,
+.routine-manage:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 62%, var(--bg-soft));
+}
+
+.routine-slash-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.routine-slash-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.routine-slash-description {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.routine-slash-command {
+  color: var(--accent-strong);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.routine-manage {
+  min-height: 36px;
+  margin-top: 5px;
+  border-top-color: var(--border);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+@keyframes routine-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.routine-variable-dialog {
+  width: min(390px, calc(100vw - 24px));
+  max-height: calc(100vh - 32px);
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 15px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.48);
+}
+
+.routine-variable-dialog::backdrop {
+  background: rgba(6, 5, 12, 0.58);
+  backdrop-filter: blur(4px);
+}
+
+.routine-variable-dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+}
+
+.routine-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.routine-dialog-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.routine-dialog-head p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.routine-variable-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.routine-variable-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.routine-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.routine-dialog-actions .btn {
+  min-height: 36px;
+  padding-inline: 12px;
+  font-size: 12px;
 }
 
 /* Compact mode select — pill segmented control.
@@ -1041,10 +1367,18 @@ textarea {
 
 .chat-input {
   min-height: 34px;
-  padding: 2px 5px;
+  max-height: 120px;
+  padding: 7px 5px;
   border: none;
   border-radius: 6px;
   background: transparent;
+  overflow-y: hidden;
+  resize: none;
+  line-height: 1.45;
+}
+
+.chat-input[data-overflow="true"] {
+  overflow-y: auto;
 }
 
 .chat-input:hover,
@@ -1305,6 +1639,15 @@ textarea {
   .topbar-mascot {
     width: 22px;
     height: 22px;
+  }
+
+  .topbar-actions {
+    gap: 1px;
+  }
+
+  .topbar-actions .icon-btn {
+    width: 28px;
+    height: 30px;
   }
 
   .model-picker-meta {

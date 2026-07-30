@@ -36,6 +36,8 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000
  * @property {string} name
  * @property {string} [displayName]
  * @property {boolean} [supportsVision]
+ * @property {boolean} [supportsTools]
+ * @property {string} [toolProtocol]
  * @property {string} [description]
  * @property {string} [provider]
  */
@@ -243,17 +245,25 @@ export async function loadModels(forceRefresh = false) {
   if (!forceRefresh) {
     const cached = await readModelsCache()
     if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-      return cached.models
+      return filterVisionModels(cached.models)
     }
   }
 
-  const session = await loadSession()
+  const session = await ensureFreshSession()
   if (!session?.accessToken) {
     const cached = await readModelsCache()
-    return cached?.models ?? []
+    return filterVisionModels(cached?.models ?? [])
   }
 
-  const models = await fetchModelsFromRouter(session.accessToken)
+  let models
+  try {
+    models = await fetchModelsFromRouter(session.accessToken)
+  } catch (error) {
+    if (error?.status !== 401 || !session.refreshToken) throw error
+    const refreshed = await refreshSession()
+    if (!refreshed?.accessToken) throw error
+    models = await fetchModelsFromRouter(refreshed.accessToken)
+  }
   await storageSet({
     [MODELS_CACHE_KEY]: { models, fetchedAt: Date.now() },
   })
@@ -281,14 +291,71 @@ export async function getSelectedModelId() {
 }
 
 /**
- * Refresh is deliberately unavailable until the registered Chrome client is
- * configured. Callers can restart the interactive OAuth flow after expiry.
+ * Refresh an OAuth session through the same public client. Refresh-token
+ * rotation is honored; providers that omit a replacement keep the old token.
  * @returns {Promise<VerbooSession|null>}
  */
-export async function refreshSession() {
+export async function refreshSession(config = OAUTH_CONFIG, dependencies = {}) {
   const current = await loadSession()
   if (!current?.accessToken) return null
-  throw new Error('oauth_refresh_not_available')
+  if (!current.refreshToken) throw new Error('oauth_refresh_token_missing')
+  if (!config?.clientId) throw new Error('oauth_not_configured')
+
+  const fetchImpl = dependencies.fetch ?? globalThis.fetch
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: current.refreshToken,
+    client_id: config.clientId,
+  })
+  const response = await fetchImpl(config.tokenUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'application/json',
+    },
+    body,
+  })
+  if (!response.ok) throw new Error(`oauth_refresh_failed:${response.status}`)
+  const token = await response.json()
+  if (!token?.access_token || typeof token.access_token !== 'string') {
+    throw new Error('oauth_access_token_missing')
+  }
+
+  const expiresIn = Number(token.expires_in)
+  const session = {
+    ...current,
+    accessToken: token.access_token,
+    refreshToken:
+      typeof token.refresh_token === 'string' && token.refresh_token
+        ? token.refresh_token
+        : current.refreshToken,
+    ...(Number.isFinite(expiresIn) && expiresIn > 0
+      ? { expiresAt: Date.now() + expiresIn * 1000 }
+      : { expiresAt: undefined }),
+    source: 'oauth',
+  }
+  await saveSession(session)
+  return session
+}
+
+/**
+ * Return a session with enough remaining lifetime for a Router request.
+ * Expired sessions without a refresh token are treated as signed out.
+ *
+ * @param {{minValidityMs?: number, config?: typeof OAUTH_CONFIG, dependencies?: {fetch?: typeof fetch}}} [options]
+ * @returns {Promise<VerbooSession|null>}
+ */
+export async function ensureFreshSession(options = {}) {
+  const current = await loadSession()
+  if (!current?.accessToken) return null
+  const minValidityMs = options.minValidityMs ?? 60_000
+  if (current.expiresAt == null || current.expiresAt > Date.now() + minValidityMs) {
+    return current
+  }
+  if (!current.refreshToken) {
+    return current.expiresAt > Date.now() ? current : null
+  }
+  return refreshSession(options.config ?? OAUTH_CONFIG, options.dependencies ?? {})
 }
 
 // ── Router fetch + normalize ─────────────────────────────────
@@ -307,19 +374,21 @@ async function fetchModelsFromRouter(token) {
   })
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`)
+    const error = new Error(`HTTP ${response.status}`)
+    error.status = response.status
+    throw error
   }
 
   const payload = await response.json()
-  const models = normalizeModels(payload)
-  // Vision models first (stable otherwise).
-  models.sort((a, b) => {
-    const av = a.supportsVision ? 0 : 1
-    const bv = b.supportsVision ? 0 : 1
-    if (av !== bv) return av - bv
-    return String(a.name).localeCompare(String(b.name))
-  })
+  const models = filterVisionModels(normalizeModels(payload))
+  models.sort((a, b) => String(a.name).localeCompare(String(b.name)))
   return models
+}
+
+function filterVisionModels(models) {
+  return Array.isArray(models)
+    ? models.filter((model) => model?.supportsVision === true)
+    : []
 }
 
 /**
@@ -361,6 +430,12 @@ function normalizeModel(item) {
     id
 
   const supportsVision = detectVisionSupport(obj)
+  const supportsTools = detectToolSupport(obj)
+  const toolProtocol = firstStringFromObjectOrCapabilities(obj, [
+    'tool_protocol',
+    'toolProtocol',
+    'function_calling_protocol',
+  ])
   const description = firstString(obj, ['description', 'summary', 'tagline'])
   const provider = firstString(obj, ['provider_name', 'providerName', 'provider'])
 
@@ -369,9 +444,43 @@ function normalizeModel(item) {
     name: displayName,
     displayName,
     supportsVision: supportsVision === true,
+    ...(typeof supportsTools === 'boolean' ? { supportsTools } : {}),
+    ...(toolProtocol ? { toolProtocol } : {}),
     ...(description ? { description } : {}),
     ...(provider ? { provider } : {}),
   }
+}
+
+function detectToolSupport(obj) {
+  const keys = [
+    'supportsTools',
+    'supports_tools',
+    'toolCalling',
+    'tool_calling',
+    'functionCalling',
+    'function_calling',
+  ]
+  for (const source of [obj, obj.capabilities]) {
+    if (!source || typeof source !== 'object') continue
+    for (const key of keys) {
+      if (typeof source[key] === 'boolean') return source[key]
+    }
+    for (const key of ['supported_parameters', 'supportedParameters']) {
+      const values = source[key]
+      if (Array.isArray(values) && values.some((value) => value === 'tools' || value === 'tool_choice')) {
+        return true
+      }
+    }
+  }
+  return undefined
+}
+
+function firstStringFromObjectOrCapabilities(obj, keys) {
+  return firstString(obj, keys) || (
+    obj.capabilities && typeof obj.capabilities === 'object'
+      ? firstString(obj.capabilities, keys)
+      : undefined
+  )
 }
 
 /**
