@@ -128,16 +128,91 @@ async function readPkgJson(dir) {
 }
 
 const rootPkg = await readPkgJson(source);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXPLICIT DEPENDENCY EXCLUSION LIST
+//
+// Packages declared in @verboo/code's package.json (or pulled transitively)
+// that are NOT used by the bundled dist/cli.mjs at runtime. Each entry must
+// have an empirical proof: removing it and running the CLI battery
+// (scripts/verify/copy-cli-resource.mjs smoke + manual route battery) yields
+// identical rc map to baseline. See pesquisa/P1-opentelemetry.md for the
+// original investigation and the C2 cycle notes for the per-package evidence.
+//
+// Why an explicit list (not a heuristic): a heuristic that auto-detects
+// "unused" packages by grepping the bundle for the package name will
+// eventually prune something essential — bundlers inline code under minified
+// names (e.g. init_growthbook), dynamic imports construct strings at runtime,
+// and packages loaded only on rare code paths look "unused" until they
+// aren't. An explicit, commented, evidence-backed list keeps the blast
+// radius of a mistake to exactly the packages a human signed off on.
+//
+// To add a new entry: (1) prove empirically it's unused, (2) record the
+// evidence (which routes were tested, when, by whom), (3) add it here with
+// a one-line "why" comment. Never prune by guess.
+// ─────────────────────────────────────────────────────────────────────────────
+const EXCLUDED_PACKAGES = new Set([
+  // OpenTelemetry SDK + exporters. The bundled cli.mjs has zero static,
+  // dynamic, or template-literal imports of @opentelemetry/*. The only
+  // "OpenTelemetry" strings in the bundle are log messages and the
+  // `otelHeadersHelper` config schema field — the CLI calls an EXTERNAL
+  // user-provided helper script to get OTEL headers, it does not import
+  // the @opentelemetry/* packages itself. Empirical proof: P1 research
+  // (2026-07-27) + C2 battery (22 routes, rc map identical to baseline).
+  "@opentelemetry/api",
+  "@opentelemetry/api-logs",
+  "@opentelemetry/core",
+  "@opentelemetry/exporter-logs-otlp-http",
+  "@opentelemetry/exporter-trace-otlp-grpc",
+  "@opentelemetry/resources",
+  "@opentelemetry/sdk-logs",
+  "@opentelemetry/sdk-metrics",
+  "@opentelemetry/sdk-trace-base",
+  "@opentelemetry/sdk-trace-node",
+  "@opentelemetry/semantic-conventions",
+
+  // gRPC runtime. Transitively pulled by @opentelemetry/exporter-trace-otlp-grpc.
+  // With OTEL removed, nothing in the closure references @grpc/*. Confirmed
+  // by `find node_modules -name package.json -exec grep -l '@grpc/grpc-js'`
+  // → only @opentelemetry/* packages match. Empirical proof: C2 battery
+  // (22 routes, rc map identical to baseline).
+  "@grpc/grpc-js",
+  "@grpc/proto-loader",
+
+  // type-fest: type-only utility package. Zero references in cli.mjs
+  // (no `from "type-fest"`, no string literal "type-fest"). Type-only
+  // imports are erased at bundle time. Empirical proof: C2 battery.
+  "type-fest",
+
+  // vscode-languageserver-protocol: LSP type definitions. Zero references
+  // in cli.mjs. The CLI does not implement an LSP server. Empirical proof:
+  // C2 battery.
+  "vscode-languageserver-protocol",
+
+  // code-excerpt: utility for excerpting source code. Zero references in
+  // cli.mjs. Empirical proof: C2 battery.
+  "code-excerpt",
+
+  // stack-utils: stack trace parser. Zero references in cli.mjs. Empirical
+  // proof: C2 battery.
+  "stack-utils",
+]);
+
 const seen = new Set();
 const queue = Object.keys({
   ...(rootPkg?.dependencies ?? {}),
   ...(rootPkg?.optionalDependencies ?? {}),
 });
 const closure = [];
+let excludedCount = 0;
 while (queue.length) {
   const name = queue.shift();
   if (seen.has(name)) continue;
   seen.add(name);
+  if (EXCLUDED_PACKAGES.has(name)) {
+    excludedCount += 1;
+    continue; // skip — proven unused at runtime, see comment above
+  }
   const pj = await readPkgJson(join(rootModules, ...name.split("/")));
   if (!pj) continue; // optional/peer dep not installed — skip
   closure.push(name);
@@ -156,7 +231,11 @@ for (const name of closure) {
   await mkdir(dirname(dst), { recursive: true });
   await cp(src, dst, { recursive: true, force: true });
 }
-console.log(`[copy-cli-resource] Copied ${closure.length} dependency packages into the bundle.`);
+console.log(
+  `[copy-cli-resource] Copied ${closure.length} dependency packages into the bundle` +
+    (excludedCount ? ` (excluded ${excludedCount} proven-unused: see EXCLUDED_PACKAGES)` : "") +
+    `.`,
+);
 
 // 3. Prepend shebang to cli.mjs so it can be exec'd directly if needed.
 const cliMjsPath = join(targetDir, "dist", "cli.mjs");
