@@ -26,6 +26,7 @@ const REASON_ID_KEYS: Record<GoalReasonId, string> = {
   userPaused: 'goal.reasonId.userPaused',
   userCancelled: 'goal.reasonId.userCancelled',
   safetyLimit: 'goal.reasonId.safetyLimit',
+  goalError: 'goal.reasonId.goalError',
 }
 
 /** Translate a stable reasonId. Unknown ids fall back to `goal.reasonId.unknown`. */

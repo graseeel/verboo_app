@@ -35,6 +35,7 @@ export type GoalReasonId =
   | 'userPaused'
   | 'userCancelled'
   | 'safetyLimit'
+  | 'goalError'
 
 /**
  * Mirror of Rust `GoalEvaluationResult` (src-tauri/src/models/types.rs:810).
@@ -51,6 +52,33 @@ export type GoalEvaluationResult = {
   nextAction?: string
   completionSummary?: string
   confidence: number
+}
+
+/**
+ * G-C15-FIX: the Tauri boundary struct for `evaluate_goal`.
+ *
+ * The Rust side (src-tauri/src/lib.rs:40 `EvaluationResult`) declares
+ * `evaluation`, `user_message`, and `evaluator_usage` as SIBLINGS at
+ * the top level of the returned JSON — NOT nested inside `evaluation`.
+ * The previous G-C15-TS adendo wrongly placed `evaluatorUsage` INSIDE
+ * `GoalEvaluationResult`, so the renderer read `evaluation.evaluatorUsage`
+ * which never existed (the key is a sibling of `evaluation`), and the
+ * evaluator's tokens never reached the usage line. Same defect class
+ * as the original TokenUsage bug (TS type describes a shape the Rust
+ * doesn't send), but on PLACEMENT instead of CASING.
+ *
+ * `evaluatorUsage` is `Option<TokenUsage>` with `skip_serializing_if
+ * Option::is_none` — when the evaluator ran no tokens the key is
+ * OMITTED from the JSON (not null). On the TS side this arrives as
+ * `undefined` — treat absence, not null.
+ */
+export type GoalEvaluationEnvelope = {
+  evaluation: GoalEvaluationResult
+  /** Legacy bridge field; FE should read `evaluation.nextAction`. */
+  userMessage?: string
+  /** Evaluator's own token usage for THIS evaluation call. Sibling of
+   *  `evaluation`, NOT inside it. camelCase keys inside (TokenUsage). */
+  evaluatorUsage?: TokenUsage
 }
 
 export type AgentResultSnapshot = {
@@ -76,13 +104,39 @@ export type GoalState = {
   pausedAt?: number
   pauseReason?: string
   lastEvaluation?: GoalEvaluationResult
+  /**
+   * G-C17: evaluator's own token usage ACCUMULATED across EVERY
+   * evaluation of this goal (input parcel), summed by the evaluateGoal
+   * delegate from the `evaluatorUsage` SIBLING of `evaluation` in the
+   * Tauri boundary struct (GoalEvaluationEnvelope — G-C15-FIX), NOT
+   * from inside `lastEvaluation`.
+   *
+   * Replaces G-C15-FIX's `lastEvaluatorUsage` (last-write-wins): in a
+   * multi-evaluation goal only the LAST parcel reached the usage line,
+   * so the "Total registrado" label under-reported by ~one evaluation
+   * (~30-40k input tokens) per discarded cycle. QA blocking.
+   *
+   * Renderer-only: Rust GoalState (types.rs:970) has no counterpart —
+   * serde ignores unknown keys when the goal crosses the boundary
+   * inside GoalEvaluationInput. Optional because legacy stored goals
+   * pre-G-C17 lack the key; readers coalesce with `?? 0` (treat
+   * ABSENCE, not null — same lesson as skip_serializing_if).
+   */
+  evaluatorInputTokens?: number
+  /** G-C17: output parcel — see evaluatorInputTokens. */
+  evaluatorOutputTokens?: number
   lastSessionId?: string
   lastTurnId?: string
   turnsRun: number
   /**
    * @deprecated Budget limits are no longer enforced — tokens and time
    * are unlimited. Kept on the type for backwards compatibility with
-   * stored goals; new goals set this to Number.MAX_SAFE_INTEGER.
+   * stored goals; new goals set this to u32::MAX (4_294_967_295).
+   *
+   * CONTRACT: Rust GoalState (types.rs:935) declares max_turns: u32.
+   * Sending a value > 4_294_967_295 causes serde to reject the
+   * entire evaluate_goal invoke. Use GOAL_MAX_TURNS_UNLIMITED from
+   * goalState.ts — never Number.MAX_SAFE_INTEGER.
    */
   maxTurns?: number
   /**
@@ -107,6 +161,16 @@ export type GoalState = {
    * burning budget on a broken evaluator.
    */
   errorCount?: number
+  /**
+   * G-C5-FIX: id of the conversation that owns this goal. The
+   * persistence effect uses this to avoid cross-writing the goal into
+   * a conversation that was just selected by the user — without this,
+   * switching from conversation A (with active goal) to conversation B
+   * fires the persist effect with `goal=A` + `activeConversationId=B`,
+   * corrupting B's stored goal. The next flush would correct it, but
+   * a crash between the two leaves B with a stale goal.
+   */
+  ownerConversationId?: string
 }
 
 export type GoalEvaluationInput = {
@@ -185,6 +249,13 @@ export type TranscriptItem = {
   // output in `command.output` instead.
   toolOutput?: string
   changeSummary?: WorkspaceChangeSummary
+  // G-C15-TS: goal-completion usage line (e.g. "Uso registrado: 79.695
+  // tokens; tempo aproximado: 8min20s"). Set on the per-turn summary item
+  // of the goal's LAST turn by the onComplete delegate. The TurnView
+  // renders this inline after the agent's final text — no separate box,
+  // no badge, same typographic family as the surrounding message. Empty
+  // when the goal accumulated no tokens (zero-guard).
+  usageLine?: string
   modelId?: string
   modelDisplayName?: string
   streaming?: boolean
@@ -382,9 +453,17 @@ export type UserSettings = {
   goalMode: {
     /** @deprecated Goal mode is always on; kept for backwards compat. */
     enabled?: boolean
-    /** @deprecated Budget limits no longer enforced; kept for backwards compat. */
+    /**
+     * @deprecated Budget limits no longer enforced; kept for backwards compat.
+     * CONTRACT: Rust GoalModeSettings (types.rs:647) declares max_turns: u32.
+     * Must stay ≤ 4_294_967_295.
+     */
     maxTurns?: number
-    /** @deprecated See maxTurns. */
+    /**
+     * @deprecated See maxTurns.
+     * CONTRACT: Rust GoalModeSettings (types.rs:651) declares max_elapsed_minutes: u32.
+     * Must stay ≤ 4_294_967_295.
+     */
     maxElapsedMinutes?: number
     allowAutoAccess: boolean
   }
@@ -502,11 +581,33 @@ export type MenuBarState = {
   email?: string
 }
 
+/**
+ * Token usage as serialized by the Rust side.
+ *
+ * CONTRACT: Rust `TokenUsage` (src-tauri/src/models/types.rs:929-936) is
+ * declared with `#[serde(rename_all = "camelCase")]`, so the JSON the
+ * renderer receives via Tauri events has camelCase keys:
+ *   inputTokens, outputTokens, cacheCreationInputTokens, cacheReadInputTokens
+ *
+ * G-C12: this type previously declared snake_case keys, which made tsc
+ * validate all reads against a contract that LIED about what the Rust
+ * side sends. The renderer read `usage.input_tokens` (undefined) and
+ * the `?? 0` coalescing silently turned every read into zero — the
+ * goal token accumulator and the composer tok/s indicator both
+ * appeared to work in tests but always reported zero in production.
+ *
+ * NOTE: the CLI sends snake_case in its raw stream payload, and the
+ * Rust side desserializes that into the same struct (serde rename
+ * works both ways). The renderer's `extractTokenUsage` reads the
+ * CLI's raw snake_case payload directly and must continue to do so;
+ * it returns a `TokenUsage` typed value, so it renames the keys to
+ * camelCase on the way out (see App.tsx:extractTokenUsage).
+ */
 export type TokenUsage = {
-  input_tokens?: number
-  output_tokens?: number
-  cache_creation_input_tokens?: number
-  cache_read_input_tokens?: number
+  inputTokens?: number
+  outputTokens?: number
+  cacheCreationInputTokens?: number
+  cacheReadInputTokens?: number
 }
 
 export type ContextUsageSnapshot = {
@@ -962,6 +1063,13 @@ export type UpdateSnapshot = {
   status: UpdateStatus
   channel: UpdateChannel
   currentVersion: string
+  /**
+   * True when a stable channel with a valid manifest exists. False on 404,
+   * network error, or invalid manifest. Fail-closed: when in doubt, false.
+   * Drives the disabled state of the Stable choice chip in settings.
+   * Mirror of Rust `UpdateSnapshot.stable_channel_available`.
+   */
+  stableChannelAvailable?: boolean
   availableVersion?: string
   releaseName?: string
   releaseDate?: string

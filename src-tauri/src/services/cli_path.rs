@@ -4,18 +4,22 @@ use std::path::PathBuf;
 ///
 /// Resolution order:
 ///   1. `VERBOO_CLI_PATH` env var (explicit override — used in dev)
-///   2. `verboo` on PATH (system install — `npm i -g @verboo/code`)
-///      — the safe default. The bundled CLI is intentionally not used
-///      because Node ESM resolution requires a co-bundled `node_modules/`,
-///      which isn't shipped with the .app. Direct execution of the bundled
-///      file fails with `ERR_MODULE_NOT_FOUND` for `@aws-sdk/client-bedrock-*`
-///      and similar transitive deps.
+///   2. `None` — the caller falls back to spawning `verboo` by name and
+///      letting the OS resolve PATH.
 ///
-/// Returns `None` only if (1) is unset. The caller falls back to spawning
-/// `verboo` by name and letting the OS resolve PATH.
+/// NOTE: This function is a thin env-var shim. It does NOT resolve the
+/// bundled CLI. The bundled `cli.mjs` (with co-bundled `node_modules/`)
+/// IS shipped with the .app — `copy-cli-resource.mjs` copies the full
+/// `cli-package` closure into Resources and validates it with
+/// `node cli.mjs --version`. The correct way to spawn the bundled CLI
+/// is `CliSpawn::new(args)` (see `cli_spawn.rs`), which resolves the
+/// bundled `cli.mjs`, picks the system Node via `node_runtime`, and
+/// builds a `Command` that runs `<node> <cli.mjs> <args>`.
 ///
-/// To use a bundled CLI for development, set `VERBOO_CLI_PATH` to its
-/// absolute path.
+/// `cli_path::resolve()` exists for legacy callers that need just the
+/// entry path as a string. New code should use `CliSpawn` instead.
+///
+/// Returns `None` if (1) is unset.
 pub fn resolve() -> Option<String> {
     if let Ok(path) = std::env::var("VERBOO_CLI_PATH") {
         let trimmed = path.trim();
@@ -27,8 +31,9 @@ pub fn resolve() -> Option<String> {
 }
 
 /// Searches for a bundled `cli.mjs` resource next to the app binary.
-/// Returns the path if found. Currently unused by `resolve()` (see the
-/// docstring above) but kept exported for tools / future implementations.
+/// Returns the path if found. Used by `cli_spawn::find_bundled_cli_mjs`
+/// (which is the production path); kept exported here for tools and
+/// future implementations.
 #[allow(dead_code)]
 pub fn find_bundled_cli() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;

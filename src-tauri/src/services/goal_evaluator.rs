@@ -1,12 +1,13 @@
 use std::fmt;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use crate::models::types::{
-    AgentResultSnapshot, GoalDecision, GoalEvaluationInput, GoalEvaluationResult, GoalReasonId,
+    GoalDecision, GoalEvaluationInput, GoalEvaluationResult, GoalReasonId,
     GoalState, GoalStatus, TranscriptItem,
 };
 use crate::services::auth_token::inject_api_key;
+use crate::services::cli_spawn::CliSpawn;
 
 /// Result of a single goal evaluation call. Mirrors the Electron type and the
 /// local `EvaluationResult` in `lib.rs` (camelCase serialized).
@@ -14,6 +15,15 @@ use crate::services::auth_token::inject_api_key;
 #[serde(rename_all = "camelCase")]
 pub struct EvaluationResult {
     pub evaluation: GoalEvaluationResult,
+    /// Token usage reported by the evaluator CLI for THIS evaluation call,
+    /// separate from the agent turn usage. The CLI envelope carries `usage`
+    /// with `input_tokens`/`output_tokens`/`cache_creation_input_tokens`/
+    /// `cache_read_input_tokens` (snake_case, CLI-native). We extract it
+    /// here so the renderer can sum turn + evaluator tokens for the total
+    /// the user asked for in G-C15. `None` when the envelope omitted usage
+    /// or the usage block was malformed — counting failure must NEVER break
+    /// the goal (G-C15 requirement 3).
+    pub evaluator_usage: Option<crate::models::types::TokenUsage>,
 }
 
 /// Errors from the goal evaluator — infrastructure failures only.
@@ -22,7 +32,10 @@ pub struct EvaluationResult {
 /// silently swallowed.
 #[derive(Debug, Clone)]
 pub enum GoalEvaluationError {
-    CliTimeout,
+    /// The CLI did not finish within the budget. Carries the budget that
+    /// was actually used (in seconds) so the user-facing message can say
+    /// "timed out after Ns" instead of the opaque "infra error".
+    CliTimeout { timeout_secs: u64 },
     CliSpawn(String),
     CliExit { exit_code: Option<i32>, stderr: String },
     ParseFailure(String),
@@ -31,7 +44,10 @@ pub enum GoalEvaluationError {
 impl fmt::Display for GoalEvaluationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CliTimeout => write!(f, "Goal evaluator CLI timed out"),
+            Self::CliTimeout { timeout_secs } => write!(
+                f,
+                "Goal evaluator CLI timed out after {timeout_secs}s — the model did not finish in time. Try again, or raise VERBOO_GOAL_TIMEOUT_SECS if your machine/model is consistently slower."
+            ),
             Self::CliSpawn(msg) => write!(f, "Goal evaluator CLI spawn failed: {msg}"),
             Self::CliExit { exit_code, stderr } => {
                 write!(
@@ -45,8 +61,62 @@ impl fmt::Display for GoalEvaluationError {
     }
 }
 
-const DEFAULT_TIMEOUT_SECS: u64 = 30;
+/// Default timeout for the evaluator CLI, in seconds.
+///
+/// JUSTIFICATION (measured, not guessed):
+///   - Trivial prompt ("teste OK"): 20,851 ms (≈21s) on the dev machine.
+///   - Realistic 29 KB prompt (full transcript window): 105,412 ms (≈105s)
+///     on the same machine, same model. Measured by the Maestro on
+///     2026-07-27 against the bundled cli.mjs with `--print --output-format
+///     json`, matching the exact command the evaluator runs.
+///   - The previous 30s budget killed every real evaluation at ~30s and
+///     surfaced as `infraError` — the user saw "Erro de infraestrutura
+///     do avaliador" with no hint that it was a timeout.
+///
+/// The budget must cover the worst case with margin. 105s was ONE
+/// measurement on ONE machine with ONE model. Under load, with a larger
+/// transcript, or on a slower user machine, the same prompt can take
+/// longer. We pick 240s (≈2.3× the measured worst case) so a legitimately
+/// slow evaluation is not cut off, while a truly hung CLI still gets
+/// killed in finite time. The timeout exists to catch hangs, not to
+/// cut legitimate work — better to err high.
+///
+/// Override with `VERBOO_GOAL_TIMEOUT_SECS` for machines/models that
+/// need a different budget. See `resolve_timeout_secs`.
+const DEFAULT_TIMEOUT_SECS: u64 = 240;
 const RECENT_ITEMS_WINDOW: usize = 30;
+
+/// Resolves the evaluator timeout in seconds. Honors the
+/// `VERBOO_GOAL_TIMEOUT_SECS` env var (so users/operators can tune the
+/// budget without rebuilding), falling back to `DEFAULT_TIMEOUT_SECS`.
+/// Invalid env values (non-numeric, zero, or absurdly small) are ignored
+/// with a warning — fail-closed to the default rather than letting a typo
+/// silently disable the timeout.
+fn resolve_timeout_secs() -> u64 {
+    match std::env::var("VERBOO_GOAL_TIMEOUT_SECS") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            match trimmed.parse::<u64>() {
+                Ok(n) if n >= 10 => n,
+                Ok(n) => {
+                    eprintln!(
+                        "VERBOO_GOAL_TIMEOUT_SECS={n} is below the 10s floor; \
+                         using DEFAULT_TIMEOUT_SECS={DEFAULT_TIMEOUT_SECS} instead"
+                    );
+                    DEFAULT_TIMEOUT_SECS
+                }
+                Err(_) => {
+                    eprintln!(
+                        "VERBOO_GOAL_TIMEOUT_SECS={trimmed:?} is not a valid u64; \
+                         using DEFAULT_TIMEOUT_SECS={DEFAULT_TIMEOUT_SECS} instead"
+                    );
+                    DEFAULT_TIMEOUT_SECS
+                }
+            }
+        }
+        Err(_) => DEFAULT_TIMEOUT_SECS,
+    }
+}
 
 /// Runs the bundled `verboo` CLI in `--print --output-format json` mode with a
 /// constructed evaluation prompt, then parses the JSON envelope for the
@@ -74,11 +144,32 @@ impl GoalEvaluator {
             .into_iter()
             .rev()
             .collect();
-        let prompt = build_evaluation_prompt(&input.goal, &recent_items, input.latest_result.as_ref());
+        let prompt = build_evaluation_prompt(&input.goal, &recent_items);
         let stdout = run_evaluation_cli(&prompt, api_key)?;
-        let json = extract_evaluation_json(&stdout)?;
+        let (json, evaluator_usage) = extract_evaluation_json(&stdout)?;
+        // G-C16: hard code guard. If the model returned `complete` but NO turn
+        // has executed, the model was either (a) hallucinating completion from
+        // a statement of intent, or (b) satisfying the "SAME turn" rule with
+        // no action to observe. In either case, completion is unsafe — convert
+        // to Continue+TaskIncomplete at the normalize step so the agent gets
+        // another turn to actually do the work. Prompt-only guard was not
+        // sufficient (verified in field 2026-07-29: goal marked complete with
+        // turnsRun=0 and no file on disk).
+        //
+        // G-C16-FIX: the guard is `turns_run > 0` ONLY. The previous
+        // `|| latest_result.is_some()` leg was dead code — `latest_result`
+        // has ZERO populators (renderer or Rust) and was always None — and
+        // worse, an armadilha armada: if someone naively populates
+        // `latest_result` in the future without scoping it to THIS goal, an
+        // inherited `latest_result` from another turn would make the guard
+        // pass with no real action of the current goal, reopening F2 in old
+        // conversations. `turns_run` is incremented in App.tsx:3224 before
+        // every evaluation, so the single remaining leg is reliable.
+        let observable_action = input.goal.turns_run > 0;
+        let evaluation = normalize_evaluation(json, observable_action);
         Ok(EvaluationResult {
-            evaluation: normalize_evaluation(json),
+            evaluation,
+            evaluator_usage,
         })
     }
 
@@ -91,6 +182,29 @@ impl GoalEvaluator {
     }
 }
 
+/// Truncate a string to at most `max_bytes` BYTES, receding to the nearest
+/// UTF-8 char boundary so we never slice inside a multibyte sequence (which
+/// would panic). The sentinel reports how many CHARS were cut from the
+/// tail, not the total length — so the model knows what it's missing.
+///
+/// G-C18-FIX: the previous `&s[..max_bytes]` panicked on Portuguese
+/// content (byte 800 was not a char boundary). QA proved it with a
+/// disposable crate. Portuguese is the norm in this app.
+fn truncate_char_safe(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut cut = max_bytes;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let head = &s[..cut];
+    let total_chars = s.chars().count();
+    let kept_chars = head.chars().count();
+    let cut_chars = total_chars - kept_chars;
+    format!("{head}... [truncated {cut_chars} chars]")
+}
+
 /// Builds the markdown prompt that asks the model to evaluate goal progress.
 ///
 /// The prompt instructs the model to output JSON with the expected fields.
@@ -101,7 +215,6 @@ impl GoalEvaluator {
 fn build_evaluation_prompt(
     goal: &GoalState,
     recent_items: &[TranscriptItem],
-    latest_result: Option<&AgentResultSnapshot>,
 ) -> String {
     let mut prompt = String::new();
     prompt.push_str("# Goal Evaluation\n\n");
@@ -111,21 +224,6 @@ fn build_evaluation_prompt(
     prompt.push_str("\n\n## Context\n\n");
     prompt.push_str(&format!("Status: {:?} | Turns run: {}", goal.status, goal.turns_run));
     prompt.push_str("\n\n");
-
-    if let Some(r) = latest_result {
-        if r.exit_code.is_some() {
-            prompt.push_str(&format!("Last exit code: {:?}\n", r.exit_code));
-        }
-        if let Some(ref errs) = r.errors {
-            if !errs.is_empty() {
-                prompt.push_str("Last errors:\n");
-                for e in errs {
-                    prompt.push_str(&format!("- {e}\n"));
-                }
-            }
-        }
-        prompt.push('\n');
-    }
 
     prompt.push_str("## Recent transcript items\n\n");
     for item in recent_items {
@@ -138,14 +236,24 @@ fn build_evaluation_prompt(
         if let Some(ref cmd) = item.command {
             prompt.push_str(&format!("\n**Command:** `{}`\n", cmd.input));
             if !cmd.output.is_empty() {
-                let max_output = 500;
-                let output = if cmd.output.len() > max_output {
-                    format!("{}... [truncated {} chars]", &cmd.output[..max_output], cmd.output.len())
-                } else {
-                    cmd.output.clone()
-                };
-                prompt.push_str(&format!("**Output:**\n```\n{}\n```\n", output));
+                prompt.push_str(&format!("**Output:**\n```\n{}\n```\n", truncate_char_safe(&cmd.output, 500)));
             }
+        }
+        // G-C18: render the captured tool output. Truncate aggressively so
+        // the prompt doesn't balloon (RECENT_ITEMS_WINDOW * limit). The
+        // choice of 800 chars/item is justified in PR comments; the
+        // truncation sentinel is visible inline so the model can flag if
+        // the truncated tail mattered.
+        //
+        // G-C18-FIX: byte-slicing `&str` panics if the cut lands inside a
+        // multibyte UTF-8 sequence. Portuguese content (the norm in this
+        // app) has accents everywhere. The previous `&output[..max_output]`
+        // panicked at byte 800 (not a char boundary). Now we recede to the
+        // nearest `is_char_boundary` and the sentinel reports how many
+        // CHARS were cut, not the total length.
+        if let Some(ref output) = item.tool_output {
+            let truncated = truncate_char_safe(output, 800);
+            prompt.push_str(&format!("\n**Tool output:**\n```\n{}\n```\n", truncated));
         }
     }
 
@@ -182,7 +290,24 @@ fn build_evaluation_prompt(
     prompt.push_str("   Provide a clear `nextAction` explaining what the user needs to do.\n");
     prompt.push_str("3. **Objective met** → `decision: \"complete\"` with `reasonId: \"done\"`.\n");
     prompt.push_str("   REQUIRED: populate `completionSummary` with concrete evidence of completion.\n");
-    prompt.push_str("   Do NOT mark as complete for partial progress.\n\n");
+    prompt.push_str("   Do NOT mark as complete for partial progress.\n");
+    prompt.push_str("   Evidence already verified in the transcript (e.g. the agent read the file it ");
+    prompt.push_str("was asked to create and confirmed its contents, a command output proves the ");
+    prompt.push_str("criterion, a test run passed) IS the concrete evidence required — populate ");
+    prompt.push_str("`completionSummary` with that verified evidence and decide `complete` in the ");
+    prompt.push_str("SAME turn. Do NOT spend an extra turn re-confirming an objective whose ");
+    prompt.push_str("acceptance criteria are already met and verified in the transcript.\n");
+    prompt.push_str("   G-C16 — what is NOT concrete evidence: a statement of intent in ");
+    prompt.push_str("future tense (\"I will create the file\", \"I will verify\", \"I will ");
+    prompt.push_str("confirm\"), an assertion that the agent is about to act, or any other ");
+    prompt.push_str("unverified claim — even one the agent itself believes is true — does ");
+    prompt.push_str("NOT satisfy the concrete-evidence requirement. Evidence requires the ");
+    prompt.push_str("action to have ALREADY HAPPENED and to have been OBSERVED in the ");
+    prompt.push_str("transcript: a Read of the file's contents, the output of the command ");
+    prompt.push_str("that created or verified the artifact, the result of a test that was ");
+    prompt.push_str("actually run. If the transcript shows no turn executed (turnsRun=0) or ");
+    prompt.push_str("no observable action, the only correct decision is `continue` with ");
+    prompt.push_str("`reasonId: \"taskIncomplete\"`.\n\n");
 
     prompt.push_str("For `continue`, always include `sessionSummary` (what was done) and `gaps` (what's left).\n");
     prompt.push_str("For `pause`, always include `nextAction` explaining what the user should do.\n");
@@ -200,61 +325,182 @@ fn run_evaluation_cli(
     prompt: &str,
     api_key: Option<&str>,
 ) -> Result<String, GoalEvaluationError> {
-    let cli_path = resolve_cli_path();
-    let mut cmd = Command::new(&cli_path);
-    cmd.args(["--print", "--output-format", "json"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
+    // G-C19 / G-C19-FIX: timing instrumentation is OFF by default.
+    // Gate env var VERBOO_GOAL_TIMING=1 enables it. When OFF, this function
+    // is byte-identical to the pre-G-C19 loop — no stdout.take(), no
+    // reader thread, no channel, no incremental read. QA requirement:
+    // instrumenting must not change the behavior of what it measures.
+    //
+    // Why the gate is mandatory, not optional:
+    //   The non-blocking read introduced in G-C19 turned out to BLOCK
+    //   for 3.009s in QA's proof-of-concept (the WouldBlock arm was
+    //   dead code: macOS pipes don't return WouldBlock on read, they
+    //   block). That defeat protects only against wall-clock timeout,
+    //   but it DISARMED the G-C6 deadline in the silent-CLI scenario
+    //   (process hung without producing stdout). With the gate OFF,
+    //   the original loop never touches stdout incrementally; the
+    //   deadline still fires.
+    //
+    // Milestones captured when ON:
+    //   t0: spawn() called
+    //   t1: spawn() returned (process created)
+    //   t2: stdin write complete (prompt sent)
+    //   t3: first byte observed on stdout (CLI started responding)
+    //   t4: process exited
+    //   t5: output collected and returned
+    //
+    // Cannot separate spawn from prefill+TTFT — CLI emits no ready
+    // signal. See PR for G-C19 phase 2 discussion.
+    let cli_spawn = CliSpawn::new(["--print", "--output-format", "json"]);
+    let runtime = cli_spawn.runtime.clone();
+    let mut cmd = cli_spawn.command;
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped()) // piped unconditionally — original behavior
         .stderr(Stdio::piped());
 
     // Inject API key for auth (same pattern as TurnService).
     inject_api_key(api_key, &mut cmd);
 
-    let mut child = cmd.spawn().map_err(|e| {
-        GoalEvaluationError::CliSpawn(format!("Failed to spawn CLI at {cli_path}: {e}"))
-    })?;
+    if std::env::var_os("VERBOO_GOAL_TIMING").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        // ── FAST PATH (identical to pre-G-C19) ──────────────────────
+        // Same try_wait + wait_with_output loop, no stdout.take(),
+        // no incremental reader, no channel. Deadline G-C6 works.
+        let mut child = cmd.spawn().map_err(|e| {
+            GoalEvaluationError::CliSpawn(format!(
+                "Failed to spawn CLI (runtime={runtime}): {e}"
+            ))
+        })?;
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            let _ = stdin.write_all(prompt.as_bytes());
+        }
+        let timeout_secs = resolve_timeout_secs();
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                let _ = child.kill();
+                return Err(GoalEvaluationError::CliTimeout { timeout_secs });
+            }
+            match child.try_wait() {
+                Ok(Some(_status)) => {
+                    let output = child.wait_with_output().map_err(|e| {
+                        GoalEvaluationError::ParseFailure(format!("Failed to collect output: {e}"))
+                    })?;
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                        return Err(GoalEvaluationError::CliExit {
+                            exit_code: output.status.code(),
+                            stderr,
+                        });
+                    }
+                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                    return Ok(stdout);
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(e) => {
+                    return Err(GoalEvaluationError::ParseFailure(format!(
+                        "Process polling error: {e}"
+                    )));
+                }
+            }
+        }
+    }
 
-    // Write prompt via stdin and close it.
+    // ── TIMING PATH: ON (gated by VERBOO_GOAL_TIMING=1) ─────────────
+    // A background thread reads stdout incrementally and forwards bytes
+    // through a channel. The main loop polls try_wait and times the
+    // FIRST byte observation by checking the channel with try_recv (non-
+    // blocking). This preserves the G-C6 deadline: if the CLI is silent,
+    // the deadline still fires because try_wait runs independently of
+    // the reader thread.
+    let t0 = Instant::now();
+    let mut child = cmd.spawn().map_err(|e| {
+        GoalEvaluationError::CliSpawn(format!(
+            "Failed to spawn CLI (runtime={runtime}): {e}"
+        ))
+    })?;
+    let t1 = Instant::now(); // process created
+
     if let Some(mut stdin) = child.stdin.take() {
         use std::io::Write;
         let _ = stdin.write_all(prompt.as_bytes());
-        // Drop closes stdin — the CLI sees EOF.
     }
+    let t2 = Instant::now(); // prompt sent
 
-    let deadline = Instant::now() + Duration::from_secs(DEFAULT_TIMEOUT_SECS);
+    // Spawn a reader thread that streams stdout bytes to the main loop
+    // via a bounded channel. Bounded (capacity 1) so the reader can't
+    // outpace the consumer forever; on saturation, the reader blocks
+    // for at most one chunk, bounded by the pipe buffer (64KB on macOS).
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+    let mut stdout_pipe = child.stdout.take().expect("stdout was piped");
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 4096];
+        loop {
+            match stdout_pipe.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let chunk = buf[..n].to_vec();
+                    // If the main loop is gone (early return on timeout
+                    // or error), the send fails; we exit the reader
+                    // thread cleanly instead of leaking.
+                    if tx.send(chunk).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
 
+    let t3 = std::sync::Mutex::new(None::<Instant>); // first byte observed
+    let mut stdout_buf: Vec<u8> = Vec::new();
+
+    let timeout_secs = resolve_timeout_secs();
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            // Kill the process so it doesn't orphan.
             let _ = child.kill();
-            return Err(GoalEvaluationError::CliTimeout);
+            // The reader thread will hit tx.send Err and exit on its own
+            // when its next chunk comes through. We don't join — the
+            // thread is cheap and bounded; OS will reap it on drop.
+            return Err(GoalEvaluationError::CliTimeout { timeout_secs });
+        }
+        // Drain the channel (non-blocking).
+        while let Ok(chunk) = rx.try_recv() {
+            if t3.lock().unwrap().is_none() {
+                *t3.lock().unwrap() = Some(Instant::now());
+            }
+            stdout_buf.extend_from_slice(&chunk);
         }
         match child.try_wait() {
             Ok(Some(_status)) => {
-                // Process exited — collect output.
+                let t4 = Instant::now();
+                // Drain remaining bytes.
+                while let Ok(chunk) = rx.try_recv() {
+                    stdout_buf.extend_from_slice(&chunk);
+                }
                 let output = child.wait_with_output().map_err(|e| {
                     GoalEvaluationError::ParseFailure(format!("Failed to collect output: {e}"))
                 })?;
+                stdout_buf.extend_from_slice(&output.stdout);
 
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    // Non-zero exit from the evaluator CLI is an infra failure
-                    // (e.g., auth expired, CLI crashed). Return as error — the
-                    // caller maps to Pause+InfraError.
                     return Err(GoalEvaluationError::CliExit {
                         exit_code: output.status.code(),
                         stderr,
                     });
                 }
 
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stdout = String::from_utf8_lossy(&stdout_buf).to_string();
+                let t5 = Instant::now();
+                write_timing_log(t0, t1, t2, *t3.lock().unwrap(), t4, t5, prompt.len(), stdout.len());
                 return Ok(stdout);
             }
-            Ok(None) => {
-                // Still running — sleep a bit and retry.
-                std::thread::sleep(Duration::from_millis(50));
-            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(e) => {
                 return Err(GoalEvaluationError::ParseFailure(format!(
                     "Process polling error: {e}"
@@ -264,29 +510,102 @@ fn run_evaluation_cli(
     }
 }
 
-/// Extracts the evaluation JSON from CLI output.
-/// Uses a depth-aware brace scanner (not greedy `rfind('}')`) to correctly
-/// handle output that contains trailing text after the JSON object.
-/// Accepts two shapes:
-///   1. Envelope: `{result:"<json>"}` — the model wraps its output in a
-///      structured envelope
-///   2. Bare: the JSON object is the first `{...}` in the output
-fn extract_evaluation_json(stdout: &str) -> Result<serde_json::Value, GoalEvaluationError> {
+/// G-C19: append a single timing line to the goal-eval-timing.log file
+/// in the user's local data dir. Best-effort — never fails the evaluation
+/// if the log can't be written. Format is TSV so it's easy to grep/awk:
+///   timestamp  t0_t1_ms  t1_t2_ms  t2_t3_ms  t3_t4_ms  t4_t5_ms  total_ms  prompt_bytes  stdout_bytes  t3_observed
+/// Where:
+///   t0_t1 = spawn() duration (process creation only — NOT full CLI ready)
+///   t1_t2 = stdin write (prompt send) — usually <1ms
+///   t2_t3 = prompt-sent → first-byte (SPAWN + PREFILL + INFERENCE combined;
+///           cannot subdivide without CLI cooperation)
+///   t3_t4 = first-byte → process-exit (rest of streaming + CLI teardown)
+///   t4_t5 = exit → output collected (usually <5ms)
+fn write_timing_log(
+    t0: Instant,
+    t1: Instant,
+    t2: Instant,
+    t3: Option<Instant>,
+    t4: Instant,
+    t5: Instant,
+    prompt_bytes: usize,
+    stdout_bytes: usize,
+) {
+    use std::io::Write;
+    // G-C19 FASE 2: must match `identifier` in src-tauri/tauri.conf.json.
+    // Hardcoded because parsing tauri.conf.json at runtime is heavier than
+    // warranted for a timing log; the comment above flags the coupling.
+    const GOAL_TIMING_BUNDLE_ID: &str = "ai.verboo.code.desktop";
+    let dir = match dirs::data_local_dir() {
+        Some(d) => d.join(GOAL_TIMING_BUNDLE_ID).join("logs"),
+        None => return,
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join("goal-eval-timing.log");
+    let mut file = match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    let now = chrono::Local::now().to_rfc3339();
+    let t0_t1 = t1.saturating_duration_since(t0).as_millis();
+    let t1_t2 = t2.saturating_duration_since(t1).as_millis();
+    let t2_t3 = match t3 {
+        Some(t3v) => t3v.saturating_duration_since(t2).as_millis(),
+        None => u128::MAX, // sentinel: no first byte observed
+    };
+    let t3_t4 = match t3 {
+        Some(t3v) => t4.saturating_duration_since(t3v).as_millis(),
+        None => 0,
+    };
+    let t4_t5 = t5.saturating_duration_since(t4).as_millis();
+    let total = t5.saturating_duration_since(t0).as_millis();
+    let t3_observed = if t3.is_some() { "yes" } else { "no" };
+    let _ = writeln!(
+        file,
+        "{now}\t{t0_t1}\t{t1_t2}\t{t2_t3}\t{t3_t4}\t{t4_t5}\t{total}\t{prompt_bytes}\t{stdout_bytes}\t{t3_observed}"
+    );
+}
+
+/// Extracts the evaluation JSON and the evaluator's token usage from CLI
+/// output. Uses a depth-aware brace scanner (not greedy `rfind('}')`) to
+/// correctly handle output that contains trailing text after the JSON
+/// object. Accepts two shapes:
+///   1. Envelope: `{result:"<json>", usage:{...}}` — the model wraps its
+///      output in a structured envelope. The `usage` block (CLI-native
+///      snake_case: `input_tokens`/`output_tokens`/`cache_creation_input_tokens`/
+///      `cache_read_input_tokens`) is extracted from the envelope.
+///   2. Bare: the JSON object is the first `{...}` in the output. No
+///      envelope, so no `usage` to extract — the second return value is
+///      `None`.
+///
+/// Returns `(evaluation_json, evaluator_usage)`. The usage extraction is
+/// best-effort: any malformation yields `None` and never fails the parse.
+/// The evaluation JSON parse path is unchanged from prior behavior — the
+/// only addition is reading `usage` from the envelope object before the
+/// existing `result` extraction runs.
+fn extract_evaluation_json(
+    stdout: &str,
+) -> Result<(serde_json::Value, Option<crate::models::types::TokenUsage>), GoalEvaluationError> {
     // First try envelope format: `{result:"<json>"}` where the value
     // is a string-encoded JSON object.
     if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
         if let Some(obj) = envelope.as_object() {
+            // G-C15: extract `usage` from the envelope before the existing
+            // `result` extraction. Best-effort — malformation yields None.
+            let evaluator_usage = extract_usage_from_envelope(obj);
             if let Some(result_val) = obj.get("result") {
                 if let Some(result_str) = result_val.as_str() {
                     // The result value is a string — it may itself be JSON.
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(result_str) {
                         if parsed.is_object() {
-                            return Ok(parsed);
+                            return Ok((parsed, evaluator_usage));
                         }
                     }
                     // String but not JSON — it may be a plain text result.
                     // Wrap it into a generic object.
-                    return Ok(serde_json::json!({
+                    return Ok((serde_json::json!({
                         "decision": "continue",
                         "reasonId": "taskIncomplete",
                         "reason": result_str,
@@ -295,26 +614,50 @@ fn extract_evaluation_json(stdout: &str) -> Result<serde_json::Value, GoalEvalua
                         "nextAction": null,
                         "completionSummary": null,
                         "confidence": 0.5,
-                    }));
+                    }), evaluator_usage));
                 }
                 // Result is not a string — might be a nested object directly.
                 if result_val.is_object() {
-                    return Ok(result_val.clone());
+                    return Ok((result_val.clone(), evaluator_usage));
                 }
             }
             // No "result" key — might be a bare evaluation object directly.
-            return Ok(serde_json::Value::Object(obj.clone()));
+            // No envelope `usage` to extract in this branch either; the
+            // object IS the evaluation, not an envelope.
+            return Ok((serde_json::Value::Object(obj.clone()), None));
         }
     }
 
     // Try depth-aware first-object extraction (handles trailing text).
     if let Some(obj) = parse_first_json_object(stdout) {
-        return Ok(obj);
+        return Ok((obj, None));
     }
 
     Err(GoalEvaluationError::ParseFailure(
         "No valid JSON object found in CLI output".into(),
     ))
+}
+
+/// Best-effort extraction of the `usage` block from a CLI envelope object.
+/// Returns `None` for any of: missing `usage`, `usage` not an object, or
+/// any field that fails to coerce to u32. NEVER returns an error — counting
+/// failure must not break the goal (G-C15 requirement 3).
+fn extract_usage_from_envelope(
+    envelope: &serde_json::Map<String, serde_json::Value>,
+) -> Option<crate::models::types::TokenUsage> {
+    let usage = envelope.get("usage")?.as_object()?;
+    Some(crate::models::types::TokenUsage {
+        input_tokens: usage.get("input_tokens").and_then(|v| v.as_u64()).and_then(|n| u32::try_from(n).ok()),
+        output_tokens: usage.get("output_tokens").and_then(|v| v.as_u64()).and_then(|n| u32::try_from(n).ok()),
+        cache_creation_input_tokens: usage
+            .get("cache_creation_input_tokens")
+            .and_then(|v| v.as_u64())
+            .and_then(|n| u32::try_from(n).ok()),
+        cache_read_input_tokens: usage
+            .get("cache_read_input_tokens")
+            .and_then(|v| v.as_u64())
+            .and_then(|n| u32::try_from(n).ok()),
+    })
 }
 
 /// Depth-aware JSON object parser. Scans for the first `{` and tracks
@@ -361,7 +704,20 @@ fn parse_first_json_object(text: &str) -> Option<serde_json::Value> {
 /// Validates and defaults fields — NEVER returns Continue for infra
 /// failures (infra errors are caught before this point).
 /// Unknown/missing fields default to Continue+TaskIncomplete safe mode.
-fn normalize_evaluation(json: serde_json::Value) -> GoalEvaluationResult {
+/// Normalizes the raw JSON the LLM returned into a `GoalEvaluationResult`.
+/// Enforces the prompt's structural rules (Continue/Complete/Pause field
+/// invariants) and applies the G-C16 hard guard: if the model decided
+/// `complete` but `observable_action == false` (no turn has run), downgrades
+/// to `Continue + TaskIncomplete`. The downgrade is deterministic, not a
+/// preference — it guarantees a `complete` decision cannot leave the
+/// scheduler without any observable work having happened, regardless of
+/// what the prompt told the model.
+///
+/// G-C16-FIX: `observable_action` is `turns_run > 0` ONLY. The previous
+/// `|| latest_result.is_some()` leg was removed — `latest_result` has zero
+/// populators and was always None, and an inherited `latest_result` from
+/// another turn would reopen F2 in old conversations if naively populated.
+fn normalize_evaluation(json: serde_json::Value, observable_action: bool) -> GoalEvaluationResult {
     let obj = match json.as_object() {
         Some(o) => o,
         None => return default_continue("Evaluation payload was not an object"),
@@ -413,35 +769,53 @@ fn normalize_evaluation(json: serde_json::Value) -> GoalEvaluationResult {
     // - Continue must have sessionSummary + gaps filled
     // - Complete must have completionSummary filled
     // - Pause must have nextAction filled
-    let (decision, reason_id, session_summary, gaps, next_action, completion_summary) = match
-        &decision
-    {
-        GoalDecision::Complete => {
-            let summary = completion_summary.unwrap_or_else(|| "Objective met".to_string());
-            (decision, reason_id, session_summary, gaps, next_action, Some(summary))
-        }
-        GoalDecision::Continue => {
-            let summary = session_summary.unwrap_or_else(|| {
-                if reason_id == GoalReasonId::TaskFailure {
-                    "Agent encountered an error and is retrying".to_string()
+    let (mut decision, mut reason_id, session_summary, gaps, next_action, completion_summary) =
+        match &decision {
+            GoalDecision::Complete => {
+                let summary = completion_summary.unwrap_or_else(|| "Objective met".to_string());
+                (decision, reason_id, session_summary, gaps, next_action, Some(summary))
+            }
+            GoalDecision::Continue => {
+                let summary = session_summary.unwrap_or_else(|| {
+                    if reason_id == GoalReasonId::TaskFailure {
+                        "Agent encountered an error and is retrying".to_string()
+                    } else {
+                        "Agent is continuing work on the objective".to_string()
+                    }
+                });
+                let g = if gaps.is_empty() {
+                    vec!["Objective not yet achieved".to_string()]
                 } else {
-                    "Agent is continuing work on the objective".to_string()
-                }
-            });
-            let g = if gaps.is_empty() {
-                vec!["Objective not yet achieved".to_string()]
-            } else {
-                gaps
-            };
-            (decision, reason_id, Some(summary), g, next_action, completion_summary)
-        }
-        GoalDecision::Pause => {
-            let action = next_action.unwrap_or_else(|| {
-                "User intervention required — see reason details".to_string()
-            });
-            (decision, reason_id, session_summary, gaps, Some(action), completion_summary)
-        }
-    };
+                    gaps
+                };
+                (decision, reason_id, Some(summary), g, next_action, completion_summary)
+            }
+            GoalDecision::Pause => {
+                let action = next_action.unwrap_or_else(|| {
+                    "User intervention required — see reason details".to_string()
+                });
+                (decision, reason_id, session_summary, gaps, Some(action), completion_summary)
+            }
+        };
+
+    // G-C16 hard guard (code, not prompt). If the model returned `complete`
+    // but no turn has executed, the model was reasoning from a statement of
+    // intent without an observable action in the transcript. A `complete`
+    // decision with zero observable action would mark the goal done without
+    // anything actually having happened (verified in field 2026-07-29:
+    // turnsRun=0, no file on disk, model cited only its own future-tense
+    // claim). Downgrade to Continue+TaskIncomplete so the scheduler runs
+    // another turn where the agent can actually do the work.
+    //
+    // G-C16-FIX: `observable_action` is `turns_run > 0` ONLY. The previous
+    // `|| latest_result.is_some()` leg was removed — `latest_result` has
+    // zero populators (renderer or Rust) and was always None, and an
+    // inherited `latest_result` from another turn would reopen F2 in old
+    // conversations if someone naively populates it in the future.
+    if decision == GoalDecision::Complete && !observable_action {
+        decision = GoalDecision::Continue;
+        reason_id = GoalReasonId::TaskIncomplete;
+    }
 
     GoalEvaluationResult {
         decision,
@@ -502,16 +876,6 @@ fn default_continue(reason: &str) -> GoalEvaluationResult {
     }
 }
 
-fn resolve_cli_path() -> String {
-    if let Ok(path) = std::env::var("VERBOO_CLI_PATH") {
-        let trimmed = path.trim().to_string();
-        if !trimmed.is_empty() {
-            return trimmed;
-        }
-    }
-    crate::services::cli_path::resolve().unwrap_or_else(|| "verboo".to_string())
-}
-
 // ════════════════════════════════════════════════════════════════════
 // Tests
 // ════════════════════════════════════════════════════════════════════
@@ -522,7 +886,7 @@ fn resolve_cli_path() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::types::{AccessMode, GoalStatus, SkillSummary};
+    use crate::models::types::{AccessMode, CommandRun, CommandStatus, GoalStatus, SkillSummary};
     use serde_json::json;
 
     fn sample_goal() -> GoalState {
@@ -553,6 +917,163 @@ mod tests {
             no_progress_count: 0,
             recent_fingerprints: Vec::new(),
         }
+    }
+
+    // ── G-C18 RECENT_ITEMS_WINDOW measurement (DEPRECATED, replaced
+    //     by g_c18_realistic_decomposition below — the previous
+    //     synthetic fixture was sub-representative by ~10x vs field).
+    //
+    // Empirical sizing for the prompt built by build_evaluation_prompt.
+    // We synthesize a realistic transcript (N items, alternating roles,
+    // some with tool_output populated to exercise the new G-C18 branch)
+    // and report prompt bytes for windows 30/20/15/10. Run with:
+    //   cargo test --lib g_c18_measurement_recent_items_window -- --nocapture
+    // so the user sees the numbers without committing them as assertions.
+    //
+    // Synthetic item model (tries to mimic a real agent trace):
+    //   - User: short message (~80 chars) every ~5 items.
+    //   - Assistant: medium prose (~600 chars) every other item.
+    //   - Tool result (Read): ~500 chars body, every ~3rd assistant item.
+    //     Populated as tool_output to exercise the G-C18 branch.
+    //   - Command result: ~150 chars, occasional.
+    // The numbers below are read once and then hand-copied into the PR
+    // report.
+    fn synth_items(n: usize) -> Vec<TranscriptItem> {
+        let user_msg = "Please continue. Make sure to read /tmp/goal-total.txt and confirm its contents before declaring the goal complete.";
+        let asst_prose = "I will create /tmp/goal-total.txt containing the word SOMA and verify its contents via Read. Let me execute the necessary commands now. The Read result must confirm a single line containing the literal SOMA; if the file is missing or the contents differ, I will rewrite it and re-verify. Once verified, I will report completion with concrete observed evidence.";
+        let tool_read = format!("1\tSOMA\n"); // the literal that triggerged the G-C18 bug
+        let cmd_out = "total 8\ndrwxr-xr-x  2 user user 4096 Jul 29 09:00 goal-total.txt\n";
+        let mut items = Vec::with_capacity(n);
+        for i in 0..n {
+            let (role, text, tool_output, command) = match i % 5 {
+                0 => ("user", user_msg.to_string(), None, None),
+                1 => (
+                    "assistant",
+                    asst_prose.to_string(),
+                    None,
+                    None,
+                ),
+                2 => (
+                    "assistant",
+                    asst_prose.to_string(),
+                    Some(tool_read.clone()),
+                    None,
+                ),
+                3 => (
+                    "assistant",
+                    asst_prose.to_string(),
+                    None,
+                    Some(CommandRun {
+                        input: "ls -la /tmp/goal-total.txt".into(),
+                        output: cmd_out.into(),
+                        status: CommandStatus::Success,
+                    }),
+                ),
+                _ => (
+                    "assistant",
+                    asst_prose.to_string(),
+                    Some(tool_read.clone()),
+                    None,
+                ),
+            };
+            items.push(TranscriptItem {
+                id: format!("item-{i}"),
+                role: role.into(),
+                text,
+                timestamp: 1_700_000_000 + i as i64,
+                kind: Some("message".into()),
+                activity_kind: None,
+                activity_detail: None,
+                command,
+                change_summary: None,
+                model_id: None,
+                model_display_name: None,
+                streaming: None,
+                skills: None,
+                tool_output,
+            });
+        }
+        items
+    }
+
+    #[test]
+    fn g_c18_measurement_recent_items_window() {
+        // Print prompt sizes for windows = {30, 20, 15, 10} and tokens.
+        // Tokens ≈ bytes / 4 (English-ish; underscore + JSON inflates
+        // ratio modestly, so this is a lower bound on real cost).
+        let goal = sample_goal();
+        let items = synth_items(35);
+        eprintln!("\n=== G-C18 RECENT_ITEMS_WINDOW measurement ===");
+        eprintln!("synthetic transcript: 35 items, every other assistant item has ~tool output of ~7 chars (Read of /tmp/goal-total.txt), occasional ~150 char command output");
+        eprintln!("{:<8} {:<10} {:<10} {:<10}", "window", "bytes", "~tokens", "% of 30");
+        eprintln!("{:-<40}", "");
+        let mut baseline_chars = 0usize;
+        let windows = [30usize, 20, 15, 10];
+        let prompt_at_30 = {
+            let recent: Vec<TranscriptItem> = items
+                .iter()
+                .rev()
+                .take(30)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let prompt = build_evaluation_prompt(&goal, &recent);
+            baseline_chars = prompt.len();
+            prompt
+        };
+        for w in windows {
+            let recent: Vec<TranscriptItem> = items
+                .iter()
+                .rev()
+                .take(w)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let prompt = build_evaluation_prompt(&goal, &recent);
+            let bytes = prompt.len();
+            let tokens = bytes / 4;
+            let pct = if baseline_chars > 0 {
+                (bytes as f64 / baseline_chars as f64) * 100.0
+            } else {
+                0.0
+            };
+            eprintln!(
+                "{:<8} {:<10} {:<10} {:<10.1}",
+                w,
+                bytes,
+                tokens,
+                pct
+            );
+        }
+        eprintln!("\ncontext: each goal produces ~3 evaluation cycles, so total evaluator input cost:");
+        for w in windows {
+            let tokens_per_call = match w {
+                30 => prompt_at_30.len() / 4,
+                _ => {
+                    let recent: Vec<TranscriptItem> = items
+                        .iter()
+                        .rev()
+                        .take(w)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    build_evaluation_prompt(&goal, &recent).len() / 4
+                }
+            };
+            eprintln!(
+                "  window={} -> ~{} tokens/call, ~{} tokens for 3 cycles",
+                w,
+                tokens_per_call,
+                tokens_per_call * 3
+            );
+        }
+        eprintln!("=== end ===\n");
     }
 
     // ── parse_first_json_object ───────────────────────────────────────
@@ -614,7 +1135,7 @@ mod tests {
             "completionSummary": "All login tests pass",
             "confidence": 0.95
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Complete);
         assert_eq!(result.reason_id, GoalReasonId::Done);
         assert_eq!(result.completion_summary, Some("All login tests pass".into()));
@@ -629,7 +1150,7 @@ mod tests {
             "reason": "Bug is fixed",
             "confidence": 0.9
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Complete);
         // Missing completionSummary gets a default.
         assert!(result.completion_summary.is_some());
@@ -645,7 +1166,7 @@ mod tests {
             "gaps": ["Need to apply the fix"],
             "confidence": 0.7
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Continue);
         assert_eq!(result.reason_id, GoalReasonId::TaskIncomplete);
         assert_eq!(
@@ -663,7 +1184,7 @@ mod tests {
             "reason": "Test failed",
             "confidence": 0.6
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Continue);
         assert_eq!(result.reason_id, GoalReasonId::TaskFailure);
         // Missing sessionSummary gets a default.
@@ -685,7 +1206,7 @@ mod tests {
             "gaps": [],
             "confidence": 0.5
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.gaps, vec!["Objective not yet achieved"]);
     }
 
@@ -698,7 +1219,7 @@ mod tests {
             "nextAction": "Confirm or deny the DELETE",
             "confidence": 0.99
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Pause);
         assert_eq!(result.reason_id, GoalReasonId::Unsafe);
         assert_eq!(
@@ -716,7 +1237,7 @@ mod tests {
             "nextAction": "Provide the API key",
             "confidence": 0.8
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Pause);
         assert_eq!(result.reason_id, GoalReasonId::NeedsUser);
         assert_eq!(result.next_action, Some("Provide the API key".into()));
@@ -730,7 +1251,7 @@ mod tests {
             "reason": "Unsafe operation",
             "confidence": 0.95
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Pause);
         // Missing nextAction gets a default.
         assert!(result.next_action.is_some());
@@ -743,7 +1264,7 @@ mod tests {
             "reason": "Unknown decision",
             "confidence": 0.0
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Continue);
         assert_eq!(result.reason_id, GoalReasonId::TaskIncomplete);
     }
@@ -756,7 +1277,7 @@ mod tests {
             "reason": "Some reason",
             "confidence": 0.5
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Continue);
         assert_eq!(result.reason_id, GoalReasonId::TaskIncomplete);
     }
@@ -764,7 +1285,7 @@ mod tests {
     #[test]
     fn normalize_non_object_falls_back_safe() {
         let json = json!("not an object");
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Continue);
         assert_eq!(result.reason_id, GoalReasonId::TaskIncomplete);
     }
@@ -772,7 +1293,7 @@ mod tests {
     #[test]
     fn normalize_empty_json_defaults_safe() {
         let json = json!({});
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Continue);
         assert_eq!(result.reason, "No reason provided");
     }
@@ -785,7 +1306,7 @@ mod tests {
             "reason": "Something failed",
             "confidence": 0.5
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.reason_id, GoalReasonId::TaskFailure);
     }
 
@@ -798,7 +1319,7 @@ mod tests {
             "nextAction": "Provide input",
             "confidence": 0.8
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.reason_id, GoalReasonId::NeedsUser);
     }
 
@@ -876,32 +1397,38 @@ mod tests {
     #[test]
     fn extract_envelope_format() {
         let stdout = r#"{"type":"result","result":"{\"decision\":\"continue\",\"reasonId\":\"taskIncomplete\",\"reason\":\"Working on it\",\"confidence\":0.7}"}"#;
-        let result = extract_evaluation_json(stdout).unwrap();
+        let (result, usage) = extract_evaluation_json(stdout).unwrap();
         assert_eq!(result["decision"], "continue");
         assert_eq!(result["reason"], "Working on it");
+        // No usage in this envelope → None, but parse still succeeds.
+        assert!(usage.is_none());
     }
 
     #[test]
     fn extract_bare_json() {
         let stdout = r#"{"decision":"complete","reasonId":"done","reason":"Done","completionSummary":"All done","confidence":0.95}"#;
-        let result = extract_evaluation_json(stdout).unwrap();
+        let (result, usage) = extract_evaluation_json(stdout).unwrap();
         assert_eq!(result["decision"], "complete");
+        // Bare object (no envelope) → no usage to extract.
+        assert!(usage.is_none());
     }
 
     #[test]
     fn extract_envelope_with_nested_object() {
         let stdout = r#"{"type":"result","result":{"decision":"pause","reasonId":"unsafe","reason":"Danger","nextAction":"Check it","confidence":0.99}}"#;
-        let result = extract_evaluation_json(stdout).unwrap();
+        let (result, usage) = extract_evaluation_json(stdout).unwrap();
         assert_eq!(result["decision"], "pause");
         assert_eq!(result["nextAction"], "Check it");
+        assert!(usage.is_none());
     }
 
     #[test]
     fn extract_envelope_result_is_plain_text() {
         let stdout = r#"{"type":"result","result":"Still working on the login fix"}"#;
-        let result = extract_evaluation_json(stdout).unwrap();
+        let (result, usage) = extract_evaluation_json(stdout).unwrap();
         // Plain text result maps to a generic continue object.
         assert_eq!(result["decision"], "continue");
+        assert!(usage.is_none());
     }
 
     #[test]
@@ -920,6 +1447,55 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // ── extract_evaluation_json: usage extraction (G-C15) ──────────────
+
+    #[test]
+    fn extract_envelope_with_usage_returns_tokens() {
+        // Envelope with a real CLI-native snake_case usage block.
+        let stdout = r#"{"type":"result","result":"{\"decision\":\"complete\",\"reasonId\":\"done\",\"reason\":\"Done\",\"completionSummary\":\"All done\",\"confidence\":0.95}","usage":{"input_tokens":32000,"output_tokens":450,"cache_creation_input_tokens":1200,"cache_read_input_tokens":8000}}"#;
+        let (result, usage) = extract_evaluation_json(stdout).unwrap();
+        assert_eq!(result["decision"], "complete");
+        let usage = usage.expect("usage must be extracted from envelope");
+        assert_eq!(usage.input_tokens, Some(32000));
+        assert_eq!(usage.output_tokens, Some(450));
+        assert_eq!(usage.cache_creation_input_tokens, Some(1200));
+        assert_eq!(usage.cache_read_input_tokens, Some(8000));
+    }
+
+    #[test]
+    fn extract_envelope_without_usage_returns_none_but_still_parses_result() {
+        // Envelope has no `usage` key. Parse of `result` must still succeed
+        // and usage must be None — counting failure must not break the goal.
+        let stdout = r#"{"type":"result","result":"{\"decision\":\"continue\",\"reasonId\":\"taskIncomplete\",\"reason\":\"Working\",\"confidence\":0.7}"}"#;
+        let (result, usage) = extract_evaluation_json(stdout).unwrap();
+        assert_eq!(result["decision"], "continue");
+        assert!(usage.is_none());
+    }
+
+    #[test]
+    fn extract_envelope_with_malformed_usage_returns_none_but_still_parses_result() {
+        // `usage` present but malformed (not an object, fields wrong type).
+        // Parse of `result` must still succeed and usage must be None.
+        let stdout = r#"{"type":"result","result":"{\"decision\":\"continue\",\"reasonId\":\"taskIncomplete\",\"reason\":\"Working\",\"confidence\":0.7}","usage":"not-an-object"}"#;
+        let (result, usage) = extract_evaluation_json(stdout).unwrap();
+        assert_eq!(result["decision"], "continue");
+        assert!(usage.is_none());
+    }
+
+    #[test]
+    fn extract_envelope_with_partial_usage_returns_present_fields_only() {
+        // `usage` with only some fields present — missing fields become None,
+        // present fields are extracted. Never fails the whole block.
+        let stdout = r#"{"type":"result","result":"{\"decision\":\"complete\",\"reasonId\":\"done\",\"reason\":\"Done\",\"confidence\":0.9}","usage":{"input_tokens":100,"output_tokens":20}}"#;
+        let (result, usage) = extract_evaluation_json(stdout).unwrap();
+        assert_eq!(result["decision"], "complete");
+        let usage = usage.expect("partial usage must still yield a TokenUsage");
+        assert_eq!(usage.input_tokens, Some(100));
+        assert_eq!(usage.output_tokens, Some(20));
+        assert_eq!(usage.cache_creation_input_tokens, None);
+        assert_eq!(usage.cache_read_input_tokens, None);
+    }
+
     // ── build_evaluation_prompt ──────────────────────────────────────
     //
     // These tests verify the prompt structure contains the expected
@@ -928,14 +1504,14 @@ mod tests {
     #[test]
     fn prompt_contains_goal_objective() {
         let goal = sample_goal();
-        let prompt = build_evaluation_prompt(&goal, &[], None);
+        let prompt = build_evaluation_prompt(&goal, &[]);
         assert!(prompt.contains("Fix the login bug"));
     }
 
     #[test]
     fn prompt_shows_turns_and_status() {
         let goal = sample_goal();
-        let prompt = build_evaluation_prompt(&goal, &[], None);
+        let prompt = build_evaluation_prompt(&goal, &[]);
         assert!(prompt.contains("Turns run"));
         assert!(prompt.contains("Active"));
     }
@@ -946,7 +1522,7 @@ mod tests {
         // token usage or budget windows as completion criteria.
         // The explanatory "Verboo has unlimited tokens" is fine.
         let goal = sample_goal();
-        let prompt = build_evaluation_prompt(&goal, &[], None);
+        let prompt = build_evaluation_prompt(&goal, &[]);
         // Allow the explanatory note, but forbid treating tokens as limits.
         assert!(
             !prompt.contains("token budget"),
@@ -965,7 +1541,7 @@ mod tests {
     #[test]
     fn prompt_contains_decision_rules() {
         let goal = sample_goal();
-        let prompt = build_evaluation_prompt(&goal, &[], None);
+        let prompt = build_evaluation_prompt(&goal, &[]);
         // The prompt should explain the 3 decision rules.
         assert!(prompt.contains("1."));
         assert!(prompt.contains("2."));
@@ -977,7 +1553,7 @@ mod tests {
     #[test]
     fn prompt_does_not_mention_old_blocked_decision() {
         let goal = sample_goal();
-        let prompt = build_evaluation_prompt(&goal, &[], None);
+        let prompt = build_evaluation_prompt(&goal, &[]);
         // The old "blocked" decision no longer exists.
         assert!(!prompt.contains(r#""blocked""#));
     }
@@ -985,15 +1561,176 @@ mod tests {
     #[test]
     fn prompt_includes_complete_rule() {
         let goal = sample_goal();
-        let prompt = build_evaluation_prompt(&goal, &[], None);
+        let prompt = build_evaluation_prompt(&goal, &[]);
         assert!(prompt.contains("complete"));
         assert!(prompt.contains("completionSummary"));
     }
 
     #[test]
+    fn prompt_tells_evaluator_verified_transcript_evidence_is_sufficient() {
+        // G-C11: regressão do viés "continue" quando a evidência já está
+        // verificada no transcript. O prompt deve dizer explicitamente que
+        // evidência já verificada no transcript É a evidência concreta
+        // exigida, e que um turno extra de re-confirmação não é necessário.
+        let goal = sample_goal();
+        let prompt = build_evaluation_prompt(&goal, &[]);
+        assert!(
+            prompt.contains("already verified in the transcript"),
+            "prompt must tell evaluator that verified transcript evidence counts"
+        );
+        assert!(
+            prompt.contains("SAME turn"),
+            "prompt must instruct completion in the same turn as the evidence"
+        );
+        assert!(
+            prompt.contains("Do NOT spend an extra turn"),
+            "prompt must explicitly forbid the redundant confirmation turn"
+        );
+        // Garantia de não-regressão: a exigência de evidência concreta
+        // NÃO pode ter sido enfraquecida.
+        assert!(
+            prompt.contains("Do NOT mark as complete for partial progress"),
+            "partial-progress guard must remain"
+        );
+        assert!(
+            prompt.contains("concrete evidence"),
+            "concrete-evidence requirement must remain"
+        );
+    }
+
+    #[test]
+    fn prompt_forbids_unverified_claims_and_future_tense_as_evidence() {
+        // G-C16: the G-C11 addition said verified transcript evidence IS
+        // sufficient, but did not explicitly say what is NOT sufficient.
+        // The model exploited this gap: it wrote a future-tense intent
+        // statement in completionSummary and the model accepted it as
+        // concrete evidence (verified in field 2026-07-29). This test
+        // asserts the prompt contains the negative — the "what is NOT
+        // concrete evidence" examples and the turnsRun=0 rule.
+        let goal = sample_goal();
+        let prompt = build_evaluation_prompt(&goal, &[]);
+        assert!(
+            prompt.contains("NOT concrete evidence"),
+            "G-C16: prompt must contain the explicit negative"
+        );
+        assert!(
+            prompt.contains("I will"),
+            "G-C16: prompt must call out future-tense 'I will' as insufficient"
+        );
+        assert!(
+            prompt.contains("unverified claim"),
+            "G-C16: prompt must reject unverified claims"
+        );
+        assert!(
+            prompt.contains("ALREADY HAPPENED"),
+            "G-C16: prompt must require action to have ALREADY HAPPENED"
+        );
+        assert!(
+            prompt.contains("OBSERVED"),
+            "G-C16: prompt must require action to have been OBSERVED in the transcript"
+        );
+        assert!(
+            prompt.contains("turnsRun=0"),
+            "G-C16: prompt must forbid complete when turnsRun is zero"
+        );
+        // Non-regression: the G-C11 improvement and the core guard must
+        // both remain intact.
+        assert!(
+            prompt.contains("already verified in the transcript"),
+            "G-C11 guard must remain"
+        );
+        assert!(
+            prompt.contains("Do NOT mark as complete for partial progress"),
+            "partial-progress guard must remain"
+        );
+        assert!(
+            prompt.contains("concrete evidence"),
+            "concrete-evidence requirement must remain"
+        );
+    }
+
+    #[test]
+    fn g_c16_pins_f2_negative_with_intent_and_observed_examples() {
+        // G-C16-FIX (QA round 2): pin test for the F2 fresta. The previous
+        // `prompt_forbids_unverified_claims_and_future_tense_as_evidence`
+        // test was a positive-only check. QA flagged that without a test
+        // that exercises the EXACT regressed pattern (future-tense intent
+        // language the model produced in the field failure), someone could
+        // rewrite the negative to a softer shape and the suite would stay
+        // green. This test asserts the negative covers the SPECIFIC phrases
+        // the regressed model used and the SPECIFIC example action type
+        // (Read-back) the user expects as evidence.
+        //
+        // If the negative is removed or softened, at least one of these
+        // assertions fails. This is the trigger the QA classified as
+        // NAO-BLOQUEANTE COM GATILHO — one failure = treat as critical.
+        let goal = sample_goal();
+        let prompt = build_evaluation_prompt(&goal, &[]);
+
+        // 1. The exact phrases the regressed model used in completionSummary
+        //    must be called out as insufficient.
+        assert!(
+            prompt.contains("I will create"),
+            "G-C16-FIX: negative must call out 'I will create' pattern"
+        );
+        assert!(
+            prompt.contains("I will verify"),
+            "G-C16-FIX: negative must call out 'I will verify' pattern"
+        );
+        assert!(
+            prompt.contains("I will confirm"),
+            "G-C16-FIX: negative must call out 'I will confirm' pattern"
+        );
+
+        // 2. The example type of verification the user expects as evidence
+        //    must be named (Read-back of contents is what makes a file
+        //    creation verifiable, not a future statement).
+        assert!(
+            prompt.contains("Read of the file"),
+            "G-C16-FIX: negative must name Read-back as the evidence type"
+        );
+        assert!(
+            prompt.contains("output of the command"),
+            "G-C16-FIX: negative must name command output as evidence"
+        );
+        assert!(
+            prompt.contains("result of a test that was actually run"),
+            "G-C16-FIX: negative must name actual test run as evidence"
+        );
+
+        // 3. The decision-forcing rule for the F2 case must be present:
+        //    no observable action → continue with taskIncomplete. The
+        //    model has no way to misread this as a suggestion.
+        assert!(
+            prompt.contains("the only correct decision is `continue`"),
+            "G-C16-FIX: F2 decision rule must be unambiguous"
+        );
+        assert!(
+            prompt.contains("`reasonId: \"taskIncomplete\"`"),
+            "G-C16-FIX: F2 reasonId must be taskIncomplete"
+        );
+
+        // 4. The full F2 sentence must be present as a contiguous block
+        //    (not split across push_str calls in a way that could be
+        //    truncated by a careless edit). Pin the full sentence.
+        assert!(
+            prompt.contains(
+                "If the transcript shows no turn executed (turnsRun=0) or no observable action"
+            ),
+            "G-C16-FIX: F2 trigger sentence must be intact"
+        );
+
+        // 5. Non-regression: G-C11 stays.
+        assert!(
+            prompt.contains("already verified in the transcript"),
+            "G-C11 must remain"
+        );
+    }
+
+    #[test]
     fn prompt_includes_continue_rule() {
         let goal = sample_goal();
-        let prompt = build_evaluation_prompt(&goal, &[], None);
+        let prompt = build_evaluation_prompt(&goal, &[]);
         assert!(prompt.contains("sessionSummary"));
         assert!(prompt.contains("gaps"));
     }
@@ -1001,14 +1738,14 @@ mod tests {
     #[test]
     fn prompt_includes_pause_rule() {
         let goal = sample_goal();
-        let prompt = build_evaluation_prompt(&goal, &[], None);
+        let prompt = build_evaluation_prompt(&goal, &[]);
         assert!(prompt.contains("nextAction"));
     }
 
     #[test]
     fn prompt_includes_reason_id_list() {
         let goal = sample_goal();
-        let prompt = build_evaluation_prompt(&goal, &[], None);
+        let prompt = build_evaluation_prompt(&goal, &[]);
         assert!(prompt.contains("taskIncomplete"));
         assert!(prompt.contains("taskFailure"));
         assert!(prompt.contains("unsafe"));
@@ -1020,7 +1757,7 @@ mod tests {
     #[test]
     fn prompt_hardcodes_return_only_json() {
         let goal = sample_goal();
-        let prompt = build_evaluation_prompt(&goal, &[], None);
+        let prompt = build_evaluation_prompt(&goal, &[]);
         assert!(prompt.contains("Return ONLY the JSON object"));
     }
 
@@ -1036,7 +1773,7 @@ mod tests {
             "completionSummary": "Found the infinite loop in auth.rs:42. Applied fix, wrote regression test, confirmed all 14 existing tests pass. PR branch pushed.",
             "confidence": 0.97
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Complete);
         assert_eq!(result.reason_id, GoalReasonId::Done);
         assert!(result.completion_summary.as_ref().unwrap().contains("auth.rs"));
@@ -1054,7 +1791,7 @@ mod tests {
             "gaps": ["Apply the fix", "Run tests"],
             "confidence": 0.8
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Continue);
         assert_eq!(result.session_summary.as_ref().unwrap(), "Identified the infinite loop in auth.rs:42");
         assert_eq!(result.gaps.len(), 2);
@@ -1071,7 +1808,7 @@ mod tests {
             "gaps": ["Debug the assertion"],
             "confidence": 0.6
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Continue);
         assert_eq!(result.reason_id, GoalReasonId::TaskFailure);
         assert_eq!(
@@ -1089,7 +1826,7 @@ mod tests {
             "nextAction": "Approve or deny the DDL operation",
             "confidence": 0.99
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert_eq!(result.decision, GoalDecision::Pause);
         assert_eq!(result.reason_id, GoalReasonId::Unsafe);
     }
@@ -1102,8 +1839,765 @@ mod tests {
             "reason": "Working",
             "confidence": 1.5
         });
-        let result = normalize_evaluation(json);
+        let result = normalize_evaluation(json, true);
         assert!(result.confidence <= 1.0);
     }
 
+    // ── G-C16: hard guard against completion without observable action ─
+
+    #[test]
+    fn g_c16_complete_with_no_observable_action_is_downgraded_to_continue() {
+        // The model returned `complete` with a future-tense completionSummary
+        // (the G-C11 prompt lets it cite a verified action, but the G-C16
+        // regression is when it cites only intent). With observable_action
+        // false (turnsRun=0), the hard guard must downgrade to
+        // Continue+TaskIncomplete regardless of what the model wrote in
+        // completionSummary.
+        //
+        // G-C16-FIX: observable_action is now `turns_run > 0` ONLY. The
+        // `latest_result.is_some()` leg was removed (dead code + armadilha
+        // armada — see comment at the call site). This test passes
+        // `observable_action=false` directly, so it still pins the guard
+        // behavior regardless of which leg computed the flag.
+        let json = json!({
+            "decision": "complete",
+            "reasonId": "done",
+            "reason": "I will create the file and verify it",
+            "completionSummary": "I will create /tmp/goal-total.txt containing the word SOMA and verify its contents via Read",
+            "confidence": 0.95
+        });
+        let result = normalize_evaluation(json, false);
+        assert_eq!(
+            result.decision,
+            GoalDecision::Continue,
+            "G-C16: complete with no observable action MUST downgrade to continue"
+        );
+        assert_eq!(
+            result.reason_id,
+            GoalReasonId::TaskIncomplete,
+            "G-C16: downgraded complete must surface as taskIncomplete"
+        );
+        // The completionSummary is preserved as-is for diagnostics but the
+        // decision is what the scheduler reads.
+    }
+
+    #[test]
+    fn g_c16_complete_with_observable_action_is_preserved() {
+        // Sanity: when turnsRun > 0, a Complete decision passes through
+        // unchanged. The guard must not affect legitimate completions.
+        // (G-C16-FIX: observable_action is now `turns_run > 0` only; this
+        // test passes `true` directly so it pins the pass-through behavior
+        // regardless of which leg computed the flag.)
+        let json = json!({
+            "decision": "complete",
+            "reasonId": "done",
+            "reason": "File created and verified",
+            "completionSummary": "Created /tmp/goal-total.txt with SOMA; re-read confirmed contents",
+            "confidence": 0.95
+        });
+        let result = normalize_evaluation(json, true);
+        assert_eq!(result.decision, GoalDecision::Complete);
+        assert_eq!(result.reason_id, GoalReasonId::Done);
+    }
+
+    #[test]
+    fn g_c16_continue_passes_through_with_no_observable_action() {
+        // The guard only downgrades Complete → Continue. Continue with
+        // no observable action is the normal starting state and must be
+        // untouched (not further downgraded).
+        let json = json!({
+            "decision": "continue",
+            "reasonId": "taskIncomplete",
+            "reason": "Just started",
+            "sessionSummary": "Agent has begun work",
+            "gaps": ["Objective not yet achieved"],
+            "confidence": 0.5
+        });
+        let result = normalize_evaluation(json, false);
+        assert_eq!(result.decision, GoalDecision::Continue);
+        assert_eq!(result.reason_id, GoalReasonId::TaskIncomplete);
+    }
+
+    #[test]
+    fn g_c16_pause_passes_through_with_no_observable_action() {
+        // The guard only downgrades Complete. Pause with no observable
+        // action is legitimate (e.g. immediate unsafe detection from goal
+        // text alone) and must be untouched.
+        let json = json!({
+            "decision": "pause",
+            "reasonId": "unsafe",
+            "reason": "Goal text requests a destructive operation",
+            "nextAction": "User must approve before proceeding",
+            "confidence": 0.99
+        });
+        let result = normalize_evaluation(json, false);
+        assert_eq!(result.decision, GoalDecision::Pause);
+        assert_eq!(result.reason_id, GoalReasonId::Unsafe);
+    }
+
+    // ────── resolve_timeout_secs: env var resolution ──────
+    //
+    // G-C6-FIX-RUST item 2: cover every branch of `resolve_timeout_secs`:
+    //   - env var absent → DEFAULT_TIMEOUT_SECS (240)
+    //   - valid numeric ≥ 10 → honored
+    //   - non-numeric text → fallback to default (fail-closed)
+    //   - zero → fallback to default (below 10s floor)
+    //   - sub-floor (e.g. 5) → fallback to default
+    //
+    // These tests MUST run serially (env var is process-global). We use
+    // a single test thread via `#[serial]`-equivalent pattern: a helper
+    // that sets the env var, calls resolve_timeout_secs, then removes
+    // the env var. Rust's test runner is parallel by default, so we
+    // guard with a static Mutex to serialize the env-touching tests.
+    //
+    // NOTE: We do NOT test the eprintln! warnings — they go to stderr
+    // and are not observable via the normal test path. We test only the
+    // return value, which is the load-bearing behavior.
+
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_env<F>(name: &str, value: Option<&str>, f: F) -> u64
+    where
+        F: FnOnce() -> u64,
+    {
+        let _guard = ENV_LOCK.lock().unwrap();
+        match value {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+        }
+        let result = f();
+        // Always clean up — even on panic — so we don't poison other tests.
+        std::env::remove_var(name);
+        result
+    }
+
+    #[test]
+    fn resolve_timeout_secs_default_when_env_absent() {
+        let got = with_env("VERBOO_GOAL_TIMEOUT_SECS", None, || resolve_timeout_secs());
+        assert_eq!(
+            got, 240,
+            "absent env var must fall back to DEFAULT_TIMEOUT_SECS (240), got {got}"
+        );
+    }
+
+    #[test]
+    fn resolve_timeout_secs_honors_valid_value() {
+        let got = with_env("VERBOO_GOAL_TIMEOUT_SECS", Some("600"), || resolve_timeout_secs());
+        assert_eq!(
+            got, 600,
+            "valid numeric value ≥10 must be honored, got {got}"
+        );
+    }
+
+    #[test]
+    fn resolve_timeout_secs_rejects_non_numeric() {
+        let got = with_env("VERBOO_GOAL_TIMEOUT_SECS", Some("not-a-number"), || {
+            resolve_timeout_secs()
+        });
+        assert_eq!(
+            got, 240,
+            "non-numeric env var must fall back to default (fail-closed), got {got}"
+        );
+    }
+
+    #[test]
+    fn resolve_timeout_secs_rejects_zero() {
+        let got = with_env("VERBOO_GOAL_TIMEOUT_SECS", Some("0"), || resolve_timeout_secs());
+        assert_eq!(
+            got, 240,
+            "zero is below the 10s floor — must fall back to default, got {got}"
+        );
+    }
+
+    #[test]
+    fn resolve_timeout_secs_rejects_sub_floor() {
+        let got = with_env("VERBOO_GOAL_TIMEOUT_SECS", Some("5"), || resolve_timeout_secs());
+        assert_eq!(
+            got, 240,
+            "5s is below the 10s floor — must fall back to default, got {got}"
+        );
+    }
+
+    #[test]
+    fn resolve_timeout_secs_accepts_floor_boundary() {
+        let got = with_env("VERBOO_GOAL_TIMEOUT_SECS", Some("10"), || resolve_timeout_secs());
+        assert_eq!(
+            got, 10,
+            "10s is the floor boundary — must be accepted (n >= 10), got {got}"
+        );
+    }
+
+    #[test]
+    fn resolve_timeout_secs_trims_whitespace() {
+        let got = with_env("VERBOO_GOAL_TIMEOUT_SECS", Some("  300  "), || {
+            resolve_timeout_secs()
+        });
+        assert_eq!(
+            got, 300,
+            "env var value must be trimmed before parsing, got {got}"
+        );
+    }
+
+    // ────── CliTimeout message carries the effective budget ──────
+    //
+    // G-C6-FIX-RUST item 2: the user-facing message must contain the
+    // number of seconds actually used (not a hardcoded literal). This
+    // guards against a regression where someone changes the Display
+    // impl back to a static string and the user loses the actionable
+    // hint ("raise VERBOO_GOAL_TIMEOUT_SECS if your machine is
+    // consistently slower").
+    //
+    // We test the Display impl directly (not via run_evaluation_cli,
+    // which would require spawning a real CLI). The Display impl is
+    // the contract — the renderer formats the error for the user.
+
+    #[test]
+    fn cli_timeout_message_contains_effective_seconds() {
+        let err = GoalEvaluationError::CliTimeout { timeout_secs: 240 };
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("240s"),
+            "CliTimeout message must contain the effective budget (240s), got: {msg}"
+        );
+        assert!(
+            msg.contains("VERBOO_GOAL_TIMEOUT_SECS"),
+            "CliTimeout message must tell the user which env var to raise, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn cli_timeout_message_reflects_custom_budget() {
+        // If the user sets VERBOO_GOAL_TIMEOUT_SECS=600 and the CLI
+        // still times out, the message must say "600s" — not "240s".
+        // This is the load-bearing behavior: the message must reflect
+        // the budget that was actually in effect.
+        let err = GoalEvaluationError::CliTimeout { timeout_secs: 600 };
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("600s"),
+            "CliTimeout message must reflect the custom budget (600s), got: {msg}"
+        );
+        assert!(
+            !msg.contains("240s"),
+            "CliTimeout message must NOT contain a hardcoded 240s when the budget was 600s, got: {msg}"
+        );
+    }
+
+    // ────── WIRING TEST: Goal uses CliSpawn (bundled), not global ──────
+    //
+    // Catches the failure mode the G-C1 QA flagged: `goal_evaluator`
+    // resolving the CLI via `cli_path::resolve().unwrap_or("verboo")`,
+    // which falls back to the system-installed `verboo` global. End
+    // users who download the .app do NOT have `verboo` installed
+    // globally — so the Goal was broken for them.
+    //
+    // The fix migrates `goal_evaluator` to `CliSpawn::new(...)`, the
+    // SAME route as chat/turn_service, which resolves the bundled
+    // cli.mjs (with co-bundled node_modules) and spawns it with the
+    // system Node.
+    //
+    // This test asserts that the source-level wiring is present:
+    //   - `CliSpawn::new(...)` is INVOKED (not just imported)
+    //   - `cli_path::resolve(` is NOT called (the global-fallback path)
+    //   - `Command::new(` is NOT called (legacy manual-spawn path)
+    //   - `fn resolve_cli_path(` is NOT defined (the deleted helper)
+    //
+    // If someone reverts the migration, the test fails with a clear
+    // pointer to G-C1.
+    //
+    // SCOPE GUARD: this test measures ONLY production code — it stops
+    // reading at the `#[cfg(test)]` line that opens this `mod tests`
+    // block. Without this guard, the test would scan its OWN source
+    // (which mentions the forbidden strings in assertion messages)
+    // and self-detect, producing a false positive. This is the second
+    // time in 12 hours a source-reading test has bitten us in this
+    // project — the lesson: a test that reads source MUST always
+    // delimit the region it measures and exclude itself.
+    #[test]
+    fn goal_evaluator_uses_cli_spawn_not_global() {
+        let full_src = std::fs::read_to_string("src/services/goal_evaluator.rs")
+            .expect("could not read goal_evaluator.rs (run from src-tauri/)");
+
+        // Measure ONLY production code: everything before `#[cfg(test)]`.
+        // That line opens this `mod tests` block; everything from there
+        // onward is test code and must be excluded from the scan.
+        let cfg_test_marker = "#[cfg(test)]";
+        let production_src: &str = match full_src.find(cfg_test_marker) {
+            Some(idx) => &full_src[..idx],
+            None => &full_src[..],
+        };
+
+        // Invoking CliSpawn::new(...) is required — this is the bundled
+        // route that works in the packaged .app.
+        assert!(
+            production_src.contains("CliSpawn::new("),
+            "src/services/goal_evaluator.rs production code does not CALL \
+             `CliSpawn::new(`. The Goal evaluator would fall back to spawning \
+             `verboo` by name, which is NOT installed on end-user machines. \
+             The G-C1 QA flagged exactly this: the bundled-cli route must be \
+             invoked. See run_evaluation_cli in goal_evaluator.rs — it must \
+             call `CliSpawn::new(args)` instead of resolving via cli_path."
+        );
+
+        // Must NOT call cli_path::resolve — that was the broken
+        // global-fallback path that shipped the Goal broken for end users.
+        assert!(
+            !production_src.contains("cli_path::resolve("),
+            "src/services/goal_evaluator.rs production code still calls \
+             `cli_path::resolve(`. This is the broken global-fallback path \
+             that landed the Goal broken for end users (G-C1). Use \
+             CliSpawn::new(...) instead."
+        );
+
+        // Must NOT call Command::new directly — the legacy manual-spawn
+        // path bypassed CliSpawn entirely. The bundled .app needs CliSpawn
+        // so the system Node and bundled cli.mjs get wired correctly.
+        assert!(
+            !production_src.contains("Command::new("),
+            "src/services/goal_evaluator.rs production code still uses \
+             `Command::new(` directly. G-C1 migrated this to CliSpawn; if you \
+             see this failure, the migration was reverted. Use \
+             `CliSpawn::new(args).command`."
+        );
+
+        // Must NOT have the removed `resolve_cli_path()` helper — that
+        // was the function that packaged-app users broke on.
+        assert!(
+            !production_src.contains("fn resolve_cli_path("),
+            "src/services/goal_evaluator.rs production code still defines \
+             `fn resolve_cli_path(...)`. That was the broken global-fallback \
+             resolver. G-C1 deleted it."
+        );
+    }
+
+    // ── G-C18: tool_output in TranscriptItem ──────────────────────────
+
+    #[test]
+    fn g_c18_tool_output_deserializes_from_camel_case() {
+        // The renderer sends `toolOutput` (camelCase); the Rust struct
+        // has `tool_output` with #[serde(rename_all = "camelCase")] on
+        // TranscriptItem. This test proves the field survives round-trip
+        // serialization and deserialization.
+        let json = serde_json::json!({
+            "id": "test-1",
+            "role": "assistant",
+            "text": "I read the file.",
+            "timestamp": 1_700_000_000,
+            "toolOutput": "1\tSOMA\n"
+        });
+        let item: TranscriptItem = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            item.tool_output,
+            Some("1\tSOMA\n".into()),
+            "G-C18: toolOutput deserializes into tool_output via camelCase rename"
+        );
+    }
+
+    #[test]
+    fn g_c18_tool_output_absent_does_not_break_deserialization() {
+        // Items without tool_output must deserialize correctly and the
+        // field must be None, preserving backward compatibility with
+        // existing conversation items.
+        let json = serde_json::json!({
+            "id": "test-2",
+            "role": "user",
+            "text": "Hello",
+            "timestamp": 1_700_000_001,
+        });
+        let item: TranscriptItem = serde_json::from_value(json).unwrap();
+        assert!(item.tool_output.is_none(), "G-C18: tool_output defaults to None when absent");
+        assert_eq!(item.text, "Hello");
+    }
+
+    #[test]
+    fn g_c18_tool_output_appears_in_prompt_when_present() {
+        // When a TranscriptItem has tool_output, build_evaluation_prompt
+        // must include a "Tool output:" block with the truncated text.
+        let goal = sample_goal();
+        let items = vec![TranscriptItem {
+            id: "tool-item-1".into(),
+            role: "assistant".into(),
+            text: "I read the file.".into(),
+            timestamp: 1_700_000_002,
+            kind: Some("message".into()),
+            activity_kind: None,
+            activity_detail: None,
+            command: None,
+            change_summary: None,
+            model_id: None,
+            model_display_name: None,
+            streaming: None,
+            skills: None,
+            tool_output: Some("1\tSOMA\n".into()),
+        }];
+        let prompt = build_evaluation_prompt(&goal, &items);
+        assert!(
+            prompt.contains("Tool output:"),
+            "G-C18: prompt must contain 'Tool output:' header"
+        );
+        assert!(
+            prompt.contains("1\tSOMA"),
+            "G-C18: prompt must contain the tool output content"
+        );
+    }
+
+    #[test]
+    fn g_c18_tool_output_absent_does_not_add_tool_output_header() {
+        // When no item has tool_output, the prompt must NOT contain
+        // "Tool output:" headers (no stale decoration).
+        let goal = sample_goal();
+        let items = vec![TranscriptItem {
+            id: "plain-item-1".into(),
+            role: "assistant".into(),
+            text: "I wrote the file.".into(),
+            timestamp: 1_700_000_003,
+            kind: Some("message".into()),
+            activity_kind: None,
+            activity_detail: None,
+            command: None,
+            change_summary: None,
+            model_id: None,
+            model_display_name: None,
+            streaming: None,
+            skills: None,
+            tool_output: None,
+        }];
+        let prompt = build_evaluation_prompt(&goal, &items);
+        assert!(
+            !prompt.contains("Tool output:"),
+            "G-C18: prompt must NOT contain 'Tool output:' when no item has tool_output"
+        );
+    }
+
+    #[test]
+    fn g_c18_tool_output_is_truncated_when_too_large() {
+        // The truncation limit for tool_output is 800 chars. An output
+        // over 800 must be truncated and marked with the truncation
+        // sentinel.
+        let goal = sample_goal();
+        let large_output = "A".repeat(1000);
+        let items = vec![TranscriptItem {
+            id: "tool-item-large".into(),
+            role: "assistant".into(),
+            text: "Read large file.".into(),
+            timestamp: 1_700_000_004,
+            kind: Some("message".into()),
+            activity_kind: None,
+            activity_detail: None,
+            command: None,
+            change_summary: None,
+            model_id: None,
+            model_display_name: None,
+            streaming: None,
+            skills: None,
+            tool_output: Some(large_output),
+        }];
+        let prompt = build_evaluation_prompt(&goal, &items);
+        assert!(
+            prompt.contains("[truncated"),
+            "G-C18: truncated tool_output must contain truncation sentinel"
+        );
+        // The first 800 chars of the output must be present.
+        assert!(
+            prompt.contains(&"A".repeat(800)),
+            "G-C18: first 800 chars of tool_output must survive truncation"
+        );
+    }
+
+    // ── G-C18-FIX: char-boundary-safe truncation + multibyte coverage ─
+
+    #[test]
+    fn g_c18_fix_truncate_char_safe_does_not_panic_on_multibyte() {
+        // G-C18-FIX: the previous `&s[..800]` panicked because byte 800
+        // was not a char boundary on Portuguese content (multibyte
+        // UTF-8 for accented chars). This test asserts:
+        //   (1) the helper does not panic on Portuguese text with
+        //       accents landing inside the cut window
+        //   (2) the output is valid UTF-8 (no mid-codepoint slice)
+        //   (3) the truncation sentinel reports CHARS cut, not bytes
+        let goal = sample_goal();
+        // Build ~1000 chars of Portuguese prose. Each accented char is
+        // 2 bytes in UTF-8; byte 800 will land mid-char.
+        let pt_sentence = "Criação do arquivo contendo a palavra SOMA verificada por leitura. ";
+        let mut pt = String::new();
+        while pt.chars().count() < 1000 {
+            pt.push_str(pt_sentence);
+        }
+        let pt = pt; // 1000+ chars
+        let items = vec![TranscriptItem {
+            id: "tool-item-pt".into(),
+            role: "assistant".into(),
+            text: "Read arquivo.".into(),
+            timestamp: 1_700_000_005,
+            kind: Some("message".into()),
+            activity_kind: None,
+            activity_detail: None,
+            command: None,
+            change_summary: None,
+            model_id: None,
+            model_display_name: None,
+            streaming: None,
+            skills: None,
+            tool_output: Some(pt.clone()),
+        }];
+        // MUST NOT PANIC. The pre-fix code panicked on this exact input.
+        let prompt = build_evaluation_prompt(&goal, &items);
+        assert!(
+            prompt.contains("Tool output:"),
+            "G-C18-FIX: prompt must contain Tool output block"
+        );
+        assert!(
+            prompt.contains("[truncated"),
+            "G-C18-FIX: truncation sentinel must be present"
+        );
+        // The prefix that survived must be valid UTF-8 (Rust guarantees
+        // &str is UTF-8; the build_evaluation_prompt build itself would
+        // have panicked if we sliced mid-codepoint).
+    }
+
+    #[test]
+    fn g_c18_fix_truncate_char_safe_sentinel_reports_chars_not_bytes() {
+        // G-C18-FIX: the sentinel must report how many CHARS were cut,
+        // not the total length, so the model knows what's missing.
+        let s: String = "áéíóúç".chars().cycle().take(1500).collect(); // 1500 chars
+        let truncated = truncate_char_safe(&s, 800);
+        assert!(
+            truncated.contains("[truncated"),
+            "G-C18-FIX: sentinel present"
+        );
+        // Extract the number from the sentinel.
+        let prefix = "[truncated ";
+        let num_start = truncated.find(prefix).unwrap() + prefix.len();
+        let num_end = truncated[num_start..].find(' ').unwrap() + num_start;
+        let n: usize = truncated[num_start..num_end].parse().unwrap();
+        // Should be a sensible number of CHARS cut from the tail. With
+        // 1500 chars total and ~800 bytes kept (each char is 2 bytes),
+        // ~400 chars survive and ~1100 are cut. Assert it's positive
+        // and less than the total (1500).
+        assert!(n > 0 && n < 1500, "G-C18-FIX: sentinel reports chars, got {n}");
+    }
+
+    #[test]
+    fn g_c19_fix_bundle_id_constant_matches_tauri_conf_json() {
+        // G-C19-FIX extra: GOAL_TIMING_BUNDLE_ID must match `identifier`
+        // in src-tauri/tauri.conf.json. The previous hardcoded
+        // "com.verboo.app" was wrong. A comment does not protect against
+        // future drift; this test does.
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tauri.conf.json"),
+        )
+        .expect("tauri.conf.json must be readable from cargo test");
+        // Extract the `identifier` field value (JSON).
+        let id_line: &str = source
+            .lines()
+            .find(|l| l.contains("\"identifier\""))
+            .expect("tauri.conf.json must contain an identifier field");
+        // Trim and parse "identifier": "<value>"
+        let value = id_line
+            .split('"')
+            .nth(3)
+            .expect("identifier value must be a quoted JSON string");
+        // Mirror the constant declared in run_evaluation_cli (kept here
+        // inline to avoid exposing a private const).
+        const GOAL_TIMING_BUNDLE_ID: &str = "ai.verboo.code.desktop";
+        assert_eq!(
+            value, GOAL_TIMING_BUNDLE_ID,
+            "GOAL_TIMING_BUNDLE_ID in goal_evaluator.rs must match identifier in tauri.conf.json"
+        );
+    }
+
+    // ── G-C18-MEDICAO: realistic prompt decomposition ────────────────
+    //
+    // Decompose the prompt into its fixed and variable blocks using a
+    // REALISTIC fixture — not the synthetic 7-char tool_output that gave
+    // 3.8K tokens vs 41K in field. The fixture models what a real script
+    // workflow looks like with tool outputs of ~500-3000 chars (Read of
+    // package.json, config file, error log).
+    //
+    // The method: build the prompt from a representative transcript,
+    // slice by `##` headers, report bytes/~tokens per block as % of the
+    // TOTAL goal_evaluator prompt. The remaining gap between our total
+    // and the user's 41K is the CLI overhead (system prompt, API call
+    // framing) — NOT controlled by this prompt.
+
+    fn report_prompt_decomposition(items: &[TranscriptItem], goal_text: &str, window: usize) {
+        let goal = GoalState {
+            objective: goal_text.into(),
+            ..sample_goal()
+        };
+        let recent = items
+            .iter()
+            .rev()
+            .take(window)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>();
+        let prompt = build_evaluation_prompt(&goal, &recent);
+        let total_bytes = prompt.len();
+
+        // Split by `## ` markers to identify sections. The prompt also
+        // has a top-level `# Goal Evaluation` before any `##` marker.
+        let h_pos: Vec<usize> = prompt.match_indices("## ").map(|(i, _)| i).collect();
+        let mut sections: Vec<(String, usize)> = Vec::new();
+
+        // Pre-header block (before ## Goal)
+        let first_h = *h_pos.first().unwrap_or(&total_bytes);
+        if first_h > 0 {
+            let text = prompt[..first_h].trim_end();
+            if !text.is_empty() {
+                sections.push(("Preamble (instructions)".to_string(), text.len()));
+            }
+        }
+
+        // Each ##-delimited section
+        for i in 0..h_pos.len() {
+            let start = h_pos[i];
+            let end = h_pos.get(i + 1).copied().unwrap_or(prompt.len());
+            let text = &prompt[start..end];
+            let line_end = text.find('\n').unwrap_or(text.len());
+            let header = text[..line_end].trim();
+            let label: String = match header {
+                "## Goal" => "Goal objective".into(),
+                "## Context" => "Context line".into(),
+                "## Recent transcript items" => "Transcript items".into(),
+                "## Evaluation" => "Rules + JSON schema + closing".into(),
+                _ => header.into(),
+            };
+            sections.push((label, text.trim_end().len()));
+        }
+
+        // Items section substats (tool_output weight inside it)
+        // Find the byte position of the "## Recent transcript items" header
+        let items_pos = prompt.match_indices("## Recent transcript items")
+            .next().map(|(i, _)| i);
+        // Find the byte position of the "## Evaluation" header (next section)
+        let eval_pos = prompt.match_indices("## Evaluation")
+            .next().map(|(i, _)| i);
+        let items_bytes = match (items_pos, eval_pos) {
+            (Some(is), Some(es)) => (es - is).saturating_sub(1), // exclude leading `\n`
+            _ => 0,
+        };
+
+        eprintln!("\n=== G-C18-MEDICAO: prompt decomposition (window={}) ===", window);
+        eprintln!("Total goal_evaluator prompt: {} bytes ≈ {} tokens", total_bytes, total_bytes / 4);
+        eprintln!("{:-<60}", "");
+        eprintln!("{:<40} {:>8} {:>8} {:>8}", "Section", "bytes", "~tokens", "%ofEval");
+        eprintln!("{:-<60}", "");
+        for (label, sz) in &sections {
+            let t = sz / 4;
+            let pct = *sz as f64 / total_bytes as f64 * 100.0;
+            eprintln!("{:<40} {:>8} {:>8} {:>7.1}%", label, sz, t, pct);
+        }
+        eprintln!("{:-<60}", "");
+        // Tool output weight within items section
+        if let Some(mut is) = prompt.find("## Recent transcript items") {
+            let items_end = prompt[is..].find("## Evaluation").map(|e| is + e).unwrap_or(prompt.len());
+            let body = &prompt[is..items_end];
+            let tool_bytes: usize = body.match_indices("**Tool output:**")
+                .map(|(start_idx, _)| {
+                    let snippet = &body[start_idx..];
+                    let code_start = snippet.find("```").map(|p| start_idx + p + 3).unwrap_or(start_idx);
+                    let code_remain = if code_start > start_idx { &body[code_start..] } else { "" };
+                    let code_end = code_remain.find("```").map(|p| code_start + p + 3).unwrap_or(code_start);
+                    code_end - start_idx
+                }).sum();
+            let cmd_bytes: usize = body.match_indices("**Command:**")
+                .map(|(start_idx, _)| {
+                    let snippet = &body[start_idx..];
+                    let code_end = snippet.find("```\n").map(|p| start_idx + p + 4).unwrap_or(start_idx);
+                    code_end - start_idx
+                }).sum();
+            let pct_tool = if body.len() > 0 { tool_bytes as f64 / body.len() as f64 * 100.0 } else { 0.0 };
+            let pct_cmd = if body.len() > 0 { cmd_bytes as f64 / body.len() as f64 * 100.0 } else { 0.0 };
+            eprintln!("  items section: {} bytes, tool_output markup: {} ({:.1}%), command: {} ({:.1}%)",
+                body.len(), tool_bytes, pct_tool, cmd_bytes, pct_cmd);
+        }
+        // Context comparison vs field
+        eprintln!("\nReference: field measured total = ~41,188 tokens/call (3-eval avg)");
+        let pct_of_field = (total_bytes as f64 / 4.0) / 41188.0 * 100.0;
+        eprintln!("  goal_evaluator prompt = ~{:.1}% of field total ({} tokens of 41,188)",
+            pct_of_field, total_bytes / 4);
+        eprintln!("  CLI/API overhead (not controlled here) = ~{:.1}%", 100.0 - pct_of_field);
+        // What would change by reducing window
+        let fixed_bytes = total_bytes - items_bytes;
+        for (w2, label) in &[(20u8, "window=20"), (15, "window=15"), (10, "window=10")] {
+            let w2 = *w2 as usize;
+            if w2 >= window { continue; }
+            let recent2 = items.iter().rev().take(w2).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>();
+            let p2 = build_evaluation_prompt(&goal, &recent2);
+            let savings = total_bytes.saturating_sub(p2.len());
+            let savings_tokens = savings / 4;
+            eprintln!("  {label}: saves ~{savings} bytes ≈ {savings_tokens} tokens ({:.1}% of eval prompt)", savings as f64 / total_bytes as f64 * 100.0);
+        }
+        eprintln!("");
+    }
+
+    fn realistic_transcript_item(
+        id: &str,
+        role: &str,
+        tool_output_len: usize,
+        text_len: usize,
+        has_cmd: bool,
+    ) -> TranscriptItem {
+        let text = format!("{} {}", role, "X".repeat(text_len.saturating_sub(role.len() + 1)));
+        let cmd_output = if has_cmd {
+            Some(CommandRun {
+                input: "ls -la /tmp".into(),
+                output: format!("total 128\n{}", "Y".repeat(500)),
+                status: CommandStatus::Success,
+            })
+        } else {
+            None
+        };
+        TranscriptItem {
+            id: id.into(),
+            role: role.into(),
+            text,
+            timestamp: 1_700_000_000,
+            kind: Some("message".into()),
+            activity_kind: None,
+            activity_detail: None,
+            command: cmd_output,
+            change_summary: None,
+            model_id: None,
+            model_display_name: None,
+            streaming: None,
+            skills: None,
+            tool_output: if tool_output_len > 0 {
+                Some("Z".repeat(tool_output_len))
+            } else {
+                None
+            },
+        }
+    }
+
+    #[test]
+    fn g_c18_realistic_decomposition() {
+        // Model a realistic script agent workflow with 30 items at windows
+        // 30, 20, 15, 10. Based on:
+        //   - agent prose: ~2000 chars (reads + explains)
+        //   - Read tool output: ~600 chars (Read of a package.json ~200-500 is
+        //     common, but a Read of a log or config is bigger)
+        //   - Command output: ~500 chars
+        //   - User messages: ~80 chars
+        // This is a CONSERVATIVE estimate — many tool outputs (Read of full
+        // files) can be 3000-5000 chars, but 600 is the median.
+        let goal_text = "Create /tmp/goal-total.txt containing the word SOMA and verify its contents via Read. \
+            The Read result must confirm a single line containing the literal SOMA.";
+        let mut items = Vec::with_capacity(35);
+        for i in 0..35 {
+            let role = if i % 5 == 0 { "user" } else { "assistant" };
+            let text_len = if role == "user" { 80 } else { 2000 };
+            let tool_len = if role == "assistant" && i % 3 == 1 { 600 } else { 0 };
+            items.push(realistic_transcript_item(&format!("item-{i}"), role, tool_len, text_len, i % 7 == 3));
+        }
+        for w in [30usize, 20, 15, 10] {
+            report_prompt_decomposition(&items, goal_text, w);
+        }
+    }
 }

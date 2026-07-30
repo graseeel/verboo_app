@@ -68,6 +68,22 @@ export function GoalActivePanel({
   const isPaused = kind === 'paused'
   const pauseReason = isPaused && goal.pauseReason ? translateGoalReason(goal.pauseReason, t) : null
 
+  // G-C6-FIX-UI: surface the evaluator's specific error message when
+  // paused by infraError. The Rust evaluator emits a useful timeout/
+  // failure reason (e.g. "Goal evaluator CLI timed out after 240s...")
+  // that the scheduler stores in goal.lastEvaluation.reason. Before
+  // this fix, the panel showed only the generic "Erro de
+  // infraestrutura do avaliador" — the specific message was written
+  // to state but never rendered. We use the existing (previously
+  // orphan) goal.errorPausedBody key, interpolating {message} with
+  // the reason text. Falls back to nothing if reason is absent or
+  // empty — the generic pauseReason already shows, never an empty
+  // string or "undefined".
+  const evaluatorErrorMessage =
+    isPaused && goal.pauseReason === 'infraError' && goal.lastEvaluation?.reason
+      ? t('goal.errorPausedBody', { message: goal.lastEvaluation.reason })
+      : null
+
   // Compact mode is forced by the parent when questions are open, but
   // the user can override to full panel. Editing also forces full panel.
   const showCompact = compact && !expandedFromCompact && !editing
@@ -112,6 +128,11 @@ export function GoalActivePanel({
           </p>
           {isPaused && pauseReason && (
             <span className="goal-active-panel-reason">{pauseReason}</span>
+          )}
+          {evaluatorErrorMessage && (
+            <span className="goal-active-panel-reason goal-active-panel-reason-detail">
+              {evaluatorErrorMessage}
+            </span>
           )}
           <div className="goal-active-panel-compact-actions">
             <button
@@ -181,6 +202,11 @@ export function GoalActivePanel({
         <span className={`goal-active-panel-status ${kind}`}>{t(statusLabelKey)}</span>
         {isPaused && pauseReason && (
           <span className="goal-active-panel-reason">{pauseReason}</span>
+        )}
+        {evaluatorErrorMessage && (
+          <span className="goal-active-panel-reason goal-active-panel-reason-detail">
+            {evaluatorErrorMessage}
+          </span>
         )}
         {compact && expandedFromCompact && (
           <button

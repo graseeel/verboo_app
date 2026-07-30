@@ -16,6 +16,7 @@ import type {
   FeedbackRequest,
   FeedbackResult,
   GoalEvaluationInput,
+  GoalEvaluationEnvelope,
   GoalState,
   LanguageCode,
   MenuBarState,
@@ -38,11 +39,12 @@ import type {
   WorkspaceChangeSummary,
   WorkspaceReviewMetadata,
 } from '../shared/types'
-import { createGoalState, goalSystemMessage } from './features/goal/goalState'
+import { createGoalState, goalSystemMessage, sanitizeStoredGoal } from './features/goal/goalState'
 import { GoalStatusBar, type GoalStatusBarState } from './features/goal/GoalStatusBar'
 import { GoalActivePanel } from './features/goal/GoalActivePanel'
-import { buildObjectiveUpdatedPrompt } from './features/goal/goalPrompt'
+import { buildGoalUsageLine, buildObjectiveUpdatedPrompt } from './features/goal/goalPrompt'
 import { runGoalCycle, type GoalSchedulerDelegate } from './features/goal/goalScheduler'
+import { shouldAccumulateTokensForTurn, accumulateEvaluatorUsage, shouldAccumulateEvaluatorUsage } from './features/goal/tokenAccumulator'
 import type { ReservedSlashCommand } from './features/composer/slashCommands'
 import { AppSidebar, type AppView } from './components/AppSidebar'
 import { CommandPalette, paletteIcons, type PaletteAction } from './components/CommandPalette'
@@ -127,6 +129,7 @@ import {
   persistChatStore,
   readChatStore,
   titleFromMessage,
+  updateConversation as updateConversationPure,
   visibleConversations,
 } from './state/chatStore'
 import packageJson from '../../package.json'
@@ -167,8 +170,8 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   ignoreToolChatsForMemory: true,
   goalMode: {
     enabled: true,
-    maxTurns: Number.MAX_SAFE_INTEGER,
-    maxElapsedMinutes: Number.MAX_SAFE_INTEGER,
+    maxTurns: 4_294_967_295,
+    maxElapsedMinutes: 4_294_967_295,
     allowAutoAccess: true,
   },
   updates: {
@@ -462,6 +465,13 @@ export function App() {
   const t = useMemo(() => createTranslator(userSettings.language), [userSettings.language])
   const [tokenRate, setTokenRate] = useState<TokenRateSnapshot | undefined>()
   const goalRef = useRef(goal)
+  // G-C17: identity key for the evaluator-usage dedupe gate. Holds the
+  // last GoalEvaluationEnvelope whose evaluatorUsage was accumulated
+  // into the goal. evaluate_goal is a single invoke → single response,
+  // so each envelope is presented once; the gate (tokenAccumulator.ts)
+  // skips only a re-presentation of the SAME object. Reset per goal in
+  // startGoalScheduler.
+  const lastEvaluatorEnvelopeRef = useRef<GoalEvaluationEnvelope | undefined>(undefined)
   const [goalBarStatus, setGoalBarStatus] = useState<GoalStatusBarState>({ kind: 'idle' })
   const [emptyLineKey] = useState(() => EMPTY_LINE_KEYS[Math.floor(Math.random() * EMPTY_LINE_KEYS.length)])
   const workspaceRef = useRef<HTMLElement | null>(null)
@@ -1102,6 +1112,20 @@ export function App() {
   // load, sidebar selection, and notification-click focus). Mirrors the
   // hydration in selectConversation but lives in an effect so it fires on
   // every activeConversationId transition, including the initial mount.
+  //
+  // G-C5: dependency is [activeConversationId] ONLY. Reading via
+  // chatStoreRef (not chatStore.conversations) avoids re-firing when the
+  // scheduler itself persists progress — that persistence changes the
+  // store reference, which previously re-triggered this effect and
+  // forced the running goal back to 'paused', causing an infinite
+  // feedback loop (visible as the goal panel flickering AVALIANDO /
+  // paused every ~1-3 s with no error ever shown).
+  //
+  // Guard: while a scheduler is alive for the active conversation
+  // (goalAbortRef not aborted), the scheduler owns the goal state —
+  // this effect must NOT overwrite it. Only hydrate from storage when
+  // there is no live cycle (initial mount, conversation switch, app
+  // relaunch).
   useEffect(() => {
     if (!activeConversationId) {
       setGoal(undefined)
@@ -1109,15 +1133,26 @@ export function App() {
       setGoalBarStatus({ kind: 'idle' })
       return
     }
-    const conversation = chatStore.conversations.find(item => item.id === activeConversationId)
+    // If a scheduler is alive for the current goal, do not hydrate from
+    // storage — the running cycle is the source of truth.
+    if (goalAbortRef.current && !goalAbortRef.current.signal.aborted) {
+      return
+    }
+    const conversation = chatStoreRef.current.conversations.find(item => item.id === activeConversationId)
     const storedGoal = conversation?.goal
     if (storedGoal && (storedGoal.status === 'active' || storedGoal.status === 'paused' || storedGoal.status === 'evaluating' || storedGoal.status === 'continuing')) {
       // Active goals are restored as paused — the user must explicitly
       // resume to restart the autonomous cycle. Prevents surprise execution
       // on app launch or conversation switch.
-      const restored: GoalState = storedGoal.status === 'paused'
-        ? storedGoal
-        : { ...storedGoal, status: 'paused', pausedAt: storedGoal.pausedAt ?? Date.now() }
+      //
+      // G-C7-TS-MIGRACAO: sanitize before re-hydrating. Goals persisted
+      // before G-C7-TS-FIX wrote maxTurns=9.0e15 on disk; running them
+      // verbatim would re-trip the Rust u32 serde rejection that this
+      // whole cycle fixed. The normalizer is idempotent for safe values.
+      const sanitized = sanitizeStoredGoal(storedGoal)
+      const restored: GoalState = sanitized.status === 'paused'
+        ? sanitized
+        : { ...sanitized, status: 'paused', pausedAt: sanitized.pausedAt ?? Date.now() }
       setGoal(restored)
       goalRef.current = restored
       setGoalBarStatus({
@@ -1130,7 +1165,44 @@ export function App() {
       goalRef.current = undefined
       setGoalBarStatus({ kind: 'idle' })
     }
-  }, [activeConversationId, chatStore.conversations])
+  }, [activeConversationId])
+
+  // G-C5: dedicated persist effect. Watches `goal` and mirrors it into
+  // the active conversation's stored goal. Runs OUTSIDE the setGoal
+  // updater, so it does not re-enter React state from inside a state
+  // updater (reentrancy risk). With P1's hydration dependency
+  // reduced to [activeConversationId], this effect's resulting store
+  // churn does NOT trigger the hydration cycle.
+  //
+  // G-C5-FIX: only persist when the goal's ownerConversationId matches
+  // the active conversation. Without this guard, switching from
+  // conversation A (with active goal) to B fires this effect with
+  // goal=A + activeConversationId=B, corrupting B's stored goal. The
+  // next flush would correct it, but a crash between the two leaves B
+  // with a stale goal.
+  useEffect(() => {
+    const conversationId = activeConversationId
+    if (!conversationId) return
+    if (goal === undefined) {
+      // Goal was cleared (cancel/clear). Clear it from storage too,
+      // but only if the conversation currently has a goal — otherwise
+      // we would create a new store reference for no reason.
+      updateConversation(conversationId, conversation =>
+        conversation.goal === undefined
+          ? conversation
+          : { ...conversation, goal: undefined, updatedAt: Date.now() },
+      )
+      return
+    }
+    // G-C5-FIX: do NOT cross-write into a conversation that does not
+    // own this goal. The owner is stamped at creation/resume time.
+    if (goal.ownerConversationId !== conversationId) return
+    updateConversation(conversationId, conversation => ({
+      ...conversation,
+      goal,
+      updatedAt: Date.now(),
+    }))
+  }, [goal, activeConversationId])
 
   async function refreshModels(forceRefresh: boolean): Promise<ModelDiscoveryResult> {
     const result = await window.verboo.listModels(forceRefresh)
@@ -1508,18 +1580,22 @@ export function App() {
 
     // Calibrate the live chars→tokens estimate with the request's real count.
     const liveState = turnLiveRates.current[turnId]
-    if (liveState && liveState.charsSinceUsage > 80 && usage.output_tokens) {
-      const measured = usage.output_tokens / liveState.charsSinceUsage
+    if (liveState && liveState.charsSinceUsage > 80 && usage.outputTokens) {
+      const measured = usage.outputTokens / liveState.charsSinceUsage
       if (Number.isFinite(measured)) {
         liveState.tokensPerChar = Math.min(0.6, Math.max(0.1, measured))
       }
       liveState.charsSinceUsage = 0
     }
 
-    const inputTokens = usage.input_tokens ?? 0
-    const outputTokens = usage.output_tokens ?? 0
-    const cacheCreationTokens = usage.cache_creation_input_tokens ?? 0
-    const cacheReadTokens = usage.cache_read_input_tokens ?? 0
+    // G-C12: usage is a TokenUsage (camelCase, see shared/types.ts).
+    // The CLI sends snake_case in its raw payload, but extractTokenUsage
+    // renames to camelCase on the way out so this consumer reads the
+    // same shape the Rust-side event.result.usage uses.
+    const inputTokens = usage.inputTokens ?? 0
+    const outputTokens = usage.outputTokens ?? 0
+    const cacheCreationTokens = usage.cacheCreationInputTokens ?? 0
+    const cacheReadTokens = usage.cacheReadInputTokens ?? 0
     const totalTokens = inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens
     if (totalTokens <= 0) return
 
@@ -1732,6 +1808,20 @@ export function App() {
     }
 
     if (event.type === 'result') {
+      // G-C14: dedupe token accumulation by turnId. The Rust side
+      // emits the result event TWICE for a single turn — the second
+      // emission carries the exit_code. Both events have the same
+      // turnId and the same usage payload, so accumulating on every
+      // event double-counts tokens (measured: 1-turn goal showed
+      // 79.695 on screen but 159.390 in the store). Fix: check if we
+      // already have a snapshot for this turnId BEFORE overwriting.
+      // If we do, this is the second emission — skip the token sum
+      // but still update the snapshot (the second event carries the
+      // exit_code and may carry a richer result). The QA was
+      // explicit: do NOT suppress the second event — other consumers
+      // (exit_code readers) depend on it. Dedupe in the consumer is
+      // sufficient and safer than touching the Rust emitter.
+      const hadSnapshot = turnResultSnapshots.current[event.turnId] !== undefined
       turnResultSnapshots.current[event.turnId] = event.result
       if (event.result.sessionId) goalSessionId.current = event.result.sessionId
       const conversationId = turnConversationIds.current[event.turnId]
@@ -1743,14 +1833,28 @@ export function App() {
       if (conversationId) {
         updateConversation(conversationId, c => ({ ...c, lastTurnEndedAt: Date.now() }))
       }
-      if (event.result.usage) {
+      if (event.result.usage && shouldAccumulateTokensForTurn(hadSnapshot)) {
         setGoal(current => {
           if (!current) return current
-          return {
+          const updated = {
             ...current,
-            usedInputTokens: current.usedInputTokens + (event.result.usage?.input_tokens ?? 0),
-            usedOutputTokens: current.usedOutputTokens + (event.result.usage?.output_tokens ?? 0),
+            // G-C12: event.result.usage comes from Rust via Tauri, which
+            // serializes TokenUsage with serde rename_all camelCase. Read
+            // camelCase keys here. The old snake_case reads returned
+            // undefined and the ?? 0 coalescing silently zeroed every
+            // accumulation — the goal token counter appeared to work in
+            // tests but always reported zero in production.
+            usedInputTokens: current.usedInputTokens + (event.result.usage?.inputTokens ?? 0),
+            usedOutputTokens: current.usedOutputTokens + (event.result.usage?.outputTokens ?? 0),
           }
+          // G-C10 item 3: synchronize goalRef.current so the scheduler
+          // (which reads via delegate.getGoal() → goalRef.current) sees
+          // the accumulated tokens. Without this, the scheduler's
+          // updateGoal((prev) => ...) sees a stale prev (tokens=0) and
+          // the completion write preserves the zeros — same ref/state
+          // desync class as G-C5 and G-C8.
+          goalRef.current = updated
+          return updated
         })
       }
       return
@@ -2810,10 +2914,20 @@ export function App() {
       ...current,
       objective: newObjective,
       updatedAt: Date.now(),
+      // G-C8-FIX item 5 (QA pendência 9): a new objective is a clean
+      // slate for loop detection. The fingerprint ring and the
+      // no-progress counter were built against the OLD objective —
+      // if we don't reset them, the user can be blocked by a loop
+      // signal that was inherited from a goal they just rewrote.
+      // Same reasoning as a fresh createGoalState call, applied
+      // in-place to an existing goal.
+      recentFingerprints: [],
+      noProgressCount: 0,
     }
     setGoal(updated)
     goalRef.current = updated
-    updateConversationGoal(updated)
+    // G-C5: persistence is handled by the dedicated useEffect watching
+    // `goal` — no direct updateConversationGoal call here.
 
     // System message: show old→new when the user can see both, otherwise just the new.
     const systemMessage = oldObjective.trim() && oldObjective !== newObjective
@@ -2881,7 +2995,16 @@ export function App() {
     if (command.action === 'resume') {
       setGoal(current => {
         if (!current || (current.status !== 'paused' && current.status !== 'blocked')) return current
-        const resumed: GoalState = { ...current, status: 'active', noProgressCount: 0, errorCount: 0 }
+        // G-C5-FIX: ensure ownerConversationId is set (legacy goals may
+        // have been created before the field existed). Stamps with the
+        // active conversation so the persist effect does not cross-write.
+        const ownerConversationId = current.ownerConversationId ?? activeConversationId
+        const resumed: GoalState = { ...current, ownerConversationId, status: 'active', noProgressCount: 0, errorCount: 0, recentFingerprints: [] }
+        // G-C5-FIX: explicit handoff. goalRef.current must be populated
+        // BEFORE startGoalScheduler runs. This updater runs synchronously
+        // inside setGoal, but the side-effect (startGoalScheduler) must
+        // observe goalRef.current already pointing at `resumed`.
+        goalRef.current = resumed
         setGoalBarStatus({ kind: 'active', objective: resumed.objective, turn: resumed.turnsRun })
         void startGoalScheduler(resumed)
         return resumed
@@ -2923,6 +3046,10 @@ export function App() {
         workingDirectory: wd,
         skills: selectedSkillsUnion,
       })
+      // G-C5-FIX: stamp the goal with its owning conversation so the
+      // persist effect does NOT cross-write into a different
+      // conversation when the user switches mid-cycle.
+      goalState.ownerConversationId = conversationId
 
       appendConversationItem(conversationId, goalSystemMessage(t('goal.systemStarted', { objective: command.objective })))
 
@@ -2936,6 +3063,14 @@ export function App() {
       }, t('goal.systemObjective', { objective: command.objective }))
 
       setGoal(goalState)
+      // G-C5-FIX: explicit handoff. goalRef.current must be populated
+      // BEFORE startGoalScheduler runs, otherwise the delegate's
+      // getGoal() returns undefined on the first iteration and the
+      // cycle exits with 'cancelled' immediately (silent total
+      // regression — the goal panel never executes). The setGoal
+      // call above passes a direct value, so its functional updater
+      // (which assigns goalRef.current) does NOT run synchronously.
+      goalRef.current = goalState
       setGoalBarStatus({ kind: 'active', objective: goalState.objective, turn: 0 })
 
       void startGoalScheduler(goalState)
@@ -2945,24 +3080,54 @@ export function App() {
   async function startGoalScheduler(initialGoal: GoalState) {
     const controller = new AbortController()
     goalAbortRef.current = controller
+    // G-C17: fresh goal, fresh dedupe key — envelopes from a previous
+    // goal must never gate (or un-gate) this goal's accumulation.
+    lastEvaluatorEnvelopeRef.current = undefined
 
     const delegate: GoalSchedulerDelegate = {
-      getGoal: () => goalRef.current ?? initialGoal,
+      // G-C5: no resurrection. If goalRef.current is undefined the goal
+      // was cleared (cancel/clear) — the cycle must observe that and
+      // exit, not resurrect a stale snapshot. runGoalCycle returns
+      // 'cancelled' at the top when getGoal() is undefined.
+      getGoal: () => goalRef.current,
       updateGoal: (update) => {
         setGoal(current => {
-          const updated = typeof update === 'function' ? update(current ?? initialGoal) : update
+          // G-C5: if current is undefined the goal was cleared — do not
+          // apply updates to a stale snapshot. Drop the update.
+          if (current === undefined) return undefined
+          const updated = typeof update === 'function' ? update(current) : update
           goalRef.current = updated
-          if (current) updateConversationGoal(updated)
           return updated
         })
       },
       evaluateGoal: async (currentGoal) => {
-        const conversationItems = conversationItemsRef.current
-        const conversationId = activeConversation?.id
+        // G-C8-FIX: the goal belongs to the conversation that created
+        // it (currentGoal.ownerConversationId), NOT to whatever the
+        // user happens to be looking at. The earlier G-C8 fix read
+        // activeConversationIdRef.current — which fixed the
+        // same-tick birth case but introduced a cross-conversation
+        // leak: if the user switched to conversation B mid-cycle, the
+        // goal of A would write its evaluation transcript into B.
+        // ownerConversationId is stamped at goal creation
+        // (handleGoalCommand, G-C5-FIX) and is the source of truth.
+        // Fallback to activeConversationIdRef.current only when the
+        // goal predates the ownerConversationId field (legacy goals
+        // persisted before G-C5-FIX).
+        const conversationId = currentGoal.ownerConversationId ?? activeConversationIdRef.current
         if (!conversationId || controller.signal.aborted) {
           throw new Error('Goal evaluation aborted: no active conversation')
         }
 
+        // G-C8-FIX item 4: the transcript sent to the evaluator must
+        // be the OWNER's transcript, not the active conversation's.
+        // conversationItemsRef.current tracks the active conversation
+        // (App.tsx:587, updated at :902) — using it here would feed
+        // the evaluator the wrong conversation when the user has
+        // switched away. We resolve the owner's items from the store
+        // ref directly. (See the parecer in the cycle report for why
+        // this is the right call.)
+        const ownerConversation = chatStoreRef.current.conversations.find(item => item.id === conversationId)
+        const conversationItems = ownerConversation?.items ?? []
         const input: GoalEvaluationInput = {
           goal: currentGoal,
           conversationItems: [...conversationItems],
@@ -2977,18 +3142,58 @@ export function App() {
           throw new Error('Goal evaluation aborted by user')
         }
 
+        // G-C17: ACCUMULATE the evaluator's token usage across EVERY
+        // evaluation of this goal (was: lastEvaluatorUsage, overwritten
+        // each cycle — in a multi-evaluation goal only the last parcel
+        // reached the "Total registrado" line; QA blocking).
+        // evaluatorUsage is a SIBLING of evaluation in the Tauri
+        // boundary struct (GoalEvaluationEnvelope, G-C15-FIX), NOT
+        // inside result.evaluation. Undefined when the evaluator ran no
+        // tokens (Rust skip_serializing_if Option::is_none) — treat
+        // absence, not null.
+        //
+        // Double-count guard: evaluate_goal is a single invoke → single
+        // response (the G-C14 double-emission was turn EVENTS and does
+        // not apply here), so each envelope accumulates exactly once.
+        // The identity gate additionally blocks a re-presentation of
+        // the SAME envelope object if a future refactor re-enters.
+        const isNewEvaluation = shouldAccumulateEvaluatorUsage(lastEvaluatorEnvelopeRef.current, result)
+        if (isNewEvaluation) {
+          lastEvaluatorEnvelopeRef.current = result
+        }
         setGoal(current => current ? {
-          ...current,
+          ...(isNewEvaluation ? accumulateEvaluatorUsage(current, result.evaluatorUsage) : current),
           lastEvaluation: result.evaluation,
           updatedAt: Date.now(),
         } : current)
+        // G-C5/G-C8/G-C10/G-C13-FIX: synchronize goalRef.current so the
+        // scheduler (and the completion path, which reads the
+        // accumulated evaluatorInputTokens/evaluatorOutputTokens via the
+        // live ref — goalScheduler.ts G-C17 adendo) sees the updated
+        // value. setGoal's functional updater does NOT run
+        // synchronously, so this sync stays OUTSIDE setGoal — and the
+        // updater above stays pure so a StrictMode double-invoke cannot
+        // double-apply the sum to the ref.
+        if (goalRef.current) {
+          goalRef.current = {
+            ...(isNewEvaluation ? accumulateEvaluatorUsage(goalRef.current, result.evaluatorUsage) : goalRef.current),
+            lastEvaluation: result.evaluation,
+            updatedAt: Date.now(),
+          }
+        }
 
         return result.evaluation
       },
       continueGoal: async (currentGoal, nextMessage) => {
         if (controller.signal.aborted) return undefined
 
-        const conversationId = activeConversation?.id
+        // G-C8-FIX: same as evaluateGoal — the goal belongs to its
+        // owner conversation, not the active one. Reading
+        // activeConversationIdRef.current here caused cross-conversation
+        // leaks (the continue message and the tracked turn were written
+        // to whatever conversation the user was looking at, not the one
+        // that owns the goal).
+        const conversationId = currentGoal.ownerConversationId ?? activeConversationIdRef.current
         if (!conversationId) return undefined
 
         const turnModel = {
@@ -3038,13 +3243,23 @@ export function App() {
         turnConversationIds.current[turnId] = conversationId
         turnModels.current[turnId] = turnModel
 
-        setGoal(current => current ? {
-          ...current,
-          turnsRun: current.turnsRun + 1,
-          lastTurnId: turnId,
-          lastSessionId: goalSessionId.current,
-          updatedAt: Date.now(),
-        } : current)
+        setGoal(current => {
+          if (!current) return current
+          const updated = {
+            ...current,
+            turnsRun: current.turnsRun + 1,
+            lastTurnId: turnId,
+            lastSessionId: goalSessionId.current,
+            updatedAt: Date.now(),
+          }
+          // G-C10 item 3: synchronize goalRef.current so the scheduler
+          // sees the incremented turnsRun. Same desync class as the
+          // token accumulator above — without this, the scheduler's
+          // getGoal() returns a stale turnsRun and the loop detection
+          // / completion logic reads the wrong turn count.
+          goalRef.current = updated
+          return updated
+        })
 
         // Wait for the turn to complete before continuing the goal cycle
         await new Promise<void>((resolve, reject) => {
@@ -3081,10 +3296,80 @@ export function App() {
       onLog: (message) => {
         console.log('[goal]', message)
       },
+      // G-C15-TS: the user REJECTED the separate green box (G-C13's
+      // approach). The evaluator's completionSummary is verbose, English,
+      // and the user called it "irrelevant information" — it stays in
+      // the backend (lastEvaluation) for diagnostics, NOT on the screen.
+      //
+      // New surface: the usage line is stamped on the LAST turn's
+      // summary item (TranscriptItem.usageLine). The TurnView renders
+      // it inline after the agent's final text — no box, no badge, same
+      // typographic family as the surrounding message. Reads as
+      // continuation of the agent's final message.
+      //
+      // Why stamp on the existing summary (not a new item): the last
+      // turn already has a `${turnId}:summary` item (created by
+      // appendTurnSummary). Adding a separate item created a second
+      // green box. Stamping usageLine on the existing item keeps ONE
+      // visual surface per turn and lets the TurnView render the usage
+      // line inline with the agent's final text.
+      //
+      // ZERO-TOKEN GUARD: buildGoalUsageLine returns '' when the goal
+      // has no token usage (legacy goal pre-G-C12, or zero turns). We
+      // skip stamping in that case — the user sees the agent's final
+      // text and the existing turn summary, no usage line.
+      onComplete: (finalGoal, evaluation) => {
+        const ownerConversationId = finalGoal.ownerConversationId ?? activeConversationIdRef.current
+        if (!ownerConversationId) return
+
+        // G-C17: buildGoalUsageLine reads the ACCUMULATED
+        // goal.evaluatorInputTokens/evaluatorOutputTokens (summed by
+        // the evaluateGoal delegate from the Tauri boundary sibling —
+        // G-C15-FIX), NOT evaluation.evaluatorUsage (which never
+        // existed). finalGoal carries the fresh totals because the
+        // scheduler overlays them from the live ref (goalScheduler.ts
+        // G-C17 adendo).
+        const usageLine = buildGoalUsageLine(finalGoal, t)
+        if (!usageLine) return
+
+        const lastTurnId = finalGoal.lastTurnId
+        if (!lastTurnId) return
+
+        const summaryItemId = `${lastTurnId}:summary`
+        // Idempotency: if the summary item already has a usageLine
+        // stamped, don't overwrite (defensive — the scheduler's
+        // runGoalCycle returns 'completed' and exits, but a future
+        // refactor could re-enter).
+        const conv = chatStoreRef.current.conversations.find(c => c.id === ownerConversationId)
+        if (!conv) return
+        const existingItem = conv.items.find(i => i.id === summaryItemId)
+        if (!existingItem) return
+        if (existingItem.usageLine) return
+
+        updateConversation(ownerConversationId, c => ({
+          ...c,
+          items: c.items.map(i =>
+            i.id === summaryItemId ? { ...i, usageLine } : i,
+          ),
+          updatedAt: Date.now(),
+        }))
+      },
       t,
     }
 
-    await runGoalCycle(delegate)
+    try {
+      await runGoalCycle(delegate)
+    } catch (err) {
+      // Fire-and-forget guard: if runGoalCycle throws unexpectedly,
+      // pause the goal so the badge does NOT stay stuck in EXECUTANDO.
+      const message = err instanceof Error ? err.message : String(err)
+      console.error('[goal] Unexpected scheduler error:', message)
+      const current = goalRef.current
+      if (current && current.status !== 'paused' && current.status !== 'completed' && current.status !== 'cancelled') {
+        setGoal({ ...current, status: 'paused', pausedAt: Date.now(), pauseReason: 'goalError' })
+        setGoalBarStatus({ kind: 'stopped', objective: current.objective, reason: 'goalError' })
+      }
+    }
   }
 
   function buildGoalStartMessage(objective: string, workingDirectory: string): string {
@@ -3099,13 +3384,9 @@ export function App() {
     ].filter(Boolean).join('\n')
   }
 
-  function updateConversationGoal(updatedGoal: GoalState) {
-    updateConversation(activeConversationId ?? '', conversation => ({
-      ...conversation,
-      goal: updatedGoal,
-      updatedAt: Date.now(),
-    }))
-  }
+  // G-C5: goal persistence moved to a dedicated useEffect watching
+  // `goal` (see above). Direct call from updateGoal delegate removed —
+  // no side effects inside React state updaters.
 
   async function sendFeedback(request: FeedbackRequest): Promise<FeedbackResult> {
     return window.verboo.sendFeedback(request)
@@ -3438,9 +3719,13 @@ export function App() {
     // restart the cycle (avoids surprise autonomous execution on chat switch).
     const storedGoal = conversation.goal
     if (storedGoal && (storedGoal.status === 'active' || storedGoal.status === 'paused' || storedGoal.status === 'evaluating' || storedGoal.status === 'continuing')) {
-      const restored: GoalState = storedGoal.status === 'active' || storedGoal.status === 'evaluating' || storedGoal.status === 'continuing'
-        ? { ...storedGoal, status: 'paused', pausedAt: storedGoal.pausedAt ?? Date.now() }
-        : storedGoal
+      // G-C7-TS-MIGRACAO: sanitize before re-hydrating. See the matching
+      // comment in the hydration effect — this is the second of two
+      // call sites that reconstruct a GoalState from persisted data.
+      const sanitized = sanitizeStoredGoal(storedGoal)
+      const restored: GoalState = sanitized.status === 'active' || sanitized.status === 'evaluating' || sanitized.status === 'continuing'
+        ? { ...sanitized, status: 'paused', pausedAt: sanitized.pausedAt ?? Date.now() }
+        : sanitized
       setGoal(restored)
       goalRef.current = restored
       setGoalBarStatus({
@@ -3972,12 +4257,9 @@ export function App() {
     conversationId: string,
     updater: (conversation: StoredConversation) => StoredConversation,
   ) {
-    updateChatStore(store => ({
-      ...store,
-      conversations: store.conversations.map(conversation =>
-        conversation.id === conversationId ? updater(conversation) : conversation,
-      ),
-    }))
+    // G-C5: delegate to the pure helper in chatStore so the
+    // identity-preserving behavior is testable in isolation.
+    updateChatStore(store => updateConversationPure(store, conversationId, updater))
   }
 
   function updateChatStore(updater: (store: ChatStore) => ChatStore) {
@@ -4627,22 +4909,15 @@ export function App() {
       )}
       </div>
       {(() => {
-        // GoalStatusBar only renders when GoalActivePanel is NOT visible.
-        // Panel covers: active | evaluating | continuing | paused.
-        // StatusBar covers: completed (toast) + cancelled/cleared (brief feedback).
-        // This prevents duplicate UI when goal is paused (panel shows paused+reason,
-        // status bar would show stopped+reason — only panel should show).
-        const panelVisible = !!goal && goal.status !== 'completed' && goal.status !== 'blocked' && goal.status !== 'cancelled'
-        if (panelVisible) return null
-        return (
-          <GoalStatusBar
-            status={goalBarStatus}
-            onPause={() => handleGoalCommand({ kind: 'goal', action: 'pause', raw: '/goal pause' })}
-            onResume={() => handleGoalCommand({ kind: 'goal', action: 'resume', raw: '/goal resume' })}
-            onCancel={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
-            onClear={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
-          />
-        )
+        // G-C10 item 1: GoalStatusBar moved INTO composer-aux-stack (below).
+        // It was previously rendered as a sibling of bottom-dock, but
+        // bottom-dock is position:fixed (composer.css:1-9) — siblings
+        // fall out of the rounded frame and the fixed composer floats
+        // over them. The aux-stack is the slot the panel uses, and the
+        // bar was designed for the same slot (mutual exclusion with the
+        // panel by status). Keeping them as siblings inside the same
+        // fixed container restores the rounded-frame clipping.
+        return null
       })()}
 
       {activeView === 'chat' && (
@@ -4676,6 +4951,22 @@ export function App() {
                   onPause={() => handleGoalCommand({ kind: 'goal', action: 'pause', raw: '/goal pause' })}
                   onResume={() => handleGoalCommand({ kind: 'goal', action: 'resume', raw: '/goal resume' })}
                   onCancel={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
+                />
+              )}
+              {/* G-C10 item 1: GoalStatusBar lives in the same aux-stack
+                  slot as GoalActivePanel. Mutual exclusion by status:
+                  panel covers active|evaluating|continuing|paused, bar
+                  covers completed|blocked|cancelled (toast/brief feedback).
+                  Both are inside bottom-dock now, so the fixed composer
+                  no longer floats over the bar and the rounded frame
+                  clips both. */}
+              {goal && (goal.status === 'completed' || goal.status === 'blocked' || goal.status === 'cancelled') && (
+                <GoalStatusBar
+                  status={goalBarStatus}
+                  onPause={() => handleGoalCommand({ kind: 'goal', action: 'pause', raw: '/goal pause' })}
+                  onResume={() => handleGoalCommand({ kind: 'goal', action: 'resume', raw: '/goal resume' })}
+                  onCancel={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
+                  onClear={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
                 />
               )}
               {questionPrompt && questionPrompt.conversationId === activeConversationId && (
@@ -5230,6 +5521,13 @@ function extractTokenUsage(payload: unknown): TokenUsage | undefined {
   const usage = extractUsageObject(payload)
   if (!usage) return undefined
 
+  // G-C12: the CLI sends snake_case keys in its raw stream payload
+  // (input_tokens, output_tokens, cache_creation_input_tokens,
+  // cache_read_input_tokens). We read them in snake_case here and
+  // return a TokenUsage-typed object with camelCase keys, so the
+  // return value matches the shape the Rust side sends via Tauri
+  // events (serde rename_all camelCase). Consumers can treat both
+  // paths (CLI raw payload and Rust event.result.usage) uniformly.
   const inputTokens = numberValue(usage.input_tokens)
   const outputTokens = numberValue(usage.output_tokens)
   const cacheCreationTokens = numberValue(usage.cache_creation_input_tokens)
@@ -5245,10 +5543,10 @@ function extractTokenUsage(payload: unknown): TokenUsage | undefined {
   }
 
   return {
-    input_tokens: inputTokens,
-    output_tokens: outputTokens,
-    cache_creation_input_tokens: cacheCreationTokens,
-    cache_read_input_tokens: cacheReadTokens,
+    inputTokens,
+    outputTokens,
+    cacheCreationInputTokens: cacheCreationTokens,
+    cacheReadInputTokens: cacheReadTokens,
   }
 }
 

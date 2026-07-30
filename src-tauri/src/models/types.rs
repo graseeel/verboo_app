@@ -1,6 +1,53 @@
 use serde::{Deserialize, Serialize};
 
 // ════════════════════════════════════════════════════════════════════
+// Serde helpers — diagnostic overflow rejection
+// ════════════════════════════════════════════════════════════════════
+
+/// Diagnostic deserializer for `u32` fields that may receive values from
+/// JavaScript's `Number.MAX_SAFE_INTEGER` (9_007_199_254_740_991).
+///
+/// When the renderer sends a value exceeding `u32::MAX`, the error message
+/// names the overflow and suggests the correct sentinel — so the user sees
+/// *what* went wrong and *how* to fix it, instead of a generic serde error.
+///
+/// Usage: `#[serde(deserialize_with = "u32_bounds::deserialize")]`
+pub(crate) mod u32_bounds {
+    use serde::{Deserialize, Deserializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        match &raw {
+            serde_json::Value::Number(n) => {
+                if let Some(v) = n.as_u64() {
+                    u32::try_from(v).map_err(|_| {
+                        serde::de::Error::custom(format!(
+                            "value {v} overflows u32 (max 4294967295). \
+                             For unlimited, send 4294967295 (u32::MAX)"
+                        ))
+                    })
+                } else if let Some(f) = n.as_f64() {
+                    Err(serde::de::Error::custom(format!(
+                        "value {f} is not a valid u32 (max 4294967295). \
+                         For unlimited, send 4294967295 (u32::MAX)"
+                    )))
+                } else {
+                    Err(serde::de::Error::custom(
+                        "invalid numeric value in JSON",
+                    ))
+                }
+            }
+            other => Err(serde::de::Error::custom(format!(
+                "expected a number for u32 field, got {other}"
+            ))),
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
 // Enums
 // ════════════════════════════════════════════════════════════════════
 
@@ -644,10 +691,12 @@ pub struct GoalModeSettings {
     /// DEPRECATED — safety guard only. Verboo has unlimited tokens.
     /// Kept for FE backward compat. Max turns before auto-pause.
     /// Default: 3. Clamped [1, 20].
+    #[serde(deserialize_with = "u32_bounds::deserialize")]
     pub max_turns: u32,
     /// DEPRECATED — safety guard only. Verboo has unlimited tokens.
     /// Kept for FE backward compat. Max elapsed minutes before auto-pause.
     /// Default: 30. Clamped [1, 240].
+    #[serde(deserialize_with = "u32_bounds::deserialize")]
     pub max_elapsed_minutes: u32,
     pub allow_auto_access: bool,
 }
@@ -932,6 +981,7 @@ pub struct GoalState {
     pub last_session_id: Option<String>,
     pub last_turn_id: Option<String>,
     pub turns_run: u32,
+    #[serde(deserialize_with = "u32_bounds::deserialize")]
     pub max_turns: u32,
     pub max_elapsed_ms: u64,
     pub max_input_tokens: Option<u64>,
@@ -951,8 +1001,18 @@ pub struct GoalState {
 pub struct GoalEvaluationInput {
     pub goal: GoalState,
     pub conversation_items: Vec<TranscriptItem>,
-    pub latest_result: Option<AgentResultSnapshot>,
     pub context_usage: Option<ContextUsageSnapshot>,
+    // G-C16-FIX2 (2026-07-29): `latest_result` was REMOVED deliberately.
+    // The field had zero populators in renderer or Rust and contributed
+    // nothing to the evaluator. Worse: it acted as a dead leg of the
+    // G-C16 completion guard, and any future populator WITHOUT goal-scoped
+    // uniqueness (e.g. via lastTurnId) would have reopened the F2 bypass
+    // in old conversations — an inherited latest_result from another turn
+    // would make the guard pass with no real action of the current goal.
+    // If reintroducing this field is ever desired to enrich the evaluator
+    // (e.g. last turn exit code, last turn errors), it MUST be goal-scoped
+    // via lastTurnId AND come with a regression test proving no cross-goal
+    // leak. See git history for the removed branch and field.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -971,6 +1031,12 @@ pub struct TranscriptItem {
     pub model_display_name: Option<String>,
     pub streaming: Option<bool>,
     pub skills: Option<Vec<SkillSummary>>,
+    /// G-C18: captured output of a tool call (e.g. the literal content the
+    /// agent read back via the Read tool). Optional because not every item
+    /// has a tool call, and even those that do may not carry captured
+    /// output. Renamed to `toolOutput` on the wire by `rename_all =
+    /// "camelCase"` so the renderer can send it as-is.
+    pub tool_output: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1753,6 +1819,129 @@ mod tests {
             back_avatar.upload_version,
             Some(99),
             "uploadVersion must survive round-trip"
+        );
+    }
+
+    // ── u32_bounds diagnostic deserializer tests ────────────────────
+
+    #[test]
+    fn goal_state_max_turns_rejects_overflow_with_diagnostic_message() {
+        // G-C7: the root cause — renderer sends Number.MAX_SAFE_INTEGER.
+        // The error must be DIAGNOSTIC, not generic serde noise.
+        let json = r#"{
+            "id": "g1", "objective": "test", "status": "active",
+            "createdAt": 0, "updatedAt": 0,
+            "turnsRun": 0, "maxTurns": 9007199254740991,
+            "maxElapsedMs": 0, "usedInputTokens": 0, "usedOutputTokens": 0,
+            "accessMode": "approval", "workingDirectory": "/tmp",
+            "skills": [], "recentFingerprints": []
+        }"#;
+        let err = serde_json::from_str::<GoalState>(json)
+            .expect_err("must reject Number.MAX_SAFE_INTEGER");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("9007199254740991"),
+            "error must name the offending value, got: {msg}"
+        );
+        assert!(
+            msg.contains("overflows u32"),
+            "error must say 'overflows u32', got: {msg}"
+        );
+        assert!(
+            msg.contains("4294967295"),
+            "error must suggest the u32::MAX sentinel, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn goal_state_max_turns_accepts_u32_max() {
+        // G-C7: 4294967295 (u32::MAX) is the "no limit" sentinel.
+        let json = r#"{
+            "id": "g1", "objective": "test", "status": "active",
+            "createdAt": 0, "updatedAt": 0,
+            "turnsRun": 0, "maxTurns": 4294967295,
+            "maxElapsedMs": 0, "usedInputTokens": 0, "usedOutputTokens": 0,
+            "accessMode": "approval", "workingDirectory": "/tmp",
+            "skills": [], "noProgressCount": 0, "recentFingerprints": []
+        }"#;
+        let goal: GoalState = serde_json::from_str(json).expect("u32::MAX must be accepted");
+        assert_eq!(goal.max_turns, u32::MAX);
+    }
+
+    #[test]
+    fn goal_state_max_turns_accepts_normal_values() {
+        let json = r#"{
+            "id": "g1", "objective": "test", "status": "active",
+            "createdAt": 0, "updatedAt": 0,
+            "turnsRun": 3, "maxTurns": 999,
+            "maxElapsedMs": 0, "usedInputTokens": 0, "usedOutputTokens": 0,
+            "accessMode": "approval", "workingDirectory": "/tmp",
+            "skills": [], "noProgressCount": 0, "recentFingerprints": []
+        }"#;
+        let goal: GoalState = serde_json::from_str(json).expect("normal u32 must be accepted");
+        assert_eq!(goal.max_turns, 999);
+    }
+
+    #[test]
+    fn goal_mode_settings_max_turns_rejects_overflow() {
+        let json = r#"{"enabled": true, "maxTurns": 9007199254740991, "maxElapsedMinutes": 99999, "allowAutoAccess": true}"#;
+        let err = serde_json::from_str::<GoalModeSettings>(json)
+            .expect_err("must reject overflow in GoalModeSettings.max_turns");
+        let msg = err.to_string();
+        assert!(msg.contains("overflows u32"), "got: {msg}");
+    }
+
+    #[test]
+    fn goal_mode_settings_max_elapsed_minutes_rejects_overflow() {
+        let json = r#"{"enabled": true, "maxTurns": 999, "maxElapsedMinutes": 9007199254740991, "allowAutoAccess": true}"#;
+        let err = serde_json::from_str::<GoalModeSettings>(json)
+            .expect_err("must reject overflow in GoalModeSettings.max_elapsed_minutes");
+        let msg = err.to_string();
+        assert!(msg.contains("overflows u32"), "got: {msg}");
+    }
+
+    #[test]
+    fn u32_bounds_rejects_negative_float() {
+        // Negative floats should not panic — they should produce a diagnostic error.
+        let json = r#"{"enabled": true, "maxTurns": -1.5, "maxElapsedMinutes": 30, "allowAutoAccess": true}"#;
+        let err = serde_json::from_str::<GoalModeSettings>(json)
+            .expect_err("must reject negative float");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not a valid u32") || msg.contains("overflows u32"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn u32_bounds_rejects_string_for_u32_field() {
+        let json = r#"{"enabled": true, "maxTurns": "unlimited", "maxElapsedMinutes": 30, "allowAutoAccess": true}"#;
+        let err = serde_json::from_str::<GoalModeSettings>(json)
+            .expect_err("must reject string for u32 field");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("expected a number"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn goal_state_max_turns_rejects_i64_min() {
+        // i64::MIN as JSON — negative, should not panic.
+        let json = r#"{
+            "id": "g1", "objective": "test", "status": "active",
+            "createdAt": 0, "updatedAt": 0,
+            "turnsRun": 0, "maxTurns": -9223372036854775808,
+            "maxElapsedMs": 0, "usedInputTokens": 0, "usedOutputTokens": 0,
+            "accessMode": "approval", "workingDirectory": "/tmp",
+            "skills": [], "recentFingerprints": []
+        }"#;
+        let err = serde_json::from_str::<GoalState>(json)
+            .expect_err("must reject i64::MIN");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not a valid u32") || msg.contains("overflows u32"),
+            "got: {msg}"
         );
     }
 }

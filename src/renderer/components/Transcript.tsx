@@ -221,6 +221,18 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
         <div className="step-text turn-recap"><MarkdownMessage text={finalText} /></div>
       )}
 
+      {/* G-C15-TS: goal-completion usage line, rendered inline after the
+          agent's final text. No box, no badge — same typographic family
+          as the turn-recap above, so it reads as a continuation of the
+          agent's final message ("...Conteúdo verificado: valor\nUso
+          registrado: 79.695 tokens; tempo aproximado: 8min20s"). The
+          line is stamped on the turn's summary item by the onComplete
+          delegate (App.tsx) when the goal completes. Empty for non-goal
+          turns (summary.usageLine is undefined). */}
+      {!streaming && summary?.usageLine && (
+        <div className="step-text turn-usage-line">{summary.usageLine}</div>
+      )}
+
       {!streaming && summary?.changeSummary?.totalFiles ? (
         <section className="turn-completion-summary" aria-label={t('transcript.turnSummary')}>
           <ChangeSummaryCard summary={summary.changeSummary} onOpenReview={onOpenReview} reviewMetadata={reviewMetadata} />
