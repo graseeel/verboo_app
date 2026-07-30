@@ -1,8 +1,9 @@
-import type { GoalEvaluationResult, GoalState } from '../../../shared/types'
+import type { GoalEvaluationResult, GoalState, GoalTask, TranscriptItem } from '../../../shared/types'
 import type { GoalStatusBarState } from './GoalStatusBar'
 import type { Translator } from '../../i18n'
 import { buildContinuePrompt, buildCompletionMessage, buildUsageSummary } from './goalPrompt'
 import { isInfraError } from './goalReason'
+import { advanceGoalTasks, buildEvaluatorSnapshot, countActionActivities, currentGoalTask } from './goalState'
 
 /**
  * Maximum consecutive evaluator failures before the scheduler pauses the
@@ -17,6 +18,17 @@ export const MAX_EVALUATION_ERRORS = 3
  * site — do NOT change without explicit Maestro sign-off.
  */
 export const LOOP_FINGERPRINT_THRESHOLD = 3
+
+/**
+ * T1 (e): fingerprint pushed into the ring when the D1 guard REJECTS a
+ * `complete` decision (task tried to complete by prose). Deterministic
+ * per task — NOT computed from the evaluation's free text — so an agent
+ * that insists produces IDENTICAL entries, climbs noProgressCount, and
+ * dies by the loop detector that already exists (threshold ~3). No new
+ * mechanism: the rejected evaluation is DOWNGRADED to a continue and
+ * this marker is what feeds the ring.
+ */
+const D1_REJECTED_FINGERPRINT_PREFIX = 'd1:complete-rejected-no-evidence:task'
 
 /** Backoff cap: max wait between transient-error retries (8 s). */
 const MAX_RETRY_DELAY_MS = 8_000
@@ -87,6 +99,20 @@ export type GoalSchedulerDelegate = {
    */
   evaluateGoal: (goal: GoalState) => Promise<GoalEvaluationResult>
   continueGoal: (goal: GoalState, nextMessage: string) => Promise<string | undefined>
+  /**
+   * T1 (D1): the LIVE transcript items of the goal's OWNER conversation
+   * (same resolution as evaluateGoal: ownerConversationId, NOT whatever
+   * the user is looking at — G-C8-FIX). The scheduler reads them only
+   * inside the batch D1 guard to count whitelisted action activities in
+   * the current task's window; legacy single-task goals never trigger
+   * a call.
+   *
+   * REQUIRED, not optional: the evidence guard must never silently
+   * no-op. A delegate that cannot provide the transcript would make
+   * batch tasks unable to complete (fail-closed) with no visible cause
+   * — a type error at the construction site is the honest failure.
+   */
+  getConversationItems: () => TranscriptItem[]
   abortTurn: () => void
   onStatusChange: (status: GoalStatusBarState) => void
   onLog: (message: string) => void
@@ -146,7 +172,12 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
 
     let evaluation: GoalEvaluationResult
     try {
-      evaluation = await delegate.evaluateGoal(currentGoal)
+      // T1 (b) THE SNAPSHOT TRICK: for batch goals the evaluator receives
+      // a snapshot whose objective is the CURRENT task's text and whose
+      // turnsRun is turnsRunThisTask — the stateless Rust evaluator then
+      // guards and prompts PER TASK without knowing a batch exists.
+      // Legacy goals pass through with the same object reference.
+      evaluation = await delegate.evaluateGoal(buildEvaluatorSnapshot(currentGoal))
     } catch (err) {
       const errorCount = (currentGoal.errorCount ?? 0) + 1
       const message = err instanceof Error ? err.message : String(err)
@@ -204,16 +235,100 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
       delegate.updateGoal((prev: GoalState) => ({ ...prev, errorCount: 0 }))
     }
 
-    // Persist the evaluation on the goal for UI hydration.
-    delegate.updateGoal((prev: GoalState) => ({ ...prev, lastEvaluation: evaluation }))
+    // ── T1: batch bookkeeping + D1 action-evidence guard ─────────────
+    // Runs ONLY for batch goals (tasks?.length > 0); legacy single-task
+    // goals skip every branch below and keep the pre-T1 behavior
+    // byte-for-byte (aceite 4).
+    //
+    // (d) A task becomes done ONLY when ALL THREE hold:
+    //       1. evaluation.decision === 'complete'
+    //       2. turnsRunThisTask > 0
+    //       3. >= 1 whitelisted action activity in the task's window
+    //          (waived ONLY for tasks declared toolless at creation).
+    // (e) A `complete` WITHOUT evidence is NOT a failure and NOT a
+    //     completion: it becomes NO-PROGRESS — the evaluation is
+    //     DOWNGRADED to a continue, the task keeps running, and a
+    //     deterministic fingerprint feeds the ring (see
+    //     D1_REJECTED_FINGERPRINT_PREFIX): insist and die by the loop
+    //     detector that already exists.
+    let effectiveEvaluation = evaluation
+    let fingerprint: string
+    let advancedTaskText: string | undefined
+    let completedTaskIndex: number | undefined
+    // Set when a NON-LAST task passed D1 and the batch advanced: the
+    // completion path must NOT fire (decision stays 'complete' — the
+    // TASK completed, the GOAL has not). Without this gate the whole
+    // goal completes at the first task boundary.
+    let didAdvance = false
+    const batchTasks = currentGoal.tasks
+    const activeTask = currentGoalTask(currentGoal)
+    const taskIndex = currentGoal.taskIndex ?? 0
+    const clampedTaskIndex = batchTasks?.length ? Math.min(taskIndex, batchTasks.length - 1) : 0
+    if (evaluation.decision === 'complete' && batchTasks && batchTasks.length > 0 && activeTask) {
+      const turnsThisTask = currentGoal.turnsRunThisTask ?? 0
+      const windowStart = activeTask.startedAt ?? currentGoal.startedAt ?? 0
+      const evidenceCount = countActionActivities(delegate.getConversationItems(), windowStart)
+      const turnsOk = turnsThisTask > 0
+      const evidenceOk = activeTask.toolless === true || evidenceCount > 0
+      if (!turnsOk || !evidenceOk) {
+        // D1 REJECTION. DECLARED LIMIT (h): the guard proves PRESENCE
+        // of action, NOT CORRECTNESS — an edit that wrote garbage would
+        // have passed; what it refuses is completion with NO observable
+        // action at all (the turnsRun-zero incident class).
+        effectiveEvaluation = {
+          ...evaluation,
+          decision: 'continue',
+          reasonId: 'taskIncomplete',
+          reason:
+            `Completion rejected by the action-evidence guard: the task was ` +
+            `declared complete with turns run this task = ${turnsThisTask} and ` +
+            `whitelisted action activities in the task window = ${activeTask.toolless === true ? 'waived (toolless task)' : evidenceCount}. ` +
+            `Perform the work with real tool actions before declaring completion.`,
+        }
+        fingerprint = `${D1_REJECTED_FINGERPRINT_PREFIX}:${clampedTaskIndex}`
+        delegate.onLog(
+          `D1 guard rejected completion of task ${clampedTaskIndex + 1}/${batchTasks.length} ` +
+          `(turnsThisTask=${turnsThisTask}, evidence=${activeTask.toolless === true ? 'waived' : evidenceCount}). Downgraded to continue.`,
+        )
+      } else {
+        fingerprint = computeFingerprint(evaluation)
+        completedTaskIndex = clampedTaskIndex
+        if (clampedTaskIndex < batchTasks.length - 1) {
+          // Non-last task done → advance the batch IN PLACE: same goal
+          // record, ownerConversationId UNTOUCHED (POSSE, not freshness),
+          // turnsRunThisTask reset at the boundary (aceite 2).
+          const now = Date.now()
+          advancedTaskText = batchTasks[clampedTaskIndex + 1].text
+          didAdvance = true
+          delegate.updateGoal((prev: GoalState) => ({
+            ...prev,
+            tasks: advanceGoalTasks(prev.tasks ?? [], clampedTaskIndex, now),
+            taskIndex: clampedTaskIndex + 1,
+            turnsRunThisTask: 0,
+          }))
+          delegate.onLog(
+            `Task ${clampedTaskIndex + 1}/${batchTasks.length} done; advancing to task ${clampedTaskIndex + 2}. turnsRunThisTask reset to 0.`,
+          )
+        }
+      }
+    } else {
+      fingerprint = computeFingerprint(evaluation)
+    }
+
+    // Persist the evaluation on the goal for UI hydration. T1: persists
+    // the EFFECTIVE evaluation — a D1-rejected completion is stored as
+    // the downgraded continue, so the panel never displays "complete"
+    // for a task that kept running.
+    delegate.updateGoal((prev: GoalState) => ({ ...prev, lastEvaluation: effectiveEvaluation }))
 
     // Update loop-detection state. The fingerprint is computed from the
-    // evaluation we just received; if it matches the previous turn's
-    // fingerprint, the agent is repeating itself and noProgressCount
-    // increments. Otherwise it resets — a structural change means the
-    // agent is making progress even if the decision is still 'continue'.
-    // See `computeFingerprint` for the textual-vs-semantic limitation.
-    const fingerprint = computeFingerprint(evaluation)
+    // evaluation we just received (or the deterministic D1 marker when
+    // the guard rejected a completion); if it matches the previous
+    // turn's fingerprint, the agent is repeating itself and
+    // noProgressCount increments. Otherwise it resets — a structural
+    // change means the agent is making progress even if the decision is
+    // still 'continue'. See `computeFingerprint` for the
+    // textual-vs-semantic limitation.
     delegate.updateGoal((prev: GoalState) => {
       const prevFp = prev.recentFingerprints.at(-1)
       const isRepeat = prevFp !== undefined && fingerprint === prevFp
@@ -222,7 +337,11 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
       return { ...prev, recentFingerprints: nextRing, noProgressCount: nextNoProgress }
     })
 
-    if (evaluation.decision === 'complete') {
+    // The completion path fires ONLY when the goal itself is done: a
+    // D1-downgraded completion arrives here as 'continue', and a batch
+    // that just advanced to its next task must continue, not complete
+    // (didAdvance gate — see the T1 block above).
+    if (effectiveEvaluation.decision === 'complete' && !didAdvance) {
       const completionMessage = buildCompletionMessage(evaluation)
       // G-C10 item 3: stamp completedAt BEFORE building the usage
       // summary, so the elapsed time is computed from the real
@@ -230,6 +349,17 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
       // completedAt to the persisted goal; the local stamp is only
       // used to build the summary string for the log line.
       const completedAt = Date.now()
+      // T1: in a batch, the LAST task also passed D1 — stamp it done in
+      // the same write that completes the goal. Undefined for legacy
+      // goals: the tasks key stays absent.
+      const tasksCompleted =
+        completedTaskIndex !== undefined && batchTasks
+          ? batchTasks.map((task, index) =>
+              index === completedTaskIndex
+                ? { ...task, status: 'done' as GoalTask['status'], completedAt }
+                : task,
+            )
+          : undefined
       const goalForSummary: GoalState = { ...currentGoal, completedAt }
       const usageSummary = buildUsageSummary(goalForSummary)
       delegate.updateGoal((prev: GoalState) => ({
@@ -237,6 +367,7 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
         status: 'completed',
         completedAt,
         lastEvaluation: evaluation,
+        ...(tasksCompleted ? { tasks: tasksCompleted } : {}),
       }))
       delegate.onStatusChange({ kind: 'completed', objective: currentGoal.objective })
       // G-C13-FIX: build finalGoal LOCALLY from currentGoal + the
@@ -278,6 +409,9 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
         status: 'completed',
         completedAt,
         lastEvaluation: evaluation,
+        // T1: a completed batch carries ALL tasks done (the last one was
+        // stamped above; the earlier ones were stamped at each advance).
+        ...(tasksCompleted ? { tasks: tasksCompleted } : {}),
       }
       if (delegate.onComplete) {
         delegate.onComplete(finalGoal, evaluation)
@@ -321,10 +455,20 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
       }
     }
 
-    // decision === 'continue'
+    // decision === 'continue' (or a D1-downgraded completion, or a batch
+    // task that just advanced)
+    //
+    // T1: the prompt objective is the CURRENT TASK's text for batch
+    // goals — the next task's text right after an advance — so the
+    // agent is re-anchored on the task it is actually working on, not
+    // the whole batch's umbrella objective. Computed LOCALLY (not via
+    // delegate.getGoal()): updateGoal's setGoal updater does not run
+    // synchronously in production, so the post-advance goal cannot be
+    // trusted to be readable here (G-C13/G-C17 desync family).
+    const continueObjective = advancedTaskText ?? activeTask?.text ?? currentGoal.objective
     const nextMessage = buildContinuePrompt({
-      objective: currentGoal.objective,
-      evaluation,
+      objective: continueObjective,
+      evaluation: effectiveEvaluation,
       workingDirectory: currentGoal.workingDirectory,
     })
 

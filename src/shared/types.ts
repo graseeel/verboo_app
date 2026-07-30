@@ -93,6 +93,40 @@ export type AgentResultSnapshot = {
   rawResult?: unknown
 }
 
+/**
+ * T1: status of one task inside a goal BATCH. `pending` → not started;
+ * `active` → the task the scheduler is currently working on (at most one
+ * per goal); `done` → passed the D1 completion rule (decision=complete +
+ * turnsRunThisTask>0 + whitelisted action evidence — see goalScheduler.ts).
+ */
+export type GoalTaskStatus = 'pending' | 'active' | 'done'
+
+/**
+ * T1: one task of a goal BATCH (the /goal-lote). ONE GoalState record
+ * owns the whole batch — N tasks INSIDE a single goal, NOT N goals.
+ * ownerConversationId lives on the goal and is stamped once at creation;
+ * advancing between tasks never touches it (the contract is POSSESSION,
+ * not freshness — G-C5/G-C8 family).
+ *
+ * Renderer-only: Rust GoalState (types.rs:921) has no task concept and
+ * serde ignores unknown keys when the goal crosses inside
+ * GoalEvaluationInput (same argument as G-C17's evaluatorInputTokens).
+ *
+ * `toolless` is the per-task D1 opt-out: a task whose legitimate output
+ * is prose only (e.g. "write a haiku in chat") declares it AT CREATION.
+ * Default (absent) REQUIRES whitelisted action evidence to complete.
+ * Opting out waives ONLY the evidence leg — turnsRunThisTask>0 still
+ * applies (a zero-turn completion is never accepted).
+ */
+export type GoalTask = {
+  id: string
+  text: string
+  status: GoalTaskStatus
+  toolless?: boolean
+  startedAt?: number
+  completedAt?: number
+}
+
 export type GoalState = {
   id: string
   objective: string
@@ -169,8 +203,45 @@ export type GoalState = {
    * fires the persist effect with `goal=A` + `activeConversationId=B`,
    * corrupting B's stored goal. The next flush would correct it, but
    * a crash between the two leaves B with a stale goal.
+   *
+   * T1 adendo: in a BATCH goal this is stamped once at creation and is
+   * NEVER re-stamped when advancing between tasks — the contract is
+   * POSSESSION, not freshness.
    */
   ownerConversationId?: string
+  /**
+   * T1: the task BATCH. When present and non-empty, this goal is a
+   * batch: one GoalState record owning N tasks (see GoalTask). When
+   * ABSENT, the goal is a legacy single-task goal and every batch code
+   * path is skipped — the pre-T1 behavior is preserved byte-for-byte
+   * (aceite 4: no single-task regression). The key stays ABSENT (not
+   * undefined-valued, not empty) for legacy goals so the check
+   * `goal.tasks?.length` is the only gate.
+   *
+   * Renderer-only: Rust GoalState (types.rs:921) has no counterpart;
+   * serde ignores unknown keys at the boundary (same as G-C17).
+   */
+  tasks?: GoalTask[]
+  /**
+   * T1: index of the currently active task inside `tasks`. Clamped by
+   * readers (currentGoalTask in goalState.ts) so a stale index can
+   * never crash the cycle. Renderer-only (see `tasks`).
+   */
+  taskIndex?: number
+  /**
+   * T1: turns executed for the CURRENT task. Reset to 0 at every task
+   * boundary (aceite 2). Incremented where `turnsRun` is incremented
+   * (App.tsx continueGoal delegate) — and ONLY for batch goals: legacy
+   * goals keep the key ABSENT so the per-task view falls back to
+   * `turnsRun` untouched.
+   *
+   * This is the counter that crosses to Rust: buildEvaluatorSnapshot
+   * (goalState.ts) copies it into the SNAPSHOT's `turnsRun` field, so
+   * the stateless Rust evaluator and its "Turns run: N" prompt operate
+   * PER TASK without knowing a batch exists. Renderer-only at rest
+   * (same serde argument as G-C17).
+   */
+  turnsRunThisTask?: number
 }
 
 export type GoalEvaluationInput = {

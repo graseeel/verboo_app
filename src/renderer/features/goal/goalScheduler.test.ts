@@ -88,6 +88,9 @@ function makeDelegate(initialGoal: GoalState, evaluations: GoalEvaluationResult[
       delegate.evaluationIndex++
       return evalResult
     },
+    // T1: required delegate field (D1 evidence source). Legacy goals
+    // never trigger a call; the empty transcript is the inert default.
+    getConversationItems: () => [],
     continueGoal: async (goal, nextMessage) => {
       delegate.continueCalls.push({ goal, nextMessage })
       const sessionId = delegate.continueReturn[delegate.continueIndex] ?? 'session-fallback'

@@ -3188,6 +3188,18 @@ export function App() {
 
         return result.evaluation
       },
+      // T1 (D1): the batch evidence guard reads the OWNER conversation's
+      // LIVE transcript (same resolution as evaluateGoal above —
+      // ownerConversationId, never the conversation the user happens to
+      // be looking at, G-C8-FIX). Called by the scheduler only for batch
+      // goals, after evaluateGoal, so the turn's action activities are
+      // already appended. Returns the live array reference (read-only
+      // use: the guard only counts).
+      getConversationItems: () => {
+        const conversationId = goalRef.current?.ownerConversationId ?? activeConversationIdRef.current
+        if (!conversationId) return []
+        return chatStoreRef.current.conversations.find(item => item.id === conversationId)?.items ?? []
+      },
       continueGoal: async (currentGoal, nextMessage) => {
         if (controller.signal.aborted) return undefined
 
@@ -3252,6 +3264,13 @@ export function App() {
           const updated = {
             ...current,
             turnsRun: current.turnsRun + 1,
+            // T1: per-task counter, incremented exactly where the global
+            // one is (the turn just ran). ONLY for batch goals — legacy
+            // goals keep the key ABSENT so the per-task view falls back
+            // to turnsRun untouched (aceite 4: no single-task regression).
+            ...(current.turnsRunThisTask !== undefined
+              ? { turnsRunThisTask: current.turnsRunThisTask + 1 }
+              : {}),
             lastTurnId: turnId,
             lastSessionId: goalSessionId.current,
             updatedAt: Date.now(),

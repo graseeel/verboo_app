@@ -64,6 +64,14 @@ const RUST_FIELD_LIMITS: Record<NonNullable<NumericKeys>, number> = {
   // of the used_*_tokens parcels they sum.
   evaluatorInputTokens: U64_MAX,
   evaluatorOutputTokens: U64_MAX,
+  // T1: renderer-only BATCH fields — same serde-ignores-unknown-keys
+  // argument as G-C17 above (Rust GoalState has no task concept).
+  // Documented with the u32 width of turns_run, the counter
+  // turnsRunThisTask shadows into the evaluator snapshot
+  // (buildEvaluatorSnapshot, goalState.ts) and the index it derives
+  // from. taskIndex is bounded by the tasks array length in practice.
+  taskIndex: U32_MAX,
+  turnsRunThisTask: U32_MAX,
 }
 
 // ─── GoalState numeric keys (derived from the type) ─────────────
@@ -111,6 +119,9 @@ const GOAL_STATE_NUMERIC_KEYS = [
   // G-C17: renderer-only accumulators (see RUST_FIELD_LIMITS note).
   'evaluatorInputTokens',
   'evaluatorOutputTokens',
+  // T1: renderer-only batch fields (see RUST_FIELD_LIMITS note).
+  'taskIndex',
+  'turnsRunThisTask',
 ] as const satisfies readonly NumericKeys[]
 
 describe('G-C7-TS: GoalState ↔ Rust numeric contract', () => {
