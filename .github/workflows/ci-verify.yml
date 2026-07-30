@@ -1,0 +1,350 @@
+name: CI Verify
+
+# Cross-platform verification gate for PRs and pushes to dev/main.
+# Runs the Rust library tests (cargo test --lib) and the renderer build
+# (tsc + vite) on macOS, Windows, and Linux — the platforms we ship to.
+# Without this matrix, regressions that only surface on Windows or Linux
+# (e.g. issue #59: login blocked on Linux Fedora 43, field reports of
+# "Not Responding" on Windows) are caught only when a beta tag is cut
+# and distributed to users.
+#
+# This workflow is verification only — no release, no artifact publish,
+# no signing, no notarization. Release remains solely in tauri-release.yml.
+#
+# The test suite MUST be run unfiltered (no --skip, no <filter>): we have
+# been burned by CI passing on a subset that hides the real defect. If a
+# test fails on a non-macOS runner, that's a real signal — the fix is
+# gate the offending code with #[cfg(target_os = "...")] in src-tauri,
+# not narrow the test in CI. The Tauri team owns src-tauri/.
+#
+# On the rare chance both jobs somehow conflict on the target directory,
+# each job sets an isolated CARGO_TARGET_DIR under $RUNNER_TEMP.
+#
+# Sidecar prep (CADINHO 2026-07-30 + A1b-resolved): src-tauri/binaries/
+# is gitignored. A fresh checkout has only .gitkeep, so the
+# bundled_ffmpeg_path and bundled_ffprobe_path tests would fail with
+# ProtectedOrUnreadable on ALL three runners without prep. We prepare
+# sidecars deterministically per OS:
+#   - macOS: evermeet.cx .zip + GPG verificado (chave 0x1A660874)
+#   - Windows: gyan.dev Essential build .zip + SHA-256 verificado
+#   - Linux: apt (pacote Ubuntu 22.04, GPG-assinado)
+# Version pinada ffmpeg 8.1.2. actions/cache evita re-download.
+# Non-media sidecars (verboo-whisper, verboo-in-chrome,
+# computer-use-helper) stay as empty stubs because no cargo test --lib
+# actually executes them (transcribe.rs only resolves the path;
+# chrome_integration tests.rs mocks via TempDir; computer-use-helper
+# has no source references at all).
+# Triple mapping source of truth: src-tauri/src/services/video/target.rs
+# (publishes 6 platforms: macOS aarch64+x86_64, Windows x86_64+aarch64,
+# Linux x86_64+aarch64). CI must NOT use --skip — if a test fails on a
+# non-macOS runner, that's the signal.
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+  pull_request:
+    paths:
+      - "src-tauri/**"
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/ci-verify.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # Rust library tests (cargo test --lib) on the three shipped OSes.
+  # This is the load-bearing job for the TORNO login fix: the test that
+  # proves .output() no longer blocks the thread and the URL arrives
+  # before the process exits runs here, unfiltered, on all three runners.
+  # ─────────────────────────────────────────────────────────────────────
+  core-tests:
+    name: cargo test --lib (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macOS
+            runner: macos-15
+            rust_target: ""
+          - os: Windows
+            runner: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+          - os: Linux
+            runner: ubuntu-22.04
+            rust_target: ""
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_TARGET_DIR: ${{ runner.temp }}/verboo-ci-target
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.89.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.89.0"
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            build-essential \
+            cmake \
+            pkg-config \
+            autoconf \
+            automake \
+            libtool \
+            nasm \
+            zlib1g-dev \
+            xvfb \
+            ffmpeg
+
+      - name: Install Linux runtime ffmpeg/ffprobe (defense in depth)
+        # The previous step installs ffmpeg-dev only on some runners; this
+        # guarantees the runtime binaries exist for the sidecar copy below.
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get install -y ffmpeg
+          fi
+          if ! command -v ffprobe >/dev/null; then
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build renderer (tsc + vite)
+        # tsc --noEmit gates type errors; vite produces dist-renderer/.
+        # Both run unfiltered — if either fails, that's a real signal.
+        run: npm run build:renderer
+
+      # ─────────────────────────────────────────────────────────────────
+      # Sidecar prep. A fresh checkout has only .gitkeep in
+      # src-tauri/binaries/ (the real binaries are gitignored).
+      # Without this step, bundled_ffmpeg_path / bundled_ffprobe_path
+      # would fail with ProtectedOrUnreadable on ALL three runners.
+      #
+      # DETERMINISTIC DOWNLOAD policy (A1b-resolved):
+      #   - macOS:  evermeet.cx ffmpeg 8.1.2 + ffprobe 8.1.2, .zip +
+      #             .sig (GPG assinado), chave 0x1A660874. GPG verify
+      #             garante integridade criptográfica.
+      #   - Windows: gyan.dev ffmpeg 8.1.2 Essential build .zip, SHA-256
+      #             verificado contra hash conhecido.
+      #   - Linux:   apt (pacote oficial Ubuntu 22.04), GPG-assinado
+      #             pelo repositório Ubuntu. Exitente via `ffmpeg -version`.
+      #
+      # A cache (actions/cache@v4) evita baixar ~50MB por runner.
+      # Key por OS+arch para não cruzar plataformas.
+      # ─────────────────────────────────────────────────────────────────
+      - name: Cache ffmpeg binaries
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: .cache/ffmpeg
+          key: ffmpeg-8.1.2-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Prepare sidecars (macOS)
+        # Fonte: evermeet.cx. FFmpeg 8.1.2 universal (x86_64 + arm64).
+        # GPG verification: baixa .sig, importa chave 0x1A660874, verifica.
+        # O cache (step anterior) restaura .cache/ffmpeg/ se hit.
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TRIPLE="$(rustc -vV | grep '^host:' | sed 's/^host: //')"
+          BINDIR="src-tauri/binaries"
+          mkdir -p "$BINDIR"
+          FFCACHE=".cache/ffmpeg"
+          mkdir -p "$FFCACHE"
+          if [ ! -f "$FFCACHE/ffmpeg-8.1.2.zip" ]; then
+            echo "download: ffmpeg 8.1.2 + ffprobe 8.1.2 de evermeet.cx"
+            curl -fsSL -o "$FFCACHE/ffmpeg-8.1.2.zip" \
+              "https://evermeet.cx/ffmpeg/ffmpeg-8.1.2.zip"
+            curl -fsSL -o "$FFCACHE/ffmpeg-8.1.2.zip.sig" \
+              "https://evermeet.cx/ffmpeg/ffmpeg-8.1.2.zip.sig"
+            curl -fsSL -o "$FFCACHE/ffprobe-8.1.2.zip" \
+              "https://evermeet.cx/ffmpeg/ffprobe-8.1.2.zip"
+            curl -fsSL -o "$FFCACHE/ffprobe-8.1.2.zip.sig" \
+              "https://evermeet.cx/ffmpeg/ffprobe-8.1.2.zip.sig"
+            curl -fsSL "https://evermeet.cx/ffmpeg/0x1A660874.asc" | gpg --import -
+            gpg --verify "$FFCACHE/ffmpeg-8.1.2.zip.sig" "$FFCACHE/ffmpeg-8.1.2.zip"
+            gpg --verify "$FFCACHE/ffprobe-8.1.2.zip.sig" "$FFCACHE/ffprobe-8.1.2.zip"
+          fi
+          unzip -o "$FFCACHE/ffmpeg-8.1.2.zip" -d "$BINDIR"
+          unzip -o "$FFCACHE/ffprobe-8.1.2.zip" -d "$BINDIR"
+          mv -f "$BINDIR/ffmpeg" "$BINDIR/verboo-ffmpeg-${TRIPLE}"
+          mv -f "$BINDIR/ffprobe" "$BINDIR/verboo-ffprobe-${TRIPLE}"
+          chmod +x "$BINDIR/verboo-ffmpeg-${TRIPLE}"
+          chmod +x "$BINDIR/verboo-ffprobe-${TRIPLE}"
+          for s in verboo-in-chrome verboo-whisper computer-use-helper; do
+            touch "$BINDIR/${s}-${TRIPLE}"
+          done
+          ls -la "$BINDIR/"
+
+      - name: Prepare sidecars (Windows)
+        # Fonte: gyan.dev. FFmpeg 8.1.2 Essential build x86_64.
+        # SHA-256 verification contra hash conhecido e publicado.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $TRIPLE = (& rustc -vV | Select-String '^host:' | ForEach-Object { $_ -replace '^host:\s*', '' })
+          $BINDIR = "src-tauri\binaries"
+          New-Item -ItemType Directory -Force -Path $BINDIR | Out-Null
+          $FFCACHE = ".cache\ffmpeg"
+          New-Item -ItemType Directory -Force -Path $FFCACHE | Out-Null
+          $ZIP = "$FFCACHE\ffmpeg-8.1.2-essentials_build.zip"
+          $EXPECTED_HASH = "db580001caa24ac104c8cb856cd113a87a0b443f7bdf47d8c12b1d740584a2ec"
+          if (-not (Test-Path $ZIP)) {
+            Write-Host "download: ffmpeg 8.1.2 Essential build de gyan.dev"
+            Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip" -OutFile $ZIP
+            $ACTUAL_HASH = (Get-FileHash -Path $ZIP -Algorithm SHA256).Hash.ToLower()
+            if ($ACTUAL_HASH -ne $EXPECTED_HASH) {
+              Write-Host "SHA-256 MISMATCH: esperado $EXPECTED_HASH, obtido $ACTUAL_HASH"
+              exit 1
+            }
+            Write-Host "SHA-256 OK: $ACTUAL_HASH"
+          }
+          Expand-Archive -Path $ZIP -DestinationPath "$FFCACHE\extracted" -Force
+          $EXTRACTED = "$FFCACHE\extracted"
+          $FF_DIR = Get-ChildItem -Path $EXTRACTED -Directory | Select-Object -First 1
+          Copy-Item -Force "$($FF_DIR.FullName)\bin\ffmpeg.exe" "$BINDIR\verboo-ffmpeg-$TRIPLE.exe"
+          Copy-Item -Force "$($FF_DIR.FullName)\bin\ffprobe.exe" "$BINDIR\verboo-ffprobe-$TRIPLE.exe"
+          foreach ($s in @('verboo-in-chrome', 'verboo-whisper', 'computer-use-helper')) {
+            New-Item -ItemType File -Force -Path "$BINDIR\$s-$TRIPLE.exe" | Out-Null
+          }
+          Get-ChildItem $BINDIR
+
+      - name: Prepare sidecars (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TRIPLE="$(rustc -vV | grep '^host:' | sed 's/^host: //')"
+          BINDIR="src-tauri/binaries"
+          mkdir -p "$BINDIR"
+          cp -f /usr/bin/ffmpeg "$BINDIR/verboo-ffmpeg-${TRIPLE}"
+          chmod +x "$BINDIR/verboo-ffmpeg-${TRIPLE}"
+          cp -f /usr/bin/ffprobe "$BINDIR/verboo-ffprobe-${TRIPLE}"
+          chmod +x "$BINDIR/verboo-ffprobe-${TRIPLE}"
+          for s in verboo-in-chrome verboo-whisper computer-use-helper; do
+            touch "$BINDIR/${s}-${TRIPLE}"
+          done
+          ls -la "$BINDIR/"
+
+      - name: Run cargo test --lib (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          set -euxo pipefail
+          cargo +1.89.0 test \
+            --manifest-path src-tauri/Cargo.toml \
+            --lib \
+            --locked \
+            -- --nocapture
+
+      - name: Run cargo test --lib (Windows)
+        # STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139) on Windows cargo test is
+        # caused by the DLL loader finding a stale VCRUNTIME140.dll from an
+        # embedded app (MySQL, MongoDB, R, OpenSSL, Chocolatey) before the
+        # system copy in C:\Windows\System32. Prepend System32 to PATH so
+        # the system copy wins. Reuses the mitigation proven in the
+        # tauri-release workflow (commit history of tauri-release.yml).
+        #
+        # CARGO_ENCODED_RUSTFLAGS embeds the Windows manifest into the
+        # test binary so the test process is recognized as a GUI app and
+        # loads Common-Controls 6.0 — without this, test discovery via
+        # Cargo's test harness can hang on Windows runners. 0x1F separator
+        # avoids the space-delimiter trap (spaces inside /MANIFESTDEPENDENCY
+        # would break -Clink-arg parsing).
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Windows\System32;$env:PATH"
+          $USEP = [char]0x1F
+          $env:CARGO_ENCODED_RUSTFLAGS = "-Clink-arg=/MANIFEST:EMBED$USEP-Clink-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+          cargo +1.89.0 test `
+            --manifest-path src-tauri/Cargo.toml `
+            --lib `
+            --locked `
+            -- --nocapture
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Renderer build gate on the three shipped OSes. This is what B4
+  # exposed as the load-bearing class of bug: a tsc failure that was
+  # swallowed by the release script, shipping a stale .app with a stale
+  # UI. In CI we fail loudly on the first tsc error — no silent path.
+  # ─────────────────────────────────────────────────────────────────────
+  renderer-tests:
+    name: renderer build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: tsc --noEmit (type check)
+        # Fails loudly on any type error. This is what was silently
+        # passing locally on macOS while the release script swallowed
+        # the real failure (B4 incident).
+        run: npx tsc --noEmit
+
+      - name: vite build
+        # Produces dist-renderer/. The output is identical across OSes
+        # modulo line endings in source files (Vite normalizes).
+        run: npm run build:renderer
+
+      - name: Run .mjs verification scripts
+        # Smoke for the scripts/verify/* test suites. These are pure
+        # Node and run identically on all three OSes.
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            for t in scripts/verify/*.test.mjs; do
+              node --test "$t"
+            done
+          else
+            for t in scripts/verify/*.test.mjs; do
+              node --test "$t"
+            done
+          fi

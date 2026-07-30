@@ -17,6 +17,7 @@
   },
   "private": true,
   "type": "module",
+  "packageManager": "npm@11.12.1",
   "scripts": {
     "dev:renderer": "vite",
     "build:renderer": "tsc --noEmit && vite build",
