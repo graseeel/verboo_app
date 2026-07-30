@@ -1289,6 +1289,22 @@ pub struct UpdateSnapshot {
     pub last_checked_at: Option<i64>,
     pub downloaded_at: Option<i64>,
     pub error: Option<String>,
+    /// `true` when the Stable channel endpoint responded with a valid
+    /// manifest (so a stable build exists). `false` when the channel is
+    /// missing (404), network error, or manifest was malformed.
+    ///
+    /// Fail-closed: any doubt yields `false`. The renderer uses this to
+    /// enable the "Stable" channel button in Settings; while the stable
+    /// release channel does not exist, the button must stay disabled so
+    /// users cannot accidentally select a channel with no manifest.
+    ///
+    /// Populated by `UpdateService::run_stable_probe` (see
+    /// `src-tauri/src/services/update_service.rs`), which is called from
+    /// `check_for_updates` in `src-tauri/src/lib.rs` after the active
+    /// channel probe completes. No extra timer is needed — the probe
+    /// rides along the existing periodic check.
+    #[serde(default)]
+    pub stable_channel_available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

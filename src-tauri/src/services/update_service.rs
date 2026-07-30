@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 const CHECK_INTERVAL_MS: u64 = 6 * 60 * 60 * 1000;
 pub const STABLE_UPDATE_ENDPOINT: &str =
-    "https://github.com/graseeel/verboo_app/releases/latest/download/latest.json";
+    "https://github.com/graseeel/verboo_app/releases/download/updater-stable/latest.json";
 pub const BETA_UPDATE_ENDPOINT: &str =
     "https://github.com/graseeel/verboo_app/releases/download/updater-beta/latest.json";
 
@@ -169,6 +169,7 @@ impl UpdateService {
             last_checked_at: None,
             downloaded_at: None,
             error: None,
+            stable_channel_available: false,
         };
         Self {
             state: Arc::new(Mutex::new(State {
@@ -545,6 +546,75 @@ impl UpdateService {
             state.last_timer_at_ms = Some(now_ms());
         }
     }
+
+    /// Records whether the Stable channel endpoint currently serves a valid
+    /// manifest. Called by the periodic updater check in `lib.rs` after it
+    /// probes `STABLE_UPDATE_ENDPOINT` alongside the user's active channel.
+    ///
+    /// Fail-closed: pass `false` for HTTP 404, network error, or malformed
+    /// manifest. Pass `true` only when a valid manifest was returned.
+    ///
+    /// This is silent — it does NOT call `mark_error` or transition `status`.
+    /// A missing stable channel is a normal state (the app is beta-only
+    /// today), not an error. Errors on the user's *active* channel continue
+    /// to flow through `mark_error` as before.
+    pub fn set_stable_channel_available(&self, available: bool) -> UpdateSnapshot {
+        if let Ok(mut state) = self.state.lock() {
+            state.snapshot.stable_channel_available = available;
+        }
+        self.snapshot()
+    }
+
+    /// Returns the last known availability of the Stable channel.
+    pub fn stable_channel_available(&self) -> bool {
+        self.state
+            .lock()
+            .map(|s| s.snapshot.stable_channel_available)
+            .unwrap_or(false)
+    }
+
+    /// Orchestrates the periodic Stable-channel availability probe and
+    /// records the result via `set_stable_channel_available`. Called by
+    /// `check_for_updates` in `src-tauri/src/lib.rs` after the active
+    /// channel probe completes.
+    ///
+    /// `active_check_ok` is `true` when the active-channel probe returned
+    /// `Ok(Some(_))` or `Ok(None)` (manifest was served and parsed). When
+    /// the user is already on the Stable channel, we reuse that result
+    /// instead of probing the same endpoint twice — the `probe` closure
+    /// is NOT invoked in that case.
+    ///
+    /// When the user is on the Beta channel, `probe` is invoked with
+    /// `STABLE_UPDATE_ENDPOINT`. The closure must return `true` when the
+    /// endpoint served a valid manifest (HTTP 200 + parseable JSON,
+    /// regardless of whether a newer version is available), and `false`
+    /// for HTTP 404, network error, or malformed manifest.
+    ///
+    /// This is silent — it does NOT call `mark_error` or transition
+    /// `status`. A missing stable channel is a normal state (the app is
+    /// beta-only today), not an error. Errors on the user's *active*
+    /// channel continue to flow through `mark_error` as before.
+    ///
+    /// The probe is injected as a closure so this method stays free of
+    /// network dependencies and can be unit-tested with a stub.
+    pub async fn run_stable_probe<F, Fut>(&self, active_check_ok: bool, probe: F) -> UpdateSnapshot
+    where
+        F: FnOnce(&'static str) -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        let on_stable = self
+            .state
+            .lock()
+            .map(|s| s.snapshot.channel == UpdateChannel::Stable)
+            .unwrap_or(false);
+        let available = if on_stable {
+            // Reuse the active-channel probe result; do NOT call probe.
+            active_check_ok
+        } else {
+            probe(STABLE_UPDATE_ENDPOINT).await
+        };
+        self.set_stable_channel_available(available)
+    }
 }
 
 impl Default for UpdateService {
@@ -847,6 +917,201 @@ mod tests {
         assert_eq!(
             macos_relaunch_script(),
             "while kill -0 \"$1\" 2>/dev/null; do sleep 0.1; done; exec /usr/bin/open -n \"$2\""
+        );
+    }
+
+    #[test]
+    fn stable_channel_available_defaults_false() {
+        // Fail-closed default: until the periodic check probes the stable
+        // endpoint and confirms a manifest exists, the renderer must keep
+        // the "Stable" button disabled.
+        let s = service(true);
+        assert!(!s.snapshot().stable_channel_available);
+        assert!(!s.stable_channel_available());
+    }
+
+    #[test]
+    fn set_stable_channel_available_true_propagates_to_snapshot() {
+        let s = service(true);
+        s.set_stable_channel_available(true);
+        assert!(s.stable_channel_available());
+        let snap = s.snapshot();
+        assert!(snap.stable_channel_available);
+    }
+
+    #[test]
+    fn set_stable_channel_available_false_is_silent_no_error_no_status_change() {
+        // 404 / network error / malformed manifest on the STABLE channel
+        // must NOT surface as a user-visible error. The user's active
+        // channel (Beta by default) is unaffected. Only the boolean flips.
+        let s = service(true);
+        s.mark_checking();
+        let snap = s.set_stable_channel_available(false);
+        assert!(!snap.stable_channel_available);
+        // status stays Checking — the active-channel probe is still in
+        // flight; the stable probe's 404 must not preempt it.
+        assert_eq!(snap.status, UpdateStatus::Checking);
+        // No error string is set.
+        assert!(snap.error.is_none());
+        // last_checked_at is NOT stamped by this call — it's stamped by
+        // mark_available / mark_not_available / mark_error for the active
+        // channel. The stable probe is a side-channel.
+        assert!(snap.last_checked_at.is_none());
+    }
+
+    #[test]
+    fn set_stable_channel_available_does_not_touch_active_channel_error() {
+        // Even if the user is ON the stable channel and the stable probe
+        // fails, the active-channel error path is the one that surfaces
+        // to the user. set_stable_channel_available(false) only records
+        // availability — it does not clear or set the active error.
+        let s = service(true);
+        s.configure(UpdateSettings {
+            channel: UpdateChannel::Stable,
+            auto_check: true,
+            auto_download: false,
+        });
+        s.mark_error("active channel down".into());
+        let snap = s.set_stable_channel_available(false);
+        assert!(!snap.stable_channel_available);
+        // Active-channel error is preserved.
+        assert_eq!(snap.error.as_deref(), Some("active channel down"));
+        assert_eq!(snap.status, UpdateStatus::Error);
+    }
+
+    // ────── run_stable_probe: orchestration wiring tests ──────
+    //
+    // These tests exercise the orchestrator that `check_for_updates` in
+    // `src-tauri/src/lib.rs` calls. They prove two things:
+    //
+    // 1. When the user is on Beta, the probe closure IS invoked and its
+    //    result populates `stable_channel_available` (silent — no
+    //    mark_error, no status transition).
+    //
+    // 2. When the user is on Stable, the probe closure is NOT invoked
+    //    (we reuse `active_check_ok` instead, avoiding a second HTTP
+    //    call to the same endpoint).
+    //
+    // Combined with the wiring test `lib_rs_calls_run_stable_probe`,
+    // these tests prove the full production path: lib.rs calls
+    // run_stable_probe, which calls the probe closure, which updates
+    // the snapshot field. If any link in that chain breaks, one of
+    // these tests fails.
+
+    #[tokio::test]
+    async fn run_stable_probe_on_beta_invokes_closure_and_records_true() {
+        let s = service(true);
+        // Default channel is Beta.
+        assert_eq!(s.snapshot().channel, UpdateChannel::Beta);
+
+        let snap = s.run_stable_probe(false, |_endpoint| async { true }).await;
+        assert!(
+            snap.stable_channel_available,
+            "Beta user + probe returns true → stable_channel_available must be true"
+        );
+        assert!(snap.error.is_none());
+        assert_ne!(snap.status, UpdateStatus::Error);
+    }
+
+    #[tokio::test]
+    async fn run_stable_probe_on_beta_invokes_closure_and_records_false() {
+        let s = service(true);
+        assert_eq!(s.snapshot().channel, UpdateChannel::Beta);
+
+        // Simulate the production scenario where updater-stable returns
+        // 404. Probe closure returns false. The active channel (Beta)
+        // state must not change.
+        s.mark_not_available();
+        let snap = s.run_stable_probe(false, |_endpoint| async { false }).await;
+        assert!(
+            !snap.stable_channel_available,
+            "Beta user + probe returns false → stable_channel_available must be false (fail-closed)"
+        );
+        assert!(snap.error.is_none(), "stable probe failure must not surface as error");
+        assert_ne!(
+            snap.status,
+            UpdateStatus::Error,
+            "stable probe failure must not transition status to Error"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_stable_probe_on_stable_reuses_active_check_ok_without_invoking_closure() {
+        // When the user is on Stable, we MUST NOT call the probe closure
+        // — that would be a second HTTP call to the same endpoint. We
+        // reuse the active probe's result via the `active_check_ok`
+        // argument.
+        let s = service(true);
+        s.configure(UpdateSettings {
+            channel: UpdateChannel::Stable,
+            auto_check: true,
+            auto_download: false,
+        });
+        assert_eq!(s.snapshot().channel, UpdateChannel::Stable);
+
+        // Probe closure panics if invoked — if the orchestrator calls
+        // it, this test fails loudly.
+        let snap = s
+            .run_stable_probe(true, |_endpoint| async {
+                panic!("probe closure must NOT be called when active channel is Stable");
+            })
+            .await;
+        assert!(snap.stable_channel_available);
+
+        // And the inverse: active_check_ok=false → stable_channel_available=false.
+        let snap = s
+            .run_stable_probe(false, |_endpoint| async {
+                panic!("probe closure must NOT be called when active channel is Stable");
+            })
+            .await;
+        assert!(!snap.stable_channel_available);
+    }
+
+    #[tokio::test]
+    async fn run_stable_probe_silently_preserves_active_error() {
+        // Even when the active channel is in Error state, the stable
+        // probe must NOT clear or alter the active error — it only
+        // flips the boolean.
+        let s = service(true);
+        s.mark_error("beta endpoint down".into());
+        let snap = s.run_stable_probe(false, |_endpoint| async { false }).await;
+        assert_eq!(snap.error.as_deref(), Some("beta endpoint down"));
+        assert_eq!(snap.status, UpdateStatus::Error);
+        assert!(!snap.stable_channel_available);
+    }
+
+    #[test]
+    fn lib_rs_calls_run_stable_probe() {
+        // WIRING TEST — catches the failure mode that the C3 QA flagged:
+        // the setter exists, the orchestrator exists, but no production
+        // code calls them, so `stable_channel_available` stays false
+        // forever. If `src-tauri/src/lib.rs` ever stops CALLING
+        // `run_stable_probe`, this test fails with a clear message.
+        //
+        // The assertion requires a CALL expression (`.run_stable_probe(`),
+        // not just a mention. A commented-out call (`// ...run_stable_probe`)
+        // or a doc comment (`/// ...run_stable_probe`) does NOT satisfy
+        // this — which is exactly the failure mode we're guarding against.
+        //
+        // Brittle to renaming the function. If you rename `run_stable_probe`,
+        // update this test and the doc on `UpdateSnapshot::stable_channel_available`.
+        let lib_rs_path = std::path::Path::new("src/lib.rs");
+        let lib_rs = std::fs::read_to_string(lib_rs_path).unwrap_or_else(|e| {
+            panic!(
+                "wiring test could not read src/lib.rs (run from src-tauri/): {e}. \
+                 If the relative path changed, update the test location."
+            );
+        });
+        assert!(
+            lib_rs.contains(".run_stable_probe("),
+            "src/lib.rs does not CALL `.run_stable_probe(`. \
+             A comment or doc mentioning `run_stable_probe` is NOT enough — \
+             the production path must invoke the method. The stable channel \
+             availability field will never be populated otherwise. The C3 QA \
+             flagged exactly this failure mode: setter exists, orchestrator \
+             exists, no production CALLER. See check_for_updates in src/lib.rs \
+             — it must call `service.run_stable_probe(...)` after the active \
+             channel probe."
         );
     }
 }

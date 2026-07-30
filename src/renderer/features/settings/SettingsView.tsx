@@ -639,7 +639,7 @@ export function SettingsView({
                   <ChoiceChip
                     selected={userSettings.updates.channel === 'stable'}
                     onClick={() => onUserSettingsChange({ updates: { ...userSettings.updates, channel: 'stable' } })}
-                    disabled
+                    disabled={!updateSnapshot?.stableChannelAvailable}
                   >
                     {t('updates.stable')}
                   </ChoiceChip>
@@ -650,9 +650,11 @@ export function SettingsView({
                     {t('updates.beta')}
                   </ChoiceChip>
                 </div>
-                <p className="settings-hint" style={{ marginTop: 6, color: 'var(--text-muted)' }}>
-                  {t('updates.stableDisabled')}
-                </p>
+                {!updateSnapshot?.stableChannelAvailable && (
+                  <p className="settings-hint" style={{ marginTop: 6, color: 'var(--text-muted)' }}>
+                    {t('updates.stableDisabled')}
+                  </p>
+                )}
               </div>
               <div className="settings-field" style={{ border: 0, marginBottom: 0 }}>
                 <div className="settings-action-row">

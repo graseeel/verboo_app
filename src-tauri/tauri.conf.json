@@ -83,7 +83,7 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://github.com/graseeel/verboo_app/releases/latest/download/latest.json"
+        "https://github.com/graseeel/verboo_app/releases/download/updater-beta/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJEQzlBRjRBN0VCMDVCQzgKUldUSVc3QitTcS9KdlVvSEpNRWJUY3FkUVFIa2JTZkMvd2FMT0Y0UG9wQWNpK09NZGgyQk1KOFkK"
     }

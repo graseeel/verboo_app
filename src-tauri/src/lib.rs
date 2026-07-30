@@ -43,6 +43,13 @@ struct EvaluationResult {
     /// FE should migrate to reading evaluation.nextAction directly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     user_message: Option<String>,
+    /// G-C15: evaluator token usage for THIS evaluation call, separate from
+    /// agent turn usage. The renderer sums turn + evaluator tokens for the
+    /// total the user asked for. `None` when the CLI envelope omitted usage
+    /// or the usage block was malformed — counting failure must NEVER break
+    /// the goal. Serialized as `evaluatorUsage` (camelCase) to TS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    evaluator_usage: Option<crate::models::types::TokenUsage>,
 }
 
 impl From<crate::services::goal_evaluator::EvaluationResult> for EvaluationResult {
@@ -51,6 +58,7 @@ impl From<crate::services::goal_evaluator::EvaluationResult> for EvaluationResul
         Self {
             evaluation: value.evaluation,
             user_message,
+            evaluator_usage: value.evaluator_usage,
         }
     }
 }
@@ -953,6 +961,7 @@ fn evaluate_goal(
                     confidence: 0.0,
                 },
                 user_message: None,
+                evaluator_usage: None,
             })
         }
     }
@@ -1225,28 +1234,66 @@ async fn check_for_updates(
             return Ok(snap);
         }
     };
-    match updater.check().await {
-        Ok(Some(update)) => {
-            let snap = service.mark_available(
-                update.version.clone(),
-                None,
-                None,
-                update.body.clone(),
-            );
-            let _ = app.emit("update:snapshot", snap.clone());
-            Ok(snap)
-        }
-        Ok(None) => {
-            let snap = service.mark_not_available();
-            let _ = app.emit("update:snapshot", snap.clone());
-            Ok(snap)
-        }
-        Err(e) => {
-            let snap = service.mark_error(format!("Falha ao verificar atualizações: {e}"));
-            let _ = app.emit("update:snapshot", snap.clone());
-            Ok(snap)
-        }
-    }
+    let active_result = updater.check().await;
+    // `active_check_ok` is true when the active-channel probe returned
+    // Ok(Some) or Ok(None) — i.e. the manifest was served and parsed.
+    // Used by `run_stable_probe` to short-circuit a second probe when
+    // the user is already on the Stable channel.
+    let active_check_ok = matches!(&active_result, Ok(_));
+    let snap = match active_result {
+        Ok(Some(update)) => service.mark_available(
+            update.version.clone(),
+            None,
+            None,
+            update.body.clone(),
+        ),
+        Ok(None) => service.mark_not_available(),
+        Err(e) => service.mark_error(format!("Falha ao verificar atualizações: {e}")),
+    };
+    let _ = app.emit("update:snapshot", snap.clone());
+
+    // Probe the Stable channel availability (silent — does NOT call
+    // mark_error). When the user is on Beta, this is an independent
+    // probe of STABLE_UPDATE_ENDPOINT. When the user is on Stable,
+    // `run_stable_probe` reuses `active_check_ok` and skips the probe.
+    // 404 / network error / malformed manifest → false (fail-closed).
+    let app_for_probe = app.clone();
+    let stable_snap = service
+        .run_stable_probe(active_check_ok, |endpoint| async move {
+            probe_endpoint_serves_manifest(&app_for_probe, endpoint).await
+        })
+        .await;
+    let _ = app.emit("update:snapshot", stable_snap);
+
+    Ok(snap)
+}
+
+/// Probes a single updater endpoint and returns `true` when it serves a
+/// valid manifest (HTTP 200 + parseable JSON, regardless of whether a
+/// newer version is available). Returns `false` for HTTP 404, network
+/// error, or malformed manifest — fail-closed.
+///
+/// Used by `check_for_updates` to populate `stable_channel_available`
+/// without surfacing errors to the user. A missing stable channel is a
+/// normal state (the app is beta-only today), not an error.
+async fn probe_endpoint_serves_manifest(app: &tauri::AppHandle, endpoint: &'static str) -> bool {
+    use tauri_plugin_updater::UpdaterExt;
+    let url: tauri::Url = match endpoint.parse() {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+    let updater = match app
+        .updater_builder()
+        .endpoints(vec![url])
+        .and_then(|b| b.build())
+    {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+    // Ok(Some) = manifest valid + newer version available
+    // Ok(None) = manifest valid + no newer version (channel exists)
+    // Err      = 404 / network error / malformed manifest (no channel)
+    matches!(updater.check().await, Ok(_))
 }
 
 #[tauri::command]
