@@ -656,6 +656,43 @@ export type LoginResult = {
   status?: CliAuthStatus
 }
 
+/**
+ * A1: kind discriminator of `LoginEvent`. Rust enum `LoginEventKind`
+ * (types.rs:608) uses `#[serde(rename_all = "lowercase")]` — a
+ * DIFFERENT serde attribute from the `camelCase` used by the struct
+ * family around it (LoginEvent, TokenUsage, …). The wire values are
+ * exactly these lowercase strings; capitalizing them here
+ * ('Url' | 'Complete' | 'Error') would compile and silently never
+ * match — the same defect class as the snake_case TokenUsage.
+ */
+export type LoginEventKind = 'url' | 'complete' | 'error'
+
+/**
+ * A1: payload of the `login:event` Tauri channel (event name is
+ * literally `login:event`, with the colon). Rust struct LoginEvent
+ * (types.rs:590) uses `rename_all = "camelCase"`. All four optional
+ * fields use `skip_serializing_if Option::is_none` — when absent the
+ * KEY IS OMITTED from the JSON and arrives as `undefined`, not null.
+ * Treat absence, not null.
+ *
+ * Dispatch contract (cli_service.rs):
+ *   - `url`      → `url` carries the login URL extracted from CLI
+ *                  stdout. The browser may not open by itself (Linux,
+ *                  issue #59), so the UI MUST show it, copyable.
+ *   - `complete` → login finished. `ok === false` means failure;
+ *                  `message` carries CLI stdout/stderr (the specific
+ *                  cause); `status` is the post-login auth snapshot.
+ *   - `error`    → infra failure (e.g. spawn). `message` carries the
+ *                  specific cause — never reduce it to a generic.
+ */
+export type LoginEvent = {
+  kind: LoginEventKind
+  url?: string
+  message?: string
+  ok?: boolean
+  status?: CliAuthStatus
+}
+
 export type ProfileUsageSummary = {
   tokensInTotal?: number
   tokensOutTotal?: number

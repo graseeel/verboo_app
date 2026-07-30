@@ -55,7 +55,17 @@ const enUS: Record<string, string> = {
   'login.apiKeyConfigured': 'Configured ({hint})',
   'login.apiKeyHelp': 'The key is encrypted locally. The app only unlocks if it can list models available in your Verboo account. In unsigned beta builds, API key mode can reduce macOS Secure Store prompts compared with CLI token access.',
   'login.openingCli': 'Opening Verboo login through the CLI...',
-  'login.cliStarted': 'Continue the authentication in the terminal or browser opened by the CLI.',
+  // A1: the CLI login is event-driven (login:event channel) — there is
+  // no "cliStarted" state anymore, progress is awaitingBrowser →
+  // urlReady → complete.
+  'login.awaitingBrowser': 'Login started — waiting for the browser…',
+  'login.urlReadyHelp': 'If the browser did not open by itself, copy and paste this link:',
+  'login.urlAria': 'Verboo login link',
+  'login.copyLink': 'Copy link',
+  'login.copied': 'Copied',
+  'login.openLink': 'Open link in browser',
+  'login.waitingForAuth': 'Waiting for authentication in the browser…',
+  'login.cancelLogin': 'Cancel',
   'login.cliStartFailed': 'Failed to start CLI login.',
   'login.logoutFailed': 'Could not sign out of Verboo.',
   'login.apiKeyValidated': 'API key validated.',
@@ -1206,7 +1216,17 @@ const ptBR: Record<string, string> = {
   'login.apiKeyConfigured': 'Configurada ({hint})',
   'login.apiKeyHelp': 'A chave fica criptografada localmente. O app só libera o uso se ela conseguir listar os modelos disponíveis na sua conta Verboo. Em builds beta sem assinatura, usar chave API pode reduzir avisos do Secure Store do macOS em comparação ao token do CLI.',
   'login.openingCli': 'Abrindo login do Verboo pelo CLI...',
-  'login.cliStarted': 'Continue a autenticação no terminal ou navegador aberto pelo CLI.',
+  // A1: o login pelo CLI é guiado por evento (canal login:event) — não
+  // existe mais estado "cliStarted"; o progresso é awaitingBrowser →
+  // urlReady → complete.
+  'login.awaitingBrowser': 'Login iniciado — aguardando o navegador…',
+  'login.urlReadyHelp': 'Se o navegador não abrir sozinho, copie e cole este link:',
+  'login.urlAria': 'Link de login do Verboo',
+  'login.copyLink': 'Copiar link',
+  'login.copied': 'Copiado',
+  'login.openLink': 'Abrir link no navegador',
+  'login.waitingForAuth': 'Aguardando a autenticação no navegador…',
+  'login.cancelLogin': 'Cancelar',
   'login.cliStartFailed': 'Falha ao iniciar o login pelo CLI.',
   'login.logoutFailed': 'Não foi possível sair do Verboo.',
   'login.apiKeyValidated': 'Chave de API validada.',

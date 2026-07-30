@@ -70,29 +70,34 @@ pub struct TokenGuard;
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]
     fn none_key_leaves_unchanged() {
         let mut cmd = Command::new("echo");
+        crate::services::cli_spawn::apply_creation_flags(&mut cmd);
         assert!(inject_api_key(None, &mut cmd).is_none());
     }
 
     #[test]
     fn empty_key_leaves_unchanged() {
         let mut cmd = Command::new("echo");
+        crate::services::cli_spawn::apply_creation_flags(&mut cmd);
         assert!(inject_api_key(Some("  "), &mut cmd).is_none());
     }
 
     #[test]
     fn vbk_returns_guard() {
         let mut cmd = Command::new("echo");
+        crate::services::cli_spawn::apply_creation_flags(&mut cmd);
         assert!(inject_api_key(Some("vbk_test_key_12345"), &mut cmd).is_some());
     }
 
     #[test]
     fn jwt_returns_guard() {
         let mut cmd = Command::new("echo");
+        crate::services::cli_spawn::apply_creation_flags(&mut cmd);
         assert!(inject_api_key(Some("eyJhbGciOiJIUzI1NiJ9.real_jwt_token"), &mut cmd).is_some());
     }
 }

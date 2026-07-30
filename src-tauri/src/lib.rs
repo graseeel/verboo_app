@@ -85,8 +85,11 @@ fn get_config(
 // ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
-fn start_cli_login(cli: tauri::State<'_, CliService>) -> Result<LoginResult, String> {
-    cli.start_cli_login()
+async fn start_cli_login(
+    app: tauri::AppHandle,
+    cli: tauri::State<'_, CliService>,
+) -> Result<LoginResult, String> {
+    cli.start_cli_login_nonblocking(app)
 }
 
 #[tauri::command]

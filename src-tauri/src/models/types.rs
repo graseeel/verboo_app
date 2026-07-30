@@ -569,6 +569,50 @@ pub struct LoginResult {
     pub status: Option<CliAuthStatus>,
 }
 
+/// A1: event emitted during non-blocking CLI login. The renderer listens
+/// on the `login:event` Tauri channel and dispatches by `kind`:
+///   - `url`      → open the browser / show a "click to open" link. `url`
+///                  is the login URL extracted from CLI stdout.
+///   - `complete` → login finished (success or failure). `ok` indicates
+///                  success; `message` carries CLI stdout/stderr or a
+///                  status summary; `status` is the post-login auth
+///                  snapshot when available.
+///   - `error`    → infra failure (spawn failed, etc.). `message` is the
+///                  error string. The renderer MUST treat this as
+///                  terminal — no further events will arrive for this
+///                  login attempt.
+///
+/// Why a single channel + discriminated `kind` (vs three separate
+/// channels): the renderer only needs one subscription, and ordering
+/// is preserved (url before complete). Three channels would race.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginEvent {
+    pub kind: LoginEventKind,
+    /// Login URL extracted from CLI stdout. Present only when
+    /// `kind == Url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Human-readable message (CLI stdout/stderr or error). Present
+    /// for `Complete` and `Error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Success flag for `Complete`. Absent for other kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ok: Option<bool>,
+    /// Post-login auth snapshot for `Complete` when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<CliAuthStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LoginEventKind {
+    Url,
+    Complete,
+    Error,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerbooModel {

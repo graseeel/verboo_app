@@ -210,6 +210,8 @@ const RUST_TO_TS_NAME: Record<string, string> = {
   AgentResultSnapshot: 'AgentResultSnapshot',
   GoalState: 'GoalState',
   ContextUsageSnapshot: 'ContextUsageSnapshot',
+  // A1: payload struct of the `login:event` channel (types.rs:590).
+  LoginEvent: 'LoginEvent',
 }
 
 describe('G-C12-4: Rust serde camelCase ↔ TS type contract (source-text)', () => {
@@ -398,4 +400,125 @@ describe('G-C15-FIX: Rust serde PLACEMENT ↔ TS envelope contract (sibling, not
       'evaluatorUsage must NOT be inside GoalEvaluationResult — it is a sibling of evaluation in GoalEvaluationEnvelope (Rust lib.rs:40 EvaluationResult)',
     ).not.toContain('evaluatorUsage')
   })
+})
+
+// ─── A1: ENUM casing contract (lowercase, NOT camelCase) ────────
+//
+// The casing contract above covers structs marked rename_all =
+// "camelCase". A1 introduced a trap in the SAME type family: the enum
+// `LoginEventKind` (types.rs:608) uses rename_all = "lowercase" — a
+// DIFFERENT serde attribute. The wire values are the lowercase strings
+// "url" | "complete" | "error". A TS union declared as
+// 'Url' | 'Complete' | 'Error' would compile and never match at
+// runtime — the renderer would ignore every login:event, the exact
+// defect class of snake_case TokenUsage, now on ENUM VARIANT CASING.
+//
+// This block parses the Rust enum marked rename_all = "lowercase",
+// derives the expected wire values from the variant names, and asserts
+// the TS union declares exactly those lowercase literals — and NOT
+// their capitalized forms.
+
+/**
+ * Extract the variants of every Rust enum marked with
+ * `#[serde(rename_all = "lowercase")]`. Mirrors the struct parser
+ * above: scan lines, track the attribute, collect `Variant,` lines
+ * until the closing `}`.
+ */
+function extractLowercaseEnums(rustSource: string): Array<{
+  enumName: string
+  variants: string[]
+}> {
+  const lines = rustSource.split('\n')
+  const results: Array<{ enumName: string; variants: string[] }> = []
+
+  let pendingLowercase = false
+  let inEnum: string | null = null
+  let variants: string[] = []
+
+  for (const raw of lines) {
+    const line = raw.trim()
+
+    if (line === '#[serde(rename_all = "lowercase")]') {
+      pendingLowercase = true
+      continue
+    }
+    if (line.startsWith('#[') && !line.includes('rename_all')) {
+      continue
+    }
+
+    const enumMatch = line.match(/^(?:pub\s+)?enum (\w+)\s*\{/)
+    if (enumMatch && pendingLowercase) {
+      inEnum = enumMatch[1]
+      variants = []
+      pendingLowercase = false
+      continue
+    }
+    if (enumMatch) {
+      pendingLowercase = false
+      inEnum = null
+      continue
+    }
+
+    if (inEnum) {
+      if (line === '}') {
+        results.push({ enumName: inEnum, variants })
+        inEnum = null
+        variants = []
+        continue
+      }
+      if (line.startsWith('//')) continue
+      // Unit variants: `Url,` or `Url` (last line may omit the comma).
+      const variantMatch = line.match(/^(\w+),?$/)
+      if (variantMatch) {
+        variants.push(variantMatch[1])
+      }
+    }
+  }
+
+  return results
+}
+
+describe('A1: Rust enum lowercase ↔ TS union contract (LoginEventKind)', () => {
+  const rustSource = readFileSync(RUST_TYPES_PATH, 'utf-8')
+  const tsSource = readFileSync(TS_TYPES_PATH, 'utf-8')
+  const enums = extractLowercaseEnums(rustSource)
+
+  it('the Rust source parses at least one rename_all = "lowercase" enum', () => {
+    expect(enums.length).toBeGreaterThan(0)
+    expect(enums.some(e => e.enumName === 'LoginEventKind')).toBe(true)
+  })
+
+  for (const { enumName, variants } of enums) {
+    if (enumName !== 'LoginEventKind') continue // out of scope: no TS counterpart
+
+    describe(`${enumName} → TS union`, () => {
+      // The TS union declaration line: `export type LoginEventKind = ...`
+      const unionMatch = tsSource.match(new RegExp(`export type ${enumName}\\s*=\\s*([^\\n]+)`))
+      const unionBody = unionMatch?.[1] ?? ''
+
+      it('has a TS union declaration', () => {
+        expect(unionMatch, `TS must declare export type ${enumName}`).not.toBeNull()
+      })
+
+      for (const variant of variants) {
+        const expectedWireValue = variant.toLowerCase()
+
+        it(`variant "${variant}" → wire value "${expectedWireValue}" (lowercase)`, () => {
+          // serde rename_all = "lowercase" lowercases the whole variant
+          // name (Url → "url"). The TS union must contain the lowercase
+          // literal…
+          expect(
+            unionBody,
+            `${enumName} in TS must declare '${expectedWireValue}' — the Rust enum uses rename_all = "lowercase"`,
+          ).toContain(`'${expectedWireValue}'`)
+          // …and must NOT declare the capitalized variant name — that
+          // would compile and silently never match at runtime.
+          expect(
+            unionBody,
+            `${enumName} in TS must NOT declare '${variant}' — rename_all = "lowercase" sends '${expectedWireValue}'`,
+          ).not.toContain(`'${variant}'`)
+        })
+      }
+    })
+  }
 })

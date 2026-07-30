@@ -310,3 +310,190 @@
   margin-top: 18px;
   background: transparent;
 }
+
+/* ─── A1: CLI login flow (event-driven) ────────────────────────────
+   Motion installed from transitions-dev: shimmer text (#15) for the
+   in-progress status, error state shake (#12) for failures. Tokens
+   below are the per-snippet :root blocks; the auto-revert half of #12
+   is deliberately NOT installed — a login failure must persist until
+   the user retries, never fade away on a timer. */
+:root {
+  --shake-distance: 6px;
+  --shake-overshoot: 4px;
+  --shake-dur-a: 80ms;
+  --shake-dur-b: 60ms;
+  --shake-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --shimmer-dur: 2000ms;
+  --shimmer-band: 400%;
+  --shimmer-ease: linear;
+  /* Theme-aware shimmer: follow the app's own palette (light/dark). */
+  --shimmer-base: var(--text-muted);
+  --shimmer-highlight: var(--text);
+}
+
+/* Shimmer text (transitions-dev #15, pure CSS): the in-progress label
+   stays alive without a spinner. Two-layer construction: base text in
+   --shimmer-base, ::before duplicates the string via attr(data-text)
+   and sweeps a highlight band clipped to the glyphs. */
+.t-shimmer {
+  position: relative;
+  display: inline-block;
+  color: var(--shimmer-base);
+}
+.t-shimmer::before {
+  content: attr(data-text);
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: linear-gradient(
+    90deg,
+    transparent          0%,
+    transparent         40%,
+    var(--shimmer-highlight) 50%,
+    transparent         60%,
+    transparent        100%
+  );
+  background-size: var(--shimmer-band) 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: t-shimmer var(--shimmer-dur) var(--shimmer-ease) infinite;
+}
+@keyframes t-shimmer {
+  0%   { background-position: 100% 0; }
+  100% { background-position: 0% 0; }
+}
+
+/* Error state shake (transitions-dev #12, keyframes verbatim):
+   percussive "this failed" hint on the error block. React remounts the
+   block per new message (key), which replays the animation — no JS
+   reflow orchestration needed here. */
+.t-input.is-shaking {
+  animation: t-input-shake calc(
+      var(--shake-dur-a) * 2 + var(--shake-dur-b) * 2
+    ) linear;
+}
+@keyframes t-input-shake {
+  0%      { transform: translateX(0);                                 animation-timing-function: var(--shake-ease); }
+  28.57%  { transform: translateX(var(--shake-distance));             animation-timing-function: var(--shake-ease); }
+  57.14%  { transform: translateX(calc(var(--shake-distance) * -1)); animation-timing-function: var(--shake-ease); }
+  78.57%  { transform: translateX(var(--shake-overshoot));            animation-timing-function: var(--shake-ease); }
+  100%    { transform: translateX(0); }
+}
+
+/* In-progress row: shimmer label + escape hatch. */
+.login-progress {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.login-cancel {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: var(--radius);
+}
+.login-cancel:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg-soft) 78%, var(--accent-soft));
+}
+.login-cancel:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* URL block (the Linux fix, issue #59): when the browser does not open
+   by itself the user must SEE the login URL and copy it by hand.
+   Enters with a short rise+fade — purpose: preventing jarring changes
+   (emil-design-eng); transform+opacity only, ease-out, 200ms (<300ms
+   UI budget). */
+.login-url-block {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  animation: login-url-enter 200ms var(--shake-ease);
+}
+@keyframes login-url-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.login-url-help {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.login-url-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.login-url-input {
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  color: var(--text);
+  padding: 0 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  cursor: text;
+}
+.login-url-input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
+}
+
+.login-copy-button {
+  min-height: 38px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.login-open-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  font-size: 13px;
+  text-decoration: none;
+  justify-self: start;
+}
+.login-open-link:hover {
+  text-decoration: underline;
+}
+
+.login-url-block .login-progress {
+  margin: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-shimmer::before { animation: none !important; }
+  .t-input.is-shaking { animation: none !important; }
+  /* Reduced motion means gentler, not zero: keep the opacity fade so
+     the block still enters smoothly, drop the movement. */
+  .login-url-block {
+    animation-name: login-url-enter-fade;
+  }
+  @keyframes login-url-enter-fade {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+}

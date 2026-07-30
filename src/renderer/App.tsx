@@ -1355,12 +1355,16 @@ export function App() {
   }
 
   async function startCliLogin() {
-    const result = await window.verboo.startCliLogin()
-    if (result.status) setCliAuth(result.status)
-    if (result.ok) {
-      await validateAccess(true)
-    }
-    return result
+    // A1: non-blocking — the Rust command spawns the CLI and returns in
+    // <1s (suite Rust A1: 30s fake CLI, command returns immediately).
+    // result.ok now means "spawned", NOT "authenticated", and
+    // result.status is always absent at this point. Do NOT call
+    // validateAccess here: it would re-check auth BEFORE the user had
+    // any chance to authenticate in the browser, surface a spurious
+    // failure, and never unlock. Progress arrives via the login:event
+    // channel (LoginScreen), and completion triggers the real
+    // re-validation via onLoginComplete below.
+    return window.verboo.startCliLogin()
   }
 
   async function logout() {
@@ -4596,6 +4600,16 @@ export function App() {
           onStaySignedInChange={updateStaySignedIn}
           onAcceptNotice={acceptDevelopmentNotice}
           onOpenFeedback={() => setFeedbackOpen(true)}
+          onLoginComplete={(event) => {
+            // A1: the CLI reported a successful login. Re-validate
+            // against the REAL backend state (validateAccess re-fetches
+            // credential/CLI/model status and unlocks only when
+            // verified) — the event's status snapshot is just a fast
+            // hint, never the unlock authority. authChecking shows the
+            // "validating" progress on the login screen meanwhile.
+            if (event.status) setCliAuth(event.status)
+            void validateAccess(true)
+          }}
         />
         <FeedbackDialog
           open={feedbackOpen}
