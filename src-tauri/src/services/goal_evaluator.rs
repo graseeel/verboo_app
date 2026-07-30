@@ -361,6 +361,9 @@ fn run_evaluation_cli(
     // Inject API key for auth (same pattern as TurnService).
     inject_api_key(api_key, &mut cmd);
 
+    // A2-FIX (2026-07-29): creation_flags already applied by CliSpawn::new
+    // (cli_spawn.rs). No need to re-apply here.
+
     if std::env::var_os("VERBOO_GOAL_TIMING").as_deref() != Some(std::ffi::OsStr::new("1")) {
         // ── FAST PATH (identical to pre-G-C19) ──────────────────────
         // Same try_wait + wait_with_output loop, no stdout.take(),

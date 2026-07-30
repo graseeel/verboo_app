@@ -85,15 +85,17 @@ pub fn list_workspace_files(working_directory: &str) -> Result<Vec<String>, Stri
 fn try_git_ls_files(root: &Path) -> Option<Vec<String>> {
     // Detect git repo membership first; the toplevel path is intentionally
     // not used for mapping because `git ls-files` below is cwd-relative.
-    let inside_output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .ok()?;
+    let inside_output = {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C")
+            .arg(root)
+            .args(["rev-parse", "--is-inside-work-tree"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+        cmd.output().ok()?
+    };
     if !inside_output.status.success() {
         return None;
     }
@@ -104,15 +106,17 @@ fn try_git_ls_files(root: &Path) -> Option<Vec<String>> {
         return None;
     }
 
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(GIT_LS_FILES_ARGS)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .ok()?;
+    let output = {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C")
+            .arg(root)
+            .args(GIT_LS_FILES_ARGS)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+        cmd.output().ok()?
+    };
     if !output.status.success() {
         return None;
     }
@@ -366,19 +370,49 @@ mod tests {
 
     #[test]
     fn git_ls_files_from_subdir_returns_paths_relative_to_subdir() {
-        let git_available = Command::new("git").arg("--version").output().is_ok();
+        let git_available = {
+            let mut cmd = Command::new("git");
+            cmd.arg("--version");
+            crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+            cmd.output().is_ok()
+        };
         if !git_available {
-            return;
+            let skip_requested = std::env::var_os("VERBOO_SKIP_GIT_TESTS")
+                .as_deref()
+                == Some(std::ffi::OsStr::new("1"));
+            if skip_requested {
+                panic!(
+                    "workspace_files::git_ls_files SKIPPED \
+                     (VERBOO_SKIP_GIT_TESTS=1): git is not available on PATH. \
+                     CI: add this test to --skip in browser-linux-check.sh, \
+                     or install git (PRENSA Dockerfile)."
+                );
+            }
+            panic!(
+                "workspace_files::git_ls_files FAIL-BY-DEFAULT: git is not \
+                 available on PATH. This test requires git to verify ls-files \
+                 behavior from a subdirectory. Fix: install git on this \
+                 runner. Local opt-out (NOT for CI): \
+                 VERBOO_SKIP_GIT_TESTS=1."
+            );
         }
 
         let tmp = TempDir::new().unwrap();
-        let init = Command::new("git")
-            .arg("init")
-            .arg(tmp.path())
-            .output()
-            .unwrap();
+        let init = {
+            let mut cmd = Command::new("git");
+            cmd.arg("init").arg(tmp.path());
+            crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+            cmd.output().unwrap()
+        };
         if !init.status.success() {
-            return;
+            panic!(
+                "workspace_files::git_ls_files FAIL: `git init` succeeded \
+                 for `git --version` but failed in the tempdir. This is \
+                 usually a sandbox/permission issue, not a missing binary. \
+                 Exit status: {:?}, stderr: {}",
+                init.status,
+                String::from_utf8_lossy(&init.stderr)
+            );
         }
 
         fs::write(tmp.path().join(".gitignore"), "*.log\n").unwrap();

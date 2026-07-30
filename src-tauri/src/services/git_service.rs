@@ -26,14 +26,17 @@ struct GitResult {
 
 /// Runs `git -C <cwd> <args>` and captures stdout/stderr.
 fn run_git(cwd: &Path, args: &[&str]) -> GitResult {
-    let output = Command::new("git")
-        .arg("-C")
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
         .arg(cwd)
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output();
+        .stderr(std::process::Stdio::piped());
+    // A2: suppress console window on Windows.
+    #[cfg(windows)]
+    cmd.creation_flags(crate::services::child_signal::process_creation_flags());
+    let output = cmd.output();
     match output {
         Ok(out) => GitResult {
             ok: out.status.success(),
@@ -524,12 +527,14 @@ fn read_upstream_branch(root: &Path) -> Option<String> {
 }
 
 fn is_gh_available() -> bool {
-    Command::new("gh")
-        .arg("--version")
+    let mut cmd = Command::new("gh");
+    cmd.arg("--version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(crate::services::child_signal::process_creation_flags());
+    cmd.output()
         .map(|out| out.status.success())
         .unwrap_or(false)
 }
@@ -692,12 +697,14 @@ pub fn create_workspace_pull_request(
         );
     }
 
-    let gh_version = Command::new("gh")
-        .arg("--version")
+    let mut gh_version = Command::new("gh");
+    gh_version.arg("--version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output();
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    gh_version.creation_flags(crate::services::child_signal::process_creation_flags());
+    let gh_version = gh_version.output();
     match gh_version {
         Ok(out) if out.status.success() => {}
         Ok(out) => {
@@ -722,8 +729,8 @@ pub fn create_workspace_pull_request(
         ));
     }
 
-    let pr_output = Command::new("gh")
-        .arg("pr")
+    let mut pr_output = Command::new("gh");
+    pr_output.arg("pr")
         .arg("create")
         .arg("--title")
         .arg(&title)
@@ -732,8 +739,10 @@ pub fn create_workspace_pull_request(
         .current_dir(&root)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output();
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    pr_output.creation_flags(crate::services::child_signal::process_creation_flags());
+    let pr_output = pr_output.output();
 
     let pr_output = match pr_output {
         Ok(out) => out,

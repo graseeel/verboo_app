@@ -67,6 +67,17 @@ impl CliSpawn {
     /// Builds a `Command` with the args already populated. The caller is
     /// responsible for setting stdin/stdout/stderr, current_dir, env, and
     /// calling `spawn()`.
+    ///
+    /// A2-FIX (2026-07-29): on Windows, this constructor ALSO applies
+    /// `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW` via `creation_flags`
+    /// so every CLI spawn suppresses the console window. This is the
+    /// single chokepoint — all 9 callers of `CliSpawn::new` inherit the
+    /// flag automatically, and a future caller can't forget it. There
+    /// is NO legitimate case where a CLI spawn needs a visible console:
+    /// the CLI is headless (all communication via stdout/stderr/JSON),
+    /// and OAuth login opens the browser, not a terminal. If a future
+    /// caller genuinely needs a visible console (none today), it must
+    /// opt out explicitly with a documented reason — never the default.
     pub fn new<I, S>(args: I) -> CliSpawn
     where
         I: IntoIterator<Item = S>,
@@ -88,6 +99,7 @@ impl CliSpawn {
                     }
                     augment_path_env(&mut command);
                     protect_user_cli_env(&mut command);
+                    apply_creation_flags(&mut command);
                     return CliSpawn {
                         command,
                         runtime: CliRuntime::EnvNode { node_path, cli_mjs_path: cli_mjs },
@@ -106,6 +118,7 @@ impl CliSpawn {
                 }
                 augment_path_env(&mut command);
                 protect_user_cli_env(&mut command);
+                apply_creation_flags(&mut command);
                 return CliSpawn {
                     command,
                     runtime: CliRuntime::BundledNode { node_path, cli_mjs_path: cli_mjs },
@@ -120,6 +133,7 @@ impl CliSpawn {
         }
         augment_path_env(&mut command);
         protect_user_cli_env(&mut command);
+        apply_creation_flags(&mut command);
         CliSpawn {
             command,
             runtime: CliRuntime::GlobalVerboo,
@@ -208,6 +222,48 @@ fn augment_path_env(command: &mut Command) {
 fn protect_user_cli_env(command: &mut Command) {
     command.env("DISABLE_AUTOUPDATER", "1");
 }
+
+/// A2-FIX (2026-07-29): applies `CREATE_NEW_PROCESS_GROUP |
+/// CREATE_NO_WINDOW` on Windows so the spawned CLI doesn't pop a
+/// visible console window AND remains interruptible via
+/// `GenerateConsoleCtrlEvent`. No-op on non-Windows.
+///
+/// This is called from `CliSpawn::new` so every CLI spawn inherits
+/// the flag automatically — the single chokepoint. A future caller
+/// can't forget it. There is NO legitimate case where a CLI spawn
+/// needs a visible console: the CLI is headless (all communication
+/// via stdout/stderr/JSON), and OAuth login opens the browser, not a
+/// terminal. If a future caller genuinely needs a visible console
+/// (none today), it must opt out explicitly with a documented
+/// reason — never the default.
+/// A2-FIX2 (2026-07-29): exposed as `pub` so the three services that
+/// spawn `Command::new` directly (auth_token, cli_credentials,
+/// workspace_files_service) can reuse the SAME guard without
+/// duplicating logic. Duplicating a safety guard in two places is how
+/// one of them falls behind. Single source of truth: this function.
+///
+/// Applies `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW` on Windows so
+/// the spawned process doesn't pop a visible console window AND remains
+/// interruptible via `GenerateConsoleCtrlEvent`. No-op on non-Windows.
+///
+/// Called from `CliSpawn::new` (the 9 CLI spawn sites inherit
+/// automatically) AND from the 7 direct `Command::new` sites in
+/// auth_token / cli_credentials / workspace_files_service. There is NO
+/// legitimate case where a child process spawned from the desktop app
+/// needs a visible console: the CLI is headless, `git`/`gh` are
+/// headless, `/usr/bin/security` is macOS-only (never runs on
+/// Windows), and test spawns of `echo`/`git` don't need a console
+/// either. If a future caller genuinely needs a visible console (none
+/// today), it must opt out explicitly with a documented reason —
+/// never the default.
+#[cfg(windows)]
+pub fn apply_creation_flags(command: &mut Command) {
+    use crate::services::child_signal::process_creation_flags;
+    command.creation_flags(process_creation_flags());
+}
+
+#[cfg(not(windows))]
+pub fn apply_creation_flags(_command: &mut Command) {}
 
 #[cfg(test)]
 mod tests {

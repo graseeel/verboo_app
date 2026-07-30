@@ -6,6 +6,8 @@ use std::sync::Arc;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use crate::services::cli_spawn::apply_creation_flags;
+
 use super::cli_mcp::{self, CliMcpRunner, CliMcpState, RealCliMcpRunner};
 use super::diagnostics;
 use super::manifest::{
@@ -135,7 +137,9 @@ impl ChromeIntegrationService {
         {
             return Err("chrome_helper_conflict".into());
         }
-        let output = Command::new(&record.helper_path)
+        let mut command = Command::new(&record.helper_path);
+        apply_creation_flags(&mut command);
+        let output = command
             .arg("ping")
             .output()
             .map_err(|error| error.to_string())?;
