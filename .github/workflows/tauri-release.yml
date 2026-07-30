@@ -81,8 +81,10 @@ jobs:
           fi
           # Strip optional leading "v" for SemVer comparisons.
           VERSION="${TAG#v}"
-          # Prerelease if the version matches x.y.z-<channel>.<n>
-          if [[ "$VERSION" =~ -(beta|alpha|rc)\.[0-9]+$ ]]; then
+          # Prerelease if the version matches x.y.z-<channel> or x.y.z-<channel>.<n>.
+          # Both forms must be detected so legacy tags (v0.6.0-beta.2) and the new
+          # channel-only form (v0.6.1-beta) are marked prerelease on GitHub.
+          if [[ "$VERSION" =~ -(beta|alpha|rc)(\.[0-9]+)?$ ]]; then
             IS_PRE="true"
           else
             IS_PRE="false"
