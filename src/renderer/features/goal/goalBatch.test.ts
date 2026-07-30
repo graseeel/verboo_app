@@ -201,8 +201,15 @@ function makeBatchGoal(
 }
 
 // ─── ACEITE 1: CANONICAL REPRO ──────────────────────────────────────
-describe('T1 aceite 1 — CANONICAL REPRO: completion by prose does NOT complete', () => {
-  it('a task completing with ZERO whitelisted actions never advances, feeds the ring, dies by loop at ~3', async () => {
+// T2 ASSERTION CHANGE — BY DESIGN, not regression (declared per the
+// Maestro's warning): under T1 this repro ended 'blocked' with the
+// goal stuck on task 1 forever. Under T2's state matrix (row 8), the
+// loop detector FAILS ONLY THE TASK and the batch ADVANCES — and when
+// the failing task is the last one (row 13), the batch completes with
+// its failures recorded per task. The D1 mechanics (reject → no-
+// progress → ring → loop at ~3) are UNCHANGED and still asserted here.
+describe('T1 aceite 1 + T2 rows 8/13 — CANONICAL REPRO: completion by prose never becomes done', () => {
+  it('each prose-completing task dies by loop at ~3, is marked failed (never done), and the batch advances', async () => {
     const goal = makeBatchGoal([{ text: 'Fix the parser' }, { text: 'Add regression test' }])
     const startedAt = goal.startedAt ?? 0
     // The transcript the agent produced: THINKING (the trap — thinking
@@ -220,45 +227,75 @@ describe('T1 aceite 1 — CANONICAL REPRO: completion by prose does NOT complete
 
     const result = await runGoalCycle(delegate)
 
-    // EFEITO 1 — the goal dies by the EXISTING loop detector, around 3.
-    expect(result).toBe('blocked')
-    expect(delegate.evalCalls).toBe(3)
-    // EFEITO 2 — rejected completion became NO-PROGRESS, not failure:
-    // the task CONTINUED (a re-prompt turn ran after each rejection).
-    expect(delegate.continueCalls.length).toBe(3)
-    // EFEITO 3 — the task NEVER advanced: same goal record, task 1
-    // still active, task 2 still pending, no state ever left taskIndex 0.
-    expect(delegate.goal.taskIndex).toBe(0)
-    expect(delegate.goal.tasks?.[0].status).toBe('active')
-    expect(delegate.goal.tasks?.[1].status).toBe('pending')
-    for (const state of delegate.goalHistory) {
-      expect(state.taskIndex ?? 0).toBe(0)
-      expect(state.status).not.toBe('completed')
-    }
-    // EFEITO 4 — the ring was fed with the DETERMINISTIC D1 fingerprint:
-    // three identical entries, the exact signal detectLoop kills on.
-    expect(delegate.goal.recentFingerprints).toEqual([
+    // EFEITO 1 — each task died by the EXISTING loop detector at ~3
+    // evaluations (3 for task 1 + 3 for task 2); the batch did NOT
+    // block — it advanced (T2 row 8) and completed with failures (row
+    // 13, which beats the K guard: nothing left to pause FOR).
+    expect(result).toBe('completed')
+    expect(delegate.evalCalls).toBe(6)
+    // EFEITO 2 — every rejected completion became NO-PROGRESS, never a
+    // failure shortcut: a re-prompt turn ran after each rejection.
+    expect(delegate.continueCalls.length).toBe(6)
+    // EFEITO 3 — neither task EVER became done; both are 'failed' with
+    // completion stamps, on the SAME goal record.
+    expect(delegate.goal.tasks?.map(task => task.status)).toEqual(['failed', 'failed'])
+    expect(delegate.goal.tasks?.[0].completedAt).toBeTypeOf('number')
+    expect(delegate.goal.tasks?.[1].completedAt).toBeTypeOf('number')
+    expect(delegate.goal.status).toBe('completed')
+    expect(delegate.goal.completedAt).toBeTypeOf('number')
+    // EFEITO 4 — the D1 ring mechanics per task, unchanged from T1:
+    // each task's rejections pushed its OWN deterministic fingerprint
+    // three times (the exact signal detectLoop kills on); the loop kill
+    // then CLEARED the ring so the next task starts clean.
+    const task0Poisoned = delegate.goalHistory.find(
+      state => state.taskIndex === 0 && state.recentFingerprints.length === 3,
+    )
+    expect(task0Poisoned?.recentFingerprints).toEqual([
       'd1:complete-rejected-no-evidence:task:0',
       'd1:complete-rejected-no-evidence:task:0',
       'd1:complete-rejected-no-evidence:task:0',
     ])
-    expect(delegate.goal.noProgressCount).toBe(2)
-    // EFEITO 5 — the UI never saw a "complete": lastEvaluation carries
-    // the DOWNGRADED continue, and onComplete never fired.
+    const task1Poisoned = delegate.goalHistory.find(
+      state => state.taskIndex === 1 && state.recentFingerprints.length === 3,
+    )
+    expect(task1Poisoned?.recentFingerprints).toEqual([
+      'd1:complete-rejected-no-evidence:task:1',
+      'd1:complete-rejected-no-evidence:task:1',
+      'd1:complete-rejected-no-evidence:task:1',
+    ])
+    // EFEITO 5 — the T2 row-8 advance after task 1's loop: task 1
+    // failed, batch STILL ACTIVE (not blocked, not paused), task 2
+    // active, counter reset, ring cleared, K counter at 1.
+    const afterFirstLoop = delegate.goalHistory.find(
+      state => state.taskIndex === 1 && state.tasks?.[0].status === 'failed',
+    )
+    expect(afterFirstLoop).toBeDefined()
+    expect(afterFirstLoop?.status).not.toBe('blocked')
+    expect(afterFirstLoop?.status).not.toBe('paused')
+    expect(afterFirstLoop?.tasks?.[1].status).toBe('active')
+    expect(afterFirstLoop?.turnsRunThisTask).toBe(0)
+    expect(afterFirstLoop?.recentFingerprints).toEqual([])
+    expect(afterFirstLoop?.consecutiveFailedTasks).toBe(1)
+    // EFEITO 6 — the UI never saw a "complete": lastEvaluation carries
+    // the DOWNGRADED continue, and onComplete never fired (T2: the
+    // row-13 failure-ending does not call onComplete — the final report
+    // surface is T4's, pinned here so T4 makes a conscious choice).
     expect(delegate.goal.lastEvaluation?.decision).toBe('continue')
     expect(delegate.goal.lastEvaluation?.reasonId).toBe('taskIncomplete')
     expect(delegate.goal.lastEvaluation?.reason).toContain('action-evidence guard')
     expect(delegate.onCompleteCalls.length).toBe(0)
-    // EFEITO 6 — the rejection was logged with the real numbers.
-    const rejectionLogs = delegate.logs.filter(m => m.startsWith('D1 guard rejected completion of task 1/2'))
-    expect(rejectionLogs.length).toBe(3)
+    // EFEITO 7 — the rejections were logged with the real numbers.
+    const rejectionLogs = delegate.logs.filter(m => m.startsWith('D1 guard rejected completion of task'))
+    expect(rejectionLogs.length).toBe(6)
+    expect(rejectionLogs[0]).toContain('task 1/2')
     expect(rejectionLogs[0]).toContain('turnsThisTask=0') // first rejection: the TURNS leg
-    expect(rejectionLogs[1]).toContain('turnsThisTask=1') // later rejections: the EVIDENCE leg
-    expect(rejectionLogs[1]).toContain('evidence=0')
-    // EFEITO 7 — the re-prompt tells the agent WHY (downgraded reason
+    expect(rejectionLogs[1]).toContain('evidence=0') // later rejections: the EVIDENCE leg
+    expect(rejectionLogs[3]).toContain('task 2/2') // second task guarded too
+    // EFEITO 8 — the re-prompt tells the agent WHY (downgraded reason
     // feeds buildContinuePrompt), anchored on the CURRENT task's text.
     expect(delegate.continueCalls[0].nextMessage).toContain('Fix the parser')
     expect(delegate.continueCalls[0].nextMessage).toContain('action-evidence guard')
+    expect(delegate.continueCalls[3].nextMessage).toContain('Add regression test')
   })
 })
 
@@ -416,16 +453,29 @@ describe('T1 (f) — toolless opt-out: evidence waived, turns still required', (
 
     const result = await runGoalCycle(delegate)
 
-    // The parser task tried to complete by prose 3 times → loop-blocked.
-    expect(result).toBe('blocked')
+    // T2 ASSERTION CHANGE — BY DESIGN: under T1 this ended 'blocked'.
+    // Under T2 the parser task's 3 prose-completions kill the TASK by
+    // loop (row 8); being the LAST task, the batch completes with the
+    // failure recorded (row 13). The per-task guard itself is unchanged.
+    expect(result).toBe('completed')
     expect(delegate.goal.taskIndex).toBe(1) // advanced past the haiku…
     expect(delegate.goal.tasks?.[0].status).toBe('done') // …toolless completed…
-    expect(delegate.goal.tasks?.[1].status).toBe('active') // …but the guarded task never did
-    expect(delegate.goal.recentFingerprints).toEqual([
-      'd1:complete-rejected-no-evidence:task:1',
-      'd1:complete-rejected-no-evidence:task:1',
-      'd1:complete-rejected-no-evidence:task:1',
-    ])
+    expect(delegate.goal.tasks?.[1].status).toBe('failed') // …but the guarded task NEVER became done
+    // The parser task's rejections DID push its own deterministic
+    // fingerprint three times before the loop kill cleared the ring.
+    // (The selector matches the POISONED state exactly — the ring at
+    // the haiku→parser boundary still carried mixed entries, because
+    // only a loop kill clears it, not a done-advance.)
+    const poisoned = delegate.goalHistory.find(
+      state =>
+        state.recentFingerprints.length === 3 &&
+        state.recentFingerprints.every(fp => fp === 'd1:complete-rejected-no-evidence:task:1'),
+    )
+    expect(poisoned).toBeDefined()
+    // T2 (row 9): the haiku's done RESET the K guard, so the parser's
+    // single failure leaves the counter at 1 — no batchStagnation.
+    expect(delegate.goal.consecutiveFailedTasks).toBe(1)
+    expect(delegate.goal.pauseReason).toBeUndefined()
   })
 })
 

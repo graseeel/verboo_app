@@ -221,19 +221,69 @@ export function buildEvaluatorSnapshot(goal: GoalState): GoalState {
 }
 
 /**
- * T1: advance the batch at a task boundary. The finished task is
- * stamped `done` (+completedAt), the next one `active` (+startedAt —
- * opens its D1 evidence window), everything else untouched. Pure: the
- * caller (goalScheduler) resets taskIndex/turnsRunThisTask on the goal.
+ * T1/T2: advance the batch at a task boundary. The finished task is
+ * stamped with `outcome` (+completedAt), the next one `active`
+ * (+startedAt — opens its D1 evidence window), everything else
+ * untouched. Pure: the caller (goalScheduler) resets
+ * taskIndex/turnsRunThisTask on the goal.
+ *
+ * T2: `outcome` is 'done' for the D1 pass (row 1, the default), and
+ * 'failed' for the loop kill (row 8) — a failed task still advances the
+ * batch so one stuck task does not drag nineteen with it.
  */
-export function advanceGoalTasks(tasks: GoalTask[], doneIndex: number, now: number): GoalTask[] {
+export function advanceGoalTasks(
+  tasks: GoalTask[],
+  doneIndex: number,
+  now: number,
+  outcome: GoalTask['status'] = 'done',
+): GoalTask[] {
   return tasks.map((task, index) =>
     index === doneIndex
-      ? { ...task, status: 'done' as GoalTask['status'], completedAt: now }
+      ? { ...task, status: outcome, completedAt: now }
       : index === doneIndex + 1
         ? { ...task, status: 'active' as GoalTask['status'], startedAt: now }
         : task,
   )
+}
+
+/**
+ * T2 (row 12): the USER skips a blocked task. Pure transition —
+ * the UI (T4) collects the click and the App restarts the cycle.
+ *
+ *   task:      blocked → skipped (+completedAt), NEVER failed — skip is
+ *              a human decision, distinct from a systemic diagnosis.
+ *   batch:     back to 'active' (clears pausedAt/pauseReason), advances
+ *              to i+1 with turnsRunThisTask reset — or to 'completed'
+ *              when the skipped task was the LAST one (row 13: the last
+ *              task reached a terminal state).
+ *   K guard:   TRANSPARENT — consecutiveFailedTasks is carried over
+ *              untouched. Counting skips toward K would fire the guard
+ *              on human intent instead of system health — and whoever
+ *              is skipping is already present, so pausing to tell them
+ *              is redundant noise (Maestro's rationale). Resetting on
+ *              skip would equally lie: two loop failures with a skip
+ *              between them are still consecutive failures.
+ *
+ * No-op (same reference back) when the current task is not 'blocked' —
+ * skipping a running/done/failed task is not a legal transition.
+ */
+export function skipBlockedGoalTask(goal: GoalState, now: number): GoalState {
+  const tasks = goal.tasks
+  const task = currentGoalTask(goal)
+  if (!tasks || tasks.length === 0 || !task || task.status !== 'blocked') return goal
+  const taskIndex = Math.min(goal.taskIndex ?? 0, tasks.length - 1)
+  const isLastTask = taskIndex >= tasks.length - 1
+  return {
+    ...goal,
+    tasks: advanceGoalTasks(tasks, taskIndex, now, 'skipped'),
+    taskIndex: taskIndex + 1,
+    turnsRunThisTask: 0,
+    // K TRANSPARENT: consecutiveFailedTasks deliberately NOT mentioned.
+    ...(isLastTask
+      ? { status: 'completed' as GoalState['status'], completedAt: now, pausedAt: undefined, pauseReason: undefined }
+      : { status: 'active' as GoalState['status'], pausedAt: undefined, pauseReason: undefined }),
+    updatedAt: now,
+  }
 }
 
 /**

@@ -30,6 +30,24 @@ export const LOOP_FINGERPRINT_THRESHOLD = 3
  */
 const D1_REJECTED_FINGERPRINT_PREFIX = 'd1:complete-rejected-no-evidence:task'
 
+/**
+ * T2 (row 9) — the K guard: how many CONSECUTIVE failed tasks pause the
+ * whole batch with pauseReason 'batchStagnation'. K = 2.
+ *
+ * K exists to detect a SYSTEMIC ENVIRONMENT problem — auth dropped,
+ * disk full, CLI broken — not to judge individual tasks. Why 2 and not
+ * more (Maestro's call, recorded verbatim): pausing is NOT cancelling —
+ * the batch is resumable — so erring on the pause side costs one click,
+ * while erring on the other side costs the whole batch grinding on with
+ * a broken environment. With costs this asymmetric, the low number wins.
+ *
+ * What BYPASSES K (pauses on the FIRST occurrence): unsafe (row 5) and
+ * infraError at max (row 7) — both already ARE systemic diagnoses, so
+ * waiting for a second strike would ignore information we already have.
+ * What NEVER feeds K: a user SKIP (row 12) — see GoalTask status docs.
+ */
+export const BATCH_STAGNATION_K = 2
+
 /** Backoff cap: max wait between transient-error retries (8 s). */
 const MAX_RETRY_DELAY_MS = 8_000
 
@@ -143,6 +161,22 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
   const goal = delegate.getGoal()
   if (!goal) return 'cancelled'
 
+  // T2 (row 4) resume normalization: a task left 'blocked' by a
+  // needsUser pause returns to 'active' when the cycle (re)starts —
+  // 'blocked' only exists while the batch waits for the user. Initial
+  // starts never have a blocked current task, so this only fires on
+  // resume.
+  const startTask = currentGoalTask(goal)
+  if (goal.tasks?.length && startTask?.status === 'blocked') {
+    delegate.updateGoal((prev: GoalState) => ({
+      ...prev,
+      tasks: prev.tasks?.map(task =>
+        task.id === startTask.id ? { ...task, status: 'active' as GoalTask['status'] } : task,
+      ),
+    }))
+    delegate.onLog('Resumed batch: blocked task back to active.')
+  }
+
   delegate.onStatusChange({ kind: 'active', objective: goal.objective, turn: goal.turnsRun })
 
   while (true) {
@@ -158,8 +192,94 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
     }
 
     // No budget enforcement — tokens and time are unlimited in Verboo.
-    // Only loop detection (identical output fingerprints) can block the cycle.
+    // T2 (rows 8/9/13): loop detection on a BATCH fails only the current
+    // task and the batch stays ACTIVE and advances — one stuck task
+    // does not drag nineteen with it. On a LEGACY goal the pre-T2
+    // behavior stands: the whole goal is blocked.
     if (detectLoop(currentGoal)) {
+      const loopTasks = currentGoal.tasks
+      const loopTask = currentGoalTask(currentGoal)
+      if (loopTasks?.length && loopTask) {
+        const loopTaskIndex = Math.min(currentGoal.taskIndex ?? 0, loopTasks.length - 1)
+        const consecutiveFailed = (currentGoal.consecutiveFailedTasks ?? 0) + 1
+        const isLastTask = loopTaskIndex >= loopTasks.length - 1
+        const now = Date.now()
+
+        if (isLastTask) {
+          // T2 (row 13): the LAST task reached a terminal state → the
+          // batch is done. Row 13 BEATS the K guard: with no tasks left
+          // there is nothing to pause FOR. The batch completes with its
+          // failures recorded per task (the T4 report distinguishes).
+          delegate.updateGoal((prev: GoalState) => ({
+            ...prev,
+            tasks: prev.tasks?.map((task, index) =>
+              index === loopTaskIndex
+                ? { ...task, status: 'failed' as GoalTask['status'], completedAt: now }
+                : task,
+            ),
+            consecutiveFailedTasks: consecutiveFailed,
+            recentFingerprints: [],
+            noProgressCount: 0,
+            status: 'completed',
+            completedAt: now,
+          }))
+          delegate.onStatusChange({ kind: 'completed', objective: currentGoal.objective })
+          delegate.onLog(
+            `Loop detected on last task ${loopTaskIndex + 1}/${loopTasks.length}; task failed, batch completed.`,
+          )
+          return 'completed'
+        }
+
+        if (consecutiveFailed >= BATCH_STAGNATION_K) {
+          // T2 (row 9): K consecutive task failures = systemic
+          // environment problem (auth dropped, disk full, CLI broken).
+          // Pause — NOT cancel: the batch is resumable. The pointer is
+          // advanced past the failed task so a resume continues with
+          // the next one; the failed tasks stay failed for the T4
+          // report. pauseReason 'batchStagnation' is a plain String in
+          // Rust, so it crosses serde freely — NOTHING changes in
+          // src-tauri (the i18n key is T4's; here only the value).
+          delegate.updateGoal((prev: GoalState) => ({
+            ...prev,
+            tasks: advanceGoalTasks(prev.tasks ?? [], loopTaskIndex, now, 'failed'),
+            taskIndex: loopTaskIndex + 1,
+            turnsRunThisTask: 0,
+            consecutiveFailedTasks: consecutiveFailed,
+            recentFingerprints: [],
+            noProgressCount: 0,
+            status: 'paused',
+            pausedAt: now,
+            pauseReason: 'batchStagnation',
+          }))
+          delegate.onStatusChange({ kind: 'stopped', objective: currentGoal.objective, reason: 'batchStagnation' })
+          delegate.onLog(
+            `Batch stagnation: ${consecutiveFailed} consecutive task failures (K=${BATCH_STAGNATION_K}). ` +
+            `Task ${loopTaskIndex + 1} failed; batch paused before task ${loopTaskIndex + 2}.`,
+          )
+          return 'paused'
+        }
+
+        // T2 (row 8): task failed, batch STAYS ACTIVE, advance to i+1.
+        // The ring and noProgressCount are RESET so the next task does
+        // not inherit this task's poisoned fingerprints (an inherited
+        // ring would fail the next task at the very next loop-top check
+        // without a single evaluation of its own).
+        delegate.updateGoal((prev: GoalState) => ({
+          ...prev,
+          tasks: advanceGoalTasks(prev.tasks ?? [], loopTaskIndex, now, 'failed'),
+          taskIndex: loopTaskIndex + 1,
+          turnsRunThisTask: 0,
+          consecutiveFailedTasks: consecutiveFailed,
+          recentFingerprints: [],
+          noProgressCount: 0,
+        }))
+        delegate.onLog(
+          `Loop detected on task ${loopTaskIndex + 1}/${loopTasks.length}; task marked failed, ` +
+          `batch continues with task ${loopTaskIndex + 2}.`,
+        )
+        continue
+      }
+
       delegate.updateGoal((prev: GoalState) => ({ ...prev, status: 'blocked' }))
       delegate.onStatusChange({ kind: 'stopped', objective: currentGoal.objective, reason: 'loop' })
       delegate.onLog('Loop detected: identical output fingerprints.')
@@ -195,6 +315,11 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
           gaps: [],
           confidence: 0,
         }
+        // T2 (row 7): infraError AT MAX pauses the batch (existing
+        // behavior — untouched) and marks the current task 'failed'.
+        // This path BYPASSES the K guard: a broken evaluator is already
+        // a systemic diagnosis — waiting for a second failed task would
+        // ignore information we already have.
         delegate.updateGoal((prev: GoalState) => ({
           ...prev,
           status: 'paused',
@@ -202,6 +327,7 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
           pauseReason: 'infraError',
           errorCount,
           lastEvaluation: syntheticEvaluation,
+          ...stampCurrentTask(prev, 'failed'),
         }))
         delegate.onStatusChange({
           kind: 'stopped',
@@ -297,6 +423,8 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
           // Non-last task done → advance the batch IN PLACE: same goal
           // record, ownerConversationId UNTOUCHED (POSSE, not freshness),
           // turnsRunThisTask reset at the boundary (aceite 2).
+          // T2 (row 9): a done RESETS the K guard — only CONSECUTIVE
+          // failures count.
           const now = Date.now()
           advancedTaskText = batchTasks[clampedTaskIndex + 1].text
           didAdvance = true
@@ -305,6 +433,7 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
             tasks: advanceGoalTasks(prev.tasks ?? [], clampedTaskIndex, now),
             taskIndex: clampedTaskIndex + 1,
             turnsRunThisTask: 0,
+            consecutiveFailedTasks: 0,
           }))
           delegate.onLog(
             `Task ${clampedTaskIndex + 1}/${batchTasks.length} done; advancing to task ${clampedTaskIndex + 2}. turnsRunThisTask reset to 0.`,
@@ -368,6 +497,9 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
         completedAt,
         lastEvaluation: evaluation,
         ...(tasksCompleted ? { tasks: tasksCompleted } : {}),
+        // T2 (row 9): a done RESETS the K guard — including the terminal
+        // done that completes the batch ("ZERA em qualquer done").
+        ...(batchTasks?.length ? { consecutiveFailedTasks: 0 } : {}),
       }))
       delegate.onStatusChange({ kind: 'completed', objective: currentGoal.objective })
       // G-C13-FIX: build finalGoal LOCALLY from currentGoal + the
@@ -412,6 +544,9 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
         // T1: a completed batch carries ALL tasks done (the last one was
         // stamped above; the earlier ones were stamped at each advance).
         ...(tasksCompleted ? { tasks: tasksCompleted } : {}),
+        // T2 (row 9): K reset mirrored in the local finalGoal (the same
+        // done that completed the batch zeroes the counter).
+        ...(batchTasks?.length ? { consecutiveFailedTasks: 0 } : {}),
       }
       if (delegate.onComplete) {
         delegate.onComplete(finalGoal, evaluation)
@@ -438,12 +573,23 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
         // for the UI to surface the failure context.
         delegate.updateGoal((prev: GoalState) => ({ ...prev, lastEvaluation: evaluation }))
       } else {
+        // T2 (rows 4/5): the batch pauses (existing behavior — unsafe
+        // stops the WHOLE batch: safety is not per-task; if the agent
+        // flagged something unsafe on task 3, moving to task 4 would be
+        // ignoring the warning). The task stamp differs: needsUser →
+        // 'blocked' (a question waiting for the user, resumable);
+        // unsafe/infraError → 'failed' (a diagnosis; both BYPASS K —
+        // they pause on the first occurrence because they already ARE
+        // systemic diagnoses).
+        const taskOutcome: GoalTask['status'] =
+          reasonId === 'needsUser' ? 'blocked' : 'failed'
         delegate.updateGoal((prev: GoalState) => ({
           ...prev,
           status: 'paused',
           pausedAt: Date.now(),
           pauseReason: reasonId,
           lastEvaluation: evaluation,
+          ...stampCurrentTask(prev, taskOutcome),
         }))
         delegate.onStatusChange({
           kind: 'stopped',
@@ -507,8 +653,24 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
   }
 }
 
-function detectLoop(goal: GoalState): boolean {
-  // Two independent signals, either sufficient on its own:
+/**
+ * T2: stamp the CURRENT task of a batch goal with a terminal-ish
+ * outcome ('failed' / 'blocked') inside an updateGoal write. Returns
+ * an empty object for legacy goals (no tasks key) so callers can spread
+ * it unconditionally without materializing the batch keys on the
+ * legacy path. Pure and local: the stamp reads prev.tasks so the write
+ * composes with whatever else the same update sets.
+ */
+function stampCurrentTask(goal: GoalState, outcome: GoalTask['status']): { tasks?: GoalTask[] } {
+  const tasks = goal.tasks
+  if (!tasks || tasks.length === 0) return {}
+  const taskIndex = Math.min(goal.taskIndex ?? 0, tasks.length - 1)
+  return {
+    tasks: tasks.map((task, index) => (index === taskIndex ? { ...task, status: outcome } : task)),
+  }
+}
+
+function detectLoop(goal: GoalState): boolean {  // Two independent signals, either sufficient on its own:
   //   1. noProgressCount >= LOOP_FINGERPRINT_THRESHOLD — N consecutive
   //      turns whose fingerprint matched the previous turn.
   //   2. last 3 fingerprints all identical — catches the case where

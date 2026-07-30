@@ -94,12 +94,26 @@ export type AgentResultSnapshot = {
 }
 
 /**
- * T1: status of one task inside a goal BATCH. `pending` → not started;
- * `active` → the task the scheduler is currently working on (at most one
- * per goal); `done` → passed the D1 completion rule (decision=complete +
- * turnsRunThisTask>0 + whitelisted action evidence — see goalScheduler.ts).
+ * T1/T2: status of one task inside a goal BATCH.
+ *   pending  → not started
+ *   active   → the task the scheduler is currently working on (at most
+ *              one per goal). The T2 state matrix calls this "running" —
+ *              same state, older name kept so T1 code stays stable.
+ *   done     → passed the D1 completion rule (decision=complete +
+ *              turnsRunThisTask>0 + whitelisted action evidence).
+ *   failed   → terminal failure (T2 rows 5/7/8: unsafe, infraError at
+ *              max, or loop detected). Counts toward the K guard unless
+ *              the path pauses the batch on its own (unsafe/infraError
+ *              bypass K — they already ARE systemic diagnoses).
+ *   blocked  → the evaluator soft-stopped with needsUser (T2 row 4):
+ *              the task waits for the user, resumable — returns to
+ *              'active' when the cycle restarts. Distinct from failed:
+ *              blocked is a question, failed is a diagnosis.
+ *   skipped  → the USER chose to jump over a blocked task (T2 row 12).
+ *              Distinct from failed ON PURPOSE: skip is a human
+ *              decision, NOT a systemic problem, so it never feeds K.
  */
-export type GoalTaskStatus = 'pending' | 'active' | 'done'
+export type GoalTaskStatus = 'pending' | 'active' | 'done' | 'failed' | 'blocked' | 'skipped'
 
 /**
  * T1: one task of a goal BATCH (the /goal-lote). ONE GoalState record
@@ -242,6 +256,26 @@ export type GoalState = {
    * (same serde argument as G-C17).
    */
   turnsRunThisTask?: number
+  /**
+   * T2 (row 9): the K guard's counter — CONSECUTIVE tasks that reached
+   * `failed` while the batch kept running (today only the loop path,
+   * row 8; unsafe and infraError-at-max pause the batch immediately and
+   * BYPASS K — rows 5/7, they already ARE systemic diagnoses and
+   * waiting for a second occurrence would ignore information we have).
+   *
+   * Incremented on each failed task, RESET TO 0 on ANY task done
+   * ("contam só failed CONSECUTIVOS, e ZERA em qualquer done"). A skip
+   * (row 12) is TRANSPARENT to K: it neither increments nor resets —
+   * skip is a user decision, not a health signal, and two loop failures
+   * with a skip between them are still consecutive failures. When the
+   * counter reaches BATCH_STAGNATION_K (=2) the batch pauses with
+   * pauseReason 'batchStagnation'.
+   *
+   * Renderer-only (same serde argument as G-C17); resume does NOT reset
+   * it — the failures are still consecutive across a pause, and pause
+   * is cheap (the user clicks resume once).
+   */
+  consecutiveFailedTasks?: number
 }
 
 export type GoalEvaluationInput = {

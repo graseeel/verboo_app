@@ -72,6 +72,11 @@ const RUST_FIELD_LIMITS: Record<NonNullable<NumericKeys>, number> = {
   // from. taskIndex is bounded by the tasks array length in practice.
   taskIndex: U32_MAX,
   turnsRunThisTask: U32_MAX,
+  // T2: renderer-only K-guard counter (consecutive failed tasks) —
+  // same serde argument as the T1 batch fields. Bounded by the tasks
+  // array length in practice; documented with the u32 width of
+  // no_progress_count, the scheduler's other failure counter.
+  consecutiveFailedTasks: U32_MAX,
 }
 
 // ─── GoalState numeric keys (derived from the type) ─────────────
@@ -122,6 +127,8 @@ const GOAL_STATE_NUMERIC_KEYS = [
   // T1: renderer-only batch fields (see RUST_FIELD_LIMITS note).
   'taskIndex',
   'turnsRunThisTask',
+  // T2: renderer-only K-guard counter (see RUST_FIELD_LIMITS note).
+  'consecutiveFailedTasks',
 ] as const satisfies readonly NumericKeys[]
 
 describe('G-C7-TS: GoalState ↔ Rust numeric contract', () => {
