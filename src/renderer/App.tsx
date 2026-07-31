@@ -39,13 +39,14 @@ import type {
   WorkspaceChangeSummary,
   WorkspaceReviewMetadata,
 } from '../shared/types'
-import { createGoalState, goalSystemMessage, sanitizeStoredGoal } from './features/goal/goalState'
+import { createGoalState, goalSystemMessage, resumeGoalSessionId, sanitizeStoredGoal, shouldResumeGoalOnUserMessage } from './features/goal/goalState'
 // T3: context-usage extraction lives in features/context/contextUsage
 // (moved out of this file verbatim) so the frontier signal (ii) is
 // testable without importing the component tree.
 import { extractContextUsage, extractUsageObject, isRecord, numberValue, numberValueOptional } from './features/context/contextUsage'
 import { GoalStatusBar, type GoalStatusBarState } from './features/goal/GoalStatusBar'
 import { GoalActivePanel } from './features/goal/GoalActivePanel'
+import { useGoalPanelExit } from './features/goal/useGoalPanelExit'
 import { buildGoalUsageLine, buildObjectiveUpdatedPrompt } from './features/goal/goalPrompt'
 import { buildBatchReportLines } from './features/goal/goalReport'
 import { parseBatchInput } from './features/goal/goalBatchParse'
@@ -435,6 +436,10 @@ export function App() {
     readReportedContextWindows,
   )
   const [goal, setGoal] = useState<GoalState | undefined>()
+  // Genie exit: snapshot of the last live goal, exposed for ~280ms after
+  // the goal turns terminal so the panel can sink back into the composer
+  // instead of vanishing. See useGoalPanelExit for the honest limits.
+  const { exitGoal } = useGoalPanelExit(goal)
   const [imageReadingTurnId, setImageReadingTurnId] = useState<string | undefined>()
   // Live video-analysis progress per turn. Explicit upsert keyed by turnId
   // (never routed through appendActivityItem, whose dedup is not an upsert
@@ -2371,6 +2376,19 @@ export function App() {
 
     appendDowngradeActivity(conversationId)
     await runTurn(queued)
+    // D-D item 2: reply-to-resume. The reply already landed in the
+    // goal's session and transcript as a normal turn (above). If the
+    // goal is paused by taskImpossible on THIS (owner) conversation,
+    // answering IS the unblock — resume THIS SAME task with context
+    // intact, via the SAME resume path the slash command uses (no
+    // synthetic command: a `/goal` literal here would be misread by
+    // the reservedSlashCommands contract as a CLI dispatch). Only on
+    // the direct-send path: when a turn was already in flight the
+    // reply QUEUES (early return above) and resuming would race the
+    // scheduler against the live turn — resume manually then.
+    if (shouldResumeGoalOnUserMessage(goalRef.current, conversationId)) {
+      resumePausedGoal()
+    }
     clearAttachments(true)
     } finally {
       sendMessageLock.current = false
@@ -3017,6 +3035,34 @@ export function App() {
     }
   }
 
+  // D-D item 2: the resume path, callable without synthesizing a slash
+  // command — sendMessage's reply-to-resume uses it directly (and the
+  // reservedSlashCommands contract heuristic must not see a `/goal`
+  // literal near runTurn and misclassify it as CLI-dispatching).
+  function resumePausedGoal() {
+    setGoal(current => {
+      if (!current || (current.status !== 'paused' && current.status !== 'blocked')) return current
+      // G-C5-FIX: ensure ownerConversationId is set (legacy goals may
+      // have been created before the field existed). Stamps with the
+      // active conversation so the persist effect does not cross-write.
+      const ownerConversationId = current.ownerConversationId ?? activeConversationId
+      const resumed: GoalState = { ...current, ownerConversationId, status: 'active', noProgressCount: 0, errorCount: 0, recentFingerprints: [] }
+      // G-C5-FIX: explicit handoff. goalRef.current must be populated
+      // BEFORE startGoalScheduler runs. This updater runs synchronously
+      // inside setGoal, but the side-effect (startGoalScheduler) must
+      // observe goalRef.current already pointing at `resumed`.
+      goalRef.current = resumed
+      // D-D item 1: rehydrate the CLI session from the PERSISTED goal
+      // before the first turn — after an app restart goalSessionId is
+      // empty and without this the resume silently opened a NEW
+      // session (context lost while the user believed it continued).
+      goalSessionId.current = resumeGoalSessionId(resumed, goalSessionId.current)
+      setGoalBarStatus({ kind: 'active', objective: resumed.objective, turn: resumed.turnsRun })
+      void startGoalScheduler(resumed)
+      return resumed
+    })
+  }
+
   function handleGoalCommand(command: Extract<ReservedSlashCommand, { kind: 'goal' }>) {
     if (command.action === 'show' || command.action === 'status') {
       const conversationId = ensureActiveConversation()
@@ -3059,22 +3105,7 @@ export function App() {
     }
 
     if (command.action === 'resume') {
-      setGoal(current => {
-        if (!current || (current.status !== 'paused' && current.status !== 'blocked')) return current
-        // G-C5-FIX: ensure ownerConversationId is set (legacy goals may
-        // have been created before the field existed). Stamps with the
-        // active conversation so the persist effect does not cross-write.
-        const ownerConversationId = current.ownerConversationId ?? activeConversationId
-        const resumed: GoalState = { ...current, ownerConversationId, status: 'active', noProgressCount: 0, errorCount: 0, recentFingerprints: [] }
-        // G-C5-FIX: explicit handoff. goalRef.current must be populated
-        // BEFORE startGoalScheduler runs. This updater runs synchronously
-        // inside setGoal, but the side-effect (startGoalScheduler) must
-        // observe goalRef.current already pointing at `resumed`.
-        goalRef.current = resumed
-        setGoalBarStatus({ kind: 'active', objective: resumed.objective, turn: resumed.turnsRun })
-        void startGoalScheduler(resumed)
-        return resumed
-      })
+      resumePausedGoal()
       return
     }
 
@@ -3142,6 +3173,12 @@ export function App() {
       // persist effect does NOT cross-write into a different
       // conversation when the user switches mid-cycle.
       goalState.ownerConversationId = conversationId
+      // The batch panel shows the user's message VERBATIM (their words,
+      // their line breaks — per user request), not the synthetic
+      // umbrella above. `command.objective` is the raw multi-line text
+      // as typed, list markers included. Single-task goals have no
+      // batchInput: their panel already shows `objective` itself.
+      if (batchParse.kind === 'batch') goalState.batchInput = command.objective
 
       appendConversationItem(conversationId, goalSystemMessage(t('goal.systemStarted', { objective })))
 
@@ -5189,7 +5226,7 @@ export function App() {
               <ArrowDown size={17} />
             </button>
           )}
-          {(goal && goal.status !== 'completed' && goal.status !== 'blocked' && goal.status !== 'cancelled') || (questionPrompt && questionPrompt.conversationId === activeConversationId) ? (
+          {(goal && goal.status !== 'completed' && goal.status !== 'blocked' && goal.status !== 'cancelled') || exitGoal || (questionPrompt && questionPrompt.conversationId === activeConversationId) ? (
             <div className="composer-aux-stack" role="region" aria-label={t('goal.auxStackLabel')}>
               {goal && goal.status !== 'completed' && goal.status !== 'blocked' && goal.status !== 'cancelled' && (
                 <GoalActivePanel
@@ -5202,6 +5239,27 @@ export function App() {
                   onCancel={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
                 />
               )}
+              {/* Genie exit: while the terminal goal's panel plays its
+                  sink-back animation, the aux-stack stays mounted (see
+                  the exitGoal clause above) and the panel renders with
+                  `leaving`. Handlers are inert — pointer-events:none in
+                  CSS — but the props are required. The GoalStatusBar is
+                  gated with !exitGoal so the exit window does NOT make
+                  the bar reachable in a path where it never rendered
+                  before (terminal goal without open questions): the bar
+                  keeps exactly its pre-genie reachability. */}
+              {exitGoal && (
+                <GoalActivePanel
+                  goal={exitGoal}
+                  leaving
+                  turnInProgress={false}
+                  compact={!!(questionPrompt && questionPrompt.conversationId === activeConversationId && questionWizardOpen)}
+                  onEditObjective={() => {}}
+                  onPause={() => {}}
+                  onResume={() => {}}
+                  onCancel={() => {}}
+                />
+              )}
               {/* G-C10 item 1: GoalStatusBar lives in the same aux-stack
                   slot as GoalActivePanel. Mutual exclusion by status:
                   panel covers active|evaluating|continuing|paused, bar
@@ -5209,7 +5267,7 @@ export function App() {
                   Both are inside bottom-dock now, so the fixed composer
                   no longer floats over the bar and the rounded frame
                   clips both. */}
-              {goal && (goal.status === 'completed' || goal.status === 'blocked' || goal.status === 'cancelled') && (
+              {goal && !exitGoal && (goal.status === 'completed' || goal.status === 'blocked' || goal.status === 'cancelled') && (
                 <GoalStatusBar
                   status={goalBarStatus}
                   onPause={() => handleGoalCommand({ kind: 'goal', action: 'pause', raw: '/goal pause' })}

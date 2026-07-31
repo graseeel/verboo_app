@@ -17,7 +17,8 @@
   border: 1px solid var(--border);
   font-size: 12px;
   line-height: 1.3;
-  animation: goal-slide-in 200ms var(--modal-ease);
+  animation: goal-genie-in 240ms var(--modal-ease);
+  transform-origin: bottom center;
 }
 
 /* Terminal-state signal moved from a tinted BOX to the icon color —
@@ -81,14 +82,31 @@
   color: var(--danger);
 }
 
-@keyframes goal-slide-in {
+/* Genie (user request): the goal surface RISES from the composer on
+ * start and SINKS back on finish — the macOS window-to-dock metaphor,
+ * kept restrained. Origin-aware enter/exit: translateY + a whisper of
+ * scale anchored at the bottom edge (the composer), never scale(0) —
+ * a full collapse reads as a gimmick, 3% reads as depth. Transform and
+ * opacity only: no layout shift, the conversation never reflows. */
+@keyframes goal-genie-in {
   from {
     opacity: 0;
-    transform: translateY(-4px);
+    transform: translateY(10px) scale(0.97);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes goal-genie-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
   }
 }
 
@@ -107,7 +125,17 @@
   border: 1px solid var(--border);
   font-size: 12px;
   line-height: 1.4;
-  animation: goal-slide-in 200ms var(--modal-ease);
+  animation: goal-genie-in 260ms var(--modal-ease);
+  transform-origin: bottom center;
+}
+
+/* Exit window (useGoalPanelExit): the goal reached a terminal state and
+ * the panel plays the genie sink-back before unmounting. pointer-events
+ * off — a leaving surface must not swallow a click. `forwards` pins the
+ * final frame so the panel never flashes back visible before unmount. */
+.goal-active-panel.leaving {
+  pointer-events: none;
+  animation: goal-genie-out 240ms var(--modal-ease) forwards;
 }
 
 .goal-active-panel-header {
@@ -157,18 +185,37 @@
   font-size: 11px;
 }
 
+/* D-D: the taskImpossible pause message (reason + reply-to-resume
+ * contract). Same quiet text vocabulary as the reason span — muted,
+ * no background, no box — with pre-line so the message's paragraph
+ * break renders as written. */
+.goal-active-panel-impossible-detail {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-line;
+}
+
 .goal-active-panel-objective {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
+/* Batch goals show the user's multi-line message VERBATIM (pre-line:
+ * their line breaks render). The max-height + scroll keeps a long batch
+ * from pushing the composer off-screen — same role the cap always had
+ * for long single-line objectives. */
 .goal-active-panel-objective-text {
   margin: 0;
   color: var(--text);
   font-size: 13px;
   line-height: 1.45;
   word-break: break-word;
+  white-space: pre-line;
+  max-height: 120px;
+  overflow-y: auto;
 }
 
 .goal-active-panel-edit-input {
@@ -295,19 +342,17 @@
   transform: rotate(180deg);
 }
 
-/* Objective text scroll when long — prevents the panel from pushing
- * the composer off-screen on very long objectives. */
-.goal-active-panel-objective-text {
-  max-height: 120px;
-  overflow-y: auto;
-}
-
-/* Reduced motion: disable the evaluating pulse and the slide-in. */
+/* Reduced motion: no genie, no pulse — state changes are instant. The
+ * JS side (useGoalPanelExit) already skips the exit window entirely, so
+ * .leaving never mounts under reduced motion; the rule below is the
+ * belt-and-braces guarantee that the genie can NEVER play. */
 @media (prefers-reduced-motion: reduce) {
   .goal-active-panel-status.evaluating .goal-active-panel-status-dot {
     animation: none;
   }
-  .goal-active-panel {
+  .goal-active-panel,
+  .goal-active-panel.leaving,
+  .goal-status-bar {
     animation: none;
   }
 }

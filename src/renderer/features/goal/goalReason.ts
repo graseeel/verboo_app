@@ -2,10 +2,10 @@
  * Pure helpers for translating goal evaluation outcomes.
  *
  * The backend (Rust `GoalEvaluationResult`) sends a stable `reasonId`
- * enum (`taskIncomplete | taskFailure | unsafe | needsUser | done |
- * infraError`) plus a free-form `reason` string from the model. The FE
- * translates the id for headings and badges; the raw `reason` is shown
- * as a secondary detail when present.
+ * enum (`taskIncomplete | taskFailure | unsafe | needsUser |
+ * taskImpossible | done | infraError`) plus a free-form `reason` string
+ * from the model. The FE translates the id for headings and badges; the
+ * raw `reason` is shown as a secondary detail when present.
  *
  * Internal scheduler reasons (max turns, max time, loop, blocked,
  * no-instruction) are NOT reasonIds — they are FE-side budget/loop
@@ -21,6 +21,7 @@ const REASON_ID_KEYS: Record<GoalReasonId, string> = {
   taskFailure: 'goal.reasonId.taskFailure',
   unsafe: 'goal.reasonId.unsafe',
   needsUser: 'goal.reasonId.needsUser',
+  taskImpossible: 'goal.reasonId.taskImpossible',
   done: 'goal.reasonId.done',
   infraError: 'goal.reasonId.infraError',
   userPaused: 'goal.reasonId.userPaused',

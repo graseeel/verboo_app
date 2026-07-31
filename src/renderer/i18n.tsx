@@ -165,6 +165,7 @@ const enUS: Record<string, string> = {
   'goal.reasonId.taskFailure': 'Task hit a failure (tests or compile)',
   'goal.reasonId.unsafe': 'Operation flagged as unsafe',
   'goal.reasonId.needsUser': 'Needs your input to continue',
+  'goal.reasonId.taskImpossible': 'Task reported as impossible',
   'goal.reasonId.done': 'Objective met',
   'goal.reasonId.infraError': 'Evaluator infrastructure error',
   'goal.reasonId.userPaused': 'Paused by you',
@@ -199,6 +200,11 @@ const enUS: Record<string, string> = {
   'goal.batchObjective': 'Batch of {count} tasks',
   'goal.batchEmpty': 'No tasks found. Write one task per line after /goal — markers like "1." or "-" are optional. Mark prose-only tasks with [toolless].',
   'goal.batchEditDisabled': 'Objective editing is disabled while a batch runs (v1)',
+  // D-D: the pause message the user READS when the evaluator emits
+  // taskImpossible. The v1 contract lives IN THE MESSAGE (unblock-only):
+  // replying resumes THIS SAME task — it does NOT redefine it. Declared
+  // visibly, before the user types, not after the frustration.
+  'goal.taskImpossibleBody': 'Goal paused — the agent reported this task as impossible: {reason}\n\nReply here and the goal resumes THIS SAME task with your guidance. To change the task itself, cancel and relaunch the batch.',
   'goal.pausedHeading': 'Goal paused',
   'goal.stoppedHeading': 'Goal stopped',
   'goal.errorPausedTitle': 'Paused after {count} evaluation errors',
@@ -1337,6 +1343,7 @@ const ptBR: Record<string, string> = {
   'goal.reasonId.taskFailure': 'Tarefa encontrou uma falha (testes ou compilação)',
   'goal.reasonId.unsafe': 'Operação marcada como insegura',
   'goal.reasonId.needsUser': 'Precisa da sua entrada para continuar',
+  'goal.reasonId.taskImpossible': 'Tarefa relatada como impossível',
   'goal.reasonId.done': 'Objetivo atingido',
   'goal.reasonId.infraError': 'Erro de infraestrutura do avaliador',
   'goal.reasonId.userPaused': 'Pausado por você',
@@ -1371,6 +1378,11 @@ const ptBR: Record<string, string> = {
   'goal.batchObjective': 'Lote de {count} tarefas',
   'goal.batchEmpty': 'Nenhuma tarefa encontrada. Escreva uma tarefa por linha após /goal — marcadores como "1." ou "-" são opcionais. Marque tarefas só de texto com [toolless].',
   'goal.batchEditDisabled': 'Edição de objetivo desabilitada durante um lote (v1)',
+  // D-D: a mensagem de pausa que o usuário LÊ quando o avaliador emite
+  // taskImpossible. O contrato v1 mora NA MENSAGEM (só desbloqueio):
+  // responder retoma ESTA MESMA tarefa — não a redefine. Declarado
+  // visivelmente, antes de o usuário digitar, não depois da frustração.
+  'goal.taskImpossibleBody': 'Goal pausado — o agente relatou que esta tarefa é impossível: {reason}\n\nRespondendo aqui, o goal retoma ESTA MESMA tarefa com a sua orientação. Para mudar de tarefa, cancele e relance o lote.',
   'goal.pausedHeading': 'Goal pausado',
   'goal.stoppedHeading': 'Goal parado',
   'goal.errorPausedTitle': 'Pausado após {count} erros de avaliação',

@@ -522,3 +522,119 @@ describe('A1: Rust enum lowercase ↔ TS union contract (LoginEventKind)', () =>
     })
   }
 })
+
+// ─── D-D: ENUM casing contract (camelCase — GoalReasonId) ───────────
+//
+// The A1 block above covers the lowercase enum trap. GoalReasonId is
+// the OTHER casing in the same file: rename_all = "camelCase"
+// (types.rs:420). D-D added the TaskImpossible variant on the Rust
+// side; a TS union missing the camelCase literal would compile and
+// silently fall through every consumer — exactly how the taskImpossible
+// verdict originally had ZERO consumers (the 10th produced-but-
+// unconsumed defect, caught before field). This block derives the
+// expected wire values from the Rust source and asserts the TS union
+// declares every one of them, so the enum can NEVER diverge again.
+// Direction: every RUST variant must exist in TS. TS-only members
+// (userPaused, userCancelled, goalError — set by the FE itself) are
+// legitimate and documented in types.ts.
+
+/** Extract the variants of every Rust enum marked with
+ * `#[serde(rename_all = "camelCase")]`. Mirrors extractLowercaseEnums
+ * above, parameterized only by the serde attribute line. */
+function extractCamelCaseEnums(rustSource: string): Array<{
+  enumName: string
+  variants: string[]
+}> {
+  const lines = rustSource.split('\n')
+  const results: Array<{ enumName: string; variants: string[] }> = []
+
+  let pendingCamelCase = false
+  let inEnum: string | null = null
+  let variants: string[] = []
+
+  for (const raw of lines) {
+    const line = raw.trim()
+
+    if (line === '#[serde(rename_all = "camelCase")]') {
+      pendingCamelCase = true
+      continue
+    }
+    if (line.startsWith('#[') && !line.includes('rename_all')) {
+      continue
+    }
+
+    const enumMatch = line.match(/^(?:pub\s+)?enum (\w+)\s*\{/)
+    if (enumMatch && pendingCamelCase) {
+      inEnum = enumMatch[1]
+      variants = []
+      pendingCamelCase = false
+      continue
+    }
+    if (enumMatch) {
+      pendingCamelCase = false
+      inEnum = null
+      continue
+    }
+
+    if (inEnum) {
+      if (line === '}') {
+        results.push({ enumName: inEnum, variants })
+        inEnum = null
+        variants = []
+        continue
+      }
+      if (line.startsWith('//')) continue
+      const variantMatch = line.match(/^(\w+),?$/)
+      if (variantMatch) {
+        variants.push(variantMatch[1])
+      }
+    }
+  }
+
+  return results
+}
+
+describe('D-D: Rust enum camelCase ↔ TS union contract (GoalReasonId)', () => {
+  const rustSource = readFileSync(RUST_TYPES_PATH, 'utf-8')
+  const tsSource = readFileSync(TS_TYPES_PATH, 'utf-8')
+  const enums = extractCamelCaseEnums(rustSource)
+
+  it('the Rust source parses the GoalReasonId enum', () => {
+    expect(enums.some(e => e.enumName === 'GoalReasonId')).toBe(true)
+  })
+
+  for (const { enumName, variants } of enums) {
+    if (enumName !== 'GoalReasonId') continue // out of scope: only this enum has a TS union to pin
+
+    describe(`${enumName} → TS union`, () => {
+      // The TS union is MULTILINE (`export type GoalReasonId =\n  | 'x'…`),
+      // unlike the single-line LoginEventKind — capture up to the blank
+      // line that ends the declaration.
+      const unionMatch = tsSource.match(/export type GoalReasonId\s*=\s*([\s\S]*?)\n\s*\n/)
+      const unionBody = unionMatch?.[1] ?? ''
+
+      it('has a TS union declaration', () => {
+        expect(unionMatch, 'TS must declare export type GoalReasonId').not.toBeNull()
+      })
+
+      for (const variant of variants) {
+        // serde rename_all = "camelCase": PascalCase variant → camelCase
+        // wire value (TaskImpossible → "taskImpossible").
+        const expectedWireValue = variant[0].toLowerCase() + variant.slice(1)
+
+        it(`variant "${variant}" → wire value "${expectedWireValue}" declared in TS`, () => {
+          expect(
+            unionBody,
+            `GoalReasonId in TS must declare '${expectedWireValue}' — the Rust enum (rename_all = "camelCase") sends it and EVERY consumer must be able to match it`,
+          ).toContain(`'${expectedWireValue}'`)
+          // …and must NOT declare the PascalCase variant name — that
+          // would compile and silently never match at runtime.
+          expect(
+            unionBody,
+            `GoalReasonId in TS must NOT declare '${variant}' — rename_all = "camelCase" sends '${expectedWireValue}'`,
+          ).not.toContain(`'${variant}'`)
+        })
+      }
+    })
+  }
+})

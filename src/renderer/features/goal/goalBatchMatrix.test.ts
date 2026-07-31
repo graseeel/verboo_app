@@ -17,6 +17,11 @@
  *  13  LAST task reaches terminal → batch completed (beats K: nothing
  *                                  left to pause FOR)
  *
+ *  D-D pause taskImpossible      → task blocked (NEVER failed —
+ *                                  resumability depends on it), batch
+ *                                  paused, K untouched; reply resumes
+ *                                  the SAME task.
+ *
  * K = 2 (BATCH_STAGNATION_K): counts only CONSECUTIVE failed tasks,
  * resets on any done, is TRANSPARENT to skips, and is bypassed by
  * unsafe/infraError-at-max (those pause on the FIRST occurrence —
@@ -287,6 +292,79 @@ describe('T2 row 4 — pause needsUser: task blocked, batch paused, waits for th
     expect(restored).toBeDefined()
     // …and the batch ran to completion.
     expect(delegate.goal.tasks?.map(task => task.status)).toEqual(['done', 'done'])
+  })
+})
+
+// ─── D-D: pause taskImpossible — task BLOCKED, never FAILED ─────────
+describe('D-D — pause taskImpossible: task blocked (resumable), batch paused, K untouched', () => {
+  const TASK_IMPOSSIBLE = makeEval({
+    decision: 'pause',
+    reasonId: 'taskImpossible',
+    reason: 'The URL uses the reserved .invalid TLD — no fetch can ever succeed.',
+  })
+
+  it('stamps the task blocked and NEVER failed — the whole reply-to-resume flow depends on it', async () => {
+    // The defect this prevents: without taskImpossible in shouldPause
+    // the verdict fell through to continue SILENTLY; and stamped failed
+    // (like unsafe) it would be unrecoverable — a failed task does not
+    // come back.
+    const goal = makeBatchGoal('Fetch the data', 'Second task')
+    const delegate = makeDelegate(goal, [
+      TASK_IMPOSSIBLE,
+      COMPLETE, // after the user's reply resumes: task 1 completes
+      COMPLETE, // task 2 completes
+    ], [activity('edit', goal.startedAt ?? 0)])
+    produceCommandEvidence(delegate)
+
+    const firstRun = await runGoalCycle(delegate)
+
+    expect(firstRun).toBe('paused')
+    expect(delegate.goal.status).toBe('paused')
+    expect(delegate.goal.pauseReason).toBe('taskImpossible')
+    expect(delegate.goal.tasks?.[0].status).toBe('blocked') // waiting for the user — RESUMABLE
+    expect(delegate.goal.tasks?.[1].status).toBe('pending')
+    expect(delegate.continueCalls.length).toBe(0) // frozen: no further turns
+    // K UNTOUCHED: blocked is not failed — the environment is fine, the
+    // task is impossible; nothing systemic to count.
+    expect(delegate.goal.consecutiveFailedTasks ?? 0).toBe(0)
+    // COUNTERFACTUAL sweep of the WHOLE history: the task was never
+    // stamped failed at any point (failed would kill resumability).
+    for (const state of delegate.goalHistory) {
+      expect(state.tasks?.[0].status).not.toBe('failed')
+    }
+
+    // The user replies in the composer and the goal resumes (App path):
+    // cycle-start normalization reactivates the SAME task…
+    simulateUserResume(delegate)
+    const secondRun = await runGoalCycle(delegate)
+
+    expect(secondRun).toBe('completed')
+    // …the SAME task (taskIndex was NOT advanced — no skip, no loss)…
+    const advancedWhileBlocked = delegate.goalHistory.some(
+      state => state.tasks?.[0].status === 'blocked' && (state.taskIndex ?? 0) > 0,
+    )
+    expect(advancedWhileBlocked).toBe(false)
+    // …and the batch ran to completion.
+    expect(delegate.goal.tasks?.map(task => task.status)).toEqual(['done', 'done'])
+  })
+
+  it('a LEGACY single-task goal pauses the same way (no tasks array — nothing to stamp, no crash)', async () => {
+    const goal = createGoalState({
+      objective: 'Fetch from a .invalid TLD',
+      accessMode: 'approval',
+      workingDirectory: '/tmp/project',
+      skills: [],
+    })
+    goal.ownerConversationId = 'conv-owner'
+    const delegate = makeDelegate(goal, [TASK_IMPOSSIBLE])
+
+    const result = await runGoalCycle(delegate)
+
+    expect(result).toBe('paused')
+    expect(delegate.goal.status).toBe('paused')
+    expect(delegate.goal.pauseReason).toBe('taskImpossible')
+    expect(delegate.goal.tasks).toBeUndefined()
+    expect(delegate.continueCalls.length).toBe(0)
   })
 })
 

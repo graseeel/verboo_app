@@ -30,6 +30,11 @@ export type GoalReasonId =
   | 'taskFailure'
   | 'unsafe'
   | 'needsUser'
+  // D-D: the agent honest-reported the task as impossible but produced
+  // only a symbolic artifact (empty file, stub). Rust emits pause +
+  // taskImpossible; the FE pauses RESUMABLY (blocked, never failed) so
+  // the user can reply in the composer and resume with context intact.
+  | 'taskImpossible'
   | 'done'
   | 'infraError'
   | 'userPaused'
@@ -161,6 +166,14 @@ export type GoalTask = {
 export type GoalState = {
   id: string
   objective: string
+  /** The raw multi-line message the user typed to start a batch — shown
+   *  verbatim in the goal panel instead of the synthetic umbrella
+   *  ("Batch of N tasks") so they recognize their own request. TS-only;
+   *  present only on batch goals. Crosses inside GoalEvaluationInput as
+   *  an ignored unknown key (same serde argument as the G-C17/T1
+   *  renderer-only fields): the evaluator reads `objective`, which the
+   *  snapshot keeps pointing at the CURRENT task — never at this text. */
+  batchInput?: string
   status: GoalStatus
   createdAt: number
   updatedAt: number

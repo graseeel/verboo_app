@@ -925,11 +925,14 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
 
     if (evaluation.decision === 'pause') {
       // Maestro resolution: pause only on soft-stop reasons the user can
-      // resolve (unsafe, needsUser) or infra failures. taskFailure and
-      // taskIncomplete are continue-eligible — the model should keep
-      // working to fix the failure, not pause.
+      // resolve (unsafe, needsUser, taskImpossible) or infra failures.
+      // taskFailure and taskIncomplete are continue-eligible — the model
+      // should keep working to fix the failure, not pause.
+      // D-D: taskImpossible JOINS the pause set — without it the new
+      // Rust verdict fell through to continue SILENTLY (the 10th
+      // produced-but-unconsumed data defect, caught before field).
       const reasonId = evaluation.reasonId
-      const shouldPause = reasonId === 'unsafe' || reasonId === 'needsUser' || reasonId === 'infraError'
+      const shouldPause = reasonId === 'unsafe' || reasonId === 'needsUser' || reasonId === 'infraError' || reasonId === 'taskImpossible'
       if (!shouldPause) {
         // Fall through to continue path — treat as a continue with the
         // structured prompt. The reasonId is preserved on lastEvaluation
@@ -944,8 +947,14 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
         // unsafe/infraError → 'failed' (a diagnosis; both BYPASS K —
         // they pause on the first occurrence because they already ARE
         // systemic diagnoses).
+        // D-D: taskImpossible stamps 'blocked' TOO — NEVER 'failed'.
+        // The whole reply-to-resume flow depends on it: a failed task
+        // does not come back, a blocked one is reactivated by the
+        // resume normalization at the top of the cycle. And blocked
+        // does not feed K (no systemic diagnosis here — the ENVIRONMENT
+        // is fine, the TASK is impossible).
         const taskOutcome: GoalTask['status'] =
-          reasonId === 'needsUser' ? 'blocked' : 'failed'
+          reasonId === 'needsUser' || reasonId === 'taskImpossible' ? 'blocked' : 'failed'
         delegate.updateGoal((prev: GoalState) => ({
           ...prev,
           status: 'paused',

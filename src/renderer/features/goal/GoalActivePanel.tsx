@@ -22,6 +22,14 @@ type GoalActivePanelProps = {
    * The user can expand back to full via the chevron.
    */
   compact?: boolean
+  /**
+   * True while the panel plays its EXIT animation (genie back into the
+   * composer) after the goal reached a terminal state. The parent keeps
+   * the panel mounted for the animation duration with a snapshot of the
+   * last live goal; the class only adds the CSS animation and
+   * pointer-events:none — no layout shift.
+   */
+  leaving?: boolean
   onEditObjective: (newObjective: string) => void
   onPause: () => void
   onResume: () => void
@@ -32,6 +40,7 @@ export function GoalActivePanel({
   goal,
   turnInProgress,
   compact = false,
+  leaving = false,
   onEditObjective,
   onPause,
   onResume,
@@ -92,6 +101,14 @@ export function GoalActivePanel({
       ? t('goal.errorPausedBody', { message: goal.lastEvaluation.reason })
       : null
 
+  // Batch goals show the user's own multi-line message verbatim (their
+  // words, line breaks included — per user request) instead of the
+  // synthetic umbrella label ("Batch of N tasks"). Single-task goals
+  // have no batchInput and show `objective` exactly as before, so the
+  // two cases read the same: what the user typed. `objective` itself
+  // stays untouched — editing, status bar and system messages use it.
+  const displayObjective = goal.batchInput ?? goal.objective
+
   // Compact mode is forced by the parent when questions are open, but
   // the user can override to full panel. Editing also forces full panel.
   const showCompact = compact && !expandedFromCompact && !editing
@@ -124,7 +141,7 @@ export function GoalActivePanel({
   if (showCompact) {
     return (
       <div
-        className="goal-active-panel compact"
+        className={`goal-active-panel compact${leaving ? ' leaving' : ''}`}
         role="region"
         aria-label={t('goal.panelTitle')}
       >
@@ -134,8 +151,8 @@ export function GoalActivePanel({
           <span className="goal-active-panel-status-dot" aria-hidden />
           {t(statusLabelKey)}
         </span>
-          <p className="goal-active-panel-compact-objective" title={goal.objective}>
-            {goal.objective}
+          <p className="goal-active-panel-compact-objective" title={displayObjective}>
+            {displayObjective}
           </p>
           {isPaused && pauseReason && (
             <span className="goal-active-panel-reason">{pauseReason}</span>
@@ -204,7 +221,7 @@ export function GoalActivePanel({
 
   return (
     <div
-      className={`goal-active-panel ${isPaused ? 'paused' : 'running'}`}
+      className={`goal-active-panel ${isPaused ? 'paused' : 'running'}${leaving ? ' leaving' : ''}`}
       role="region"
       aria-label={t('goal.panelTitle')}
     >
@@ -253,9 +270,25 @@ export function GoalActivePanel({
             rows={2}
           />
         ) : (
-          <p className="goal-active-panel-objective-text">{goal.objective}</p>
+          <p className="goal-active-panel-objective-text">{displayObjective}</p>
         )}
       </div>
+
+      {/* D-D item 4: the taskImpossible pause message the user READS.
+          The legible reason + the v1 contract (reply resumes THIS SAME
+          task; to change it, cancel and relaunch) — the contract lives
+          IN THE MESSAGE, declared before the user types, not after the
+          frustration. Plain text in the panel's own typographic family:
+          no box, no badge (the noise class the user vetoed twice).
+          Compact strip keeps only the header label — the full text is
+          one chevron away. */}
+      {isPaused && goal.pauseReason === 'taskImpossible' && !editing && (
+        <p className="goal-active-panel-impossible-detail">
+          {t('goal.taskImpossibleBody', {
+            reason: goal.lastEvaluation?.reason?.trim() || t('goal.reasonId.taskImpossible'),
+          })}
+        </p>
+      )}
 
       <div className="goal-active-panel-actions">
         {/* quieter redesign: every action is icon-only with tooltip, the

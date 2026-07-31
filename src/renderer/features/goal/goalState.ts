@@ -174,6 +174,54 @@ export function goalSystemMessage(text: string): TranscriptItem {
   }
 }
 
+// ─── D-D: pause with reply-to-resume (taskImpossible) ───────────────
+
+/**
+ * D-D item 1 — SESSION REHYDRATION on resume ("sem perda de contexto").
+ *
+ * The goal's CLI session survives an in-app pause because there is no
+ * live process and every turn re-attaches via resume. But the App's
+ * goalSessionId ref is volatile and was NEVER rehydrated from
+ * goal.lastSessionId (the persisted value): resuming after an APP
+ * RESTART silently created a NEW session — the user replied believing
+ * the model remembered everything and it started from zero.
+ *
+ * The rule: a LIVE session id always wins (never clobber the session
+ * the in-app pause kept); only when the ref is empty (restart) do we
+ * fall back to the persisted lastSessionId. Legacy goals without
+ * lastSessionId legitimately return undefined → a fresh session, the
+ * pre-D-D behavior for goals that never ran a turn.
+ */
+export function resumeGoalSessionId(
+  goal: GoalState,
+  liveSessionId: string | undefined,
+): string | undefined {
+  return liveSessionId ?? goal.lastSessionId
+}
+
+/**
+ * D-D item 2 — REPLY RESUMES. A composer reply auto-resumes the goal
+ * ONLY when all three hold:
+ *   - the goal is PAUSED (an active goal must never be re-triggered);
+ *   - the pause reason is 'taskImpossible' — other pauses (userPaused,
+ *     unsafe, batchStagnation…) keep their explicit-resume semantics,
+ *     a reply must not resume them by accident (counterfactual pinned
+ *     in the tests);
+ *   - POSSE: the message went to the goal's OWNER conversation
+ *     (ownerConversationId), not whatever conversation is active —
+ *     replying in an unrelated chat must not drive the goal (G-C8).
+ */
+export function shouldResumeGoalOnUserMessage(
+  goal: GoalState | undefined,
+  conversationId: string,
+): boolean {
+  return (
+    goal?.status === 'paused' &&
+    goal.pauseReason === 'taskImpossible' &&
+    goal.ownerConversationId === conversationId
+  )
+}
+
 // ─── T1: goal BATCH (lote) + D1 action-evidence guard ───────────────
 
 /**

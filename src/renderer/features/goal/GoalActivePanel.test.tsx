@@ -339,3 +339,140 @@ describe('GoalActivePanel — quieter redesign (user request)', () => {
     expect(document.querySelector('.goal-active-panel-status.continuing .goal-active-panel-status-dot')).toBeTruthy()
   })
 })
+
+describe('GoalActivePanel — batch title is the user message verbatim (user request)', () => {
+  // The user rejected the synthetic umbrella ("Lote de 4 tarefas") as
+  // title: the panel must show the message HE typed, line breaks
+  // included, so he recognizes his own request. The umbrella keeps
+  // existing in goal.objective for system messages — it must NOT leak
+  // into the panel.
+
+  const RAW_INPUT = '1. Fix the login bug\n2. Refactor the batch parser\n3. Write the migration tests'
+
+  function makeTitledBatchGoal(): GoalState {
+    return makeGoal({
+      status: 'active',
+      // What App.tsx actually produces: umbrella in objective, raw
+      // multi-line message in batchInput.
+      objective: 'Batch of 3 tasks',
+      batchInput: RAW_INPUT,
+      tasks: [
+        { id: 't1', text: 'Fix the login bug', status: 'active' },
+        { id: 't2', text: 'Refactor the batch parser', status: 'pending' },
+        { id: 't3', text: 'Write the migration tests', status: 'pending' },
+      ],
+      taskIndex: 0,
+    })
+  }
+
+  it('full panel shows the RAW multi-line message — first, middle and last lines all reach the DOM', () => {
+    renderPanel(makeTitledBatchGoal())
+    // Verbatim: markers and all — this is "literalmente a mensagem".
+    expect(screen.getByText(/1\. Fix the login bug/)).toBeTruthy()
+    expect(screen.getByText(/2\. Refactor the batch parser/)).toBeTruthy()
+    expect(screen.getByText(/3\. Write the migration tests/)).toBeTruthy()
+    // The text node preserves the user's line breaks (pre-line CSS
+    // renders them; jsdom pins the source contract in the DOM).
+    const objectiveEl = document.querySelector('.goal-active-panel-objective-text')
+    expect(objectiveEl?.textContent).toBe(RAW_INPUT)
+  })
+
+  it('NEGATIVE: the synthetic umbrella never appears in the panel', () => {
+    renderPanel(makeTitledBatchGoal())
+    expect(screen.queryByText(/Batch of 3 tasks/)).toBeNull()
+  })
+
+  it('NEGATIVE: still ONE quiet surface — the multi-line message does NOT become one box per line', () => {
+    // Veto-history pin (the user rejected noise boxes twice this cycle):
+    // the message renders in the SAME single objective element a
+    // single-task goal uses. If someone "improves" this into per-task
+    // rows/badges, this breaks with a message explaining why.
+    renderPanel(makeTitledBatchGoal())
+    const objectiveBlocks = document.querySelectorAll('.goal-active-panel-objective-text')
+    expect(
+      objectiveBlocks.length,
+      'The batch message must render as ONE objective element — per-line boxes are the noise class the user rejected.',
+    ).toBe(1)
+    // And the panel itself is still the single .goal-active-panel card.
+    expect(document.querySelectorAll('.goal-active-panel').length).toBe(1)
+  })
+
+  it('compact strip shows the raw message too, with the FULL multi-line text in the tooltip', () => {
+    render(
+      <I18nProvider language="en-US">
+        <GoalActivePanel
+          goal={makeTitledBatchGoal()}
+          turnInProgress={false}
+          compact
+          onEditObjective={vi.fn()}
+          onPause={vi.fn()}
+          onResume={vi.fn()}
+          onCancel={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+    const objectiveEl = document.querySelector('.goal-active-panel-compact-objective') as HTMLElement
+    expect(objectiveEl).toBeTruthy()
+    // The strip truncates visually (CSS ellipsis) but the source text is
+    // the user's message, not the umbrella…
+    expect(objectiveEl.textContent).toBe(RAW_INPUT)
+    // …and the tooltip carries the COMPLETE message (every line), so
+    // nothing of his request is hidden behind the truncation.
+    expect(objectiveEl.title).toBe(RAW_INPUT)
+    expect(screen.queryByText(/Batch of 3 tasks/)).toBeNull()
+  })
+
+  it('coherence: a single-task goal (no batchInput) shows its objective exactly as before', () => {
+    // Same surface, same rule in both cases: what the user typed.
+    renderPanel(makeGoal({ status: 'active', objective: 'Create /tmp/test.txt' }))
+    const objectiveEl = document.querySelector('.goal-active-panel-objective-text')
+    expect(objectiveEl?.textContent).toBe('Create /tmp/test.txt')
+  })
+})
+
+describe('GoalActivePanel — leaving prop (genie exit)', () => {
+  // useGoalPanelExit keeps the panel mounted briefly after the goal
+  // turns terminal; `leaving` is the styling hook the genie-out CSS
+  // hangs on (and its pointer-events:none guard).
+
+  it('full panel root carries the leaving class when leaving is set', () => {
+    render(
+      <I18nProvider language="en-US">
+        <GoalActivePanel
+          goal={makeGoal({ status: 'active' })}
+          turnInProgress={false}
+          leaving
+          onEditObjective={vi.fn()}
+          onPause={vi.fn()}
+          onResume={vi.fn()}
+          onCancel={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+    const root = document.querySelector('.goal-active-panel.leaving')
+    expect(root).toBeTruthy()
+  })
+
+  it('compact strip root carries the leaving class too', () => {
+    render(
+      <I18nProvider language="en-US">
+        <GoalActivePanel
+          goal={makeGoal({ status: 'active' })}
+          turnInProgress={false}
+          compact
+          leaving
+          onEditObjective={vi.fn()}
+          onPause={vi.fn()}
+          onResume={vi.fn()}
+          onCancel={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+    expect(document.querySelector('.goal-active-panel.compact.leaving')).toBeTruthy()
+  })
+
+  it('NEGATIVE: without leaving the class is absent (no accidental exit state)', () => {
+    renderPanel(makeGoal({ status: 'active' }))
+    expect(document.querySelector('.goal-active-panel.leaving')).toBeNull()
+  })
+})
