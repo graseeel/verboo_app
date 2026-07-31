@@ -233,6 +233,26 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
         <div className="step-text turn-usage-line">{summary.usageLine}</div>
       )}
 
+      {/* T4: batch-goal progress ("Tarefa 3 de 12") and the final batch
+          report — same surface rule as the usage line above: stamped on
+          the turn's summary item, rendered inline in the SAME
+          .turn-usage-line typographic family (NO new class, no box, no
+          badge — the user rejected both). The progress line only exists
+          while the batch runs; on completion the onComplete delegate
+          clears it and stamps batchReportLines instead (one line per
+          task with its cited evidence + the compaction-failure footer).
+          Both undefined for non-batch goals — nothing renders. */}
+      {!streaming && summary?.progressLine && (
+        <div className="step-text turn-usage-line">{summary.progressLine}</div>
+      )}
+      {!streaming && summary?.batchReportLines && summary.batchReportLines.length > 0 && (
+        <div className="step-text turn-usage-line">
+          {summary.batchReportLines.map((line, index) => (
+            <div key={index}>{line}</div>
+          ))}
+        </div>
+      )}
+
       {!streaming && summary?.changeSummary?.totalFiles ? (
         <section className="turn-completion-summary" aria-label={t('transcript.turnSummary')}>
           <ChangeSummaryCard summary={summary.changeSummary} onOpenReview={onOpenReview} reviewMetadata={reviewMetadata} />

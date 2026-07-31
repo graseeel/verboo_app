@@ -50,8 +50,8 @@ export function isInfraError(reasonId: GoalReasonId | string | undefined): boole
  * Translate any reason string the scheduler might surface — either a
  * stable reasonId from the evaluator, or an internal budget/loop
  * reason (`maxTurns | maxTime | loop | blocked | noInstruction |
- * infraError`). The internal reasons use the legacy `goal.reason.*`
- * keys for backwards compatibility with existing copy.
+ * batchStagnation | infraError`). The internal reasons use the legacy
+ * `goal.reason.*` keys for backwards compatibility with existing copy.
  */
 const INTERNAL_REASON_KEYS: Record<string, string> = {
   maxTurns: 'goal.reason.maxTurns',
@@ -59,6 +59,12 @@ const INTERNAL_REASON_KEYS: Record<string, string> = {
   loop: 'goal.reason.loop',
   blocked: 'goal.reason.blocked',
   noInstruction: 'goal.reason.noInstruction',
+  // T2/T4: batch K-guard pause. Not a GoalReasonId (the backend enum has
+  // no batch concept) — an FE-side scheduler reason like the budget
+  // guards above. WITHOUT this entry it fell through to the free-form
+  // passthrough and rendered the raw camelCase literal "batchStagnation"
+  // on screen (chave órfã + genérico-na-tela wound class).
+  batchStagnation: 'goal.reason.batchStagnation',
   // Legacy snake_case aliases the scheduler used before reasonIds were
   // introduced. Kept for backwards compatibility with stored goals.
   infra_error: 'goal.reasonId.infraError',

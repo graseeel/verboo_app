@@ -112,3 +112,58 @@ describe('GoalActivePanel — evaluator error message (G-C6-FIX-UI)', () => {
     expect(screen.queryByText(/Some stale reason/)).toBeNull()
   })
 })
+
+describe('GoalActivePanel — T4 batch states', () => {
+  function renderPanelIn(goal: GoalState, language: 'en-US' | 'pt-BR') {
+    render(
+      <I18nProvider language={language}>
+        <GoalActivePanel
+          goal={goal}
+          turnInProgress={false}
+          onEditObjective={vi.fn()}
+          onPause={vi.fn()}
+          onResume={vi.fn()}
+          onCancel={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+  }
+
+  it('paused by batchStagnation shows the TRANSLATED reason, never the raw literal (both locales)', () => {
+    // T2 shipped pauseReason 'batchStagnation' with no translator entry:
+    // the panel rendered the raw camelCase literal via the free-form
+    // passthrough. Pin the fix in the REAL DOM, both locales.
+    const goal = makeGoal({ pauseReason: 'batchStagnation' })
+
+    renderPanelIn(goal, 'en-US')
+    expect(screen.getByText('Batch paused after repeated task failures')).toBeTruthy()
+    expect(screen.queryByText(/batchStagnation/)).toBeNull()
+    cleanup()
+
+    renderPanelIn(goal, 'pt-BR')
+    expect(screen.getByText('Lote pausado após falhas repetidas de tarefa')).toBeTruthy()
+    expect(screen.queryByText(/batchStagnation/)).toBeNull()
+  })
+
+  it('a batch ACTIVE with a failed task still shows the running label — no impossible state', () => {
+    // T2 row 8: a loop-killed task fails but the batch STAYS ACTIVE and
+    // advances. The panel maps goal.status — 'active' — so it must show
+    // the running label, never a paused/blocked reason for a batch that
+    // is in fact working.
+    const goal = makeGoal({
+      status: 'active',
+      pauseReason: undefined,
+      tasks: [
+        { id: 't1', text: 'Stuck task', status: 'failed', failureReason: 'loop', turns: 2 },
+        { id: 't2', text: 'Current task', status: 'active' },
+      ],
+      taskIndex: 1,
+    })
+    renderPanelIn(goal, 'en-US')
+
+    expect(screen.getByText('Running')).toBeTruthy()
+    expect(screen.queryByText('Paused')).toBeNull()
+    // And no reason span leaks into an active panel.
+    expect(screen.queryByText(/batchStagnation|Possible loop/i)).toBeNull()
+  })
+})

@@ -139,6 +139,23 @@ export type GoalTask = {
   toolless?: boolean
   startedAt?: number
   completedAt?: number
+  // T4: per-task EVIDENCE for the final batch report, stamped by the
+  // scheduler at the task's terminal transition (done/failed/skipped).
+  // The report must CITE what sustained each conclusion — a batch that
+  // completes a task with zero observable action is the turnsRun-zero
+  // incident class multiplied by N in silence. Renderer-only, same
+  // serde-ignores-unknown-keys argument as the GoalState batch fields.
+  /** Turns the task ran (turnsRunThisTask captured BEFORE the boundary
+   *  reset). */
+  turns?: number
+  /** Whitelisted action activities counted in the task's D1 evidence
+   *  window at completion (done only; undefined for toolless tasks —
+   *  evidence waived — and for non-done outcomes). */
+  evidenceCount?: number
+  /** WHY the task failed: 'loop' (three identical fingerprints),
+   *  'unsafe' (evaluator flag — pauses the whole batch), 'infraError'
+   *  (evaluator dead at max retries). Absent for done/skipped. */
+  failureReason?: 'loop' | 'unsafe' | 'infraError'
 }
 
 export type GoalState = {
@@ -395,6 +412,23 @@ export type TranscriptItem = {
   // no badge, same typographic family as the surrounding message. Empty
   // when the goal accumulated no tokens (zero-guard).
   usageLine?: string
+  // T4: batch-goal PROGRESS line (e.g. "Tarefa 3 de 12"), stamped on the
+  // LATEST turn's summary item while the batch runs (one line, updated
+  // each cycle — never a badge, never a separate box; the G-C15-TS
+  // surface rule). Cleared on the final item when the batch completes —
+  // the report below supersedes it, and two lines saying the same thing
+  // is the duplication the user rejected. Renderer-only like usageLine:
+  // Rust's TranscriptItem has no counterpart and serde ignores the
+  // unknown keys when items cross inside GoalEvaluationInput —
+  // usageLine itself is the in-production precedent (G-C15-TS).
+  progressLine?: string
+  // T4: batch-goal FINAL REPORT — one line per task with its cited
+  // evidence (turns/actions for done, reason for failed, "skipped by
+  // you"), plus the compaction-failure footer when compactions failed.
+  // Stamped on the LAST turn's summary item by the onComplete delegate
+  // alongside usageLine. Rendered as plain lines in the SAME
+  // .turn-usage-line typographic family — no box, no badge.
+  batchReportLines?: string[]
   modelId?: string
   modelDisplayName?: string
   streaming?: boolean

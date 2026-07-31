@@ -367,6 +367,10 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
         const consecutiveFailed = (currentGoal.consecutiveFailedTasks ?? 0) + 1
         const isLastTask = loopTaskIndex >= loopTasks.length - 1
         const now = Date.now()
+        // T4: captured ONCE here so every loop write below can stamp the
+        // per-task evidence (failureReason 'loop' + the turns the task
+        // ran) — and reused by the T3b coalescence gate further down.
+        const loopTurnsThisTask = currentGoal.turnsRunThisTask ?? 0
 
         if (isLastTask) {
           // T2 (row 13): the LAST task reached a terminal state → the
@@ -377,7 +381,14 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
             ...prev,
             tasks: prev.tasks?.map((task, index) =>
               index === loopTaskIndex
-                ? { ...task, status: 'failed' as GoalTask['status'], completedAt: now }
+                ? {
+                    ...task,
+                    status: 'failed' as GoalTask['status'],
+                    completedAt: now,
+                    // T4: evidence for the final report — WHY it failed.
+                    failureReason: 'loop' as const,
+                    turns: loopTurnsThisTask,
+                  }
                 : task,
             ),
             consecutiveFailedTasks: consecutiveFailed,
@@ -404,7 +415,11 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
           // src-tauri (the i18n key is T4's; here only the value).
           delegate.updateGoal((prev: GoalState) => ({
             ...prev,
-            tasks: advanceGoalTasks(prev.tasks ?? [], loopTaskIndex, now, 'failed'),
+            tasks: advanceGoalTasks(prev.tasks ?? [], loopTaskIndex, now, 'failed', {
+              // T4: evidence for the final report — WHY it failed.
+              failureReason: 'loop',
+              turns: loopTurnsThisTask,
+            }),
             taskIndex: loopTaskIndex + 1,
             turnsRunThisTask: 0,
             consecutiveFailedTasks: consecutiveFailed,
@@ -437,7 +452,6 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
         // content (the user's original complaint IS time wasted in the
         // dumb zone; a useless compaction is literally that). The skip
         // is DECLARED in the log — never silent.
-        const loopTurnsThisTask = currentGoal.turnsRunThisTask ?? 0
         if (delegate.compactOnTaskBoundary && loopTurnsThisTask > 0) {
           // SPLIT WRITE (the T3 atomic-advance solution, applied to the
           // kill): the kill/advance lands FIRST — the poisoned ring
@@ -449,7 +463,11 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
           // when the compaction fails — see runTaskBoundaryFrontier.
           delegate.updateGoal((prev: GoalState) => ({
             ...prev,
-            tasks: advanceGoalTasks(prev.tasks ?? [], loopTaskIndex, now, 'failed'),
+            tasks: advanceGoalTasks(prev.tasks ?? [], loopTaskIndex, now, 'failed', {
+              // T4: evidence for the final report — WHY it failed.
+              failureReason: 'loop',
+              turns: loopTurnsThisTask,
+            }),
             taskIndex: loopTaskIndex + 1,
             turnsRunThisTask: 0,
             consecutiveFailedTasks: consecutiveFailed,
@@ -484,7 +502,11 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
           }
           delegate.updateGoal((prev: GoalState) => ({
             ...prev,
-            tasks: advanceGoalTasks(prev.tasks ?? [], loopTaskIndex, now, 'failed'),
+            tasks: advanceGoalTasks(prev.tasks ?? [], loopTaskIndex, now, 'failed', {
+              // T4: evidence for the final report — WHY it failed.
+              failureReason: 'loop',
+              turns: loopTurnsThisTask,
+            }),
             taskIndex: loopTaskIndex + 1,
             turnsRunThisTask: 0,
             consecutiveFailedTasks: consecutiveFailed,
@@ -506,7 +528,22 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
     }
 
     delegate.onLog(`Evaluating goal progress (turn ${currentGoal.turnsRun})...`)
-    delegate.onStatusChange({ kind: 'evaluating', objective: currentGoal.objective, turn: currentGoal.turnsRun })
+    // T4: the batch progress rides the status change so the App can
+    // stamp "Tarefa k de N" on the latest turn's summary item — computed
+    // from the FRESH loop-top snapshot (a goalRef read could lag one
+    // cycle right after a boundary write; this snapshot never does).
+    const batchProgress = currentGoal.tasks?.length
+      ? {
+          current: Math.min((currentGoal.taskIndex ?? 0) + 1, currentGoal.tasks.length),
+          total: currentGoal.tasks.length,
+        }
+      : undefined
+    delegate.onStatusChange({
+      kind: 'evaluating',
+      objective: currentGoal.objective,
+      turn: currentGoal.turnsRun,
+      ...(batchProgress ? { batchProgress } : {}),
+    })
     delegate.updateGoal((prev: GoalState) => ({ ...prev, status: 'evaluating' }))
 
     let evaluation: GoalEvaluationResult
@@ -546,7 +583,11 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
           pauseReason: 'infraError',
           errorCount,
           lastEvaluation: syntheticEvaluation,
-          ...stampCurrentTask(prev, 'failed'),
+          ...stampCurrentTask(prev, 'failed', {
+            // T4: evidence for the final report — WHY it failed.
+            failureReason: 'infraError',
+            turns: currentGoal.turnsRunThisTask ?? 0,
+          }),
         }))
         delegate.onStatusChange({
           kind: 'stopped',
@@ -609,6 +650,13 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
     // advance write resets turnsRunThisTask to 0 — the frontier gate
     // below reads it after the reset, so it cannot re-read the field.
     let turnsThisTaskBeforeAdvance: number | undefined
+    // T4: the completed task's evidence, captured at the D1 pass so the
+    // final report can CITE it (turns + whitelisted actions). Used by
+    // BOTH the advance write (non-last task) and the terminal
+    // completion stamp (last task). undefined evidenceCount = toolless
+    // waiver (the report says "toolless" instead of citing actions).
+    let completedTaskTurns: number | undefined
+    let completedTaskEvidence: number | undefined
     const batchTasks = currentGoal.tasks
     const activeTask = currentGoalTask(currentGoal)
     const taskIndex = currentGoal.taskIndex ?? 0
@@ -642,6 +690,10 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
       } else {
         fingerprint = computeFingerprint(evaluation)
         completedTaskIndex = clampedTaskIndex
+        // T4: capture the evidence NOW — the D1 block's turnsThisTask /
+        // evidenceCount go out of scope before the completion write.
+        completedTaskTurns = turnsThisTask
+        completedTaskEvidence = activeTask.toolless === true ? undefined : evidenceCount
         if (clampedTaskIndex < batchTasks.length - 1) {
           // Non-last task done → advance the batch IN PLACE: same goal
           // record, ownerConversationId UNTOUCHED (POSSE, not freshness),
@@ -654,7 +706,12 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
           turnsThisTaskBeforeAdvance = turnsThisTask
           delegate.updateGoal((prev: GoalState) => ({
             ...prev,
-            tasks: advanceGoalTasks(prev.tasks ?? [], clampedTaskIndex, now),
+            // T4: the completed task carries its evidence into the
+            // final report (turns always; actions unless toolless).
+            tasks: advanceGoalTasks(prev.tasks ?? [], clampedTaskIndex, now, 'done', {
+              turns: turnsThisTask,
+              ...(completedTaskEvidence !== undefined ? { evidenceCount: completedTaskEvidence } : {}),
+            }),
             taskIndex: clampedTaskIndex + 1,
             turnsRunThisTask: 0,
             consecutiveFailedTasks: 0,
@@ -742,7 +799,17 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
         completedTaskIndex !== undefined && batchTasks
           ? batchTasks.map((task, index) =>
               index === completedTaskIndex
-                ? { ...task, status: 'done' as GoalTask['status'], completedAt }
+                ? {
+                    ...task,
+                    status: 'done' as GoalTask['status'],
+                    completedAt,
+                    // T4: the LAST task's evidence for the report (the
+                    // earlier tasks were stamped at each advance write).
+                    turns: completedTaskTurns ?? 0,
+                    ...(completedTaskEvidence !== undefined
+                      ? { evidenceCount: completedTaskEvidence }
+                      : {}),
+                  }
                 : task,
             )
           : undefined
@@ -846,7 +913,16 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
           pausedAt: Date.now(),
           pauseReason: reasonId,
           lastEvaluation: evaluation,
-          ...stampCurrentTask(prev, taskOutcome),
+          // T4: a failed task carries WHY into the final report
+          // ('unsafe' | 'infraError'); blocked (needsUser) is not a
+          // terminal stamp — the skip records its turns later.
+          ...stampCurrentTask(
+            prev,
+            taskOutcome,
+            taskOutcome === 'failed'
+              ? { failureReason: reasonId as 'unsafe' | 'infraError', turns: currentGoal.turnsRunThisTask ?? 0 }
+              : undefined,
+          ),
         }))
         delegate.onStatusChange({
           kind: 'stopped',
@@ -918,12 +994,20 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
  * legacy path. Pure and local: the stamp reads prev.tasks so the write
  * composes with whatever else the same update sets.
  */
-function stampCurrentTask(goal: GoalState, outcome: GoalTask['status']): { tasks?: GoalTask[] } {
+function stampCurrentTask(
+  goal: GoalState,
+  outcome: GoalTask['status'],
+  // T4: per-task evidence for the final report (failureReason / turns),
+  // merged into the stamped task only.
+  extra?: Partial<GoalTask>,
+): { tasks?: GoalTask[] } {
   const tasks = goal.tasks
   if (!tasks || tasks.length === 0) return {}
   const taskIndex = Math.min(goal.taskIndex ?? 0, tasks.length - 1)
   return {
-    tasks: tasks.map((task, index) => (index === taskIndex ? { ...task, status: outcome } : task)),
+    tasks: tasks.map((task, index) =>
+      index === taskIndex ? { ...task, status: outcome, ...extra } : task,
+    ),
   }
 }
 

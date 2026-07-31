@@ -47,6 +47,7 @@ import { extractContextUsage, extractUsageObject, isRecord, numberValue, numberV
 import { GoalStatusBar, type GoalStatusBarState } from './features/goal/GoalStatusBar'
 import { GoalActivePanel } from './features/goal/GoalActivePanel'
 import { buildGoalUsageLine, buildObjectiveUpdatedPrompt } from './features/goal/goalPrompt'
+import { buildBatchReportLines } from './features/goal/goalReport'
 import { runGoalCycle, type GoalSchedulerDelegate } from './features/goal/goalScheduler'
 import { shouldAccumulateTokensForTurn, accumulateTurnUsage, accumulateEvaluatorUsage, shouldAccumulateEvaluatorUsage } from './features/goal/tokenAccumulator'
 import type { ReservedSlashCommand } from './features/composer/slashCommands'
@@ -3393,7 +3394,39 @@ export function App() {
         // forever after the user clicks abort.
         void window.verboo.forceIdleMenuBar()
       },
-      onStatusChange: setGoalBarStatus,
+      onStatusChange: (status) => {
+        setGoalBarStatus(status)
+        // T4: the discreet batch progress line — "Tarefa k de N" stamped
+        // on the LATEST turn's summary item, the same G-C15-TS surface
+        // as the usage line (no badge, no box, no second item). Only the
+        // 'evaluating' kind carries the fresh batchProgress payload (the
+        // scheduler computes it from the loop-top snapshot); every other
+        // kind passes through untouched — including legacy goals, which
+        // never carry the payload and never get a line.
+        if (status.kind !== 'evaluating' || !status.batchProgress) return
+        const currentGoal = goalRef.current
+        const ownerConversationId = currentGoal?.ownerConversationId ?? activeConversationIdRef.current
+        const lastTurnId = currentGoal?.lastTurnId
+        // First cycle has no turn yet — nothing to stamp on.
+        if (!ownerConversationId || !lastTurnId) return
+        const progressLine = t('goal.batchProgress', {
+          current: status.batchProgress.current,
+          total: status.batchProgress.total,
+        })
+        const summaryItemId = `${lastTurnId}:summary`
+        const conv = chatStoreRef.current.conversations.find(c => c.id === ownerConversationId)
+        if (!conv) return
+        const existingItem = conv.items.find(i => i.id === summaryItemId)
+        // No churn: skip the write when the stamped line is already current.
+        if (!existingItem || existingItem.progressLine === progressLine) return
+        updateConversation(ownerConversationId, c => ({
+          ...c,
+          items: c.items.map(i =>
+            i.id === summaryItemId ? { ...i, progressLine } : i,
+          ),
+          updatedAt: Date.now(),
+        }))
+      },
       onLog: (message) => {
         console.log('[goal]', message)
       },
@@ -3431,7 +3464,17 @@ export function App() {
         // scheduler overlays them from the live ref (goalScheduler.ts
         // G-C17 adendo).
         const usageLine = buildGoalUsageLine(finalGoal, t)
-        if (!usageLine) return
+        // T4: the batch FINAL REPORT — one line per task with its cited
+        // evidence (turns/actions, failure reason, "skipped by you"),
+        // plus the compaction-failure footer. [] for legacy goals. Same
+        // surface as the usage line: stamped on this same summary item,
+        // no box, no badge, no second message.
+        const batchReportLines = buildBatchReportLines(finalGoal, t)
+        // ZERO-TOKEN GUARD (above) for the usage line; the report is the
+        // batch's core deliverable and stamps even when a toolless batch
+        // accumulated no tokens — but a legacy goal with no tokens stamps
+        // nothing, exactly as before.
+        if (!usageLine && batchReportLines.length === 0) return
 
         const lastTurnId = finalGoal.lastTurnId
         if (!lastTurnId) return
@@ -3445,12 +3488,22 @@ export function App() {
         if (!conv) return
         const existingItem = conv.items.find(i => i.id === summaryItemId)
         if (!existingItem) return
-        if (existingItem.usageLine) return
+        if (existingItem.usageLine && (batchReportLines.length === 0 || existingItem.batchReportLines)) return
 
         updateConversation(ownerConversationId, c => ({
           ...c,
           items: c.items.map(i =>
-            i.id === summaryItemId ? { ...i, usageLine } : i,
+            i.id === summaryItemId
+              ? {
+                  ...i,
+                  ...(usageLine ? { usageLine } : {}),
+                  ...(batchReportLines.length > 0 ? { batchReportLines } : {}),
+                  // T4: the report SUPERSEDES the progress line — clear
+                  // it on the final item so the two never coexist (a
+                  // duplicate line is the noise class the user rejected).
+                  progressLine: undefined,
+                }
+              : i,
           ),
           updatedAt: Date.now(),
         }))

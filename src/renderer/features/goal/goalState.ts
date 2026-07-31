@@ -236,10 +236,14 @@ export function advanceGoalTasks(
   doneIndex: number,
   now: number,
   outcome: GoalTask['status'] = 'done',
+  // T4: per-task evidence for the final report (turns / evidenceCount /
+  // failureReason), merged into the OUTGOING task's stamp only. The next
+  // task's activation stamp is never touched.
+  outcomeExtra?: Partial<GoalTask>,
 ): GoalTask[] {
   return tasks.map((task, index) =>
     index === doneIndex
-      ? { ...task, status: outcome, completedAt: now }
+      ? { ...task, status: outcome, completedAt: now, ...outcomeExtra }
       : index === doneIndex + 1
         ? { ...task, status: 'active' as GoalTask['status'], startedAt: now }
         : task,
@@ -308,7 +312,9 @@ export function skipBlockedGoalTask(
   }
   return {
     ...goal,
-    tasks: advanceGoalTasks(tasks, taskIndex, now, 'skipped'),
+    // T4: the skipped task carries its turn count into the report —
+    // "skipped by you" is the conclusion, the turns are the context.
+    tasks: advanceGoalTasks(tasks, taskIndex, now, 'skipped', { turns: turnsThisTask }),
     taskIndex: taskIndex + 1,
     turnsRunThisTask: 0,
     // K TRANSPARENT: consecutiveFailedTasks deliberately NOT mentioned.
