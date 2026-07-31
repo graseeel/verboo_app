@@ -34,11 +34,37 @@ REPO="$SCRIPT_DIR/../.."
 # Normalize path (resolve .. and symlinks)
 REPO="$(cd "$REPO" && pwd)"
 
-IMAGE="verboo-linux-check:ubuntu24"
+# --- Architecture selection ---
+# TARGET_PLATFORM habilita docker --platform para teste em arquitetura
+# alternativa (ex: linux/amd64 sob QEMU). Default vazio = host nativo.
+#
+# TENTATIVA QEMU (2026-07-30, PRENSA): encerrada apos 3 falhas.
+#   - collect2 (gcc-13) segfaulta no linking de proc-macro:
+#     cc: internal compiler error: Segmentation fault
+#   - CARGO_BUILD_JOBS=1 nao resolveu (crash migrou para outro crate)
+#   - clang+lld como linker quebrou no apt-get (dpkg crash sob QEMU)
+#   Conclusao: QEMU x86_64 sobre ARM e instavel para toolchain Rust
+#   completa. Resposta definitiva e hardware x86_64 real (ci-verify.yml).
+# Se um dia alguem reabrir esta via: resolver GPG (kernel keyring),
+# collect2 (linker), e estabilidade dpkg. Nao reativar sem testar os
+# tres sintomas.
+TARGET_PLATFORM="${TARGET_PLATFORM:-}"
+
+if [ -n "$TARGET_PLATFORM" ]; then
+  PLATFORM_FLAGS="--platform $TARGET_PLATFORM"
+  PLATFORM_TAG_SUFFIX="-$(echo "$TARGET_PLATFORM" | tr '/:' '-')"
+  TARGET_VOLUME="verboo-linux-target${PLATFORM_TAG_SUFFIX}"
+else
+  PLATFORM_FLAGS=""
+  PLATFORM_TAG_SUFFIX=""
+  TARGET_VOLUME="verboo-linux-target"
+fi
+
+IMAGE="verboo-linux-check:ubuntu24${PLATFORM_TAG_SUFFIX}"
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "==> construindo imagem base (uma vez)"
-  docker build -t "$IMAGE" - <<'DOCKERFILE'
+  docker build $PLATFORM_FLAGS -t "$IMAGE" - <<'DOCKERFILE'
 FROM ubuntu:24.04
 
 # Node 22 pinado em 22.11.0 (LTS "Jod"). Node flutuante faria o container
@@ -47,7 +73,8 @@ FROM ubuntu:24.04
 # O verboo-cli-update.yml já usa Node 22; este container casa com ele.
 ENV NODE_VERSION=22.11.0
 
-RUN export DEBIAN_FRONTEND=noninteractive && apt-get update -qq && \
+RUN export DEBIAN_FRONTEND=noninteractive && \
+    apt-get update -qq && \
     apt-get install -y -qq \
       build-essential pkg-config libssl-dev \
       libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
@@ -85,6 +112,7 @@ fi
 
 echo "==> criando stubs de sidecar para o triple do container"
 docker run --rm \
+  $PLATFORM_FLAGS \
   -v "$REPO:$REPO" \
   -e CARGO_TARGET_DIR=/target \
   -w "$REPO" \
@@ -218,8 +246,9 @@ TEST_OUTPUT="$(mktemp)"
 # PIPESTATUS instead of killing the script before the guard check.
 set +e
 docker run --rm \
+  $PLATFORM_FLAGS \
   -v "$REPO:$REPO" \
-  -v verboo-linux-target:/target \
+  -v "${TARGET_VOLUME}:/target" \
   -v verboo-cargo-registry:/root/.cargo/registry \
   -e CARGO_TARGET_DIR=/target \
   -w "$REPO" \
