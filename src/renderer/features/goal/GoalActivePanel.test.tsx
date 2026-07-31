@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '../../i18n'
@@ -165,5 +165,105 @@ describe('GoalActivePanel — T4 batch states', () => {
     expect(screen.queryByText('Paused')).toBeNull()
     // And no reason span leaks into an active panel.
     expect(screen.queryByText(/batchStagnation|Possible loop/i)).toBeNull()
+  })
+})
+
+describe('GoalActivePanel — T5 batch edit lock (v1)', () => {
+  // Veto→assertion pattern (T4): the v1 limitation is DECLARED, not
+  // silent. The edit affordance stays VISIBLE but disabled, with the
+  // reason as tooltip — a clear warning, never a mysterious disappearance.
+
+  function makeBatchGoal(): GoalState {
+    return makeGoal({
+      status: 'active',
+      tasks: [
+        { id: 't1', text: 'First task', status: 'active' },
+        { id: 't2', text: 'Second task', status: 'pending' },
+      ],
+      taskIndex: 0,
+    })
+  }
+
+  it('batch goal: full-panel edit button is DISABLED with the v1 reason as tooltip (both locales)', () => {
+    renderPanel(makeBatchGoal())
+    const button = screen.getByRole('button', {
+      name: 'Objective editing is disabled while a batch runs (v1)',
+    }) as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    expect(button.title).toBe('Objective editing is disabled while a batch runs (v1)')
+    // The visible label keeps the original wording — only the affordance
+    // and the tooltip changed.
+    expect(screen.getByText('Edit objective')).toBeTruthy()
+    cleanup()
+
+    render(
+      <I18nProvider language="pt-BR">
+        <GoalActivePanel
+          goal={makeBatchGoal()}
+          turnInProgress={false}
+          onEditObjective={vi.fn()}
+          onPause={vi.fn()}
+          onResume={vi.fn()}
+          onCancel={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+    const buttonPt = screen.getByRole('button', {
+      name: 'Edição de objetivo desabilitada durante um lote (v1)',
+    }) as HTMLButtonElement
+    expect(buttonPt.disabled).toBe(true)
+    expect(buttonPt.title).toBe('Edição de objetivo desabilitada durante um lote (v1)')
+  })
+
+  it('batch goal: clicking the disabled button does NOT enter edit mode nor call onEditObjective', () => {
+    const onEditObjective = vi.fn()
+    render(
+      <I18nProvider language="en-US">
+        <GoalActivePanel
+          goal={makeBatchGoal()}
+          turnInProgress={false}
+          onEditObjective={onEditObjective}
+          onPause={vi.fn()}
+          onResume={vi.fn()}
+          onCancel={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+    const button = screen.getByRole('button', {
+      name: 'Objective editing is disabled while a batch runs (v1)',
+    })
+    fireEvent.click(button)
+    // EFEITO: no edit textarea opens, no callback fires.
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(onEditObjective).not.toHaveBeenCalled()
+  })
+
+  it('batch goal: compact-panel pencil button is disabled too', () => {
+    render(
+      <I18nProvider language="en-US">
+        <GoalActivePanel
+          goal={makeBatchGoal()}
+          turnInProgress={false}
+          compact
+          onEditObjective={vi.fn()}
+          onPause={vi.fn()}
+          onResume={vi.fn()}
+          onCancel={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+    const button = screen.getByRole('button', {
+      name: 'Objective editing is disabled while a batch runs (v1)',
+    }) as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+  })
+
+  it('NEGATIVE: a non-batch goal keeps the edit button ENABLED with its original label', () => {
+    // The lock must be scoped to batches — a legacy single-task goal
+    // edits exactly as before (aceite d, zero regression).
+    renderPanel(makeGoal({ status: 'active' }))
+    const button = screen.getByRole('button', { name: 'Edit objective' }) as HTMLButtonElement
+    expect(button.disabled).toBe(false)
+    expect(button.title).not.toBe('Objective editing is disabled while a batch runs (v1)')
   })
 })

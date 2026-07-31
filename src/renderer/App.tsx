@@ -48,6 +48,7 @@ import { GoalStatusBar, type GoalStatusBarState } from './features/goal/GoalStat
 import { GoalActivePanel } from './features/goal/GoalActivePanel'
 import { buildGoalUsageLine, buildObjectiveUpdatedPrompt } from './features/goal/goalPrompt'
 import { buildBatchReportLines } from './features/goal/goalReport'
+import { parseBatchInput } from './features/goal/goalBatchParse'
 import { runGoalCycle, type GoalSchedulerDelegate } from './features/goal/goalScheduler'
 import { shouldAccumulateTokensForTurn, accumulateTurnUsage, accumulateEvaluatorUsage, shouldAccumulateEvaluatorUsage } from './features/goal/tokenAccumulator'
 import type { ReservedSlashCommand } from './features/composer/slashCommands'
@@ -2942,6 +2943,18 @@ export function App() {
     const current = goalRef.current
     if (!current) return
 
+    // T5 (v1): objective editing is DISABLED while a batch runs. Editing
+    // the umbrella label would not retarget any task (the evaluator reads
+    // the per-task snapshot, not the umbrella), and rewriting task texts
+    // mid-flight has no safe semantics in v1 — skip/cancel remain the
+    // supported escape hatches. The panel also disables the edit affordance
+    // with this same message as its tooltip; this guard is the backstop for
+    // any other entry point. Declared to the user, never a silent no-op.
+    if (current.tasks?.length) {
+      appendConversationItem(conversationId, goalSystemMessage(t('goal.batchEditDisabled')))
+      return
+    }
+
     const oldObjective = current.objective
     const updated: GoalState = {
       ...current,
@@ -3056,6 +3069,22 @@ export function App() {
     }
 
     if (command.action === 'start' && command.objective) {
+      // T5 batch entry: a multi-line objective is parsed as a task batch —
+      // one task per line, numbered/bullet markers stripped, [toolless] as
+      // the per-task opt-out of the D1 evidence guard. A single line keeps
+      // the LEGACY path field-by-field: no tasks array, no D1 guard, no
+      // progress line, no per-task report (zero regression by construction).
+      const batchParse = parseBatchInput(command.objective)
+
+      if (batchParse.kind === 'empty') {
+        // Nothing runnable (e.g. `/goal` followed only by blank lines or
+        // bare list markers). Answer with the expected format and DON'T
+        // touch any goal already in flight — a malformed new command must
+        // not silently kill the running one.
+        appendConversationItem(ensureActiveConversation(), goalSystemMessage(t('goal.batchEmpty')))
+        return
+      }
+
       goalAbortRef.current?.abort()
 
       const conversationId = ensureActiveConversation()
@@ -3071,29 +3100,41 @@ export function App() {
         ? (accessMode === 'full' && userSettings.fullAccessEnabled ? 'full' as const : 'auto' as const)
         : accessMode
 
+      // The batch umbrella objective is a label ("Batch of N tasks"), never
+      // evaluated: the evaluator always receives the CURRENT task's text via
+      // the per-task snapshot (T1). Single tasks keep the raw objective.
+      const objective = batchParse.kind === 'batch'
+        ? t('goal.batchObjective', { count: batchParse.tasks.length })
+        : batchParse.objective
+
       const goalState = createGoalState({
-        objective: command.objective,
+        objective,
         accessMode: goalAccessMode, // continueGoal downgrades 'full' unless full access is enabled
         modelId: selectedModel,
         modelDisplayName: selectedModelInfo?.displayName,
         workingDirectory: wd,
         skills: selectedSkillsUnion,
+        // Only a real batch (2+ tasks) carries the tasks array — a lone
+        // task produces a goal identical to the pre-batch era.
+        ...(batchParse.kind === 'batch' ? { tasks: batchParse.tasks } : {}),
       })
       // G-C5-FIX: stamp the goal with its owning conversation so the
       // persist effect does NOT cross-write into a different
       // conversation when the user switches mid-cycle.
       goalState.ownerConversationId = conversationId
 
-      appendConversationItem(conversationId, goalSystemMessage(t('goal.systemStarted', { objective: command.objective })))
+      appendConversationItem(conversationId, goalSystemMessage(t('goal.systemStarted', { objective })))
 
-      const message = buildGoalStartMessage(command.objective, wd)
+      const message = batchParse.kind === 'batch'
+        ? buildGoalBatchStartMessage(batchParse.tasks, wd)
+        : buildGoalStartMessage(batchParse.objective, wd)
       appendConversationItem(conversationId, {
         id: `user:goal:${Date.now()}`,
         role: 'user',
         text: message,
         timestamp: Date.now(),
         skills: selectedSkillsUnion,
-      }, t('goal.systemObjective', { objective: command.objective }))
+      }, t('goal.systemObjective', { objective }))
 
       setGoal(goalState)
       // G-C5-FIX: explicit handoff. goalRef.current must be populated
@@ -3533,6 +3574,26 @@ export function App() {
       'You are now working autonomously toward this objective.',
       'Complete the objective step by step. Do NOT ask for confirmation for each step.',
       'When you believe the objective is complete, summarize what was done.',
+      '',
+      `Working directory: ${workingDirectory}`,
+    ].filter(Boolean).join('\n')
+  }
+
+  // T5: kickoff message for a batch goal. Lists every task so the agent
+  // sees the full plan up front, but instructs it to work ONLY the first
+  // task — the scheduler drives each frontier (compaction + next task) via
+  // its own per-task prompt, so this message must not invite parallel work.
+  function buildGoalBatchStartMessage(tasks: { text: string }[], workingDirectory: string): string {
+    return [
+      `## Goal: batch of ${tasks.length} tasks`,
+      '',
+      'You are now working autonomously through a BATCH of tasks, in order.',
+      ...tasks.map((task, index) => `${index + 1}. ${task.text}`),
+      '',
+      'Start with task 1 ONLY. Work it to completion and summarize what was',
+      'done. Do NOT start later tasks — the system advances to each next',
+      'task automatically, with a fresh context, when the current one ends.',
+      'Do NOT ask for confirmation for each step.',
       '',
       `Working directory: ${workingDirectory}`,
     ].filter(Boolean).join('\n')

@@ -68,6 +68,14 @@ export function GoalActivePanel({
   const isPaused = kind === 'paused'
   const pauseReason = isPaused && goal.pauseReason ? translateGoalReason(goal.pauseReason, t) : null
 
+  // T5 (v1): objective editing is disabled while a BATCH runs — editing
+  // the umbrella label would not retarget any task, and rewriting task
+  // texts mid-flight has no safe v1 semantics. The edit buttons stay
+  // VISIBLE but disabled, with the reason as tooltip: a clear warning,
+  // not a mysterious disappearance. App.handleEditObjective carries the
+  // same guard as backstop for non-panel entry points.
+  const isBatch = (goal.tasks?.length ?? 0) > 0
+
   // G-C6-FIX-UI: surface the evaluator's specific error message when
   // paused by infraError. The Rust evaluator emits a useful timeout/
   // failure reason (e.g. "Goal evaluator CLI timed out after 240s...")
@@ -148,8 +156,9 @@ export function GoalActivePanel({
               type="button"
               className="goal-panel-icon-button"
               onClick={() => setEditing(true)}
-              aria-label={t('goal.compactEditButton')}
-              title={t('goal.compactEditButton')}
+              aria-label={isBatch ? t('goal.batchEditDisabled') : t('goal.compactEditButton')}
+              title={isBatch ? t('goal.batchEditDisabled') : t('goal.compactEditButton')}
+              disabled={isBatch}
             >
               <Pencil size={14} aria-hidden />
             </button>
@@ -267,7 +276,9 @@ export function GoalActivePanel({
               type="button"
               className="goal-panel-button"
               onClick={() => setEditing(true)}
-              aria-label={t('goal.panelEditButton')}
+              aria-label={isBatch ? t('goal.batchEditDisabled') : t('goal.panelEditButton')}
+              title={isBatch ? t('goal.batchEditDisabled') : t('goal.panelEditButton')}
+              disabled={isBatch}
             >
               <Pencil size={14} aria-hidden />
               <span>{t('goal.panelEditButton')}</span>
