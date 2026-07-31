@@ -191,9 +191,11 @@ describe('GoalActivePanel — T5 batch edit lock (v1)', () => {
     }) as HTMLButtonElement
     expect(button.disabled).toBe(true)
     expect(button.title).toBe('Objective editing is disabled while a batch runs (v1)')
-    // The visible label keeps the original wording — only the affordance
-    // and the tooltip changed.
-    expect(screen.getByText('Edit objective')).toBeTruthy()
+    // quieter redesign (BY DESIGN, declared in the diff): actions are
+    // icon-only now — the visible "Edit objective" caption is GONE, the
+    // wording survives as aria-label/tooltip. Pin the absence so nobody
+    // reintroduces a labeled button without reading this.
+    expect(screen.queryByText('Edit objective')).toBeNull()
     cleanup()
 
     render(
@@ -265,5 +267,75 @@ describe('GoalActivePanel — T5 batch edit lock (v1)', () => {
     const button = screen.getByRole('button', { name: 'Edit objective' }) as HTMLButtonElement
     expect(button.disabled).toBe(false)
     expect(button.title).not.toBe('Objective editing is disabled while a batch runs (v1)')
+  })
+})
+
+describe('GoalActivePanel — quieter redesign (user request)', () => {
+  // The user called the old panel "MUITO GRITANTE": purple card, uppercase
+  // status pill, uppercase OBJECTIVE label, labeled buttons with a red
+  // Cancel. These tests pin the QUIET contract in the real DOM — what
+  // appears AND what must never come back. Note the declared limit:
+  // jsdom cannot evaluate stylesheets, so visual quiet (neutral surface,
+  // muted danger) is pinned via the styling-hook classes that ARE the
+  // documented CSS contract in goal.css.
+
+  it('status is dot + discreet text — the uppercase pill is gone, the dot is the state signal', () => {
+    renderPanel(makeGoal({ status: 'evaluating' }))
+    // The status text itself still reaches the user…
+    expect(screen.getByText('Evaluating')).toBeTruthy()
+    // …carried by the dot structure that replaced the pill…
+    const dot = document.querySelector('.goal-active-panel-status.evaluating .goal-active-panel-status-dot')
+    expect(dot).toBeTruthy()
+    // …and the old pill's building blocks are NOT in the DOM anymore:
+    // no separate status chip element, no OBJECTIVE label.
+    expect(screen.queryByText('Objective')).toBeNull()
+  })
+
+  it('the uppercase OBJECTIVE label is gone — objective text stands on its own', () => {
+    renderPanel(makeGoal({ status: 'active' }))
+    expect(screen.getByText('Create /tmp/test.txt')).toBeTruthy()
+    expect(screen.queryByText('Objective')).toBeNull()
+    expect(document.querySelector('.goal-active-panel-objective-label')).toBeNull()
+  })
+
+  it('actions are icon-only: no visible Pause / Cancel goal captions, buttons still reachable by name', () => {
+    renderPanel(makeGoal({ status: 'active' }))
+    // NEGATIVE pins — the labeled-button row must not come back.
+    expect(screen.queryByText('Pause')).toBeNull()
+    expect(screen.queryByText('Cancel goal')).toBeNull()
+    // POSITIVE — every action still exists, discoverable via aria-label
+    // (a11y) and tooltip, in the icon-button vocabulary (styling hook).
+    for (const name of ['Edit objective', 'Pause', 'Cancel goal']) {
+      const button = screen.getByRole('button', { name })
+      expect(button.className).toContain('goal-panel-icon-button')
+    }
+  })
+
+  it('paused state: resume uses the primary (accent) icon button, cancel keeps the muted-danger hook', () => {
+    renderPanel(makeGoal({ status: 'paused', pauseReason: 'userPaused' }))
+    const resume = screen.getByRole('button', { name: 'Resume' })
+    expect(resume.className).toContain('goal-panel-icon-button primary')
+    const cancel = screen.getByRole('button', { name: 'Cancel goal' })
+    expect(cancel.className).toContain('goal-panel-icon-button danger')
+    // The dot signals paused (muted) instead of the old gray pill.
+    expect(document.querySelector('.goal-active-panel-status.paused .goal-active-panel-status-dot')).toBeTruthy()
+  })
+
+  it('compact strip carries the same quiet status vocabulary', () => {
+    render(
+      <I18nProvider language="en-US">
+        <GoalActivePanel
+          goal={makeGoal({ status: 'continuing' })}
+          turnInProgress={false}
+          compact
+          onEditObjective={vi.fn()}
+          onPause={vi.fn()}
+          onResume={vi.fn()}
+          onCancel={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+    expect(screen.getByText('Continuing')).toBeTruthy()
+    expect(document.querySelector('.goal-active-panel-status.continuing .goal-active-panel-status-dot')).toBeTruthy()
   })
 })

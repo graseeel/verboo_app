@@ -130,7 +130,10 @@ export function GoalActivePanel({
       >
         <div className="goal-active-panel-compact-row">
           <Target size={14} aria-hidden className="goal-active-panel-compact-icon" />
-          <span className={`goal-active-panel-status ${kind}`}>{t(statusLabelKey)}</span>
+          <span className={`goal-active-panel-status ${kind}`}>
+          <span className="goal-active-panel-status-dot" aria-hidden />
+          {t(statusLabelKey)}
+        </span>
           <p className="goal-active-panel-compact-objective" title={goal.objective}>
             {goal.objective}
           </p>
@@ -208,7 +211,10 @@ export function GoalActivePanel({
       <div className="goal-active-panel-header">
         <Target size={14} aria-hidden />
         <span className="goal-active-panel-title">{t('goal.panelTitle')}</span>
-        <span className={`goal-active-panel-status ${kind}`}>{t(statusLabelKey)}</span>
+        <span className={`goal-active-panel-status ${kind}`}>
+          <span className="goal-active-panel-status-dot" aria-hidden />
+          {t(statusLabelKey)}
+        </span>
         {isPaused && pauseReason && (
           <span className="goal-active-panel-reason">{pauseReason}</span>
         )}
@@ -231,7 +237,10 @@ export function GoalActivePanel({
       </div>
 
       <div className="goal-active-panel-objective">
-        <span className="goal-active-panel-objective-label">{t('goal.panelObjectiveLabel')}</span>
+        {/* quieter redesign: the "OBJECTIVE" uppercase label was removed —
+            the text under the Goal header is self-evident, and the user
+            rejects labels that read as noise. The i18n key and CSS rule
+            were removed together (no orphan on either side). */}
         {editing ? (
           <textarea
             ref={editInputRef}
@@ -249,70 +258,73 @@ export function GoalActivePanel({
       </div>
 
       <div className="goal-active-panel-actions">
+        {/* quieter redesign: every action is icon-only with tooltip, the
+            SAME vocabulary as the compact strip (product.md: consistent
+            affordances across the surface). The i18n keys stay consumed
+            as aria-label/title — nothing orphaned. */}
         {editing ? (
           <>
             <button
               type="button"
-              className="goal-panel-button primary"
+              className="goal-panel-icon-button primary"
               onClick={handleSaveEdit}
               aria-label={t('goal.panelEditSaveButton')}
+              title={t('goal.panelEditSaveButton')}
             >
               <Check size={14} aria-hidden />
-              <span>{t('goal.panelEditSaveButton')}</span>
             </button>
             <button
               type="button"
-              className="goal-panel-button"
+              className="goal-panel-icon-button"
               onClick={handleCancelEdit}
               aria-label={t('goal.panelEditCancelButton')}
+              title={t('goal.panelEditCancelButton')}
             >
               <X size={14} aria-hidden />
-              <span>{t('goal.panelEditCancelButton')}</span>
             </button>
           </>
         ) : (
           <>
             <button
               type="button"
-              className="goal-panel-button"
+              className="goal-panel-icon-button"
               onClick={() => setEditing(true)}
               aria-label={isBatch ? t('goal.batchEditDisabled') : t('goal.panelEditButton')}
               title={isBatch ? t('goal.batchEditDisabled') : t('goal.panelEditButton')}
               disabled={isBatch}
             >
               <Pencil size={14} aria-hidden />
-              <span>{t('goal.panelEditButton')}</span>
             </button>
             {isPaused ? (
               <button
                 type="button"
-                className="goal-panel-button primary"
+                className="goal-panel-icon-button primary"
                 onClick={onResume}
                 aria-label={t('goal.panelResumeButton')}
+                title={t('goal.panelResumeButton')}
               >
                 <Play size={14} aria-hidden />
-                <span>{t('goal.panelResumeButton')}</span>
               </button>
             ) : (
               <button
                 type="button"
-                className="goal-panel-button"
+                className="goal-panel-icon-button"
                 onClick={onPause}
                 aria-label={t('goal.panelPauseButton')}
+                title={t('goal.panelPauseButton')}
                 disabled={kind === 'evaluating'}
               >
                 <Pause size={14} aria-hidden />
-                <span>{t('goal.panelPauseButton')}</span>
               </button>
             )}
             <button
               type="button"
-              className="goal-panel-button danger"
+              className="goal-panel-icon-button danger"
               onClick={onCancel}
               aria-label={t('goal.panelCancelButton')}
+              title={t('goal.panelCancelButton')}
             >
               <Square size={14} aria-hidden />
-              <span>{t('goal.panelCancelButton')}</span>
             </button>
           </>
         )}
