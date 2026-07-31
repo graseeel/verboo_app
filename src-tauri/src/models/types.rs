@@ -428,6 +428,20 @@ pub enum GoalReasonId {
     Unsafe,
     /// Agent needs user input (credentials, architectural decision).
     NeedsUser,
+    /// Objective is structurally impossible given the constraints
+    /// (e.g. fetching from a reserved `.invalid` TLD, reading a
+    /// path that the user controls and has confirmed does not
+    /// exist). Agent honest-reported impossibility but produced a
+    /// symbolic artifact (empty file, placeholder, stub) that
+    /// previously satisfied the observability whitelist. The goal
+    /// is PAUSED so the user can read the human-legible reason
+    /// and respond — paused is resumable, failed is not.
+    ///
+    /// D-D (2026-07-31): the symbolic-artifact defect let four
+    /// honest-but-impossible tasks be marked complete by the
+    /// observability guard. Adding this variant closes that gap
+    /// without breaking the existing pause→user→resume flow.
+    TaskImpossible,
     /// Objective met.
     Done,
     /// Goal hit safety limits (max turns, max elapsed, etc.).

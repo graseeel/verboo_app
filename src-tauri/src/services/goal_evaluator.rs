@@ -280,6 +280,7 @@ fn build_evaluation_prompt(
     prompt.push_str("- `taskFailure` — agent hit a task error (test fails, compile error) but can retry\n");
     prompt.push_str("- `unsafe` — operation is potentially destructive and needs human review\n");
     prompt.push_str("- `needsUser` — agent needs user input (credentials, architectural decision)\n");
+    prompt.push_str("- `taskImpossible` — objective is structurally impossible given the constraints, see rule 4 below\n");
     prompt.push_str("- `done` — objective is clearly met with concrete evidence\n");
     prompt.push_str("- `safetyLimit` — goal safety limit reached (not a token limit — Verboo has unlimited tokens)\n\n");
 
@@ -312,6 +313,110 @@ fn build_evaluation_prompt(
     prompt.push_str("For `continue`, always include `sessionSummary` (what was done) and `gaps` (what's left).\n");
     prompt.push_str("For `pause`, always include `nextAction` explaining what the user should do.\n");
     prompt.push_str("For `complete`, always include `completionSummary` with proof.\n\n");
+
+    // Rule 4 — D-D field fix (2026-07-31). The defect:
+    //   The observability guard proves PRESENCE of an action (e.g. a file
+    //   was written). It does NOT prove CORRECTNESS of the artifact. The
+    //   app observed a batch where 2 of 4 tasks were structurally
+    //   impossible (path does not exist; .invalid TLD is reserved). The
+    //   agent honest-reported impossibility, but still produced a
+    //   symbolic artifact (empty file, empty keys) to satisfy the
+    //   whitelist, and the evaluator accepted as complete.
+    //
+    // The rule distinguishes symbolic vs. real delivery:
+    //   * If the evidence in the transcript shows the action was REAL
+    //     (Read returned non-empty content, command output proves the
+    //     artifact satisfies the goal, a test was actually run and
+    //     passed), then `complete` with `done` is correct.
+    //   * If the action is structurally impossible given the
+    //     constraints — the input source does not exist and cannot be
+    //     created, the target is a reserved/unreachable namespace (e.g.
+    //     .invalid per RFC 2606), permissions are denied by the
+    //     platform, or the goal's preconditions are unmet and the
+    //     agent has no way to meet them — then the decision is NOT
+    //     `complete` (the deliverable is missing) and NOT `continue`
+    //     (the agent cannot retry around a structural block). The
+    //     correct decision is `pause` with `reasonId: "taskImpossible"`
+    //     and a human-legible `reason` that names the SPECIFIC
+    //     structural block so the user can decide whether to change
+    //     the goal, change the input, or abandon the task.
+    //
+    // `pause` (not `failure`) so the user can read, respond, and
+    // resume the goal from where it stopped. Failure would close the
+    // goal and lose the context the agent built up across the
+    // continuing partial work.
+    //
+    // The reason must be CONCRETE, not generic. "Impossible" alone is
+    // not enough — it must say what kind of impossibility
+    // (path-missing, domain-reserved, permission-denied, preconditions-
+    // unmet, etc.) and which artifact or step is blocked. The user
+    // reads this to decide.
+    //
+    // Distinguishing REAL delivery from SYMBOLIC delivery:
+    //   READ-AND-CONFIRM: the agent Read the file post-write and the
+    //   transcript shows non-empty content matching the goal. Real.
+    //   CREATE-EMPTY: the agent Wrote a file but its Read returned 0
+    //   bytes, or the keys are empty placeholders. Symbolic.
+    //   FETCH-TO-EMPTY: the agent claimed a fetch succeeded but the
+    //   response body is empty or contains only stub keys. Symbolic.
+    prompt.push_str(
+        "4. **Structural impossibility (D-D, 2026-07-31)** → `decision: \"pause\"` with \
+         `reasonId: \"taskImpossible\"`.\n",
+    );
+    prompt.push_str(
+        "   A SYMBOLIC ARTIFACT IS NOT DELIVERY. An empty file (`0 bytes`), a file with \
+         only placeholder keys (e.g. `{\"key\":\"\"}`), or any other artifact whose \
+         content does not materially advance the objective does NOT satisfy the goal, \
+         even when the observability guard saw the action happen.\n",
+    );
+    prompt.push_str(
+        "   Trigger `taskImpossible` ONLY when ALL THREE conditions hold:\n",
+    );
+    prompt.push_str(
+        "   (a) the agent honestly reports the action cannot be completed as specified \
+         (path does not exist and cannot be created, target is structurally unreachable \
+         like the .invalid TLD per RFC 2606, permission is denied at the OS level, or \
+         the goal preconditions are demonstrably unmet),\n",
+    );
+    prompt.push_str(
+        "   (b) the evidence in the transcript agrees with that report (a Read showed 0 \
+         bytes, a fetch returned an empty/stub body, an authoritative error message \
+         confirmed the unreachable target),\n",
+    );
+    prompt.push_str(
+        "   (c) the agent cannot recover by retrying with a different approach — the \
+         structural block persists regardless of strategy.\n",
+    );
+    prompt.push_str(
+        "   When all three hold, the goal is PAUSED (NOT failed) so the user can read \
+         the `reason`, respond in the composer, and resume the goal from where it \
+         stopped without losing the conversation context. A failed goal closes the \
+         session.\n",
+    );
+    prompt.push_str(
+        "   The `reason` field MUST be concrete and human-legible. Do NOT write generic \
+         text like \"task is impossible\" — name the SPECIFIC structural block. Examples \
+         of acceptable `reason` text for the field defect observed on 2026-07-31:\n",
+    );
+    prompt.push_str(
+        "     * `impossible: source path /Users/.../nonexistent.txt does not exist and \
+         cannot be created — nothing to copy from`\n",
+    );
+    prompt.push_str(
+        "     * `impossible: target is the reserved .invalid TLD (RFC 2606) — DNS \
+         resolution will always NXDOMAIN; use a reachable test domain instead`\n",
+    );
+    prompt.push_str(
+        "     * `impossible: permission denied by macOS TCC for Documents directory — \
+         grant permission in System Settings → Privacy & Security`\n",
+    );
+    prompt.push_str(
+        "   If (a) the agent reports impossibility but (b) evidence does NOT agree, or \
+         (c) the agent could retry with a different strategy, then this is NOT \
+         taskImpossible — fall back to `continue` with `taskIncomplete` and let the \
+         agent try again or document the gap. Over-using taskImpossible freezes the \
+         goal prematurely and is a worse failure mode than the defect itself.\n\n",
+    );
 
     prompt.push_str("Return ONLY the JSON object. No markdown wrapping, no explanation.\n");
 
@@ -907,6 +1012,7 @@ fn parse_reason_id(value: Option<&serde_json::Value>) -> GoalReasonId {
         "taskfailure" | "task_failure" => GoalReasonId::TaskFailure,
         "unsafe" => GoalReasonId::Unsafe,
         "needsuser" | "needs_user" => GoalReasonId::NeedsUser,
+        "taskimpossible" | "task_impossible" => GoalReasonId::TaskImpossible,
         "done" => GoalReasonId::Done,
         "safetylimit" | "safety_limit" => GoalReasonId::SafetyLimit,
         "infraerror" | "infra_error" => GoalReasonId::InfraError,
@@ -2890,5 +2996,79 @@ mod tests {
         for w in [30usize, 20, 15, 10] {
             report_prompt_decomposition(&items, goal_text, w);
         }
+    }
+
+    // ── TaskImpossible: symbolic artifact → pause + non-empty reason ──
+
+    #[test]
+    fn symbolic_artifact_triggers_pause_with_task_impossible() {
+        // The model reports a structurally impossible task and proposes a
+        // symbolic artifact (empty file, placeholder). The evaluator must
+        // pause (not complete, not fail) so the user can read the reason.
+        let json = json!({
+            "decision": "pause",
+            "reasonId": "taskImpossible",
+            "reason": "The URL http://example.invalid uses a reserved TLD that cannot resolve. Created an empty placeholder file but the actual fetch is structurally impossible.",
+            "nextAction": "The user should specify an alternative URL or adjust the objective.",
+            "confidence": 0.95
+        });
+        let result = normalize_evaluation(json, true);
+        assert_eq!(result.decision, GoalDecision::Pause);
+        assert_eq!(result.reason_id, GoalReasonId::TaskImpossible);
+        assert!(
+            !result.reason.is_empty(),
+            "taskImpossible reason must be non-empty so the user understands why the task is impossible"
+        );
+    }
+
+    // ── Counterfactual: real delivery must NOT be flagged ──────────────
+
+    #[test]
+    fn real_delivery_not_flagged_as_task_impossible() {
+        // Rule 4 (symbolic artifact) must NOT suppress legitimate
+        // completions. A real delivery (file created, verified) with
+        // decision=complete+reasonId=done must pass through unchanged.
+        // This is the mandatory counterfactual: without it, we can't
+        // prove the rule doesn't over-reject legitimate work.
+        let json = json!({
+            "decision": "complete",
+            "reasonId": "done",
+            "reason": "File created at /tmp/output.txt and contents verified via Read",
+            "completionSummary": "Created /tmp/output.txt with expected content. Read confirmed 3 lines matching the specification.",
+            "confidence": 0.97
+        });
+        let result = normalize_evaluation(json, true);
+        assert_eq!(result.decision, GoalDecision::Complete);
+        assert_eq!(result.reason_id, GoalReasonId::Done);
+    }
+
+    // ── parse_reason_id: taskImpossible does not fall to default ───────
+
+    #[test]
+    fn parse_reason_id_task_impossible_does_not_fall_to_default() {
+        // Without the explicit arm in parse_reason_id, "taskimpossible"
+        // would hit the catch-all and silently become TaskIncomplete.
+        // This test proves the arm fires and maps correctly.
+        assert_eq!(
+            parse_reason_id(Some(&json!("taskimpossible"))),
+            GoalReasonId::TaskImpossible,
+            "lowercase taskimpossible must map to TaskImpossible, not default TaskIncomplete"
+        );
+        assert_eq!(
+            parse_reason_id(Some(&json!("task_impossible"))),
+            GoalReasonId::TaskImpossible,
+            "snake_case task_impossible must also map to TaskImpossible"
+        );
+        assert_eq!(
+            parse_reason_id(Some(&json!("taskImpossible"))),
+            GoalReasonId::TaskImpossible,
+            "camelCase taskImpossible must also map to TaskImpossible"
+        );
+        // Case-insensitive: uppercase
+        assert_eq!(
+            parse_reason_id(Some(&json!("TASKIMPOSSIBLE"))),
+            GoalReasonId::TaskImpossible,
+            "TASKIMPOSSIBLE must map to TaskImpossible"
+        );
     }
 }
