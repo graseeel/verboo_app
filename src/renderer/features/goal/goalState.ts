@@ -263,22 +263,59 @@ export function advanceGoalTasks(
  *              is redundant noise (Maestro's rationale). Resetting on
  *              skip would equally lie: two loop failures with a skip
  *              between them are still consecutive failures.
+ *   T3b:       the advance is a TASK BOUNDARY, so it owes the next task
+ *              a compaction frontier — but this transition runs OUTSIDE
+ *              the goal cycle, where the frontier protocol (fire,
+ *              AWAIT, then reset) cannot execute. It therefore stamps
+ *              `pendingCompaction: true` (only when there IS a next
+ *              task) and the next runGoalCycle start settles the debt.
+ *   T3b COALESCENCE (Maestro's call): the debt is NOT stamped when the
+ *              skipped task ran ZERO turns — with no turns, nothing was
+ *              added to the context since the last compaction, and
+ *              compacting would spend 25-50s compressing exactly the
+ *              same content (the user's original complaint is time
+ *              wasted in the dumb zone; a useless compaction is
+ *              literally that). The skip is DECLARED via `onLog` —
+ *              skipping silently would be the defect class this whole
+ *              cycle worked to eliminate.
+ *
+ * `onLog` is optional and only invoked for the DECLARED coalescence
+ * skip; the T4/App wiring should pass the goal log channel. Pure with
+ * respect to the returned state either way.
  *
  * No-op (same reference back) when the current task is not 'blocked' —
  * skipping a running/done/failed task is not a legal transition.
  */
-export function skipBlockedGoalTask(goal: GoalState, now: number): GoalState {
+export function skipBlockedGoalTask(
+  goal: GoalState,
+  now: number,
+  onLog?: (message: string) => void,
+): GoalState {
   const tasks = goal.tasks
   const task = currentGoalTask(goal)
   if (!tasks || tasks.length === 0 || !task || task.status !== 'blocked') return goal
   const taskIndex = Math.min(goal.taskIndex ?? 0, tasks.length - 1)
   const isLastTask = taskIndex >= tasks.length - 1
+  const turnsThisTask = goal.turnsRunThisTask ?? 0
+  // T3b coalescence: a zero-turn task owes NO frontier — nothing new to
+  // compact. Declared, never silent.
+  const owesFrontier = !isLastTask && turnsThisTask > 0
+  if (!isLastTask && !owesFrontier) {
+    onLog?.(
+      `Frontier: skipping compaction — skipped task ${taskIndex + 1}/${tasks.length} ran 0 turns; ` +
+      `nothing new was added to the context since the last compaction.`,
+    )
+  }
   return {
     ...goal,
     tasks: advanceGoalTasks(tasks, taskIndex, now, 'skipped'),
     taskIndex: taskIndex + 1,
     turnsRunThisTask: 0,
     // K TRANSPARENT: consecutiveFailedTasks deliberately NOT mentioned.
+    // T3b: frontier owed to the next task (cleared by the cycle start);
+    // NOT stamped when the batch just completed — no next task exists —
+    // nor when the skipped task ran zero turns (coalescence, above).
+    ...(owesFrontier ? { pendingCompaction: true } : {}),
     ...(isLastTask
       ? { status: 'completed' as GoalState['status'], completedAt: now, pausedAt: undefined, pauseReason: undefined }
       : { status: 'active' as GoalState['status'], pausedAt: undefined, pauseReason: undefined }),

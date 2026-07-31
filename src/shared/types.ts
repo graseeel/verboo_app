@@ -290,6 +290,26 @@ export type GoalState = {
    * there; nothing changes in src-tauri.
    */
   compactionFailures?: number
+  /**
+   * T3b: a compaction frontier is OWED to the current task. Set ONLY by
+   * skipBlockedGoalTask (row 12): the skip advance happens OUTSIDE the
+   * goal cycle — a pure transition, the UI collects the click (T4) and
+   * the App restarts the cycle — so the frontier cannot run inline the
+   * way it does on the done/loop advances. The next runGoalCycle start
+   * sees the flag, executes the pending frontier with the exact T3
+   * protocol (fire /compact, AWAIT conclusion, THEN reset) and clears
+   * it — so later resumes of the SAME task do not compact again
+   * (idempotent). NOT set when the skipped task was the LAST one (the
+   * batch completed; there is no next task to compact for). Also NOT
+   * set when the skipped task ran ZERO turns (T3b coalescence): with
+   * no turns, nothing new entered the context since the last
+   * compaction — the skip is declared in the goal log instead.
+   *
+   * Renderer-only (same serde argument as G-C17): the flag crosses to
+   * Rust inside the GoalState snapshot and serde ignores unknown keys
+   * there; nothing changes in src-tauri.
+   */
+  pendingCompaction?: boolean
 }
 
 export type GoalEvaluationInput = {

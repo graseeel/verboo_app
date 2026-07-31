@@ -182,6 +182,122 @@ export type GoalSchedulerDelegate = {
 
 export type ScheduleResult = 'completed' | 'cancelled' | 'paused' | 'blocked' | 'error'
 
+/**
+ * T3/T3b: the COMPACTION FRONTIER protocol core — shared by all three
+ * task-boundary kinds. T3 wired the done-advance (row 1); T3b (Maestro
+ * ratification) extended to EVERY task boundary — done, loop-kill
+ * (row 8, inline at the kill) and skip (row 12, settled at cycle start)
+ * — because "start each task on a clean context" does not depend on how
+ * the previous one ended, and a loop-killed task leaves the MOST
+ * polluted context of the batch (several turns of repetition).
+ *
+ * MANDATORY ORDER (Maestro's protocol): the compact turn must CONCLUDE
+ * before any frontier state is reset — the reset NEVER happens before
+ * `compactOnTaskBoundary` settles. The reset then:
+ *   - zeroes turnsRunThisTask (already zeroed by the advance write;
+ *     restated so the protocol reads in one place);
+ *   - clears the fingerprint ring + noProgressCount: a REAL compaction
+ *     changed the transcript, so fingerprints computed against the
+ *     pre-compact context are a stale baseline — keeping them would
+ *     compare the next task's evaluations against a transcript that no
+ *     longer exists;
+ *   - RE-OPENS the new task's D1 evidence window (startedAt stamped
+ *     NOW, post-compact): the advance had opened it BEFORE the compact
+ *     turn ran, so without the re-stamp any whitelisted activity
+ *     emitted by the CLI during /compact would count as action evidence
+ *     for a task that never ran. The compact turn alone must NEVER
+ *     satisfy the next task's D1 guard — on the loop path this matters
+ *     even MORE, because the previous task FAILED.
+ *
+ * FAILURE: the batch PROCEEDS WITHOUT COMPACTING — never blocked by
+ * it — but the failure is DECLARED (log + compactionFailures counter
+ * for the T4 report), never hidden. On failure the ring is PRESERVED
+ * on the done/skip paths (the transcript did not change, so the loop
+ * detector's baseline stays valid — disarming it would strip
+ * protection we still need) but CLEARED on the loop path
+ * (`clearPoisonedRingOnFailure`): a ring that just killed a task holds
+ * three IDENTICAL fingerprints, and preserving it would fail the next
+ * task at the very next loop-top check without a single evaluation of
+ * its own — the exact defect the T2 reset existed to prevent. The
+ * evidence window is re-opened on both policies (a partial compact
+ * turn may have emitted activities).
+ *
+ * SKIP PATH (`settlePendingCompaction`): the skip advance ran OUTSIDE
+ * the cycle and left pendingCompaction: true; this frontier settles
+ * the debt and clears the flag WHATEVER the outcome — a failed
+ * frontier is declared and moved past, not retried on every resume.
+ *
+ * HONESTY LINE (required): this frontier only controls compaction at
+ * the boundary. The REACTIVE context-overflow recovery that already
+ * exists in App.tsx (~1877-1906 and ~1989-1996) can fire in the MIDDLE
+ * of a task, outside our control; when it does, the loop detector is
+ * disarmed BY NATURE — the transcript changed, so the evaluator's
+ * output changes and fingerprints no longer compare. That cannot be
+ * prevented honestly from here; the T2 K guard (batchStagnation) is
+ * the net for that case. Do not read this frontier as control over
+ * mid-task compaction.
+ */
+async function runTaskBoundaryFrontier(
+  delegate: GoalSchedulerDelegate,
+  goal: GoalState,
+  options: {
+    frontierIndex: number
+    totalTasks: number
+    clearPoisonedRingOnFailure: boolean
+    settlePendingCompaction?: boolean
+  },
+): Promise<void> {
+  const { frontierIndex, totalTasks } = options
+  delegate.onLog(
+    `Frontier: compacting context before task ${frontierIndex + 1}/${totalTasks}...`,
+  )
+  let compacted: boolean
+  try {
+    // Guaranteed present by every call site (all gate on the delegate's
+    // optional field before calling).
+    compacted = await delegate.compactOnTaskBoundary!(goal)
+  } catch (error) {
+    delegate.onLog(
+      `Frontier: compaction threw (${error instanceof Error ? error.message : String(error)}); treating as failure.`,
+    )
+    compacted = false
+  }
+  const now = Date.now()
+  if (compacted) {
+    delegate.updateGoal((prev: GoalState) => ({
+      ...prev,
+      turnsRunThisTask: 0,
+      recentFingerprints: [],
+      noProgressCount: 0,
+      tasks: reopenTaskEvidenceWindow(prev.tasks ?? [], prev.taskIndex ?? frontierIndex, now),
+      ...(options.settlePendingCompaction ? { pendingCompaction: undefined } : {}),
+    }))
+    delegate.onLog(
+      'Frontier: compaction concluded; ring, noProgressCount and turnsRunThisTask reset; evidence window reopened.',
+    )
+  } else {
+    delegate.updateGoal((prev: GoalState) => ({
+      ...prev,
+      compactionFailures: (prev.compactionFailures ?? 0) + 1,
+      turnsRunThisTask: 0,
+      tasks: reopenTaskEvidenceWindow(prev.tasks ?? [], prev.taskIndex ?? frontierIndex, now),
+      // Loop path: clear the PROVABLY POISONED ring even on failure (see
+      // doc); done/skip paths: preserve the healthy ring (doc above).
+      ...(options.clearPoisonedRingOnFailure
+        ? { recentFingerprints: [], noProgressCount: 0 }
+        : {}),
+      ...(options.settlePendingCompaction ? { pendingCompaction: undefined } : {}),
+    }))
+    delegate.onLog(
+      'Frontier: compaction FAILED; the batch proceeds WITHOUT compacting ' +
+      '(declared — compactionFailures incremented). ' +
+      (options.clearPoisonedRingOnFailure
+        ? 'Poisoned loop ring cleared anyway — it would kill the next task unread.'
+        : 'Ring and noProgressCount preserved.'),
+    )
+  }
+}
+
 export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<ScheduleResult> {
   const goal = delegate.getGoal()
   if (!goal) return 'cancelled'
@@ -200,6 +316,28 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
       ),
     }))
     delegate.onLog('Resumed batch: blocked task back to active.')
+  }
+
+  // T3b (row 12 frontier): a SKIP advance happens OUTSIDE the cycle —
+  // skipBlockedGoalTask is a pure transition collected by the UI (T4) —
+  // so it could not run the frontier inline and stamped
+  // pendingCompaction: true instead. Settle the debt BEFORE the first
+  // evaluation, with the exact T3 protocol (fire, AWAIT, then reset):
+  // the task starts on a clean context and the compact turn never
+  // counts as its action evidence (the helper re-opens the D1 window
+  // post-compact). The flag is cleared WHATEVER the outcome — a failed
+  // frontier is declared and moved past, not retried on every resume
+  // (idempotent). Without a wired delegate the flag stays inert and
+  // nothing fires (T2 tests, hosts without a CLI session).
+  const pendingGoal = delegate.getGoal()
+  if (pendingGoal?.pendingCompaction && delegate.compactOnTaskBoundary) {
+    const pendingTasks = pendingGoal.tasks ?? []
+    await runTaskBoundaryFrontier(delegate, pendingGoal, {
+      frontierIndex: Math.min(pendingGoal.taskIndex ?? 0, Math.max(pendingTasks.length - 1, 0)),
+      totalTasks: pendingTasks.length,
+      clearPoisonedRingOnFailure: false,
+      settlePendingCompaction: true,
+    })
   }
 
   delegate.onStatusChange({ kind: 'active', objective: goal.objective, turn: goal.turnsRun })
@@ -285,23 +423,79 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
         }
 
         // T2 (row 8): task failed, batch STAYS ACTIVE, advance to i+1.
-        // The ring and noProgressCount are RESET so the next task does
-        // not inherit this task's poisoned fingerprints (an inherited
-        // ring would fail the next task at the very next loop-top check
-        // without a single evaluation of its own).
-        delegate.updateGoal((prev: GoalState) => ({
-          ...prev,
-          tasks: advanceGoalTasks(prev.tasks ?? [], loopTaskIndex, now, 'failed'),
-          taskIndex: loopTaskIndex + 1,
-          turnsRunThisTask: 0,
-          consecutiveFailedTasks: consecutiveFailed,
-          recentFingerprints: [],
-          noProgressCount: 0,
-        }))
-        delegate.onLog(
-          `Loop detected on task ${loopTaskIndex + 1}/${loopTasks.length}; task marked failed, ` +
-          `batch continues with task ${loopTaskIndex + 2}.`,
-        )
+        // T3b (Maestro ratification): this advance is a TASK BOUNDARY,
+        // so the compaction frontier fires here too — a loop-killed task
+        // produced several turns of repetition, the MOST polluted
+        // context in the batch; carrying it into the next task is the
+        // user's original complaint ("tempo demais na zona burra"). The
+        // report loses no diagnosis: it is built from goal state (per-
+        // task status/reason), and the CLI compaction keeps a summary.
+        // T3b COALESCENCE (Maestro's call): skip the frontier when the
+        // task that is LEAVING ran ZERO turns — with no turns, nothing
+        // was added to the context since the last compaction, so
+        // compacting would spend 25-50s compressing exactly the same
+        // content (the user's original complaint IS time wasted in the
+        // dumb zone; a useless compaction is literally that). The skip
+        // is DECLARED in the log — never silent.
+        const loopTurnsThisTask = currentGoal.turnsRunThisTask ?? 0
+        if (delegate.compactOnTaskBoundary && loopTurnsThisTask > 0) {
+          // SPLIT WRITE (the T3 atomic-advance solution, applied to the
+          // kill): the kill/advance lands FIRST — the poisoned ring
+          // survives until the compact settles, which is safe because
+          // NOTHING reads it while the cycle is suspended at the await —
+          // and the frontier reset comes AFTER, per the mandatory
+          // order. clearPoisonedRingOnFailure: this ring is provably
+          // toxic (three identical fingerprints), so it is cleared even
+          // when the compaction fails — see runTaskBoundaryFrontier.
+          delegate.updateGoal((prev: GoalState) => ({
+            ...prev,
+            tasks: advanceGoalTasks(prev.tasks ?? [], loopTaskIndex, now, 'failed'),
+            taskIndex: loopTaskIndex + 1,
+            turnsRunThisTask: 0,
+            consecutiveFailedTasks: consecutiveFailed,
+          }))
+          delegate.onLog(
+            `Loop detected on task ${loopTaskIndex + 1}/${loopTasks.length}; task marked failed, ` +
+            `batch continues with task ${loopTaskIndex + 2}.`,
+          )
+          await runTaskBoundaryFrontier(delegate, currentGoal, {
+            frontierIndex: loopTaskIndex + 1,
+            totalTasks: loopTasks.length,
+            clearPoisonedRingOnFailure: true,
+          })
+        } else {
+          // Legacy atomic kill: advance + reset in ONE write, the exact
+          // T2 behavior. The ring and noProgressCount are RESET so the
+          // next task does not inherit this task's poisoned fingerprints
+          // (an inherited ring would fail the next task at the very next
+          // loop-top check without a single evaluation of its own). The
+          // ring cleanup is needed in BOTH sub-cases below — poisoned is
+          // poisoned, compacted or not.
+          // Two sub-cases land here: (a) NO frontier wired (T2 unit
+          // tests, hosts without a CLI session) — nothing to declare;
+          // (b) frontier wired BUT the killed task ran ZERO turns — the
+          // T3b coalescence skip, which MUST be declared in the log
+          // (never silent).
+          if (delegate.compactOnTaskBoundary) {
+            delegate.onLog(
+              `Frontier: skipping compaction — task ${loopTaskIndex + 1}/${loopTasks.length} ran 0 turns; ` +
+              `nothing new was added to the context since the last compaction.`,
+            )
+          }
+          delegate.updateGoal((prev: GoalState) => ({
+            ...prev,
+            tasks: advanceGoalTasks(prev.tasks ?? [], loopTaskIndex, now, 'failed'),
+            taskIndex: loopTaskIndex + 1,
+            turnsRunThisTask: 0,
+            consecutiveFailedTasks: consecutiveFailed,
+            recentFingerprints: [],
+            noProgressCount: 0,
+          }))
+          delegate.onLog(
+            `Loop detected on task ${loopTaskIndex + 1}/${loopTasks.length}; task marked failed, ` +
+            `batch continues with task ${loopTaskIndex + 2}.`,
+          )
+        }
         continue
       }
 
@@ -411,6 +605,10 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
     // TASK completed, the GOAL has not). Without this gate the whole
     // goal completes at the first task boundary.
     let didAdvance = false
+    // T3b COALESCENCE: the leaving task's turn count, captured BEFORE the
+    // advance write resets turnsRunThisTask to 0 — the frontier gate
+    // below reads it after the reset, so it cannot re-read the field.
+    let turnsThisTaskBeforeAdvance: number | undefined
     const batchTasks = currentGoal.tasks
     const activeTask = currentGoalTask(currentGoal)
     const taskIndex = currentGoal.taskIndex ?? 0
@@ -453,6 +651,7 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
           const now = Date.now()
           advancedTaskText = batchTasks[clampedTaskIndex + 1].text
           didAdvance = true
+          turnsThisTaskBeforeAdvance = turnsThisTask
           delegate.updateGoal((prev: GoalState) => ({
             ...prev,
             tasks: advanceGoalTasks(prev.tasks ?? [], clampedTaskIndex, now),
@@ -491,82 +690,35 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
       return { ...prev, recentFingerprints: nextRing, noProgressCount: nextNoProgress }
     })
 
-    // ─── T3: COMPACTION FRONTIER (compact BETWEEN tasks) ──────────
-    // Fires ONLY on the done-advance path (row 1): a non-last task
-    // passed D1 and the batch just moved to the next task. Loop/K
-    // advances (rows 8/9) do NOT compact — a task that just failed
-    // signals a possibly broken environment and the K guard pauses next;
-    // compacting there would spend tokens on a dying batch.
-    //
-    // MANDATORY ORDER (Maestro's protocol): the compact turn must
-    // CONCLUDE before any frontier state is reset — the reset NEVER
-    // happens before `compactOnTaskBoundary` settles. The reset then:
-    //   - zeroes turnsRunThisTask (already zeroed by the advance write;
-    //     restated so the protocol reads in one place);
-    //   - clears the fingerprint ring + noProgressCount: a REAL
-    //     compaction changed the transcript, so fingerprints computed
-    //     against the pre-compact context are a stale baseline — keeping
-    //     them would compare the next task's evaluations against a
-    //     transcript that no longer exists;
-    //   - RE-OPENS the new task's D1 evidence window (startedAt stamped
-    //     NOW, post-compact): the advance had opened it BEFORE the
-    //     compact turn ran, so without the re-stamp any whitelisted
-    //     activity emitted by the CLI during /compact would count as
-    //     action evidence for a task that never ran. The compact turn
-    //     alone must NEVER satisfy the next task's D1 guard.
-    //
-    // FAILURE: the batch PROCEEDS WITHOUT COMPACTING — never blocked by
-    // it — but the failure is DECLARED (log + compactionFailures
-    // counter for the T4 report), never hidden. On failure the ring and
-    // noProgressCount are PRESERVED: the transcript did not change, so
-    // the loop detector's baseline is still valid — disarming it would
-    // strip protection we still need. The evidence window is still
-    // re-opened (a partial compact turn may have emitted activities).
-    //
-    // HONESTY LINE (required): this frontier only controls compaction
-    // at the boundary. The REACTIVE context-overflow recovery that
-    // already exists in App.tsx (~1877-1906 and ~1989-1996) can fire in
-    // the MIDDLE of a task, outside our control; when it does, the loop
-    // detector is disarmed BY NATURE — the transcript changed, so the
-    // evaluator's output changes and fingerprints no longer compare.
-    // That cannot be prevented honestly from here; the T2 K guard
-    // (batchStagnation) is the net for that case. Do not read this
-    // frontier as control over mid-task compaction.
+    // ─── T3/T3b: COMPACTION FRONTIER (compact at EVERY task boundary)
+    // T3 wired this path (done-advance, row 1). T3b (Maestro
+    // ratification): EVERY task boundary compacts — the loop-kill
+    // advance (row 8) fires it inline at the kill, and the skip advance
+    // (row 12) settles it at cycle start via pendingCompaction. What
+    // still does NOT compact: the K-pause (row 9 — the batch stops for
+    // the user, no next task starts) and a terminal LAST task (row
+    // 13/done — nothing to compact for).
+    // The protocol core (mandatory order, failure policy, honesty line)
+    // lives in runTaskBoundaryFrontier — shared by all three kinds.
     if (didAdvance && delegate.compactOnTaskBoundary) {
-      const frontierIndex = clampedTaskIndex + 1
-      delegate.onLog(
-        `Frontier: compacting context before task ${frontierIndex + 1}/${batchTasks?.length}...`,
-      )
-      let compacted: boolean
-      try {
-        compacted = await delegate.compactOnTaskBoundary(currentGoal)
-      } catch (error) {
-        delegate.onLog(
-          `Frontier: compaction threw (${error instanceof Error ? error.message : String(error)}); treating as failure.`,
-        )
-        compacted = false
-      }
-      if (compacted) {
-        delegate.updateGoal((prev: GoalState) => ({
-          ...prev,
-          turnsRunThisTask: 0,
-          recentFingerprints: [],
-          noProgressCount: 0,
-          tasks: reopenTaskEvidenceWindow(prev.tasks ?? [], prev.taskIndex ?? frontierIndex, Date.now()),
-        }))
-        delegate.onLog(
-          'Frontier: compaction concluded; ring, noProgressCount and turnsRunThisTask reset; evidence window reopened.',
-        )
+      // T3b COALESCENCE (Maestro's call): skip when the task that is
+      // LEAVING ran zero turns — nothing new entered the context since
+      // the last compaction, so compacting would spend 25-50s on the
+      // same content. DECLARED, never silent. NOTE: unreachable today —
+      // the D1 guard requires turnsThisTask > 0 for a done-advance — but
+      // the uniform rule ("every boundary compacts EXCEPT when there is
+      // nothing new") is kept in one shape across the three paths so a
+      // future D1 change cannot silently reintroduce a useless compact.
+      if ((turnsThisTaskBeforeAdvance ?? 0) > 0) {
+        await runTaskBoundaryFrontier(delegate, currentGoal, {
+          frontierIndex: clampedTaskIndex + 1,
+          totalTasks: batchTasks?.length ?? 0,
+          clearPoisonedRingOnFailure: false,
+        })
       } else {
-        delegate.updateGoal((prev: GoalState) => ({
-          ...prev,
-          compactionFailures: (prev.compactionFailures ?? 0) + 1,
-          turnsRunThisTask: 0,
-          tasks: reopenTaskEvidenceWindow(prev.tasks ?? [], prev.taskIndex ?? frontierIndex, Date.now()),
-        }))
         delegate.onLog(
-          'Frontier: compaction FAILED; the batch proceeds WITHOUT compacting ' +
-          '(declared — compactionFailures incremented). Ring and noProgressCount preserved.',
+          `Frontier: skipping compaction — task ${clampedTaskIndex + 1}/${batchTasks?.length ?? 0} ran 0 turns; ` +
+          `nothing new was added to the context since the last compaction.`,
         )
       }
     }
