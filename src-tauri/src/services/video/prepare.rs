@@ -109,7 +109,10 @@ pub(crate) fn run_media_tool(
         .stderr(Stdio::piped());
     // A2: suppress console window on Windows.
     #[cfg(windows)]
-    command.creation_flags(crate::services::child_signal::process_creation_flags());
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::services::child_signal::process_creation_flags());
+    }
     let mut child = command
         .spawn()
         .map_err(|error| format!("spawn media tool: {error}"))?;

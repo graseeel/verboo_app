@@ -154,7 +154,10 @@ fn run_ffprobe(path: &Path, ffprobe: &Path) -> Result<String, VideoValidationErr
         .stderr(Stdio::piped());
     // A2: suppress console window on Windows.
     #[cfg(windows)]
-    cmd.creation_flags(crate::services::child_signal::process_creation_flags());
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(crate::services::child_signal::process_creation_flags());
+    }
     let mut child = cmd
         .spawn()
         .map_err(|_| VideoValidationError::ProtectedOrUnreadable)?;

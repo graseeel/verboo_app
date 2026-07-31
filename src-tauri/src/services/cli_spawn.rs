@@ -258,6 +258,7 @@ fn protect_user_cli_env(command: &mut Command) {
 /// never the default.
 #[cfg(windows)]
 pub fn apply_creation_flags(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
     use crate::services::child_signal::process_creation_flags;
     command.creation_flags(process_creation_flags());
 }

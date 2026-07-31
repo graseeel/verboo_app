@@ -148,6 +148,17 @@ mod tests {
     // positives. This is the same lesson as G-C1 / wiring-test
     // self-detection.
     //
+    // HONESTIDADE DOCUMENTAL: este teste é FORM-ONLY. Ele prova a
+    // PRESENÇA do padrão (`apply_creation_flags` / `.creation_flags`)
+    // no código de produção — NÃO prova que o código compila no
+    // Windows. Prova de compilação é feita separadamente:
+    //   - Local: `cargo xwin check --target x86_64-pc-windows-msvc`
+    //     (reproduzível por qualquer desenvolvedor com cargo-xwin)
+    //   - CI: job Windows do ci-verify (compila nativamente)
+    // ler a saída verde do form-test como prova de compilação é o
+    // falso conforto que este comentário impede. O gate certo compila
+    // o código de verdade.
+    //
     // If you add a new spawn site:
     //   - Use `CliSpawn::new(...)` (preferred — single chokepoint).
     //   - Or call `cli_spawn::apply_creation_flags(&mut cmd)` after

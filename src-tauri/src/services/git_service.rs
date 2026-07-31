@@ -35,7 +35,10 @@ fn run_git(cwd: &Path, args: &[&str]) -> GitResult {
         .stderr(std::process::Stdio::piped());
     // A2: suppress console window on Windows.
     #[cfg(windows)]
-    cmd.creation_flags(crate::services::child_signal::process_creation_flags());
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(crate::services::child_signal::process_creation_flags());
+    }
     let output = cmd.output();
     match output {
         Ok(out) => GitResult {
@@ -533,7 +536,10 @@ fn is_gh_available() -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     #[cfg(windows)]
-    cmd.creation_flags(crate::services::child_signal::process_creation_flags());
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(crate::services::child_signal::process_creation_flags());
+    }
     cmd.output()
         .map(|out| out.status.success())
         .unwrap_or(false)
@@ -703,7 +709,10 @@ pub fn create_workspace_pull_request(
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
-    gh_version.creation_flags(crate::services::child_signal::process_creation_flags());
+    {
+        use std::os::windows::process::CommandExt;
+        gh_version.creation_flags(crate::services::child_signal::process_creation_flags());
+    }
     let gh_version = gh_version.output();
     match gh_version {
         Ok(out) if out.status.success() => {}
@@ -741,7 +750,10 @@ pub fn create_workspace_pull_request(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
-    pr_output.creation_flags(crate::services::child_signal::process_creation_flags());
+    {
+        use std::os::windows::process::CommandExt;
+        pr_output.creation_flags(crate::services::child_signal::process_creation_flags());
+    }
     let pr_output = pr_output.output();
 
     let pr_output = match pr_output {
