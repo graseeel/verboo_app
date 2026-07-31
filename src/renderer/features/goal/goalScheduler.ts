@@ -174,8 +174,15 @@ export type GoalSchedulerDelegate = {
    * Folding this into onLog would require the App.tsx onLog handler
    * to parse the message back into structured data — fragile and
    * exactly the "data produced, no consumer" pattern G-C13 fixes.
+   *
+   * D-B: `evaluation` is OPTIONAL since D-B — the batch can also
+   * complete WITHOUT a fresh evaluation: a loop-kill on the LAST task
+   * (row 13) and skipping the last task both reach 'completed' from a
+   * state transition, and the report must fire there too (the user's
+   * field-test complaint: no per-task evidence, no elapsed, no tokens).
+   * Those paths pass the goal's lastEvaluation when one exists.
    */
-  onComplete?: (goal: GoalState, evaluation: GoalEvaluationResult) => void
+  onComplete?: (goal: GoalState, evaluation?: GoalEvaluationResult) => void
   /** i18n translator for system messages emitted by the scheduler. */
   t: Translator
 }
@@ -400,6 +407,38 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
           delegate.onStatusChange({ kind: 'completed', objective: currentGoal.objective })
           delegate.onLog(
             `Loop detected on last task ${loopTaskIndex + 1}/${loopTasks.length}; task failed, batch completed.`,
+          )
+          // D-B: this path completed the batch WITHOUT onComplete — no
+          // per-task report, no elapsed time, no tokens on screen (the
+          // user's field-test complaint). Fire it now, with the goal
+          // built LOCALLY (G-C13 lesson: updateGoal's setGoal updater
+          // does not run synchronously, so delegate.getGoal() cannot be
+          // trusted to carry completedAt here). No evaluator-token
+          // overlay: no evaluation ran since the loop-top snapshot, so
+          // currentGoal already carries every accumulated parcel. The
+          // evaluation passed is the last one the goal saw — loops are
+          // detected FROM evaluations, so it exists on this path.
+          delegate.onComplete?.(
+            {
+              ...currentGoal,
+              tasks: currentGoal.tasks?.map((task, index) =>
+                index === loopTaskIndex
+                  ? {
+                      ...task,
+                      status: 'failed' as GoalTask['status'],
+                      completedAt: now,
+                      failureReason: 'loop' as const,
+                      turns: loopTurnsThisTask,
+                    }
+                  : task,
+              ),
+              consecutiveFailedTasks: consecutiveFailed,
+              recentFingerprints: [],
+              noProgressCount: 0,
+              status: 'completed',
+              completedAt: now,
+            },
+            currentGoal.lastEvaluation,
           )
           return 'completed'
         }

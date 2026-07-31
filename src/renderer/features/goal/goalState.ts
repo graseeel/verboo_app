@@ -287,6 +287,15 @@ export function advanceGoalTasks(
  * skip; the T4/App wiring should pass the goal log channel. Pure with
  * respect to the returned state either way.
  *
+ * `onBatchComplete` (D-B) is optional and invoked ONLY when this skip
+ * completes the batch (the skipped task was the last one) — receiving
+ * the SAME completed state the function returns. The skip advance runs
+ * OUTSIDE the goal cycle, so the scheduler's onComplete is out of reach
+ * from here; without this notification the batch ended with no final
+ * report (the D-B defect: no per-task evidence, no elapsed time, no
+ * tokens on screen). The caller wires the report stamper — the
+ * transition itself stays pure in its return value.
+ *
  * No-op (same reference back) when the current task is not 'blocked' —
  * skipping a running/done/failed task is not a legal transition.
  */
@@ -294,6 +303,7 @@ export function skipBlockedGoalTask(
   goal: GoalState,
   now: number,
   onLog?: (message: string) => void,
+  onBatchComplete?: (completedGoal: GoalState) => void,
 ): GoalState {
   const tasks = goal.tasks
   const task = currentGoalTask(goal)
@@ -310,7 +320,7 @@ export function skipBlockedGoalTask(
       `nothing new was added to the context since the last compaction.`,
     )
   }
-  return {
+  const next: GoalState = {
     ...goal,
     // T4: the skipped task carries its turn count into the report —
     // "skipped by you" is the conclusion, the turns are the context.
@@ -327,6 +337,10 @@ export function skipBlockedGoalTask(
       : { status: 'active' as GoalState['status'], pausedAt: undefined, pauseReason: undefined }),
     updatedAt: now,
   }
+  // D-B: the terminal skip completes the batch — notify so the final
+  // report fires on this path too.
+  if (isLastTask) onBatchComplete?.(next)
+  return next
 }
 
 /**

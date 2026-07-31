@@ -49,6 +49,8 @@ import { GoalActivePanel } from './features/goal/GoalActivePanel'
 import { buildGoalUsageLine, buildObjectiveUpdatedPrompt } from './features/goal/goalPrompt'
 import { buildBatchReportLines } from './features/goal/goalReport'
 import { parseBatchInput } from './features/goal/goalBatchParse'
+import { settleGoalTurnAfterSummary } from './features/goal/turnCompletion'
+import { stampBatchProgressLine } from './features/goal/progressStamp'
 import { runGoalCycle, type GoalSchedulerDelegate } from './features/goal/goalScheduler'
 import { shouldAccumulateTokensForTurn, accumulateTurnUsage, accumulateEvaluatorUsage, shouldAccumulateEvaluatorUsage } from './features/goal/tokenAccumulator'
 import type { ReservedSlashCommand } from './features/composer/slashCommands'
@@ -2179,24 +2181,42 @@ export function App() {
       }
       if (conversationId) finishAssistantMessage(conversationId, event.turnId)
       if (conversationId) {
-        void appendTurnSummary(conversationId, event.turnId, event.exitCode)
+        const summaryPromise = appendTurnSummary(conversationId, event.turnId, event.exitCode)
+        void summaryPromise
           .then(changeSummary => {
             if (event.exitCode === 0) {
               scheduleBrowserPostEditReload(event.turnId, conversationId, changeSummary?.totalFiles ?? 0)
             }
           })
-          .finally(() => cleanupTurnState(event.turnId))
           .catch(() => undefined)
+        // D-C: the goal turn deferred resolves ONLY AFTER the summary
+        // item exists (or the append failed — the loop must never hang
+        // on it). Before this fix the resolve ran SYNCHRONOUSLY below,
+        // the scheduler continued in a microtask, and the batch progress
+        // stamp found no `${turnId}:summary` item — returning SILENTLY
+        // and never retrying for that turnId (the field-test defect:
+        // "Tarefa k de N" never reached the screen). The ordering
+        // contract is owned by settleGoalTurnAfterSummary and tested in
+        // turnCompletion.test.ts.
+        settleGoalTurnAfterSummary(summaryPromise, {
+          cleanup: () => cleanupTurnState(event.turnId),
+          resolveGoalTurn: () => {
+            if (turnCompletionDeferred.current?.turnId === event.turnId) {
+              turnCompletionDeferred.current.resolve()
+              turnCompletionDeferred.current = undefined
+            }
+          },
+        })
       } else {
         cleanupTurnState(event.turnId)
+        // No summary append in flight — resolve immediately.
+        if (turnCompletionDeferred.current?.turnId === event.turnId) {
+          turnCompletionDeferred.current.resolve()
+          turnCompletionDeferred.current = undefined
+        }
       }
       delete turnRetryPayload.current[event.turnId]
 
-      // Resolve goal turn completion promise if this turn was started by the goal scheduler
-      if (turnCompletionDeferred.current?.turnId === event.turnId) {
-        turnCompletionDeferred.current.resolve()
-        turnCompletionDeferred.current = undefined
-      }
       // Resolve interject promise if one is pending for this turn
       if (interjectDeferred.current?.turnId === event.turnId) {
         interjectDeferred.current.resolve()
@@ -3444,29 +3464,18 @@ export function App() {
         // scheduler computes it from the loop-top snapshot); every other
         // kind passes through untouched — including legacy goals, which
         // never carry the payload and never get a line.
+        // D-C: the stamp lives in features/goal/progressStamp.ts so its
+        // failure modes are testable — a missing target is now a
+        // console.error, never another silent loss.
         if (status.kind !== 'evaluating' || !status.batchProgress) return
-        const currentGoal = goalRef.current
-        const ownerConversationId = currentGoal?.ownerConversationId ?? activeConversationIdRef.current
-        const lastTurnId = currentGoal?.lastTurnId
-        // First cycle has no turn yet — nothing to stamp on.
-        if (!ownerConversationId || !lastTurnId) return
-        const progressLine = t('goal.batchProgress', {
-          current: status.batchProgress.current,
-          total: status.batchProgress.total,
+        stampBatchProgressLine({
+          goal: goalRef.current,
+          fallbackConversationId: activeConversationIdRef.current,
+          batchProgress: status.batchProgress,
+          conversations: chatStoreRef.current.conversations,
+          updateConversation,
+          t,
         })
-        const summaryItemId = `${lastTurnId}:summary`
-        const conv = chatStoreRef.current.conversations.find(c => c.id === ownerConversationId)
-        if (!conv) return
-        const existingItem = conv.items.find(i => i.id === summaryItemId)
-        // No churn: skip the write when the stamped line is already current.
-        if (!existingItem || existingItem.progressLine === progressLine) return
-        updateConversation(ownerConversationId, c => ({
-          ...c,
-          items: c.items.map(i =>
-            i.id === summaryItemId ? { ...i, progressLine } : i,
-          ),
-          updatedAt: Date.now(),
-        }))
       },
       onLog: (message) => {
         console.log('[goal]', message)
@@ -3495,7 +3504,13 @@ export function App() {
       // text and the existing turn summary, no usage line.
       onComplete: (finalGoal, evaluation) => {
         const ownerConversationId = finalGoal.ownerConversationId ?? activeConversationIdRef.current
-        if (!ownerConversationId) return
+        // D-B/D-C: the report + usage + elapsed are the user's visible
+        // completion deliverable — every drop below is LOGGED, never
+        // another silent loss (the field-test complaint class).
+        if (!ownerConversationId) {
+          console.error('[goal] onComplete: no owner conversation — the final report was LOST (goal', finalGoal.id, ')')
+          return
+        }
 
         // G-C17: buildGoalUsageLine reads the ACCUMULATED
         // goal.evaluatorInputTokens/evaluatorOutputTokens (summed by
@@ -3518,7 +3533,10 @@ export function App() {
         if (!usageLine && batchReportLines.length === 0) return
 
         const lastTurnId = finalGoal.lastTurnId
-        if (!lastTurnId) return
+        if (!lastTurnId) {
+          console.error('[goal] onComplete: goal has no lastTurnId — no summary item to stamp the final report on; report LOST (goal', finalGoal.id, ')')
+          return
+        }
 
         const summaryItemId = `${lastTurnId}:summary`
         // Idempotency: if the summary item already has a usageLine
@@ -3526,9 +3544,15 @@ export function App() {
         // runGoalCycle returns 'completed' and exits, but a future
         // refactor could re-enter).
         const conv = chatStoreRef.current.conversations.find(c => c.id === ownerConversationId)
-        if (!conv) return
+        if (!conv) {
+          console.error('[goal] onComplete: owner conversation', ownerConversationId, 'not found — the final report was LOST')
+          return
+        }
         const existingItem = conv.items.find(i => i.id === summaryItemId)
-        if (!existingItem) return
+        if (!existingItem) {
+          console.error('[goal] onComplete: summary item', summaryItemId, 'not found in conversation', ownerConversationId, '— the final report was LOST')
+          return
+        }
         if (existingItem.usageLine && (batchReportLines.length === 0 || existingItem.batchReportLines)) return
 
         updateConversation(ownerConversationId, c => ({

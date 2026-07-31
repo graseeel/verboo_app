@@ -26,8 +26,11 @@
 import { describe, it, expect } from 'vitest'
 import type { GoalEvaluationResult, GoalState, GoalTask, TranscriptItem } from '../../../shared/types'
 import type { Translator } from '../../i18n'
+import { createTranslator } from '../../i18n'
 import { runGoalCycle, BATCH_STAGNATION_K, MAX_EVALUATION_ERRORS, type GoalSchedulerDelegate } from './goalScheduler'
 import { createGoalState, skipBlockedGoalTask } from './goalState'
+import { buildGoalUsageLine } from './goalPrompt'
+import { buildBatchReportLines } from './goalReport'
 
 const t: Translator = ((key: string, params?: Record<string, unknown>) => {
   if (!params) return key
@@ -76,6 +79,8 @@ type MatrixDelegate = GoalSchedulerDelegate & {
   goalHistory: GoalState[]
   continueCalls: { nextMessage: string }[]
   onCompleteCalls: number
+  /** D-B: the goals onComplete received, in order (report content proof). */
+  completedGoals: GoalState[]
   statusChanges: unknown[]
   logs: string[]
   /** Test hook ran inside continueGoal: simulate the turn producing
@@ -98,6 +103,7 @@ function makeDelegate(
     goalHistory: [],
     continueCalls: [],
     onCompleteCalls: 0,
+    completedGoals: [],
     statusChanges: [],
     logs: [],
     getGoal: () => delegate.goal,
@@ -137,8 +143,9 @@ function makeDelegate(
     onLog: (message) => {
       delegate.logs.push(message)
     },
-    onComplete: () => {
+    onComplete: (g) => {
       delegate.onCompleteCalls++
+      delegate.completedGoals.push(g)
     },
     t,
   }
@@ -582,6 +589,71 @@ describe('T2 row 12 — user SKIPS a blocked task: skipped, batch active, advanc
     expect(skipped.pauseReason).toBeUndefined()
   })
 
+  it('D-B: the terminal skip notifies onBatchComplete — and the notified goal yields report + usage + elapsed', () => {
+    // The field-test defect: the skip path completed the batch with NO
+    // completion signal, so the final report never fired. The transition
+    // stays pure in its return value; the callback is the seam the
+    // (future) skip-button wiring uses to stamp the report.
+    const goal = makeBatchGoal('Done one', 'Blocked two')
+    goal.startedAt = Date.now() - 45_000
+    goal.usedInputTokens = 80_000
+    goal.usedOutputTokens = 4_000
+    goal.lastTurnId = 'turn-9'
+    const blocked: GoalState = {
+      ...goal,
+      status: 'paused',
+      pausedAt: Date.now(),
+      pauseReason: 'needsUser',
+      tasks: goal.tasks!.map((task, index) =>
+        index === 0
+          ? { ...task, status: 'done' as GoalTask['status'], turns: 2, evidenceCount: 3 }
+          : { ...task, status: 'blocked' as GoalTask['status'] },
+      ),
+      taskIndex: 1,
+      turnsRunThisTask: 1,
+    }
+
+    const completed: GoalState[] = []
+    const skipped = skipBlockedGoalTask(blocked, Date.now(), undefined, g => completed.push(g))
+
+    // The callback fires EXACTLY once, with the SAME state returned.
+    expect(completed).toHaveLength(1)
+    expect(completed[0]).toBe(skipped)
+    expect(completed[0].status).toBe('completed')
+
+    // The report the user was owed: per-task evidence including the skip,
+    // plus the elapsed+tokens line — built from the REAL builders, exactly
+    // as the App's onComplete delegate builds them.
+    const tEn = createTranslator('en-US')
+    const reportLines = buildBatchReportLines(completed[0], tEn)
+    expect(reportLines[0]).toBe('Batch report')
+    expect(reportLines).toContain('1. Done one — done (turns: 2, actions: 3)')
+    expect(reportLines).toContain('2. Blocked two — skipped by you')
+    const usageLine = buildGoalUsageLine(completed[0], tEn)
+    expect(usageLine).toContain('elapsed time')
+    expect(usageLine).toContain('tokens')
+  })
+
+  it('D-B CONTRAFACTUAL: skipping a NON-last blocked task does NOT notify — the batch is still running', () => {
+    const goal = makeBatchGoal('Blocked one', 'Next two')
+    const blocked: GoalState = {
+      ...goal,
+      status: 'paused',
+      pausedAt: Date.now(),
+      pauseReason: 'needsUser',
+      tasks: goal.tasks!.map((task, index) =>
+        index === 0 ? { ...task, status: 'blocked' as GoalTask['status'] } : task,
+      ),
+      taskIndex: 0,
+      turnsRunThisTask: 1,
+    }
+    const completed: GoalState[] = []
+    const skipped = skipBlockedGoalTask(blocked, Date.now(), undefined, g => completed.push(g))
+
+    expect(completed).toHaveLength(0) // no completion, no notification
+    expect(skipped.status).toBe('active')
+  })
+
   it('skip is a no-op (same reference) on a non-blocked task or a legacy goal', () => {
     const running = makeBatchGoal('Running task')
     expect(skipBlockedGoalTask(running, Date.now())).toBe(running)
@@ -613,5 +685,44 @@ describe('T2 row 13 — LAST task reaches terminal state: batch completed', () =
     expect(delegate.goal.pauseReason).toBeUndefined()
     expect(delegate.goal.tasks?.map(task => task.status)).toEqual(['failed', 'failed'])
     expect(delegate.goal.consecutiveFailedTasks).toBe(2)
+  })
+
+  it('D-B: the terminal loop fires onComplete — the received goal yields the per-task report AND the elapsed+tokens line', async () => {
+    // The field-test defect: this path completed the batch WITHOUT
+    // onComplete, so the user saw no report, no elapsed time, no tokens.
+    const goal = makeBatchGoal('Stuck one', 'Stuck two')
+    goal.startedAt = Date.now() - 60_000
+    goal.usedInputTokens = 120_000
+    goal.usedOutputTokens = 6_000
+    const delegate = makeDelegate(goal, [
+      CONTINUE, CONTINUE, CONTINUE, // task 1 loops → failed (K=1), advance
+      CONTINUE, CONTINUE, CONTINUE, // task 2 loops → failed, LAST → completed
+    ])
+
+    const result = await runGoalCycle(delegate)
+
+    expect(result).toBe('completed')
+    // EXACTLY once: 0 was the D-B defect; 2 would mean firing on the
+    // non-terminal advance too (contrafactual guard).
+    expect(delegate.onCompleteCalls).toBe(1)
+    const finalGoal = delegate.completedGoals[0]
+    expect(finalGoal.status).toBe('completed')
+    expect(finalGoal.completedAt).toBeTypeOf('number')
+    // G-C13 lesson pinned again: completedAt must be present on the
+    // RECEIVED goal even with React's async updater — the usage gate
+    // dies silently without it.
+    expect(finalGoal.tasks?.map(task => task.status)).toEqual(['failed', 'failed'])
+
+    const tEn = createTranslator('en-US')
+    // The final report: every task with its cited evidence (the paper-
+    // gate requirement) — both failed by loop, in the real en-US text.
+    const reportLines = buildBatchReportLines(finalGoal, tEn)
+    expect(reportLines[0]).toBe('Batch report')
+    expect(reportLines).toContain('1. Stuck one — failed (Possible loop detected)')
+    expect(reportLines).toContain('2. Stuck two — failed (Possible loop detected)')
+    // The user's explicit complaint: elapsed time AND tokens.
+    const usageLine = buildGoalUsageLine(finalGoal, tEn)
+    expect(usageLine).toContain('elapsed time')
+    expect(usageLine).toContain('tokens')
   })
 })

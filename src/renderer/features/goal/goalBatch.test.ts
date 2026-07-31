@@ -96,7 +96,7 @@ type BatchSpiedDelegate = GoalSchedulerDelegate & {
    *  has already moved past. */
   goalHistory: GoalState[]
   continueCalls: { nextMessage: string }[]
-  onCompleteCalls: { goal: GoalState; evaluation: GoalEvaluationResult }[]
+  onCompleteCalls: { goal: GoalState; evaluation?: GoalEvaluationResult }[]
   statusChanges: unknown[]
   logs: string[]
   /** The object the last getGoal() returned — the scheduler's loop-top
@@ -276,14 +276,24 @@ describe('T1 aceite 1 + T2 rows 8/13 — CANONICAL REPRO: completion by prose ne
     expect(afterFirstLoop?.turnsRunThisTask).toBe(0)
     expect(afterFirstLoop?.recentFingerprints).toEqual([])
     expect(afterFirstLoop?.consecutiveFailedTasks).toBe(1)
-    // EFEITO 6 — the UI never saw a "complete": lastEvaluation carries
-    // the DOWNGRADED continue, and onComplete never fired (T2: the
-    // row-13 failure-ending does not call onComplete — the final report
-    // surface is T4's, pinned here so T4 makes a conscious choice).
+    // EFEITO 6 — the UI never saw a "complete" from the evaluator:
+    // lastEvaluation carries the DOWNGRADED continue.
     expect(delegate.goal.lastEvaluation?.decision).toBe('continue')
     expect(delegate.goal.lastEvaluation?.reasonId).toBe('taskIncomplete')
     expect(delegate.goal.lastEvaluation?.reason).toContain('action-evidence guard')
-    expect(delegate.onCompleteCalls.length).toBe(0)
+    // EFEITO 6b (D-B — BY-DESIGN change to the T2 pin that used to live
+    // here): the pin asserted onComplete NEVER fired on this path because
+    // "the final report surface is T4's, pinned so T4 makes a conscious
+    // choice". T4 built the report but the pin was never revisited — and
+    // the field test caught it: the batch ended with no report, no
+    // elapsed, no tokens. The new contract: the TERMINAL loop-kill fires
+    // onComplete EXACTLY once (the row-8 non-terminal advance does NOT
+    // complete anything — twice would be wrong).
+    expect(delegate.onCompleteCalls.length).toBe(1)
+    const finalGoal = delegate.onCompleteCalls[0].goal
+    expect(finalGoal.status).toBe('completed')
+    expect(finalGoal.completedAt).toBeTypeOf('number')
+    expect(finalGoal.tasks?.map(task => task.status)).toEqual(['failed', 'failed'])
     // EFEITO 7 — the rejections were logged with the real numbers.
     const rejectionLogs = delegate.logs.filter(m => m.startsWith('D1 guard rejected completion of task'))
     expect(rejectionLogs.length).toBe(6)

@@ -61,7 +61,7 @@ type SpiedDelegate = GoalSchedulerDelegate & {
   statusChanges: unknown[]
   logs: string[]
   updateCalls: number
-  onCompleteCalls: { goal: GoalState; evaluation: GoalEvaluationResult }[]
+  onCompleteCalls: { goal: GoalState; evaluation?: GoalEvaluationResult }[]
 }
 
 function makeDelegate(initialGoal: GoalState, evaluations: GoalEvaluationResult[]): SpiedDelegate {
