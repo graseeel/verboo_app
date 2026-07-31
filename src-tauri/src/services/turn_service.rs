@@ -2119,10 +2119,112 @@ fn build_prompt(request: &AgentTurnRequest, is_resume: bool) -> String {
     build_prompt_internal(request, is_resume)
 }
 
+/// Slash commands reserved by the CLI's native command interceptor.
+///
+/// The CLI's interception layer fires only when the user message
+/// STARTS with a `/` followed by a known command — see MEDICAO
+/// (2026-07-30) where /compact produced `status:"compacting"` and
+/// /nonexistent returned `Unknown skill` in 9ms with no API call.
+/// (MEDICAO ran the bundled cli.mjs DIRECTLY against node, NOT
+/// through the app's prompt path — it proved the CLI side, not the
+/// app side.)
+///
+/// Our `build_prompt_internal` normally PREFIXES the message with
+/// the workspace header (`Current working directory: ...`) and, on
+/// the non-resume path, with app instructions/personality/skills/
+/// memory/etc. That prefix breaks the CLI interceptor because the
+/// resulting prompt no longer starts with `/`.
+///
+/// The reserved commands below are passed through RAW (no prefix,
+/// no envelope) when they appear at the head of `request.message`.
+/// Adding a new reserved command: append it here AND add a
+/// regression test that proves the bypass fires AND update the
+/// cross-fence test at
+/// `src/renderer/features/composer/reservedSlashCommands.contract.test.ts`
+/// so the renderer side and the Rust side stay in sync.
+///
+/// Field defect reference: commit 7fdd56c added /compact on
+/// origin/dev; commit c5dae57 (Tauri migration) introduced the
+/// prompt wrapping; no subsequent commit touched either side.
+/// The bypass was missing from the day /compact shipped.
+const RESERVED_SLASH_COMMANDS: &[&str] = &[
+    // Native CLI compaction command. Fires `status:"compacting"` and
+    // returns `compact_boundary` metadata.
+    //
+    // PROVEN end-to-end on the CLI side by MEDICAO 2026-07-30:
+    //   node cli.mjs --print --output-format stream-json --verbose \
+    //     --resume <session_id> "/compact"
+    //   → first event: {"type":"system","subtype":"status",
+    //                    "status":"compacting",...}
+    //   → later event: {"type":"system","subtype":"compact_boundary",
+    //                    "compact_metadata":{"trigger":"manual",
+    //                                        "pre_tokens":2}}
+    //
+    // NOT PROVEN on the app side. This Rust bypass makes the message
+    // arrive raw at the CLI, but PROVING the CLI executes compaction
+    // by the app path requires rebuilding the app, opening it in a
+    // real session, and observing `compact_boundary` in the
+    // runtimeActivity stream AND `contextUsage` dropping in the UI.
+    // Exit-zero alone is NOT acceptance — many error paths also
+    // return exit zero. The field-acceptance criterion, registered
+    // 2026-07-31, is:
+    //   `compact_boundary` present in the stream-json emission AND
+    //   `contextUsage` value falling afterwards. Never exit zero.
+    //
+    // Do not state "verified end-to-end" or "fully proven" in any
+    // comment or commit message about this bypass until the app-side
+    // criterion is observed in a packaged build.
+    "/compact",
+];
+
+/// Returns `true` when `message` is a reserved slash command that
+/// must reach the CLI interceptor unprefixed. Matching is by
+/// whitespace-delimited head: `/compact preserve old memory` matches
+/// because the head token is `/compact`. Comparison is
+/// case-insensitive — declared as DEFENSIVE CONSERVATISM. We did
+/// NOT verify that the CLI normalizes case before intercepting, so
+/// the lowercase here is "if the CLI is case-sensitive we want to
+/// still match" rather than a documented contract. If the CLI is in
+/// fact case-sensitive and the user types `/Compact`, this bypass
+/// fails — that failure mode is still better than the silent wrap
+/// it replaces (the user sees the message go to the model, not a
+/// silent compact miss).
+fn is_reserved_slash_command(message: &str) -> bool {
+    let trimmed = message.trim_start();
+    let head = trimmed
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    !head.is_empty()
+        && head.starts_with('/')
+        && RESERVED_SLASH_COMMANDS
+            .iter()
+            .any(|reserved| head == *reserved)
+}
+
 /// Same as [`build_prompt`], exposed as `pub(crate)` so the research-subagent
 /// runner (services/research_subagent_runner.rs) can compose the same prompt
 /// format without duplicating the logic.
 pub(crate) fn build_prompt_internal(request: &AgentTurnRequest, is_resume: bool) -> String {
+    // Reserved slash commands bypass the prompt wrapper. The CLI's
+    // command interceptor fires only on messages that START with a
+    // recognized `/` token — any prefix (workspace header, app
+    // instructions, attachments, etc.) breaks the intercept and the
+    // command is silently routed to the model as text. See
+    // `RESERVED_SLASH_COMMANDS` for the field defect background.
+    //
+    // Field evidence (D-D, 2026-07-31): /compact sent through the
+    // app's normal flow never reached the CLI's `status:"compacting"`
+    // branch because the prompt started with "Current working
+    // directory: ..." and the `/compact` token was nowhere near the
+    // head. The bypass returns the message as the entire prompt —
+    // no envelope, no language header, no workspace context. The CLI
+    // accepts the bare slash command in --print mode.
+    if is_reserved_slash_command(&request.message) {
+        return request.message.clone();
+    }
+
     let language = request.response_language.unwrap_or(LanguageCode::EnUs);
     let working_directory = safe_runtime_working_directory(&request.working_directory);
     let _ = request.response_language; // already copied via Copy
@@ -5115,6 +5217,128 @@ mod tests {
                 .extracted_text
                 .as_deref(),
             Some("text content")
+        );
+    }
+
+    // ── D-D (2026-07-31) field fix: slash commands bypass prompt prefix ──
+    //
+    // The CLI's native command interceptor fires only when the user
+    // message STARTS with a recognized slash token (MEDICAO 2026-07-30:
+    // /compact → status:"compacting"; /nonexistent → "Unknown skill"
+    // in 9ms with no API call). `build_prompt_internal` normally
+    // prefixes with the workspace header (`Current working
+    // directory: ...`) and, on the first-turn path, with the full
+    // app instructions block — that prefix breaks the intercept.
+    //
+    // The fix returns the raw message as the entire prompt when the
+    // head token is one of `RESERVED_SLASH_COMMANDS`. These tests pin
+    // both sides of the contract:
+
+    fn request_with_message(message: &str) -> AgentTurnRequest {
+        AgentTurnRequest {
+            turn_id: None,
+            conversation_id: "c1".into(),
+            message: message.into(),
+            model: None,
+            model_supports_vision: None,
+            context_window: None,
+            response_language: Some(LanguageCode::EnUs),
+            access_mode: crate::models::types::AccessMode::Approval,
+            working_directory: "/tmp".into(),
+            skills: Vec::new(),
+            attachments: None,
+            response_enhancements_enabled: Some(false),
+            personality: None,
+            custom_instructions: None,
+            memory_context: None,
+            run_vision_fallback: None,
+            media_capabilities: None,
+            cli_media_capabilities: None,
+            run_video_analysis: None,
+            effort: None,
+            reasoning: None,
+        }
+    }
+
+    #[test]
+    fn build_prompt_reserved_slash_compact_bypasses_prefix_on_resume() {
+        // CONTRAFACTUAL EVIDENCE: a reserved slash command on the
+        // resume path (where the bug surfaced) must arrive at the CLI
+        // starting with `/compact` and WITHOUT the workspace header.
+        // Before the fix, the prompt started with "Current working
+        // directory: /tmp" and the CLI's interceptor never fired.
+        let req = request_with_message("/compact preserve old memory");
+        let prompt = build_prompt(&req, /* is_resume = */ true);
+        assert!(
+            prompt.starts_with("/compact"),
+            "reserved slash command must be at prompt head — got: {prompt:?}"
+        );
+        assert!(
+            !prompt.contains("Current working directory:"),
+            "workspace header must NOT prefix reserved slash commands — got: {prompt:?}"
+        );
+        assert!(
+            !prompt.contains("Diretório de trabalho atual:"),
+            "PT-BR workspace header must NOT prefix reserved slash commands — got: {prompt:?}"
+        );
+        // Whole-prompt equality: the bypass returns the message RAW.
+        assert_eq!(prompt, "/compact preserve old memory");
+    }
+
+    #[test]
+    fn build_prompt_reserved_slash_compact_bypasses_prefix_on_first_turn() {
+        // The non-resume path prefixes with the full app instructions
+        // block — even worse for intercept. The bypass must apply on
+        // BOTH paths or /compact still won't fire from the user's
+        // first message of a session.
+        let req = request_with_message("/compact");
+        let prompt = build_prompt(&req, /* is_resume = */ false);
+        assert!(
+            prompt.starts_with("/compact"),
+            "reserved slash command must be at prompt head — got: {prompt:?}"
+        );
+        assert_eq!(prompt, "/compact");
+    }
+
+    #[test]
+    fn build_prompt_normal_message_still_gets_workspace_prefix_on_resume() {
+        // Counterfactual: the bypass is reserved-command-only. A
+        // normal message MUST still get the prefix or the existing
+        // workspace-context guarantee (test
+        // `build_prompt_resume_omits_app_instructions` at line 3845)
+        // silently regresses. This test is the load-bearing one for
+        // "don't break the normal case".
+        let req = request_with_message("Hello");
+        let prompt = build_prompt(&req, /* is_resume = */ true);
+        assert!(
+            prompt.contains("Current working directory: /tmp"),
+            "normal message on resume path MUST keep workspace header — got: {prompt:?}"
+        );
+        assert!(
+            !prompt.starts_with("Hello"),
+            "normal message MUST NOT bypass the prefix — got: {prompt:?}"
+        );
+    }
+
+    #[test]
+    fn reserved_slash_commands_list_does_not_shrink_or_vanish() {
+        // Fail-by-default regression guard: the reserved set must
+        // remain non-empty and contain the documented /compact entry.
+        // If a future refactor empties the list or removes /compact,
+        // /compact stops reaching the CLI's interceptor and the
+        // MEDICAO evidence (status:"compacting" emitted by the CLI)
+        // becomes a dead letter.
+        //
+        // The guard does NOT pin the exact size — additions are
+        // expected as the CLI ships new reserved commands. It pins:
+        //   1. The list is non-empty.
+        //   2. `/compact` is present (the one MEDICAO verified).
+        assert!(!RESERVED_SLASH_COMMANDS.is_empty(),
+            "RESERVED_SLASH_COMMANDS is empty — no slash command can reach the CLI interceptor. \
+             This is a regression: see D-D 2026-07-31 field fix.");
+        assert!(
+            RESERVED_SLASH_COMMANDS.contains(&"/compact"),
+            "RESERVED_SLASH_COMMANDS must contain \"/compact\" (verified by MEDICAO 2026-07-30)"
         );
     }
 }
