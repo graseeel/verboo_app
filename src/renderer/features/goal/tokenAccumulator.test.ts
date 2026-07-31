@@ -23,6 +23,7 @@ import { describe, it, expect } from 'vitest'
 import type { GoalEvaluationEnvelope, GoalState, TokenUsage } from '../../../shared/types'
 import {
   shouldAccumulateTokensForTurn,
+  accumulateTurnUsage,
   accumulateEvaluatorUsage,
   shouldAccumulateEvaluatorUsage,
 } from './tokenAccumulator'
@@ -292,5 +293,75 @@ describe('G-C17: shouldAccumulateEvaluatorUsage — same evaluation counted twic
     expect(shouldAccumulateEvaluatorUsage(undefined, a)).toBe(true)
     expect(shouldAccumulateEvaluatorUsage(a, a)).toBe(false)
     expect(shouldAccumulateEvaluatorUsage(a, b)).toBe(true)
+  })
+})
+
+/**
+ * T3: accumulateTurnUsage — the COMPACT turn's tokens count ONCE.
+ *
+ * Acceptance context: the frontier's compact turn goes through runTurn
+ * (NOT continueGoal — it never increments turnsRun), so its tokens flow
+ * through the same G-C14 path as any turn: the Rust side emits the
+ * turn-result event TWICE (the second emission carries the exit_code)
+ * with the SAME turnId and the SAME usage payload. Summing on both
+ * emissions doubled the count once before in this project (G-C14).
+ *
+ * The accumulation lived INLINE in the App.tsx handler until T3, where
+ * it was extracted byte-identical into the pure accumulateTurnUsage so
+ * this sequence is testable as EFFECT (the total grows once), not form.
+ */
+describe('T3: accumulateTurnUsage — the compact turn counts exactly ONCE', () => {
+  it('replays the EXACT handler sequence for the compact turn: two emissions, one sum', () => {
+    // Mirrors the App.tsx result-event handler verbatim: snapshot map
+    // per turnId, gate on hadSnapshot BEFORE overwriting, accumulate
+    // via the pure function only when the gate opens.
+    const snapshots: Record<string, unknown> = {}
+    let goal = makeGoal({ usedInputTokens: 0, usedOutputTokens: 0 })
+    const usage = { inputTokens: 12_000, outputTokens: 400 }
+    const compactTurnId = 'compact-turn-1'
+
+    const emissions = [
+      { note: 'first emission (carries the result)' },
+      { note: 'duplicate (carries the exit_code)', exitCode: 0 },
+    ]
+    for (const emission of emissions) {
+      const hadSnapshot = snapshots[compactTurnId] !== undefined
+      snapshots[compactTurnId] = emission
+      if (shouldAccumulateTokensForTurn(hadSnapshot)) {
+        goal = accumulateTurnUsage(goal, usage)
+      }
+    }
+
+    expect(goal.usedInputTokens).toBe(12_000)
+    expect(goal.usedOutputTokens).toBe(400)
+    // CONTRAFACTUAL: without the gate the SAME sequence sums 2× — the
+    // trap is armed and the gate is what disarms it.
+    const naiveDouble = 2 * usage.inputTokens
+    expect(naiveDouble).toBe(24_000) // the number the bug would produce
+    expect(goal.usedInputTokens).not.toBe(naiveDouble)
+  })
+
+  it('reads camelCase keys ONLY (G-C12): a snake_case payload sums ZERO', () => {
+    // event.result.usage arrives from Rust via Tauri, serialized with
+    // serde rename_all camelCase. The old snake_case reads returned
+    // undefined and the ?? 0 coalescing silently zeroed every
+    // accumulation in production. Pinned so a casing regression fails
+    // loudly here instead of silently zeroing the counter.
+    const snakeCasePayload = { input_tokens: 99_999, output_tokens: 888 } as unknown as TokenUsage
+    const goal = accumulateTurnUsage(
+      makeGoal({ usedInputTokens: 0, usedOutputTokens: 0 }),
+      snakeCasePayload,
+    )
+    expect(goal.usedInputTokens).toBe(0)
+    expect(goal.usedOutputTokens).toBe(0)
+  })
+
+  it('treats absent usage as +0 and never mutates the input goal (pure)', () => {
+    const original = makeGoal({ usedInputTokens: 5, usedOutputTokens: 7 })
+    const updated = accumulateTurnUsage(original, undefined)
+    expect(updated.usedInputTokens).toBe(5)
+    expect(updated.usedOutputTokens).toBe(7)
+    expect(updated).not.toBe(original)
+    expect(original.usedInputTokens).toBe(5)
   })
 })

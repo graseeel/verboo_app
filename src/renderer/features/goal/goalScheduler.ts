@@ -3,7 +3,7 @@ import type { GoalStatusBarState } from './GoalStatusBar'
 import type { Translator } from '../../i18n'
 import { buildContinuePrompt, buildCompletionMessage, buildUsageSummary } from './goalPrompt'
 import { isInfraError } from './goalReason'
-import { advanceGoalTasks, buildEvaluatorSnapshot, countActionActivities, currentGoalTask } from './goalState'
+import { advanceGoalTasks, buildEvaluatorSnapshot, countActionActivities, currentGoalTask, reopenTaskEvidenceWindow } from './goalState'
 
 /**
  * Maximum consecutive evaluator failures before the scheduler pauses the
@@ -117,6 +117,31 @@ export type GoalSchedulerDelegate = {
    */
   evaluateGoal: (goal: GoalState) => Promise<GoalEvaluationResult>
   continueGoal: (goal: GoalState, nextMessage: string) => Promise<string | undefined>
+  /**
+   * T3: the COMPACTION FRONTIER between batch tasks. Called ONLY on the
+   * done-advance path (matrix row 1: a non-last task passed D1 and the
+   * batch is moving to the next task). The implementation must:
+   *   1. send the equivalent of the /compact command to the goal's
+   *      OWNER conversation (the measured CLI behavior: slash commands
+   *      are intercepted BEFORE the model — the "/nonexistent → Unknown
+   *      skill in 9ms, zero API calls" control proves the agent cannot
+   *      answer ABOUT the command instead of executing it);
+   *   2. AWAIT the compaction turn's conclusion (resolve only when the
+   *      turn's terminal event arrives) — the scheduler's reset NEVER
+   *      happens before this promise settles;
+   *   3. resolve true when the compaction concluded cleanly, false on
+   *      any failure (no CLI session, turn error, abort, non-zero exit).
+   *
+   * The compaction turn goes through runTurn, NOT continueGoal — it
+   * must NOT increment turnsRun/turnsRunThisTask (it is maintenance,
+   * not task work). Its tokens are accumulated ONCE via the existing
+   * G-C14 turnId dedupe in the App's result handler.
+   *
+   * OPTIONAL on purpose: when absent (unit tests, hosts without a CLI
+   * session), the scheduler takes the ATOMIC T1/T2 boundary — a single
+   * updateGoal with the advance — and no compaction is attempted.
+   */
+  compactOnTaskBoundary?: (goal: GoalState) => Promise<boolean>
   /**
    * T1 (D1): the LIVE transcript items of the goal's OWNER conversation
    * (same resolution as evaluateGoal: ownerConversationId, NOT whatever
@@ -465,6 +490,86 @@ export async function runGoalCycle(delegate: GoalSchedulerDelegate): Promise<Sch
       const nextRing = [...prev.recentFingerprints, fingerprint].slice(-FINGERPRINT_RING_CAP)
       return { ...prev, recentFingerprints: nextRing, noProgressCount: nextNoProgress }
     })
+
+    // ─── T3: COMPACTION FRONTIER (compact BETWEEN tasks) ──────────
+    // Fires ONLY on the done-advance path (row 1): a non-last task
+    // passed D1 and the batch just moved to the next task. Loop/K
+    // advances (rows 8/9) do NOT compact — a task that just failed
+    // signals a possibly broken environment and the K guard pauses next;
+    // compacting there would spend tokens on a dying batch.
+    //
+    // MANDATORY ORDER (Maestro's protocol): the compact turn must
+    // CONCLUDE before any frontier state is reset — the reset NEVER
+    // happens before `compactOnTaskBoundary` settles. The reset then:
+    //   - zeroes turnsRunThisTask (already zeroed by the advance write;
+    //     restated so the protocol reads in one place);
+    //   - clears the fingerprint ring + noProgressCount: a REAL
+    //     compaction changed the transcript, so fingerprints computed
+    //     against the pre-compact context are a stale baseline — keeping
+    //     them would compare the next task's evaluations against a
+    //     transcript that no longer exists;
+    //   - RE-OPENS the new task's D1 evidence window (startedAt stamped
+    //     NOW, post-compact): the advance had opened it BEFORE the
+    //     compact turn ran, so without the re-stamp any whitelisted
+    //     activity emitted by the CLI during /compact would count as
+    //     action evidence for a task that never ran. The compact turn
+    //     alone must NEVER satisfy the next task's D1 guard.
+    //
+    // FAILURE: the batch PROCEEDS WITHOUT COMPACTING — never blocked by
+    // it — but the failure is DECLARED (log + compactionFailures
+    // counter for the T4 report), never hidden. On failure the ring and
+    // noProgressCount are PRESERVED: the transcript did not change, so
+    // the loop detector's baseline is still valid — disarming it would
+    // strip protection we still need. The evidence window is still
+    // re-opened (a partial compact turn may have emitted activities).
+    //
+    // HONESTY LINE (required): this frontier only controls compaction
+    // at the boundary. The REACTIVE context-overflow recovery that
+    // already exists in App.tsx (~1877-1906 and ~1989-1996) can fire in
+    // the MIDDLE of a task, outside our control; when it does, the loop
+    // detector is disarmed BY NATURE — the transcript changed, so the
+    // evaluator's output changes and fingerprints no longer compare.
+    // That cannot be prevented honestly from here; the T2 K guard
+    // (batchStagnation) is the net for that case. Do not read this
+    // frontier as control over mid-task compaction.
+    if (didAdvance && delegate.compactOnTaskBoundary) {
+      const frontierIndex = clampedTaskIndex + 1
+      delegate.onLog(
+        `Frontier: compacting context before task ${frontierIndex + 1}/${batchTasks?.length}...`,
+      )
+      let compacted: boolean
+      try {
+        compacted = await delegate.compactOnTaskBoundary(currentGoal)
+      } catch (error) {
+        delegate.onLog(
+          `Frontier: compaction threw (${error instanceof Error ? error.message : String(error)}); treating as failure.`,
+        )
+        compacted = false
+      }
+      if (compacted) {
+        delegate.updateGoal((prev: GoalState) => ({
+          ...prev,
+          turnsRunThisTask: 0,
+          recentFingerprints: [],
+          noProgressCount: 0,
+          tasks: reopenTaskEvidenceWindow(prev.tasks ?? [], prev.taskIndex ?? frontierIndex, Date.now()),
+        }))
+        delegate.onLog(
+          'Frontier: compaction concluded; ring, noProgressCount and turnsRunThisTask reset; evidence window reopened.',
+        )
+      } else {
+        delegate.updateGoal((prev: GoalState) => ({
+          ...prev,
+          compactionFailures: (prev.compactionFailures ?? 0) + 1,
+          turnsRunThisTask: 0,
+          tasks: reopenTaskEvidenceWindow(prev.tasks ?? [], prev.taskIndex ?? frontierIndex, Date.now()),
+        }))
+        delegate.onLog(
+          'Frontier: compaction FAILED; the batch proceeds WITHOUT compacting ' +
+          '(declared — compactionFailures incremented). Ring and noProgressCount preserved.',
+        )
+      }
+    }
 
     // The completion path fires ONLY when the goal itself is done: a
     // D1-downgraded completion arrives here as 'continue', and a batch

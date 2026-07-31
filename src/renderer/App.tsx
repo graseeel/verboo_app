@@ -40,11 +40,15 @@ import type {
   WorkspaceReviewMetadata,
 } from '../shared/types'
 import { createGoalState, goalSystemMessage, sanitizeStoredGoal } from './features/goal/goalState'
+// T3: context-usage extraction lives in features/context/contextUsage
+// (moved out of this file verbatim) so the frontier signal (ii) is
+// testable without importing the component tree.
+import { extractContextUsage, extractUsageObject, isRecord, numberValue, numberValueOptional } from './features/context/contextUsage'
 import { GoalStatusBar, type GoalStatusBarState } from './features/goal/GoalStatusBar'
 import { GoalActivePanel } from './features/goal/GoalActivePanel'
 import { buildGoalUsageLine, buildObjectiveUpdatedPrompt } from './features/goal/goalPrompt'
 import { runGoalCycle, type GoalSchedulerDelegate } from './features/goal/goalScheduler'
-import { shouldAccumulateTokensForTurn, accumulateEvaluatorUsage, shouldAccumulateEvaluatorUsage } from './features/goal/tokenAccumulator'
+import { shouldAccumulateTokensForTurn, accumulateTurnUsage, accumulateEvaluatorUsage, shouldAccumulateEvaluatorUsage } from './features/goal/tokenAccumulator'
 import type { ReservedSlashCommand } from './features/composer/slashCommands'
 import { AppSidebar, type AppView } from './components/AppSidebar'
 import { CommandPalette, paletteIcons, type PaletteAction } from './components/CommandPalette'
@@ -534,6 +538,15 @@ export function App() {
   // to await the interrupted turn before sending the next message. Separate
   // from turnCompletionDeferred (used by goal scheduler) to avoid conflicts.
   const interjectDeferred = useRef<{ turnId: string; resolve: () => void } | undefined>(undefined)
+  // T3: resolves when the frontier COMPACTION turn ends. The goal
+  // scheduler's compactOnTaskBoundary awaits this before any frontier
+  // state is reset (the reset NEVER happens before the compact
+  // concludes). Resolved with `exitCode === 0` on done, `false` on
+  // error/abort — a failed compaction never blocks the batch, but is
+  // declared (compactionFailures). Separate from the deferreds above:
+  // the compaction turn goes through runTurn, NOT continueGoal, and
+  // must not touch the goal turn's completion deferred.
+  const compactCompletionDeferred = useRef<{ turnId: string; resolve: (ok: boolean) => void } | undefined>(undefined)
   const turnThinkingText = useRef<Record<string, string>>({})
   const turnThinkingSnippets = useRef<Record<string, string[]>>({})
   const [thinkingSnippets, setThinkingSnippets] = useState<string[]>([])
@@ -1840,17 +1853,11 @@ export function App() {
       if (event.result.usage && shouldAccumulateTokensForTurn(hadSnapshot)) {
         setGoal(current => {
           if (!current) return current
-          const updated = {
-            ...current,
-            // G-C12: event.result.usage comes from Rust via Tauri, which
-            // serializes TokenUsage with serde rename_all camelCase. Read
-            // camelCase keys here. The old snake_case reads returned
-            // undefined and the ?? 0 coalescing silently zeroed every
-            // accumulation — the goal token counter appeared to work in
-            // tests but always reported zero in production.
-            usedInputTokens: current.usedInputTokens + (event.result.usage?.inputTokens ?? 0),
-            usedOutputTokens: current.usedOutputTokens + (event.result.usage?.outputTokens ?? 0),
-          }
+          // T3: the accumulation moved to the pure accumulateTurnUsage
+          // (tokenAccumulator.ts) — byte-identical semantics (G-C12
+          // camelCase reads), extracted so the dedupe sequence is
+          // testable as EFFECT, not form.
+          const updated = accumulateTurnUsage(current, event.result.usage)
           // G-C10 item 3: synchronize goalRef.current so the scheduler
           // (which reads via delegate.getGoal() → goalRef.current) sees
           // the accumulated tokens. Without this, the scheduler's
@@ -1971,6 +1978,16 @@ export function App() {
       if (interjectDeferred.current?.turnId === event.turnId) {
         interjectDeferred.current.resolve()
         interjectDeferred.current = undefined
+      }
+      // T3: a compaction-turn error resolves the frontier deferred with
+      // false — UNCONDITIONALLY, even when willContinueAutomatically:
+      // the batch NEVER waits on a failed compact (it proceeds without
+      // compacting and declares the failure). If the reactive recovery
+      // compacts anyway, that is the pre-existing reactive path doing
+      // its own job, outside the frontier's control.
+      if (compactCompletionDeferred.current?.turnId === event.turnId) {
+        compactCompletionDeferred.current.resolve(false)
+        compactCompletionDeferred.current = undefined
       }
 
       if (conversationId) {
@@ -2182,6 +2199,12 @@ export function App() {
       if (interjectDeferred.current?.turnId === event.turnId) {
         interjectDeferred.current.resolve()
         interjectDeferred.current = undefined
+      }
+      // T3: resolve the frontier compaction deferred with the REAL exit
+      // code — true only when the compact concluded cleanly (exit 0).
+      if (compactCompletionDeferred.current?.turnId === event.turnId) {
+        compactCompletionDeferred.current.resolve(event.exitCode === 0)
+        compactCompletionDeferred.current = undefined
       }
 
     }
@@ -2491,7 +2514,7 @@ export function App() {
     enqueueFollowUp(queued)
   }
 
-  async function runTurn(item: QueuedFollowUp, options?: { skipResume?: boolean }) {
+  async function runTurn(item: QueuedFollowUp, options?: { skipResume?: boolean }): Promise<string> {
     pendingConversationId.current = item.conversationId
     setContextUsage(undefined)
     setTokenRate(undefined)
@@ -2511,6 +2534,11 @@ export function App() {
     }
     tagAssistantMessage(item.conversationId, turnId, item.turnModel)
     if (pendingConversationId.current === item.conversationId) pendingConversationId.current = undefined
+    // T3: return the REAL turnId (the one terminal done/error events
+    // carry) so the compaction frontier can await THIS turn's
+    // conclusion. Existing fire-and-forget callers (`void runTurn(...)`)
+    // are unaffected.
+    return turnId
   }
 
   async function sendTrackedTurn(request: AgentTurnRequest, resumeSessionId?: string): Promise<string> {
@@ -3306,6 +3334,56 @@ export function App() {
 
         if (controller.signal.aborted) return undefined
         return goalSessionId.current
+      },
+      // T3: the COMPACTION FRONTIER — compacts the goal's OWNER
+      // conversation between batch tasks and AWAITS the compact turn's
+      // conclusion (the scheduler's frontier reset NEVER runs before
+      // this promise settles). Mirrors handleCompactCommand's flow —
+      // same CLI-session gate, same '/compact' string, same
+      // skipContextEstimateUntil window — but awaited instead of
+      // fire-and-forget, and with POSSE resolution
+      // (ownerConversationId — G-C8-FIX), never the conversation the
+      // user happens to be looking at.
+      //
+      // The compact turn goes through runTurn — NOT continueGoal — so
+      // it does NOT increment turnsRun/turnsRunThisTask (it is
+      // maintenance, not task work — Maestro's point 1). Its tokens are
+      // accumulated exactly ONCE via the existing G-C14 turnId dedupe
+      // in the result-event handler (point 2).
+      //
+      // Resolves false on ANY failure path (aborted, no conversation,
+      // no CLI session, sendTurn threw, non-zero exit, abort
+      // mid-compact): the batch proceeds WITHOUT compacting and the
+      // scheduler declares the failure (compactionFailures) — a
+      // compaction NEVER blocks the batch (point 3).
+      compactOnTaskBoundary: async (currentGoal) => {
+        if (controller.signal.aborted) return false
+        const conversationId = currentGoal.ownerConversationId ?? activeConversationIdRef.current
+        if (!conversationId) return false
+        const sessionId = conversationCliSessionId(conversationId)
+        if (!sessionId) return false
+
+        skipContextEstimateUntil.current = Date.now() + 15_000
+
+        let turnId: string
+        try {
+          turnId = await runTurn(createQueuedFollowUp(conversationId, '/compact'))
+        } catch {
+          return false
+        }
+        if (controller.signal.aborted) return false
+
+        return new Promise<boolean>((resolve) => {
+          compactCompletionDeferred.current = { turnId, resolve }
+          // If aborted while waiting, resolve false to unblock the
+          // scheduler — the batch must never hang on a compact.
+          controller.signal.addEventListener('abort', () => {
+            if (compactCompletionDeferred.current?.turnId === turnId) {
+              compactCompletionDeferred.current = undefined
+              resolve(false)
+            }
+          }, { once: true })
+        })
       },
       abortTurn: () => {
         void window.verboo.interrupt()
@@ -5465,91 +5543,6 @@ function workspaceFolderName(path: string, projectName?: string, fallback = 'No 
   return trimmed.split(/[\\/]/).filter(Boolean).at(-1) ?? trimmed
 }
 
-function extractContextUsage(payload: unknown, maxTokens?: number): ContextUsageSnapshot | undefined {
-  // Prefer the CLI's pre-calculated context_window object when available.
-  // This is the authoritative source — the CLI accounts for its own context
-  // management (system prompt, output reservation, compaction) which the
-  // raw API usage tokens don't reflect. Using the CLI's numbers ensures the
-  // meter matches what the CLI itself displays.
-  const ctxWindow = extractContextWindowObject(payload)
-  if (ctxWindow) {
-    const cliUsedPercentage = numberValueOptional(ctxWindow.used_percentage)
-    const cliWindowSize = numberValueOptional(ctxWindow.context_window_size)
-    const cliTotalInput = numberValueOptional(ctxWindow.total_input_tokens)
-    const cliTotalOutput = numberValueOptional(ctxWindow.total_output_tokens)
-    const effectiveMax = cliWindowSize ?? maxTokens
-    // If the CLI gives us a used_percentage (0-100), use it directly.
-    // BUT: return undefined when the CLI sends early zeros (before any tokens
-    // have actually been used) so the frontend's estimate is not overwritten.
-    if (cliUsedPercentage !== undefined) {
-      const valid = cliUsedPercentage > 0 || (cliTotalInput !== undefined && cliTotalInput > 0)
-      if (!valid) return undefined
-      const percentage = Math.max(0, Math.min(1, cliUsedPercentage / 100))
-      const usedTokens = effectiveMax
-        ? Math.round(percentage * effectiveMax)
-        : cliTotalInput ?? 0
-      return {
-        usedTokens,
-        maxTokens: effectiveMax,
-        percentage,
-        inputTokens: cliTotalInput,
-        outputTokens: cliTotalOutput,
-        source: 'cli-usage',
-        updatedAt: Date.now(),
-      }
-    }
-    // If the CLI gives us total_input_tokens + context_window_size, compute
-    // from those (more accurate than raw API usage because the CLI tracks
-    // cumulative input across the whole conversation).
-    if (cliTotalInput !== undefined && effectiveMax !== undefined && effectiveMax > 0) {
-      const percentage = Math.max(0, Math.min(1, cliTotalInput / effectiveMax))
-      return {
-        usedTokens: cliTotalInput,
-        maxTokens: effectiveMax,
-        percentage,
-        inputTokens: cliTotalInput,
-        outputTokens: cliTotalOutput,
-        source: 'cli-usage',
-        updatedAt: Date.now(),
-      }
-    }
-  }
-
-  // Fallback: compute from raw API usage tokens (input + cache).
-  const usage = extractUsageObject(payload)
-  if (!usage) return undefined
-
-  const inputTokens = numberValue(usage.input_tokens) ?? 0
-  const outputTokens = numberValue(usage.output_tokens) ?? 0
-  const cacheCreationTokens = numberValue(usage.cache_creation_input_tokens) ?? 0
-  const cacheReadTokens = numberValue(usage.cache_read_input_tokens) ?? 0
-  const usedTokens = inputTokens + cacheCreationTokens + cacheReadTokens
-  if (usedTokens <= 0) return undefined
-
-  return {
-    usedTokens,
-    maxTokens,
-    percentage: maxTokens ? Math.min(1, usedTokens / maxTokens) : undefined,
-    inputTokens,
-    outputTokens,
-    source: 'cli-usage',
-    updatedAt: Date.now(),
-  }
-}
-
-/// Extracts the CLI's `context_window` object from a stream-json payload.
-/// The CLI emits this with pre-calculated `used_percentage`,
-/// `remaining_percentage`, `context_window_size`, `total_input_tokens`,
-/// and `total_output_tokens`. This is the authoritative context usage.
-function extractContextWindowObject(payload: unknown): Record<string, unknown> | undefined {
-  if (!isRecord(payload)) return undefined
-  if (isRecord(payload.context_window)) return payload.context_window
-  if (payload.type === 'stream_event' && isRecord(payload.event)) {
-    if (isRecord(payload.event.context_window)) return payload.event.context_window
-  }
-  return undefined
-}
-
 function extractTokenUsage(payload: unknown): TokenUsage | undefined {
   const usage = extractUsageObject(payload)
   if (!usage) return undefined
@@ -5594,19 +5587,6 @@ function streamDeltaText(payload: unknown): string | undefined {
   if (delta.type === 'text_delta' && typeof delta.text === 'string') return delta.text
   if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') return delta.thinking
   if (delta.type === 'input_json_delta' && typeof delta.partial_json === 'string') return delta.partial_json
-  return undefined
-}
-
-function extractUsageObject(payload: unknown): Record<string, unknown> | undefined {
-  if (!isRecord(payload)) return undefined
-  if (isRecord(payload.usage)) return payload.usage
-  if (isRecord(payload.message) && isRecord(payload.message.usage)) return payload.message.usage
-
-  if (payload.type === 'stream_event' && isRecord(payload.event)) {
-    if (isRecord(payload.event.usage)) return payload.event.usage
-    if (isRecord(payload.event.message) && isRecord(payload.event.message.usage)) return payload.event.message.usage
-  }
-
   return undefined
 }
 
@@ -5873,21 +5853,6 @@ function formatCompactNumber(value: number, language: LanguageCode): string {
 
 function textValue(value: unknown): string {
   return typeof value === 'string' ? value : ''
-}
-
-function numberValue(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0
-}
-
-/// Like `numberValue` but returns `undefined` for missing/non-number fields.
-/// Used in fallback chains where we need to distinguish "field present" from
-/// "field absent" (e.g. context_window.used_percentage might be absent).
-function numberValueOptional(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-}
-
-function isRecord(value: unknown): value is Record<string, any> {
-  return typeof value === 'object' && value !== null
 }
 
 // Pull tool_result blocks out of a stream-json payload so a command's real

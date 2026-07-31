@@ -30,6 +30,39 @@ export function shouldAccumulateTokensForTurn(hadSnapshot: boolean): boolean {
 }
 
 /**
+ * T3: accumulate a TURN's token usage into the goal's running totals.
+ *
+ * Extracted as a pure function from the App.tsx result-event handler
+ * (where it lived inline) so the G-C14 dedupe can be tested as the
+ * EXACT sequence the handler runs — first emission (no snapshot →
+ * accumulate) then the duplicate carrying exit_code (snapshot exists →
+ * skip) — proving the compact turn's tokens are summed exactly ONCE.
+ * A test against the inline handler code would only prove FORM; this
+ * proves the EFFECT (the total grows once, not twice).
+ *
+ * The accumulation itself is byte-identical to the pre-T3 inline code,
+ * including the G-C12 casing lesson: `event.result.usage` comes from
+ * Rust via Tauri, which serializes TokenUsage with serde rename_all
+ * camelCase — read camelCase keys. The old snake_case reads returned
+ * undefined and the `?? 0` coalescing silently zeroed every
+ * accumulation (worked in tests, always zero in production).
+ *
+ * Pure: returns a NEW GoalState; never mutates the input. The caller
+ * (App.tsx) applies it to BOTH the React state (setGoal updater) and
+ * goalRef.current — each store accumulates exactly once per emission.
+ */
+export function accumulateTurnUsage(
+  goal: GoalState,
+  usage: TokenUsage | undefined,
+): GoalState {
+  return {
+    ...goal,
+    usedInputTokens: goal.usedInputTokens + (usage?.inputTokens ?? 0),
+    usedOutputTokens: goal.usedOutputTokens + (usage?.outputTokens ?? 0),
+  }
+}
+
+/**
  * G-C17: accumulate the evaluator's own token usage across EVERY
  * evaluation of a goal.
  *

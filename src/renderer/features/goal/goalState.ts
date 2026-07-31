@@ -287,6 +287,39 @@ export function skipBlockedGoalTask(goal: GoalState, now: number): GoalState {
 }
 
 /**
+ * T3: RE-OPEN the active task's D1 evidence window at the END of the
+ * compaction frontier.
+ *
+ * Why this exists: the boundary advance (advanceGoalTasks) stamps the
+ * next task's `startedAt` BEFORE the compact turn runs. Without a
+ * re-stamp, the compact turn's own activities would fall INSIDE the new
+ * task's evidence window (timestamp >= startedAt) — and any whitelisted
+ * kind emitted by the CLI during /compact would count as "action
+ * evidence" for a task that has not run a single turn of its own. The
+ * compact turn alone must NEVER satisfy the next task's D1 guard
+ * (Maestro's protocol; CADINHO's explicit condition), so the window is
+ * re-opened AFTER the compact concludes: everything the compact turn
+ * did lands before the new `startedAt` and is excluded by
+ * countActionActivities' `timestamp < windowStart` skip.
+ *
+ * Only the task at `activeIndex` with status 'active' is re-stamped —
+ * done/failed/skipped tasks keep their history, and a missing/absent
+ * active task makes this a no-op map (defensive: same clamp discipline
+ * as currentGoalTask).
+ */
+export function reopenTaskEvidenceWindow(
+  tasks: GoalTask[],
+  activeIndex: number,
+  now: number,
+): GoalTask[] {
+  return tasks.map((task, index) =>
+    index === activeIndex && task.status === 'active'
+      ? { ...task, startedAt: now }
+      : task,
+  )
+}
+
+/**
  * T1 (c) — D1 ACTION WHITELIST. The activity kinds that COUNT as an
  * observable action for the task-evidence guard.
  *

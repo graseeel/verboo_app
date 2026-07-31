@@ -276,6 +276,20 @@ export type GoalState = {
    * is cheap (the user clicks resume once).
    */
   consecutiveFailedTasks?: number
+  /**
+   * T3: how many task-boundary compactions FAILED in this batch. The
+   * frontier protocol compacts between tasks; when a compaction fails
+   * the batch PROCEEDS WITHOUT COMPACTING (never blocked by it) — but
+   * the failure must not be hidden: this counter is what lets the final
+   * report (T4) declare "N compactions failed; the batch continued
+   * without compacting". A missing key means zero failures (legacy
+   * batches pre-T3 read as `?? 0`).
+   *
+   * Renderer-only (same serde argument as G-C17): the field crosses to
+   * Rust inside the GoalState snapshot and serde ignores unknown keys
+   * there; nothing changes in src-tauri.
+   */
+  compactionFailures?: number
 }
 
 export type GoalEvaluationInput = {
