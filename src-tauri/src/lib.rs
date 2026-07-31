@@ -947,26 +947,23 @@ fn evaluate_goal(
     let result = crate::services::goal_evaluator::GoalEvaluator::evaluate(input, token.as_deref());
     match result {
         Ok(r) => Ok(r.into()),
-        Err(e) => {
-            // Infra failure → return Pause+InfraError so the FE scheduler
-            // receives a predictable decision (NOT an Err throw — the scheduler
-            // can't handle promise rejections in runGoalCycle). The FE checks
-            // reasonId=infraError to circuit-break.
-            Ok(EvaluationResult {
-                evaluation: GoalEvaluationResult {
-                    decision: GoalDecision::Pause,
-                    reason_id: GoalReasonId::InfraError,
-                    reason: e.to_string(),
-                    session_summary: None,
-                    gaps: Vec::new(),
-                    next_action: None,
-                    completion_summary: None,
-                    confidence: 0.0,
-                },
-                user_message: None,
-                evaluator_usage: None,
-            })
-        }
+        // 2026-07-31 field fix: propagate the Err to the FE instead of
+        // fabricating a Pause+InfraError envelope. The previous behavior
+        // bypassed the scheduler's retry mesh (1s/2s/4s/8s backoff in
+        // goalScheduler.ts) by returning Ok — the FE caught the
+        // reasonId=infraError and paused IMMEDIATELY on the first parse
+        // failure, never giving the unwrap retry a chance. The contract
+        // documented at goalScheduler.ts:111-117 ("Callers must NOT
+        // swallow errors into a fake continue decision") was already
+        // explicit on the FE side; this side was the violator.
+        //
+        // Propagating Err lets the scheduler count consecutive failures
+        // (catch at line 557), retry with backoff, and pause at the 3rd
+        // consecutive failure with the message visible in the panel.
+        // The Err message includes the first 500 chars of the raw CLI
+        // output (truncated at extract_evaluation_json) so operators can
+        // diagnose intermittent fence-wrapped outputs.
+        Err(e) => Err(e.to_string()),
     }
 }
 

@@ -601,23 +601,43 @@ fn extract_evaluation_json(
             if let Some(result_val) = obj.get("result") {
                 if let Some(result_str) = result_val.as_str() {
                     // The result value is a string — it may itself be JSON.
+                    // Fast path: bare JSON object inside the string.
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(result_str) {
                         if parsed.is_object() {
                             return Ok((parsed, evaluator_usage));
                         }
                     }
-                    // String but not JSON — it may be a plain text result.
-                    // Wrap it into a generic object.
-                    return Ok((serde_json::json!({
-                        "decision": "continue",
-                        "reasonId": "taskIncomplete",
-                        "reason": result_str,
-                        "sessionSummary": null,
-                        "gaps": [],
-                        "nextAction": null,
-                        "completionSummary": null,
-                        "confidence": 0.5,
-                    }), evaluator_usage));
+                    // 2026-07-31 field fix (corrected): when the bare
+                    // parse fails OR yields a non-object, fall back to
+                    // the depth-aware first-object scan. The CLI
+                    // intermittently wraps the JSON in ```json ... ```
+                    // fences — parse_first_json_object subsumes those
+                    // naturally because it walks the string char-by-char
+                    // counting depth, ignoring any `{`/`}` that appear
+                    // inside string literals (like fence markers).
+                    //
+                    // If the scan finds an object, return it WITH the
+                    // envelope's usage block preserved — the previous
+                    // synthetic-continue wrap (decision:continue,
+                    // reasonId:taskIncomplete, confidence:0.5) is the
+                    // field defect this branch replaces. It fabricated
+                    // Continue for every model that emitted a fenced
+                    // JSON, even when the inner object had
+                    // decision:complete. The goalScheduler.ts:111-117
+                    // contract forbids this swallowing.
+                    if let Some(parsed) = parse_first_json_object(result_str) {
+                        return Ok((parsed, evaluator_usage));
+                    }
+                    // result_str contains no parseable JSON object at
+                    // all — surface as a parse failure so the FE
+                    // retry mesh can engage (lib.rs propagates Err;
+                    // 1s/2s/4s/8s backoff at goalScheduler.ts:557).
+                    // Truncate to 500 chars so the message carries
+                    // signal without dumping the entire transcript.
+                    return Err(GoalEvaluationError::ParseFailure(format!(
+                        "envelope result string contains no parseable JSON object (first 500 chars): {}",
+                        truncate_for_error(result_str, 500)
+                    )));
                 }
                 // Result is not a string — might be a nested object directly.
                 if result_val.is_object() {
@@ -636,9 +656,26 @@ fn extract_evaluation_json(
         return Ok((obj, None));
     }
 
-    Err(GoalEvaluationError::ParseFailure(
-        "No valid JSON object found in CLI output".into(),
-    ))
+    // Last resort: truncate the raw stdout to 500 chars so the error
+    // message carries signal without dumping the entire transcript.
+    // (2026-07-31 field fix: previous message was a fixed string —
+    // silent on intermittent fence failures. Now operators can see
+    // WHAT the model actually emitted before it hit the unwrap path.)
+    Err(GoalEvaluationError::ParseFailure(format!(
+        "No valid JSON object found in CLI output (first 500 chars): {}",
+        truncate_for_error(stdout, 500)
+    )))
+}
+
+/// Truncates `s` to at most `max_chars` chars, appending an ellipsis
+/// marker if truncation occurred. Char-based (NOT byte-based) to
+/// respect multi-byte UTF-8 sequences.
+fn truncate_for_error(s: &str, max_chars: usize) -> String {
+    let mut out: String = s.chars().take(max_chars).collect();
+    if s.chars().count() > max_chars {
+        out.push_str("...[truncated]");
+    }
+    out
 }
 
 /// Best-effort extraction of the `usage` block from a CLI envelope object.
@@ -842,7 +879,19 @@ fn parse_decision(value: Option<&serde_json::Value>) -> GoalDecision {
         "continue" => GoalDecision::Continue,
         "pause" => GoalDecision::Pause,
         "complete" => GoalDecision::Complete,
-        _ => GoalDecision::Continue,
+        _ => {
+            // 2026-07-31 field fix: log the raw decision string when the
+            // default fires so operators can see what the model actually
+            // emitted. The default itself is preserved — the prior
+            // behavior mapped unknown strings to Continue safely, and
+            // the load-bearing G-C16 guard catches the dangerous case
+            // (complete with zero observable_action) downstream.
+            eprintln!(
+                "goal_evaluator: parse_decision unknown value {:?} -> default Continue",
+                s
+            );
+            GoalDecision::Continue
+        }
     }
 }
 
@@ -861,7 +910,19 @@ fn parse_reason_id(value: Option<&serde_json::Value>) -> GoalReasonId {
         "done" => GoalReasonId::Done,
         "safetylimit" | "safety_limit" => GoalReasonId::SafetyLimit,
         "infraerror" | "infra_error" => GoalReasonId::InfraError,
-        _ => GoalReasonId::TaskIncomplete,
+        _ => {
+            // 2026-07-31 field fix: log the raw reason id when the
+            // default fires. Same rationale as parse_decision — the
+            // default is preserved (TaskIncomplete is safe), but the
+            // raw string is now visible for diagnosis. The load-bearing
+            // G-C16 guard catches the dangerous (complete + zero
+            // observable_action) case downstream.
+            eprintln!(
+                "goal_evaluator: parse_reason_id unknown value {:?} -> default TaskIncomplete",
+                s
+            );
+            GoalReasonId::TaskIncomplete
+        }
     }
 }
 
@@ -1428,10 +1489,29 @@ mod tests {
     #[test]
     fn extract_envelope_result_is_plain_text() {
         let stdout = r#"{"type":"result","result":"Still working on the login fix"}"#;
-        let (result, usage) = extract_evaluation_json(stdout).unwrap();
-        // Plain text result maps to a generic continue object.
-        assert_eq!(result["decision"], "continue");
-        assert!(usage.is_none());
+        // 2026-07-31 field fix: prose inside an envelope's `result`
+        // no longer fabricates a synthetic Continue+TaskIncomplete.
+        // The renderer-side retry mesh (goalScheduler.ts:557,
+        // 1s/2s/4s/8s backoff, pause at 3rd consecutive error) is
+        // the correct handling for a model that emitted prose where
+        // the prompt required JSON. Returning a fake Continue here
+        // violated goalScheduler.ts:111-117.
+        let result = extract_evaluation_json(stdout);
+        match result {
+            Err(GoalEvaluationError::ParseFailure(message)) => {
+                assert!(
+                    message.contains("envelope result string contains no parseable JSON object"),
+                    "ParseFailure message should describe the envelope failure: {message}"
+                );
+                assert!(
+                    message.contains("Still working on the login fix"),
+                    "ParseFailure must carry the truncated prose for diagnosis: {message}"
+                );
+            }
+            other => panic!(
+                "expected Err(ParseFailure) for prose envelope result, got: {other:?}"
+            ),
+        }
     }
 
     #[test]
@@ -1449,6 +1529,214 @@ mod tests {
         let result = extract_evaluation_json("");
         assert!(result.is_err());
     }
+
+    // ── 2026-07-31 field fix: depth-aware first-object scan ─────────────
+    //
+    // Field defect path (for context, NOT pin history): the production
+    // defect that broke the field was at the ENVELOPE level — the
+    // CLI returned `{result:"<fenced JSON>"}` and the envelope branch
+    // fabricated a synthetic Continue when `from_str(result_str)` did
+    // not succeed. The bare-stdout fenced path below is exercised as a
+    // regression witness: before this fix, the `parse_first_json_object`
+    // depth-aware scan ALREADY found fenced JSON in bare stdout, so
+    // this path was working. The fence tests pin the depth-aware
+    // behavior against future regressions in parse_first_json_object
+    // itself, NOT the production defect (that lives at the envelope
+    // branch — see `extract_envelope_with_fenced_json_result` below).
+
+    #[test]
+    fn extract_fenced_json_unwraps_to_complete_decision() {
+        // Bare CLI stdout (no envelope): a fenced JSON object. The
+        // depth-aware first-object scan finds the inner `{...}` and
+        // returns it. Pinning parse_first_json_object's fence
+        // tolerance against future regressions — this was already
+        // working before the field fix; the actual defect was on the
+        // envelope's result_str branch.
+        let stdout = r#"```json
+{"decision":"complete","reasonId":"done","reason":"arquivo b.txt criado e conteudo verificado","completionSummary":"agente criou o arquivo e leu, conteudo bate","confidence":1.0}
+```"#;
+        let (result, usage) = extract_evaluation_json(stdout)
+            .expect("fenced bare-stdout JSON must unwrap via depth-aware scan");
+        assert_eq!(result["decision"], "complete");
+        assert_eq!(result["reasonId"], "done");
+        assert_eq!(result["confidence"], 1.0);
+        assert!(usage.is_none());
+    }
+
+    #[test]
+    fn extract_bare_fence_without_language_tag_also_unwraps() {
+        // Same as above but the fence opener is ``` with NO language
+        // tag. Depth-aware scan handles both uniformly. Same intent:
+        // regression witness for parse_first_json_object, not the
+        // production path that broke.
+        let stdout = "```\n{\"decision\":\"complete\",\"reasonId\":\"done\",\"reason\":\"ok\",\"confidence\":0.9}\n```";
+        let (result, _) = extract_evaluation_json(stdout)
+            .expect("bare ``` fence must unwrap via depth-aware scan");
+        assert_eq!(result["decision"], "complete");
+        assert_eq!(result["confidence"], 0.9);
+    }
+
+    #[test]
+    fn extract_garbage_text_without_any_json_returns_error_not_synthetic_continue() {
+        // Field defect counterfactual: before the fix, the previous
+        // ParseFailure path eventually fell into a default_continue
+        // fabrication. With the new contract, the extrator MUST
+        // surface Err(ParseFailure) — a downstream default_continue
+        // would defeat the goalScheduler.ts:111-117 contract that
+        // forbids swallowing parse failures into fake continue.
+        //
+        // The 2026-07-31 field fix adds Err propagation through
+        // lib.rs:947 (previously the Err was converted to
+        // Ok(Pause+InfraError), also bypassing the contract).
+        // This test pins the EXTRACTOR behavior: garbage in, Err out.
+        let garbage = "the model emitted prose without any JSON object in it";
+        let result = extract_evaluation_json(garbage);
+        match result {
+            Err(GoalEvaluationError::ParseFailure(message)) => {
+                // Truncated raw stdout appears in the message — operator
+                // can see WHAT the model emitted before defaulting.
+                assert!(
+                    message.contains("No valid JSON object found"),
+                    "ParseFailure message should describe the failure: {message}"
+                );
+                assert!(
+                    message.contains("the model emitted prose"),
+                    "ParseFailure message should carry the truncated raw stdout: {message}"
+                );
+            }
+            other => panic!(
+                "expected Err(ParseFailure) for garbage input, got: {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn extract_error_message_truncates_long_raw_stdout() {
+        // The ParseFailure message must include the truncated raw
+        // stdout (first 500 chars + ellipsis marker) — not the entire
+        // transcript. Pinning the 500-char ceiling protects log files.
+        let long_stdout = "x".repeat(2000);
+        let err = extract_evaluation_json(&long_stdout).unwrap_err();
+        match err {
+            GoalEvaluationError::ParseFailure(message) => {
+                assert!(message.contains("...[truncated]"),
+                    "ParseFailure must include the truncation marker for long inputs");
+                // 500 chars of 'x' + marker = ~516 chars total
+                assert!(message.len() < 600,
+                    "ParseFailure message must be truncated, got len={}",
+                    message.len());
+            }
+            // Other variants (CliTimeout, CliSpawn, CliExit) cannot be
+            // produced by extract_evaluation_json — it only inspects
+            // stdout bytes, never invokes the CLI. The match arm here
+            // is a forward-compat net: future variants added to
+            // GoalEvaluationError must NOT silently break this test.
+            other => panic!(
+                "extract_evaluation_json produced non-ParseFailure variant for garbage input: {other:?}"
+            ),
+        }
+    }
+
+    // ── end 2026-07-31 field fix tests ───────────────────────────────
+
+    // ── end bare-stdout fence tests ─────────────────────────────────
+
+    // ── 2026-07-31 field fix: envelope result_str tolerance ────────
+    //
+    // These tests witness the ACTUAL production path that broke in
+    // the field defect: the CLI returned `{result:"<fenced JSON>"}`
+    // and the envelope branch fabricated a synthetic Continue. The
+    // corrected envelope branch (a) tries bare `from_str`, then (b)
+    // falls back to depth-aware `parse_first_json_object` on the
+    // result_str itself (NOT on the whole stdout). When the inner
+    // object is found, it is returned ALONG WITH the envelope's
+    // `usage` block (preserved by G-C15 path at line ~600).
+
+    #[test]
+    fn extract_envelope_with_fenced_json_result_returns_complete() {
+        // Production-shaped defect: CLI returned an envelope whose
+        // `result` value was a fenced JSON string carrying
+        // decision:complete. Before the field fix, the envelope branch
+        // found `result` as a string, ran `from_str` on the fenced
+        // content (failed because the fence chars are not valid JSON
+        // syntax), fell through to the synthetic-continue wrap, and
+        // returned decision:continue. After the fix, the envelope
+        // branch falls back to `parse_first_json_object` on result_str
+        // which depth-scans past the fence and finds the inner
+        // decision:complete.
+        let envelope = serde_json::json!({
+            "type": "result",
+            "result": "```json\n{\"decision\":\"complete\",\"reasonId\":\"done\",\"reason\":\"arquivo b.txt criado e conteudo verificado\",\"completionSummary\":\"agente criou o arquivo e leu, conteudo bate\",\"confidence\":1.0}\n```",
+            "usage": {
+                "input_tokens": 42,
+                "output_tokens": 7,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0
+            }
+        })
+        .to_string();
+        let (result, usage) = extract_evaluation_json(&envelope)
+            .expect("envelope with fenced result_str must unwrap to inner complete decision");
+        assert_eq!(result["decision"], "complete");
+        assert_eq!(result["reasonId"], "done");
+        assert_eq!(result["confidence"], 1.0);
+        // The load-bearing assertion: the envelope's `usage` block
+        // survives the unwrap. G-C15 only kicks in when the envelope
+        // path itself succeeds; a fallback that lost usage would
+        // break token accounting for the evaluator's own response.
+        let usage = usage.expect("usage extracted from envelope must survive the envelope branch fallback");
+        assert_eq!(usage.input_tokens, Some(42));
+        assert_eq!(usage.output_tokens, Some(7));
+    }
+
+    #[test]
+    fn extract_envelope_with_prose_result_returns_parse_failure() {
+        // Production-shaped counterfactual: CLI returned an envelope
+        // whose `result` was prose without any JSON. Before the field
+        // fix, this fabricated a synthetic Continue+TaskIncomplete
+        // with the prose dumped into the `reason` field (the field
+        // defect the user observed). After the fix, prose in
+        // envelope.result returns Err(ParseFailure) with the truncated
+        // prose embedded so the operator can see what the model
+        // emitted. The renderer's retry mesh (1s/2s/4s/8s backoff at
+        // goalScheduler.ts:557) handles the retry — the FE pauses at
+        // the 3rd consecutive failure with the message visible.
+        let envelope = r#"{"type":"result","result":"I have not yet finished editing objective.md, please give me a moment."}"#;
+        let result = extract_evaluation_json(envelope);
+        match result {
+            Err(GoalEvaluationError::ParseFailure(message)) => {
+                assert!(
+                    message.contains("envelope result string contains no parseable JSON object"),
+                    "ParseFailure message should describe the envelope failure: {message}"
+                );
+                assert!(
+                    message.contains("I have not yet finished editing objective.md"),
+                    "ParseFailure must carry the truncated result_str prose for diagnosis: {message}"
+                );
+                // FAILS GUARD: must NOT be a synthetic Continue.
+                // The pre-fix branch returned Ok with decision:continue
+                // — that path is gone. If a future regression
+                // re-introduces the synthetic wrap, this test fails.
+                assert!(
+                    !message.contains("decision\":\"continue\""),
+                    "ParseFailure must NOT carry a synthetic continue payload: {message}"
+                );
+            }
+            Ok((value, _usage)) => panic!(
+                "expected Err(ParseFailure) for prose envelope result, got Ok with decision={}",
+                value["decision"]
+            ),
+            // Other Err variants (CliTimeout, CliSpawn, CliExit) cannot
+            // be produced by extract_evaluation_json — it only inspects
+            // a parsed envelope's `result` field, never invokes the CLI.
+            // The match arm here is a forward-compat net.
+            Err(other_err) => panic!(
+                "extract_evaluation_json produced non-ParseFailure variant for prose envelope: {other_err:?}"
+            ),
+        }
+    }
+
+    // ── end 2026-07-31 field fix envelope tests ───────────────────
 
     // ── extract_evaluation_json: usage extraction (G-C15) ──────────────
 
