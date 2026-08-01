@@ -1230,6 +1230,24 @@ pub struct RuntimeStatus {
     pub label: String,
 }
 
+/// One entry of a TodoWrite tool call. Mirrors the CLI's TodoItemSchema
+/// (cli.mjs: `content` + `status` + `activeForm`, status ∈
+/// {"pending","in_progress","completed"}). Serialized camelCase on the
+/// wire so the renderer reads `activeForm` directly.
+///
+/// T1-TodoWrite (2026-07-31): previously the Rust side mapped todowrite
+/// to a label string ("Atualizou tarefas") and DISCARDED `input.todos`,
+/// so the renderer never saw the items or their status. This struct is
+/// the structured propagation — the items and statuses now cross the
+/// bridge as a typed list, not a label.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoItem {
+    pub content: String,
+    pub status: String,
+    pub active_form: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeActivity {
@@ -1244,6 +1262,15 @@ pub struct RuntimeActivity {
     pub deletions: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff_preview: Option<String>,
+    /// T1-TodoWrite (2026-07-31): structured todo list from the
+    /// todowrite tool. Populated ONLY for todowrite events from the
+    /// MAIN turn (parent_tool_use_id absent or empty). Subagent
+    /// TodoWrites are filtered out here so the renderer never sees a
+    /// subagent's internal list overwrite the user-facing one. None
+    /// for every other tool — `skip_serializing_if` keeps the payload
+    /// small for non-todowrite activities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todos: Option<Vec<TodoItem>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

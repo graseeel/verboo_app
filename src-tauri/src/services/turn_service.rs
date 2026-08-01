@@ -363,6 +363,7 @@ impl TurnService {
                         additions: None,
                         deletions: None,
                         diff_preview: None,
+                        todos: None,
                     }),
                     ..Default::default()
                 },
@@ -1105,6 +1106,7 @@ impl TurnService {
                     additions: None,
                     deletions: None,
                     diff_preview: None,
+                    todos: None,
                 }),
                 ..Default::default()
             },
@@ -2954,6 +2956,7 @@ fn runtime_activity_from_payload(payload: &serde_json::Value) -> Option<RuntimeA
             additions: None,
             deletions: None,
             diff_preview: None,
+            todos: None,
         });
     }
     let block = extract_tool_block(payload)?;
@@ -2971,6 +2974,24 @@ fn runtime_activity_from_payload(payload: &serde_json::Value) -> Option<RuntimeA
     let stats = edit_stats_for_tool(&name, input.as_ref());
     let diff_preview = diff_preview_for_tool(&name, input.as_ref());
     let activity = activity_for_tool(&name);
+    // T1-TodoWrite SUBAGENT FILTER: `parent_tool_use_id` presente e
+    // não-vazio marca que este evento veio de uma thread de subagente.
+    // O TodoWrite de subagente é interno a ele — a lista que chega à
+    // tela do usuário tem que ser a do turno PRINCIPAL, senão o
+    // usuário vê a lista interna de um subagente sobrescrevendo a dele.
+    // Por isso só populamos `todos` quando `parent_tool_use_id` é
+    // ausente ou vazio. O filtro é no PRODUTOR (aqui), não no
+    // consumidor (renderer): o dado nem atravessa a ponte.
+    let is_subagent_event = payload
+        .get("parent_tool_use_id")
+        .and_then(|v| v.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    let todos = if is_subagent_event {
+        None
+    } else {
+        todos_for_tool(&name, input.as_ref())
+    };
     Some(RuntimeActivity {
         key: format!(
             "{}:{}",
@@ -2984,6 +3005,7 @@ fn runtime_activity_from_payload(payload: &serde_json::Value) -> Option<RuntimeA
         additions: stats.as_ref().map(|s| s.additions),
         deletions: stats.as_ref().map(|s| s.deletions),
         diff_preview,
+        todos,
     })
 }
 
@@ -3081,8 +3103,71 @@ fn activity_for_tool(tool_name: &str) -> (&'static str, &'static str) {
         "bash" | "shell" | "exec_command" => ("Executou comando", "command"),
         "websearch" | "webfetch" => ("Pesquisou na internet", "search"),
         "askuserquestion" => ("Pediu resposta", "permission"),
-        "todowrite" => ("Atualizou tarefas", "tool"),
+        // T1-TodoWrite (2026-07-31) — DECISÃO EXPLÍCITA DO MAESTRO:
+        // PLANEJAR NÃO CONTA COMO AGIR.
+        //
+        // A guarda de ação observável (renderer goalState.ts
+        // ACTION_ACTIVITY_KINDS) existe para provar que algo FOI FEITO
+        // — um edit, um comando, uma busca. Escrever a lista do que se
+        // pretende fazer é o oposto disso: é declarar intenção, não
+        // executar. Se todowrite fosse kind="tool", entraria na
+        // whitelist e um agente poderia satisfazer a guarda só
+        // escrevendo a lista de tarefas, sem fazer nenhuma. Isso é
+        // exatamente o defeito que a guarda existe para pegar, só que
+        // disfarçado de atividade legítima.
+        //
+        // kind="planning" cai FORA da whitelist por design. O label
+        // continua "Atualizou tarefas" para o usuário ver que o agente
+        // planejou, mas o avaliador não conta isso como ação. Quem ler
+        // este código daqui a seis meses precisa entender que foi
+        // deliberado: a simetria entre "exibiu uma atividade" e "contou
+        // como ação" foi quebrada aqui de propósito, porque planejar é
+        // o caso onde a simetria mente.
+        "todowrite" => ("Atualizou tarefas", "planning"),
         _ => ("Usou ferramenta", "tool"),
+    }
+}
+
+/// T1-TodoWrite (2026-07-31): extracts the structured todo list from a
+/// todowrite tool input. Mirrors the CLI's TodoItemSchema —
+/// `todos: [{ content, status, activeForm }]` with status ∈
+/// {"pending","in_progress","completed"}. Returns None for non-todowrite
+/// tools or malformed inputs (defensive: a missing/empty `todos` array
+/// yields None, not an empty vec, so the renderer's `skip_serializing_if`
+/// keeps the payload small).
+///
+/// SUBAGENT FILTER: this helper does NOT know whether the event came
+/// from a subagent. The filter is applied by the caller
+/// (`runtime_activity_from_payload`), which checks `parent_tool_use_id`
+/// before calling this — subagent TodoWrites never reach this helper.
+fn todos_for_tool(
+    tool_name: &str,
+    input: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<Vec<crate::models::types::TodoItem>> {
+    let input = input?;
+    let n = tool_name.to_lowercase();
+    if n != "todowrite" {
+        return None;
+    }
+    let arr = input.get("todos")?.as_array()?;
+    if arr.is_empty() {
+        return None;
+    }
+    let mut items = Vec::with_capacity(arr.len());
+    for v in arr {
+        let content = v.get("content").and_then(|v| v.as_str())?.to_string();
+        let status = v.get("status").and_then(|v| v.as_str())?.to_string();
+        let active_form = v.get("activeForm").and_then(|v| v.as_str())?.to_string();
+        items.push(crate::models::types::TodoItem {
+            content,
+            status,
+            active_form,
+        });
+    }
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
     }
 }
 
@@ -3099,6 +3184,12 @@ fn detail_for_tool(
                 .find_map(|k| input.get(*k).and_then(|v| v.as_str())),
             360,
         );
+    }
+    // T1-TodoWrite: todowrite não tem detail em string — o dado vive no
+    // campo estruturado `todos` (ver todos_for_tool). Retornar None
+    // aqui evita duplicar a lista em string e em struct.
+    if n == "todowrite" {
+        return None;
     }
     if matches!(n.as_str(), "bash" | "shell" | "exec_command") {
         return snippet(
@@ -5339,6 +5430,231 @@ mod tests {
         assert!(
             RESERVED_SLASH_COMMANDS.contains(&"/compact"),
             "RESERVED_SLASH_COMMANDS must contain \"/compact\" (verified by MEDICAO 2026-07-30)"
+        );
+    }
+
+    // ── T1-TodoWrite (2026-07-31) — 4 regression tests ────────────────
+    //
+    // The pre-existing defect: todowrite was mapped to
+    // ("Atualizou tarefas", "tool") and `input.todos` was DISCARDED in
+    // `detail_for_tool` (no branch for it). The renderer only ever
+    // saw the label "Atualizou tarefas" — items and statuses were lost
+    // at the Rust boundary.
+    //
+    // The fix introduces:
+    //   1. kind="planning" (not "tool") — out of the renderer
+    //      whitelist `['edit','command','terminal','read','search','tool','subagent']`,
+    //      so planning does NOT count as observable action.
+    //   2. Structured `todos: Option<Vec<TodoItem>>` field on
+    //      RuntimeActivity — items + statuses cross the bridge.
+    //   3. Subagent filter: `parent_tool_use_id` present and non-empty
+    //      → todos=None (the subagent's list must not overwrite the
+    //      main turn's list).
+    //
+    // Fixture format mirrors the CLI's actual TodoListSchema
+    // (cli.mjs: `TodoListSchema = z.array(z.object({ content, status,
+    // activeForm }))`, status ∈ {"pending","in_progress","completed"}).
+    // Captured from the bundled CLI at /Users/grasel/Library/Caches/
+    // verboo/target/.../cli.mjs — not invented.
+
+    #[test]
+    fn todowrite_extracts_items_and_statuses_to_structured_field() {
+        // Fixture: real CLI TodoWrite shape — tool_use with input.todos
+        // carrying 3 items in distinct statuses.
+        let payload = json!({
+            "type": "tool_use",
+            "id": "tool_todo_01",
+            "name": "todowrite",
+            "input": {
+                "todos": [
+                    {
+                        "content": "Read the manifest_cache source",
+                        "status": "completed",
+                        "activeForm": "Reading the manifest_cache source"
+                    },
+                    {
+                        "content": "Add stampede-inventory comments",
+                        "status": "in_progress",
+                        "activeForm": "Adding stampede-inventory comments"
+                    },
+                    {
+                        "content": "Report to Maestro",
+                        "status": "pending",
+                        "activeForm": "Reporting to Maestro"
+                    }
+                ]
+            }
+        });
+        let activity = runtime_activity_from_payload(&payload)
+            .expect("todowrite payload must produce a RuntimeActivity");
+        let todos = activity
+            .todos
+            .as_ref()
+            .expect("todowrite activity must carry todos");
+        assert_eq!(todos.len(), 3, "all 3 todos must cross the bridge");
+        // Item 0: completed
+        assert_eq!(todos[0].content, "Read the manifest_cache source");
+        assert_eq!(todos[0].status, "completed");
+        assert_eq!(todos[0].active_form, "Reading the manifest_cache source");
+        // Item 1: in_progress — the load-bearing one (status mid-flight)
+        assert_eq!(todos[1].content, "Add stampede-inventory comments");
+        assert_eq!(todos[1].status, "in_progress");
+        // Item 2: pending
+        assert_eq!(todos[2].content, "Report to Maestro");
+        assert_eq!(todos[2].status, "pending");
+        // detail must be None for todowrite — the data is structured,
+        // not a string. No duplication.
+        assert!(
+            activity.detail.is_none(),
+            "todowrite must not duplicate the list in `detail`; the structured `todos` field is the source of truth"
+        );
+    }
+
+    #[test]
+    fn todowrite_kind_is_planning_not_tool() {
+        // DECISÃO EXPLÍCITA DO MAESTRO (2026-07-31): PLANEJAR NÃO CONTA
+        // COMO AGIR. O kind="planning" cai fora da whitelist de ação
+        // observável do renderer. Se kind fosse "tool", um agente
+        // poderia satisfazer a guarda escrevendo a lista sem fazer
+        // nada — exatamente o defeito que a guarda existe para pegar.
+        let payload = json!({
+            "type": "tool_use",
+            "id": "tool_todo_02",
+            "name": "todowrite",
+            "input": {
+                "todos": [{"content": "anything", "status": "pending", "activeForm": "anything"}]
+            }
+        });
+        let activity = runtime_activity_from_payload(&payload).unwrap();
+        assert_eq!(
+            activity.kind, "planning",
+            "todowrite must be kind='planning' to fall out of ACTION_ACTIVITY_KINDS whitelist"
+        );
+        assert_ne!(
+            activity.kind, "tool",
+            "kind='tool' would satisfy the observable-action guard without action — forbidden"
+        );
+        assert_eq!(activity.label, "Atualizou tarefas");
+    }
+
+    #[test]
+    fn todowrite_does_not_count_as_observable_action_with_counterfactual() {
+        // Indirect proof via kind: todowrite kind is NOT in the renderer's
+        // ACTION_ACTIVITY_KINDS whitelist; a real action (Bash) IS. This
+        // is the counterfactual that proves the fix didn't just shift
+        // the boundary — planning is uniquely excluded.
+        //
+        // The whitelist values come from the renderer fence
+        // (goalState.ts ACTION_ACTIVITY_KINDS). They are duplicated
+        // here ONLY for the assertion — the source of truth lives in
+        // the renderer. If the renderer ever adds "planning" to its
+        // whitelist, this test fails and forces the discussion:
+        // "should planning count as action again?" (the answer per
+        // T1-TodoWrite decision is NO).
+        const OBSERVABLE_ACTION_KINDS: &[&str] = &[
+            "edit", "command", "terminal", "read", "search", "tool", "subagent",
+        ];
+        // todowrite: kind="planning" → NOT in whitelist → does not count
+        let todo_payload = json!({
+            "type": "tool_use",
+            "id": "tool_todo_03",
+            "name": "todowrite",
+            "input": {
+                "todos": [{"content": "plan only", "status": "pending", "activeForm": "plan only"}]
+            }
+        });
+        let todo_activity = runtime_activity_from_payload(&todo_payload).unwrap();
+        assert!(
+            !OBSERVABLE_ACTION_KINDS.contains(&todo_activity.kind.as_str()),
+            "todowrite kind '{}' must NOT be in ACTION_ACTIVITY_KINDS \
+             (T1-TodoWrite decision: planning is not acting)",
+            todo_activity.kind
+        );
+        // Counterfactual: a real action (Bash) STILL counts.
+        let bash_payload = json!({
+            "type": "tool_use",
+            "id": "tool_bash_03",
+            "name": "bash",
+            "input": {"command": "echo hi"}
+        });
+        let bash_activity = runtime_activity_from_payload(&bash_payload).unwrap();
+        assert!(
+            OBSERVABLE_ACTION_KINDS.contains(&bash_activity.kind.as_str()),
+            "counterfactual: bash kind '{}' must remain observable — the \
+             fix only excludes planning, not real actions",
+            bash_activity.kind
+        );
+    }
+
+    #[test]
+    fn subagent_todowrite_does_not_populate_main_turn_todos() {
+        // CADINHO LEVANTOU: subagentes emitem TodoWrite PRÓPRIO. A
+        // lista que chega à tela tem que ser a do turno PRINCIPAL.
+        // O filtro é no PRODUTOR (aqui): quando payload.parent_tool_use_id
+        // está presente e não-vazio, o evento veio de uma thread de
+        // subagente e `todos` deve ser None — o dado nem atravessa a
+        // ponte, então o renderer não tem como exibir a lista errada.
+        let main_payload = json!({
+            "type": "tool_use",
+            "id": "tool_todo_main",
+            "name": "todowrite",
+            "input": {
+                "todos": [
+                    {"content": "main: investigate", "status": "in_progress", "activeForm": "main investigating"}
+                ]
+            }
+        });
+        let sub_payload = json!({
+            "type": "tool_use",
+            "id": "tool_todo_sub",
+            "name": "todowrite",
+            "parent_tool_use_id": "toolu_subagent_root",
+            "input": {
+                "todos": [
+                    {"content": "sub: internal step", "status": "pending", "activeForm": "sub working"}
+                ]
+            }
+        });
+        // Main turn: todos populated.
+        let main_activity = runtime_activity_from_payload(&main_payload).unwrap();
+        assert!(
+            main_activity.todos.is_some(),
+            "main turn todowrite must populate todos"
+        );
+        assert_eq!(main_activity.todos.as_ref().unwrap().len(), 1);
+        assert_eq!(main_activity.todos.as_ref().unwrap()[0].content, "main: investigate");
+
+        // Subagent turn: todos is None — the subagent's internal list
+        // does NOT cross the bridge. The renderer never sees it.
+        let sub_activity = runtime_activity_from_payload(&sub_payload).unwrap();
+        assert!(
+            sub_activity.todos.is_none(),
+            "subagent todowrite must NOT populate todos — the subagent's \
+             internal list would overwrite the main turn's user-facing list. \
+             Filter is at the producer, not the consumer."
+        );
+        // But the activity itself is still emitted (label/kind/thread
+        // identification matter for the subagent thread UI). It's just
+        // the todos field that is filtered.
+        assert_eq!(sub_activity.label, "Atualizou tarefas");
+        assert_eq!(sub_activity.kind, "planning");
+        assert_eq!(sub_activity.tool_use_id.as_deref(), Some("tool_todo_sub"));
+
+        // Edge case: empty parent_tool_use_id is treated as main turn
+        // (defensive — empty string is not a valid marker).
+        let empty_parent_payload = json!({
+            "type": "tool_use",
+            "id": "tool_todo_empty",
+            "name": "todowrite",
+            "parent_tool_use_id": "",
+            "input": {
+                "todos": [{"content": "main with empty parent", "status": "pending", "activeForm": "main"}]
+            }
+        });
+        let empty_activity = runtime_activity_from_payload(&empty_parent_payload).unwrap();
+        assert!(
+            empty_activity.todos.is_some(),
+            "empty parent_tool_use_id must be treated as main turn (defensive)"
         );
     }
 }
