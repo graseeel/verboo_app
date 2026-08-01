@@ -27,7 +27,7 @@ import type { TodoItem } from '../../../shared/types'
 
 afterEach(cleanup)
 
-const VIEWPORT: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0 }
+const VIEWPORT: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0, topClearance: 0 }
 const measureViewport = () => VIEWPORT
 
 const item = (content: string, status: TodoItem['status'], activeForm = ''): TodoItem => ({
@@ -191,7 +191,11 @@ describe('ChecklistPanel: drag — USER RULE: never rests over the transcript', 
     // Way past the top-left corner — must clamp to the window edge
     fireEvent.pointerMove(card, { pointerId: 1, clientX: -5000, clientY: -5000 })
     expect(card.style.left).toBe('8px')
-    expect(card.style.top).toBe('8px')
+    // y clamps to the RAIL TOP, not the window edge: with no clearance
+    // measured the rail floor is the home margin (16) — the card never
+    // parks inside the titlebar strip again (latent defect fixed with
+    // the field collision).
+    expect(card.style.top).toBe('16px')
   })
 
   it('clicking the toggle does NOT start a drag', () => {
@@ -238,5 +242,85 @@ describe('ChecklistPanel: ORDER — the goal always stays closer to the composer
     const composer = container.querySelector('.composer-double')!
     expect(checklist.compareDocumentPosition(goal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(goal.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+})
+
+describe('ChecklistPanel: SHARED TOP-RIGHT RAIL — the card yields to the subagent chip', () => {
+  // Field defect (2026-07-31): the floating subagent indicator chip
+  // OVERLAPPED the card in the top-right corner. The corner is shared
+  // space with a stacking order, not the card's property: chip first,
+  // card below. The chip's geometry arrives via measureViewport's
+  // topClearance (108 = chip bottom + gap, as measured live).
+  const CHIP_VIEWPORT: ChecklistViewport = { ...VIEWPORT, topClearance: 108 }
+  const stripX = checklistCardHome(VIEWPORT, CHECKLIST_CARD_WIDTH).x
+
+  it('with the chip present the card parks BELOW it — never overlapping', () => {
+    const { container } = renderPanel({ form: 'floating', measureViewport: () => CHIP_VIEWPORT })
+    const card = container.querySelector<HTMLElement>('.checklist-panel.floating')!
+    expect(card.style.top).toBe('108px')
+  })
+
+  it('CONTRAFACTUAL: without the clearance the card parks at the plain margin — the overlap would be back', () => {
+    // Same render, no chip: y drops to the home margin. If the rail
+    // math regressed, BOTH cases would park at 16 and the first test
+    // above would pass vacuously — this pair is what makes it proof.
+    const { container } = renderPanel({ form: 'floating' })
+    const card = container.querySelector<HTMLElement>('.checklist-panel.floating')!
+    expect(card.style.top).toBe('16px')
+  })
+
+  it('a drop ABOVE the chip may be visited during the drag but never RESTS there', () => {
+    const onCardPosChange = vi.fn()
+    const { container } = renderPanel({
+      form: 'floating',
+      onCardPosChange,
+      measureViewport: () => CHIP_VIEWPORT,
+    })
+    const card = container.querySelector('.checklist-panel.floating')!
+    // Home is y=108 with the chip; drag upward into the chip strip and drop.
+    fireEvent.pointerDown(card, { pointerId: 1, clientX: stripX + 20, clientY: 128 })
+    fireEvent.pointerMove(card, { pointerId: 1, clientX: stripX + 20, clientY: 30 })
+    fireEvent.pointerUp(card, { pointerId: 1, clientX: stripX + 20, clientY: 30 })
+    const resolved = onCardPosChange.mock.calls[0][0]
+    expect(resolved.y).toBe(108)
+    expect(resolved.x).toBe(stripX)
+  })
+
+  it('a persisted position parked over the chip is re-contained on mount', () => {
+    const onCardPosChange = vi.fn()
+    renderPanel({
+      form: 'floating',
+      cardPos: { x: 976, y: 30 },
+      onCardPosChange,
+      measureViewport: () => CHIP_VIEWPORT,
+    })
+    expect(onCardPosChange).toHaveBeenCalledWith({ x: 976, y: 108 })
+  })
+})
+
+describe('ChecklistPanel: long steps stay LEGIBLE (field truncation fix)', () => {
+  // Field defect (2026-07-31): real TodoWrite items are whole sentences
+  // and the single-line ellipsis made steps illegible ("Create
+  // lista1.txt with…"). jsdom has no layout, so what is proven here is
+  // that the FULL text reaches the DOM and the tooltip carries it
+  // verbatim; the two-line wrap itself is a CSS pin in
+  // checklistContract.test.ts. DECLARED: the rendered pixel of the
+  // wrap stays unproven until the next packaged field run.
+  const LONG =
+    'Create lista1.txt with the complete sentence an agent writes in a real field run, not a short label'
+  const LONG_LIST: TodoItem[] = [item(LONG, 'in_progress'), item('Segunda etapa curta', 'pending')]
+
+  it('floating: the full sentence reaches the DOM AND the title tooltip, verbatim', () => {
+    const { container } = renderPanel({ form: 'floating', todos: LONG_LIST })
+    const textEl = container.querySelector('.checklist-card-rows .checklist-row-text')!
+    expect(textEl.textContent).toBe(LONG)
+    expect(textEl.getAttribute('title')).toBe(LONG)
+  })
+
+  it('docked: the compact single line keeps the full text one hover away', () => {
+    const { container } = renderPanel({ todos: LONG_LIST })
+    const textEl = container.querySelector('.checklist-row.is-current .checklist-row-text')!
+    expect(textEl.textContent).toBe(LONG)
+    expect(textEl.getAttribute('title')).toBe(LONG)
   })
 })

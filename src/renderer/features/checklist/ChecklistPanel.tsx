@@ -35,6 +35,15 @@ import {
  *   2. The USER chooses the form; the toggle rides the card header /
  *      the current docked row and the preference is persisted by the
  *      parent (it survives conversation switches and app restarts).
+ *   3. THE SHARED TOP-RIGHT RAIL (field collision, 2026-07-31): the
+ *      corner is shared space with a stacking ORDER, not the card's
+ *      property — the subagent indicator chip owns the top slot and
+ *      the card starts BELOW it (measured live in liveViewport as
+ *      topClearance; without the chip the rail starts at titlebar+14,
+ *      the chip's own origin). Resting positions never go above the
+ *      rail: the drag may visit, the drop may not stay — same
+ *      philosophy as the transcript rule. The chip NEVER changes the
+ *      FORM (it is small and transient); it changes geometry only.
  *
  * MULTIPLATFORM BY CONSTRUCTION (no local gate covers the WebView):
  *   - The viewport — INCLUDING the OS scrollbar lane — is measured at
@@ -84,17 +93,41 @@ type DragState = {
 }
 
 /** Estimated card height when the element reports 0 (jsdom in tests,
- *  or a pre-paint measurement). Real renders measure offsetHeight. */
+ *  or a pre-paint measurement). Worst case: every row wraps to two
+ *  lines (~40px) plus header/hairline chrome. Real renders measure
+ *  offsetHeight. */
 function estimateCardHeight(itemCount: number): number {
-  return 46 + itemCount * 22
+  return 46 + itemCount * 40
 }
+
+/** Gap between the subagent chip and the checklist card in the shared
+ *  top-right rail. */
+const RAIL_GAP = 8
+
+/** Fallback when the titlebar CSS variable can't be read (jsdom). */
+const TITLEBAR_FALLBACK_PX = 52
 
 function liveViewport(): ChecklistViewport {
   const clientWidth = document.documentElement?.clientWidth ?? window.innerWidth
+  // THE SHARED TOP-RIGHT RAIL, measured live (never assumed): the
+  // subagent indicator chip owns the top slot; the card starts below
+  // it. Without the chip, the rail starts where the chip would —
+  // titlebar + 14 (the chip's own origin), which also keeps the card
+  // out of the titlebar strip (36px on Windows/Linux, 56px on macOS).
+  const chip = document.querySelector('.subagent-indicator')
+  let topClearance: number
+  if (chip) {
+    topClearance = Math.ceil(chip.getBoundingClientRect().bottom) + RAIL_GAP
+  } else {
+    const raw = getComputedStyle(document.documentElement).getPropertyValue('--titlebar-height')
+    const titlebar = Number.parseInt(raw, 10)
+    topClearance = (Number.isFinite(titlebar) ? titlebar : TITLEBAR_FALLBACK_PX) + 14
+  }
   return {
     width: window.innerWidth,
     height: window.innerHeight,
     scrollbarWidth: Math.max(0, window.innerWidth - clientWidth),
+    topClearance,
   }
 }
 
@@ -252,6 +285,7 @@ export function ChecklistPanel(props: ChecklistPanelProps) {
 
   const renderRow = (item: TodoItem | null, modifier: string, key: string, withFraction: boolean) => {
     const settled = item ? settledRef.current!.has(item.content) : true
+    const text = item ? rowText(item) : t('checklist.allDone')
     return (
       <div className={`checklist-row ${modifier}`} key={key}>
         <svg
@@ -264,7 +298,15 @@ export function ChecklistPanel(props: ChecklistPanelProps) {
           <circle cx="7" cy="7" r="5.5" />
           <path d="M4.4 7.2l1.8 1.8 3.4-3.8" />
         </svg>
-        <span className="checklist-row-text">{item ? rowText(item) : t('checklist.allDone')}</span>
+        {/* Full text in the tooltip in BOTH forms (field defect: real
+            TodoWrite items are whole sentences — "Create lista1.txt
+            with…" truncation made the step illegible). The floating
+            card also wraps to two lines via CSS line-clamp; the docked
+            form keeps its approved single-line compactness, so the
+            tooltip is where the full text lives there. */}
+        <span className="checklist-row-text" title={text}>
+          {text}
+        </span>
         {withFraction && (
           <span className="checklist-frac">
             {doneCount}/{total}

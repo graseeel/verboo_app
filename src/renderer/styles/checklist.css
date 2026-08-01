@@ -113,7 +113,31 @@
 }
 .checklist-card-rows .checklist-row {
   line-height: 1.85;
-  height: 1.85em;
+  /* Two-line rows: height follows content (min one line, max two via
+   * the text clamp below). Still em units — the multiplatform
+   * font-metric guard — never px. */
+  height: auto;
+  min-height: 1.85em;
+  align-items: flex-start;
+}
+.checklist-card-rows .checklist-row .checklist-check {
+  /* Optically center the check on the FIRST line of a wrapped row. */
+  margin-top: calc((1.85em - 14px) / 2);
+}
+.checklist-card-rows .checklist-row .checklist-row-text {
+  /* FIELD DEFECT FIX (2026-07-31): real TodoWrite items are whole
+   * sentences and the single-line ellipsis made steps illegible
+   * ("Create lista1.txt with…"). The floating card is the READER
+   * form — height of its own content — so rows wrap to AT MOST two
+   * lines (clamp, not free wrap: a 5-line step would break the
+   * card's compactness). The docked form keeps its approved
+   * single-line ellipsis; the full text is one hover away via the
+   * title tooltip in both forms. */
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .checklist-row-text {
   overflow: hidden;

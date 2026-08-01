@@ -66,6 +66,27 @@ describe('checklistContract: multiplatform CSS pins', () => {
     expect(floating![0]).toContain('box-shadow: var(--shadow)')
     expect(floating![0]).not.toMatch(/opacity:\s*0\./)
   })
+
+  it('floating rows wrap to AT MOST two lines; docked rows keep the single-line ellipsis', () => {
+    // Field defect (2026-07-31): real TodoWrite items are whole
+    // sentences and the single-line ellipsis made steps illegible
+    // ("Create lista1.txt with…"). The floating card is the READER form
+    // (height of its own content): two lines max via line-clamp — free
+    // wrap would let a 5-line step break the card's compactness. The
+    // docked form keeps its approved single-line compactness. Anchored
+    // at line start so the card block can't satisfy the docked check.
+    const cardText = css.match(
+      /^\.checklist-card-rows \.checklist-row \.checklist-row-text\s*\{[^}]*\}/m,
+    )
+    expect(cardText, 'card row-text block must exist').not.toBeNull()
+    expect(cardText![0]).toContain('-webkit-line-clamp: 2')
+    expect(cardText![0]).toContain('white-space: normal')
+    expect(cardText![0]).not.toContain('nowrap')
+    const dockedText = css.match(/^\.checklist-row-text\s*\{[^}]*\}/m)
+    expect(dockedText, 'docked row-text block must exist').not.toBeNull()
+    expect(dockedText![0]).toContain('white-space: nowrap')
+    expect(dockedText![0]).toContain('text-overflow: ellipsis')
+  })
 })
 
 describe('checklistContract: App.tsx wiring pins (JSX order + possession)', () => {

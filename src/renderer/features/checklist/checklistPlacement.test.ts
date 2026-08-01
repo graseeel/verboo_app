@@ -20,11 +20,12 @@ import {
  * checklistPlacement — EXHAUSTIVE MATRIX.
  *
  * The user required: the UI must not break in ANY combination of
- * sidebar × terminal × review × web × goal × preference × dragged
- * position. A pure function is the only way to PROVE that without
- * opening the app thirty times — so every combination of the six
- * binary inputs is crossed here (2^6 = 64), with the dragged position
- * crossed as geometry invariants over the same matrix.
+ * sidebar × terminal × review × web × goal × subagent chip ×
+ * preference × dragged position. A pure function is the only way to
+ * PROVE that without opening the app thirty times — so every
+ * combination of the eight binary inputs is crossed here (2^8 = 256),
+ * with the dragged position crossed as geometry invariants over the
+ * same matrix.
  *
  * Decision table under test (approved hierarchy):
  *   no list                       → null
@@ -38,6 +39,10 @@ import {
  *                                   is the preferred home when free)
  *   sidebar                       → INVARIANT (left-side input, the
  *                                   card anchors to the right edge)
+ *   subagent chip                 → INVARIANT for the form, GEOMETRY
+ *                                   only (the card yields below it in
+ *                                   the shared top-right rail — see
+ *                                   the rail suite at the bottom)
  */
 
 const BOOLEANS = [false, true]
@@ -50,24 +55,26 @@ function everyCombination(): ChecklistPlacementInput[] {
         for (const reviewOpen of BOOLEANS)
           for (const webOpen of BOOLEANS)
             for (const sidebarOpen of BOOLEANS)
-              for (const preference of ['float', 'dock'] as ChecklistFormPreference[])
-                inputs.push({
-                  hasList,
-                  goalDocked,
-                  terminalOpen,
-                  reviewOpen,
-                  webOpen,
-                  sidebarOpen,
-                  preference,
-                })
+              for (const subagentChipPresent of BOOLEANS)
+                for (const preference of ['float', 'dock'] as ChecklistFormPreference[])
+                  inputs.push({
+                    hasList,
+                    goalDocked,
+                    terminalOpen,
+                    reviewOpen,
+                    webOpen,
+                    sidebarOpen,
+                    subagentChipPresent,
+                    preference,
+                  })
   return inputs
 }
 
 const MATRIX = everyCombination()
 
-describe('checklistPlacement: exhaustive matrix (128 combinations of 7 binary inputs)', () => {
-  it('crosses every binary input exactly 128 times (2^7)', () => {
-    expect(MATRIX).toHaveLength(128)
+describe('checklistPlacement: exhaustive matrix (256 combinations of 8 binary inputs)', () => {
+  it('crosses every binary input exactly 256 times (2^8)', () => {
+    expect(MATRIX).toHaveLength(256)
   })
 
   it('NEVER returns a placement when there is no list', () => {
@@ -141,7 +148,7 @@ describe('checklistPlacement: exhaustive matrix (128 combinations of 7 binary in
     // is crossed HERE: for a representative viewport, every candidate
     // drop (including over the transcript) must land on the strip x,
     // in-bounds, for BOTH possible outcomes of any matrix cell.
-    const viewport: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0 }
+    const viewport: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0, topClearance: 0 }
     const card = { width: CHECKLIST_CARD_WIDTH, height: 220 }
     const stripX = checklistCardHome(viewport, card.width).x
     const candidates = [
@@ -154,14 +161,14 @@ describe('checklistPlacement: exhaustive matrix (128 combinations of 7 binary in
     for (const candidate of candidates) {
       const resolved = resolveCardDrop(candidate, viewport, card)
       expect(resolved.x).toBe(stripX)
-      expect(resolved.y).toBeGreaterThanOrEqual(CHECKLIST_WINDOW_EDGE)
+      expect(resolved.y).toBeGreaterThanOrEqual(CHECKLIST_CARD_MARGIN)
       expect(resolved.y).toBeLessThanOrEqual(viewport.height - card.height - CHECKLIST_WINDOW_EDGE)
     }
   })
 })
 
 describe('checklistPlacement: card geometry (pure)', () => {
-  const viewport: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0 }
+  const viewport: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0, topClearance: 0 }
 
   it('home is the top-right corner clear of margin and scrollbar', () => {
     expect(checklistCardHome(viewport, CHECKLIST_CARD_WIDTH)).toEqual({
@@ -171,7 +178,7 @@ describe('checklistPlacement: card geometry (pure)', () => {
   })
 
   it('home never goes left of the window edge on a tiny viewport', () => {
-    const tiny: ChecklistViewport = { width: 200, height: 300, scrollbarWidth: 0 }
+    const tiny: ChecklistViewport = { width: 200, height: 300, scrollbarWidth: 0, topClearance: 0 }
     expect(checklistCardHome(tiny, CHECKLIST_CARD_WIDTH).x).toBe(CHECKLIST_WINDOW_EDGE)
   })
 
@@ -182,13 +189,13 @@ describe('checklistPlacement: card geometry (pure)', () => {
 
   it('clamp pulls an off-screen position back into bounds (restore/resize rule)', () => {
     const clamped = clampCardPosition({ x: 4000, y: -120 }, viewport, { width: 288, height: 220 })
-    expect(clamped).toEqual({ x: 1280 - 0 - 288 - CHECKLIST_WINDOW_EDGE, y: CHECKLIST_WINDOW_EDGE })
+    expect(clamped).toEqual({ x: 1280 - 0 - 288 - CHECKLIST_WINDOW_EDGE, y: CHECKLIST_CARD_MARGIN })
   })
 
   it('clamp is total on degenerate viewports (max < min falls back to the edge, never NaN)', () => {
-    const degenerate: ChecklistViewport = { width: 100, height: 100, scrollbarWidth: 0 }
+    const degenerate: ChecklistViewport = { width: 100, height: 100, scrollbarWidth: 0, topClearance: 0 }
     const clamped = clampCardPosition({ x: 50, y: 50 }, degenerate, { width: 288, height: 220 })
-    expect(clamped).toEqual({ x: CHECKLIST_WINDOW_EDGE, y: CHECKLIST_WINDOW_EDGE })
+    expect(clamped).toEqual({ x: CHECKLIST_WINDOW_EDGE, y: CHECKLIST_CARD_MARGIN })
     expect(Number.isFinite(clamped.x)).toBe(true)
     expect(Number.isFinite(clamped.y)).toBe(true)
   })
@@ -214,22 +221,22 @@ describe('checklistPlacement: card geometry (pure)', () => {
    * the real pixel on Windows/Linux stays unproven until a field run
    * — no local gate covers the WebView there. */
   it('WINDOWS SIM: home clears a 17px scrollbar lane', () => {
-    const win: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 17 }
+    const win: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 17, topClearance: 50 }
     expect(checklistCardHome(win, 288).x).toBe(1280 - 17 - CHECKLIST_CARD_MARGIN - 288)
   })
 
   it('WINDOWS SIM: a position saved on a larger monitor is re-contained on restore', () => {
     const savedOnBigMonitor = { x: 2400, y: 60 }
-    const win: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 17 }
+    const win: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 17, topClearance: 50 }
     const clamped = clampCardPosition(savedOnBigMonitor, win, { width: 288, height: 220 })
     expect(clamped.x).toBe(1280 - 17 - 288 - CHECKLIST_WINDOW_EDGE)
-    expect(clamped.y).toBe(60)
+    expect(clamped.y).toBe(60) // above the rail top (50), untouched
   })
 
   it('WINDOWS SIM: 1.1× font metric grows the card — drop still lands in the strip', () => {
     // The docked rows are em-sized in CSS (font-metric guard); here the
     // taller CARD that a larger font produces is simulated as geometry.
-    const win: ChecklistViewport = { width: 1366, height: 768, scrollbarWidth: 17 }
+    const win: ChecklistViewport = { width: 1366, height: 768, scrollbarWidth: 17, topClearance: 50 }
     const tallerCard = { width: 288, height: Math.round(220 * 1.1) }
     const resolved = resolveCardDrop({ x: 500, y: 900 }, win, tallerCard)
     expect(resolved.x).toBe(1366 - 17 - CHECKLIST_CARD_MARGIN - 288)
@@ -283,5 +290,57 @@ describe('checklistPlacement: TodoWrite state semantics', () => {
     expect(next['conv-2']).toEqual([item('a'.replace('a', 'b'))])
     // Missing key: same reference, no churn.
     expect(removeChecklistForConversation(state, 'conv-9')).toBe(state)
+  })
+})
+
+describe('checklistPlacement: THE SHARED TOP-RIGHT RAIL (field collision fix)', () => {
+  it('CHIP INVARIANCE on the FORM: subagentChipPresent NEVER changes floating vs docked', () => {
+    // The chip is small and transient and appears in exactly the runs
+    // where the checklist matters most (subagent-heavy batches).
+    // Banishing the card to docked would punish the common case — so
+    // the chip shifts GEOMETRY (topClearance), never the form. Crossed
+    // over the whole matrix to PROVE the invariance, not assume it.
+    for (const input of MATRIX) {
+      const flipped = { ...input, subagentChipPresent: !(input.subagentChipPresent === true) }
+      expect(resolveChecklistPlacement(flipped)).toEqual(resolveChecklistPlacement(input))
+    }
+  })
+
+  const viewport: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0, topClearance: 0 }
+
+  it('without clearance the rail top is the plain home margin', () => {
+    expect(checklistCardHome(viewport, 288).y).toBe(CHECKLIST_CARD_MARGIN)
+  })
+
+  it('with the subagent chip present the card home sits BELOW the chip', () => {
+    // Chip at titlebar(56)+14, ~30px tall, +8px gap → clearance 108.
+    const withChip: ChecklistViewport = { ...viewport, topClearance: 108 }
+    expect(checklistCardHome(withChip, 288).y).toBe(108)
+  })
+
+  it('a drop ABOVE the rail can visit during the drag but CANNOT rest there', () => {
+    // Contrafactual: if the rail clamp did not exist, this drop would
+    // rest at y=20 — INSIDE the chip strip — and the field collision
+    // would be back. The resolved rest must be the rail top.
+    const withChip: ChecklistViewport = { ...viewport, topClearance: 108 }
+    const resolved = resolveCardDrop({ x: 300, y: 20 }, withChip, { width: 288, height: 220 })
+    expect(resolved.y).toBe(108)
+    expect(resolved.x).toBe(checklistCardHome(withChip, 288).x)
+  })
+
+  it('a persisted position parked over the chip is re-contained on restore', () => {
+    const withChip: ChecklistViewport = { ...viewport, topClearance: 108 }
+    const clamped = clampCardPosition({ x: 976, y: 30 }, withChip, { width: 288, height: 220 })
+    expect(clamped.y).toBe(108)
+  })
+
+  it('the titlebar strip itself is a clearance: the card never parks at y=16 again', () => {
+    // Latent defect fixed along the way: y=16 parked the card INSIDE
+    // the 36px Windows/Linux titlebar (window controls sit top-right
+    // there). Rail origin = titlebar(36) + 14 = 50.
+    const win: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 17, topClearance: 50 }
+    expect(checklistCardHome(win, 288).y).toBe(50)
+    const resolved = resolveCardDrop({ x: 400, y: 10 }, win, { width: 288, height: 220 })
+    expect(resolved.y).toBe(50)
   })
 })

@@ -69,6 +69,15 @@ export type ChecklistPlacementInput = {
    *  open lane panel is the exact defect the rule exists to prevent.
    *  Optional; defaults to false. */
   otherRightLaneOpen?: boolean
+  /** The floating subagent INDICATOR chip (field-tested collision,
+   *  2026-07-31). Crossed in the matrix like the sidebar: INVARIANT
+   *  for the form decision — the chip is small and transient and
+   *  appears in exactly the runs where the checklist matters most
+   *  (subagent-heavy batches), so banishing the card to docked would
+   *  punish the common case. What the chip changes is GEOMETRY, not
+   *  form: the card yields below it in the shared top-right rail
+   *  (see ChecklistViewport.topClearance). */
+  subagentChipPresent?: boolean
 }
 
 export type ChecklistDockAnchor = 'above-goal' | 'above-composer'
@@ -120,6 +129,18 @@ export type ChecklistViewport = {
    *  it overlays (0). Never assume a value — see the multiplatform
    *  note in ChecklistPanel. */
   scrollbarWidth: number
+  /** THE SHARED TOP-RIGHT RAIL (field defect, 2026-07-31): the region
+   *  is shared space with a stacking ORDER, not the card's property.
+   *  Occupants from the top: the subagent indicator chip (app chrome,
+   *  transient), then the checklist card. This value is the first y
+   *  the card may occupy — measured live: chip.bottom + gap when the
+   *  chip is present, titlebar-height + 14 otherwise (the chip's own
+   *  origin, surfaces.css .subagent-indicator). It also fixes the
+   *  latent defect of the card parking INSIDE the titlebar strip
+   *  (36px on Windows/Linux, where window controls sit top-right).
+   *  Resting positions NEVER go above it — the drag may visit, the
+   *  drop may not stay (same philosophy as the transcript rule). */
+  topClearance: number
 }
 
 export type ChecklistCardSize = { width: number; height: number }
@@ -132,8 +153,14 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
 }
 
-/** The right-strip home position (top-right corner, clear of the
- *  OS scrollbar lane). Pure: all geometry arrives as arguments. */
+/** The lowest y a resting card may take: the rail clearance when it
+ *  exceeds the plain home margin, else the margin. */
+function railTop(viewport: ChecklistViewport): number {
+  return Math.max(CHECKLIST_CARD_MARGIN, viewport.topClearance)
+}
+
+/** The right-strip home position (below the rail clearance, clear of
+ *  the OS scrollbar lane). Pure: all geometry arrives as arguments. */
 export function checklistCardHome(
   viewport: ChecklistViewport,
   cardWidth: number = CHECKLIST_CARD_WIDTH,
@@ -143,14 +170,16 @@ export function checklistCardHome(
       CHECKLIST_WINDOW_EDGE,
       viewport.width - viewport.scrollbarWidth - CHECKLIST_CARD_MARGIN - cardWidth,
     ),
-    y: CHECKLIST_CARD_MARGIN,
+    y: railTop(viewport),
   }
 }
 
-/** Keeps a position fully inside the window with the edge clearance.
- *  Applied when RESTORING a persisted position and on every RESIZE —
- *  a position saved on a large monitor is off-screen on a smaller one
- *  (multiplatform guard; the CADINHO's construction requirement). */
+/** Keeps a position fully inside the window with the edge clearance
+ *  and BELOW the rail top (never parked over the subagent chip or the
+ *  titlebar). Applied when RESTORING a persisted position and on every
+ *  RESIZE — a position saved on a large monitor is off-screen on a
+ *  smaller one (multiplatform guard; the CADINHO's construction
+ *  requirement). */
 export function clampCardPosition(
   pos: ChecklistCardPos,
   viewport: ChecklistViewport,
@@ -158,22 +187,24 @@ export function clampCardPosition(
 ): ChecklistCardPos {
   return {
     x: clamp(pos.x, CHECKLIST_WINDOW_EDGE, viewport.width - viewport.scrollbarWidth - card.width - CHECKLIST_WINDOW_EDGE),
-    y: clamp(pos.y, CHECKLIST_WINDOW_EDGE, viewport.height - card.height - CHECKLIST_WINDOW_EDGE),
+    y: clamp(pos.y, railTop(viewport), viewport.height - card.height - CHECKLIST_WINDOW_EDGE),
   }
 }
 
 /** Resolves where the card RESTS after a drop (user rule: never over
- *  the transcript). x ALWAYS returns to the right strip; y survives
- *  the drop (clamped into the window), with the magnetic snap pulling
- *  to the home corner when the drop lands near it. The glide back is
- *  the component's job — this function only computes the target. */
+ *  the transcript — and, since the field collision, never parked over
+ *  the subagent chip or the titlebar either). x ALWAYS returns to the
+ *  right strip; y survives the drop clamped into [rail top, window
+ *  bottom], with the magnetic snap pulling to the home corner when the
+ *  drop lands near it. The glide back is the component's job — this
+ *  function only computes the target. */
 export function resolveCardDrop(
   candidate: ChecklistCardPos,
   viewport: ChecklistViewport,
   card: ChecklistCardSize,
 ): ChecklistCardPos {
   const home = checklistCardHome(viewport, card.width)
-  const y = clamp(candidate.y, CHECKLIST_WINDOW_EDGE, viewport.height - card.height - CHECKLIST_WINDOW_EDGE)
+  const y = clamp(candidate.y, railTop(viewport), viewport.height - card.height - CHECKLIST_WINDOW_EDGE)
   const nearHome = Math.abs(y - home.y) <= CHECKLIST_SNAP
   return { x: home.x, y: nearHome ? home.y : y }
 }
