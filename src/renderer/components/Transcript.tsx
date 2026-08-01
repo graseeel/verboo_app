@@ -1,4 +1,4 @@
-import { Check, CheckCircle2, ChevronDown, ChevronRight, Clipboard, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
+import { Check, CheckCircle2, ChevronDown, ChevronRight, Clipboard, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, ListChecks, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { TranscriptItem, VideoProgress, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
 import { VideoProcessingRow } from '../features/video/VideoProcessingRow'
@@ -549,6 +549,8 @@ function ActivityIcon({ item }: { item: TranscriptItem }) {
   if (item.activityKind === 'thinking') return <Clock3 size={14} strokeWidth={1.8} />
   if (item.activityKind === 'permission') return <FileSearch size={14} strokeWidth={1.8} />
   if (item.activityKind === 'subagent') return <GitBranch size={14} strokeWidth={1.8} />
+  // planning (T1-TodoWrite): the todowrite activity — a checklist, not a wrench.
+  if (item.activityKind === 'planning') return <ListChecks size={14} strokeWidth={1.8} />
   return <Wrench size={14} strokeWidth={1.8} />
 }
 

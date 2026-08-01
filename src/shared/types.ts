@@ -407,7 +407,14 @@ export type TranscriptItem = {
   text: string
   timestamp: number
   kind?: 'message' | 'activity' | 'summary'
-  activityKind?: 'thinking' | 'image' | 'video' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool' | 'compacting'
+  // 'planning' — T1-TodoWrite (2026-07-31): the Rust side maps the
+  // todowrite tool to kind="planning" (turn_service.rs activity_for_tool)
+  // ON PURPOSE: planning is declaring intent, NOT acting, so this kind
+  // must stay OUT of the D1 observable-action whitelist
+  // (goalState.ts ACTION_ACTIVITY_KINDS). The transcript still renders
+  // the row (label "Atualizou tarefas"); the evaluator just never
+  // counts it as action.
+  activityKind?: 'thinking' | 'image' | 'video' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool' | 'compacting' | 'planning'
   activityDetail?: string
   activityAdditions?: number
   activityDeletions?: number
@@ -1100,6 +1107,29 @@ export type RuntimeStatus = {
   label: string
 }
 
+/**
+ * T1-TodoWrite (2026-07-31): one entry of a TodoWrite tool call.
+ * Frontier with TORNO — mirrors `pub struct TodoItem` in
+ * src-tauri/src/models/types.rs, which is `#[serde(rename_all =
+ * "camelCase")]`: the Rust field `active_form` arrives as `activeForm`.
+ * Declaring `active_form` here would compile and read `undefined`
+ * forever — the exact G-C12 TokenUsage defect class. The key-shape
+ * pair is pinned in features/goal/rustSerdeContract.test.ts.
+ *
+ * `status` values come from the CLI's TodoItemSchema:
+ * "pending" | "in_progress" | "completed". `activeForm` is the
+ * present-continuous label the CLI shows while the item is
+ * in_progress (e.g. "Mapeando os reasonIds"); display falls back to
+ * `content` when it is empty.
+ */
+export type TodoItemStatus = 'pending' | 'in_progress' | 'completed'
+
+export type TodoItem = {
+  content: string
+  status: TodoItemStatus
+  activeForm: string
+}
+
 export type RuntimeActivity = {
   key: string
   label: string
@@ -1109,6 +1139,17 @@ export type RuntimeActivity = {
   additions?: number
   deletions?: number
   diffPreview?: string
+  /**
+   * T1-TodoWrite: structured todo list from the todowrite tool.
+   * Frontier with TORNO (`todos: Option<Vec<TodoItem>>` in types.rs
+   * with `skip_serializing_if = "Option::is_none"`): when there is no
+   * list the KEY IS ABSENT from the JSON — it arrives `undefined`,
+   * never `null`. Treat ABSENCE, not nullity. Populated only for
+   * main-turn todowrite events; subagent TodoWrites are filtered in
+   * Rust and never cross the bridge. Semantics: each TodoWrite call
+   * REPLACES the whole list — never accumulate.
+   */
+  todos?: TodoItem[]
 }
 
 export type CliTerminalFailure = {

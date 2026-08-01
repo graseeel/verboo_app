@@ -212,6 +212,9 @@ const RUST_TO_TS_NAME: Record<string, string> = {
   ContextUsageSnapshot: 'ContextUsageSnapshot',
   // A1: payload struct of the `login:event` channel (types.rs:590).
   LoginEvent: 'LoginEvent',
+  // T1-TodoWrite: the checklist item crossing inside RuntimeActivity
+  // (types.rs). `active_form` → `activeForm` is the trap pair.
+  TodoItem: 'TodoItem',
 }
 
 describe('G-C12-4: Rust serde camelCase ↔ TS type contract (source-text)', () => {

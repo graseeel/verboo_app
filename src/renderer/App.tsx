@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { ArrowDown, FolderClosed, X } from 'lucide-react'
 import type {
   AccessMode,
@@ -29,6 +30,7 @@ import type {
   StoredConversation,
   ThemeMode,
   TokenRateSnapshot,
+  TodoItem,
   TokenUsage,
   TranscriptItem,
   UpdateSnapshot,
@@ -54,6 +56,10 @@ import { settleGoalTurnAfterSummary } from './features/goal/turnCompletion'
 import { stampBatchProgressLine } from './features/goal/progressStamp'
 import { runGoalCycle, type GoalSchedulerDelegate } from './features/goal/goalScheduler'
 import { shouldAccumulateTokensForTurn, accumulateTurnUsage, accumulateEvaluatorUsage, shouldAccumulateEvaluatorUsage } from './features/goal/tokenAccumulator'
+import { ChecklistPanel } from './features/checklist/ChecklistPanel'
+import { useChecklistFlight } from './features/checklist/useChecklistFlight'
+import { applyTodoWrite, removeChecklistForConversation, resolveChecklistPlacement, type ChecklistCardPos, type ChecklistFormPreference } from './features/checklist/checklistPlacement'
+import { readChecklistCardPos, readChecklistFormPreference, writeChecklistCardPos, writeChecklistFormPreference } from './features/checklist/checklistStorage'
 import type { ReservedSlashCommand } from './features/composer/slashCommands'
 import { AppSidebar, type AppView } from './components/AppSidebar'
 import { CommandPalette, paletteIcons, type PaletteAction } from './components/CommandPalette'
@@ -440,6 +446,20 @@ export function App() {
   // the goal turns terminal so the panel can sink back into the composer
   // instead of vanishing. See useGoalPanelExit for the honest limits.
   const { exitGoal } = useGoalPanelExit(goal)
+  // T1-TodoWrite: the task checklist. Per-conversation TodoWrite lists
+  // (POSSESSION — each entry belongs to its turn's OWNER conversation;
+  // only the ACTIVE conversation's list renders). The list is NOT a
+  // goal feature: it appears whenever the agent TodoWrites, goal or no
+  // goal. REPLACE semantics per call — never accumulate (see
+  // applyTodoWrite).
+  const [todosByConversation, setTodosByConversation] = useState<Record<string, TodoItem[]>>({})
+  // USER RULE 2: the form is the user's choice and persists — floating
+  // card on the right, or docked above the composer (respecting the
+  // goal-first hierarchy either way).
+  const [checklistFormPref, setChecklistFormPref] = useState<ChecklistFormPreference>(readChecklistFormPreference)
+  // Floating card's resting position; null = home corner. Persisted and
+  // re-clamped into the window bounds by the panel (multiplatform rule).
+  const [checklistCardPos, setChecklistCardPos] = useState<ChecklistCardPos | null>(readChecklistCardPos)
   const [imageReadingTurnId, setImageReadingTurnId] = useState<string | undefined>()
   // Live video-analysis progress per turn. Explicit upsert keyed by turnId
   // (never routed through appendActivityItem, whose dedup is not an upsert
@@ -693,6 +713,36 @@ export function App() {
     ? subagentThreads.find(agent => agent.id === selectedSubagentId)
     : undefined
   const showSubagentThreadPanel = activeView === 'chat' && Boolean(selectedSubagent) && !terminal.terminalOpen && !review.reviewOpen
+
+  /* ── T1-TodoWrite: checklist placement (PURE decision + flight) ──
+   * The checklist is a CHAT-LANE citizen: hidden outside the chat
+   * view and in fullscreen, like the workspace panels (hasList folds
+   * those gates in). goalDocked counts ANY goal element occupying the
+   * aux-stack — live panel, genie exit ghost, or terminal status bar —
+   * which is what serializes the checklist migration AFTER the 280ms
+   * genie window instead of fighting it (single choreography owner —
+   * see useChecklistFlight). otherRightLaneOpen extends "right side
+   * physically occupied" to the subagent thread panel, same spirit as
+   * the terminal/review/web rule. */
+  const activeChecklistTodos = activeConversationId ? todosByConversation[activeConversationId] : undefined
+  const checklistPlacement = resolveChecklistPlacement({
+    hasList: activeView === 'chat' && !isFullscreenView && !!activeChecklistTodos && activeChecklistTodos.length > 0,
+    goalDocked: Boolean(goal) || Boolean(exitGoal),
+    terminalOpen: visibleTerminalOpen,
+    reviewOpen: visibleReviewOpen,
+    webOpen: visibleBrowserOpen,
+    sidebarOpen: sidebarVisualMode !== 'hidden',
+    preference: checklistFormPref,
+    otherRightLaneOpen: showSubagentThreadPanel,
+  })
+  const checklistFlight = useChecklistFlight(checklistPlacement)
+
+  useEffect(() => {
+    writeChecklistFormPreference(checklistFormPref)
+  }, [checklistFormPref])
+  useEffect(() => {
+    writeChecklistCardPos(checklistCardPos)
+  }, [checklistCardPos])
   const appLayoutStyle = {
     '--sidebar-width': `${effectiveSidebarWidth}px`,
     // Peek width is frozen at the user's sidebarWidth and used by the shell
@@ -1802,6 +1852,15 @@ export function App() {
       // Do NOT clear compactingTurnId here — it stays until the turn
       // completes (done/error handler), ensuring the user sees the
       // compaction marker long enough even if follow-up activities race in.
+      // T1-TodoWrite: the structured checklist rides the todowrite
+      // activity (kind 'planning'). REPLACE semantics per OWNER
+      // conversation (possession); absence (undefined —
+      // skip_serializing_if) is NOT a clear. The activity itself
+      // continues below into the transcript as before — the checklist
+      // display is additive state, not a transcript change.
+      if (conversationId && activity?.todos) {
+        setTodosByConversation(prev => applyTodoWrite(prev, conversationId, activity.todos))
+      }
       if (conversationId && activity) {
         if (activity.kind === 'command' && activity.detail) {
           turnLastCommand.current[event.turnId] = activity.detail
@@ -4088,6 +4147,7 @@ export function App() {
         if (pending.length) void deleteBrowserTempFiles(browserTempPaths(pending)).catch(() => {})
         delete pendingBrowserSnapshots.current[conversationId]
         setQueuedFollowUpsList(current => current.filter(item => item.conversationId !== conversationId))
+        setTodosByConversation(current => removeChecklistForConversation(current, conversationId))
         void deleteBrowserCaptureOwner(conversationId).catch(() => {})
         updateChatStore(store => ({
           ...store,
@@ -5226,8 +5286,29 @@ export function App() {
               <ArrowDown size={17} />
             </button>
           )}
-          {(goal && goal.status !== 'completed' && goal.status !== 'blocked' && goal.status !== 'cancelled') || exitGoal || (questionPrompt && questionPrompt.conversationId === activeConversationId) ? (
+          {(goal && goal.status !== 'completed' && goal.status !== 'blocked' && goal.status !== 'cancelled') || exitGoal || (questionPrompt && questionPrompt.conversationId === activeConversationId) || checklistFlight.committed?.form === 'docked' || checklistFlight.spacerHeight !== null ? (
             <div className="composer-aux-stack" role="region" aria-label={t('goal.auxStackLabel')}>
+              {/* T1-TodoWrite: the checklist rides ABOVE the goal —
+                  the goal always stays closest to the composer
+                  (approved hierarchy: list → goal → composer). The
+                  spacer animates the flow space during a FLIP flight
+                  so the goal panel slides instead of jumping. */}
+              {checklistFlight.spacerHeight !== null && (
+                <div className="checklist-spacer" style={{ height: checklistFlight.spacerHeight }} aria-hidden="true" />
+              )}
+              {checklistFlight.committed?.form === 'docked' && activeChecklistTodos && (
+                <ChecklistPanel
+                  todos={activeChecklistTodos}
+                  form="docked"
+                  cardPos={null}
+                  onCardPosChange={() => {}}
+                  onToggleForm={() => setChecklistFormPref('float')}
+                  flightStyle={checklistFlight.flightStyle}
+                  flying={checklistFlight.flying}
+                  entering={checklistFlight.entering}
+                  registerElement={checklistFlight.registerPanel}
+                />
+              )}
               {goal && goal.status !== 'completed' && goal.status !== 'blocked' && goal.status !== 'cancelled' && (
                 <GoalActivePanel
                   goal={goal}
@@ -5435,6 +5516,26 @@ export function App() {
       />
 
       <VerbooPet visible={petEnabled} state={petState} size={petSize} onSizeChange={updatePetSize} />
+
+      {/* T1-TodoWrite: the floating checklist card lives in a portal —
+          position:fixed must be free of any fixed/transformed ancestor
+          (the bottom-dock is position:fixed; mounting a floating panel
+          inside it is exactly the panel-that-fell-to-the-bottom defect
+          class this project already paid for). */}
+      {checklistFlight.committed?.form === 'floating' && activeChecklistTodos && createPortal(
+        <ChecklistPanel
+          todos={activeChecklistTodos}
+          form="floating"
+          cardPos={checklistCardPos}
+          onCardPosChange={setChecklistCardPos}
+          onToggleForm={() => setChecklistFormPref('dock')}
+          flightStyle={checklistFlight.flightStyle}
+          flying={checklistFlight.flying}
+          entering={checklistFlight.entering}
+          registerElement={checklistFlight.registerPanel}
+        />,
+        document.body,
+      )}
 
     </main>
     </I18nProvider>
