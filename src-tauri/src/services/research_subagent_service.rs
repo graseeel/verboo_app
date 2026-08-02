@@ -682,6 +682,7 @@ mod tests {
             personality: Some(PersonalityMode::Concise),
             custom_instructions: None,
             memory_context: None,
+            annotations: None,
         }
     }
 

@@ -6,6 +6,7 @@ import type {
   AgentEvent,
   AgentResultSnapshot,
   AgentTurnRequest,
+  Annotation,
   AppConfig,
   AttachmentMeta,
   ChatStore,
@@ -52,14 +53,32 @@ import { useGoalPanelExit } from './features/goal/useGoalPanelExit'
 import { buildGoalUsageLine, buildObjectiveUpdatedPrompt } from './features/goal/goalPrompt'
 import { buildBatchReportLines } from './features/goal/goalReport'
 import { parseBatchInput } from './features/goal/goalBatchParse'
+import { AnnotationLayer } from './features/annotations/AnnotationLayer'
+import { AnnotationOverlay } from './features/annotations/AnnotationOverlay'
+import {
+  addAnnotationDraft,
+  consumeAnnotationDrafts,
+  draftsForConversation,
+  removeAnnotationDraft,
+  updateAnnotationComment,
+  type AnnotationDrafts,
+} from './features/annotations/annotationDrafts'
+// F3: o ÚNICO ponto onde o campo annotations entra no request (nunca no texto)
+// e o item N3 (o chip vira turno, autocontido). Montagem do bloco no prompt é
+// Rust-side — aqui só viaja o campo estruturado.
+import { applyAnnotations } from './features/annotations/annotationRequest'
+import { annotationTurnItemId, buildAnnotationTurnItem, insertAnnotationTurnBeforeResponse } from './features/annotations/annotationTurnItem'
 import { settleGoalTurnAfterSummary } from './features/goal/turnCompletion'
 import { stampBatchProgressLine } from './features/goal/progressStamp'
 import { runGoalCycle, type GoalSchedulerDelegate } from './features/goal/goalScheduler'
 import { shouldAccumulateTokensForTurn, accumulateTurnUsage, accumulateEvaluatorUsage, shouldAccumulateEvaluatorUsage } from './features/goal/tokenAccumulator'
 import { ChecklistPanel } from './features/checklist/ChecklistPanel'
 import { useChecklistFlight } from './features/checklist/useChecklistFlight'
+import { useChecklistCompletionExit } from './features/checklist/useChecklistCompletionExit'
 import { applyTodoWrite, removeChecklistForConversation, resolveChecklistPlacement, type ChecklistCardPos, type ChecklistFormPreference } from './features/checklist/checklistPlacement'
 import { readChecklistCardPos, readChecklistFormPreference, writeChecklistCardPos, writeChecklistFormPreference } from './features/checklist/checklistStorage'
+import { createSoundPlayer, resolveSoundForEvent, type SoundEvent, type SoundPlayer } from './features/sound/sounds'
+import { readSoundsEnabled, writeSoundsEnabled } from './features/sound/soundStorage'
 import type { ReservedSlashCommand } from './features/composer/slashCommands'
 import { AppSidebar, type AppView } from './components/AppSidebar'
 import { CommandPalette, paletteIcons, type PaletteAction } from './components/CommandPalette'
@@ -401,6 +420,18 @@ export function App() {
     () => restoredUpdateDrafts?.drafts[activeConversationId ?? '__new__'] ?? '',
   )
   const prevConversationIdRef = useRef<string | undefined>(activeConversationId)
+  // Annotation drafts (F1): per-conversation POSSE — a draft created in
+  // conversation A belongs to A forever; switching chats never moves or loses
+  // it. In-memory only (restart clears) — declared limit, drafts are ephemeral
+  // by design. F1 scope: the chip READS this state to show the count and the
+  // panel. NOTHING here touches the send path — sending annotations is F3,
+  // with its own gate (official block assembly is Rust-side, per the Maestro).
+  const [annotationDrafts, setAnnotationDrafts] = useState<AnnotationDrafts>({})
+  // F3: sendMessage lê o retrato do clique por ESTE ref, não pelo state do
+  // closure — criar a anotação e enviar podem cair no mesmo tick de render,
+  // e o guarda não pode decidir com um state velho (nem deixar o envio
+  // só-anotação morrer por um render de atraso).
+  const annotationDraftsRef = useRef<AnnotationDrafts>({})
   const [pendingPermissionPrompt, setPendingPermissionPrompt] = useState<PendingPermissionPrompt | undefined>()
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | undefined>()
   const [questionPrompt, setQuestionPrompt] = useState<QuestionPromptState | undefined>()
@@ -460,6 +491,37 @@ export function App() {
   // Floating card's resting position; null = home corner. Persisted and
   // re-clamped into the window bounds by the panel (multiplatform rule).
   const [checklistCardPos, setChecklistCardPos] = useState<ChecklistCardPos | null>(readChecklistCardPos)
+  /* TWO SOUNDS, EXACTLY TWO (user order, 2026-08-01 — "APENAS ISSO,
+   * NADA MAIS"): a notification sound (permission/question waiting) and
+   * a conclusion sound (turn or goal/batch completed). Synthesized with
+   * Web Audio (autocontained, all three WebViews) — see features/sound.
+   * The master switch persists renderer-side (localStorage: the bridge
+   * settings contract is TORNO's) and the per-type notification prefs
+   * gate each event — integrated with Settings → Notifications, not a
+   * parallel system. */
+  const [soundsEnabled, setSoundsEnabled] = useState(readSoundsEnabled)
+  const soundsEnabledRef = useRef(soundsEnabled)
+  const soundPlayerRef = useRef<SoundPlayer | null>(null)
+  const playAppSound = (event: SoundEvent, conversationId: string | undefined) => {
+    const settings = userSettingsRef.current
+    const kind = resolveSoundForEvent(
+      event,
+      {
+        soundsEnabled: soundsEnabledRef.current,
+        completionNotifications: settings.completionNotifications,
+        permissionNotifications: settings.permissionNotifications,
+        questionNotifications: settings.questionNotifications,
+      },
+      {
+        background:
+          (conversationId !== undefined && conversationId !== activeConversationIdRef.current)
+          || !document.hasFocus(),
+      },
+    )
+    if (!kind) return
+    soundPlayerRef.current ??= createSoundPlayer()
+    soundPlayerRef.current.play(kind)
+  }
   const [imageReadingTurnId, setImageReadingTurnId] = useState<string | undefined>()
   // Live video-analysis progress per turn. Explicit upsert keyed by turnId
   // (never routed through appendActivityItem, whose dedup is not an upsert
@@ -594,6 +656,10 @@ export function App() {
     conversationId: string
     message: string
     alreadyRetriedWithoutSession: boolean
+    // F3 (QA a-i): the retry must replay the SAME payload — annotations
+    // included — or the retried turn silently loses the excerpts the user
+    // attached on purpose (the worst class: invisible data loss).
+    annotations?: Annotation[]
   }>>({})
   const autoApprovalSent = useRef<Set<string>>(new Set())
   const turnOpenTextSegment = useRef<Record<string, string | undefined>>({})
@@ -736,6 +802,16 @@ export function App() {
     otherRightLaneOpen: showSubagentThreadPanel,
   })
   const checklistFlight = useChecklistFlight(checklistPlacement)
+  /* The completed list LEAVES (user order, 2026-08-01): after the dwell
+   * the exit animation plays and ONLY THEN the conversation entry is
+   * removed — hasList folds to false and the panel unmounts. Timers are
+   * keyed to the list reference, so a new list can never be deleted by
+   * a stale exit (see useChecklistCompletionExit). */
+  const checklistCompletionExit = useChecklistCompletionExit(
+    activeConversationId,
+    activeChecklistTodos,
+    id => setTodosByConversation(prev => removeChecklistForConversation(prev, id)),
+  )
 
   useEffect(() => {
     writeChecklistFormPreference(checklistFormPref)
@@ -743,6 +819,12 @@ export function App() {
   useEffect(() => {
     writeChecklistCardPos(checklistCardPos)
   }, [checklistCardPos])
+  // Mirror + persist the sound master switch (event handlers read the
+  // ref — they have stale closures by construction).
+  useEffect(() => {
+    soundsEnabledRef.current = soundsEnabled
+    writeSoundsEnabled(soundsEnabled)
+  }, [soundsEnabled])
   const appLayoutStyle = {
     '--sidebar-width': `${effectiveSidebarWidth}px`,
     // Peek width is frozen at the user's sidebarWidth and used by the shell
@@ -979,6 +1061,12 @@ export function App() {
     goalRef.current = goal
   }, [goal])
 
+  // Espelho do state no ref (mesmo padrão de goalRef acima): mantém o
+  // retrato fresco para o sendMessage sem re-criar a função a cada rascunho.
+  useEffect(() => {
+    annotationDraftsRef.current = annotationDrafts
+  }, [annotationDrafts])
+
   useEffect(() => {
     conversationItemsRef.current = items
   }, [items])
@@ -1043,6 +1131,27 @@ export function App() {
     autoApprovalSent.current.add(pendingPermissionPrompt.id)
     void respondToPermissionPrompt(pendingPermissionPrompt, 'allow', true)
   }, [pendingPermissionPrompt])
+
+  /* NOTIFICATION SOUND (the app's first sound): the app needs the user.
+   * Effect-driven — one fire per staged prompt, never a setState-
+   * updater side effect (double-invoke would double-play). The VISIBLE
+   * prompt gate already excludes auto-approved prompts (no attention
+   * needed there). Each event is additionally gated by its existing
+   * notification preference inside playAppSound. */
+  const visiblePermissionPromptId = visiblePermissionPrompt?.id
+  useEffect(() => {
+    if (visiblePermissionPromptId) {
+      playAppSound('permissionNeeded', visiblePermissionPrompt?.conversationId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visiblePermissionPromptId])
+  const questionPromptTurnId = questionPrompt?.turnId
+  useEffect(() => {
+    if (questionPromptTurnId) {
+      playAppSound('questionNeeded', questionPrompt?.conversationId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [questionPromptTurnId])
 
   useEffect(() => {
     return window.verboo.onRefreshDataRequest(() => {
@@ -2102,7 +2211,10 @@ export function App() {
       if (willRestartSession && conversationId && retryMeta) {
         clearConversationSession(conversationId)
         removeTurnTranscriptItems(conversationId, event.turnId)
-        const retry = createQueuedFollowUp(conversationId, retryMeta.message)
+        // QA a-i: the retry replays the SAME send — annotations included
+        // (frozen at the click, carried by the retry payload). Without this
+        // the retried turn silently lost the user's excerpts.
+        const retry = createQueuedFollowUp(conversationId, retryMeta.message, undefined, retryMeta.annotations ?? [])
         retry.request.turnId = crypto.randomUUID()
         if (completionDeferred) completionDeferred.turnId = retry.request.turnId
         void runTurn(retry, { skipResume: true }).catch(error => {
@@ -2123,6 +2235,10 @@ export function App() {
 
       // Auto-resume with a structured hidden prompt. The original user message
       // is never replayed, preventing completed tool calls from being repeated.
+      // ANNOTATIONS ARE DELIBERATELY ABSENT HERE (QA a-i trap): unlike the
+      // dead-session retry above, this is a CONTINUATION — the original turn
+      // was already delivered and the model already saw the annotation block;
+      // replaying it would double the content. Do not "fix" this by symmetry.
       if ((willRecoverAuth || willRecoverContext) && conversationId) {
         const suffix = partialText.length > 50
           ? `\n\nLast partial assistant output (may be truncated):\n"""\n${partialText.slice(-800)}\n"""`
@@ -2193,6 +2309,21 @@ export function App() {
           isActive,
         )
       }
+      // CONCLUSION SOUND (the app's second sound): a PLAIN turn ending
+      // successfully. Goal turns are silent HERE — their completion
+      // sound belongs to the goal's onComplete, so a batch sounds ONCE
+      // at the end instead of at every turn (the sleeping-batch user
+      // hears exactly one chime). Frontier /compact turns are plumbing,
+      // not conclusions — also silent. Failed turns get NO sound: the
+      // user's limit is two sounds and no error sound was asked for.
+      if (
+        conversationId
+        && event.exitCode === 0
+        && turnCompletionDeferred.current?.turnId !== event.turnId
+        && compactCompletionDeferred.current?.turnId !== event.turnId
+      ) {
+        playAppSound('turnCompleted', conversationId)
+      }
       // Persist accumulated thinking text BEFORE the assistant message is
       // finalized so the block lands in chronological order in the
       // transcript. The live ref is intentionally NOT cleared (data contract).
@@ -2236,7 +2367,9 @@ export function App() {
           setQuestionWizardOpen(false)
         }
         cleanupTurnState(event.turnId)
-        void runTurn(createQueuedFollowUp(conversationId, message), { skipResume: true })
+        // QA a-i: same replay rule as the error path — the retry carries the
+        // click-time annotations from the payload, never a stripped copy.
+        void runTurn(createQueuedFollowUp(conversationId, message, undefined, retryMeta.annotations ?? []), { skipResume: true })
         return
       }
       if (conversationId && event.exitCode !== 0) {
@@ -2303,7 +2436,14 @@ export function App() {
   const sendMessageLock = useRef(false)
   async function sendMessage(message: string) {
     const trimmed = message.trim()
-    if (!trimmed) return
+    // F3 — guarda do vazio ALARGADA: enviar SÓ a anotação é comportamento
+    // exigido pelo usuário ("posso apenas enviar a anotação"). O retrato vem
+    // do ref (criar a anotação e clicar enviar podem cair no mesmo tick; o
+    // state do closure estaria um render atrás e mataria o envio).
+    const pendingAnnotations = activeConversationId
+      ? draftsForConversation(annotationDraftsRef.current, activeConversationId)
+      : []
+    if (!trimmed && pendingAnnotations.length === 0) return
     if (sendMessageLock.current) return // already in flight
     sendMessageLock.current = true
     try {
@@ -2410,22 +2550,30 @@ export function App() {
     }
 
     turnAttachments = await promoteBrowserAttachments(turnAttachments, conversationId)
-    const queued = createQueuedFollowUp(conversationId, trimmed, turnAttachments)
+    // F3: pendingAnnotations foi lido do ref ANTES dos awaits acima — é o
+    // retrato do clique, e é ele que viaja (congelado) no request da fila.
+    const queued = createQueuedFollowUp(conversationId, trimmed, turnAttachments, pendingAnnotations)
     setActiveView('chat')
     stickToBottomRef.current = true
     setShowJumpToLatest(false)
     setPendingPermissionPrompt(current => current?.conversationId === conversationId ? undefined : current)
 
-    appendConversationItem(conversationId, {
-      id: `user:${Date.now()}`,
-      role: 'user',
-      text: trimmed,
-      timestamp: Date.now(),
-      skills: selectedSkillsUnion,
-      // Persist a slim version of attachments — just path/name/kind — so the
-      // transcript can render chips/thumbnails on reload without base64 bloat.
-      attachments: turnAttachments.length ? turnAttachments.map(slimMeta) : undefined,
-    }, titleFromMessage(trimmed))
+    // F3: envio SÓ-anotação não cria bolha de usuário vazia — o registro do
+    // envio é o item N3 (kind 'annotation') que o runTurn anexa após a
+    // confirmação; bolha vazia seria ruído sem conteúdo (o veto de produto a
+    // mensagem redundante segue valendo). Com texto, a bolha é a de sempre.
+    if (trimmed) {
+      appendConversationItem(conversationId, {
+        id: `user:${Date.now()}`,
+        role: 'user',
+        text: trimmed,
+        timestamp: Date.now(),
+        skills: selectedSkillsUnion,
+        // Persist a slim version of attachments — just path/name/kind — so the
+        // transcript can render chips/thumbnails on reload without base64 bloat.
+        attachments: turnAttachments.length ? turnAttachments.map(slimMeta) : undefined,
+      }, titleFromMessage(trimmed))
+    }
 
     if (isConversationRunning(conversationId)) {
       enqueueFollowUp(queued)
@@ -2462,6 +2610,10 @@ export function App() {
     conversationId: string,
     message: string,
     attachments: AttachmentMeta[] = attachedFiles,
+    // F3 (N10): o request nasce NO CLIQUE — as cópias congeladas que
+    // applyAnnotations produz aqui são o que o turno carrega, mesmo que a
+    // fila espere outro turno terminar e o usuário edite o rascunho nesse meio.
+    annotations: readonly Annotation[] = [],
   ): QueuedFollowUp {
     const turnModel = {
       modelId: selectedModel,
@@ -2474,7 +2626,11 @@ export function App() {
       conversationId,
       message,
       turnModel,
-      request: {
+      // applyAnnotations com lista vazia devolve a MESMA referência (a chave
+      // nem existe) — o caminho sem anotações fica byte-idêntico ao pré-F3,
+      // como manda o portão. Com anotações, o campo viaja ESTRUTURADO —
+      // nunca concatenado em `message` (a montagem do bloco é Rust-side).
+      request: applyAnnotations({
         conversationId,
         message,
         model: selectedModel,
@@ -2491,7 +2647,7 @@ export function App() {
         personality: userSettings.personality,
         customInstructions: userSettings.customInstructions,
         memoryContext: buildMemoryContext(chatStore, conversationId, userSettings),
-      },
+      }, annotations),
     }
   }
 
@@ -2623,13 +2779,47 @@ export function App() {
     const request = await prepareRequestWithResearchSubagents(item, parentTurnId)
     const resumeId = options?.skipResume ? undefined : conversationCliSessionId(item.conversationId)
     const turnId = await sendTrackedTurn({ ...request, turnId: parentTurnId }, resumeId)
+    // F3 — limpeza PÓS-confirmação + N3. O await acima resolveu: o Rust
+    // aceitou o turno, ENTÃO (e só então) o rascunho é consumido — por id,
+    // só os que viajaram no request; um rascunho criado DURANTE o voo fica.
+    // Se sendTrackedTurn lançar, nada aqui executa e o rascunho sobrevive à
+    // falha (a posição desta linha é pinada por teste estrutural).
+    const sentAnnotations = request.annotations
+    if (sentAnnotations?.length) {
+      setAnnotationDrafts(current =>
+        consumeAnnotationDrafts(current, item.conversationId, new Set(sentAnnotations.map(a => a.id))),
+      )
+      // N3 — "o chip vira turno": item autocontido com os pares quote+comment
+      // CONGELADOS (o que o modelo recebeu, não o rascunho vivo). `text`
+      // leva o fallback legível para builds antigas. O título da conversa só
+      // é proposto no envio sem texto (com texto, a bolha do usuário já o deu).
+      appendConversationItem(
+        item.conversationId,
+        buildAnnotationTurnItem(
+          sentAnnotations,
+          { quoteLabel: t('annotations.quoteLabel'), commentLabel: t('annotations.commentLabel') },
+          annotationTurnItemId(sentAnnotations.map(annotation => annotation.id)),
+          Date.now(),
+        ),
+        item.message.trim() ? undefined : titleFromMessage(sentAnnotations[0]?.quote ?? ''),
+        turnId,
+      )
+    }
     turnConversationIds.current[turnId] = item.conversationId
     turnModels.current[turnId] = item.turnModel
     // Track last user text for one-shot session-resume recovery.
+    // The payload carries the click-time annotations too (QA a-i): a
+    // dead-session retry replays what the user SENT, not a stripped copy.
+    // DECLARED ASYMMETRY (deliberate, accepted by the QA): a text+annotation
+    // send retries; an annotation-ONLY send does NOT — shouldRetrySession
+    // requires a non-empty message, so it fails VISIBLY instead of retrying.
+    // Visible failure beats silent loss, but a reader must know the
+    // asymmetry is a decision, not an oversight.
     turnRetryPayload.current[turnId] = {
       conversationId: item.conversationId,
       message: item.message,
       alreadyRetriedWithoutSession: Boolean(options?.skipResume),
+      annotations: request.annotations,
     }
     tagAssistantMessage(item.conversationId, turnId, item.turnModel)
     if (pendingConversationId.current === item.conversationId) pendingConversationId.current = undefined
@@ -3600,6 +3790,11 @@ export function App() {
       // text and the existing turn summary, no usage line.
       onComplete: (finalGoal, evaluation) => {
         const ownerConversationId = finalGoal.ownerConversationId ?? activeConversationIdRef.current
+        // CONCLUSION SOUND for the goal/batch — fired BEFORE the report
+        // guards below: the completion is real even when the report is
+        // lost (a lost report is logged; a lost sound would be silence
+        // on the exact event the sleeping user is waiting for).
+        playAppSound('goalCompleted', ownerConversationId)
         // D-B/D-C: the report + usage + elapsed are the user's visible
         // completion deliverable — every drop below is LOGGED, never
         // another silent loss (the field-test complaint class).
@@ -4218,11 +4413,13 @@ export function App() {
     return conversation.id
   }
 
-  function appendConversationItem(conversationId: string, item: TranscriptItem, title?: string) {
+  function appendConversationItem(conversationId: string, item: TranscriptItem, title?: string, beforeTurnId?: string) {
     updateConversation(conversationId, conversation => ({
       ...conversation,
       title: conversation.title === DEFAULT_CONVERSATION_TITLE && title ? title : conversation.title,
-      items: [...conversation.items, item],
+      items: beforeTurnId
+        ? insertAnnotationTurnBeforeResponse(conversation.items, item, beforeTurnId)
+        : [...conversation.items, item],
       updatedAt: Date.now(),
     }))
   }
@@ -4754,13 +4951,13 @@ export function App() {
   const handleToggleBrowser = useCallback(() => {
     if (!browserAvailable || !workspacePanelsEnabled) return
     if (browser.browserOpen) {
-      browser.close()
+      browser.toggle()
       return
     }
     terminal.close()
     review.close()
     setSelectedSubagentId(undefined)
-    browser.open()
+    browser.toggle()
   }, [browser, browserAvailable, terminal, review, workspacePanelsEnabled])
 
   async function refreshWorkspaceReview() {
@@ -5156,6 +5353,8 @@ export function App() {
               onThemeChange={setTheme}
               onActiveTabChange={setSettingsTab}
               onUserSettingsChange={updateUserSettings}
+              soundsEnabled={soundsEnabled}
+              onSoundsEnabledChange={setSoundsEnabled}
               onResetUserSettings={resetUserSettings}
               onRestoreConversation={restoreConversation}
               onDeleteConversation={deleteConversation}
@@ -5184,6 +5383,29 @@ export function App() {
                 onUserExpand={handleUserExpand}
               />
               <div ref={transcriptEndRef} className="transcript-end" />
+              {/* AnnotationLayer (F1): ouvinte de seleção + barra flutuante.
+                  Vive dentro de hasConversation para morrer fora da view de chat.
+                  Posse: o Layer só cria para a conversationId da prop DESTE
+                  render — a mesma capturada pelo onCreate abaixo — e a barra é
+                  dispensada ao trocar de conversa, então os dois lados nunca
+                  divergem. */}
+              <AnnotationLayer
+                conversationId={activeConversationId}
+                onCreate={annotation =>
+                  setAnnotationDrafts(current =>
+                    activeConversationId ? addAnnotationDraft(current, activeConversationId, annotation) : current,
+                  )
+                }
+              />
+              {/* F2: overlay de destaque + balão, IRMÃO do transcript —
+                  nunca dentro dele (regra 1: o DOM do MarkdownMessage é do
+                  React; o byte-idêntico está pinado em teste). Lê os MESMOS
+                  rascunhos do chip; âncora que não resolve degrada sem visual
+                  e sem perder o dado. Nada aqui toca o caminho de envio. */}
+              <AnnotationOverlay
+                annotations={draftsForConversation(annotationDrafts, activeConversationId ?? '')}
+                conversationId={activeConversationId}
+              />
             </>
           ) : (
             <EmptyChat hasProject={Boolean(activeProject?.name)} projectName={projectName} line={emptyLine} />
@@ -5241,7 +5463,6 @@ export function App() {
           navigationRequest={browser.navigationRequest}
           onNavigationHandled={browser.completeNavigation}
           reloadRequest={browser.reloadRequest}
-          onUrlChange={browser.setCurrentUrl}
           onReloadSnapshot={handleBrowserReloadSnapshot}
           onReloadHandled={browser.completeReload}
           minWidth={browser.MIN_WIDTH}
@@ -5250,6 +5471,7 @@ export function App() {
           activeTab={browser.activeTab}
           onCreateTab={browser.createTab}
           onActivateTab={browser.activateTab}
+          onNavigateTab={browser.navigateTab}
           onCloseTab={browser.closeTab}
         />
       )}
@@ -5306,6 +5528,7 @@ export function App() {
                   flightStyle={checklistFlight.flightStyle}
                   flying={checklistFlight.flying}
                   entering={checklistFlight.entering}
+                  exiting={checklistCompletionExit.exiting}
                   registerElement={checklistFlight.registerPanel}
                 />
               )}
@@ -5448,6 +5671,17 @@ export function App() {
             onQueueRemove={removeQueuedItem}
             onPetCommand={togglePet}
             onCompactCommand={handleCompactCommand}
+            annotations={draftsForConversation(annotationDrafts, activeConversationId ?? '')}
+            onRemoveAnnotation={annotationId =>
+              setAnnotationDrafts(current =>
+                activeConversationId ? removeAnnotationDraft(current, activeConversationId, annotationId) : current,
+              )
+            }
+            onEditAnnotationComment={(annotationId, comment) =>
+              setAnnotationDrafts(current =>
+                activeConversationId ? updateAnnotationComment(current, activeConversationId, annotationId, comment) : current,
+              )
+            }
             value={composerValue}
             onValueChange={setComposerValue}
             busy={activeConversationId ? runningConversations.has(activeConversationId) : false}
@@ -5532,6 +5766,7 @@ export function App() {
           flightStyle={checklistFlight.flightStyle}
           flying={checklistFlight.flying}
           entering={checklistFlight.entering}
+          exiting={checklistCompletionExit.exiting}
           registerElement={checklistFlight.registerPanel}
         />,
         document.body,

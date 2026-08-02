@@ -256,6 +256,27 @@
   }
 }
 
+/* Exit: the COMPLETED list leaves (user order, 2026-08-01) — the exact
+ * reverse of the entrance, same genie family, same duration, so arrival
+ * and departure read as one object moving. Driven by
+ * useChecklistCompletionExit AFTER the dwell; never applied under
+ * reduced motion (the component gates it AND the kill block below
+ * zeroes it). */
+.checklist-exit {
+  animation: checklist-genie-out 260ms var(--modal-ease) forwards;
+  transform-origin: bottom center;
+}
+@keyframes checklist-genie-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+}
+
 /* ── prefers-reduced-motion: EVERYTHING in this file goes instant ── */
 @media (prefers-reduced-motion: reduce) {
   .checklist-panel,
@@ -268,6 +289,7 @@
     transition: none !important;
   }
   .checklist-enter,
+  .checklist-exit,
   .checklist-row.is-done .checklist-check path {
     animation: none !important;
   }

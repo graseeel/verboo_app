@@ -28,7 +28,7 @@ impl BrowserPlatformError {
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
-pub use macos::{attach_bridge, evaluate, snapshot_png, BridgeHandle};
+pub use macos::{attach_bridge, evaluate, set_media_suspended, snapshot_png, BridgeHandle};
 
 #[cfg(windows)]
 mod windows;

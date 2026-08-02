@@ -204,6 +204,16 @@ function extractTsTypeFields(tsSource: string, typeName: string): string[] {
  * boundary structs. GoalState is covered by goalState.contract.test.ts
  * (numeric limits, not key shape) — listed here too because it has
  * rename_all and a TS counterpart, so the key-shape contract applies.
+ *
+ * ARMADILHA DECLARADA (não mude o comportamento sem cuidado): struct
+ * Rust rename_all SEM entrada neste mapa é PULADA EM SILÊNCIO pelo
+ * loop abaixo (`if (!tsName) continue // out of scope`). Ou seja: a
+ * proteção é OPT-IN — quem adiciona struct nova de fronteira no Rust e
+ * esquece a linha aqui NÃO recebe aviso nenhum, e a fronteira fica
+ * desprotegida sem barulho (foi o que aconteceu com Annotation na F0).
+ * Não torne o pulo barulhento por conta própria: structs Rust que
+ * legitimamente NÃO têm par TS começariam a falhar. Se um dia quiser
+ * barulho, faça com uma lista branca explícita de "sem par TS, ok".
  */
 const RUST_TO_TS_NAME: Record<string, string> = {
   TokenUsage: 'TokenUsage',
@@ -215,6 +225,15 @@ const RUST_TO_TS_NAME: Record<string, string> = {
   // T1-TodoWrite: the checklist item crossing inside RuntimeActivity
   // (types.rs). `active_form` → `activeForm` is the trap pair.
   TodoItem: 'TodoItem',
+  // F0-Annotations: persisted user annotation anchored on a transcript
+  // segment (types.rs:954). Multi-word trap fields: `segment_id`,
+  // `occurrence_index`, `created_at`.
+  Annotation: 'Annotation',
+  // F3-Annotations: the turn request now carries `annotations` (types.rs
+  // AgentTurnRequest, #[serde(default)] — absence tolerated). The whole
+  // struct crosses the send_turn bridge, so every rename_all field is
+  // contract-covered here.
+  AgentTurnRequest: 'AgentTurnRequest',
 }
 
 describe('G-C12-4: Rust serde camelCase ↔ TS type contract (source-text)', () => {

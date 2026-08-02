@@ -109,12 +109,47 @@ struct BrowserTabRuntime {
     messages: Arc<Mutex<BrowserBridgeQueue>>,
 }
 
+mod panel_visibility {
+    #[derive(Default)]
+    pub(crate) struct State {
+        visible: bool,
+    }
+
+    impl State {
+        pub(crate) fn is_visible(&self) -> bool {
+            self.visible
+        }
+
+        /// The model flag is committed only after the native transition
+        /// succeeds. Keeping the field private makes this the only route
+        /// for changing the internal visibility state.
+        pub(crate) fn set_after_native<F>(
+            &mut self,
+            visible: bool,
+            native_transition: F,
+        ) -> Result<(), String>
+        where
+            F: FnOnce() -> Result<(), String>,
+        {
+            native_transition()?;
+            self.visible = visible;
+            Ok(())
+        }
+    }
+}
+
 #[derive(Default)]
 struct BrowserPanelInner {
     session: BrowserSessionModel,
     tabs: HashMap<BrowserTabId, BrowserTabRuntime>,
     bounds: Option<BrowserBounds>,
-    visible: bool,
+    visibility: panel_visibility::State,
+}
+
+impl BrowserPanelInner {
+    fn snapshot(&self) -> BrowserSessionSnapshot {
+        self.session.snapshot(self.visibility.is_visible())
+    }
 }
 
 impl BrowserPanelState {
@@ -366,7 +401,7 @@ pub fn browser_drain_messages(
     state: State<'_, BrowserPanelState>,
     tab_id: BrowserTabId,
 ) -> Result<Vec<String>, String> {
-    let mut inner = state.lock();
+    let inner = state.lock();
     let runtime = inner
         .tabs
         .get(&tab_id)
@@ -567,7 +602,7 @@ pub fn start_runtime_smoke(app: AppHandle, report_path: PathBuf) {
         let (report, exit_code) = match result {
             Ok(report) => (report, 0),
             Err(error) => {
-                let _ = destroy_smoke_webview(&app);
+                let _ = destroy_smoke_webview(&app).await;
                 (BrowserRuntimeSmokeReport {
                     success: false,
                     navigated: false,
@@ -599,6 +634,37 @@ pub fn start_runtime_smoke(app: AppHandle, report_path: PathBuf) {
 const SMOKE_STEP_TIMEOUT: Duration = Duration::from_secs(10);
 const SMOKE_PAGE_READY_POLL: Duration = Duration::from_millis(50);
 const SMOKE_PAGE_READY_ATTEMPTS: usize = 400;
+
+/// F4-EVICT (2026-08-02) — TETO ANTI-CATASTROFE POR CONTAGEM.
+///
+/// MEDIDO (F4-MEASURE, 3 corridas, mediana; RSS incremental por PID):
+///   página leve (example.com):     31.696 KB por aba
+///   página pesada (youtube vídeo): 737.120 KB por aba
+///   (leve: 31696/31568/31728 — pesada: 737120/714640/754576)
+///
+/// ISTO NÃO É UM TETO DE MEMÓRIA. A diferença de ~23x entre leve e
+/// pesada torna impossível derivar um teto de memória por contagem: 8
+/// abas LEVES dão ~250 MB (irrelevante), 8 abas PESADAS dariam ~5,8 GB
+/// e o app morreria antes. Um teto derivado de orçamento sairia em 3 ou
+/// 4; o 8 aqui NÃO protege memória — ele evita a catástrofe de vinte
+/// abas e preserva o caso TÍPICO (usuário com algumas abas abertas,
+/// despejo não-agressivo, e a promessa F2/F3: aba viva volta exatamente
+/// de onde estava). O trade-off é deliberado: proteção de memória
+/// real exige teto por PESO — RSS por PID em runtime, que a harness
+/// da F1 (F4-MEASURE) já sabe ler — e fica como ITEM FUTURO.
+///
+/// 700MB POR ABA FECHADA NÃO É HIGIENE INVISÍVEL. Esta é a conclusão
+/// mais importante: abrir e fechar quatro abas de vídeo numa sessão
+/// normal queima ~2,8 GB que SÓ voltam reiniciando o app — o fork
+/// RETÉM os webviews fechados (os dois retain no Drop do wkwebview;
+/// medido: após fechar 2 abas, 3 processos WebContent continuam vivos,
+/// 680-757 MB). Os dois retain do fork passam a ser o item de MAIOR
+/// PRIORIDADE do navegador, acima de qualquer polimento. E a F4 NÃO os
+/// cobre por construção: este teto conta abas VIVAS, e os órfãos vivem
+/// FORA da contagem. A F4 não vende um limite que não limita — a lacuna
+/// é declarada com todas as letras aqui, para que o leak do fork nunca
+/// seja esquecido ou tratado como cosmético.
+pub const MAX_LIVE_TABS: usize = 8;
 
 /// Start a local HTTP server that serves the two smoke pages.
 ///
@@ -724,7 +790,7 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
     if !wait_for_page_ready(app, &tab1_id).await {
         eprintln!("[smoke] step: wait_for_page_ready tab1 failed/timeout: page not ready");
         report.error = Some("tab 1 page-ready not observed".into());
-        let _ = destroy_smoke_webview(app);
+        let _ = destroy_smoke_webview(app).await;
         return Ok(report);
     }
     eprintln!("[smoke] step: wait_for_page_ready tab1 ok");
@@ -747,7 +813,7 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
     if !wait_for_page_ready(app, &tab2_id).await {
         eprintln!("[smoke] step: wait_for_page_ready tab2 failed/timeout: page not ready");
         report.error = Some("tab 2 page-ready not observed".into());
-        let _ = destroy_smoke_webview(app);
+        let _ = destroy_smoke_webview(app).await;
         return Ok(report);
     }
     eprintln!("[smoke] step: wait_for_page_ready tab2 ok");
@@ -810,12 +876,12 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
     // ── step: close both tabs ─────────────────────────────────
     let mut closed = 0usize;
     eprintln!("[smoke] step: close tab1 starting");
-    match browser_tab_close(app.state(), tab1_id) {
+    match browser_tab_close(app.state(), tab1_id).await {
         Ok(_) => { eprintln!("[smoke] step: close tab1 ok"); closed += 1; }
         Err(e) => { eprintln!("[smoke] step: close tab1 failed/timeout: {e}"); report.error = Some(format!("close tab 1 failed: {e}")); }
     }
     eprintln!("[smoke] step: close tab2 starting");
-    match browser_tab_close(app.state(), tab2_id) {
+    match browser_tab_close(app.state(), tab2_id).await {
         Ok(_) => { eprintln!("[smoke] step: close tab2 ok"); closed += 1; }
         Err(e) => { eprintln!("[smoke] step: close tab2 failed/timeout: {e}"); report.error = Some(format!("close tab 2 failed: {e}")); }
     }
@@ -834,9 +900,307 @@ async fn run_runtime_smoke(app: &AppHandle) -> Result<BrowserRuntimeSmokeReport,
         ));
     }
 
+    // F2-PAUSE (2026-08-02) — PROVA PERSISTENTE com as DUAS metades
+    // juntas, como exigido pelo QA: a mídia PAUSA (video.paused === true)
+    // E o documento NÃO é descarregado (a URL continua a original, não
+    // about:blank). Sem as duas asserções no MESMO teste, alguém poderia
+    // "consertar" a pausa navegando para about:blank e a fase passaria
+    // morta. PROXY DECLARADO: video.paused é a propriedade padrão de
+    // mídia <video>/<audio> — Web Audio API e WebRTC NÃO passam por ela;
+    // esse é o limite do proxy, aceito pelo QA. O teste roda no smoke
+    // runtime (só funciona em release, nunca em debug — regra da base).
+    //
+    // Nota de validade: o youtube carrega pausado (autoplay com som é
+    // bloqueado pela política). Por isso a prova DÁ PLAY (muted, que a
+    // política permite) e confirma paused=false ANTES — senão "paused=true
+    // depois" provaria que o comando pausou, e não que já estava pausado.
+    eprintln!("[smoke] F2-PAUSE: provando que suspender pausa SEM descarregar");
+    #[cfg(target_os = "macos")]
+    {
+        let bounds = BrowserBounds { x: 40.0, y: 80.0, width: 480.0, height: 360.0 };
+        let _open = browser_session_open(app.state(), bounds);
+        let create = browser_tab_create(app.clone(), app.state(), Some("https://www.youtube.com".into()));
+        match create {
+            Ok(snap) => {
+                let tab = snap.active_tab_id.unwrap_or_default();
+                if wait_for_page_ready(app, &tab).await {
+                    eprintln!("[smoke] F2-PAUSE: youtube page-ready ok");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2000));
+                let gen: u64 = { let s = app.state::<BrowserPanelState>(); let g = s.lock().session.current_generation(&tab).unwrap_or(0); g };
+                let play_script = "(()=>{const v=document.querySelector('video'); if(v){v.muted=true; v.play();} return 'play-ok';})()";
+                let probe_script = "JSON.stringify({paused: (()=>{const v=document.querySelector('video')||document.querySelector('audio'); return v? v.paused : null})(), url: location.href})";
+                let _ = browser_evaluate_script(app.state(), tab.clone(), gen, play_script.into()).await;
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                let playing = match browser_evaluate_script(app.state(), tab.clone(), gen, probe_script.into()).await {
+                    Ok(r) => r.value, Err(e) => format!("eval-falhou: {e}"),
+                };
+                eprintln!("[smoke] F2-PAUSE: antes (deve estar paused=false): {playing}");
+
+                let _ = browser_tab_set_media_suspended(app.state(), tab.clone(), true).await;
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let suspended = match browser_evaluate_script(app.state(), tab.clone(), gen, probe_script.into()).await {
+                    Ok(r) => r.value, Err(e) => format!("eval-falhou: {e}"),
+                };
+                eprintln!("[smoke] F2-PAUSE: suspenso: {suspended}");
+
+                // DUAS METADES JUNTAS:
+                let was_playing = playing.contains("\"paused\":false");
+                let paused = suspended.contains("\"paused\":true");
+                let url_preserved = suspended.contains("youtube") && !suspended.contains("about:blank");
+                if was_playing && paused && url_preserved {
+                    eprintln!("[smoke] F2-PAUSE: >>> PROVA OK (mídia tocava → pausou; URL preservada, não about:blank)");
+                } else {
+                    eprintln!("[smoke] F2-PAUSE: >>> FALHOU — was_playing={was_playing} paused={paused} url_preserved={url_preserved}");
+                    report.error = Some(format!(
+                        "F2-PAUSE: was_playing={was_playing} paused={paused} url_preserved={url_preserved}"
+                    ));
+                }
+
+                // ABERTO: devolve controle com pausa determinística — o
+                // smoke mediu que o desbloqueio SOZINHO retoma autoplay;
+                // o comando agora encadeia a pausa. Asserção: após o par,
+                // nada tocando E URL preservada.
+                let _ = browser_tab_set_media_suspended(app.state(), tab.clone(), false).await;
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                let reopened = match browser_evaluate_script(app.state(), tab.clone(), gen, probe_script.into()).await {
+                    Ok(r) => r.value, Err(e) => format!("eval-falhou: {e}"),
+                };
+                eprintln!("[smoke] F2-PAUSE: reaberto (deve estar paused=true, URL youtube): {reopened}");
+                let reopened_paused = reopened.contains("\"paused\":true");
+                let reopened_preserved = reopened.contains("youtube") && !reopened.contains("about:blank");
+                if reopened_paused && reopened_preserved {
+                    eprintln!("[smoke] F2-PAUSE: >>> ABERTO OK (controle devolvido, nada tocando, URL preservada)");
+                } else {
+                    eprintln!("[smoke] F2-PAUSE: >>> ABERTO FALHOU — paused={reopened_paused} preserved={reopened_preserved}");
+                    if report.error.is_none() {
+                        report.error = Some(format!(
+                            "F2-PAUSE ABERTO: paused={reopened_paused} preserved={reopened_preserved}"
+                        ));
+                    }
+                }
+                let _ = browser_tab_close(app.state(), tab).await;
+            }
+            Err(e) => eprintln!("[smoke] F2-PAUSE: criação falhou: {e}"),
+        }
+    }
+
+    // F3-SURVIVE (2026-08-02) — PROVA de que o webview SOBREVIVE ao
+    // ciclo esconder-mostrar sem ser descartado. Este é o risco que o QA
+    // marcou como o mais perigoso do projeto: o SO pode suspender ou
+    // DESCARTAR uma view nativa oculta sem nos avisar. Se descartar, o
+    // "volta exatamente de onde estava" quebra em silêncio.
+    //
+    // MEDIÇÃO: plantar uma variável de janela (`window.__f3_sentinel`)
+    // com um valor único — ela SÓ sobrevive se o documento NÃO
+    // recarregou. Esconder (set_visible false), ESPERAR, reabrir
+    // (set_visible true), e verificar por evaluate: sentinel preservado
+    // E URL preservada. O sentinel é mais forte que a URL sozinha: a URL
+    // pode ser re-navegada e parecer igual, mas a variável plantada só
+    // existe se o mesmo documento continuou vivo.
+    //
+    // A espera é variável: `F3_HOLD_MS` (default 2s para o smoke rápido;
+    // o Maestro pediu 30s e 2min — rodados como execuções separadas com
+    // env override). Se o SO descartar, o sentinel desaparece e a prova
+    // FALHA — report.error setado, a fase não fecha com a prova vermelha.
+    eprintln!("[smoke] F3-SURVIVE: provando que o webview sobrevive ao ciclo esconder-mostrar");
+    #[cfg(target_os = "macos")]
+    {
+        let hold_ms: u64 = std::env::var("F3_HOLD_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2000);
+        let bounds = BrowserBounds { x: 40.0, y: 80.0, width: 480.0, height: 360.0 };
+        let _open = browser_session_open(app.state(), bounds);
+        let create = browser_tab_create(app.clone(), app.state(), Some("https://www.youtube.com".into()));
+        match create {
+            Ok(snap) => {
+                let tab = snap.active_tab_id.unwrap_or_default();
+                if wait_for_page_ready(app, &tab).await {
+                    eprintln!("[smoke] F3-SURVIVE: youtube page-ready ok");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+                let gen: u64 = { let s = app.state::<BrowserPanelState>(); let g = s.lock().session.current_generation(&tab).unwrap_or(0); g };
+                // Planta o sentinel: valor único que só sobrevive se o
+                // documento NÃO recarregou.
+                let sentinel = format!("f3-{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+                let plant = format!("window.__f3_sentinel = {sentinel:?}; 'planted'");
+                match browser_evaluate_script(app.state(), tab.clone(), gen, plant.into()).await {
+                    Ok(r) => eprintln!("[smoke] F3-SURVIVE: sentinel plantado: {sentinel} ({})", r.value),
+                    Err(e) => eprintln!("[smoke] F3-SURVIVE: plant falhou: {e}"),
+                }
+
+                // Esconde pelo MESMO comando usado pela produção. O smoke
+                // também lê a view nativa: se set_visible voltar a ser só
+                // uma mudança no modelo Rust, esta fase fica vermelha.
+                let runtime_webview = {
+                    let st = app.state::<BrowserPanelState>();
+                    let inner = st.lock();
+                    inner.tabs.get(&tab).map(|rt| rt.webview.clone())
+                };
+                let observe_native_hidden = || {
+                    runtime_webview
+                        .as_ref()
+                        .ok_or_else(|| format!("F3-SURVIVE: runtime {tab} não encontrado"))
+                        .and_then(native_webview_hidden)
+                };
+                let hidden_native = match browser_session_set_visible(app.state(), false) {
+                    Ok(snapshot) => match observe_native_hidden() {
+                        Ok(hidden) => {
+                            eprintln!(
+                                "[smoke] F3-SURVIVE: set_visible(false) → visible={} native_hidden={hidden}",
+                                snapshot.visible
+                            );
+                            hidden
+                        }
+                        Err(error) => {
+                            eprintln!("[smoke] F3-SURVIVE: probe hide falhou: {error}");
+                            false
+                        }
+                    },
+                    Err(error) => {
+                        eprintln!("[smoke] F3-SURVIVE: set_visible(false) falhou: {error}");
+                        false
+                    }
+                };
+                if !hidden_native && report.error.is_none() {
+                    report.error = Some("F3-SURVIVE: set_visible(false) não ocultou a view nativa".into());
+                }
+                eprintln!("[smoke] F3-SURVIVE: webview NATIVO escondido pelo comando, esperando {hold_ms}ms...");
+                std::thread::sleep(std::time::Duration::from_millis(hold_ms));
+
+                // REABRE pelo mesmo comando e verifica também que a view
+                // nativa voltou a ficar visível antes do sentinel + URL.
+                let shown_native = match browser_session_set_visible(app.state(), true) {
+                    Ok(snapshot) => match observe_native_hidden() {
+                        Ok(hidden) => {
+                            eprintln!(
+                                "[smoke] F3-SURVIVE: set_visible(true) → visible={} native_hidden={hidden}",
+                                snapshot.visible
+                            );
+                            !hidden
+                        }
+                        Err(error) => {
+                            eprintln!("[smoke] F3-SURVIVE: probe show falhou: {error}");
+                            false
+                        }
+                    },
+                    Err(error) => {
+                        eprintln!("[smoke] F3-SURVIVE: set_visible(true) falhou: {error}");
+                        false
+                    }
+                };
+                if !shown_native && report.error.is_none() {
+                    report.error = Some("F3-SURVIVE: set_visible(true) não mostrou a view nativa".into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let probe_script = format!(
+                    "JSON.stringify({{sentinel: window.__f3_sentinel ?? null, url: location.href}})"
+                );
+                let after = match browser_evaluate_script(app.state(), tab.clone(), gen, probe_script.into()).await {
+                    Ok(r) => r.value, Err(e) => format!("eval-falhou: {e}"),
+                };
+                eprintln!("[smoke] F3-SURVIVE: após reabrir ({hold_ms}ms escondido): {after}");
+
+                let sentinel_alive = after.contains(&sentinel);
+                let url_preserved = after.contains("youtube") && !after.contains("about:blank");
+                if sentinel_alive && url_preserved {
+                    eprintln!("[smoke] F3-SURVIVE: >>> PROVA OK ({hold_ms}ms: documento sobreviveu — sentinel e URL intactos)");
+                } else {
+                    eprintln!("[smoke] F3-SURVIVE: >>> FALHOU ({hold_ms}ms: documento foi DESCARTADO — sentinel={sentinel_alive} url={url_preserved})");
+                    if report.error.is_none() {
+                        report.error = Some(format!(
+                            "F3-SURVIVE {hold_ms}ms: sentinel_alive={sentinel_alive} url_preserved={url_preserved} — SO pode ter descartado a view oculta"
+                        ));
+                    }
+                }
+                let _ = browser_tab_close(app.state(), tab).await;
+            }
+            Err(e) => eprintln!("[smoke] F3-SURVIVE: criação falhou: {e}"),
+        }
+    }
+
+    // F4-EVICT (2026-08-02) — PROVA PERSISTENTE: despejar destrói o
+    // webview mas MANTÉM a entrada da aba; reativar recria o webview e
+    // navega para a URL guardada. O ciclo prova o contrato do teto: a
+    // aba sobrevive ao despejo com identidade (id, url), e volta a ser
+    // navegável sem recriar do zero.
+    eprintln!("[smoke] F4-EVICT: provando despejo-preserva + reativação-navega");
+    #[cfg(target_os = "macos")]
+    {
+        let bounds = BrowserBounds { x: 40.0, y: 80.0, width: 480.0, height: 360.0 };
+        let _open = browser_session_open(app.state(), bounds);
+        let create = browser_tab_create(app.clone(), app.state(), Some("https://www.youtube.com".into()));
+        match create {
+            Ok(snap) => {
+                let tab = snap.active_tab_id.unwrap_or_default();
+                if wait_for_page_ready(app, &tab).await {
+                    eprintln!("[smoke] F4-EVICT: youtube page-ready ok");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+
+                // 1. DESPEJA: entrada preservada, evicted=true, URL guardada.
+                let evicted = match browser_tab_evict(app.state(), tab.clone()).await {
+                    Ok(s) => s,
+                    Err(e) => { eprintln!("[smoke] F4-EVICT: evict falhou: {e}"); return Ok(report); }
+                };
+                let evicted_tab = evicted.tabs.iter().find(|t| t.id == tab).cloned();
+                match &evicted_tab {
+                    Some(t) => eprintln!("[smoke] F4-EVICT: após evict — id={} evicted={} url={}",
+                        t.id, t.evicted, t.url),
+                    None => eprintln!("[smoke] F4-EVICT: >>> FALHOU — aba sumiu do session após evict"),
+                }
+                let entry_preserved = evicted_tab.as_ref().map(|t| t.evicted && t.url.contains("youtube")).unwrap_or(false);
+
+                // 2. REATIVA: webview recriado, navega para a URL guardada.
+                let reactivated = match browser_tab_reactivate(app.clone(), app.state(), tab.clone()) {
+                    Ok(s) => s,
+                    Err(e) => { eprintln!("[smoke] F4-EVICT: reactivate falhou: {e}"); return Ok(report); }
+                };
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                let react_tab = reactivated.tabs.iter().find(|t| t.id == tab).cloned();
+                match &react_tab {
+                    Some(t) => eprintln!("[smoke] F4-EVICT: após reactivate — evicted={} url(no snapshot)={}", t.evicted, t.url),
+                    None => eprintln!("[smoke] F4-EVICT: >>> FALHOU — aba sumiu após reactivate"),
+                }
+                // A promessa da F4: a entrada saiu do estado evicted (o
+                // webview foi recriado). A URL no SNAPSHOT pode estar
+                // desatualizada — bug PRÉ-EXISTENTE: o caminho de criação
+                // navega via webview.navigate sem begin_navigation, então o
+                // session model não sincroniza a URL (também afeta o create
+                // normal). A navegação REAL é provada pelo `alive` abaixo
+                // (evaluate no documento recriado).
+                let reactivated_ok = react_tab.as_ref().map(|t| !t.evicted).unwrap_or(false);
+
+                // Confirma que o webview recriado responde (navegável) E
+                // está na URL guardada — a prova real da reativação.
+                let gen: u64 = { let s = app.state::<BrowserPanelState>(); let g = s.lock().session.current_generation(&tab).unwrap_or(0); g };
+                let alive = match browser_evaluate_script(app.state(), tab.clone(), gen,
+                    "JSON.stringify({url: location.href})".into()).await {
+                    Ok(r) => r.value.contains("youtube"),
+                    Err(_) => false,
+                };
+                eprintln!("[smoke] F4-EVICT: webview reativado responde a evaluate: {alive}");
+
+                if entry_preserved && reactivated_ok && alive {
+                    eprintln!("[smoke] F4-EVICT: >>> PROVA OK (despejo preserva entrada; reativação recria webview e navega)");
+                } else {
+                    eprintln!("[smoke] F4-EVICT: >>> FALHOU — entry_preserved={entry_preserved} reactivated_ok={reactivated_ok} alive={alive}");
+                    if report.error.is_none() {
+                        report.error = Some(format!(
+                            "F4-EVICT: entry_preserved={entry_preserved} reactivated_ok={reactivated_ok} alive={alive}"
+                        ));
+                    }
+                }
+                let _ = browser_tab_close(app.state(), tab).await;
+            }
+            Err(e) => eprintln!("[smoke] F4-EVICT: criação falhou: {e}"),
+        }
+    }
+
     // ── step: destroy session ─────────────────────────────────
     eprintln!("[smoke] step: destroy starting");
-    report.destroyed = destroy_smoke_webview(app);
+    report.destroyed = destroy_smoke_webview(app).await;
     eprintln!("[smoke] step: destroy {}",
         if report.destroyed { "ok" } else { "failed" });
 
@@ -916,8 +1280,8 @@ async fn wait_for_ui_turn(app: &AppHandle) -> bool {
 }
 
 /// Destroy the smoke webviews after the lifecycle assertions finish.
-fn destroy_smoke_webview(app: &AppHandle) -> bool {
-    match browser_session_destroy(app.state()) {
+async fn destroy_smoke_webview(app: &AppHandle) -> bool {
+    match browser_session_destroy(app.state()).await {
         Ok(()) => true,
         Err(e) => { eprintln!("[smoke] destroy failed: {e}"); false }
     }
@@ -935,6 +1299,87 @@ async fn evaluate_script(
         .map_err(|_| "eval timed out".to_string())?
         .map_err(|error| error.message)?;
     Ok(EvaluateReport { ms: started.elapsed().as_millis(), value })
+}
+
+// F1-AUDIO (2026-08-02) — constantes da sondagem de descarregamento.
+const UNLOAD_POLL_MS: u64 = 20;
+const UNLOAD_BUDGET_MS: u64 = 500;
+
+/// F1-AUDIO (2026-08-02) — fecha uma tab parando a mídia de verdade:
+/// navega para about:blank e ESPERA a confirmação de que o documento
+/// descarregou antes de fechar o webview. Usado por `browser_tab_close`
+/// e `browser_session_destroy` — a garantia de áudio é compartilhada.
+///
+/// ORÇAMENTO TOTAL (correção QA 2026-08-02): o teto é de 500ms DE
+/// ORÇAMENTO TOTAL, não 500ms por iteração. O `evaluate_script` interno
+/// tem timeout próprio de 5s — se cada sondagem consumisse os 5s, dez
+/// sondagens somariam 50s e o teto declarado não valeria nada. Por isso
+/// cada chamada é envolta em `tokio::time::timeout(remaining, ...)` com
+/// o TEMPO RESTANTE do orçamento: o pior caso real é 500ms, não
+/// `n × 5s`. O timeout externo cai no mesmo ramo de erro da sondagem
+/// (segue sondando ou sai pelo teto e loga) — comportamento declarado
+/// não muda, só passa a ser verdadeiro.
+///
+/// O `bool` retornado é true quando o descarregamento foi confirmado
+/// (documento virou about:blank) e false quando o teto foi atingido sem
+/// confirmação — o caller loga e segue fechando mesmo assim (nunca
+/// travamos a UI por causa de um webview que não confirma).
+async fn unload_and_close_webview(
+    state: &State<'_, BrowserPanelState>,
+    tab_id: &BrowserTabId,
+) -> bool {
+    // Navegar para about:blank com o runtime ainda no map (a sondagem
+    // endereça a tab por id). O MutexGuard não cruza o await abaixo.
+    {
+        let mut inner = state.lock();
+        if let Some(runtime) = inner.tabs.get_mut(tab_id) {
+            if let Ok(blank_url) = parse_url_for_panel("about:blank") {
+                if let Err(e) = runtime.webview.navigate(blank_url) {
+                    eprintln!(
+                        "[browser_unload] navigate(about:blank) falhou para {tab_id}: {e}"
+                    );
+                }
+            }
+        }
+    }
+
+    let poll_started = std::time::Instant::now();
+    let mut unloaded = false;
+    while poll_started.elapsed().as_millis() < UNLOAD_BUDGET_MS as u128 {
+        let remaining = UNLOAD_BUDGET_MS.saturating_sub(poll_started.elapsed().as_millis() as u64);
+        if remaining == 0 {
+            break;
+        }
+        // String() força NSString — boolean JS puro viraria NSNumber(1)
+        // cujo description é "1" e nunca casaria com "true".
+        let is_blank = tokio::time::timeout(
+            std::time::Duration::from_millis(remaining),
+            evaluate_script(
+                state,
+                (*tab_id).clone(),
+                "String(document.location.href === 'about:blank')".into(),
+            ),
+        )
+        .await;
+        match is_blank {
+            Ok(Ok(report)) if report.value.trim() == "true" => {
+                unloaded = true;
+                break;
+            }
+            _ => {
+                // evaluate pode falhar (stale, timeout, webview morto) —
+                // sinal ambíguo; continua sondando até o orçamento total.
+                tokio::time::sleep(std::time::Duration::from_millis(UNLOAD_POLL_MS)).await;
+            }
+        }
+    }
+    if !unloaded {
+        eprintln!(
+            "[browser_unload] about:blank não confirmado em {UNLOAD_BUDGET_MS}ms para {tab_id} \
+             (medição real: 14ms leve, 30ms youtube) — fechando sem confirmação"
+        );
+    }
+    unloaded
 }
 
 async fn capture_snapshot_bytes(
@@ -1020,6 +1465,29 @@ fn current_webview(state: &State<'_, BrowserPanelState>, tab_id: &str) -> Result
         .get(tab_id)
         .map(|rt| rt.webview.clone())
         .ok_or_else(|| format!("{tab_id} sem runtime"))
+}
+
+/// Reads the native child-view visibility on the UI thread. This is smoke
+/// instrumentation only: the production path uses Tauri's portable
+/// `Webview::hide/show`, while the macOS smoke needs an observable native
+/// effect so a model-only visibility update cannot pass.
+#[cfg(target_os = "macos")]
+fn native_webview_hidden(webview: &Webview<Wry>) -> Result<bool, String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    webview
+        .with_webview(move |platform_webview| {
+            // SAFETY: Tauri gives this closure the live WKWebView pointer on
+            // the AppKit main thread. WKWebView is an NSView subclass, and
+            // the pointer is used only for the duration of this callback.
+            let view = unsafe {
+                &*(platform_webview.inner() as *const objc2_app_kit::NSView)
+            };
+            let _ = sender.send(view.isHiddenOrHasHiddenAncestor());
+        })
+        .map_err(|error| format!("ler visibilidade nativa falhou: {error}"))?;
+    receiver
+        .recv_timeout(Duration::from_secs(1))
+        .map_err(|error| format!("aguardar visibilidade nativa falhou: {error}"))
 }
 
 // ── bridge plumbing (ungated — 3 SOs) ────────────────────────────
@@ -1159,8 +1627,8 @@ pub fn browser_session_open(
     }
     let mut inner = state.lock();
     inner.bounds = Some(bounds);
-    inner.visible = true;
-    Ok(inner.session.snapshot(inner.visible))
+    set_panel_visibility(&mut inner, true)?;
+    Ok(inner.snapshot())
 }
 
 #[tauri::command]
@@ -1168,7 +1636,7 @@ pub fn browser_session_snapshot(
     state: State<'_, BrowserPanelState>,
 ) -> Result<BrowserSessionSnapshot, String> {
     let inner = state.lock();
-    Ok(inner.session.snapshot(inner.visible))
+    Ok(inner.snapshot())
 }
 
 #[tauri::command]
@@ -1177,25 +1645,38 @@ pub fn browser_session_set_visible(
     visible: bool,
 ) -> Result<BrowserSessionSnapshot, String> {
     let mut inner = state.lock();
-    inner.visible = visible;
-    Ok(inner.session.snapshot(inner.visible))
+    set_panel_visibility(&mut inner, visible)?;
+    Ok(inner.snapshot())
 }
 
 #[tauri::command]
-pub fn browser_session_destroy(
+pub async fn browser_session_destroy(
     state: State<'_, BrowserPanelState>,
 ) -> Result<(), String> {
-    let mut inner = state.lock();
-    let tab_ids: Vec<BrowserTabId> = inner.tabs.keys().cloned().collect();
-    for id in tab_ids {
-        if let Some(runtime) = inner.tabs.remove(&id) {
-            let _ = runtime.webview.close();
+    // F1-AUDIO (2026-08-02): o destroy do painel fecha TODAS as tabs com
+    // a MESMA garantia do X da aba — `unload_and_close_webview` (navegar
+    // about:blank + sondar com orçamento total). Antes, fechava bruto
+    // (close direto) e o áudio continuava tocando exatamente como no
+    // browser_tab_close original. O helper compartilhado garante que
+    // nenhum caminho de fechamento deixe mídia órfã.
+    let tab_ids: Vec<BrowserTabId> = {
+        let inner = state.lock();
+        inner.tabs.keys().cloned().collect()
+    };
+    for id in &tab_ids {
+        let _ = unload_and_close_webview(&state, id).await;
+        let mut inner = state.lock();
+        if let Some(runtime) = inner.tabs.remove(id) {
+            if let Err(e) = runtime.webview.close() {
+                eprintln!("[browser_session_destroy] webview.close() falhou para {id}: {e}");
+            }
             // runtime.bridge drops here, unregistering the native handler.
         }
-        let _ = inner.session.close(&id);
+        let _ = inner.session.close(id);
     }
+    let mut inner = state.lock();
     inner.bounds = None;
-    inner.visible = false;
+    set_panel_visibility(&mut inner, false)?;
     Ok(())
 }
 
@@ -1209,25 +1690,215 @@ pub fn browser_tab_create(
     // gate preserves the single-file creation order when multiple create
     // requests arrive together.
     let _creation_guard = state.lock_tab_creation();
+    let tab_id = format!("verboo-browser-{}", next_label_seq());
+    create_webview_with_id(&app, &state, &tab_id, url.as_deref().unwrap_or("about:blank"))?;
+    let inner = state.lock();
+    smoke_create_trace("browser_tab_create returning");
+    Ok(inner.snapshot())
+}
 
-    // Bounds come from the session — set once by browser_session_open.
-    // The renderer never re-sends them.
+/// FRENTE-GOOGLE (2026-08-02): User-Agent das ABAS do navegador embutido.
+///
+/// PROBLEMA MEDIDO (probe descartável em runtime, macOS 27.0): a WKWebView
+/// sem UA customizado envia
+///   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15
+///    (KHTML, like Gecko)"
+/// SEM o sufixo "Version/X.Y Safari/605.1.15" que o Safari real anexa.
+///
+/// O Google checa RECÊNCIA do token Version, não coerência. Medido em
+/// 2026-08-02 (curl -A, mesmo base, só variando o token Version):
+///   ausenta                         ->  84.446 bytes, name="f"       (ANTIGO)
+///   Version/27.0 Safari/605.1.15    -> 217.923 bytes, role="search"  (MODERNO)
+///   Version/15.0 Safari/605.1.15    ->  65.358 bytes, name="f"       (ANTIGO)
+///   Version/9.0  Safari/605.1.15    ->  84.616 bytes, name="f"       (ANTIGO)
+///   Linux X11, Version/8.0          ->  84.805 bytes, name="f"       (ANTIGO)
+///   Linux X11, Version/17.0         -> 212.671 bytes, role="search"  (MODERNO)
+///   Windows, Chrome/131 (Edge)      -> 224.051 bytes, role="search"  (MODERNO)
+/// Version/15.0 é PERFEITAMENTE coerente com AppleWebKit/605.1.15 e mesmo
+/// assim leva o layout velho. Consequência: chumbar a versão reintroduz o
+/// defeito sozinho quando o Safari avançar. Por isso:
+///   - macOS: a versão de marketing é LIDA EM RUNTIME do bundle do Safari
+///     (app de sistema, sempre presente) via NSBundle — o parser do SISTEMA
+///     trata plist XML E binário, sem parser nosso;
+///   - Linux: não há Safari para ler — o valor vem do FALLBACK (declarado
+///     na constante), SUBSTITUINDO o token Version/ que o WebKitGTK traz
+///     (anexar não resolve: o default dele tem Version/ velho);
+///   - Windows: WebView2 é motor Chromium — o UA default já é Chrome/Edge
+///     moderno (medido acima); forçar um UA Safari no Windows seria pior
+///     para os sites. Sem override.
+#[cfg(target_os = "macos")]
+const BROWSER_TAB_UA_BASE: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)";
+
+/// Prefixo plausível do default do WebKitGTK (Linux), COM o token
+/// Version/8.0 histórico que o Maestro mediu como ANTIGO (84.805 bytes,
+/// name="f").
+/// LIMITE DECLARADO: testamos um UA PLAUSÍVEL do WebKitGTK, não o que a
+/// nossa build realmente manda, porque não temos máquina Linux. A correção
+/// é DEFENSIVA: se o WebKitGTK moderno já mandar Version alto, ela não faz
+/// mal; se mandar 8.0, ela salva. NÃO foi verificado no Linux.
+#[cfg(target_os = "linux")]
+const BROWSER_TAB_UA_BASE_LINUX: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/8.0 Safari/605.1.15";
+
+/// Caminho do BUNDLE do Safari — app de sistema, sempre presente no macOS.
+/// Lido em runtime via NSBundle (trata plist XML e binário); se a leitura
+/// falhar, usamos o fallback declarado.
+#[cfg(target_os = "macos")]
+const SAFARI_BUNDLE_PATH: &str = "/Applications/Safari.app";
+
+/// FALLBACK da versão de marketing. Quando usado — macOS: leitura do bundle
+/// falhou (Safari removido, sandbox); Linux: não há Safari para ler — o
+/// valor é este, 27.0, o Safari no momento do fix (medido). A VERDADE AQUI:
+/// se cair neste caminho e o Safari do sistema avançar muito além de 27.0,
+/// o Google volta a servir o layout antigo — a derivação em runtime é o
+/// caminho principal; o fallback é a exceção com degradação conhecida, não
+/// "nada quebra".
+const BROWSER_TAB_SAFARI_MARKETING_VERSION_FALLBACK: &str = "27.0";
+
+/// Monta o User-Agent das abas a partir do UA que o engine forneceria +
+/// a versão de marketing resolvida. Três casos:
+///  1. Já existe " Version/" (WebKitGTK no Linux): SUBSTITUI o token — o
+///     WebKitGTK pode mandar um Version/ velho (medido: 8.0 -> ANTIGO),
+///     então anexar não resolve.
+///  2. Existe " Safari/" sem " Version/": insere o Version/ antes.
+///  3. Nenhum dos dois (WKWebView no macOS): anexa o sufixo completo,
+///     extraindo o build do token AppleWebKit do próprio input ("605.1.15",
+///     congelado pela Apple desde 2017), para o par Version/Safari casar
+///     com o engine.
+fn assemble_browser_tab_user_agent(engine_ua: &str, safari_version: &str) -> String {
+    if let Some(version_pos) = engine_ua.find(" Version/") {
+        let value_start = version_pos + " Version/".len();
+        let value_end = engine_ua[value_start..]
+            .find(' ')
+            .map(|offset| value_start + offset)
+            .unwrap_or(engine_ua.len());
+        return format!(
+            "{} Version/{}{}",
+            &engine_ua[..version_pos],
+            safari_version,
+            &engine_ua[value_end..]
+        );
+    }
+    if let Some(safari_pos) = engine_ua.find(" Safari/") {
+        return format!(
+            "{} Version/{} {}",
+            &engine_ua[..safari_pos],
+            safari_version,
+            &engine_ua[safari_pos + 1..]
+        );
+    }
+    let webkit_build = engine_ua
+        .split("AppleWebKit/")
+        .nth(1)
+        .and_then(|rest| rest.split([' ', '(', ';']).next())
+        .filter(|t| !t.is_empty())
+        .unwrap_or("605.1.15");
+    format!("{engine_ua} Version/{safari_version} Safari/{webkit_build}")
+}
+
+/// Resolve a versão de marketing: runtime quando disponível, fallback senão.
+/// Quando cai no fallback, registra UMA VEZ — a degradação não pode ser
+/// invisível, senão o sintoma ("Google está feio") aparece anos depois sem
+/// ligação com a causa.
+fn resolve_safari_version(runtime: Option<String>) -> String {
+    match runtime {
+        Some(version) => version,
+        None => {
+            static LOGGED: std::sync::Once = std::sync::Once::new();
+            LOGGED.call_once(|| {
+                eprintln!(
+                    "[browser-panel] User-Agent das abas: FALLBACK em uso ({fallback}). \
+                     macOS: a leitura da versão do Safari falhou; Linux: não há Safari \
+                     para ler. Quando o Safari do sistema avançar muito além de \
+                     {fallback}, o Google volta a servir o layout antigo.",
+                    fallback = BROWSER_TAB_SAFARI_MARKETING_VERSION_FALLBACK
+                );
+            });
+            BROWSER_TAB_SAFARI_MARKETING_VERSION_FALLBACK.to_string()
+        }
+    }
+}
+
+/// Lê a versão de marketing do Safari via NSBundle — o parser do SISTEMA
+/// decodifica o Info.plist em XML OU binário, sem parser nosso. None em
+/// qualquer falha (bundle ausente, chave ausente) — o chamador decide o
+/// fallback.
+#[cfg(target_os = "macos")]
+fn read_safari_marketing_version() -> Option<String> {
+    read_short_version_from_bundle(std::path::Path::new(SAFARI_BUNDLE_PATH))
+}
+
+/// Lê e extrai CFBundleShortVersionString de um bundle em `path`.
+/// Separada para o teste de fallback forçar o caminho de falha com um
+/// caminho inexistente.
+#[cfg(target_os = "macos")]
+fn read_short_version_from_bundle(path: &std::path::Path) -> Option<String> {
+    use objc2_foundation::{NSBundle, NSString};
+    let bundle = NSBundle::bundleWithPath(&NSString::from_str(&path.to_string_lossy()))?;
+    let value = bundle.objectForInfoDictionaryKey(&NSString::from_str("CFBundleShortVersionString"))?;
+    value
+        .downcast_ref::<NSString>()
+        .map(|string| string.to_string())
+        .filter(|version| !version.is_empty())
+}
+
+/// Versão de marketing resolvida (runtime ou fallback), cacheada — o bundle
+/// é lido no máximo uma vez por processo.
+#[cfg(target_os = "macos")]
+fn resolved_tab_safari_version() -> &'static str {
+    static CACHED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHED.get_or_init(|| resolve_safari_version(read_safari_marketing_version()))
+}
+
+/// F4-EVICT (2026-08-02): cria (ou RECRIA) o webview de uma aba com um
+/// ID DADO. Compartilhado por `browser_tab_create` (id novo) e por
+/// `browser_tab_reactivate` (id de uma aba despejada — o webview foi
+/// destruído no despejo, esta função o traz de volta).
+///
+/// NOTA DE ROLLBACK: no caminho normal (`browser_tab_create`), o
+/// session model ainda não tem a tab quando esta função roda — a
+/// inserção no session acontece em outro lugar? NÃO: a inserção do
+/// snapshot no session model acontece aqui, via `insert_and_activate`,
+/// ANTES de navegar — para que a aba exista no modelo durante o
+/// navigate e o rollback consiga desfazer. A reativação (evicted)
+/// reutiliza a entrada que já existe no session (desmarca evicted).
+fn create_webview_with_id(
+    app: &AppHandle,
+    state: &State<'_, BrowserPanelState>,
+    tab_id: &BrowserTabId,
+    initial: &str,
+) -> Result<(), String> {
     let bounds = {
         let inner = state.lock();
         resolve_session_bounds(&inner)?
     };
-
     let window = app
         .get_window("main")
         .ok_or_else(|| "janela principal não encontrada".to_string())?;
 
-    let tab_id = format!("verboo-browser-{}", next_label_seq());
-    let initial = url.as_deref().unwrap_or("about:blank");
     let parsed = parse_url_for_panel(initial)?;
-
     let blank = parse_url_for_panel("about:blank")?;
-    let builder = tauri::webview::WebviewBuilder::new(&tab_id, tauri::WebviewUrl::External(blank))
+    let builder = tauri::webview::WebviewBuilder::new(tab_id, tauri::WebviewUrl::External(blank))
         .incognito(true);
+    // FRENTE-GOOGLE (2026-08-02): o Google checa RECÊNCIA do token Version
+    // — chumbar reintroduz o defeito quando o Safari avança. O teste
+    // `tab_builder_sets_user_agent` fica VERMELHO se o `.user_agent` sumir
+    // da cadeia de criação das abas.
+    #[cfg(target_os = "macos")]
+    let builder = builder.user_agent(&assemble_browser_tab_user_agent(
+        BROWSER_TAB_UA_BASE,
+        resolved_tab_safari_version(),
+    ));
+    // Linux: WebKitGTK pode mandar Version/ velho (medido plausível: 8.0 ->
+    // ANTIGO). Sem Safari para ler, o valor vem do FALLBACK (declarado na
+    // constante). Correção DEFENSIVA — ver o LIMITE na constante.
+    #[cfg(target_os = "linux")]
+    let builder = builder.user_agent(&assemble_browser_tab_user_agent(
+        BROWSER_TAB_UA_BASE_LINUX,
+        BROWSER_TAB_SAFARI_MARKETING_VERSION_FALLBACK,
+    ));
+    // Windows (WebView2): motor Chromium — o UA default já é Chrome/Edge
+    // moderno (medido: Chrome/131 -> 224KB role="search" MODERNO). Forçar
+    // um UA Safari no Windows seria pior para os sites. Sem override.
 
     smoke_create_trace("window.add_child starting");
     let webview = window
@@ -1239,57 +1910,138 @@ pub fn browser_tab_create(
         .map_err(|e| format!("add_child falhou: {e}"))?;
     smoke_create_trace("window.add_child completed");
 
-    // Atomic creation: attach the bridge. On failure, destroy the partial
-    // webview and propagate the error — the runtime map and session model
-    // are NOT mutated (try_attach_or_destroy pattern).
+    // F4-EVICT: na REATIVAÇÃO, a entrada evicted já existe no session —
+    // o attach_message_handler (logo abaixo) chama insert_and_activate
+    // que falharia com DuplicateTab. Remove a entrada evicted ANTES do
+    // attach; o attach re-insere fresh (evicted=false) e o navigate no
+    // fim recarrega a URL guardada.
+    {
+        let mut inner = state.lock();
+        if inner.session.tab_evicted(tab_id) {
+            inner.session.remove_tab(tab_id);
+        }
+    }
+
     smoke_create_trace("bridge attach starting");
-    let attach_result = bridge_plumbing::attach_message_handler(&webview, &state, &tab_id);
+    let attach_result = bridge_plumbing::attach_message_handler(&webview, state, tab_id);
     if let Err(error) = attach_result {
         let _ = webview.close();
         return Err(error);
     }
     smoke_create_trace("bridge attach completed");
 
-    // Hide all other tabs, show this one.
     smoke_create_trace("visibility update starting");
     {
         let mut inner = state.lock();
-        let other_ids: Vec<BrowserTabId> = inner
-            .tabs
-            .keys()
-            .filter(|id| id.as_str() != tab_id.as_str())
-            .cloned()
-            .collect();
-        for id in other_ids {
-            if let Some(rt) = inner.tabs.get(&id) {
-                let _ = rt.webview.hide();
-            }
-        }
-        if let Some(rt) = inner.tabs.get(&tab_id) {
-            let _ = rt.webview.show();
-        }
-        inner.visible = true;
+        set_panel_visibility(&mut inner, true)?;
     }
     smoke_create_trace("visibility update completed");
 
     if initial != "about:blank" {
         smoke_create_trace("initial navigation starting");
         if let Err(error) = webview.navigate(parsed) {
-            // Rollback: close the tab we just created.
+            // Rollback: close the tab we just created (only on the
+            // fresh-create path — an evicted tab keeps its entry).
             let mut inner = state.lock();
-            let runtime = inner.tabs.remove(&tab_id);
+            let runtime = inner.tabs.remove(tab_id);
             if let Some(rt) = runtime {
                 let _ = rt.webview.close();
             }
-            let _ = inner.session.close(&tab_id);
+            let _ = inner.session.close(tab_id);
             return Err(format!("navigate inicial falhou: {error}"));
         }
         smoke_create_trace("initial navigation completed");
     }
+    Ok(())
+}
 
+/// F4-EVICT (2026-08-02) — DESPEJA uma aba: destrói o webview (e o
+/// processo WebContent) mas MANTÉM a entrada da aba (id, título, URL,
+/// favicon) no session model. O renderer continua mostrando a aba —
+/// marcada como despejada — e o usuário pode reativá-la, que recria o
+/// webview e navega para a URL guardada.
+///
+/// Usa o MESMO helper do fechamento (`unload_and_close_webview`): o
+/// despejo e o close compartilham o mecanismo de parar mídia e destruir
+/// o webview — um lugar só, como o Maestro exigiu. A diferença é que o
+/// close remove a entrada do session; o evict NÃO.
+///
+/// O teto de abas vivas (F4) chama este comando nas abas em excesso:
+/// o processo WebContent é liberado, a aba permanece visível.
+#[tauri::command]
+pub async fn browser_tab_evict(
+    state: State<'_, BrowserPanelState>,
+    tab_id: BrowserTabId,
+) -> Result<BrowserSessionSnapshot, String> {
+    // Só despeja se a aba existe no session (a entrada sobrevive).
+    {
+        let inner = state.lock();
+        if inner.session.tab_snapshot(&tab_id).is_none() {
+            return Ok(inner.snapshot());
+        }
+    }
+    // A URL guardada vem do DOCUMENTO REAL (evaluate via o caminho do
+    // renderer), não do session model — que é conhecido por desatualizar
+    // (browser_tab_create usa webview.navigate direto, sem
+    // begin_navigation, então o session pode ficar em about:blank mesmo
+    // com a aba em youtube). A URL do documento é o estado que a
+    // reativação deve navegar. Timeout curto (2s) — se o documento não
+    // responder, cai para o session model.
+    let saved_url: Option<String> = {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            evaluate_script(&state, tab_id.clone(), "String(location.href)".into()),
+        )
+        .await
+        {
+            Ok(Ok(report)) if !report.value.is_empty() && report.value != "about:blank" => {
+                Some(report.value)
+            }
+            _ => {
+                // Falhou, timeout ou about:blank — cai para o session model.
+                let inner = state.lock();
+                inner.session.tab_snapshot(&tab_id).map(|t| t.url.clone())
+            }
+        }
+    };
+    let _ = unload_and_close_webview(&state, &tab_id).await;
+    let mut inner = state.lock();
+    let runtime = inner.tabs.remove(&tab_id);
+    if let Some(rt) = runtime {
+        if let Err(e) = rt.webview.close() {
+            eprintln!("[browser_tab_evict] webview.close() falhou para {tab_id}: {e}");
+        }
+        // runtime.bridge drops here.
+    }
+    let _ = inner.session.mark_evicted(&tab_id, true);
+    if let Some(url) = saved_url {
+        let _ = inner.session.set_tab_url(&tab_id, url);
+    }
+    Ok(inner.snapshot())
+}
+
+/// F4-EVICT (2026-08-02) — REATIVA uma aba despejada: recria o webview
+/// e navega para a URL guardada na entrada. O documento recarrega (a
+/// posição de rolagem etc. não é preservada) — a promessa é "a aba
+/// volta na MESMA URL", não "volta no mesmo scroll" (restauração de
+/// scroll só com declaração explícita da UI, opcional barato).
+#[tauri::command(async)]
+pub fn browser_tab_reactivate(
+    app: AppHandle,
+    state: State<'_, BrowserPanelState>,
+    tab_id: BrowserTabId,
+) -> Result<BrowserSessionSnapshot, String> {
+    let _creation_guard = state.lock_tab_creation();
+    let saved_url = {
+        let inner = state.lock();
+        match inner.session.tab_snapshot(&tab_id) {
+            Some(tab) if tab.evicted => tab.url.clone(),
+            _ => return Ok(inner.snapshot()),
+        }
+    };
+    create_webview_with_id(&app, &state, &tab_id, &saved_url)?;
     let inner = state.lock();
-    smoke_create_trace("browser_tab_create returning");
-    Ok(inner.session.snapshot(inner.visible))
+    Ok(inner.snapshot())
 }
 
 #[tauri::command]
@@ -1300,10 +2052,10 @@ pub fn browser_tab_activate(
     // Collect the visibility transitions we need to perform, then apply
     // them outside the session-model borrow. This avoids the double-mut
     // borrow that would happen if the closure captured `inner`.
-    let (previous, snapshot_before) = {
+    let (previous, snapshot_before, panel_visible) = {
         let inner = state.lock();
         let prev = inner.session.active_id().map(|id| id.to_string());
-        (prev, inner.session.snapshot(inner.visible))
+        (prev, inner.snapshot(), inner.visibility.is_visible())
     };
     let previous = match previous {
         Some(id) => id,
@@ -1327,12 +2079,29 @@ pub fn browser_tab_activate(
             None => return Ok(snapshot_before),
         }
     };
-    let _ = hide_prev.hide();
-    match show_next.show() {
+    let native_result = activate_native_tab(
+        &previous,
+        &tab_id,
+        panel_visible,
+        |id, visible| {
+            let webview = if id == previous.as_str() {
+                &hide_prev
+            } else {
+                &show_next
+            };
+            if visible {
+                webview.show().map_err(|error| error.to_string())
+            } else {
+                let _ = webview.hide();
+                Ok(())
+            }
+        },
+    );
+    match native_result {
         Ok(()) => {
             let mut inner = state.lock();
             let _ = inner.session.activate(&tab_id);
-            Ok(inner.session.snapshot(inner.visible))
+            Ok(inner.snapshot())
         }
         Err(error) => {
             let _ = hide_prev.show();
@@ -1343,20 +2112,83 @@ pub fn browser_tab_activate(
 }
 
 #[tauri::command]
-pub fn browser_tab_close(
+pub async fn browser_tab_close(
     state: State<'_, BrowserPanelState>,
     tab_id: BrowserTabId,
 ) -> Result<BrowserSessionSnapshot, String> {
+    // F1-AUDIO (2026-08-02) — DECISÃO: navegar para about:blank e
+    // ESPERAR CONFIRMAÇÃO de que o documento descarregou antes de fechar.
+    //
+    // MEDIDO, não inferido: a medição (a) confirmou por evaluate que
+    // navegar para about:blank muda o documento de
+    // `{url: youtube, hasVideo: true}` para `{url: about:blank,
+    // hasVideo: false}` — o player do youtube é destruído com o
+    // documento. O áudio PARA no descarregamento. O processo WebContent
+    // pode persistir depois (higiene invisível) — isso é LIMITE
+    // DECLARADO: a promessa ao usuário é "áudio para e aba some", e a
+    // medição prova que o áudio para; o processo vivo é aceito e
+    // declarado.
+    //
+    // ESPERA POR EVENTO, NÃO POR RELÓGIO (correção do Maestro 2026-08-02):
+    // a primeira versão dormia 600ms fixos — número sem referência que
+    // volta a falhar intermitente em máquina lenta e bloqueia a UI. A
+    // medição real (F1c) deu: página leve 17ms, youtube com vídeo 30ms
+    // até virar about:blank. A espera agora SONDA o documento de 20 em
+    // 20ms até 500ms — fecha no caso comum (~40ms com a granularidade da
+    // sondagem) e tem teto no caso ruim. 500ms é 16x o pior caso medido,
+    // cobrindo máquina lenta sem ser infinito.
+    //
+    // POR QUE SONDA EM VEZ DO EVENTO DE NAVEGAÇÃO (opção (a)): o
+    // callback `did_finish_navigation` existe no wry mas não é exposto
+    // pelo Webview do Tauri — expô-lo exigiria patch no fork, que está
+    // PROIBIDO nesta fase. A sondagem usa o sinal observável que já
+    // validamos por medida: o documento em si vira about:blank.
+    //
+    // A sondagem usa evaluate_script (o MESMO caminho do renderer, com
+    // timeout de 5s) — não eval() do Tauri, que retorna Result<()> sem
+    // valor. O runtime permanece no map durante a sondagem e só é
+    // removido depois da confirmação.
+    //
+    // NOTA DE THREAD (Send): o MutexGuard do state NÃO pode cruzar o
+    // `.await` da sondagem (futuro não-Send). Navegar e soltar o guard
+    // ANTES de sondar; evaluate_script religa o lock internamente por
+    // tab_id, então a tab continua endereçável mesmo com o guard solto.
+    // Garantia de áudio compartilhada: navegar about:blank + sondar com
+    // orçamento total (500ms) — ver `unload_and_close_webview`. O
+    // runtime permanece no map durante a sondagem (endereçado por id) e
+    // só é removido depois da confirmação. O MutexGuard não cruza o
+    // await (futuro Send).
+    {
+        let inner = state.lock();
+        if !inner.tabs.contains_key(&tab_id) {
+            return Ok(inner.snapshot());
+        }
+    }
+    let _unloaded = unload_and_close_webview(&state, &tab_id).await;
+
+    // Runtime confirmado como descarregado (ou teto atingido). Agora sim
+    // remove do map e fecha.
     let mut inner = state.lock();
-    let snapshot_before = inner.session.snapshot(inner.visible);
     let runtime = match inner.tabs.remove(&tab_id) {
         Some(rt) => rt,
-        None => return Ok(snapshot_before),
+        None => return Ok(inner.snapshot()),
     };
-    let _ = runtime.webview.close();
+    // O erro do close agora é registrado, não engolido. A medição por
+    // PID provou que close() retorna Ok mas o processo WebContent pode
+    // continuar vivo (WKWebView retido pelo WebKit) — o log é a única
+    // pista quando isso acontecer. O Result do close é despachado no
+    // run loop do Tauri; propagar Err aqui esconderia o que aconteceu,
+    // então registramos e seguimos.
+    if let Err(e) = runtime.webview.close() {
+        eprintln!(
+            "[browser_tab_close] webview.close() falhou para {tab_id}: {e}"
+        );
+    }
     // runtime.bridge drops here, unregistering the native handler.
-    let _ = inner.session.close(&tab_id);
-    Ok(inner.session.snapshot(inner.visible))
+    if let Err(e) = inner.session.close(&tab_id) {
+        eprintln!("[browser_tab_close] session.close() falhou para {tab_id}: {e:?}");
+    }
+    Ok(inner.snapshot())
 }
 
 #[tauri::command]
@@ -1375,11 +2207,113 @@ pub fn browser_tab_navigate(
         .webview
         .navigate(parsed)
         .map_err(|e| format!("navigate falhou: {e}"))?;
-    let _ = inner
+    // 2026-08-01 (QA): propagar, não engolir. A forma anterior
+    // (`let _ = ...map_err(|err| ...)`) construía uma String de erro
+    // e a jogava fora — parecia tratamento e não tratava nada.
+    //
+    // POR QUE PROPAGAR (e não apenas logar): begin_navigation avança o
+    // generation da sessão — o mesmo generation que a captura de
+    // anotação usa como identidade (tabId + generation). Se esta
+    // chamada falhar (UnknownTab — session divergeu do runtime map) e
+    // a navegação continuar com sucesso silencioso, o session fica com
+    // o generation ANTIGO: uma captura de anotação pós-navegação seria
+    // atribuída ao CARREGAMENTO ERRADO (o check de geração validaria a
+    // geração antiga como "current" para uma página que já mudou).
+    //
+    // Nota de ordem: webview.navigate já foi chamado acima (efeito
+    // físico irreversível). Se chegarmos aqui com erro, o webview está
+    // a meio de uma navegação que a sessão não registrou — o retorno
+    // Err faz o renderer tratar como falha e exibir o estado de erro,
+    // em vez de avançar com identidade de geração divergente.
+    inner
         .session
         .begin_navigation(&tab_id, url)
-        .map_err(|err| format!("begin_navigation failed: {err:?}"));
-    Ok(inner.session.snapshot(inner.visible))
+        .map_err(|err| format!("begin_navigation failed: {err:?}"))?;
+    Ok(inner.snapshot())
+}
+
+// F2-PAUSE (2026-08-02) — pausa a mídia de uma aba SEM destruir nem
+// descarregar o documento (minimizar preserva o estado).
+//
+// CONTRATO (revisado pelo QA 2026-08-02, medição real):
+//   ESCONDIDO (suspended=true)  = silêncio GARANTIDO — a mídia para e
+//       NÃO pode retomar (macOS bloqueia via suspended; script pausa nos
+//       demais).
+//   ABERTO (suspended=false)    = controle devolvido E NADA tocando.
+//       ATENÇÃO: o desbloqueio SOZINHO NÃO garante isso — medido no
+//       smoke (F2b): play → suspender(true) → unsuspend(false) deixou
+//       `paused:false` após 1s — a página com autoplay RETOMOU sozinha
+//       ao ser desbloqueada. Por isso o ABERTO encadeia uma PAUSA
+//       DETERMINÍSTICA logo após o desbloqueio: `video.pause()` nos
+//       elementos. A doc do setAllMediaPlaybackSuspended só garante o
+//       DESBLOQUEIO ("resumed in pairs"), nunca que a página não tente
+//       tocar — a pausa determinística é o segundo passo que fecha a
+//       promessa "aberto = nada tocando".
+//
+// POR PLATAFORMA (cada uma com a doc citada no código da plataforma):
+//   - macOS: `setAllMediaPlaybackSuspended(true/false)` — pausa e
+//     BLOQUEIA toda tentativa de retomar (página ou usuário) até o par
+//     `false`. É a API certa para o ESCONDIDO. Para o ABERTO: desbloqueia
+//     E pausa determinística via script.
+//   - Windows: `TrySuspend` (ICoreWebView2_5) e `IsMuted` (ICoreWebView2_13)
+//     NÃO estão no binding webview2-com 0.38.2 (verificado por grep nas
+//     interfaces — só o TrySuspendCompletedHandler de callback existe).
+//     Fallback: script no documento (`video.pause()`), limite DECLARADO:
+//     não pega mídia em iframe de outra origem.
+//   - Linux: `webkit_web_view_set_is_muted` existe no binding (2.0.2),
+//     mas a doc diz que MUTA o áudio — o vídeo continua AVANÇANDO calado,
+//     o que viola a promessa "volta exatamente do ponto". Fallback:
+//     script no documento, mesmo limite declarado.
+//
+// O caminho script é executado via evaluate_script (o MESMO do renderer),
+// então o limite de iframe cross-origin é o custo de não termos a API
+// nativa no binding.
+#[tauri::command]
+pub async fn browser_tab_set_media_suspended(
+    state: State<'_, BrowserPanelState>,
+    tab_id: BrowserTabId,
+    suspended: bool,
+) -> Result<(), String> {
+    let webview = {
+        let inner = state.lock();
+        match inner.tabs.get(&tab_id) {
+            Some(rt) => rt.webview.clone(),
+            None => return Err(format!("aba {tab_id} não existe")),
+        }
+    };
+
+    // PAUSA DETERMINÍSTICA (script nos elementos): pausa qualquer mídia
+    // que o desbloqueio tenha deixado retomar. Sempre encadeada no ABERTO
+    // (e redundante no ESCONDIDO para plataformas sem API nativa). O
+    // script é o mesmo do fallback — em macOS é o segundo passo do par.
+    let pause_script = "document.querySelectorAll('video,audio').forEach(e => e.pause())";
+
+    #[cfg(target_os = "macos")]
+    {
+        // ESCONDIDO: suspender nativo (bloqueia retomada — silêncio
+        // garantido inclusive contra autoplay da página).
+        // ABERTO: desbloquear (devolve controle) E pausa determinística
+        // encadeada — a medição F2b provou que o desbloqueio sozinho
+        // retoma autoplay (paused:false após 1s).
+        browser_platform::set_media_suspended(webview, suspended)
+            .await
+            .map_err(|e| format!("set_media_suspended falhou: {e:?}"))?;
+        if !suspended {
+            evaluate_script(&state, tab_id, pause_script.into()).await?;
+        }
+        Ok(())
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        // Fallback documentado (sem API nativa no binding): pausa via
+        // script nos dois sentidos — ESCONDIDO pausa, ABERTO pausa de
+        // novo (garante "nada tocando" ao reabrir, mesmo que a página
+        // tenha tentado retomar). Como o script não bloqueia retomada,
+        // o ABERTO refaz a pausa para fechar o contrato.
+        evaluate_script(&state, tab_id, pause_script.into()).await?;
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -1465,17 +2399,44 @@ fn check_stale<T>(
 
 // ── Atomic multi-tab helpers (testable without a Tauri State) ───────
 
+fn activate_native_tab<F>(
+    previous: &str,
+    next: &str,
+    panel_visible: bool,
+    mut set_visible: F,
+) -> Result<(), String>
+where
+    F: FnMut(&str, bool) -> Result<(), String>,
+{
+    set_visible(previous, false)?;
+    if !panel_visible {
+        return Ok(());
+    }
+
+    match set_visible(next, true) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // Rollback: restore visibility of the previous tab.
+            let _ = set_visible(previous, true);
+            Err(error)
+        }
+    }
+}
+
 /// Atomically activates `next`: hides the previous tab, attempts to show
-/// `next`, restores the previous tab on failure, and only commits the
-/// model transition after the show succeeds.
+/// `next` when the panel is visible, restores the previous tab on failure,
+/// and only commits the model transition after the native transition
+/// succeeds. When the panel is hidden, it commits only the model change;
+/// `set_panel_visibility(true)` will show the newly active tab later.
 ///
 /// `set_visible(id, visible)` is called for each visibility transition.
-/// Returning `Err` from a "show" call triggers rollback: the previous
-/// tab is shown again and the model is NOT mutated.
+/// Returning `Err` from a "show" call triggers rollback: the previous tab
+/// is shown again and the model is NOT mutated.
 #[allow(dead_code)]
 pub(crate) fn activate_atomically<F>(
     session: &mut BrowserSessionModel,
     next: &str,
+    panel_visible: bool,
     mut set_visible: F,
 ) -> Result<(), String>
 where
@@ -1488,20 +2449,11 @@ where
     if previous == next {
         return Ok(());
     }
-    set_visible(&previous, false)?;
-    match set_visible(next, true) {
-        Ok(()) => {
-            session
-                .activate(next)
-                .map_err(|err| format!("activate failed: {err:?}"))?;
-            Ok(())
-        }
-        Err(error) => {
-            // Rollback: restore visibility of the previous tab.
-            let _ = set_visible(&previous, true);
-            Err(error)
-        }
-    }
+    activate_native_tab(&previous, next, panel_visible, &mut set_visible)?;
+    session
+        .activate(next)
+        .map_err(|err| format!("activate failed: {err:?}"))?;
+    Ok(())
 }
 
 /// Closes a tab atomically: removes the runtime from the map, calls the
@@ -1537,6 +2489,77 @@ where
 fn resolve_session_bounds(inner: &BrowserPanelInner) -> Result<BrowserBounds, String> {
     inner.bounds.ok_or_else(|| {
         "browser_tab_create falhou: sessão não aberta — chame browser_session_open primeiro".to_string()
+    })
+}
+
+/// Applies the native visibility transition to every live webview while
+/// preserving the multi-tab invariant: hidden sessions hide every runtime;
+/// visible sessions position every runtime first, then show only the active
+/// runtime. A tab switch owns which runtime is active, so showing all live
+/// runtimes here would stack inactive pages over the active page.
+fn apply_native_visibility<T, P, V>(
+    runtimes: &HashMap<BrowserTabId, T>,
+    active_id: Option<&str>,
+    bounds: Option<BrowserBounds>,
+    visible: bool,
+    mut position: P,
+    mut set_visible: V,
+) -> Result<(), String>
+where
+    P: FnMut(&T, BrowserBounds) -> Result<(), String>,
+    V: FnMut(&T, bool) -> Result<(), String>,
+{
+    let bounds = if visible {
+        Some(bounds.ok_or_else(|| "sessão visível sem bounds".to_string())?)
+    } else {
+        None
+    };
+
+    for (tab_id, runtime) in runtimes {
+        if let Some(bounds) = bounds {
+            position(runtime, bounds)
+                .map_err(|error| format!("posicionar webview {tab_id} falhou: {error}"))?;
+        }
+        let should_show = visible && active_id == Some(tab_id.as_str());
+        set_visible(runtime, should_show)
+            .map_err(|error| format!("alterar visibilidade de {tab_id} falhou: {error}"))?;
+    }
+    Ok(())
+}
+
+fn set_panel_visibility(
+    inner: &mut BrowserPanelInner,
+    visible: bool,
+) -> Result<(), String> {
+    let active_id = inner.session.active_id().map(ToOwned::to_owned);
+    let bounds = inner.bounds;
+    let (tabs, visibility) = (&inner.tabs, &mut inner.visibility);
+
+    visibility.set_after_native(visible, || {
+        apply_native_visibility(
+            tabs,
+            active_id.as_deref(),
+            bounds,
+            visible,
+            |runtime, bounds| {
+                runtime
+                    .webview
+                    .set_position(LogicalPosition::new(bounds.x, bounds.y))
+                    .map_err(|error| error.to_string())?;
+                runtime
+                    .webview
+                    .set_size(LogicalSize::new(bounds.width, bounds.height))
+                    .map_err(|error| error.to_string())
+            },
+            |runtime, should_show| {
+                let result = if should_show {
+                    runtime.webview.show()
+                } else {
+                    runtime.webview.hide()
+                };
+                result.map_err(|error| error.to_string())
+            },
+        )
     })
 }
 
@@ -1702,6 +2725,59 @@ mod tests {
     }
 
     #[test]
+    fn native_visibility_hides_all_and_positions_before_showing_active() {
+        #[derive(Default)]
+        struct FakeNativeView {
+            events: std::cell::RefCell<Vec<&'static str>>,
+        }
+
+        let mut runtimes = HashMap::new();
+        runtimes.insert("tab-a".to_string(), FakeNativeView::default());
+        runtimes.insert("tab-b".to_string(), FakeNativeView::default());
+        let bounds = BrowserBounds { x: 12.0, y: 34.0, width: 560.0, height: 420.0 };
+
+        apply_native_visibility(
+            &runtimes,
+            Some("tab-a"),
+            Some(bounds),
+            false,
+            |_view, _bounds| panic!("hidden transition must not position"),
+            |view, visible| {
+                assert!(!visible);
+                view.events.borrow_mut().push("hide");
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        apply_native_visibility(
+            &runtimes,
+            Some("tab-a"),
+            Some(bounds),
+            true,
+            |view, actual| {
+                assert_eq!(actual, bounds);
+                view.events.borrow_mut().push("position");
+                Ok(())
+            },
+            |view, visible| {
+                view.events.borrow_mut().push(if visible { "show" } else { "hide" });
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            runtimes["tab-a"].events.borrow().as_slice(),
+            &["hide", "position", "show"]
+        );
+        assert_eq!(
+            runtimes["tab-b"].events.borrow().as_slice(),
+            &["hide", "position", "hide"]
+        );
+    }
+
+    #[test]
     fn parse_url_accepts_http_https_about_file() {
         assert!(parse_url_for_panel("https://example.com").is_ok());
         assert!(parse_url_for_panel("http://localhost:3000/").is_ok());
@@ -1818,13 +2894,70 @@ mod tests {
         session.insert_and_activate(BrowserTabSnapshot::blank("b".into(), "label-b".into())).unwrap();
         session.activate("a").unwrap();
         let mut visibility = Vec::new();
-        let result = activate_atomically(&mut session, "b", |id, visible| {
+        let result = activate_atomically(&mut session, "b", true, |id, visible| {
             visibility.push((id.to_string(), visible));
             if id == "b" && visible { Err("show failed".to_string()) } else { Ok(()) }
         });
         assert!(result.is_err());
         assert_eq!(session.active_id(), Some("a"));
         assert_eq!(visibility, vec![("a".into(), false), ("b".into(), true), ("a".into(), true)]);
+    }
+
+    #[test]
+    fn hidden_activation_defers_show_until_panel_reopens() {
+        #[derive(Default)]
+        struct FakeNativeView {
+            events: std::cell::RefCell<Vec<&'static str>>,
+        }
+
+        let mut session = BrowserSessionModel::default();
+        session.insert_and_activate(BrowserTabSnapshot::blank("a".into(), "label-a".into())).unwrap();
+        session.insert_and_activate(BrowserTabSnapshot::blank("b".into(), "label-b".into())).unwrap();
+        session.activate("a").unwrap();
+
+        let runtimes = HashMap::from([
+            ("a".to_string(), FakeNativeView::default()),
+            ("b".to_string(), FakeNativeView::default()),
+        ]);
+        activate_atomically(&mut session, "b", false, |id, visible| {
+            runtimes[id]
+                .events
+                .borrow_mut()
+                .push(if visible { "show" } else { "hide" });
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(session.active_id(), Some("b"));
+        assert_eq!(runtimes["a"].events.borrow().as_slice(), &["hide"]);
+        assert!(runtimes["b"].events.borrow().is_empty(), "hidden activation must not show the next tab");
+
+        let bounds = BrowserBounds { x: 12.0, y: 34.0, width: 560.0, height: 420.0 };
+        apply_native_visibility(
+            &runtimes,
+            session.active_id(),
+            Some(bounds),
+            true,
+            |view, actual| {
+                assert_eq!(actual, bounds);
+                view.events.borrow_mut().push("position");
+                Ok(())
+            },
+            |view, visible| {
+                view.events.borrow_mut().push(if visible { "show" } else { "hide" });
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            runtimes["a"].events.borrow().as_slice(),
+            &["hide", "position", "hide"]
+        );
+        assert_eq!(
+            runtimes["b"].events.borrow().as_slice(),
+            &["position", "show"]
+        );
     }
 
     #[test]
@@ -2015,6 +3148,217 @@ mod tests {
         );
     }
 
+    /// FRENTE-GOOGLE: com a versão de marketing LIDA EM RUNTIME (27.0 nesta
+    /// máquina), o montador produz exatamente a assinatura medida via curl
+    /// (form role="search" = layout moderno).
+    #[test]
+    fn assembles_measured_signature_from_runtime_version() {
+        let engine_ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)";
+        let ua = assemble_browser_tab_user_agent(engine_ua, "27.0");
+        assert_eq!(
+            ua,
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15"
+        );
+        assert!(ua.contains(" Version/"), "suffix must include Version/");
+        assert!(
+            ua.contains(" Safari/605.1.15"),
+            "suffix must include the engine's own AppleWebKit build"
+        );
+    }
+
+    /// FRENTE-GOOGLE / ARMADILHA LINUX: o UA do WebKitGTK JÁ traz
+    /// " Safari/" e um token Version/ possivelmente VELHO (medido: 8.0 ->
+    /// ANTIGO). O montador tem que SUBSTITUIR o token — não anexar, e
+    /// jamais devolver o input inalterado (o comportamento antigo fazia
+    /// no-op exatamente neste caso e deixava o Linux com o defeito).
+    #[test]
+    fn replaces_old_version_token_on_webkitgtk_ua() {
+        let gtk_old = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/8.0 Safari/605.1.15";
+        let fixed = assemble_browser_tab_user_agent(gtk_old, "27.0");
+        assert_ne!(
+            fixed, gtk_old,
+            "o token Version/ velho do WebKitGTK tem que ser SUBSTITUÍDO, não mantido"
+        );
+        assert_eq!(
+            fixed,
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15"
+        );
+        // Um Version/ já moderno também é atualizado (defensivo, coerente).
+        let gtk_17 = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+        assert_eq!(
+            assemble_browser_tab_user_agent(gtk_17, "27.0"),
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15"
+        );
+    }
+
+    /// Caso defensivo: " Safari/" sem " Version/" ganha o Version/ inserido
+    /// antes do token Safari (não é anexado no fim, o que quebraria a
+    /// ordem dos tokens).
+    #[test]
+    fn inserts_version_before_safari_when_missing() {
+        let no_version = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15";
+        assert_eq!(
+            assemble_browser_tab_user_agent(no_version, "27.0"),
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15"
+        );
+    }
+
+    /// O caminho de PRODUÇÃO do Linux (base plausível + fallback) produz o
+    /// UA moderno exato — é o que o builder aplica nas abas do Linux.
+    #[test]
+    fn linux_production_path_replaces_old_token_with_fallback() {
+        let base_linux = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/8.0 Safari/605.1.15";
+        assert_eq!(
+            assemble_browser_tab_user_agent(
+                base_linux,
+                BROWSER_TAB_SAFARI_MARKETING_VERSION_FALLBACK,
+            ),
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15"
+        );
+    }
+
+    /// Sem token AppleWebKit, o build de fallback mantém assinatura válida.
+    #[test]
+    fn uses_frozen_build_when_engine_token_missing() {
+        assert_eq!(
+            assemble_browser_tab_user_agent("Mozilla/5.0 (custom)", "27.0"),
+            "Mozilla/5.0 (custom) Version/27.0 Safari/605.1.15"
+        );
+    }
+
+    /// Resolve runtime quando disponível e cai no fallback quando não.
+    ///
+    /// O valor de runtime é "99.9" — que NUNCA pode coincidir com o fallback
+    /// (27.0) — para que os dois caminhos produzam textos DISTINGUÍVEIS.
+    /// Testar só com "27.0" é cego: nesta máquina o runtime vale o mesmo que
+    /// o fallback, então uma mutação que descarta o valor de runtime passa
+    /// em qualquer comparação de valor. (Ex.: `let runtime = None;` no início
+    /// de `resolve_safari_version` passa no teste antigo e é pego por este.)
+    #[test]
+    fn resolves_runtime_or_fallback() {
+        assert_eq!(resolve_safari_version(Some("99.9".to_string())), "99.9");
+        assert_eq!(
+            resolve_safari_version(None),
+            BROWSER_TAB_SAFARI_MARKETING_VERSION_FALLBACK
+        );
+        assert_ne!(
+            resolve_safari_version(Some("99.9".to_string())),
+            resolve_safari_version(None),
+            "os dois caminhos têm que ser distinguíveis"
+        );
+    }
+
+    /// Pina que o valor de runtime atravessa ATÉ A STRING FINAL do UA, não
+    /// só até a função `resolve`. Runtime (99.9) e fallback (27.0) têm que
+    /// produzir UAs DIFERENTES — uma mutação que troque o valor no meio do
+    /// caminho apaga essa diferença.
+    #[test]
+    fn runtime_value_flows_to_final_ua_string() {
+        let engine_ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)";
+        let runtime_ua = assemble_browser_tab_user_agent(
+            engine_ua,
+            &resolve_safari_version(Some("99.9".to_string())),
+        );
+        let fallback_ua = assemble_browser_tab_user_agent(
+            engine_ua,
+            &resolve_safari_version(None),
+        );
+        assert!(
+            runtime_ua.contains("Version/99.9"),
+            "o valor de runtime tem que aparecer na string final do UA"
+        );
+        assert_ne!(
+            runtime_ua, fallback_ua,
+            "caminho de runtime e caminho de fallback têm que divergir quando os valores divergem"
+        );
+        assert!(fallback_ua.contains(&format!(
+            "Version/{}",
+            BROWSER_TAB_SAFARI_MARKETING_VERSION_FALLBACK
+        )));
+    }
+
+    /// Caminho de FALHA da leitura: caminho inexistente -> None -> fallback.
+    /// O fallback mantém a assinatura funcional hoje, mas o comentário da
+    /// constante declara a degradação: se o Safari avançar muito e cairmos
+    /// aqui, o Google volta ao layout antigo.
+    ///
+    /// A falha é forçada com um caminho de bundle INEXISTENTE — o NSBundle
+    /// devolve None (o parser do sistema não acha o bundle), o resolver cai
+    /// no fallback e o UA montado mantém a assinatura funcional.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fallback_path_when_bundle_read_fails() {
+        let missing = std::path::Path::new("/nonexistent/Safari.app");
+        assert_eq!(read_short_version_from_bundle(missing), None);
+        let resolved = resolve_safari_version(read_short_version_from_bundle(missing));
+        assert_eq!(resolved, BROWSER_TAB_SAFARI_MARKETING_VERSION_FALLBACK);
+        let engine_ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)";
+        assert_eq!(
+            assemble_browser_tab_user_agent(engine_ua, &resolved),
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15"
+        );
+    }
+
+    /// Integração (só macOS): a LEITURA REAL do plist do Safari nesta
+    /// máquina tem que devolver a versão medida (27.0) e o UA montado com
+    /// ela tem que casar com a assinatura que o Google serve em modo
+    /// moderno. Se o Safari da máquina avançar, este teste aponta a
+    /// necessidade de re-medir a assinatura — é o tripwire da recência.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn runtime_safari_read_matches_measured_signature() {
+        let version = read_safari_marketing_version().expect("Safari plist deve ser legível no macOS");
+        assert_eq!(version, "27.0", "versão do Safari desta máquina (medida)");
+        let engine_ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)";
+        let ua = assemble_browser_tab_user_agent(engine_ua, &version);
+        assert!(ua.ends_with("Version/27.0 Safari/605.1.15"));
+        assert_eq!(resolved_tab_safari_version(), "27.0");
+    }
+
+    /// REGRESSÃO FRENTE-GOOGLE: se alguém remover o `.user_agent(...)` da
+    /// criação das abas, este teste fica VERMELHO — e o Google volta a
+    /// servir o layout antigo silenciosamente.
+    #[test]
+    fn tab_builder_sets_user_agent() {
+        let source = include_str!("browser_panel.rs").replace("\r\n", "\n");
+        let create_start = source
+            .find("fn create_webview_with_id")
+            .expect("create_webview_with_id");
+        let create_end = source[create_start..]
+            .find("\npub fn ")
+            .map(|offset| create_start + offset)
+            .expect("create_webview_with_id end");
+        let create = &source[create_start..create_end];
+        // Comentários (//, ///) são descartados ANTES de buscar as strings —
+        // senão o próprio comentário do fix satisfaria a asserção e a
+        // remoção do código passaria despercebida (falso-verde).
+        let create_code: String = create
+            .lines()
+            .filter(|line| !line.trim().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            create_code.contains(".user_agent("),
+            "create_webview_with_id must set the tab user agent (Frente Google); removing it silently reverts google.com to the old layout"
+        );
+        assert!(
+            create_code.contains("assemble_browser_tab_user_agent("),
+            "the tab user agent must be assembled from the engine UA + the RUNTIME-read Safari version"
+        );
+        assert!(
+            create_code.contains("resolved_tab_safari_version("),
+            "the macOS Safari marketing version must come from runtime resolution (recency check), not a hardcoded value"
+        );
+        assert!(
+            create_code.contains("BROWSER_TAB_UA_BASE_LINUX"),
+            "Linux must also set the tab user agent (WebKitGTK can send a stale Version/ token); removing it leaves Linux with the old-google defect"
+        );
+        assert!(
+            create_code.contains("BROWSER_TAB_SAFARI_MARKETING_VERSION_FALLBACK"),
+            "Linux has no Safari to read, so its version must come from the declared fallback"
+        );
+    }
+
     /// Class-level assertion: no `#[cfg(not(target_os = "macos"))]` stub
     /// and no `"somente macOS"` error message may exist anywhere in
     /// non-comment code. Catches ANY reintroduction of the cfg-gated
@@ -2043,6 +3387,26 @@ mod tests {
             !non_comment.contains("somente macOS"),
             "\"somente macOS\" error message found in production code. \
              All stubs that announce being macOS-only must be deleted.",
+        );
+    }
+
+    #[test]
+    fn set_after_native_has_one_production_call_site() {
+        let source = include_str!("browser_panel.rs");
+        let prod_end = source.find("\nmod tests {").unwrap_or(source.len());
+        let production = &source[..prod_end];
+        let call_sites = production.matches("set_after_native(").count();
+
+        assert_eq!(
+            call_sites,
+            1,
+            concat!(
+                "set_after_native must have exactly one production call site; a second call site ",
+                "would create another path to mutate visibility and could pass an empty closure ",
+                "(`|| Ok(())`) instead of performing the real native hide/show transition. ",
+                "Found {} call sites."
+            ),
+            call_sites,
         );
     }
 

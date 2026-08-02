@@ -314,6 +314,61 @@ pub fn snapshot_png(webview: Webview<Wry>) -> PlatformFuture<Vec<u8>> {
     })
 }
 
+/// F2-PAUSE (2026-08-02) — suspende ou restaura a mídia de um webview
+/// SEM destruir nem descarregar o documento.
+///
+/// API escolhida: `setAllMediaPlaybackSuspended(_:)` — doc do WebKit
+/// (objc2-web-kit WKWebView.rs): "If suspended is true, this pauses
+/// media playback and blocks ALL attempts by the page or the user to
+/// resume until setAllMediaPlaybackSuspended is called again with
+/// suspended set to false. Media playback should always be suspended
+/// and resumed in pairs."
+///
+/// POR QUE ESTA E NÃO `pauseAllMediaPlayback`: a doc de
+/// pauseAllMediaPlayback diz "Media can be restarted by calling play()
+/// ... A user can also use media controls to play media content after
+/// it has been paused" — NÃO bloqueia a retomada. A promessa F2 é
+/// "minimizar pausa E não retoma sozinho ao reabrir" — só o suspended
+/// garante isso (bloqueia o play da página e do usuário até o par
+/// `suspended=false`). O par resume é o comando simétrico (F2), que
+/// devolve o controle sem tocar a reprodução.
+///
+/// O completion handler confirma a aplicação (espera por confirmação,
+/// não por relógio — lição F1). Fire-and-forget estaria sujeito ao
+/// mesmo defeito de "ok que não aconteceu".
+pub fn set_media_suspended(webview: Webview<Wry>, suspended: bool) -> PlatformFuture<()> {
+    Box::pin(async move {
+        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
+
+        webview
+            .with_webview(move |pw| {
+                let deliver = {
+                    let tx = tx.clone();
+                    move |result: Result<(), String>| {
+                        if let Some(sender) = tx.lock().unwrap().take() {
+                            let _ = sender.send(result);
+                        }
+                    }
+                };
+                unsafe {
+                    let wk = wk_from_ptr(pw.inner().cast());
+                    let block = RcBlock::new(move || {
+                        deliver(Ok(()));
+                    });
+                    wk.setAllMediaPlaybackSuspended_completionHandler(suspended, Some(&block));
+                }
+            })
+            .map_err(|e| BrowserPlatformError::new("set_media_suspended", "macos", e.to_string()))?;
+
+        tokio::time::timeout(EVAL_TIMEOUT, rx)
+            .await
+            .map_err(|_| BrowserPlatformError::new("set_media_suspended", "macos", "timed out"))?
+            .map_err(|_| BrowserPlatformError::new("set_media_suspended", "macos", "channel dropped"))?
+            .map_err(|e| BrowserPlatformError::new("set_media_suspended", "macos", e))
+    })
+}
+
 fn eval_with_result(
     wk: &WKWebView,
     tab_id: &str,

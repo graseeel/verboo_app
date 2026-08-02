@@ -928,6 +928,40 @@ pub struct VideoProgress {
     pub total_units: Option<u32>,
 }
 
+/// F0-Annotate (2026-07-31) — the user-selected passage of the prior
+/// model response that the user wants to attach to the next turn, with
+/// optional commentary. Field shapes are fixed by the project's
+/// F0-Annotate contract (TORNO fence + MOSAICO fence) — neither side
+/// invents or renames. The wire shape is camelCase via serde.
+///
+/// SAFETY NOTE (load-bearing): the `quote` field is **safe — it is a
+/// slice of the assistant's prior response, returning to the prompt.**
+/// The `comment` field is **unsafe — it is user-authored.** In the
+/// prompt, the two must be ROUTED WITH DISTINCT LABELS so the model
+/// can never confuse them. The labels live in `turn_service.rs`:
+/// "Trecho citado da resposta anterior DO ASSISTENTE" / "USER comment".
+/// If the labels ever collapse into a single bucket, we create an
+/// injection surface — model text returning as if it were user
+/// instruction. The contract is enforced at the prompt-building site,
+/// not here. The struct shape is the contract; the labels are the
+/// fence.
+///
+/// `segment_id` is `"turnId:text:N"` where N is `occurrence_index`
+/// (base zero). Stack-ordering is preserved by the renderer; the Rust
+/// side does not re-sort.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Annotation {
+    pub id: String,
+    pub segment_id: String,
+    pub quote: String,
+    pub prefix: String,
+    pub suffix: String,
+    pub occurrence_index: u32,
+    pub comment: Option<String>,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTurnRequest {
@@ -968,6 +1002,18 @@ pub struct AgentTurnRequest {
     pub personality: Option<PersonalityMode>,
     pub custom_instructions: Option<String>,
     pub memory_context: Option<String>,
+    /// F0-Annotate (2026-07-31) — user-selected passages from the prior
+    /// assistant response, attached to the next turn with optional
+    /// commentary. Optional; `#[serde(default)]` preserves backward
+    /// compatibility: a request serialized by an older build (no
+    /// `annotations` key) still deserializes with `None`. Truncation
+    /// of `quote` is the renderer's responsibility — if a quote ever
+    /// arrives here larger than 4 KiB, we still render the prompt
+    /// without further cuts (the renderer is the gate that sizes
+    /// selections). See `build_annotation_block` for the render side
+    /// of the truncation story.
+    #[serde(default)]
+    pub annotations: Option<Vec<Annotation>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

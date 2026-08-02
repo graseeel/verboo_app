@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '../../i18n'
@@ -27,7 +27,7 @@ import type { TodoItem } from '../../../shared/types'
 
 afterEach(cleanup)
 
-const VIEWPORT: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0, topClearance: 0 }
+const VIEWPORT: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0, topClearance: 0, bottomClearance: 0 }
 const measureViewport = () => VIEWPORT
 
 const item = (content: string, status: TodoItem['status'], activeForm = ''): TodoItem => ({
@@ -298,6 +298,23 @@ describe('ChecklistPanel: SHARED TOP-RIGHT RAIL — the card yields to the subag
   })
 })
 
+describe('ChecklistPanel: EXIT — the completed list leaves with the genie family', () => {
+  it('the exiting prop applies the exit class (the animation lives in CSS)', () => {
+    const { container } = renderPanel({ exiting: true })
+    expect(container.querySelector('.checklist-panel')!.classList.contains('checklist-exit')).toBe(true)
+  })
+
+  it('REDUCED MOTION: the exit class is suppressed — removal is instant, never animated', () => {
+    const { container } = renderPanel({ exiting: true, prefersReducedMotion: () => true })
+    expect(container.querySelector('.checklist-panel')!.classList.contains('checklist-exit')).toBe(false)
+  })
+
+  it('without the exiting prop there is NO exit class (a new list never inherits a ghost exit)', () => {
+    const { container } = renderPanel()
+    expect(container.querySelector('.checklist-panel')!.classList.contains('checklist-exit')).toBe(false)
+  })
+})
+
 describe('ChecklistPanel: long steps stay LEGIBLE (field truncation fix)', () => {
   // Field defect (2026-07-31): real TodoWrite items are whole sentences
   // and the single-line ellipsis made steps illegible ("Create
@@ -322,5 +339,81 @@ describe('ChecklistPanel: long steps stay LEGIBLE (field truncation fix)', () =>
     const textEl = container.querySelector('.checklist-row.is-current .checklist-row-text')!
     expect(textEl.textContent).toBe(LONG)
     expect(textEl.getAttribute('title')).toBe(LONG)
+  })
+})
+
+describe('ChecklistPanel: BOTTOM RAIL — the card never enters the composer band', () => {
+  /* Field defect (2026-08-01, packaged app): the composer dock drew
+   * OVER the floating card and hid the bottom rows. The geometric proof
+   * lives in checklistPlacement.test.ts (rectangle intersection); what
+   * is proven here is the PANEL's wiring: the drop resolves above the
+   * band, and a GROWING composer re-contains a parked card live. */
+  const BOTTOM_VIEWPORT: ChecklistViewport = { ...VIEWPORT, bottomClearance: 116 }
+  const stripX = checklistCardHome(VIEWPORT, CHECKLIST_CARD_WIDTH).x
+  // jsdom has no layout: the panel's card height is the estimate
+  // 46 + 5 × 40 = 246 (real renders measure offsetHeight).
+  const ESTIMATED_CARD_HEIGHT = 46 + 5 * 40
+
+  it('a drop inside the composer band resolves ABOVE it (short composer)', () => {
+    const onCardPosChange = vi.fn()
+    const { container } = renderPanel({
+      form: 'floating',
+      onCardPosChange,
+      measureViewport: () => BOTTOM_VIEWPORT,
+    })
+    const card = container.querySelector('.checklist-panel.floating')!
+    fireEvent.pointerDown(card, { pointerId: 1, clientX: stripX + 20, clientY: 36 })
+    fireEvent.pointerMove(card, { pointerId: 1, clientX: stripX + 20, clientY: 700 })
+    fireEvent.pointerUp(card, { pointerId: 1, clientX: stripX + 20, clientY: 700 })
+    const resolved = onCardPosChange.mock.calls[0][0]
+    expect(resolved).toEqual({
+      x: stripX,
+      y: BOTTOM_VIEWPORT.height - 116 - ESTIMATED_CARD_HEIGHT - 8,
+    })
+    // The geometric consequence: the card's bottom stays above the band.
+    expect(resolved.y + ESTIMATED_CARD_HEIGHT).toBeLessThanOrEqual(
+      BOTTOM_VIEWPORT.height - BOTTOM_VIEWPORT.bottomClearance,
+    )
+  })
+
+  it('the composer GROWING (multi-line input) re-contains a parked card — ResizeObserver on the dock', () => {
+    // jsdom has no ResizeObserver: a fake captures the callback so the
+    // REAL wiring is fired (disparo + efeito, not a re-implementation).
+    let roCallback: (() => void) | undefined
+    const realRO = (globalThis as { ResizeObserver?: unknown }).ResizeObserver
+    ;(globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+      constructor(cb: () => void) {
+        roCallback = cb
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    const dock = document.createElement('div')
+    dock.className = 'bottom-dock'
+    document.body.appendChild(dock)
+    try {
+      // One-line composer: the parked card fits (676 ≤ 684 — no call).
+      let viewport: ChecklistViewport = { ...VIEWPORT, bottomClearance: 116 }
+      const onCardPosChange = vi.fn()
+      renderPanel({
+        form: 'floating',
+        cardPos: { x: 976, y: 430 },
+        onCardPosChange,
+        measureViewport: () => viewport,
+      })
+      expect(onCardPosChange).not.toHaveBeenCalled()
+      // The user types three lines: the dock grows and the observer fires.
+      viewport = { ...viewport, bottomClearance: 300 }
+      act(() => roCallback!())
+      expect(onCardPosChange).toHaveBeenCalledTimes(1)
+      expect(onCardPosChange.mock.calls[0][0]).toEqual({
+        x: 976,
+        y: 800 - 300 - ESTIMATED_CARD_HEIGHT - 8,
+      })
+    } finally {
+      document.body.removeChild(dock)
+      ;(globalThis as { ResizeObserver?: unknown }).ResizeObserver = realRO
+    }
   })
 })

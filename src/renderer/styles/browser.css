@@ -89,6 +89,15 @@
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
+.browser-tab-shell.evicted {
+  opacity: 0.56;
+}
+
+.browser-tab-shell.evicted:hover,
+.browser-tab-shell.evicted:focus-within {
+  opacity: 0.78;
+}
+
 .browser-tab {
   display: inline-flex;
   align-items: center;
@@ -110,6 +119,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.browser-tab-evicted-marker {
+  flex-shrink: 0;
+  color: var(--text-dim);
 }
 
 .browser-tab:focus-visible {

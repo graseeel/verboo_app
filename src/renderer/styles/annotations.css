@@ -1,0 +1,369 @@
+/* ── Annotations (F1) — floating selection bar + composer chip panel ──
+ *
+ * Design language follows checklist.css (the most recently approved UI):
+ * sober, dense information in little space, no shouting boxes. All colors
+ * come from base.css tokens so both themes work untouched.
+ *
+ * z-index ladder: checklist floating card = 40 < annotation bar = 50 <
+ * skill popover = 60. The bar must float ABOVE the checklist card (a
+ * selection can happen under it) but BELOW the composer popovers.
+ *
+ * Motion: single 150ms entrance (opacity + scale 0.97), transform-origin
+ * keyed to data-placement so the bar grows from the selection. The chip
+ * panel reuses the same entrance. prefers-reduced-motion zeroes EVERYTHING
+ * in this file (block at the bottom) — same contract as checklist.css.
+ */
+
+.annotation-bar {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  animation: annotation-bar-in 150ms var(--modal-ease);
+}
+
+.annotation-bar[data-placement='above'] {
+  transform-origin: bottom center;
+}
+
+.annotation-bar[data-placement='below'] {
+  transform-origin: top center;
+}
+
+@keyframes annotation-bar-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.annotation-bar-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.annotation-bar-notice {
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text-dim);
+}
+
+.annotation-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.annotation-bar-comment {
+  width: 180px;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  outline: none;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  resize: none;
+}
+
+.annotation-bar-comment:focus {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  box-shadow: var(--focus-ring);
+}
+
+.annotation-bar-add {
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-radius: calc(var(--radius) - 2px);
+  cursor: pointer;
+  transition: transform 100ms ease;
+}
+
+.annotation-bar-add:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.annotation-bar-add:active {
+  transform: scale(0.97);
+}
+
+/* ── Composer chip + hover panel ── */
+
+.annotation-chip-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+/* The chip button itself reuses .skill-chip.attachment-chip (Composer.tsx);
+ * only the wrap and the panel live here. */
+
+.annotation-chip-hover-bridge {
+  position: fixed;
+  z-index: 60;
+}
+
+.annotation-chip-panel {
+  position: fixed;
+  z-index: 60;
+  width: min(320px, calc(100vw - 16px));
+  max-height: min(280px, calc(100vh - 16px));
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  transform-origin: bottom left;
+  animation: annotation-bar-in 150ms var(--modal-ease);
+}
+
+.annotation-panel-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.annotation-panel-item:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.annotation-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.annotation-panel-index {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.annotation-panel-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.annotation-panel-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--radius) - 2px);
+  cursor: pointer;
+  transition:
+    color 120ms ease,
+    background 120ms ease,
+    transform 100ms ease;
+}
+
+.annotation-panel-action:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.annotation-panel-action:active {
+  transform: scale(0.97);
+}
+
+.annotation-panel-quote,
+.annotation-panel-comment {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.annotation-panel-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.annotation-panel-text {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+  /* Dense but bounded: long quotes clamp to 4 lines instead of pushing the
+   * panel open-ended; the full text travels in the prompt anyway. */
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: break-word;
+}
+
+.annotation-panel-comment .annotation-panel-text {
+  color: var(--text-muted);
+}
+
+.annotation-panel-edit {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  outline: none;
+}
+
+.annotation-panel-edit:focus {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  box-shadow: var(--focus-ring);
+}
+
+/* ── F2 overlay: highlight rectangles + numbered balloon ──
+ *
+ * Drawn OVER the text in a fixed layer (NEVER inside the segment — the DOM
+ * of MarkdownMessage belongs to React; the byte-identical test pins this).
+ * z-index 30: above the transcript text, below the checklist card (40) and
+ * the annotation bar (50) — interactive floaters always win. The layer is
+ * pointer-events:none inline in the component AND here: it cannot eat a
+ * click, a selection or a copy gesture.
+ */
+
+.annotation-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.annotation-hl {
+  position: absolute;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-radius: 3px;
+}
+
+.annotation-hl-enter {
+  animation: annotation-hl-in 120ms ease-out;
+}
+
+@keyframes annotation-hl-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.annotation-balloon {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: #ffffff;
+  background: var(--accent-strong);
+  border-radius: 50%;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+
+/* ── F3 turn card (N3): the SENT annotation as a transcript item ──
+ *
+ * Same user-bubble base (right-aligned, accent-tinted — it IS a user send),
+ * with the frozen quote+comment pairs as a compact list. No entrance
+ * animation: transcript rows never animate (a persisted item appearing on
+ * load must not replay motion). Typography stays at message size — the card
+ * is dense information, not a callout.
+ */
+.annotation-turn-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.annotation-turn-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.annotation-turn-index {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.annotation-turn-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.annotation-turn-quote,
+.annotation-turn-comment {
+  margin: 0;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.annotation-turn-quote {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.annotation-turn-comment {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+/* ── prefers-reduced-motion: EVERYTHING in this file goes instant ── */
+@media (prefers-reduced-motion: reduce) {
+  .annotation-bar,
+  .annotation-chip-panel,
+  .annotation-hl,
+  .annotation-balloon {
+    animation: none !important;
+  }
+
+  .annotation-bar-add,
+  .annotation-panel-action {
+    transition: none !important;
+  }
+}

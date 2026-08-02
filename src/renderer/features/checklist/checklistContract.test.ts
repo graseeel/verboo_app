@@ -59,6 +59,38 @@ describe('checklistContract: multiplatform CSS pins', () => {
     expect(reducedBlock![1]).toContain('animation: none')
   })
 
+  it('the EXIT is the exact reverse of the entrance (genie family) and reduced-motion kills it', () => {
+    // User order (2026-08-01): the completed list leaves with a SMOOTH
+    // exit — same family as the genie-in, never instant. The behavioral
+    // sequence (dwell → exit → removal) is proven in
+    // useChecklistCompletionExit.test.tsx; this pins the CSS half.
+    const exitBlock = css.match(/\.checklist-exit\s*\{[^}]*\}/)
+    expect(exitBlock, '.checklist-exit block must exist').not.toBeNull()
+    expect(exitBlock![0]).toContain('checklist-genie-out')
+    expect(exitBlock![0]).toContain('forwards')
+    const keyframes = css.match(/@keyframes checklist-genie-out \{[\s\S]*?\n\}/)
+    expect(keyframes).not.toBeNull()
+    // Reverse of the entrance: ends at the entrance's FROM frame.
+    expect(keyframes![0]).toContain('translateY(10px) scale(0.97)')
+    const reducedBlock = css.match(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/)
+    expect(reducedBlock![1]).toContain('.checklist-exit')
+  })
+
+  it('the card never enters the composer band: the panel MEASURES .bottom-dock live', () => {
+    // Field defect (2026-08-01, packaged app): the composer dock (z120)
+    // drew OVER the card (z40) and hid the bottom rows. The fix is
+    // geometric — proven by rectangle intersection in
+    // checklistPlacement.test.ts — but it only bites if the clearance
+    // is MEASURED live: the dock grows with multi-line input and its
+    // metrics differ per OS, so a hardcoded px would break again.
+    // This pins the measurement + the observer that re-contains a
+    // parked card when the dock grows.
+    const panel = readFileSync(resolve(__dirname, 'ChecklistPanel.tsx'), 'utf-8')
+    expect(panel).toContain("document.querySelector('.bottom-dock')")
+    expect(panel).toContain('bottomClearance')
+    expect(panel).toContain('ResizeObserver')
+  })
+
   it('the floating card NEVER uses translucency (shadow+border over solid elevated)', () => {
     const floating = css.match(/\.checklist-panel\.floating\s*\{[^}]*\}/)
     expect(floating).not.toBeNull()

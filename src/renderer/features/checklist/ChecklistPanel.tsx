@@ -78,6 +78,9 @@ export type ChecklistPanelProps = {
   /** Entrance animation — first appearance only (never on remounts
    *  from a form switch, that would be motion noise). */
   entering?: boolean
+  /** Exit animation — the completed list leaving after the dwell
+   *  (useChecklistCompletionExit). Suppressed under reduced motion. */
+  exiting?: boolean
   /** Injectable for tests; defaults to the live window measurement. */
   measureViewport?: () => ChecklistViewport
   /** Injectable for tests; defaults to the live matchMedia query. */
@@ -107,6 +110,13 @@ const RAIL_GAP = 8
 /** Fallback when the titlebar CSS variable can't be read (jsdom). */
 const TITLEBAR_FALLBACK_PX = 52
 
+/** Fallback when the composer dock can't be measured (jsdom, pre-mount).
+ *  ≈ one-line composer + its 16px bottom offset + the rail gap — the
+ *  CONSERVATIVE direction (a too-large clearance eats lane space; a
+ *  too-small one reopens the overlap defect). Never authoritative: the
+ *  real band is measured live below. */
+const BOTTOM_DOCK_FALLBACK_PX = 116
+
 function liveViewport(): ChecklistViewport {
   const clientWidth = document.documentElement?.clientWidth ?? window.innerWidth
   // THE SHARED TOP-RIGHT RAIL, measured live (never assumed): the
@@ -123,11 +133,25 @@ function liveViewport(): ChecklistViewport {
     const titlebar = Number.parseInt(raw, 10)
     topClearance = (Number.isFinite(titlebar) ? titlebar : TITLEBAR_FALLBACK_PX) + 14
   }
+  // THE BOTTOM RAIL, measured live (field defect, 2026-08-01): the
+  // composer dock (.bottom-dock, position:fixed z120) is drawn OVER the
+  // card and ate the list's bottom rows. The card must never enter the
+  // dock's band — measured from the dock's rect, NOT a fixed px: the
+  // dock grows with multi-line input / attachment bar and its metrics
+  // differ per OS. The dock's top marks the whole bottom stack (aux
+  // panels + composer), so the goal panel is covered by the same band.
+  const dock = document.querySelector('.bottom-dock')
+  const dockTop = dock ? dock.getBoundingClientRect().top : 0
+  const bottomClearance =
+    dockTop > 0
+      ? Math.max(0, Math.ceil(window.innerHeight - dockTop)) + RAIL_GAP
+      : BOTTOM_DOCK_FALLBACK_PX
   return {
     width: window.innerWidth,
     height: window.innerHeight,
     scrollbarWidth: Math.max(0, window.innerWidth - clientWidth),
     topClearance,
+    bottomClearance,
   }
 }
 
@@ -180,7 +204,12 @@ export function ChecklistPanel(props: ChecklistPanelProps) {
 
   /* Restore/resize containment (multiplatform rule): a persisted
    * position is valid only INSIDE the current window. Runs on mount
-   * and on every resize while floating. */
+   * and on every resize while floating. The composer dock is ALSO
+   * observed: it grows when the user types multiple lines or the
+   * attachment bar appears — a parked card that fit one line must be
+   * re-contained BEFORE the dock swallows its bottom rows (the field
+   * defect this fixes). Same live-measure precedent as App.tsx's
+   * --composer-clearance. */
   useLayoutEffect(() => {
     if (form !== 'floating') return
     const contain = () => {
@@ -192,7 +221,18 @@ export function ChecklistPanel(props: ChecklistPanelProps) {
     }
     contain()
     window.addEventListener('resize', contain)
-    return () => window.removeEventListener('resize', contain)
+    // ResizeObserver is absent in jsdom — the contain() math itself is
+    // pure and tested; this guard keeps the wiring honest there.
+    const dock = document.querySelector('.bottom-dock')
+    const observer =
+      dock && typeof ResizeObserver === 'function'
+        ? new ResizeObserver(contain)
+        : undefined
+    if (observer && dock) observer.observe(dock)
+    return () => {
+      window.removeEventListener('resize', contain)
+      observer?.disconnect()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form, props.cardPos])
 
@@ -275,6 +315,7 @@ export function ChecklistPanel(props: ChecklistPanelProps) {
     gliding ? 'is-gliding' : '',
     props.flying ? 'flying' : '',
     props.entering && !reduced ? 'checklist-enter' : '',
+    props.exiting && !reduced ? 'checklist-exit' : '',
   ]
     .filter(Boolean)
     .join(' ')

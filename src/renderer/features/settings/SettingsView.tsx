@@ -51,7 +51,7 @@ import { AvatarIcon } from '../../components/AvatarIcon'
 import { formatDateTime, useI18n } from '../../i18n'
 import { DEFAULT_CONVERSATION_TITLE } from '../../state/chatStore'
 
-type SettingsViewProps = {
+export type SettingsViewProps = {
   credentials: CredentialStatus
   modelResult: ModelDiscoveryResult
   selectedModel?: VerbooModel
@@ -71,6 +71,11 @@ type SettingsViewProps = {
   onThemeChange: (theme: ThemeMode) => void
   onActiveTabChange: (tab: SettingsTab) => void
   onUserSettingsChange: (patch: Partial<UserSettings>) => Promise<void>
+  /** Master switch for the app's TWO sounds (notification + conclusion).
+   *  Renderer-persisted (localStorage) — deliberately NOT in
+   *  UserSettings: that contract crosses the Rust bridge (TORNO). */
+  soundsEnabled: boolean
+  onSoundsEnabledChange: (enabled: boolean) => void
   onResetUserSettings: () => Promise<void>
   onRestoreConversation: (conversationId: string) => void
   onDeleteConversation: (conversationId: string) => void
@@ -100,6 +105,8 @@ export function SettingsView({
   onThemeChange,
   onActiveTabChange,
   onUserSettingsChange,
+  soundsEnabled,
+  onSoundsEnabledChange,
   onResetUserSettings,
   onRestoreConversation,
   onDeleteConversation,
@@ -496,6 +503,12 @@ export function SettingsView({
                 body={t('settings.questionNotificationsBody')}
                 checked={userSettings.questionNotifications}
                 onChange={questionNotifications => onUserSettingsChange({ questionNotifications })}
+              />
+              <SettingToggle
+                title={t('settings.sounds')}
+                body={t('settings.soundsBody')}
+                checked={soundsEnabled}
+                onChange={onSoundsEnabledChange}
               />
             </section>
           </section>

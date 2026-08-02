@@ -148,7 +148,7 @@ describe('checklistPlacement: exhaustive matrix (256 combinations of 8 binary in
     // is crossed HERE: for a representative viewport, every candidate
     // drop (including over the transcript) must land on the strip x,
     // in-bounds, for BOTH possible outcomes of any matrix cell.
-    const viewport: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0, topClearance: 0 }
+    const viewport: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0, topClearance: 0, bottomClearance: 0 }
     const card = { width: CHECKLIST_CARD_WIDTH, height: 220 }
     const stripX = checklistCardHome(viewport, card.width).x
     const candidates = [
@@ -168,7 +168,7 @@ describe('checklistPlacement: exhaustive matrix (256 combinations of 8 binary in
 })
 
 describe('checklistPlacement: card geometry (pure)', () => {
-  const viewport: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0, topClearance: 0 }
+  const viewport: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0, topClearance: 0, bottomClearance: 0 }
 
   it('home is the top-right corner clear of margin and scrollbar', () => {
     expect(checklistCardHome(viewport, CHECKLIST_CARD_WIDTH)).toEqual({
@@ -178,7 +178,7 @@ describe('checklistPlacement: card geometry (pure)', () => {
   })
 
   it('home never goes left of the window edge on a tiny viewport', () => {
-    const tiny: ChecklistViewport = { width: 200, height: 300, scrollbarWidth: 0, topClearance: 0 }
+    const tiny: ChecklistViewport = { width: 200, height: 300, scrollbarWidth: 0, topClearance: 0, bottomClearance: 0 }
     expect(checklistCardHome(tiny, CHECKLIST_CARD_WIDTH).x).toBe(CHECKLIST_WINDOW_EDGE)
   })
 
@@ -193,7 +193,7 @@ describe('checklistPlacement: card geometry (pure)', () => {
   })
 
   it('clamp is total on degenerate viewports (max < min falls back to the edge, never NaN)', () => {
-    const degenerate: ChecklistViewport = { width: 100, height: 100, scrollbarWidth: 0, topClearance: 0 }
+    const degenerate: ChecklistViewport = { width: 100, height: 100, scrollbarWidth: 0, topClearance: 0, bottomClearance: 0 }
     const clamped = clampCardPosition({ x: 50, y: 50 }, degenerate, { width: 288, height: 220 })
     expect(clamped).toEqual({ x: CHECKLIST_WINDOW_EDGE, y: CHECKLIST_CARD_MARGIN })
     expect(Number.isFinite(clamped.x)).toBe(true)
@@ -221,13 +221,13 @@ describe('checklistPlacement: card geometry (pure)', () => {
    * the real pixel on Windows/Linux stays unproven until a field run
    * — no local gate covers the WebView there. */
   it('WINDOWS SIM: home clears a 17px scrollbar lane', () => {
-    const win: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 17, topClearance: 50 }
+    const win: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 17, topClearance: 50, bottomClearance: 0 }
     expect(checklistCardHome(win, 288).x).toBe(1280 - 17 - CHECKLIST_CARD_MARGIN - 288)
   })
 
   it('WINDOWS SIM: a position saved on a larger monitor is re-contained on restore', () => {
     const savedOnBigMonitor = { x: 2400, y: 60 }
-    const win: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 17, topClearance: 50 }
+    const win: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 17, topClearance: 50, bottomClearance: 0 }
     const clamped = clampCardPosition(savedOnBigMonitor, win, { width: 288, height: 220 })
     expect(clamped.x).toBe(1280 - 17 - 288 - CHECKLIST_WINDOW_EDGE)
     expect(clamped.y).toBe(60) // above the rail top (50), untouched
@@ -236,7 +236,7 @@ describe('checklistPlacement: card geometry (pure)', () => {
   it('WINDOWS SIM: 1.1× font metric grows the card — drop still lands in the strip', () => {
     // The docked rows are em-sized in CSS (font-metric guard); here the
     // taller CARD that a larger font produces is simulated as geometry.
-    const win: ChecklistViewport = { width: 1366, height: 768, scrollbarWidth: 17, topClearance: 50 }
+    const win: ChecklistViewport = { width: 1366, height: 768, scrollbarWidth: 17, topClearance: 50, bottomClearance: 0 }
     const tallerCard = { width: 288, height: Math.round(220 * 1.1) }
     const resolved = resolveCardDrop({ x: 500, y: 900 }, win, tallerCard)
     expect(resolved.x).toBe(1366 - 17 - CHECKLIST_CARD_MARGIN - 288)
@@ -306,7 +306,7 @@ describe('checklistPlacement: THE SHARED TOP-RIGHT RAIL (field collision fix)', 
     }
   })
 
-  const viewport: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0, topClearance: 0 }
+  const viewport: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0, topClearance: 0, bottomClearance: 0 }
 
   it('without clearance the rail top is the plain home margin', () => {
     expect(checklistCardHome(viewport, 288).y).toBe(CHECKLIST_CARD_MARGIN)
@@ -338,9 +338,98 @@ describe('checklistPlacement: THE SHARED TOP-RIGHT RAIL (field collision fix)', 
     // Latent defect fixed along the way: y=16 parked the card INSIDE
     // the 36px Windows/Linux titlebar (window controls sit top-right
     // there). Rail origin = titlebar(36) + 14 = 50.
-    const win: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 17, topClearance: 50 }
+    const win: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 17, topClearance: 50, bottomClearance: 0 }
     expect(checklistCardHome(win, 288).y).toBe(50)
     const resolved = resolveCardDrop({ x: 400, y: 10 }, win, { width: 288, height: 220 })
     expect(resolved.y).toBe(50)
+  })
+})
+
+describe('checklistPlacement: THE BOTTOM RAIL — the card never enters the composer band', () => {
+  /* Field defect (2026-08-01, measured in the packaged app): the
+   * composer dock (.bottom-dock, position:fixed z120) draws OVER the
+   * floating card (z40) and hid the list's bottom rows (overlap band
+   * x 1000-1090, y 700-745). The fix is GEOMETRIC, not stacking — the
+   * composer is where the user writes and must never be covered, and
+   * the goal keeps the near-composer slot — so the lane's usable bottom
+   * discounts the dock's REAL measured height (bottomClearance), the
+   * symmetric of the top rail. Proven here by RECTANGLE INTERSECTION,
+   * never by CSS existence. */
+
+  const card = { width: CHECKLIST_CARD_WIDTH, height: 220 }
+
+  /** Axis-aligned rectangle overlap area — the honest geometric proof. */
+  function overlapArea(
+    a: { x: number; y: number; w: number; h: number },
+    b: { x: number; y: number; w: number; h: number },
+  ): number {
+    const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)
+    const h = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y)
+    return Math.max(0, w) * Math.max(0, h)
+  }
+
+  const SHORT_COMPOSER: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0, topClearance: 0, bottomClearance: 116 }
+  const TALL_COMPOSER: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0, topClearance: 0, bottomClearance: 300 }
+
+  /** The band the dock occupies: its top to the viewport bottom, full
+   *  width (the composer is centered but the user measured the overlap
+   *  inside the card's x range — the strip is what matters). */
+  function composerBand(viewport: ChecklistViewport) {
+    return { x: 0, y: viewport.height - viewport.bottomClearance, w: viewport.width, h: viewport.bottomClearance }
+  }
+
+  function cardRect(pos: { x: number; y: number }) {
+    return { x: pos.x, y: pos.y, w: card.width, h: card.height }
+  }
+
+  it('GEOMETRIC PROOF: a drop inside the SHORT composer band resolves with ZERO overlap', () => {
+    const resolved = resolveCardDrop({ x: 1050, y: 700 }, SHORT_COMPOSER, card)
+    expect(resolved.y).toBe(800 - 116 - 220 - CHECKLIST_WINDOW_EDGE)
+    expect(overlapArea(cardRect(resolved), composerBand(SHORT_COMPOSER))).toBe(0)
+  })
+
+  it('GEOMETRIC PROOF: a drop inside the TALL composer band resolves with ZERO overlap', () => {
+    const resolved = resolveCardDrop({ x: 1050, y: 600 }, TALL_COMPOSER, card)
+    expect(overlapArea(cardRect(resolved), composerBand(TALL_COMPOSER))).toBe(0)
+    expect(resolved.y + card.height).toBeLessThanOrEqual(TALL_COMPOSER.height - TALL_COMPOSER.bottomClearance)
+  })
+
+  it('CONTRAFACTUAL: with zero bottom clearance even the deepest LEGAL rest overlaps the band', () => {
+    // The pre-fix math: the drop clamps to the old bottom bound (572)
+    // and STILL crosses the composer band by 108px — exactly what the
+    // user measured in the packaged app. If the rail math regressed to
+    // zero, this is what would come back.
+    const noRail: ChecklistViewport = { ...SHORT_COMPOSER, bottomClearance: 0 }
+    const resolved = resolveCardDrop({ x: 1050, y: 700 }, noRail, card)
+    expect(resolved.y).toBe(800 - 0 - 220 - CHECKLIST_WINDOW_EDGE)
+    expect(overlapArea(cardRect(resolved), composerBand(SHORT_COMPOSER))).toBeGreaterThan(0)
+  })
+
+  it('a parked position inside the band is re-contained ABOVE it on restore/resize', () => {
+    const clamped = clampCardPosition({ x: 976, y: 700 }, SHORT_COMPOSER, card)
+    expect(overlapArea(cardRect(clamped), composerBand(SHORT_COMPOSER))).toBe(0)
+  })
+
+  it('the clamp stays total when the composer eats the whole lane: degenerate, never NaN', () => {
+    const eaten: ChecklistViewport = { width: 1280, height: 800, scrollbarWidth: 0, topClearance: 0, bottomClearance: 790 }
+    const clamped = clampCardPosition({ x: 976, y: 400 }, eaten, card)
+    expect(Number.isFinite(clamped.y)).toBe(true)
+    expect(clamped.y).toBe(CHECKLIST_CARD_MARGIN) // falls back to the rail top
+  })
+
+  it('WINDOWS SIM: a 1.1× composer metric grows the band — still zero overlap', () => {
+    // DECLARED simulation, not proof: Windows font metrics grow the
+    // dock; here the grown band is fed as geometry. The real pixel on
+    // Windows/Linux stays unproven until a field run — no local gate
+    // covers the WebView there.
+    const winTall: ChecklistViewport = {
+      width: 1366,
+      height: 768,
+      scrollbarWidth: 17,
+      topClearance: 50,
+      bottomClearance: Math.round(116 * 1.1),
+    }
+    const resolved = resolveCardDrop({ x: 1000, y: 700 }, winTall, card)
+    expect(overlapArea(cardRect(resolved), composerBand(winTall))).toBe(0)
   })
 })

@@ -141,6 +141,18 @@ export type ChecklistViewport = {
    *  Resting positions NEVER go above it — the drag may visit, the
    *  drop may not stay (same philosophy as the transcript rule). */
   topClearance: number
+  /** THE BOTTOM RAIL (field defect, 2026-08-01): the composer dock
+   *  (.bottom-dock, position:fixed z120) is drawn OVER the card (z40)
+   *  and ate the list's bottom rows in the packaged app. The fix is
+   *  GEOMETRIC, not stacking — the composer is where the user writes
+   *  and must never be covered, so the card never enters its band.
+   *  This value is the band's height (+ gap), measured LIVE from the
+   *  dock's rect in liveViewport: the dock grows when the user types
+   *  multiple lines, when the attachment bar appears, and its metrics
+   *  differ per OS — a fixed px would break again (multiplatform rule).
+   *  The symmetric of topClearance: resting positions never go below
+   *  (viewport.height − bottomClearance − card.height − edge). */
+  bottomClearance: number
 }
 
 export type ChecklistCardSize = { width: number; height: number }
@@ -157,6 +169,13 @@ function clamp(value: number, min: number, max: number): number {
  *  exceeds the plain home margin, else the margin. */
 function railTop(viewport: ChecklistViewport): number {
   return Math.max(CHECKLIST_CARD_MARGIN, viewport.topClearance)
+}
+
+/** The HIGHEST y a resting card may take: above the composer band.
+ *  bottomClearance 0 degrades to the plain window edge (the pre-fix
+ *  behavior — the contrafactual the tests cross). */
+function laneBottom(viewport: ChecklistViewport, cardHeight: number): number {
+  return viewport.height - Math.max(0, viewport.bottomClearance) - cardHeight - CHECKLIST_WINDOW_EDGE
 }
 
 /** The right-strip home position (below the rail clearance, clear of
@@ -187,7 +206,7 @@ export function clampCardPosition(
 ): ChecklistCardPos {
   return {
     x: clamp(pos.x, CHECKLIST_WINDOW_EDGE, viewport.width - viewport.scrollbarWidth - card.width - CHECKLIST_WINDOW_EDGE),
-    y: clamp(pos.y, railTop(viewport), viewport.height - card.height - CHECKLIST_WINDOW_EDGE),
+    y: clamp(pos.y, railTop(viewport), laneBottom(viewport, card.height)),
   }
 }
 
@@ -204,7 +223,7 @@ export function resolveCardDrop(
   card: ChecklistCardSize,
 ): ChecklistCardPos {
   const home = checklistCardHome(viewport, card.width)
-  const y = clamp(candidate.y, railTop(viewport), viewport.height - card.height - CHECKLIST_WINDOW_EDGE)
+  const y = clamp(candidate.y, railTop(viewport), laneBottom(viewport, card.height))
   const nearHome = Math.abs(y - home.y) <= CHECKLIST_SNAP
   return { x: home.x, y: nearHome ? home.y : y }
 }

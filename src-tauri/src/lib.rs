@@ -2140,6 +2140,9 @@ pub fn run() {
             services::browser_panel::browser_tab_back,
             services::browser_panel::browser_tab_forward,
             services::browser_panel::browser_tab_reload,
+            services::browser_panel::browser_tab_set_media_suspended,
+            services::browser_panel::browser_tab_evict,
+            services::browser_panel::browser_tab_reactivate,
             // Auth
             start_cli_login,
             get_cli_auth_status,

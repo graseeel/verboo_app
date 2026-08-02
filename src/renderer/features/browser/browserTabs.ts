@@ -8,6 +8,7 @@ export type BrowserTabSnapshot = {
   loading: boolean
   generation: number
   recoverableError: string | null
+  evicted: boolean
 }
 
 export type BrowserSessionSnapshot = {
@@ -15,6 +16,10 @@ export type BrowserSessionSnapshot = {
   activeTabId: string | null
   visible: boolean
 }
+
+// Mirrors Rust browser_panel::MAX_LIVE_TABS. The source contract is pinned by
+// browserTabs.test.ts so the renderer cannot silently drift from the native cap.
+export const MAX_LIVE_BROWSER_TABS = 8
 
 export const emptyBrowserSession: BrowserSessionSnapshot = {
   tabs: [],

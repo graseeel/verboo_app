@@ -406,7 +406,7 @@ export type TranscriptItem = {
   role: 'user' | 'assistant' | 'tool' | 'system'
   text: string
   timestamp: number
-  kind?: 'message' | 'activity' | 'summary'
+  kind?: 'message' | 'activity' | 'summary' | 'annotation'
   // 'planning' — T1-TodoWrite (2026-07-31): the Rust side maps the
   // todowrite tool to kind="planning" (turn_service.rs activity_for_tool)
   // ON PURPOSE: planning is declaring intent, NOT acting, so this kind
@@ -456,6 +456,15 @@ export type TranscriptItem = {
   // Attachments sent with this message — thumbnail metadata only (paths,
   // names, kinds), no base64 blobs. Survives conversation reload.
   attachments?: Pick<AttachmentMeta, 'path' | 'name' | 'kind' | 'size' | 'mediaType' | 'browserAnnotation'>[]
+  /** F3 (N3): the annotation TURN item — kind 'annotation'. The quote+comment
+   *  pairs are FROZEN inside the item at send time: "consultable forever"
+   *  never depends on re-anchoring against the transcript (the excerpt may
+   *  be edited or compacted away later). Self-contained by design.
+   *  DEGRADATION CONTRACT for older builds: `text` carries a readable
+   *  fallback rendering of these same pairs, so an old version that does
+   *  not know kind 'annotation' still shows the content as a plain user
+   *  message instead of breaking or hiding it. */
+  annotationEntries?: { quote: string; comment: string | null }[]
 }
 
 export type WorkspaceChangeEntry = {
@@ -1039,6 +1048,14 @@ export type AgentTurnRequest = {
   personality?: PersonalityMode
   customInstructions?: string
   memoryContext?: string
+  /** F3-Annotations: user annotations on transcript excerpts, sent as a
+   *  FIELD — never concatenated into `message` (the block assembly with
+   *  UPPERCASE origin labels and char-safe truncation lives in Rust,
+   *  turn_service.rs build_annotation_block). Mirrors
+   *  `#[serde(default)] annotations: Option<Vec<Annotation>>`: the key is
+   *  ABSENT when empty, so a request without annotations stays
+   *  byte-identical to the pre-F3 shape (pinned by applyAnnotations). */
+  annotations?: Annotation[]
 }
 
 export type ResearchSubagentRequest = {
@@ -1391,4 +1408,30 @@ export type LocalTerminalStartRequest = {
 export type TerminalDataEvent = {
   sessionId: string
   data: string
+}
+
+// --- Anotações (F0) -----------------------------------------------------------
+// Contrato FIXADO pelo Maestro, idêntico ao que o TORNO recebeu no Rust. Não
+// renomear, não acrescentar campo: a fronteira Rust<->TS é camelCase e o Rust
+// já tem serde(rename_all = "camelCase") — um campo em snake_case aqui zera
+// silenciosamente o dado na ponte (já aconteceu com TokenUsage).
+//
+// Teto de quote: seleções acima de ANNOTATION_QUOTE_MAX (2000) chars são
+// truncadas NA CRIAÇÃO (não no resolvedor). Convenção de marcação, sem campo
+// novo no contrato: ao truncar, a criação grava suffix === '' — o suffix do
+// trecho COMPLETO não é vizinho do quote truncado no texto, então não teria
+// poder de desempate; o vazio sinaliza "não use suffix" e quote.length ===
+// ANNOTATION_QUOTE_MAX com suffix vazio identifica um quote truncado.
+export const ANNOTATION_QUOTE_MAX = 2000
+export const ANNOTATION_CONTEXT_MAX = 40
+
+export type Annotation = {
+  id: string
+  segmentId: string
+  quote: string
+  prefix: string
+  suffix: string
+  occurrenceIndex: number
+  comment: string | null
+  createdAt: number
 }

@@ -101,9 +101,9 @@ export function TopBar({
               event.stopPropagation()
               onToggleBrowser()
             }}
-            data-tooltip={browserOpen ? t('topbar.hideBrowser') : t('topbar.openBrowser')}
+            data-tooltip={browserOpen ? t('topbar.minimizeBrowser') : t('topbar.openBrowser')}
             data-tooltip-align="end"
-            aria-label={browserOpen ? t('topbar.hideBrowser') : t('topbar.openBrowser')}
+            aria-label={browserOpen ? t('topbar.minimizeBrowser') : t('topbar.openBrowser')}
           >
             <Globe size={15} />
           </button>

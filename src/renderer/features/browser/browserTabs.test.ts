@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { activeBrowserTab, emptyBrowserSession } from './browserTabs'
+import { activeBrowserTab, emptyBrowserSession, MAX_LIVE_BROWSER_TABS } from './browserTabs'
 import { rustTabFields, rustSessionFields } from './browserTabsConcordance'
 import type { BrowserSessionSnapshot, BrowserTabSnapshot } from './browserTabs'
 
@@ -9,7 +9,7 @@ function tab(id: string, overrides: Partial<BrowserTabSnapshot> = {}): BrowserTa
   return {
     id, label: `label-${id}`, url: 'about:blank', title: '',
     canGoBack: false, canGoForward: false, loading: false,
-    generation: 0, recoverableError: null,
+    generation: 0, recoverableError: null, evicted: false,
     ...overrides,
   }
 }
@@ -69,6 +69,7 @@ describe('browserTabs — Rust-TS field concordance', () => {
     const sample: Record<keyof BrowserTabSnapshot, unknown> = {
       id: '', label: '', url: '', title: '', canGoBack: false,
       canGoForward: false, loading: false, generation: 0, recoverableError: null,
+      evicted: false,
     }
     const tsKeys = new Set(Object.keys(sample))
 
@@ -101,5 +102,17 @@ describe('browserTabs — Rust-TS field concordance', () => {
       )
     }
     expect(rustFields).toEqual(tsKeys)
+  })
+
+  it('keeps the renderer live-tab cap pinned to the measured Rust limit', () => {
+    const rustSource = readFileSync(
+      resolve(__dirname, '../../../../src-tauri/src/services/browser_panel.rs'),
+      'utf8',
+    )
+
+    // Cross-component selector/contract rule: pin against the foreign source,
+    // never against a renderer-authored copy of the same number.
+    const rustLimit = rustSource.match(/pub const MAX_LIVE_TABS: usize = (\d+);/)?.[1]
+    expect(Number(rustLimit)).toBe(MAX_LIVE_BROWSER_TABS)
   })
 })
