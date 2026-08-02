@@ -49,3 +49,25 @@ test('cancels queued work without running it', async () => {
   release()
   await first
 })
+
+test('pauses active work through its cooperative pause callback', async () => {
+  const queue = createRunQueue()
+  let paused = false
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const run = queue.enqueue({
+    id: 'pause-me',
+    execute: async () => {
+      await gate
+      return 'queued'
+    },
+    pause: () => {
+      paused = true
+      release()
+    },
+  })
+
+  assert.equal(queue.pause('pause-me'), true)
+  await run
+  assert.equal(paused, true)
+})

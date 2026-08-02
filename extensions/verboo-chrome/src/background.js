@@ -303,6 +303,55 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true
     }
 
+    case MSG.ROUTINE_SIMULATE: {
+      routineRunner.run({
+        ...message,
+        simulate: true,
+        senderTabId: sender.tab?.id,
+        waitForCompletion: false,
+      })
+        .then((run) => sendResponse({ ok: true, run }))
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_PAUSE: {
+      loadSession()
+        .then(async (session) => {
+          if (!session?.accountId) {
+            sendResponse({ ok: false, error: 'auth_required' })
+            return
+          }
+          const paused = await routineRunner.pause(session.accountId, message.runId)
+          sendResponse({ ok: true, paused })
+        })
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
+    case MSG.ROUTINE_RESUME: {
+      loadSession()
+        .then(async (session) => {
+          if (!session?.accountId) {
+            sendResponse({ ok: false, error: 'auth_required' })
+            return
+          }
+          const run = await routineRunner.resume(session.accountId, message.runId, {
+            senderTabId: sender.tab?.id,
+            waitForCompletion: false,
+          })
+          sendResponse({ ok: true, run })
+        })
+        .catch((error) => {
+          sendResponse({ ok: false, error: error?.message ?? String(error) })
+        })
+      return true
+    }
+
     case MSG.ROUTINE_CANCEL: {
       loadSession()
         .then(async (session) => {

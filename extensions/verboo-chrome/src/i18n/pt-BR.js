@@ -446,6 +446,39 @@ export default {
   "routine_recorded_steps_help": {
     "message": "Revise os seletores e as variáveis antes de salvar."
   },
+  "routine_automation": {
+    "message": "Blocos de automação"
+  },
+  "routine_branch_selector": {
+    "message": "Se o seletor"
+  },
+  "routine_branch_contains": {
+    "message": "Contiver o texto"
+  },
+  "routine_branch_then": {
+    "message": "Se encontrar, faça"
+  },
+  "routine_branch_else": {
+    "message": "Caso contrário, faça"
+  },
+  "routine_output_format": {
+    "message": "Saída estruturada"
+  },
+  "routine_output_none": {
+    "message": "Sem saída estruturada"
+  },
+  "routine_output_table": {
+    "message": "Tabela Markdown"
+  },
+  "routine_output_selector": {
+    "message": "Seletor da saída"
+  },
+  "routine_subroutines": {
+    "message": "Sub-rotinas"
+  },
+  "routine_subroutines_help": {
+    "message": "Uma barra por linha. Elas rodam como módulos reutilizáveis de instruções."
+  },
   "routine_schedule": {
     "message": "Agendamento"
   },
@@ -512,6 +545,63 @@ export default {
   "routine_run": {
     "message": "Executar rotina"
   },
+  "routine_simulate": {
+    "message": "Simular"
+  },
+  "routine_pause": {
+    "message": "Pausar"
+  },
+  "routine_resume": {
+    "message": "Continuar"
+  },
+  "routine_cancel_run": {
+    "message": "Cancelar execução"
+  },
+  "routine_target_tab": {
+    "message": "Aba alvo"
+  },
+  "routine_timeline": {
+    "message": "Linha do tempo"
+  },
+  "routine_compare": {
+    "message": "Comparar com a execução anterior"
+  },
+  "routine_simulation_label": {
+    "message": "Simulação"
+  },
+  "routine_no_previous_run": {
+    "message": "Não há execução anterior para comparar."
+  },
+  "routine_event_created": {
+    "message": "Execução criada"
+  },
+  "routine_event_started": {
+    "message": "Execução iniciada"
+  },
+  "routine_event_tool": {
+    "message": "Etapa de ferramenta"
+  },
+  "routine_event_simulation": {
+    "message": "Plano de simulação gerado"
+  },
+  "routine_event_conditional": {
+    "message": "Condição avaliada"
+  },
+  "routine_event_subroutine": {
+    "message": "Sub-rotina reutilizável"
+  },
+  "routine_event_completed": {
+    "message": "Execução concluída"
+  },
+  "routine_event_failed": {
+    "message": "Execução falhou"
+  },
+  "routine_event_paused": {
+    "message": "Execução pausada"
+  },
+  "routine_event_cancelled": {
+    "message": "Execução cancelada"
+  },
   "routine_duplicate": {
     "message": "Duplicar"
   },
@@ -538,6 +628,9 @@ export default {
   },
   "routine_status_queued": {
     "message": "Na fila"
+  },
+  "routine_status_paused": {
+    "message": "Pausada"
   },
   "routine_status_running": {
     "message": "Executando"

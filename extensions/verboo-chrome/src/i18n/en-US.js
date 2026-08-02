@@ -446,6 +446,39 @@ export default {
   "routine_recorded_steps_help": {
     "message": "Review selectors and variable placeholders before saving."
   },
+  "routine_automation": {
+    "message": "Automation building blocks"
+  },
+  "routine_branch_selector": {
+    "message": "If selector"
+  },
+  "routine_branch_contains": {
+    "message": "Contains text"
+  },
+  "routine_branch_then": {
+    "message": "If found, do"
+  },
+  "routine_branch_else": {
+    "message": "Otherwise, do"
+  },
+  "routine_output_format": {
+    "message": "Structured output"
+  },
+  "routine_output_none": {
+    "message": "No structured output"
+  },
+  "routine_output_table": {
+    "message": "Markdown table"
+  },
+  "routine_output_selector": {
+    "message": "Output selector"
+  },
+  "routine_subroutines": {
+    "message": "Sub-routines"
+  },
+  "routine_subroutines_help": {
+    "message": "One slash command per line. They run as reusable instruction modules."
+  },
   "routine_schedule": {
     "message": "Schedule"
   },
@@ -512,6 +545,63 @@ export default {
   "routine_run": {
     "message": "Run routine"
   },
+  "routine_simulate": {
+    "message": "Simulate"
+  },
+  "routine_pause": {
+    "message": "Pause"
+  },
+  "routine_resume": {
+    "message": "Resume"
+  },
+  "routine_cancel_run": {
+    "message": "Cancel run"
+  },
+  "routine_target_tab": {
+    "message": "Target tab"
+  },
+  "routine_timeline": {
+    "message": "Execution timeline"
+  },
+  "routine_compare": {
+    "message": "Compare with previous run"
+  },
+  "routine_simulation_label": {
+    "message": "Simulation"
+  },
+  "routine_no_previous_run": {
+    "message": "No previous run to compare."
+  },
+  "routine_event_created": {
+    "message": "Run created"
+  },
+  "routine_event_started": {
+    "message": "Execution started"
+  },
+  "routine_event_tool": {
+    "message": "Tool step"
+  },
+  "routine_event_simulation": {
+    "message": "Simulation plan generated"
+  },
+  "routine_event_conditional": {
+    "message": "Conditional branch evaluated"
+  },
+  "routine_event_subroutine": {
+    "message": "Reusable sub-routine"
+  },
+  "routine_event_completed": {
+    "message": "Execution completed"
+  },
+  "routine_event_failed": {
+    "message": "Execution failed"
+  },
+  "routine_event_paused": {
+    "message": "Execution paused"
+  },
+  "routine_event_cancelled": {
+    "message": "Execution cancelled"
+  },
   "routine_duplicate": {
     "message": "Duplicate"
   },
@@ -538,6 +628,9 @@ export default {
   },
   "routine_status_queued": {
     "message": "Queued"
+  },
+  "routine_status_paused": {
+    "message": "Paused"
   },
   "routine_status_running": {
     "message": "Running"

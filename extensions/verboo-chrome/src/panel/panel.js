@@ -27,6 +27,7 @@ import {
   safeMarkdownToHtml,
   shouldAppendError,
   shouldSubmitComposerKey,
+  structuredResultPreview,
   translatedErrorMessage,
 } from './presentation.js'
 import { approvalMessage } from './approvalActions.js'
@@ -1341,6 +1342,8 @@ function formatResultData(data) {
   if (typeof data === 'object') {
     const obj = /** @type {Record<string, unknown>} */ (data)
     if (obj.image || obj.dataUrl || obj.base64) return 'Screenshot captured'
+    const structuredPreview = structuredResultPreview(data)
+    if (structuredPreview) return structuredPreview
     if (typeof obj.text === 'string') {
       if (looksLikeScriptNoise(obj.text)) return 'Page content not useful'
       // Prefer a short clip of useful page text

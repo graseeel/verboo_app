@@ -3,6 +3,10 @@ const VARIABLE_PATTERN = /\{\{([a-zA-Z][\w-]{0,63})\}\}/g
 const NAME_MAX_LENGTH = 80
 const DESCRIPTION_MAX_LENGTH = 240
 const INSTRUCTIONS_MAX_LENGTH = 32_000
+const BRANCH_TEXT_MAX_LENGTH = 2_000
+const SUBROUTINE_MAX_COUNT = 8
+const SUBROUTINE_COMMAND_MAX_LENGTH = 64
+const STRUCTURED_SELECTOR_MAX_LENGTH = 256
 
 /**
  * Convert a routine name or slash command into the canonical command slug.
@@ -63,6 +67,9 @@ export function normalizeRoutineDraft(input, accountId, identity) {
   const recordedSteps = cloneArray(input?.recordedSteps)
   const assets = cloneArray(input?.assets)
   const schedule = normalizeSchedule(input?.schedule)
+  const branch = normalizeBranch(input?.branch)
+  const subroutineCommands = normalizeSubroutineCommands(input?.subroutineCommands)
+  const output = normalizeStructuredOutput(input?.output)
 
   return {
     schemaVersion: 1,
@@ -79,6 +86,9 @@ export function normalizeRoutineDraft(input, accountId, identity) {
     assets,
     strategy: recordedSteps.length > 0 ? 'hybrid' : 'semantic',
     recordedSteps,
+    ...(branch ? { branch } : {}),
+    ...(subroutineCommands.length > 0 ? { subroutineCommands } : {}),
+    ...(output ? { output } : {}),
     ...(typeof input?.modelId === 'string' && input.modelId.trim()
       ? { modelId: input.modelId.trim() }
       : {}),
@@ -87,6 +97,32 @@ export function normalizeRoutineDraft(input, accountId, identity) {
     createdAt: identity.createdAt ?? identity.updatedAt,
     updatedAt: identity.updatedAt,
   }
+}
+
+function normalizeBranch(value) {
+  if (!value || typeof value !== 'object') return undefined
+  const selector = String(value.selector ?? '').trim().slice(0, STRUCTURED_SELECTOR_MAX_LENGTH)
+  const contains = String(value.contains ?? '').trim().slice(0, BRANCH_TEXT_MAX_LENGTH)
+  if (!selector || !contains) throw new Error('routine_branch_invalid')
+  const thenInstructions = String(value.thenInstructions ?? '').trim().slice(0, BRANCH_TEXT_MAX_LENGTH)
+  const elseInstructions = String(value.elseInstructions ?? '').trim().slice(0, BRANCH_TEXT_MAX_LENGTH)
+  if (!thenInstructions && !elseInstructions) throw new Error('routine_branch_invalid')
+  return { selector, contains, thenInstructions, elseInstructions }
+}
+
+function normalizeSubroutineCommands(value) {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value
+    .map((command) => normalizeCommand(command).slice(0, SUBROUTINE_COMMAND_MAX_LENGTH))
+    .filter(Boolean))].slice(0, SUBROUTINE_MAX_COUNT)
+}
+
+function normalizeStructuredOutput(value) {
+  if (!value || typeof value !== 'object') return undefined
+  const format = String(value.format ?? '').trim().toLowerCase()
+  if (!['json', 'csv', 'table'].includes(format)) throw new Error('routine_output_format_invalid')
+  const selector = String(value.selector ?? '').trim().slice(0, STRUCTURED_SELECTOR_MAX_LENGTH)
+  return { format, ...(selector ? { selector } : {}) }
 }
 
 function normalizeOptionalHttpUrl(value) {

@@ -52,3 +52,31 @@ test('normalizes supported local schedules and rejects invalid recurrence data',
     /schedule_/,
   )
 })
+
+test('normalizes conditional, structured output, and reusable sub-routine settings', () => {
+  const routine = normalizeRoutineDraft(
+    {
+      name: 'Branching report',
+      instructions: 'Review the page.',
+      branch: {
+        selector: '.status',
+        contains: 'Ready',
+        thenInstructions: 'Publish the report.',
+        elseInstructions: 'Ask for an update.',
+      },
+      output: { format: 'csv', selector: 'table' },
+      subroutineCommands: ['/collect-leads', 'collect-leads', '/collect-leads'],
+    },
+    'acct-a',
+    { id: 'routine-3', updatedAt: 1 },
+  )
+
+  assert.deepEqual(routine.branch, {
+    selector: '.status',
+    contains: 'Ready',
+    thenInstructions: 'Publish the report.',
+    elseInstructions: 'Ask for an update.',
+  })
+  assert.deepEqual(routine.output, { format: 'csv', selector: 'table' })
+  assert.deepEqual(routine.subroutineCommands, ['collect-leads'])
+})

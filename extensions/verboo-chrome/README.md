@@ -24,7 +24,7 @@ extensions/verboo-chrome/
     │   ├── protocol.js    # MSG enum, ToolCall/ToolResult/PolicyDecision contracts, makeToolCall, TOOL_RISK_MAP
     │   ├── execute.js     # execute(toolCall, ctx) — single chokepoint; runs evaluateToolPolicy before dispatch
     │   ├── execute.test.js
-    │   ├── types.ts        # BrowserTool TS discriminated union (MVP: navigate, read_page, click, type, screenshot, tabs, tab_group)
+    │   ├── types.ts        # BrowserTool TS discriminated union (MVP: navigate, read_page, structured_extract, click, type, screenshot, tabs, tab_group)
     │   └── tools/
     │       ├── navigate.js    # chrome.tabs.update
     │       ├── readPage.js    # chrome.scripting.executeScript

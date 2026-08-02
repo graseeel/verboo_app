@@ -10,6 +10,7 @@ import { loadMode, saveMode } from '../policy/modesStore.js'
 import { loadGrants, upsertGrant, removeGrant } from '../policy/siteGrantsStore.js'
 import { loadSession } from '../auth/auth.js'
 import { MSG } from '../controller/protocol.js'
+import { loadOptionsSession } from './optionsSession.js'
 
 import EN_US from '../i18n/en-US.js'
 import PT_BR from '../i18n/pt-BR.js'
@@ -271,11 +272,13 @@ function renderRoutines() {
     description.className = 'routine-card-description'
     description.textContent = routine.description || routine.instructions
     content.append(title, command, description)
-    const latestRun = routineRuns.find((run) => run.routineId === routine.id)
+    const relatedRuns = routineRuns.filter((run) => run.routineId === routine.id)
+    const latestRun = relatedRuns[0]
     if (latestRun) {
       const status = document.createElement('span')
       status.className = 'routine-card-status'
-      status.textContent = `${t('routine_last_run')}: ${runStatusLabel(latestRun.status)}`
+      const target = latestRun.targetTab?.title || latestRun.targetTab?.url || t('routine_target_tab')
+      status.textContent = `${t('routine_last_run')}: ${runStatusLabel(latestRun.status)} · ${target}`
       content.append(status)
     }
 
@@ -283,9 +286,25 @@ function renderRoutines() {
     actions.className = 'routine-card-actions'
     actions.append(
       routineAction(t('routine_run'), 'run', () => runRoutineFromSettings(routine)),
+      routineAction(t('routine_simulate'), 'simulate', () => runRoutineFromSettings(routine, true)),
       routineAction(t('routine_duplicate'), 'duplicate', () => duplicateRoutine(routine)),
       routineAction(t('routine_delete'), 'delete', () => deleteRoutine(routine)),
     )
+    if (latestRun && ['running', 'waiting_approval'].includes(latestRun.status)) {
+      actions.prepend(
+        routineAction(t('routine_pause'), 'pause', () => controlRoutineRun(latestRun, 'pause')),
+      )
+    }
+    if (latestRun?.status === 'queued') {
+      actions.prepend(
+        routineAction(t('routine_resume'), 'resume', () => controlRoutineRun(latestRun, 'resume')),
+      )
+    }
+    if (latestRun && ['queued', 'running', 'waiting_approval'].includes(latestRun.status)) {
+      actions.prepend(
+        routineAction(t('routine_cancel_run'), 'cancel-run', () => controlRoutineRun(latestRun, 'cancel')),
+      )
+    }
     if (latestRun?.recoverySuggestion) {
       actions.prepend(
         routineAction(
@@ -297,8 +316,84 @@ function renderRoutines() {
     }
 
     card.append(content, actions)
+    if (latestRun) card.append(renderRunDetails(latestRun, relatedRuns))
     list.appendChild(card)
   }
+}
+
+function renderRunDetails(latestRun, relatedRuns) {
+  const details = document.createElement('details')
+  details.className = 'routine-run-details'
+  const summary = document.createElement('summary')
+  summary.textContent = t('routine_timeline')
+  details.appendChild(summary)
+
+  const meta = document.createElement('div')
+  meta.className = 'routine-run-meta'
+  const mode = latestRun.mode === 'simulation' ? ` · ${t('routine_simulation_label')}` : ''
+  const duration = Number.isFinite(latestRun.durationMs)
+    ? ` · ${formatDuration(latestRun.durationMs)}`
+    : ''
+  meta.textContent = `${runStatusLabel(latestRun.status)}${mode}${duration}`
+  details.appendChild(meta)
+
+  const target = document.createElement('div')
+  target.className = 'routine-run-target'
+  target.textContent = `${t('routine_target_tab')}: ${latestRun.targetTab?.title || latestRun.targetTab?.url || '—'}`
+  details.appendChild(target)
+
+  const timeline = document.createElement('ol')
+  timeline.className = 'routine-timeline'
+  for (const event of Array.isArray(latestRun.events) ? latestRun.events : []) {
+    const item = document.createElement('li')
+    item.className = `routine-timeline-event routine-timeline-${event.type || 'unknown'}`
+    const title = document.createElement('strong')
+    title.textContent = event.type === 'tool'
+      ? `${t('routine_event_tool')}: ${event.name || 'unknown'}`
+      : t(`routine_event_${event.type}`)
+    const detail = document.createElement('span')
+    detail.textContent = event.type === 'tool'
+      ? `${event.success ? '✓' : '✕'}${event.durationMs ? ` · ${formatDuration(event.durationMs)}` : ''}${event.error ? ` · ${event.error}` : ''}`
+      : `${formatEventTime(event.at)}${event.error ? ` · ${event.error}` : ''}`
+    item.append(title, detail)
+    if (event.type === 'simulation' && Array.isArray(event.steps)) {
+      const steps = document.createElement('div')
+      steps.className = 'routine-simulation-steps'
+      for (const step of event.steps) {
+        const row = document.createElement('span')
+        row.textContent = `${step.index}. ${step.name}`
+        steps.appendChild(row)
+      }
+      item.appendChild(steps)
+    }
+    timeline.appendChild(item)
+  }
+  if (timeline.children.length === 0) {
+    const empty = document.createElement('li')
+    empty.textContent = t('routine_no_previous_run')
+    timeline.appendChild(empty)
+  }
+  details.appendChild(timeline)
+
+  const previous = relatedRuns.find((run) => run.id !== latestRun.id)
+  if (previous) {
+    const compare = document.createElement('div')
+    compare.className = 'routine-run-compare'
+    compare.textContent = `${t('routine_compare')}: ${runStatusLabel(previous.status)} → ${runStatusLabel(latestRun.status)}`
+    details.appendChild(compare)
+  }
+  return details
+}
+
+function formatDuration(value) {
+  const ms = Math.max(0, Number(value) || 0)
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
+function formatEventTime(value) {
+  const date = new Date(Number(value))
+  return Number.isNaN(date.valueOf()) ? '' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
 function runStatusLabel(status) {
@@ -354,6 +449,14 @@ function openRoutineEditor(routine = null) {
     Array.isArray(routine?.recordedSteps) && routine.recordedSteps.length > 0
       ? JSON.stringify(routine.recordedSteps, null, 2)
       : ''
+  document.getElementById('routine-branch-selector').value = routine?.branch?.selector ?? ''
+  document.getElementById('routine-branch-contains').value = routine?.branch?.contains ?? ''
+  document.getElementById('routine-branch-then').value = routine?.branch?.thenInstructions ?? ''
+  document.getElementById('routine-branch-else').value = routine?.branch?.elseInstructions ?? ''
+  document.getElementById('routine-output-format').value = routine?.output?.format ?? ''
+  document.getElementById('routine-output-selector').value = routine?.output?.selector ?? ''
+  document.getElementById('routine-subroutines').value =
+    Array.isArray(routine?.subroutineCommands) ? routine.subroutineCommands.join('\n') : ''
   document.getElementById('routine-schedule-enabled').checked =
     routine?.schedule?.enabled === true
   document.getElementById('routine-schedule-frequency').value =
@@ -395,6 +498,21 @@ function routineDraftFromForm() {
     .map((value) => value.trim())
     .filter(Boolean)
 
+  const branchSelector = document.getElementById('routine-branch-selector').value.trim()
+  const branchContains = document.getElementById('routine-branch-contains').value.trim()
+  const branchThen = document.getElementById('routine-branch-then').value.trim()
+  const branchElse = document.getElementById('routine-branch-else').value.trim()
+  const branch = branchSelector || branchContains || branchThen || branchElse
+    ? { selector: branchSelector, contains: branchContains, thenInstructions: branchThen, elseInstructions: branchElse }
+    : null
+  const outputFormat = document.getElementById('routine-output-format').value
+  const outputSelector = document.getElementById('routine-output-selector').value.trim()
+  const output = outputFormat ? { format: outputFormat, ...(outputSelector ? { selector: outputSelector } : {}) } : null
+  const subroutineCommands = document.getElementById('routine-subroutines').value
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+
   const frequency = document.getElementById('routine-schedule-frequency').value
   const schedule = scheduleEnabled
     ? {
@@ -424,6 +542,9 @@ function routineDraftFromForm() {
     modelId: document.getElementById('routine-model-id').value,
     cleanupCreatedTabs: document.getElementById('routine-cleanup-tabs').checked,
     recordedSteps,
+    branch,
+    output,
+    subroutineCommands,
     schedule,
   }
 }
@@ -611,7 +732,7 @@ async function deleteRoutine(routine) {
   await loadRoutines()
 }
 
-async function runRoutineFromSettings(routine) {
+async function runRoutineFromSettings(routine, simulate = false) {
   const missing = (routine.variables ?? []).filter(
     (variable) => variable.required !== false && !variable.defaultValue,
   )
@@ -623,12 +744,23 @@ async function runRoutineFromSettings(routine) {
     (routine.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? '']),
   )
   const response = await sendMessage({
-    type: MSG.ROUTINE_RUN,
+    type: simulate ? MSG.ROUTINE_SIMULATE : MSG.ROUTINE_RUN,
     routineId: routine.id,
     expectedRevision: routine.revision,
     variables,
   })
   if (!response?.ok) showRoutinesError(response?.error ?? t('routine_run_failed'))
+}
+
+async function controlRoutineRun(run, action) {
+  const type = action === 'pause'
+    ? MSG.ROUTINE_PAUSE
+    : action === 'resume'
+      ? MSG.ROUTINE_RESUME
+      : MSG.ROUTINE_CANCEL
+  const response = await sendMessage({ type, runId: run.id })
+  if (!response?.ok) showRoutinesError(response?.error ?? t('routine_run_failed'))
+  await loadRoutines()
 }
 
 function setRoutineFormError(message) {
@@ -721,7 +853,10 @@ async function init() {
   applyI18n(document)
   resolveBrandAssets()
 
-  const session = await loadSession()
+  const session = await loadOptionsSession({
+    requestAuthState: () => sendMessage({ type: MSG.AUTH_STATE_REQUEST }),
+    loadStoredSession: loadSession,
+  })
   await renderAuth(session)
 
   await initModes()

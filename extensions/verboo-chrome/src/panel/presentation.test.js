@@ -5,6 +5,7 @@ import {
   humanizeModelId,
   modelDisplayName,
   safeMarkdownToHtml,
+  structuredResultPreview,
 } from './presentation.js'
 import * as presentation from './presentation.js'
 
@@ -27,11 +28,36 @@ test('safeMarkdownToHtml: renders summary emphasis and line breaks', () => {
   )
 })
 
+test('safeMarkdownToHtml: renders headings and unordered/ordered lists', () => {
+  assert.equal(
+    safeMarkdownToHtml('## Resumo\n- Primeiro\n- Segundo\n1. Próximo'),
+    '<h2>Resumo</h2><br><ul><li>Primeiro</li><li>Segundo</li></ul><br><ol><li>Próximo</li></ol>',
+  )
+})
+
+test('safeMarkdownToHtml: renders fenced code blocks without exposing delimiters', () => {
+  assert.equal(
+    safeMarkdownToHtml('Resultado:\n```csv\nNome,Valor\nJuno,42\n```'),
+    'Resultado:<br><pre><code>Nome,Valor\nJuno,42</code></pre>',
+  )
+})
+
 test('safeMarkdownToHtml: escapes model-provided markup before formatting', () => {
   const html = safeMarkdownToHtml('<img src=x onerror=alert(1)> **ok**')
   assert.doesNotMatch(html, /<img/i)
   assert.match(html, /&lt;img/)
   assert.match(html, /<strong>ok<\/strong>/)
+})
+
+test('structuredResultPreview: shows a useful bounded preview for structured data', () => {
+  assert.equal(
+    structuredResultPreview({
+      format: 'csv',
+      url: 'https://example.com',
+      data: 'Nome,Valor\nJuno,42',
+    }),
+    'CSV · Nome,Valor Juno,42',
+  )
 })
 
 test('translatedErrorMessage: translates known backend codes and hides unknown codes', () => {

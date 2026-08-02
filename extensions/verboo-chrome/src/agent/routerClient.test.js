@@ -254,3 +254,281 @@ test('chatCompletion assembles streamed tool-call argument fragments', async () 
     globalThis.fetch = originalFetch
   }
 })
+
+// ────────────────────────────────────────────────────────────────────
+// A2-CHROME: parser regression tests for the user-reported leak
+//
+// Symptom (user, Windows): when the model emits a tool call as text
+// (e.g. `<tool_call>...<function=computer>...<parameter=action>screenshot</parameter>...`),
+// the parser either failed to resolve the tool name (function was
+// `computer` not `browser`) or skipped the entire XML block (because
+// the turn offered no tools, the old `allowTextToolCalls` gate skipped
+// it). Both modes left the raw `<tool_call>` markup visible to the
+// user as plain conversation text.
+//
+// These tests lock in the parser's behavior:
+//  - family wrappers `browser` / `computer` with `parameter=action=<x>`
+//    unwrap to the inner tool name
+//  - dotted forms `browser.<x>` / `computer.<x>` resolve when `<x>`
+//    matches a real tool; invalid suffixes are dropped silently
+//  - raw `<tool_call>` markup is ALWAYS stripped from returned content,
+//    whether or not structured calls were extracted
+//  - malformed XML markup with no extractable calls still produces zero
+//    leak (no `<tool_call` substring survives in content)
+// ────────────────────────────────────────────────────────────────────
+
+test('parseCompletionResponse: function=computer + action=screenshot unwraps to screenshot tool', () => {
+  const json = {
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: 'Vou tirar um screenshot pra você.\n<tool_call>\n<function=computer>\n<parameter=action>screenshot</parameter>\n</function>\n</tool_call>',
+      },
+    }],
+  }
+  const result = parseCompletionResponse(json)
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].name, 'screenshot')
+  assert.equal(result.toolCalls[0].arguments, '{}')
+  // Markup MUST NOT appear in content — that was the user-facing bug.
+  assert.ok(!(result.content ?? '').includes('<tool_call'))
+  assert.ok(!(result.content ?? '').includes('<function='))
+  assert.ok((result.content ?? '').includes('Vou tirar um screenshot pra você.'))
+})
+
+test('parseCompletionResponse: dotted computer.navigate and computer.click resolve to inner tools', () => {
+  const json = {
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: '<tool_call>\n<function=computer.navigate>\n<parameter=url>https://example.com</parameter>\n</function>\n</tool_call>',
+      },
+    }],
+  }
+  const navigate = parseCompletionResponse(json)
+  assert.equal(navigate.toolCalls.length, 1)
+  assert.equal(navigate.toolCalls[0].name, 'navigate')
+  assert.deepEqual(JSON.parse(navigate.toolCalls[0].arguments), { url: 'https://example.com' })
+  assert.ok(!(navigate.content ?? '').includes('<tool_call'))
+
+  // `computer.click` — a real tool, dotted form. The user's capture
+  // showed models emitting `computer.navigate` and `computer.wait`;
+  // `wait` is NOT a real tool (it's a hallucination) and is covered
+  // by the "unknown suffix dropped" test below. Here we use `click`
+  // which IS a real tool.
+  const jsonClick = {
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: '<tool_call>\n<function=computer.click>\n<parameter=selector>#submit</parameter>\n</function>\n</tool_call>',
+      },
+    }],
+  }
+  const click = parseCompletionResponse(jsonClick)
+  assert.equal(click.toolCalls.length, 1)
+  assert.equal(click.toolCalls[0].name, 'click')
+  assert.deepEqual(JSON.parse(click.toolCalls[0].arguments), { selector: '#submit' })
+})
+
+test('parseCompletionResponse: dotted form with unknown suffix is dropped, markup is still stripped', () => {
+  const json = {
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: '<tool_call>\n<function=computer.totally_made_up>\n<parameter=foo>bar</parameter>\n</function>\n</tool_call>some prose after',
+      },
+    }],
+  }
+  const result = parseCompletionResponse(json)
+  // Unknown tool suffix — drop the call rather than pass a fake name through.
+  assert.equal(result.toolCalls.length, 0)
+  // BUT the markup is still stripped from the content the user sees.
+  assert.ok(!(result.content ?? '').includes('<tool_call'))
+  assert.ok(!(result.content ?? '').includes('<function='))
+  assert.ok((result.content ?? '').includes('some prose after'))
+})
+
+test('parseCompletionResponse: raw tool_call markup NEVER survives in content for any family', () => {
+  // Five flavours of the user's symptom — none should leak markup.
+  const flavours = [
+    { content: 'before\n<tool_call>\n<function=computer>\n<parameter=action>screenshot</parameter>\n</function>\n</tool_call>\nafter' },
+    { content: 'x<tool_call><function=browser.navigate><parameter=url>https://e.com</parameter></function></tool_call>y' },
+    { content: 'a<tool_call><function=browser_click><parameter=selector>#btn</parameter></function></tool_call>b' },
+    { content: '<tool_call><function=garbage_tool></function></tool_call>plain text' },
+    { content: 'no markup here' },
+  ]
+  for (const { content } of flavours) {
+    const result = parseCompletionResponse({ choices: [{ message: { role: 'assistant', content } }] })
+    assert.ok(
+      !(result.content ?? '').includes('<tool_call'),
+      `markup leaked in content for input: ${JSON.stringify(content)} → ${JSON.stringify(result.content)}`,
+    )
+    assert.ok(
+      !(result.content ?? '').includes('</tool_call>'),
+      `closing markup leaked in content for input: ${JSON.stringify(content)}`,
+    )
+  }
+})
+
+test('parseCompletionResponse: malformed markup with zero extractable calls returns clean content, no throw', () => {
+  // The OLD parser threw `Router returned a malformed text tool call`
+  // here. The NEW parser silently strips the markup — the agent loop is
+  // responsible for surfacing "tools weren't available" to the user,
+  // not the parser. A throw here would leave the panel stuck on
+  // "Working…" because nothing got returned.
+  const json = {
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: 'Half a tool call: <tool_call>not a real call',
+      },
+    }],
+  }
+  const result = parseCompletionResponse(json)
+  assert.equal(result.toolCalls.length, 0)
+  assert.equal(result.content, 'Half a tool call: not a real call')
+})
+
+// ────────────────────────────────────────────────────────────────────
+// A2-CHROME Correction 1: no double-execution when structured + text
+// mirror the same call.
+//
+// The parser must ALWAYS strip the markup (presentation fix), but only
+// FORWARD the parsed text calls when there are no structured tool_calls.
+// Otherwise a model that emits a structured `type` call AND mirrors
+// `<tool_call><function=type>...` in content would produce two calls, and
+// loop.js's dedupeToolCalls does NOT save us (it keys on name +
+// canonical arguments, and the text form's arguments differ from the
+// structured form's — so both survive dedupe and `type` runs twice).
+// ────────────────────────────────────────────────────────────────────
+
+test('parseCompletionResponse: structured tool_call + text mirror = ONE call, content clean', () => {
+  const json = {
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: [
+          'Vou digitar pra voce.',
+          '<tool_call>',
+          '<function=type>',
+          '<parameter=text>ola</parameter>',
+          '<parameter=selector>#campo</parameter>',
+          '</function>',
+          '</tool_call>',
+        ].join('\n'),
+        tool_calls: [{
+          id: 'call_structured_1',
+          type: 'function',
+          function: {
+            name: 'type',
+            arguments: JSON.stringify({ text: 'ola', selector: '#campo' }),
+          },
+        }],
+      },
+    }],
+  }
+  const result = parseCompletionResponse(json)
+  // ONE call, not two — the structured one wins, the text mirror is dropped.
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].name, 'type')
+  assert.equal(result.toolCalls[0].id, 'call_structured_1')
+  // Markup is STILL stripped from content (presentation fix is unconditional).
+  assert.ok(!(result.content ?? '').includes('<tool_call'))
+  assert.ok(!(result.content ?? '').includes('<function='))
+  assert.ok((result.content ?? '').includes('Vou digitar pra voce.'))
+})
+
+// Counterfactual: text-only (no structured tool_calls) still parses normally.
+test('parseCompletionResponse: text-only tool call (no structured) parses normally', () => {
+  const json = {
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: [
+          '<tool_call>',
+          '<function=type>',
+          '<parameter=text>ola</parameter>',
+          '<parameter=selector>#campo</parameter>',
+          '</function>',
+          '</tool_call>',
+        ].join('\n'),
+      },
+    }],
+  }
+  const result = parseCompletionResponse(json)
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].name, 'type')
+  assert.deepEqual(JSON.parse(result.toolCalls[0].arguments), { text: 'ola', selector: '#campo' })
+  assert.ok(!(result.content ?? '').includes('<tool_call'))
+})
+
+test('parseCompletionResponse: text-only structured extraction call parses normally', () => {
+  const result = parseCompletionResponse({
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: [
+          'Vou estruturar os dados.',
+          '<tool_call>',
+          '<function=structured_extract>',
+          '<parameter=format>csv</parameter>',
+          '<parameter=selector>table</parameter>',
+          '</function>',
+          '</tool_call>',
+        ].join('\n'),
+      },
+    }],
+  })
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].name, 'structured_extract')
+  assert.deepEqual(JSON.parse(result.toolCalls[0].arguments), {
+    format: 'csv',
+    selector: 'table',
+  })
+  assert.equal(result.content, 'Vou estruturar os dados.')
+})
+
+test('parseCompletionResponse: JSON computer tool calls inside tool_call markup are normalized', () => {
+  const result = parseCompletionResponse({
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: [
+          'Vou abrir a página.',
+          '<tool_call>',
+          '{"name":"computer.navigate","arguments":{"url":"https://github.com"}}',
+          '</tool_call>',
+        ].join('\n'),
+      },
+    }],
+  })
+
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].name, 'navigate')
+  assert.deepEqual(JSON.parse(result.toolCalls[0].arguments), {
+    url: 'https://github.com',
+  })
+  assert.equal(result.content, 'Vou abrir a página.')
+})
+
+test('parseCompletionResponse: JSON computer action unwraps action and drops unknown tools', () => {
+  const result = parseCompletionResponse({
+    choices: [{
+      message: {
+        content: [
+          '<tool_call>',
+          '{"name":"computer","arguments":{"action":"read_page","selector":"body"}}',
+          '</tool_call>',
+          '<tool_call>',
+          '{"name":"computer.wait","arguments":{"seconds":2}}',
+          '</tool_call>',
+        ].join('\n'),
+      },
+    }],
+  })
+
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].name, 'read_page')
+  assert.deepEqual(JSON.parse(result.toolCalls[0].arguments), { selector: 'body' })
+  assert.ok(!(result.content ?? '').includes('<tool_call'))
+})

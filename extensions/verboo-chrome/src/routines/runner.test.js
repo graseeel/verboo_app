@@ -27,9 +27,9 @@ function createHarness(overrides = {}) {
     routinesStore: {
       get: async () => baseRoutine(),
     },
-    runStore: {
+      runStore: {
       create: async (accountId, input) => {
-        const run = { ...input, accountId, status: 'draft' }
+        const run = { ...input, accountId, status: 'draft', events: input.events ?? [] }
         storedRuns.set(run.id, run)
         return run
       },
@@ -42,6 +42,12 @@ function createHarness(overrides = {}) {
       get: async (_accountId, id) => storedRuns.get(id) ?? null,
       patch: async (_accountId, id, patch) => {
         const run = { ...storedRuns.get(id), ...patch }
+        storedRuns.set(id, run)
+        return run
+      },
+      appendEvent: async (_accountId, id, event) => {
+        const run = storedRuns.get(id)
+        run.events = [...(run.events ?? []), event]
         storedRuns.set(id, run)
         return run
       },
@@ -173,6 +179,89 @@ test('resumes an interrupted recorded routine from its last confirmed checkpoint
   assert.deepEqual(
     executed.map((toolCall) => toolCall.params.selector),
     ['#remaining'],
+  )
+})
+
+test('simulation completes with a visible plan and never calls browser execution', async () => {
+  let agentCalls = 0
+  const events = []
+  const { runner } = createHarness({
+    runAgent: async () => {
+      agentCalls += 1
+      return { assistantMessage: 'should not run', toolResults: [] }
+    },
+    broadcast: (message) => {
+      if (message?.run?.events) events.push(message.run.events.at(-1))
+    },
+  })
+
+  const result = await runner.run({
+    routineId: 'routine-1',
+    expectedRevision: 2,
+    variables: { empresa: 'Acme' },
+    simulate: true,
+  })
+
+  assert.equal(result.status, 'completed')
+  assert.equal(result.simulation, true)
+  assert.match(result.assistantMessage, /Simulation only/)
+  assert.equal(agentCalls, 0)
+  assert.ok(events.some((event) => event?.type === 'simulation'))
+})
+
+test('simulation does not require an inference model', async () => {
+  const { runner } = createHarness({
+    getSelectedModelId: async () => null,
+    loadModels: async () => [],
+  })
+
+  const result = await runner.run({
+    routineId: 'routine-1',
+    expectedRevision: 2,
+    variables: { empresa: 'Acme' },
+    simulate: true,
+  })
+
+  assert.equal(result.status, 'completed')
+  assert.equal(result.simulation, true)
+})
+
+test('simulation exposes conditionals, sub-routines, and structured extraction', async () => {
+  const events = []
+  const { runner } = createHarness({
+    routinesStore: {
+      get: async () => baseRoutine({
+        branch: {
+          selector: '.status',
+          contains: 'Ready',
+          thenInstructions: 'Publish it.',
+          elseInstructions: 'Wait.',
+        },
+        subroutineCommands: ['collect-leads'],
+        output: { format: 'json', selector: 'table' },
+      }),
+      list: async () => [
+        baseRoutine({ id: 'routine-1', command: 'weekly' }),
+        baseRoutine({ id: 'routine-2', command: 'collect-leads', instructions: 'Collect the leads.' }),
+      ],
+    },
+    broadcast: (message) => {
+      if (message?.run?.events) events.push(message.run.events.at(-1))
+    },
+  })
+
+  const result = await runner.run({
+    routineId: 'routine-1',
+    expectedRevision: 2,
+    variables: { empresa: 'Acme' },
+    simulate: true,
+  })
+
+  assert.equal(result.status, 'completed')
+  assert.equal(events.at(-1)?.type, 'simulation')
+  assert.deepEqual(
+    events.at(-1).steps.map((step) => step.name),
+    ['conditional', 'agent', 'subroutine', 'structured_extract'],
   )
 })
 

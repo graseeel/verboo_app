@@ -11,6 +11,21 @@
 const CHAT_URL = 'https://code.verboo.ai/router/v1/chat/completions'
 const DEFAULT_TIMEOUT_MS = 60_000
 
+// The eight real browser tools the controller knows how to execute.
+// Anything else the model emits (e.g. `computer.wait`, `garbage_tool`)
+// is a hallucination and must be dropped at parse time — passing it
+// through would surface a fake tool name to the user or the controller.
+const BROWSER_TOOL_NAMES = new Set([
+  'click',
+  'navigate',
+  'read_page',
+  'structured_extract',
+  'screenshot',
+  'tab_group',
+  'tabs',
+  'type',
+])
+
 /**
  * Send a chat completion request to the Verboo Router.
  *
@@ -71,7 +86,7 @@ export async function chatCompletion({
       }
 
       const json = await readCompletionPayload(res)
-      return parseCompletionResponse(json, { allowTextToolCalls: Boolean(tools?.length) })
+      return parseCompletionResponse(json)
     }
     throw new Error('Router authorization retry exhausted')
   } catch (err) {
@@ -94,10 +109,18 @@ export async function chatCompletion({
 
 /**
  * Parse an OpenAI-style chat completion response.
+ *
+ * Side effect: any tool-call markup found inside the assistant content
+ * is ALWAYS stripped — whether or not structured calls were extracted.
+ * This is intentional: the raw markup was a user-facing bug
+ * (model-printed tool call leaked to conversation). Whether to execute
+ * the parsed calls is the agent loop's responsibility
+ * (browserToolsEnabled gate), not the parser's.
+ *
  * @param {unknown} json
  * @returns {{ content: string|null, toolCalls: Array<{id:string,name:string,arguments:string}> }}
  */
-export function parseCompletionResponse(json, options = {}) {
+export function parseCompletionResponse(json) {
   if (!json || typeof json !== 'object') throw new Error('Router returned an unreadable response')
   const obj = /** @type {Record<string, unknown>} */ (json)
   let choices = Array.isArray(obj.choices) ? obj.choices : null
@@ -138,28 +161,68 @@ export function parseCompletionResponse(json, options = {}) {
     content = textParts.join('\n').trim() || null
   }
 
-  if (
-    toolCalls.length === 0 &&
-    options.allowTextToolCalls &&
-    /<(?:minimax:)?tool_call>/i.test(content ?? '')
-  ) {
+  // ──────────────────────────────────────────────────────────────────
+  // PRESENTATION (non-negotiable) + EXECUTION (separate decision).
+  //
+  // PRESENTATION: strip ALL <tool_call>...</tool_call> markup from
+  // `content` regardless of what else is in the response. The user
+  // must NEVER see raw tool-call markup leaking to the conversation
+  // (the original A2-CHROME user report). Prose outside the tags is
+  // preserved. Two passes cover the malformed inputs the tests lock
+  // in:
+  //   1. well-formed <tool_call>...</tool_call> blocks (and the
+  //      namespaced <minimax:tool_call>...</minimax:tool_call> form)
+  //   2. an orphan <tool_call> opener with no matching closer
+  //      (model emitted partial/malformed markup) — drop just the
+  //      bare opener tag, keep the trailing prose so we don't lose
+  //      user-visible content the model emitted after the malformed
+  //      opener
+  //
+  // EXECUTION: only forward parsed text calls when there are no
+  // structured tool_calls already captured above. If the model emits
+  // a structured `type` call AND mirrors it as text markup, pushing
+  // both would double-execute (loop.js's dedupeToolCalls keys on
+  // name + canonical arguments, and the text form's arguments differ
+  // from the structured form's — so dedupe does NOT save us). Strip
+  // the markup either way; only forward the parsed calls when there
+  // are no structured ones.
+  //
+  // NO THROW on malformed markup: the OLD parser threw "Router
+  // returned a malformed text tool call" when parsing failed, which
+  // left the panel stuck on "Working…" because nothing got returned.
+  // The NEW behavior: silently drop unrecognized markup, return the
+  // remaining prose, let the loop decide how to communicate.
+  if (content && /<(?::?minimax:)?tool_call>/i.test(content)) {
     const parsed = parseXmlToolCalls(content)
-    if (parsed.length === 0) throw new Error('Router returned a malformed text tool call')
-    toolCalls.push(...parsed)
-    const remaining = content
-      .replace(/<(?:minimax:)?tool_call>[\s\S]*?<\/(?:minimax:)?tool_call>/gi, '')
-      .trim()
-    content = remaining || null
+    if (toolCalls.length === 0) toolCalls.push(...parsed)
+    content = content
+      .replace(/<(?::?minimax:)?tool_call>[\s\S]*?<\/(?:minimax:)?tool_call>/gi, '')
+      .replace(/<(?::?minimax:)?tool_call>/gi, '')
+      .trim() || null
   }
   return { content, toolCalls }
 }
 
+// Extract structured tool calls from text markup. Recognizes TWO
+// shapes the model emits inside a <tool_call>...</tool_call>
+// envelope:
+//   1. <invoke name="...">...</invoke> (Anthropic-style)
+//   2. <function=NAME>...</function> (the user's report shape,
+//      including function=computer with parameter=action=...)
+// Names are normalized (browser_ prefix stripped, family.dotted
+// resolved to inner tool) and validated against the 7-name whitelist.
+// Invalid names are dropped, not passed through.
 function parseXmlToolCalls(content) {
   const calls = []
   for (const match of content.matchAll(
-    /<(?:minimax:)?tool_call>([\s\S]*?)<\/(?:minimax:)?tool_call>/gi,
+    /<(?::?minimax:)?tool_call>([\s\S]*?)<\/(?:minimax:)?tool_call>/gi,
   )) {
     const body = match[1]
+    const jsonCalls = parseJsonToolCalls(body)
+    if (jsonCalls.length > 0) {
+      calls.push(...jsonCalls)
+      continue
+    }
     const invokes = [...body.matchAll(
       /<invoke\s+name=["']([^"']+)["']>([\s\S]*?)<\/invoke>/gi,
     )]
@@ -167,7 +230,7 @@ function parseXmlToolCalls(content) {
       for (const invoke of invokes) {
         const params = parseNamedParameters(invoke[2])
         const name = normalizeTextToolName(decodeXml(invoke[1].trim()))
-        if (name) {
+        if (name && isValidToolName(name)) {
           calls.push({
             id: fallbackToolCallId(),
             name,
@@ -188,11 +251,84 @@ function parseXmlToolCalls(content) {
     }
     Object.assign(params, parseNamedParameters(body))
     const functionName = decodeXml(rawFunction.trim())
-    const name = functionName === 'browser' && typeof params.action === 'string'
+    // Family wrappers (browser, computer) with an action param unwrap
+    // to the inner tool name. Bare family names with no action fall
+    // through to normalizeTextToolName so dotted forms like
+    // `computer.navigate` also resolve.
+    const name = (functionName === 'browser' || functionName === 'computer')
+      && typeof params.action === 'string'
       ? params.action
       : normalizeTextToolName(functionName)
-    if (functionName === 'browser') delete params.action
-    if (name) calls.push({ id: fallbackToolCallId(), name, arguments: JSON.stringify(params) })
+    if (functionName === 'browser' || functionName === 'computer') delete params.action
+    if (name && isValidToolName(name)) {
+      calls.push({ id: fallbackToolCallId(), name, arguments: JSON.stringify(params) })
+    }
+  }
+  return calls
+}
+
+/**
+ * Parse the JSON envelope emitted by some OpenAI-compatible models:
+ * `{ "name": "computer.navigate", "arguments": { ... } }`.
+ * It commonly arrives inside the same `<tool_call>` wrapper as the XML
+ * dialects above. Arguments may be either an object or a JSON string.
+ * Unknown tools are dropped by the same whitelist as XML calls.
+ */
+function parseJsonToolCalls(body) {
+  const trimmed = String(body ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '')
+  if (!trimmed) return []
+
+  let parsed
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    // Be tolerant of a short bit of prose around the JSON object while
+    // avoiding a broad scan that could mistake page content for a call.
+    const start = trimmed.indexOf('{')
+    const end = trimmed.lastIndexOf('}')
+    if (start < 0 || end <= start) return []
+    try {
+      parsed = JSON.parse(trimmed.slice(start, end + 1))
+    } catch {
+      return []
+    }
+  }
+
+  const entries = Array.isArray(parsed) ? parsed : [parsed]
+  const calls = []
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
+    const record = /** @type {Record<string, unknown>} */ (entry)
+    const fn = record.function && typeof record.function === 'object'
+      ? /** @type {Record<string, unknown>} */ (record.function)
+      : null
+    const rawName = record.name ?? record.tool ?? fn?.name
+    if (typeof rawName !== 'string' || !rawName.trim()) continue
+
+    let rawArguments = record.arguments ?? record.input ?? record.parameters ?? fn?.arguments ?? {}
+    if (typeof rawArguments === 'string') {
+      try {
+        rawArguments = JSON.parse(rawArguments)
+      } catch {
+        rawArguments = {}
+      }
+    }
+    const params = rawArguments && typeof rawArguments === 'object' && !Array.isArray(rawArguments)
+      ? { .../** @type {Record<string, unknown>} */ (rawArguments) }
+      : {}
+    const functionName = rawName.trim()
+    const name = (functionName === 'browser' || functionName === 'computer')
+      && typeof params.action === 'string'
+      ? params.action
+      : normalizeTextToolName(functionName)
+    if (functionName === 'browser' || functionName === 'computer') delete params.action
+    if (name && isValidToolName(name)) {
+      calls.push({
+        id: fallbackToolCallId(),
+        name,
+        arguments: JSON.stringify(params),
+      })
+    }
   }
   return calls
 }
@@ -209,20 +345,31 @@ function parseNamedParameters(body) {
 
 function normalizeTextToolName(name) {
   const value = String(name).trim()
-  const browserToolNames = new Set([
-    'click',
-    'navigate',
-    'read_page',
-    'screenshot',
-    'tab_group',
-    'tabs',
-    'type',
-  ])
   if (value.startsWith('browser_')) {
     const unprefixed = value.slice('browser_'.length)
-    if (browserToolNames.has(unprefixed)) return unprefixed
+    if (isValidToolName(unprefixed)) return unprefixed
+  }
+  // Dotted family forms (e.g. `browser.navigate`, `computer.click`,
+  // `computer.wait`) — emitted by some models when they don't know the
+  // exact tool name. Take the suffix after the last dot; only return
+  // it if it matches a real tool. Otherwise the name is invalid and
+  // isValidToolName() will drop it at the call site.
+  const lastDot = value.lastIndexOf('.')
+  if (lastDot > 0 && lastDot < value.length - 1) {
+    const family = value.slice(0, lastDot)
+    const suffix = value.slice(lastDot + 1)
+    if ((family === 'browser' || family === 'computer') && isValidToolName(suffix)) {
+      return suffix
+    }
   }
   return value
+}
+
+// Whether a normalized name is a real browser tool. Used by
+// parseXmlToolCalls to drop hallucinated tool names at parse time
+// instead of forwarding them to the controller.
+function isValidToolName(name) {
+  return BROWSER_TOOL_NAMES.has(name)
 }
 
 async function readCompletionPayload(response) {
@@ -244,84 +391,110 @@ async function readCompletionPayload(response) {
 }
 
 function parseSseCompletion(body) {
-  let completeMessage = null
-  let content = ''
-  const toolCalls = new Map()
-
-  for (const event of String(body).split(/\r?\n\r?\n/)) {
-    const data = event
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith('data:'))
-      .map((line) => line.slice(5).trimStart())
-      .join('\n')
-      .trim()
-    if (!data || data === '[DONE]') continue
-
-    let payload
-    try {
-      payload = JSON.parse(data)
-    } catch {
-      throw new Error('Router returned an unreadable SSE response')
-    }
-    if (payload?.error) {
-      throw new Error(payload.error.message ?? String(payload.error))
-    }
-
-    const choice = payload?.choices?.[0]
-    if (choice?.message && typeof choice.message === 'object') {
-      completeMessage = choice.message
+  const events = []
+  let buffer = ''
+  for (const line of body.split(/\r?\n/)) {
+    if (line.startsWith('data:')) {
+      buffer += line.slice(5).trimStart()
       continue
     }
-
-    const delta = choice?.delta
-    if (!delta || typeof delta !== 'object') continue
-    if (typeof delta.content === 'string') content += delta.content
-    for (const fragment of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
-      const index = Number.isInteger(fragment?.index) ? fragment.index : toolCalls.size
-      const current = toolCalls.get(index) ?? {
-        id: '',
-        type: 'function',
-        function: { name: '', arguments: '' },
-      }
-      if (typeof fragment?.id === 'string') current.id = fragment.id
-      if (typeof fragment?.function?.name === 'string') {
-        current.function.name += fragment.function.name
-      }
-      if (typeof fragment?.function?.arguments === 'string') {
-        current.function.arguments += fragment.function.arguments
-      }
-      toolCalls.set(index, current)
+    if (line === '' && buffer) {
+      events.push(buffer)
+      buffer = ''
     }
   }
+  if (buffer) events.push(buffer)
 
-  if (completeMessage) {
-    return { choices: [{ message: completeMessage }] }
+  let merged = null
+  for (const event of events) {
+    if (event === '[DONE]') break
+    let payload
+    try {
+      payload = JSON.parse(event)
+    } catch {
+      continue
+    }
+    merged = mergeStreamedChoice(merged, payload)
   }
-  if (!content && toolCalls.size === 0) {
-    throw new Error('Router returned an unreadable SSE response')
-  }
-  return {
-    choices: [{
-      message: {
-        role: 'assistant',
-        content: content || null,
-        ...(toolCalls.size > 0
-          ? { tool_calls: [...toolCalls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call) }
-          : {}),
-      },
-    }],
-  }
+  if (!merged) throw new Error('Router stream had no parseable events')
+  return merged
 }
 
-function decodeXml(value) {
-  return String(value)
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-    .replaceAll('&quot;', '"')
-    .replaceAll('&#39;', "'")
-    .replaceAll('&amp;', '&')
+function mergeStreamedChoice(acc, payload) {
+  if (!payload || typeof payload !== 'object') return acc
+  const choices = Array.isArray(payload.choices) ? payload.choices : null
+  if (!choices?.length) return acc
+  const choice = choices[0]
+  const delta = choice?.delta ?? choice?.message
+  if (!acc) {
+    return {
+      choices: [{
+        ...choice,
+        message: {
+          ...(delta ?? {}),
+          tool_calls: Array.isArray(delta?.tool_calls) ? delta.tool_calls : undefined,
+        },
+      }],
+    }
+  }
+  const accMessage = acc.choices[0].message ?? {}
+  const accContent = typeof accMessage.content === 'string' ? accMessage.content : ''
+  const deltaContent = typeof delta?.content === 'string' ? delta.content : ''
+  const accToolCalls = Array.isArray(accMessage.tool_calls) ? accMessage.tool_calls : []
+  const deltaToolCalls = Array.isArray(delta?.tool_calls) ? delta.tool_calls : []
+  const toolCalls = mergeToolCalls(accToolCalls, deltaToolCalls)
+  acc.choices[0] = {
+    ...choice,
+    message: {
+      ...accMessage,
+      ...delta,
+      content: accContent + deltaContent,
+      tool_calls: toolCalls.length > 0 ? toolCalls : accMessage.tool_calls,
+    },
+  }
+  return acc
+}
+
+function mergeToolCalls(acc, delta) {
+  const out = [...acc]
+  for (const tc of delta) {
+    const index = typeof tc.index === 'number' ? tc.index : 0
+    if (!out[index]) {
+      out[index] = {
+        id: typeof tc.id === 'string' ? tc.id : fallbackToolCallId(),
+        type: tc.type ?? 'function',
+        function: { name: '', arguments: '' },
+      }
+    }
+    if (typeof tc.id === 'string') out[index].id = tc.id
+    if (tc.function) {
+      if (typeof tc.function.name === 'string') out[index].function.name += tc.function.name
+      if (typeof tc.function.arguments === 'string') out[index].function.arguments += tc.function.arguments
+    }
+  }
+  return out
 }
 
 function fallbackToolCallId() {
   return `tc_${Math.random().toString(36).slice(2, 10)}`
+}
+
+function decodeXml(value) {
+  return String(value)
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+    .trim()
+}
+
+export const __test__ = {
+  parseCompletionResponse,
+  parseXmlToolCalls,
+  parseJsonToolCalls,
+  normalizeTextToolName,
+  isValidToolName,
+  mergeToolCalls,
+  parseSseCompletion,
 }

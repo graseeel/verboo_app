@@ -1,6 +1,7 @@
 export const RUNS_STORAGE_KEY = 'verbooRoutineRunsV1'
 
 const MAX_RUNS_PER_ACCOUNT = 50
+const MAX_EVENTS_PER_RUN = 120
 const VALID_STATUSES = new Set([
   'draft',
   'ready',
@@ -15,7 +16,7 @@ const ALLOWED_TRANSITIONS = Object.freeze({
   draft: new Set(['ready', 'cancelled']),
   ready: new Set(['queued', 'cancelled']),
   queued: new Set(['running', 'cancelled']),
-  running: new Set(['waiting_approval', 'completed', 'failed', 'cancelled']),
+  running: new Set(['waiting_approval', 'queued', 'completed', 'failed', 'cancelled']),
   waiting_approval: new Set(['running', 'failed', 'cancelled']),
   completed: new Set(),
   failed: new Set(),
@@ -76,6 +77,7 @@ export function createRunStore(storage, now = Date.now) {
           ...cloneValue(input),
           accountId: String(accountId),
           status,
+          events: Array.isArray(input.events) ? cloneValue(input.events).slice(-MAX_EVENTS_PER_RUN) : [],
           checkpointIndex: Number.isInteger(input.checkpointIndex)
             ? input.checkpointIndex
             : 0,
@@ -120,6 +122,31 @@ export function createRunStore(storage, now = Date.now) {
         const updated = {
           ...current,
           ...cloneValue(patch),
+          id: current.id,
+          accountId: current.accountId,
+          status: current.status,
+          updatedAt: now(),
+        }
+        runs[index] = updated
+        all[accountId] = boundRuns(runs)
+        return updated
+      })
+    },
+
+    appendEvent(accountId, id, event) {
+      return transact((all) => {
+        const runs = accountRuns(all, accountId)
+        const index = runs.findIndex((item) => item.id === id)
+        if (index === -1) throw new Error('routine_run_not_found')
+        const current = runs[index]
+        const nextEvent = {
+          ...cloneValue(event),
+          at: Number.isFinite(event?.at) ? event.at : now(),
+        }
+        const updated = {
+          ...current,
+          events: [...(Array.isArray(current.events) ? current.events : []), nextEvent]
+            .slice(-MAX_EVENTS_PER_RUN),
           id: current.id,
           accountId: current.accountId,
           status: current.status,

@@ -88,6 +88,7 @@ IMPORTANT RULES:
   Reply immediately with a short confirmation in the user's language.
 - For search: navigate to the search engine, type the query, submit
 - For reading a page: use read_page with a targeted selector, not the whole body when possible
+- For an explicit current-page inspection request (for example "o que é isso", "o que diz esta página", or "extract this page"), ALWAYS call read_page before answering. Do not answer that browser tools are unavailable when the current page is an HTTP(S) page.
 - Return a brief text summary when you finish the task
 - Never invent or fabricate selectors — only use ones you can see from page content`
 
@@ -140,15 +141,16 @@ export async function runLlmAgentTurn({
   })
 
   // Seed with current page context as a system note (not a fake tool_call).
+  let activeTabMeta = null
   if (browserToolsEnabled) {
-    const tabMeta = await getActiveTabMeta()
-    if (tabMeta?.url && /^https?:\/\//i.test(tabMeta.url)) {
+    activeTabMeta = await getActiveTabMeta()
+    if (activeTabMeta?.url && /^https?:\/\//i.test(activeTabMeta.url)) {
       messages.push({
         role: 'system',
         content: wrapUntrustedBrowserContent({
           currentPage: {
-            url: tabMeta.url,
-            ...(tabMeta.title ? { title: tabMeta.title } : {}),
+            url: activeTabMeta.url,
+            ...(activeTabMeta.title ? { title: activeTabMeta.title } : {}),
           },
         }),
       })
@@ -260,23 +262,99 @@ export async function runLlmAgentTurn({
     }
     pendingVisualMessageIndexes = []
 
-    // Text-only response → done.
+    // Text-only response → done. Some models occasionally ignore the tool
+    // contract and answer in prose even for an explicit current-page read.
+    // For HTTP(S) pages, synthesize the same read-only call we asked for and
+    // let the normal tool-result round-trip produce the final answer. This is
+    // deliberately narrower than browserToolsEnabled: navigation, mutation,
+    // and screenshot requests never get an invented action.
     if (completion.toolCalls.length === 0) {
       if (browserToolsEnabled && allToolResults.length === 0) {
-        throw new Error('model_tool_protocol_unsupported')
+        if (
+          activeTabMeta?.url &&
+          /^https?:\/\//i.test(activeTabMeta.url) &&
+          shouldFallbackToPageRead(userMessage)
+        ) {
+          completion = {
+            content: null,
+            toolCalls: [{
+              id: `fallback_read_${turnId}_${step}`,
+              name: 'read_page',
+              arguments: '{"selector":"body"}',
+            }],
+          }
+        } else {
+          throw new Error('model_tool_protocol_unsupported')
+        }
       }
-      if (requiresVerification) {
-        messages.push({
-          role: 'system',
-          content:
-            'The last browser mutation has not been verified. Inspect the current page with read_page ' +
-            'or screenshot before claiming completion, then answer with the observed result.',
-        })
-        continue
+      if (completion.toolCalls.length === 0) {
+        if (requiresVerification) {
+          messages.push({
+            role: 'system',
+            content:
+              'The last browser mutation has not been verified. Inspect the current page with read_page ' +
+              'or screenshot before claiming completion, then answer with the observed result.',
+          })
+          continue
+        }
+        const text = completion.content?.trim()
+        if (!text) throw new Error('model_returned_empty_response')
+        return { assistantMessage: text, toolResults: allToolResults }
       }
-      const text = completion.content?.trim()
-      if (!text) throw new Error('model_returned_empty_response')
-      return { assistantMessage: text, toolResults: allToolResults }
+    }
+
+    // Model emitted one or more tool calls, but this turn was classified as
+    // NORMAL CONVERSATION (shouldOfferBrowserTools was false at the top of
+    // the turn, and no saved routine was active) — so no browser tools were
+    // offered. Do NOT execute the calls: the loop must never expand the
+    // execution surface beyond what was explicitly offered. Tell the user
+    // why in plain language instead of letting the parser's structured
+    // output slip through to a controller that wasn't expecting it.
+    //
+    // Why this is a hard gate, not a soft preference: a model that emits
+    // `<tool_call>computer.screenshot</tool_call>` in a conversation-mode
+    // turn may be hallucinating an action the user never asked for, or
+    // following a prompt-injection seed from page content. Either way,
+    // the correct response is communication, not silent execution.
+    if (!browserToolsEnabled && completion.toolCalls.length > 0) {
+      const attempted = completion.toolCalls.map((tc) => tc.name).filter(Boolean)
+      const pt = looksPortuguese(userMessage)
+      const attemptedLabel = attempted.length === 0
+        ? (pt ? 'ferramentas de navegador' : 'browser tools')
+        : attempted.length === 1
+          ? (pt ? `a ferramenta "${attempted[0]}"` : `the "${attempted[0]}" tool`)
+          : (pt
+              ? `as ferramentas ${attempted.map((n) => `"${n}"`).join(', ')}`
+              : `the tools ${attempted.map((n) => `"${n}"`).join(', ')}`)
+      broadcast({
+        type: MSG.AGENT_THOUGHT,
+        turnId,
+        text: pt
+          ? `Modelo tentou chamar ${attemptedLabel} em turno de conversa normal — bloqueando e pedindo reformulação.`
+          : `Model tried to call ${attemptedLabel} in a normal-conversation turn — blocking and asking for a rephrase.`,
+      })
+      // NOTE: do NOT suggest switching to "Aja sem perguntar" / "Act without
+      // asking" mode — that mode does NOT force browser tools to be offered
+      // (browserToolsEnabled = Boolean(routineContext) || shouldOfferBrowserTools
+      // at loop.js:122 has no term for that mode). Suggesting it would send
+      // the user to do something that demonstrably does not work, which is
+      // exactly what the field report showed. The only thing that actually
+      // offers browser tools is an explicit action verb + page reference
+      // matching shouldOfferBrowserTools — so tell the user to rephrase with
+      // an explicit verb.
+      return {
+        assistantMessage: pt
+          ? `Este turno foi classificado como conversa normal, então ferramentas de navegador ` +
+            `não estão disponíveis e não serão executadas. O modelo tentou chamar ${attemptedLabel}. ` +
+            `Reformule o pedido com um verbo de ação explícito e uma referência à página — por ` +
+            `exemplo, "abra a aba atual e me diga o que está escrito" ou "capture um screenshot ` +
+            `desta página".`
+          : `This turn was classified as normal conversation, so browser tools are not available ` +
+            `and will not be executed. The model tried to call ${attemptedLabel}. Rephrase the ` +
+            `request with an explicit action verb and a page reference — for example, "open the ` +
+            `current tab and tell me what's written" or "take a screenshot of this page".`,
+        toolResults: allToolResults,
+      }
     }
 
     // Models may emit the same action more than once in a parallel tool-call
@@ -617,12 +695,58 @@ export function shouldOfferBrowserTools(userMessage) {
     /\b(?:whatsapp|gmail|e-?mail|instagram|facebook|linkedin|twitter|formulario|form|site)\b/i
   if (communicationAction.test(text) && externalDestination.test(text)) return true
 
+  // Page reference: the user points at the CURRENT page/tab/site with a
+  // demonstrative. Covers PT `esta/essa/desta/dessa/na` (already here)
+  // PLUS the contracted demonstratives Brazilians naturally use:
+  // `nesta/nessa/neste/nesse/nestes/nesses` and the EN `this/current`.
+  //
+  // INTENTIONAL EXCLUSIONS — `no` and `num` are bare prepositions, not
+  // demonstratives. `o que tem no site da Apple` is a general-knowledge
+  // question, not a pointer to the current tab — including them would
+  // expand the execution surface to any turn that mentions a site, even
+  // when the user never asked about the page they're on. They were
+  // briefly added in this cycle and reverted after the Maestro measured
+  // the false positive.
+  //
+  // Bare `na` is accepted only when it explicitly points to the currently
+  // open page (`na aba atual`, `na pagina aberta`, etc.). This avoids turning
+  // references to book pages or other historical content into browser work.
   const pageReference =
-    /\b(?:esta|essa|desta|dessa|na|this|current)\s+(?:pagina|page|aba|tab|site)\b/i
+    /\b(?:esta|essa|desta|dessa|nesta|nessa|neste|nesse|nestes|nesses|this|current)\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\b|\bna\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\s+(?:atual|aberta|aberto|aqui|current)\b/i
+  // Page inspection: the user asks to look at / read / describe what's
+  // on the page. Covers PT `resuma/resume/leia/ler/analise/verifique/
+  // veja/descreva/diga o que/o que tem/o que esta` (already here) PLUS
+  // the look/show family Brazilians naturally use: `olhe/olha/olhar/
+  // mostre/mostra/mostrar/ve` and the EN `look/show/see`. `olhe` alone
+  // is also a discourse marker in PT ("olhe, eu acho que..."), so the
+  // CONJUNCTION with pageReference below is the load-bearing gate —
+  // `olhe` without a page reference must continue to DENY. See the
+  // test "olhe alone, no page reference, denies browser tools" — it
+  // locks this behavior in.
+  //
+  // `ve` is split out of the alternation into its own guarded regex
+  // because the apostrophe is a word boundary, so bare `ve` was
+  // matching inside English contractions `I've`/`you've`/`we've`.
+  // The guard `(?<![''])` rejects matches preceded by an apostrophe
+  // (manifest requires Chrome 123, lookbehind is supported). The
+  // alternation stays readable; the special case stays isolated.
   const pageInspection =
-    /\b(?:resuma|resume|leia|ler|analise|verifique|veja|descreva|diga o que|o que tem|o que esta|summarize|read|analyze|check|inspect|describe|what is on|what's on|what is visible)\b/i
+    /\b(?:resuma|resume|leia|ler|analise|verifique|veja|descreva|diga o que|o que tem|o que esta|o que diz|o que aparece|o que ha|o que e|qual conteudo|extraia|extrair|copie|copiar|olhe|olha|olhar|mostre|mostra|mostrar|summarize|read|analyze|check|inspect|describe|look|show|see|what is on|what's on|what is visible)\b/i
+  const bareVe = /(?<!['’])\bve\b/i
 
-  return pageReference.test(text) && pageInspection.test(text)
+  // Some users omit the space in `o que` (`oque`) or point at a
+  // selection with a short deictic question (`o que é isso?`). These
+  // are still current-page inspection requests in the browser panel.
+  const deicticInspection =
+    /\b(?:o\s*que|qual|me diga|diga|explique|descreva)\s+(?:e|significa|diz|tem|ha|aparece|vejo|ve)\s+(?:isso|isto|aqui)\b/i
+  const contentInspection =
+    /\b(?:ver|ve|ler|leia|ler|extrair|extraia|copiar|copie|acessar|acesso|consegue|pode)\b.{0,64}\b(?:conteudo|html|dom|texto|body)\b/i
+
+  return (
+    (pageReference.test(text) && (pageInspection.test(text) || bareVe.test(text))) ||
+    deicticInspection.test(text) ||
+    contentInspection.test(text)
+  )
 }
 
 /**
@@ -727,8 +851,38 @@ function normalizeIntentText(value) {
   return String(value ?? '')
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')
+    .replace(/\boque\b/g, 'o que')
     .trim()
     .toLowerCase()
+}
+
+/**
+ * Whether a browser-enabled turn is an explicit request to inspect the
+ * current page. This intentionally excludes mutations and screenshot asks:
+ * only a safe, read-only `read_page(body)` call may be synthesized here when
+ * a model omits the tool protocol.
+ *
+ * @param {string} userMessage
+ */
+function shouldFallbackToPageRead(userMessage) {
+  const text = normalizeIntentText(userMessage)
+  if (!text || requiresScreenshot(text)) return false
+
+  const pageReference =
+    /\b(?:esta|essa|desta|dessa|nesta|nessa|neste|nesse|nestes|nesses|this|current)\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\b|\bna\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\s+(?:atual|aberta|aberto|aqui|current)\b/i
+  const pageInspection =
+    /\b(?:resuma|resume|leia|ler|analise|verifique|veja|descreva|diga o que|o que tem|o que esta|o que diz|o que aparece|o que ha|o que e|qual conteudo|extraia|extrair|copie|copiar|olhe|olha|olhar|mostre|mostra|mostrar|summarize|read|analyze|check|inspect|describe|look|show|see|what is on|what's on|what is visible|extract)\b/i
+  const bareVe = /(?<!['’])\bve\b/i
+  const deicticInspection =
+    /\b(?:o\s*que|qual|me diga|diga|explique|descreva)\s+(?:e|significa|diz|tem|ha|aparece|vejo|ve)\s+(?:isso|isto|aqui)\b/i
+  const contentInspection =
+    /\b(?:ver|ve|ler|leia|extrair|extraia|copiar|copie|acessar|acesso|consegue|pode)\b.{0,64}\b(?:conteudo|html|dom|texto|body)\b/i
+
+  return (
+    (pageReference.test(text) && (pageInspection.test(text) || bareVe.test(text))) ||
+    deicticInspection.test(text) ||
+    contentInspection.test(text)
+  )
 }
 
 /**

@@ -332,6 +332,7 @@
   display: flex;
   align-items: center;
   gap: 3px;
+  flex-wrap: wrap;
 }
 
 .routine-card-action {
@@ -356,6 +357,89 @@
 .routine-card-action[data-action="delete"]:focus-visible {
   color: var(--danger);
   background: var(--danger-soft);
+}
+
+.routine-run-details {
+  grid-column: 1 / -1;
+  margin: 2px 6px 4px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.routine-run-details summary {
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.routine-run-meta,
+.routine-run-target,
+.routine-run-compare {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.routine-run-target {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.routine-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 8px 0 0;
+  padding: 0 0 0 18px;
+}
+
+.routine-timeline-event {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.routine-timeline-event strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.routine-timeline-event span {
+  flex-shrink: 0;
+  color: var(--text-dim);
+}
+
+.routine-simulation-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-top: 3px;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.routine-simulation-steps span {
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+
+.routine-timeline-tool strong {
+  color: var(--accent-strong);
+}
+
+.routine-timeline-failed strong {
+  color: var(--danger);
+}
+
+.routine-timeline-completed strong {
+  color: var(--green);
 }
 
 .routine-editor {
@@ -526,6 +610,28 @@
   border-radius: var(--radius);
 }
 
+.routine-automation {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.routine-automation legend {
+  grid-column: 1 / -1;
+  padding: 0 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.routine-automation .routine-field-wide {
+  grid-column: 1 / -1;
+}
+
 .routine-schedule legend {
   padding: 0 5px;
   color: var(--text-muted);
@@ -568,7 +674,8 @@
   }
 
   .routine-editor-grid,
-  .routine-schedule-fields {
+  .routine-schedule-fields,
+  .routine-automation {
     grid-template-columns: 1fr;
   }
 

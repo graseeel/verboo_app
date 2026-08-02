@@ -18,7 +18,7 @@ export function createRoutineRunner({
   broadcast,
   cryptoImpl = globalThis.crypto,
 }) {
-  const controllers = new Map()
+  const controls = new Map()
 
   async function run(request) {
     const context = await resolveContext(request)
@@ -35,6 +35,13 @@ export function createRoutineRunner({
         ? { senderTabId: request.senderTabId }
         : {}),
       ...(request?.occurrenceKey ? { occurrenceKey: request.occurrenceKey } : {}),
+      mode: request?.simulate === true ? 'simulation' : 'live',
+      targetTab: summarizeTargetTab(context.activeTab),
+      events: [{
+        type: 'created',
+        mode: request?.simulate === true ? 'simulation' : 'live',
+        targetTab: summarizeTargetTab(context.activeTab),
+      }],
     })
     runRecord = await transition(accountId, runId, 'ready')
     runRecord = await transition(accountId, runId, 'queued')
@@ -78,13 +85,18 @@ export function createRoutineRunner({
       throw new Error('routine_revision_conflict')
     }
 
-    const instructions = resolveInstructions(routine, request?.variables)
-    const modelId = routine.modelId || request?.modelId || await getSelectedModelId()
-    if (!modelId) throw new Error('routine_model_missing')
-    const models = await loadModels(false)
-    const model = models.find((item) => item.id === modelId)
-    if (!model) throw new Error('routine_model_missing')
-    if (routineNeedsVision(routine) && model.supportsVision !== true) {
+    const baseInstructions = resolveInstructions(routine, request?.variables)
+    const instructions = await expandSubroutineInstructions(routinesStore, accountId, routine, baseInstructions)
+    const simulation = request?.simulate === true
+    const modelId = simulation
+      ? (routine.modelId || request?.modelId || 'simulation')
+      : (routine.modelId || request?.modelId || await getSelectedModelId())
+    const models = simulation ? [] : await loadModels(false)
+    const model = simulation
+      ? { id: modelId, supportsVision: false }
+      : models.find((item) => item.id === modelId)
+    if (!simulation && !model) throw new Error('routine_model_missing')
+    if (!simulation && routineNeedsVision(routine) && model.supportsVision !== true) {
       throw new Error('routine_model_requires_vision')
     }
 
@@ -120,13 +132,65 @@ export function createRoutineRunner({
     } = context
     const runId = runRecord.id
     const controller = new AbortController()
-    controllers.set(runId, controller)
+    const control = { controller, pauseRequested: false }
+    controls.set(runId, control)
     const completion = queue.enqueue({
       id: runId,
       cancel: () => controller.abort(),
+      pause: () => {
+        control.pauseRequested = true
+        controller.abort()
+      },
       execute: async () => {
+        const startedAt = Date.now()
         try {
-          await transition(accountId, runId, 'running')
+          await transition(accountId, runId, 'running', { startedAt })
+          await appendEvent(accountId, runId, {
+            type: 'started',
+            targetTab: summarizeTargetTab(activeTab),
+          })
+
+          if (request?.simulate === true) {
+            const plan = buildSimulationPlan(routine)
+            await appendEvent(accountId, runId, {
+              type: 'simulation',
+              steps: plan,
+            })
+            return transition(accountId, runId, 'completed', {
+              finishedAt: Date.now(),
+              durationMs: Date.now() - startedAt,
+              assistantMessage: simulationMessage(routine, plan),
+              simulation: true,
+              toolResults: [],
+            })
+          }
+          let runtimeInstructions = instructions
+          if (routine.branch && typeof executeRecordedStep === 'function') {
+            const branchResult = await executeRecordedStep(
+              {
+                id: cryptoImpl.randomUUID(),
+                name: 'read_page',
+                params: { selector: routine.branch.selector },
+                reasoning: 'Checking the saved routine condition.',
+              },
+              {
+                ...request,
+                runId,
+                routineAllowedOrigins: routine.allowedOrigins ?? [],
+              },
+              controller.signal,
+            )
+            if (!branchResult?.ok) throw new Error(branchResult?.error ?? 'routine_branch_probe_failed')
+            const probeText = branchText(branchResult.result)
+            const matched = probeText.toLocaleLowerCase().includes(routine.branch.contains.toLocaleLowerCase())
+            const selected = matched ? routine.branch.thenInstructions : routine.branch.elseInstructions
+            await appendEvent(accountId, runId, {
+              type: 'conditional',
+              matched,
+              selector: routine.branch.selector,
+            })
+            if (selected) runtimeInstructions = `${runtimeInstructions}\n\nCONDITIONAL BRANCH:\n${selected}`
+          }
           const agentInput = {
             turnId: runId,
             userMessage: routineRunPrompt(routine),
@@ -135,7 +199,7 @@ export function createRoutineRunner({
             modelSupportsVision: model.supportsVision === true,
             routineContext: {
               name: routine.name,
-              instructions,
+              instructions: runtimeInstructions,
               assets,
             },
             routineAllowedOrigins: cloneValue(routine.allowedOrigins ?? []),
@@ -203,7 +267,7 @@ export function createRoutineRunner({
                 userMessage: recoveryPrompt(routine, replay.failure),
                 routineContext: {
                   ...agentInput.routineContext,
-                  instructions: recoveryInstructions(instructions, replay.failure),
+                  instructions: recoveryInstructions(runtimeInstructions, replay.failure),
                 },
                 toolAllowlist: recoveryToolAllowlist(
                   failedStep.name,
@@ -219,23 +283,92 @@ export function createRoutineRunner({
           } else {
             result = await runAgent(agentInput)
           }
+          for (const toolResult of result?.toolResults ?? []) {
+            await appendEvent(accountId, runId, {
+              type: 'tool',
+              name: toolResult?.name,
+              success: toolResult?.success === true,
+              durationMs: Number(toolResult?.durationMs ?? 0),
+              ...(toolResult?.error ? { error: String(toolResult.error) } : {}),
+              ...(toolResult?.params ? { params: cloneValue(toolResult.params) } : {}),
+            })
+          }
+          if (routine.output?.format && typeof executeRecordedStep === 'function') {
+            const extraction = await executeRecordedStep(
+              {
+                id: cryptoImpl.randomUUID(),
+                name: 'structured_extract',
+                params: {
+                  format: routine.output.format,
+                  ...(routine.output.selector ? { selector: routine.output.selector } : {}),
+                },
+                reasoning: 'Formatting the requested structured routine output.',
+              },
+              {
+                ...request,
+                runId,
+                routineAllowedOrigins: routine.allowedOrigins ?? [],
+              },
+              controller.signal,
+            )
+            if (!extraction?.ok) throw new Error(extraction?.error ?? 'routine_structured_extract_failed')
+            await appendEvent(accountId, runId, {
+              type: 'tool',
+              name: 'structured_extract',
+              success: true,
+              params: cloneValue(routine.output),
+            })
+            result = {
+              ...result,
+              assistantMessage: `${result?.assistantMessage ?? ''}\n\n${formatExtractionForMessage(extraction.result)}`.trim(),
+              toolResults: [...(result?.toolResults ?? []), {
+                name: 'structured_extract',
+                params: cloneValue(routine.output),
+                success: true,
+              }],
+            }
+          }
+          if (control.pauseRequested) {
+            await appendEvent(accountId, runId, { type: 'paused' })
+            return transition(accountId, runId, 'queued', {
+              pausedAt: Date.now(),
+              durationMs: Date.now() - startedAt,
+            })
+          }
           if (controller.signal.aborted) {
             return transition(accountId, runId, 'cancelled')
           }
+          await appendEvent(accountId, runId, { type: 'completed' })
           return transition(accountId, runId, 'completed', {
             assistantMessage: result?.assistantMessage ?? '',
             toolResults: compactToolResults(result?.toolResults),
+            finishedAt: Date.now(),
+            durationMs: Date.now() - startedAt,
             ...(recoverySuggestion ? { recoverySuggestion } : {}),
           })
         } catch (error) {
+          if (control.pauseRequested) {
+            await appendEvent(accountId, runId, { type: 'paused' })
+            return transition(accountId, runId, 'queued', {
+              pausedAt: Date.now(),
+              durationMs: Date.now() - startedAt,
+            })
+          }
           if (controller.signal.aborted || error?.message === 'run_cancelled') {
+            await appendEvent(accountId, runId, { type: 'cancelled' })
             return transition(accountId, runId, 'cancelled')
           }
-          return transition(accountId, runId, 'failed', {
+          await appendEvent(accountId, runId, {
+            type: 'failed',
             error: error?.message ?? String(error),
           })
+          return transition(accountId, runId, 'failed', {
+            error: error?.message ?? String(error),
+            finishedAt: Date.now(),
+            durationMs: Date.now() - startedAt,
+          })
         } finally {
-          controllers.delete(runId)
+          controls.delete(runId)
         }
       },
     })
@@ -249,11 +382,24 @@ export function createRoutineRunner({
 
   async function cancel(accountId, runId) {
     const didCancel = queue.cancel(runId)
-    controllers.get(runId)?.abort()
+    controls.get(runId)?.controller.abort()
     if (!didCancel) return false
     const current = await runStore.get(accountId, runId)
     if (current && ['draft', 'ready', 'queued'].includes(current.status)) {
       await transition(accountId, runId, 'cancelled')
+    }
+    return true
+  }
+
+  async function pause(accountId, runId) {
+    const current = await runStore.get(accountId, runId)
+    if (!current || !['queued', 'running', 'waiting_approval'].includes(current.status)) {
+      return false
+    }
+    if (current.status === 'running') {
+      queue.pause(runId)
+      controls.get(runId)?.controller.abort()
+      return true
     }
     return true
   }
@@ -267,7 +413,14 @@ export function createRoutineRunner({
     return updated
   }
 
-  return { run, resume, cancel }
+  async function appendEvent(accountId, runId, event) {
+    if (typeof runStore.appendEvent !== 'function') return null
+    const updated = await runStore.appendEvent(accountId, runId, event)
+    broadcast({ type: MSG.ROUTINE_RUN_CHANGED, run: updated })
+    return updated
+  }
+
+  return { run, resume, cancel, pause }
 }
 
 function resolveInstructions(routine, submittedVariables) {
@@ -359,9 +512,105 @@ function compactToolResults(results) {
   return (Array.isArray(results) ? results : []).map((result) => ({
     toolCallId: result?.toolCallId,
     name: result?.name,
+    params: result?.params ? cloneValue(result.params) : undefined,
     success: result?.success === true,
     error: result?.error ?? null,
+    durationMs: Number(result?.durationMs ?? 0),
   }))
+}
+
+function summarizeTargetTab(tab) {
+  if (!tab || typeof tab !== 'object') return undefined
+  return {
+    ...(Number.isInteger(tab.id) ? { id: tab.id } : {}),
+    ...(typeof tab.url === 'string' && tab.url ? { url: tab.url } : {}),
+    ...(typeof tab.title === 'string' && tab.title ? { title: tab.title } : {}),
+  }
+}
+
+function buildSimulationPlan(routine) {
+  const recorded = Array.isArray(routine?.recordedSteps) ? routine.recordedSteps : []
+  const plan = []
+  if (routine?.branch) {
+    plan.push({
+      index: plan.length + 1,
+      name: 'conditional',
+      params: {
+        selector: routine.branch.selector,
+        contains: routine.branch.contains,
+      },
+      status: 'would_branch',
+    })
+  }
+  if (recorded.length > 0) {
+    plan.push(...recorded.map((step, index) => ({
+      index: plan.length + index + 1,
+      name: step?.name ?? 'unknown',
+      params: cloneValue(step?.params ?? {}),
+      status: 'would_run',
+    })))
+  } else {
+    plan.push({
+      index: plan.length + 1,
+      name: 'agent',
+      params: { instructions: String(routine?.instructions ?? '') },
+      status: 'would_run',
+    })
+  }
+  for (const command of routine?.subroutineCommands ?? []) {
+    plan.push({
+      index: plan.length + 1,
+      name: 'subroutine',
+      params: { command },
+      status: 'would_run',
+    })
+  }
+  if (routine?.output?.format) {
+    plan.push({
+      index: plan.length + 1,
+      name: 'structured_extract',
+      params: cloneValue(routine.output),
+      status: 'would_run',
+    })
+  }
+  return plan
+}
+
+function simulationMessage(routine, plan) {
+  return `Simulation only: ${routine.name} would execute ${plan.length} step(s). No browser action was performed.`
+}
+
+async function expandSubroutineInstructions(store, accountId, routine, baseInstructions) {
+  const commands = Array.isArray(routine?.subroutineCommands) ? routine.subroutineCommands : []
+  if (commands.length === 0 || typeof store?.list !== 'function') return baseInstructions
+  const routines = await store.list(accountId)
+  const byCommand = new Map(routines.map((item) => [item.command, item]))
+  const blocks = []
+  const visited = new Set([routine.id])
+  for (const command of commands) {
+    const nested = byCommand.get(command.replace(/^\/+/, ''))
+    if (!nested || visited.has(nested.id)) continue
+    blocks.push(`SUB-ROUTINE /${nested.command}:\n${nested.instructions}`)
+    visited.add(nested.id)
+  }
+  return blocks.length > 0
+    ? `${baseInstructions}\n\nREUSABLE SUB-ROUTINES:\n${blocks.join('\n\n')}`
+    : baseInstructions
+}
+
+function branchText(result) {
+  if (result == null) return ''
+  if (typeof result === 'string') return result
+  if (typeof result === 'object') {
+    if (typeof result.text === 'string') return result.text
+    if (typeof result.data === 'string') return result.data
+  }
+  return JSON.stringify(result)
+}
+
+function formatExtractionForMessage(result) {
+  if (!result || typeof result !== 'object') return String(result ?? '')
+  return typeof result.data === 'string' ? result.data : JSON.stringify(result.data, null, 2)
 }
 
 function cloneValue(value) {

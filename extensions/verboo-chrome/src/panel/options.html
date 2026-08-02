@@ -228,6 +228,43 @@
             <textarea class="field-input routine-textarea routine-textarea-small" id="routine-recorded-steps" name="recordedSteps"></textarea>
             <small data-i18n="routine_recorded_steps_help">Review selectors and variable placeholders before saving.</small>
           </label>
+          <fieldset class="routine-automation routine-field-wide">
+            <legend data-i18n="routine_automation">Automation building blocks</legend>
+            <label class="routine-field">
+              <span data-i18n="routine_branch_selector">If selector</span>
+              <input class="field-input" id="routine-branch-selector" placeholder=".status" />
+            </label>
+            <label class="routine-field">
+              <span data-i18n="routine_branch_contains">Contains text</span>
+              <input class="field-input" id="routine-branch-contains" placeholder="Ready" />
+            </label>
+            <label class="routine-field routine-field-wide">
+              <span data-i18n="routine_branch_then">If found, do</span>
+              <textarea class="field-input routine-textarea routine-textarea-small" id="routine-branch-then"></textarea>
+            </label>
+            <label class="routine-field routine-field-wide">
+              <span data-i18n="routine_branch_else">Otherwise, do</span>
+              <textarea class="field-input routine-textarea routine-textarea-small" id="routine-branch-else"></textarea>
+            </label>
+            <label class="routine-field">
+              <span data-i18n="routine_output_format">Structured output</span>
+              <select class="field-select" id="routine-output-format">
+                <option value="" data-i18n="routine_output_none">No structured output</option>
+                <option value="json">JSON</option>
+                <option value="csv">CSV</option>
+                <option value="table" data-i18n="routine_output_table">Markdown table</option>
+              </select>
+            </label>
+            <label class="routine-field">
+              <span data-i18n="routine_output_selector">Output selector</span>
+              <input class="field-input" id="routine-output-selector" placeholder="table" />
+            </label>
+            <label class="routine-field routine-field-wide">
+              <span data-i18n="routine_subroutines">Sub-routines</span>
+              <textarea class="field-input routine-textarea routine-textarea-small" id="routine-subroutines" placeholder="/collect-leads"></textarea>
+              <small data-i18n="routine_subroutines_help">One slash command per line. They run as reusable instruction modules.</small>
+            </label>
+          </fieldset>
           <fieldset class="routine-schedule routine-field-wide">
             <legend data-i18n="routine_schedule">Schedule</legend>
             <label class="routine-check">

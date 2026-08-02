@@ -98,3 +98,27 @@ test('recovers approval waits as queued so the unconfirmed step can resume', asy
   const recovered = await store.recoverInterrupted('acct-a')
   assert.equal(recovered[0].status, 'queued')
 })
+
+test('appends bounded execution events without changing the run state', async () => {
+  let now = 100
+  const store = createRunStore(memoryStorage(), () => ++now)
+  await store.create('acct-a', {
+    id: 'run-events',
+    routineId: 'routine-1',
+    routineRevision: 1,
+    status: 'queued',
+    events: [],
+  })
+
+  const updated = await store.appendEvent('acct-a', 'run-events', {
+    type: 'tool',
+    name: 'read_page',
+    success: true,
+    durationMs: 42,
+  })
+
+  assert.equal(updated.status, 'queued')
+  assert.equal(updated.events.length, 1)
+  assert.equal(updated.events[0].type, 'tool')
+  assert.equal(updated.events[0].at, 102)
+})

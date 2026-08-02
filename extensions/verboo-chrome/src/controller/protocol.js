@@ -33,7 +33,7 @@
  * must never be exported.
  */
 
-import browserCatalog from './browserTools.json' with { type: 'json' }
+import browserCatalog from './browserTools.js'
 
 // ── Message types ──────────────────────────────────────────
 
@@ -60,7 +60,9 @@ export const MSG = Object.freeze({
   ROUTINE_DUPLICATE: 'routine:duplicate',
   ROUTINE_DELETE: 'routine:delete',
   ROUTINE_RUN: 'routine:run',
+  ROUTINE_SIMULATE: 'routine:simulate',
   ROUTINE_CANCEL: 'routine:cancel',
+  ROUTINE_PAUSE: 'routine:pause',
   ROUTINE_RESUME: 'routine:resume',
   ROUTINE_RUN_LIST: 'routine:run_list',
   ROUTINE_RECOVERY_APPLY: 'routine:recovery_apply',
@@ -142,7 +144,7 @@ export const TOOL_RISK = Object.freeze({
   ELEVATED: 'elevated',
 })
 
-/** Bump in browserTools.json on every catalog change. */
+/** Bump in browserTools.js (and the JSON reference copy) on every catalog change. */
 export const CATALOG_VERSION = browserCatalog.version
 
 /**

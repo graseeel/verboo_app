@@ -35,6 +35,14 @@ export function createRunQueue() {
     return false
   }
 
+  function pause(id) {
+    if (active?.id === id) {
+      active.pause?.()
+      return true
+    }
+    return pending.some((item) => item.id === id)
+  }
+
   async function pump() {
     if (active || pending.length === 0) return
     active = pending.shift()
@@ -56,6 +64,7 @@ export function createRunQueue() {
   return {
     enqueue,
     cancel,
+    pause,
     activeId: () => active?.id ?? null,
   }
 }
