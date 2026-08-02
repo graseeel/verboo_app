@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
 import { spawn } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 
@@ -16,7 +16,12 @@ export function resolveLaunch(appPath, platform, executableName = 'verboo-deskto
   const isMacBundle = appPath.endsWith('.app')
   if (platform === 'darwin' && isMacBundle) {
     return {
-      executable: join(appPath, 'Contents', 'MacOS', executableName),
+      // Bundle .app internal structure is always POSIX, regardless of
+      // host OS. resolveLaunch receives platform as a parameter and is
+      // called with 'darwin' from any machine, so host-dependent path
+      // separators (node:path join on Windows) would violate the
+      // contract. posix.join yields '/' everywhere.
+      executable: posix.join(appPath, 'Contents', 'MacOS', executableName),
       args: [],
     }
   }
@@ -120,7 +125,10 @@ const reportPath = join(workDir, 'report.json')
 const platform = process.platform
 let launch
 if (platform === 'darwin' && appPath.endsWith('.app')) {
-  const infoPlist = await readFile(join(appPath, 'Contents', 'Info.plist'), 'utf8')
+  // Same class as resolveLaunch: .app internal paths are always POSIX.
+  // Guarded by platform==='darwin' today, but build it correctly so a
+  // future test on any host can't break.
+  const infoPlist = await readFile(posix.join(appPath, 'Contents', 'Info.plist'), 'utf8')
   const executableName = infoPlist.match(
     /<key>CFBundleExecutable<\/key>\s*<string>([^<]+)<\/string>/
   )?.[1]
