@@ -2,7 +2,7 @@
 
 Verboo Code Desktop is an independent desktop client for working with the Verboo Code CLI from a focused app interface. It wraps the CLI-oriented workflow with project navigation, chat history, model selection, skill selection, permission controls, profile views, feedback reporting, and a desktop shell that runs on macOS, Windows, and Linux.
 
-The desktop shell is built with **Tauri v2** (Rust backend + system WebView frontend) and ships a bundled `cli-package` sidecar so the app is self-contained on a clean machine.
+The desktop shell is built with **Tauri v2** (Rust backend + system WebView frontend) and ships a bundled `cli-package` sidecar (the `@verboo/code` CLI, which requires Node.js ≥22 on the host).
 
 Official CLI upstream: [verbeux-ai/code](https://github.com/verbeux-ai/code).
 
@@ -24,11 +24,12 @@ Official CLI upstream: [verbeux-ai/code](https://github.com/verbeux-ai/code).
 | Windows | x64 | Beta | NSIS `.exe` |
 | Linux | x64 | Beta | AppImage, `.deb`, `.rpm` |
 
-The packaged app is self-contained for normal use on all three platforms. The
-Tauri bundle ships the Rust backend, the embedded `cli-package` (the Verboo CLI
-plus its Node dependency closure), and the image/OCR dependencies it needs to
-start. On macOS and Linux the bundled CLI runs on the system Node runtime; on
-Windows the installer ships the Node sidecar.
+The packaged bundle ships the Rust backend, the embedded `cli-package` (the
+Verboo CLI plus its Node dependency closure), and the image/OCR dependencies it
+needs to start. The bundled CLI is JavaScript and runs on a system Node.js
+runtime (≥22.0.0). The macOS, Linux, and Windows installers do not ship a Node
+runtime — the app resolves Node from the system (Homebrew, nvm, fnm, Volta, or
+PATH).
 
 For per-platform setup, known issues, and troubleshooting, see
 [SETUP.md](SETUP.md).
@@ -52,6 +53,19 @@ Use this app as an experimental community/independent desktop build. Expect bugs
 - Supports image attachment handling, including a vision-helper fallback path when the selected model does not support vision.
 - Includes a local terminal side panel for project commands.
 - Includes a feedback/report-bug flow backed by Supabase, with `mailto:` fallback.
+- **Embedded browser panel** with multi-tab navigation, hide/restore, an 8-tab
+  live cap with eviction, and a User-Agent override on macOS and Linux so web
+  apps see a current browser identity. Windows (WebView2/Chromium) keeps its
+  default UA, which already reports a modern identity; the Linux override is
+  defensive and not yet verified on a real Linux machine.
+- **Transcript annotations** — select any passage of the assistant's reply,
+  capture a private comment, and send it as the next user message in turn
+  order.
+- **Media sidecars** — `verboo-ffmpeg`, `verboo-ffprobe`, and `verboo-whisper`
+  are bundled per platform for video/audio understanding without external
+  installs.
+- **Chrome extension** (`extensions/verboo-chrome`, v0.2.1) — bridges the
+  browser's active tab into the desktop app via native messaging.
 
 ## Requirements
 
@@ -61,13 +75,14 @@ Use this app as an experimental community/independent desktop build. Expect bugs
   - Linux x64 with glibc 2.28+ (Ubuntu 20.04+, Debian 11+, Fedora 35+)
 - Internet access and a valid Verboo session or API key.
 
-The packaged app is self-contained for normal use. The Tauri bundle ships the
-Rust backend, the embedded `cli-package` (Verboo CLI + Node dependency closure),
-and the image/OCR dependencies it needs to start.
+The packaged bundle ships the Rust backend, the embedded `cli-package` (Verboo
+CLI + Node dependency closure), and the image/OCR dependencies it needs to
+start. The bundled CLI is JavaScript and runs on a system Node.js (≥22.0.0).
 
-Node.js, npm, Homebrew, and a global `@verboo/code` CLI are not required to run
-the packaged app. If the user already has newer compatible versions of those
-tools, the app leaves them untouched.
+npm, Homebrew, and a global `@verboo/code` CLI are not required to run the
+packaged app. The app resolves Node from the system (Homebrew, nvm, fnm,
+Volta, or PATH) and leaves user-installed Node untouched. If the user already
+has newer compatible versions of those tools, the app leaves them untouched.
 
 Git is optional, but useful when the assistant works inside a real repository.
 
@@ -139,8 +154,9 @@ each update bundle against the public key in `src-tauri/tauri.conf.json`.
 > reliable after Developer ID signing and notarization. The updater code is
 > designed to keep working when signing is enabled later.
 
-See [docs/release-github-actions.md](docs/release-github-actions.md) and
-[docs/updater-signing.md](docs/updater-signing.md).
+See [.github/workflows/tauri-release.yml](.github/workflows/tauri-release.yml)
+for the active release pipeline; the updater key and endpoints live in
+[src-tauri/tauri.conf.json](src-tauri/tauri.conf.json) under `plugins.updater`.
 
 ## Feedback Backend
 
@@ -153,7 +169,7 @@ VERBOO_FEEDBACK_PUBLIC_KEY=YOUR_SUPABASE_PUBLISHABLE_KEY
 
 If Supabase is unavailable or not configured, the app opens a prefilled email to the maintainer.
 
-See [docs/feedback-supabase.md](docs/feedback-supabase.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the feedback backend layout.
 
 ## Security Notes
 
@@ -169,15 +185,13 @@ The application code is released under the MIT License.
 
 The license applies to this repository's source code. It does not grant ownership or unrestricted reuse rights over Verboo trademarks, service names, logos, mascot art, or other Verboo-owned brand assets unless the Verboo owner separately grants those rights.
 
-See [docs/open-source-review.md](docs/open-source-review.md) for the current open-source readiness review.
-
 ---
 
 ## Português (Brasil)
 
 Verboo Code Desktop é um cliente desktop independente para trabalhar com o CLI do Verboo Code em uma interface focada. Ele envolve o fluxo orientado por CLI com navegação de projetos, histórico de chats, seleção de modelos, seleção de habilidades, controles de permissão, perfil, envio de feedback e uma experiência desktop amigável para macOS.
 
-O shell desktop é construído com **Tauri v2** (backend Rust + WebView nativo do sistema) e embarca um sidecar `cli-package` para o app ser autossuficiente numa máquina limpa.
+O shell desktop é construído com **Tauri v2** (backend Rust + WebView nativo do sistema) e embarca um sidecar `cli-package` (o CLI `@verboo/code`, que precisa de Node.js ≥22 no host).
 
 CLI oficial usado como upstream: [verbeux-ai/code](https://github.com/verbeux-ai/code).
 
@@ -200,6 +214,20 @@ Use este app como um build experimental independente/comunitário. Espere bugs, 
 - Suporta anexos de imagem, incluindo fallback com helper vision quando o modelo selecionado não suporta visão.
 - Inclui um painel lateral de terminal local para comandos do projeto.
 - Inclui fluxo de feedback/reporte de bug via Supabase, com fallback para `mailto:`.
+- **Painel de navegador embutido** com navegação multi-aba, esconder/restaurar,
+  teto de 8 abas ativas com despejo e User-Agent próprio no macOS e no Linux,
+  para que apps web vejam uma identidade de navegador atual. O Windows
+  (WebView2/Chromium) mantém o UA default, que já reporta identidade moderna;
+  o override do Linux é defensivo e ainda não foi verificado em máquina Linux
+  real.
+- **Anotações no transcript** — selecione qualquer trecho da resposta do
+  assistente, capture um comentário privado e envie como a próxima mensagem
+  do usuário, na ordem da conversa.
+- **Sidecars de mídia** — `verboo-ffmpeg`, `verboo-ffprobe` e `verboo-whisper`
+  são embarcados por plataforma para compreensão de vídeo e áudio sem
+  instalação externa.
+- **Extensão do Chrome** (`extensions/verboo-chrome`, v0.2.1) — conecta a aba
+  ativa do navegador ao app desktop via native messaging.
 
 ### Requisitos
 
@@ -207,9 +235,7 @@ Use este app como um build experimental independente/comunitário. Espere bugs, 
 - Mac Apple Silicon arm64 (build Intel x64 disponível como beta).
 - Acesso à internet e uma sessão Verboo válida ou chave de API.
 
-O app empacotado é autossuficiente para uso normal. O bundle Tauri embarca o backend Rust, o `cli-package` (CLI Verboo + closure de dependências Node) e as dependências de imagem/OCR necessárias para iniciar.
-
-Node.js, npm, Homebrew e um CLI global `@verboo/code` não são necessários para executar o app empacotado. Se o usuário já tiver versões mais recentes compatíveis dessas ferramentas, o app não altera essas instalações.
+O bundle Tauri embarca o backend Rust, o `cli-package` (CLI Verboo + closure de dependências Node) e as dependências de imagem/OCR necessárias para iniciar. O CLI embutido é JavaScript e roda em um Node.js de sistema (≥22.0.0) — npm, Homebrew e um CLI global `@verboo/code` não são necessários. O app resolve o Node pelo sistema (Homebrew, nvm, fnm, Volta ou PATH) e não altera Node instalado pelo usuário. Se o usuário já tiver versões mais recentes compatíveis dessas ferramentas, o app não altera essas instalações.
 
 Git e Apple Command Line Tools são opcionais, mas úteis quando o assistente trabalha dentro de um repositório real:
 
@@ -282,8 +308,9 @@ bundle de atualização contra a chave pública em `src-tauri/tauri.conf.json`.
 > ID e notarização. O código do updater foi projetado para continuar funcionando
 > quando a assinatura for ativada.
 
-Veja [docs/release-github-actions.md](docs/release-github-actions.md) e
-[docs/updater-signing.md](docs/updater-signing.md).
+Veja [.github/workflows/tauri-release.yml](.github/workflows/tauri-release.yml)
+para o pipeline de release ativo; a chave e os endpoints do updater ficam em
+[src-tauri/tauri.conf.json](src-tauri/tauri.conf.json) em `plugins.updater`.
 
 ### Backend de feedback
 
@@ -296,7 +323,7 @@ VERBOO_FEEDBACK_PUBLIC_KEY=YOUR_SUPABASE_PUBLISHABLE_KEY
 
 Se o Supabase estiver indisponível ou não configurado, o app abre um e-mail preenchido para o mantenedor.
 
-Veja [docs/feedback-supabase.md](docs/feedback-supabase.md).
+Veja [CONTRIBUTING.md](CONTRIBUTING.md) para a estrutura do backend de feedback.
 
 ### Segurança
 
@@ -311,5 +338,3 @@ Veja [docs/feedback-supabase.md](docs/feedback-supabase.md).
 O código do aplicativo é distribuído sob a licença MIT.
 
 A licença se aplica ao código-fonte deste repositório. Ela não concede propriedade nem direitos irrestritos de reutilização sobre marcas, nomes de serviço, logos, arte do mascote ou outros ativos de marca pertencentes à Verboo, exceto quando o dono da Verboo conceder esses direitos separadamente.
-
-Veja [docs/open-source-review.md](docs/open-source-review.md) para a revisão atual de prontidão open source.

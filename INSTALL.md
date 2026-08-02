@@ -1,7 +1,7 @@
 # Install — Verboo Code (macOS Apple Silicon)
 
 Verboo Code is an **independent** app for Macs with **Apple Silicon (M1 or newer)**, built with Tauri v2 (Rust backend + native system WebView).
-You do **not** need Node.js, npm, or the Verboo CLI installed — the app ships complete with the embedded `cli-package` sidecar.
+You do **not** need npm or the Verboo CLI installed — the app ships the embedded `cli-package` sidecar. The bundled CLI is JavaScript and requires Node.js (≥22.0.0) on the host; the installer does not ship a Node runtime.
 
 ## Requirements
 
@@ -36,9 +36,14 @@ If it still says "damaged", use the `xattr` method above — it is the most reli
 
 ## What is NOT required
 
-- ❌ Node.js / npm
+- ❌ npm
+- ❌ Homebrew
 - ❌ Global Verboo CLI (`verboo`)
-- ✅ The Tauri bundle already ships the Rust backend, the `cli-package` (Verboo CLI + Node dependencies), and the embedded native modules.
+- ✅ The Tauri bundle already ships the Rust backend, the `cli-package` (Verboo CLI + Node dependency closure), and the embedded native modules.
+
+## What IS required
+
+- ✅ **Node.js ≥22.0.0** on the host. The bundled CLI is JavaScript and runs through the system Node; the installer does not ship a Node runtime. Node is resolved from Homebrew, nvm, fnm, Volta, or PATH.
 
 ## First use
 
@@ -47,7 +52,7 @@ When the app opens, sign in with your Verboo account through the app interface. 
 ## Português (Brasil)
 
 O Verboo Code é um app **independente** para Macs com chip **Apple Silicon (M1 ou superior)**, construído com Tauri v2 (backend Rust + WebView nativo do sistema).
-Você **não** precisa ter Node.js, npm nem o CLI do Verboo instalados — o app já vem completo com o `cli-package` sidecar embutido.
+Você **não** precisa de npm nem do CLI global do Verboo — o app embarca o `cli-package`. Mas o CLI embutido é JavaScript e requer Node.js (≥22.0.0) instalado no sistema; o instalador não embarca runtime Node.
 
 ### Requisitos
 
@@ -83,9 +88,14 @@ Se ainda aparecer "danificado", use o método do `xattr` acima — é o mais con
 
 ### O que NÃO é necessário
 
-- ❌ Node.js / npm
+- ❌ npm
+- ❌ Homebrew
 - ❌ CLI global do Verboo (`verboo`)
-- ✅ O bundle Tauri já vem com o backend Rust, o `cli-package` (CLI Verboo + dependências Node) e os módulos nativos embutidos.
+- ✅ O bundle Tauri já vem com o backend Rust, o `cli-package` (CLI Verboo + closure de dependências Node) e os módulos nativos embutidos.
+
+### O que É necessário
+
+- ✅ **Node.js ≥22.0.0** no sistema. O CLI embutido é JavaScript e roda pelo Node de sistema; o instalador não embarca runtime Node. O Node é resolvido via Homebrew, nvm, fnm, Volta ou PATH.
 
 ### Primeiro uso
 
