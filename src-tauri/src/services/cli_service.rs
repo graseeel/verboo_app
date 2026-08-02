@@ -518,11 +518,11 @@ mod tests {
             // `write` is not a portable flush barrier: the callback is the
             // Writable contract that the chunk was flushed. Do not block
             // Node's event loop before that point, or this fake can hide its
-            // URL behind the 30s loop on a different pipe implementation.
+            // URL behind its 30s lifetime on a different pipe implementation.
             process.stdout.write('Open https://verboo.example/auth?token=abc123 in your browser.\n', () => {
-                const start = Date.now();
-                while (Date.now() - start < 30000) {} // busy sleep 30s
-                process.exit(0);
+                // Keep the child alive without monopolizing a CPU. The test
+                // needs a live process, not a CPU-bound process.
+                setTimeout(() => process.exit(0), 30000);
             });
         "#;
         let _path = write_fake_cli(script, "spawn");
@@ -552,9 +552,9 @@ mod tests {
         // process exit before reading, we'd miss the deadline.
         let script = r#"
             process.stdout.write('Open https://verboo.example/auth?token=xyz789 in your browser.\n', () => {
-                const start = Date.now();
-                while (Date.now() - start < 30000) {}
-                process.exit(0);
+                // Keep the child alive without monopolizing a CPU. The test
+                // needs a live process, not a CPU-bound process.
+                setTimeout(() => process.exit(0), 30000);
             });
         "#;
         let _path = write_fake_cli(script, "url");
@@ -574,6 +574,13 @@ mod tests {
                 Ok(n) => {
                     buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
                     if extract_login_url(&buf).is_some() {
+                        assert!(
+                            child
+                                .try_wait()
+                                .expect("A1: child liveness check must succeed")
+                                .is_none(),
+                            "A1: URL was read after the child exited; a pipe retains bytes from a dead process, so this would not prove incremental reading from a live child",
+                        );
                         url_found_at = Some(t0.elapsed());
                         break;
                     }
