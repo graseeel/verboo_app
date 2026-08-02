@@ -3299,20 +3299,41 @@ mod tests {
         );
     }
 
-    /// Integração (só macOS): a LEITURA REAL do plist do Safari nesta
-    /// máquina tem que devolver a versão medida (27.0) e o UA montado com
-    /// ela tem que casar com a assinatura que o Google serve em modo
-    /// moderno. Se o Safari da máquina avançar, este teste aponta a
-    /// necessidade de re-medir a assinatura — é o tripwire da recência.
+    /// Integração (só macOS): a LEITURA REAL do bundle do Safari nesta
+    /// máquina tem que FUNCIONAR e produzir algo plausível — NÃO um número
+    /// fixo. O Safari varia de máquina para máquina (o runner de CI
+    /// macos-15 tem versão diferente da dev), então fixar "27.0" testaria a
+    /// máquina, não o nosso código. O que este teste afirma:
+    ///   1. a leitura devolve Some (Safari é app de sistema no macOS);
+    ///   2. o valor começa com dígito (versão de marketing plausível);
+    ///   3. o valor atravessa até o token Version do UA montado;
+    ///   4. RELAÇÃO, não valor: a resolução de produção (cacheada) reflete a
+    ///      leitura em runtime. Em máquina onde Safari ≠ fallback, isso pega
+    ///      a mutação que faz a resolução ignorar a leitura (cairia no
+    ///      fallback e divergiria). A proteção local contra descartar o
+    ///      valor de runtime está em `resolves_runtime_or_fallback` e
+    ///      `runtime_value_flows_to_final_ua_string` (99.9 não-colidível).
     #[cfg(target_os = "macos")]
     #[test]
-    fn runtime_safari_read_matches_measured_signature() {
-        let version = read_safari_marketing_version().expect("Safari plist deve ser legível no macOS");
-        assert_eq!(version, "27.0", "versão do Safari desta máquina (medida)");
+    fn runtime_safari_read_is_plausible_and_reaches_ua() {
+        let version = read_safari_marketing_version()
+            .expect("Safari é app de sistema no macOS; a leitura do bundle tem que funcionar");
+        assert!(
+            version.chars().next().is_some_and(|c| c.is_ascii_digit()),
+            "a versão de marketing do Safari tem que começar com dígito, veio {version:?}"
+        );
         let engine_ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)";
         let ua = assemble_browser_tab_user_agent(engine_ua, &version);
-        assert!(ua.ends_with("Version/27.0 Safari/605.1.15"));
-        assert_eq!(resolved_tab_safari_version(), "27.0");
+        assert!(
+            ua.contains(&format!("Version/{version}")),
+            "o valor lido em runtime tem que aparecer no token Version do UA montado"
+        );
+        let resolved = resolved_tab_safari_version();
+        assert_eq!(
+            resolved,
+            version.as_str(),
+            "a resolução de produção tem que usar o valor lido em runtime (relação, não valor fixo)"
+        );
     }
 
     /// REGRESSÃO FRENTE-GOOGLE: se alguém remover o `.user_agent(...)` da
