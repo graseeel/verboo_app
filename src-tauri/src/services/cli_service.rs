@@ -515,10 +515,15 @@ mod tests {
         // <cli.mjs>` (from VERBOO_CLI_PATH env var), so the script body
         // is the JS source, not a shebang script.
         let script = r#"
-            process.stdout.write('Open https://verboo.example/auth?token=abc123 in your browser.\n');
-            const start = Date.now();
-            while (Date.now() - start < 30000) {} // busy sleep 30s
-            process.exit(0);
+            // `write` is not a portable flush barrier: the callback is the
+            // Writable contract that the chunk was flushed. Do not block
+            // Node's event loop before that point, or this fake can hide its
+            // URL behind the 30s loop on a different pipe implementation.
+            process.stdout.write('Open https://verboo.example/auth?token=abc123 in your browser.\n', () => {
+                const start = Date.now();
+                while (Date.now() - start < 30000) {} // busy sleep 30s
+                process.exit(0);
+            });
         "#;
         let _path = write_fake_cli(script, "spawn");
         let t0 = std::time::Instant::now();
@@ -546,10 +551,11 @@ mod tests {
         // stdout reading BEFORE the 30s sleep ends. If we waited for
         // process exit before reading, we'd miss the deadline.
         let script = r#"
-            process.stdout.write('Open https://verboo.example/auth?token=xyz789 in your browser.\n');
-            const start = Date.now();
-            while (Date.now() - start < 30000) {}
-            process.exit(0);
+            process.stdout.write('Open https://verboo.example/auth?token=xyz789 in your browser.\n', () => {
+                const start = Date.now();
+                while (Date.now() - start < 30000) {}
+                process.exit(0);
+            });
         "#;
         let _path = write_fake_cli(script, "url");
         let t0 = std::time::Instant::now();
