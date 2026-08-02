@@ -8,8 +8,9 @@ The packaged Rust helper implements both the stdio MCP server and Chrome Native 
 - Protocol version: `1`
 - Envelope: `{ version, id, kind, secret?, payload }`
 - Kinds: `hello`, `toolRequest`, `toolResponse`, `error`
-- Host to Chrome maximum: 1 MiB
-- Chrome to host maximum: 64 MiB
+- Chrome Native Messaging platform limit: 1 MiB per message (Chrome's own cap on `chrome.runtime.connectNative` frames; not codified in this repo).
+- Application payload cap: 64 KiB on `envelope.payload.len()`, enforced by the Rust host (`src-tauri/src/services/browser_bridge.rs:MAX_PAGE_MESSAGE_BYTES = 64 * 1024`). Messages whose payload exceeds this cap are rejected with `MessageTooLarge` before any tool runs.
+- Reconnect: the extension reconnects on disconnect with exponential backoff starting at 750 ms, doubling each attempt, capped at 30 s, and never stops trying (`src/native/bridge.js:scheduleReconnect`). In-flight requests at the moment of disconnect are not replayed.
 
 The MCP process discovers a live Native Host through a private, per-user record. Each record contains a random session secret. Local requests are authenticated with that secret, while the secret is removed before the request reaches the extension.
 
@@ -37,7 +38,9 @@ O helper Rust empacotado implementa tanto o servidor MCP por stdio quanto o host
 - Versão do protocolo: `1`
 - Envelope: `{ version, id, kind, secret?, payload }`
 - Kinds: `hello`, `toolRequest`, `toolResponse`, `error`
-- Máximo host → Chrome: 1 MiB; máximo Chrome → host: 64 MiB
+- Limite da plataforma Chrome Native Messaging: 1 MiB por mensagem (teto do próprio Chrome sobre quadros de `chrome.runtime.connectNative`; não codificado neste repositório).
+- Teto de payload da aplicação: 64 KiB sobre `envelope.payload.len()`, imposto pelo host Rust (`src-tauri/src/services/browser_bridge.rs:MAX_PAGE_MESSAGE_BYTES = 64 * 1024`). Mensagens cujo payload excede esse teto são rejeitadas com `MessageTooLarge` antes de qualquer ferramenta rodar.
+- Reconexão: a extensão reconecta em desconexão com backoff exponencial a partir de 750 ms, dobrando a cada tentativa, teto de 30 s, e nunca para de tentar (`src/native/bridge.js:scheduleReconnect`). Requisições em voo no momento da desconexão não são reexecutadas.
 
 O processo MCP descobre um Native Host vivo por um registro privado por usuário contendo um segredo de sessão aleatório. Requisições locais são autenticadas com esse segredo, que é removido antes de a requisição chegar à extensão.
 

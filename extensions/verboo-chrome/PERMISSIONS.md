@@ -70,6 +70,16 @@ When adding or removing a permission, update this file in the same PR.
 
 ---
 
+## `activeTab`
+
+**What it is.** Grants the extension temporary access to the focused tab when you invoke the extension (clicking the toolbar icon, opening the side panel, or running a context-menu item). Unlike `host_permissions`, `activeTab` is per-gesture and expires when the tab navigates or you stop interacting.
+
+**Why we need it.** `chrome.tabs.captureVisibleTab` requires either `<all_urls>` host permission or temporary `activeTab` to take a viewport screenshot from the side panel. We declare both so capture keeps working if a future Store review forces us to drop `<all_urls>`. The screenshot tool (`src/controller/tools/screenshot.js`) is the only consumer; it calls `chrome.tabs.captureVisibleTab` for the focused tab's viewport.
+
+**What we don't do with it.** We do not use `activeTab` to read browsing history, persist access after the turn ends, or attach to tabs the user did not gesture toward. Internal Chrome pages (`chrome://`, `chrome-extension://`, `about:`) are rejected by the planner (`src/planMessage.js:isControllableUrl`) before any tool runs, so `activeTab` never grants access to them.
+
+---
+
 ## `nativeMessaging`
 
 **What it is.** Lets the extension connect to the locally installed `com.verboo.code.browser_extension` host over Chrome's framed stdin/stdout protocol.

@@ -1,8 +1,8 @@
 # Verboo Code — Privacy Policy
 
-**Last updated:** 2026-07-29
+**Last updated:** 2026-08-02
 **Extension:** Verboo Code — Browser Control
-**Version:** 0.1.2
+**Version:** 0.2.1
 
 This privacy policy explains what data the Verboo Code browser extension handles when you use it to control Chrome with a Verboo account session.
 
@@ -47,7 +47,9 @@ The extension can also save account-scoped routines in the current Chrome profil
 - **`scripting`** — Injects small scripts into the active tab to read content, click elements, or fill form fields that you approved. Scripts run in the page's own context; the extension does not use `eval`.
 - **`tabs`** — Lists, switches, closes, opens, and updates tabs. Used to manage browser state during a turn.
 - **`tabGroups`** — Groups browser tabs when you organize a multi-step task.
-- **`host_permissions` (`http://*/*`, `https://*/*`)** — Required so `scripting` and `tabs` can work on any HTTP/HTTPS page you visit. The extension cannot read `file://` pages, `chrome://` pages, or other internal URLs.
+- **`activeTab`** — Grants temporary access to the focused tab for a user-gesture turn (used as a fallback so `chrome.tabs.captureVisibleTab` can take a viewport screenshot when `<all_urls>` is not the active grant). The extension does not use `activeTab` to read history or persist access after the turn ends.
+- **`nativeMessaging`** — Connects to the locally installed `com.verboo.code.browser_extension` host over Chrome's framed stdin/stdout protocol. Used only to relay browser-tool requests from the Verboo CLI MCP server while the desktop app is closed; the host cannot call Chrome APIs directly, and every relayed request still passes through the extension's policy gate and approval executor.
+- **`host_permissions` (`http://*/*`, `https://*/*`, `<all_urls>`)** — Required so `scripting` and `tabs` can work on any HTTP/HTTPS page you visit, and so `chrome.tabs.captureVisibleTab` can take a viewport screenshot from the side panel (Chrome does not grant capture with plain `http(s)` patterns alone). The extension cannot read `file://` pages, `chrome://` pages, or other internal URLs — the planner rejects those schemes before any tool runs, regardless of `<all_urls>`.
 
 Future permissions (not yet requested, will be added when needed):
 
@@ -98,7 +100,7 @@ Open an issue on the repository's issues tab. (TODO: confirm the canonical Verbo
 
 ## Português (Brasil)
 
-**Última atualização:** 2026-07-29 · **Extensão:** Verboo Code — Browser Control · **Versão:** 0.1.2
+**Última atualização:** 2026-08-02 · **Extensão:** Verboo Code — Browser Control · **Versão:** 0.2.1
 
 Esta política explica quais dados a extensão trata quando você a usa para controlar o Chrome com uma sessão de conta Verboo.
 
@@ -121,6 +123,12 @@ Não lê suas teclas fora de ferramentas aprovadas; não rastreia sites fora de 
 ### Onde seus dados vivem
 
 O estado persistente fica no armazenamento local da extensão, restrito ao perfil atual e sem sincronização com a conta Google. Além das chaves de sessão, modelos e permissões, `verbooRoutinesV1` guarda rotinas e `verbooRoutineRunsV1` guarda um histórico limitado com checkpoints. Arquivos selecionados ficam no IndexedDB `verboo-routines`; rascunhos e gravação ativa usam `chrome.storage.session`. A gravação ignora campos de senha, pagamento e segredos. As permissões `alarms` e `notifications` existem somente para agendar rotinas locais e avisar quando uma execução precisa da intervenção do usuário.
+
+### Permissões declaradas (português)
+
+- **`activeTab`** — acesso temporário à aba focada para o turno iniciado por você (fallback de `chrome.tabs.captureVisibleTab` para screenshot de viewport quando `<all_urls>` não é a concessão ativa). Não lê histórico nem persiste acesso após o turno.
+- **`nativeMessaging`** — conecta ao host local `com.verboo.code.browser_extension` pelo protocolo stdin/stdout enquadrado do Chrome. Usada somente para relé de requisições de ferramentas entre o servidor MCP do CLI Verboo e a extensão quando o app desktop está fechado; o host não chama APIs do Chrome diretamente, e toda requisição relé ainda passa pelo portão de política e pelo executor de aprovações da extensão.
+- **`host_permissions` (`http://*/*`, `https://*/*`, `<all_urls>`)** — necessárias para que `scripting` e `tabs` atuem em qualquer página HTTP/HTTPS e para que `chrome.tabs.captureVisibleTab` tire screenshot de viewport pelo side panel (Chrome não concede capture só com padrões `http(s)`). A extensão não lê `file://`, `chrome://` nem outras URLs internas — o planner rejeita esses esquemas antes de qualquer ferramenta rodar, independentemente de `<all_urls>`.
 
 ### Sem login, terceiros, crianças e alterações
 
