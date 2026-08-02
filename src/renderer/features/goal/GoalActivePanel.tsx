@@ -22,6 +22,14 @@ type GoalActivePanelProps = {
    * The user can expand back to full via the chevron.
    */
   compact?: boolean
+  /**
+   * True while the panel plays its EXIT animation (genie back into the
+   * composer) after the goal reached a terminal state. The parent keeps
+   * the panel mounted for the animation duration with a snapshot of the
+   * last live goal; the class only adds the CSS animation and
+   * pointer-events:none — no layout shift.
+   */
+  leaving?: boolean
   onEditObjective: (newObjective: string) => void
   onPause: () => void
   onResume: () => void
@@ -32,6 +40,7 @@ export function GoalActivePanel({
   goal,
   turnInProgress,
   compact = false,
+  leaving = false,
   onEditObjective,
   onPause,
   onResume,
@@ -68,6 +77,38 @@ export function GoalActivePanel({
   const isPaused = kind === 'paused'
   const pauseReason = isPaused && goal.pauseReason ? translateGoalReason(goal.pauseReason, t) : null
 
+  // T5 (v1): objective editing is disabled while a BATCH runs — editing
+  // the umbrella label would not retarget any task, and rewriting task
+  // texts mid-flight has no safe v1 semantics. The edit buttons stay
+  // VISIBLE but disabled, with the reason as tooltip: a clear warning,
+  // not a mysterious disappearance. App.handleEditObjective carries the
+  // same guard as backstop for non-panel entry points.
+  const isBatch = (goal.tasks?.length ?? 0) > 0
+
+  // G-C6-FIX-UI: surface the evaluator's specific error message when
+  // paused by infraError. The Rust evaluator emits a useful timeout/
+  // failure reason (e.g. "Goal evaluator CLI timed out after 240s...")
+  // that the scheduler stores in goal.lastEvaluation.reason. Before
+  // this fix, the panel showed only the generic "Erro de
+  // infraestrutura do avaliador" — the specific message was written
+  // to state but never rendered. We use the existing (previously
+  // orphan) goal.errorPausedBody key, interpolating {message} with
+  // the reason text. Falls back to nothing if reason is absent or
+  // empty — the generic pauseReason already shows, never an empty
+  // string or "undefined".
+  const evaluatorErrorMessage =
+    isPaused && goal.pauseReason === 'infraError' && goal.lastEvaluation?.reason
+      ? t('goal.errorPausedBody', { message: goal.lastEvaluation.reason })
+      : null
+
+  // Batch goals show the user's own multi-line message verbatim (their
+  // words, line breaks included — per user request) instead of the
+  // synthetic umbrella label ("Batch of N tasks"). Single-task goals
+  // have no batchInput and show `objective` exactly as before, so the
+  // two cases read the same: what the user typed. `objective` itself
+  // stays untouched — editing, status bar and system messages use it.
+  const displayObjective = goal.batchInput ?? goal.objective
+
   // Compact mode is forced by the parent when questions are open, but
   // the user can override to full panel. Editing also forces full panel.
   const showCompact = compact && !expandedFromCompact && !editing
@@ -100,18 +141,26 @@ export function GoalActivePanel({
   if (showCompact) {
     return (
       <div
-        className="goal-active-panel compact"
+        className={`goal-active-panel compact${leaving ? ' leaving' : ''}`}
         role="region"
         aria-label={t('goal.panelTitle')}
       >
         <div className="goal-active-panel-compact-row">
           <Target size={14} aria-hidden className="goal-active-panel-compact-icon" />
-          <span className={`goal-active-panel-status ${kind}`}>{t(statusLabelKey)}</span>
-          <p className="goal-active-panel-compact-objective" title={goal.objective}>
-            {goal.objective}
+          <span className={`goal-active-panel-status ${kind}`}>
+          <span className="goal-active-panel-status-dot" aria-hidden />
+          {t(statusLabelKey)}
+        </span>
+          <p className="goal-active-panel-compact-objective" title={displayObjective}>
+            {displayObjective}
           </p>
           {isPaused && pauseReason && (
             <span className="goal-active-panel-reason">{pauseReason}</span>
+          )}
+          {evaluatorErrorMessage && (
+            <span className="goal-active-panel-reason goal-active-panel-reason-detail">
+              {evaluatorErrorMessage}
+            </span>
           )}
           <div className="goal-active-panel-compact-actions">
             <button
@@ -127,8 +176,9 @@ export function GoalActivePanel({
               type="button"
               className="goal-panel-icon-button"
               onClick={() => setEditing(true)}
-              aria-label={t('goal.compactEditButton')}
-              title={t('goal.compactEditButton')}
+              aria-label={isBatch ? t('goal.batchEditDisabled') : t('goal.compactEditButton')}
+              title={isBatch ? t('goal.batchEditDisabled') : t('goal.compactEditButton')}
+              disabled={isBatch}
             >
               <Pencil size={14} aria-hidden />
             </button>
@@ -171,16 +221,24 @@ export function GoalActivePanel({
 
   return (
     <div
-      className={`goal-active-panel ${isPaused ? 'paused' : 'running'}`}
+      className={`goal-active-panel ${isPaused ? 'paused' : 'running'}${leaving ? ' leaving' : ''}`}
       role="region"
       aria-label={t('goal.panelTitle')}
     >
       <div className="goal-active-panel-header">
         <Target size={14} aria-hidden />
         <span className="goal-active-panel-title">{t('goal.panelTitle')}</span>
-        <span className={`goal-active-panel-status ${kind}`}>{t(statusLabelKey)}</span>
+        <span className={`goal-active-panel-status ${kind}`}>
+          <span className="goal-active-panel-status-dot" aria-hidden />
+          {t(statusLabelKey)}
+        </span>
         {isPaused && pauseReason && (
           <span className="goal-active-panel-reason">{pauseReason}</span>
+        )}
+        {evaluatorErrorMessage && (
+          <span className="goal-active-panel-reason goal-active-panel-reason-detail">
+            {evaluatorErrorMessage}
+          </span>
         )}
         {compact && expandedFromCompact && (
           <button
@@ -196,7 +254,10 @@ export function GoalActivePanel({
       </div>
 
       <div className="goal-active-panel-objective">
-        <span className="goal-active-panel-objective-label">{t('goal.panelObjectiveLabel')}</span>
+        {/* quieter redesign: the "OBJECTIVE" uppercase label was removed —
+            the text under the Goal header is self-evident, and the user
+            rejects labels that read as noise. The i18n key and CSS rule
+            were removed together (no orphan on either side). */}
         {editing ? (
           <textarea
             ref={editInputRef}
@@ -209,73 +270,94 @@ export function GoalActivePanel({
             rows={2}
           />
         ) : (
-          <p className="goal-active-panel-objective-text">{goal.objective}</p>
+          <p className="goal-active-panel-objective-text">{displayObjective}</p>
         )}
       </div>
 
+      {/* D-D item 4: the taskImpossible pause message the user READS.
+          The legible reason + the v1 contract (reply resumes THIS SAME
+          task; to change it, cancel and relaunch) — the contract lives
+          IN THE MESSAGE, declared before the user types, not after the
+          frustration. Plain text in the panel's own typographic family:
+          no box, no badge (the noise class the user vetoed twice).
+          Compact strip keeps only the header label — the full text is
+          one chevron away. */}
+      {isPaused && goal.pauseReason === 'taskImpossible' && !editing && (
+        <p className="goal-active-panel-impossible-detail">
+          {t('goal.taskImpossibleBody', {
+            reason: goal.lastEvaluation?.reason?.trim() || t('goal.reasonId.taskImpossible'),
+          })}
+        </p>
+      )}
+
       <div className="goal-active-panel-actions">
+        {/* quieter redesign: every action is icon-only with tooltip, the
+            SAME vocabulary as the compact strip (product.md: consistent
+            affordances across the surface). The i18n keys stay consumed
+            as aria-label/title — nothing orphaned. */}
         {editing ? (
           <>
             <button
               type="button"
-              className="goal-panel-button primary"
+              className="goal-panel-icon-button primary"
               onClick={handleSaveEdit}
               aria-label={t('goal.panelEditSaveButton')}
+              title={t('goal.panelEditSaveButton')}
             >
               <Check size={14} aria-hidden />
-              <span>{t('goal.panelEditSaveButton')}</span>
             </button>
             <button
               type="button"
-              className="goal-panel-button"
+              className="goal-panel-icon-button"
               onClick={handleCancelEdit}
               aria-label={t('goal.panelEditCancelButton')}
+              title={t('goal.panelEditCancelButton')}
             >
               <X size={14} aria-hidden />
-              <span>{t('goal.panelEditCancelButton')}</span>
             </button>
           </>
         ) : (
           <>
             <button
               type="button"
-              className="goal-panel-button"
+              className="goal-panel-icon-button"
               onClick={() => setEditing(true)}
-              aria-label={t('goal.panelEditButton')}
+              aria-label={isBatch ? t('goal.batchEditDisabled') : t('goal.panelEditButton')}
+              title={isBatch ? t('goal.batchEditDisabled') : t('goal.panelEditButton')}
+              disabled={isBatch}
             >
               <Pencil size={14} aria-hidden />
-              <span>{t('goal.panelEditButton')}</span>
             </button>
             {isPaused ? (
               <button
                 type="button"
-                className="goal-panel-button primary"
+                className="goal-panel-icon-button primary"
                 onClick={onResume}
                 aria-label={t('goal.panelResumeButton')}
+                title={t('goal.panelResumeButton')}
               >
                 <Play size={14} aria-hidden />
-                <span>{t('goal.panelResumeButton')}</span>
               </button>
             ) : (
               <button
                 type="button"
-                className="goal-panel-button"
+                className="goal-panel-icon-button"
                 onClick={onPause}
                 aria-label={t('goal.panelPauseButton')}
+                title={t('goal.panelPauseButton')}
                 disabled={kind === 'evaluating'}
               >
                 <Pause size={14} aria-hidden />
-                <span>{t('goal.panelPauseButton')}</span>
               </button>
             )}
             <button
               type="button"
-              className="goal-panel-button danger"
+              className="goal-panel-icon-button danger"
               onClick={onCancel}
               aria-label={t('goal.panelCancelButton')}
+              title={t('goal.panelCancelButton')}
             >
               <Square size={14} aria-hidden />
-              <span>{t('goal.panelCancelButton')}</span>
             </button>
           </>
         )}

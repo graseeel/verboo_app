@@ -60,6 +60,19 @@
    its own whitespace. */
 .step-text:has(.markdown-body) { white-space: normal; }
 .turn-recap { margin-top: 2px; }
+/* G-C15-TS: goal-completion usage line, rendered inline after the
+   agent's final text. Same typographic family as .turn-recap (no box,
+   no badge, no colored background) so it reads as a continuation of
+   the agent's final message. Slightly muted to distinguish it from
+   the model's own prose without breaking the flow. */
+.turn-usage-line {
+  margin-top: 2px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 
 .step-thinking {
   display: inline-flex; align-items: center; gap: 7px;

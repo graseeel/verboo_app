@@ -1,4 +1,4 @@
-import { Check, CheckCircle2, ChevronDown, ChevronRight, Clipboard, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
+import { Check, CheckCircle2, ChevronDown, ChevronRight, Clipboard, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, ListChecks, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { TranscriptItem, VideoProgress, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
 import { VideoProcessingRow } from '../features/video/VideoProcessingRow'
@@ -165,7 +165,7 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
     item.kind === 'activity' && item.activityKind !== 'thinking'
   )
   return (
-    <article className="message-row assistant turn-view">
+    <article className="message-row assistant turn-view" data-turn-streaming={streaming ? 'true' : undefined}>
       {/* No "generating" badge here: while streaming, the thinking marker and
           the active action row below already signal progress — two indicators
           side-by-side read as noise. */}
@@ -218,7 +218,39 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
           )}
 
       {!streaming && finalText && (
-        <div className="step-text turn-recap"><MarkdownMessage text={finalText} /></div>
+        <div className="step-text turn-recap" data-annotation-segment={finalTextItem?.id}><MarkdownMessage text={finalText} /></div>
+      )}
+
+      {/* G-C15-TS: goal-completion usage line, rendered inline after the
+          agent's final text. No box, no badge — same typographic family
+          as the turn-recap above, so it reads as a continuation of the
+          agent's final message ("...Conteúdo verificado: valor\nUso
+          registrado: 79.695 tokens; tempo aproximado: 8min20s"). The
+          line is stamped on the turn's summary item by the onComplete
+          delegate (App.tsx) when the goal completes. Empty for non-goal
+          turns (summary.usageLine is undefined). */}
+      {!streaming && summary?.usageLine && (
+        <div className="step-text turn-usage-line">{summary.usageLine}</div>
+      )}
+
+      {/* T4: batch-goal progress ("Tarefa 3 de 12") and the final batch
+          report — same surface rule as the usage line above: stamped on
+          the turn's summary item, rendered inline in the SAME
+          .turn-usage-line typographic family (NO new class, no box, no
+          badge — the user rejected both). The progress line only exists
+          while the batch runs; on completion the onComplete delegate
+          clears it and stamps batchReportLines instead (one line per
+          task with its cited evidence + the compaction-failure footer).
+          Both undefined for non-batch goals — nothing renders. */}
+      {!streaming && summary?.progressLine && (
+        <div className="step-text turn-usage-line">{summary.progressLine}</div>
+      )}
+      {!streaming && summary?.batchReportLines && summary.batchReportLines.length > 0 && (
+        <div className="step-text turn-usage-line">
+          {summary.batchReportLines.map((line, index) => (
+            <div key={index}>{line}</div>
+          ))}
+        </div>
       )}
 
       {!streaming && summary?.changeSummary?.totalFiles ? (
@@ -296,6 +328,34 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onCo
     )
   }
 
+  // F3 (N3): item de anotação ENVIADA — cartão dedicado, montado dos pares
+  // CONGELADOS em annotationEntries. O fallback `text` (MarkdownMessage) é
+  // só para builds ANTIGAS; aqui ele nunca é a fonte. Sem ações de copiar/
+  // editar: editar mexeria no texto-fallback, não nos pares congelados —
+  // limite declarado do v1.
+  if (item.kind === 'annotation' && item.annotationEntries?.length) {
+    return (
+      <div className="msg-wrap msg-wrap-right">
+        <article className="message-row user annotation annotation-turn">
+          <div className="message-meta">
+            <span>{labelForItem(item, t)}</span>
+          </div>
+          <ol className="annotation-turn-list">
+            {item.annotationEntries.map((entry, index) => (
+              <li key={index} className="annotation-turn-entry">
+                <span className="annotation-turn-index" aria-hidden="true">{index + 1}</span>
+                <div className="annotation-turn-body">
+                  <p className="annotation-turn-quote">{entry.quote}</p>
+                  {entry.comment ? <p className="annotation-turn-comment">{entry.comment}</p> : null}
+                </div>
+              </li>
+            ))}
+          </ol>
+        </article>
+      </div>
+    )
+  }
+
   return (<>
     <div className={`msg-wrap ${isUserMessage ? 'msg-wrap-right' : ''}`}>
       <article
@@ -335,7 +395,10 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onCo
           <div className="message-skills">{item.skills.map(s => <span key={s.id}>/{s.name}</span>)}</div>
         )}
 
-        <div className={`message-text ${item.streaming ? 'streaming-text' : ''}`}>
+        <div
+          className={`message-text ${item.streaming ? 'streaming-text' : ''}`}
+          data-annotation-segment={item.role === 'assistant' && !item.kind && visibleText ? item.id : undefined}
+        >
           {item.kind === 'summary' && item.activityDetail ? item.activityDetail
             : visibleText ? <MarkdownMessage text={visibleText} />
             : item.streaming ? t('transcript.thinking') : ''}
@@ -372,6 +435,70 @@ function isInitialGoalUserItem(item: TranscriptItem): boolean {
 
 function isInternalGoalContinuationItem(item: TranscriptItem): boolean {
   return item.role === 'user' && item.id.startsWith('user:goal-continue:')
+}
+
+// --- Vazamento de tag de raciocínio no stream --------------------------------
+// Medido no histórico persistido real (verboo:chat-store:v1): 36 segmentos
+// assistant (id no formato turnId:text:N) contêm `</think>` cru — o FECHAMENTO
+// escapa do filtro do stream (a abertura é consumida antes e nunca vaza). A
+// limpeza acontece AQUI, na exibição, e não na gravação: assim o histórico já
+// persistido do usuário também fica limpo.
+//
+// Duas regras conservadoras, com o motivo de cada uma:
+// 1) Remove-se a TAG, nunca o segmento inteiro: 3 das 36 ocorrências reais
+//    traziam a resposta do modelo junto da tag (uma delas uma explicação de
+//    várias linhas que o usuário precisava ler). Descartar a mensagem inteira
+//    — como faz features/subagents/subagentThreads.ts, onde o critério é outro
+//    — apagaria essas respostas. O segmento só é descartado quando NADA além
+//    de whitespace sobra depois da remoção.
+// 2) A tag só é removida quando ocupa a PRÓPRIA LINHA começando na coluna 0
+//    (no máximo whitespace depois dela) E está FORA de cerca de crases. Menção
+//    inline ("...o token </think> fecha...") e qualquer linha dentro de bloco
+//    de código cercado SOBREVIVEM — inclusive a tag na coluna zero dentro da
+//    cerca, porque ali ela é CONTEÚDO visível ao usuário, e apagar conteúdo
+//    visível é pior que o vazamento que viemos consertar. A consciência de
+//    cerca é paridade simples: cada linha começando com ``` alterna dentro/
+//    fora. CASOS NÃO COBERTOS, declarados: cerca com til (~~~), cerca aninhada
+//    (quatro crases abrindo, três fechando), cerca dentro de citação (> ```)
+//    e cerca indentada (válida em markdown com até 3 espaços) NÃO são
+//    reconhecidas — nenhuma observada nas 36 ocorrências reais. Cerca não
+//    fechada protege até o fim do texto, mesmo comportamento do render
+//    markdown.
+const LEAKED_THINK_TAG_LINE_RE = /^<\/?think>\s*$/i
+const CODE_FENCE_LINE_RE = /^```/
+
+/** Remove linhas que são só uma tag `<think>`/`</think>` vazada FORA de cerca de crases. Uso de exibição; não altera o dado persistido. */
+export function stripLeakedThinkTagLines(text: string): string {
+  if (!text.includes('<')) return text
+  const lines = text.split('\n')
+  if (!lines.some((line) => LEAKED_THINK_TAG_LINE_RE.test(line))) return text
+  let inFence = false
+  return lines
+    .filter((line) => {
+      if (CODE_FENCE_LINE_RE.test(line)) {
+        inFence = !inFence
+        return true
+      }
+      if (inFence) return true
+      return !LEAKED_THINK_TAG_LINE_RE.test(line)
+    })
+    .join('\n')
+}
+
+/**
+ * Limpa um segmento de texto assistant com tag de raciocínio vazada.
+ * Retorna o MESMO item quando não há nada a limpar (fast-path por referência);
+ * um item novo com o texto limpo quando sobra conteúdo; e null quando o
+ * segmento era só ruído (tag + whitespace), caso em que deve ser descartado.
+ * Mensagens de usuário e itens activity/summary são intocáveis.
+ */
+export function cleanLeakedThinkTagItem(item: TranscriptItem): TranscriptItem | null {
+  if (item.role !== 'assistant') return item
+  if (item.kind === 'activity' || item.kind === 'summary') return item
+  const cleaned = stripLeakedThinkTagLines(item.text)
+  if (cleaned === item.text) return item
+  if (cleaned.trim().length === 0) return null
+  return { ...item, text: cleaned }
 }
 
 function visibleInitialGoalCommand(text: string): string {
@@ -517,6 +644,8 @@ function ActivityIcon({ item }: { item: TranscriptItem }) {
   if (item.activityKind === 'thinking') return <Clock3 size={14} strokeWidth={1.8} />
   if (item.activityKind === 'permission') return <FileSearch size={14} strokeWidth={1.8} />
   if (item.activityKind === 'subagent') return <GitBranch size={14} strokeWidth={1.8} />
+  // planning (T1-TodoWrite): the todowrite activity — a checklist, not a wrench.
+  if (item.activityKind === 'planning') return <ListChecks size={14} strokeWidth={1.8} />
   return <Wrench size={14} strokeWidth={1.8} />
 }
 
@@ -534,9 +663,22 @@ function turnIdOf(item: TranscriptItem): string | undefined {
   return undefined
 }
 
-function buildTranscriptEntries(items: TranscriptItem[]): TranscriptEntry[] {
-  const turns = new Map<string, { turnId: string; items: TranscriptItem[]; summary?: TranscriptItem }>()
+export function buildTranscriptEntries(items: TranscriptItem[]): TranscriptEntry[] {
+  // Limpa o vazamento de `</think>` ANTES do laço de agrupamento: um filtro
+  // aplicado só no segundo laço (como o de isInternalGoalContinuationItem)
+  // deixaria a tag já dentro de turn.items. Se a limpeza esvaziar TODOS os
+  // segmentos de texto de um turno e ele não tiver summary, o turno some do
+  // transcript — desfecho correto para um turno que só continha ruído (uma
+  // bolha vazia seria pior). No fluxo real todo turno encerrado recebe
+  // summary, então o cabeçalho e o resumo permanecem.
+  const visibleItems: TranscriptItem[] = []
   for (const item of items) {
+    const cleaned = cleanLeakedThinkTagItem(item)
+    if (cleaned) visibleItems.push(cleaned)
+  }
+
+  const turns = new Map<string, { turnId: string; items: TranscriptItem[]; summary?: TranscriptItem }>()
+  for (const item of visibleItems) {
     const turnId = turnIdOf(item)
     if (!turnId) continue
     let turn = turns.get(turnId)
@@ -547,7 +689,7 @@ function buildTranscriptEntries(items: TranscriptItem[]): TranscriptEntry[] {
 
   const emitted = new Set<string>()
   const entries: TranscriptEntry[] = []
-  for (const item of items) {
+  for (const item of visibleItems) {
     if (item.role === 'system' && item.kind !== 'summary') continue
     if (isInternalGoalContinuationItem(item)) continue
     const turnId = turnIdOf(item)

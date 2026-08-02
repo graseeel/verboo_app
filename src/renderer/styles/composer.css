@@ -76,6 +76,7 @@
 
 /* Children of the stack inherit the lane width — no double margin. */
 .bottom-dock > .composer-aux-stack > .goal-active-panel,
+.bottom-dock > .composer-aux-stack > .checklist-panel,
 .bottom-dock > .composer-aux-stack > .question-wizard,
 .bottom-dock > .composer-aux-stack > .question-chip-container {
   width: 100%;

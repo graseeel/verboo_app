@@ -72,7 +72,7 @@ describe('useOverlayShade', () => {
 
   it('captures before hiding and restores the live webview after release', async () => {
     vi.useFakeTimers()
-    const { result } = renderHook(() => useOverlayShade(true, true))
+    const { result } = renderHook(() => useOverlayShade(true, true, 'tab-a', 1))
 
     let release: () => void
     act(() => {
@@ -83,17 +83,17 @@ describe('useOverlayShade', () => {
       await Promise.resolve()
       await Promise.resolve()
     })
-    expect(invoke).toHaveBeenCalledWith('browser_snapshot')
-    expect(invoke).toHaveBeenCalledWith('browser_set_visible', { visible: false })
+    expect(invoke).toHaveBeenCalledWith('browser_snapshot', { tabId: 'tab-a', generation: 1 })
+    expect(invoke).toHaveBeenCalledWith('browser_session_set_visible', { visible: false })
     const calls = vi.mocked(invoke).mock.calls.map(([command]) => command)
-    expect(calls.indexOf('browser_snapshot')).toBeLessThan(calls.indexOf('browser_set_visible'))
+    expect(calls.indexOf('browser_snapshot')).toBeLessThan(calls.indexOf('browser_session_set_visible'))
 
     act(() => release!())
     expect(result.current.isShading).toBe(true)
-    expect(invoke).not.toHaveBeenCalledWith('browser_set_visible', { visible: true })
+    expect(invoke).not.toHaveBeenCalledWith('browser_session_set_visible', { visible: true })
 
     act(() => { vi.advanceTimersByTime(140) })
-    expect(invoke).toHaveBeenCalledWith('browser_set_visible', { visible: true })
+    expect(invoke).toHaveBeenCalledWith('browser_session_set_visible', { visible: true })
     expect(result.current.isShading).toBe(false)
     vi.useRealTimers()
   })
@@ -101,7 +101,7 @@ describe('useOverlayShade', () => {
   it('does not hide after a fast-close snapshot race', async () => {
     let resolveSnapshot: ((value: unknown) => void) | undefined
     vi.mocked(invoke).mockImplementationOnce(() => new Promise(resolve => { resolveSnapshot = resolve }))
-    const { result, unmount } = renderHook(() => useOverlayShade(true, true))
+    const { result, unmount } = renderHook(() => useOverlayShade(true, true, 'tab-a', 1))
 
     let release: () => void
     act(() => { release = result.current.register(true) })
@@ -116,8 +116,8 @@ describe('useOverlayShade', () => {
       await Promise.resolve()
     })
 
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('browser_snapshot'))
-    expect(invoke).not.toHaveBeenCalledWith('browser_set_visible', { visible: false })
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('browser_snapshot', { tabId: 'tab-a', generation: 1 }))
+    expect(invoke).not.toHaveBeenCalledWith('browser_session_set_visible', { visible: false })
     expect(invoke).toHaveBeenCalledWith('browser_delete_temp_files', { paths: ['/tmp/snapshot.png'] })
     unmount()
   })
@@ -132,7 +132,16 @@ describe('useOverlayShade', () => {
     await waitFor(() => expect(result.current.isShading).toBe(true))
 
     act(() => { modal.remove() })
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('browser_set_visible', { visible: true }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('browser_session_set_visible', { visible: true }))
+  })
+
+  it('skips the snapshot when there is no active tab', () => {
+    const { result } = renderHook(() => useOverlayShade(true, true))
+
+    act(() => { result.current.register(true) })
+
+    expect(invoke).not.toHaveBeenCalledWith('browser_snapshot', expect.anything())
+    expect(invoke).not.toHaveBeenCalledWith('browser_session_set_visible', { visible: false })
   })
 })
 

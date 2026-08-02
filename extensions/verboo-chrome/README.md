@@ -6,7 +6,7 @@ Let Verboo control the browser: navigate, click, type, extract data, take screen
 
 ```
 extensions/verboo-chrome/
-├── manifest.json          # MV3: identity, sidePanel, storage, scripting, tabs, tabGroups
+├── manifest.json          # MV3: identity, sidePanel, storage, alarms, notifications, browser control
 ├── package.json           # node --test runner
 ├── PRIVACY.md             # Privacy policy (Chrome Web Store)
 ├── PERMISSIONS.md         # Permission justifications (Chrome Web Store)
@@ -24,7 +24,7 @@ extensions/verboo-chrome/
     │   ├── protocol.js    # MSG enum, ToolCall/ToolResult/PolicyDecision contracts, makeToolCall, TOOL_RISK_MAP
     │   ├── execute.js     # execute(toolCall, ctx) — single chokepoint; runs evaluateToolPolicy before dispatch
     │   ├── execute.test.js
-    │   ├── types.ts        # BrowserTool TS discriminated union (MVP: navigate, read_page, click, type, screenshot, tabs, tab_group)
+    │   ├── types.ts        # BrowserTool TS discriminated union (MVP: navigate, read_page, structured_extract, click, type, screenshot, tabs, tab_group)
     │   └── tools/
     │       ├── navigate.js    # chrome.tabs.update
     │       ├── readPage.js    # chrome.scripting.executeScript
@@ -37,6 +37,7 @@ extensions/verboo-chrome/
     │   ├── panel.html     # Side panel UI (branding, auth, modes, grants, chat, tool approval)
     │   ├── panel.js       # Wires MSG.AGENT_TURN_START, renders thoughts/tool cards/results
     │   └── panel.css      # Light + dark via prefers-color-scheme; risk badges (read=green, mutate=orange, elevated=red)
+    ├── routines/          # Local CRUD, slash commands, assets, recording, replay, schedules, and checkpoints
     ├── policy/
     │   ├── index.ts                  # checkPolicy facade (intent + URL + mode + grants)
     │   ├── evaluateToolPolicy.js      # Unified policy gate (hard blocks + mode + grant + elevated)
@@ -63,6 +64,8 @@ extensions/verboo-chrome/
 | `sidePanel` | Show the Verboo control panel in Chrome's side panel |
 | `identity` | Open the user-initiated Verboo OAuth PKCE flow and receive its extension callback |
 | `storage` | Persist Verboo session, permission mode, and per-site grants in `chrome.storage.local` |
+| `alarms` | Wake locally scheduled routines in the user's selected timezone |
+| `notifications` | Notify when a scheduled/resumed routine needs user attention |
 | `scripting` | Inject code into pages for DOM extraction, clicks, and typing |
 | `tabs` | Tab management (list, switch, close, navigate) |
 | `tabGroups` | Group browser tabs by session |
@@ -75,6 +78,12 @@ extensions/verboo-chrome/
 | `debugger` | CDP-level access for full-page screenshots (`Page.captureScreenshot` with `captureBeyondViewport: true`) and sandboxed JavaScript evaluation (`Runtime.evaluate` in an isolated world) | P3+ |
 
 See `PERMISSIONS.md` for the full justifications and `PRIVACY.md` for the privacy policy.
+
+## Routines and Skills
+
+Routines are scoped to the signed-in Verboo account and the current Chrome profile. A user can create or edit them in Settings, invoke them from the composer with `/`, save a prompt or conversation as an editable draft, attach approved text/image formats, or record a browser workflow. Recorded input values are unresolved by default and sensitive fields are discarded.
+
+All browser actions still pass through the same policy executor. Replay checkpoints confirmed steps, falls back to one-step semantic recovery when a selector changes, and never rewrites the saved selector until the user accepts the suggestion. Optional daily, weekly, monthly, and annual schedules use `chrome.alarms`; they require explicit allowed origins and pause with a notification when authentication, variables, a compatible model, a normal window, or approval is missing.
 
 ## Auth model
 
@@ -91,7 +100,7 @@ interface VerbooSession {
 }
 ```
 
-`startOAuthLogin()` uses `chrome.identity.launchWebAuthFlow` with Authorization Code + PKCE. The release configuration deliberately contains an empty `clientId`, so standalone chat fails closed with `oauth_not_configured` until the Verboo backend registers the Chrome extension public client. It never falls back to a CLI credential or pasted key. The returned extension session is stored under `verbooSession`.
+`startOAuthLogin()` uses `chrome.identity.launchWebAuthFlow` with Authorization Code + PKCE. The release configuration uses the registered public client `verboo-code-chrome-extension` and the published extension redirect `https://nkfgdaoblgcbngpklgnmjkfdabpbmpee.chromiumapp.org/oauth/callback`. The client id identifies the extension, not a person: every user signs in with their own Verboo account and receives their own tokens. It never falls back to a CLI credential or pasted key. The returned extension session is stored under `verbooSession`.
 
 After OAuth is configured and the user starts a chat turn, the extension sends the user's prompt, selected active-page context, and browser-tool results to the Verboo Router. Page-derived values are explicitly fenced as untrusted data before they are returned to the model. The separate MCP transport planned for Verboo in Chrome is local and never carries a CLI token into the extension.
 
@@ -123,7 +132,7 @@ The single chokepoint is `controller.execute(toolCall, ctx)`. Tool handlers are 
 2. Enable "Developer mode"
 3. "Load unpacked" → point to `extensions/verboo-chrome/`
 4. Click the extension icon → "Open side panel"
-5. Click "Sign in". Until the registered Chrome OAuth `clientId` is supplied in `src/auth/oauthConfig.js`, the UI remains disabled with an explicit configuration message.
+5. Click "Sign in". OAuth is registered for the published Chrome Web Store id. An unpacked development install receives a different extension id and therefore needs its own redirect registration before its OAuth callback can succeed.
 
 ### Run tests
 
@@ -140,11 +149,11 @@ Deixe o Verboo controlar o navegador: navegar, clicar, digitar, extrair dados, t
 
 ### Permissões (manifest atual)
 
-`sidePanel` (painel de controle do Verboo no side panel do Chrome), `identity` (fluxo OAuth PKCE iniciado pelo usuário), `storage` (sessão, modo de permissão e concessões por site em `chrome.storage.local`), `scripting` (injeção para extração de DOM, cliques e digitação), `tabs` (gerenciar abas), `tabGroups` (agrupar abas) e acesso a hosts `http(s)`. Futuro (fora do manifest): `debugger` para screenshots de página inteira e avaliação isolada de JavaScript (P3+). Veja `PERMISSIONS.md` para as justificativas completas e `PRIVACY.md` para a política de privacidade.
+`sidePanel` (painel de controle do Verboo no side panel do Chrome), `identity` (fluxo OAuth PKCE iniciado pelo usuário), `storage` (sessão, configurações, rotinas e checkpoints locais), `alarms` (agendamentos locais), `notifications` (avisos quando uma rotina precisa de atenção), `scripting` (injeção para extração de DOM, cliques e digitação), `tabs` (gerenciar abas), `tabGroups` (agrupar abas) e acesso a hosts `http(s)`. Futuro (fora do manifest): `debugger` para screenshots de página inteira e avaliação isolada de JavaScript (P3+). Veja `PERMISSIONS.md` para as justificativas completas e `PRIVACY.md` para a política de privacidade.
 
 ### Modelo de autenticação
 
-A extensão usa **sessão de conta Verboo** (OAuth PKCE via `chrome.identity.launchWebAuthFlow`), nunca chave de API nem credencial do CLI. A configuração de release traz `clientId` vazio de propósito: o chat avulso falha fechado com `oauth_not_configured` até o backend Verboo registrar o public client da extensão. Depois do OAuth, um turno iniciado pelo usuário envia prompt, contexto selecionado da página e resultados de ferramentas ao Verboo Router; valores derivados de página são cercados como dados não confiáveis antes de chegar ao modelo. O transporte MCP do Verboo no Chrome é local e nunca leva token do CLI para a extensão.
+A extensão usa **sessão de conta Verboo** (OAuth PKCE via `chrome.identity.launchWebAuthFlow`), nunca chave de API nem credencial do CLI. O public client `verboo-code-chrome-extension` está registrado para o redirect da extensão publicada; esse identificador é comum a todas as instalações, enquanto cada usuário entra na própria conta e recebe tokens próprios. Depois do OAuth, um turno iniciado pelo usuário envia prompt, contexto selecionado da página e resultados de ferramentas ao Verboo Router; valores derivados de página são cercados como dados não confiáveis antes de chegar ao modelo. O transporte MCP do Verboo no Chrome é local e nunca leva token do CLI para a extensão.
 
 ### Portão de política
 
@@ -152,4 +161,4 @@ Toda chamada de ferramenta passa por `evaluateToolPolicy(mode, siteGrant, toolCa
 
 ### Desenvolvimento
 
-`chrome://extensions` → ativar "Developer mode" → "Load unpacked" apontando para `extensions/verboo-chrome/` → abrir o side panel pelo ícone → "Sign in" (fica desabilitado com mensagem explícita até o `clientId` OAuth ser configurado em `src/auth/oauthConfig.js`). Testes: `cd extensions/verboo-chrome && npm test` (runner nativo do Node, sem dependências extras).
+`chrome://extensions` → ativar "Developer mode" → "Load unpacked" apontando para `extensions/verboo-chrome/` → abrir o side panel pelo ícone. O OAuth de produção está registrado para o ID da Chrome Web Store; uma instalação unpacked ganha outro ID e precisa de um redirect próprio para concluir o login. Testes: `cd extensions/verboo-chrome && npm test` (runner nativo do Node, sem dependências extras).

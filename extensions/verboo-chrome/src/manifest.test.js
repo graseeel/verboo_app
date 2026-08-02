@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises'
 const manifest = JSON.parse(
   await readFile(new URL('../manifest.json', import.meta.url), 'utf8'),
 )
+const background = await readFile(new URL('./background.js', import.meta.url), 'utf8')
 
 test('manifest advertises Native Messaging for the packaged MCP host', () => {
   assert.equal(manifest.permissions.includes('nativeMessaging'), true)
@@ -12,4 +13,15 @@ test('manifest advertises Native Messaging for the packaged MCP host', () => {
 
 test('manifest declares identity for user-initiated OAuth PKCE', () => {
   assert.equal(manifest.permissions.includes('identity'), true)
+})
+
+test('manifest declares scheduling and notification capabilities for local routines', () => {
+  assert.equal(manifest.permissions.includes('alarms'), true)
+  assert.equal(manifest.permissions.includes('notifications'), true)
+})
+
+test('service worker tolerates an existing install awaiting new routine permissions', () => {
+  assert.match(background, /const alarmsApi = chrome\.alarms \?\?/)
+  assert.match(background, /chrome\.alarms\?\.onAlarm\?\.addListener/)
+  assert.match(background, /chrome\.notifications\?\.onClicked\?\.addListener/)
 })

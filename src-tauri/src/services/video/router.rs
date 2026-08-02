@@ -113,12 +113,12 @@ fn detect_bundled_toolchain() -> MediaToolchainCapabilities {
 }
 
 fn encoder_listing(ffmpeg: &Path) -> Option<String> {
-    let output = Command::new(ffmpeg)
-        .arg("-hide_banner")
+    let mut cmd = Command::new(ffmpeg);
+    cmd.arg("-hide_banner")
         .arg("-encoders")
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
+        .stdin(Stdio::null());
+    crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -130,8 +130,14 @@ fn encoder_listing(ffmpeg: &Path) -> Option<String> {
 fn bundled_ffmpeg_path() -> Option<PathBuf> {
     let executable = std::env::current_exe().ok()?;
     let executable_dir = executable.parent()?;
-    let target_name = format!("verboo-ffmpeg-{}{}", host_target(), executable_suffix());
-    let packaged_name = format!("verboo-ffmpeg{}", executable_suffix());
+    // A1c (2026-07-30): host_target/executable_suffix moved to
+    // shared module. See video/target.rs for the single source of truth.
+    let Some(target) = super::target::host_target() else {
+        return None;
+    };
+    let suffix = super::target::executable_suffix();
+    let target_name = format!("verboo-ffmpeg-{target}{suffix}");
+    let packaged_name = format!("verboo-ffmpeg{suffix}");
     let mut candidates = vec![
         executable_dir.join(&packaged_name),
         executable_dir.join(&target_name),
@@ -174,27 +180,6 @@ fn current_platform() -> &'static str {
     return "linux";
     #[allow(unreachable_code)]
     "unknown"
-}
-
-fn host_target() -> &'static str {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return "aarch64-apple-darwin";
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return "x86_64-apple-darwin";
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    return "x86_64-pc-windows-msvc";
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return "x86_64-unknown-linux-gnu";
-    #[allow(unreachable_code)]
-    "unsupported"
-}
-
-fn executable_suffix() -> &'static str {
-    if cfg!(windows) {
-        ".exe"
-    } else {
-        ""
-    }
 }
 
 #[cfg(test)]

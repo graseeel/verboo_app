@@ -19,7 +19,13 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # Node 22 LTS — required because Corepack installs pnpm 11.x which
+          # breaks with ERR_UNKNOWN_BUILTIN_MODULE on Node 20.x. pnpm 11.x
+          # is the version Corepack resolves by default; pinning pnpm would
+          # require adding `packageManager` to package.json (broader scope).
+          # Bumping Node is a 1-line fix and keeps the workflow on an LTS
+          # that's maintained until 2027.
+          node-version: "22"
           cache: npm
 
       - name: Enable Corepack

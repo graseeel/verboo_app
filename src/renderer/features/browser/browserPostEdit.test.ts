@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { findLocalBrowserUrl, isLocalBrowserUrl, postEditVerificationPrompt, shouldScheduleBrowserReload } from './browserPostEdit'
+import { findLocalBrowserUrl, isLocalBrowserUrl, normalizeUrlForComparison, postEditVerificationPrompt, routePreview, shouldScheduleBrowserReload } from './browserPostEdit'
 
 describe('browser post-edit verification', () => {
   it('allows only local development URLs', () => {
@@ -44,5 +44,46 @@ describe('browser post-edit verification', () => {
       browserOpen: true,
       browserUrl: 'http://localhost:5173',
     })).toBe(false)
+  })
+})
+
+describe('local preview routing', () => {
+  function tabSnapshot(input: { id: string; generation: number; url: string }) {
+    return { id: input.id, generation: input.generation, url: input.url }
+  }
+
+  it('activates an existing tab already at the same normalized URL', () => {
+    const session = {
+      tabs: [
+        tabSnapshot({ id: 'tab-a', generation: 1, url: 'http://127.0.0.1:5173' }),
+        tabSnapshot({ id: 'tab-b', generation: 1, url: 'http://127.0.0.1:5174' }),
+      ],
+      activeTabId: 'tab-b',
+    }
+    expect(routePreview(session, 'http://127.0.0.1:5173')).toEqual({ kind: 'activate', tabId: 'tab-a' })
+  })
+
+  it('navigates the active tab when it is blank', () => {
+    const session = {
+      tabs: [tabSnapshot({ id: 'tab-b', generation: 0, url: 'about:blank' })],
+      activeTabId: 'tab-b',
+    }
+    expect(routePreview(session, 'http://127.0.0.1:5174')).toEqual({ kind: 'navigate', tabId: 'tab-b' })
+  })
+
+  it('creates a new tab when the active tab is occupied', () => {
+    const session = {
+      tabs: [tabSnapshot({ id: 'tab-c', generation: 1, url: 'http://example.com' })],
+      activeTabId: 'tab-c',
+    }
+    expect(routePreview(session, 'http://127.0.0.1:5175')).toEqual({ kind: 'create' })
+  })
+
+  it('normalizes URLs for comparison: lowercase scheme+host, strip default port, preserve path+query, ignore trailing slash at root', () => {
+    expect(normalizeUrlForComparison('http://LocalHost:80/app')).toBe('http://localhost/app')
+    expect(normalizeUrlForComparison('https://example.com:443/')).toBe('https://example.com')
+    expect(normalizeUrlForComparison('http://localhost:5173/app/')).toBe('http://localhost:5173/app')
+    expect(normalizeUrlForComparison('http://localhost:5173/app?q=1#frag')).toBe('http://localhost:5173/app?q=1#frag')
+    expect(normalizeUrlForComparison('not a url')).toBeNull()
   })
 })

@@ -5997,14 +5997,18 @@ dependencies = [
 
 [[package]]
 name = "verboo-desktop"
-version = "0.6.0-beta.1"
+version = "0.6.1-beta"
 dependencies = [
  "base64 0.22.1",
  "block2",
+ "cairo-rs",
  "chrono",
  "ctor 1.0.8",
  "dirs",
+ "gio",
+ "glib",
  "image",
+ "javascriptcore-rs",
  "keepawake",
  "keyring",
  "libc",
@@ -6031,6 +6035,9 @@ dependencies = [
  "tempfile",
  "tokio",
  "uuid",
+ "webkit2gtk",
+ "webview2-com",
+ "windows 0.61.3",
  "windows-sys 0.59.0",
  "winreg 0.55.0",
 ]
@@ -6936,8 +6943,6 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 [[package]]
 name = "wry"
 version = "0.55.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "186f9871daa55fd9c016578b810d149de58367113db7fb72b462d2323ce19514"
 dependencies = [
  "base64 0.22.1",
  "block2",

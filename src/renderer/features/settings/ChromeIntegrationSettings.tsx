@@ -7,6 +7,7 @@ import {
   RefreshCcw,
   ShieldCheck,
   Trash2,
+  UserRound,
 } from 'lucide-react'
 import { ChromeLogoIcon } from '../../components/ChromeLogoIcon'
 import { useState } from 'react'
@@ -78,6 +79,26 @@ export function ChromeIntegrationSettings() {
         <StatusRow label={t('chrome.bridge')} state={status.bridge} t={t} />
         <StatusRow label={t('chrome.cliMcp')} state={status.mcp} t={t} />
         <ConnectionRow label={t('chrome.connection')} state={status.connection} t={t} />
+      </section>
+
+      <section
+        className="settings-panel chrome-identity-panel"
+        aria-label={t('chrome.identityAndCli')}
+      >
+        <div className="settings-row chrome-identity-row">
+          <UserRound size={16} />
+          <div>
+            <strong>{t('chrome.accountLogin')}</strong>
+            <p>{t('chrome.accountLoginBody')}</p>
+          </div>
+        </div>
+        <div className="settings-row chrome-identity-row">
+          <PlugZap size={16} />
+          <div>
+            <strong>{t('chrome.cliConnection')}</strong>
+            <p>{t('chrome.cliConnectionBody')}</p>
+          </div>
+        </div>
       </section>
 
       {status.developmentBuild && (

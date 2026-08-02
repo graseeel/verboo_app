@@ -1,0 +1,304 @@
+/*
+ * checklist.css — TodoWrite task checklist (T1-TodoWrite, 2026-07-31).
+ *
+ * ONE component, TWO forms (approved in PROTOTYPE-checklist-b-v3.html):
+ *   .floating — compact mini-modal card: fixed width, height of its own
+ *     content, top-right, draggable along the right strip. Detaches via
+ *     SHADOW + BORDER over a SOLID background — never translucency over
+ *     text (semi-transparent text-over-text is illegible noise).
+ *   .docked — condensed window of 3 rows riding the composer aux-stack
+ *     ABOVE the goal panel (order: list → goal → composer). NO header,
+ *     NO border — the approved hierarchy keeps the goal panel as the
+ *     bordered one; the list must be quieter. Collapses to a single
+ *     row when every item is completed.
+ *
+ * MULTIPLATFORM BY CONSTRUCTION: row heights are line-height (em)
+ * units, NOT pixels — font metrics differ across platforms and what
+ * fits on macOS overflows on Windows/Linux. Scrollbar geometry is
+ * measured at runtime in JS (never assumed). Drag is Pointer Events
+ * with touch-action:none. prefers-reduced-motion zeroes every
+ * animation in this file (block at the bottom).
+ */
+
+.checklist-panel {
+  font-size: 12px;
+  box-sizing: border-box;
+}
+
+/* ── Floating mini-modal card ─────────────────────────────────────── */
+.checklist-panel.floating {
+  position: fixed;
+  z-index: 40;
+  max-width: calc(100vw - 32px);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  cursor: grab;
+  user-select: none;
+  touch-action: none; /* Pointer Events drive the drag — no scroll fight. */
+  transition: box-shadow 150ms ease;
+}
+.checklist-panel.floating.is-dragging {
+  cursor: grabbing;
+  /* Physical "lift" while dragging (Apple HIG drag feedback);
+   * reduced-motion zeroes it via the kill block below. */
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.45);
+}
+/* The "volta sozinho" glide: after a drop outside the strip the card
+ * animates back to the resolved resting position. */
+.checklist-panel.floating.is-gliding {
+  transition:
+    left 200ms var(--modal-ease),
+    top 200ms var(--modal-ease),
+    box-shadow 150ms ease;
+}
+.checklist-panel.flying {
+  cursor: default;
+}
+
+.checklist-card-box {
+  padding: 12px 14px 10px;
+}
+.checklist-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.checklist-card-frac {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  font-weight: 600;
+  font-size: 12px;
+}
+.checklist-card-bar {
+  height: 2px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--bg-soft) 80%, transparent);
+  margin: 7px 0 6px;
+  overflow: hidden;
+}
+.checklist-card-bar > div {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 1px;
+  transition: width 240ms var(--modal-ease);
+}
+
+/* ── Docked condensed window ──────────────────────────────────────── */
+.checklist-panel.docked {
+  /* Quieter than the goal panel: no border, translucent soft wash. */
+  background: color-mix(in srgb, var(--bg-soft) 30%, transparent);
+  border-radius: var(--radius);
+  padding: 4px 10px;
+}
+.checklist-docked-box {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Rows (both forms) ────────────────────────────────────────────── */
+.checklist-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  /* em, NOT px: multiplatform font-metric guard. 1.6em ≈ 19px at the
+   * 12px base — the prototype's approved rhythm, scaled by the
+   * platform's font. */
+  line-height: 1.6;
+  height: 1.6em;
+}
+.checklist-card-rows .checklist-row {
+  line-height: 1.85;
+  /* Two-line rows: height follows content (min one line, max two via
+   * the text clamp below). Still em units — the multiplatform
+   * font-metric guard — never px. */
+  height: auto;
+  min-height: 1.85em;
+  align-items: flex-start;
+}
+.checklist-card-rows .checklist-row .checklist-check {
+  /* Optically center the check on the FIRST line of a wrapped row. */
+  margin-top: calc((1.85em - 14px) / 2);
+}
+.checklist-card-rows .checklist-row .checklist-row-text {
+  /* FIELD DEFECT FIX (2026-07-31): real TodoWrite items are whole
+   * sentences and the single-line ellipsis made steps illegible
+   * ("Create lista1.txt with…"). The floating card is the READER
+   * form — height of its own content — so rows wrap to AT MOST two
+   * lines (clamp, not free wrap: a 5-line step would break the
+   * card's compactness). The docked form keeps its approved
+   * single-line ellipsis; the full text is one hover away via the
+   * title tooltip in both forms. */
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.checklist-row-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  color: var(--text-dim);
+  transition: color 200ms;
+}
+.checklist-row.is-current .checklist-row-text {
+  color: var(--text);
+}
+.checklist-row.done-all .checklist-row-text {
+  color: var(--text-muted);
+}
+.checklist-frac {
+  margin-left: auto;
+  padding-left: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+/* Form toggle: icon-only, quiet until hovered (sobriedade aprovada). */
+.checklist-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  opacity: 0.65;
+  cursor: pointer;
+}
+.checklist-toggle:hover {
+  opacity: 1;
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg-soft) 60%, transparent);
+}
+.checklist-card-head .checklist-toggle {
+  margin-left: 2px;
+}
+
+/* ── Check that draws itself (micro-interaction) ──────────────────── */
+.checklist-check {
+  flex: none;
+}
+.checklist-check circle,
+.checklist-check path {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.checklist-check circle {
+  stroke: var(--border-strong);
+}
+.checklist-check path {
+  stroke: var(--green);
+  stroke-dasharray: 14;
+  stroke-dashoffset: 14;
+}
+.checklist-row.is-done .checklist-check path {
+  animation: checklist-check-draw 150ms ease-out forwards;
+}
+.checklist-row.is-done .checklist-check circle {
+  stroke: var(--green);
+  transition: stroke 200ms;
+}
+.checklist-row.is-current .checklist-check circle {
+  stroke: var(--accent-strong);
+}
+/* Items already completed when they first render do NOT replay the
+ * draw (anti motion-noise). */
+.checklist-check.settled path {
+  animation: none;
+  stroke-dashoffset: 0;
+}
+.checklist-check.settled circle {
+  transition: none;
+}
+.checklist-row.is-done .checklist-check.settled circle {
+  stroke: var(--green);
+}
+@keyframes checklist-check-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* ── FLIP flight spacer + entrance ────────────────────────────────── */
+.checklist-spacer {
+  transition: height 300ms var(--modal-ease);
+}
+
+/* Entrance: same motion family as the goal panel's genie — rises
+ * from the composer. Applied ONLY on first appearance, never on the
+ * remounts a form switch causes. */
+.checklist-enter {
+  animation: checklist-genie-in 260ms var(--modal-ease);
+  transform-origin: bottom center;
+}
+@keyframes checklist-genie-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Exit: the COMPLETED list leaves (user order, 2026-08-01) — the exact
+ * reverse of the entrance, same genie family, same duration, so arrival
+ * and departure read as one object moving. Driven by
+ * useChecklistCompletionExit AFTER the dwell; never applied under
+ * reduced motion (the component gates it AND the kill block below
+ * zeroes it). */
+.checklist-exit {
+  animation: checklist-genie-out 260ms var(--modal-ease) forwards;
+  transform-origin: bottom center;
+}
+@keyframes checklist-genie-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+}
+
+/* ── prefers-reduced-motion: EVERYTHING in this file goes instant ── */
+@media (prefers-reduced-motion: reduce) {
+  .checklist-panel,
+  .checklist-panel.floating,
+  .checklist-panel.floating.is-gliding,
+  .checklist-card-bar > div,
+  .checklist-row .checklist-row-text,
+  .checklist-spacer,
+  .checklist-check circle {
+    transition: none !important;
+  }
+  .checklist-enter,
+  .checklist-exit,
+  .checklist-row.is-done .checklist-check path {
+    animation: none !important;
+  }
+  /* Under reduced motion a completed check still needs its final
+   * state without the draw animation. */
+  .checklist-row.is-done .checklist-check path {
+    stroke-dashoffset: 0;
+  }
+  .checklist-row.is-done .checklist-check circle {
+    stroke: var(--green);
+  }
+}

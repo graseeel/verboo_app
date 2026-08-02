@@ -6,8 +6,15 @@ describe('supportsEmbeddedBrowser', () => {
     expect(supportsEmbeddedBrowser('darwin')).toBe(true)
   })
 
-  it('keeps the embedded browser unavailable on Windows and Linux', () => {
-    expect(supportsEmbeddedBrowser('win32')).toBe(false)
-    expect(supportsEmbeddedBrowser('linux')).toBe(false)
+  it('enables the embedded browser on Windows', () => {
+    expect(supportsEmbeddedBrowser('win32')).toBe(true)
+  })
+
+  it('enables the embedded browser on Linux', () => {
+    expect(supportsEmbeddedBrowser('linux')).toBe(true)
+  })
+
+  it('keeps the embedded browser unavailable on non-desktop platforms', () => {
+    expect(supportsEmbeddedBrowser('freebsd' as NodeJS.Platform)).toBe(false)
   })
 })

@@ -1,5 +1,5 @@
 /**
- * readPage.js — read text content (or an attribute) from the active tab.
+ * readPage.js — read visible text (or an attribute) from the active tab.
  *
  * Uses chrome.scripting.executeScript (no debugger needed). The
  * injected function runs in the page's isolated world (MV3 default).
@@ -15,13 +15,14 @@ import { preparePresenceForAction } from '../../presence/inject.js'
 
 /**
  * @param {{ name: 'read_page'; selector?: string; attribute?: string; risk?: string; input?: string }} tool
+ * @param {{ activeTabId?: number }} [ctx]
  * @returns {Promise<{ text: string; selector?: string; attribute?: string; url: string }>}
  */
-export async function readPage(tool) {
+export async function readPage(tool, ctx = {}) {
   const selector = tool?.selector
   const attribute = tool?.attribute
 
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  const tab = await resolveTargetTab(ctx?.activeTabId)
   if (!tab?.id) throw new Error('read_page: no active tab')
 
   if (!isControllableUrl(tab.url)) {
@@ -47,10 +48,49 @@ export async function readPage(tool) {
 }
 
 /**
+ * Prefer the tab captured when the panel turn started. A side panel can keep
+ * a different window focused while its page remains the user's target; using
+ * `currentWindow` alone can therefore inject into the wrong tab and return an
+ * empty body. The fallback mirrors screenshot.js for older callers.
+ * @param {number | undefined} preferredTabId
+ */
+async function resolveTargetTab(preferredTabId) {
+  if (typeof preferredTabId === 'number') {
+    try {
+      const tab = await chrome.tabs.get(preferredTabId)
+      if (tab?.id) return tab
+    } catch {
+      /* tab closed — fall through */
+    }
+  }
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+    if (tab?.id) return tab
+  } catch {
+    /* ignore */
+  }
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  if (tab?.id) return tab
+
+  try {
+    const windows = await chrome.windows.getAll({ populate: true, windowTypes: ['normal'] })
+    for (const win of windows) {
+      const active = win.tabs?.find((candidate) => candidate.active)
+      if (active?.id) return active
+    }
+  } catch {
+    /* ignore */
+  }
+  return null
+}
+
+/**
  * In-page function. Runs in the page's main world via executeScript.
- * Returns textContent of the first match (or the whole document if
+ * Returns visible innerText of the first match (or the whole document if
  * no selector). If `attribute` is set, returns that attribute's value
- * instead of textContent.
+ * instead of visible text.
  * @param {string | null} selector
  * @param {string | null} attribute
  * @returns {string}
@@ -62,5 +102,5 @@ function readInPage(selector, attribute) {
     const v = el.getAttribute(attribute)
     return v ?? ''
   }
-  return el.textContent ?? ''
+  return el.innerText ?? el.textContent ?? ''
 }

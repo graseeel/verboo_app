@@ -59,8 +59,17 @@ pub struct PreparedVideo {
 pub fn bundled_media_tool(base: &str) -> Result<PathBuf, String> {
     let executable =
         std::env::current_exe().map_err(|error| format!("resolve app executable: {error}"))?;
-    let suffix = if cfg!(windows) { ".exe" } else { "" };
-    let target = host_target();
+    // A1c (2026-07-30): host_target/executable_suffix moved to
+    // shared module. See video/target.rs for the single source of truth.
+    let Some(target) = super::target::host_target() else {
+        return Err(format!(
+            "bundled media tool {base} is not available on \
+             {}/{} — no published sidecar for this platform",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        ));
+    };
+    let suffix = super::target::executable_suffix();
     let mut candidates = Vec::new();
     if let Some(directory) = executable.parent() {
         candidates.push(directory.join(format!("{base}{suffix}")));
@@ -82,19 +91,6 @@ pub fn bundled_ffmpeg_path() -> Result<PathBuf, String> {
     bundled_media_tool("verboo-ffmpeg")
 }
 
-fn host_target() -> &'static str {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return "aarch64-apple-darwin";
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return "x86_64-apple-darwin";
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    return "x86_64-pc-windows-msvc";
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return "x86_64-unknown-linux-gnu";
-    #[allow(unreachable_code)]
-    "unsupported"
-}
-
 /// Runs one bundled media tool under the job's cancellation token. Arguments
 /// are always a vector — never a shell string — and stderr is capped.
 pub(crate) fn run_media_tool(
@@ -111,6 +107,12 @@ pub(crate) fn run_media_tool(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
+    // A2: suppress console window on Windows.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::services::child_signal::process_creation_flags());
+    }
     let mut child = command
         .spawn()
         .map_err(|error| format!("spawn media tool: {error}"))?;

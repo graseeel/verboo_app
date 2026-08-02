@@ -49,3 +49,14 @@ describe('sidebar updater i18n keys', () => {
     expect(t('updates.downloadAria', { version: '0.6.0' })).toContain('0.6.0')
   })
 })
+
+describe('browser eviction copy', () => {
+  it('states the conditional restore promise in both locales', () => {
+    expect(createTranslator('en-US')('browser.evictedTabHint')).toBe(
+      'Unloaded to free memory. Live tabs resume exactly where you left them; this tab reloads when opened.',
+    )
+    expect(createTranslator('pt-BR')('browser.evictedTabHint')).toBe(
+      'Descarregada para liberar memória. Abas vivas voltam exatamente de onde estavam; esta aba recarrega ao abrir.',
+    )
+  })
+})

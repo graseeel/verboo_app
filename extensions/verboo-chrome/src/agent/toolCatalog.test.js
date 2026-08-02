@@ -6,10 +6,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { OPENAI_TOOLS, getToolRisk, toToolCall } from './toolCatalog.js'
 
-test('OPENAI_TOOLS: is derived from the seven executable browser tools', () => {
-  assert.equal(OPENAI_TOOLS.length, 7)
+test('OPENAI_TOOLS: is derived from the executable browser tools', () => {
+  assert.equal(OPENAI_TOOLS.length, 8)
   const names = OPENAI_TOOLS.map(t => t.function.name)
-  assert.deepEqual(names, ['navigate', 'read_page', 'click', 'type', 'screenshot', 'tabs', 'tab_group'])
+  assert.deepEqual(names, ['navigate', 'read_page', 'structured_extract', 'click', 'type', 'screenshot', 'tabs', 'tab_group'])
 })
 
 test('OPENAI_TOOLS: navigate has required url param', () => {
@@ -41,11 +41,14 @@ test('OPENAI_TOOLS: tabs has required action', () => {
   const tabs = OPENAI_TOOLS.find(t => t.function.name === 'tabs')
   assert.ok(tabs)
   assert.deepEqual(tabs.function.parameters.required, ['action'])
+  assert.match(tabs.function.description, /new tab/i)
+  assert.match(tabs.function.description, /do not use navigate/i)
 })
 
 test('getToolRisk: returns correct risk class for known tools', () => {
   assert.equal(getToolRisk('navigate'), 'mutate')
   assert.equal(getToolRisk('read_page'), 'read')
+  assert.equal(getToolRisk('structured_extract'), 'read')
   assert.equal(getToolRisk('click'), 'mutate')
   assert.equal(getToolRisk('type'), 'mutate')
   assert.equal(getToolRisk('screenshot'), 'read')

@@ -20,6 +20,8 @@ export const VERBOO_TAB_GROUP_TITLE = 'Verboo'
 /** chrome.tabGroups color enum value */
 export const VERBOO_TAB_GROUP_COLOR = 'purple'
 
+export const VERBOO_PANEL_PATH = 'src/panel/panel.html'
+
 const FRAME_ID = 'verboo-presence-frame'
 const FRAME_STYLE_ID = 'verboo-presence-frame-style'
 const CURSOR_ID = 'verboo-agent-cursor'
@@ -27,17 +29,17 @@ const CURSOR_STYLE_ID = 'verboo-agent-cursor-style'
 const CURSOR_RIPPLE_ID = 'verboo-agent-cursor-ripple'
 
 /** Inclusive lower bound for the random presence pause (ms). */
-export const PRESENCE_ACTION_DELAY_MS_MIN = 420
+export const PRESENCE_ACTION_DELAY_MS_MIN = 840
 /** Inclusive upper bound for the random presence pause (ms). */
-export const PRESENCE_ACTION_DELAY_MS_MAX = 580
+export const PRESENCE_ACTION_DELAY_MS_MAX = 980
 /**
  * Representative delay in the presence range (for tests / docs).
  * Runtime uses {@link randomBetween} each action — long enough to see the cursor.
  */
-export const PRESENCE_ACTION_DELAY_MS = 500
+export const PRESENCE_ACTION_DELAY_MS = 900
 
 /** Cursor glide duration (ms) — matches in-page CSS transition. */
-export const CURSOR_MOVE_MS = 420
+export const CURSOR_MOVE_MS = 760
 
 /**
  * Inclusive integer random in [min, max].
@@ -52,6 +54,36 @@ export function randomBetween(min, max) {
 }
 
 // ── Tab group ──────────────────────────────────────────────────
+
+/**
+ * Disable the manifest's window-wide panel fallback. Individual tabs opt in
+ * through {@link openVerbooWorkspace}, so switching tabs hides the panel.
+ */
+export async function disableGlobalVerbooPanel() {
+  await chrome.sidePanel.setOptions({ enabled: false })
+}
+
+/**
+ * Bind the Verboo panel to one tab, open it from the toolbar gesture, and put
+ * the controlled tab in the Verboo group.
+ *
+ * @param {number} tabId
+ * @returns {Promise<{ groupId: number }>}
+ */
+export async function openVerbooWorkspace(tabId) {
+  if (typeof tabId !== 'number') {
+    throw new Error('openVerbooWorkspace: missing tabId')
+  }
+  const configurePanel = chrome.sidePanel.setOptions({
+    tabId,
+    path: VERBOO_PANEL_PATH,
+    enabled: true,
+  })
+  const openPanel = chrome.sidePanel.open({ tabId })
+  await configurePanel
+  await openPanel
+  return ensureVerbooTabGroup(tabId)
+}
 
 /**
  * Ensure `tabId` is in a purple tab group titled "Verboo".
@@ -160,7 +192,7 @@ export async function showAgentCursor(tabId, target) {
   await chrome.scripting.executeScript({
     target: { tabId },
     func: injectAgentCursorInPage,
-    args: [CURSOR_ID, CURSOR_STYLE_ID, payload],
+    args: [CURSOR_ID, CURSOR_STYLE_ID, payload, CURSOR_MOVE_MS],
   })
 }
 
@@ -305,7 +337,7 @@ export async function ensureAgentPresence(tabId, target) {
 /**
  * Best-effort presence prelude used by click/type/read/screenshot:
  * frame + cursor (selector or center) + delay. Never throws.
- * Delay is randomBetween(280, 380) unless reduced-motion (0).
+ * Delay is randomBetween(840, 980) unless reduced-motion (0).
  *
  * @param {number} tabId
  * @param {string} [selector]
@@ -328,7 +360,7 @@ export async function preparePresenceForAction(tabId, selector) {
 
 /**
  * @param {number} tabId
- * @returns {Promise<number>} 0 when prefers-reduced-motion, else 280–380
+ * @returns {Promise<number>} 0 when prefers-reduced-motion, else 840–980
  */
 async function resolvePresenceDelayMs(tabId) {
   try {
@@ -374,9 +406,10 @@ function injectPresenceFrameInPage(frameId, styleId) {
   pointer-events: none !important;
   z-index: 2147483646 !important;
   box-shadow:
-    inset 0 0 0 3px rgba(147, 85, 255, 0.55),
-    inset 0 0 24px 4px rgba(169, 109, 255, 0.22),
-    0 0 18px 2px rgba(147, 85, 255, 0.18) !important;
+    inset 0 0 0 1px rgba(170, 113, 255, 0.72),
+    inset 0 0 52px 7px rgba(147, 85, 255, 0.17),
+    inset 0 0 118px 28px rgba(89, 102, 228, 0.09),
+    0 0 28px 4px rgba(147, 85, 255, 0.2) !important;
   border-radius: 0 !important;
   opacity: 0;
   transition: opacity 220ms cubic-bezier(0.23, 1, 0.32, 1);
@@ -386,22 +419,37 @@ function injectPresenceFrameInPage(frameId, styleId) {
 #${frameId}.verboo-frame-visible {
   opacity: 1 !important;
 }
-@keyframes verboo-presence-pulse {
-  from {
-    box-shadow:
-      inset 0 0 0 3px rgba(147, 85, 255, 0.42),
-      inset 0 0 16px 2px rgba(169, 109, 255, 0.14),
-      0 0 10px 1px rgba(147, 85, 255, 0.10);
-  }
-  to {
-    box-shadow:
-      inset 0 0 0 3px rgba(147, 85, 255, 0.78),
-      inset 0 0 32px 6px rgba(169, 109, 255, 0.34),
-      0 0 26px 4px rgba(147, 85, 255, 0.28);
-  }
+#${frameId}::before,
+#${frameId}::after {
+  content: "" !important;
+  position: absolute !important;
+  width: 48% !important;
+  height: 64px !important;
+  border-radius: 50% !important;
+  filter: blur(18px) !important;
+  opacity: 0.7;
 }
-#${frameId}.verboo-animate {
-  animation: verboo-presence-pulse 2s ease-in-out infinite alternate;
+#${frameId}::before {
+  top: -34px !important;
+  left: -20% !important;
+  background: linear-gradient(90deg, transparent, rgba(92, 126, 255, 0.52), rgba(179, 102, 255, 0.72), transparent) !important;
+}
+#${frameId}::after {
+  right: -20% !important;
+  bottom: -35px !important;
+  background: linear-gradient(90deg, transparent, rgba(190, 106, 255, 0.64), rgba(99, 119, 255, 0.5), transparent) !important;
+}
+@keyframes verboo-flow-edge-forward {
+  to { transform: translateX(150%); }
+}
+@keyframes verboo-flow-edge-back {
+  to { transform: translateX(-150%); }
+}
+#${frameId}.verboo-animate::before {
+  animation: verboo-flow-edge-forward 6.4s ease-in-out infinite alternate;
+}
+#${frameId}.verboo-animate::after {
+  animation: verboo-flow-edge-back 7.2s ease-in-out infinite alternate;
 }
 `.trim()
     ;(document.documentElement || document.body).appendChild(style)
@@ -422,29 +470,132 @@ function injectPresenceFrameInPage(frameId, styleId) {
  * @param {string} cursorId
  * @param {string} styleId
  * @param {{ x?: number; y?: number; selector?: string } | null} target
+ * @param {number} moveMs
  */
-function injectAgentCursorInPage(cursorId, styleId, target) {
+function injectAgentCursorInPage(cursorId, styleId, target, moveMs) {
   // Self-contained (serialized into the page). No outer helpers, no innerHTML
   // (YouTube Trusted Types rejects string HTML injection).
   function buildPointerSvg() {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-    svg.setAttribute('width', '24')
-    svg.setAttribute('height', '24')
-    svg.setAttribute('viewBox', '0 0 24 24')
+    svg.setAttribute('width', '30')
+    svg.setAttribute('height', '30')
+    svg.setAttribute('viewBox', '0 0 34 34')
     svg.setAttribute('aria-hidden', 'true')
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-    path.setAttribute('fill', '#9355ff')
+    path.setAttribute('fill', '#a468ff')
     path.setAttribute('stroke', '#ffffff')
-    path.setAttribute('stroke-width', '0.9')
+    path.setAttribute('stroke-width', '1.25')
     path.setAttribute('stroke-linejoin', 'round')
-    path.setAttribute('d', 'M4 3 L4 19 L9 14 L12 21 L14.5 20 L11.5 13 L18 13 Z')
+    path.setAttribute('d', 'M4.4 3.8 L6.1 26.4 L12.05 20.34 L16.64 29.25 L20.64 27.19 L16.05 18.28 L24.58 17.42 Z')
+    const facet = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    facet.setAttribute('fill', '#7f48eb')
+    facet.setAttribute('fill-opacity', '0.52')
+    facet.setAttribute('d', 'M5.25 4.7 L15.98 18.24 L11.94 20.1 L6.25 25.45 Z')
+    const highlight = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    highlight.setAttribute('fill', 'none')
+    highlight.setAttribute('stroke', '#ffffff')
+    highlight.setAttribute('stroke-opacity', '0.5')
+    highlight.setAttribute('stroke-width', '1')
+    highlight.setAttribute('stroke-linecap', 'round')
+    highlight.setAttribute('d', 'M7.1 7.1 L7.9 20.2')
     svg.appendChild(path)
+    svg.appendChild(facet)
+    svg.appendChild(highlight)
     return svg
+  }
+
+  function readCursorPosition(cursor, fallbackX, fallbackY) {
+    try {
+      const matrix = new DOMMatrixReadOnly(getComputedStyle(cursor).transform)
+      if (Number.isFinite(matrix.m41) && Number.isFinite(matrix.m42)) {
+        return { x: matrix.m41, y: matrix.m42 }
+      }
+    } catch {
+      /* fall through */
+    }
+    const storedX = Number(cursor.dataset.verbooX)
+    const storedY = Number(cursor.dataset.verbooY)
+    return {
+      x: Number.isFinite(storedX) ? storedX : fallbackX,
+      y: Number.isFinite(storedY) ? storedY : fallbackY,
+    }
+  }
+
+  function glideCursor(cursor, fromX, fromY, toX, toY, duration) {
+    const finalTransform = `translate(${toX}px, ${toY}px)`
+    cursor.style.setProperty('--verboo-cursor-t', finalTransform)
+
+    if (typeof cursor.animate !== 'function' || duration <= 0) {
+      cursor.style.transform = finalTransform
+      cursor.dataset.verbooX = String(toX)
+      cursor.dataset.verbooY = String(toY)
+      return
+    }
+
+    const dx = toX - fromX
+    const dy = toY - fromY
+    const distance = Math.hypot(dx, dy)
+    const arc = Math.min(20, Math.max(8, distance * 0.035))
+    const tilt = Math.max(-12, Math.min(12, dx / 30))
+    const directionAngle = Math.atan2(dy, dx) * 180 / Math.PI
+    const motionId = String((Number(cursor.dataset.verbooMotionId) || 0) + 1)
+    cursor.dataset.verbooMotionId = motionId
+
+    cursor.__verbooMotion?.cancel()
+    cursor.style.setProperty('--verboo-flow-angle', `${directionAngle}deg`)
+    cursor.classList.add('verboo-cursor-moving')
+    const animation = cursor.animate(
+      [
+        {
+          transform: `translate3d(${fromX}px, ${fromY}px, 0) rotate(0deg) scale(1)`,
+        },
+        {
+          transform: `translate3d(${fromX + dx * 0.24}px, ${fromY + dy * 0.1 - arc}px, 0) rotate(${tilt * 0.72}deg) scale(1.025)`,
+          offset: 0.25,
+        },
+        {
+          transform: `translate3d(${fromX + dx * 0.58}px, ${fromY + dy * 0.46 - arc * 1.08}px, 0) rotate(${tilt}deg) scale(1.035)`,
+          offset: 0.58,
+        },
+        {
+          transform: `translate3d(${fromX + dx * 0.86}px, ${fromY + dy * 0.84 - arc * 0.34}px, 0) rotate(${tilt * 0.38}deg) scale(1.01)`,
+          offset: 0.86,
+        },
+        {
+          transform: `translate3d(${toX}px, ${toY}px, 0) rotate(0deg) scale(1)`,
+        },
+      ],
+      {
+        duration,
+        easing: 'cubic-bezier(0.45, 0, 0.2, 1)',
+        fill: 'forwards',
+      },
+    )
+    cursor.__verbooMotion = animation
+
+    animation.finished
+      .then(() => {
+        if (cursor.dataset.verbooMotionId !== motionId) return
+        cursor.style.transform = finalTransform
+        cursor.dataset.verbooX = String(toX)
+        cursor.dataset.verbooY = String(toY)
+        cursor.classList.remove('verboo-cursor-moving')
+        cursor.__verbooMotion = null
+        animation.cancel()
+      })
+      .catch(() => {
+        // A new target can supersede this movement.
+      })
   }
 
   const reduced =
     typeof matchMedia === 'function' &&
     matchMedia('(prefers-reduced-motion: reduce)').matches
+  const duration = reduced
+    ? 0
+    : Number.isFinite(moveMs) && moveMs > 0
+      ? moveMs
+      : 760
 
   let x = window.innerWidth * 0.5
   let y = window.innerHeight * 0.42
@@ -489,13 +640,15 @@ function injectAgentCursorInPage(cursorId, styleId, target) {
   position: fixed !important;
   left: 0 !important;
   top: 0 !important;
-  width: 28px !important;
-  height: 28px !important;
+  width: 34px !important;
+  height: 34px !important;
   pointer-events: none !important;
   z-index: 2147483647 !important;
   opacity: 0;
   transform-origin: 0 0;
-  filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.4)) drop-shadow(0 0 12px rgba(147, 85, 255, 0.55));
+  filter:
+    drop-shadow(0 2px 1px rgba(25, 17, 38, 0.3))
+    drop-shadow(0 9px 17px rgba(98, 47, 174, 0.31));
   will-change: transform, opacity;
   line-height: 0 !important;
   margin: 0 !important;
@@ -503,30 +656,61 @@ function injectAgentCursorInPage(cursorId, styleId, target) {
   background: transparent !important;
   border: none !important;
 }
+#${cursorId}::before {
+  content: "" !important;
+  position: absolute !important;
+  left: 2px !important;
+  top: 24px !important;
+  width: 32px !important;
+  height: 9px !important;
+  border-radius: 50% !important;
+  background: linear-gradient(90deg, rgba(147, 85, 255, 0.04), rgba(50, 27, 84, 0.3)) !important;
+  filter: blur(6px) !important;
+  opacity: 0.68;
+  transform: scaleX(0.9);
+  transform-origin: center !important;
+  transition:
+    opacity 180ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 180ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+#${cursorId}::after {
+  content: "" !important;
+  position: absolute !important;
+  left: -42px !important;
+  top: 9px !important;
+  width: 48px !important;
+  height: 5px !important;
+  border-radius: 999px !important;
+  background: linear-gradient(90deg, transparent, rgba(108, 121, 255, 0.24), rgba(169, 109, 255, 0.58)) !important;
+  filter: blur(2px) !important;
+  opacity: 0;
+  transform: rotate(var(--verboo-flow-angle, 0deg)) scaleX(0.35);
+  transform-origin: 100% 50% !important;
+  transition:
+    opacity 180ms cubic-bezier(0.23, 1, 0.32, 1),
+    transform 180ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+#${cursorId}.verboo-cursor-moving::before {
+  opacity: 0.42;
+  transform: scaleX(1.12);
+}
+#${cursorId}.verboo-cursor-moving::after {
+  opacity: 0.62;
+  transform: rotate(var(--verboo-flow-angle, 0deg)) scaleX(1);
+}
 #${cursorId}.verboo-cursor-visible {
   opacity: 1 !important;
 }
 #${cursorId} svg {
   display: block !important;
-  width: 24px !important;
-  height: 24px !important;
+  position: relative !important;
+  z-index: 1 !important;
+  width: 30px !important;
+  height: 30px !important;
   overflow: visible !important;
 }
 #${cursorId}.verboo-cursor-animate {
-  transition:
-    transform 420ms cubic-bezier(0.23, 1, 0.32, 1),
-    opacity 200ms cubic-bezier(0.23, 1, 0.32, 1);
-}
-@keyframes verboo-cursor-idle {
-  0%, 100% {
-    filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.4)) drop-shadow(0 0 10px rgba(147, 85, 255, 0.4));
-  }
-  50% {
-    filter: drop-shadow(0 5px 10px rgba(0, 0, 0, 0.35)) drop-shadow(0 0 18px rgba(147, 85, 255, 0.75));
-  }
-}
-#${cursorId}.verboo-cursor-idle {
-  animation: verboo-cursor-idle 1.4s ease-in-out infinite;
+  transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 #${cursorId}.verboo-cursor-click {
   transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1) !important;
@@ -570,6 +754,8 @@ function injectAgentCursorInPage(cursorId, styleId, target) {
     const enterX = Math.max(0, x - 36)
     const enterY = Math.max(0, y - 24)
     cursor.style.transform = `translate(${enterX}px, ${enterY}px)`
+    cursor.dataset.verbooX = String(enterX)
+    cursor.dataset.verbooY = String(enterY)
     cursor.style.setProperty('--verboo-cursor-t', transform)
     ;(document.documentElement || document.body).appendChild(cursor)
     if (!reduced) {
@@ -578,17 +764,14 @@ function injectAgentCursorInPage(cursorId, styleId, target) {
           const c = document.getElementById(cursorId)
           if (!c) return
           c.classList.add('verboo-cursor-animate', 'verboo-cursor-visible')
-          c.style.transform = transform
-          c.style.setProperty('--verboo-cursor-t', transform)
-          setTimeout(() => {
-            const live = document.getElementById(cursorId)
-            if (live) live.classList.add('verboo-cursor-idle')
-          }, 450)
+          glideCursor(c, enterX, enterY, x, y, duration)
         })
       })
     } else {
       cursor.classList.add('verboo-cursor-visible')
       cursor.style.transform = transform
+      cursor.dataset.verbooX = String(x)
+      cursor.dataset.verbooY = String(y)
     }
   } else {
     if (!cursor.querySelector('svg')) {
@@ -597,19 +780,20 @@ function injectAgentCursorInPage(cursorId, styleId, target) {
     }
     cursor.classList.remove('verboo-cursor-idle', 'verboo-cursor-click')
     if (reduced) {
+      cursor.__verbooMotion?.cancel()
+      cursor.__verbooMotion = null
+      cursor.classList.remove('verboo-cursor-moving')
       cursor.classList.remove('verboo-cursor-animate')
       cursor.classList.add('verboo-cursor-visible')
+      cursor.style.transform = transform
+      cursor.dataset.verbooX = String(x)
+      cursor.dataset.verbooY = String(y)
     } else {
       cursor.classList.add('verboo-cursor-animate', 'verboo-cursor-visible')
+      const from = readCursorPosition(cursor, x, y)
+      glideCursor(cursor, from.x, from.y, x, y, duration)
     }
-    cursor.style.transform = transform
     cursor.style.setProperty('--verboo-cursor-t', transform)
-    if (!reduced) {
-      setTimeout(() => {
-        const live = document.getElementById(cursorId)
-        if (live) live.classList.add('verboo-cursor-idle')
-      }, 450)
-    }
   }
 }
 

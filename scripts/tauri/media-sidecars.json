@@ -2,21 +2,29 @@
   "ffmpeg": {
     "version": "8.1.2",
     "url": "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz",
+    "urls": [
+      "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz",
+      "https://ftp.osuosl.org/pub/blfs/conglomeration/ffmpeg/ffmpeg-8.1.2.tar.xz",
+      "https://distfiles.macports.org/ffmpeg/ffmpeg-8.1.2.tar.xz"
+    ],
     "sha256": "464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c"
   },
   "zimg": {
     "version": "3.0.6",
     "url": "https://github.com/sekrit-twc/zimg/archive/refs/tags/release-3.0.6.tar.gz",
+    "urls": ["https://github.com/sekrit-twc/zimg/archive/refs/tags/release-3.0.6.tar.gz"],
     "sha256": "be89390f13a5c9b2388ce0f44a5e89364a20c1c57ce46d382b1fcc3967057577"
   },
   "whisperCpp": {
     "version": "1.8.5",
     "url": "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.8.5.tar.gz",
+    "urls": ["https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.8.5.tar.gz"],
     "sha256": "cd702189cb5e608c8bc487f4b151db593c4455925b37cc06ef76b44861911db1"
   },
   "whisperModel": {
     "name": "ggml-base.bin",
     "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+    "urls": ["https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"],
     "size": 147951465,
     "sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
   }

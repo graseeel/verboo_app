@@ -18,6 +18,17 @@ pub enum VideoValidationError {
     MissingVideoStream,
     UnsupportedContainer(String),
     UnsupportedCodec(String),
+    /// A1c (2026-07-30): explicit error for platforms without a
+    /// published sidecar. Replaces the old `"unsupported"` string
+    /// that produced an invalid filename (`verboo-ffprobe-unsupported`)
+    /// and failed later with a confusing "file not found".
+    ///
+    /// Previous behavior was the cousin of the stub-Ok defect:
+    /// silent fabrication of an invalid value that failed far from
+    /// the root cause. Now the error surfaces immediately with the
+    /// platform identity so the user (or CI log) sees which platform
+    /// is unsupported.
+    UnsupportedPlatform { os: String, arch: String, tool: String },
     ProtectedOrUnreadable,
     ProbeFailed(String),
 }
@@ -37,6 +48,14 @@ impl fmt::Display for VideoValidationError {
                 write!(f, "video_unsupported_container:{container}")
             }
             Self::UnsupportedCodec(codec) => write!(f, "video_unsupported_codec:{codec}"),
+            Self::UnsupportedPlatform { os, arch, tool } => {
+                write!(
+                    f,
+                    "video_unsupported_platform: {tool} does not have a published \
+                     binary for {os}/{arch}. Supported platforms: \
+                     macOS x86_64/aarch64, Windows x86_64/aarch64, Linux x86_64/aarch64."
+                )
+            }
             Self::ProtectedOrUnreadable => write!(f, "video_protected_or_unreadable"),
             Self::ProbeFailed(message) => write!(f, "video_probe_failed:{message}"),
         }
@@ -66,6 +85,7 @@ pub mod job;
 pub mod prepare;
 pub mod probe;
 pub mod router;
+pub mod target;
 pub mod transcribe;
 
 pub use probe::{bundled_ffprobe_path, probe_and_validate};

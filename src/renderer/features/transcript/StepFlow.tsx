@@ -28,8 +28,11 @@ export function StepFlow({ items, streaming = false, imageReading = false, hideF
         // Match by id identity (never by text equality or blind position).
         if (block.kind === 'text' && hideFinalTextId && block.id === hideFinalTextId) return null
         if (block.kind === 'text') {
+          // data-annotation-segment liga o DOM ao segmentId (turnId:text:N) —
+          // é o que torna o texto selecionável para anotações (F1). O ouvinte
+          // de seleção só considera elementos com esta marca.
           return block.text
-            ? <div key={block.id} className={`step-text ${block.streaming ? 'streaming-text' : ''}`}><MarkdownMessage text={block.text} /></div>
+            ? <div key={block.id} className={`step-text ${block.streaming ? 'streaming-text' : ''}`} data-annotation-segment={block.id}><MarkdownMessage text={block.text} /></div>
             : null
         }
         if (block.kind === 'thinking') {

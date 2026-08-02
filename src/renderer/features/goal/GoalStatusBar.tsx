@@ -5,7 +5,16 @@ import { translateGoalReason } from './goalReason'
 export type GoalStatusBarState =
   | { kind: 'idle' }
   | { kind: 'active'; objective: string; turn: number }
-  | { kind: 'evaluating'; objective: string; turn: number }
+  | {
+      kind: 'evaluating'
+      objective: string
+      turn: number
+      // T4: batch progress for the discreet "Tarefa k de N" line the App
+      // stamps on the latest turn's summary item. Present only for batch
+      // goals; the status bar itself ignores it (it renders nothing for
+      // 'evaluating' — see below).
+      batchProgress?: { current: number; total: number }
+    }
   | { kind: 'continuing'; objective: string; turn: number }
   | { kind: 'completed'; objective: string }
   | { kind: 'stopped'; objective: string; reason: string }

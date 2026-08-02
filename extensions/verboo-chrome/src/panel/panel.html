@@ -28,6 +28,23 @@
           Continue with your Verboo account in a secure browser window.
         </p>
 
+        <div class="login-connection-note" role="note">
+          <div class="login-connection-row">
+            <span class="login-connection-dot" aria-hidden="true"></span>
+            <span class="login-connection-copy">
+              <strong data-i18n="auth_accountLoginLabel">Verboo account</strong>
+              <span data-i18n="auth_accountLoginBody">This signs in only this Chrome extension.</span>
+            </span>
+          </div>
+          <div class="login-connection-row">
+            <span class="login-connection-dot login-connection-dot--muted" aria-hidden="true"></span>
+            <span class="login-connection-copy">
+              <strong data-i18n="auth_cliConnectionLabel">CLI connection</strong>
+              <span data-i18n="auth_cliConnectionBody">Configure it separately in the Verboo desktop app.</span>
+            </span>
+          </div>
+        </div>
+
         <form class="login-form" id="login-form" novalidate>
           <p class="field-error" id="login-error" role="alert" hidden></p>
 
@@ -122,6 +139,61 @@
         </div>
         <div class="topbar-actions">
           <button
+            id="routines-btn"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="routine-slash-menu"
+            type="button"
+            class="icon-btn"
+            title="Routines"
+            data-i18n-title="routines_title"
+            data-i18n-aria-label="routines_title"
+            aria-label="Routines"
+          >
+            <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 4.25h10M3 8h10M3 11.75h6.5" />
+              <path d="M1.75 4.25h.01M1.75 8h.01M1.75 11.75h.01" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="icon-btn"
+            id="record-workflow"
+            title="Record workflow"
+            data-i18n-title="routine_record"
+            data-i18n-aria-label="routine_record"
+            aria-label="Record workflow"
+          >
+            <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="8" cy="8" r="5.5" />
+              <circle cx="8" cy="8" r="2.25" fill="currentColor" stroke="none" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="icon-btn"
+            id="clear-chat"
+            title="New conversation"
+            data-i18n-title="chat_clearTitle"
+            data-i18n-aria-label="chat_clearTitle"
+            aria-label="New conversation"
+          >
+            <svg
+              viewBox="0 0 16 16"
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M3 4.5A1.5 1.5 0 014.5 3h7A1.5 1.5 0 0113 4.5v7a1.5 1.5 0 01-1.5 1.5h-7A1.5 1.5 0 013 11.5z" />
+              <path d="M8 5.75v4.5M5.75 8h4.5" />
+            </svg>
+          </button>
+          <button
             type="button"
             class="icon-btn"
             id="settings-btn"
@@ -173,6 +245,12 @@
           </button>
         </div>
       </header>
+      <div class="recording-status" id="recording-status" role="status" hidden>
+        <span class="recording-dot" aria-hidden="true"></span>
+        <span data-i18n="routine_recording">Recording workflow</span>
+        <time id="recording-time">00:00</time>
+        <button type="button" id="recording-cancel" data-i18n="routine_cancel">Cancel</button>
+      </div>
 
       <!-- Primary: chat transcript takes the entire body -->
       <section class="chat" aria-label="Chat">
@@ -184,16 +262,34 @@
         ></div>
 
         <div class="chat-foot">
+          <div
+            class="routine-slash-menu"
+            id="routine-slash-menu"
+            role="menu"
+            data-i18n-aria-label="routines_title"
+            aria-label="Routines"
+            hidden
+          >
+            <div class="routine-slash-list" id="routine-slash-list"></div>
+            <button type="button" class="routine-manage" id="routine-manage" role="menuitem">
+              <span data-i18n="routine_manage">Manage routines</span>
+              <span aria-hidden="true">↗</span>
+            </button>
+          </div>
           <form class="chat-composer" id="chat-form">
-            <input
-              type="text"
+            <textarea
               id="chat-input"
               class="field-input chat-input"
               data-i18n-placeholder="chat_placeholder"
               placeholder="Ask Verboo to control this page…"
               autocomplete="off"
               aria-label="Message"
-            />
+              aria-autocomplete="list"
+              aria-controls="routine-slash-menu"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              rows="1"
+            ></textarea>
             <div class="composer-toolbar">
               <div class="mode-inline" role="radiogroup" data-i18n-aria-label="mode_title" aria-label="Permission mode">
                 <label class="mode-chip" data-mode="manual">
@@ -259,6 +355,42 @@
           </form>
         </div>
       </section>
+
+      <dialog
+        class="routine-variable-dialog"
+        id="routine-variable-dialog"
+        aria-labelledby="routine-variable-title"
+      >
+        <form method="dialog" id="routine-variable-form">
+          <div class="routine-dialog-head">
+            <div>
+              <h2 id="routine-variable-title" data-i18n="routine_variables_title">
+                Complete routine details
+              </h2>
+              <p id="routine-variable-description"></p>
+            </div>
+            <button
+              type="button"
+              class="icon-btn"
+              id="routine-variable-close"
+              data-i18n-aria-label="routine_cancel"
+              aria-label="Cancel"
+            >
+              <span aria-hidden="true">×</span>
+            </button>
+          </div>
+          <div class="routine-variable-fields" id="routine-variable-fields"></div>
+          <p class="field-error" id="routine-variable-error" role="alert" hidden></p>
+          <div class="routine-dialog-actions">
+            <button type="button" class="btn btn-secondary" id="routine-variable-cancel" data-i18n="routine_cancel">
+              Cancel
+            </button>
+            <button type="submit" class="btn btn-primary" data-i18n="routine_run">
+              Run routine
+            </button>
+          </div>
+        </form>
+      </dialog>
     </div>
   </div>
 

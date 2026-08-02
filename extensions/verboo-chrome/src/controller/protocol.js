@@ -33,7 +33,7 @@
  * must never be exported.
  */
 
-import browserCatalog from './browserTools.json' with { type: 'json' }
+import browserCatalog from './browserTools.js'
 
 // ── Message types ──────────────────────────────────────────
 
@@ -41,6 +41,7 @@ export const MSG = Object.freeze({
   // Panel → Controller
   AGENT_TURN_START: 'agent:turn_start',       // user submits a chat message
   AGENT_TURN_CANCEL: 'agent:turn_cancel',     // user cancels in-flight turn
+  TOOL_PENDING_LIST: 'tool:pending_list',     // panel restores approvals after reopening
   TOOL_APPROVE: 'tool:approve',               // user approves a needsApproval tool
   TOOL_DENY: 'tool:deny',                     // user denies a needsApproval tool
   AUTH_LOGIN: 'auth:login',                   // start user-initiated OAuth PKCE flow
@@ -52,6 +53,31 @@ export const MSG = Object.freeze({
   POLICY_MODE_SET: 'policy:mode_set',
   POLICY_GRANT_UPSERT: 'policy:grant_upsert',
   POLICY_GRANT_REMOVE: 'policy:grant_remove',
+  ROUTINE_LIST: 'routine:list',
+  ROUTINE_GET: 'routine:get',
+  ROUTINE_CREATE: 'routine:create',
+  ROUTINE_UPDATE: 'routine:update',
+  ROUTINE_DUPLICATE: 'routine:duplicate',
+  ROUTINE_DELETE: 'routine:delete',
+  ROUTINE_RUN: 'routine:run',
+  ROUTINE_SIMULATE: 'routine:simulate',
+  ROUTINE_CANCEL: 'routine:cancel',
+  ROUTINE_PAUSE: 'routine:pause',
+  ROUTINE_RESUME: 'routine:resume',
+  ROUTINE_RUN_LIST: 'routine:run_list',
+  ROUTINE_RECOVERY_APPLY: 'routine:recovery_apply',
+  ROUTINE_DRAFT_FROM_MESSAGE: 'routine:draft_from_message',
+  ROUTINE_DRAFT_FROM_CONVERSATION: 'routine:draft_from_conversation',
+  ROUTINE_DRAFT_GET: 'routine:draft_get',
+  ROUTINE_ASSET_ADD: 'routine:asset_add',
+  ROUTINE_ASSET_DELETE: 'routine:asset_delete',
+  ROUTINE_RECORD_START: 'routine:record_start',
+  ROUTINE_RECORD_STOP: 'routine:record_stop',
+  ROUTINE_RECORD_CANCEL: 'routine:record_cancel',
+  ROUTINE_RECORD_EVENT: 'routine:record_event',
+  ROUTINE_RECORD_STATE_REQUEST: 'routine:record_state_request',
+  ROUTINE_SCHEDULE_UPSERT: 'routine:schedule_upsert',
+  ROUTINE_SCHEDULE_REMOVE: 'routine:schedule_remove',
 
   // Controller → Panel
   AGENT_TURN_STARTED: 'agent:turn_started',
@@ -65,6 +91,10 @@ export const MSG = Object.freeze({
   MODELS_STATE_CHANGED: 'models:state_changed',
   POLICY_MODE_CHANGED: 'policy:mode_changed',
   POLICY_GRANT_CHANGED: 'policy:grant_changed',
+  ROUTINE_STATE_CHANGED: 'routine:state_changed',
+  ROUTINE_RUN_CHANGED: 'routine:run_changed',
+  ROUTINE_RECORD_STATE_CHANGED: 'routine:record_state_changed',
+  ROUTINE_SCHEDULE_CHANGED: 'routine:schedule_changed',
 })
 
 // ── Tool Call envelope ────────────────────────────────────
@@ -114,7 +144,7 @@ export const TOOL_RISK = Object.freeze({
   ELEVATED: 'elevated',
 })
 
-/** Bump in browserTools.json on every catalog change. */
+/** Bump in browserTools.js (and the JSON reference copy) on every catalog change. */
 export const CATALOG_VERSION = browserCatalog.version
 
 /**
@@ -173,7 +203,8 @@ export const TOOL_RISK_MAP = Object.freeze(Object.fromEntries(
 export const MSG_SHAPES = Object.freeze({
   [MSG.AGENT_TURN_START]: { turnId: 'string', userMessage: 'string' },
   [MSG.AGENT_TURN_CANCEL]: { turnId: 'string' },
-  [MSG.TOOL_APPROVE]:      { toolCallId: 'string' },
+  [MSG.TOOL_PENDING_LIST]: {},
+  [MSG.TOOL_APPROVE]:      { toolCallId: 'string', decision: 'once|always' },
   [MSG.TOOL_DENY]:         { toolCallId: 'string', reason: 'string?' },
   [MSG.AGENT_TOOL_REQUEST]:{ toolCall: 'object', policyDecision: 'object' },
   [MSG.AGENT_TOOL_RESULT]: { toolResult: 'object' },

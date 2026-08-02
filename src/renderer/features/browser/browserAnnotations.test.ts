@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  annotationStillCurrent,
   createAnnotationAttachment,
   browserAnnotationLocationLabel,
   expandBrowserAnnotationSnapshots,
@@ -100,5 +101,28 @@ describe('browser annotation messages', () => {
         viewportSnapshot: { path: '/app/browser_captures/owner/viewport.png' },
       },
     })
+  })
+})
+
+describe('annotation identity and stale capture discard', () => {
+  it('keeps a capture current when the originating tab and generation match', () => {
+    expect(annotationStillCurrent(
+      { tabId: 'tab-a', generation: 3, url: 'http://localhost:5173' },
+      { id: 'tab-a', generation: 3 },
+    )).toBe(true)
+  })
+
+  it('drops a capture after the originating tab navigates (generation advanced)', () => {
+    expect(annotationStillCurrent(
+      { tabId: 'tab-a', generation: 3, url: 'http://localhost:5173' },
+      { id: 'tab-a', generation: 4 },
+    )).toBe(false)
+  })
+
+  it('drops a capture after the originating tab is closed (different tabId)', () => {
+    expect(annotationStillCurrent(
+      { tabId: 'tab-a', generation: 3, url: 'http://localhost:5173' },
+      { id: 'tab-b', generation: 3 },
+    )).toBe(false)
   })
 })

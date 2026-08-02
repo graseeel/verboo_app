@@ -5,6 +5,7 @@ import {
   createConversation,
   readChatStore,
   sanitizeConversation,
+  updateConversation,
 } from './chatStore'
 import type { ChatStore, StoredConversation } from '../../shared/types'
 
@@ -164,5 +165,64 @@ describe('readChatStore — subagent persistence migration', () => {
 
     expect(store.version).toBe(3)
     expect(store.conversations[0].subagents).toEqual([])
+  })
+})
+
+describe('updateConversation — identity preservation (G-C5)', () => {
+  // Regression: the old updateConversation always created a new store
+  // object and a new conversations array, even when no conversation
+  // matched the id. That identity churn triggered the goal-hydration
+  // useEffect (which depended on chatStore.conversations) every time
+  // the scheduler persisted progress, forcing the running goal back
+  // to 'paused' and creating an infinite feedback loop.
+
+  it('returns the SAME store reference when no conversation matches the id', () => {
+    const a = conversation({ id: 'chat:a', title: 'A' })
+    const store = storeWith([a])
+
+    const result = updateConversation(store, 'chat:nonexistent', c => ({
+      ...c,
+      title: 'Changed',
+    }))
+
+    // Identity must be preserved — same reference, no new object.
+    expect(result).toBe(store)
+  })
+
+  it('returns a NEW store reference when a conversation matches and is updated', () => {
+    const a = conversation({ id: 'chat:a', title: 'A' })
+    const store = storeWith([a])
+
+    const result = updateConversation(store, 'chat:a', c => ({
+      ...c,
+      title: 'Changed',
+    }))
+
+    // Identity must NOT be preserved — the conversation changed.
+    expect(result).not.toBe(store)
+    expect(result.conversations).not.toBe(store.conversations)
+    expect(result.conversations[0].title).toBe('Changed')
+  })
+
+  it('preserves array identity for non-target conversations', () => {
+    // When one conversation is updated, the OTHER conversations in
+    // the array must keep their object identity (slice + index assign
+    // vs .map() which creates new objects for every entry).
+    const a = conversation({ id: 'chat:a', title: 'A' })
+    const b = conversation({ id: 'chat:b', title: 'B' })
+    const store = storeWith([a, b])
+
+    const result = updateConversation(store, 'chat:a', c => ({
+      ...c,
+      title: 'Changed',
+    }))
+
+    // The non-target conversation (b) must be the SAME object reference.
+    const bResult = result.conversations.find(c => c.id === 'chat:b')
+    expect(bResult).toBe(b)
+    // The target conversation (a) must be a NEW object.
+    const aResult = result.conversations.find(c => c.id === 'chat:a')
+    expect(aResult).not.toBe(a)
+    expect(aResult?.title).toBe('Changed')
   })
 })

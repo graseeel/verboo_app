@@ -199,23 +199,40 @@ export function missingFfmpegCapabilities(outputs, target) {
   return missing
 }
 
-function assertPinnedSource(source, name) {
+// Resolves the list of URLs for a pinned source. Accepts `urls` (preferred,
+// array of mirrors tried in order) or legacy `url` (single string). Does NOT
+// mutate the input — returns a new array. sha256 is always mandatory and
+// verified against whichever URL succeeds; the checksum is the supply-chain
+// anchor, not the URL.
+function resolveSourceUrls(source, name) {
   if (!source || typeof source !== 'object') throw new Error(`Missing ${name} pin`)
-  if (typeof source.url !== 'string' || !source.url.startsWith('https://')) {
-    throw new Error(`Invalid ${name} URL`)
+  const urls = source.urls
+    ? (Array.isArray(source.urls) ? source.urls : null)
+    : (typeof source.url === 'string' ? [source.url] : null)
+  if (!urls || urls.length === 0) {
+    throw new Error(`Invalid ${name} URLs`)
+  }
+  for (const url of urls) {
+    if (typeof url !== 'string' || !url.startsWith('https://')) {
+      throw new Error(`Invalid ${name} URL: ${url}`)
+    }
   }
   if (typeof source.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(source.sha256)) {
     throw new Error(`Invalid ${name} SHA-256`)
   }
+  return urls
 }
 
 function validateManifest(manifest) {
-  for (const name of sourceNames) assertPinnedSource(manifest[name], name)
-  assertPinnedSource(manifest.whisperModel, 'whisper model')
+  const normalized = { ...manifest }
+  for (const name of sourceNames) {
+    normalized[name] = { ...manifest[name], urls: resolveSourceUrls(manifest[name], name) }
+  }
+  normalized.whisperModel = { ...manifest.whisperModel, urls: resolveSourceUrls(manifest.whisperModel, 'whisper model') }
   if (!Number.isSafeInteger(manifest.whisperModel.size) || manifest.whisperModel.size <= 0) {
     throw new Error('Invalid whisper model size')
   }
-  return manifest
+  return normalized
 }
 
 export async function loadManifest() {
@@ -264,9 +281,63 @@ async function exists(file) {
   }
 }
 
+// Resilient download: tries each URL in `urls` in order, with up to
+// MAX_ATTEMPTS attempts per URL and exponential backoff. Each attempt has a
+// generous per-request timeout (the undici default 10s connect is too short
+// for a slow host). SHA-256 is verified after every successful download; a
+// mismatch consumes the attempt and falls through to the next URL/mirror.
+// This is the only network path for pinned sidecar sources — a single
+// transient hiccup must not sink a platform release.
+const DOWNLOAD_MAX_ATTEMPTS = 4
+const DOWNLOAD_BACKOFF_MS = [2_000, 6_000, 15_000, 40_000]
+const DOWNLOAD_PER_ATTEMPT_TIMEOUT_MS = 60_000
+
+async function fetchWithRetry(name, urls, sha256, destination) {
+  let lastError = null
+  for (const url of urls) {
+    for (let attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt++) {
+      try {
+        process.stdout.write(
+          `Downloading ${name} from ${url} (attempt ${attempt}/${DOWNLOAD_MAX_ATTEMPTS})\n`
+        )
+        const response = await fetch(url, {
+          redirect: 'follow',
+          signal: AbortSignal.timeout(DOWNLOAD_PER_ATTEMPT_TIMEOUT_MS),
+        })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const buffer = Buffer.from(await response.arrayBuffer())
+        await writeFile(destination, buffer)
+        // Verify checksum before accepting — a mirror serving a different
+        // artifact (e.g. git-generated tarball vs official .tar.xz) is
+        // rejected here, not silently shipped.
+        const actual = createHash('sha256').update(buffer).digest('hex')
+        if (actual !== sha256) {
+          throw new Error(`SHA-256 mismatch: expected ${sha256}, got ${actual}`)
+        }
+        process.stdout.write(`Downloaded ${name} from ${url} (${buffer.length} bytes, sha256 ok)\n`)
+        return destination
+      } catch (error) {
+        lastError = error
+        process.stderr.write(
+          `  attempt ${attempt} failed: ${error.message}\n`
+        )
+        if (attempt < DOWNLOAD_MAX_ATTEMPTS) {
+          const wait = DOWNLOAD_BACKOFF_MS[attempt - 1] ?? DOWNLOAD_BACKOFF_MS[DOWNLOAD_BACKOFF_MS.length - 1]
+          process.stdout.write(`  retrying in ${wait / 1000}s...\n`)
+          await new Promise((resolve) => setTimeout(resolve, wait))
+        }
+      }
+    }
+  }
+  throw new Error(
+    `Could not download ${name} after ${urls.length} URL(s) × ${DOWNLOAD_MAX_ATTEMPTS} attempts. ` +
+    `Last error: ${lastError ? lastError.message : 'unknown'}`
+  )
+}
+
 async function fetchPinnedArchive(name, source, sourceDirectory) {
   await mkdir(sourceDirectory, { recursive: true })
-  const archive = path.join(sourceDirectory, `${name}-${source.version}${archiveExtension(source.url)}`)
+  const archive = path.join(sourceDirectory, `${name}-${source.version}${archiveExtension(source.urls[0])}`)
   if (await exists(archive)) {
     try {
       await verifySha256(archive, source.sha256)
@@ -279,11 +350,7 @@ async function fetchPinnedArchive(name, source, sourceDirectory) {
   const temporary = await mkdtemp(path.join(tmpdir(), `verboo-${name}-download-`))
   const downloaded = path.join(temporary, path.basename(archive))
   try {
-    process.stdout.write(`Downloading pinned ${name} ${source.version}\n`)
-    const response = await fetch(source.url, { redirect: 'follow' })
-    if (!response.ok) throw new Error(`Could not download ${name}: HTTP ${response.status}`)
-    await writeFile(downloaded, Buffer.from(await response.arrayBuffer()))
-    await verifySha256(downloaded, source.sha256)
+    await fetchWithRetry(name, source.urls, source.sha256, downloaded)
     await rename(downloaded, archive)
     return archive
   } finally {

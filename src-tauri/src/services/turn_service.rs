@@ -363,6 +363,7 @@ impl TurnService {
                         additions: None,
                         deletions: None,
                         diff_preview: None,
+                        todos: None,
                     }),
                     ..Default::default()
                 },
@@ -1105,6 +1106,7 @@ impl TurnService {
                     additions: None,
                     deletions: None,
                     diff_preview: None,
+                    todos: None,
                 }),
                 ..Default::default()
             },
@@ -2119,13 +2121,184 @@ fn build_prompt(request: &AgentTurnRequest, is_resume: bool) -> String {
     build_prompt_internal(request, is_resume)
 }
 
+/// Slash commands reserved by the CLI's native command interceptor.
+///
+/// The CLI's interception layer fires only when the user message
+/// STARTS with a `/` followed by a known command — see MEDICAO
+/// (2026-07-30) where /compact produced `status:"compacting"` and
+/// /nonexistent returned `Unknown skill` in 9ms with no API call.
+/// (MEDICAO ran the bundled cli.mjs DIRECTLY against node, NOT
+/// through the app's prompt path — it proved the CLI side, not the
+/// app side.)
+///
+/// Our `build_prompt_internal` normally PREFIXES the message with
+/// the workspace header (`Current working directory: ...`) and, on
+/// the non-resume path, with app instructions/personality/skills/
+/// memory/etc. That prefix breaks the CLI interceptor because the
+/// resulting prompt no longer starts with `/`.
+///
+/// The reserved commands below are passed through RAW (no prefix,
+/// no envelope) when they appear at the head of `request.message`.
+/// Adding a new reserved command: append it here AND add a
+/// regression test that proves the bypass fires AND update the
+/// cross-fence test at
+/// `src/renderer/features/composer/reservedSlashCommands.contract.test.ts`
+/// so the renderer side and the Rust side stay in sync.
+///
+/// Field defect reference: commit 7fdd56c added /compact on
+/// origin/dev; commit c5dae57 (Tauri migration) introduced the
+/// prompt wrapping; no subsequent commit touched either side.
+/// The bypass was missing from the day /compact shipped.
+const RESERVED_SLASH_COMMANDS: &[&str] = &[
+    // Native CLI compaction command. Fires `status:"compacting"` and
+    // returns `compact_boundary` metadata.
+    //
+    // PROVEN end-to-end on the CLI side by MEDICAO 2026-07-30:
+    //   node cli.mjs --print --output-format stream-json --verbose \
+    //     --resume <session_id> "/compact"
+    //   → first event: {"type":"system","subtype":"status",
+    //                    "status":"compacting",...}
+    //   → later event: {"type":"system","subtype":"compact_boundary",
+    //                    "compact_metadata":{"trigger":"manual",
+    //                                        "pre_tokens":2}}
+    //
+    // NOT PROVEN on the app side. This Rust bypass makes the message
+    // arrive raw at the CLI, but PROVING the CLI executes compaction
+    // by the app path requires rebuilding the app, opening it in a
+    // real session, and observing `compact_boundary` in the
+    // runtimeActivity stream AND `contextUsage` dropping in the UI.
+    // Exit-zero alone is NOT acceptance — many error paths also
+    // return exit zero. The field-acceptance criterion, registered
+    // 2026-07-31, is:
+    //   `compact_boundary` present in the stream-json emission AND
+    //   `contextUsage` value falling afterwards. Never exit zero.
+    //
+    // Do not state "verified end-to-end" or "fully proven" in any
+    // comment or commit message about this bypass until the app-side
+    // criterion is observed in a packaged build.
+    "/compact",
+];
+
+/// Returns `true` when `message` is a reserved slash command that
+/// must reach the CLI interceptor unprefixed. Matching is by
+/// whitespace-delimited head: `/compact preserve old memory` matches
+/// because the head token is `/compact`. Comparison is
+/// case-insensitive — declared as DEFENSIVE CONSERVATISM. We did
+/// NOT verify that the CLI normalizes case before intercepting, so
+/// the lowercase here is "if the CLI is case-sensitive we want to
+/// still match" rather than a documented contract. If the CLI is in
+/// fact case-sensitive and the user types `/Compact`, this bypass
+/// fails — that failure mode is still better than the silent wrap
+/// it replaces (the user sees the message go to the model, not a
+/// silent compact miss).
+fn is_reserved_slash_command(message: &str) -> bool {
+    let trimmed = message.trim_start();
+    let head = trimmed
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    !head.is_empty()
+        && head.starts_with('/')
+        && RESERVED_SLASH_COMMANDS
+            .iter()
+            .any(|reserved| head == *reserved)
+}
+
 /// Same as [`build_prompt`], exposed as `pub(crate)` so the research-subagent
 /// runner (services/research_subagent_runner.rs) can compose the same prompt
 /// format without duplicating the logic.
 pub(crate) fn build_prompt_internal(request: &AgentTurnRequest, is_resume: bool) -> String {
+    // Reserved slash commands bypass the prompt wrapper. The CLI's
+    // command interceptor fires only on messages that START with a
+    // recognized `/` token — any prefix (workspace header, app
+    // instructions, attachments, etc.) breaks the intercept and the
+    // command is silently routed to the model as text. See
+    // `RESERVED_SLASH_COMMANDS` for the field defect background.
+    //
+    // Field evidence (D-D, 2026-07-31): /compact sent through the
+    // app's normal flow never reached the CLI's `status:"compacting"`
+    // branch because the prompt started with "Current working
+    // directory: ..." and the `/compact` token was nowhere near the
+    // head. The bypass returns the message as the entire prompt —
+    // no envelope, no language header, no workspace context. The CLI
+    // accepts the bare slash command in --print mode.
+    //
+    // T2-TodoWrite-i18n (2026-07-31): this bypass is a D-D field fix
+    // and is intentionally UNTOUCHED. A reserved slash command
+    // continues to leave the prompt wrapper untouched — no envelope,
+    // no language header, no TodoWrite instruction. /compact
+    // intercept must not regress.
+    //
+    // F0-Annotate (2026-07-31) — DECISÃO: DECLARAR, NÃO BLOQUEAR.
+    //
+    // When a reserved slash command arrives WITH pending annotations,
+    // the bypass returns the raw message and the annotations would be
+    // dropped in silence. Silence is the worst desfecho — the user
+    // selected a passage, wrote a comment, hit send, and the next
+    // turn has no idea any of that happened. We considered two
+    // options:
+    //
+    //   (A) BLOQUEAR — return Err / panic and refuse to dispatch.
+    //       Rejected: the slash command bypass is the D-D field fix
+    //       and the user said "não mexa no atalho em si". Changing
+    //       the return type to Result would ripple into 7+ callers
+    //       for a corner case. Worse, blocking /compact because the
+    //       user happened to have a draft annotation would be a
+    //       regression in the /compact UX.
+    //
+    //   (B) DECLARAR — log loud via eprintln with full context
+    //       (which reserved command, how many annotations dropped,
+    //       what the user comment was), then proceed with the bypass
+    //       as today. The annotations are dropped, but the drop is
+    //       VISIBLE in stderr / Tauri panic handler logs. The
+    //       renderer can also guard against this combination at the
+    //       dispatch site (MOSAICO's fence), but the Rust side is
+    //       the last line of defense and must not be silent.
+    //
+    // We choose (B). The eprintln is the declaration. The bypass
+    // itself is untouched — same `return request.message.clone()`
+    // as before, just preceded by a log line when annotations are
+    // non-empty. A test pins the log via a thread-local counter
+    // (see `RESERVED_WITH_ANNOTATIONS_WARN_COUNT`).
+    if is_reserved_slash_command(&request.message) {
+        if let Some(anns) = request.annotations.as_ref() {
+            if !anns.is_empty() {
+                warn_reserved_with_annotations_dropped(
+                    &request.message,
+                    anns.len(),
+                    anns
+                        .iter()
+                        .find_map(|a| a.comment.as_ref().map(|c| c.as_str()))
+                        .unwrap_or("<no comment>"),
+                );
+            }
+        }
+        return request.message.clone();
+    }
+
     let language = request.response_language.unwrap_or(LanguageCode::EnUs);
     let working_directory = safe_runtime_working_directory(&request.working_directory);
     let _ = request.response_language; // already copied via Copy
+
+    // T2-TodoWrite-i18n (2026-07-31): the TodoWrite language instruction
+    // is added to BOTH the first-turn envelope AND the resume branch.
+    //
+    // Why include it on resume: the conversation can resume many times
+    // in batch and /goal flows — only the first turn sets the model
+    // expectation, and a fresh model invocation on resume does NOT
+    // carry the first-turn's system header. If the instruction lived
+    // only here, the agent's TodoWrite steps on every subsequent
+    // resumed task would revert to English. The cost is small (~30–40
+    // tokens per turn) and constant, which is acceptable for a
+    // behavioral guarantee.
+    let language_instruction = todowrite_language_instruction(language);
+    // F0-Annotate (2026-07-31): annotation block, when present, is
+    // placed AFTER skills/language-instruction and BEFORE attachments.
+    // Empty string when there are no annotations — so a request
+    // without annotations produces a byte-identical prompt to today.
+    // See `build_annotation_block` for the safety labeling contract.
+    let annotation_block = build_annotation_block(request.annotations.as_ref(), language);
 
     if is_resume {
         let workspace_line = if language == LanguageCode::PtBr {
@@ -2139,6 +2312,8 @@ pub(crate) fn build_prompt_internal(request: &AgentTurnRequest, is_resume: bool)
             request.model_supports_vision,
         );
         let parts: Vec<String> = std::iter::once(workspace_line)
+            .chain(std::iter::once(language_instruction))
+            .chain(std::iter::once(annotation_block).filter(|s| !s.is_empty()))
             .chain(attachment_lines)
             .chain(std::iter::once(request.message.clone()))
             .collect();
@@ -2193,6 +2368,18 @@ pub(crate) fn build_prompt_internal(request: &AgentTurnRequest, is_resume: bool)
     }
     let skill_lines = build_skill_lines(&request.skills, language);
     parts.extend(skill_lines);
+    // T2-TodoWrite-i18n (2026-07-31): instruction placed in the first-turn
+    // envelope, AFTER skills/attachments and BEFORE the user message, so
+    // it lands in the same structural position as a system-level rule.
+    parts.push(language_instruction);
+    // F0-Annotate (2026-07-31): annotation block placed BEFORE
+    // attachments and BEFORE the user message. Empty string is
+    // filtered out so it does not introduce a blank section when
+    // there are no annotations — preserving byte-identical prompt
+    // for the no-annotations case.
+    if !annotation_block.is_empty() {
+        parts.push(annotation_block);
+    }
     let attachment_lines = build_attachment_lines(
         &request.attachments,
         language,
@@ -2202,6 +2389,198 @@ pub(crate) fn build_prompt_internal(request: &AgentTurnRequest, is_resume: bool)
 
     parts.push(request.message.clone());
     parts.join("\n\n")
+}
+
+/// T2-TodoWrite-i18n (2026-07-31): instructs the model to write the
+/// TodoWrite item text in the conversation's language, while keeping
+/// technical identifiers (filenames, paths, commands, flags, code
+/// snippets) intact. Why a rule at the source, not translation at
+/// display: the user picked the source-fix because displaying would
+/// destroy filenames, paths, and commands — translating `p1.txt` to
+/// `p1.txt` is fine, but translating a Cyrillic path or a CLI flag
+/// would be a data-loss bug.
+///
+/// Token cost: ~30 tokens (EN) / ~40 tokens (PT). The PT version is a
+/// hair longer because "Escreva os passos do TodoWrite" + "Preserve
+/// intactos" carries more inflection than English. Both are
+/// single-sentence instructions — no preamble, no explanation, just
+/// the rule. The instruction is one of several `parts` in the prompt;
+/// adding it does not change the routing envelope.
+fn todowrite_language_instruction(language: LanguageCode) -> String {
+    if language == LanguageCode::PtBr {
+        // PT: write steps in the conversation language; keep
+        // identifiers intact. Names of files, paths, commands, flags,
+        // identifiers, and code snippets MUST stay as-is.
+        "Escreva os passos do TodoWrite (campos content e activeForm) \
+         no idioma da conversa. Preserve intactos: nomes de arquivo, \
+         caminhos, comandos, flags, identificadores e trechos de código."
+            .to_string()
+    } else {
+        // EN: write steps in the conversation language; keep
+        // identifiers intact. Filenames, paths, commands, flags,
+        // identifiers, and code snippets MUST stay as-is.
+        "Write TodoWrite steps (content and activeForm fields) in the \
+         conversation's language. Keep intact: filenames, paths, \
+         commands, flags, identifiers, and code snippets."
+            .to_string()
+    }
+}
+
+/// F0-Annotate (2026-07-31) — renders the user's annotations as a
+/// labeled block in the prompt. Returns empty string when there are
+/// no annotations, so the caller can `.filter(|s| !s.is_empty())` and
+/// the no-annotations case produces a byte-identical prompt to today.
+///
+/// SAFETY CONTRACT — ORIGIN LABELING (load-bearing, non-negotiable):
+/// the `quote` field is a slice of the ASSISTANT's prior response
+/// returning to the prompt. The `comment` field is USER-authored. If
+/// the two ever collapse into a single bucket, we create an injection
+/// surface — model text returning as if it were user instruction. So
+/// each annotation is rendered with TWO distinct labels:
+///
+///   PT:
+///     "Trecho citado da resposta anterior DO ASSISTENTE:"
+///     "Comentário DO USUÁRIO:"
+///   EN:
+///     "Quoted passage from the prior ASSISTANT response:"
+///     "USER comment:"
+///
+/// The labels are uppercase-emphasized ("DO ASSISTENTE", "DO USUÁRIO",
+/// "ASSISTANT", "USER") so the model cannot misread them as soft
+/// hints. The order within each annotation is: quote first (the
+/// context), comment second (the user's intent on that context).
+/// Comment is OPTIONAL — when `comment` is None or empty, the comment
+/// line is OMITTED entirely. We do NOT emit an orphan label like
+/// "Comentário DO USUÁRIO:" with nothing after it — that would be
+/// both confusing and a prompt-bloat leak.
+///
+/// TRUNCATION POLICY — UNIT CONVERSION (do not mix units):
+///
+///   TS side (renderer gate, MOSAICO fence): 2000 UTF-16 CODE UNITS.
+///   A UTF-16 code unit is NOT a byte and NOT a code point:
+///     - a BMP char (U+0800..U+FFFF, e.g. CJK) is 1 UTF-16 unit but
+///       3 UTF-8 bytes;
+///     - an emoji (non-BMP) is 2 UTF-16 units but 4 UTF-8 bytes.
+///
+///   Worst-case UTF-8 expansion of 2000 UTF-16 units:
+///     all BMP 3-byte chars → 2000 × 3 = 6000 bytes
+///     (non-BMP: 1000 chars × 4 bytes = 4000 bytes — smaller)
+///   → 6000 bytes is the largest a TS-passed selection can reach.
+///
+///   The Rust ceiling is therefore 6144 bytes (6 KiB = 6000 + 144
+///   slack): the smallest value that NEVER fires on a selection the
+///   TS gate let through. If it fires anyway, a renderer bug
+///   bypassed the TS gate — the prompt still does not bloat to the
+///   size of the entire response.
+///
+///   Truncation is CHAR-SAFE (never cuts inside a UTF-8 char — that
+///   PANICS in Rust; see `truncate_quote_char_safe`). The 'ç'
+///   boundary test in this file guards the panic path.
+const ANNOTATION_QUOTE_CEILING_BYTES: usize = 6144;
+
+/// F0-Annotate (2026-07-31) — truncates a quote at a UTF-8 CHAR
+/// boundary near the byte ceiling. `&str[..N]` PANICS when N lands
+/// inside a multi-byte character (a user pasting 4 KiB of accented
+/// text would crash the app at the exact wrong offset). Walking back
+/// to the last char boundary is the panic-free form; worst-case
+/// walk-back is 3 bytes (max UTF-8 char width is 4). The "[…]" marker
+/// signals the cut to the model. Returns the original when it fits.
+fn truncate_quote_char_safe(quote: &str) -> String {
+    if quote.len() <= ANNOTATION_QUOTE_CEILING_BYTES {
+        return quote.to_string();
+    }
+    let mut end = ANNOTATION_QUOTE_CEILING_BYTES;
+    while !quote.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = String::with_capacity(end + 4);
+    out.push_str(&quote[..end]);
+    out.push_str("[…]");
+    out
+}
+
+fn build_annotation_block(
+    annotations: Option<&Vec<crate::models::types::Annotation>>,
+    language: LanguageCode,
+) -> String {
+    let anns = match annotations {
+        Some(a) if !a.is_empty() => a,
+        _ => return String::new(),
+    };
+    let (header, quote_label, comment_label) = if language == LanguageCode::PtBr {
+        (
+            "Anotações do usuário para este turno:",
+            "Trecho citado da resposta anterior DO ASSISTENTE:",
+            "Comentário DO USUÁRIO:",
+        )
+    } else {
+        (
+            "User annotations for this turn:",
+            "Quoted passage from the prior ASSISTANT response:",
+            "USER comment:",
+        )
+    };
+    let mut sections: Vec<String> = Vec::with_capacity(anns.len() + 1);
+    sections.push(header.to_string());
+    for (i, ann) in anns.iter().enumerate() {
+        let mut block = String::new();
+        block.push_str(&format!("{}. ", i + 1));
+        block.push_str(quote_label);
+        block.push('\n');
+        let quote = truncate_quote_char_safe(&ann.quote);
+        block.push_str(&quote);
+        if let Some(c) = ann.comment.as_ref() {
+            let trimmed = c.trim();
+            if !trimmed.is_empty() {
+                block.push('\n');
+                block.push_str(comment_label);
+                block.push('\n');
+                block.push_str(trimmed);
+            }
+        }
+        sections.push(block);
+    }
+    sections.join("\n\n")
+}
+
+/// F0-Annotate (2026-07-31) — DECLARAR (not BLOQUEAR) when a reserved
+/// slash command arrives with pending annotations. Logs to stderr
+/// with full context so the drop is visible, not silent. See the
+/// decision comment in `build_prompt_internal` for the rationale.
+///
+/// Test hook: `RESERVED_WITH_ANNOTATIONS_WARN_COUNT` is a thread-local
+/// counter incremented on each warning. Tests reset it, run the call,
+/// and assert the counter — without having to capture stderr. The
+/// counter is `#[cfg(test)]` only, zero cost in release builds.
+#[cfg(test)]
+thread_local! {
+    static RESERVED_WITH_ANNOTATIONS_WARN_COUNT: std::cell::Cell<usize> = std::cell::Cell::new(0);
+}
+
+#[cfg(test)]
+fn reserved_with_annotations_warn_count() -> usize {
+    RESERVED_WITH_ANNOTATIONS_WARN_COUNT.with(|c| c.get())
+}
+
+#[cfg(test)]
+fn reset_reserved_with_annotations_warn_count() {
+    RESERVED_WITH_ANNOTATIONS_WARN_COUNT.with(|c| c.set(0));
+}
+
+fn warn_reserved_with_annotations_dropped(
+    message: &str,
+    count: usize,
+    first_comment: &str,
+) {
+    eprintln!(
+        "[F0-Annotate] WARN: reserved slash command `{}` arrived with {} pending annotation(s); \
+         the bypass returns the raw message and the annotations are DROPPED (not attached to the \
+         next model turn). First comment: `{}`. This is a DECLARAR decision — the drop is logged, \
+         not silent. See build_prompt_internal decision comment for rationale.",
+        message, count, first_comment
+    );
+    #[cfg(test)]
+    RESERVED_WITH_ANNOTATIONS_WARN_COUNT.with(|c| c.set(c.get() + 1));
 }
 
 /// Resolves the `--effort <level>` argument to send to the CLI, given the
@@ -2852,6 +3231,7 @@ fn runtime_activity_from_payload(payload: &serde_json::Value) -> Option<RuntimeA
             additions: None,
             deletions: None,
             diff_preview: None,
+            todos: None,
         });
     }
     let block = extract_tool_block(payload)?;
@@ -2869,6 +3249,24 @@ fn runtime_activity_from_payload(payload: &serde_json::Value) -> Option<RuntimeA
     let stats = edit_stats_for_tool(&name, input.as_ref());
     let diff_preview = diff_preview_for_tool(&name, input.as_ref());
     let activity = activity_for_tool(&name);
+    // T1-TodoWrite SUBAGENT FILTER: `parent_tool_use_id` presente e
+    // não-vazio marca que este evento veio de uma thread de subagente.
+    // O TodoWrite de subagente é interno a ele — a lista que chega à
+    // tela do usuário tem que ser a do turno PRINCIPAL, senão o
+    // usuário vê a lista interna de um subagente sobrescrevendo a dele.
+    // Por isso só populamos `todos` quando `parent_tool_use_id` é
+    // ausente ou vazio. O filtro é no PRODUTOR (aqui), não no
+    // consumidor (renderer): o dado nem atravessa a ponte.
+    let is_subagent_event = payload
+        .get("parent_tool_use_id")
+        .and_then(|v| v.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    let todos = if is_subagent_event {
+        None
+    } else {
+        todos_for_tool(&name, input.as_ref())
+    };
     Some(RuntimeActivity {
         key: format!(
             "{}:{}",
@@ -2882,6 +3280,7 @@ fn runtime_activity_from_payload(payload: &serde_json::Value) -> Option<RuntimeA
         additions: stats.as_ref().map(|s| s.additions),
         deletions: stats.as_ref().map(|s| s.deletions),
         diff_preview,
+        todos,
     })
 }
 
@@ -2979,8 +3378,71 @@ fn activity_for_tool(tool_name: &str) -> (&'static str, &'static str) {
         "bash" | "shell" | "exec_command" => ("Executou comando", "command"),
         "websearch" | "webfetch" => ("Pesquisou na internet", "search"),
         "askuserquestion" => ("Pediu resposta", "permission"),
-        "todowrite" => ("Atualizou tarefas", "tool"),
+        // T1-TodoWrite (2026-07-31) — DECISÃO EXPLÍCITA DO MAESTRO:
+        // PLANEJAR NÃO CONTA COMO AGIR.
+        //
+        // A guarda de ação observável (renderer goalState.ts
+        // ACTION_ACTIVITY_KINDS) existe para provar que algo FOI FEITO
+        // — um edit, um comando, uma busca. Escrever a lista do que se
+        // pretende fazer é o oposto disso: é declarar intenção, não
+        // executar. Se todowrite fosse kind="tool", entraria na
+        // whitelist e um agente poderia satisfazer a guarda só
+        // escrevendo a lista de tarefas, sem fazer nenhuma. Isso é
+        // exatamente o defeito que a guarda existe para pegar, só que
+        // disfarçado de atividade legítima.
+        //
+        // kind="planning" cai FORA da whitelist por design. O label
+        // continua "Atualizou tarefas" para o usuário ver que o agente
+        // planejou, mas o avaliador não conta isso como ação. Quem ler
+        // este código daqui a seis meses precisa entender que foi
+        // deliberado: a simetria entre "exibiu uma atividade" e "contou
+        // como ação" foi quebrada aqui de propósito, porque planejar é
+        // o caso onde a simetria mente.
+        "todowrite" => ("Atualizou tarefas", "planning"),
         _ => ("Usou ferramenta", "tool"),
+    }
+}
+
+/// T1-TodoWrite (2026-07-31): extracts the structured todo list from a
+/// todowrite tool input. Mirrors the CLI's TodoItemSchema —
+/// `todos: [{ content, status, activeForm }]` with status ∈
+/// {"pending","in_progress","completed"}. Returns None for non-todowrite
+/// tools or malformed inputs (defensive: a missing/empty `todos` array
+/// yields None, not an empty vec, so the renderer's `skip_serializing_if`
+/// keeps the payload small).
+///
+/// SUBAGENT FILTER: this helper does NOT know whether the event came
+/// from a subagent. The filter is applied by the caller
+/// (`runtime_activity_from_payload`), which checks `parent_tool_use_id`
+/// before calling this — subagent TodoWrites never reach this helper.
+fn todos_for_tool(
+    tool_name: &str,
+    input: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<Vec<crate::models::types::TodoItem>> {
+    let input = input?;
+    let n = tool_name.to_lowercase();
+    if n != "todowrite" {
+        return None;
+    }
+    let arr = input.get("todos")?.as_array()?;
+    if arr.is_empty() {
+        return None;
+    }
+    let mut items = Vec::with_capacity(arr.len());
+    for v in arr {
+        let content = v.get("content").and_then(|v| v.as_str())?.to_string();
+        let status = v.get("status").and_then(|v| v.as_str())?.to_string();
+        let active_form = v.get("activeForm").and_then(|v| v.as_str())?.to_string();
+        items.push(crate::models::types::TodoItem {
+            content,
+            status,
+            active_form,
+        });
+    }
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
     }
 }
 
@@ -2997,6 +3459,12 @@ fn detail_for_tool(
                 .find_map(|k| input.get(*k).and_then(|v| v.as_str())),
             360,
         );
+    }
+    // T1-TodoWrite: todowrite não tem detail em string — o dado vive no
+    // campo estruturado `todos` (ver todos_for_tool). Retornar None
+    // aqui evita duplicar a lista em string e em struct.
+    if n == "todowrite" {
+        return None;
     }
     if matches!(n.as_str(), "bash" | "shell" | "exec_command") {
         return snippet(
@@ -3835,6 +4303,7 @@ mod tests {
             run_video_analysis: None,
             effort: None,
             reasoning: None,
+            annotations: None,
         };
         let prompt = build_prompt(&request, false);
         assert!(prompt.contains("Current working directory: /tmp"));
@@ -3864,6 +4333,7 @@ mod tests {
             cli_media_capabilities: None,
             run_video_analysis: None,
             effort: None,
+            annotations: None,
             reasoning: None,
         };
         let prompt = build_prompt(&request, true);
@@ -4081,6 +4551,7 @@ mod tests {
             run_video_analysis: None,
             effort: None,
             reasoning: None,
+            annotations: None,
         };
         let payload = build_stream_json_input(&request, "prompt text");
         assert!(
@@ -4114,6 +4585,7 @@ mod tests {
             run_video_analysis: None,
             effort: None,
             reasoning: None,
+            annotations: None,
         };
         let payload = build_stream_json_input(&request, "prompt text");
         assert!(
@@ -4147,6 +4619,7 @@ mod tests {
             run_video_analysis: None,
             effort: None,
             reasoning: None,
+            annotations: None,
         };
         let payload = build_stream_json_input(&request, "prompt text");
         assert!(
@@ -4195,6 +4668,7 @@ mod tests {
             run_video_analysis: None,
             effort: None,
             reasoning: None,
+            annotations: None,
         };
         let payload = build_stream_json_input(&request, "prompt text here");
         assert!(
@@ -4263,6 +4737,7 @@ mod tests {
             run_video_analysis: None,
             effort: None,
             reasoning: None,
+            annotations: None,
         };
         let payload = build_stream_json_input(&request, "prompt text");
         // No readable images → None (falls back to positional prompt).
@@ -4408,6 +4883,7 @@ mod tests {
             personality: None,
             custom_instructions: None,
             memory_context: None,
+            annotations: None,
         }
     }
 
@@ -4507,6 +4983,7 @@ mod tests {
             run_video_analysis: None,
             effort: None,
             reasoning: None,
+            annotations: None,
         }
     }
 
@@ -5115,6 +5592,850 @@ mod tests {
                 .extracted_text
                 .as_deref(),
             Some("text content")
+        );
+    }
+
+    // ── D-D (2026-07-31) field fix: slash commands bypass prompt prefix ──
+    //
+    // The CLI's native command interceptor fires only when the user
+    // message STARTS with a recognized slash token (MEDICAO 2026-07-30:
+    // /compact → status:"compacting"; /nonexistent → "Unknown skill"
+    // in 9ms with no API call). `build_prompt_internal` normally
+    // prefixes with the workspace header (`Current working
+    // directory: ...`) and, on the first-turn path, with the full
+    // app instructions block — that prefix breaks the intercept.
+    //
+    // The fix returns the raw message as the entire prompt when the
+    // head token is one of `RESERVED_SLASH_COMMANDS`. These tests pin
+    // both sides of the contract:
+
+    fn request_with_message(message: &str) -> AgentTurnRequest {
+        AgentTurnRequest {
+            turn_id: None,
+            conversation_id: "c1".into(),
+            message: message.into(),
+            model: None,
+            model_supports_vision: None,
+            context_window: None,
+            response_language: Some(LanguageCode::EnUs),
+            access_mode: crate::models::types::AccessMode::Approval,
+            working_directory: "/tmp".into(),
+            skills: Vec::new(),
+            attachments: None,
+            response_enhancements_enabled: Some(false),
+            personality: None,
+            custom_instructions: None,
+            memory_context: None,
+            run_vision_fallback: None,
+            media_capabilities: None,
+            cli_media_capabilities: None,
+            run_video_analysis: None,
+            effort: None,
+            reasoning: None,
+            annotations: None,
+        }
+    }
+
+    #[test]
+    fn build_prompt_reserved_slash_compact_bypasses_prefix_on_resume() {
+        // CONTRAFACTUAL EVIDENCE: a reserved slash command on the
+        // resume path (where the bug surfaced) must arrive at the CLI
+        // starting with `/compact` and WITHOUT the workspace header.
+        // Before the fix, the prompt started with "Current working
+        // directory: /tmp" and the CLI's interceptor never fired.
+        let req = request_with_message("/compact preserve old memory");
+        let prompt = build_prompt(&req, /* is_resume = */ true);
+        assert!(
+            prompt.starts_with("/compact"),
+            "reserved slash command must be at prompt head — got: {prompt:?}"
+        );
+        assert!(
+            !prompt.contains("Current working directory:"),
+            "workspace header must NOT prefix reserved slash commands — got: {prompt:?}"
+        );
+        assert!(
+            !prompt.contains("Diretório de trabalho atual:"),
+            "PT-BR workspace header must NOT prefix reserved slash commands — got: {prompt:?}"
+        );
+        // Whole-prompt equality: the bypass returns the message RAW.
+        assert_eq!(prompt, "/compact preserve old memory");
+    }
+
+    #[test]
+    fn build_prompt_reserved_slash_compact_bypasses_prefix_on_first_turn() {
+        // The non-resume path prefixes with the full app instructions
+        // block — even worse for intercept. The bypass must apply on
+        // BOTH paths or /compact still won't fire from the user's
+        // first message of a session.
+        let req = request_with_message("/compact");
+        let prompt = build_prompt(&req, /* is_resume = */ false);
+        assert!(
+            prompt.starts_with("/compact"),
+            "reserved slash command must be at prompt head — got: {prompt:?}"
+        );
+        assert_eq!(prompt, "/compact");
+    }
+
+    #[test]
+    fn build_prompt_normal_message_still_gets_workspace_prefix_on_resume() {
+        // Counterfactual: the bypass is reserved-command-only. A
+        // normal message MUST still get the prefix or the existing
+        // workspace-context guarantee (test
+        // `build_prompt_resume_omits_app_instructions` at line 3845)
+        // silently regresses. This test is the load-bearing one for
+        // "don't break the normal case".
+        let req = request_with_message("Hello");
+        let prompt = build_prompt(&req, /* is_resume = */ true);
+        assert!(
+            prompt.contains("Current working directory: /tmp"),
+            "normal message on resume path MUST keep workspace header — got: {prompt:?}"
+        );
+        assert!(
+            !prompt.starts_with("Hello"),
+            "normal message MUST NOT bypass the prefix — got: {prompt:?}"
+        );
+    }
+
+    #[test]
+    fn reserved_slash_commands_list_does_not_shrink_or_vanish() {
+        // Fail-by-default regression guard: the reserved set must
+        // remain non-empty and contain the documented /compact entry.
+        // If a future refactor empties the list or removes /compact,
+        // /compact stops reaching the CLI's interceptor and the
+        // MEDICAO evidence (status:"compacting" emitted by the CLI)
+        // becomes a dead letter.
+        //
+        // The guard does NOT pin the exact size — additions are
+        // expected as the CLI ships new reserved commands. It pins:
+        //   1. The list is non-empty.
+        //   2. `/compact` is present (the one MEDICAO verified).
+        assert!(!RESERVED_SLASH_COMMANDS.is_empty(),
+            "RESERVED_SLASH_COMMANDS is empty — no slash command can reach the CLI interceptor. \
+             This is a regression: see D-D 2026-07-31 field fix.");
+        assert!(
+            RESERVED_SLASH_COMMANDS.contains(&"/compact"),
+            "RESERVED_SLASH_COMMANDS must contain \"/compact\" (verified by MEDICAO 2026-07-30)"
+        );
+    }
+
+    // ── T1-TodoWrite (2026-07-31) — 4 regression tests ────────────────
+    //
+    // The pre-existing defect: todowrite was mapped to
+    // ("Atualizou tarefas", "tool") and `input.todos` was DISCARDED in
+    // `detail_for_tool` (no branch for it). The renderer only ever
+    // saw the label "Atualizou tarefas" — items and statuses were lost
+    // at the Rust boundary.
+    //
+    // The fix introduces:
+    //   1. kind="planning" (not "tool") — out of the renderer
+    //      whitelist `['edit','command','terminal','read','search','tool','subagent']`,
+    //      so planning does NOT count as observable action.
+    //   2. Structured `todos: Option<Vec<TodoItem>>` field on
+    //      RuntimeActivity — items + statuses cross the bridge.
+    //   3. Subagent filter: `parent_tool_use_id` present and non-empty
+    //      → todos=None (the subagent's list must not overwrite the
+    //      main turn's list).
+    //
+    // Fixture format mirrors the CLI's actual TodoListSchema
+    // (cli.mjs: `TodoListSchema = z.array(z.object({ content, status,
+    // activeForm }))`, status ∈ {"pending","in_progress","completed"}).
+    // Captured from the bundled CLI at /Users/grasel/Library/Caches/
+    // verboo/target/.../cli.mjs — not invented.
+
+    #[test]
+    fn todowrite_extracts_items_and_statuses_to_structured_field() {
+        // Fixture: real CLI TodoWrite shape — tool_use with input.todos
+        // carrying 3 items in distinct statuses.
+        let payload = json!({
+            "type": "tool_use",
+            "id": "tool_todo_01",
+            "name": "todowrite",
+            "input": {
+                "todos": [
+                    {
+                        "content": "Read the manifest_cache source",
+                        "status": "completed",
+                        "activeForm": "Reading the manifest_cache source"
+                    },
+                    {
+                        "content": "Add stampede-inventory comments",
+                        "status": "in_progress",
+                        "activeForm": "Adding stampede-inventory comments"
+                    },
+                    {
+                        "content": "Report to Maestro",
+                        "status": "pending",
+                        "activeForm": "Reporting to Maestro"
+                    }
+                ]
+            }
+        });
+        let activity = runtime_activity_from_payload(&payload)
+            .expect("todowrite payload must produce a RuntimeActivity");
+        let todos = activity
+            .todos
+            .as_ref()
+            .expect("todowrite activity must carry todos");
+        assert_eq!(todos.len(), 3, "all 3 todos must cross the bridge");
+        // Item 0: completed
+        assert_eq!(todos[0].content, "Read the manifest_cache source");
+        assert_eq!(todos[0].status, "completed");
+        assert_eq!(todos[0].active_form, "Reading the manifest_cache source");
+        // Item 1: in_progress — the load-bearing one (status mid-flight)
+        assert_eq!(todos[1].content, "Add stampede-inventory comments");
+        assert_eq!(todos[1].status, "in_progress");
+        // Item 2: pending
+        assert_eq!(todos[2].content, "Report to Maestro");
+        assert_eq!(todos[2].status, "pending");
+        // detail must be None for todowrite — the data is structured,
+        // not a string. No duplication.
+        assert!(
+            activity.detail.is_none(),
+            "todowrite must not duplicate the list in `detail`; the structured `todos` field is the source of truth"
+        );
+    }
+
+    #[test]
+    fn todowrite_kind_is_planning_not_tool() {
+        // DECISÃO EXPLÍCITA DO MAESTRO (2026-07-31): PLANEJAR NÃO CONTA
+        // COMO AGIR. O kind="planning" cai fora da whitelist de ação
+        // observável do renderer. Se kind fosse "tool", um agente
+        // poderia satisfazer a guarda escrevendo a lista sem fazer
+        // nada — exatamente o defeito que a guarda existe para pegar.
+        let payload = json!({
+            "type": "tool_use",
+            "id": "tool_todo_02",
+            "name": "todowrite",
+            "input": {
+                "todos": [{"content": "anything", "status": "pending", "activeForm": "anything"}]
+            }
+        });
+        let activity = runtime_activity_from_payload(&payload).unwrap();
+        assert_eq!(
+            activity.kind, "planning",
+            "todowrite must be kind='planning' to fall out of ACTION_ACTIVITY_KINDS whitelist"
+        );
+        assert_ne!(
+            activity.kind, "tool",
+            "kind='tool' would satisfy the observable-action guard without action — forbidden"
+        );
+        assert_eq!(activity.label, "Atualizou tarefas");
+    }
+
+    #[test]
+    fn todowrite_does_not_count_as_observable_action_with_counterfactual() {
+        // Indirect proof via kind: todowrite kind is NOT in the renderer's
+        // ACTION_ACTIVITY_KINDS whitelist; a real action (Bash) IS. This
+        // is the counterfactual that proves the fix didn't just shift
+        // the boundary — planning is uniquely excluded.
+        //
+        // The whitelist values come from the renderer fence
+        // (goalState.ts ACTION_ACTIVITY_KINDS). They are duplicated
+        // here ONLY for the assertion — the source of truth lives in
+        // the renderer. If the renderer ever adds "planning" to its
+        // whitelist, this test fails and forces the discussion:
+        // "should planning count as action again?" (the answer per
+        // T1-TodoWrite decision is NO).
+        const OBSERVABLE_ACTION_KINDS: &[&str] = &[
+            "edit", "command", "terminal", "read", "search", "tool", "subagent",
+        ];
+        // todowrite: kind="planning" → NOT in whitelist → does not count
+        let todo_payload = json!({
+            "type": "tool_use",
+            "id": "tool_todo_03",
+            "name": "todowrite",
+            "input": {
+                "todos": [{"content": "plan only", "status": "pending", "activeForm": "plan only"}]
+            }
+        });
+        let todo_activity = runtime_activity_from_payload(&todo_payload).unwrap();
+        assert!(
+            !OBSERVABLE_ACTION_KINDS.contains(&todo_activity.kind.as_str()),
+            "todowrite kind '{}' must NOT be in ACTION_ACTIVITY_KINDS \
+             (T1-TodoWrite decision: planning is not acting)",
+            todo_activity.kind
+        );
+        // Counterfactual: a real action (Bash) STILL counts.
+        let bash_payload = json!({
+            "type": "tool_use",
+            "id": "tool_bash_03",
+            "name": "bash",
+            "input": {"command": "echo hi"}
+        });
+        let bash_activity = runtime_activity_from_payload(&bash_payload).unwrap();
+        assert!(
+            OBSERVABLE_ACTION_KINDS.contains(&bash_activity.kind.as_str()),
+            "counterfactual: bash kind '{}' must remain observable — the \
+             fix only excludes planning, not real actions",
+            bash_activity.kind
+        );
+    }
+
+    #[test]
+    fn subagent_todowrite_does_not_populate_main_turn_todos() {
+        // CADINHO LEVANTOU: subagentes emitem TodoWrite PRÓPRIO. A
+        // lista que chega à tela tem que ser a do turno PRINCIPAL.
+        // O filtro é no PRODUTOR (aqui): quando payload.parent_tool_use_id
+        // está presente e não-vazio, o evento veio de uma thread de
+        // subagente e `todos` deve ser None — o dado nem atravessa a
+        // ponte, então o renderer não tem como exibir a lista errada.
+        let main_payload = json!({
+            "type": "tool_use",
+            "id": "tool_todo_main",
+            "name": "todowrite",
+            "input": {
+                "todos": [
+                    {"content": "main: investigate", "status": "in_progress", "activeForm": "main investigating"}
+                ]
+            }
+        });
+        let sub_payload = json!({
+            "type": "tool_use",
+            "id": "tool_todo_sub",
+            "name": "todowrite",
+            "parent_tool_use_id": "toolu_subagent_root",
+            "input": {
+                "todos": [
+                    {"content": "sub: internal step", "status": "pending", "activeForm": "sub working"}
+                ]
+            }
+        });
+        // Main turn: todos populated.
+        let main_activity = runtime_activity_from_payload(&main_payload).unwrap();
+        assert!(
+            main_activity.todos.is_some(),
+            "main turn todowrite must populate todos"
+        );
+        assert_eq!(main_activity.todos.as_ref().unwrap().len(), 1);
+        assert_eq!(main_activity.todos.as_ref().unwrap()[0].content, "main: investigate");
+
+        // Subagent turn: todos is None — the subagent's internal list
+        // does NOT cross the bridge. The renderer never sees it.
+        let sub_activity = runtime_activity_from_payload(&sub_payload).unwrap();
+        assert!(
+            sub_activity.todos.is_none(),
+            "subagent todowrite must NOT populate todos — the subagent's \
+             internal list would overwrite the main turn's user-facing list. \
+             Filter is at the producer, not the consumer."
+        );
+        // But the activity itself is still emitted (label/kind/thread
+        // identification matter for the subagent thread UI). It's just
+        // the todos field that is filtered.
+        assert_eq!(sub_activity.label, "Atualizou tarefas");
+        assert_eq!(sub_activity.kind, "planning");
+        assert_eq!(sub_activity.tool_use_id.as_deref(), Some("tool_todo_sub"));
+
+        // Edge case: empty parent_tool_use_id is treated as main turn
+        // (defensive — empty string is not a valid marker).
+        let empty_parent_payload = json!({
+            "type": "tool_use",
+            "id": "tool_todo_empty",
+            "name": "todowrite",
+            "parent_tool_use_id": "",
+            "input": {
+                "todos": [{"content": "main with empty parent", "status": "pending", "activeForm": "main"}]
+            }
+        });
+        let empty_activity = runtime_activity_from_payload(&empty_parent_payload).unwrap();
+        assert!(
+            empty_activity.todos.is_some(),
+            "empty parent_tool_use_id must be treated as main turn (defensive)"
+        );
+    }
+
+    // ── T2-TodoWrite-i18n (2026-07-31) — 3 form-only tests ────────────
+    //
+    // LIMIT OF THIS TEST BLOCK: these tests prove that the prompt
+    // CONTAINS the language instruction (in PT and EN) and that the
+    // reserved slash-command bypass is preserved. They do NOT prove
+    // that the model obeys the instruction — obedience is a
+    // behavioral property, only verifiable by feeding a real agent a
+    // real request and inspecting the TodoWrite payload. Past cycles
+    // (see D-D) we were bitten by form-only tests being read as proof
+    // of behavior. These tests are witnesses of the prompt text, not
+    // of model behavior. The compliance test lives in the field.
+    //
+    // If a future review reads these tests as "the model now writes
+    // steps in the user's language", that reader is wrong. The model
+    // MAY still write English steps. What this block guarantees is
+    // the shadow we cast — we shipped the instruction; whether the
+    // agent walks in it is the user's call to verify on first use.
+
+    fn sample_request_with_language(message: &str, language: LanguageCode) -> AgentTurnRequest {
+        AgentTurnRequest {
+            turn_id: None,
+            conversation_id: "c1".into(),
+            message: message.into(),
+            model: None,
+            model_supports_vision: None,
+            context_window: None,
+            response_language: Some(language),
+            access_mode: crate::models::types::AccessMode::Approval,
+            working_directory: "/tmp/probe".into(),
+            skills: Vec::new(),
+            attachments: None,
+            response_enhancements_enabled: Some(false),
+            personality: None,
+            custom_instructions: None,
+            memory_context: None,
+            run_vision_fallback: None,
+            media_capabilities: None,
+            cli_media_capabilities: None,
+            run_video_analysis: None,
+            effort: None,
+            reasoning: None,
+            annotations: None,
+        }
+    }
+
+    #[test]
+    fn todowrite_language_instruction_present_in_pt_br_prompt() {
+        // FORM-ONLY: proves the PT instruction text is in the rendered
+        // prompt when the user is in PT-BR. Does NOT prove the model
+        // respects it.
+        let request = sample_request_with_language(
+            "crie um arquivo p1.txt com 'p1'",
+            LanguageCode::PtBr,
+        );
+        let prompt = build_prompt_internal(&request, /*is_resume=*/ false);
+        assert!(
+            prompt.contains("Escreva os passos do TodoWrite"),
+            "PT must carry the PT instruction text. Form-only check, model behavior not proven."
+        );
+        assert!(
+            prompt.contains("Preserve intactos"),
+            "PT instruction must declare the identifier-preservation rule explicitly (not leave it implicit)"
+        );
+        // Resume path also carries it.
+        let prompt_resume = build_prompt_internal(&request, /*is_resume=*/ true);
+        assert!(
+            prompt_resume.contains("Escreva os passos do TodoWrite"),
+            "resume path must also carry the PT instruction — see comment \
+             in build_prompt_internal: omitted-on-resume would revert \
+             subsequent resumed tasks to English"
+        );
+    }
+
+    #[test]
+    fn todowrite_language_instruction_present_in_en_us_prompt() {
+        // FORM-ONLY: proves the EN instruction text is in the rendered
+        // prompt when the user is in EN-US. Does NOT prove the model
+        // respects it.
+        let request = sample_request_with_language(
+            "create p1.txt with 'p1'",
+            LanguageCode::EnUs,
+        );
+        let prompt = build_prompt_internal(&request, false);
+        assert!(
+            prompt.contains("Write TodoWrite steps"),
+            "EN must carry the EN instruction text. Form-only check, model behavior not proven."
+        );
+        assert!(
+            prompt.contains("Keep intact"),
+            "EN instruction must declare the identifier-preservation rule explicitly (not leave it implicit)"
+        );
+        // The PT version must NOT show up in EN mode — only one
+        // language per turn. If the PT text leaks, the model gets
+        // conflicting instructions and is more likely to default to
+        // English (the model's bias). Off-mode absence is the
+        // contract.
+        assert!(
+            !prompt.contains("Escreva os passos do TodoWrite"),
+            "EN-mode prompt must not contain the PT instruction — language mismatch is a contract violation"
+        );
+        // Resume path also carries it.
+        let prompt_resume = build_prompt_internal(&request, true);
+        assert!(
+            prompt_resume.contains("Write TodoWrite steps"),
+            "resume path must also carry the EN instruction"
+        );
+    }
+
+    #[test]
+    fn reserved_slash_command_bypass_remains_bare_no_envelope_no_instruction() {
+        // D-D 2026-07-31 field fix: any prefix before the `/token`
+        // breaks the CLI's slash-command interceptor. /compact (and
+        // other reserved commands) MUST leave the prompt wrapper
+        // untouched — no envelope, no language header, no
+        // TodoWrite instruction, no workspace line. This test pins
+        // that contract after T2-TodoWrite-i18n so we know the
+        // language fix did not regress the D-D bypass.
+        let mut request = sample_request_with_language("/compact", LanguageCode::PtBr);
+        request.message = "/compact".to_string();
+        let prompt = build_prompt_internal(&request, false);
+        assert_eq!(
+            prompt, "/compact",
+            "/compact must exit the wrapper as the bare message — no \
+             prefix, no envelope, no instruction. Regressing this is \
+             the D-D field defect returning."
+        );
+        assert!(
+            !prompt.contains("Escreva os passos do TodoWrite"),
+            "reserved slash command must not include the language instruction"
+        );
+        assert!(
+            !prompt.contains("Diretório de trabalho"),
+            "reserved slash command must not include the PT workspace header"
+        );
+        // Also: EN mode, also resume — bypass must hold across the
+        // matrix.
+        let mut en = sample_request_with_language("/compact", LanguageCode::EnUs);
+        en.message = "/compact".to_string();
+        let prompt_en = build_prompt_internal(&en, true);
+        assert_eq!(
+            prompt_en, "/compact",
+            "reserved bypass must hold for EN mode and resume path too"
+        );
+    }
+
+    // ── F0-Annotate (2026-07-31) — annotation block in prompt ─────────
+    //
+    // CONTRACT (fixed by Maestro + MOSAICO):
+    //   Annotation {
+    //     id: String
+    //     segmentId: String          // turnId:text:N
+    //     quote: String              // VERBATIM
+    //     prefix: String             // up to 40 chars before
+    //     suffix: String             // up to 40 chars after
+    //     occurrenceIndex: u32       // base ZERO
+    //     comment: Option<String>    // OPTIONAL
+    //     createdAt: i64
+    //   }
+    //
+    // SAFETY LABELING (load-bearing):
+    //   - quote is from the ASSISTANT's prior response
+    //   - comment is from the USER
+    //   Both are rendered with distinct labels so the model can
+    //   never confuse them. If labels collapse, model text returns
+    //   to the prompt as if it were user instruction — injection
+    //   surface. The labels are not optional decoration; they are
+    //   the fence.
+    //
+    // BACKWARD COMPATIBILITY (load-bearing):
+    //   A request serialized by an older build (no `annotations`
+    //   key) MUST still deserialize with `annotations = None`. The
+    //   `#[serde(default)]` on the field plus the absence-of-label
+    //   byte-identical test below are the witnesses.
+
+    fn sample_annotation() -> crate::models::types::Annotation {
+        crate::models::types::Annotation {
+            id: "ann_1".into(),
+            segment_id: "turn_42:text:0".into(),
+            quote: "the manifest_cache stampede is the bug".into(),
+            prefix: "…we discovered that ".into(),
+            suffix: " — fix at the producer, not consumer.".into(),
+            occurrence_index: 0,
+            comment: Some("prioritize the waiters-elect-leader path".into()),
+            created_at: 1_700_000_000_000,
+        }
+    }
+
+    // ── CONTRAFACTUAL QUE MANDA EM TUDO (GOLDEN ANCHOR) ───────────────
+    // A request sem annotations tem que produzir prompt BYTE-IDENTICO
+    // ao de hoje. Sem isso, F0 não passa. Este teste é o PRIMEIRO
+    // que deve rodar; vem antes dos testes de anotacao, não depois.
+    //
+    // GOLDEN ANCHOR (QA 2026-07-31): a primeira versão deste teste
+    // reconstruía o esperado chamando build_prompt_internal no próprio
+    // request — um teste que se recalcula concorda com qualquer bug.
+    // O QA mutou de propósito o caminho sem-anotações e o teste
+    // continuou VERDE: tanto o "esperado" quanto o "atual" mudavam
+    // juntos. Esta versão assere contra um valor LITERAL colado aqui,
+    // que não se recalcula. Qualquer mudança no prompt sem-anotações
+    // (intencional ou não) deixa o teste VERMELHO. Quando o formato
+    // do prompt mudar INTENCIONALMENTE, este literal é atualizado no
+    // MESMO commit da mudança — nunca antes, nunca depois.
+    #[test]
+    fn build_prompt_is_byte_identical_when_no_annotations() {
+        // Golden literals — não reconstruir a partir de código. Cada
+        // um é o prompt montado por build_prompt_internal para o
+        // fixture abaixo. Se o código produzir qualquer byte diferente,
+        // este teste falha (e DEVE falhar — é a rede).
+        //
+        // Fixture (sample_request_with_language): enhancements=false
+        // (sem app instructions/personality/custom), memory=None,
+        // skills=[], attachments=None, working_directory=/tmp/probe.
+        // Com essas configurações o ramo first-turn e o resume
+        // produzem as mesmas partes (bloco de anotações filtrado
+        // como vazio) — por isso cada idioma tem UM literal válido
+        // para os dois caminhos.
+        const GOLDEN_PT: &str = "\
+Diretório de trabalho atual: /tmp/probe\n\
+\n\
+Escreva os passos do TodoWrite (campos content e activeForm) no idioma da conversa. Preserve intactos: nomes de arquivo, caminhos, comandos, flags, identificadores e trechos de código.\n\
+\n\
+crie p1.txt";
+        const GOLDEN_EN: &str = "\
+Current working directory: /tmp/probe\n\
+\n\
+Write TodoWrite steps (content and activeForm fields) in the conversation's language. Keep intact: filenames, paths, commands, flags, identifiers, and code snippets.\n\
+\n\
+create p1.txt";
+
+        // PT — baseline (annotations=None por construção).
+        let baseline = sample_request_with_language("crie p1.txt", LanguageCode::PtBr);
+        assert_eq!(
+            build_prompt_internal(&baseline, false),
+            GOLDEN_PT,
+            "PT first-turn no-annotations must match the golden literal EXACTLY (byte for byte)"
+        );
+        // PT — Some(empty): não pode introduzir seção nova.
+        let with_empty = {
+            let mut r = sample_request_with_language("crie p1.txt", LanguageCode::PtBr);
+            r.annotations = Some(vec![]);
+            r
+        };
+        assert_eq!(
+            build_prompt_internal(&with_empty, false),
+            GOLDEN_PT,
+            "PT Some(empty) must also match the golden literal"
+        );
+        // PT — resume path (mesmo literal, ver comentário acima).
+        assert_eq!(
+            build_prompt_internal(&baseline, true),
+            GOLDEN_PT,
+            "PT resume no-annotations must also match the golden literal"
+        );
+
+        // EN — mesmo conjunto de caminhos.
+        let en = sample_request_with_language("create p1.txt", LanguageCode::EnUs);
+        assert_eq!(
+            build_prompt_internal(&en, false),
+            GOLDEN_EN,
+            "EN first-turn no-annotations must match the golden literal EXACTLY"
+        );
+        assert_eq!(
+            build_prompt_internal(&en, true),
+            GOLDEN_EN,
+            "EN resume no-annotations must also match the golden literal"
+        );
+    }
+
+    #[test]
+    fn quote_truncation_is_char_safe_at_byte_boundary() {
+        // QA 2026-07-31: a primeira implementação cortava o quote por
+        // FATIA DE BYTE (`&str[..CEILING]`). Em Rust, fatiar String
+        // UTF-8 fora da fronteira de caractere PANICA — um usuário
+        // colando 4 KiB de texto com acento na posição errada derrubaria
+        // o app. A regra permanente do Maestro: nada pode quebrar o app.
+        //
+        // CENÁRIO: 6143 'a' (1 byte cada) + 'ç' (2 bytes: 0xC3 0xA7).
+        // len = 6145 > 6144 (teto). O corte em 6144 cai NO MEIO do 'ç'
+        // (segundo byte). `&str[..6144]` panica. `truncate_quote_char_safe`
+        // volta para a fronteira 6143 e corta antes do 'ç'.
+        let mut quote = "a".repeat(6143);
+        quote.push('ç');
+        assert!(quote.len() == 6145, "fixture: 6143 ASCII + ç = 6145 bytes");
+        // Prova que o OFFSET 6144 cai no meio do 'ç' (o cenário que
+        // panica no corte por byte):
+        assert!(
+            !quote.is_char_boundary(6144),
+            "byte 6144 must NOT be a char boundary (it is the 2nd byte of ç) — \
+             this is the exact panic position the fix targets"
+        );
+        let truncated = truncate_quote_char_safe(&quote);
+        // Sem panic é o primeiro requisito; mas também o resultado
+        // precisa ser UTF-8 VÁLIDO (não pode ter ficado meio caractere).
+        assert!(
+            std::str::from_utf8(truncated.as_bytes()).is_ok(),
+            "truncated quote must be valid UTF-8 — no dangling half-character"
+        );
+        assert!(
+            truncated.ends_with("[…]"),
+            "truncated quote must carry the cut marker"
+        );
+        assert!(
+            !truncated.contains('ç'),
+            "the ç sitting exactly at the cut boundary must be dropped, not half-sliced"
+        );
+        assert_eq!(
+            truncated.chars().count(),
+            6143 + 3,
+            "6143 ASCII chars + '…' marker (3 chars) = 6146 chars, all valid"
+        );
+        // O caminho INTEIRO (via build_annotation_block/prompt) também
+        // não pode panica com um quote gigante.
+        let mut req = sample_request_with_language("ok", LanguageCode::PtBr);
+        req.annotations = Some(vec![crate::models::types::Annotation {
+            quote: quote.clone(),
+            ..sample_annotation()
+        }]);
+        let prompt = build_prompt_internal(&req, false);
+        assert!(
+            std::str::from_utf8(prompt.as_bytes()).is_ok(),
+            "full prompt must remain valid UTF-8 with a boundary-adjacent multi-byte char"
+        );
+        assert!(
+            prompt.contains("[…]"),
+            "prompt must contain the truncation marker for an oversized quote"
+        );
+    }
+
+    #[test]
+    fn annotation_without_comment_does_not_emit_orphan_label() {
+        // CONTRAFACTUAL: comment is optional. If it's None OR empty
+        // string, the prompt must NOT contain "Comentário DO USUÁRIO:"
+        // with nothing after it (orphan label). It must contain the
+        // quote label and the quote text. Otherwise the prompt has
+        // a confusing dangling header — bloat + misleading layout.
+        let mut req = sample_request_with_language("ok", LanguageCode::PtBr);
+        req.annotations = Some(vec![crate::models::types::Annotation {
+            comment: None,
+            ..sample_annotation()
+        }]);
+        let prompt = build_prompt_internal(&req, false);
+        assert!(
+            prompt.contains("Trecho citado da resposta anterior DO ASSISTENTE"),
+            "quote label must be present"
+        );
+        assert!(
+            prompt.contains("the manifest_cache stampede is the bug"),
+            "quote text must be present"
+        );
+        assert!(
+            !prompt.contains("Comentário DO USUÁRIO:"),
+            "orphan comment label forbidden — comment was None"
+        );
+        // Also: empty-string comment is treated as no comment.
+        let mut req_empty_comment = sample_request_with_language("ok", LanguageCode::PtBr);
+        req_empty_comment.annotations = Some(vec![crate::models::types::Annotation {
+            comment: Some("   ".into()),
+            ..sample_annotation()
+        }]);
+        let prompt_empty = build_prompt_internal(&req_empty_comment, false);
+        assert!(
+            !prompt_empty.contains("Comentário DO USUÁRIO:"),
+            "whitespace-only comment must not emit the label either"
+        );
+    }
+
+    #[test]
+    fn two_annotations_preserve_order_and_label_each_origin() {
+        // Order preservation: stack order in the Vec is the prompt
+        // order. The renderer attaches annotations in selection
+        // order; the Rust side does NOT re-sort. If a future refactor
+        // sorts them, this test catches it.
+        let mut req = sample_request_with_language("ok", LanguageCode::EnUs);
+        let mut a1 = sample_annotation();
+        a1.id = "ann_first".into();
+        a1.quote = "first quoted passage".into();
+        a1.comment = Some("first user comment".into());
+        let mut a2 = sample_annotation();
+        a2.id = "ann_second".into();
+        a2.quote = "second quoted passage".into();
+        a2.comment = Some("second user comment".into());
+        req.annotations = Some(vec![a1, a2]);
+        let prompt = build_prompt_internal(&req, false);
+        // First annotation's quote appears BEFORE second annotation's
+        // quote. Without ordering we'd still pass on count — but
+        // wrong on which is first.
+        let pos_first_quote = prompt.find("first quoted passage").unwrap();
+        let pos_second_quote = prompt.find("second quoted passage").unwrap();
+        assert!(
+            pos_first_quote < pos_second_quote,
+            "annotation order must match Vec order: first ({pos_first_quote}) < second ({pos_second_quote})"
+        );
+        // Both labels present (origin labeling — quote = ASSISTANT,
+        // comment = USER). Both must appear for both annotations.
+        let assistant_label_count = prompt.matches("Quoted passage from the prior ASSISTANT response").count();
+        let user_label_count = prompt.matches("USER comment").count();
+        assert_eq!(
+            assistant_label_count, 2,
+            "each annotation must carry its ASSISTANT quote label"
+        );
+        assert_eq!(
+            user_label_count, 2,
+            "each annotation must carry its USER comment label"
+        );
+    }
+
+    #[test]
+    fn agent_turn_request_without_annotations_field_deserializes_to_none() {
+        // Backward compatibility: a request serialized by an older
+        // build (no `annotations` key) must still deserialize with
+        // `annotations = None`. The struct relies on `#[serde(default)]`
+        // on the field. This test pins that — if a future refactor
+        // removes `default`, existing persisted requests break.
+        let json = r#"{
+            "turnId": null,
+            "conversationId": "c1",
+            "message": "hi",
+            "model": null,
+            "modelSupportsVision": null,
+            "contextWindow": null,
+            "responseLanguage": "en-US",
+            "accessMode": "approval",
+            "workingDirectory": "/tmp",
+            "skills": [],
+            "attachments": null,
+            "responseEnhancementsEnabled": false,
+            "personality": null,
+            "customInstructions": null,
+            "memoryContext": null,
+            "runVisionFallback": null,
+            "mediaCapabilities": null,
+            "cliMediaCapabilities": null,
+            "runVideoAnalysis": null,
+            "effort": null,
+            "reasoning": null
+        }"#;
+        let req: AgentTurnRequest = serde_json::from_str(json)
+            .expect("legacy request without annotations must still deserialize");
+        assert!(
+            req.annotations.is_none(),
+            "annotations field must default to None when absent on the wire"
+        );
+        // And the prompt is built without error.
+        let prompt = build_prompt_internal(&req, false);
+        assert!(prompt.contains("hi"));
+    }
+
+    #[test]
+    fn reserved_slash_command_with_pending_annotations_logs_warning_and_drops() {
+        // DECISÃO (see build_prompt_internal comment): DECLARAR, not
+        // BLOQUEAR. Reserved slash command + pending annotations =
+        // bypass returns raw message, annotations dropped, but the
+        // drop is VISIBLE via eprintln. Test pins: the bypass still
+        // returns the bare message (D-D regression guard), AND the
+        // warn counter is incremented (visibility guard).
+        reset_reserved_with_annotations_warn_count();
+        let mut req = sample_request_with_language("/compact", LanguageCode::EnUs);
+        req.annotations = Some(vec![sample_annotation()]);
+        // Resume path also surfaces the warning.
+        let prompt = build_prompt_internal(&req, true);
+        assert_eq!(
+            prompt, "/compact",
+            "D-D regression guard: reserved slash command bypass must return bare message \
+             even with pending annotations"
+        );
+        assert_eq!(
+            reserved_with_annotations_warn_count(),
+            1,
+            "warn counter must fire exactly once when reserved command + non-empty annotations"
+        );
+        // Second call with same request — counter ticks again.
+        let _ = build_prompt_internal(&req, false);
+        assert_eq!(
+            reserved_with_annotations_warn_count(),
+            2,
+            "warn counter must fire on every such call (no dedup, no rate limit — the drop is \
+             user intent lost and the log is the only signal)"
+        );
+        // No annotations → no warn.
+        req.annotations = None;
+        let _ = build_prompt_internal(&req, false);
+        assert_eq!(
+            reserved_with_annotations_warn_count(),
+            2,
+            "no annotations → no warn (counter unchanged)"
+        );
+        // Empty annotations vec → no warn.
+        req.annotations = Some(vec![]);
+        let _ = build_prompt_internal(&req, false);
+        assert_eq!(
+            reserved_with_annotations_warn_count(),
+            2,
+            "empty annotations vec → no warn (counter unchanged)"
         );
     }
 }

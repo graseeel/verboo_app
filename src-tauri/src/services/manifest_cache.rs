@@ -33,6 +33,7 @@
 //! never across the CLI spawn. This is the standard single-flight pattern.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -83,7 +84,17 @@ async fn cache() -> &'static Mutex<Option<FetchState>> {
 /// before awaiting the watch channel.
 pub async fn get_or_fetch_manifests() -> Result<HashMap<String, MarketplacePluginEntry>, PluginError> {
     let cache_mutex = cache().await;
+    get_or_fetch_with(cache_mutex, fetch_manifests_inner).await
+}
 
+async fn get_or_fetch_with<F, Fut>(
+    cache_mutex: &Mutex<Option<FetchState>>,
+    fetch: F,
+) -> Result<HashMap<String, MarketplacePluginEntry>, PluginError>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<HashMap<String, MarketplacePluginEntry>, PluginError>>,
+{
     // ── Phase 1: brief lock to check state ─────────────────────────────
     let action = {
         let mut guard = cache_mutex.lock().await;
@@ -128,23 +139,23 @@ pub async fn get_or_fetch_manifests() -> Result<HashMap<String, MarketplacePlugi
                         _ => {
                             // Leader failed or cache still stale. Fall through
                             // to a direct fetch (rare path).
-                            fetch_direct().await
+                            fetch().await
                         }
                     }
                 }
                 Ok(Err(_)) => {
                     // watch sender dropped (leader panicked/errored). Direct fetch.
-                    fetch_direct().await
+                    fetch().await
                 }
                 Err(_) => {
                     // Timeout. Direct fetch (don't hang the command).
-                    fetch_direct().await
+                    fetch().await
                 }
             }
         }
         Action::LeadFetch(tx) => {
             // We're the leader. Do the fetch OUTSIDE the lock.
-            let result = fetch_manifests_inner().await;
+            let result = fetch().await;
 
             // Re-acquire the lock to publish the result.
             let mut guard = cache_mutex.lock().await;
@@ -185,13 +196,6 @@ enum Action {
     LeadFetch(watch::Sender<Option<Arc<CachedManifests>>>),
 }
 
-/// Direct fetch fallback (no caching). Used when the leader fails or times
-/// out — the waiter does its own fetch without trying to cache (avoids
-/// thundering herd on failure, since failures are rare).
-async fn fetch_direct() -> Result<HashMap<String, MarketplacePluginEntry>, PluginError> {
-    fetch_manifests_inner().await
-}
-
 /// Inner fetch: calls `marketplace_list` (CLI) + `read_all_manifests` (disk).
 async fn fetch_manifests_inner() -> Result<HashMap<String, MarketplacePluginEntry>, PluginError> {
     let marketplaces = crate::services::plugins_service::marketplace_list().await?;
@@ -213,6 +217,7 @@ pub async fn invalidate() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn ttl_is_60_seconds() {
@@ -224,105 +229,261 @@ mod tests {
         assert_eq!(WAITER_TIMEOUT, Duration::from_secs(30));
     }
 
-    /// Multi-thread concurrency test: N concurrent `get_or_fetch_manifests`
-    /// calls must complete in seconds (not deadlock). This test would have
-    /// caught the v1 deadlock (std Mutex held across `.await`).
+    /// Integration test (NOT in CI gate): real-CLI concurrent calls must
+    /// complete without hang. Marked `#[ignore]` because the gate
+    /// cannot rely on real-CLI spawn timing — slow Node spawn on
+    /// shared CI runners makes the 60s outer timeout fire
+    /// intermittently (CADINHO analysis 2026-07-31).
     ///
-    /// NOTE: This test calls the real `get_or_fetch_manifests`, which spawns
-    /// the CLI. In the test environment, the CLI may or may not be available.
-    /// The key assertion is that the calls COMPLETE (don't hang) within a
-    /// reasonable timeout — either Ok or Err, not a deadlock.
+    /// Diagnosed behavior under slow spawn:
+    ///   1. Leader's spawn exceeds `WAITER_TIMEOUT` and fails.
+    ///   2. All waiters fall into the fallback direct-lookup path,
+    ///      launching N simultaneous real-CLI spawns.
+    ///   3. Each spawn eventually completes (no hang), but the
+    ///      60s outer timeout can fire on slow runners.
+    ///   4. Test panics with "timed out — likely deadlock". This is
+    ///      MISLEADING: it is a slow-spawn degenerate path, not a
+    ///      deadlock. The system reaches a result for every call,
+    ///      just slower than the test budget on shared runners.
+    ///
+    /// Gate witness for deadlock-freedom: see
+    /// `single_flight_produces_one_fetch_not_n` below — it covers the
+    /// pure-path concurrency contract on the `get_or_fetch_with`
+    /// closure, asserting all 10 tasks complete within 2s and share
+    /// one fetch. That gate witness does NOT depend on real CLI
+    /// spawn and is the canonical proof of deadlock-absence on the
+    /// production code path.
+    ///
+    /// Stampede inventory item (CADINHO, 2026-07-31, NOT FIXED HERE):
+    /// the fallback N-direct-lookup path is exactly the stampede the
+    /// cache exists to prevent — it manifests precisely when load is
+    /// highest (slow leader). Tracked as a separate improvement; this
+    /// test's only job is to prove the calls EVENTUALLY COMPLETE.
+    ///
+    /// PANIC MESSAGE POLICY (2026-07-31): the panic message below
+    /// does NOT claim "NOT a deadlock" unconditionally — it
+    /// classifies the observed timing pattern into one of three
+    /// shapes:
+    ///
+    ///   (A) SLOW-SPAWN DEGENERATE PATH (known) — every timed-out
+    ///       task's elapsed time is within 25..35s of the inner
+    ///       30s budget. The handle returned; the spawned future
+    ///       simply did not finish. Matches CADINHO's diagnosis.
+    ///
+    ///   (B) REAL HANG (unknown) — at least one handle timed out at
+    ///       the OUTER 60s budget (the spawned future never returned
+    ///       to report even a per-task Timeout-elapsed). This is
+    ///       genuine deadlock or join failure and must NOT be
+    ///       dismissed as the slow-spawn path.
+    ///
+    ///   (C) AMBIGUOUS — the timing pattern crosses both shapes
+    ///       (some tasks near 30s, some hung past 60s). Test reports
+    ///       both observations and asks the operator to inspect.
+    ///
+    /// The previous message ("NOT a deadlock") unconditionally
+    /// denied hang on every observed timeout, which would have made
+    /// the test deny itself in front of a real (B) hang. The new
+    /// message reports what was actually observed.
+    ///
+    /// Run with: `cargo test --lib -- --ignored real_cli_concurrent_calls_complete_without_hang`
+    #[ignore]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn concurrent_calls_do_not_deadlock() {
+    async fn real_cli_concurrent_calls_complete_without_hang() {
+        use std::time::Instant;
+
         // Invalidate any existing cache first.
         invalidate().await;
 
-        // Spawn 10 concurrent calls.
+        // Spawn 10 concurrent calls. Each task records its own start
+        // time so we can classify timeouts into the three shapes
+        // described in the doc comment.
         let mut handles = Vec::new();
         for i in 0..10 {
             handles.push(tokio::spawn(async move {
-                // Each call gets a 30s safety timeout (matches WAITER_TIMEOUT).
+                let start = Instant::now();
                 let result = tokio::time::timeout(
                     Duration::from_secs(30),
                     get_or_fetch_manifests(),
                 )
                 .await;
-                (i, result)
+                (i, result, start.elapsed())
             }));
         }
 
-        // All must complete within 60s (generous — CLI spawn can take 15s).
+        // Two-bucket accounting:
+        //   inner_timeouts: tasks where the spawned future did
+        //     return, but only after the 30s inner timeout fired.
+        //     Each entry records the observed elapsed time.
+        //   outer_hangs: tasks where the spawned future did NOT
+        //     return within the OUTER 60s budget — genuine hang
+        //     or join failure.
+        let mut inner_timeouts: Vec<(usize, std::time::Duration)> = Vec::new();
+        let mut outer_hangs: Vec<usize> = Vec::new();
+        let mut completed: usize = 0;
+
         for handle in handles {
-            let (i, result) = tokio::time::timeout(Duration::from_secs(60), handle)
-                .await
-                .expect("task hung > 60s")
-                .expect("join failed");
-            // The result is Ok(Ok(_)) or Ok(Err(_)) or Err(Timeout).
-            // The key assertion: it's NOT a timeout (which would mean deadlock).
-            match result {
-                Ok(Ok(_entries)) => eprintln!("[test] call {i} → Ok"),
-                Ok(Err(e)) => eprintln!("[test] call {i} → Err ({e})"),
-                Err(_) => panic!("call {i} timed out — likely deadlock"),
+            let outer_start = Instant::now();
+            match tokio::time::timeout(Duration::from_secs(60), handle).await {
+                Ok(Ok((i, result, inner_elapsed))) => match result {
+                    Ok(Ok(_)) => {
+                        completed += 1;
+                        eprintln!(
+                            "[integration] call {i} → Ok in {}ms",
+                            inner_elapsed.as_millis()
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        eprintln!(
+                            "[integration] call {i} → Err ({e}) in {}ms",
+                            inner_elapsed.as_millis()
+                        );
+                    }
+                    Err(_elapsed) => {
+                        // Spawned future returned, but the per-task
+                        // 30s timeout fired. Capture elapsed so we
+                        // can classify (A) vs (C).
+                        inner_timeouts.push((i, inner_elapsed));
+                    }
+                },
+                Ok(Err(join_err)) => {
+                    panic!("task join failed: {join_err}");
+                }
+                Err(_outer_elapsed) => {
+                    // The handle itself did not return within 60s.
+                    // We don't have the inner `i` because the join
+                    // never produced it — record the index from the
+                    // spawned-task order is not recoverable here.
+                    // Push a marker with i=usize::MAX as a sentinel.
+                    outer_hangs.push(usize::MAX);
+                    let _ = outer_start;
+                }
             }
         }
+
+        if !outer_hangs.is_empty() {
+            panic!(
+                "REAL HANG detected: {} of 10 task handles did not return within \
+                 the outer 60s budget. This is genuine deadlock or join failure, \
+                 NOT the slow-spawn degenerate path. Inner-timeout count: {}, \
+                 completed count: {}. Investigate the cache mutex / channel — see \
+                 the inventory item for waiters-electing-a-new-leader for context.",
+                outer_hangs.len(),
+                inner_timeouts.len(),
+                completed
+            );
+        }
+
+        if !inner_timeouts.is_empty() {
+            // All observed timeouts were the per-task inner 30s
+            // firing — every recorded elapsed should be near 30s.
+            // We classify the pattern as SLOW-SPAWN if every
+            // recorded elapsed is within 25..35s, AMBIGUOUS
+            // otherwise.
+            let slow_spawn = inner_timeouts
+                .iter()
+                .all(|(_, elapsed)| {
+                    let s = elapsed.as_secs();
+                    (25..=35).contains(&s)
+                });
+            let summary: Vec<String> = inner_timeouts
+                .iter()
+                .map(|(i, d)| format!("call {i}={}s", d.as_secs()))
+                .collect();
+
+            if slow_spawn {
+                panic!(
+                    "SLOW-SPAWN DEGENERATE PATH (known, per CADINHO 2026-07-31): \
+                     {} of 10 tasks fired their per-task 30s timeout. Every \
+                     elapsed time clusters near the inner budget — matches the \
+                     leader-fail + N-direct-lookups stampede (waiters fall into \
+                     the fallback path when the leader exceeds WAITER_TIMEOUT). \
+                     This is NOT a deadlock: the spawned futures all return, \
+                     they just exceed the per-task budget on slow runners. \
+                     Observed: [{}]. Re-run with longer timeouts (the test budget \
+                     is intentionally tight) OR address the stampede via the \
+                     inventory item.",
+                    inner_timeouts.len(),
+                    summary.join(", ")
+                );
+            } else {
+                panic!(
+                    "AMBIGUOUS timeout pattern: {} of 10 tasks fired the inner 30s \
+                     timeout, but the observed elapsed times do NOT cluster near \
+                     the budget (signature of a real hang, not the slow-spawn path). \
+                     Observed: [{}]. Treat this as a real hang unless you can \
+                     reproduce the slow-spawn signature. The previous message \
+                     unconditionally claimed 'NOT a deadlock'; that was wrong for \
+                     this pattern.",
+                    inner_timeouts.len(),
+                    summary.join(", ")
+                );
+            }
+        }
+
+        // No timeouts: all 10 calls completed cleanly.
+        eprintln!("[integration] all 10 calls completed within budget ({completed}/10)");
     }
 
-    /// Single-flight correctness test: N concurrent calls must produce
-    /// exactly 1 leader fetch (not N). The previous test only asserted
-    /// "no timeout" — this one asserts "1 fetch" by counting leader
-    /// publications via the watch channel.
+    /// Gate witness for absence-of-deadlock on the concurrent call path.
     ///
-    /// This test uses a mock fetch path by pre-populating the cache as
-    /// a "leader" would, then verifying that concurrent callers all see
-    /// the same cached result without triggering additional fetches.
+    /// THIS TEST is the in-gate proof that 10 concurrent
+    /// `get_or_fetch_with(...)` calls do NOT deadlock. It uses a
+    /// closure that performs a 50ms simulated fetch (no real CLI,
+    /// no real spawn, no timeouts anywhere except the 2s guard),
+    /// then asserts:
+    ///   - all 10 tasks complete within 2 seconds (deadlock would
+    ///     exceed this and `expect("single-flight task hung")` would
+    ///     fire);
+    ///   - exactly one fetch ran (single-flight semantics — the
+    ///     leader carried the work for the 9 waiters).
+    ///
+    /// Together these two assertions prove the production
+    /// `get_or_fetch_with` path is deadlock-free AND single-flight
+    /// under concurrency, with NO dependency on Node spawn timing —
+    /// making the test deterministic on any CI runner.
+    ///
+    /// The complementary integration test
+    /// `real_cli_concurrent_calls_complete_without_hang` (above,
+    /// `#[ignore]`) exercises the real-CLI path on slow-spawn
+    /// failure modes — required for full coverage but unfit for
+    /// the gate due to spawn-timing flakes.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn single_flight_produces_one_fetch_not_n() {
-        // Invalidate any existing cache.
-        invalidate().await;
-
-        // Spawn 10 concurrent calls. In the real CLI environment, the leader
-        // fetch may succeed or fail. The key assertion: we don't see 10
-        // "direct fetch (no cache)" fallbacks (which would mean single-flight
-        // is broken — every waiter did its own fetch).
+        let cache = Arc::new(Mutex::new(None));
+        let fetch_count = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(tokio::sync::Barrier::new(10));
         let mut handles = Vec::new();
-        for i in 0..10 {
+
+        for _ in 0..10 {
+            let cache = Arc::clone(&cache);
+            let fetch_count = Arc::clone(&fetch_count);
+            let start = Arc::clone(&start);
             handles.push(tokio::spawn(async move {
-                tokio::time::timeout(Duration::from_secs(30), get_or_fetch_manifests()).await
+                start.wait().await;
+                get_or_fetch_with(cache.as_ref(), || {
+                    let fetch_count = Arc::clone(&fetch_count);
+                    async move {
+                        fetch_count.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        Ok::<_, PluginError>(HashMap::new())
+                    }
+                })
+                .await
             }));
         }
 
-        let mut ok_count = 0;
-        let mut err_count = 0;
-        let mut timeout_count = 0;
         for handle in handles {
-            let result = tokio::time::timeout(Duration::from_secs(60), handle)
+            // The 2s timeout is the deadlock-freedom witness: every
+            // task MUST finish well before this fires. A real
+            // deadlock would exceed 2s on any sane CI runner.
+            let result = tokio::time::timeout(Duration::from_secs(2), handle)
                 .await
-                .expect("task hung > 60s")
+                .expect("single-flight task hung — would-be deadlock in production path")
                 .expect("join failed");
-            match result {
-                Ok(Ok(_)) => ok_count += 1,
-                Ok(Err(_)) => err_count += 1,
-                Err(_) => timeout_count += 1,
-            }
+            assert!(result.is_ok());
         }
 
-        // All must complete (no timeouts = no deadlock).
-        assert_eq!(timeout_count, 0, "no calls should time out (deadlock?)");
-
-        // At least one call must have succeeded or errored (the leader).
-        // The rest are either waiters (Ok if leader published, Err if fallback)
-        // or direct fetchers (if single-flight is broken).
-        eprintln!(
-            "[test] single_flight: ok={ok_count}, err={err_count}, timeout={timeout_count}"
-        );
-
-        // If the CLI is available, the leader fetch succeeds and all 10
-        // callers get Ok (1 leader + 9 waiters via tx.send). If the CLI
-        // is NOT available, the leader errors and all 10 callers get Err
-        // (1 leader error + 9 waiter fallbacks). Either way, no timeouts.
-        // The single-flight bug would manifest as 10 separate "direct fetch"
-        // log lines — we can't assert on those here without capturing stderr,
-        // but the concurrent_calls_do_not_deadlock test + the tx.send fix
-        // together cover the property.
+        // Single-flight witness: exactly one fetch for 10 callers.
+        assert_eq!(fetch_count.load(Ordering::SeqCst), 1);
     }
 }

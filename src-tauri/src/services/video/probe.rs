@@ -74,11 +74,20 @@ pub fn bundled_ffprobe_path() -> Result<PathBuf, VideoValidationError> {
     #[cfg(not(debug_assertions))]
     let debug_binaries: Option<PathBuf> = None;
 
+    // A1c (2026-07-30): host_target moved to shared module to eliminate
+    // triplication. See video/target.rs for the single source of truth.
+    let Some(target) = super::target::host_target() else {
+        return Err(VideoValidationError::UnsupportedPlatform {
+            os: std::env::consts::OS.into(),
+            arch: std::env::consts::ARCH.into(),
+            tool: "verboo-ffprobe".into(),
+        });
+    };
     ffprobe_candidates(
         &executable,
         debug_binaries.as_deref(),
-        host_target(),
-        executable_suffix(),
+        target,
+        super::target::executable_suffix(),
     )
     .into_iter()
     .find(|candidate| candidate.is_file())
@@ -129,8 +138,8 @@ fn run_ffprobe(path: &Path, ffprobe: &Path) -> Result<String, VideoValidationErr
         return Err(VideoValidationError::ProtectedOrUnreadable);
     }
 
-    let mut child = Command::new(ffprobe)
-        .arg("-v")
+    let mut cmd = Command::new(ffprobe);
+    cmd.arg("-v")
         .arg("error")
         .arg("-protocol_whitelist")
         .arg("file,pipe")
@@ -142,7 +151,14 @@ fn run_ffprobe(path: &Path, ffprobe: &Path) -> Result<String, VideoValidationErr
         .arg(path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // A2: suppress console window on Windows.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(crate::services::child_signal::process_creation_flags());
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|_| VideoValidationError::ProtectedOrUnreadable)?;
     let stdout = child
@@ -412,26 +428,7 @@ fn hdr_kind(stream: &ProbeStream) -> VideoHdrKind {
     }
 }
 
-fn host_target() -> &'static str {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return "aarch64-apple-darwin";
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return "x86_64-apple-darwin";
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    return "x86_64-pc-windows-msvc";
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return "x86_64-unknown-linux-gnu";
-    #[allow(unreachable_code)]
-    "unsupported"
-}
 
-fn executable_suffix() -> &'static str {
-    if cfg!(windows) {
-        ".exe"
-    } else {
-        ""
-    }
-}
 
 #[cfg(test)]
 mod tests {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { Translator } from '../../i18n'
+import { createTranslator, type Translator } from '../../i18n'
 import {
   translateGoalReasonById,
   translateGoalReason,
@@ -60,5 +60,25 @@ describe('translateGoalReason (legacy/internal namespace)', () => {
   it('falls back to unknown for empty input', () => {
     expect(translateGoalReason(undefined, t)).toBe('goal.reasonId.unknown')
     expect(translateGoalReason('', t)).toBe('goal.reasonId.unknown')
+  })
+
+  it('T4: batchStagnation maps to its own key — before T4 it fell through to the raw passthrough', () => {
+    // T2 shipped the K-guard pause with pauseReason 'batchStagnation'
+    // but no map entry: the panel rendered the raw camelCase literal
+    // "batchStagnation" via the free-form passthrough below. This pin
+    // locks the key selection...
+    expect(translateGoalReason('batchStagnation', t)).toBe('goal.reason.batchStagnation')
+  })
+
+  it('T4: batchStagnation resolves to real text in BOTH locale tables', () => {
+    // ...and this pin locks the TRANSLATIONS (real tables, exact text —
+    // a pt-BR gap would silently fall back to the en-US string via
+    // createTranslator's chain and only an exact-text assert catches it).
+    expect(createTranslator('pt-BR')('goal.reason.batchStagnation')).toBe(
+      'Lote pausado após falhas repetidas de tarefa',
+    )
+    expect(createTranslator('en-US')('goal.reason.batchStagnation')).toBe(
+      'Batch paused after repeated task failures',
+    )
   })
 })

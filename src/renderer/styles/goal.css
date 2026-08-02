@@ -1,3 +1,10 @@
+/* goal.css — quieter redesign (user request: the goal card/badge was
+ * "MUITO GRITANTE"). Direction from impeccable/quieter + product register:
+ * neutrals carry the surface, accent is a ~5% state signal (status dot,
+ * primary action icon), status is discreet text instead of an uppercase
+ * pill, actions are icon-only with tooltips. State lives in the DOT and
+ * the text, never in a saturated card background. */
+
 .goal-status-bar {
   display: flex;
   align-items: center;
@@ -6,21 +13,22 @@
   padding: 6px 12px;
   margin: 0 16px 4px;
   border-radius: var(--radius);
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--bg-soft) 45%, transparent);
   border: 1px solid var(--border);
   font-size: 12px;
   line-height: 1.3;
-  animation: goal-slide-in 200ms var(--modal-ease);
+  animation: goal-genie-in 240ms var(--modal-ease);
+  transform-origin: bottom center;
 }
 
-.goal-status-bar[data-kind="completed"] {
-  background: rgba(64, 200, 120, 0.1);
-  border-color: rgba(64, 200, 120, 0.25);
+/* Terminal-state signal moved from a tinted BOX to the icon color —
+ * same information, no green/red card shouting over the conversation. */
+.goal-status-bar[data-kind="completed"] .goal-status-bar__objective-icon {
+  color: var(--green);
 }
 
-.goal-status-bar[data-kind="stopped"] {
-  background: rgba(255, 107, 107, 0.1);
-  border-color: rgba(255, 107, 107, 0.25);
+.goal-status-bar[data-kind="stopped"] .goal-status-bar__objective-icon {
+  color: var(--danger);
 }
 
 .goal-status-bar__body {
@@ -33,7 +41,7 @@
 
 .goal-status-bar__objective-icon {
   flex-shrink: 0;
-  color: var(--accent);
+  color: var(--text-muted);
 }
 
 .goal-status-bar__label {
@@ -42,32 +50,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
-}
-
-.goal-status-bar__turn-count {
-  flex-shrink: 0;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-  font-size: 11px;
-}
-
-.goal-status-bar__progress {
-  flex-shrink: 0;
-  width: 48px;
-  height: 4px;
-  background: var(--bg-soft);
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.goal-status-bar__progress-bar {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 2px;
-  transform: scaleX(0);
-  transform-origin: left center;
-  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform;
 }
 
 .goal-status-bar__actions {
@@ -100,37 +82,60 @@
   color: var(--danger);
 }
 
-@keyframes goal-slide-in {
+/* Genie (user request): the goal surface RISES from the composer on
+ * start and SINKS back on finish — the macOS window-to-dock metaphor,
+ * kept restrained. Origin-aware enter/exit: translateY + a whisper of
+ * scale anchored at the bottom edge (the composer), never scale(0) —
+ * a full collapse reads as a gimmick, 3% reads as depth. Transform and
+ * opacity only: no layout shift, the conversation never reflows. */
+@keyframes goal-genie-in {
   from {
     opacity: 0;
-    transform: translateY(-4px);
+    transform: translateY(10px) scale(0.97);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes goal-genie-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
   }
 }
 
 /* GoalActivePanel — anchored above the composer while a goal is running
- * or paused. Mirrors the Question chip pattern: subtle, dismissible,
- * keyboard-accessible. */
+ * or paused. One calm neutral surface for every state: paused used to get
+ * its own background, but the status dot + text already carry the state,
+ * so the card itself stays out of the conversation's way. */
 .goal-active-panel {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: 6px;
+  padding: 8px 12px;
   margin: 0 16px 6px;
   border-radius: var(--radius);
-  background: var(--accent-soft);
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--bg-soft) 45%, transparent);
+  border: 1px solid var(--border);
   font-size: 12px;
   line-height: 1.4;
-  animation: goal-slide-in 200ms var(--modal-ease);
+  animation: goal-genie-in 260ms var(--modal-ease);
+  transform-origin: bottom center;
 }
 
-.goal-active-panel.paused {
-  background: color-mix(in srgb, var(--bg-soft) 60%, transparent);
-  border-color: var(--border);
+/* Exit window (useGoalPanelExit): the goal reached a terminal state and
+ * the panel plays the genie sink-back before unmounting. pointer-events
+ * off — a leaving surface must not swallow a click. `forwards` pins the
+ * final frame so the panel never flashes back visible before unmount. */
+.goal-active-panel.leaving {
+  pointer-events: none;
+  animation: goal-genie-out 240ms var(--modal-ease) forwards;
 }
 
 .goal-active-panel-header {
@@ -138,32 +143,39 @@
   align-items: center;
   gap: 6px;
   color: var(--text-muted);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .goal-active-panel-title {
   color: var(--text);
-  font-weight: 700;
+  font-weight: 600;
 }
 
+/* Status: dot + discreet text. No uppercase pill with its own background —
+ * the single accent point on the card, pulsing only while evaluating. */
 .goal-active-panel-status {
   margin-left: auto;
-  padding: 2px 8px;
-  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  color: color-mix(in srgb, var(--accent-strong) 82%, var(--text));
-}
-
-.goal-active-panel-status.paused {
-  background: color-mix(in srgb, var(--text-muted) 14%, transparent);
+  font-weight: 500;
   color: var(--text-muted);
 }
 
-.goal-active-panel-status.evaluating {
+.goal-active-panel-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.goal-active-panel-status.paused .goal-active-panel-status-dot {
+  background: var(--text-dim);
+}
+
+.goal-active-panel-status.evaluating .goal-active-panel-status-dot {
   animation: goal-pulse 1.4s ease-in-out infinite;
 }
 
@@ -173,25 +185,37 @@
   font-size: 11px;
 }
 
+/* D-D: the taskImpossible pause message (reason + reply-to-resume
+ * contract). Same quiet text vocabulary as the reason span — muted,
+ * no background, no box — with pre-line so the message's paragraph
+ * break renders as written. */
+.goal-active-panel-impossible-detail {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-line;
+}
+
 .goal-active-panel-objective {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.goal-active-panel-objective-label {
-  color: var(--text-muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
+/* Batch goals show the user's multi-line message VERBATIM (pre-line:
+ * their line breaks render). The max-height + scroll keeps a long batch
+ * from pushing the composer off-screen — same role the cap always had
+ * for long single-line objectives. */
 .goal-active-panel-objective-text {
   margin: 0;
   color: var(--text);
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.45;
   word-break: break-word;
+  white-space: pre-line;
+  max-height: 120px;
+  overflow-y: auto;
 }
 
 .goal-active-panel-edit-input {
@@ -217,58 +241,13 @@
 .goal-active-panel-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
   flex-wrap: wrap;
-}
-
-.goal-panel-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 10px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 120ms, border-color 120ms;
-}
-
-.goal-panel-button:hover:not(:disabled) {
-  background: var(--bg-soft);
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
-}
-
-.goal-panel-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.goal-panel-button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--bg);
-}
-
-.goal-panel-button.primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 88%, white);
-}
-
-.goal-panel-button.danger {
-  color: var(--danger);
-}
-
-.goal-panel-button.danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
-  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
 }
 
 @keyframes goal-pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
+  50% { opacity: 0.4; }
 }
 
 /* Compact strip — shown when QuestionWizard is open so both coexist.
@@ -309,7 +288,8 @@
   flex-shrink: 0;
 }
 
-/* Icon-only buttons for compact mode (and the collapse-back chevron). */
+/* Icon-only buttons — the single action vocabulary of the whole goal
+ * surface (compact strip, full panel, collapse chevron). */
 .goal-panel-icon-button {
   display: inline-flex;
   align-items: center;
@@ -343,11 +323,14 @@
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
+/* Danger is muted at rest and only turns red on hover — a stop button
+ * that is permanently red shouts next to a calm surface. */
 .goal-panel-icon-button.danger {
-  color: var(--danger);
+  color: var(--text-muted);
 }
 
 .goal-panel-icon-button.danger:hover:not(:disabled) {
+  color: var(--danger);
   background: color-mix(in srgb, var(--danger) 10%, transparent);
 }
 
@@ -359,19 +342,17 @@
   transform: rotate(180deg);
 }
 
-/* Objective text scroll when long — prevents the panel from pushing
- * the composer off-screen on very long objectives. */
-.goal-active-panel-objective-text {
-  max-height: 120px;
-  overflow-y: auto;
-}
-
-/* Reduced motion: disable the evaluating pulse. */
+/* Reduced motion: no genie, no pulse — state changes are instant. The
+ * JS side (useGoalPanelExit) already skips the exit window entirely, so
+ * .leaving never mounts under reduced motion; the rule below is the
+ * belt-and-braces guarantee that the genie can NEVER play. */
 @media (prefers-reduced-motion: reduce) {
-  .goal-active-panel-status.evaluating {
+  .goal-active-panel-status.evaluating .goal-active-panel-status-dot {
     animation: none;
   }
-  .goal-active-panel {
+  .goal-active-panel,
+  .goal-active-panel.leaving,
+  .goal-status-bar {
     animation: none;
   }
 }

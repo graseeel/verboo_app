@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { ArrowDown, FolderClosed, X } from 'lucide-react'
 import type {
   AccessMode,
   AgentEvent,
   AgentResultSnapshot,
   AgentTurnRequest,
+  Annotation,
   AppConfig,
   AttachmentMeta,
   ChatStore,
@@ -16,6 +18,7 @@ import type {
   FeedbackRequest,
   FeedbackResult,
   GoalEvaluationInput,
+  GoalEvaluationEnvelope,
   GoalState,
   LanguageCode,
   MenuBarState,
@@ -28,6 +31,7 @@ import type {
   StoredConversation,
   ThemeMode,
   TokenRateSnapshot,
+  TodoItem,
   TokenUsage,
   TranscriptItem,
   UpdateSnapshot,
@@ -38,11 +42,43 @@ import type {
   WorkspaceChangeSummary,
   WorkspaceReviewMetadata,
 } from '../shared/types'
-import { createGoalState, goalSystemMessage } from './features/goal/goalState'
+import { createGoalState, goalSystemMessage, resumeGoalSessionId, sanitizeStoredGoal, shouldResumeGoalOnUserMessage } from './features/goal/goalState'
+// T3: context-usage extraction lives in features/context/contextUsage
+// (moved out of this file verbatim) so the frontier signal (ii) is
+// testable without importing the component tree.
+import { extractContextUsage, extractUsageObject, isRecord, numberValue, numberValueOptional } from './features/context/contextUsage'
 import { GoalStatusBar, type GoalStatusBarState } from './features/goal/GoalStatusBar'
 import { GoalActivePanel } from './features/goal/GoalActivePanel'
-import { buildObjectiveUpdatedPrompt } from './features/goal/goalPrompt'
+import { useGoalPanelExit } from './features/goal/useGoalPanelExit'
+import { buildGoalUsageLine, buildObjectiveUpdatedPrompt } from './features/goal/goalPrompt'
+import { buildBatchReportLines } from './features/goal/goalReport'
+import { parseBatchInput } from './features/goal/goalBatchParse'
+import { AnnotationLayer } from './features/annotations/AnnotationLayer'
+import { AnnotationOverlay } from './features/annotations/AnnotationOverlay'
+import {
+  addAnnotationDraft,
+  consumeAnnotationDrafts,
+  draftsForConversation,
+  removeAnnotationDraft,
+  updateAnnotationComment,
+  type AnnotationDrafts,
+} from './features/annotations/annotationDrafts'
+// F3: o ÚNICO ponto onde o campo annotations entra no request (nunca no texto)
+// e o item N3 (o chip vira turno, autocontido). Montagem do bloco no prompt é
+// Rust-side — aqui só viaja o campo estruturado.
+import { applyAnnotations } from './features/annotations/annotationRequest'
+import { annotationTurnItemId, buildAnnotationTurnItem, insertAnnotationTurnBeforeResponse } from './features/annotations/annotationTurnItem'
+import { settleGoalTurnAfterSummary } from './features/goal/turnCompletion'
+import { stampBatchProgressLine } from './features/goal/progressStamp'
 import { runGoalCycle, type GoalSchedulerDelegate } from './features/goal/goalScheduler'
+import { shouldAccumulateTokensForTurn, accumulateTurnUsage, accumulateEvaluatorUsage, shouldAccumulateEvaluatorUsage } from './features/goal/tokenAccumulator'
+import { ChecklistPanel } from './features/checklist/ChecklistPanel'
+import { useChecklistFlight } from './features/checklist/useChecklistFlight'
+import { useChecklistCompletionExit } from './features/checklist/useChecklistCompletionExit'
+import { applyTodoWrite, removeChecklistForConversation, resolveChecklistPlacement, type ChecklistCardPos, type ChecklistFormPreference } from './features/checklist/checklistPlacement'
+import { readChecklistCardPos, readChecklistFormPreference, writeChecklistCardPos, writeChecklistFormPreference } from './features/checklist/checklistStorage'
+import { createSoundPlayer, resolveSoundForEvent, type SoundEvent, type SoundPlayer } from './features/sound/sounds'
+import { readSoundsEnabled, writeSoundsEnabled } from './features/sound/soundStorage'
 import type { ReservedSlashCommand } from './features/composer/slashCommands'
 import { AppSidebar, type AppView } from './components/AppSidebar'
 import { CommandPalette, paletteIcons, type PaletteAction } from './components/CommandPalette'
@@ -127,6 +163,7 @@ import {
   persistChatStore,
   readChatStore,
   titleFromMessage,
+  updateConversation as updateConversationPure,
   visibleConversations,
 } from './state/chatStore'
 import packageJson from '../../package.json'
@@ -167,8 +204,8 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   ignoreToolChatsForMemory: true,
   goalMode: {
     enabled: true,
-    maxTurns: Number.MAX_SAFE_INTEGER,
-    maxElapsedMinutes: Number.MAX_SAFE_INTEGER,
+    maxTurns: 4_294_967_295,
+    maxElapsedMinutes: 4_294_967_295,
     allowAutoAccess: true,
   },
   updates: {
@@ -383,6 +420,18 @@ export function App() {
     () => restoredUpdateDrafts?.drafts[activeConversationId ?? '__new__'] ?? '',
   )
   const prevConversationIdRef = useRef<string | undefined>(activeConversationId)
+  // Annotation drafts (F1): per-conversation POSSE — a draft created in
+  // conversation A belongs to A forever; switching chats never moves or loses
+  // it. In-memory only (restart clears) — declared limit, drafts are ephemeral
+  // by design. F1 scope: the chip READS this state to show the count and the
+  // panel. NOTHING here touches the send path — sending annotations is F3,
+  // with its own gate (official block assembly is Rust-side, per the Maestro).
+  const [annotationDrafts, setAnnotationDrafts] = useState<AnnotationDrafts>({})
+  // F3: sendMessage lê o retrato do clique por ESTE ref, não pelo state do
+  // closure — criar a anotação e enviar podem cair no mesmo tick de render,
+  // e o guarda não pode decidir com um state velho (nem deixar o envio
+  // só-anotação morrer por um render de atraso).
+  const annotationDraftsRef = useRef<AnnotationDrafts>({})
   const [pendingPermissionPrompt, setPendingPermissionPrompt] = useState<PendingPermissionPrompt | undefined>()
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | undefined>()
   const [questionPrompt, setQuestionPrompt] = useState<QuestionPromptState | undefined>()
@@ -424,6 +473,55 @@ export function App() {
     readReportedContextWindows,
   )
   const [goal, setGoal] = useState<GoalState | undefined>()
+  // Genie exit: snapshot of the last live goal, exposed for ~280ms after
+  // the goal turns terminal so the panel can sink back into the composer
+  // instead of vanishing. See useGoalPanelExit for the honest limits.
+  const { exitGoal } = useGoalPanelExit(goal)
+  // T1-TodoWrite: the task checklist. Per-conversation TodoWrite lists
+  // (POSSESSION — each entry belongs to its turn's OWNER conversation;
+  // only the ACTIVE conversation's list renders). The list is NOT a
+  // goal feature: it appears whenever the agent TodoWrites, goal or no
+  // goal. REPLACE semantics per call — never accumulate (see
+  // applyTodoWrite).
+  const [todosByConversation, setTodosByConversation] = useState<Record<string, TodoItem[]>>({})
+  // USER RULE 2: the form is the user's choice and persists — floating
+  // card on the right, or docked above the composer (respecting the
+  // goal-first hierarchy either way).
+  const [checklistFormPref, setChecklistFormPref] = useState<ChecklistFormPreference>(readChecklistFormPreference)
+  // Floating card's resting position; null = home corner. Persisted and
+  // re-clamped into the window bounds by the panel (multiplatform rule).
+  const [checklistCardPos, setChecklistCardPos] = useState<ChecklistCardPos | null>(readChecklistCardPos)
+  /* TWO SOUNDS, EXACTLY TWO (user order, 2026-08-01 — "APENAS ISSO,
+   * NADA MAIS"): a notification sound (permission/question waiting) and
+   * a conclusion sound (turn or goal/batch completed). Synthesized with
+   * Web Audio (autocontained, all three WebViews) — see features/sound.
+   * The master switch persists renderer-side (localStorage: the bridge
+   * settings contract is TORNO's) and the per-type notification prefs
+   * gate each event — integrated with Settings → Notifications, not a
+   * parallel system. */
+  const [soundsEnabled, setSoundsEnabled] = useState(readSoundsEnabled)
+  const soundsEnabledRef = useRef(soundsEnabled)
+  const soundPlayerRef = useRef<SoundPlayer | null>(null)
+  const playAppSound = (event: SoundEvent, conversationId: string | undefined) => {
+    const settings = userSettingsRef.current
+    const kind = resolveSoundForEvent(
+      event,
+      {
+        soundsEnabled: soundsEnabledRef.current,
+        completionNotifications: settings.completionNotifications,
+        permissionNotifications: settings.permissionNotifications,
+        questionNotifications: settings.questionNotifications,
+      },
+      {
+        background:
+          (conversationId !== undefined && conversationId !== activeConversationIdRef.current)
+          || !document.hasFocus(),
+      },
+    )
+    if (!kind) return
+    soundPlayerRef.current ??= createSoundPlayer()
+    soundPlayerRef.current.play(kind)
+  }
   const [imageReadingTurnId, setImageReadingTurnId] = useState<string | undefined>()
   // Live video-analysis progress per turn. Explicit upsert keyed by turnId
   // (never routed through appendActivityItem, whose dedup is not an upsert
@@ -462,6 +560,13 @@ export function App() {
   const t = useMemo(() => createTranslator(userSettings.language), [userSettings.language])
   const [tokenRate, setTokenRate] = useState<TokenRateSnapshot | undefined>()
   const goalRef = useRef(goal)
+  // G-C17: identity key for the evaluator-usage dedupe gate. Holds the
+  // last GoalEvaluationEnvelope whose evaluatorUsage was accumulated
+  // into the goal. evaluate_goal is a single invoke → single response,
+  // so each envelope is presented once; the gate (tokenAccumulator.ts)
+  // skips only a re-presentation of the SAME object. Reset per goal in
+  // startGoalScheduler.
+  const lastEvaluatorEnvelopeRef = useRef<GoalEvaluationEnvelope | undefined>(undefined)
   const [goalBarStatus, setGoalBarStatus] = useState<GoalStatusBarState>({ kind: 'idle' })
   const [emptyLineKey] = useState(() => EMPTY_LINE_KEYS[Math.floor(Math.random() * EMPTY_LINE_KEYS.length)])
   const workspaceRef = useRef<HTMLElement | null>(null)
@@ -524,6 +629,15 @@ export function App() {
   // to await the interrupted turn before sending the next message. Separate
   // from turnCompletionDeferred (used by goal scheduler) to avoid conflicts.
   const interjectDeferred = useRef<{ turnId: string; resolve: () => void } | undefined>(undefined)
+  // T3: resolves when the frontier COMPACTION turn ends. The goal
+  // scheduler's compactOnTaskBoundary awaits this before any frontier
+  // state is reset (the reset NEVER happens before the compact
+  // concludes). Resolved with `exitCode === 0` on done, `false` on
+  // error/abort — a failed compaction never blocks the batch, but is
+  // declared (compactionFailures). Separate from the deferreds above:
+  // the compaction turn goes through runTurn, NOT continueGoal, and
+  // must not touch the goal turn's completion deferred.
+  const compactCompletionDeferred = useRef<{ turnId: string; resolve: (ok: boolean) => void } | undefined>(undefined)
   const turnThinkingText = useRef<Record<string, string>>({})
   const turnThinkingSnippets = useRef<Record<string, string[]>>({})
   const [thinkingSnippets, setThinkingSnippets] = useState<string[]>([])
@@ -542,6 +656,10 @@ export function App() {
     conversationId: string
     message: string
     alreadyRetriedWithoutSession: boolean
+    // F3 (QA a-i): the retry must replay the SAME payload — annotations
+    // included — or the retried turn silently loses the excerpts the user
+    // attached on purpose (the worst class: invisible data loss).
+    annotations?: Annotation[]
   }>>({})
   const autoApprovalSent = useRef<Set<string>>(new Set())
   const turnOpenTextSegment = useRef<Record<string, string | undefined>>({})
@@ -661,6 +779,52 @@ export function App() {
     ? subagentThreads.find(agent => agent.id === selectedSubagentId)
     : undefined
   const showSubagentThreadPanel = activeView === 'chat' && Boolean(selectedSubagent) && !terminal.terminalOpen && !review.reviewOpen
+
+  /* ── T1-TodoWrite: checklist placement (PURE decision + flight) ──
+   * The checklist is a CHAT-LANE citizen: hidden outside the chat
+   * view and in fullscreen, like the workspace panels (hasList folds
+   * those gates in). goalDocked counts ANY goal element occupying the
+   * aux-stack — live panel, genie exit ghost, or terminal status bar —
+   * which is what serializes the checklist migration AFTER the 280ms
+   * genie window instead of fighting it (single choreography owner —
+   * see useChecklistFlight). otherRightLaneOpen extends "right side
+   * physically occupied" to the subagent thread panel, same spirit as
+   * the terminal/review/web rule. */
+  const activeChecklistTodos = activeConversationId ? todosByConversation[activeConversationId] : undefined
+  const checklistPlacement = resolveChecklistPlacement({
+    hasList: activeView === 'chat' && !isFullscreenView && !!activeChecklistTodos && activeChecklistTodos.length > 0,
+    goalDocked: Boolean(goal) || Boolean(exitGoal),
+    terminalOpen: visibleTerminalOpen,
+    reviewOpen: visibleReviewOpen,
+    webOpen: visibleBrowserOpen,
+    sidebarOpen: sidebarVisualMode !== 'hidden',
+    preference: checklistFormPref,
+    otherRightLaneOpen: showSubagentThreadPanel,
+  })
+  const checklistFlight = useChecklistFlight(checklistPlacement)
+  /* The completed list LEAVES (user order, 2026-08-01): after the dwell
+   * the exit animation plays and ONLY THEN the conversation entry is
+   * removed — hasList folds to false and the panel unmounts. Timers are
+   * keyed to the list reference, so a new list can never be deleted by
+   * a stale exit (see useChecklistCompletionExit). */
+  const checklistCompletionExit = useChecklistCompletionExit(
+    activeConversationId,
+    activeChecklistTodos,
+    id => setTodosByConversation(prev => removeChecklistForConversation(prev, id)),
+  )
+
+  useEffect(() => {
+    writeChecklistFormPreference(checklistFormPref)
+  }, [checklistFormPref])
+  useEffect(() => {
+    writeChecklistCardPos(checklistCardPos)
+  }, [checklistCardPos])
+  // Mirror + persist the sound master switch (event handlers read the
+  // ref — they have stale closures by construction).
+  useEffect(() => {
+    soundsEnabledRef.current = soundsEnabled
+    writeSoundsEnabled(soundsEnabled)
+  }, [soundsEnabled])
   const appLayoutStyle = {
     '--sidebar-width': `${effectiveSidebarWidth}px`,
     // Peek width is frozen at the user's sidebarWidth and used by the shell
@@ -897,6 +1061,12 @@ export function App() {
     goalRef.current = goal
   }, [goal])
 
+  // Espelho do state no ref (mesmo padrão de goalRef acima): mantém o
+  // retrato fresco para o sendMessage sem re-criar a função a cada rascunho.
+  useEffect(() => {
+    annotationDraftsRef.current = annotationDrafts
+  }, [annotationDrafts])
+
   useEffect(() => {
     conversationItemsRef.current = items
   }, [items])
@@ -961,6 +1131,27 @@ export function App() {
     autoApprovalSent.current.add(pendingPermissionPrompt.id)
     void respondToPermissionPrompt(pendingPermissionPrompt, 'allow', true)
   }, [pendingPermissionPrompt])
+
+  /* NOTIFICATION SOUND (the app's first sound): the app needs the user.
+   * Effect-driven — one fire per staged prompt, never a setState-
+   * updater side effect (double-invoke would double-play). The VISIBLE
+   * prompt gate already excludes auto-approved prompts (no attention
+   * needed there). Each event is additionally gated by its existing
+   * notification preference inside playAppSound. */
+  const visiblePermissionPromptId = visiblePermissionPrompt?.id
+  useEffect(() => {
+    if (visiblePermissionPromptId) {
+      playAppSound('permissionNeeded', visiblePermissionPrompt?.conversationId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visiblePermissionPromptId])
+  const questionPromptTurnId = questionPrompt?.turnId
+  useEffect(() => {
+    if (questionPromptTurnId) {
+      playAppSound('questionNeeded', questionPrompt?.conversationId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [questionPromptTurnId])
 
   useEffect(() => {
     return window.verboo.onRefreshDataRequest(() => {
@@ -1102,6 +1293,20 @@ export function App() {
   // load, sidebar selection, and notification-click focus). Mirrors the
   // hydration in selectConversation but lives in an effect so it fires on
   // every activeConversationId transition, including the initial mount.
+  //
+  // G-C5: dependency is [activeConversationId] ONLY. Reading via
+  // chatStoreRef (not chatStore.conversations) avoids re-firing when the
+  // scheduler itself persists progress — that persistence changes the
+  // store reference, which previously re-triggered this effect and
+  // forced the running goal back to 'paused', causing an infinite
+  // feedback loop (visible as the goal panel flickering AVALIANDO /
+  // paused every ~1-3 s with no error ever shown).
+  //
+  // Guard: while a scheduler is alive for the active conversation
+  // (goalAbortRef not aborted), the scheduler owns the goal state —
+  // this effect must NOT overwrite it. Only hydrate from storage when
+  // there is no live cycle (initial mount, conversation switch, app
+  // relaunch).
   useEffect(() => {
     if (!activeConversationId) {
       setGoal(undefined)
@@ -1109,15 +1314,26 @@ export function App() {
       setGoalBarStatus({ kind: 'idle' })
       return
     }
-    const conversation = chatStore.conversations.find(item => item.id === activeConversationId)
+    // If a scheduler is alive for the current goal, do not hydrate from
+    // storage — the running cycle is the source of truth.
+    if (goalAbortRef.current && !goalAbortRef.current.signal.aborted) {
+      return
+    }
+    const conversation = chatStoreRef.current.conversations.find(item => item.id === activeConversationId)
     const storedGoal = conversation?.goal
     if (storedGoal && (storedGoal.status === 'active' || storedGoal.status === 'paused' || storedGoal.status === 'evaluating' || storedGoal.status === 'continuing')) {
       // Active goals are restored as paused — the user must explicitly
       // resume to restart the autonomous cycle. Prevents surprise execution
       // on app launch or conversation switch.
-      const restored: GoalState = storedGoal.status === 'paused'
-        ? storedGoal
-        : { ...storedGoal, status: 'paused', pausedAt: storedGoal.pausedAt ?? Date.now() }
+      //
+      // G-C7-TS-MIGRACAO: sanitize before re-hydrating. Goals persisted
+      // before G-C7-TS-FIX wrote maxTurns=9.0e15 on disk; running them
+      // verbatim would re-trip the Rust u32 serde rejection that this
+      // whole cycle fixed. The normalizer is idempotent for safe values.
+      const sanitized = sanitizeStoredGoal(storedGoal)
+      const restored: GoalState = sanitized.status === 'paused'
+        ? sanitized
+        : { ...sanitized, status: 'paused', pausedAt: sanitized.pausedAt ?? Date.now() }
       setGoal(restored)
       goalRef.current = restored
       setGoalBarStatus({
@@ -1130,7 +1346,44 @@ export function App() {
       goalRef.current = undefined
       setGoalBarStatus({ kind: 'idle' })
     }
-  }, [activeConversationId, chatStore.conversations])
+  }, [activeConversationId])
+
+  // G-C5: dedicated persist effect. Watches `goal` and mirrors it into
+  // the active conversation's stored goal. Runs OUTSIDE the setGoal
+  // updater, so it does not re-enter React state from inside a state
+  // updater (reentrancy risk). With P1's hydration dependency
+  // reduced to [activeConversationId], this effect's resulting store
+  // churn does NOT trigger the hydration cycle.
+  //
+  // G-C5-FIX: only persist when the goal's ownerConversationId matches
+  // the active conversation. Without this guard, switching from
+  // conversation A (with active goal) to B fires this effect with
+  // goal=A + activeConversationId=B, corrupting B's stored goal. The
+  // next flush would correct it, but a crash between the two leaves B
+  // with a stale goal.
+  useEffect(() => {
+    const conversationId = activeConversationId
+    if (!conversationId) return
+    if (goal === undefined) {
+      // Goal was cleared (cancel/clear). Clear it from storage too,
+      // but only if the conversation currently has a goal — otherwise
+      // we would create a new store reference for no reason.
+      updateConversation(conversationId, conversation =>
+        conversation.goal === undefined
+          ? conversation
+          : { ...conversation, goal: undefined, updatedAt: Date.now() },
+      )
+      return
+    }
+    // G-C5-FIX: do NOT cross-write into a conversation that does not
+    // own this goal. The owner is stamped at creation/resume time.
+    if (goal.ownerConversationId !== conversationId) return
+    updateConversation(conversationId, conversation => ({
+      ...conversation,
+      goal,
+      updatedAt: Date.now(),
+    }))
+  }, [goal, activeConversationId])
 
   async function refreshModels(forceRefresh: boolean): Promise<ModelDiscoveryResult> {
     const result = await window.verboo.listModels(forceRefresh)
@@ -1283,12 +1536,16 @@ export function App() {
   }
 
   async function startCliLogin() {
-    const result = await window.verboo.startCliLogin()
-    if (result.status) setCliAuth(result.status)
-    if (result.ok) {
-      await validateAccess(true)
-    }
-    return result
+    // A1: non-blocking — the Rust command spawns the CLI and returns in
+    // <1s (suite Rust A1: 30s fake CLI, command returns immediately).
+    // result.ok now means "spawned", NOT "authenticated", and
+    // result.status is always absent at this point. Do NOT call
+    // validateAccess here: it would re-check auth BEFORE the user had
+    // any chance to authenticate in the browser, surface a spurious
+    // failure, and never unlock. Progress arrives via the login:event
+    // channel (LoginScreen), and completion triggers the real
+    // re-validation via onLoginComplete below.
+    return window.verboo.startCliLogin()
   }
 
   async function logout() {
@@ -1508,18 +1765,22 @@ export function App() {
 
     // Calibrate the live chars→tokens estimate with the request's real count.
     const liveState = turnLiveRates.current[turnId]
-    if (liveState && liveState.charsSinceUsage > 80 && usage.output_tokens) {
-      const measured = usage.output_tokens / liveState.charsSinceUsage
+    if (liveState && liveState.charsSinceUsage > 80 && usage.outputTokens) {
+      const measured = usage.outputTokens / liveState.charsSinceUsage
       if (Number.isFinite(measured)) {
         liveState.tokensPerChar = Math.min(0.6, Math.max(0.1, measured))
       }
       liveState.charsSinceUsage = 0
     }
 
-    const inputTokens = usage.input_tokens ?? 0
-    const outputTokens = usage.output_tokens ?? 0
-    const cacheCreationTokens = usage.cache_creation_input_tokens ?? 0
-    const cacheReadTokens = usage.cache_read_input_tokens ?? 0
+    // G-C12: usage is a TokenUsage (camelCase, see shared/types.ts).
+    // The CLI sends snake_case in its raw payload, but extractTokenUsage
+    // renames to camelCase on the way out so this consumer reads the
+    // same shape the Rust-side event.result.usage uses.
+    const inputTokens = usage.inputTokens ?? 0
+    const outputTokens = usage.outputTokens ?? 0
+    const cacheCreationTokens = usage.cacheCreationInputTokens ?? 0
+    const cacheReadTokens = usage.cacheReadInputTokens ?? 0
     const totalTokens = inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens
     if (totalTokens <= 0) return
 
@@ -1700,6 +1961,15 @@ export function App() {
       // Do NOT clear compactingTurnId here — it stays until the turn
       // completes (done/error handler), ensuring the user sees the
       // compaction marker long enough even if follow-up activities race in.
+      // T1-TodoWrite: the structured checklist rides the todowrite
+      // activity (kind 'planning'). REPLACE semantics per OWNER
+      // conversation (possession); absence (undefined —
+      // skip_serializing_if) is NOT a clear. The activity itself
+      // continues below into the transcript as before — the checklist
+      // display is additive state, not a transcript change.
+      if (conversationId && activity?.todos) {
+        setTodosByConversation(prev => applyTodoWrite(prev, conversationId, activity.todos))
+      }
       if (conversationId && activity) {
         if (activity.kind === 'command' && activity.detail) {
           turnLastCommand.current[event.turnId] = activity.detail
@@ -1732,6 +2002,20 @@ export function App() {
     }
 
     if (event.type === 'result') {
+      // G-C14: dedupe token accumulation by turnId. The Rust side
+      // emits the result event TWICE for a single turn — the second
+      // emission carries the exit_code. Both events have the same
+      // turnId and the same usage payload, so accumulating on every
+      // event double-counts tokens (measured: 1-turn goal showed
+      // 79.695 on screen but 159.390 in the store). Fix: check if we
+      // already have a snapshot for this turnId BEFORE overwriting.
+      // If we do, this is the second emission — skip the token sum
+      // but still update the snapshot (the second event carries the
+      // exit_code and may carry a richer result). The QA was
+      // explicit: do NOT suppress the second event — other consumers
+      // (exit_code readers) depend on it. Dedupe in the consumer is
+      // sufficient and safer than touching the Rust emitter.
+      const hadSnapshot = turnResultSnapshots.current[event.turnId] !== undefined
       turnResultSnapshots.current[event.turnId] = event.result
       if (event.result.sessionId) goalSessionId.current = event.result.sessionId
       const conversationId = turnConversationIds.current[event.turnId]
@@ -1743,14 +2027,22 @@ export function App() {
       if (conversationId) {
         updateConversation(conversationId, c => ({ ...c, lastTurnEndedAt: Date.now() }))
       }
-      if (event.result.usage) {
+      if (event.result.usage && shouldAccumulateTokensForTurn(hadSnapshot)) {
         setGoal(current => {
           if (!current) return current
-          return {
-            ...current,
-            usedInputTokens: current.usedInputTokens + (event.result.usage?.input_tokens ?? 0),
-            usedOutputTokens: current.usedOutputTokens + (event.result.usage?.output_tokens ?? 0),
-          }
+          // T3: the accumulation moved to the pure accumulateTurnUsage
+          // (tokenAccumulator.ts) — byte-identical semantics (G-C12
+          // camelCase reads), extracted so the dedupe sequence is
+          // testable as EFFECT, not form.
+          const updated = accumulateTurnUsage(current, event.result.usage)
+          // G-C10 item 3: synchronize goalRef.current so the scheduler
+          // (which reads via delegate.getGoal() → goalRef.current) sees
+          // the accumulated tokens. Without this, the scheduler's
+          // updateGoal((prev) => ...) sees a stale prev (tokens=0) and
+          // the completion write preserves the zeros — same ref/state
+          // desync class as G-C5 and G-C8.
+          goalRef.current = updated
+          return updated
         })
       }
       return
@@ -1864,6 +2156,16 @@ export function App() {
         interjectDeferred.current.resolve()
         interjectDeferred.current = undefined
       }
+      // T3: a compaction-turn error resolves the frontier deferred with
+      // false — UNCONDITIONALLY, even when willContinueAutomatically:
+      // the batch NEVER waits on a failed compact (it proceeds without
+      // compacting and declares the failure). If the reactive recovery
+      // compacts anyway, that is the pre-existing reactive path doing
+      // its own job, outside the frontier's control.
+      if (compactCompletionDeferred.current?.turnId === event.turnId) {
+        compactCompletionDeferred.current.resolve(false)
+        compactCompletionDeferred.current = undefined
+      }
 
       if (conversationId) {
         if (willRecoverAuth) {
@@ -1909,7 +2211,10 @@ export function App() {
       if (willRestartSession && conversationId && retryMeta) {
         clearConversationSession(conversationId)
         removeTurnTranscriptItems(conversationId, event.turnId)
-        const retry = createQueuedFollowUp(conversationId, retryMeta.message)
+        // QA a-i: the retry replays the SAME send — annotations included
+        // (frozen at the click, carried by the retry payload). Without this
+        // the retried turn silently lost the user's excerpts.
+        const retry = createQueuedFollowUp(conversationId, retryMeta.message, undefined, retryMeta.annotations ?? [])
         retry.request.turnId = crypto.randomUUID()
         if (completionDeferred) completionDeferred.turnId = retry.request.turnId
         void runTurn(retry, { skipResume: true }).catch(error => {
@@ -1930,6 +2235,10 @@ export function App() {
 
       // Auto-resume with a structured hidden prompt. The original user message
       // is never replayed, preventing completed tool calls from being repeated.
+      // ANNOTATIONS ARE DELIBERATELY ABSENT HERE (QA a-i trap): unlike the
+      // dead-session retry above, this is a CONTINUATION — the original turn
+      // was already delivered and the model already saw the annotation block;
+      // replaying it would double the content. Do not "fix" this by symmetry.
       if ((willRecoverAuth || willRecoverContext) && conversationId) {
         const suffix = partialText.length > 50
           ? `\n\nLast partial assistant output (may be truncated):\n"""\n${partialText.slice(-800)}\n"""`
@@ -2000,6 +2309,21 @@ export function App() {
           isActive,
         )
       }
+      // CONCLUSION SOUND (the app's second sound): a PLAIN turn ending
+      // successfully. Goal turns are silent HERE — their completion
+      // sound belongs to the goal's onComplete, so a batch sounds ONCE
+      // at the end instead of at every turn (the sleeping-batch user
+      // hears exactly one chime). Frontier /compact turns are plumbing,
+      // not conclusions — also silent. Failed turns get NO sound: the
+      // user's limit is two sounds and no error sound was asked for.
+      if (
+        conversationId
+        && event.exitCode === 0
+        && turnCompletionDeferred.current?.turnId !== event.turnId
+        && compactCompletionDeferred.current?.turnId !== event.turnId
+      ) {
+        playAppSound('turnCompleted', conversationId)
+      }
       // Persist accumulated thinking text BEFORE the assistant message is
       // finalized so the block lands in chronological order in the
       // transcript. The live ref is intentionally NOT cleared (data contract).
@@ -2043,7 +2367,9 @@ export function App() {
           setQuestionWizardOpen(false)
         }
         cleanupTurnState(event.turnId)
-        void runTurn(createQueuedFollowUp(conversationId, message), { skipResume: true })
+        // QA a-i: same replay rule as the error path — the retry carries the
+        // click-time annotations from the payload, never a stripped copy.
+        void runTurn(createQueuedFollowUp(conversationId, message, undefined, retryMeta.annotations ?? []), { skipResume: true })
         return
       }
       if (conversationId && event.exitCode !== 0) {
@@ -2052,28 +2378,52 @@ export function App() {
       }
       if (conversationId) finishAssistantMessage(conversationId, event.turnId)
       if (conversationId) {
-        void appendTurnSummary(conversationId, event.turnId, event.exitCode)
+        const summaryPromise = appendTurnSummary(conversationId, event.turnId, event.exitCode)
+        void summaryPromise
           .then(changeSummary => {
             if (event.exitCode === 0) {
               scheduleBrowserPostEditReload(event.turnId, conversationId, changeSummary?.totalFiles ?? 0)
             }
           })
-          .finally(() => cleanupTurnState(event.turnId))
           .catch(() => undefined)
+        // D-C: the goal turn deferred resolves ONLY AFTER the summary
+        // item exists (or the append failed — the loop must never hang
+        // on it). Before this fix the resolve ran SYNCHRONOUSLY below,
+        // the scheduler continued in a microtask, and the batch progress
+        // stamp found no `${turnId}:summary` item — returning SILENTLY
+        // and never retrying for that turnId (the field-test defect:
+        // "Tarefa k de N" never reached the screen). The ordering
+        // contract is owned by settleGoalTurnAfterSummary and tested in
+        // turnCompletion.test.ts.
+        settleGoalTurnAfterSummary(summaryPromise, {
+          cleanup: () => cleanupTurnState(event.turnId),
+          resolveGoalTurn: () => {
+            if (turnCompletionDeferred.current?.turnId === event.turnId) {
+              turnCompletionDeferred.current.resolve()
+              turnCompletionDeferred.current = undefined
+            }
+          },
+        })
       } else {
         cleanupTurnState(event.turnId)
+        // No summary append in flight — resolve immediately.
+        if (turnCompletionDeferred.current?.turnId === event.turnId) {
+          turnCompletionDeferred.current.resolve()
+          turnCompletionDeferred.current = undefined
+        }
       }
       delete turnRetryPayload.current[event.turnId]
 
-      // Resolve goal turn completion promise if this turn was started by the goal scheduler
-      if (turnCompletionDeferred.current?.turnId === event.turnId) {
-        turnCompletionDeferred.current.resolve()
-        turnCompletionDeferred.current = undefined
-      }
       // Resolve interject promise if one is pending for this turn
       if (interjectDeferred.current?.turnId === event.turnId) {
         interjectDeferred.current.resolve()
         interjectDeferred.current = undefined
+      }
+      // T3: resolve the frontier compaction deferred with the REAL exit
+      // code — true only when the compact concluded cleanly (exit 0).
+      if (compactCompletionDeferred.current?.turnId === event.turnId) {
+        compactCompletionDeferred.current.resolve(event.exitCode === 0)
+        compactCompletionDeferred.current = undefined
       }
 
     }
@@ -2086,7 +2436,14 @@ export function App() {
   const sendMessageLock = useRef(false)
   async function sendMessage(message: string) {
     const trimmed = message.trim()
-    if (!trimmed) return
+    // F3 — guarda do vazio ALARGADA: enviar SÓ a anotação é comportamento
+    // exigido pelo usuário ("posso apenas enviar a anotação"). O retrato vem
+    // do ref (criar a anotação e clicar enviar podem cair no mesmo tick; o
+    // state do closure estaria um render atrás e mataria o envio).
+    const pendingAnnotations = activeConversationId
+      ? draftsForConversation(annotationDraftsRef.current, activeConversationId)
+      : []
+    if (!trimmed && pendingAnnotations.length === 0) return
     if (sendMessageLock.current) return // already in flight
     sendMessageLock.current = true
     try {
@@ -2193,22 +2550,30 @@ export function App() {
     }
 
     turnAttachments = await promoteBrowserAttachments(turnAttachments, conversationId)
-    const queued = createQueuedFollowUp(conversationId, trimmed, turnAttachments)
+    // F3: pendingAnnotations foi lido do ref ANTES dos awaits acima — é o
+    // retrato do clique, e é ele que viaja (congelado) no request da fila.
+    const queued = createQueuedFollowUp(conversationId, trimmed, turnAttachments, pendingAnnotations)
     setActiveView('chat')
     stickToBottomRef.current = true
     setShowJumpToLatest(false)
     setPendingPermissionPrompt(current => current?.conversationId === conversationId ? undefined : current)
 
-    appendConversationItem(conversationId, {
-      id: `user:${Date.now()}`,
-      role: 'user',
-      text: trimmed,
-      timestamp: Date.now(),
-      skills: selectedSkillsUnion,
-      // Persist a slim version of attachments — just path/name/kind — so the
-      // transcript can render chips/thumbnails on reload without base64 bloat.
-      attachments: turnAttachments.length ? turnAttachments.map(slimMeta) : undefined,
-    }, titleFromMessage(trimmed))
+    // F3: envio SÓ-anotação não cria bolha de usuário vazia — o registro do
+    // envio é o item N3 (kind 'annotation') que o runTurn anexa após a
+    // confirmação; bolha vazia seria ruído sem conteúdo (o veto de produto a
+    // mensagem redundante segue valendo). Com texto, a bolha é a de sempre.
+    if (trimmed) {
+      appendConversationItem(conversationId, {
+        id: `user:${Date.now()}`,
+        role: 'user',
+        text: trimmed,
+        timestamp: Date.now(),
+        skills: selectedSkillsUnion,
+        // Persist a slim version of attachments — just path/name/kind — so the
+        // transcript can render chips/thumbnails on reload without base64 bloat.
+        attachments: turnAttachments.length ? turnAttachments.map(slimMeta) : undefined,
+      }, titleFromMessage(trimmed))
+    }
 
     if (isConversationRunning(conversationId)) {
       enqueueFollowUp(queued)
@@ -2218,6 +2583,19 @@ export function App() {
 
     appendDowngradeActivity(conversationId)
     await runTurn(queued)
+    // D-D item 2: reply-to-resume. The reply already landed in the
+    // goal's session and transcript as a normal turn (above). If the
+    // goal is paused by taskImpossible on THIS (owner) conversation,
+    // answering IS the unblock — resume THIS SAME task with context
+    // intact, via the SAME resume path the slash command uses (no
+    // synthetic command: a `/goal` literal here would be misread by
+    // the reservedSlashCommands contract as a CLI dispatch). Only on
+    // the direct-send path: when a turn was already in flight the
+    // reply QUEUES (early return above) and resuming would race the
+    // scheduler against the live turn — resume manually then.
+    if (shouldResumeGoalOnUserMessage(goalRef.current, conversationId)) {
+      resumePausedGoal()
+    }
     clearAttachments(true)
     } finally {
       sendMessageLock.current = false
@@ -2232,6 +2610,10 @@ export function App() {
     conversationId: string,
     message: string,
     attachments: AttachmentMeta[] = attachedFiles,
+    // F3 (N10): o request nasce NO CLIQUE — as cópias congeladas que
+    // applyAnnotations produz aqui são o que o turno carrega, mesmo que a
+    // fila espere outro turno terminar e o usuário edite o rascunho nesse meio.
+    annotations: readonly Annotation[] = [],
   ): QueuedFollowUp {
     const turnModel = {
       modelId: selectedModel,
@@ -2244,7 +2626,11 @@ export function App() {
       conversationId,
       message,
       turnModel,
-      request: {
+      // applyAnnotations com lista vazia devolve a MESMA referência (a chave
+      // nem existe) — o caminho sem anotações fica byte-idêntico ao pré-F3,
+      // como manda o portão. Com anotações, o campo viaja ESTRUTURADO —
+      // nunca concatenado em `message` (a montagem do bloco é Rust-side).
+      request: applyAnnotations({
         conversationId,
         message,
         model: selectedModel,
@@ -2261,7 +2647,7 @@ export function App() {
         personality: userSettings.personality,
         customInstructions: userSettings.customInstructions,
         memoryContext: buildMemoryContext(chatStore, conversationId, userSettings),
-      },
+      }, annotations),
     }
   }
 
@@ -2383,7 +2769,7 @@ export function App() {
     enqueueFollowUp(queued)
   }
 
-  async function runTurn(item: QueuedFollowUp, options?: { skipResume?: boolean }) {
+  async function runTurn(item: QueuedFollowUp, options?: { skipResume?: boolean }): Promise<string> {
     pendingConversationId.current = item.conversationId
     setContextUsage(undefined)
     setTokenRate(undefined)
@@ -2393,16 +2779,55 @@ export function App() {
     const request = await prepareRequestWithResearchSubagents(item, parentTurnId)
     const resumeId = options?.skipResume ? undefined : conversationCliSessionId(item.conversationId)
     const turnId = await sendTrackedTurn({ ...request, turnId: parentTurnId }, resumeId)
+    // F3 — limpeza PÓS-confirmação + N3. O await acima resolveu: o Rust
+    // aceitou o turno, ENTÃO (e só então) o rascunho é consumido — por id,
+    // só os que viajaram no request; um rascunho criado DURANTE o voo fica.
+    // Se sendTrackedTurn lançar, nada aqui executa e o rascunho sobrevive à
+    // falha (a posição desta linha é pinada por teste estrutural).
+    const sentAnnotations = request.annotations
+    if (sentAnnotations?.length) {
+      setAnnotationDrafts(current =>
+        consumeAnnotationDrafts(current, item.conversationId, new Set(sentAnnotations.map(a => a.id))),
+      )
+      // N3 — "o chip vira turno": item autocontido com os pares quote+comment
+      // CONGELADOS (o que o modelo recebeu, não o rascunho vivo). `text`
+      // leva o fallback legível para builds antigas. O título da conversa só
+      // é proposto no envio sem texto (com texto, a bolha do usuário já o deu).
+      appendConversationItem(
+        item.conversationId,
+        buildAnnotationTurnItem(
+          sentAnnotations,
+          { quoteLabel: t('annotations.quoteLabel'), commentLabel: t('annotations.commentLabel') },
+          annotationTurnItemId(sentAnnotations.map(annotation => annotation.id)),
+          Date.now(),
+        ),
+        item.message.trim() ? undefined : titleFromMessage(sentAnnotations[0]?.quote ?? ''),
+        turnId,
+      )
+    }
     turnConversationIds.current[turnId] = item.conversationId
     turnModels.current[turnId] = item.turnModel
     // Track last user text for one-shot session-resume recovery.
+    // The payload carries the click-time annotations too (QA a-i): a
+    // dead-session retry replays what the user SENT, not a stripped copy.
+    // DECLARED ASYMMETRY (deliberate, accepted by the QA): a text+annotation
+    // send retries; an annotation-ONLY send does NOT — shouldRetrySession
+    // requires a non-empty message, so it fails VISIBLY instead of retrying.
+    // Visible failure beats silent loss, but a reader must know the
+    // asymmetry is a decision, not an oversight.
     turnRetryPayload.current[turnId] = {
       conversationId: item.conversationId,
       message: item.message,
       alreadyRetriedWithoutSession: Boolean(options?.skipResume),
+      annotations: request.annotations,
     }
     tagAssistantMessage(item.conversationId, turnId, item.turnModel)
     if (pendingConversationId.current === item.conversationId) pendingConversationId.current = undefined
+    // T3: return the REAL turnId (the one terminal done/error events
+    // carry) so the compaction frontier can await THIS turn's
+    // conclusion. Existing fire-and-forget callers (`void runTurn(...)`)
+    // are unaffected.
+    return turnId
   }
 
   async function sendTrackedTurn(request: AgentTurnRequest, resumeSessionId?: string): Promise<string> {
@@ -2805,15 +3230,37 @@ export function App() {
     const current = goalRef.current
     if (!current) return
 
+    // T5 (v1): objective editing is DISABLED while a batch runs. Editing
+    // the umbrella label would not retarget any task (the evaluator reads
+    // the per-task snapshot, not the umbrella), and rewriting task texts
+    // mid-flight has no safe semantics in v1 — skip/cancel remain the
+    // supported escape hatches. The panel also disables the edit affordance
+    // with this same message as its tooltip; this guard is the backstop for
+    // any other entry point. Declared to the user, never a silent no-op.
+    if (current.tasks?.length) {
+      appendConversationItem(conversationId, goalSystemMessage(t('goal.batchEditDisabled')))
+      return
+    }
+
     const oldObjective = current.objective
     const updated: GoalState = {
       ...current,
       objective: newObjective,
       updatedAt: Date.now(),
+      // G-C8-FIX item 5 (QA pendência 9): a new objective is a clean
+      // slate for loop detection. The fingerprint ring and the
+      // no-progress counter were built against the OLD objective —
+      // if we don't reset them, the user can be blocked by a loop
+      // signal that was inherited from a goal they just rewrote.
+      // Same reasoning as a fresh createGoalState call, applied
+      // in-place to an existing goal.
+      recentFingerprints: [],
+      noProgressCount: 0,
     }
     setGoal(updated)
     goalRef.current = updated
-    updateConversationGoal(updated)
+    // G-C5: persistence is handled by the dedicated useEffect watching
+    // `goal` — no direct updateConversationGoal call here.
 
     // System message: show old→new when the user can see both, otherwise just the new.
     const systemMessage = oldObjective.trim() && oldObjective !== newObjective
@@ -2835,6 +3282,34 @@ export function App() {
         console.error('[goal] failed to interject objective update:', err)
       })
     }
+  }
+
+  // D-D item 2: the resume path, callable without synthesizing a slash
+  // command — sendMessage's reply-to-resume uses it directly (and the
+  // reservedSlashCommands contract heuristic must not see a `/goal`
+  // literal near runTurn and misclassify it as CLI-dispatching).
+  function resumePausedGoal() {
+    setGoal(current => {
+      if (!current || (current.status !== 'paused' && current.status !== 'blocked')) return current
+      // G-C5-FIX: ensure ownerConversationId is set (legacy goals may
+      // have been created before the field existed). Stamps with the
+      // active conversation so the persist effect does not cross-write.
+      const ownerConversationId = current.ownerConversationId ?? activeConversationId
+      const resumed: GoalState = { ...current, ownerConversationId, status: 'active', noProgressCount: 0, errorCount: 0, recentFingerprints: [] }
+      // G-C5-FIX: explicit handoff. goalRef.current must be populated
+      // BEFORE startGoalScheduler runs. This updater runs synchronously
+      // inside setGoal, but the side-effect (startGoalScheduler) must
+      // observe goalRef.current already pointing at `resumed`.
+      goalRef.current = resumed
+      // D-D item 1: rehydrate the CLI session from the PERSISTED goal
+      // before the first turn — after an app restart goalSessionId is
+      // empty and without this the resume silently opened a NEW
+      // session (context lost while the user believed it continued).
+      goalSessionId.current = resumeGoalSessionId(resumed, goalSessionId.current)
+      setGoalBarStatus({ kind: 'active', objective: resumed.objective, turn: resumed.turnsRun })
+      void startGoalScheduler(resumed)
+      return resumed
+    })
   }
 
   function handleGoalCommand(command: Extract<ReservedSlashCommand, { kind: 'goal' }>) {
@@ -2879,13 +3354,7 @@ export function App() {
     }
 
     if (command.action === 'resume') {
-      setGoal(current => {
-        if (!current || (current.status !== 'paused' && current.status !== 'blocked')) return current
-        const resumed: GoalState = { ...current, status: 'active', noProgressCount: 0, errorCount: 0 }
-        setGoalBarStatus({ kind: 'active', objective: resumed.objective, turn: resumed.turnsRun })
-        void startGoalScheduler(resumed)
-        return resumed
-      })
+      resumePausedGoal()
       return
     }
 
@@ -2900,6 +3369,22 @@ export function App() {
     }
 
     if (command.action === 'start' && command.objective) {
+      // T5 batch entry: a multi-line objective is parsed as a task batch —
+      // one task per line, numbered/bullet markers stripped, [toolless] as
+      // the per-task opt-out of the D1 evidence guard. A single line keeps
+      // the LEGACY path field-by-field: no tasks array, no D1 guard, no
+      // progress line, no per-task report (zero regression by construction).
+      const batchParse = parseBatchInput(command.objective)
+
+      if (batchParse.kind === 'empty') {
+        // Nothing runnable (e.g. `/goal` followed only by blank lines or
+        // bare list markers). Answer with the expected format and DON'T
+        // touch any goal already in flight — a malformed new command must
+        // not silently kill the running one.
+        appendConversationItem(ensureActiveConversation(), goalSystemMessage(t('goal.batchEmpty')))
+        return
+      }
+
       goalAbortRef.current?.abort()
 
       const conversationId = ensureActiveConversation()
@@ -2915,27 +3400,57 @@ export function App() {
         ? (accessMode === 'full' && userSettings.fullAccessEnabled ? 'full' as const : 'auto' as const)
         : accessMode
 
+      // The batch umbrella objective is a label ("Batch of N tasks"), never
+      // evaluated: the evaluator always receives the CURRENT task's text via
+      // the per-task snapshot (T1). Single tasks keep the raw objective.
+      const objective = batchParse.kind === 'batch'
+        ? t('goal.batchObjective', { count: batchParse.tasks.length })
+        : batchParse.objective
+
       const goalState = createGoalState({
-        objective: command.objective,
+        objective,
         accessMode: goalAccessMode, // continueGoal downgrades 'full' unless full access is enabled
         modelId: selectedModel,
         modelDisplayName: selectedModelInfo?.displayName,
         workingDirectory: wd,
         skills: selectedSkillsUnion,
+        // Only a real batch (2+ tasks) carries the tasks array — a lone
+        // task produces a goal identical to the pre-batch era.
+        ...(batchParse.kind === 'batch' ? { tasks: batchParse.tasks } : {}),
       })
+      // G-C5-FIX: stamp the goal with its owning conversation so the
+      // persist effect does NOT cross-write into a different
+      // conversation when the user switches mid-cycle.
+      goalState.ownerConversationId = conversationId
+      // The batch panel shows the user's message VERBATIM (their words,
+      // their line breaks — per user request), not the synthetic
+      // umbrella above. `command.objective` is the raw multi-line text
+      // as typed, list markers included. Single-task goals have no
+      // batchInput: their panel already shows `objective` itself.
+      if (batchParse.kind === 'batch') goalState.batchInput = command.objective
 
-      appendConversationItem(conversationId, goalSystemMessage(t('goal.systemStarted', { objective: command.objective })))
+      appendConversationItem(conversationId, goalSystemMessage(t('goal.systemStarted', { objective })))
 
-      const message = buildGoalStartMessage(command.objective, wd)
+      const message = batchParse.kind === 'batch'
+        ? buildGoalBatchStartMessage(batchParse.tasks, wd)
+        : buildGoalStartMessage(batchParse.objective, wd)
       appendConversationItem(conversationId, {
         id: `user:goal:${Date.now()}`,
         role: 'user',
         text: message,
         timestamp: Date.now(),
         skills: selectedSkillsUnion,
-      }, t('goal.systemObjective', { objective: command.objective }))
+      }, t('goal.systemObjective', { objective }))
 
       setGoal(goalState)
+      // G-C5-FIX: explicit handoff. goalRef.current must be populated
+      // BEFORE startGoalScheduler runs, otherwise the delegate's
+      // getGoal() returns undefined on the first iteration and the
+      // cycle exits with 'cancelled' immediately (silent total
+      // regression — the goal panel never executes). The setGoal
+      // call above passes a direct value, so its functional updater
+      // (which assigns goalRef.current) does NOT run synchronously.
+      goalRef.current = goalState
       setGoalBarStatus({ kind: 'active', objective: goalState.objective, turn: 0 })
 
       void startGoalScheduler(goalState)
@@ -2945,24 +3460,54 @@ export function App() {
   async function startGoalScheduler(initialGoal: GoalState) {
     const controller = new AbortController()
     goalAbortRef.current = controller
+    // G-C17: fresh goal, fresh dedupe key — envelopes from a previous
+    // goal must never gate (or un-gate) this goal's accumulation.
+    lastEvaluatorEnvelopeRef.current = undefined
 
     const delegate: GoalSchedulerDelegate = {
-      getGoal: () => goalRef.current ?? initialGoal,
+      // G-C5: no resurrection. If goalRef.current is undefined the goal
+      // was cleared (cancel/clear) — the cycle must observe that and
+      // exit, not resurrect a stale snapshot. runGoalCycle returns
+      // 'cancelled' at the top when getGoal() is undefined.
+      getGoal: () => goalRef.current,
       updateGoal: (update) => {
         setGoal(current => {
-          const updated = typeof update === 'function' ? update(current ?? initialGoal) : update
+          // G-C5: if current is undefined the goal was cleared — do not
+          // apply updates to a stale snapshot. Drop the update.
+          if (current === undefined) return undefined
+          const updated = typeof update === 'function' ? update(current) : update
           goalRef.current = updated
-          if (current) updateConversationGoal(updated)
           return updated
         })
       },
       evaluateGoal: async (currentGoal) => {
-        const conversationItems = conversationItemsRef.current
-        const conversationId = activeConversation?.id
+        // G-C8-FIX: the goal belongs to the conversation that created
+        // it (currentGoal.ownerConversationId), NOT to whatever the
+        // user happens to be looking at. The earlier G-C8 fix read
+        // activeConversationIdRef.current — which fixed the
+        // same-tick birth case but introduced a cross-conversation
+        // leak: if the user switched to conversation B mid-cycle, the
+        // goal of A would write its evaluation transcript into B.
+        // ownerConversationId is stamped at goal creation
+        // (handleGoalCommand, G-C5-FIX) and is the source of truth.
+        // Fallback to activeConversationIdRef.current only when the
+        // goal predates the ownerConversationId field (legacy goals
+        // persisted before G-C5-FIX).
+        const conversationId = currentGoal.ownerConversationId ?? activeConversationIdRef.current
         if (!conversationId || controller.signal.aborted) {
           throw new Error('Goal evaluation aborted: no active conversation')
         }
 
+        // G-C8-FIX item 4: the transcript sent to the evaluator must
+        // be the OWNER's transcript, not the active conversation's.
+        // conversationItemsRef.current tracks the active conversation
+        // (App.tsx:587, updated at :902) — using it here would feed
+        // the evaluator the wrong conversation when the user has
+        // switched away. We resolve the owner's items from the store
+        // ref directly. (See the parecer in the cycle report for why
+        // this is the right call.)
+        const ownerConversation = chatStoreRef.current.conversations.find(item => item.id === conversationId)
+        const conversationItems = ownerConversation?.items ?? []
         const input: GoalEvaluationInput = {
           goal: currentGoal,
           conversationItems: [...conversationItems],
@@ -2977,18 +3522,70 @@ export function App() {
           throw new Error('Goal evaluation aborted by user')
         }
 
+        // G-C17: ACCUMULATE the evaluator's token usage across EVERY
+        // evaluation of this goal (was: lastEvaluatorUsage, overwritten
+        // each cycle — in a multi-evaluation goal only the last parcel
+        // reached the "Total registrado" line; QA blocking).
+        // evaluatorUsage is a SIBLING of evaluation in the Tauri
+        // boundary struct (GoalEvaluationEnvelope, G-C15-FIX), NOT
+        // inside result.evaluation. Undefined when the evaluator ran no
+        // tokens (Rust skip_serializing_if Option::is_none) — treat
+        // absence, not null.
+        //
+        // Double-count guard: evaluate_goal is a single invoke → single
+        // response (the G-C14 double-emission was turn EVENTS and does
+        // not apply here), so each envelope accumulates exactly once.
+        // The identity gate additionally blocks a re-presentation of
+        // the SAME envelope object if a future refactor re-enters.
+        const isNewEvaluation = shouldAccumulateEvaluatorUsage(lastEvaluatorEnvelopeRef.current, result)
+        if (isNewEvaluation) {
+          lastEvaluatorEnvelopeRef.current = result
+        }
         setGoal(current => current ? {
-          ...current,
+          ...(isNewEvaluation ? accumulateEvaluatorUsage(current, result.evaluatorUsage) : current),
           lastEvaluation: result.evaluation,
           updatedAt: Date.now(),
         } : current)
+        // G-C5/G-C8/G-C10/G-C13-FIX: synchronize goalRef.current so the
+        // scheduler (and the completion path, which reads the
+        // accumulated evaluatorInputTokens/evaluatorOutputTokens via the
+        // live ref — goalScheduler.ts G-C17 adendo) sees the updated
+        // value. setGoal's functional updater does NOT run
+        // synchronously, so this sync stays OUTSIDE setGoal — and the
+        // updater above stays pure so a StrictMode double-invoke cannot
+        // double-apply the sum to the ref.
+        if (goalRef.current) {
+          goalRef.current = {
+            ...(isNewEvaluation ? accumulateEvaluatorUsage(goalRef.current, result.evaluatorUsage) : goalRef.current),
+            lastEvaluation: result.evaluation,
+            updatedAt: Date.now(),
+          }
+        }
 
         return result.evaluation
+      },
+      // T1 (D1): the batch evidence guard reads the OWNER conversation's
+      // LIVE transcript (same resolution as evaluateGoal above —
+      // ownerConversationId, never the conversation the user happens to
+      // be looking at, G-C8-FIX). Called by the scheduler only for batch
+      // goals, after evaluateGoal, so the turn's action activities are
+      // already appended. Returns the live array reference (read-only
+      // use: the guard only counts).
+      getConversationItems: () => {
+        const conversationId = goalRef.current?.ownerConversationId ?? activeConversationIdRef.current
+        if (!conversationId) return []
+        return chatStoreRef.current.conversations.find(item => item.id === conversationId)?.items ?? []
       },
       continueGoal: async (currentGoal, nextMessage) => {
         if (controller.signal.aborted) return undefined
 
-        const conversationId = activeConversation?.id
+        // G-C8-FIX: same as evaluateGoal — the goal belongs to its
+        // owner conversation, not the active one. Reading
+        // activeConversationIdRef.current here caused cross-conversation
+        // leaks (the continue message and the tracked turn were written
+        // to whatever conversation the user was looking at, not the one
+        // that owns the goal).
+        const conversationId = currentGoal.ownerConversationId ?? activeConversationIdRef.current
         if (!conversationId) return undefined
 
         const turnModel = {
@@ -3038,13 +3635,30 @@ export function App() {
         turnConversationIds.current[turnId] = conversationId
         turnModels.current[turnId] = turnModel
 
-        setGoal(current => current ? {
-          ...current,
-          turnsRun: current.turnsRun + 1,
-          lastTurnId: turnId,
-          lastSessionId: goalSessionId.current,
-          updatedAt: Date.now(),
-        } : current)
+        setGoal(current => {
+          if (!current) return current
+          const updated = {
+            ...current,
+            turnsRun: current.turnsRun + 1,
+            // T1: per-task counter, incremented exactly where the global
+            // one is (the turn just ran). ONLY for batch goals — legacy
+            // goals keep the key ABSENT so the per-task view falls back
+            // to turnsRun untouched (aceite 4: no single-task regression).
+            ...(current.turnsRunThisTask !== undefined
+              ? { turnsRunThisTask: current.turnsRunThisTask + 1 }
+              : {}),
+            lastTurnId: turnId,
+            lastSessionId: goalSessionId.current,
+            updatedAt: Date.now(),
+          }
+          // G-C10 item 3: synchronize goalRef.current so the scheduler
+          // sees the incremented turnsRun. Same desync class as the
+          // token accumulator above — without this, the scheduler's
+          // getGoal() returns a stale turnsRun and the loop detection
+          // / completion logic reads the wrong turn count.
+          goalRef.current = updated
+          return updated
+        })
 
         // Wait for the turn to complete before continuing the goal cycle
         await new Promise<void>((resolve, reject) => {
@@ -3069,6 +3683,56 @@ export function App() {
         if (controller.signal.aborted) return undefined
         return goalSessionId.current
       },
+      // T3: the COMPACTION FRONTIER — compacts the goal's OWNER
+      // conversation between batch tasks and AWAITS the compact turn's
+      // conclusion (the scheduler's frontier reset NEVER runs before
+      // this promise settles). Mirrors handleCompactCommand's flow —
+      // same CLI-session gate, same '/compact' string, same
+      // skipContextEstimateUntil window — but awaited instead of
+      // fire-and-forget, and with POSSE resolution
+      // (ownerConversationId — G-C8-FIX), never the conversation the
+      // user happens to be looking at.
+      //
+      // The compact turn goes through runTurn — NOT continueGoal — so
+      // it does NOT increment turnsRun/turnsRunThisTask (it is
+      // maintenance, not task work — Maestro's point 1). Its tokens are
+      // accumulated exactly ONCE via the existing G-C14 turnId dedupe
+      // in the result-event handler (point 2).
+      //
+      // Resolves false on ANY failure path (aborted, no conversation,
+      // no CLI session, sendTurn threw, non-zero exit, abort
+      // mid-compact): the batch proceeds WITHOUT compacting and the
+      // scheduler declares the failure (compactionFailures) — a
+      // compaction NEVER blocks the batch (point 3).
+      compactOnTaskBoundary: async (currentGoal) => {
+        if (controller.signal.aborted) return false
+        const conversationId = currentGoal.ownerConversationId ?? activeConversationIdRef.current
+        if (!conversationId) return false
+        const sessionId = conversationCliSessionId(conversationId)
+        if (!sessionId) return false
+
+        skipContextEstimateUntil.current = Date.now() + 15_000
+
+        let turnId: string
+        try {
+          turnId = await runTurn(createQueuedFollowUp(conversationId, '/compact'))
+        } catch {
+          return false
+        }
+        if (controller.signal.aborted) return false
+
+        return new Promise<boolean>((resolve) => {
+          compactCompletionDeferred.current = { turnId, resolve }
+          // If aborted while waiting, resolve false to unblock the
+          // scheduler — the batch must never hang on a compact.
+          controller.signal.addEventListener('abort', () => {
+            if (compactCompletionDeferred.current?.turnId === turnId) {
+              compactCompletionDeferred.current = undefined
+              resolve(false)
+            }
+          }, { once: true })
+        })
+      },
       abortTurn: () => {
         void window.verboo.interrupt()
         // Force the tray to idle immediately — don't wait for the CLI to
@@ -3077,14 +3741,145 @@ export function App() {
         // forever after the user clicks abort.
         void window.verboo.forceIdleMenuBar()
       },
-      onStatusChange: setGoalBarStatus,
+      onStatusChange: (status) => {
+        setGoalBarStatus(status)
+        // T4: the discreet batch progress line — "Tarefa k de N" stamped
+        // on the LATEST turn's summary item, the same G-C15-TS surface
+        // as the usage line (no badge, no box, no second item). Only the
+        // 'evaluating' kind carries the fresh batchProgress payload (the
+        // scheduler computes it from the loop-top snapshot); every other
+        // kind passes through untouched — including legacy goals, which
+        // never carry the payload and never get a line.
+        // D-C: the stamp lives in features/goal/progressStamp.ts so its
+        // failure modes are testable — a missing target is now a
+        // console.error, never another silent loss.
+        if (status.kind !== 'evaluating' || !status.batchProgress) return
+        stampBatchProgressLine({
+          goal: goalRef.current,
+          fallbackConversationId: activeConversationIdRef.current,
+          batchProgress: status.batchProgress,
+          conversations: chatStoreRef.current.conversations,
+          updateConversation,
+          t,
+        })
+      },
       onLog: (message) => {
         console.log('[goal]', message)
+      },
+      // G-C15-TS: the user REJECTED the separate green box (G-C13's
+      // approach). The evaluator's completionSummary is verbose, English,
+      // and the user called it "irrelevant information" — it stays in
+      // the backend (lastEvaluation) for diagnostics, NOT on the screen.
+      //
+      // New surface: the usage line is stamped on the LAST turn's
+      // summary item (TranscriptItem.usageLine). The TurnView renders
+      // it inline after the agent's final text — no box, no badge, same
+      // typographic family as the surrounding message. Reads as
+      // continuation of the agent's final message.
+      //
+      // Why stamp on the existing summary (not a new item): the last
+      // turn already has a `${turnId}:summary` item (created by
+      // appendTurnSummary). Adding a separate item created a second
+      // green box. Stamping usageLine on the existing item keeps ONE
+      // visual surface per turn and lets the TurnView render the usage
+      // line inline with the agent's final text.
+      //
+      // ZERO-TOKEN GUARD: buildGoalUsageLine returns '' when the goal
+      // has no token usage (legacy goal pre-G-C12, or zero turns). We
+      // skip stamping in that case — the user sees the agent's final
+      // text and the existing turn summary, no usage line.
+      onComplete: (finalGoal, evaluation) => {
+        const ownerConversationId = finalGoal.ownerConversationId ?? activeConversationIdRef.current
+        // CONCLUSION SOUND for the goal/batch — fired BEFORE the report
+        // guards below: the completion is real even when the report is
+        // lost (a lost report is logged; a lost sound would be silence
+        // on the exact event the sleeping user is waiting for).
+        playAppSound('goalCompleted', ownerConversationId)
+        // D-B/D-C: the report + usage + elapsed are the user's visible
+        // completion deliverable — every drop below is LOGGED, never
+        // another silent loss (the field-test complaint class).
+        if (!ownerConversationId) {
+          console.error('[goal] onComplete: no owner conversation — the final report was LOST (goal', finalGoal.id, ')')
+          return
+        }
+
+        // G-C17: buildGoalUsageLine reads the ACCUMULATED
+        // goal.evaluatorInputTokens/evaluatorOutputTokens (summed by
+        // the evaluateGoal delegate from the Tauri boundary sibling —
+        // G-C15-FIX), NOT evaluation.evaluatorUsage (which never
+        // existed). finalGoal carries the fresh totals because the
+        // scheduler overlays them from the live ref (goalScheduler.ts
+        // G-C17 adendo).
+        const usageLine = buildGoalUsageLine(finalGoal, t)
+        // T4: the batch FINAL REPORT — one line per task with its cited
+        // evidence (turns/actions, failure reason, "skipped by you"),
+        // plus the compaction-failure footer. [] for legacy goals. Same
+        // surface as the usage line: stamped on this same summary item,
+        // no box, no badge, no second message.
+        const batchReportLines = buildBatchReportLines(finalGoal, t)
+        // ZERO-TOKEN GUARD (above) for the usage line; the report is the
+        // batch's core deliverable and stamps even when a toolless batch
+        // accumulated no tokens — but a legacy goal with no tokens stamps
+        // nothing, exactly as before.
+        if (!usageLine && batchReportLines.length === 0) return
+
+        const lastTurnId = finalGoal.lastTurnId
+        if (!lastTurnId) {
+          console.error('[goal] onComplete: goal has no lastTurnId — no summary item to stamp the final report on; report LOST (goal', finalGoal.id, ')')
+          return
+        }
+
+        const summaryItemId = `${lastTurnId}:summary`
+        // Idempotency: if the summary item already has a usageLine
+        // stamped, don't overwrite (defensive — the scheduler's
+        // runGoalCycle returns 'completed' and exits, but a future
+        // refactor could re-enter).
+        const conv = chatStoreRef.current.conversations.find(c => c.id === ownerConversationId)
+        if (!conv) {
+          console.error('[goal] onComplete: owner conversation', ownerConversationId, 'not found — the final report was LOST')
+          return
+        }
+        const existingItem = conv.items.find(i => i.id === summaryItemId)
+        if (!existingItem) {
+          console.error('[goal] onComplete: summary item', summaryItemId, 'not found in conversation', ownerConversationId, '— the final report was LOST')
+          return
+        }
+        if (existingItem.usageLine && (batchReportLines.length === 0 || existingItem.batchReportLines)) return
+
+        updateConversation(ownerConversationId, c => ({
+          ...c,
+          items: c.items.map(i =>
+            i.id === summaryItemId
+              ? {
+                  ...i,
+                  ...(usageLine ? { usageLine } : {}),
+                  ...(batchReportLines.length > 0 ? { batchReportLines } : {}),
+                  // T4: the report SUPERSEDES the progress line — clear
+                  // it on the final item so the two never coexist (a
+                  // duplicate line is the noise class the user rejected).
+                  progressLine: undefined,
+                }
+              : i,
+          ),
+          updatedAt: Date.now(),
+        }))
       },
       t,
     }
 
-    await runGoalCycle(delegate)
+    try {
+      await runGoalCycle(delegate)
+    } catch (err) {
+      // Fire-and-forget guard: if runGoalCycle throws unexpectedly,
+      // pause the goal so the badge does NOT stay stuck in EXECUTANDO.
+      const message = err instanceof Error ? err.message : String(err)
+      console.error('[goal] Unexpected scheduler error:', message)
+      const current = goalRef.current
+      if (current && current.status !== 'paused' && current.status !== 'completed' && current.status !== 'cancelled') {
+        setGoal({ ...current, status: 'paused', pausedAt: Date.now(), pauseReason: 'goalError' })
+        setGoalBarStatus({ kind: 'stopped', objective: current.objective, reason: 'goalError' })
+      }
+    }
   }
 
   function buildGoalStartMessage(objective: string, workingDirectory: string): string {
@@ -3099,13 +3894,29 @@ export function App() {
     ].filter(Boolean).join('\n')
   }
 
-  function updateConversationGoal(updatedGoal: GoalState) {
-    updateConversation(activeConversationId ?? '', conversation => ({
-      ...conversation,
-      goal: updatedGoal,
-      updatedAt: Date.now(),
-    }))
+  // T5: kickoff message for a batch goal. Lists every task so the agent
+  // sees the full plan up front, but instructs it to work ONLY the first
+  // task — the scheduler drives each frontier (compaction + next task) via
+  // its own per-task prompt, so this message must not invite parallel work.
+  function buildGoalBatchStartMessage(tasks: { text: string }[], workingDirectory: string): string {
+    return [
+      `## Goal: batch of ${tasks.length} tasks`,
+      '',
+      'You are now working autonomously through a BATCH of tasks, in order.',
+      ...tasks.map((task, index) => `${index + 1}. ${task.text}`),
+      '',
+      'Start with task 1 ONLY. Work it to completion and summarize what was',
+      'done. Do NOT start later tasks — the system advances to each next',
+      'task automatically, with a fresh context, when the current one ends.',
+      'Do NOT ask for confirmation for each step.',
+      '',
+      `Working directory: ${workingDirectory}`,
+    ].filter(Boolean).join('\n')
   }
+
+  // G-C5: goal persistence moved to a dedicated useEffect watching
+  // `goal` (see above). Direct call from updateGoal delegate removed —
+  // no side effects inside React state updaters.
 
   async function sendFeedback(request: FeedbackRequest): Promise<FeedbackResult> {
     return window.verboo.sendFeedback(request)
@@ -3145,6 +3956,8 @@ export function App() {
       targetRect: firstAnnotation.rect,
       autoVerify: userSettingsRef.current.browserVerificationEnabled,
       verificationPrompt: postEditVerificationPrompt(annotations, userSettingsRef.current.language),
+      tabId: browser.activeTab?.id ?? '',
+      generation: browser.activeTab?.generation ?? 0,
     })
   }
 
@@ -3436,9 +4249,13 @@ export function App() {
     // restart the cycle (avoids surprise autonomous execution on chat switch).
     const storedGoal = conversation.goal
     if (storedGoal && (storedGoal.status === 'active' || storedGoal.status === 'paused' || storedGoal.status === 'evaluating' || storedGoal.status === 'continuing')) {
-      const restored: GoalState = storedGoal.status === 'active' || storedGoal.status === 'evaluating' || storedGoal.status === 'continuing'
-        ? { ...storedGoal, status: 'paused', pausedAt: storedGoal.pausedAt ?? Date.now() }
-        : storedGoal
+      // G-C7-TS-MIGRACAO: sanitize before re-hydrating. See the matching
+      // comment in the hydration effect — this is the second of two
+      // call sites that reconstruct a GoalState from persisted data.
+      const sanitized = sanitizeStoredGoal(storedGoal)
+      const restored: GoalState = sanitized.status === 'active' || sanitized.status === 'evaluating' || sanitized.status === 'continuing'
+        ? { ...sanitized, status: 'paused', pausedAt: sanitized.pausedAt ?? Date.now() }
+        : sanitized
       setGoal(restored)
       goalRef.current = restored
       setGoalBarStatus({
@@ -3525,6 +4342,7 @@ export function App() {
         if (pending.length) void deleteBrowserTempFiles(browserTempPaths(pending)).catch(() => {})
         delete pendingBrowserSnapshots.current[conversationId]
         setQueuedFollowUpsList(current => current.filter(item => item.conversationId !== conversationId))
+        setTodosByConversation(current => removeChecklistForConversation(current, conversationId))
         void deleteBrowserCaptureOwner(conversationId).catch(() => {})
         updateChatStore(store => ({
           ...store,
@@ -3595,11 +4413,13 @@ export function App() {
     return conversation.id
   }
 
-  function appendConversationItem(conversationId: string, item: TranscriptItem, title?: string) {
+  function appendConversationItem(conversationId: string, item: TranscriptItem, title?: string, beforeTurnId?: string) {
     updateConversation(conversationId, conversation => ({
       ...conversation,
       title: conversation.title === DEFAULT_CONVERSATION_TITLE && title ? title : conversation.title,
-      items: [...conversation.items, item],
+      items: beforeTurnId
+        ? insertAnnotationTurnBeforeResponse(conversation.items, item, beforeTurnId)
+        : [...conversation.items, item],
       updatedAt: Date.now(),
     }))
   }
@@ -3970,12 +4790,9 @@ export function App() {
     conversationId: string,
     updater: (conversation: StoredConversation) => StoredConversation,
   ) {
-    updateChatStore(store => ({
-      ...store,
-      conversations: store.conversations.map(conversation =>
-        conversation.id === conversationId ? updater(conversation) : conversation,
-      ),
-    }))
+    // G-C5: delegate to the pure helper in chatStore so the
+    // identity-preserving behavior is testable in isolation.
+    updateChatStore(store => updateConversationPure(store, conversationId, updater))
   }
 
   function updateChatStore(updater: (store: ChatStore) => ChatStore) {
@@ -4134,13 +4951,13 @@ export function App() {
   const handleToggleBrowser = useCallback(() => {
     if (!browserAvailable || !workspacePanelsEnabled) return
     if (browser.browserOpen) {
-      browser.close()
+      browser.toggle()
       return
     }
     terminal.close()
     review.close()
     setSelectedSubagentId(undefined)
-    browser.open()
+    browser.toggle()
   }, [browser, browserAvailable, terminal, review, workspacePanelsEnabled])
 
   async function refreshWorkspaceReview() {
@@ -4312,6 +5129,16 @@ export function App() {
           onStaySignedInChange={updateStaySignedIn}
           onAcceptNotice={acceptDevelopmentNotice}
           onOpenFeedback={() => setFeedbackOpen(true)}
+          onLoginComplete={(event) => {
+            // A1: the CLI reported a successful login. Re-validate
+            // against the REAL backend state (validateAccess re-fetches
+            // credential/CLI/model status and unlocks only when
+            // verified) — the event's status snapshot is just a fast
+            // hint, never the unlock authority. authChecking shows the
+            // "validating" progress on the login screen meanwhile.
+            if (event.status) setCliAuth(event.status)
+            void validateAccess(true)
+          }}
         />
         <FeedbackDialog
           open={feedbackOpen}
@@ -4526,6 +5353,8 @@ export function App() {
               onThemeChange={setTheme}
               onActiveTabChange={setSettingsTab}
               onUserSettingsChange={updateUserSettings}
+              soundsEnabled={soundsEnabled}
+              onSoundsEnabledChange={setSoundsEnabled}
               onResetUserSettings={resetUserSettings}
               onRestoreConversation={restoreConversation}
               onDeleteConversation={deleteConversation}
@@ -4554,6 +5383,29 @@ export function App() {
                 onUserExpand={handleUserExpand}
               />
               <div ref={transcriptEndRef} className="transcript-end" />
+              {/* AnnotationLayer (F1): ouvinte de seleção + barra flutuante.
+                  Vive dentro de hasConversation para morrer fora da view de chat.
+                  Posse: o Layer só cria para a conversationId da prop DESTE
+                  render — a mesma capturada pelo onCreate abaixo — e a barra é
+                  dispensada ao trocar de conversa, então os dois lados nunca
+                  divergem. */}
+              <AnnotationLayer
+                conversationId={activeConversationId}
+                onCreate={annotation =>
+                  setAnnotationDrafts(current =>
+                    activeConversationId ? addAnnotationDraft(current, activeConversationId, annotation) : current,
+                  )
+                }
+              />
+              {/* F2: overlay de destaque + balão, IRMÃO do transcript —
+                  nunca dentro dele (regra 1: o DOM do MarkdownMessage é do
+                  React; o byte-idêntico está pinado em teste). Lê os MESMOS
+                  rascunhos do chip; âncora que não resolve degrada sem visual
+                  e sem perder o dado. Nada aqui toca o caminho de envio. */}
+              <AnnotationOverlay
+                annotations={draftsForConversation(annotationDrafts, activeConversationId ?? '')}
+                conversationId={activeConversationId}
+              />
             </>
           ) : (
             <EmptyChat hasProject={Boolean(activeProject?.name)} projectName={projectName} line={emptyLine} />
@@ -4611,31 +5463,29 @@ export function App() {
           navigationRequest={browser.navigationRequest}
           onNavigationHandled={browser.completeNavigation}
           reloadRequest={browser.reloadRequest}
-          onUrlChange={browser.setCurrentUrl}
           onReloadSnapshot={handleBrowserReloadSnapshot}
           onReloadHandled={browser.completeReload}
           minWidth={browser.MIN_WIDTH}
           maxWidth={browserWidthLimit}
+          session={browser.session}
+          activeTab={browser.activeTab}
+          onCreateTab={browser.createTab}
+          onActivateTab={browser.activateTab}
+          onNavigateTab={browser.navigateTab}
+          onCloseTab={browser.closeTab}
         />
       )}
       </div>
       {(() => {
-        // GoalStatusBar only renders when GoalActivePanel is NOT visible.
-        // Panel covers: active | evaluating | continuing | paused.
-        // StatusBar covers: completed (toast) + cancelled/cleared (brief feedback).
-        // This prevents duplicate UI when goal is paused (panel shows paused+reason,
-        // status bar would show stopped+reason — only panel should show).
-        const panelVisible = !!goal && goal.status !== 'completed' && goal.status !== 'blocked' && goal.status !== 'cancelled'
-        if (panelVisible) return null
-        return (
-          <GoalStatusBar
-            status={goalBarStatus}
-            onPause={() => handleGoalCommand({ kind: 'goal', action: 'pause', raw: '/goal pause' })}
-            onResume={() => handleGoalCommand({ kind: 'goal', action: 'resume', raw: '/goal resume' })}
-            onCancel={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
-            onClear={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
-          />
-        )
+        // G-C10 item 1: GoalStatusBar moved INTO composer-aux-stack (below).
+        // It was previously rendered as a sibling of bottom-dock, but
+        // bottom-dock is position:fixed (composer.css:1-9) — siblings
+        // fall out of the rounded frame and the fixed composer floats
+        // over them. The aux-stack is the slot the panel uses, and the
+        // bar was designed for the same slot (mutual exclusion with the
+        // panel by status). Keeping them as siblings inside the same
+        // fixed container restores the rounded-frame clipping.
+        return null
       })()}
 
       {activeView === 'chat' && (
@@ -4658,8 +5508,30 @@ export function App() {
               <ArrowDown size={17} />
             </button>
           )}
-          {(goal && goal.status !== 'completed' && goal.status !== 'blocked' && goal.status !== 'cancelled') || (questionPrompt && questionPrompt.conversationId === activeConversationId) ? (
+          {(goal && goal.status !== 'completed' && goal.status !== 'blocked' && goal.status !== 'cancelled') || exitGoal || (questionPrompt && questionPrompt.conversationId === activeConversationId) || checklistFlight.committed?.form === 'docked' || checklistFlight.spacerHeight !== null ? (
             <div className="composer-aux-stack" role="region" aria-label={t('goal.auxStackLabel')}>
+              {/* T1-TodoWrite: the checklist rides ABOVE the goal —
+                  the goal always stays closest to the composer
+                  (approved hierarchy: list → goal → composer). The
+                  spacer animates the flow space during a FLIP flight
+                  so the goal panel slides instead of jumping. */}
+              {checklistFlight.spacerHeight !== null && (
+                <div className="checklist-spacer" style={{ height: checklistFlight.spacerHeight }} aria-hidden="true" />
+              )}
+              {checklistFlight.committed?.form === 'docked' && activeChecklistTodos && (
+                <ChecklistPanel
+                  todos={activeChecklistTodos}
+                  form="docked"
+                  cardPos={null}
+                  onCardPosChange={() => {}}
+                  onToggleForm={() => setChecklistFormPref('float')}
+                  flightStyle={checklistFlight.flightStyle}
+                  flying={checklistFlight.flying}
+                  entering={checklistFlight.entering}
+                  exiting={checklistCompletionExit.exiting}
+                  registerElement={checklistFlight.registerPanel}
+                />
+              )}
               {goal && goal.status !== 'completed' && goal.status !== 'blocked' && goal.status !== 'cancelled' && (
                 <GoalActivePanel
                   goal={goal}
@@ -4669,6 +5541,43 @@ export function App() {
                   onPause={() => handleGoalCommand({ kind: 'goal', action: 'pause', raw: '/goal pause' })}
                   onResume={() => handleGoalCommand({ kind: 'goal', action: 'resume', raw: '/goal resume' })}
                   onCancel={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
+                />
+              )}
+              {/* Genie exit: while the terminal goal's panel plays its
+                  sink-back animation, the aux-stack stays mounted (see
+                  the exitGoal clause above) and the panel renders with
+                  `leaving`. Handlers are inert — pointer-events:none in
+                  CSS — but the props are required. The GoalStatusBar is
+                  gated with !exitGoal so the exit window does NOT make
+                  the bar reachable in a path where it never rendered
+                  before (terminal goal without open questions): the bar
+                  keeps exactly its pre-genie reachability. */}
+              {exitGoal && (
+                <GoalActivePanel
+                  goal={exitGoal}
+                  leaving
+                  turnInProgress={false}
+                  compact={!!(questionPrompt && questionPrompt.conversationId === activeConversationId && questionWizardOpen)}
+                  onEditObjective={() => {}}
+                  onPause={() => {}}
+                  onResume={() => {}}
+                  onCancel={() => {}}
+                />
+              )}
+              {/* G-C10 item 1: GoalStatusBar lives in the same aux-stack
+                  slot as GoalActivePanel. Mutual exclusion by status:
+                  panel covers active|evaluating|continuing|paused, bar
+                  covers completed|blocked|cancelled (toast/brief feedback).
+                  Both are inside bottom-dock now, so the fixed composer
+                  no longer floats over the bar and the rounded frame
+                  clips both. */}
+              {goal && !exitGoal && (goal.status === 'completed' || goal.status === 'blocked' || goal.status === 'cancelled') && (
+                <GoalStatusBar
+                  status={goalBarStatus}
+                  onPause={() => handleGoalCommand({ kind: 'goal', action: 'pause', raw: '/goal pause' })}
+                  onResume={() => handleGoalCommand({ kind: 'goal', action: 'resume', raw: '/goal resume' })}
+                  onCancel={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
+                  onClear={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
                 />
               )}
               {questionPrompt && questionPrompt.conversationId === activeConversationId && (
@@ -4762,6 +5671,17 @@ export function App() {
             onQueueRemove={removeQueuedItem}
             onPetCommand={togglePet}
             onCompactCommand={handleCompactCommand}
+            annotations={draftsForConversation(annotationDrafts, activeConversationId ?? '')}
+            onRemoveAnnotation={annotationId =>
+              setAnnotationDrafts(current =>
+                activeConversationId ? removeAnnotationDraft(current, activeConversationId, annotationId) : current,
+              )
+            }
+            onEditAnnotationComment={(annotationId, comment) =>
+              setAnnotationDrafts(current =>
+                activeConversationId ? updateAnnotationComment(current, activeConversationId, annotationId, comment) : current,
+              )
+            }
             value={composerValue}
             onValueChange={setComposerValue}
             busy={activeConversationId ? runningConversations.has(activeConversationId) : false}
@@ -4830,6 +5750,27 @@ export function App() {
       />
 
       <VerbooPet visible={petEnabled} state={petState} size={petSize} onSizeChange={updatePetSize} />
+
+      {/* T1-TodoWrite: the floating checklist card lives in a portal —
+          position:fixed must be free of any fixed/transformed ancestor
+          (the bottom-dock is position:fixed; mounting a floating panel
+          inside it is exactly the panel-that-fell-to-the-bottom defect
+          class this project already paid for). */}
+      {checklistFlight.committed?.form === 'floating' && activeChecklistTodos && createPortal(
+        <ChecklistPanel
+          todos={activeChecklistTodos}
+          form="floating"
+          cardPos={checklistCardPos}
+          onCardPosChange={setChecklistCardPos}
+          onToggleForm={() => setChecklistFormPref('dock')}
+          flightStyle={checklistFlight.flightStyle}
+          flying={checklistFlight.flying}
+          entering={checklistFlight.entering}
+          exiting={checklistCompletionExit.exiting}
+          registerElement={checklistFlight.registerPanel}
+        />,
+        document.body,
+      )}
 
     </main>
     </I18nProvider>
@@ -5134,95 +6075,17 @@ function workspaceFolderName(path: string, projectName?: string, fallback = 'No 
   return trimmed.split(/[\\/]/).filter(Boolean).at(-1) ?? trimmed
 }
 
-function extractContextUsage(payload: unknown, maxTokens?: number): ContextUsageSnapshot | undefined {
-  // Prefer the CLI's pre-calculated context_window object when available.
-  // This is the authoritative source — the CLI accounts for its own context
-  // management (system prompt, output reservation, compaction) which the
-  // raw API usage tokens don't reflect. Using the CLI's numbers ensures the
-  // meter matches what the CLI itself displays.
-  const ctxWindow = extractContextWindowObject(payload)
-  if (ctxWindow) {
-    const cliUsedPercentage = numberValueOptional(ctxWindow.used_percentage)
-    const cliWindowSize = numberValueOptional(ctxWindow.context_window_size)
-    const cliTotalInput = numberValueOptional(ctxWindow.total_input_tokens)
-    const cliTotalOutput = numberValueOptional(ctxWindow.total_output_tokens)
-    const effectiveMax = cliWindowSize ?? maxTokens
-    // If the CLI gives us a used_percentage (0-100), use it directly.
-    // BUT: return undefined when the CLI sends early zeros (before any tokens
-    // have actually been used) so the frontend's estimate is not overwritten.
-    if (cliUsedPercentage !== undefined) {
-      const valid = cliUsedPercentage > 0 || (cliTotalInput !== undefined && cliTotalInput > 0)
-      if (!valid) return undefined
-      const percentage = Math.max(0, Math.min(1, cliUsedPercentage / 100))
-      const usedTokens = effectiveMax
-        ? Math.round(percentage * effectiveMax)
-        : cliTotalInput ?? 0
-      return {
-        usedTokens,
-        maxTokens: effectiveMax,
-        percentage,
-        inputTokens: cliTotalInput,
-        outputTokens: cliTotalOutput,
-        source: 'cli-usage',
-        updatedAt: Date.now(),
-      }
-    }
-    // If the CLI gives us total_input_tokens + context_window_size, compute
-    // from those (more accurate than raw API usage because the CLI tracks
-    // cumulative input across the whole conversation).
-    if (cliTotalInput !== undefined && effectiveMax !== undefined && effectiveMax > 0) {
-      const percentage = Math.max(0, Math.min(1, cliTotalInput / effectiveMax))
-      return {
-        usedTokens: cliTotalInput,
-        maxTokens: effectiveMax,
-        percentage,
-        inputTokens: cliTotalInput,
-        outputTokens: cliTotalOutput,
-        source: 'cli-usage',
-        updatedAt: Date.now(),
-      }
-    }
-  }
-
-  // Fallback: compute from raw API usage tokens (input + cache).
-  const usage = extractUsageObject(payload)
-  if (!usage) return undefined
-
-  const inputTokens = numberValue(usage.input_tokens) ?? 0
-  const outputTokens = numberValue(usage.output_tokens) ?? 0
-  const cacheCreationTokens = numberValue(usage.cache_creation_input_tokens) ?? 0
-  const cacheReadTokens = numberValue(usage.cache_read_input_tokens) ?? 0
-  const usedTokens = inputTokens + cacheCreationTokens + cacheReadTokens
-  if (usedTokens <= 0) return undefined
-
-  return {
-    usedTokens,
-    maxTokens,
-    percentage: maxTokens ? Math.min(1, usedTokens / maxTokens) : undefined,
-    inputTokens,
-    outputTokens,
-    source: 'cli-usage',
-    updatedAt: Date.now(),
-  }
-}
-
-/// Extracts the CLI's `context_window` object from a stream-json payload.
-/// The CLI emits this with pre-calculated `used_percentage`,
-/// `remaining_percentage`, `context_window_size`, `total_input_tokens`,
-/// and `total_output_tokens`. This is the authoritative context usage.
-function extractContextWindowObject(payload: unknown): Record<string, unknown> | undefined {
-  if (!isRecord(payload)) return undefined
-  if (isRecord(payload.context_window)) return payload.context_window
-  if (payload.type === 'stream_event' && isRecord(payload.event)) {
-    if (isRecord(payload.event.context_window)) return payload.event.context_window
-  }
-  return undefined
-}
-
 function extractTokenUsage(payload: unknown): TokenUsage | undefined {
   const usage = extractUsageObject(payload)
   if (!usage) return undefined
 
+  // G-C12: the CLI sends snake_case keys in its raw stream payload
+  // (input_tokens, output_tokens, cache_creation_input_tokens,
+  // cache_read_input_tokens). We read them in snake_case here and
+  // return a TokenUsage-typed object with camelCase keys, so the
+  // return value matches the shape the Rust side sends via Tauri
+  // events (serde rename_all camelCase). Consumers can treat both
+  // paths (CLI raw payload and Rust event.result.usage) uniformly.
   const inputTokens = numberValue(usage.input_tokens)
   const outputTokens = numberValue(usage.output_tokens)
   const cacheCreationTokens = numberValue(usage.cache_creation_input_tokens)
@@ -5238,10 +6101,10 @@ function extractTokenUsage(payload: unknown): TokenUsage | undefined {
   }
 
   return {
-    input_tokens: inputTokens,
-    output_tokens: outputTokens,
-    cache_creation_input_tokens: cacheCreationTokens,
-    cache_read_input_tokens: cacheReadTokens,
+    inputTokens,
+    outputTokens,
+    cacheCreationInputTokens: cacheCreationTokens,
+    cacheReadInputTokens: cacheReadTokens,
   }
 }
 
@@ -5256,19 +6119,6 @@ function streamDeltaText(payload: unknown): string | undefined {
   if (delta.type === 'text_delta' && typeof delta.text === 'string') return delta.text
   if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') return delta.thinking
   if (delta.type === 'input_json_delta' && typeof delta.partial_json === 'string') return delta.partial_json
-  return undefined
-}
-
-function extractUsageObject(payload: unknown): Record<string, unknown> | undefined {
-  if (!isRecord(payload)) return undefined
-  if (isRecord(payload.usage)) return payload.usage
-  if (isRecord(payload.message) && isRecord(payload.message.usage)) return payload.message.usage
-
-  if (payload.type === 'stream_event' && isRecord(payload.event)) {
-    if (isRecord(payload.event.usage)) return payload.event.usage
-    if (isRecord(payload.event.message) && isRecord(payload.event.message.usage)) return payload.event.message.usage
-  }
-
   return undefined
 }
 
@@ -5535,21 +6385,6 @@ function formatCompactNumber(value: number, language: LanguageCode): string {
 
 function textValue(value: unknown): string {
   return typeof value === 'string' ? value : ''
-}
-
-function numberValue(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0
-}
-
-/// Like `numberValue` but returns `undefined` for missing/non-number fields.
-/// Used in fallback chains where we need to distinguish "field present" from
-/// "field absent" (e.g. context_window.used_percentage might be absent).
-function numberValueOptional(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
-}
-
-function isRecord(value: unknown): value is Record<string, any> {
-  return typeof value === 'object' && value !== null
 }
 
 // Pull tool_result blocks out of a stream-json payload so a command's real

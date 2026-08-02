@@ -32,6 +32,8 @@ Copy-paste-ready draft for the Chrome Web Store developer dashboard. Keep this f
 > - **Per-tool safety gate.** Every tool call is evaluated by a policy engine before any Chrome API is touched. Hard blocks on purchases, trades, mass deletion, and credential exposure apply in every mode.
 > - **Three permission modes.** Manual (approve each action), Auto (safety checks still apply, fewer prompts), Skip (no routine prompts, hard blocks still enforced).
 > - **Per-site grants.** Allow a host once, always, or deny it. Grants are stored locally and never synced.
+> - **Reusable routines.** Save instructions, variables, reference files, or a recorded workflow and run it again from a `/` command.
+> - **Optional local schedules.** Run a routine daily, weekly, monthly, or annually. Chrome notifies you whenever sign-in or approval is needed.
 > - **Verboo account session.** Sign in with your Verboo account. No API key to copy around.
 >
 > ### What it does NOT do
@@ -48,7 +50,9 @@ Copy-paste-ready draft for the Chrome Web Store developer dashboard. Keep this f
 >
 > - **sidePanel** — shows the Verboo panel alongside the page.
 > - **identity** — opens the user-initiated Verboo OAuth PKCE flow.
-> - **storage** — keeps you signed in and remembers your permission mode and per-site grants, locally.
+> - **storage** — keeps you signed in and stores local settings, routines, and checkpoints.
+> - **alarms** — wakes a routine at its locally saved time.
+> - **notifications** — tells you when a routine pauses for your attention.
 > - **scripting** — runs small scripts in the page you approved to read, click, or fill.
 > - **tabs** — manages the tabs the agent works on.
 > - **tabGroups** — groups the tabs the agent opens so multi-step research stays organized.
@@ -82,7 +86,7 @@ Copy-paste-ready draft for the Chrome Web Store developer dashboard. Keep this f
 1. Side panel open with the chat prompt and a tool approval card visible.
 2. Permission mode selector (Manual / Auto / Skip).
 3. Site grants list showing one allowed and one denied host.
-4. Empty disconnected state prompting to sign in.
+4. Routines settings with a `/` command, variables, and an optional schedule.
 
 ---
 
@@ -90,7 +94,7 @@ Copy-paste-ready draft for the Chrome Web Store developer dashboard. Keep this f
 
 | Question | Answer |
 |---------|--------|
-| Does this extension collect user data? | Standalone chat processes the user's prompt, selected browser context, and tool results for a turn the user started. OAuth state, model selection, and safety grants are stored locally. |
+| Does this extension collect user data? | Standalone chat processes the user's prompt, selected browser context, and tool results for a turn the user started. OAuth state, model selection, safety grants, and optional routines are stored locally. |
 | Is that data transmitted off-device? | Standalone chat sends active-turn data to the Verboo Router after extension OAuth. The MCP transport is local. |
 | Is the data sold or shared with third parties? | No. |
 | Does the extension read browsing history? | No. |
@@ -109,7 +113,7 @@ Copy-paste-ready draft for the Chrome Web Store developer dashboard. Keep this f
 
 ## Reviewer notes (paste into the submission form)
 
-> This extension implements `chrome.identity`, `chrome.scripting`, `chrome.tabs`, `chrome.tabGroups`, `chrome.storage`, and `chrome.sidePanel` to provide a browser-automation side panel. There is no remote-loaded code; all injected scripts are bundled. Standalone chat uses user-initiated OAuth PKCE and sends active-turn prompts, selected browser context, and tool results to the Verboo Router. Browser content is fenced as untrusted data. The separate MCP transport is local and carries no CLI token. The extension does not request `debugger` at this time. The full privacy policy is bundled at `PRIVACY.md` and `privacy.html` and linked from the side panel.
+> This extension implements `chrome.identity`, `chrome.scripting`, `chrome.tabs`, `chrome.tabGroups`, `chrome.storage`, `chrome.alarms`, `chrome.notifications`, and `chrome.sidePanel` to provide a browser-automation side panel with optional local routines. There is no remote-loaded code; all injected scripts are bundled. Standalone chat and routine execution use user-initiated OAuth PKCE and send only active-turn instructions, selected reference content, browser context, and tool results to the Verboo Router. Browser content is fenced as untrusted data. Schedules remain local; notifications are used only when a routine needs attention. The separate MCP transport is local and carries no CLI token. The extension does not request `debugger` at this time. The full privacy policy is bundled at `PRIVACY.md` and `privacy.html` and linked from the side panel.
 
 ## Português (Brasil) — rascunho da listagem pt-BR
 
@@ -129,11 +133,11 @@ Rascunho pronto para o painel da Chrome Web Store no idioma pt-BR. Mantenha em s
 >
 > Abra o painel pela barra de ferramentas, digite o que quer ("puxe os 10 primeiros resultados desta busca", "preencha o formulário de checkout com estes valores") e o agente trabalha com você no controle de cada passo.
 >
-> **O que ele faz:** navega, clica, digita, extrai, tira screenshots e gerencia abas; portão de segurança por ferramenta (bloqueios rígidos a compras, trades, deleção em massa e exposição de credenciais valem em todos os modos); três modos de permissão (Manual, Auto, Skip); concessões por site (uma vez, sempre ou negar — guardadas localmente); sessão de conta Verboo (sem chave de API para copiar).
+> **O que ele faz:** navega, clica, digita, extrai, tira screenshots e gerencia abas; salva rotinas reutilizáveis com comando `/`, variáveis, arquivos de referência ou um fluxo gravado; permite agendamento local diário, semanal, mensal ou anual; mantém o portão de segurança por ferramenta (bloqueios rígidos a compras, trades, deleção em massa e exposição de credenciais valem em todos os modos); oferece concessões por site e sessão de conta Verboo sem chave de API para copiar.
 >
 > **O que ele NÃO faz:** não coleta analytics nem telemetria; não lê seu histórico; não executa código de origem remota; não toca `chrome://`, `chrome-extension://`, `about:` nem a Chrome Web Store; não deixa sessão de debugger anexada; o chat avulso é explícito (só um turno iniciado por você envia dados ao Verboo Router, com o texto do navegador cercado como não confiável); o MCP permanece local, sem tokens do CLI.
 >
-> **Permissões em português claro:** sidePanel (mostra o painel), identity (OAuth PKCE iniciado por você), storage (sessão, modo e concessões, localmente), scripting (scripts pequenos na página aprovada), tabs (abas do trabalho do agente), tabGroups (organiza pesquisas multi-etapas).
+> **Permissões em português claro:** sidePanel (mostra o painel), identity (OAuth PKCE iniciado por você), storage (sessão, configurações, rotinas e checkpoints locais), alarms (horários locais), notifications (avisos quando uma rotina precisa de você), scripting (scripts pequenos na página aprovada), tabs (abas do trabalho do agente) e tabGroups (organiza pesquisas multi-etapas).
 
 ### Categoria, idioma e distribuição
 

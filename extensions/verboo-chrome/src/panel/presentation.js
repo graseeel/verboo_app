@@ -34,16 +34,135 @@ export function humanizeModelId(id) {
 /**
  * Render the deliberately small Markdown subset used in assistant summaries.
  * Input is escaped first, so assigning the result to innerHTML cannot execute
- * model-provided markup. Supported: bold, inline code, and line breaks.
+ * model-provided markup. Supported: headings, bold, inline/fenced code, lists, and
+ * line breaks.
  * @param {unknown} value
  * @returns {string}
  */
 export function safeMarkdownToHtml(value) {
-  return escapeHtml(String(value ?? ''))
+  const lines = escapeHtml(String(value ?? '')).split(/\r?\n/)
+  const rendered = []
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    const fence = line.match(/^```[A-Za-z0-9_-]*\s*$/)
+    if (fence) {
+      const codeLines = []
+      while (index + 1 < lines.length && !/^```\s*$/.test(lines[index + 1])) {
+        index += 1
+        codeLines.push(lines[index])
+      }
+      if (index + 1 < lines.length) index += 1
+      rendered.push(`<pre><code>${codeLines.join('\n')}</code></pre>`)
+      continue
+    }
+    const heading = line.match(/^(#{1,6})\s+(.+)$/)
+    if (heading) {
+      rendered.push(`<h${heading[1].length}>${formatInlineMarkdown(heading[2])}</h${heading[1].length}>`)
+      continue
+    }
+
+    const unordered = line.match(/^[-*]\s+(.+)$/)
+    if (unordered) {
+      const items = [unordered[1]]
+      while (index + 1 < lines.length) {
+        const next = lines[index + 1].match(/^[-*]\s+(.+)$/)
+        if (!next) break
+        items.push(next[1])
+        index += 1
+      }
+      rendered.push(`<ul>${items.map((item) => `<li>${formatInlineMarkdown(item)}</li>`).join('')}</ul>`)
+      continue
+    }
+
+    const ordered = line.match(/^\d+[.)]\s+(.+)$/)
+    if (ordered) {
+      const items = [ordered[1]]
+      while (index + 1 < lines.length) {
+        const next = lines[index + 1].match(/^\d+[.)]\s+(.+)$/)
+        if (!next) break
+        items.push(next[1])
+        index += 1
+      }
+      rendered.push(`<ol>${items.map((item) => `<li>${formatInlineMarkdown(item)}</li>`).join('')}</ol>`)
+      continue
+    }
+
+    rendered.push(formatInlineMarkdown(line))
+  }
+
+  return rendered.join('<br>')
+}
+
+/**
+ * Build a bounded, useful preview for structured browser-tool results.
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function structuredResultPreview(value) {
+  if (!value || typeof value !== 'object' || !('data' in value)) return ''
+  const record = /** @type {Record<string, unknown>} */ (value)
+  const format = typeof record.format === 'string' ? record.format.toUpperCase() : ''
+  let preview = ''
+  if (typeof record.data === 'string') {
+    preview = record.data.replace(/\s+/g, ' ').trim()
+  } else if (record.data != null) {
+    try {
+      preview = JSON.stringify(record.data)
+    } catch {
+      preview = ''
+    }
+  }
+  if (!preview) return format
+  const clipped = preview.length > 120 ? `${preview.slice(0, 117)}…` : preview
+  return format ? `${format} · ${clipped}` : clipped
+}
+
+/** @param {string} value */
+function formatInlineMarkdown(value) {
+  return value
     .replace(/`([^`\n]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
     .replace(/__([^_\n]+)__/g, '<strong>$1</strong>')
-    .replace(/\r?\n/g, '<br>')
+}
+
+/**
+ * Translate a backend error code without leaking unknown internal codes.
+ * @param {unknown} errorCode
+ * @param {string} fallbackKey
+ * @param {(key: string) => string} translate
+ * @returns {string}
+ */
+export function translatedErrorMessage(errorCode, fallbackKey, translate) {
+  const code = String(errorCode ?? '').trim()
+  if (!code) return translate(fallbackKey)
+  const translated = translate(code)
+  return translated && translated !== code ? translated : translate(fallbackKey)
+}
+
+/**
+ * Avoid stacking the same error twice when the user repeats an action.
+ * @param {unknown} previousError
+ * @param {unknown} nextError
+ * @returns {boolean}
+ */
+export function shouldAppendError(previousError, nextError) {
+  const previous = String(previousError ?? '')
+  const next = String(nextError ?? '')
+  return !previous || previous !== next
+}
+
+/**
+ * Submit only for an unmodified Enter that was not already handled by
+ * another interaction, such as the slash menu or an IME composition.
+ * @param {{key?: string, shiftKey?: boolean, isComposing?: boolean, defaultPrevented?: boolean}} event
+ * @returns {boolean}
+ */
+export function shouldSubmitComposerKey(event) {
+  return event?.key === 'Enter'
+    && !event.shiftKey
+    && !event.isComposing
+    && !event.defaultPrevented
 }
 
 /** @param {unknown} value */

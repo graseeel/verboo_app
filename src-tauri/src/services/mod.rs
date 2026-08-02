@@ -1,5 +1,8 @@
 pub mod auth_token;
+pub mod browser_bridge;
 pub mod browser_panel;
+pub mod browser_platform;
+pub mod browser_session;
 pub mod child_signal;
 pub mod chrome_integration;
 pub mod cli_credentials;
@@ -7,6 +10,7 @@ pub mod cli_path;
 pub mod cli_service;
 pub mod cli_subagent_transcript;
 pub mod cli_spawn;
+pub mod cli_todo_canary;
 pub mod credentials_store;
 pub mod feedback_service;
 pub mod file_service;

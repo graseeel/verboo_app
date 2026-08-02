@@ -1,6 +1,6 @@
 {
   "appName": { "message": "Verboo" },
-  "appDesc": { "message": "Control Chrome with Verboo — an AI side panel for browser automation" },
+  "appDesc": { "message": "Control Chrome with Verboo — an AI side panel with browser automation and reusable routines" },
   "openSidePanel": { "message": "Open Verboo side panel" },
   "branding_title": { "message": "Verboo" },
   "branding_tagline": { "message": "Control Chrome with Verboo" },

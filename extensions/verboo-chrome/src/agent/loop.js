@@ -10,8 +10,8 @@
  *   6. For vision-capable models, screenshot pixels are attached once as a
  *      multimodal user message; tool messages stay OpenAI-compatible strings
  *   7. Repeat up to MAX_STEPS (20)
- *   8. Router errors after partial tool success → friendly completion (no throw)
- *   9. On hard failure with zero tools → throw (background may planMessage)
+ *   8. Router errors after partial tool success → explicit partial-result summary
+ *   9. On hard failure with zero tools → throw without executing a fallback plan
  *
  * Policy gate: executeTool callback MUST go through the existing
  * execute() → evaluateToolPolicy path. This module never touches chrome.*.
@@ -24,9 +24,12 @@
  */
 
 import { chatCompletion } from './routerClient.js'
-import { OPENAI_TOOLS, toToolCall } from './toolCatalog.js'
+import { getToolRisk, OPENAI_TOOLS, toToolCall } from './toolCatalog.js'
 import { MSG } from '../controller/protocol.js'
-import { wrapUntrustedBrowserContent } from './untrustedContent.js'
+import {
+  inspectUntrustedBrowserContent,
+  wrapUntrustedBrowserContent,
+} from './untrustedContent.js'
 
 const MAX_STEPS = 20
 const MAX_RESULT_CHARS = 4000
@@ -85,13 +88,14 @@ IMPORTANT RULES:
   Reply immediately with a short confirmation in the user's language.
 - For search: navigate to the search engine, type the query, submit
 - For reading a page: use read_page with a targeted selector, not the whole body when possible
+- For an explicit current-page inspection request (for example "o que é isso", "o que diz esta página", or "extract this page"), ALWAYS call read_page before answering. Do not answer that browser tools are unavailable when the current page is an HTTP(S) page.
 - Return a brief text summary when you finish the task
 - Never invent or fabricate selectors — only use ones you can see from page content`
 
 /**
  * Run a multi-step LLM agent turn.
  *
- * @param {{ turnId: string, userMessage: string, accessToken: string, modelId: string, modelSupportsVision?: boolean, conversationHistory?: Array<object>, broadcast: Function, executeTool: Function, getActiveTabMeta: Function, signal?: AbortSignal }} params
+ * @param {{ turnId: string, userMessage: string, accessToken: string, modelId: string, modelSupportsVision?: boolean, conversationHistory?: Array<object>, routineContext?: {name:string,instructions:string,assets?:Array<object>}, toolAllowlist?: string[], broadcast: Function, executeTool: Function, getActiveTabMeta: Function, refreshAccessToken?: () => Promise<string|null>, signal?: AbortSignal }} params
  * @returns {Promise<{ assistantMessage: string, toolResults: Array<object> }>}
  */
 export async function runLlmAgentTurn({
@@ -101,9 +105,12 @@ export async function runLlmAgentTurn({
   modelId,
   modelSupportsVision,
   conversationHistory,
+  routineContext,
+  toolAllowlist,
   broadcast,
   executeTool,
   getActiveTabMeta,
+  refreshAccessToken,
   signal,
 }) {
   if (!accessToken) throw new Error('LLM agent: accessToken is required')
@@ -113,12 +120,18 @@ export async function runLlmAgentTurn({
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'system', content: modelIdentityDirectiveFor(modelId, modelSupportsVision) },
   ]
-  const browserToolsEnabled = shouldOfferBrowserTools(userMessage)
-  const tools = browserToolsEnabled
+  const browserToolsEnabled = Boolean(routineContext) || shouldOfferBrowserTools(userMessage)
+  const availableTools = browserToolsEnabled
     ? modelSupportsVision === true
       ? OPENAI_TOOLS
       : OPENAI_TOOLS.filter((tool) => tool.function?.name !== 'screenshot')
     : []
+  const allowedToolNames = Array.isArray(toolAllowlist)
+    ? new Set(toolAllowlist)
+    : null
+  const tools = allowedToolNames
+    ? availableTools.filter((tool) => allowedToolNames.has(tool.function?.name))
+    : availableTools
 
   messages.push({
     role: 'system',
@@ -128,15 +141,16 @@ export async function runLlmAgentTurn({
   })
 
   // Seed with current page context as a system note (not a fake tool_call).
+  let activeTabMeta = null
   if (browserToolsEnabled) {
-    const tabMeta = await getActiveTabMeta()
-    if (tabMeta?.url && /^https?:\/\//i.test(tabMeta.url)) {
+    activeTabMeta = await getActiveTabMeta()
+    if (activeTabMeta?.url && /^https?:\/\//i.test(activeTabMeta.url)) {
       messages.push({
         role: 'system',
         content: wrapUntrustedBrowserContent({
           currentPage: {
-            url: tabMeta.url,
-            ...(tabMeta.title ? { title: tabMeta.title } : {}),
+            url: activeTabMeta.url,
+            ...(activeTabMeta.title ? { title: activeTabMeta.title } : {}),
           },
         }),
       })
@@ -144,7 +158,18 @@ export async function runLlmAgentTurn({
   }
 
   messages.push(...sanitizeConversationHistory(conversationHistory))
-  messages.push({ role: 'user', content: userMessage })
+  const routineUserContent = await buildRoutineUserContent(
+    userMessage,
+    routineContext,
+    modelSupportsVision === true,
+  )
+  const routineVisualMessageIndex = Array.isArray(routineUserContent)
+    ? messages.length
+    : -1
+  messages.push({
+    role: 'user',
+    content: routineUserContent,
+  })
   // Hard language pin for the final reply (models often ignore a soft prompt rule).
   messages.push({
     role: 'system',
@@ -159,6 +184,7 @@ export async function runLlmAgentTurn({
   // later requests do not resend a large base64 payload on every step.
   /** @type {number[]} */
   let pendingVisualMessageIndexes = []
+  let routineVisualPending = routineVisualMessageIndex >= 0
 
   /** Tracks consecutive failures of the same tool to inject strategy / stop early. */
   let failStreak = { name: null, count: 0, afterHint: false }
@@ -166,6 +192,16 @@ export async function runLlmAgentTurn({
   // Some tasks have an observable terminal state. Once reached, the next
   // request asks only for the final reply and cannot trigger another action.
   let browserActionsComplete = false
+  let requiresVerification = false
+  let promptInjectionDetected = false
+  let currentAccessToken = accessToken
+  const refreshAccessTokenForTurn = typeof refreshAccessToken === 'function'
+    ? async () => {
+        const refreshed = await refreshAccessToken()
+        if (typeof refreshed === 'string' && refreshed) currentAccessToken = refreshed
+        return refreshed
+      }
+    : undefined
 
   for (let step = 0; step < MAX_STEPS; step++) {
     if (signal?.aborted) break
@@ -182,10 +218,11 @@ export async function runLlmAgentTurn({
     let completion
     try {
       completion = await chatCompletion({
-        accessToken,
+        accessToken: currentAccessToken,
         model: modelId,
         messages,
         tools: browserActionsComplete ? [] : tools,
+        refreshAccessToken: refreshAccessTokenForTurn,
         signal,
       })
     } catch (routerErr) {
@@ -205,6 +242,18 @@ export async function runLlmAgentTurn({
       throw routerErr
     }
 
+    if (routineVisualPending) {
+      const original = messages[routineVisualMessageIndex]
+      const textPart = Array.isArray(original?.content)
+        ? original.content.find((part) => part?.type === 'text')?.text
+        : ''
+      messages[routineVisualMessageIndex] = {
+        role: 'user',
+        content: `${textPart ?? ''}\n[Saved routine images were provided for the first model step.]`,
+      }
+      routineVisualPending = false
+    }
+
     for (const index of pendingVisualMessageIndexes) {
       messages[index] = {
         role: 'system',
@@ -213,10 +262,99 @@ export async function runLlmAgentTurn({
     }
     pendingVisualMessageIndexes = []
 
-    // Text-only response → done.
+    // Text-only response → done. Some models occasionally ignore the tool
+    // contract and answer in prose even for an explicit current-page read.
+    // For HTTP(S) pages, synthesize the same read-only call we asked for and
+    // let the normal tool-result round-trip produce the final answer. This is
+    // deliberately narrower than browserToolsEnabled: navigation, mutation,
+    // and screenshot requests never get an invented action.
     if (completion.toolCalls.length === 0) {
-      const text = completion.content ?? 'Done.'
-      return { assistantMessage: text, toolResults: allToolResults }
+      if (browserToolsEnabled && allToolResults.length === 0) {
+        if (
+          activeTabMeta?.url &&
+          /^https?:\/\//i.test(activeTabMeta.url) &&
+          shouldFallbackToPageRead(userMessage)
+        ) {
+          completion = {
+            content: null,
+            toolCalls: [{
+              id: `fallback_read_${turnId}_${step}`,
+              name: 'read_page',
+              arguments: '{"selector":"body"}',
+            }],
+          }
+        } else {
+          throw new Error('model_tool_protocol_unsupported')
+        }
+      }
+      if (completion.toolCalls.length === 0) {
+        if (requiresVerification) {
+          messages.push({
+            role: 'system',
+            content:
+              'The last browser mutation has not been verified. Inspect the current page with read_page ' +
+              'or screenshot before claiming completion, then answer with the observed result.',
+          })
+          continue
+        }
+        const text = completion.content?.trim()
+        if (!text) throw new Error('model_returned_empty_response')
+        return { assistantMessage: text, toolResults: allToolResults }
+      }
+    }
+
+    // Model emitted one or more tool calls, but this turn was classified as
+    // NORMAL CONVERSATION (shouldOfferBrowserTools was false at the top of
+    // the turn, and no saved routine was active) — so no browser tools were
+    // offered. Do NOT execute the calls: the loop must never expand the
+    // execution surface beyond what was explicitly offered. Tell the user
+    // why in plain language instead of letting the parser's structured
+    // output slip through to a controller that wasn't expecting it.
+    //
+    // Why this is a hard gate, not a soft preference: a model that emits
+    // `<tool_call>computer.screenshot</tool_call>` in a conversation-mode
+    // turn may be hallucinating an action the user never asked for, or
+    // following a prompt-injection seed from page content. Either way,
+    // the correct response is communication, not silent execution.
+    if (!browserToolsEnabled && completion.toolCalls.length > 0) {
+      const attempted = completion.toolCalls.map((tc) => tc.name).filter(Boolean)
+      const pt = looksPortuguese(userMessage)
+      const attemptedLabel = attempted.length === 0
+        ? (pt ? 'ferramentas de navegador' : 'browser tools')
+        : attempted.length === 1
+          ? (pt ? `a ferramenta "${attempted[0]}"` : `the "${attempted[0]}" tool`)
+          : (pt
+              ? `as ferramentas ${attempted.map((n) => `"${n}"`).join(', ')}`
+              : `the tools ${attempted.map((n) => `"${n}"`).join(', ')}`)
+      broadcast({
+        type: MSG.AGENT_THOUGHT,
+        turnId,
+        text: pt
+          ? `Modelo tentou chamar ${attemptedLabel} em turno de conversa normal — bloqueando e pedindo reformulação.`
+          : `Model tried to call ${attemptedLabel} in a normal-conversation turn — blocking and asking for a rephrase.`,
+      })
+      // NOTE: do NOT suggest switching to "Aja sem perguntar" / "Act without
+      // asking" mode — that mode does NOT force browser tools to be offered
+      // (browserToolsEnabled = Boolean(routineContext) || shouldOfferBrowserTools
+      // at loop.js:122 has no term for that mode). Suggesting it would send
+      // the user to do something that demonstrably does not work, which is
+      // exactly what the field report showed. The only thing that actually
+      // offers browser tools is an explicit action verb + page reference
+      // matching shouldOfferBrowserTools — so tell the user to rephrase with
+      // an explicit verb.
+      return {
+        assistantMessage: pt
+          ? `Este turno foi classificado como conversa normal, então ferramentas de navegador ` +
+            `não estão disponíveis e não serão executadas. O modelo tentou chamar ${attemptedLabel}. ` +
+            `Reformule o pedido com um verbo de ação explícito e uma referência à página — por ` +
+            `exemplo, "abra a aba atual e me diga o que está escrito" ou "capture um screenshot ` +
+            `desta página".`
+          : `This turn was classified as normal conversation, so browser tools are not available ` +
+            `and will not be executed. The model tried to call ${attemptedLabel}. Rephrase the ` +
+            `request with an explicit action verb and a page reference — for example, "open the ` +
+            `current tab and tell me what's written" or "take a screenshot of this page".`,
+        toolResults: allToolResults,
+      }
     }
 
     // Models may emit the same action more than once in a parallel tool-call
@@ -255,6 +393,37 @@ export async function runLlmAgentTurn({
       const tc = toToolCall(rawTc)
       const startedAt = Date.now()
 
+      if (allowedToolNames && !allowedToolNames.has(tc.name)) {
+        throw new Error(`recovery_tool_not_allowed:${tc.name}`)
+      }
+
+      if (promptInjectionDetected && getToolRisk(tc.name) !== 'read') {
+        const blockedResult = {
+          toolCallId: tc.id,
+          name: tc.name,
+          success: false,
+          data: null,
+          error: 'suspected_prompt_injection',
+          durationMs: 0,
+        }
+        allToolResults.push(blockedResult)
+        broadcast({
+          type: MSG.AGENT_TOOL_RESULT,
+          turnId,
+          toolResult: {
+            toolCallId: tc.id,
+            success: false,
+            data: null,
+            error: blockedResult.error,
+            durationMs: 0,
+          },
+        })
+        return {
+          assistantMessage: promptInjectionStopMessage(userMessage),
+          toolResults: allToolResults,
+        }
+      }
+
       // Broadcast what the LLM decided to do (panel shape).
       broadcast({
         type: MSG.AGENT_THOUGHT,
@@ -273,6 +442,9 @@ export async function runLlmAgentTurn({
       let screenshotDataUrl = null
       if (execResult.ok) {
         const raw = execResult.result
+        if (inspectUntrustedBrowserContent(raw).suspicious) {
+          promptInjectionDetected = true
+        }
         if (typeof raw === 'string') {
           resultText = truncate(raw, MAX_RESULT_CHARS)
         } else if (raw && typeof raw === 'object') {
@@ -318,6 +490,7 @@ export async function runLlmAgentTurn({
       allToolResults.push({
         toolCallId: tc.id,
         name: tc.name,
+        params: tc.params,
         success: execResult.ok,
         data: storedData,
         error: execResult.ok ? null : execResult.error,
@@ -352,6 +525,8 @@ export async function runLlmAgentTurn({
       // Consecutive failure tracking — strategy hint, then early stop if still stuck.
       if (execResult.ok) {
         failStreak = { name: null, count: 0, afterHint: false }
+        if (tc.name === 'click' || tc.name === 'type') requiresVerification = true
+        if (tc.name === 'read_page' || tc.name === 'screenshot') requiresVerification = false
       } else if (failStreak.name === tc.name) {
         failStreak.count++
       } else {
@@ -391,6 +566,7 @@ export async function runLlmAgentTurn({
           const meta = await getPostActionTabMeta(getActiveTabMeta, tc, execResult)
           if (meta?.url && /youtube\.com\/watch/i.test(meta.url)) {
             browserActionsComplete = true
+            requiresVerification = false
             messages.push({
               role: 'system',
               content:
@@ -433,7 +609,9 @@ export async function runLlmAgentTurn({
 
   // Reached max steps without text-only response.
   return {
-    assistantMessage: `Completed ${allToolResults.length} action(s). Let me know if you need anything else.`,
+    assistantMessage: looksPortuguese(userMessage)
+      ? `Execução incompleta: alcancei o limite de ${MAX_STEPS} etapas antes de concluir e verificar o pedido.`
+      : `Incomplete execution: I reached the ${MAX_STEPS}-step limit before completing and verifying the request.`,
     toolResults: allToolResults,
   }
 }
@@ -477,13 +655,10 @@ function sanitizeConversationHistory(history) {
  * @returns {boolean}
  */
 export function shouldOfferBrowserTools(userMessage) {
-  const text = String(userMessage ?? '')
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .trim()
-    .toLowerCase()
+  const text = normalizeIntentText(userMessage)
 
   if (!text) return false
+  if (requiresScreenshot(text)) return true
 
   const action =
     '(?:abra|abre|abrir|acesse|acessa|acessar|navegue|navegar|va|vai|entre|entrar|' +
@@ -520,12 +695,194 @@ export function shouldOfferBrowserTools(userMessage) {
     /\b(?:whatsapp|gmail|e-?mail|instagram|facebook|linkedin|twitter|formulario|form|site)\b/i
   if (communicationAction.test(text) && externalDestination.test(text)) return true
 
+  // Page reference: the user points at the CURRENT page/tab/site with a
+  // demonstrative. Covers PT `esta/essa/desta/dessa/na` (already here)
+  // PLUS the contracted demonstratives Brazilians naturally use:
+  // `nesta/nessa/neste/nesse/nestes/nesses` and the EN `this/current`.
+  //
+  // INTENTIONAL EXCLUSIONS — `no` and `num` are bare prepositions, not
+  // demonstratives. `o que tem no site da Apple` is a general-knowledge
+  // question, not a pointer to the current tab — including them would
+  // expand the execution surface to any turn that mentions a site, even
+  // when the user never asked about the page they're on. They were
+  // briefly added in this cycle and reverted after the Maestro measured
+  // the false positive.
+  //
+  // Bare `na` is accepted only when it explicitly points to the currently
+  // open page (`na aba atual`, `na pagina aberta`, etc.). This avoids turning
+  // references to book pages or other historical content into browser work.
   const pageReference =
-    /\b(?:esta|essa|desta|dessa|na|this|current)\s+(?:pagina|page|aba|tab|site)\b/i
+    /\b(?:esta|essa|desta|dessa|nesta|nessa|neste|nesse|nestes|nesses|this|current)\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\b|\bna\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\s+(?:atual|aberta|aberto|aqui|current)\b/i
+  // Page inspection: the user asks to look at / read / describe what's
+  // on the page. Covers PT `resuma/resume/leia/ler/analise/verifique/
+  // veja/descreva/diga o que/o que tem/o que esta` (already here) PLUS
+  // the look/show family Brazilians naturally use: `olhe/olha/olhar/
+  // mostre/mostra/mostrar/ve` and the EN `look/show/see`. `olhe` alone
+  // is also a discourse marker in PT ("olhe, eu acho que..."), so the
+  // CONJUNCTION with pageReference below is the load-bearing gate —
+  // `olhe` without a page reference must continue to DENY. See the
+  // test "olhe alone, no page reference, denies browser tools" — it
+  // locks this behavior in.
+  //
+  // `ve` is split out of the alternation into its own guarded regex
+  // because the apostrophe is a word boundary, so bare `ve` was
+  // matching inside English contractions `I've`/`you've`/`we've`.
+  // The guard `(?<![''])` rejects matches preceded by an apostrophe
+  // (manifest requires Chrome 123, lookbehind is supported). The
+  // alternation stays readable; the special case stays isolated.
   const pageInspection =
-    /\b(?:resuma|resume|leia|ler|analise|verifique|veja|descreva|diga o que|o que tem|o que esta|summarize|read|analyze|check|inspect|describe|what is on|what's on|what is visible)\b/i
+    /\b(?:resuma|resume|leia|ler|analise|verifique|veja|descreva|diga o que|o que tem|o que esta|o que diz|o que aparece|o que ha|o que e|qual conteudo|extraia|extrair|copie|copiar|olhe|olha|olhar|mostre|mostra|mostrar|summarize|read|analyze|check|inspect|describe|look|show|see|what is on|what's on|what is visible)\b/i
+  const bareVe = /(?<!['’])\bve\b/i
 
-  return pageReference.test(text) && pageInspection.test(text)
+  // Some users omit the space in `o que` (`oque`) or point at a
+  // selection with a short deictic question (`o que é isso?`). These
+  // are still current-page inspection requests in the browser panel.
+  const deicticInspection =
+    /\b(?:o\s*que|qual|me diga|diga|explique|descreva)\s+(?:e|significa|diz|tem|ha|aparece|vejo|ve)\s+(?:isso|isto|aqui)\b/i
+  const contentInspection =
+    /\b(?:ver|ve|ler|leia|ler|extrair|extraia|copiar|copie|acessar|acesso|consegue|pode)\b.{0,64}\b(?:conteudo|html|dom|texto|body)\b/i
+
+  return (
+    (pageReference.test(text) && (pageInspection.test(text) || bareVe.test(text))) ||
+    deicticInspection.test(text) ||
+    contentInspection.test(text)
+  )
+}
+
+/**
+ * Keep saved instructions in the user-owned message instead of elevating them
+ * into the system role.
+ *
+ * @param {string} userMessage
+ * @param {{name?:string,instructions?:string}|null|undefined} routineContext
+ */
+export function appendSavedRoutineContext(userMessage, routineContext) {
+  if (!routineContext) return userMessage
+  const name = escapeRoutineMarkup(String(routineContext.name ?? 'Routine').slice(0, 80))
+  const instructions = escapeRoutineClosingTag(
+    String(routineContext.instructions ?? '').slice(0, 32_000),
+  )
+  let content = (
+    `${String(userMessage ?? '').trim()}\n\n` +
+    `<saved_routine name="${name}">\n` +
+    'User-authored reusable instructions:\n' +
+    `${instructions}\n` +
+    '</saved_routine>'
+  )
+  for (const asset of routineContext.assets ?? []) {
+    if (typeof asset?.data !== 'string') continue
+    const filename = escapeRoutineMarkup(String(asset.name ?? 'reference').slice(0, 180))
+    const mime = escapeRoutineMarkup(String(asset.mime ?? 'text/plain').slice(0, 80))
+    const text = escapeRoutineClosingTag(asset.data.slice(0, 262_144))
+    content += (
+      `\n\n<saved_routine_file name="${filename}" mime="${mime}">\n` +
+      `${text}\n` +
+      '</saved_routine_file>'
+    )
+  }
+  return content
+}
+
+async function buildRoutineUserContent(userMessage, routineContext, supportsVision) {
+  const text = appendSavedRoutineContext(userMessage, routineContext)
+  if (!routineContext || !supportsVision) return text
+
+  const imageParts = []
+  for (const asset of routineContext.assets ?? []) {
+    if (!String(asset?.mime ?? '').startsWith('image/')) continue
+    const dataUrl = await assetDataUrl(asset)
+    if (dataUrl) {
+      imageParts.push({
+        type: 'image_url',
+        image_url: { url: dataUrl },
+      })
+    }
+  }
+  return imageParts.length > 0
+    ? [{ type: 'text', text }, ...imageParts]
+    : text
+}
+
+function escapeRoutineMarkup(value) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+}
+
+function escapeRoutineClosingTag(value) {
+  return value.replace(/<\/?saved_routine(?:_file)?/gi, (match) =>
+    match.replace('<', '&lt;'),
+  )
+}
+
+async function assetDataUrl(asset) {
+  if (typeof asset.data === 'string' && asset.data.startsWith('data:image/')) {
+    return asset.data
+  }
+  if (!asset.data || typeof asset.data.arrayBuffer !== 'function') return null
+  const bytes = new Uint8Array(await asset.data.arrayBuffer())
+  let binary = ''
+  const chunkSize = 32_768
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize))
+  }
+  return `data:${asset.mime};base64,${btoa(binary)}`
+}
+
+/**
+ * Whether the user's requested outcome itself is a captured viewport image.
+ * Printing a document is intentionally excluded from this classifier.
+ *
+ * @param {string} userMessage
+ */
+export function requiresScreenshot(userMessage) {
+  const text = normalizeIntentText(userMessage)
+  if (!text) return false
+  if (/\b(?:screenshot|screen shot|captura de tela|print da (?:tela|pagina))\b/i.test(text)) {
+    return true
+  }
+  return /\b(?:tire|tirar|faca|fazer|take|capture)\b.{0,24}\b(?:um |uma |a )?(?:print|screenshot|screen shot|captura)\b/i.test(text)
+}
+
+/** @param {unknown} value */
+function normalizeIntentText(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/\boque\b/g, 'o que')
+    .trim()
+    .toLowerCase()
+}
+
+/**
+ * Whether a browser-enabled turn is an explicit request to inspect the
+ * current page. This intentionally excludes mutations and screenshot asks:
+ * only a safe, read-only `read_page(body)` call may be synthesized here when
+ * a model omits the tool protocol.
+ *
+ * @param {string} userMessage
+ */
+function shouldFallbackToPageRead(userMessage) {
+  const text = normalizeIntentText(userMessage)
+  if (!text || requiresScreenshot(text)) return false
+
+  const pageReference =
+    /\b(?:esta|essa|desta|dessa|nesta|nessa|neste|nesse|nestes|nesses|this|current)\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\b|\bna\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\s+(?:atual|aberta|aberto|aqui|current)\b/i
+  const pageInspection =
+    /\b(?:resuma|resume|leia|ler|analise|verifique|veja|descreva|diga o que|o que tem|o que esta|o que diz|o que aparece|o que ha|o que e|qual conteudo|extraia|extrair|copie|copiar|olhe|olha|olhar|mostre|mostra|mostrar|summarize|read|analyze|check|inspect|describe|look|show|see|what is on|what's on|what is visible|extract)\b/i
+  const bareVe = /(?<!['’])\bve\b/i
+  const deicticInspection =
+    /\b(?:o\s*que|qual|me diga|diga|explique|descreva)\s+(?:e|significa|diz|tem|ha|aparece|vejo|ve)\s+(?:isso|isto|aqui)\b/i
+  const contentInspection =
+    /\b(?:ver|ve|ler|leia|extrair|extraia|copiar|copie|acessar|acesso|consegue|pode)\b.{0,64}\b(?:conteudo|html|dom|texto|body)\b/i
+
+  return (
+    (pageReference.test(text) && (pageInspection.test(text) || bareVe.test(text))) ||
+    deicticInspection.test(text) ||
+    contentInspection.test(text)
+  )
 }
 
 /**
@@ -614,34 +971,16 @@ export function summarizePartialAgentTurn(userMessage, toolResults) {
   const pt = looksPortuguese(userMessage)
 
   if (pt) {
-    if (didClick) {
-      return (
-        'Consegui avançar na página (incluindo um clique). ' +
-        'Se o vídeo ou o resultado não estiver certo, diga o que ajustar.'
-      )
-    }
-    if (didNav) {
-      return (
-        'Abri a página pedida e executei parte das ações. ' +
-        'Se algo faltar, peça o próximo passo.'
-      )
+    if (didClick || didNav) {
+      return `Execução parcial: ${ok} ação(ões) ocorreram, mas o pedido não foi concluído nem verificado porque a conexão com o modelo foi interrompida.`
     }
     return ok > 0
       ? `Fiz ${ok} ação(ões), mas a conexão com o modelo falhou no final. Tente de novo se precisar.`
       : 'Não consegui concluir o pedido. Tente novamente.'
   }
 
-  if (didClick) {
-    return (
-      'I made progress on the page (including a click). ' +
-      'If the video or result is wrong, tell me what to fix.'
-    )
-  }
-  if (didNav) {
-    return (
-      'I opened the requested page and completed part of the work. ' +
-      'Ask for the next step if something is missing.'
-    )
+  if (didClick || didNav) {
+    return `Partial execution: ${ok} action(s) ran, but the request was not completed or verified because the model connection was interrupted.`
   }
   return ok > 0
     ? `I completed ${ok} action(s), but the model connection failed at the end. Try again if needed.`
@@ -725,6 +1064,12 @@ function looksEnglish(text) {
   return /\b(open|go to|search|play|put on|find|please|the|and|for|with|youtube|music|song|video)\b/i.test(
     text,
   )
+}
+
+function promptInjectionStopMessage(userMessage) {
+  return looksPortuguese(userMessage)
+    ? 'Interrompi antes de executar uma nova ação porque a página contém conteúdo suspeito de prompt injection. Revise a página e faça um novo pedido explícito se quiser continuar.'
+    : 'I stopped before executing another action because the page contains suspected prompt injection content. Review the page and make a new explicit request if you want to continue.'
 }
 
 /** @param {unknown} value */

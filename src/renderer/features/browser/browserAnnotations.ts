@@ -12,6 +12,12 @@ export type AnnotationCandidate = {
   viewport: { width: number; height: number }
 }
 
+export type BrowserAnnotationIdentity = {
+  tabId: string
+  generation: number
+  url: string
+}
+
 export type PageReadyMessage = {
   type: 'page-ready'
   url: string
@@ -207,6 +213,18 @@ export function deleteBrowserCaptureOwner(ownerId: string): Promise<void> {
 
 export function cleanupBrowserCaptureOwners(activeOwnerIds: string[]): Promise<void> {
   return invoke('browser_cleanup_capture_owners', { activeOwnerIds }).then(() => undefined)
+}
+
+/**
+ * Returns false when the capture is no longer relevant because the
+ * originating tab has changed (navigated, closed, or its generation advanced).
+ * Silently discarding stale results avoids attaching outdated captures.
+ */
+export function annotationStillCurrent(
+  identity: BrowserAnnotationIdentity,
+  current: { id: string; generation: number },
+): boolean {
+  return identity.tabId === current.id && identity.generation === current.generation
 }
 
 export function createAnnotationAttachment(

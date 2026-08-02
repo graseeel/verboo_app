@@ -42,15 +42,12 @@ The packager (`scripts/package.mjs`) ships only runtime files — it excludes
 reviewer sees a minimal surface. Bump `version` / `version_name` in
 `manifest.json` before each store submission.
 
-## Before first submission — blockers
+## Before uploading an update
 
-1. **OAuth client id.** `src/auth/oauthConfig.js` ships `clientId: ''`
-   (fail-closed). Standalone sign-in stays disabled until the Verboo backend
-   registers a Chrome-extension public client and that id is filled in. The
-   redirect URL the backend must allow is
-   `https://<extension-id>.chromiumapp.org/` — and the extension id only exists
-   after the first upload, so the usual order is: upload as Draft → copy the id
-   → register it in the backend → fill `clientId` → re-package → publish.
+1. **OAuth login.** `src/auth/oauthConfig.js` ships the registered public client
+   `verboo-code-chrome-extension`. Before uploading, verify that **Sign in**
+   returns through the published redirect
+   `https://nkfgdaoblgcbngpklgnmjkfdabpbmpee.chromiumapp.org/oauth/callback`.
 2. **Listing copy.** Name, descriptions, category, permission justifications, and
    reviewer notes are all drafted in `../STORE_LISTING.md` — copy-paste ready.
 
@@ -60,4 +57,4 @@ Ativos prontos para upload na listagem da Chrome Web Store, gerados a partir da 
 
 A tabela de arquivos, a URL da política de privacidade (GitHub Pages, branch `gh-pages`) e a receita de reempacotamento (`npm run package`, que exclui `*.test.js`, `*.ts`, `*.md` e `native-messaging/`) estão na seção em inglês acima. Suba pelo menos 1 screenshot (a loja aceita até 5); a ordem 01 → 04 conta a história: o que faz → como é controlado → o resultado → como começar.
 
-Bloqueios antes da primeira submissão: (1) o `clientId` OAuth em `src/auth/oauthConfig.js` é vazio (fail-closed) até o backend Verboo registrar o public client — a URL de redirect exigida é `https://<extension-id>.chromiumapp.org/`, e o ID só existe após o primeiro upload (fluxo: subir como rascunho → copiar o ID → registrar no backend → preencher o `clientId` → reempacotar → publicar); (2) os textos da listagem estão prontos em `../STORE_LISTING.md`.
+Antes de subir uma atualização: (1) teste o login OAuth do build publicado, configurado com o public client `verboo-code-chrome-extension` e o redirect `https://nkfgdaoblgcbngpklgnmjkfdabpbmpee.chromiumapp.org/oauth/callback`; (2) os textos da listagem estão prontos em `../STORE_LISTING.md`.

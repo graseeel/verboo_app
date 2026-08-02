@@ -16,9 +16,9 @@ The app needs the extension's 32-letter **ID** to configure the connection. That
 6. **Submit for review.** Public visibility → Submit. Broad permissions (`<all_urls>`, `scripting`, `nativeMessaging`) usually trigger manual review (hours to days).
 7. **Bake the ID into the app and rebuild.** Paste the ID into `VERBOO_CHROME_EXTENSION_ID` (and optionally the store URL) in `scripts/build-release-app.sh`, run it, distribute the generated `.dmg`. Each user installs app + store extension, signs in with **their own** account, clicks **Configure** once.
 
-## Two things the Google reviewer may block
+## Release checks
 
-1. **The extension must be testable by the reviewer.** They do not have the desktop app, and standalone chat is disabled until the OAuth `clientId` is filled in `src/auth/oauthConfig.js`. Before submitting, either enable OAuth login or provide a test script/credentials in the *Reviewer notes* explaining the desktop-app dependency.
+1. **OAuth must remain testable by the reviewer.** The public client `verboo-code-chrome-extension` is configured for the published extension redirect. Verify "Sign in" on the Chrome Web Store build before submitting an update.
 2. **The ID is only permanent from the first upload.** Deleting and recreating the item changes the ID — and an app baked with the old ID stops matching. Never delete the item after baking the ID.
 
 ## Distributing to other people
@@ -86,16 +86,12 @@ tile em `store-assets/promo-tile-440x280.png`.
 - Distribua o `.dmg` gerado. Cada usuário instala o app + a extensão da loja,
   loga **na conta dele**, clica **Configurar** uma vez → funciona.
 
-### Atenção — dois pontos que o revisor da Google pode barrar
+### Verificações antes de publicar
 
-1. **A extensão precisa ser testável pelo revisor.** O revisor não tem o app
-   desktop, então o controle via MCP não roda para ele. E o chat direto dentro
-   da extensão hoje está desativado (falta o `clientId` OAuth em
-   `src/auth/oauthConfig.js`). Se o revisor não conseguir usar nada, pode
-   rejeitar por "não funcional". Antes de submeter, decida um destes:
-   - ligar o login OAuth (preencher o `clientId`), **ou**
-   - fornecer nas *Reviewer notes* um roteiro/credenciais de teste explicando
-     que a função principal depende do app desktop.
+1. **O OAuth precisa continuar testável pelo revisor.** O public client
+   `verboo-code-chrome-extension` está configurado para o redirect da extensão
+   publicada. Teste o botão **Sign in** no build da Chrome Web Store antes de
+   enviar uma atualização.
 
 2. **O ID só é permanente a partir do primeiro upload.** Se você deletar o item
    e recriar, o ID muda — e o app gravado com o ID antigo para de casar. Não
@@ -104,7 +100,7 @@ tile em `store-assets/promo-tile-440x280.png`.
 ### Distribuir para outras pessoas — o que cada um faz
 1. Instala o app (o `.dmg` que você gerou, já com o ID gravado).
 2. Instala a extensão pela loja (mesmo ID para todos).
-3. Loga na própria conta Verboo no app/CLI.
+3. Entra na própria conta Verboo pela extensão.
 4. Clica **Configurar** uma vez na máquina dele.
 O ID é igual para todos (identidade da extensão); a **conta** é a de cada um
 (vem do login no CLI/app). Ninguém depende de você.

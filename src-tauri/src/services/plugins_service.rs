@@ -397,6 +397,9 @@ async fn run_cli_raw(args: &[&str], timeout_secs: u64) -> Result<CliOutput, Plug
         .stdout(Stdio::from(stdout_file_clone))
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // A2-FIX (2026-07-29): creation_flags already applied by CliSpawn::new
+    // (cli_spawn.rs). TokioCommand::from(std_cmd) preserves them. No need
+    // to re-apply here.
 
     // Build a debug representation of args for error messages BEFORE moving.
     let args_debug = format!("verboo {}", args.join(" "));

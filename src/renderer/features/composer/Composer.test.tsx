@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
-import type { AttachmentMeta, SkillSummary } from '../../../shared/types'
+import type { Annotation, AttachmentMeta, SkillSummary } from '../../../shared/types'
 
 // jsdom lacks matchMedia — Composer reads it at module-eval time for
 // prefers-reduced-motion. Stub before importing Composer.
@@ -360,5 +360,41 @@ describe('native drag overlay', () => {
 
     expect(container.querySelector('.composer-drop-overlay')).toBeFalsy()
     expect(onDropFiles).toHaveBeenCalledWith(['/tmp/clip.mov'], [])
+  })
+})
+
+describe('F3 — annotation chip enables annotation-ONLY send', () => {
+  const transcriptAnnotation: Annotation = {
+    id: 'ann-1',
+    segmentId: 'turn1:text:0',
+    quote: 'the selected excerpt',
+    prefix: '',
+    suffix: '',
+    occurrenceIndex: 0,
+    comment: 'please fix this',
+    createdAt: 1_700_000_000_000,
+  }
+
+  it('EFFECT: annotations + EMPTY text → send enabled, and the submit ships an EMPTY message', () => {
+    const onSubmit = vi.fn()
+    const { container } = renderComposer({ value: '', annotations: [transcriptAnnotation], onSubmit })
+
+    expect(container.querySelector<HTMLButtonElement>('.send-button')).not.toBeDisabled()
+    fireEvent.submit(container.querySelector('form')!)
+
+    // The message travels EMPTY — the annotation IS the content (the field is
+    // attached downstream, in App). The composer must NOT invent a prompt for
+    // this case, unlike browser-annotation which legitimately has one.
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).toHaveBeenCalledWith('')
+  })
+
+  it('CONTRAFACTUAL (single variable): the SAME setup WITHOUT annotations → send disabled, submit is a no-op', () => {
+    const onSubmit = vi.fn()
+    const { container } = renderComposer({ value: '', onSubmit })
+
+    expect(container.querySelector<HTMLButtonElement>('.send-button')).toBeDisabled()
+    fireEvent.submit(container.querySelector('form')!)
+    expect(onSubmit).not.toHaveBeenCalled()
   })
 })

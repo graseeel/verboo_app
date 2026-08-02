@@ -30,6 +30,7 @@ import type {
   FileDiffStatus,
   GoalEvaluationInput,
   GoalEvaluationResult,
+  GoalEvaluationEnvelope,
   InstallUpdateResult,
   LocalTerminalSession,
   LocalTerminalStartRequest,
@@ -280,7 +281,7 @@ const api = {
     invoke<void>('clear_stale_files', { conversationId }),
 
   evaluateGoal: (input: GoalEvaluationInput) =>
-    invoke<{ evaluation: GoalEvaluationResult; userMessage?: string }>('evaluate_goal', { input }),
+    invoke<GoalEvaluationEnvelope>('evaluate_goal', { input }),
 
   // ── @-mention file listing (quick-win #1) ──────────────────
   // Returns RELATIVE paths (POSIX, sorted, cap 5000) for the given

@@ -12,12 +12,43 @@ type InjectedApi = {
 
 const source = readFileSync(resolve(process.cwd(), 'src-tauri/src/services/browser_inject.js'), 'utf8')
 
-function installInteractiveLayer() {
-  const postMessage = vi.fn()
-  Object.defineProperty(window, 'webkit', {
+type NativeTransport = {
+  tabId: string
+  bridgeToken: string
+  documentToken: string
+  post: ReturnType<typeof vi.fn>
+}
+
+function setupTransport(): NativeTransport {
+  const post = vi.fn()
+  Object.defineProperty(globalThis, '__VERBOO_NATIVE_TRANSPORT__', {
     configurable: true,
-    value: { messageHandlers: { verboo: { postMessage } } },
+    value: { tabId: 'test-tab', bridgeToken: 'bridge-token', documentToken: 'doc-token', post },
   })
+  return { tabId: 'test-tab', bridgeToken: 'bridge-token', documentToken: 'doc-token', post }
+}
+
+/** Extract the inner (payload) message from transport call envelope. */
+function payloadsFrom(transport: NativeTransport): unknown[] {
+  return transport.post.mock.calls.map((call) => {
+    const raw = (call as [string])[0]
+    return JSON.parse(JSON.parse(raw).payload)
+  })
+}
+
+/**
+ * jsdom's new MouseEvent() always has isTrusted=false (non-configurable).
+ * Behavioral tests that dispatch events must use a source copy with the
+ * trust guard removed; the unmodified source is used by the synthetic-event
+ * rejection tests which PROVE the guard works. Production source is NOT
+ * modified — verified by source scan.
+ */
+function trustedSource(): string {
+  return source.replaceAll('!event.isTrusted', '0')
+}
+
+function installInteractiveLayer(opts?: { trustedEvents?: boolean }) {
+  const transport = setupTransport()
   const attachShadow = Element.prototype.attachShadow
   vi.spyOn(Element.prototype, 'attachShadow').mockImplementation(function (this: Element, init: ShadowRootInit) {
     return attachShadow.call(this, { ...init, mode: 'open' })
@@ -30,12 +61,12 @@ function installInteractiveLayer() {
     configurable: true,
     value: vi.fn(),
   })
-  window.eval(source)
+  window.eval(opts?.trustedEvents !== false ? trustedSource() : source)
   const api = (window as Window & { __verbooBrowser?: InjectedApi }).__verbooBrowser!
   const hosts = document.querySelectorAll<HTMLElement>('[data-verboo-browser-layer]')
   const root = hosts.item(hosts.length - 1).shadowRoot!
-  postMessage.mockClear()
-  return { api, postMessage, root }
+  transport.post.mockClear()
+  return { api, transport, root }
 }
 
 describe('browser injected layer', () => {
@@ -43,14 +74,11 @@ describe('browser injected layer', () => {
     vi.restoreAllMocks()
     document.documentElement.innerHTML = '<head><title>Injected test</title></head><body><button>Target</button></body>'
     delete (window as Window & { __verbooBrowser?: InjectedApi }).__verbooBrowser
+    delete (globalThis as Record<string, unknown>).__VERBOO_NATIVE_TRANSPORT__
   })
 
-  it('is idempotent and announces a structured page-ready message', () => {
-    const postMessage = vi.fn()
-    Object.defineProperty(window, 'webkit', {
-      configurable: true,
-      value: { messageHandlers: { verboo: { postMessage } } },
-    })
+  it('is idempotent and announces a structured page-ready message via the native transport', () => {
+    const transport = setupTransport()
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
       setTransform: vi.fn(),
       clearRect: vi.fn(),
@@ -64,8 +92,8 @@ describe('browser injected layer', () => {
     expect(first).toBeDefined()
     expect(second).toBe(first)
     expect(first?.ping()).toContain('pong:')
-    const messages = postMessage.mock.calls.map(([message]) => JSON.parse(message))
-    expect(messages.filter(message => message.type === 'page-ready')).toHaveLength(3)
+    const messages = payloadsFrom(transport)
+    expect(messages.filter(m => (m as Record<string, unknown>).type === 'page-ready')).toHaveLength(3)
     expect(messages[0]).toMatchObject({
       type: 'page-ready',
       title: 'Injected test',
@@ -74,18 +102,18 @@ describe('browser injected layer', () => {
   })
 
   it('captures a pencil gesture and submits its accented note from the popup', () => {
-    const { api, postMessage, root } = installInteractiveLayer()
+    const { api, transport, root } = installInteractiveLayer()
     const canvas = root.getElementById('ink')!
     api.setMode('pencil')
     canvas.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 40, clientY: 50 }))
     canvas.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, button: 0, clientX: 120, clientY: 130 }))
     canvas.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, button: 0, clientX: 160, clientY: 180 }))
 
-    const candidate = postMessage.mock.calls.map(([message]) => JSON.parse(message))
-      .find(message => message.type === 'annotation-candidate')
+    const candidate = payloadsFrom(transport)
+      .find(m => (m as Record<string, unknown>).type === 'annotation-candidate') as Record<string, unknown> | undefined
     expect(candidate).toMatchObject({ kind: 'pen', rect: { x: 26, y: 36 } })
 
-    api.openNoteModal(candidate.token)
+    api.openNoteModal(candidate!.token as string)
     const card = root.getElementById('card')!
     expect(card.getAttribute('data-placement')).toBe('below')
     expect(card.style.getPropertyValue('--anchor-x')).toMatch(/px$/)
@@ -94,9 +122,9 @@ describe('browser injected layer', () => {
     note.value = 'Ação, espaçamento e você'
     note.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }))
 
-    const submitted = postMessage.mock.calls.map(([message]) => JSON.parse(message))
-      .find(message => message.type === 'annotation-submit')
-    expect(submitted).toMatchObject({ token: candidate.token, note: 'Ação, espaçamento e você' })
+    const submitted = payloadsFrom(transport)
+      .find(m => (m as Record<string, unknown>).type === 'annotation-submit') as Record<string, unknown> | undefined
+    expect(submitted).toMatchObject({ token: candidate!.token, note: 'Ação, espaçamento e você' })
     expect(root.getElementById('modal')?.getAttribute('aria-hidden')).toBe('true')
   })
 
@@ -108,22 +136,22 @@ describe('browser injected layer', () => {
       toJSON: () => ({}),
     })
     Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: vi.fn(() => target) })
-    const { api, postMessage, root } = installInteractiveLayer()
+    const { api, transport, root } = installInteractiveLayer()
     const picker = root.getElementById('picker')!
     api.setMode('arrow')
     picker.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 140, clientY: 100 }))
     picker.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 140, clientY: 100 }))
 
-    const candidate = postMessage.mock.calls.map(([message]) => JSON.parse(message))
-      .find(message => message.type === 'annotation-candidate')
+    const candidate = payloadsFrom(transport)
+      .find(m => (m as Record<string, unknown>).type === 'annotation-candidate') as Record<string, unknown> | undefined
     expect(candidate).toMatchObject({ kind: 'element', selector: '#save', component: 'PrimaryAction' })
 
-    api.openNoteModal(candidate.token)
+    api.openNoteModal(candidate!.token as string)
     expect(root.getElementById('title')?.textContent).toBe('Type your suggestion')
     const note = root.getElementById('note') as HTMLTextAreaElement
     note.value = 'Alinhar com o campo acima'
     note.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }))
-    expect(postMessage.mock.calls.map(([message]) => JSON.parse(message)))
+    expect(payloadsFrom(transport))
       .toContainEqual(expect.objectContaining({ type: 'annotation-submit', note: 'Alinhar com o campo acima' }))
   })
 
@@ -194,11 +222,7 @@ describe('browser injected layer', () => {
   })
 
   it('reattaches its closed-shadow host when a hostile page removes it', async () => {
-    const postMessage = vi.fn()
-    Object.defineProperty(window, 'webkit', {
-      configurable: true,
-      value: { messageHandlers: { verboo: { postMessage } } },
-    })
+    const transport = setupTransport()
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
       setTransform: vi.fn(),
       clearRect: vi.fn(),
@@ -209,5 +233,121 @@ describe('browser injected layer', () => {
     await Promise.resolve()
 
     expect(host?.isConnected).toBe(true)
+  })
+
+  // ── New tests: transport neutrality, 8192 cap, isTrusted, token closure ──
+
+  it('silently skips installation when the native transport is absent', () => {
+    delete (globalThis as Record<string, unknown>).__VERBOO_NATIVE_TRANSPORT__
+    window.eval(source)
+    expect((window as Window & { __verbooBrowser?: InjectedApi }).__verbooBrowser).toBeUndefined()
+  })
+
+  it('silently skips installation when the native transport lacks a post function', () => {
+    Object.defineProperty(globalThis, '__VERBOO_NATIVE_TRANSPORT__', {
+      configurable: true,
+      value: { tabId: 'x', bridgeToken: 'x', documentToken: 'x' },
+    })
+    window.eval(source)
+    expect((window as Window & { __verbooBrowser?: InjectedApi }).__verbooBrowser).toBeUndefined()
+  })
+
+  it('envelopes every message with tabId, bridgeToken, documentToken', () => {
+    const transport = setupTransport()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      setTransform: vi.fn(),
+      clearRect: vi.fn(),
+    } as unknown as CanvasRenderingContext2D)
+    window.eval(source)
+    transport.post.mockClear()
+    const api = (window as Window & { __verbooBrowser?: InjectedApi }).__verbooBrowser!
+    api.announce()
+
+    expect(transport.post).toHaveBeenCalled()
+    const raw = transport.post.mock.calls[0][0]
+    const envelope = JSON.parse(raw)
+    expect(envelope.tabId).toBe('test-tab')
+    expect(envelope.bridgeToken).toBe('bridge-token')
+    expect(envelope.documentToken).toBe('doc-token')
+    expect(envelope.payload).toEqual(expect.any(String))
+    const inner = JSON.parse(envelope.payload)
+    expect(inner.type).toBe('page-ready')
+  })
+
+  it('keeps bridgeToken and documentToken off globalThis and DOM after installation', () => {
+    setupTransport()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      setTransform: vi.fn(),
+      clearRect: vi.fn(),
+    } as unknown as CanvasRenderingContext2D)
+    window.eval(source)
+
+    // globalThis.__VERBOO_NATIVE_TRANSPORT__ must be deleted
+    expect((globalThis as Record<string, unknown>).__VERBOO_NATIVE_TRANSPORT__).toBeUndefined()
+
+    // tokens must not appear as any DOM attribute text
+    const serialized = document.documentElement.outerHTML
+    expect(serialized).not.toContain('bridge-token')
+    expect(serialized).not.toContain('doc-token')
+    expect(serialized).not.toContain('test-tab')
+  })
+
+  it('caps a pencil stroke at 8192 points and finalizes the stroke', () => {
+    const { api, transport, root } = installInteractiveLayer()
+    const canvas = root.getElementById('ink')!
+    api.setMode('pencil')
+
+    // One continuous stroke: 1 pointerdown + 9000 pointermoves + 1 pointerup
+    canvas.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 100, clientY: 100 }))
+    for (let i = 0; i < 9000; i++) {
+      canvas.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, button: 0, clientX: 100 + i, clientY: 100 }))
+    }
+    canvas.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, button: 0, clientX: 100 + 9000, clientY: 100 }))
+
+    // Exactly one annotation-candidate should be created (at the 8192-point cap)
+    const candidates = payloadsFrom(transport)
+      .filter(m => (m as Record<string, unknown>).type === 'annotation-candidate')
+    expect(candidates).toHaveLength(1)
+    expect((candidates[0] as Record<string, unknown>).kind).toBe('pen')
+
+    // Verify source enforces the cap
+    expect(source).toContain('8192')
+  })
+
+  it('rejects synthetic pencil events even when an active tool is set', () => {
+    const { api, transport, root } = installInteractiveLayer({ trustedEvents: false })
+    const canvas = root.getElementById('ink')!
+    api.setMode('pencil')
+
+    // Fire synthetic events (isTrusted=false by default for jsdom event constructors)
+    canvas.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 40, clientY: 50 }))
+    canvas.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, button: 0, clientX: 120, clientY: 130 }))
+    canvas.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, button: 0, clientX: 160, clientY: 180 }))
+
+    // No annotation candidate should be created
+    const candidates = payloadsFrom(transport)
+      .filter(m => (m as Record<string, unknown>).type === 'annotation-candidate')
+    expect(candidates).toHaveLength(0)
+  })
+
+  it('rejects synthetic element picker events', () => {
+    document.body.innerHTML = '<button id="save">Target</button>'
+    const target = document.getElementById('save')!
+    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue({
+      x: 100, y: 80, left: 100, top: 80, right: 220, bottom: 120, width: 120, height: 40,
+      toJSON: () => ({}),
+    })
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: vi.fn(() => target) })
+    const { api, transport, root } = installInteractiveLayer({ trustedEvents: false })
+    const picker = root.getElementById('picker')!
+    api.setMode('arrow')
+
+    // Synthetic events
+    picker.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 140, clientY: 100 }))
+    picker.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 140, clientY: 100 }))
+
+    const candidates = payloadsFrom(transport)
+      .filter(m => (m as Record<string, unknown>).type === 'annotation-candidate')
+    expect(candidates).toHaveLength(0)
   })
 })

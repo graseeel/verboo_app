@@ -1,10 +1,11 @@
 import { ArrowUp, Mic, MicOff, Paperclip, Target, X } from 'lucide-react'
 import { type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { AttachmentMeta, CustomSlashCommand, SkillSummary } from '../../../shared/types'
+import type { AttachmentMeta, CustomSlashCommand, SkillSummary, Annotation } from '../../../shared/types'
 import { useI18n } from '../../i18n'
 import { useToast } from '../../components/Toast'
 import { QueuePanel } from '../queue/QueuePanel'
+import { AnnotationChip } from '../annotations/AnnotationChip'
 import { parseReservedSlashCommand, parseGoalCommand, type ReservedSlashCommand } from './slashCommands'
 import {
   getCustomCommandLabel,
@@ -59,6 +60,11 @@ type ComposerProps = {
   onQueueSendNow?: (queueItemId: string) => void
   onQueueEdit?: (queueItemId: string, newText: string) => void
   onQueueRemove?: (queueItemId: string) => void
+  /** F1: annotation drafts of the ACTIVE conversation (ownership fixed at
+   *  creation in the App). Rendered as a chip with a hover panel. */
+  annotations?: Annotation[]
+  onRemoveAnnotation?: (annotationId: string) => void
+  onEditAnnotationComment?: (annotationId: string, comment: string | null) => void
 }
 
 export function Composer({
@@ -88,6 +94,9 @@ export function Composer({
   onQueueSendNow,
   onQueueEdit,
   onQueueRemove,
+  annotations = [],
+  onRemoveAnnotation,
+  onEditAnnotationComment,
 }: ComposerProps) {
   const { t, language } = useI18n()
   const [internalValue, setInternalValue] = useState('')
@@ -274,8 +283,13 @@ export function Composer({
     event.preventDefault()
     const trimmed = value.trim()
     const hasBrowserAnnotations = attachments.some(attachment => attachment.kind === 'browser-annotation')
-    if (!trimmed && !hasBrowserAnnotations) return
-    const submission = trimmed || t('browser.annotationDefaultPrompt')
+    // F3: anotação de transcript (chip) TAMBÉM habilita envio sem texto —
+    // "posso apenas enviar a anotação". Nesse caso a mensagem viaja vazia:
+    // a anotação É o conteúdo; o campo estruturado entra no App, e o bloco
+    // legível é montado no Rust. O prompt default só existe para o caso
+    // browser-annotation, que precisa de texto para o turno fazer sentido.
+    if (!trimmed && !hasBrowserAnnotations && annotations.length === 0) return
+    const submission = trimmed || (hasBrowserAnnotations ? t('browser.annotationDefaultPrompt') : '')
 
     const reserved = parseReservedSlashCommand(submission)
     if (reserved?.kind === 'goal') {
@@ -845,6 +859,16 @@ export function Composer({
         </div>
       )}
 
+      {annotations.length > 0 && onRemoveAnnotation && onEditAnnotationComment && (
+        <div className="selected-skills annotation-chips">
+          <AnnotationChip
+            annotations={annotations}
+            onRemove={onRemoveAnnotation}
+            onEditComment={onEditAnnotationComment}
+          />
+        </div>
+      )}
+
       {goalModeActive && (
         <div className="composer-goal-mode" aria-label={t('composer.goalActive')}>
           <Target size={13} />
@@ -901,7 +925,10 @@ export function Composer({
           <button
             className="send-button"
             type="submit"
-            disabled={disabled || (!value.trim() && !attachments.some(attachment => attachment.kind === 'browser-annotation'))}
+            // F3: chip de anotação também habilita o envio (mesma regra do
+            // submit acima) — sem isto o botão ficaria morto com anotação e
+            // texto vazio, contradizendo o comportamento exigido.
+            disabled={disabled || (!value.trim() && !attachments.some(attachment => attachment.kind === 'browser-annotation') && annotations.length === 0)}
             title={busy ? t('composer.queue') : t('composer.send')}
           >
             <ArrowUp size={17} />

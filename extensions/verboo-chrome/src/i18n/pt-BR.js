@@ -38,6 +38,18 @@ export default {
   "auth_oauthIntro": {
     "message": "Continue com sua conta Verboo em uma janela segura do navegador."
   },
+  "auth_accountLoginLabel": {
+    "message": "Conta Verboo"
+  },
+  "auth_accountLoginBody": {
+    "message": "Este login conecta somente esta extensão do Chrome."
+  },
+  "auth_cliConnectionLabel": {
+    "message": "Conexão com o CLI"
+  },
+  "auth_cliConnectionBody": {
+    "message": "Configure separadamente no app desktop Verboo."
+  },
   "auth_oauthUnavailable": {
     "message": "O login da conta Verboo ainda não está configurado nesta build."
   },
@@ -341,6 +353,9 @@ export default {
   "chat_stopTitle": {
     "message": "Interromper Verboo"
   },
+  "chat_clearTitle": {
+    "message": "Nova conversa"
+  },
   "model_picker_label": {
     "message": "Escolher modelo"
   },
@@ -364,5 +379,332 @@ export default {
   },
   "model_selection_failed": {
     "message": "Não foi possível trocar o modelo. Tente de novo."
+  },
+  "routines_title": {
+    "message": "Rotinas e Skills"
+  },
+  "routines_description": {
+    "message": "Salve instruções reutilizáveis e execute-as no chat com um comando de barra."
+  },
+  "routines_empty": {
+    "message": "Nenhuma rotina criada."
+  },
+  "routine_create": {
+    "message": "Nova rotina"
+  },
+  "routine_edit": {
+    "message": "Editar rotina"
+  },
+  "routine_editor_title": {
+    "message": "Rotina"
+  },
+  "routine_editor_description": {
+    "message": "As instruções ficam neste perfil do Chrome e vinculadas à sua conta Verboo."
+  },
+  "routine_name": {
+    "message": "Nome"
+  },
+  "routine_command": {
+    "message": "Comando de barra"
+  },
+  "routine_description": {
+    "message": "Descrição"
+  },
+  "routine_instructions": {
+    "message": "Instruções"
+  },
+  "routine_variables_help": {
+    "message": "Use {{nome}} para solicitar um valor antes de iniciar a rotina."
+  },
+  "routine_start_url": {
+    "message": "URL inicial"
+  },
+  "routine_allowed_origins": {
+    "message": "Sites permitidos"
+  },
+  "routine_origins_help": {
+    "message": "Uma origem por linha. Execuções agendadas nunca saem desta lista."
+  },
+  "routine_model": {
+    "message": "Modelo preferido"
+  },
+  "routine_model_default": {
+    "message": "Usar o modelo visual atual"
+  },
+  "routine_cleanup_tabs": {
+    "message": "Fechar as abas criadas pela rotina quando ela terminar"
+  },
+  "routine_files": {
+    "message": "Arquivos de referência"
+  },
+  "routine_files_help": {
+    "message": "Markdown, texto, JSON, CSV, PNG, JPEG ou WebP."
+  },
+  "routine_recorded_steps": {
+    "message": "Passos gravados"
+  },
+  "routine_recorded_steps_help": {
+    "message": "Revise os seletores e as variáveis antes de salvar."
+  },
+  "routine_automation": {
+    "message": "Blocos de automação"
+  },
+  "routine_branch_selector": {
+    "message": "Se o seletor"
+  },
+  "routine_branch_contains": {
+    "message": "Contiver o texto"
+  },
+  "routine_branch_then": {
+    "message": "Se encontrar, faça"
+  },
+  "routine_branch_else": {
+    "message": "Caso contrário, faça"
+  },
+  "routine_output_format": {
+    "message": "Saída estruturada"
+  },
+  "routine_output_none": {
+    "message": "Sem saída estruturada"
+  },
+  "routine_output_table": {
+    "message": "Tabela Markdown"
+  },
+  "routine_output_selector": {
+    "message": "Seletor da saída"
+  },
+  "routine_subroutines": {
+    "message": "Sub-rotinas"
+  },
+  "routine_subroutines_help": {
+    "message": "Uma barra por linha. Elas rodam como módulos reutilizáveis de instruções."
+  },
+  "routine_schedule": {
+    "message": "Agendamento"
+  },
+  "routine_schedule_enable": {
+    "message": "Executar em um horário"
+  },
+  "routine_schedule_requirements": {
+    "message": "Rotinas agendadas exigem uma URL inicial válida e o mesmo site na lista de permitidos."
+  },
+  "routine_frequency": {
+    "message": "Frequência"
+  },
+  "routine_daily": {
+    "message": "Diariamente"
+  },
+  "routine_weekly": {
+    "message": "Semanalmente"
+  },
+  "routine_monthly": {
+    "message": "Mensalmente"
+  },
+  "routine_annual": {
+    "message": "Anualmente"
+  },
+  "routine_weekday": {
+    "message": "Dia da semana"
+  },
+  "routine_monday": {
+    "message": "Segunda-feira"
+  },
+  "routine_tuesday": {
+    "message": "Terça-feira"
+  },
+  "routine_wednesday": {
+    "message": "Quarta-feira"
+  },
+  "routine_thursday": {
+    "message": "Quinta-feira"
+  },
+  "routine_friday": {
+    "message": "Sexta-feira"
+  },
+  "routine_saturday": {
+    "message": "Sábado"
+  },
+  "routine_sunday": {
+    "message": "Domingo"
+  },
+  "routine_month": {
+    "message": "Mês"
+  },
+  "routine_day": {
+    "message": "Dia"
+  },
+  "routine_time": {
+    "message": "Horário"
+  },
+  "routine_save": {
+    "message": "Salvar rotina"
+  },
+  "routine_cancel": {
+    "message": "Cancelar"
+  },
+  "routine_run": {
+    "message": "Executar rotina"
+  },
+  "routine_simulate": {
+    "message": "Simular"
+  },
+  "routine_pause": {
+    "message": "Pausar"
+  },
+  "routine_resume": {
+    "message": "Continuar"
+  },
+  "routine_cancel_run": {
+    "message": "Cancelar execução"
+  },
+  "routine_target_tab": {
+    "message": "Aba alvo"
+  },
+  "routine_timeline": {
+    "message": "Linha do tempo"
+  },
+  "routine_compare": {
+    "message": "Comparar com a execução anterior"
+  },
+  "routine_simulation_label": {
+    "message": "Simulação"
+  },
+  "routine_no_previous_run": {
+    "message": "Não há execução anterior para comparar."
+  },
+  "routine_event_created": {
+    "message": "Execução criada"
+  },
+  "routine_event_started": {
+    "message": "Execução iniciada"
+  },
+  "routine_event_tool": {
+    "message": "Etapa de ferramenta"
+  },
+  "routine_event_simulation": {
+    "message": "Plano de simulação gerado"
+  },
+  "routine_event_conditional": {
+    "message": "Condição avaliada"
+  },
+  "routine_event_subroutine": {
+    "message": "Sub-rotina reutilizável"
+  },
+  "routine_event_completed": {
+    "message": "Execução concluída"
+  },
+  "routine_event_failed": {
+    "message": "Execução falhou"
+  },
+  "routine_event_paused": {
+    "message": "Execução pausada"
+  },
+  "routine_event_cancelled": {
+    "message": "Execução cancelada"
+  },
+  "routine_duplicate": {
+    "message": "Duplicar"
+  },
+  "routine_delete": {
+    "message": "Excluir"
+  },
+  "routine_delete_confirm": {
+    "message": "Excluir esta rotina? Essa ação não pode ser desfeita."
+  },
+  "routine_last_run": {
+    "message": "Última execução"
+  },
+  "routine_update_saved_step": {
+    "message": "Atualizar passo salvo"
+  },
+  "routine_recovery_apply_failed": {
+    "message": "Não foi possível atualizar o passo salvo."
+  },
+  "routine_status_draft": {
+    "message": "Rascunho"
+  },
+  "routine_status_ready": {
+    "message": "Pronta"
+  },
+  "routine_status_queued": {
+    "message": "Na fila"
+  },
+  "routine_status_paused": {
+    "message": "Pausada"
+  },
+  "routine_status_running": {
+    "message": "Executando"
+  },
+  "routine_status_waiting_approval": {
+    "message": "Aguardando aprovação"
+  },
+  "routine_status_completed": {
+    "message": "Concluída"
+  },
+  "routine_status_failed": {
+    "message": "Falhou"
+  },
+  "routine_status_cancelled": {
+    "message": "Cancelada"
+  },
+  "routine_manage": {
+    "message": "Gerenciar rotinas"
+  },
+  "routine_record": {
+    "message": "Gravar fluxo"
+  },
+  "routine_variables_title": {
+    "message": "Complete os dados da rotina"
+  },
+  "routine_variables_required": {
+    "message": "Preencha todos os campos obrigatórios."
+  },
+  "routine_auth_required": {
+    "message": "Entre para gerenciar rotinas."
+  },
+  "routine_load_failed": {
+    "message": "Não foi possível carregar as rotinas."
+  },
+  "routine_save_failed": {
+    "message": "Não foi possível salvar a rotina."
+  },
+  "routine_duplicate_failed": {
+    "message": "Não foi possível duplicar a rotina."
+  },
+  "routine_delete_failed": {
+    "message": "Não foi possível excluir a rotina."
+  },
+  "routine_run_failed": {
+    "message": "Não foi possível iniciar a rotina."
+  },
+  "routine_variables_open_panel": {
+    "message": "Abra o painel do Verboo e execute esta rotina para preencher as variáveis."
+  },
+  "routine_save_message": {
+    "message": "Salvar como rotina"
+  },
+  "routine_convert_conversation": {
+    "message": "Converter conversa em rotina"
+  },
+  "routine_draft_failed": {
+    "message": "Não foi possível criar o rascunho da rotina."
+  },
+  "routine_file_remove": {
+    "message": "Remover arquivo de referência"
+  },
+  "routine_file_remove_failed": {
+    "message": "Não foi possível remover o arquivo de referência."
+  },
+  "routine_recording": {
+    "message": "Gravando fluxo"
+  },
+  "routine_record_stop": {
+    "message": "Parar e revisar gravação"
+  },
+  "routine_record_failed": {
+    "message": "Não foi possível alterar a gravação do fluxo."
+  },
+  "routine_recording_page_unavailable": {
+    "message": "Abra um site antes de gravar um fluxo."
   }
 }

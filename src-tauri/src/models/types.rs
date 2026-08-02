@@ -1,6 +1,53 @@
 use serde::{Deserialize, Serialize};
 
 // ════════════════════════════════════════════════════════════════════
+// Serde helpers — diagnostic overflow rejection
+// ════════════════════════════════════════════════════════════════════
+
+/// Diagnostic deserializer for `u32` fields that may receive values from
+/// JavaScript's `Number.MAX_SAFE_INTEGER` (9_007_199_254_740_991).
+///
+/// When the renderer sends a value exceeding `u32::MAX`, the error message
+/// names the overflow and suggests the correct sentinel — so the user sees
+/// *what* went wrong and *how* to fix it, instead of a generic serde error.
+///
+/// Usage: `#[serde(deserialize_with = "u32_bounds::deserialize")]`
+pub(crate) mod u32_bounds {
+    use serde::{Deserialize, Deserializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        match &raw {
+            serde_json::Value::Number(n) => {
+                if let Some(v) = n.as_u64() {
+                    u32::try_from(v).map_err(|_| {
+                        serde::de::Error::custom(format!(
+                            "value {v} overflows u32 (max 4294967295). \
+                             For unlimited, send 4294967295 (u32::MAX)"
+                        ))
+                    })
+                } else if let Some(f) = n.as_f64() {
+                    Err(serde::de::Error::custom(format!(
+                        "value {f} is not a valid u32 (max 4294967295). \
+                         For unlimited, send 4294967295 (u32::MAX)"
+                    )))
+                } else {
+                    Err(serde::de::Error::custom(
+                        "invalid numeric value in JSON",
+                    ))
+                }
+            }
+            other => Err(serde::de::Error::custom(format!(
+                "expected a number for u32 field, got {other}"
+            ))),
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
 // Enums
 // ════════════════════════════════════════════════════════════════════
 
@@ -381,6 +428,20 @@ pub enum GoalReasonId {
     Unsafe,
     /// Agent needs user input (credentials, architectural decision).
     NeedsUser,
+    /// Objective is structurally impossible given the constraints
+    /// (e.g. fetching from a reserved `.invalid` TLD, reading a
+    /// path that the user controls and has confirmed does not
+    /// exist). Agent honest-reported impossibility but produced a
+    /// symbolic artifact (empty file, placeholder, stub) that
+    /// previously satisfied the observability whitelist. The goal
+    /// is PAUSED so the user can read the human-legible reason
+    /// and respond — paused is resumable, failed is not.
+    ///
+    /// D-D (2026-07-31): the symbolic-artifact defect let four
+    /// honest-but-impossible tasks be marked complete by the
+    /// observability guard. Adding this variant closes that gap
+    /// without breaking the existing pause→user→resume flow.
+    TaskImpossible,
     /// Objective met.
     Done,
     /// Goal hit safety limits (max turns, max elapsed, etc.).
@@ -522,6 +583,50 @@ pub struct LoginResult {
     pub status: Option<CliAuthStatus>,
 }
 
+/// A1: event emitted during non-blocking CLI login. The renderer listens
+/// on the `login:event` Tauri channel and dispatches by `kind`:
+///   - `url`      → open the browser / show a "click to open" link. `url`
+///                  is the login URL extracted from CLI stdout.
+///   - `complete` → login finished (success or failure). `ok` indicates
+///                  success; `message` carries CLI stdout/stderr or a
+///                  status summary; `status` is the post-login auth
+///                  snapshot when available.
+///   - `error`    → infra failure (spawn failed, etc.). `message` is the
+///                  error string. The renderer MUST treat this as
+///                  terminal — no further events will arrive for this
+///                  login attempt.
+///
+/// Why a single channel + discriminated `kind` (vs three separate
+/// channels): the renderer only needs one subscription, and ordering
+/// is preserved (url before complete). Three channels would race.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginEvent {
+    pub kind: LoginEventKind,
+    /// Login URL extracted from CLI stdout. Present only when
+    /// `kind == Url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Human-readable message (CLI stdout/stderr or error). Present
+    /// for `Complete` and `Error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Success flag for `Complete`. Absent for other kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ok: Option<bool>,
+    /// Post-login auth snapshot for `Complete` when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<CliAuthStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LoginEventKind {
+    Url,
+    Complete,
+    Error,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerbooModel {
@@ -644,10 +749,12 @@ pub struct GoalModeSettings {
     /// DEPRECATED — safety guard only. Verboo has unlimited tokens.
     /// Kept for FE backward compat. Max turns before auto-pause.
     /// Default: 3. Clamped [1, 20].
+    #[serde(deserialize_with = "u32_bounds::deserialize")]
     pub max_turns: u32,
     /// DEPRECATED — safety guard only. Verboo has unlimited tokens.
     /// Kept for FE backward compat. Max elapsed minutes before auto-pause.
     /// Default: 30. Clamped [1, 240].
+    #[serde(deserialize_with = "u32_bounds::deserialize")]
     pub max_elapsed_minutes: u32,
     pub allow_auto_access: bool,
 }
@@ -821,6 +928,40 @@ pub struct VideoProgress {
     pub total_units: Option<u32>,
 }
 
+/// F0-Annotate (2026-07-31) — the user-selected passage of the prior
+/// model response that the user wants to attach to the next turn, with
+/// optional commentary. Field shapes are fixed by the project's
+/// F0-Annotate contract (TORNO fence + MOSAICO fence) — neither side
+/// invents or renames. The wire shape is camelCase via serde.
+///
+/// SAFETY NOTE (load-bearing): the `quote` field is **safe — it is a
+/// slice of the assistant's prior response, returning to the prompt.**
+/// The `comment` field is **unsafe — it is user-authored.** In the
+/// prompt, the two must be ROUTED WITH DISTINCT LABELS so the model
+/// can never confuse them. The labels live in `turn_service.rs`:
+/// "Trecho citado da resposta anterior DO ASSISTENTE" / "USER comment".
+/// If the labels ever collapse into a single bucket, we create an
+/// injection surface — model text returning as if it were user
+/// instruction. The contract is enforced at the prompt-building site,
+/// not here. The struct shape is the contract; the labels are the
+/// fence.
+///
+/// `segment_id` is `"turnId:text:N"` where N is `occurrence_index`
+/// (base zero). Stack-ordering is preserved by the renderer; the Rust
+/// side does not re-sort.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Annotation {
+    pub id: String,
+    pub segment_id: String,
+    pub quote: String,
+    pub prefix: String,
+    pub suffix: String,
+    pub occurrence_index: u32,
+    pub comment: Option<String>,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTurnRequest {
@@ -861,6 +1002,18 @@ pub struct AgentTurnRequest {
     pub personality: Option<PersonalityMode>,
     pub custom_instructions: Option<String>,
     pub memory_context: Option<String>,
+    /// F0-Annotate (2026-07-31) — user-selected passages from the prior
+    /// assistant response, attached to the next turn with optional
+    /// commentary. Optional; `#[serde(default)]` preserves backward
+    /// compatibility: a request serialized by an older build (no
+    /// `annotations` key) still deserializes with `None`. Truncation
+    /// of `quote` is the renderer's responsibility — if a quote ever
+    /// arrives here larger than 4 KiB, we still render the prompt
+    /// without further cuts (the renderer is the gate that sizes
+    /// selections). See `build_annotation_block` for the render side
+    /// of the truncation story.
+    #[serde(default)]
+    pub annotations: Option<Vec<Annotation>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -932,6 +1085,7 @@ pub struct GoalState {
     pub last_session_id: Option<String>,
     pub last_turn_id: Option<String>,
     pub turns_run: u32,
+    #[serde(deserialize_with = "u32_bounds::deserialize")]
     pub max_turns: u32,
     pub max_elapsed_ms: u64,
     pub max_input_tokens: Option<u64>,
@@ -951,8 +1105,18 @@ pub struct GoalState {
 pub struct GoalEvaluationInput {
     pub goal: GoalState,
     pub conversation_items: Vec<TranscriptItem>,
-    pub latest_result: Option<AgentResultSnapshot>,
     pub context_usage: Option<ContextUsageSnapshot>,
+    // G-C16-FIX2 (2026-07-29): `latest_result` was REMOVED deliberately.
+    // The field had zero populators in renderer or Rust and contributed
+    // nothing to the evaluator. Worse: it acted as a dead leg of the
+    // G-C16 completion guard, and any future populator WITHOUT goal-scoped
+    // uniqueness (e.g. via lastTurnId) would have reopened the F2 bypass
+    // in old conversations — an inherited latest_result from another turn
+    // would make the guard pass with no real action of the current goal.
+    // If reintroducing this field is ever desired to enrich the evaluator
+    // (e.g. last turn exit code, last turn errors), it MUST be goal-scoped
+    // via lastTurnId AND come with a regression test proving no cross-goal
+    // leak. See git history for the removed branch and field.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -971,6 +1135,12 @@ pub struct TranscriptItem {
     pub model_display_name: Option<String>,
     pub streaming: Option<bool>,
     pub skills: Option<Vec<SkillSummary>>,
+    /// G-C18: captured output of a tool call (e.g. the literal content the
+    /// agent read back via the Read tool). Optional because not every item
+    /// has a tool call, and even those that do may not carry captured
+    /// output. Renamed to `toolOutput` on the wire by `rename_all =
+    /// "camelCase"` so the renderer can send it as-is.
+    pub tool_output: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1106,6 +1276,24 @@ pub struct RuntimeStatus {
     pub label: String,
 }
 
+/// One entry of a TodoWrite tool call. Mirrors the CLI's TodoItemSchema
+/// (cli.mjs: `content` + `status` + `activeForm`, status ∈
+/// {"pending","in_progress","completed"}). Serialized camelCase on the
+/// wire so the renderer reads `activeForm` directly.
+///
+/// T1-TodoWrite (2026-07-31): previously the Rust side mapped todowrite
+/// to a label string ("Atualizou tarefas") and DISCARDED `input.todos`,
+/// so the renderer never saw the items or their status. This struct is
+/// the structured propagation — the items and statuses now cross the
+/// bridge as a typed list, not a label.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoItem {
+    pub content: String,
+    pub status: String,
+    pub active_form: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeActivity {
@@ -1120,6 +1308,15 @@ pub struct RuntimeActivity {
     pub deletions: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff_preview: Option<String>,
+    /// T1-TodoWrite (2026-07-31): structured todo list from the
+    /// todowrite tool. Populated ONLY for todowrite events from the
+    /// MAIN turn (parent_tool_use_id absent or empty). Subagent
+    /// TodoWrites are filtered out here so the renderer never sees a
+    /// subagent's internal list overwrite the user-facing one. None
+    /// for every other tool — `skip_serializing_if` keeps the payload
+    /// small for non-todowrite activities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todos: Option<Vec<TodoItem>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1289,6 +1486,22 @@ pub struct UpdateSnapshot {
     pub last_checked_at: Option<i64>,
     pub downloaded_at: Option<i64>,
     pub error: Option<String>,
+    /// `true` when the Stable channel endpoint responded with a valid
+    /// manifest (so a stable build exists). `false` when the channel is
+    /// missing (404), network error, or manifest was malformed.
+    ///
+    /// Fail-closed: any doubt yields `false`. The renderer uses this to
+    /// enable the "Stable" channel button in Settings; while the stable
+    /// release channel does not exist, the button must stay disabled so
+    /// users cannot accidentally select a channel with no manifest.
+    ///
+    /// Populated by `UpdateService::run_stable_probe` (see
+    /// `src-tauri/src/services/update_service.rs`), which is called from
+    /// `check_for_updates` in `src-tauri/src/lib.rs` after the active
+    /// channel probe completes. No extra timer is needed — the probe
+    /// rides along the existing periodic check.
+    #[serde(default)]
+    pub stable_channel_available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1737,6 +1950,129 @@ mod tests {
             back_avatar.upload_version,
             Some(99),
             "uploadVersion must survive round-trip"
+        );
+    }
+
+    // ── u32_bounds diagnostic deserializer tests ────────────────────
+
+    #[test]
+    fn goal_state_max_turns_rejects_overflow_with_diagnostic_message() {
+        // G-C7: the root cause — renderer sends Number.MAX_SAFE_INTEGER.
+        // The error must be DIAGNOSTIC, not generic serde noise.
+        let json = r#"{
+            "id": "g1", "objective": "test", "status": "active",
+            "createdAt": 0, "updatedAt": 0,
+            "turnsRun": 0, "maxTurns": 9007199254740991,
+            "maxElapsedMs": 0, "usedInputTokens": 0, "usedOutputTokens": 0,
+            "accessMode": "approval", "workingDirectory": "/tmp",
+            "skills": [], "recentFingerprints": []
+        }"#;
+        let err = serde_json::from_str::<GoalState>(json)
+            .expect_err("must reject Number.MAX_SAFE_INTEGER");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("9007199254740991"),
+            "error must name the offending value, got: {msg}"
+        );
+        assert!(
+            msg.contains("overflows u32"),
+            "error must say 'overflows u32', got: {msg}"
+        );
+        assert!(
+            msg.contains("4294967295"),
+            "error must suggest the u32::MAX sentinel, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn goal_state_max_turns_accepts_u32_max() {
+        // G-C7: 4294967295 (u32::MAX) is the "no limit" sentinel.
+        let json = r#"{
+            "id": "g1", "objective": "test", "status": "active",
+            "createdAt": 0, "updatedAt": 0,
+            "turnsRun": 0, "maxTurns": 4294967295,
+            "maxElapsedMs": 0, "usedInputTokens": 0, "usedOutputTokens": 0,
+            "accessMode": "approval", "workingDirectory": "/tmp",
+            "skills": [], "noProgressCount": 0, "recentFingerprints": []
+        }"#;
+        let goal: GoalState = serde_json::from_str(json).expect("u32::MAX must be accepted");
+        assert_eq!(goal.max_turns, u32::MAX);
+    }
+
+    #[test]
+    fn goal_state_max_turns_accepts_normal_values() {
+        let json = r#"{
+            "id": "g1", "objective": "test", "status": "active",
+            "createdAt": 0, "updatedAt": 0,
+            "turnsRun": 3, "maxTurns": 999,
+            "maxElapsedMs": 0, "usedInputTokens": 0, "usedOutputTokens": 0,
+            "accessMode": "approval", "workingDirectory": "/tmp",
+            "skills": [], "noProgressCount": 0, "recentFingerprints": []
+        }"#;
+        let goal: GoalState = serde_json::from_str(json).expect("normal u32 must be accepted");
+        assert_eq!(goal.max_turns, 999);
+    }
+
+    #[test]
+    fn goal_mode_settings_max_turns_rejects_overflow() {
+        let json = r#"{"enabled": true, "maxTurns": 9007199254740991, "maxElapsedMinutes": 99999, "allowAutoAccess": true}"#;
+        let err = serde_json::from_str::<GoalModeSettings>(json)
+            .expect_err("must reject overflow in GoalModeSettings.max_turns");
+        let msg = err.to_string();
+        assert!(msg.contains("overflows u32"), "got: {msg}");
+    }
+
+    #[test]
+    fn goal_mode_settings_max_elapsed_minutes_rejects_overflow() {
+        let json = r#"{"enabled": true, "maxTurns": 999, "maxElapsedMinutes": 9007199254740991, "allowAutoAccess": true}"#;
+        let err = serde_json::from_str::<GoalModeSettings>(json)
+            .expect_err("must reject overflow in GoalModeSettings.max_elapsed_minutes");
+        let msg = err.to_string();
+        assert!(msg.contains("overflows u32"), "got: {msg}");
+    }
+
+    #[test]
+    fn u32_bounds_rejects_negative_float() {
+        // Negative floats should not panic — they should produce a diagnostic error.
+        let json = r#"{"enabled": true, "maxTurns": -1.5, "maxElapsedMinutes": 30, "allowAutoAccess": true}"#;
+        let err = serde_json::from_str::<GoalModeSettings>(json)
+            .expect_err("must reject negative float");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not a valid u32") || msg.contains("overflows u32"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn u32_bounds_rejects_string_for_u32_field() {
+        let json = r#"{"enabled": true, "maxTurns": "unlimited", "maxElapsedMinutes": 30, "allowAutoAccess": true}"#;
+        let err = serde_json::from_str::<GoalModeSettings>(json)
+            .expect_err("must reject string for u32 field");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("expected a number"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn goal_state_max_turns_rejects_i64_min() {
+        // i64::MIN as JSON — negative, should not panic.
+        let json = r#"{
+            "id": "g1", "objective": "test", "status": "active",
+            "createdAt": 0, "updatedAt": 0,
+            "turnsRun": 0, "maxTurns": -9223372036854775808,
+            "maxElapsedMs": 0, "usedInputTokens": 0, "usedOutputTokens": 0,
+            "accessMode": "approval", "workingDirectory": "/tmp",
+            "skills": [], "recentFingerprints": []
+        }"#;
+        let err = serde_json::from_str::<GoalState>(json)
+            .expect_err("must reject i64::MIN");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not a valid u32") || msg.contains("overflows u32"),
+            "got: {msg}"
         );
     }
 }

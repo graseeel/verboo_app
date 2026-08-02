@@ -99,6 +99,30 @@ export function activeProjects(store: ChatStore): ChatStore['projects'] {
   return store.projects.filter(project => !project.archivedAt)
 }
 
+/**
+ * Apply an updater to a single conversation in the store. Preserves the
+ * store's object identity when no conversation matches the id — this is
+ * load-bearing (G-C5): the goal-persistence effect fires on every
+ * scheduler tick, and a stale-id call must NOT churn the store reference
+ * or the hydration effect would re-fire and force the running goal back
+ * to paused.
+ *
+ * Also uses `slice() + index assignment` instead of `.map()` so non-target
+ * conversations keep their array identity (matters for React keys /
+ * memoization downstream).
+ */
+export function updateConversation(
+  store: ChatStore,
+  conversationId: string,
+  updater: (conversation: StoredConversation) => StoredConversation,
+): ChatStore {
+  const index = store.conversations.findIndex(c => c.id === conversationId)
+  if (index === -1) return store
+  const nextConversations = store.conversations.slice()
+  nextConversations[index] = updater(nextConversations[index])
+  return { ...store, conversations: nextConversations }
+}
+
 function isPersistedChatStore(value: unknown): value is PersistedChatStore {
   if (!value || typeof value !== 'object') return false
   const candidate = value as Partial<PersistedChatStore>
