@@ -127,7 +127,9 @@ test("rejects mismatched tags and non-HTTPS URLs", async () => {
 });
 
 test("release workflow publishes native v2 artifacts for every installer", async () => {
-  const workflow = await readFile(".github/workflows/tauri-release.yml", "utf8");
+  const workflow = (
+    await readFile(".github/workflows/tauri-release.yml", "utf8")
+  ).replace(/\r\n/g, "\n"); // CRLF -> LF: Windows checkout (same as browser_panel.rs:3625)
 
   assert.doesNotMatch(workflow, /\*\.nsis\.zip/);
   assert.doesNotMatch(workflow, /\*\.AppImage\.tar\.gz/);

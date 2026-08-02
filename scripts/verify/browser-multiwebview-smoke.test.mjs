@@ -196,7 +196,9 @@ test('rust snapshot-skip error matches the gate predicate (/snapshot/i)', async 
   // platform smoke blocks with "smoke reported error" instead of the WARNING.
   // This test pins both sides so the mismatch surfaces locally.
   const rustPath = new URL('../../src-tauri/src/services/browser_panel.rs', import.meta.url)
-  const rust = await readFile(rustPath, 'utf8')
+  // CRLF -> LF: Windows checkout brings CRLF into the .rs; the regexes
+  // below compare source text (same pattern as browser_panel.rs:3625).
+  const rust = (await readFile(rustPath, 'utf8')).replace(/\r\n/g, '\n')
 
   // Find the snapshot-skip section — it is gated by VERBOO_SMOKE_SKIP_SNAPSHOT
   // and sets `report.error = Some("...")` right after the `skip_snapshot` line.

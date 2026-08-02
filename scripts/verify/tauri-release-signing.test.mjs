@@ -7,8 +7,16 @@ const workflowPath = new URL(
   import.meta.url,
 );
 
+// Normalize CRLF -> LF on read: git checkout on Windows brings CRLF into
+// the workflow files, and comparing/slicing workflow text with "\n" (or
+// /\n/ regexes) breaks when the file arrives with "\r\n". Same pattern
+// as browser_panel.rs:3625 (vendored-Wry read). macOS/Linux are no-ops.
+async function readWorkflowText(target) {
+  return (await readFile(target, "utf8")).replace(/\r\n/g, "\n");
+}
+
 test("macOS releases require Developer ID signing and API-key notarization", async () => {
-  const workflow = await readFile(workflowPath, "utf8");
+  const workflow = await readWorkflowText(workflowPath);
 
   assert.match(workflow, /secrets\.APPLE_CERTIFICATE\b/);
   assert.match(workflow, /secrets\.APPLE_CERTIFICATE_PASSWORD\b/);
@@ -19,7 +27,7 @@ test("macOS releases require Developer ID signing and API-key notarization", asy
 });
 
 test("macOS release build submits once without waiting and persists the exact artifacts", async () => {
-  const workflow = await readFile(workflowPath, "utf8");
+  const workflow = await readWorkflowText(workflowPath);
   const submitStart = workflow.indexOf(
     "- name: Verify and submit macOS artifacts for asynchronous notarization",
   );
@@ -41,7 +49,7 @@ test("macOS release build submits once without waiting and persists the exact ar
 });
 
 test("macOS build does not let Tauri synchronously notarize the app", async () => {
-  const workflow = await readFile(workflowPath, "utf8");
+  const workflow = await readWorkflowText(workflowPath);
   const buildStart = workflow.indexOf(
     "- name: Build Tauri bundle and signed updater artifacts",
   );
@@ -54,7 +62,7 @@ test("macOS build does not let Tauri synchronously notarize the app", async () =
 });
 
 test("macOS builds the app with Tauri and creates the signed DMG in a bounded retry step", async () => {
-  const workflow = await readFile(workflowPath, "utf8");
+  const workflow = await readWorkflowText(workflowPath);
   const buildStart = workflow.indexOf(
     "- name: Build Tauri bundle and signed updater artifacts",
   );
@@ -78,7 +86,7 @@ test("macOS builds the app with Tauri and creates the signed DMG in a bounded re
 });
 
 test("notarization key exists only for macOS build steps and is always removed", async () => {
-  const workflow = await readFile(workflowPath, "utf8");
+  const workflow = await readWorkflowText(workflowPath);
 
   assert.match(
     workflow,
@@ -92,7 +100,7 @@ test("notarization key exists only for macOS build steps and is always removed",
 });
 
 test("embedded CLI Mach-O binaries receive Developer ID hardened signatures", async () => {
-  const workflow = await readFile(workflowPath, "utf8");
+  const workflow = await readWorkflowText(workflowPath);
   const prepareStart = workflow.indexOf(
     "- name: Prepare Apple notarization credentials",
   );
@@ -144,7 +152,7 @@ test("embedded CLI Mach-O binaries receive Developer ID hardened signatures", as
 });
 
 test("macOS target architectures use matching native runners", async () => {
-  const workflow = await readFile(workflowPath, "utf8");
+  const workflow = await readWorkflowText(workflowPath);
 
   assert.match(
     workflow,
@@ -157,7 +165,7 @@ test("macOS target architectures use matching native runners", async () => {
 });
 
 test("prerelease builds do not block publishing on packaged runtime smoke", async () => {
-  const workflow = await readFile(workflowPath, "utf8");
+  const workflow = await readWorkflowText(workflowPath);
 
   for (const platform of ["macOS", "Windows", "Linux"]) {
     const stepStart = workflow.indexOf(
@@ -176,10 +184,9 @@ test("prerelease builds do not block publishing on packaged runtime smoke", asyn
 });
 
 test("notarization finalizer polls the saved IDs and republishes only after stapling", async () => {
-  const releaseWorkflow = await readFile(workflowPath, "utf8");
-  const workflow = await readFile(
+  const releaseWorkflow = await readWorkflowText(workflowPath);
+  const workflow = await readWorkflowText(
     new URL("../../.github/workflows/tauri-notarization.yml", import.meta.url),
-    "utf8",
   );
 
   assert.match(
