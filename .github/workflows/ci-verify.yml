@@ -152,6 +152,19 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Prepare bundled CLI resource (cli-package)
+        # tauri.conf.json declares resources/cli-package/ as the ONLY
+        # resource. src-tauri/resources/ is gitignored (.gitignore:33) —
+        # a fresh checkout has no such dir, and tauri_build's build.rs
+        # aborts on the FIRST missing resource ("resource path
+        # 'resources/cli-package' doesn't exist"). copy-cli-resource.mjs
+        # (the existing step from build:tauri-deps) creates it from the
+        # installed @verboo/code. fetch:tessdata is NOT included: it
+        # writes to src/renderer/public/tessdata/, a renderer public
+        # asset, not a tauri.conf.json resource — dragging it into CI
+        # would download ~30MB nobody needs.
+        run: node scripts/verify/copy-cli-resource.mjs
+
       - name: Build renderer (tsc + vite)
         # tsc --noEmit gates type errors; vite produces dist-renderer/.
         # Both run unfiltered — if either fails, that's a real signal.
@@ -233,7 +246,7 @@ jobs:
           $FFCACHE = ".cache\ffmpeg"
           New-Item -ItemType Directory -Force -Path $FFCACHE | Out-Null
           $ZIP = "$FFCACHE\ffmpeg-8.1.2-essentials_build.zip"
-          $EXPECTED_HASH = "db580001caa24ac104c8cb856cd113a87a0b443f7bdf47d8c12b1d740584a2ec"
+          $EXPECTED_HASH = "db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec"
           if (-not (Test-Path $ZIP)) {
             Write-Host "download: ffmpeg 8.1.2 Essential build de gyan.dev"
             Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.1.2-essentials_build.zip" -OutFile $ZIP
@@ -348,6 +361,11 @@ jobs:
       - name: Run .mjs verification scripts
         # Smoke for the scripts/verify/* test suites. These are pure
         # Node and run identically on all three OSes.
+        # shell: bash required — POSIX syntax (if [ ], for...do, done, fi)
+        # under the default pwsh on windows-latest raised ParserError
+        # ("Missing '(' after 'if'"). Same class as the CARGO_TARGET_DIR
+        # fix above: cross-OS steps must name their shell explicitly.
+        shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             for t in scripts/verify/*.test.mjs; do
