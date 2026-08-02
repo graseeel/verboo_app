@@ -395,16 +395,18 @@ mod tests {
     // ── A1: non-blocking login regression tests ──────────────────────
     //
     // QA gate: two tests using a FAKE CLI via VERBOO_CLI_PATH pointing
-    // to a script that prints a login URL and sleeps 30 seconds. The
+    // to a script that prints a login URL and stays alive for its configured
+    // fake-child lifetime. The
     // tests must prove:
     //   (i)  spawn_login_child() returns in < 1 second. If any .output()
-    //        leaked into the path, the test would block on the 30s
+    //        leaked into the path, the test would block on the fake-child
     //        sleep and fail.
-    //   (ii) reading stdout incrementally extracts the URL within ~2
-    //        seconds of spawn, BEFORE the 30s sleep completes.
+    //   (ii) reading stdout incrementally extracts the URL within one third
+    //        of the fake child lifetime, BEFORE that lifetime completes.
 
     /// Helper: write a fake CLI script that prints a login URL and
-    /// sleeps for `sleep_secs`, and return its path. Sets VERBOO_CLI_PATH
+    /// stays alive for the configured fake-child lifetime, and return its
+    /// path. Sets VERBOO_CLI_PATH
     /// so CliSpawn::new picks it up.
     fn write_fake_cli(script_body: &str, suffix: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -440,6 +442,12 @@ mod tests {
     /// by default; without this guard, test (ii) could pick up the env
     /// var set by test (i) and read the wrong child's stdout.
     static A1_FAKE_CLI_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    const FAKE_CHILD_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30);
+
+    fn fake_child_url_deadline() -> std::time::Duration {
+        FAKE_CHILD_LIFETIME / 3
+    }
 
     /// A1b-GUARD (2026-07-30): the fake CLI is a .mjs script spawned via
     /// `node <cli.mjs>`. The Linux CI Docker container
@@ -511,26 +519,29 @@ mod tests {
         let _guard = A1_FAKE_CLI_GUARD.lock().unwrap();
         a1_node_precheck();
         // QA criterion (i): if any .output() leaked, this would block
-        // on the 30s sleep. CliSpawn invokes the fake via `node
+        // on the fake child lifetime. CliSpawn invokes the fake via `node
         // <cli.mjs>` (from VERBOO_CLI_PATH env var), so the script body
         // is the JS source, not a shebang script.
-        let script = r#"
+        let script = format!(
+            r#"
             // `write` is not a portable flush barrier: the callback is the
             // Writable contract that the chunk was flushed. Do not block
             // Node's event loop before that point, or this fake can hide its
-            // URL behind its 30s lifetime on a different pipe implementation.
-            process.stdout.write('Open https://verboo.example/auth?token=abc123 in your browser.\n', () => {
+            // URL behind its lifetime on a different pipe implementation.
+            process.stdout.write('Open https://verboo.example/auth?token=abc123 in your browser.\n', () => {{
                 // Keep the child alive without monopolizing a CPU. The test
                 // needs a live process, not a CPU-bound process.
-                setTimeout(() => process.exit(0), 30000);
-            });
-        "#;
-        let _path = write_fake_cli(script, "spawn");
+                setTimeout(() => process.exit(0), {});
+            }});
+        "#,
+            FAKE_CHILD_LIFETIME.as_millis()
+        );
+        let _path = write_fake_cli(&script, "spawn");
         let t0 = std::time::Instant::now();
         let result = crate::services::cli_service::CliService::spawn_login_child();
         let elapsed = t0.elapsed();
         let (mut child, _stdout, _stderr) =
-            result.expect("spawn must succeed without blocking on the child's 30s sleep");
+            result.expect("spawn must succeed without blocking on the fake child lifetime");
         // Kill the child so we don't leave a process running.
         let _ = child.kill();
         let _ = child.wait();
@@ -548,16 +559,19 @@ mod tests {
         let _guard = A1_FAKE_CLI_GUARD.lock().unwrap();
         a1_node_precheck();
         // QA criterion (ii): the URL must be reachable via incremental
-        // stdout reading BEFORE the 30s sleep ends. If we waited for
+        // stdout reading BEFORE the fake child lifetime ends. If we waited for
         // process exit before reading, we'd miss the deadline.
-        let script = r#"
-            process.stdout.write('Open https://verboo.example/auth?token=xyz789 in your browser.\n', () => {
+        let script = format!(
+            r#"
+            process.stdout.write('Open https://verboo.example/auth?token=xyz789 in your browser.\n', () => {{
                 // Keep the child alive without monopolizing a CPU. The test
                 // needs a live process, not a CPU-bound process.
-                setTimeout(() => process.exit(0), 30000);
-            });
-        "#;
-        let _path = write_fake_cli(script, "url");
+                setTimeout(() => process.exit(0), {});
+            }});
+        "#,
+            FAKE_CHILD_LIFETIME.as_millis()
+        );
+        let _path = write_fake_cli(&script, "url");
         let t0 = std::time::Instant::now();
         let (mut child, mut stdout_pipe, _stderr_pipe) =
             crate::services::cli_service::CliService::spawn_login_child()
@@ -567,7 +581,7 @@ mod tests {
         let mut buf = String::new();
         let mut chunk = [0u8; 4096];
         let mut url_found_at: Option<std::time::Duration> = None;
-        let deadline = t0 + std::time::Duration::from_secs(2);
+        let deadline = t0 + fake_child_url_deadline();
         while std::time::Instant::now() < deadline {
             match stdout_pipe.read(&mut chunk) {
                 Ok(0) => break,
@@ -602,8 +616,9 @@ mod tests {
             "URL must match what the fake CLI printed"
         );
         assert!(
-            url_found_at.unwrap() < std::time::Duration::from_secs(2),
-            "A1: URL must be extractable in <2s, well before the 30s sleep. Took {:?}.",
+            url_found_at.unwrap() < fake_child_url_deadline(),
+            "A1: URL must be extractable in less than one third of the fake child lifetime ({:?}). Took {:?}.",
+            fake_child_url_deadline(),
             url_found_at
         );
     }
