@@ -86,10 +86,20 @@ jobs:
     timeout-minutes: 30
     env:
       CARGO_TERM_COLOR: always
-      CARGO_TARGET_DIR: ${{ runner.temp }}/verboo-ci-target
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Isolate cargo target dir
+        shell: bash
+        # ${{ runner.temp }} is NOT valid in job-level env — the runner
+        # context is unavailable there, so GitHub rejected this workflow
+        # at validation (0s, no job ran). $RUNNER_TEMP is the same path
+        # surfaced as an env var, present in bash on all three runners.
+        # Writing via GITHUB_ENV propagates to every subsequent step
+        # (including the pwsh steps on Windows), keeping the per-job
+        # isolation documented in the header comment.
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TEMP/verboo-ci-target" >> "$GITHUB_ENV"
 
       - name: Install Rust 1.89.0
         uses: dtolnay/rust-toolchain@master
