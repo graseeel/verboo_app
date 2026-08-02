@@ -268,6 +268,15 @@ jobs:
           Get-ChildItem $BINDIR
 
       - name: Prepare sidecars (Linux)
+        # Fonte: BtbN/FFmpeg-Builds, release IMUTAVEL autobuild-2026-08-02-13-17
+        # (nao usar a tag 'latest': ela e movel, o conteudo muda a cada
+        # autobuild). Build do branch n8.1.2 — mesma linha do produto que
+        # embute ffmpeg 8.1.2. apt do Ubuntu 22.04 entrega ffmpeg 4.4, que
+        # nao tem fps_mode (>= 5.1) e quebra os testes de video.
+        # SHA-256 verificado contra o checksums.sha256 PUBLICADO na mesma
+        # release (transcrito do arquivo publicado, nao de saida de execucao):
+        #   https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-02-13-17/checksums.sha256
+        #   f34f7ed9b02f54d96f5622393f3a36fc65b3c5b3bb503bb04a3225fde68d71e0  ffmpeg-n8.1.2-34-g9b6c8969e0-linux64-gpl-8.1.tar.xz
         if: runner.os == 'Linux'
         shell: bash
         run: |
@@ -275,10 +284,29 @@ jobs:
           TRIPLE="$(rustc -vV | grep '^host:' | sed 's/^host: //')"
           BINDIR="src-tauri/binaries"
           mkdir -p "$BINDIR"
-          cp -f /usr/bin/ffmpeg "$BINDIR/verboo-ffmpeg-${TRIPLE}"
+          FFCACHE=".cache/ffmpeg"
+          mkdir -p "$FFCACHE"
+          FFVER="ffmpeg-n8.1.2-34-g9b6c8969e0-linux64-gpl-8.1"
+          TARBALL="$FFCACHE/$FFVER.tar.xz"
+          if [ ! -f "$TARBALL" ]; then
+            echo "download: ffmpeg 8.1.2 (branch n8.1.2) de BtbN/FFmpeg-Builds"
+            curl -fsSL -o "$TARBALL" \
+              "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-02-13-17/$FFVER.tar.xz"
+            ACTUAL_HASH="$(sha256sum "$TARBALL" | awk '{print $1}')"
+            EXPECTED_HASH="f34f7ed9b02f54d96f5622393f3a36fc65b3c5b3bb503bb04a3225fde68d71e0"
+            if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+              echo "SHA-256 MISMATCH: esperado $EXPECTED_HASH, obtido $ACTUAL_HASH"
+              exit 1
+            fi
+            echo "SHA-256 OK: $ACTUAL_HASH"
+          fi
+          tar -xJf "$TARBALL" -C "$BINDIR"
+          mv -f "$BINDIR/$FFVER/bin/ffmpeg" "$BINDIR/verboo-ffmpeg-${TRIPLE}"
+          mv -f "$BINDIR/$FFVER/bin/ffprobe" "$BINDIR/verboo-ffprobe-${TRIPLE}"
           chmod +x "$BINDIR/verboo-ffmpeg-${TRIPLE}"
-          cp -f /usr/bin/ffprobe "$BINDIR/verboo-ffprobe-${TRIPLE}"
           chmod +x "$BINDIR/verboo-ffprobe-${TRIPLE}"
+          # :? guard — if either var were empty this would expand to / (SC2115)
+          rm -rf "${BINDIR:?}/${FFVER:?}"
           for s in verboo-in-chrome verboo-whisper computer-use-helper; do
             touch "$BINDIR/${s}-${TRIPLE}"
           done
