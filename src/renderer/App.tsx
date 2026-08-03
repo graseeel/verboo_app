@@ -6052,6 +6052,10 @@ function activityDisplayLabel(activity: TurnActivity, t: Translator): string {
   if (activity.kind === 'image') return t('transcript.imageOne')
   if (activity.kind === 'permission') return t('transcript.permissionOne')
   if (activity.kind === 'subagent') return t('transcript.subagentOne')
+  // FRENTE-A (2026-08-02): without this branch, a browser activity would fall
+  // through to toolOne ("Usou ferramenta") — the Chrome step silently loses
+  // its presentation. Same kind-level flattening as read/edit/command.
+  if (activity.kind === 'browser') return t('transcript.browserOne')
   if (activity.kind === 'context') return activity.label
   if (activity.kind === 'thinking') return t('transcript.thinking')
   return t('transcript.toolOne')

@@ -414,7 +414,7 @@ export type TranscriptItem = {
   // (goalState.ts ACTION_ACTIVITY_KINDS). The transcript still renders
   // the row (label "Atualizou tarefas"); the evaluator just never
   // counts it as action.
-  activityKind?: 'thinking' | 'image' | 'video' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool' | 'compacting' | 'planning'
+  activityKind?: 'thinking' | 'image' | 'video' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool' | 'compacting' | 'planning' | 'browser'
   activityDetail?: string
   activityAdditions?: number
   activityDeletions?: number
@@ -477,6 +477,10 @@ export type WorkspaceChangeEntry = {
 export type TurnActionKind =
   | 'read' | 'search' | 'edit' | 'create' | 'delete' | 'command'
   | 'image' | 'video' | 'terminal' | 'permission' | 'agent-open' | 'agent-close' | 'tool'
+  // FRENTE-A (2026-08-02): the bundled Verboo-in-Chrome extension's tools
+  // (mcp__verboo-in-chrome__* → activity_for_tool kind "browser"). One kind
+  // shared by all 8 tools; the specific action lives in the label.
+  | 'browser'
 
 export type CommandRun = { input: string; output: string; status: 'success' | 'failure' | 'running' }
 
@@ -1202,12 +1206,14 @@ export type ChromeComponentState = 'missing' | 'managed' | 'outdated' | 'invalid
 export type ChromeConnectionState = 'connected' | 'waitingForChrome' | 'ambiguous' | 'incompatible'
 export type ChromeIntegrationAggregate = 'notConfigured' | 'incomplete' | 'ready' | 'connected'
 export type ChromeExtensionIdSource = 'none' | 'release' | 'development'
+export type ChromePanelState = 'notApplicable' | 'unknown'
 
 export type ChromeIntegrationStatus = {
   extension: ChromeComponentState
   bridge: ChromeComponentState
   mcp: ChromeComponentState
   connection: ChromeConnectionState
+  panelState: ChromePanelState
   aggregate: ChromeIntegrationAggregate
   installedVersion?: string
   availableVersion: string

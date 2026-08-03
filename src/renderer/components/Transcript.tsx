@@ -741,6 +741,7 @@ function activityPanelTitle(activities: TranscriptItem[], summary: TranscriptIte
     formatCount(counts.subagent, t('transcript.subagentOne'), t('transcript.subagentMany')),
     formatCount(counts.permission, t('transcript.permissionOne'), t('transcript.permissionMany')),
     formatCount(counts.tool, t('transcript.toolOne'), t('transcript.toolMany')),
+    formatCount(counts.browser, t('transcript.browserOne'), t('transcript.browserMany')),
   ].filter((part): part is string => Boolean(part))
 
   if (parts.length > 0) return joinParts(parts, t)
@@ -784,7 +785,7 @@ function activityDetailLines(activities: TranscriptItem[], summary: TranscriptIt
 function countActivities(activities: TranscriptItem[]): Partial<Record<NonNullable<TranscriptItem['activityKind']>, number>> {
   return activities.reduce<Partial<Record<NonNullable<TranscriptItem['activityKind']>, number>>>((counts, item) => {
     if (!item.activityKind || item.activityKind === 'thinking') return counts
-    if (!item.activityDetail && item.activityKind !== 'permission' && item.activityKind !== 'subagent' && item.activityKind !== 'image') return counts
+    if (!item.activityDetail && item.activityKind !== 'permission' && item.activityKind !== 'subagent' && item.activityKind !== 'image' && item.activityKind !== 'browser') return counts
     counts[item.activityKind] = (counts[item.activityKind] ?? 0) + 1
     return counts
   }, {})

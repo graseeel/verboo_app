@@ -4,6 +4,8 @@ import type { Translator } from '../../i18n'
 const KIND_MAP: Record<string, TurnActionKind> = {
   read: 'read', search: 'search', edit: 'edit', command: 'command',
   image: 'image', terminal: 'terminal', permission: 'permission', subagent: 'agent-open', tool: 'tool',
+  // FRENTE-A (2026-08-02): all Verboo-in-Chrome tools share the browser kind.
+  browser: 'browser',
 }
 
 // Walks a turn's already-ordered items (text segments + activity items) into an
@@ -75,6 +77,7 @@ const PLURAL_KEYS: Partial<Record<TurnActionKind, [string, string]>> = {
   'agent-open': ['transcript.agentOpenOne', 'transcript.agentOpenMany'],
   'agent-close': ['transcript.agentCloseOne', 'transcript.agentCloseMany'],
   tool: ['transcript.toolOne', 'transcript.toolMany'],
+  browser: ['transcript.browserOne', 'transcript.browserMany'],
 }
 
 /**
