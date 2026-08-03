@@ -48,6 +48,7 @@ function fixture(overrides = {}) {
     },
   }
   const calls = []
+  const presenceClears = []
   const executeWithApproval = async (toolCall, _contextFactory, approvalUi) => {
     calls.push(toolCall)
     if (overrides.requireApproval) {
@@ -61,9 +62,12 @@ function fixture(overrides = {}) {
     contextFactory: async () => ({ mode: 'manual' }),
     approvalUiFactory: () => ({ request: async () => 'once' }),
     isApprovalUiAvailable: () => overrides.approvalUiAvailable ?? true,
+    clearPresenceOnAllTabs: overrides.clearPresenceOnAllTabs ?? (async () => {
+      presenceClears.push(true)
+    }),
     reconnectDelayMs: 0,
   })
-  return { bridge, calls, chromeApi, ports }
+  return { bridge, calls, chromeApi, ports, presenceClears }
 }
 
 function validRequest(id = 'request-1') {
@@ -97,12 +101,34 @@ test('native tool requests use the shared approval executor', async () => {
   assert.equal(ports[0].posted[0].id, 'request-1')
 })
 
+test('turn completion clears presence without executing a browser tool', async () => {
+  const { bridge, calls, ports, presenceClears } = fixture()
+  bridge.connect()
+
+  ports[0].onMessage.emit({
+    version: BROWSER_BRIDGE_PROTOCOL_VERSION,
+    id: 'turn-complete-1',
+    kind: 'turnComplete',
+    payload: {},
+  })
+  await tick()
+
+  assert.equal(calls.length, 0)
+  assert.equal(presenceClears.length, 1)
+  assert.equal(ports[0].posted[0].kind, 'turnCompleteAck')
+  assert.equal(ports[0].posted[0].id, 'turn-complete-1')
+})
+
 test('protocol mismatches and malformed envelopes execute nothing', async () => {
   const { bridge, calls, ports } = fixture()
   bridge.connect()
 
   ports[0].onMessage.emit({ ...validRequest('version'), version: 99 })
-  ports[0].onMessage.emit({ version: 1, kind: 'toolRequest', payload: null })
+  ports[0].onMessage.emit({
+    version: BROWSER_BRIDGE_PROTOCOL_VERSION,
+    kind: 'toolRequest',
+    payload: null,
+  })
   await tick()
 
   assert.equal(calls.length, 0)

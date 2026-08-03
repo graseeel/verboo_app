@@ -45,6 +45,43 @@ mod unix_tests {
         (BrowserMcpServer::new(Arc::new(client)).unwrap(), task, temp)
     }
 
+    async fn connected_client_for_completion() -> (
+        BrowserSessionClient,
+        tokio::task::JoinHandle<Envelope>,
+        TempDir,
+    ) {
+        let temp = TempDir::new().unwrap();
+        let store = DiscoveryStore::at(temp.path().join("runtime"));
+        let record = store
+            .register(std::process::id(), "chrome-extension://test".into())
+            .unwrap();
+        let listener = verboo_in_chrome::local_transport::bind(&record).unwrap();
+        let expected_secret = record.secret.clone();
+
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (reader, mut writer) = stream.into_split();
+            let mut lines = BufReader::new(reader).lines();
+            let request: Envelope =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(request.secret.as_deref(), Some(expected_secret.as_str()));
+            let response = Envelope {
+                version: PROTOCOL_VERSION,
+                id: request.id.clone(),
+                kind: MessageKind::TurnCompleteAck,
+                secret: None,
+                payload: json!({"ok": true}),
+            };
+            writer
+                .write_all(format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes())
+                .await
+                .unwrap();
+            request
+        });
+
+        (BrowserSessionClient::with_store(store), task, temp)
+    }
+
     #[tokio::test]
     async fn lists_tools_and_relays_a_read_only_call_exactly() {
         let (server, request_task, _temp) = connected_server().await;
@@ -69,6 +106,17 @@ mod unix_tests {
             request.payload,
             json!({"name": "read_page", "arguments": {"selector": "main"}})
         );
+    }
+
+    #[tokio::test]
+    async fn completion_signal_is_sent_only_as_a_separate_control_request() {
+        let (client, request_task, _temp) = connected_client_for_completion().await;
+
+        client.complete_turn().await.unwrap();
+
+        let request = request_task.await.unwrap();
+        assert_eq!(request.kind, MessageKind::TurnComplete);
+        assert_eq!(request.payload, json!({}));
     }
 
     #[tokio::test]

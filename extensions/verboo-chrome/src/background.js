@@ -170,6 +170,7 @@ const nativeBridge = createNativeBridge({
   contextFactory: () => makeExecutionContext(undefined, undefined),
   approvalUiFactory: () => makeApprovalUi(undefined, new AbortController().signal),
   isApprovalUiAvailable: () => approvalSurfaces.size > 0,
+  clearPresenceOnAllTabs,
 })
 nativeBridge.registerStartup()
 nativeBridge.connect()

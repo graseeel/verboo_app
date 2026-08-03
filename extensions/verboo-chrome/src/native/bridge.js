@@ -1,5 +1,5 @@
 export const NATIVE_MESSAGING_HOST_NAME = 'com.verboo.code.browser_extension'
-export const BROWSER_BRIDGE_PROTOCOL_VERSION = 1
+export const BROWSER_BRIDGE_PROTOCOL_VERSION = 2
 
 const DEFAULT_RECONNECT_DELAY_MS = 750
 const MAX_RECONNECT_DELAY_MS = 30_000
@@ -11,6 +11,7 @@ const MAX_RECONNECT_DELAY_MS = 30_000
  *   contextFactory: Function;
  *   approvalUiFactory: Function;
  *   isApprovalUiAvailable: () => boolean;
+ *   clearPresenceOnAllTabs: () => Promise<void>;
  *   reconnectDelayMs?: number;
  * }} dependencies
  */
@@ -20,6 +21,7 @@ export function createNativeBridge({
   contextFactory,
   approvalUiFactory,
   isApprovalUiAvailable,
+  clearPresenceOnAllTabs,
   reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
 }) {
   let port = null
@@ -121,6 +123,21 @@ export function createNativeBridge({
     }
 
     const { id, payload } = envelope
+    if (envelope.kind === 'turnComplete') {
+      try {
+        await clearPresenceOnAllTabs()
+        postTo(sourcePort, {
+          version: BROWSER_BRIDGE_PROTOCOL_VERSION,
+          id,
+          kind: 'turnCompleteAck',
+          payload: { ok: true },
+        })
+      } catch (error) {
+        postTo(sourcePort, errorEnvelope(id, 'execution_failed', error?.message ?? String(error)))
+      }
+      return
+    }
+
     const rawToolCall = {
       id,
       name: payload.name,
@@ -183,8 +200,14 @@ function validateEnvelope(envelope) {
   }
   if (
     typeof envelope.id !== 'string' || !envelope.id ||
-    envelope.kind !== 'toolRequest' ||
     !envelope.payload || typeof envelope.payload !== 'object' ||
+    Array.isArray(envelope.payload)
+  ) {
+    return { ok: false, id, code: 'malformed_envelope', message: 'Invalid browser tool request.' }
+  }
+  if (envelope.kind === 'turnComplete') return { ok: true }
+  if (
+    envelope.kind !== 'toolRequest' ||
     typeof envelope.payload.name !== 'string' || !envelope.payload.name ||
     !envelope.payload.arguments ||
     typeof envelope.payload.arguments !== 'object' ||

@@ -94,7 +94,10 @@ pub fn prepare_browser_request(
     if request.version != PROTOCOL_VERSION {
         return Err(NativeHostError::ProtocolVersionMismatch);
     }
-    if request.kind != MessageKind::ToolRequest {
+    if !matches!(
+        request.kind,
+        MessageKind::ToolRequest | MessageKind::TurnComplete
+    ) {
         return Err(NativeHostError::UnexpectedMessageKind);
     }
     if request.secret.as_deref() != Some(record.secret.as_str()) {
@@ -114,10 +117,22 @@ pub fn validate_browser_response(
     if response.id != request.id {
         return Err(NativeHostError::ResponseIdMismatch);
     }
-    if !matches!(
-        response.kind,
-        MessageKind::ToolResponse | MessageKind::Error
-    ) {
+    let valid_response = match request.kind {
+        MessageKind::ToolRequest => {
+            matches!(
+                response.kind,
+                MessageKind::ToolResponse | MessageKind::Error
+            )
+        }
+        MessageKind::TurnComplete => {
+            matches!(
+                response.kind,
+                MessageKind::TurnCompleteAck | MessageKind::Error
+            )
+        }
+        _ => false,
+    };
+    if !valid_response {
         return Err(NativeHostError::UnexpectedMessageKind);
     }
     Ok(())

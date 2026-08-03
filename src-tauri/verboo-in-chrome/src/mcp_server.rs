@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use uuid::Uuid;
 
 use crate::catalog::{browser_catalog, BrowserCatalog, BrowserTool};
 use crate::discovery::{DiscoveryError, DiscoveryStore};
@@ -120,6 +121,49 @@ impl BrowserSessionClient {
         name: &str,
         arguments: Value,
     ) -> Result<ToolRelayResult, RelayError> {
+        let response = self
+            .send_request(
+                id,
+                MessageKind::ToolRequest,
+                json!({ "name": name, "arguments": arguments }),
+            )
+            .await?;
+
+        match response.kind {
+            MessageKind::ToolResponse => Ok(ToolRelayResult::Success(response.payload)),
+            MessageKind::Error => Err(relay_error_from_response(&response)),
+            _ => Err(RelayError::new(
+                RelayErrorCode::InvalidResponse,
+                "Chrome returned an unexpected bridge message.",
+            )),
+        }
+    }
+
+    pub async fn complete_turn(&self) -> Result<(), RelayError> {
+        let response = self
+            .send_request(
+                &Uuid::new_v4().to_string(),
+                MessageKind::TurnComplete,
+                json!({}),
+            )
+            .await?;
+
+        match response.kind {
+            MessageKind::TurnCompleteAck => Ok(()),
+            MessageKind::Error => Err(relay_error_from_response(&response)),
+            _ => Err(RelayError::new(
+                RelayErrorCode::InvalidResponse,
+                "Chrome returned an unexpected bridge message.",
+            )),
+        }
+    }
+
+    async fn send_request(
+        &self,
+        id: &str,
+        kind: MessageKind,
+        payload: Value,
+    ) -> Result<Envelope, RelayError> {
         let record = self
             .store
             .discover_session()
@@ -137,9 +181,9 @@ impl BrowserSessionClient {
         let request = Envelope {
             version: PROTOCOL_VERSION,
             id: id.to_string(),
-            kind: MessageKind::ToolRequest,
+            kind,
             secret: Some(record.secret),
-            payload: json!({ "name": name, "arguments": arguments }),
+            payload,
         };
         let encoded = serde_json::to_vec(&request).map_err(invalid_response)?;
         writer.write_all(&encoded).await.map_err(connection_lost)?;
@@ -154,7 +198,7 @@ impl BrowserSessionClient {
             .ok_or_else(|| {
                 RelayError::new(
                     RelayErrorCode::ConnectionLost,
-                    "Chrome disconnected before returning a tool result.",
+                    "Chrome disconnected before returning a bridge result.",
                 )
             })?;
         let response: Envelope = serde_json::from_str(&line).map_err(invalid_response)?;
@@ -170,29 +214,23 @@ impl BrowserSessionClient {
                 "Chrome returned a response for a different request.",
             ));
         }
-
-        match response.kind {
-            MessageKind::ToolResponse => Ok(ToolRelayResult::Success(response.payload)),
-            MessageKind::Error => {
-                let code = response
-                    .payload
-                    .get("code")
-                    .and_then(Value::as_str)
-                    .map(RelayErrorCode::from_wire)
-                    .unwrap_or(RelayErrorCode::InvalidResponse);
-                let message = response
-                    .payload
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Chrome rejected the browser tool request.");
-                Err(RelayError::new(code, message))
-            }
-            _ => Err(RelayError::new(
-                RelayErrorCode::InvalidResponse,
-                "Chrome returned an unexpected bridge message.",
-            )),
-        }
+        Ok(response)
     }
+}
+
+fn relay_error_from_response(response: &Envelope) -> RelayError {
+    let code = response
+        .payload
+        .get("code")
+        .and_then(Value::as_str)
+        .map(RelayErrorCode::from_wire)
+        .unwrap_or(RelayErrorCode::InvalidResponse);
+    let message = response
+        .payload
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("Chrome rejected the browser bridge request.");
+    RelayError::new(code, message)
 }
 
 fn map_discovery_error(error: DiscoveryError) -> RelayError {

@@ -19,6 +19,16 @@ fn request(secret: Option<&str>) -> Envelope {
     }
 }
 
+fn turn_complete(secret: Option<&str>) -> Envelope {
+    Envelope {
+        version: PROTOCOL_VERSION,
+        id: "turn-complete-1".into(),
+        kind: MessageKind::TurnComplete,
+        secret: secret.map(str::to_string),
+        payload: json!({}),
+    }
+}
+
 #[test]
 fn loads_and_validates_only_origins_from_the_installed_manifest() {
     let temp = TempDir::new().unwrap();
@@ -64,6 +74,20 @@ fn authenticated_local_requests_are_forwarded_without_the_secret() {
 }
 
 #[test]
+fn authenticated_turn_completion_is_forwarded_without_the_secret() {
+    let temp = TempDir::new().unwrap();
+    let store = DiscoveryStore::at(temp.path().join("runtime"));
+    let record = store
+        .register(std::process::id(), "chrome-extension://test/".into())
+        .unwrap();
+
+    let forwarded = prepare_browser_request(&record, turn_complete(Some(&record.secret))).unwrap();
+    assert_eq!(forwarded.id, "turn-complete-1");
+    assert_eq!(forwarded.kind, MessageKind::TurnComplete);
+    assert_eq!(forwarded.secret, None);
+}
+
+#[test]
 fn unauthenticated_local_requests_are_rejected() {
     let temp = TempDir::new().unwrap();
     let store = DiscoveryStore::at(temp.path().join("runtime"));
@@ -88,6 +112,16 @@ fn chrome_responses_must_match_the_request_id_and_protocol() {
         payload: json!({"ok": true}),
     };
     validate_browser_response(&sent, &valid).unwrap();
+
+    let completion = turn_complete(None);
+    let completion_ack = Envelope {
+        version: PROTOCOL_VERSION,
+        id: completion.id.clone(),
+        kind: MessageKind::TurnCompleteAck,
+        secret: None,
+        payload: json!({"ok": true}),
+    };
+    validate_browser_response(&completion, &completion_ack).unwrap();
 
     let wrong_id = Envelope {
         id: "different".into(),
