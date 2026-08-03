@@ -46,3 +46,23 @@ describe('StepFlow hideFinalTextId', () => {
     expect(container.querySelectorAll('.step-actions').length).toBe(1)
   })
 })
+
+describe('StepFlow browser action rows', () => {
+  it('renders three consecutive browser actions as three labeled rows', () => {
+    const items: TranscriptItem[] = [
+      { id: 't1:activity:0', role: 'assistant', kind: 'activity', activityKind: 'browser', text: 'Navegou no Chrome', timestamp: 0 },
+      { id: 't1:activity:1', role: 'assistant', kind: 'activity', activityKind: 'browser', text: 'Leu página no Chrome', timestamp: 0 },
+      { id: 't1:activity:2', role: 'assistant', kind: 'activity', activityKind: 'browser', text: 'Capturou tela no Chrome', timestamp: 0 },
+    ]
+
+    const { container } = render(<StepFlow items={items} />)
+    const labels = Array.from(container.querySelectorAll('.step-actions-label')).map(node => node.textContent)
+
+    expect(container.querySelectorAll('.step-actions')).toHaveLength(3)
+    expect(labels).toEqual([
+      'Navegou no Chrome',
+      'Leu página no Chrome',
+      'Capturou tela no Chrome',
+    ])
+  })
+})

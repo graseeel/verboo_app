@@ -40,4 +40,24 @@ describe('browser (Verboo-in-Chrome) transcript presentation', () => {
 
     expect(summary).toBe('Navegou no Chrome, Leu página no Chrome')
   })
+
+  it('keeps edits for different files in separate blocks', () => {
+    const blocks = groupTurnBlocks([
+      { id: 't1:activity:0', role: 'assistant', kind: 'activity', activityKind: 'edit', text: 'Editou arquivo', activityDetail: 'src/a.ts', timestamp: 0 },
+      { id: 't1:activity:1', role: 'assistant', kind: 'activity', activityKind: 'edit', text: 'Editou arquivo', activityDetail: 'src/b.ts', timestamp: 0 },
+    ])
+
+    expect(blocks).toHaveLength(2)
+    expect(blocks.every(block => block.kind === 'actions' && block.actions.length === 1)).toBe(true)
+  })
+
+  it('continues grouping consecutive read actions', () => {
+    const blocks = groupTurnBlocks([
+      { id: 't1:activity:0', role: 'assistant', kind: 'activity', activityKind: 'read', text: 'Leu arquivo', activityDetail: 'src/a.ts', timestamp: 0 },
+      { id: 't1:activity:1', role: 'assistant', kind: 'activity', activityKind: 'read', text: 'Leu arquivo', activityDetail: 'src/b.ts', timestamp: 0 },
+    ])
+
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0].kind === 'actions' && blocks[0].actions).toHaveLength(2)
+  })
 })

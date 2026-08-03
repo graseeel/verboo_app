@@ -45,10 +45,13 @@ export function groupTurnBlocks(items: TranscriptItem[]): TurnBlock[] {
       }
       // Single-file edits/creates with a path get their OWN row (not collapsed
       // into the previous actions block) so the user sees "Editou foo.js +87 -32"
-      // per file rather than a generic "Editou arquivos (2)" summary.
-      const isPerFileAction = (action.kind === 'edit' || action.kind === 'create') && action.detail
+      // per file rather than a generic "Editou arquivos (2)" summary. Browser
+      // actions also get one row each because the product reference requires
+      // every Chrome step to say what it did; unlike edits, they need no detail.
+      const isOwnRowAction = action.kind === 'browser'
+        || ((action.kind === 'edit' || action.kind === 'create') && Boolean(action.detail))
       const last = blocks[blocks.length - 1]
-      if (!isPerFileAction && last && last.kind === 'actions') last.actions.push(action)
+      if (!isOwnRowAction && last && last.kind === 'actions') last.actions.push(action)
       else blocks.push({ kind: 'actions', id: `${item.id}:g`, actions: [action] })
       continue
     }
