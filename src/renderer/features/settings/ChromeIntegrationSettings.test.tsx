@@ -24,6 +24,7 @@ const baseStatus: ChromeIntegrationStatus = {
   bridge: 'managed',
   mcp: 'managed',
   connection: 'waitingForChrome',
+  panelState: 'notApplicable',
   aggregate: 'ready',
   installedVersion: '0.5.2-beta.1',
   availableVersion: '0.5.2-beta.1',

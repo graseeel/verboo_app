@@ -834,6 +834,13 @@ const enUS: Record<string, string> = {
   'chrome.aggregate.connected': 'Chrome connected',
   'chrome.aggregate.connectedBody': 'The CLI can reach the active Verboo extension session in Chrome.',
   'chrome.aggregate.waiting': 'Configured, waiting for Chrome',
+  'chrome.panel.noticeTitle': 'Keep the side panel open to use Chrome tools',
+  'chrome.panel.noticeBody':
+    'The extension can only approve navigation while its side panel is open in Chrome. With the panel closed, every tool that needs approval fails with "approval_ui_unavailable" and nothing executes.',
+  'chrome.panel.noticeSteps':
+    'To open it: click the Verboo extension icon in the Chrome toolbar. Keep it open while a turn runs.',
+  'chrome.panel.hint':
+    'Keep the extension side panel open in Chrome — tools fail with "approval_ui_unavailable" while it is closed.',
   'chrome.error.generic': 'Could not complete this action. Refresh the status and try again.',
   'chrome.error.chrome_extension_id_invalid': 'Enter a valid 32-character Chrome extension ID using letters a through p.',
   'chrome.error.chrome_release_metadata_missing': 'This build does not contain the production Chrome extension metadata. Use a temporary extension ID in development.',
@@ -1981,6 +1988,13 @@ const ptBR: Record<string, string> = {
   'chrome.aggregate.connected': 'Chrome conectado',
   'chrome.aggregate.connectedBody': 'O CLI consegue acessar a sessão ativa da extensão Verboo no Chrome.',
   'chrome.aggregate.waiting': 'Configurado, aguardando o Chrome',
+  'chrome.panel.noticeTitle': 'Mantenha o painel lateral aberto para usar as ferramentas do Chrome',
+  'chrome.panel.noticeBody':
+    'A extensão só consegue aprovar a navegação com o painel lateral aberto no Chrome. Com o painel fechado, toda ferramenta que exige aprovação falha com "approval_ui_unavailable" e nada executa.',
+  'chrome.panel.noticeSteps':
+    'Para abrir: clique no ícone da extensão Verboo na barra do Chrome. Mantenha aberto durante o turno.',
+  'chrome.panel.hint':
+    'Mantenha o painel lateral da extensão aberto no Chrome — as ferramentas falham com "approval_ui_unavailable" enquanto ele está fechado.',
   'chrome.error.generic': 'Não foi possível concluir esta ação. Atualize o status e tente novamente.',
   'chrome.error.chrome_extension_id_invalid': 'Informe um ID válido da extensão com 32 caracteres entre as letras a e p.',
   'chrome.error.chrome_release_metadata_missing': 'Este build não contém os metadados da extensão de produção. Use um ID temporário em desenvolvimento.',
