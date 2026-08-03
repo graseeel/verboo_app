@@ -116,6 +116,17 @@ export function summarizeActions(actions: TurnAction[], t: Translator): string {
   for (const a of actions) counts.set(a.kind, (counts.get(a.kind) ?? 0) + 1)
   const parts: string[] = []
   for (const [kind, n] of counts) {
+    // Browser intentionally keeps every tool label in execution order. A
+    // shared block must tell the user which Chrome actions happened instead
+    // of collapsing them into a type counter; other kinds keep their summary.
+    if (kind === 'browser') {
+      const browserLabels = actions
+        .filter(action => action.kind === 'browser')
+        .map(action => action.label.trim())
+        .filter(Boolean)
+      parts.push(browserLabels.length > 0 ? browserLabels.join(', ') : 'transcript.browserOne')
+      continue
+    }
     const forms = PLURAL_KEYS[kind] ?? ['transcript.actionOne', 'transcript.actionMany']
     parts.push(n === 1 ? forms[0] : `${forms[1]} (${n})`)
   }

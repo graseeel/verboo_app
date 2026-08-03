@@ -32,10 +32,12 @@ describe('browser (Verboo-in-Chrome) transcript presentation', () => {
     expect(pt).toContain('Chrome')
   })
 
-  it('summarizes multiple browser actions with the plural form and count', () => {
-    const make = (): TurnAction => ({ kind: 'browser', label: 'Navegou no Chrome' })
-    const en = summarizeActions([make(), make()], createTranslator('en-US'))
-    expect(en).toContain('Chrome')
-    expect(en).toContain('(2)')
+  it('lists distinct labels for different browser tools in one action block', () => {
+    const summary = summarizeActions([
+      { kind: 'browser', label: 'Navegou no Chrome' },
+      { kind: 'browser', label: 'Leu página no Chrome' },
+    ], createTranslator('pt-BR'))
+
+    expect(summary).toBe('Navegou no Chrome, Leu página no Chrome')
   })
 })

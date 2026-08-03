@@ -4149,23 +4149,23 @@ mod tests {
         // prefixed `mcp__verboo-in-chrome__<tool>` (tool set pinned
         // bidirectionally by services::chrome_tools_canary against
         // extensions/verboo-chrome/src/controller/browserTools.json).
-        // Every one must map to kind "browser" with a label naming Chrome.
-        for name in [
-            "navigate",
-            "read_page",
-            "structured_extract",
-            "click",
-            "type",
-            "screenshot",
-            "tabs",
-            "tab_group",
+        // Every one must map to kind "browser" with its specific action label.
+        for (name, expected_label) in [
+            ("navigate", "Navegou no Chrome"),
+            ("read_page", "Leu página no Chrome"),
+            ("structured_extract", "Extraiu dados no Chrome"),
+            ("click", "Clicou no Chrome"),
+            ("type", "Digitou no Chrome"),
+            ("screenshot", "Capturou tela no Chrome"),
+            ("tabs", "Gerenciou abas no Chrome"),
+            ("tab_group", "Organizou grupos de abas no Chrome"),
         ] {
             let full = format!("mcp__verboo-in-chrome__{name}");
             let (label, kind) = activity_for_tool(&full);
             assert_eq!(kind, "browser", "tool `{name}` must map to kind browser");
-            assert!(
-                label.contains("Chrome"),
-                "tool `{name}` label must name Chrome, got `{label}`"
+            assert_eq!(
+                label, expected_label,
+                "tool `{name}` must keep its specific Chrome action label"
             );
         }
     }
