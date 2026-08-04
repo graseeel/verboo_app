@@ -33,8 +33,15 @@ import {
   ensureAgentPresence,
   clearPresenceOnAllTabs,
   disableGlobalVerbooPanel,
+  openVerbooPanel,
   openVerbooWorkspace,
 } from './presence/inject.js'
+import {
+  SELECTION_CONTEXT_MENU_ID,
+  createSelectionContextController,
+  installSelectionContextMenu,
+  readSelectionFromPage,
+} from './selectionContext.js'
 import {
   runLlmAgentTurn,
   requiresScreenshot,
@@ -83,6 +90,12 @@ const recordingController = createRecordingController({
     type: MSG.ROUTINE_RECORD_STATE_CHANGED,
     state,
   }),
+})
+const selectionContextController = createSelectionContextController({
+  storage: chrome.storage.session ?? chrome.storage.local,
+  openPanel: openVerbooPanel,
+  readSelection: readSelectionFromPage,
+  broadcast,
 })
 let routineScheduler
 const routineMessageHandler = createRoutineMessageHandler({
@@ -168,8 +181,10 @@ chrome.runtime.onConnect.addListener((port) => {
 const nativeBridge = createNativeBridge({
   executeWithApproval,
   contextFactory: () => makeExecutionContext(undefined, undefined),
-  approvalUiFactory: () => makeApprovalUi(undefined, new AbortController().signal),
+  approvalUiFactory: () => makeApprovalUi(undefined, new AbortController().signal, 'native'),
   isApprovalUiAvailable: () => approvalSurfaces.size > 0,
+  cancelPendingApprovals: () => cancelPendingApprovals('native'),
+  clearPresenceOnAllTabs,
 })
 nativeBridge.registerStartup()
 nativeBridge.connect()
@@ -191,10 +206,21 @@ chrome.action.onClicked.addListener(async (tab) => {
 
 // ── Extension install / update ────────────────────────────────────
 chrome.runtime.onInstalled.addListener((details) => {
+  void installSelectionContextMenu().catch((error) => {
+    console.error('[Verboo] Could not install the selected-text menu:', error)
+  })
   if (details.reason === 'install') {
     console.log('[Verboo] Extension installed. Opening side panel on next toolbar click.')
   }
   void restoreRoutineExecutionState()
+})
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info?.menuItemId !== SELECTION_CONTEXT_MENU_ID) return
+  // `handleContextMenuClick` invokes sidePanel.open before its first await.
+  void selectionContextController.handleContextMenuClick(info, tab).catch((error) => {
+    console.error('[Verboo] Could not capture the selected-text context:', error)
+  })
 })
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
@@ -239,37 +265,82 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   switch (message.type) {
     case MSG.AGENT_TURN_START: {
-      // runAgentTurn always emits COMPLETE or ERROR in finally; this catch is
-      // a last-resort if the function itself rejects before that path runs.
-      const executeTurn = () => runAgentTurn(
-        message.turnId,
-        message.userMessage,
-        sender.tab?.id,
-        message.modelId,
-        message.conversationHistory,
-      )
-      const turnPromise = shouldOfferBrowserTools(message.userMessage)
-        ? browserControlQueue.enqueue({
-            id: message.turnId,
-            execute: executeTurn,
-            cancel: () => abortTurnController(message.turnId),
-          })
-        : executeTurn()
-      void turnPromise
-        .catch((err) => {
-          try {
-            void clearPresenceOnAllTabs()
-          } catch {
-            /* presence cleanup is best-effort */
-          }
-          broadcast({
-            type: MSG.AGENT_TURN_ERROR,
-            turnId: message.turnId,
-            error: err?.message ?? String(err),
-          })
+      resolveSelectionContextForTurn(message)
+        .then((selectionContext) => {
+          // runAgentTurn always emits COMPLETE or ERROR in finally; this catch is
+          // a last-resort if the function itself rejects before that path runs.
+          const senderTabId = selectionContext?.tabId ?? sender.tab?.id
+          const executeTurn = () => runAgentTurn(
+            message.turnId,
+            message.userMessage,
+            senderTabId,
+            message.modelId,
+            message.conversationHistory,
+            selectionContext,
+          )
+          const turnPromise = shouldOfferBrowserTools(message.userMessage)
+            ? browserControlQueue.enqueue({
+                id: message.turnId,
+                execute: executeTurn,
+                cancel: () => abortTurnController(message.turnId),
+              })
+            : executeTurn()
+          void turnPromise
+            .catch((err) => {
+              try {
+                void clearPresenceOnAllTabs()
+              } catch {
+                /* presence cleanup is best-effort */
+              }
+              broadcast({
+                type: MSG.AGENT_TURN_ERROR,
+                turnId: message.turnId,
+                error: err?.message ?? String(err),
+              })
+            })
+          sendResponse({ ok: true })
         })
-      sendResponse({ ok: true })
-      return false
+        .catch((error) => {
+          const reason = error?.message ?? String(error)
+          console.warn('[Verboo] Rejected selected-text context for agent turn:', reason)
+          sendResponse({ ok: false, error: reason })
+        })
+      return true
+    }
+
+    case MSG.SELECTION_CONTEXT_GET: {
+      if (!Number.isInteger(message.tabId)) {
+        console.warn('[Verboo] Rejected selection-context request: missing tabId')
+        sendResponse({ ok: false, error: 'invalid_selection_context_request' })
+        return false
+      }
+      selectionContextController.getPendingSelectionContext(message.tabId)
+        .then((context) => sendResponse({ ok: true, context }))
+        .catch((error) => {
+          const reason = error?.message ?? String(error)
+          console.warn('[Verboo] Could not load the selected-text context:', reason)
+          sendResponse({ ok: false, error: reason })
+        })
+      return true
+    }
+
+    case MSG.SELECTION_CONTEXT_DISCARD: {
+      if (!Number.isInteger(message.tabId) || typeof message.selectionContextId !== 'string') {
+        console.warn('[Verboo] Rejected selection-context discard: invalid envelope')
+        sendResponse({ ok: false, error: 'invalid_selection_context_discard' })
+        return false
+      }
+      selectionContextController.discardPendingSelectionContext(
+        message.tabId,
+        message.selectionContextId,
+      )
+        .then((discarded) => sendResponse({ ok: true, discarded }))
+        .catch((error) => {
+          const reason = error?.message ?? String(error)
+          console.warn('[Verboo] Could not discard the selected-text context:', reason)
+          sendResponse({ ok: false, error: reason })
+        })
+      return true
     }
 
     case MSG.AGENT_TURN_CANCEL: {
@@ -708,11 +779,33 @@ function slimToolResultsForBroadcast(results) {
 }
 
 /**
+ * Consume a panel-owned context only once. A malformed or stale envelope is
+ * rejected explicitly so a selected excerpt can never disappear silently.
+ *
+ * @param {Record<string, unknown>} message
+ * @returns {Promise<import('./selectionContext.js').PendingSelectionContext | null>}
+ */
+async function resolveSelectionContextForTurn(message) {
+  const hasId = typeof message.selectionContextId === 'string' && message.selectionContextId
+  const hasTabId = Number.isInteger(message.selectionContextTabId)
+  if (!hasId && !hasTabId) return null
+  if (!hasId || !hasTabId) throw new Error('invalid_selection_context_envelope')
+
+  const context = await selectionContextController.consumePendingSelectionContext(
+    message.selectionContextTabId,
+    message.selectionContextId,
+  )
+  if (!context) throw new Error('selection_context_unavailable')
+  return context
+}
+
+/**
  * @param {string} turnId
  * @param {string} userMessage
  * @param {number} [senderTabId]
  * @param {string} [requestedModelId]
  * @param {Array<object>} [conversationHistory]
+ * @param {import('./selectionContext.js').PendingSelectionContext | null} [selectionContext]
  */
 async function runAgentTurn(
   turnId,
@@ -720,6 +813,7 @@ async function runAgentTurn(
   senderTabId,
   requestedModelId,
   conversationHistory,
+  selectionContext,
 ) {
   const controller = new AbortController()
   turnControllers.set(turnId, controller)
@@ -816,6 +910,7 @@ async function runAgentTurn(
           modelId: selectedModelId,
           modelSupportsVision,
           conversationHistory,
+          selectionContext,
           broadcast: (msg) => broadcast(msg),
           executeTool: (tc) => executeWithApproval(
             tc,
@@ -1141,7 +1236,7 @@ async function applyRoutineRecoverySuggestion(runId) {
   return result
 }
 
-function makeApprovalUi(turnId, signal) {
+function makeApprovalUi(turnId, signal, source = undefined) {
   return {
     request: async ({ toolCall, policy }) => {
       await setRoutineApprovalState(turnId, 'waiting_approval')
@@ -1171,6 +1266,7 @@ function makeApprovalUi(turnId, signal) {
         turnId,
         toolCall,
         policy,
+        source,
       })
     },
     onApprovalClosed: async ({ toolCall, decision }) => {
@@ -1188,6 +1284,14 @@ function makeApprovalUi(turnId, signal) {
       toolCall,
       policyDecision: policy,
     }),
+  }
+}
+
+function cancelPendingApprovals(source) {
+  for (const [id, pending] of pendingApprovals.entries()) {
+    if (pending.source !== source) continue
+    pending.resolve('cancelled')
+    pendingApprovals.delete(id)
   }
 }
 

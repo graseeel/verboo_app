@@ -5,6 +5,7 @@ import { VideoProcessingRow } from '../features/video/VideoProcessingRow'
 import { MarkdownMessage } from '../features/transcript/MarkdownMessage'
 import { StepFlow } from '../features/transcript/StepFlow'
 import { ThinkingIcon } from '../features/transcript/TranscriptIcons'
+import { TurnErrorDetails } from '../features/transcript/TurnErrorDetails'
 import { useI18n, type Translator } from '../i18n'
 
 type TranscriptProps = {
@@ -158,11 +159,13 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
   // (e.g. "8s", "1m 23s") and re-renders via t('transcript.workedFor').
   const WORKED_FOR_RE = /^Worked for (.+)$/
   const workedForMatch = summary?.text?.match(WORKED_FOR_RE)
-  // A turn has "steps" when it contains at least one non-thinking activity
-  // (read/search/edit/command/etc). Turns with only a final assistant message
+  // A turn has "steps" when it contains at least one transcript activity
+  // (read/search/edit/command/etc). Planning is rendered by ChecklistPanel,
+  // not by StepFlow, so it must not make an otherwise empty panel expandable.
+  // Turns with only a final assistant message
   // have nothing to expand — the chevron would open an empty panel.
   const hasActions = entry.items.some(item =>
-    item.kind === 'activity' && item.activityKind !== 'thinking'
+    item.kind === 'activity' && item.activityKind !== 'thinking' && item.activityKind !== 'planning'
   )
   return (
     <article className="message-row assistant turn-view" data-turn-streaming={streaming ? 'true' : undefined}>
@@ -293,6 +296,7 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onCo
   const [editText, setEditText] = useState(visibleText)
   const [copyFlash, setCopyFlash] = useState(false)
   const isUserMessage = item.role === 'user' && item.kind !== 'activity' && item.kind !== 'summary'
+  const visualRole = item.presentation === 'interruption' ? 'assistant' : item.role
 
   function handleCopy() {
     const text = visibleText || item.text
@@ -315,8 +319,8 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onCo
   // Inline edit UI
   if (editMode) {
     return (<>
-      <article className={`message-row ${item.role} ${item.kind ?? 'message'}`} data-activity={item.activityKind}>
-        <div className="message-meta"><span>{t('transcript.editMessage')}</span></div>
+      <article className={`message-row ${visualRole} ${item.kind ?? 'message'}`} data-activity={item.activityKind}>
+        {item.presentation !== 'interruption' && <div className="message-meta"><span>{t('transcript.editMessage')}</span></div>}
         <textarea className="message-edit-textarea" value={editText} onChange={e => setEditText(e.target.value)} autoFocus />
         <div className="message-edit-actions">
           <button type="button" className="message-edit-btn save" onClick={handleSaveEdit} disabled={!editText.trim()}>{t('common.save')}</button>
@@ -359,21 +363,23 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onCo
   return (<>
     <div className={`msg-wrap ${isUserMessage ? 'msg-wrap-right' : ''}`}>
       <article
-        className={`message-row ${item.role} ${item.kind ?? 'message'}`}
+        className={`message-row ${visualRole} ${item.kind ?? 'message'}`}
         data-activity={item.activityKind}
         data-command={isInitialGoalUserItem(item) ? 'goal' : undefined}
       >
-        <div className="message-meta">
-          {item.kind === 'activity' && <ActivityIcon item={item} />}
-          {item.kind === 'summary' && <CheckCircle2 size={14} strokeWidth={1.8} />}
-          <span>{labelForItem(item, t)}</span>
-          {item.streaming && (
-            <span className="message-status-marker" role="status">
-              <span className="message-status-marker-icon" aria-hidden="true"><LoaderCircle size={12} /></span>
-              <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm" data-text={t('transcript.generating')}>{t('transcript.generating')}</span>
-            </span>
-          )}
-        </div>
+        {item.presentation !== 'interruption' && (
+          <div className="message-meta">
+            {item.kind === 'activity' && <ActivityIcon item={item} />}
+            {item.kind === 'summary' && <CheckCircle2 size={14} strokeWidth={1.8} />}
+            <span>{labelForItem(item, t)}</span>
+            {item.streaming && (
+              <span className="message-status-marker" role="status">
+                <span className="message-status-marker-icon" aria-hidden="true"><LoaderCircle size={12} /></span>
+                <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm" data-text={t('transcript.generating')}>{t('transcript.generating')}</span>
+              </span>
+            )}
+          </div>
+        )}
 
         {item.attachments?.length ? (
           <div className="message-attachments">
@@ -404,6 +410,7 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onCo
             : item.streaming ? t('transcript.thinking') : ''}
           {item.kind !== 'summary' && item.activityDetail && <span className="message-detail">{item.activityDetail}</span>}
         </div>
+        {item.errorDetail ? <TurnErrorDetails detail={item.errorDetail} /> : null}
 
         {children}
       </article>
@@ -690,7 +697,8 @@ export function buildTranscriptEntries(items: TranscriptItem[]): TranscriptEntry
   const emitted = new Set<string>()
   const entries: TranscriptEntry[] = []
   for (const item of visibleItems) {
-    if (item.role === 'system' && item.kind !== 'summary') continue
+    const isTurnError = item.role === 'system' && item.id.endsWith(':error')
+    if (item.role === 'system' && item.kind !== 'summary' && !isTurnError) continue
     if (isInternalGoalContinuationItem(item)) continue
     const turnId = turnIdOf(item)
     if (turnId && turns.has(turnId)) {
@@ -741,6 +749,7 @@ function activityPanelTitle(activities: TranscriptItem[], summary: TranscriptIte
     formatCount(counts.subagent, t('transcript.subagentOne'), t('transcript.subagentMany')),
     formatCount(counts.permission, t('transcript.permissionOne'), t('transcript.permissionMany')),
     formatCount(counts.tool, t('transcript.toolOne'), t('transcript.toolMany')),
+    formatCount(counts.browser, t('transcript.browserOne'), t('transcript.browserMany')),
   ].filter((part): part is string => Boolean(part))
 
   if (parts.length > 0) return joinParts(parts, t)
@@ -784,7 +793,7 @@ function activityDetailLines(activities: TranscriptItem[], summary: TranscriptIt
 function countActivities(activities: TranscriptItem[]): Partial<Record<NonNullable<TranscriptItem['activityKind']>, number>> {
   return activities.reduce<Partial<Record<NonNullable<TranscriptItem['activityKind']>, number>>>((counts, item) => {
     if (!item.activityKind || item.activityKind === 'thinking') return counts
-    if (!item.activityDetail && item.activityKind !== 'permission' && item.activityKind !== 'subagent' && item.activityKind !== 'image') return counts
+    if (!item.activityDetail && item.activityKind !== 'permission' && item.activityKind !== 'subagent' && item.activityKind !== 'image' && item.activityKind !== 'browser') return counts
     counts[item.activityKind] = (counts[item.activityKind] ?? 0) + 1
     return counts
   }, {})

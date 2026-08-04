@@ -1449,6 +1449,9 @@ let conversationHistory = []
 /** @type {{turnId:string, userMessage:string} | null} */
 let pendingConversation = null
 
+/** @type {{id:string, tabId:number, frameId:number, text:string, verification:'pending'|'complete'|'incomplete'} | null} */
+let pendingSelectionContext = null
+
 /** @type {string | null} turn currently owned by the panel UI */
 let activeTurnId = null
 
@@ -1469,6 +1472,106 @@ function updateSendEnabled() {
   if (!input || !send) return
   const hasText = input.value.trim().length > 0
   send.disabled = turnInFlight || modelSelectionPending || !selectedModelId || !hasText
+}
+
+function isSelectionContext(context) {
+  return Boolean(
+    context &&
+    typeof context.id === 'string' &&
+    Number.isInteger(context.tabId) &&
+    Number.isInteger(context.frameId) &&
+    typeof context.text === 'string' &&
+    ['pending', 'complete', 'incomplete'].includes(context.verification),
+  )
+}
+
+function renderSelectionContext() {
+  const container = document.getElementById('selection-context')
+  const preview = document.getElementById('selection-context-preview')
+  const warning = document.getElementById('selection-context-warning')
+  const remove = document.getElementById('selection-context-remove')
+  if (!container || !preview || !warning || !remove) return
+
+  const context = pendingSelectionContext
+  container.hidden = !context
+  if (!context) {
+    preview.textContent = ''
+    warning.textContent = ''
+    warning.hidden = true
+    remove.disabled = false
+    return
+  }
+
+  preview.textContent = context.text.replace(/\s+/g, ' ').trim()
+  warning.hidden = context.verification === 'complete'
+  warning.textContent = context.verification === 'pending'
+    ? t('selection_context_verifying')
+    : t('selection_context_incomplete')
+  remove.disabled = false
+}
+
+function setSelectionContext(context) {
+  if (!isSelectionContext(context)) return
+  pendingSelectionContext = context
+  renderSelectionContext()
+}
+
+function clearSelectionContext() {
+  pendingSelectionContext = null
+  renderSelectionContext()
+}
+
+async function resolveSelectionContextTabId() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+    if (Number.isInteger(tab?.id)) return tab.id
+  } catch {
+    // Fall back to the current window for older Chrome window focus behavior.
+  }
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    return Number.isInteger(tab?.id) ? tab.id : null
+  } catch {
+    return null
+  }
+}
+
+async function hydrateSelectionContext() {
+  const tabId = await resolveSelectionContextTabId()
+  if (!Number.isInteger(tabId)) return
+  const response = await sendMessage({ type: MSG.SELECTION_CONTEXT_GET, tabId })
+  if (!response?.ok) return
+  if (isSelectionContext(response.context)) {
+    setSelectionContext(response.context)
+  } else {
+    clearSelectionContext()
+  }
+}
+
+async function handleSelectionContextChanged(context) {
+  const tabId = await resolveSelectionContextTabId()
+  if (tabId !== context.tabId) return
+  setSelectionContext(context)
+}
+
+function initSelectionContext() {
+  const remove = document.getElementById('selection-context-remove')
+  remove?.addEventListener('click', async () => {
+    const context = pendingSelectionContext
+    if (!context) return
+    remove.disabled = true
+    const response = await sendMessage({
+      type: MSG.SELECTION_CONTEXT_DISCARD,
+      tabId: context.tabId,
+      selectionContextId: context.id,
+    })
+    if (response?.ok) clearSelectionContext()
+    else remove.disabled = false
+  })
+  void hydrateSelectionContext()
+  chrome.tabs.onActivated.addListener(() => {
+    void hydrateSelectionContext()
+  })
 }
 
 function resizeChatInput(input) {
@@ -1627,18 +1730,29 @@ function initChat() {
 
     const turnId = crypto.randomUUID()
     const priorConversation = conversationHistory.slice(-MAX_PANEL_HISTORY_MESSAGES)
+    const selectionContextForTurn = pendingSelectionContext
     pendingConversation = { turnId, userMessage: text }
     setTurnInFlight(true)
     ensureWorkingHeader()
     armTurnWatchdogs(turnId)
     try {
-      await chrome.runtime.sendMessage({
+      const response = await chrome.runtime.sendMessage({
         type: MSG.AGENT_TURN_START,
         turnId,
         userMessage: text,
         modelId: selectedModelId,
         conversationHistory: priorConversation,
+        ...(selectionContextForTurn
+          ? {
+              selectionContextId: selectionContextForTurn.id,
+              selectionContextTabId: selectionContextForTurn.tabId,
+            }
+          : {}),
       })
+      if (!response?.ok) throw new Error(response?.error ?? t('chat_turnStartFailed'))
+      if (selectionContextForTurn?.id === pendingSelectionContext?.id) {
+        clearSelectionContext()
+      }
     } catch (err) {
       if (pendingConversation?.turnId === turnId) pendingConversation = null
       endTurnUi()
@@ -1694,6 +1808,11 @@ function initAgentEventListener() {
       }
       case MSG.MODELS_STATE_CHANGED: {
         populateModelSelect(message.models ?? [], message.selectedId)
+        break
+      }
+      case MSG.SELECTION_CONTEXT_CHANGED: {
+        if (!isSelectionContext(message.context)) break
+        void handleSelectionContextChanged(message.context)
         break
       }
       case MSG.AGENT_TURN_STARTED: {
@@ -1818,6 +1937,7 @@ async function init() {
 
   initAgentEventListener()
   initModelSelect()
+  initSelectionContext()
 
   await hydrateAuthFromBackground()
   await hydratePendingApprovals()

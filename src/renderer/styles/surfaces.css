@@ -144,11 +144,39 @@
   letter-spacing: 0;
 }
 
-.profile-view,
 .settings-view {
   display: grid;
   gap: 18px;
   padding-bottom: 42px;
+}
+
+.profile-account-content {
+  display: grid;
+  gap: 16px;
+}
+
+.profile-account-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-group-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-group-heading h2,
+.settings-group-heading p {
+  margin: 0;
+}
+
+.settings-group-heading h2 {
+  font-size: 13px;
+}
+
+.settings-group-heading p {
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .settings-shell {
@@ -790,6 +818,39 @@
   background: color-mix(in srgb, var(--accent-soft) 42%, transparent);
 }
 
+.settings-panel .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings-panel .button-sm {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.settings-panel .button-secondary {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.settings-panel .button-secondary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-soft) 76%, transparent);
+  color: var(--text);
+}
+
+.settings-panel .button-primary {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+  color: white;
+}
+
+.settings-panel .button-primary:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
 .settings-nav button:focus-visible,
 .settings-panel button:focus-visible,
 .settings-panel input:focus-visible,
@@ -798,7 +859,8 @@
 .access-setting:focus-visible,
 .settings-toggle-row:focus-visible,
 .settings-select-row:focus-within,
-.archived-chat button:focus-visible,
+.sidebar-archived-toggle:focus-visible,
+.sidebar-archived-row-actions button:focus-visible,
 .modal-actions button:focus-visible,
 .danger-button:focus-visible {
   outline: none;
@@ -809,7 +871,8 @@
 .settings-panel button:not(:disabled):active,
 .access-setting:not(:disabled):active,
 .settings-toggle-row:not(:disabled):active,
-.archived-chat button:not(:disabled):active,
+.sidebar-archived-toggle:not(:disabled):active,
+.sidebar-archived-row-actions button:not(:disabled):active,
 .modal-actions button:not(:disabled):active,
 .danger-button:not(:disabled):active {
   transform: scale(var(--press-scale));
@@ -1791,6 +1854,28 @@
   margin-top: 4px;
   color: var(--text-dim);
   font-size: 12.5px;
+}
+
+.turn-error-details {
+  margin-top: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.turn-error-details summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.turn-error-details pre {
+  max-width: 100%;
+  max-height: 160px;
+  margin: 6px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .message-text.streaming-text {

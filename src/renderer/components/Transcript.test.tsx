@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, within } from '@testing-library/react'
 import { Transcript, buildTranscriptEntries, cleanLeakedThinkTagItem } from './Transcript'
 import type { TranscriptItem } from '../../shared/types'
 import { annotationTurnItemId, insertAnnotationTurnBeforeResponse } from '../features/annotations/annotationTurnItem'
@@ -92,6 +92,64 @@ describe('TurnView — .turn-recap stays mounted after expand', () => {
 
     expect(container.querySelector('.message-attachment-image img')).toBeTruthy()
     expect(container.querySelector('.message-attachment-file')).toBeNull()
+  })
+
+  it('renders a turn error in the main transcript with a friendly summary and expandable detail', () => {
+    const rawDiagnostic = '(signal, runtime=bundled-node, cwd=/project)'
+    const { container } = render(
+      <Transcript
+        items={[{
+          id: 'turn-main:error',
+          role: 'system',
+          text: 'Turn interrupted by the user.',
+          errorDetail: rawDiagnostic,
+          timestamp: 0,
+        }]}
+      />,
+    )
+
+    expect(container).toHaveTextContent('Turn interrupted by the user.')
+    const details = container.querySelector('details.turn-error-details') as HTMLDetailsElement
+    expect(details.open).toBe(false)
+    expect(details.querySelector('pre')).toHaveTextContent(rawDiagnostic)
+    fireEvent.click(screen.getByText('transcript.showTechnicalDetails'))
+    expect(details.open).toBe(true)
+    expect(container).toHaveTextContent(rawDiagnostic)
+  })
+
+  it('renders an interruption with the assistant treatment while keeping a real failure highlighted', () => {
+    const interruptionText = 'Turn interrupted by the user.'
+    const failureText = '(signal, runtime=bundled-node, cwd=/project)'
+    const { container } = render(
+      <Transcript
+        items={[
+          {
+            id: 'turn-interruption:error',
+            role: 'system',
+            text: interruptionText,
+            errorDetail: failureText,
+            presentation: 'interruption',
+            timestamp: 0,
+          },
+          {
+            id: 'turn-failure:error',
+            role: 'system',
+            text: failureText,
+            timestamp: 1,
+          },
+        ]}
+      />,
+    )
+
+    const interruptionRow = screen.getByText(interruptionText).closest('article')
+    const failureRow = Array.from(container.querySelectorAll('article')).find(row =>
+      row.querySelector('.message-text')?.textContent === failureText,
+    )
+    expect(interruptionRow).toHaveClass('assistant')
+    expect(interruptionRow).not.toHaveClass('system')
+    expect(within(interruptionRow!).queryByText('transcript.system')).not.toBeInTheDocument()
+    expect(failureRow).toHaveClass('system')
+    expect(within(failureRow!).getByText('transcript.system')).toBeInTheDocument()
   })
 })
 

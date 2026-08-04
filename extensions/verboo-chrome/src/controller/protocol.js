@@ -20,13 +20,18 @@
  * Manual/Auto/Skip mode contract — which is a security violation.
  *
  * Forbidden patterns (AEGIS audits for these in review):
- *   - chrome.scripting.executeScript(...) called outside src/controller/tools/*
+ *   - chrome.scripting.executeScript(...) called outside src/controller/tools/*,
+ *     except the narrow, user-gesture-only selection read in
+ *     src/selectionContext.js. That code reads `window.getSelection()` only,
+ *     cannot mutate the page, is never model-initiated, and its result is
+ *     fenced as untrusted content before a user-started turn.
  *   - chrome.tabs.update(...) called outside src/controller/tools/navigate.js
  *   - chrome.debugger.attach(...) called outside src/controller/tools/screenshot.js
  *   - Any tool handler imported and invoked from agent.js or background.js
  *     without going through controller.execute()
- *   - Panel sending a message that directly triggers a tool handler (panel
- *     may only send MSG.AGENT_TURN_START, MSG.TOOL_APPROVE, MSG.TOOL_DENY)
+ *   - Panel sending a message that directly triggers a tool handler (the
+ *     panel may start a turn, resolve approval, or read/discard its own
+ *     pending selected-text context; only the turn can reach a tool handler)
  *
  * The dispatchTool() helper inside controller.js is the ONLY function allowed
  * to call tool handlers directly. It is private to the controller module and
@@ -41,6 +46,8 @@ export const MSG = Object.freeze({
   // Panel → Controller
   AGENT_TURN_START: 'agent:turn_start',       // user submits a chat message
   AGENT_TURN_CANCEL: 'agent:turn_cancel',     // user cancels in-flight turn
+  SELECTION_CONTEXT_GET: 'selection_context:get',
+  SELECTION_CONTEXT_DISCARD: 'selection_context:discard',
   TOOL_PENDING_LIST: 'tool:pending_list',     // panel restores approvals after reopening
   TOOL_APPROVE: 'tool:approve',               // user approves a needsApproval tool
   TOOL_DENY: 'tool:deny',                     // user denies a needsApproval tool
@@ -87,6 +94,7 @@ export const MSG = Object.freeze({
   AGENT_TOOL_RESULT: 'agent:tool_result',
   AGENT_TURN_COMPLETE: 'agent:turn_complete',
   AGENT_TURN_ERROR: 'agent:turn_error',
+  SELECTION_CONTEXT_CHANGED: 'selection_context:changed',
   AUTH_STATE_CHANGED: 'auth:state_changed',
   MODELS_STATE_CHANGED: 'models:state_changed',
   POLICY_MODE_CHANGED: 'policy:mode_changed',
@@ -189,6 +197,8 @@ export const TOOL_RISK_MAP = Object.freeze(Object.fromEntries(
  * @typedef {Object} AgentTurnStart
  * @property {string} turnId               - UUID for the whole turn
  * @property {string} userMessage          - User's chat input
+ * @property {string} [selectionContextId] - Pending page-selection context to consume once
+ * @property {number} [selectionContextTabId] - Tab that owns the pending selection
  */
 
 /**
@@ -201,8 +211,15 @@ export const TOOL_RISK_MAP = Object.freeze(Object.fromEntries(
 // ── Message payload shapes (for type-checking in handlers) ──
 
 export const MSG_SHAPES = Object.freeze({
-  [MSG.AGENT_TURN_START]: { turnId: 'string', userMessage: 'string' },
+  [MSG.AGENT_TURN_START]: {
+    turnId: 'string',
+    userMessage: 'string',
+    selectionContextId: 'string?',
+    selectionContextTabId: 'number?',
+  },
   [MSG.AGENT_TURN_CANCEL]: { turnId: 'string' },
+  [MSG.SELECTION_CONTEXT_GET]: { tabId: 'number' },
+  [MSG.SELECTION_CONTEXT_DISCARD]: { tabId: 'number', selectionContextId: 'string' },
   [MSG.TOOL_PENDING_LIST]: {},
   [MSG.TOOL_APPROVE]:      { toolCallId: 'string', decision: 'once|always' },
   [MSG.TOOL_DENY]:         { toolCallId: 'string', reason: 'string?' },
@@ -210,6 +227,7 @@ export const MSG_SHAPES = Object.freeze({
   [MSG.AGENT_TOOL_RESULT]: { toolResult: 'object' },
   [MSG.AGENT_TURN_COMPLETE]:{ turnId: 'string', assistantMessage: 'string', toolResults: 'array' },
   [MSG.AGENT_TURN_ERROR]:  { turnId: 'string', error: 'string' },
+  [MSG.SELECTION_CONTEXT_CHANGED]: { tabId: 'number', context: 'object' },
   [MSG.AUTH_STATE_CHANGED]:{ session: 'object?' },
   [MSG.MODELS_STATE_CHANGED]:{ models: 'array', selectedId: 'string?' },
   [MSG.POLICY_MODE_CHANGED]:{ mode: 'string' },

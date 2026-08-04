@@ -39,6 +39,12 @@ export function ActionIcon({ kind }: { kind: TurnActionKind }) {
       return <svg {...box}><circle cx="8" cy="6" r="2.5" /><path d="M3.5 13a4.5 4.5 0 0 1 9 0" /></svg>
     case 'agent-close':
       return <svg {...box}><circle cx="8" cy="6" r="2.5" opacity="0.5" /><path d="M4 13l8-8" /></svg>
+    // FRENTE-A (2026-08-02): generic globe — NEVER the Google Chrome logo
+    // (trademarked; the app is publicly distributed and signed under the
+    // owner's name). The word "Chrome" lives in the LABEL, not the icon.
+    // Same line style as the siblings: 16px stroke 1.4 round.
+    case 'browser':
+      return <svg {...box}><circle cx="8" cy="8" r="5.5" /><path d="M2.5 8h11M8 2.5c1.5 1.5 2.2 3.4 2.2 5.5S9.5 12 8 13.5C6.5 12 5.8 10.1 5.8 8S6.5 4 8 2.5" /></svg>
     default:
       return <svg {...box}><circle cx="8" cy="8" r="2" /><path d="M8 2v2M8 12v2M2 8h2M12 8h2" /></svg>
   }

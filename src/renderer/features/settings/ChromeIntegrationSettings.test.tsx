@@ -4,9 +4,24 @@ import type { ChromeIntegrationStatus } from '../../../shared/types'
 import { ChromeIntegrationSettings } from './ChromeIntegrationSettings'
 import { useChromeIntegration } from './useChromeIntegration'
 
-vi.mock('../../i18n', () => ({
-  useI18n: () => ({ t: (key: string) => key }),
-}))
+vi.mock('../../i18n', async () => {
+  const actual = await vi.importActual<typeof import('../../i18n')>('../../i18n')
+  const pt = actual.createTranslator('pt-BR')
+  const translatedKeys = new Set([
+    'chrome.accountLogin',
+    'chrome.accountLoginBody',
+    'chrome.cliConnection',
+    'chrome.cliConnectionBody',
+  ])
+
+  return {
+    useI18n: () => ({
+      t: (key: string, values?: Record<string, string | number | undefined>) => (
+        translatedKeys.has(key) ? pt(key, values) : key
+      ),
+    }),
+  }
+})
 vi.mock('./useChromeIntegration', () => ({ useChromeIntegration: vi.fn() }))
 
 const actions = {
@@ -24,6 +39,7 @@ const baseStatus: ChromeIntegrationStatus = {
   bridge: 'managed',
   mcp: 'managed',
   connection: 'waitingForChrome',
+  panelState: 'notApplicable',
   aggregate: 'ready',
   installedVersion: '0.5.2-beta.1',
   availableVersion: '0.5.2-beta.1',
@@ -75,10 +91,10 @@ describe('ChromeIntegrationSettings', () => {
     render(<ChromeIntegrationSettings />)
 
     const explanation = screen.getByRole('region', { name: 'chrome.identityAndCli' })
-    expect(explanation).toHaveTextContent('chrome.accountLogin')
-    expect(explanation).toHaveTextContent('chrome.accountLoginBody')
-    expect(explanation).toHaveTextContent('chrome.cliConnection')
-    expect(explanation).toHaveTextContent('chrome.cliConnectionBody')
+    expect(explanation).toHaveTextContent('Entre na sua conta Verboo')
+    expect(explanation).toHaveTextContent('Você precisa estar logado na sua conta Verboo para usar as ferramentas do Chrome.')
+    expect(explanation).toHaveTextContent('Conexão do CLI')
+    expect(explanation).toHaveTextContent('O CLI Verboo se conecta ao Chrome pelo helper local e pela extensão Verboo. Mantenha o painel lateral da extensão aberto enquanto uma tarefa estiver em execução.')
   })
 
   it('shows only actions enabled by the backend state', () => {

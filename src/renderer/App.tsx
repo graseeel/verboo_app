@@ -63,6 +63,17 @@ import {
   updateAnnotationComment,
   type AnnotationDrafts,
 } from './features/annotations/annotationDrafts'
+import { SideChatSurface } from './features/sidechat/SideChatSurface'
+import { findNotifiableConversationId } from './features/notifications/notificationFocus'
+import {
+  buildSideChatRequest,
+  createSideChatState,
+  resolveSideChatSessionId,
+  resolveSideChatWorkingDirectory,
+  shouldDiscardSideChatForNavigation,
+  type SideChatState,
+  updateSideChatState,
+} from './features/sidechat/sideChat'
 // F3: o ÚNICO ponto onde o campo annotations entra no request (nunca no texto)
 // e o item N3 (o chip vira turno, autocontido). Montagem do bloco no prompt é
 // Rust-side — aqui só viaja o campo estruturado.
@@ -77,6 +88,7 @@ import { useChecklistFlight } from './features/checklist/useChecklistFlight'
 import { useChecklistCompletionExit } from './features/checklist/useChecklistCompletionExit'
 import { applyTodoWrite, removeChecklistForConversation, resolveChecklistPlacement, type ChecklistCardPos, type ChecklistFormPreference } from './features/checklist/checklistPlacement'
 import { readChecklistCardPos, readChecklistFormPreference, writeChecklistCardPos, writeChecklistFormPreference } from './features/checklist/checklistStorage'
+import { registerRuntimeActivity } from './features/transcript/runtimeActivity'
 import { createSoundPlayer, resolveSoundForEvent, type SoundEvent, type SoundPlayer } from './features/sound/sounds'
 import { readSoundsEnabled, writeSoundsEnabled } from './features/sound/soundStorage'
 import type { ReservedSlashCommand } from './features/composer/slashCommands'
@@ -123,6 +135,7 @@ import {
   shouldAutoRecoverAuthentication,
   shouldRetryIncompleteTurn,
 } from './features/transcript/cliFailureRecovery'
+import { presentAgentError } from './features/transcript/agentErrorWiring'
 import { truncateToolOutput } from './features/transcript/toolOutput'
 import { applySubagentThreadUpdate, isSubagentThreadWorking, latestSubagentThread } from './features/subagents/subagentThreads'
 import { SubagentIndicator } from './features/subagents/SubagentIndicator'
@@ -130,7 +143,6 @@ import { SubagentThreadPanel } from './features/subagents/SubagentThreadPanel'
 import { FeedbackDialog } from './features/feedback/FeedbackDialog'
 import { ModelSelector } from './features/models/ModelSelector'
 import { validOverride, displayEffort, migrateEffortPrefs } from './features/models/effortOverride'
-import { ProfileView } from './features/profile/ProfileView'
 import { PluginsView } from './features/plugins/PluginsView'
 import { loadPluginSkillSummaries } from './features/plugins/pluginSkillSummaries'
 import { ProjectPicker } from './features/projects/ProjectPicker'
@@ -166,6 +178,8 @@ import {
   updateConversation as updateConversationPure,
   visibleConversations,
 } from './state/chatStore'
+import { finishTurn, findNextRunnableQueueIndex, resolveEscapeConversation, startTurn } from './state/turnLifecycle'
+import { promptForConversation } from './state/promptRouting'
 import packageJson from '../../package.json'
 
 const defaultModels: VerbooModel[] = []
@@ -297,6 +311,7 @@ type QueuedFollowUp = {
   conversationId: string
   message: string
   request: AgentTurnRequest
+  sideChat?: boolean
   turnModel: {
     modelId?: string
     modelDisplayName?: string
@@ -341,7 +356,7 @@ export function App() {
   const [profile, setProfile] = useState<ProfileResult>({ status: 'unauthenticated' })
   const [profileLoading, setProfileLoading] = useState(false)
   const [activeView, setActiveView] = useState<AppView>('chat')
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>('permissions')
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('security')
   const [userSettings, setUserSettings] = useState<UserSettings>(DEFAULT_USER_SETTINGS)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [noticeAccepted, setNoticeAccepted] = useState(
@@ -409,8 +424,11 @@ export function App() {
     return visibleConversations(chatStore)[0]?.id
   })
   const [selectedProjectId, setSelectedProjectId] = useState<string | undefined>()
-  const [runningTurnId, setRunningTurnId] = useState<string | undefined>()
-  const [runningConversations, setRunningConversations] = useState<Set<string>>(() => new Set())
+  const [runningTurnByConversation, setRunningTurnByConversation] = useState<Record<string, string>>({})
+  const runningTurnByConversationRef = useRef<Record<string, string>>({})
+  const runningConversations = useMemo(() => new Set(Object.keys(runningTurnByConversation)), [runningTurnByConversation])
+  const activeTurnId = activeConversationId ? runningTurnByConversation[activeConversationId] : undefined
+  const anyRunningTurnId = Object.values(runningTurnByConversation)[0]
   const [performanceWarningDismissed, setPerformanceWarningDismissed] = useState(false)
   const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedFollowUp[]>([])
   // Per-conversation composer drafts (in-memory). Survives chat switches and
@@ -432,11 +450,15 @@ export function App() {
   // e o guarda não pode decidir com um state velho (nem deixar o envio
   // só-anotação morrer por um render de atraso).
   const annotationDraftsRef = useRef<AnnotationDrafts>({})
-  const [pendingPermissionPrompt, setPendingPermissionPrompt] = useState<PendingPermissionPrompt | undefined>()
+  const [sideChat, setSideChat] = useState<SideChatState | undefined>()
+  const sideChatRef = useRef<SideChatState | undefined>(undefined)
+  const focusedConversationIdRef = useRef<string | undefined>(undefined)
+  const focusedConversationLaneRef = useRef<'main' | 'side' | undefined>(undefined)
+  const [pendingPermissionPrompts, setPendingPermissionPrompts] = useState<Record<string, PendingPermissionPrompt>>({})
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | undefined>()
-  const [questionPrompt, setQuestionPrompt] = useState<QuestionPromptState | undefined>()
-  const [questionWizardOpen, setQuestionWizardOpen] = useState(false)
-  const questionPromptRef = useRef<QuestionPromptState | undefined>(undefined)
+  const [questionPrompts, setQuestionPrompts] = useState<Record<string, QuestionPromptState>>({})
+  const [questionWizardOpenByTurn, setQuestionWizardOpenByTurn] = useState<Record<string, boolean>>({})
+  const questionPromptsRef = useRef<Record<string, QuestionPromptState>>({})
 
   // Vision fallback consent — deferred promise pattern like interject.
   // When set, the VisionFallbackModal is rendered as an overlay. The resolve
@@ -611,6 +633,7 @@ export function App() {
   const goalAbortRef = useRef<AbortController | undefined>(undefined)
   const queuedFollowUpsRef = useRef<QueuedFollowUp[]>([])
   const lastEscapeAt = useRef(0)
+  const userInterruptedTurnsRef = useRef<Set<string>>(new Set())
   const selectedContextWindowRef = useRef<number | undefined>(undefined)
   const turnStartedAt = useRef<Record<string, number>>({})
   const turnTokenRates = useRef<Record<string, TokenRateSample>>({})
@@ -656,6 +679,7 @@ export function App() {
     conversationId: string
     message: string
     alreadyRetriedWithoutSession: boolean
+    sideChat?: boolean
     // F3 (QA a-i): the retry must replay the SAME payload — annotations
     // included — or the retried turn silently loses the excerpts the user
     // attached on purpose (the worst class: invisible data loss).
@@ -707,9 +731,16 @@ export function App() {
   const emptyLine = t(emptyLineKey)
   const latestItem = items[items.length - 1]
   const latestItemSignature = `${latestItem?.id ?? ''}:${latestItem?.text.length ?? 0}:${latestItem?.streaming ? 1 : 0}`
-  const visiblePermissionPrompt = pendingPermissionPrompt && pendingPermissionPrompt.conversationId === activeConversationId && !pendingPermissionPrompt.autoApprove
-    ? pendingPermissionPrompt
-    : undefined
+  const visiblePermissionPrompt = promptForConversation(
+    Object.values(pendingPermissionPrompts).filter(prompt => !prompt.autoApprove),
+    activeConversationId,
+  )
+  const sidePermissionPrompt = promptForConversation(
+    Object.values(pendingPermissionPrompts).filter(prompt => !prompt.autoApprove),
+    sideChat?.conversation.id,
+  )
+  const mainQuestionPrompt = promptForConversation(Object.values(questionPrompts), activeConversationId)
+  const sideQuestionPrompt = promptForConversation(Object.values(questionPrompts), sideChat?.conversation.id)
   const shouldShowLogin = !noticeAccepted || !entryUnlocked
   // When peeking (hidden + hover), the sidebar column expands visually to
   // the user's last expanded width — but the persisted mode stays 'hidden'.
@@ -719,9 +750,9 @@ export function App() {
   // the "ghost column" — an empty full-width column that appeared because the
   // grid stayed expanded while the shell had already faded.
   const sidebarVisualMode = sidebarMode === 'hidden' && sidebarPeek && !sidebarPeekLeaving ? 'expanded' : sidebarMode
-  // Fullscreen views (Profile / Settings) don't render the sidebar at all —
+  // The settings view does not render the sidebar —
   // collapse the column to 0 so the workspace takes the full grid width.
-  const isFullscreenView = activeView === 'settings' || activeView === 'profile'
+  const isFullscreenView = activeView === 'settings'
   const closeWorkspacePanels = useCallback(() => {
     terminal.close()
     review.close()
@@ -788,8 +819,10 @@ export function App() {
    * which is what serializes the checklist migration AFTER the 280ms
    * genie window instead of fighting it (single choreography owner —
    * see useChecklistFlight). otherRightLaneOpen extends "right side
-   * physically occupied" to the subagent thread panel, same spirit as
-   * the terminal/review/web rule. */
+   * physically occupied" to the subagent thread panel and the side-chat
+   * column, same spirit as the terminal/review/web rule. A floating card
+   * anchored to the viewport's right edge would otherwise sit underneath
+   * the side-chat lane. */
   const activeChecklistTodos = activeConversationId ? todosByConversation[activeConversationId] : undefined
   const checklistPlacement = resolveChecklistPlacement({
     hasList: activeView === 'chat' && !isFullscreenView && !!activeChecklistTodos && activeChecklistTodos.length > 0,
@@ -799,7 +832,7 @@ export function App() {
     webOpen: visibleBrowserOpen,
     sidebarOpen: sidebarVisualMode !== 'hidden',
     preference: checklistFormPref,
-    otherRightLaneOpen: showSubagentThreadPanel,
+    otherRightLaneOpen: showSubagentThreadPanel || Boolean(sideChat),
   })
   const checklistFlight = useChecklistFlight(checklistPlacement)
   /* The completed list LEAVES (user order, 2026-08-01): after the dwell
@@ -833,6 +866,7 @@ export function App() {
     // (position:absolute) must keep its own width or .app-sidebar grows to
     // content width → ghost expand with untruncated project names.
     '--sidebar-peek-width': `${sidebarMode === 'hidden' && (sidebarPeek || sidebarPeekLeaving) ? sidebarWidth : 0}px`,
+    '--sidechat-width': sideChat ? 'clamp(300px, 32vw, 420px)' : '0px',
     '--subagents-panel-width': showSubagentThreadPanel ? '320px' : '0px',
     '--terminal-width': visibleTerminalOpen ? `${terminal.terminalWidth}px` : '0px',
     '--review-width': visibleReviewOpen ? `${review.reviewWidth}px` : '0px',
@@ -923,14 +957,14 @@ export function App() {
     }
   }, [])
 
-  // Notification click → focus conversation. Wired once at mount. The
-  // backend emits "notification-clicked" with conversationId when the
-  // user clicks an OS notification — currently a TODO for Geralt's
-  // notification_service.rs. Until then the handler exists but the event
-  // never fires.
+  // Notification click → focus a persisted conversation. The desktop
+  // backend may emit this event immediately when it shows a notification;
+  // ephemeral side-chat IDs must never become the main conversation.
   useEffect(() => {
     const unlisten = (window.verboo as any).listenForNotificationClick?.((conversationId: string) => {
-      setActiveConversationId(conversationId)
+      const target = findNotifiableConversationId(chatStoreRef.current.conversations, conversationId)
+      if (!target) return
+      setActiveConversationId(target)
       setActiveView('chat')
     })
     return () => { unlisten?.then((fn: () => void) => fn()) }
@@ -1068,6 +1102,42 @@ export function App() {
   }, [annotationDrafts])
 
   useEffect(() => {
+    sideChatRef.current = sideChat
+  }, [sideChat])
+
+  // Escape may only act on a conversation that is still rendered in the lane
+  // that last received focus. Navigation can leave a previous conversation
+  // running in the background, so keeping its focus ref would make Esc stop
+  // work the user can no longer see.
+  useEffect(() => {
+    const focusedConversationId = focusedConversationIdRef.current
+    if (!focusedConversationId) return
+
+    const focusedConversationIsVisible = focusedConversationLaneRef.current === 'main'
+      ? activeView === 'chat' && focusedConversationId === activeConversationId
+      : focusedConversationLaneRef.current === 'side'
+        ? focusedConversationId === sideChat?.conversation.id
+        : false
+
+    if (!focusedConversationIsVisible) {
+      focusedConversationIdRef.current = undefined
+      focusedConversationLaneRef.current = undefined
+    }
+  }, [activeConversationId, activeView, sideChat])
+
+  // The excerpt belongs to the main conversation and workspace that opened
+  // it. Any main-lane navigation invalidates that relationship, including
+  // routes that do not go through the explicit sidebar handlers (notification
+  // clicks and the command palette). Close the ephemeral lane before it can
+  // send against a different project.
+  useEffect(() => {
+    if (!sideChat) return
+    if (shouldDiscardSideChatForNavigation(sideChat, activeConversationId, currentWorkspaceDirectory)) {
+      discardSideChatForNavigation()
+    }
+  }, [activeConversationId, currentWorkspaceDirectory, sideChat])
+
+  useEffect(() => {
     conversationItemsRef.current = items
   }, [items])
 
@@ -1126,11 +1196,12 @@ export function App() {
   }, [activeView, activeConversationId, hasConversation, latestItemSignature, shouldShowLogin])
 
   useEffect(() => {
-    if (!pendingPermissionPrompt?.autoApprove) return
-    if (autoApprovalSent.current.has(pendingPermissionPrompt.id)) return
-    autoApprovalSent.current.add(pendingPermissionPrompt.id)
-    void respondToPermissionPrompt(pendingPermissionPrompt, 'allow', true)
-  }, [pendingPermissionPrompt])
+    for (const prompt of Object.values(pendingPermissionPrompts)) {
+      if (!prompt.autoApprove || autoApprovalSent.current.has(prompt.id)) continue
+      autoApprovalSent.current.add(prompt.id)
+      void respondToPermissionPrompt(prompt, 'allow', true)
+    }
+  }, [pendingPermissionPrompts])
 
   /* NOTIFICATION SOUND (the app's first sound): the app needs the user.
    * Effect-driven — one fire per staged prompt, never a setState-
@@ -1138,17 +1209,17 @@ export function App() {
    * prompt gate already excludes auto-approved prompts (no attention
    * needed there). Each event is additionally gated by its existing
    * notification preference inside playAppSound. */
-  const visiblePermissionPromptId = visiblePermissionPrompt?.id
+  const visiblePermissionPromptId = [visiblePermissionPrompt?.id, sidePermissionPrompt?.id].filter(Boolean).join('|')
   useEffect(() => {
-    if (visiblePermissionPromptId) {
-      playAppSound('permissionNeeded', visiblePermissionPrompt?.conversationId)
+    for (const prompt of [visiblePermissionPrompt, sidePermissionPrompt]) {
+      if (prompt) playAppSound('permissionNeeded', prompt.conversationId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visiblePermissionPromptId])
-  const questionPromptTurnId = questionPrompt?.turnId
+  const questionPromptTurnId = Object.keys(questionPrompts).sort().join('|')
   useEffect(() => {
-    if (questionPromptTurnId) {
-      playAppSound('questionNeeded', questionPrompt?.conversationId)
+    for (const prompt of Object.values(questionPrompts)) {
+      playAppSound('questionNeeded', prompt.conversationId)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [questionPromptTurnId])
@@ -1162,10 +1233,9 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    // ESC closes settings, profile, and plugins fullscreen views. Earlier this
-    // only handled settings, so profile/plugins had no keyboard escape — users
-    // had to click the back button. Now all three views respond to ESC.
-    if (activeView !== 'settings' && activeView !== 'profile' && activeView !== 'plugins') return undefined
+    // ESC closes settings and plugins. Earlier this only handled settings, so
+    // the plugins view had no keyboard escape — users had to click back.
+    if (activeView !== 'settings' && activeView !== 'plugins') return undefined
 
     function handleEscape(event: KeyboardEvent) {
       if (event.key === 'Escape') {
@@ -1221,32 +1291,32 @@ export function App() {
   const effectiveContextUsage = contextUsage ?? (Date.now() < skipContextEstimateUntil.current ? undefined : estimatedContextUsage)
 
   useEffect(() => {
-    if (runningTurnId || queuedFollowUps.length === 0) return
+    if (queuedFollowUps.length === 0) return
     void flushQueuedFollowUps()
-  }, [runningTurnId, queuedFollowUps])
+  }, [queuedFollowUps, runningTurnByConversation])
 
   useEffect(() => {
     function handleEscapeInterrupt(event: KeyboardEvent) {
-      if (event.key !== 'Escape' || !runningTurnId) return
+      const targetConversationId = resolveEscapeConversation({
+        activeConversationId: activeConversationIdRef.current,
+        sideChatConversationId: sideChatRef.current?.conversation.id,
+        focusedConversationId: focusedConversationIdRef.current,
+        focusedLane: focusedConversationLaneRef.current,
+        lifecycle: { runningTurnByConversation: runningTurnByConversationRef.current },
+      })
+      if (event.key !== 'Escape' || !targetConversationId) return
       event.preventDefault()
       event.stopPropagation()
       const now = Date.now()
       if (now - lastEscapeAt.current <= 1300) {
         lastEscapeAt.current = 0
-        goalAbortRef.current?.abort()
-        // Pass activeConversationId so only the active chat stops (Bug 4).
-        // Guard: when activeConversationId is undefined (new chat with no
-        // active session), interrupt(undefined) would stop ALL sessions.
-        if (activeConversationId) {
-          void window.verboo.interrupt(activeConversationId)
-        }
+        if (targetConversationId === activeConversationIdRef.current) goalAbortRef.current?.abort()
+        void interruptForUser(targetConversationId)
         // User ESC×2 is deliberate: dismiss the question wizard entirely
         // (not just minimize). The auto-interrupt from presentTurnQuestions
         // (line ~2251) does NOT go through this handler — that path must
         // keep the wizard open for AskUserQuestion flow.
-        questionPromptRef.current = undefined
-        setQuestionPrompt(undefined)
-        setQuestionWizardOpen(false)
+        clearQuestionPromptsForConversation(targetConversationId)
         return
       }
       lastEscapeAt.current = now
@@ -1255,7 +1325,7 @@ export function App() {
 
     window.addEventListener('keydown', handleEscapeInterrupt, { capture: true })
     return () => window.removeEventListener('keydown', handleEscapeInterrupt, { capture: true })
-  }, [runningTurnId, activeConversationId])
+  }, [runningTurnByConversation])
 
   // Save the outgoing conversation's composer draft and restore the incoming
   // conversation's draft whenever the active conversation changes. Uses a
@@ -1268,6 +1338,9 @@ export function App() {
     const previousKey = prevConversationIdRef.current ?? NEW_CHAT_KEY
     const nextKey = activeConversationId ?? NEW_CHAT_KEY
     if (previousKey !== nextKey) {
+      // SideChatSurface is parallel to this composer. Its turn lifecycle must
+      // never close the side panel just because the main conversation changes;
+      // only closeSideChat (the user's close action) destroys it.
       composerDrafts.current[previousKey] = composerValue
       setComposerValue(composerDrafts.current[nextKey] ?? '')
       setTokenSkills([])
@@ -1848,10 +1921,9 @@ export function App() {
       turnTerminalErrors.current[event.turnId] = []
       turnCommands.current[event.turnId] = []
       turnReferences.current[event.turnId] = []
-      setRunningTurnId(event.turnId)
       setThinkingTurnId(event.turnId)
       if (conversationId) {
-        setRunningConversations(prev => new Set(prev).add(conversationId))
+        markTurnStarted(conversationId, event.turnId)
         appendAssistantPlaceholder(conversationId, event.turnId)
       }
       return
@@ -1910,7 +1982,7 @@ export function App() {
           turnConversationIds.current[event.turnId] = conversationId
           turnStartedAt.current[event.turnId] = Date.now()
           beginTokenRateTracking(event.turnId)
-          setRunningTurnId(event.turnId)
+          markTurnStarted(conversationId, event.turnId)
           setThinkingTurnId(event.turnId)
         }
       }
@@ -1964,9 +2036,9 @@ export function App() {
       // T1-TodoWrite: the structured checklist rides the todowrite
       // activity (kind 'planning'). REPLACE semantics per OWNER
       // conversation (possession); absence (undefined —
-      // skip_serializing_if) is NOT a clear. The activity itself
-      // continues below into the transcript as before — the checklist
-      // display is additive state, not a transcript change.
+      // skip_serializing_if) is NOT a clear. ChecklistPanel is the
+      // presentation for this activity, so appendActivityItem deliberately
+      // skips its duplicate transcript row below.
       if (conversationId && activity?.todos) {
         setTodosByConversation(prev => applyTodoWrite(prev, conversationId, activity.todos))
       }
@@ -2050,6 +2122,11 @@ export function App() {
 
     if (event.type === 'error') {
       const conversationId = turnConversationIds.current[event.turnId]
+      const errorPresentation = presentAgentError(
+        event,
+        userInterruptedTurnsRef.current,
+        t,
+      )
       setVideoProgressByTurn(prev => clearVideoProgress(prev, event.turnId))
       const failure = event.payload
       if (conversationId && failure?.sessionId) {
@@ -2117,8 +2194,8 @@ export function App() {
       if (conversationId) {
         updateConversation(conversationId, c => ({ ...c, lastTurnEndedAt: Date.now() }))
       }
-      setRunningTurnId(undefined)
-      setRunningConversations(prev => { const next = new Set(prev); next.delete(conversationId); return next })
+      if (conversationId) markTurnFinished(conversationId, event.turnId)
+      clearPermissionPromptForTurn(event.turnId)
       setTokenRate(undefined)
       // Force the tray to idle so a lagging 'thinking' event can never
       // resurrect the timer after the turn has errored out.
@@ -2130,11 +2207,14 @@ export function App() {
       if (!willContinueAutomatically) flashPet('error')
       // A transparently recovered failure is not a completed error from the
       // user's perspective, so only notify when it will actually surface.
-      if (conversationId && !willContinueAutomatically) {
-        const isActive = conversationId === activeConversationIdRef.current
+      const notificationConversationId = conversationId
+        ? findNotifiableConversationId(chatStoreRef.current.conversations, conversationId)
+        : undefined
+      if (notificationConversationId && !willContinueAutomatically) {
+        const isActive = notificationConversationId === activeConversationIdRef.current
         void window.verboo.fireCompletionNotification(
           1,
-          conversationId,
+          notificationConversationId,
           isActive,
         )
       }
@@ -2194,8 +2274,10 @@ export function App() {
             id: `${event.turnId}:error`,
             role: 'system',
             text: isContextOverflow
-              ? `${t('context.overflowDetected')}\n\n${event.message}`
-              : event.message,
+              ? `${t('context.overflowDetected')}\n\n${errorPresentation.text}`
+              : errorPresentation.text,
+            errorDetail: errorPresentation.technicalDetail,
+            presentation: errorPresentation.presentation,
             timestamp: Date.now(),
           })
         }
@@ -2214,7 +2296,13 @@ export function App() {
         // QA a-i: the retry replays the SAME send — annotations included
         // (frozen at the click, carried by the retry payload). Without this
         // the retried turn silently lost the user's excerpts.
-        const retry = createQueuedFollowUp(conversationId, retryMeta.message, undefined, retryMeta.annotations ?? [])
+        const retry = createQueuedFollowUp(
+          conversationId,
+          retryMeta.message,
+          undefined,
+          retryMeta.annotations ?? [],
+          retryMeta.sideChat ?? false,
+        )
         retry.request.turnId = crypto.randomUUID()
         if (completionDeferred) completionDeferred.turnId = retry.request.turnId
         void runTurn(retry, { skipResume: true }).catch(error => {
@@ -2244,7 +2332,7 @@ export function App() {
           ? `\n\nLast partial assistant output (may be truncated):\n"""\n${partialText.slice(-800)}\n"""`
           : ''
         const resumeMessage = t(willRecoverAuth ? 'auth.resumePrompt' : 'context.resumePrompt') + suffix
-        const resume = createQueuedFollowUp(conversationId, resumeMessage)
+        const resume = createQueuedFollowUp(conversationId, resumeMessage, undefined, [], retryMeta?.sideChat ?? false)
         resume.request.turnId = crypto.randomUUID()
         if (completionDeferred) completionDeferred.turnId = resume.request.turnId
 
@@ -2280,14 +2368,15 @@ export function App() {
 
     if (event.type === 'done') {
       const conversationId = turnConversationIds.current[event.turnId]
+      userInterruptedTurnsRef.current.delete(event.turnId)
       // A turn finished cleanly → clear any overflow-recovery guard so a future
       // overflow in this conversation can auto-recover again.
       if (conversationId) {
         overflowRecovering.current.delete(conversationId)
         authRecovering.current.delete(conversationId)
       }
-      setRunningTurnId(undefined)
-      setRunningConversations(prev => { const next = new Set(prev); next.delete(conversationId); return next })
+      if (conversationId) markTurnFinished(conversationId, event.turnId)
+      clearPermissionPromptForTurn(event.turnId)
       setTokenRate(undefined)
       // Force the tray to idle so a lagging 'thinking' event can never
       // resurrect the timer after the turn has completed.
@@ -2301,11 +2390,14 @@ export function App() {
       // Fire OS notification when the turn completed in a background
       // conversation (not the active one) or the window is not focused.
       // The backend checks the user's completion_notifications setting.
-      if (conversationId) {
-        const isActive = conversationId === activeConversationIdRef.current
+      const notificationConversationId = conversationId
+        ? findNotifiableConversationId(chatStoreRef.current.conversations, conversationId)
+        : undefined
+      if (notificationConversationId) {
+        const isActive = notificationConversationId === activeConversationIdRef.current
         void window.verboo.fireCompletionNotification(
           event.exitCode ?? 0,
-          conversationId,
+          notificationConversationId,
           isActive,
         )
       }
@@ -2361,15 +2453,20 @@ export function App() {
         }
         // presentTurnQuestions (above) may have staged a question wizard for
         // the dead turnId; clear it so the retry doesn't inherit stale state.
-        if (questionPromptRef.current?.turnId === event.turnId) {
-          questionPromptRef.current = undefined
-          setQuestionPrompt(undefined)
-          setQuestionWizardOpen(false)
-        }
+        clearQuestionPromptForTurn(event.turnId)
         cleanupTurnState(event.turnId)
         // QA a-i: same replay rule as the error path — the retry carries the
         // click-time annotations from the payload, never a stripped copy.
-        void runTurn(createQueuedFollowUp(conversationId, message, undefined, retryMeta.annotations ?? []), { skipResume: true })
+        void runTurn(
+          createQueuedFollowUp(
+            conversationId,
+            message,
+            undefined,
+            retryMeta.annotations ?? [],
+            retryMeta.sideChat ?? false,
+          ),
+          { skipResume: true },
+        )
         return
       }
       if (conversationId && event.exitCode !== 0) {
@@ -2556,7 +2653,10 @@ export function App() {
     setActiveView('chat')
     stickToBottomRef.current = true
     setShowJumpToLatest(false)
-    setPendingPermissionPrompt(current => current?.conversationId === conversationId ? undefined : current)
+    setPendingPermissionPrompts(current => {
+      const next = Object.fromEntries(Object.entries(current).filter(([, prompt]) => prompt.conversationId !== conversationId))
+      return Object.keys(next).length === Object.keys(current).length ? current : next
+    })
 
     // F3: envio SÓ-anotação não cria bolha de usuário vazia — o registro do
     // envio é o item N3 (kind 'annotation') que o runTurn anexa após a
@@ -2602,8 +2702,79 @@ export function App() {
     }
   }
 
+  function markTurnStarted(conversationId: string, turnId: string) {
+    const next = startTurn(
+      { runningTurnByConversation: runningTurnByConversationRef.current },
+      conversationId,
+      turnId,
+    )
+    runningTurnByConversationRef.current = next.runningTurnByConversation
+    setRunningTurnByConversation(next.runningTurnByConversation)
+  }
+
+  function markTurnFinished(conversationId: string, turnId: string) {
+    if (runningTurnByConversationRef.current[conversationId] !== turnId) return
+    const next = finishTurn(
+      { runningTurnByConversation: runningTurnByConversationRef.current },
+      conversationId,
+      turnId,
+    )
+    runningTurnByConversationRef.current = next.runningTurnByConversation
+    setRunningTurnByConversation(next.runningTurnByConversation)
+  }
+
+  async function interruptForUser(conversationId?: string): Promise<boolean> {
+    const targetConversationId = conversationId ?? activeConversationIdRef.current
+    const turnId = targetConversationId
+      ? runningTurnByConversationRef.current[targetConversationId]
+      : undefined
+    if (turnId) userInterruptedTurnsRef.current.add(turnId)
+
+    const interrupted = await window.verboo.interrupt(conversationId).catch(() => false)
+    if (!interrupted && turnId) userInterruptedTurnsRef.current.delete(turnId)
+    return interrupted
+  }
+
+  function clearPermissionPromptForTurn(turnId: string) {
+    setPendingPermissionPrompts(current => {
+      const next = Object.fromEntries(Object.entries(current).filter(([, prompt]) => prompt.turnId !== turnId))
+      return Object.keys(next).length === Object.keys(current).length ? current : next
+    })
+  }
+
+  function clearQuestionPromptForTurn(turnId: string) {
+    delete questionPromptsRef.current[turnId]
+    setQuestionPrompts(current => {
+      if (!current[turnId]) return current
+      const next = { ...current }
+      delete next[turnId]
+      return next
+    })
+    setQuestionWizardOpenByTurn(current => {
+      if (!(turnId in current)) return current
+      const next = { ...current }
+      delete next[turnId]
+      return next
+    })
+  }
+
+  function clearQuestionPromptsForConversation(conversationId: string) {
+    const turnIds = Object.values(questionPromptsRef.current)
+      .filter(prompt => prompt.conversationId === conversationId)
+      .map(prompt => prompt.turnId)
+    for (const turnId of turnIds) clearQuestionPromptForTurn(turnId)
+  }
+
+  function updateQuestionPromptAnswers(turnId: string, answers: QuestionAnswer[]) {
+    const current = questionPromptsRef.current[turnId]
+    if (!current) return
+    const next = { ...current, answers }
+    questionPromptsRef.current[turnId] = next
+    setQuestionPrompts(prompts => ({ ...prompts, [turnId]: next }))
+  }
+
   function isConversationRunning(conversationId: string): boolean {
-    return Object.values(turnConversationIds.current).includes(conversationId)
+    return Boolean(runningTurnByConversationRef.current[conversationId])
   }
 
   function createQueuedFollowUp(
@@ -2614,6 +2785,7 @@ export function App() {
     // applyAnnotations produz aqui são o que o turno carrega, mesmo que a
     // fila espere outro turno terminar e o usuário edite o rascunho nesse meio.
     annotations: readonly Annotation[] = [],
+    sideChat = false,
   ): QueuedFollowUp {
     const turnModel = {
       modelId: selectedModel,
@@ -2625,6 +2797,7 @@ export function App() {
       id: `queue:${crypto.randomUUID()}`,
       conversationId,
       message,
+      sideChat,
       turnModel,
       // applyAnnotations com lista vazia devolve a MESMA referência (a chave
       // nem existe) — o caminho sem anotações fica byte-idêntico ao pré-F3,
@@ -2667,9 +2840,13 @@ export function App() {
   }
 
   async function flushQueuedFollowUps() {
-    if (runningTurnId || queuedFollowUpsRef.current.length === 0) return
-    const [next, ...rest] = queuedFollowUpsRef.current
+    if (queuedFollowUpsRef.current.length === 0) return
+    const runningConversationIds = new Set(Object.keys(runningTurnByConversationRef.current))
+    const nextIndex = findNextRunnableQueueIndex(queuedFollowUpsRef.current, runningConversationIds)
+    if (nextIndex < 0) return
+    const next = queuedFollowUpsRef.current[nextIndex]
     if (!next) return
+    const rest = queuedFollowUpsRef.current.filter((_, index) => index !== nextIndex)
     setQueuedFollowUpsList(() => rest)
     await runTurn(next)
   }
@@ -2711,7 +2888,7 @@ export function App() {
       deferred.resolve = resolve
       interjectDeferred.current = deferred
     })
-    const interrupted = await window.verboo.interrupt(conversationId).catch(() => false)
+    const interrupted = await interruptForUser(conversationId)
     if (!interrupted) {
       deferred.resolve()
       interjectDeferred.current = undefined
@@ -2776,16 +2953,24 @@ export function App() {
 
     const parentTurnId = item.request.turnId ?? crypto.randomUUID()
     turnConversationIds.current[parentTurnId] = item.conversationId
-    const request = await prepareRequestWithResearchSubagents(item, parentTurnId)
-    const resumeId = options?.skipResume ? undefined : conversationCliSessionId(item.conversationId)
-    const turnId = await sendTrackedTurn({ ...request, turnId: parentTurnId }, resumeId)
+    // Reserve the conversation before the async request preparation. A queued
+    // follow-up must not slip into this conversation during research-subagent
+    // preparation, before the CLI has emitted `started`.
+    markTurnStarted(item.conversationId, parentTurnId)
+    let acceptedTurnId = parentTurnId
+    try {
+      const request = await prepareRequestWithResearchSubagents(item, parentTurnId)
+      const resumeId = options?.skipResume ? undefined : conversationCliSessionId(item.conversationId)
+      const turnId = await sendTrackedTurn({ ...request, turnId: parentTurnId }, resumeId)
+      acceptedTurnId = turnId
+      markTurnStarted(item.conversationId, turnId)
     // F3 — limpeza PÓS-confirmação + N3. O await acima resolveu: o Rust
     // aceitou o turno, ENTÃO (e só então) o rascunho é consumido — por id,
     // só os que viajaram no request; um rascunho criado DURANTE o voo fica.
     // Se sendTrackedTurn lançar, nada aqui executa e o rascunho sobrevive à
     // falha (a posição desta linha é pinada por teste estrutural).
     const sentAnnotations = request.annotations
-    if (sentAnnotations?.length) {
+    if (sentAnnotations?.length && !item.sideChat) {
       setAnnotationDrafts(current =>
         consumeAnnotationDrafts(current, item.conversationId, new Set(sentAnnotations.map(a => a.id))),
       )
@@ -2819,6 +3004,7 @@ export function App() {
       conversationId: item.conversationId,
       message: item.message,
       alreadyRetriedWithoutSession: Boolean(options?.skipResume),
+      sideChat: item.sideChat,
       annotations: request.annotations,
     }
     tagAssistantMessage(item.conversationId, turnId, item.turnModel)
@@ -2827,7 +3013,11 @@ export function App() {
     // carry) so the compaction frontier can await THIS turn's
     // conclusion. Existing fire-and-forget callers (`void runTurn(...)`)
     // are unaffected.
-    return turnId
+      return turnId
+    } catch (error) {
+      markTurnFinished(item.conversationId, acceptedTurnId)
+      throw error
+    }
   }
 
   async function sendTrackedTurn(request: AgentTurnRequest, resumeSessionId?: string): Promise<string> {
@@ -2920,9 +3110,9 @@ export function App() {
     const command = turnLastCommand.current[turnId] ?? extractCommandFromPermissionText(combined)
     const trusted = command ? findTrustedCommand(command, userSettingsRef.current) : undefined
 
-    setPendingPermissionPrompt(current => {
-      if (current?.turnId === turnId) return current
-      return {
+    setPendingPermissionPrompts(current => {
+      if (Object.values(current).some(prompt => prompt.turnId === turnId)) return current
+      const prompt: PendingPermissionPrompt = {
         id: `permission:${turnId}:${Date.now()}`,
         turnId,
         conversationId,
@@ -2930,6 +3120,7 @@ export function App() {
         detail,
         autoApprove: Boolean(trusted),
       }
+      return { ...current, [prompt.id]: prompt }
     })
   }
 
@@ -2945,7 +3136,12 @@ export function App() {
       await markTrustedCommandUsed(prompt.command)
     }
 
-    setPendingPermissionPrompt(current => current?.id === prompt.id ? undefined : current)
+    setPendingPermissionPrompts(current => {
+      if (!current[prompt.id]) return current
+      const next = { ...current }
+      delete next[prompt.id]
+      return next
+    })
 
     const approved = decision !== 'deny'
     appendConversationItem(prompt.conversationId, {
@@ -3068,7 +3264,7 @@ export function App() {
   function presentTurnQuestions(turnId: string, conversationId: string | undefined) {
     if (!conversationId) return
     // Already presented for this turn (wizard opened mid-turn on tool capture).
-    if (questionPromptRef.current?.turnId === turnId) return
+    if (questionPromptsRef.current[turnId]) return
     let questions: ModelQuestion[] | undefined = turnQuestions.current[turnId]
     let autoOpen = true
     if (!questions || questions.length === 0) {
@@ -3084,20 +3280,19 @@ export function App() {
       questions,
       answers: questions.map(() => ({ selected: [], custom: '' })),
     }
-    questionPromptRef.current = nextPrompt
-    setQuestionPrompt(nextPrompt)
-    setQuestionWizardOpen(autoOpen)
+    questionPromptsRef.current[turnId] = nextPrompt
+    setQuestionPrompts(current => ({ ...current, [turnId]: nextPrompt }))
+    setQuestionWizardOpenByTurn(current => ({ ...current, [turnId]: autoOpen }))
   }
 
-  async function submitQuestionAnswers() {
+  async function submitQuestionAnswers(prompt: QuestionPromptState) {
     // Read through the ref: the wizard auto-advances 170ms after the last
     // click, and the state captured by its render closure can miss that
     // final answer (it shipped "(no answer)" for the last question).
-    const prompt = questionPromptRef.current
-    if (!prompt) return
-    questionPromptRef.current = undefined
-    setQuestionPrompt(undefined)
-    setQuestionWizardOpen(false)
+    const currentPrompt = questionPromptsRef.current[prompt.turnId]
+    if (!currentPrompt) return
+    prompt = currentPrompt
+    clearQuestionPromptForTurn(prompt.turnId)
 
     const lines = prompt.questions.map((question, index) => {
       const answer = prompt.answers[index]
@@ -3131,7 +3326,7 @@ export function App() {
   // activity kind, so it is inferred from the action label/command text.
   const petState: PetState = useMemo(() => {
     if (petFlash) return petFlash
-    if (!runningTurnId) return 'idle'
+    if (runningConversations.size === 0) return 'idle'
     const kind = petActivity?.kind
     const label = petActivity?.label ?? ''
     const deleting = /\b(rm|del|delete|remove|unlink)\b|apag|remov|exclu/i.test(label)
@@ -3139,7 +3334,7 @@ export function App() {
     if (kind === 'edit') return deleting ? 'deleting' : 'editing'
     if (kind === 'read' || kind === 'search') return 'reading'
     return 'thinking'
-  }, [petFlash, runningTurnId, petActivity])
+  }, [petFlash, runningConversations.size, petActivity])
 
   function togglePet() {
     setPetEnabled(current => {
@@ -3734,7 +3929,7 @@ export function App() {
         })
       },
       abortTurn: () => {
-        void window.verboo.interrupt()
+        void interruptForUser()
         // Force the tray to idle immediately — don't wait for the CLI to
         // acknowledge the interrupt (it may be stuck reading stdout and
         // never emit the 'done' event). Prevents the timer from counting
@@ -4169,6 +4364,7 @@ export function App() {
   }
 
   function selectProjectPath(path: string) {
+    discardSideChatForNavigation()
     const existing = chatStore.projects.find(project => project.path === path && !project.archivedAt)
     const project = existing ?? createProject(path)
     if (!existing) {
@@ -4181,6 +4377,7 @@ export function App() {
   }
 
   function newChat(projectId = selectedProjectId) {
+    discardSideChatForNavigation()
     const project = projectId ? chatStore.projects.find(item => item.id === projectId && !item.archivedAt) : undefined
     if (project) {
       updateChatStore(store => ({
@@ -4202,9 +4399,64 @@ export function App() {
     setActiveView('chat')
   }
 
+  function openSideChat(context: Annotation) {
+    const previousId = sideChatRef.current?.conversation.id
+    if (previousId && isConversationRunning(previousId)) {
+      void window.verboo.interrupt(previousId).catch(() => {})
+    }
+    const next = createSideChatState(
+      context,
+      undefined,
+      undefined,
+      activeConversationId,
+      currentWorkspaceDirectory,
+    )
+    sideChatRef.current = next
+    setSideChat(next)
+  }
+
+  function closeSideChat() {
+    discardSideChatForNavigation()
+  }
+
+  function discardSideChatForNavigation() {
+    const conversationId = sideChatRef.current?.conversation.id
+    if (conversationId && isConversationRunning(conversationId)) {
+      void window.verboo.interrupt(conversationId).catch(() => {})
+    }
+    if (conversationId) {
+      setTodosByConversation(current => removeChecklistForConversation(current, conversationId))
+      setPendingPermissionPrompts(current => {
+        const next = Object.fromEntries(Object.entries(current).filter(([, prompt]) => prompt.conversationId !== conversationId))
+        return Object.keys(next).length === Object.keys(current).length ? current : next
+      })
+      clearQuestionPromptsForConversation(conversationId)
+    }
+    sideChatRef.current = undefined
+    setSideChat(undefined)
+  }
+
+  async function sendSideChatMessage(message: string) {
+    const state = sideChatRef.current
+    const trimmed = message.trim()
+    if (!state || !trimmed || isConversationRunning(state.conversation.id)) return
+
+    const conversationId = state.conversation.id
+    appendConversationItem(conversationId, {
+      id: `${conversationId}:user:${Date.now()}`,
+      role: 'user',
+      text: trimmed,
+      timestamp: Date.now(),
+    })
+    const queued = createQueuedFollowUp(conversationId, trimmed, [], [], true)
+    queued.request = buildSideChatRequest(queued.request, state.context)
+    await runTurn(queued)
+  }
+
   function selectProject(projectId: string) {
     const project = chatStore.projects.find(item => item.id === projectId && !item.archivedAt)
     if (!project) return
+    discardSideChatForNavigation()
     setSelectedProjectId(project.id)
     setActiveConversationId(undefined)
     if (project.path) setConfig(current => ({ ...current, workingDirectory: project.path ?? current.workingDirectory }))
@@ -4212,6 +4464,7 @@ export function App() {
   }
 
   function clearProjectSelection() {
+    discardSideChatForNavigation()
     setSelectedProjectId(undefined)
     setActiveConversationId(undefined)
     // Reset the working directory to the host default so the workspace badge
@@ -4226,6 +4479,9 @@ export function App() {
   function selectConversation(conversationId: string) {
     const conversation = chatStore.conversations.find(item => item.id === conversationId)
     if (!conversation || conversation.archivedAt) return
+    if (shouldDiscardSideChatForNavigation(sideChatRef.current, conversationId)) {
+      discardSideChatForNavigation()
+    }
     const project = conversation.projectId
       ? chatStore.projects.find(item => item.id === conversation.projectId)
       : undefined
@@ -4425,7 +4681,8 @@ export function App() {
   }
 
   function conversationCliSessionId(conversationId: string): string | undefined {
-    return chatStoreRef.current.conversations.find(conversation => conversation.id === conversationId)?.cliSessionId
+    const persistedSessionId = chatStoreRef.current.conversations.find(conversation => conversation.id === conversationId)?.cliSessionId
+    return resolveSideChatSessionId(sideChatRef.current, conversationId, persistedSessionId)
   }
 
   function updateConversationSession(conversationId: string, cliSessionId: string) {
@@ -4555,8 +4812,11 @@ export function App() {
     }
     const keys = turnActivityKeys.current[turnId] ?? new Set<string>()
     turnActivityKeys.current[turnId] = keys
-    if (keys.has(activity.key)) return
-    keys.add(activity.key)
+    const seenToolUseIds = new Set([
+      ...Object.keys(turnCommandItemIds.current[turnId] ?? {}),
+      ...Object.keys(turnToolUseItemIds.current[turnId] ?? {}),
+    ])
+    if (!registerRuntimeActivity(activity, keys, seenToolUseIds)) return
     // Dedupe: skip regular "Leu imagem" activities when a vision-relay
     // activity already exists for this turn (avoids double image row).
     if (activity.kind === 'image' && !activity.key.endsWith(':vision-relay')) {
@@ -4790,6 +5050,10 @@ export function App() {
     conversationId: string,
     updater: (conversation: StoredConversation) => StoredConversation,
   ) {
+    if (sideChatRef.current?.conversation.id === conversationId) {
+      setSideChat(current => updateSideChatState(current, conversationId, updater))
+      return
+    }
     // G-C5: delegate to the pure helper in chatStore so the
     // identity-preserving behavior is testable in isolation.
     updateChatStore(store => updateConversationPure(store, conversationId, updater))
@@ -4803,6 +5067,8 @@ export function App() {
   }
 
   function workingDirectoryForConversation(conversationId: string): string {
+    const sideChatDirectory = resolveSideChatWorkingDirectory(sideChatRef.current, conversationId, '')
+    if (sideChatDirectory) return sideChatDirectory
     const conversation = chatStore.conversations.find(item => item.id === conversationId)
     const conversationProject = conversation?.projectId
       ? chatStore.projects.find(item => item.id === conversation.projectId)
@@ -5042,9 +5308,9 @@ export function App() {
   useEffect(() => {
     const subagentsRunning = workingSubagentCount > 0
     const state: Partial<MenuBarState> = {
-      execution: runningTurnId ? subagentsRunning ? 'tool' : 'thinking' : 'idle',
-      label: runningTurnId ? subagentsRunning ? 'subagent' : 'working' : 'ready',
-      startedAt: runningTurnId ? turnStartedAt.current[runningTurnId] : undefined,
+      execution: anyRunningTurnId ? subagentsRunning ? 'tool' : 'thinking' : 'idle',
+      label: anyRunningTurnId ? subagentsRunning ? 'subagent' : 'working' : 'ready',
+      startedAt: anyRunningTurnId ? turnStartedAt.current[anyRunningTurnId] : undefined,
       modelId: selectedModel,
       modelDisplayName: selectedModelInfo?.displayName,
       contextWindow: selectedContextWindow,
@@ -5063,7 +5329,7 @@ export function App() {
     effectiveContextUsage?.percentage,
     credentials.hasApiKey,
     profile.user?.email,
-    runningTurnId,
+    anyRunningTurnId,
     selectedContextWindow,
     selectedModel,
     selectedModelInfo?.displayName,
@@ -5170,9 +5436,9 @@ export function App() {
       />
 
       <div
-        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' || activeView === 'profile' ? 'view-fullscreen' : ''} ${visibleTerminalOpen ? 'terminal-open' : ''} ${visibleReviewOpen ? 'review-open' : ''} ${visibleBrowserOpen ? 'browser-open' : ''}`}
+        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${sideChat ? 'sidechat-open' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' ? 'view-fullscreen' : ''} ${visibleTerminalOpen ? 'terminal-open' : ''} ${visibleReviewOpen ? 'review-open' : ''} ${visibleBrowserOpen ? 'browser-open' : ''}`}
       >
-        {activeView !== 'settings' && activeView !== 'profile' && sidebarMode === 'hidden' && !sidebarPeek && !sidebarPeekLeaving && (
+        {activeView !== 'settings' && sidebarMode === 'hidden' && !sidebarPeek && !sidebarPeekLeaving && (
           // Rail: thin hit-area on the left edge. Hover/focus expands the
           // sidebar transiently (peek) without persisting. Tab-focusable so
           // keyboard users can open it without a pointer. Hidden while the
@@ -5197,7 +5463,7 @@ export function App() {
           />
         )}
 
-        {activeView !== 'settings' && activeView !== 'profile' && (sidebarMode !== 'hidden' || sidebarPeek || sidebarPeekLeaving) && (
+        {activeView !== 'settings' && (sidebarMode !== 'hidden' || sidebarPeek || sidebarPeekLeaving) && (
           <div
             className={`sidebar-shell ${sidebarPeek && !sidebarPeekLeaving ? 'is-peek' : ''} ${sidebarPeekLeaving && !sidebarPeek ? 'is-peek-leaving' : ''}`}
             onMouseEnter={sidebarPeek || sidebarPeekLeaving ? showSidebarPeek : undefined}
@@ -5219,7 +5485,7 @@ export function App() {
               peek={sidebarPeek || sidebarPeekLeaving}
               onSelectView={setActiveView}
               onOpenSettings={() => {
-                setSettingsTab('permissions')
+                setSettingsTab('security')
                 setActiveView('settings')
               }}
               onOpenSearch={() => setPaletteOpen(true)}
@@ -5235,6 +5501,8 @@ export function App() {
               onArchiveProject={archiveProject}
               onDeleteProject={deleteProject}
               onArchiveConversation={archiveConversation}
+              archivedConversations={archivedChats}
+              onRestoreConversation={restoreConversation}
               onDeleteConversation={deleteConversation}
               onRenameConversation={renameConversation}
             />
@@ -5255,6 +5523,14 @@ export function App() {
           ref={workspaceRef}
           className={`workspace ${activeView === 'chat' && !hasConversation ? 'empty-workspace' : ''} ${activeView === 'settings' ? 'settings-workspace' : ''}`}
           onScroll={handleWorkspaceScroll}
+          onFocusCapture={() => {
+            focusedConversationLaneRef.current = 'main'
+            focusedConversationIdRef.current = activeConversationIdRef.current
+          }}
+          onPointerDownCapture={() => {
+            focusedConversationLaneRef.current = 'main'
+            focusedConversationIdRef.current = activeConversationIdRef.current
+          }}
         >
           {activeView === 'chat' && (
             <div className="workspace-folder-badge" title={workspaceDirectory || t('workspace.noProjectOpen')}>
@@ -5270,22 +5546,12 @@ export function App() {
               onDismiss={() => setDismissedSubagentKey(subagentIndicatorKey)}
             />
           )}
-          {activeView === 'profile' ? (
-            <ProfileView
-              profile={profile}
-              loading={profileLoading}
-              avatarSettings={userSettings.avatar}
-              onRefresh={refreshProfile}
-              onManagePlan={() => window.verboo.openSubscriptions()}
-              onUpdateAvatar={avatar => updateUserSettings({ avatar })}
-              onClose={() => setActiveView('chat')}
-            />
-          ) : activeView === 'plugins' ? (
+          {activeView === 'plugins' ? (
             <PluginsView
               onClose={() => setActiveView('chat')}
               loadIcons={userSettings.loadWebIcons}
               onManageChromeIntegration={() => {
-                setSettingsTab('verbooInChrome')
+                setSettingsTab('integrations')
                 setActiveView('settings')
               }}
               onUsePlugin={(payload) => {
@@ -5341,12 +5607,16 @@ export function App() {
               userSettings={userSettings}
               petEnabled={petEnabled}
               petSize={petSize}
+              profile={profile}
+              profileLoading={profileLoading}
               workingDirectory={currentWorkspaceDirectory}
               onPetToggle={togglePet}
               onPetSizeChange={updatePetSize}
-              archivedConversations={archivedChats}
               browserAvailable={browserAvailable}
               onOpenDashboard={() => window.verboo.openDashboard()}
+              onRefreshProfile={refreshProfile}
+              onManagePlan={() => window.verboo.openSubscriptions()}
+              onUpdateAvatar={avatar => updateUserSettings({ avatar })}
               onSaveApiKey={async apiKey => {
                 await saveApiKey(apiKey)
               }}
@@ -5356,8 +5626,6 @@ export function App() {
               soundsEnabled={soundsEnabled}
               onSoundsEnabledChange={setSoundsEnabled}
               onResetUserSettings={resetUserSettings}
-              onRestoreConversation={restoreConversation}
-              onDeleteConversation={deleteConversation}
               updateSnapshot={updateSnapshot}
               onCheckForUpdates={onCheckForUpdates}
               onDownloadUpdate={onDownloadUpdate}
@@ -5378,7 +5646,7 @@ export function App() {
                 compactedTurnIds={compactedTurnIds}
                 imageReadingTurnId={imageReadingTurnId}
                 videoProgressByTurn={videoProgressByTurn}
-                onCancelVideo={() => { void window.verboo.interrupt(activeConversationId) }}
+                onCancelVideo={() => { void interruptForUser(activeConversationId) }}
                 onEditSent={editSentMessage}
                 onUserExpand={handleUserExpand}
               />
@@ -5396,6 +5664,12 @@ export function App() {
                     activeConversationId ? addAnnotationDraft(current, activeConversationId, annotation) : current,
                   )
                 }
+                onEditComment={(annotationId, comment) =>
+                  setAnnotationDrafts(current =>
+                    activeConversationId ? updateAnnotationComment(current, activeConversationId, annotationId, comment) : current,
+                  )
+                }
+                onAskInSideChat={openSideChat}
               />
               {/* F2: overlay de destaque + balão, IRMÃO do transcript —
                   nunca dentro dele (regra 1: o DOM do MarkdownMessage é do
@@ -5411,6 +5685,59 @@ export function App() {
             <EmptyChat hasProject={Boolean(activeProject?.name)} projectName={projectName} line={emptyLine} />
           )}
         </section>
+        <SideChatSurface
+          sideChat={sideChat}
+          busy={sideChat ? runningConversations.has(sideChat.conversation.id) : false}
+          onSubmit={message => { void sendSideChatMessage(message) }}
+          onClose={closeSideChat}
+          onFocusConversation={() => {
+            focusedConversationLaneRef.current = 'side'
+            focusedConversationIdRef.current = sideChatRef.current?.conversation.id
+          }}
+          auxiliary={(
+            <>
+              {sideQuestionPrompt && (
+                questionWizardOpenByTurn[sideQuestionPrompt.turnId] ? (
+                  <QuestionWizard
+                    prompt={sideQuestionPrompt}
+                    onAnswersChange={answers => updateQuestionPromptAnswers(sideQuestionPrompt.turnId, answers)}
+                    onSubmit={() => { void submitQuestionAnswers(sideQuestionPrompt) }}
+                    onDismiss={() => clearQuestionPromptForTurn(sideQuestionPrompt.turnId)}
+                  />
+                ) : (
+                  <div className="question-chip-container">
+                    <button
+                      type="button"
+                      className="question-chip"
+                      onClick={() => setQuestionWizardOpenByTurn(current => ({ ...current, [sideQuestionPrompt.turnId]: true }))}
+                    >
+                      <MessageCircleQuestion size={15} aria-hidden="true" />
+                      {sideQuestionPrompt.questions.length === 1
+                        ? t('questions.chipOne')
+                        : t('questions.chip', { count: sideQuestionPrompt.questions.length })}
+                    </button>
+                    <button
+                      type="button"
+                      className="question-chip-close"
+                      onClick={() => clearQuestionPromptForTurn(sideQuestionPrompt.turnId)}
+                      aria-label={t('questions.dismiss')}
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                )
+              )}
+              {sidePermissionPrompt && (
+                <PermissionApprovalPanel
+                  prompt={sidePermissionPrompt}
+                  onAllow={() => respondToPermissionPrompt(sidePermissionPrompt, 'allow')}
+                  onDeny={() => respondToPermissionPrompt(sidePermissionPrompt, 'deny')}
+                  onAlwaysAllow={() => respondToPermissionPrompt(sidePermissionPrompt, 'always')}
+                />
+              )}
+            </>
+          )}
+        />
         {showSubagentThreadPanel && selectedSubagent && (
           <SubagentThreadPanel
             threads={subagentThreads}
@@ -5508,7 +5835,7 @@ export function App() {
               <ArrowDown size={17} />
             </button>
           )}
-          {(goal && goal.status !== 'completed' && goal.status !== 'blocked' && goal.status !== 'cancelled') || exitGoal || (questionPrompt && questionPrompt.conversationId === activeConversationId) || checklistFlight.committed?.form === 'docked' || checklistFlight.spacerHeight !== null ? (
+          {(goal && goal.status !== 'completed' && goal.status !== 'blocked' && goal.status !== 'cancelled') || exitGoal || mainQuestionPrompt || checklistFlight.committed?.form === 'docked' || checklistFlight.spacerHeight !== null ? (
             <div className="composer-aux-stack" role="region" aria-label={t('goal.auxStackLabel')}>
               {/* T1-TodoWrite: the checklist rides ABOVE the goal —
                   the goal always stays closest to the composer
@@ -5536,7 +5863,7 @@ export function App() {
                 <GoalActivePanel
                   goal={goal}
                   turnInProgress={activeConversationId ? runningConversations.has(activeConversationId) : false}
-                  compact={!!(questionPrompt && questionPrompt.conversationId === activeConversationId && questionWizardOpen)}
+                  compact={!!(mainQuestionPrompt && questionWizardOpenByTurn[mainQuestionPrompt.turnId])}
                   onEditObjective={handleEditObjective}
                   onPause={() => handleGoalCommand({ kind: 'goal', action: 'pause', raw: '/goal pause' })}
                   onResume={() => handleGoalCommand({ kind: 'goal', action: 'resume', raw: '/goal resume' })}
@@ -5557,7 +5884,7 @@ export function App() {
                   goal={exitGoal}
                   leaving
                   turnInProgress={false}
-                  compact={!!(questionPrompt && questionPrompt.conversationId === activeConversationId && questionWizardOpen)}
+                  compact={!!(mainQuestionPrompt && questionWizardOpenByTurn[mainQuestionPrompt.turnId])}
                   onEditObjective={() => {}}
                   onPause={() => {}}
                   onResume={() => {}}
@@ -5580,34 +5907,27 @@ export function App() {
                   onClear={() => handleGoalCommand({ kind: 'goal', action: 'clear', raw: '/goal clear' })}
                 />
               )}
-              {questionPrompt && questionPrompt.conversationId === activeConversationId && (
-                questionWizardOpen ? (
+              {mainQuestionPrompt && (
+                questionWizardOpenByTurn[mainQuestionPrompt.turnId] ? (
                   <QuestionWizard
-                    prompt={questionPrompt}
-                    onAnswersChange={answers => {
-                      if (questionPromptRef.current) {
-                        questionPromptRef.current = { ...questionPromptRef.current, answers }
-                      }
-                      setQuestionPrompt(current => current ? { ...current, answers } : current)
-                    }}
-                    onSubmit={() => { void submitQuestionAnswers() }}
-                    onDismiss={() => setQuestionWizardOpen(false)}
+                    prompt={mainQuestionPrompt}
+                    onAnswersChange={answers => updateQuestionPromptAnswers(mainQuestionPrompt.turnId, answers)}
+                    onSubmit={() => { void submitQuestionAnswers(mainQuestionPrompt) }}
+                    onDismiss={() => clearQuestionPromptForTurn(mainQuestionPrompt.turnId)}
                   />
                 ) : (
                   <div className="question-chip-container">
-                    <button type="button" className="question-chip" onClick={() => setQuestionWizardOpen(true)}>
+                    <button type="button" className="question-chip" onClick={() => setQuestionWizardOpenByTurn(current => ({ ...current, [mainQuestionPrompt.turnId]: true }))}>
                       <MessageCircleQuestion size={15} aria-hidden="true" />
-                      {questionPrompt.questions.length === 1
+                      {mainQuestionPrompt.questions.length === 1
                         ? t('questions.chipOne')
-                        : t('questions.chip', { count: questionPrompt.questions.length })}
+                        : t('questions.chip', { count: mainQuestionPrompt.questions.length })}
                     </button>
                     <button
                       type="button"
                       className="question-chip-close"
                       onClick={() => {
-                        questionPromptRef.current = undefined
-                        setQuestionPrompt(undefined)
-                        setQuestionWizardOpen(false)
+                        clearQuestionPromptForTurn(mainQuestionPrompt.turnId)
                       }}
                       aria-label={t('questions.dismiss')}
                     >
@@ -5691,14 +6011,14 @@ export function App() {
                 fullAccessEnabled={userSettings.fullAccessEnabled}
                 onChange={setAccessMode}
                 onRequestFullAccessSettings={() => {
-                  setSettingsTab('permissions')
+                  setSettingsTab('security')
                   setActiveView('settings')
                 }}
               />
             }
             rightToolbar={
               <>
-                <TokenRateMeter rate={tokenRate} active={Boolean(runningTurnId)} />
+                <TokenRateMeter rate={tokenRate} active={Boolean(activeTurnId)} />
                 <ModelSelector
                   models={modelResult.models}
                   selectedModel={selectedModel}
@@ -6052,6 +6372,11 @@ function activityDisplayLabel(activity: TurnActivity, t: Translator): string {
   if (activity.kind === 'image') return t('transcript.imageOne')
   if (activity.kind === 'permission') return t('transcript.permissionOne')
   if (activity.kind === 'subagent') return t('transcript.subagentOne')
+  // FRENTE-A (2026-08-02): browser intentionally diverges from the
+  // kind-level flattening used by read/edit/command because the product
+  // reference requires the Chrome step to identify each action. Preserve
+  // the tool-specific label, with the generic fallback for empty labels.
+  if (activity.kind === 'browser') return activity.label || t('transcript.browserOne')
   if (activity.kind === 'context') return activity.label
   if (activity.kind === 'thinking') return t('transcript.thinking')
   return t('transcript.toolOne')

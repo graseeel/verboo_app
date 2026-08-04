@@ -95,12 +95,13 @@ IMPORTANT RULES:
 /**
  * Run a multi-step LLM agent turn.
  *
- * @param {{ turnId: string, userMessage: string, accessToken: string, modelId: string, modelSupportsVision?: boolean, conversationHistory?: Array<object>, routineContext?: {name:string,instructions:string,assets?:Array<object>}, toolAllowlist?: string[], broadcast: Function, executeTool: Function, getActiveTabMeta: Function, refreshAccessToken?: () => Promise<string|null>, signal?: AbortSignal }} params
+ * @param {{ turnId: string, userMessage: string, selectionContext?: {text:string,verification?:string}, accessToken: string, modelId: string, modelSupportsVision?: boolean, conversationHistory?: Array<object>, routineContext?: {name:string,instructions:string,assets?:Array<object>}, toolAllowlist?: string[], broadcast: Function, executeTool: Function, getActiveTabMeta: Function, refreshAccessToken?: () => Promise<string|null>, signal?: AbortSignal }} params
  * @returns {Promise<{ assistantMessage: string, toolResults: Array<object> }>}
  */
 export async function runLlmAgentTurn({
   turnId,
   userMessage,
+  selectionContext,
   accessToken,
   modelId,
   modelSupportsVision,
@@ -155,6 +156,18 @@ export async function runLlmAgentTurn({
         }),
       })
     }
+  }
+
+  if (typeof selectionContext?.text === 'string' && selectionContext.text.trim()) {
+    messages.push({
+      role: 'system',
+      content: wrapUntrustedBrowserContent({
+        selectedText: selectionContext.text,
+        ...(selectionContext.verification === 'complete'
+          ? {}
+          : { selectedTextStatus: 'Selection may be incomplete.' }),
+      }),
+    })
   }
 
   messages.push(...sanitizeConversationHistory(conversationHistory))

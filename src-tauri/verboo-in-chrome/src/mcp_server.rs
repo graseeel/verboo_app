@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use uuid::Uuid;
 
 use crate::catalog::{browser_catalog, BrowserCatalog, BrowserTool};
 use crate::discovery::{DiscoveryError, DiscoveryStore};
@@ -120,6 +121,41 @@ impl BrowserSessionClient {
         name: &str,
         arguments: Value,
     ) -> Result<ToolRelayResult, RelayError> {
+        let response = self
+            .send_request(
+                id,
+                MessageKind::ToolRequest,
+                json!({ "name": name, "arguments": arguments }),
+            )
+            .await?;
+
+        match response.kind {
+            MessageKind::ToolResponse => Ok(ToolRelayResult::Success(response.payload)),
+            MessageKind::Error => Err(relay_error_from_response(&response)),
+            _ => Err(RelayError::new(
+                RelayErrorCode::InvalidResponse,
+                "Chrome returned an unexpected bridge message.",
+            )),
+        }
+    }
+
+    pub async fn complete_turn(&self) -> Result<(), RelayError> {
+        // The native host may still be reading the response for a pending tool;
+        // cleanup must reach Chrome without waiting for that shared reader.
+        self.send_request_without_response(
+            &Uuid::new_v4().to_string(),
+            MessageKind::TurnComplete,
+            json!({}),
+        )
+        .await
+    }
+
+    async fn send_request_without_response(
+        &self,
+        id: &str,
+        kind: MessageKind,
+        payload: Value,
+    ) -> Result<(), RelayError> {
         let record = self
             .store
             .discover_session()
@@ -130,16 +166,63 @@ impl BrowserSessionClient {
                     "Open Google Chrome with the Verboo extension enabled.",
                 )
             })?;
-        let stream = local_transport::connect(&record)
-            .await
-            .map_err(|error| RelayError::new(RelayErrorCode::ConnectionLost, error.to_string()))?;
+        let stream = match local_transport::connect(&record).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                let _ = self.store.remove_record(&record);
+                return Err(RelayError::new(
+                    RelayErrorCode::ConnectionLost,
+                    error.to_string(),
+                ));
+            }
+        };
+        let (_reader, mut writer) = tokio::io::split(stream);
+        let request = Envelope {
+            version: PROTOCOL_VERSION,
+            id: id.to_string(),
+            kind,
+            secret: Some(record.secret),
+            payload,
+        };
+        let encoded = serde_json::to_vec(&request).map_err(invalid_response)?;
+        writer.write_all(&encoded).await.map_err(connection_lost)?;
+        writer.write_all(b"\n").await.map_err(connection_lost)?;
+        writer.flush().await.map_err(connection_lost)
+    }
+
+    async fn send_request(
+        &self,
+        id: &str,
+        kind: MessageKind,
+        payload: Value,
+    ) -> Result<Envelope, RelayError> {
+        let record = self
+            .store
+            .discover_session()
+            .map_err(map_discovery_error)?
+            .ok_or_else(|| {
+                RelayError::new(
+                    RelayErrorCode::ChromeNotConnected,
+                    "Open Google Chrome with the Verboo extension enabled.",
+                )
+            })?;
+        let stream = match local_transport::connect(&record).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                let _ = self.store.remove_record(&record);
+                return Err(RelayError::new(
+                    RelayErrorCode::ConnectionLost,
+                    error.to_string(),
+                ));
+            }
+        };
         let (reader, mut writer) = tokio::io::split(stream);
         let request = Envelope {
             version: PROTOCOL_VERSION,
             id: id.to_string(),
-            kind: MessageKind::ToolRequest,
+            kind,
             secret: Some(record.secret),
-            payload: json!({ "name": name, "arguments": arguments }),
+            payload,
         };
         let encoded = serde_json::to_vec(&request).map_err(invalid_response)?;
         writer.write_all(&encoded).await.map_err(connection_lost)?;
@@ -154,7 +237,7 @@ impl BrowserSessionClient {
             .ok_or_else(|| {
                 RelayError::new(
                     RelayErrorCode::ConnectionLost,
-                    "Chrome disconnected before returning a tool result.",
+                    "Chrome disconnected before returning a bridge result.",
                 )
             })?;
         let response: Envelope = serde_json::from_str(&line).map_err(invalid_response)?;
@@ -170,29 +253,23 @@ impl BrowserSessionClient {
                 "Chrome returned a response for a different request.",
             ));
         }
-
-        match response.kind {
-            MessageKind::ToolResponse => Ok(ToolRelayResult::Success(response.payload)),
-            MessageKind::Error => {
-                let code = response
-                    .payload
-                    .get("code")
-                    .and_then(Value::as_str)
-                    .map(RelayErrorCode::from_wire)
-                    .unwrap_or(RelayErrorCode::InvalidResponse);
-                let message = response
-                    .payload
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Chrome rejected the browser tool request.");
-                Err(RelayError::new(code, message))
-            }
-            _ => Err(RelayError::new(
-                RelayErrorCode::InvalidResponse,
-                "Chrome returned an unexpected bridge message.",
-            )),
-        }
+        Ok(response)
     }
+}
+
+fn relay_error_from_response(response: &Envelope) -> RelayError {
+    let code = response
+        .payload
+        .get("code")
+        .and_then(Value::as_str)
+        .map(RelayErrorCode::from_wire)
+        .unwrap_or(RelayErrorCode::InvalidResponse);
+    let message = response
+        .payload
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("Chrome rejected the browser bridge request.");
+    RelayError::new(code, message)
 }
 
 fn map_discovery_error(error: DiscoveryError) -> RelayError {
@@ -342,9 +419,15 @@ impl ServerHandler for BrowserMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let arguments = Value::Object(request.arguments.unwrap_or_default());
-        Ok(Self::relay_result(
-            self.call_browser_tool(&context.id.to_string(), request.name.as_ref(), arguments)
-                .await,
-        ))
+        let request_id = context.id.to_string();
+        let tool_name = request.name.as_ref();
+        let result = tokio::select! {
+            result = self.call_browser_tool(&request_id, tool_name, arguments) => result,
+            _ = context.ct.cancelled() => Err(RelayError::new(
+                RelayErrorCode::ConnectionLost,
+                "The MCP turn ended before Chrome returned a result.",
+            )),
+        };
+        Ok(Self::relay_result(result))
     }
 }

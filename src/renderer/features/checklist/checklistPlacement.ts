@@ -63,9 +63,9 @@ export type ChecklistPlacementInput = {
   /** Invariant by construction (see header) — crossed to prove it. */
   sidebarOpen: boolean
   preference: ChecklistFormPreference
-  /** Extension beyond the literal order: the subagent thread panel is
-   *  ALSO a right-lane surface. The rule's spirit is "the right side
-   *  is physically occupied" — an overlapping floating card over an
+  /** Extension beyond the literal order: the subagent thread panel and
+   *  side-chat column are ALSO right-lane surfaces. The rule's spirit is
+   *  "right side physically occupied" — an overlapping floating card over an
    *  open lane panel is the exact defect the rule exists to prevent.
    *  Optional; defaults to false. */
   otherRightLaneOpen?: boolean

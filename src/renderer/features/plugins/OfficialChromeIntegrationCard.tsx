@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleAlert, CircleDashed } from 'lucide-react'
+import { CheckCircle2, CircleAlert, CircleDashed, PanelRightOpen } from 'lucide-react'
 import { ChromeLogoIcon } from '../../components/ChromeLogoIcon'
 import type { ChromeIntegrationAggregate } from '../../../shared/types'
 import verbooIconUrl from '../../../../assets/branding/verboo-mascot.png'
@@ -9,7 +9,9 @@ export function OfficialChromeIntegrationCard({ onManage }: { onManage: () => vo
   const { t } = useI18n()
   const { status, loading } = useChromeIntegration()
   const aggregate = status?.aggregate ?? 'notConfigured'
+  const panelState = status?.panelState ?? 'notApplicable'
   const configured = aggregate !== 'notConfigured'
+  const panelWarning = panelState === 'unknown'
 
   return (
     <article className="official-chrome-card" aria-label={t('plugins.chrome.title')}>
@@ -27,6 +29,12 @@ export function OfficialChromeIntegrationCard({ onManage }: { onManage: () => vo
           <AggregateIcon aggregate={aggregate} />
           <span>{loading && !status ? t('plugins.chrome.checking') : t(`plugins.chrome.${aggregate}`)}</span>
         </div>
+        {panelWarning && (
+          <p className="official-chrome-panel-hint" role="note">
+            <PanelRightOpen size={13} aria-hidden="true" />
+            <span>{t('chrome.panel.hint')}</span>
+          </p>
+        )}
       </div>
       <button type="button" className="official-chrome-action" onClick={onManage}>
         {configured ? t('plugins.chrome.manage') : t('plugins.chrome.configure')}

@@ -140,6 +140,18 @@ export default {
   "chat_sendTitle": {
     "message": "Enviar"
   },
+  "selection_context_count": {
+    "message": "1 seleção"
+  },
+  "selection_context_verifying": {
+    "message": "Verificando a seleção completa…"
+  },
+  "selection_context_incomplete": {
+    "message": "A seleção pode estar incompleta."
+  },
+  "selection_context_remove": {
+    "message": "Remover texto selecionado"
+  },
   "topbar_settingsTitle": {
     "message": "Configurações"
   },

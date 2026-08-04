@@ -2,11 +2,12 @@
  * Alvo de uma seleção para anotação — função pura sobre DOM, testável em jsdom.
  *
  * A REGRA MORA AQUI, não na barra nem no botão: a seleção só vira candidata
- * quando está CONTIDA num segmento de mensagem do MODELO — um elemento com
- * [data-annotation-segment] (marcado na renderização do transcript).
- * Seleção em mensagem do USUÁRIO, em activity, em summary ou fora do
- * transcript retorna null e não produz barra nenhuma. Se a regra morasse só
- * no botão, alguém a contornaria.
+ * quando alcança um segmento de mensagem do MODELO — um elemento com
+ * [data-annotation-segment] (marcado na renderização do transcript). Um
+ * arrasto que começa no cabeçalho do MESMO turno é limitado a esse segmento
+ * e sinalizado; mensagem de usuário, activity, summary ou área fora de um
+ * turno continuam retornando null. Se a regra morasse só no botão, alguém a
+ * contornaria.
  *
  * SUPRESSÃO DURANTE STREAMING (recusa deliberada, limite declarado): um
  * segmento sob [data-turn-streaming="true"] retorna null — a barra NÃO
@@ -15,7 +16,7 @@
  * atributo sai e a seleção volta a ser candidata.
  *
  * SELEÇÃO CRUZANDO SEGMENTOS (decisão do Maestro): CLAMPA ao primeiro
- * segmento (o do anchor) e sinaliza `clamped: true` para o chamador avisar
+ * segmento e sinaliza `clamped: true` para o chamador avisar
  * o usuário. Não tentamos costurar dois segmentos numa âncora só — a âncora
  * é por segmento por contrato (segmentId único).
  */
@@ -30,6 +31,11 @@ export function findAnnotatableSegment(node: Node | null): Element | null {
     current = current.parentNode ?? (current instanceof ShadowRoot ? current.host : null)
   }
   return null
+}
+
+function findTurnView(node: Node | null): Element | null {
+  const element = node instanceof Element ? node : node?.parentElement
+  return element?.closest('.turn-view') ?? null
 }
 
 /** Offset absoluto (unidades UTF-16) de (node, offset) dentro do textContent de root. */
@@ -60,8 +66,21 @@ export function resolveSelectionTarget(
   focusNode: Node | null,
   focusOffset: number,
 ): SelectionTarget | null {
-  const anchorSegment = findAnnotatableSegment(anchorNode)
-  if (!anchorSegment || !anchorNode) return null
+  let anchorSegment = findAnnotatableSegment(anchorNode)
+  const focusSegment = findAnnotatableSegment(focusNode)
+  if (!anchorNode) return null
+
+  // Transcript headers (model name and elapsed time) deliberately have no
+  // annotation segment of their own. When a drag starts there and ends in
+  // the response body of the SAME turn, use the body as the target and
+  // clamp the unannotatable header away. This keeps the existing rule for
+  // user text and unrelated unmarked content: those still return null.
+  const startedInTurnHeader = !anchorSegment
+    && focusSegment
+    && findTurnView(anchorNode) === findTurnView(focusNode)
+    && Boolean(findTurnView(anchorNode))
+  if (startedInTurnHeader) anchorSegment = focusSegment
+  if (!anchorSegment) return null
 
   // Streaming: recusa deliberada (ver comentário do módulo).
   if (anchorSegment.closest('[data-turn-streaming="true"]')) return null
@@ -72,12 +91,16 @@ export function resolveSelectionTarget(
   const segmentLength = anchorSegment.textContent?.length ?? 0
   const anchorAt = textOffsetWithin(anchorSegment, anchorNode, anchorOffset)
 
-  const focusSegment = findAnnotatableSegment(focusNode)
   let start: number
   let end: number
   let clamped = false
 
-  if (focusSegment === anchorSegment && focusNode) {
+  if (startedInTurnHeader && focusNode) {
+    const focusAt = textOffsetWithin(anchorSegment, focusNode, focusOffset)
+    start = 0
+    end = focusAt
+    clamped = true
+  } else if (focusSegment === anchorSegment && focusNode) {
     const focusAt = textOffsetWithin(anchorSegment, focusNode, focusOffset)
     start = Math.min(anchorAt, focusAt)
     end = Math.max(anchorAt, focusAt)

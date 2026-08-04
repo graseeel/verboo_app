@@ -11,7 +11,9 @@ export const MAX_CHROME_TO_HOST_BYTES = 64 * 1024 * 1024
 export type BrowserBridgeMessageKind =
   | 'hello'
   | 'toolRequest'
+  | 'turnComplete'
   | 'toolResponse'
+  | 'turnCompleteAck'
   | 'error'
 
 export type BrowserBridgeErrorCode =

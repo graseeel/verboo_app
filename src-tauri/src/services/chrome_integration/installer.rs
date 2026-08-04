@@ -17,7 +17,7 @@ use super::manifest::{
 use super::models::{
     ChromeComponentState, ChromeConnectionState, ChromeExtensionIdSource,
     ChromeIntegrationAggregate, ChromeIntegrationRequest, ChromeIntegrationStatus,
-    ChromeReleaseMetadata, InstallationRecord,
+    ChromePanelState, ChromeReleaseMetadata, InstallationRecord,
 };
 use super::paths::ChromeIntegrationPaths;
 
@@ -340,6 +340,16 @@ impl ChromeIntegrationService {
         } else {
             ChromeIntegrationAggregate::Incomplete
         };
+        // The app has no direct channel to observe whether the extension side
+        // panel is open. When the native host is alive (`Connected`), the panel
+        // state is genuinely `Unknown` — the extension only reveals it via
+        // `approval_ui_unavailable` on a failed tool call. Otherwise the
+        // question does not apply.
+        let panel_state = if aggregate == ChromeIntegrationAggregate::Connected {
+            ChromePanelState::Unknown
+        } else {
+            ChromePanelState::NotApplicable
+        };
         let repairable = [bridge, mcp].iter().any(|state| {
             matches!(
                 state,
@@ -359,6 +369,7 @@ impl ChromeIntegrationService {
             bridge,
             mcp,
             connection,
+            panel_state,
             aggregate,
             installed_version: record.as_ref().map(|record| record.version.clone()),
             available_version: self.paths.app_version().into(),

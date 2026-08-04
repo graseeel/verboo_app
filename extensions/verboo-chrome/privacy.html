@@ -91,9 +91,9 @@
   <main class="container">
     <h1>Verboo Code — Privacy Policy</h1>
     <p class="meta">
-      <strong>Last updated:</strong> 2026-07-29 ·
+      <strong>Last updated:</strong> 2026-08-04 ·
       <strong>Extension:</strong> Verboo Code — Browser Control ·
-      <span class="badge">v0.1.2</span>
+      <span class="badge">v0.2.3</span>
     </p>
 
     <p>
@@ -108,7 +108,7 @@
       <li><strong>No data is sold.</strong></li>
       <li><strong>You stay in control</strong> of every action: the extension asks before each potentially destructive step, and you can always deny.</li>
       <li><strong>Hard blocks cannot be bypassed.</strong> Actions like purchasing, financial trades, mass deletion, and credential exposure are blocked even in the most permissive permission mode.</li>
-      <li><strong>Standalone chat is explicit.</strong> After extension OAuth, a turn you start sends your prompt, selected browser context, and tool results to the Verboo Router. Browser text is fenced as untrusted data.</li>
+      <li><strong>Standalone chat is explicit.</strong> After extension OAuth, a turn you start sends your prompt, selected browser context, and tool results to the Verboo Router. Text selected through <strong>Ask Verboo</strong> stays local and is sent only when you send a chat turn. Browser text is fenced as untrusted data.</li>
       <li><strong>MCP stays local.</strong> The Verboo in Chrome MCP transport does not carry CLI tokens into the extension.</li>
     </ul>
 
@@ -122,6 +122,11 @@
           <td>Active tab URL and title</td>
           <td>Show context in the side panel and route tool calls</td>
           <td>Sent to the Verboo Router only during a standalone chat turn after extension OAuth.</td>
+        </tr>
+        <tr>
+          <td>Text you explicitly select and choose <strong>Ask Verboo</strong> for</td>
+          <td>Show the selected text as context in the side panel</td>
+          <td>Kept temporarily in <code>chrome.storage.session</code> and sent only when you send a chat turn. It is fenced as untrusted browser data before model processing.</td>
         </tr>
         <tr>
           <td>Page content you read or click on</td>
@@ -205,14 +210,21 @@
           <td>Bounded run history, status, checkpoints, and optional recovery suggestions</td>
           <td>Never directly.</td>
         </tr>
+        <tr>
+          <td><code>verbooSelectionContexts</code></td>
+          <td><code>src/selectionContext.js</code></td>
+          <td>A temporary selected-text context, keyed by tab, until it is sent or dismissed</td>
+          <td>Only when you send the next chat turn with that context; then discarded.</td>
+        </tr>
       </tbody>
     </table>
 
-    <p>Persistent definitions live in <code>chrome.storage.local</code>. Routine files live in the extension-only IndexedDB database <code>verboo-routines</code>; deleting a routine deletes its files. Temporary drafts and active recording state use <code>chrome.storage.session</code>. Nothing is synced to your Google account. Recording listeners remain inert until you start recording, discard password/payment/token fields, and do not save safe input literals until you explicitly resolve them.</p>
+    <p>Persistent definitions live in <code>chrome.storage.local</code>. Routine files live in the extension-only IndexedDB database <code>verboo-routines</code>; deleting a routine deletes its files. Temporary drafts, active recording state, and pending selected-text context use <code>chrome.storage.session</code>. A selected-text context is discarded when you remove it or after the first chat turn that uses it. Nothing is synced to your Google account. Recording listeners remain inert until you start recording, discard password/payment/token fields, and do not save safe input literals until you explicitly resolve them.</p>
 
     <h2>Permissions explained</h2>
     <ul>
       <li><code>sidePanel</code> — Opens the Verboo control panel alongside the page you are on.</li>
+      <li><code>contextMenus</code> — Shows <strong>Ask Verboo</strong> only when text is selected; choosing it opens the side panel and keeps the text locally as pending context until you send a chat turn.</li>
       <li><code>identity</code> — Opens the user-initiated Verboo OAuth PKCE flow and receives its Chrome callback.</li>
       <li><code>storage</code> — Persists the extension session, model cache/selection, permission mode, grants, routines, checkpoints, and temporary recording state.</li>
       <li><code>alarms</code> — Wakes Chrome for an optional local routine schedule. Missed occurrences run at most once.</li>

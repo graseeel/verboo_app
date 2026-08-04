@@ -21,6 +21,7 @@ function statusFor(aggregate: ChromeIntegrationAggregate): ChromeIntegrationStat
     bridge: aggregate === 'notConfigured' ? 'missing' : aggregate === 'incomplete' ? 'invalid' : 'managed',
     mcp: aggregate === 'notConfigured' ? 'missing' : 'managed',
     connection: aggregate === 'connected' ? 'connected' : 'waitingForChrome',
+    panelState: aggregate === 'connected' ? 'unknown' : 'notApplicable',
     aggregate,
     availableVersion: '0.5.2-beta.1',
     canConfigure: aggregate === 'notConfigured',

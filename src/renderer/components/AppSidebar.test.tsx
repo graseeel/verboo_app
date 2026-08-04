@@ -40,6 +40,8 @@ describe('AppSidebar update placement', () => {
           onArchiveProject={vi.fn()}
           onDeleteProject={vi.fn()}
           onArchiveConversation={vi.fn()}
+          archivedConversations={[]}
+          onRestoreConversation={vi.fn()}
           onDeleteConversation={vi.fn()}
           onRenameConversation={vi.fn()}
         />

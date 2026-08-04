@@ -3364,10 +3364,54 @@ fn is_tool_block(value: &serde_json::Value) -> bool {
         || value.get("tool_name").and_then(|v| v.as_str()).is_some()
 }
 
-fn activity_for_tool(tool_name: &str) -> (&'static str, &'static str) {
+/// FRENTE-A (2026-08-02): the exact tool set of the bundled
+/// Verboo-in-Chrome extension, pinned bidirectionally by
+/// `services::chrome_tools_canary` against the REAL manifest
+/// (`extensions/verboo-chrome/src/controller/browserTools.json`). A rename
+/// on the extension side goes RED there instead of silently degrading the
+/// transcript step to the generic fallback. Each tool has its own label
+/// (the specific action); all share the single "browser" kind and icon.
+pub(crate) const CHROME_BROWSER_TOOLS: &[(&str, &str)] = &[
+    ("navigate", "Navegou no Chrome"),
+    ("read_page", "Leu página no Chrome"),
+    ("structured_extract", "Extraiu dados no Chrome"),
+    ("click", "Clicou no Chrome"),
+    ("type", "Digitou no Chrome"),
+    ("screenshot", "Capturou tela no Chrome"),
+    ("tabs", "Gerenciou abas no Chrome"),
+    ("tab_group", "Organizou grupos de abas no Chrome"),
+];
+
+/// Generic fallback for verboo-in-chrome tools not (yet) in the manifest.
+/// Keeps the browser kind and the brand even for future tools.
+pub(crate) const CHROME_FALLBACK_LABEL: &str = "Usou o Chrome";
+
+/// MCP namespace prefix used by the bundled Chrome extension sidecar
+/// (MCP tool names arrive as `mcp__<server>__<tool>`).
+pub(crate) const CHROME_MCP_PREFIX: &str = "mcp__verboo-in-chrome__";
+
+pub(crate) fn activity_for_tool(tool_name: &str) -> (&'static str, &'static str) {
     let n = tool_name.to_lowercase();
     if is_subagent_tool_name(&n) {
         return ("Subagente ativo", "subagent");
+    }
+    // FRENTE-A (2026-08-02): the bundled Chrome extension's MCP tools arrive
+    // prefixed `mcp__verboo-in-chrome__<tool>`. They all share the single
+    // "browser" kind (one icon family — the generic globe; the brand lives
+    // in the label, not the icon). Only THIS server gets the browser
+    // presentation: other MCP servers' tool sets are not knowable at compile
+    // time, so they stay on the generic fallback below. Matching the prefix
+    // structure generally (any `mcp__<server>__<tool>`) would either mislabel
+    // (a generic server's "read" → "Leu arquivo" with no Chrome context) or
+    // force server-aware labels we cannot know statically. The canary pins
+    // this exact server's manifest in both directions.
+    if let Some(tool) = n.strip_prefix(CHROME_MCP_PREFIX) {
+        let label = CHROME_BROWSER_TOOLS
+            .iter()
+            .find(|(t, _)| *t == tool)
+            .map(|(_, l)| *l)
+            .unwrap_or(CHROME_FALLBACK_LABEL);
+        return (label, "browser");
     }
     match n.as_str() {
         "read" | "read_file" => ("Leu arquivo", "read"),
@@ -4097,6 +4141,64 @@ mod tests {
         assert_eq!(activity.label, "Executou comando");
         assert_eq!(activity.kind, "command");
         assert_eq!(activity.detail.as_deref(), Some("ls -la"));
+    }
+
+    #[test]
+    fn activity_for_tool_maps_chrome_tools_to_browser() {
+        // FRENTE-A (2026-08-02): the Verboo-in-Chrome MCP tools arrive
+        // prefixed `mcp__verboo-in-chrome__<tool>` (tool set pinned
+        // bidirectionally by services::chrome_tools_canary against
+        // extensions/verboo-chrome/src/controller/browserTools.json).
+        // Every one must map to kind "browser" with its specific action label.
+        for (name, expected_label) in [
+            ("navigate", "Navegou no Chrome"),
+            ("read_page", "Leu página no Chrome"),
+            ("structured_extract", "Extraiu dados no Chrome"),
+            ("click", "Clicou no Chrome"),
+            ("type", "Digitou no Chrome"),
+            ("screenshot", "Capturou tela no Chrome"),
+            ("tabs", "Gerenciou abas no Chrome"),
+            ("tab_group", "Organizou grupos de abas no Chrome"),
+        ] {
+            let full = format!("mcp__verboo-in-chrome__{name}");
+            let (label, kind) = activity_for_tool(&full);
+            assert_eq!(kind, "browser", "tool `{name}` must map to kind browser");
+            assert_eq!(
+                label, expected_label,
+                "tool `{name}` must keep its specific Chrome action label"
+            );
+        }
+    }
+
+    #[test]
+    fn activity_for_tool_unknown_chrome_tool_falls_back_to_browser_label() {
+        // A verboo-in-chrome tool not (yet) in the manifest must NOT fall
+        // through to the generic tool arm: it keeps the browser kind and the
+        // branded fallback label.
+        let (label, kind) = activity_for_tool("mcp__verboo-in-chrome__future_tool");
+        assert_eq!(kind, "browser");
+        assert_eq!(label, "Usou o Chrome");
+    }
+
+    #[test]
+    fn activity_for_tool_other_mcp_server_stays_generic() {
+        // Only the verboo-in-chrome server gets the browser presentation. A
+        // different MCP server's tool keeps the generic fallback — its tool
+        // set is not knowable at compile time.
+        let (label, kind) = activity_for_tool("mcp__another_server__navigate");
+        assert_eq!(kind, "tool");
+        assert_eq!(label, "Usou ferramenta");
+    }
+
+    #[test]
+    fn activity_for_tool_keeps_existing_arms() {
+        // Regression guard — the new chrome branch must not disturb existing arms.
+        assert_eq!(activity_for_tool("bash"), ("Executou comando", "command"));
+        assert_eq!(activity_for_tool("read"), ("Leu arquivo", "read"));
+        assert_eq!(
+            activity_for_tool("todowrite"),
+            ("Atualizou tarefas", "planning")
+        );
     }
 
     #[test]
@@ -5820,6 +5922,69 @@ mod tests {
             "kind='tool' would satisfy the observable-action guard without action — forbidden"
         );
         assert_eq!(activity.label, "Atualizou tarefas");
+    }
+
+    #[test]
+    fn real_todowrite_stream_blocks_share_one_activity_and_result_is_not_one() {
+        // Exact relevant shapes captured from /tmp/stream.jsonl: the CLI
+        // emits an empty stream-start block, then the full assistant block,
+        // then a user tool_result with the same tool_use_id.
+        let tool_use_id = "call_fa685df1555f47879c165be8";
+        let stream_start = json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": "TodoWrite",
+                    "input": {}
+                }
+            }
+        });
+        let assistant = json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": "TodoWrite",
+                    "input": {
+                        "todos": [
+                            {"content": "tarefa A", "status": "pending", "activeForm": "Executando tarefa A"},
+                            {"content": "tarefa B", "status": "pending", "activeForm": "Executando tarefa B"}
+                        ]
+                    }
+                }]
+            }
+        });
+        let tool_result = json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "tool_use_id": tool_use_id,
+                    "type": "tool_result",
+                    "content": "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable"
+                }]
+            }
+        });
+
+        let first = runtime_activity_from_payload(&stream_start)
+            .expect("stream-start tool_use must produce an activity");
+        let second = runtime_activity_from_payload(&assistant)
+            .expect("assistant tool_use must produce an activity");
+
+        assert_eq!(first.label, "Atualizou tarefas");
+        assert_eq!(first.kind, "planning");
+        assert_eq!(first.tool_use_id.as_deref(), Some(tool_use_id));
+        assert_eq!(second.tool_use_id, first.tool_use_id);
+        assert_eq!(second.key, first.key);
+        assert!(first.todos.is_none());
+        assert_eq!(second.todos.as_ref().map(Vec::len), Some(2));
+        assert!(runtime_activity_from_payload(&tool_result).is_none());
     }
 
     #[test]

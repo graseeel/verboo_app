@@ -276,6 +276,22 @@
               <span aria-hidden="true">↗</span>
             </button>
           </div>
+          <div class="selection-context" id="selection-context" role="status" hidden>
+            <div class="selection-context-copy">
+              <span id="selection-context-count" data-i18n="selection_context_count">1 selection</span>
+              <span id="selection-context-preview"></span>
+              <span id="selection-context-warning" hidden></span>
+            </div>
+            <button
+              type="button"
+              class="selection-context-remove"
+              id="selection-context-remove"
+              data-i18n-aria-label="selection_context_remove"
+              aria-label="Remove selected text"
+            >
+              <span aria-hidden="true">×</span>
+            </button>
+          </div>
           <form class="chat-composer" id="chat-form">
             <textarea
               id="chat-input"

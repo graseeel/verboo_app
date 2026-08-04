@@ -30,6 +30,63 @@ describe('@-mention + voice i18n keys', () => {
   })
 })
 
+describe('Chrome settings copy', () => {
+  it.each([
+    {
+      language: 'en-US' as const,
+      expected: {
+        'chrome.identityAndCli': 'Verboo account and CLI connection',
+        'chrome.accountLogin': 'Sign in to your Verboo account',
+        'chrome.accountLoginBody': 'You must be signed in to your Verboo account to use Chrome tools.',
+        'chrome.cliConnection': 'CLI connection',
+        'chrome.cliConnectionBody': 'The Verboo CLI connects to Chrome through the local helper and the Verboo extension. Keep the extension side panel open while a task runs.',
+        'common.remove': 'Remove',
+      },
+    },
+    {
+      language: 'pt-BR' as const,
+      expected: {
+        'chrome.identityAndCli': 'Conta Verboo e conexão do CLI',
+        'chrome.accountLogin': 'Entre na sua conta Verboo',
+        'chrome.accountLoginBody': 'Você precisa estar logado na sua conta Verboo para usar as ferramentas do Chrome.',
+        'chrome.cliConnection': 'Conexão do CLI',
+        'chrome.cliConnectionBody': 'O CLI Verboo se conecta ao Chrome pelo helper local e pela extensão Verboo. Mantenha o painel lateral da extensão aberto enquanto uma tarefa estiver em execução.',
+        'common.remove': 'Remover',
+      },
+    },
+  ])('provides complete translated copy for $language', ({ language, expected }) => {
+    const t = createTranslator(language)
+    for (const [key, value] of Object.entries(expected)) {
+      expect(t(key)).toBe(value)
+    }
+  })
+})
+
+describe('side chat copy', () => {
+  it.each(['en-US', 'pt-BR'] as const)('has complete %s labels', language => {
+    const t = createTranslator(language)
+    for (const key of [
+      'annotations.askInSideChat',
+      'sideChat.title',
+      'sideChat.contextLabel',
+      'sideChat.selectedExcerptOne',
+      'sideChat.composerAria',
+      'sideChat.questionAria',
+      'sideChat.questionPlaceholder',
+      'sideChat.sendAria',
+      'sideChat.closeAria',
+      'sideChat.closeConfirmTitle',
+      'sideChat.closeConfirmBody',
+      'sideChat.closeConfirmDontAsk',
+      'sideChat.cancel',
+      'sideChat.confirmClose',
+      'sideChat.thinking',
+    ]) {
+      expect(t(key)).not.toBe(key)
+    }
+  })
+})
+
 describe('sidebar updater i18n keys', () => {
   it.each(['en-US', 'pt-BR'] as const)('provides complete %s update copy', language => {
     const t = createTranslator(language)
@@ -58,5 +115,31 @@ describe('browser eviction copy', () => {
     expect(createTranslator('pt-BR')('browser.evictedTabHint')).toBe(
       'Descarregada para liberar memória. Abas vivas voltam exatamente de onde estavam; esta aba recarrega ao abrir.',
     )
+  })
+})
+
+describe('Settings navigation copy', () => {
+  it.each([
+    {
+      language: 'en-US' as const,
+      expected: {
+        'access.fullLocked': 'Enable it in Settings > Security to unlock this mode.',
+        'vision.strippedWarning': 'Images removed — vision fallback is disabled. Enable in Settings → Integrations.',
+        'videoConsent.denied': 'Video was not sent because local-only visual understanding is not implemented. Change Video Understanding in Settings → Integrations to allow the disclosed route.',
+      },
+    },
+    {
+      language: 'pt-BR' as const,
+      expected: {
+        'access.fullLocked': 'Ative em Configurações > Segurança para liberar este modo.',
+        'vision.strippedWarning': 'Imagens removidas — fallback de visão desativado. Ative em Configurações → Integrações.',
+        'videoConsent.denied': 'O vídeo não foi enviado porque a compreensão visual somente local ainda não foi implementada. Altere Compreensão de vídeo em Configurações → Integrações para permitir a rota informada.',
+      },
+    },
+  ])('points obsolete settings navigation to the new $language tab', ({ language, expected }) => {
+    const t = createTranslator(language)
+    for (const [key, value] of Object.entries(expected)) {
+      expect(t(key)).toBe(value)
+    }
   })
 })

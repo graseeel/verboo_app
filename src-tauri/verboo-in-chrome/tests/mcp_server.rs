@@ -45,6 +45,32 @@ mod unix_tests {
         (BrowserMcpServer::new(Arc::new(client)).unwrap(), task, temp)
     }
 
+    async fn connected_client_for_completion() -> (
+        BrowserSessionClient,
+        tokio::task::JoinHandle<Envelope>,
+        TempDir,
+    ) {
+        let temp = TempDir::new().unwrap();
+        let store = DiscoveryStore::at(temp.path().join("runtime"));
+        let record = store
+            .register(std::process::id(), "chrome-extension://test".into())
+            .unwrap();
+        let listener = verboo_in_chrome::local_transport::bind(&record).unwrap();
+        let expected_secret = record.secret.clone();
+
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (reader, _writer) = stream.into_split();
+            let mut lines = BufReader::new(reader).lines();
+            let request: Envelope =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(request.secret.as_deref(), Some(expected_secret.as_str()));
+            request
+        });
+
+        (BrowserSessionClient::with_store(store), task, temp)
+    }
+
     #[tokio::test]
     async fn lists_tools_and_relays_a_read_only_call_exactly() {
         let (server, request_task, _temp) = connected_server().await;
@@ -69,6 +95,17 @@ mod unix_tests {
             request.payload,
             json!({"name": "read_page", "arguments": {"selector": "main"}})
         );
+    }
+
+    #[tokio::test]
+    async fn completion_signal_is_sent_without_waiting_for_a_browser_ack() {
+        let (client, request_task, _temp) = connected_client_for_completion().await;
+
+        client.complete_turn().await.unwrap();
+
+        let request = request_task.await.unwrap();
+        assert_eq!(request.kind, MessageKind::TurnComplete);
+        assert_eq!(request.payload, json!({}));
     }
 
     #[tokio::test]
@@ -99,5 +136,23 @@ mod unix_tests {
             .await
             .unwrap_err();
         assert_eq!(error.code(), RelayErrorCode::ChromeNotConnected);
+    }
+
+    #[tokio::test]
+    async fn removes_a_record_when_its_local_endpoint_is_unreachable() {
+        let temp = TempDir::new().unwrap();
+        let store = DiscoveryStore::at(temp.path().join("runtime"));
+        let record = store
+            .register(std::process::id(), "chrome-extension://stale".into())
+            .unwrap();
+        let listener = verboo_in_chrome::local_transport::bind(&record).unwrap();
+        drop(listener);
+        let client = BrowserSessionClient::with_store(store.clone());
+
+        let error = client.complete_turn().await.unwrap_err();
+
+        assert_eq!(error.code(), RelayErrorCode::ConnectionLost);
+        assert!(!store.record_path(record.pid).exists());
+        assert!(!std::path::Path::new(&record.endpoint).exists());
     }
 }

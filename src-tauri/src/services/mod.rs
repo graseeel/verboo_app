@@ -11,6 +11,7 @@ pub mod cli_service;
 pub mod cli_subagent_transcript;
 pub mod cli_spawn;
 pub mod cli_todo_canary;
+pub mod chrome_tools_canary;
 pub mod credentials_store;
 pub mod feedback_service;
 pub mod file_service;

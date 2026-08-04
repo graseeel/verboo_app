@@ -359,17 +359,11 @@ export type LanguageCode = 'en-US' | 'pt-BR'
  */
 export type ThemeMode = 'dark' | 'light' | 'system'
 export type SettingsTab =
-  | 'permissions'
-  | 'trustedCommands'
-  | 'customCommands'
-  | 'app'
-  | 'verbooInChrome'
-  | 'notifications'
-  | 'personalization'
-  | 'memory'
-  | 'projectInstructions'
-  | 'updates'
-  | 'archived'
+  | 'general'
+  | 'account'
+  | 'context'
+  | 'security'
+  | 'integrations'
 export type PersonalityMode = 'pragmatic' | 'concise' | 'explanatory'
 export type CompletionNotificationMode = 'always' | 'background' | 'never'
 
@@ -411,11 +405,15 @@ export type TranscriptItem = {
   // todowrite tool to kind="planning" (turn_service.rs activity_for_tool)
   // ON PURPOSE: planning is declaring intent, NOT acting, so this kind
   // must stay OUT of the D1 observable-action whitelist
-  // (goalState.ts ACTION_ACTIVITY_KINDS). The transcript still renders
-  // the row (label "Atualizou tarefas"); the evaluator just never
-  // counts it as action.
-  activityKind?: 'thinking' | 'image' | 'video' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool' | 'compacting' | 'planning'
+  // (goalState.ts ACTION_ACTIVITY_KINDS). The transcript renders no row for
+  // planning: ChecklistPanel is its dedicated presentation, and the
+  // evaluator just never counts it as action.
+  activityKind?: 'thinking' | 'image' | 'video' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool' | 'compacting' | 'planning' | 'browser'
   activityDetail?: string
+  /** Native diagnostic kept behind a friendly user-facing error summary. */
+  errorDetail?: string
+  /** User-requested interruption uses the assistant's quiet transcript treatment. */
+  presentation?: 'interruption'
   activityAdditions?: number
   activityDeletions?: number
   activityDiffPreview?: string
@@ -477,6 +475,10 @@ export type WorkspaceChangeEntry = {
 export type TurnActionKind =
   | 'read' | 'search' | 'edit' | 'create' | 'delete' | 'command'
   | 'image' | 'video' | 'terminal' | 'permission' | 'agent-open' | 'agent-close' | 'tool'
+  // FRENTE-A (2026-08-02): the bundled Verboo-in-Chrome extension's tools
+  // (mcp__verboo-in-chrome__* → activity_for_tool kind "browser"). One kind
+  // shared by all 8 tools; the specific action lives in the label.
+  | 'browser'
 
 export type CommandRun = { input: string; output: string; status: 'success' | 'failure' | 'running' }
 
@@ -1202,12 +1204,14 @@ export type ChromeComponentState = 'missing' | 'managed' | 'outdated' | 'invalid
 export type ChromeConnectionState = 'connected' | 'waitingForChrome' | 'ambiguous' | 'incompatible'
 export type ChromeIntegrationAggregate = 'notConfigured' | 'incomplete' | 'ready' | 'connected'
 export type ChromeExtensionIdSource = 'none' | 'release' | 'development'
+export type ChromePanelState = 'notApplicable' | 'unknown'
 
 export type ChromeIntegrationStatus = {
   extension: ChromeComponentState
   bridge: ChromeComponentState
   mcp: ChromeComponentState
   connection: ChromeConnectionState
+  panelState: ChromePanelState
   aggregate: ChromeIntegrationAggregate
   installedVersion?: string
   availableVersion: string

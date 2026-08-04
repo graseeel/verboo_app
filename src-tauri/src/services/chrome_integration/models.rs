@@ -38,6 +38,22 @@ pub enum ChromeExtensionIdSource {
     Development,
 }
 
+/// Visibility the desktop app has into the extension side panel state.
+///
+/// `NotApplicable` — no live native host, so the panel question is moot.
+/// `Unknown` — the native host is alive (the extension is connected to it),
+/// but the app has no channel to observe whether the side panel is open.
+/// The extension only reveals `approval_ui_unavailable` when a tool that
+/// needs approval runs while the panel is closed
+/// (`extensions/verboo-chrome/src/background.js:172`,
+/// `extensions/verboo-chrome/native-messaging/PROTOCOL.md:17`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChromePanelState {
+    NotApplicable,
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChromeIntegrationStatus {
@@ -45,6 +61,7 @@ pub struct ChromeIntegrationStatus {
     pub bridge: ChromeComponentState,
     pub mcp: ChromeComponentState,
     pub connection: ChromeConnectionState,
+    pub panel_state: ChromePanelState,
     pub aggregate: ChromeIntegrationAggregate,
     pub installed_version: Option<String>,
     pub available_version: String,

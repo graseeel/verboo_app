@@ -4,6 +4,8 @@ import type { Translator } from '../../i18n'
 const KIND_MAP: Record<string, TurnActionKind> = {
   read: 'read', search: 'search', edit: 'edit', command: 'command',
   image: 'image', terminal: 'terminal', permission: 'permission', subagent: 'agent-open', tool: 'tool',
+  // FRENTE-A (2026-08-02): all Verboo-in-Chrome tools share the browser kind.
+  browser: 'browser',
 }
 
 // Walks a turn's already-ordered items (text segments + activity items) into an
@@ -29,6 +31,9 @@ export function groupTurnBlocks(items: TranscriptItem[]): TurnBlock[] {
         })
         continue
       }
+      // TodoWrite is presented by ChecklistPanel. Ignore planning items here
+      // too, so persisted or replayed events cannot create a duplicate row.
+      if (item.activityKind === 'planning') continue
       const action: TurnAction = {
         kind: KIND_MAP[item.activityKind ?? 'tool'] ?? 'tool',
         label: item.text,
@@ -43,10 +48,15 @@ export function groupTurnBlocks(items: TranscriptItem[]): TurnBlock[] {
       }
       // Single-file edits/creates with a path get their OWN row (not collapsed
       // into the previous actions block) so the user sees "Editou foo.js +87 -32"
-      // per file rather than a generic "Editou arquivos (2)" summary.
-      const isPerFileAction = (action.kind === 'edit' || action.kind === 'create') && action.detail
+      // per file rather than a generic "Editou arquivos (2)" summary. Browser
+      // actions also get one row each because the product reference requires
+      // every Chrome step to say what it did; unlike edits, they need no detail.
+      const isOwnRowAction = action.kind === 'browser'
+        || ((action.kind === 'edit' || action.kind === 'create') && Boolean(action.detail))
       const last = blocks[blocks.length - 1]
-      if (!isPerFileAction && last && last.kind === 'actions') last.actions.push(action)
+      const lastBlockContainsBrowser = last?.kind === 'actions'
+        && last.actions.some(existing => existing.kind === 'browser')
+      if (!isOwnRowAction && !lastBlockContainsBrowser && last && last.kind === 'actions') last.actions.push(action)
       else blocks.push({ kind: 'actions', id: `${item.id}:g`, actions: [action] })
       continue
     }
@@ -75,6 +85,7 @@ const PLURAL_KEYS: Partial<Record<TurnActionKind, [string, string]>> = {
   'agent-open': ['transcript.agentOpenOne', 'transcript.agentOpenMany'],
   'agent-close': ['transcript.agentCloseOne', 'transcript.agentCloseMany'],
   tool: ['transcript.toolOne', 'transcript.toolMany'],
+  browser: ['transcript.browserOne', 'transcript.browserMany'],
 }
 
 /**
@@ -113,6 +124,17 @@ export function summarizeActions(actions: TurnAction[], t: Translator): string {
   for (const a of actions) counts.set(a.kind, (counts.get(a.kind) ?? 0) + 1)
   const parts: string[] = []
   for (const [kind, n] of counts) {
+    // Browser intentionally keeps every tool label in execution order. A
+    // shared block must tell the user which Chrome actions happened instead
+    // of collapsing them into a type counter; other kinds keep their summary.
+    if (kind === 'browser') {
+      const browserLabels = actions
+        .filter(action => action.kind === 'browser')
+        .map(action => action.label.trim())
+        .filter(Boolean)
+      parts.push(browserLabels.length > 0 ? browserLabels.join(', ') : 'transcript.browserOne')
+      continue
+    }
     const forms = PLURAL_KEYS[kind] ?? ['transcript.actionOne', 'transcript.actionMany']
     parts.push(n === 1 ? forms[0] : `${forms[1]} (${n})`)
   }

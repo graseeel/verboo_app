@@ -3,6 +3,7 @@ import {
   CircleAlert,
   CircleDashed,
   LoaderCircle,
+  PanelRightOpen,
   PlugZap,
   RefreshCcw,
   ShieldCheck,
@@ -80,6 +81,17 @@ export function ChromeIntegrationSettings() {
         <StatusRow label={t('chrome.cliMcp')} state={status.mcp} t={t} />
         <ConnectionRow label={t('chrome.connection')} state={status.connection} t={t} />
       </section>
+
+      {status.panelState === 'unknown' && (
+        <section className="settings-panel chrome-panel-notice" role="note">
+          <PanelRightOpen size={16} aria-hidden="true" />
+          <div>
+            <strong>{t('chrome.panel.noticeTitle')}</strong>
+            <p>{t('chrome.panel.noticeBody')}</p>
+            <p className="chrome-panel-notice-steps">{t('chrome.panel.noticeSteps')}</p>
+          </div>
+        </section>
+      )}
 
       <section
         className="settings-panel chrome-identity-panel"
