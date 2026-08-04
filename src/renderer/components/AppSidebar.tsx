@@ -17,21 +17,21 @@ import {
   Search,
   Settings,
   Trash2,
-  UserRound,
+  RotateCcw,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import type { AvatarSettings, ChatProject, CliAuthStatus, ProfileResult, SidebarUpdatePresentation, StoredConversation } from '../../shared/types'
 import { AvatarIcon } from './AvatarIcon'
 import { ContextMenu, type ContextMenuState } from './ContextMenu'
 import { SidebarUpdateControl } from './SidebarUpdateControl'
 import { useOutsideDismiss } from '../hooks/useOutsideDismiss'
-import { useI18n } from '../i18n'
+import { formatDateTime, useI18n } from '../i18n'
 import { DEFAULT_CONVERSATION_TITLE } from '../state/chatStore'
 import mascotUrl from '../../../assets/branding/verboo-mascot.png'
 import packageJson from '../../../package.json'
 
-export type AppView = 'chat' | 'profile' | 'settings' | 'plugins'
+export type AppView = 'chat' | 'settings' | 'plugins'
 
 type AppSidebarProps = {
   activeView: AppView
@@ -59,6 +59,8 @@ type AppSidebarProps = {
   onArchiveProject: (projectId: string) => void
   onDeleteProject: (projectId: string) => void
   onArchiveConversation: (conversationId: string) => void
+  archivedConversations: StoredConversation[]
+  onRestoreConversation: (conversationId: string) => void
   onDeleteConversation: (conversationId: string) => void
   onRenameConversation: (conversationId: string, title: string) => void
   avatarSettings?: AvatarSettings
@@ -92,6 +94,8 @@ export function AppSidebar({
   onArchiveProject,
   onDeleteProject,
   onArchiveConversation,
+  archivedConversations,
+  onRestoreConversation,
   onDeleteConversation,
   onRenameConversation,
   avatarSettings,
@@ -104,10 +108,15 @@ export function AppSidebar({
   const [projectDraft, setProjectDraft] = useState('')
   const [editingConversationId, setEditingConversationId] = useState<string | undefined>()
   const [conversationDraft, setConversationDraft] = useState('')
+  const [archivedChatsOpen, setArchivedChatsOpen] = useState(false)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | undefined>()
   const profileMenuRef = useRef<HTMLDivElement | null>(null)
+  const archivedChatsListId = useId()
   const profileName = profile.user?.name ?? profile.user?.email ?? cliAuth.email ?? t('sidebar.profile')
   useOutsideDismiss(profileMenuRef, profileMenuOpen, () => setProfileMenuOpen(false))
+  useEffect(() => {
+    if (archivedConversations.length === 0) setArchivedChatsOpen(false)
+  }, [archivedConversations.length])
   // Search is now handled by the command palette (⌘K / ⌘P). The sidebar no
   // longer keeps a local query or inline input — clicking "Pesquisar" opens
   // the palette via onOpenSearch. Conversations/projects render unfiltered
@@ -346,16 +355,39 @@ export function AppSidebar({
               />
             ))
           )}
+          {archivedConversations.length > 0 && (
+            <div className="sidebar-archived">
+              <button
+                className="sidebar-archived-toggle"
+                type="button"
+                aria-expanded={archivedChatsOpen}
+                aria-controls={archivedChatsListId}
+                onClick={() => setArchivedChatsOpen(open => !open)}
+              >
+                <Archive size={14} />
+                <span>{t('sidebar.archivedChats')} · {archivedConversations.length}</span>
+                {archivedChatsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              </button>
+              {archivedChatsOpen && (
+                <ul id={archivedChatsListId} className="sidebar-archived-list" aria-label={t('sidebar.archivedChats')}>
+                  {archivedConversations.map(conversation => (
+                    <ArchivedConversationRow
+                      key={conversation.id}
+                      conversation={conversation}
+                      onRestore={onRestoreConversation}
+                      onDelete={onDeleteConversation}
+                    />
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </section>
       </div>
 
       <footer className="sidebar-account-wrap" ref={profileMenuRef}>
         {profileMenuOpen && (
           <div className="profile-menu popover-panel t-dropdown is-open" data-origin="bottom-left">
-            <button type="button" onClick={() => { onSelectView('profile'); setProfileMenuOpen(false) }}>
-              <UserRound size={15} />
-              {t('sidebar.profile')}
-            </button>
             <button type="button" onClick={() => { onOpenSettings(); setProfileMenuOpen(false) }}>
               <Settings size={15} />
               {t('sidebar.settings')}
@@ -452,6 +484,32 @@ function ConversationRow({ conversation, active, running, editing, draft, onDraf
         </button>
       </div>
     </div>
+  )
+}
+
+function ArchivedConversationRow({ conversation, onRestore, onDelete }: {
+  conversation: StoredConversation
+  onRestore: (conversationId: string) => void
+  onDelete: (conversationId: string) => void
+}) {
+  const { language, t } = useI18n()
+
+  return (
+    <li className="sidebar-archived-row">
+      <MessageSquare size={14} />
+      <span>
+        <strong>{displayConversationTitle(conversation.title, t)}</strong>
+        <small>{formatDateTime(conversation.archivedAt ?? conversation.updatedAt, language)}</small>
+      </span>
+      <div className="sidebar-archived-row-actions">
+        <button type="button" onClick={() => onRestore(conversation.id)} title={t('common.restore')} aria-label={t('common.restore')}>
+          <RotateCcw size={13} />
+        </button>
+        <button type="button" onClick={() => onDelete(conversation.id)} title={t('common.delete')} aria-label={t('common.delete')}>
+          <Trash2 size={13} />
+        </button>
+      </div>
+    </li>
   )
 }
 

@@ -17,6 +17,8 @@
 .annotation-bar {
   position: fixed;
   z-index: 50;
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -26,6 +28,15 @@
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   animation: annotation-bar-in 150ms var(--modal-ease);
+}
+
+.annotation-bar[data-mode='actions'] {
+  padding: 4px;
+  background: color-mix(in srgb, var(--bg-elevated) 82%, transparent);
+  border-color: color-mix(in srgb, var(--border-strong) 48%, transparent);
+  border-radius: 999px;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
 }
 
 .annotation-bar[data-placement='above'] {
@@ -53,6 +64,10 @@
   gap: 2px;
 }
 
+.annotation-bar[data-mode='actions'] .annotation-bar-notices {
+  padding-inline: 10px;
+}
+
 .annotation-bar-notice {
   font-size: 11px;
   line-height: 1.3;
@@ -63,6 +78,68 @@
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.annotation-bar-actions {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+  max-width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.annotation-bar-segment {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 0;
+  color: var(--text-dim);
+  background: transparent;
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color 100ms ease,
+    background-color 100ms ease,
+    transform 100ms ease;
+}
+
+.annotation-bar-segment:first-child {
+  border-top-left-radius: 999px;
+  border-bottom-left-radius: 999px;
+}
+
+.annotation-bar-segment:last-child {
+  border-top-right-radius: 999px;
+  border-bottom-right-radius: 999px;
+}
+
+.annotation-bar-segment + .annotation-bar-segment {
+  border-left: 1px solid color-mix(in srgb, var(--border-strong) 55%, transparent);
+}
+
+.annotation-bar-segment:hover {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.annotation-bar-segment:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.annotation-bar-segment:active {
+  transform: translateY(1px);
 }
 
 .annotation-bar-comment {
@@ -84,27 +161,6 @@
 .annotation-bar-comment:focus {
   border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
   box-shadow: var(--focus-ring);
-}
-
-.annotation-bar-add {
-  padding: 5px 10px;
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-  color: var(--accent-strong);
-  background: var(--accent-soft);
-  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
-  border-radius: calc(var(--radius) - 2px);
-  cursor: pointer;
-  transition: transform 100ms ease;
-}
-
-.annotation-bar-add:hover {
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
-}
-
-.annotation-bar-add:active {
-  transform: scale(0.97);
 }
 
 /* ── Composer chip + hover panel ── */
@@ -362,7 +418,7 @@
     animation: none !important;
   }
 
-  .annotation-bar-add,
+  .annotation-bar-segment,
   .annotation-panel-action {
     transition: none !important;
   }

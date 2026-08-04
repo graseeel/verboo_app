@@ -4,7 +4,7 @@
  */
 
 export const NATIVE_MESSAGING_HOST_NAME = 'com.verboo.code.browser_extension' as const
-export const BROWSER_BRIDGE_PROTOCOL_VERSION = 2 as const
+export const BROWSER_BRIDGE_PROTOCOL_VERSION = 1 as const
 export const MAX_HOST_TO_CHROME_BYTES = 1024 * 1024
 export const MAX_CHROME_TO_HOST_BYTES = 64 * 1024 * 1024
 

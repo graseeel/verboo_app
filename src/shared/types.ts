@@ -359,17 +359,11 @@ export type LanguageCode = 'en-US' | 'pt-BR'
  */
 export type ThemeMode = 'dark' | 'light' | 'system'
 export type SettingsTab =
-  | 'permissions'
-  | 'trustedCommands'
-  | 'customCommands'
-  | 'app'
-  | 'verbooInChrome'
-  | 'notifications'
-  | 'personalization'
-  | 'memory'
-  | 'projectInstructions'
-  | 'updates'
-  | 'archived'
+  | 'general'
+  | 'account'
+  | 'context'
+  | 'security'
+  | 'integrations'
 export type PersonalityMode = 'pragmatic' | 'concise' | 'explanatory'
 export type CompletionNotificationMode = 'always' | 'background' | 'never'
 
@@ -411,11 +405,15 @@ export type TranscriptItem = {
   // todowrite tool to kind="planning" (turn_service.rs activity_for_tool)
   // ON PURPOSE: planning is declaring intent, NOT acting, so this kind
   // must stay OUT of the D1 observable-action whitelist
-  // (goalState.ts ACTION_ACTIVITY_KINDS). The transcript still renders
-  // the row (label "Atualizou tarefas"); the evaluator just never
-  // counts it as action.
+  // (goalState.ts ACTION_ACTIVITY_KINDS). The transcript renders no row for
+  // planning: ChecklistPanel is its dedicated presentation, and the
+  // evaluator just never counts it as action.
   activityKind?: 'thinking' | 'image' | 'video' | 'read' | 'edit' | 'search' | 'command' | 'terminal' | 'permission' | 'subagent' | 'queued' | 'context' | 'tool' | 'compacting' | 'planning' | 'browser'
   activityDetail?: string
+  /** Native diagnostic kept behind a friendly user-facing error summary. */
+  errorDetail?: string
+  /** User-requested interruption uses the assistant's quiet transcript treatment. */
+  presentation?: 'interruption'
   activityAdditions?: number
   activityDeletions?: number
   activityDiffPreview?: string

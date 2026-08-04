@@ -1,5 +1,5 @@
 export const NATIVE_MESSAGING_HOST_NAME = 'com.verboo.code.browser_extension'
-export const BROWSER_BRIDGE_PROTOCOL_VERSION = 2
+export const BROWSER_BRIDGE_PROTOCOL_VERSION = 1
 
 const DEFAULT_RECONNECT_DELAY_MS = 750
 const MAX_RECONNECT_DELAY_MS = 30_000
@@ -11,6 +11,7 @@ const MAX_RECONNECT_DELAY_MS = 30_000
  *   contextFactory: Function;
  *   approvalUiFactory: Function;
  *   isApprovalUiAvailable: () => boolean;
+ *   cancelPendingApprovals?: () => Promise<void>|void;
  *   clearPresenceOnAllTabs: () => Promise<void>;
  *   reconnectDelayMs?: number;
  * }} dependencies
@@ -21,6 +22,7 @@ export function createNativeBridge({
   contextFactory,
   approvalUiFactory,
   isApprovalUiAvailable,
+  cancelPendingApprovals = async () => {},
   clearPresenceOnAllTabs,
   reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
 }) {
@@ -64,6 +66,15 @@ export function createNativeBridge({
         if (failure) {
           console.warn('[verboo] native bridge disconnected:', failure.message)
         }
+        void Promise.resolve()
+          .then(() => cancelPendingApprovals())
+          .catch(() => {
+            // Approval cancellation is best-effort; presence cleanup still runs.
+          })
+          .then(() => clearPresenceOnAllTabs())
+          .catch(() => {
+            // Cleanup is best-effort when the native host disappears abruptly.
+          })
         scheduleReconnect()
       })
       return true
@@ -125,6 +136,11 @@ export function createNativeBridge({
     const { id, payload } = envelope
     if (envelope.kind === 'turnComplete') {
       try {
+        try {
+          await cancelPendingApprovals()
+        } catch {
+          // Approval cancellation is best-effort; presence cleanup still runs.
+        }
         await clearPresenceOnAllTabs()
         postTo(sourcePort, {
           version: BROWSER_BRIDGE_PROTOCOL_VERSION,

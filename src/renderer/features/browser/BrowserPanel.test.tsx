@@ -198,6 +198,7 @@ async function switchActiveTabScenario(urlDraft?: string) {
   fireEvent.click(screen.getByRole('tab', { name: 'docs.example' }))
   await waitFor(() => {
     expect(screen.getByLabelText('Active browser tab')).toHaveTextContent('tab-b')
+    expect(input).toHaveValue('https://docs.example/guide')
   })
   return input
 }

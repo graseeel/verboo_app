@@ -1,4 +1,6 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -6,6 +8,8 @@ use directories::BaseDirs;
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::oneshot;
+use tokio::task::JoinSet;
 
 use crate::discovery::{DiscoveryError, DiscoveryRecord, DiscoveryStore};
 use crate::error::BridgeError;
@@ -14,6 +18,8 @@ use crate::local_transport;
 use crate::protocol::{Envelope, MessageKind, PROTOCOL_VERSION};
 
 const HOST_NAME: &str = "com.verboo.code.browser_extension";
+
+type PendingResponses = Arc<Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>;
 
 #[derive(Debug, Error)]
 pub enum NativeHostError {
@@ -143,32 +149,105 @@ pub async fn run(origin: String) -> Result<(), NativeHostError> {
     validate_extension_origin(&origin, &allowed_origins)?;
 
     let store = DiscoveryStore::for_current_user()?;
-    let record = store.register(std::process::id(), origin)?;
+    let record = store.prepare(std::process::id(), origin)?;
+    let guard = SessionGuard::new(store, &record);
     let listener = local_transport::bind(&record)?;
-    let _guard = SessionGuard::new(store, &record);
-    let chrome_reader = Arc::new(Mutex::new(FrameReader::new(
-        std::io::stdin(),
-        Direction::FromChrome,
-    )));
+    guard.store.write_record(&record)?;
+    let chrome_reader = std::io::stdin();
     let chrome_writer = Arc::new(Mutex::new(std::io::stdout()));
 
+    run_relay_loop(listener, record, chrome_reader, chrome_writer).await
+}
+
+async fn run_relay_loop<R, W>(
+    listener: local_transport::LocalListener,
+    record: DiscoveryRecord,
+    chrome_reader: R,
+    chrome_writer: Arc<Mutex<W>>,
+) -> Result<(), NativeHostError>
+where
+    R: Read + Send + 'static,
+    W: Write + Send + 'static,
+{
+    let tool_transaction = Arc::new(tokio::sync::Mutex::new(()));
+    let completion_ids = Arc::new(Mutex::new(HashSet::new()));
+    let pending_responses: PendingResponses = Arc::new(Mutex::new(HashMap::new()));
+    let mut relays = JoinSet::new();
+    let mut chrome_reader_task = tokio::spawn(read_chrome_messages(
+        chrome_reader,
+        Arc::clone(&pending_responses),
+        Arc::clone(&completion_ids),
+    ));
+
     loop {
-        let stream = local_transport::accept(&listener).await?;
-        if let Err(error) = relay_one(stream, &record, &chrome_reader, &chrome_writer).await {
-            eprintln!("verboo-in-chrome native relay: {error}");
-            if matches!(error, NativeHostError::ChromeDisconnected) {
-                return Err(error);
+        tokio::select! {
+            accepted = local_transport::accept(&listener) => {
+                let stream = match accepted {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        chrome_reader_task.abort();
+                        relays.abort_all();
+                        return Err(error.into());
+                    }
+                };
+                let relay_record = record.clone();
+                let relay_writer = Arc::clone(&chrome_writer);
+                let relay_transaction = Arc::clone(&tool_transaction);
+                let relay_completion_ids = Arc::clone(&completion_ids);
+                let relay_pending_responses = Arc::clone(&pending_responses);
+                relays.spawn(async move {
+                    relay_one(
+                        stream,
+                        &relay_record,
+                        relay_writer,
+                        relay_transaction,
+                        relay_completion_ids,
+                        relay_pending_responses,
+                    )
+                    .await
+                });
+            }
+            result = &mut chrome_reader_task => {
+                relays.abort_all();
+                while relays.join_next().await.is_some() {}
+                return match result {
+                    Ok(result) => result,
+                    Err(error) => Err(NativeHostError::Worker(error.to_string())),
+                };
+            }
+            result = relays.join_next(), if !relays.is_empty() => {
+                let Some(result) = result else {
+                    continue;
+                };
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        eprintln!("verboo-in-chrome native relay: {error}");
+                        if matches!(error, NativeHostError::ChromeDisconnected) {
+                            relays.abort_all();
+                            return Err(error);
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("verboo-in-chrome native relay task failed: {error}");
+                    }
+                }
             }
         }
     }
 }
 
-async fn relay_one(
+async fn relay_one<W>(
     stream: local_transport::AcceptedStream,
     record: &DiscoveryRecord,
-    chrome_reader: &Arc<Mutex<FrameReader<std::io::Stdin>>>,
-    chrome_writer: &Arc<Mutex<std::io::Stdout>>,
-) -> Result<(), NativeHostError> {
+    chrome_writer: Arc<Mutex<W>>,
+    tool_transaction: Arc<tokio::sync::Mutex<()>>,
+    completion_ids: Arc<Mutex<HashSet<String>>>,
+    pending_responses: PendingResponses,
+) -> Result<(), NativeHostError>
+where
+    W: Write + Send + 'static,
+{
     let mut local_reader = BufReader::new(stream);
     let mut encoded_request = String::new();
     if local_reader.read_line(&mut encoded_request).await? == 0 {
@@ -176,6 +255,93 @@ async fn relay_one(
     }
     let request = prepare_browser_request(record, serde_json::from_str(&encoded_request)?)?;
 
+    if request.kind == MessageKind::TurnComplete {
+        // The MCP side intentionally does not wait for this ACK. Forward the
+        // cleanup while a previous tool relay may still own the Chrome reader.
+        completion_ids
+            .lock()
+            .map_err(|_| NativeHostError::Worker("completion id lock poisoned".into()))?
+            .insert(request.id.clone());
+        if let Err(error) = write_browser_request(&request, &chrome_writer).await {
+            completion_ids
+                .lock()
+                .map_err(|_| NativeHostError::Worker("completion id lock poisoned".into()))?
+                .remove(&request.id);
+            return Err(error);
+        }
+        drop(local_reader.into_inner());
+        return Ok(());
+    }
+
+    let _tool_transaction = tool_transaction.lock().await;
+    let (response_sender, response_receiver) = oneshot::channel();
+    pending_responses
+        .lock()
+        .map_err(|_| NativeHostError::Worker("pending response lock poisoned".into()))?
+        .insert(request.id.clone(), response_sender);
+    if let Err(error) = write_browser_request(&request, &chrome_writer).await {
+        pending_responses
+            .lock()
+            .map_err(|_| NativeHostError::Worker("pending response lock poisoned".into()))?
+            .remove(&request.id);
+        return Err(error);
+    }
+
+    let response = response_receiver
+        .await
+        .map_err(|_| NativeHostError::ChromeDisconnected)?;
+    let response: Envelope = serde_json::from_value(response)?;
+    if response.id != request.id {
+        return Err(NativeHostError::ResponseIdMismatch);
+    }
+    validate_browser_response(&request, &response)?;
+
+    let mut stream = local_reader.into_inner();
+    stream.write_all(&serde_json::to_vec(&response)?).await?;
+    stream.write_all(b"\n").await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+async fn read_chrome_messages<R>(
+    reader: R,
+    pending_responses: PendingResponses,
+    completion_ids: Arc<Mutex<HashSet<String>>>,
+) -> Result<(), NativeHostError>
+where
+    R: Read + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let mut reader = FrameReader::new(reader, Direction::FromChrome);
+        loop {
+            let value = reader.read()?.ok_or(NativeHostError::ChromeDisconnected)?;
+            let response: Envelope = serde_json::from_value(value.clone())?;
+            let was_completion = completion_ids
+                .lock()
+                .map_err(|_| NativeHostError::Worker("completion id lock poisoned".into()))?
+                .remove(&response.id);
+            if was_completion {
+                continue;
+            }
+            let sender = pending_responses
+                .lock()
+                .map_err(|_| NativeHostError::Worker("pending response lock poisoned".into()))?
+                .remove(&response.id)
+                .ok_or(NativeHostError::ResponseIdMismatch)?;
+            let _ = sender.send(value);
+        }
+    })
+    .await
+    .map_err(|error| NativeHostError::Worker(error.to_string()))?
+}
+
+async fn write_browser_request<W>(
+    request: &Envelope,
+    chrome_writer: &Arc<Mutex<W>>,
+) -> Result<(), NativeHostError>
+where
+    W: Write + Send + 'static,
+{
     let browser_request = request.clone();
     let writer = Arc::clone(chrome_writer);
     tokio::task::spawn_blocking(move || {
@@ -187,24 +353,6 @@ async fn relay_one(
     })
     .await
     .map_err(|error| NativeHostError::Worker(error.to_string()))??;
-
-    let reader = Arc::clone(chrome_reader);
-    let response = tokio::task::spawn_blocking(move || {
-        let mut input = reader
-            .lock()
-            .map_err(|_| NativeHostError::Worker("stdin lock poisoned".into()))?;
-        Ok::<_, NativeHostError>(input.read()?)
-    })
-    .await
-    .map_err(|error| NativeHostError::Worker(error.to_string()))??
-    .ok_or(NativeHostError::ChromeDisconnected)?;
-    let response: Envelope = serde_json::from_value(response)?;
-    validate_browser_response(&request, &response)?;
-
-    let mut stream = local_reader.into_inner();
-    stream.write_all(&serde_json::to_vec(&response)?).await?;
-    stream.write_all(b"\n").await?;
-    stream.shutdown().await?;
     Ok(())
 }
 
@@ -274,5 +422,105 @@ impl Drop for SessionGuard {
         let _ = self.store.remove(self.pid);
         #[cfg(unix)]
         let _ = fs::remove_file(&self.endpoint);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::{
+        discovery::DiscoveryStore,
+        framing::Direction,
+        mcp_server::BrowserSessionClient,
+        protocol::{Envelope, MessageKind, PROTOCOL_VERSION},
+    };
+    use serde_json::json;
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixStream;
+    use tempfile::TempDir;
+    use tokio::{
+        io::AsyncWriteExt,
+        sync::oneshot,
+        time::{timeout, Duration},
+    };
+
+    async fn write_local_request(
+        stream: &mut tokio::net::UnixStream,
+        record: &crate::discovery::DiscoveryRecord,
+        id: &str,
+        kind: MessageKind,
+    ) {
+        let request = Envelope {
+            version: PROTOCOL_VERSION,
+            id: id.into(),
+            kind,
+            secret: Some(record.secret.clone()),
+            payload: json!({}),
+        };
+        stream
+            .write_all(format!("{}\n", serde_json::to_string(&request).unwrap()).as_bytes())
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn turn_completion_bypasses_a_pending_tool_relay() {
+        let temp = TempDir::new().unwrap();
+        let store = DiscoveryStore::at(temp.path().join("runtime"));
+        let record = store
+            .register(std::process::id(), "chrome-extension://test".into())
+            .unwrap();
+        let listener = crate::local_transport::bind(&record).unwrap();
+        let (chrome_host, chrome_peer) = UnixStream::pair().unwrap();
+        let chrome_reader = chrome_host.try_clone().unwrap();
+        let chrome_writer = Arc::new(Mutex::new(chrome_host));
+
+        let (first_seen, first_seen_receiver) = oneshot::channel();
+        let peer_reader = chrome_peer.try_clone().unwrap();
+        let chrome_frames = tokio::task::spawn_blocking(move || {
+            let mut reader = FrameReader::new(peer_reader, Direction::FromHost);
+            let first = reader.read().unwrap().unwrap();
+            first_seen.send(first).unwrap();
+            reader.read().unwrap().unwrap()
+        });
+
+        let run_task = tokio::spawn(run_relay_loop(
+            listener,
+            record.clone(),
+            chrome_reader,
+            chrome_writer,
+        ));
+
+        let mut pending_tool = crate::local_transport::connect(&record).await.unwrap();
+        write_local_request(
+            &mut pending_tool,
+            &record,
+            "pending-tool",
+            MessageKind::ToolRequest,
+        )
+        .await;
+        let first = timeout(Duration::from_secs(1), first_seen_receiver)
+            .await
+            .unwrap()
+            .unwrap();
+        let first: Envelope = serde_json::from_value(first).unwrap();
+        assert_eq!(first.kind, MessageKind::ToolRequest);
+
+        let client = BrowserSessionClient::with_store(store);
+        client.complete_turn().await.unwrap();
+        let second = timeout(Duration::from_secs(1), chrome_frames)
+            .await
+            .unwrap()
+            .unwrap();
+        let second: Envelope = serde_json::from_value(second).unwrap();
+        assert_eq!(second.kind, MessageKind::TurnComplete);
+
+        chrome_peer.shutdown(Shutdown::Write).unwrap();
+        let run_result = timeout(Duration::from_secs(1), run_task).await.unwrap();
+        assert!(matches!(
+            run_result.unwrap(),
+            Err(NativeHostError::ChromeDisconnected)
+        ));
     }
 }

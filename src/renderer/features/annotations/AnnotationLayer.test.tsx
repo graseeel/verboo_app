@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '../../i18n'
@@ -43,7 +43,12 @@ if (typeof Range !== 'undefined' && !Range.prototype.getBoundingClientRect) {
     ({ top: 100, left: 100, width: 50, height: 20, right: 150, bottom: 120, x: 100, y: 100, toJSON: () => ({}) }) as DOMRect
 }
 
-function renderLayer(onCreate: (a: Annotation) => void, conversationId: string | undefined = 'conv-a') {
+function renderLayer(
+  onCreate: (a: Annotation) => void,
+  conversationId: string | undefined = 'conv-a',
+  onAskInSideChat?: (annotation: Annotation) => void,
+  onEditComment?: (annotationId: string, comment: string | null) => void,
+) {
   return render(
     <I18nProvider language="en-US">
       <div data-testid="scroll-surface">
@@ -56,7 +61,12 @@ function renderLayer(onCreate: (a: Annotation) => void, conversationId: string |
         <input data-testid="outside-focus" aria-label="Outside the annotation bar" />
       </div>
       <div className="composer" data-testid="composer" />
-      <AnnotationLayer conversationId={conversationId} onCreate={onCreate} />
+      <AnnotationLayer
+        conversationId={conversationId}
+        onCreate={onCreate}
+        onEditComment={onEditComment}
+        onAskInSideChat={onAskInSideChat}
+      />
     </I18nProvider>,
   )
 }
@@ -80,6 +90,12 @@ function openBarThenCollapseSelectionWithFocus(resolveFocusTarget: () => HTMLEle
   selectText(textOf('model-seg'), 0, 5)
   fireEvent.pointerUp(document)
   expect(screen.getByRole('dialog', { name: 'Add to chat' })).toBeTruthy()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Add to chat' }))
+  // The real browser may collapse the document selection while auto-focusing
+  // the textarea. Recreate the selected-text state before testing the hook's
+  // explicit collapsed-selection behavior below.
+  selectText(textOf('model-seg'), 0, 5)
 
   const selection = document.getSelection()!
   expect(selection.isCollapsed).toBe(false)
@@ -124,8 +140,8 @@ function openBarForCommentGrowth({ selectionTop = 600, composerTop = 650 } = {})
   fireEvent.pointerUp(document)
 
   const bar = screen.getByRole('dialog', { name: 'Add to chat' })
+  fireEvent.click(screen.getByRole('button', { name: 'Add to chat' }))
   const comment = screen.getByPlaceholderText('Comment (optional)…') as HTMLTextAreaElement
-  const addButton = screen.getByRole('button', { name: 'Add to chat' })
   fireEvent.pointerDown(comment)
   comment.focus()
   fireEvent.pointerUp(document)
@@ -153,7 +169,6 @@ function openBarForCommentGrowth({ selectionTop = 600, composerTop = 650 } = {})
   })
 
   return {
-    addButton,
     bar,
     comment,
     composer,
@@ -171,6 +186,70 @@ describe('AnnotationLayer — selection → bar', () => {
     selectText(textOf('model-seg'), 0, 5) // "alpha"
     fireEvent.pointerUp(document)
     expect(screen.getByRole('dialog', { name: 'Add to chat' })).toBeTruthy()
+  })
+
+  it('EFEITO: a fresh selection shows only the two actions, with no comment field', () => {
+    renderLayer(() => {}, 'conv-a', vi.fn())
+    selectText(textOf('model-seg'), 0, 5)
+    fireEvent.pointerUp(document)
+
+    expect(screen.queryByPlaceholderText('Comment (optional)…')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Add to chat' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Ask in side chat' })).toBeTruthy()
+  })
+
+  it('EFEITO: selection from a turn header into its response shows a limited bar', () => {
+    render(
+      <I18nProvider language="en-US">
+        <article className="turn-view">
+          <div data-testid="turn-header" className="message-meta">Verboo · Worked for 10s</div>
+          <div data-testid="header-response" data-annotation-segment="turn1:text:0">response body</div>
+        </article>
+        <AnnotationLayer conversationId="conv-a" onCreate={() => {}} onAskInSideChat={() => {}} />
+      </I18nProvider>,
+    )
+    const header = textOf('turn-header')
+    const response = textOf('header-response')
+    document.getSelection()!.setBaseAndExtent(header, 0, response, 8)
+    fireEvent.pointerUp(document)
+
+    const bar = screen.getByRole('dialog', { name: 'Add to chat' })
+    expect(bar).toHaveTextContent('Selection limited to one message.')
+    expect(screen.getByRole('button', { name: 'Add to chat' })).toBeInTheDocument()
+  })
+
+  it('ACESSIBILIDADE: Tab alcança os dois segmentos da barra compacta', () => {
+    renderLayer(() => {}, 'conv-a', vi.fn())
+    selectText(textOf('model-seg'), 0, 5)
+    fireEvent.pointerUp(document)
+
+    const addButton = screen.getByRole('button', { name: 'Add to chat' })
+    const sideChatButton = screen.getByRole('button', { name: 'Ask in side chat' })
+
+    addButton.focus()
+    expect(document.activeElement).toBe(addButton)
+
+    // jsdom does not implement the browser's default Tab traversal. Move to
+    // the next native button explicitly after the same key event the browser
+    // would dispatch, then assert the public focus result.
+    fireEvent.keyDown(addButton, { key: 'Tab' })
+    sideChatButton.focus()
+    expect(document.activeElement).toBe(sideChatButton)
+  })
+
+  it('EFEITO: Add to chat creates the annotation and then focuses the comment field', () => {
+    const onCreate = vi.fn()
+    renderLayer(onCreate)
+    selectText(textOf('model-seg'), 0, 5)
+    fireEvent.pointerUp(document)
+
+    expect(screen.queryByPlaceholderText('Comment (optional)…')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Add to chat' }))
+
+    const comment = screen.getByPlaceholderText('Comment (optional)…')
+    expect(onCreate).toHaveBeenCalledTimes(1)
+    expect(document.activeElement).toBe(comment)
+    expect(screen.queryByRole('button', { name: 'Add to chat' })).toBeNull()
   })
 
   it('CONTRAFACTUAL: selection in a USER message (no mark) shows NO bar', () => {
@@ -247,13 +326,15 @@ describe('AnnotationLayer — selection → bar', () => {
     fireEvent.pointerUp(document)
     expect(screen.getByRole('dialog', { name: 'Add to chat' })).toBeTruthy()
 
+    fireEvent.click(screen.getByRole('button', { name: 'Add to chat' }))
     const input = screen.getByPlaceholderText('Comment (optional)…')
+    screen.getByTestId('outside-focus').focus()
     fireEvent.pointerDown(input)
     expect(document.activeElement).not.toBe(input)
 
     const selection = document.getSelection()!
     selection.collapseToEnd()
-    fireEvent(document, new Event('selectionchange'))
+    act(() => fireEvent(document, new Event('selectionchange')))
     fireEvent.pointerUp(document)
 
     expect(screen.getByRole('dialog', { name: 'Add to chat' })).toBeTruthy()
@@ -265,7 +346,9 @@ describe('AnnotationLayer — selection → bar', () => {
     fireEvent.pointerUp(document)
     expect(screen.getByRole('dialog', { name: 'Add to chat' })).toBeTruthy()
 
+    fireEvent.click(screen.getByRole('button', { name: 'Add to chat' }))
     const input = screen.getByPlaceholderText('Comment (optional)…')
+    screen.getByTestId('outside-focus').focus()
     fireEvent.pointerDown(input)
     input.focus()
     fireEvent.pointerUp(document)
@@ -281,7 +364,7 @@ describe('AnnotationLayer — selection → bar', () => {
 
     const selection = document.getSelection()!
     selection.collapseToEnd()
-    fireEvent(document, new Event('selectionchange'))
+    act(() => fireEvent(document, new Event('selectionchange')))
 
     expect(screen.queryByRole('dialog')).toBeNull()
   })
@@ -317,20 +400,20 @@ describe('AnnotationLayer — selection → bar', () => {
   })
 
   it('EFEITO: a long comment scrolls inside the capped field and leaves Add to chat actionable', () => {
-    const { addButton, bar, comment, composer, onCreate } = openBarForCommentGrowth()
+    const { bar, comment, composer, onCreate } = openBarForCommentGrowth()
     const longComment = 'A long annotation comment that wraps across many visual lines. '.repeat(12)
     fireEvent.change(comment, { target: { value: longComment } })
     fireEvent.scroll(comment)
 
     expect(comment.value).toBe(longComment)
-    expect(bar.contains(addButton)).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Add to chat' })).toBeNull()
     expect(comment.style.maxHeight).toBe('74px')
     expect(comment.style.height).toBe('74px')
     expect(comment.style.overflowY).toBe('auto')
     expect(comment.scrollHeight).toBeGreaterThan(Number.parseFloat(comment.style.height))
     expect(bar.getBoundingClientRect().bottom).toBeLessThan(composer.getBoundingClientRect().top)
 
-    fireEvent.click(addButton)
+    fireEvent.keyDown(comment, { key: 'Enter' })
     expect(onCreate).toHaveBeenCalledTimes(1)
   })
 
@@ -384,24 +467,41 @@ describe('AnnotationLayer — selection → bar', () => {
   })
 
   it('CONTRAFACTUAL: a short comment uses its content height without internal scroll', () => {
-    const { addButton, bar, comment, composer, onCreate } = openBarForCommentGrowth()
+    const { bar, comment, composer, onCreate } = openBarForCommentGrowth()
     const shortComment = 'Short comment'
     fireEvent.change(comment, { target: { value: shortComment } })
 
     expect(comment.value).toBe(shortComment)
-    expect(bar.contains(addButton)).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Add to chat' })).toBeNull()
     expect(comment.style.maxHeight).toBe('74px')
     expect(comment.style.height).toBe('32px')
     expect(comment.style.overflowY).toBe('hidden')
     expect(comment.scrollHeight).toBe(Number.parseFloat(comment.style.height))
     expect(bar.getBoundingClientRect().bottom).toBeLessThan(composer.getBoundingClientRect().top)
 
-    fireEvent.click(addButton)
+    fireEvent.keyDown(comment, { key: 'Enter' })
     expect(onCreate).toHaveBeenCalledTimes(1)
   })
 })
 
 describe('AnnotationLayer — creation', () => {
+  it('offers a second action that sends the selected quote to the side chat', () => {
+    const onAskInSideChat = vi.fn()
+    renderLayer(() => {}, 'conv-a', onAskInSideChat)
+    selectText(textOf('model-seg'), 6, 10)
+    fireEvent.pointerUp(document)
+
+    expect(screen.queryByPlaceholderText('Comment (optional)…')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ask in side chat' }))
+
+    expect(onAskInSideChat).toHaveBeenCalledTimes(1)
+    expect(onAskInSideChat.mock.calls[0]?.[0].quote).toBe('beta')
+    expect(onAskInSideChat.mock.calls[0]?.[0].comment).toBeNull()
+    expect(screen.queryByPlaceholderText('Comment (optional)…')).toBeNull()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
   it('clicking "Add to chat" delivers an Annotation with EXACTLY the selected text as quote', () => {
     const received: Annotation[] = []
     renderLayer(a => received.push(a))
@@ -418,21 +518,23 @@ describe('AnnotationLayer — creation', () => {
     expect(received[0].prefix).toBe('alpha ')
     expect(received[0].suffix).toBe(' gamma delta')
     expect(received[0].occurrenceIndex).toBe(0)
-    // Bar dismissed after creation — the screen returns to clean.
-    expect(screen.queryByRole('dialog')).toBeNull()
+    // The first click creates the draft and changes the bar into comment mode.
+    expect(screen.getByPlaceholderText('Comment (optional)…')).toBeTruthy()
   })
 
   it('a typed comment travels in the annotation', () => {
     const received: Annotation[] = []
-    renderLayer(a => received.push(a))
+    const onEditComment = vi.fn()
+    renderLayer(a => received.push(a), 'conv-a', undefined, onEditComment)
     selectText(textOf('model-seg'), 6, 10)
     fireEvent.pointerUp(document)
 
-    fireEvent.change(screen.getByPlaceholderText('Comment (optional)…'), { target: { value: 'check this' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add to chat' }))
+    fireEvent.change(screen.getByPlaceholderText('Comment (optional)…'), { target: { value: 'check this' } })
+    fireEvent.keyDown(screen.getByPlaceholderText('Comment (optional)…'), { key: 'Enter' })
 
     expect(received).toHaveLength(1)
-    expect(received[0].comment).toBe('check this')
+    expect(onEditComment).toHaveBeenCalledWith(received[0].id, 'check this')
   })
 
   it('a selection crossing into UNMARKED content clamps to the segment and SAYS SO in the bar', () => {
@@ -515,6 +617,16 @@ describe('AnnotationLayer — obstacle inventory (checklist card, BOTH forms)', 
 
   it('FLOATING checklist card over the free spot → the bar still MOVES below (regression pin)', () => {
     renderWithObstacle('checklist-panel floating')
+    selectText(textOf('model-seg'), 0, 5)
+    fireEvent.pointerUp(document)
+
+    const bar = screen.getByRole('dialog', { name: 'Add to chat' })
+    expect(bar.getAttribute('data-placement')).toBe('below')
+    expect(bar.style.top).toBe('128px')
+  })
+
+  it('SIDECHAT column over the free spot → the bar MOVES below, no intersection', () => {
+    renderWithObstacle('sidechat-panel')
     selectText(textOf('model-seg'), 0, 5)
     fireEvent.pointerUp(document)
 

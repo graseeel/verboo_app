@@ -60,22 +60,11 @@ mod unix_tests {
 
         let task = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let (reader, mut writer) = stream.into_split();
+            let (reader, _writer) = stream.into_split();
             let mut lines = BufReader::new(reader).lines();
             let request: Envelope =
                 serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
             assert_eq!(request.secret.as_deref(), Some(expected_secret.as_str()));
-            let response = Envelope {
-                version: PROTOCOL_VERSION,
-                id: request.id.clone(),
-                kind: MessageKind::TurnCompleteAck,
-                secret: None,
-                payload: json!({"ok": true}),
-            };
-            writer
-                .write_all(format!("{}\n", serde_json::to_string(&response).unwrap()).as_bytes())
-                .await
-                .unwrap();
             request
         });
 
@@ -109,7 +98,7 @@ mod unix_tests {
     }
 
     #[tokio::test]
-    async fn completion_signal_is_sent_only_as_a_separate_control_request() {
+    async fn completion_signal_is_sent_without_waiting_for_a_browser_ack() {
         let (client, request_task, _temp) = connected_client_for_completion().await;
 
         client.complete_turn().await.unwrap();
@@ -147,5 +136,23 @@ mod unix_tests {
             .await
             .unwrap_err();
         assert_eq!(error.code(), RelayErrorCode::ChromeNotConnected);
+    }
+
+    #[tokio::test]
+    async fn removes_a_record_when_its_local_endpoint_is_unreachable() {
+        let temp = TempDir::new().unwrap();
+        let store = DiscoveryStore::at(temp.path().join("runtime"));
+        let record = store
+            .register(std::process::id(), "chrome-extension://stale".into())
+            .unwrap();
+        let listener = verboo_in_chrome::local_transport::bind(&record).unwrap();
+        drop(listener);
+        let client = BrowserSessionClient::with_store(store.clone());
+
+        let error = client.complete_turn().await.unwrap_err();
+
+        assert_eq!(error.code(), RelayErrorCode::ConnectionLost);
+        assert!(!store.record_path(record.pid).exists());
+        assert!(!std::path::Path::new(&record.endpoint).exists());
     }
 }

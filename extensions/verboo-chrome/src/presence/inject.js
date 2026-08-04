@@ -27,6 +27,134 @@ const FRAME_STYLE_ID = 'verboo-presence-frame-style'
 const CURSOR_ID = 'verboo-agent-cursor'
 const CURSOR_STYLE_ID = 'verboo-agent-cursor-style'
 const CURSOR_RIPPLE_ID = 'verboo-agent-cursor-ripple'
+const PRESENCE_GENERATION_STORAGE_KEY = 'verbooPresenceGeneration'
+const PRESENCE_TOUCHED_TAB_GENERATIONS_STORAGE_KEY = 'verbooPresenceTouchedTabGenerations'
+
+let presenceGeneration = 0
+let presenceGenerationReady
+let presenceGenerationWrite = Promise.resolve()
+let presenceTouchedTabGenerationsWrite = Promise.resolve()
+/** @type {Set<number>} */
+const touchedPresenceTabIds = new Set()
+/** @type {Map<number, number>} */
+const touchedPresenceTabGenerations = new Map()
+
+/**
+ * @returns {{get?: Function, set?: Function} | undefined}
+ */
+function getPresenceSessionStorage() {
+  return globalThis.chrome?.storage?.session
+}
+
+/** @returns {Promise<void>} */
+async function restorePresenceGeneration() {
+  const storage = getPresenceSessionStorage()
+  if (typeof storage?.get !== 'function') return
+  try {
+    const result = await storage.get(PRESENCE_GENERATION_STORAGE_KEY)
+    const storedGeneration = Number(result?.[PRESENCE_GENERATION_STORAGE_KEY])
+    if (Number.isSafeInteger(storedGeneration) && storedGeneration >= 0) {
+      presenceGeneration = storedGeneration
+    }
+  } catch {
+    // Presence remains best-effort if session storage is unavailable.
+  }
+}
+
+/** @returns {Promise<void>} */
+async function restoreTouchedPresenceTabs() {
+  const storage = getPresenceSessionStorage()
+  if (typeof storage?.get !== 'function') return
+  try {
+    const result = await storage.get(PRESENCE_TOUCHED_TAB_GENERATIONS_STORAGE_KEY)
+    const storedValue = result?.[PRESENCE_TOUCHED_TAB_GENERATIONS_STORAGE_KEY]
+    touchedPresenceTabIds.clear()
+    touchedPresenceTabGenerations.clear()
+    if (!Array.isArray(storedValue)) return
+    for (const entry of storedValue) {
+      const tabId = Number(entry?.tabId)
+      const generation = Number(entry?.generation)
+      if (
+        Number.isSafeInteger(tabId) && tabId >= 0 &&
+        Number.isSafeInteger(generation) && generation >= 0
+      ) {
+        touchedPresenceTabIds.add(tabId)
+        touchedPresenceTabGenerations.set(tabId, generation)
+      }
+    }
+  } catch {
+    // Presence remains best-effort if session storage is unavailable.
+  }
+}
+
+/** @returns {Promise<void>} */
+function ensurePresenceGenerationReady() {
+  if (!presenceGenerationReady) {
+    presenceGenerationReady = Promise.all([
+      restorePresenceGeneration(),
+      restoreTouchedPresenceTabs(),
+    ]).then(() => {})
+  }
+  return presenceGenerationReady
+}
+
+/**
+ * Serialize writes so concurrent turn teardowns cannot publish an older
+ * generation after a newer one.
+ *
+ * @param {number} generation
+ * @returns {Promise<void>}
+ */
+function persistPresenceGeneration(generation) {
+  const storage = getPresenceSessionStorage()
+  if (typeof storage?.set !== 'function') return Promise.resolve()
+  const write = presenceGenerationWrite.then(() =>
+    storage.set({ [PRESENCE_GENERATION_STORAGE_KEY]: generation }),
+  )
+  presenceGenerationWrite = write.catch(() => {})
+  return presenceGenerationWrite
+}
+
+/**
+ * Persist the tabs that still have presence born in this service-worker
+ * state. Keeping the injection generation alongside each tab preserves the
+ * cleanup threshold when a new injection races an older cleanup.
+ *
+ * @returns {Promise<void>}
+ */
+function persistTouchedPresenceTabs() {
+  const storage = getPresenceSessionStorage()
+  if (typeof storage?.set !== 'function') return Promise.resolve()
+  const write = presenceTouchedTabGenerationsWrite.then(() =>
+    storage.set({
+      [PRESENCE_TOUCHED_TAB_GENERATIONS_STORAGE_KEY]: Array.from(
+        touchedPresenceTabGenerations,
+        ([tabId, generation]) => ({ tabId, generation }),
+      ),
+    }),
+  )
+  presenceTouchedTabGenerationsWrite = write.catch(() => {})
+  return presenceTouchedTabGenerationsWrite
+}
+
+/**
+ * @param {number} tabId
+ * @returns {Promise<number>}
+ */
+async function rememberPresenceTab(tabId) {
+  touchedPresenceTabIds.add(tabId)
+  touchedPresenceTabGenerations.set(tabId, presenceGeneration)
+  await persistTouchedPresenceTabs()
+  return presenceGeneration
+}
+
+/** @returns {Promise<number>} */
+async function advancePresenceGeneration() {
+  presenceGeneration += 1
+  const generation = presenceGeneration
+  await persistPresenceGeneration(generation)
+  return generation
+}
 
 /** Inclusive lower bound for the random presence pause (ms). */
 export const PRESENCE_ACTION_DELAY_MS_MIN = 840
@@ -64,15 +192,15 @@ export async function disableGlobalVerbooPanel() {
 }
 
 /**
- * Bind the Verboo panel to one tab, open it from the toolbar gesture, and put
- * the controlled tab in the Verboo group.
+ * Bind the Verboo panel to one tab and invoke its opening while the caller's
+ * user gesture is still active. Do not add an await before `sidePanel.open`.
  *
  * @param {number} tabId
- * @returns {Promise<{ groupId: number }>}
+ * @returns {Promise<void>}
  */
-export async function openVerbooWorkspace(tabId) {
+export function openVerbooPanel(tabId) {
   if (typeof tabId !== 'number') {
-    throw new Error('openVerbooWorkspace: missing tabId')
+    throw new Error('openVerbooPanel: missing tabId')
   }
   const configurePanel = chrome.sidePanel.setOptions({
     tabId,
@@ -80,8 +208,18 @@ export async function openVerbooWorkspace(tabId) {
     enabled: true,
   })
   const openPanel = chrome.sidePanel.open({ tabId })
-  await configurePanel
-  await openPanel
+  return Promise.all([configurePanel, openPanel]).then(() => {})
+}
+
+/**
+ * Bind the Verboo panel to one tab, open it from the toolbar gesture, and put
+ * the controlled tab in the Verboo group.
+ *
+ * @param {number} tabId
+ * @returns {Promise<{ groupId: number }>}
+ */
+export async function openVerbooWorkspace(tabId) {
+  await openVerbooPanel(tabId)
   return ensureVerbooTabGroup(tabId)
 }
 
@@ -145,29 +283,43 @@ export async function ensureVerbooTabGroup(tabId) {
  * Idempotent — does not double-inject.
  *
  * @param {number} tabId
+ * @param {number} [generation]
  * @returns {Promise<void>}
  */
-export async function showPresenceFrame(tabId) {
+export async function showPresenceFrame(tabId, generation) {
   if (typeof tabId !== 'number') return
+  await ensurePresenceGenerationReady()
+  const injectionGeneration = await rememberPresenceTab(tabId)
+  if (typeof generation !== 'number') generation = injectionGeneration
+  if (typeof generation === 'number') {
+    // Callers that coordinate multiple presence effects pass one snapshot.
+    // Direct callers use the current generation captured above.
+    generation = generation <= injectionGeneration ? generation : injectionGeneration
+  }
+  const appliedGeneration = generation
   await chrome.scripting.executeScript({
     target: { tabId },
     func: injectPresenceFrameInPage,
-    args: [FRAME_ID, FRAME_STYLE_ID],
+    args: [FRAME_ID, FRAME_STYLE_ID, appliedGeneration],
   })
+  if (appliedGeneration < presenceGeneration) {
+    await hidePresenceFrame(tabId, appliedGeneration).catch(() => {})
+  }
 }
 
 /**
  * Remove the presence frame overlay from the page (optional end of turn).
  *
  * @param {number} tabId
+ * @param {number} [maxGeneration] Remove only effects born at or below this generation.
  * @returns {Promise<void>}
  */
-export async function hidePresenceFrame(tabId) {
+export async function hidePresenceFrame(tabId, maxGeneration) {
   if (typeof tabId !== 'number') return
   await chrome.scripting.executeScript({
     target: { tabId },
     func: removeByIdsInPage,
-    args: [[FRAME_ID, FRAME_STYLE_ID]],
+    args: [[FRAME_ID, FRAME_STYLE_ID], maxGeneration],
   })
 }
 
@@ -181,10 +333,18 @@ export async function hidePresenceFrame(tabId) {
  *
  * @param {number} tabId
  * @param {{ x: number; y: number } | { selector: string } | null | undefined} target
+ * @param {number} [generation]
  * @returns {Promise<void>}
  */
-export async function showAgentCursor(tabId, target) {
+export async function showAgentCursor(tabId, target, generation) {
   if (typeof tabId !== 'number') return
+  await ensurePresenceGenerationReady()
+  const injectionGeneration = await rememberPresenceTab(tabId)
+  if (typeof generation !== 'number') generation = injectionGeneration
+  const appliedGeneration =
+    typeof generation === 'number' && generation <= injectionGeneration
+      ? generation
+      : injectionGeneration
   const payload =
     target && typeof target === 'object'
       ? target
@@ -192,37 +352,52 @@ export async function showAgentCursor(tabId, target) {
   await chrome.scripting.executeScript({
     target: { tabId },
     func: injectAgentCursorInPage,
-    args: [CURSOR_ID, CURSOR_STYLE_ID, payload, CURSOR_MOVE_MS],
+    args: [CURSOR_ID, CURSOR_STYLE_ID, payload, CURSOR_MOVE_MS, appliedGeneration],
   })
+  if (appliedGeneration < presenceGeneration) {
+    await hideAgentCursor(tabId, appliedGeneration).catch(() => {})
+  }
 }
 
 /**
  * Brief click pulse + ripple at the cursor tip (feedback before DOM click).
  *
  * @param {number} tabId
+ * @param {number} [generation]
  * @returns {Promise<void>}
  */
-export async function pulseAgentCursor(tabId) {
+export async function pulseAgentCursor(tabId, generation) {
   if (typeof tabId !== 'number') return
+  await ensurePresenceGenerationReady()
+  const injectionGeneration = await rememberPresenceTab(tabId)
+  if (typeof generation !== 'number') generation = injectionGeneration
+  const appliedGeneration =
+    typeof generation === 'number' && generation <= injectionGeneration
+      ? generation
+      : injectionGeneration
   await chrome.scripting.executeScript({
     target: { tabId },
     func: pulseAgentCursorInPage,
-    args: [CURSOR_ID, CURSOR_RIPPLE_ID],
+    args: [CURSOR_ID, CURSOR_RIPPLE_ID, appliedGeneration],
   })
+  if (appliedGeneration < presenceGeneration) {
+    await hideAgentCursor(tabId, appliedGeneration).catch(() => {})
+  }
 }
 
 /**
  * Remove the agent cursor overlay.
  *
  * @param {number} tabId
+ * @param {number} [maxGeneration] Remove only effects born at or below this generation.
  * @returns {Promise<void>}
  */
-export async function hideAgentCursor(tabId) {
+export async function hideAgentCursor(tabId, maxGeneration) {
   if (typeof tabId !== 'number') return
   await chrome.scripting.executeScript({
     target: { tabId },
     func: removeByIdsInPage,
-    args: [[CURSOR_ID, CURSOR_STYLE_ID, CURSOR_RIPPLE_ID]],
+    args: [[CURSOR_ID, CURSOR_STYLE_ID, CURSOR_RIPPLE_ID], maxGeneration],
   })
 }
 
@@ -230,18 +405,22 @@ export async function hideAgentCursor(tabId) {
  * Hide frame + cursor on a known tab (end of agent control).
  *
  * @param {number} tabId
+ * @param {number} [maxGeneration] Remove only effects born at or below this generation.
  * @returns {Promise<void>}
  */
-export async function clearPresence(tabId) {
+export async function clearPresence(tabId, maxGeneration) {
   if (typeof tabId !== 'number') return
+  await ensurePresenceGenerationReady()
+  const removalGeneration =
+    typeof maxGeneration === 'number' ? maxGeneration : (await advancePresenceGeneration()) - 1
   // Clear independently so one failure does not leave the other visible.
   try {
-    await hidePresenceFrame(tabId)
+    await hidePresenceFrame(tabId, removalGeneration)
   } catch {
     /* ignore */
   }
   try {
-    await hideAgentCursor(tabId)
+    await hideAgentCursor(tabId, removalGeneration)
   } catch {
     /* ignore */
   }
@@ -269,7 +448,30 @@ export async function clearPresenceBestEffort(tabId) {
 }
 
 /**
+ * Drop only the touched entries that belonged to this cleanup snapshot.
+ * A newer injection on the same tab has a newer generation and must remain
+ * persisted for the next cleanup.
+ *
+ * @param {Map<number, number>} cleanupTouchedTabGenerations
+ * @param {number} threshold
+ * @returns {Promise<void>}
+ */
+async function forgetCleanedPresenceTabs(cleanupTouchedTabGenerations, threshold) {
+  let changed = false
+  for (const [tabId, generation] of cleanupTouchedTabGenerations) {
+    const currentGeneration = touchedPresenceTabGenerations.get(tabId)
+    if (currentGeneration === generation && generation <= threshold) {
+      touchedPresenceTabGenerations.delete(tabId)
+      touchedPresenceTabIds.delete(tabId)
+      changed = true
+    }
+  }
+  if (changed) await persistTouchedPresenceTabs()
+}
+
+/**
  * Clear presence overlays on every tab that could have them. Targets:
+ *   - Tabs persisted when a frame or cursor was injected, across worker restarts
  *   - All tabs in any "Verboo" tab group (any window)
  *   - Plus the active tab in every window (fallback when no group exists)
  *
@@ -281,9 +483,19 @@ export async function clearPresenceBestEffort(tabId) {
  * @returns {Promise<void>}
  */
 export async function clearPresenceOnAllTabs() {
+  await ensurePresenceGenerationReady()
+  await presenceTouchedTabGenerationsWrite
+  const cleanupGenerationPromise = advancePresenceGeneration()
+  /** @type {Set<number>} */
+  const tabIds = new Set(touchedPresenceTabIds)
+  /** @type {Map<number, number>} */
+  const cleanupTouchedTabGenerations = new Map(
+    Array.from(tabIds, (tabId) => [
+      tabId,
+      touchedPresenceTabGenerations.get(tabId) ?? Math.max(0, presenceGeneration - 1),
+    ]),
+  )
   try {
-    /** @type {Set<number>} */
-    const tabIds = new Set()
     try {
       const groups = await chrome.tabGroups.query({ title: VERBOO_TAB_GROUP_TITLE })
       for (const g of groups) {
@@ -307,8 +519,13 @@ export async function clearPresenceOnAllTabs() {
     } catch {
       // windows/tabs query failure — best-effort.
     }
+    const cleanupGeneration = await cleanupGenerationPromise
     await Promise.all(
-      Array.from(tabIds).map((id) => clearPresence(id).catch(() => {})),
+      Array.from(tabIds).map((id) => clearPresence(id, cleanupGeneration - 1).catch(() => {})),
+    )
+    await forgetCleanedPresenceTabs(
+      cleanupTouchedTabGenerations,
+      cleanupGeneration - 1,
     )
   } catch {
     // Whole-operation failure — ignore.
@@ -326,9 +543,11 @@ export async function clearPresenceOnAllTabs() {
  */
 export async function ensureAgentPresence(tabId, target) {
   if (typeof tabId !== 'number') return
+  await ensurePresenceGenerationReady()
+  const generation = await rememberPresenceTab(tabId)
   try {
-    await showPresenceFrame(tabId)
-    await showAgentCursor(tabId, target ?? null)
+    await showPresenceFrame(tabId, generation)
+    await showAgentCursor(tabId, target ?? null, generation)
   } catch {
     // chrome:// pages, closed tabs, CSP — ignore.
   }
@@ -344,12 +563,17 @@ export async function ensureAgentPresence(tabId, target) {
  * @returns {Promise<void>}
  */
 export async function preparePresenceForAction(tabId, selector) {
+  await ensurePresenceGenerationReady()
+  const generation = typeof tabId === 'number'
+    ? await rememberPresenceTab(tabId)
+    : presenceGeneration
   try {
-    await showPresenceFrame(tabId)
+    await showPresenceFrame(tabId, generation)
     // Always animate the cursor — even without a selector (center target).
     await showAgentCursor(
       tabId,
       typeof selector === 'string' && selector ? { selector } : null,
+      generation,
     )
     const delayMs = await resolvePresenceDelayMs(tabId)
     if (delayMs > 0) await sleep(delayMs)
@@ -382,13 +606,27 @@ async function resolvePresenceDelayMs(tabId) {
 /**
  * @param {string} frameId
  * @param {string} styleId
+ * @param {number} generation
  */
-function injectPresenceFrameInPage(frameId, styleId) {
+function injectPresenceFrameInPage(frameId, styleId, generation) {
+  const appliedGeneration = Number.isFinite(generation) ? generation : 0
+  const generationText = String(appliedGeneration)
   // Must be self-contained (serialized into the page). Avoids innerHTML —
   // YouTube Trusted Types can reject string HTML injection.
-  if (document.getElementById(frameId)) {
-    const existing = document.getElementById(frameId)
-    if (existing) existing.classList.add('verboo-frame-visible')
+  const existing = document.getElementById(frameId)
+  if (existing) {
+    const existingGeneration = Number(existing.dataset?.verbooPresenceGeneration)
+    if (Number.isFinite(existingGeneration) && existingGeneration > appliedGeneration) return
+    existing.dataset.verbooPresenceGeneration = generationText
+    const existingStyle = document.getElementById(styleId)
+    const styleGeneration = Number(existingStyle?.dataset?.verbooPresenceGeneration)
+    if (
+      existingStyle &&
+      (!Number.isFinite(styleGeneration) || styleGeneration < appliedGeneration)
+    ) {
+      existingStyle.dataset.verbooPresenceGeneration = generationText
+    }
+    existing.classList.add('verboo-frame-visible')
     return
   }
 
@@ -399,6 +637,7 @@ function injectPresenceFrameInPage(frameId, styleId) {
   if (!document.getElementById(styleId)) {
     const style = document.createElement('style')
     style.id = styleId
+    style.dataset.verbooPresenceGeneration = generationText
     style.textContent = `
 #${frameId} {
   position: fixed !important;
@@ -453,16 +692,25 @@ function injectPresenceFrameInPage(frameId, styleId) {
 }
 `.trim()
     ;(document.documentElement || document.body).appendChild(style)
+  } else {
+    const style = document.getElementById(styleId)
+    const styleGeneration = Number(style?.dataset?.verbooPresenceGeneration)
+    if (style && (!Number.isFinite(styleGeneration) || styleGeneration < appliedGeneration)) {
+      style.dataset.verbooPresenceGeneration = generationText
+    }
   }
 
   const frame = document.createElement('div')
   frame.id = frameId
+  frame.dataset.verbooPresenceGeneration = generationText
   frame.setAttribute('aria-hidden', 'true')
   if (!reduced) frame.classList.add('verboo-animate')
   ;(document.documentElement || document.body).appendChild(frame)
   requestAnimationFrame(() => {
     const f = document.getElementById(frameId)
-    if (f) f.classList.add('verboo-frame-visible')
+    if (f?.dataset?.verbooPresenceGeneration === generationText) {
+      f.classList.add('verboo-frame-visible')
+    }
   })
 }
 
@@ -471,10 +719,14 @@ function injectPresenceFrameInPage(frameId, styleId) {
  * @param {string} styleId
  * @param {{ x?: number; y?: number; selector?: string } | null} target
  * @param {number} moveMs
+ * @param {number} generation
  */
-function injectAgentCursorInPage(cursorId, styleId, target, moveMs) {
+function injectAgentCursorInPage(cursorId, styleId, target, moveMs, generation) {
   // Self-contained (serialized into the page). No outer helpers, no innerHTML
   // (YouTube Trusted Types rejects string HTML injection).
+  const appliedGeneration = Number.isFinite(generation) ? generation : 0
+  const generationText = String(appliedGeneration)
+
   function buildPointerSvg() {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
     svg.setAttribute('width', '30')
@@ -575,7 +827,10 @@ function injectAgentCursorInPage(cursorId, styleId, target, moveMs) {
 
     animation.finished
       .then(() => {
-        if (cursor.dataset.verbooMotionId !== motionId) return
+        if (
+          cursor.dataset.verbooMotionId !== motionId ||
+          cursor.dataset.verbooPresenceGeneration !== generationText
+        ) return
         cursor.style.transform = finalTransform
         cursor.dataset.verbooX = String(toX)
         cursor.dataset.verbooY = String(toY)
@@ -635,6 +890,7 @@ function injectAgentCursorInPage(cursorId, styleId, target, moveMs) {
   if (!document.getElementById(styleId)) {
     const style = document.createElement('style')
     style.id = styleId
+    style.dataset.verbooPresenceGeneration = generationText
     style.textContent = `
 #${cursorId} {
   position: fixed !important;
@@ -741,14 +997,26 @@ function injectAgentCursorInPage(cursorId, styleId, target, moveMs) {
 }
 `.trim()
     ;(document.documentElement || document.body).appendChild(style)
+  } else {
+    const style = document.getElementById(styleId)
+    const styleGeneration = Number(style?.dataset?.verbooPresenceGeneration)
+    if (style && (!Number.isFinite(styleGeneration) || styleGeneration < appliedGeneration)) {
+      style.dataset.verbooPresenceGeneration = generationText
+    }
   }
 
   let cursor = document.getElementById(cursorId)
+  if (cursor) {
+    const cursorGeneration = Number(cursor.dataset?.verbooPresenceGeneration)
+    if (Number.isFinite(cursorGeneration) && cursorGeneration > appliedGeneration) return
+    cursor.dataset.verbooPresenceGeneration = generationText
+  }
   const transform = `translate(${x}px, ${y}px)`
 
   if (!cursor) {
     cursor = document.createElement('div')
     cursor.id = cursorId
+    cursor.dataset.verbooPresenceGeneration = generationText
     cursor.setAttribute('aria-hidden', 'true')
     cursor.appendChild(buildPointerSvg())
     const enterX = Math.max(0, x - 36)
@@ -762,7 +1030,7 @@ function injectAgentCursorInPage(cursorId, styleId, target, moveMs) {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           const c = document.getElementById(cursorId)
-          if (!c) return
+          if (!c || c.dataset.verbooPresenceGeneration !== generationText) return
           c.classList.add('verboo-cursor-animate', 'verboo-cursor-visible')
           glideCursor(c, enterX, enterY, x, y, duration)
         })
@@ -800,10 +1068,16 @@ function injectAgentCursorInPage(cursorId, styleId, target, moveMs) {
 /**
  * @param {string} cursorId
  * @param {string} rippleId
+ * @param {number} generation
  */
-function pulseAgentCursorInPage(cursorId, rippleId) {
+function pulseAgentCursorInPage(cursorId, rippleId, generation) {
+  const appliedGeneration = Number.isFinite(generation) ? generation : 0
+  const generationText = String(appliedGeneration)
   const cursor = document.getElementById(cursorId)
   if (!cursor) return
+  const cursorGeneration = Number(cursor.dataset?.verbooPresenceGeneration)
+  if (Number.isFinite(cursorGeneration) && cursorGeneration > appliedGeneration) return
+  cursor.dataset.verbooPresenceGeneration = generationText
 
   const reduced =
     typeof matchMedia === 'function' &&
@@ -822,7 +1096,7 @@ function pulseAgentCursorInPage(cursorId, rippleId) {
     cursor.classList.add('verboo-cursor-click')
     setTimeout(() => {
       const c = document.getElementById(cursorId)
-      if (!c) return
+      if (!c || c.dataset.verbooPresenceGeneration !== generationText) return
       c.classList.remove('verboo-cursor-click')
       c.style.transform = base
       c.classList.add('verboo-cursor-idle')
@@ -833,20 +1107,38 @@ function pulseAgentCursorInPage(cursorId, rippleId) {
   if (reduced) return
   const ripple = document.createElement('div')
   ripple.id = rippleId
+  ripple.dataset.verbooPresenceGeneration = generationText
   ripple.setAttribute('aria-hidden', 'true')
   ripple.style.left = `${x}px`
   ripple.style.top = `${y}px`
   ;(document.documentElement || document.body).appendChild(ripple)
-  setTimeout(() => ripple.remove(), 500)
+  setTimeout(() => {
+    const current = document.getElementById(rippleId)
+    if (current?.dataset?.verbooPresenceGeneration === generationText) current.remove()
+  }, 500)
 }
 
 /**
  * @param {string[]} ids
+ * @param {number} [maxGeneration]
  */
-function removeByIdsInPage(ids) {
+function removeByIdsInPage(ids, maxGeneration) {
+  const threshold = Number(maxGeneration)
+  const removedIds = []
   for (const id of ids) {
-    document.getElementById(id)?.remove()
+    const element = document.getElementById(id)
+    if (!element) continue
+    const elementGeneration = Number(element.dataset?.verbooPresenceGeneration)
+    if (
+      !Number.isFinite(threshold) ||
+      !Number.isFinite(elementGeneration) ||
+      elementGeneration <= threshold
+    ) {
+      element.remove()
+      removedIds.push(id)
+    }
   }
+  return removedIds
 }
 
 /**

@@ -109,6 +109,22 @@ describe('resolveSelectionTarget — contenção em segmento do MODELO', () => {
     expect(target.clamped).toBe(true)
     expect(target.end).toBe('texto do modelo'.length)
   })
+
+  it('seleção que começa no cabeçalho do mesmo turno → mostra alvo limitado e aviso', () => {
+    mount(`<article class="turn-view">
+      <div class="message-meta">Verboo · Trabalhou por 10s</div>
+      <div class="step-text" data-annotation-segment="t1:text:0"><p>texto selecionável da resposta</p></div>
+    </article>`)
+    const headerNode = textNodeOf('.message-meta')
+    const responseNode = textNodeOf('[data-annotation-segment]')
+    const target = resolveSelectionTarget(headerNode, 0, responseNode, 6)!
+
+    expect(target).not.toBeNull()
+    expect(target.segmentId).toBe('t1:text:0')
+    expect(target.start).toBe(0)
+    expect(target.end).toBe(6)
+    expect(target.clamped).toBe(true)
+  })
 })
 
 describe('textOffsetWithin — offsets UTF-16 sobre DOM aninhado', () => {

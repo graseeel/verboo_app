@@ -1,0 +1,289 @@
+/* F2: the side chat is a second conversation lane, not a floating overlay.
+   The app grid reserves its column immediately after .workspace. */
+.sidechat-panel {
+  position: relative;
+  grid-column: 3;
+  grid-row: 1;
+  z-index: 180;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid color-mix(in srgb, var(--border-strong) 62%, transparent);
+  background: color-mix(in srgb, var(--bg-elevated) 96%, var(--bg));
+  box-shadow: inset 10px 0 28px color-mix(in srgb, black 7%, transparent);
+  backdrop-filter: blur(12px);
+  overflow: hidden;
+}
+
+.sidechat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 46px;
+  padding: 8px 10px 8px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidechat-title {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.sidechat-title strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidechat-title svg {
+  color: var(--accent-strong);
+}
+
+.sidechat-close {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.sidechat-close:hover {
+  border-color: var(--border);
+  background: var(--bg-soft);
+  color: var(--text);
+}
+
+.sidechat-context {
+  margin: 0;
+  padding: 10px 14px 11px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 48%, var(--bg-soft));
+}
+
+.sidechat-context-chip {
+  width: max-content;
+  max-width: 100%;
+  margin-inline-start: auto;
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border-radius: 999px;
+  color: var(--accent-strong);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.sidechat-context blockquote {
+  margin: 8px 0 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  max-height: 92px;
+  overflow: hidden auto;
+}
+
+.sidechat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 14px 12px;
+  overflow: hidden auto;
+}
+
+.sidechat-message {
+  max-width: 92%;
+  padding: 9px 11px;
+  border-radius: 11px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.sidechat-message p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.sidechat-message.user {
+  align-self: flex-end;
+  background: var(--accent-soft);
+}
+
+.sidechat-message.assistant {
+  align-self: flex-start;
+  background: var(--bg-soft);
+}
+
+.sidechat-message.assistant > :first-child {
+  margin-top: 0;
+}
+
+.sidechat-message.assistant > :last-child {
+  margin-bottom: 0;
+}
+
+.sidechat-thinking {
+  align-self: flex-start;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.sidechat-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.sidechat-close-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 320;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, black 38%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.sidechat-close-dialog {
+  width: min(420px, 100%);
+  padding: 20px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--bg-elevated);
+  box-shadow: 0 20px 56px color-mix(in srgb, black 34%, transparent);
+}
+
+.sidechat-close-dialog h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.sidechat-close-dialog p {
+  margin: 9px 0 16px;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.sidechat-close-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sidechat-close-checkbox input {
+  accent-color: var(--accent);
+}
+
+.sidechat-close-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.sidechat-close-cancel,
+.sidechat-close-confirm {
+  min-height: 34px;
+  padding: 7px 12px;
+  border-radius: 9px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sidechat-close-cancel {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+}
+
+.sidechat-close-cancel:hover {
+  background: var(--bg-soft);
+  color: var(--text);
+}
+
+.sidechat-close-confirm {
+  border: 1px solid color-mix(in srgb, var(--danger, #c94a4a) 60%, var(--border-strong));
+  background: color-mix(in srgb, var(--danger, #c94a4a) 88%, #8b1e1e);
+  color: white;
+}
+
+.sidechat-close-confirm:hover {
+  background: color-mix(in srgb, var(--danger, #c94a4a) 100%, #8b1e1e);
+}
+
+.sidechat-form textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 42px;
+  max-height: 120px;
+  padding: 9px 10px;
+  resize: vertical;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--bg-soft);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.sidechat-form textarea:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 48%, transparent);
+  outline-offset: 1px;
+}
+
+.sidechat-send {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border: 1px solid var(--accent);
+  border-radius: 9px;
+  background: var(--accent);
+  color: white;
+  cursor: pointer;
+}
+
+.sidechat-send:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+@media (max-width: 900px) {
+  .sidechat-panel {
+    position: fixed;
+    z-index: 180;
+    right: 12px;
+    bottom: 12px;
+    width: min(420px, calc(100vw - 24px));
+    height: min(620px, calc(100vh - 72px));
+    border: 1px solid var(--border-strong);
+    border-radius: 16px;
+    box-shadow: 0 18px 48px color-mix(in srgb, black 34%, transparent);
+  }
+}

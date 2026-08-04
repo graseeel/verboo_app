@@ -6,7 +6,7 @@ Let Verboo control the browser: navigate, click, type, extract data, take screen
 
 ```
 extensions/verboo-chrome/
-├── manifest.json          # MV3: identity, sidePanel, storage, alarms, notifications, scripting, tabs, tabGroups, activeTab, nativeMessaging, host_permissions, options_ui
+├── manifest.json          # MV3: contextMenus, identity, sidePanel, storage, alarms, notifications, scripting, tabs, tabGroups, activeTab, nativeMessaging, host_permissions, options_ui
 ├── package.json           # node --test runner
 ├── PRIVACY.md             # Privacy policy (Chrome Web Store)
 ├── PERMISSIONS.md         # Permission justifications (Chrome Web Store)
@@ -72,6 +72,7 @@ extensions/verboo-chrome/
 | Permission | Purpose |
 |-----------|---------|
 | `sidePanel` | Show the Verboo control panel in Chrome's side panel |
+| `contextMenus` | Show Ask Verboo only for selected text and open the side panel with pending local context |
 | `identity` | Open the user-initiated Verboo OAuth PKCE flow and receive its extension callback |
 | `storage` | Persist Verboo session, permission mode, and per-site grants in `chrome.storage.local` |
 | `alarms` | Wake locally scheduled routines in the user's selected timezone |
@@ -160,7 +161,7 @@ Deixe o Verboo controlar o navegador: navegar, clicar, digitar, extrair dados, t
 
 ### Permissões (manifest atual)
 
-`sidePanel` (painel de controle do Verboo no side panel do Chrome), `identity` (fluxo OAuth PKCE iniciado pelo usuário), `storage` (sessão, configurações, rotinas e checkpoints locais), `alarms` (agendamentos locais), `notifications` (avisos quando uma rotina precisa de atenção), `scripting` (injeção para extração de DOM, cliques e digitação), `tabs` (gerenciar abas), `tabGroups` (agrupar abas), `activeTab` (acesso temporário à aba focada para `captureVisibleTab`), `nativeMessaging` (conexão ao host local `com.verboo.code.browser_extension`) e host_permissions `http://*/*`, `https://*/*`, `<all_urls>` (acesso a hosts para scripting, tabs e capture). Futuro (fora do manifest): `debugger` para screenshots de página inteira e avaliação isolada de JavaScript (P4+). Veja `PERMISSIONS.md` para as justificativas completas e `PRIVACY.md` para a política de privacidade.
+`sidePanel` (painel de controle do Verboo no side panel do Chrome), `contextMenus` (**Perguntar ao Verboo** somente com texto selecionado, guardado localmente até o envio de um turno), `identity` (fluxo OAuth PKCE iniciado pelo usuário), `storage` (sessão, configurações, rotinas e checkpoints locais), `alarms` (agendamentos locais), `notifications` (avisos quando uma rotina precisa de atenção), `scripting` (injeção para extração de DOM, cliques e digitação), `tabs` (gerenciar abas), `tabGroups` (agrupar abas), `activeTab` (acesso temporário à aba focada para `captureVisibleTab`), `nativeMessaging` (conexão ao host local `com.verboo.code.browser_extension`) e host_permissions `http://*/*`, `https://*/*`, `<all_urls>` (acesso a hosts para scripting, tabs e capture). Futuro (fora do manifest): `debugger` para screenshots de página inteira e avaliação isolada de JavaScript (P4+). Veja `PERMISSIONS.md` para as justificativas completas e `PRIVACY.md` para a política de privacidade.
 
 ### Modelo de autenticação
 

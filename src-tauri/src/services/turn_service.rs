@@ -5925,6 +5925,69 @@ mod tests {
     }
 
     #[test]
+    fn real_todowrite_stream_blocks_share_one_activity_and_result_is_not_one() {
+        // Exact relevant shapes captured from /tmp/stream.jsonl: the CLI
+        // emits an empty stream-start block, then the full assistant block,
+        // then a user tool_result with the same tool_use_id.
+        let tool_use_id = "call_fa685df1555f47879c165be8";
+        let stream_start = json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": "TodoWrite",
+                    "input": {}
+                }
+            }
+        });
+        let assistant = json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": "TodoWrite",
+                    "input": {
+                        "todos": [
+                            {"content": "tarefa A", "status": "pending", "activeForm": "Executando tarefa A"},
+                            {"content": "tarefa B", "status": "pending", "activeForm": "Executando tarefa B"}
+                        ]
+                    }
+                }]
+            }
+        });
+        let tool_result = json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "tool_use_id": tool_use_id,
+                    "type": "tool_result",
+                    "content": "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable"
+                }]
+            }
+        });
+
+        let first = runtime_activity_from_payload(&stream_start)
+            .expect("stream-start tool_use must produce an activity");
+        let second = runtime_activity_from_payload(&assistant)
+            .expect("assistant tool_use must produce an activity");
+
+        assert_eq!(first.label, "Atualizou tarefas");
+        assert_eq!(first.kind, "planning");
+        assert_eq!(first.tool_use_id.as_deref(), Some(tool_use_id));
+        assert_eq!(second.tool_use_id, first.tool_use_id);
+        assert_eq!(second.key, first.key);
+        assert!(first.todos.is_none());
+        assert_eq!(second.todos.as_ref().map(Vec::len), Some(2));
+        assert!(runtime_activity_from_payload(&tool_result).is_none());
+    }
+
+    #[test]
     fn todowrite_does_not_count_as_observable_action_with_counterfactual() {
         // Indirect proof via kind: todowrite kind is NOT in the renderer's
         // ACTION_ACTIVITY_KINDS whitelist; a real action (Bash) IS. This

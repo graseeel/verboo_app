@@ -82,3 +82,26 @@ test('composer grows within a limit and preserves user-authored line breaks', ()
     /\.chat-message\[data-role="user"\]\s+\.chat-message-content\s*\{[^}]*white-space:\s*pre-wrap/s,
   )
 })
+
+test('panel exposes a removable selected-text context above the composer', () => {
+  assert.match(html, /id="selection-context"[^>]*hidden/s)
+  assert.match(html, /id="selection-context-count"[^>]*data-i18n="selection_context_count"/s)
+  assert.match(html, /id="selection-context-warning"[^>]*hidden/s)
+  assert.match(html, /id="selection-context-remove"[^>]*data-i18n-aria-label="selection_context_remove"/s)
+  assert.match(styles, /\.selection-context\s*\{/)
+  assert.match(script, /MSG\.SELECTION_CONTEXT_GET/)
+  assert.match(script, /MSG\.SELECTION_CONTEXT_CHANGED/)
+  assert.match(script, /MSG\.SELECTION_CONTEXT_DISCARD/)
+  assert.match(script, /selectionContextId/)
+  assert.match(script, /clearSelectionContext\(\)/)
+  assert.match(script, /context\.verification === 'pending'[\s\S]*selection_context_verifying[\s\S]*selection_context_incomplete/)
+  assert.match(script, /chrome\.tabs\.onActivated\.addListener/)
+  assert.match(script, /handleSelectionContextChanged\(message\.context\)/)
+  assert.doesNotMatch(script, /let selectionContextTabId/)
+
+  for (const bundle of [enUs, ptBr]) {
+    assert.match(bundle, /"selection_context_count"/)
+    assert.match(bundle, /"selection_context_incomplete"/)
+    assert.match(bundle, /"selection_context_remove"/)
+  }
+})

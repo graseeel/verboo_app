@@ -1,0 +1,246 @@
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ReactNode } from 'react'
+import type { UserSettings } from '../shared/types'
+import { App } from './App'
+import { CHAT_STORE_KEY, createConversation } from './state/chatStore'
+
+type ComposerProps = {
+  leftToolbar?: ReactNode
+}
+
+type PluginsViewProps = {
+  onManageChromeIntegration: () => void
+}
+
+vi.mock('./features/composer/Composer', () => ({
+  Composer: ({ leftToolbar }: ComposerProps) => <div data-testid="composer-stub">{leftToolbar}</div>,
+}))
+
+vi.mock('./features/models/ModelSelector', () => ({
+  ModelSelector: () => null,
+}))
+
+vi.mock('./features/terminal/LocalTerminalPanel', () => ({
+  LocalTerminalPanel: () => null,
+}))
+
+vi.mock('./features/plugins/PluginsView', () => ({
+  PluginsView: ({ onManageChromeIntegration }: PluginsViewProps) => (
+    <button type="button" onClick={onManageChromeIntegration}>Manage Chrome integration</button>
+  ),
+}))
+
+const userSettings = {
+  language: 'en-US',
+  theme: 'system',
+  defaultAccessMode: 'approval',
+  fullAccessEnabled: false,
+  showInMenuBar: true,
+  showMenuBarText: true,
+  staySignedIn: true,
+  preventSleepWhileRunning: true,
+  completionNotifications: 'background',
+  permissionNotifications: true,
+  questionNotifications: true,
+  responseEnhancementsEnabled: true,
+  personality: 'pragmatic',
+  customInstructions: '',
+  trustedCommands: [],
+  customSlashCommands: [],
+  memoriesEnabled: true,
+  chroniclePreview: true,
+  ignoreToolChatsForMemory: true,
+  goalMode: { enabled: true, maxTurns: 4, maxElapsedMinutes: 10, allowAutoAccess: false },
+  updates: { channel: 'stable', autoCheck: true, autoDownload: false },
+  visionFallbackConsent: 'ask',
+  videoFallbackConsent: 'ask',
+  trustedSkills: [],
+  includeVerbooCoAuthor: false,
+  browserVerificationEnabled: true,
+  loadWebIcons: true,
+} as UserSettings
+
+class TestResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+function createBridge() {
+  const unsubscribe = () => {}
+  const bridge = {
+    getUserSettings: vi.fn(async () => userSettings),
+    getConfig: vi.fn(async () => ({ workingDirectory: '', accessMode: 'approval', platform: 'darwin' })),
+    getDefaultWorkingDirectory: vi.fn(async () => ''),
+    getCredentialStatus: vi.fn(async () => ({ hasApiKey: true, apiKeyHint: '…1234' })),
+    getCliAuthStatus: vi.fn(async () => ({ loggedIn: true, email: 'ada@example.test' })),
+    listModels: vi.fn(async () => ({
+      models: [{ id: 'model-1', displayName: 'Test model', raw: {} }],
+      source: 'api-key',
+      stale: false,
+    })),
+    getProfile: vi.fn(async () => ({
+      status: 'ready',
+      user: { name: 'Ada' },
+      summary: { totalTokens: 1, tokensInTotal: 1, tokensOutTotal: 0, reqTotal: 1 },
+      plan: { name: 'Pro', status: 'active' },
+    })),
+    pluginList: vi.fn(async () => []),
+    pluginSkills: vi.fn(async () => []),
+    getUpdateStatus: vi.fn(async () => undefined),
+    onAgentEvent: vi.fn(() => unsubscribe),
+    onVideoOcrRequest: vi.fn(() => unsubscribe),
+    onUpdateStatus: vi.fn(() => unsubscribe),
+    onRefreshDataRequest: vi.fn(() => unsubscribe),
+    onTerminalData: vi.fn(() => unsubscribe),
+    onTerminalExit: vi.fn(() => unsubscribe),
+    listenForNotificationClick: vi.fn(async () => unsubscribe),
+    updateMenuBar: vi.fn(async () => {}),
+    heartbeatMenuBar: vi.fn(async () => {}),
+    chromeIntegrationStatus: vi.fn(async () => ({
+      extension: 'managed',
+      bridge: 'managed',
+      mcp: 'managed',
+      connection: 'waitingForChrome',
+      panelState: 'notApplicable',
+      aggregate: 'ready',
+      installedVersion: '0.5.2',
+      availableVersion: '0.5.2',
+      canConfigure: false,
+      canRepair: false,
+      canRemove: false,
+      storeUrlAvailable: false,
+      developmentBuild: false,
+      extensionIdSource: 'release',
+    })),
+    getVideoComponentState: vi.fn(async () => ({ asrModel: 'absent' })),
+    onVideoTranscriberProgress: vi.fn(() => unsubscribe),
+  }
+
+  return new Proxy(bridge as Record<PropertyKey, unknown>, {
+    get(target, property) {
+      if (property in target) return target[property]
+      return vi.fn(async () => undefined)
+    },
+  })
+}
+
+function renderApp() {
+  render(<App />)
+  return screen.findByRole('button', { name: /Ada/ })
+}
+
+function seedArchivedChats() {
+  const now = Date.now()
+  const restore = {
+    ...createConversation(),
+    id: 'chat:restore',
+    title: 'Restore this chat',
+    createdAt: now - 4_000,
+    updatedAt: now - 4_000,
+    lastTurnEndedAt: now - 4_000,
+    archivedAt: now - 2_000,
+  }
+  const remove = {
+    ...createConversation(),
+    id: 'chat:remove',
+    title: 'Delete this chat',
+    createdAt: now - 3_000,
+    updatedAt: now - 3_000,
+    lastTurnEndedAt: now - 3_000,
+    archivedAt: now - 1_000,
+  }
+
+  window.localStorage.setItem(CHAT_STORE_KEY, JSON.stringify({
+    version: 3,
+    projects: [],
+    conversations: [restore, remove],
+  }))
+}
+
+beforeEach(() => {
+  window.localStorage.clear()
+  window.localStorage.setItem('verboo:development-notice-accepted', 'true')
+  vi.stubGlobal('ResizeObserver', TestResizeObserver)
+  vi.stubGlobal('matchMedia', () => ({
+    matches: false,
+    media: '',
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  }))
+  ;(window as unknown as { verboo: unknown }).verboo = createBridge()
+})
+
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
+
+describe('App settings shortcuts', () => {
+  it('routes the avatar Settings shortcut to Security', async () => {
+    fireEvent.click(await renderApp())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    expect(await screen.findByRole('heading', { name: 'Security', level: 1 })).toBeInTheDocument()
+  })
+
+  it('routes the locked Free mode shortcut to Security', async () => {
+    await renderApp()
+    fireEvent.click(screen.getByRole('button', { name: 'Ask for approval' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Free mode/ }))
+
+    expect(await screen.findByRole('heading', { name: 'Security', level: 1 })).toBeInTheDocument()
+  })
+
+  it('routes Chrome management to Integrations', async () => {
+    await renderApp()
+    fireEvent.click(screen.getByRole('button', { name: 'Plugins' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage Chrome integration' }))
+
+    expect(await screen.findByRole('heading', { name: 'Integrations', level: 1 })).toBeInTheDocument()
+  })
+
+  it('does not expose a separate Profile route in the avatar menu', async () => {
+    fireEvent.click(await renderApp())
+
+    expect(screen.queryByRole('button', { name: 'Profile' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
+  })
+
+  it('keeps archived chats in the sidebar, where restore and deletion update the real chat store', async () => {
+    seedArchivedChats()
+    await renderApp()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Archived chats · 2' }))
+    const archivedList = screen.getByRole('list', { name: 'Archived chats' })
+    expect(within(archivedList).getByText('Restore this chat')).toBeInTheDocument()
+    expect(within(archivedList).getByText('Delete this chat')).toBeInTheDocument()
+
+    const restoreRow = within(archivedList).getByText('Restore this chat').closest('li')!
+    fireEvent.click(within(restoreRow).getByRole('button', { name: 'Restore' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Archived chats · 1' })).toBeInTheDocument())
+    expect(screen.getByText('Restore this chat').closest('.conversation-row')).not.toBeNull()
+
+    const deleteRow = screen.getByText('Delete this chat').closest('li')!
+    fireEvent.click(within(deleteRow).getByRole('button', { name: 'Delete' }))
+    const confirmDialog = await screen.findByRole('alertdialog')
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Delete' }))
+
+    await waitFor(() => {
+      expect(screen.queryByText('Delete this chat')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /Archived chats/ })).not.toBeInTheDocument()
+    })
+  })
+
+  it('does not render the archived sidebar entry when there are no archived chats', async () => {
+    await renderApp()
+
+    expect(screen.queryByRole('button', { name: /Archived chats/ })).not.toBeInTheDocument()
+  })
+})

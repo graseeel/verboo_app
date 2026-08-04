@@ -31,6 +31,9 @@ export function groupTurnBlocks(items: TranscriptItem[]): TurnBlock[] {
         })
         continue
       }
+      // TodoWrite is presented by ChecklistPanel. Ignore planning items here
+      // too, so persisted or replayed events cannot create a duplicate row.
+      if (item.activityKind === 'planning') continue
       const action: TurnAction = {
         kind: KIND_MAP[item.activityKind ?? 'tool'] ?? 'tool',
         label: item.text,
@@ -51,7 +54,9 @@ export function groupTurnBlocks(items: TranscriptItem[]): TurnBlock[] {
       const isOwnRowAction = action.kind === 'browser'
         || ((action.kind === 'edit' || action.kind === 'create') && Boolean(action.detail))
       const last = blocks[blocks.length - 1]
-      if (!isOwnRowAction && last && last.kind === 'actions') last.actions.push(action)
+      const lastBlockContainsBrowser = last?.kind === 'actions'
+        && last.actions.some(existing => existing.kind === 'browser')
+      if (!isOwnRowAction && !lastBlockContainsBrowser && last && last.kind === 'actions') last.actions.push(action)
       else blocks.push({ kind: 'actions', id: `${item.id}:g`, actions: [action] })
       continue
     }

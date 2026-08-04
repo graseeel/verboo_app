@@ -65,4 +65,39 @@ describe('StepFlow browser action rows', () => {
       'Capturou tela no Chrome',
     ])
   })
+
+  it('does not render the Checklist-owned planning activity as a generic tool row', () => {
+    const items: TranscriptItem[] = [
+      {
+        id: 't1:activity:0',
+        role: 'tool',
+        kind: 'activity',
+        activityKind: 'planning',
+        text: 'Usou ferramenta',
+        toolOutput: 'Todos have been modified successfully...',
+        timestamp: 0,
+      },
+      { id: 't1:activity:1', role: 'tool', kind: 'activity', activityKind: 'browser', text: 'Leu página no Chrome', timestamp: 0 },
+    ]
+
+    const { container } = render(<StepFlow items={items} />)
+
+    expect(container.querySelectorAll('.step-actions')).toHaveLength(1)
+    expect(container.querySelector('.step-actions-label')).toHaveTextContent('Leu página no Chrome')
+    expect(container.textContent).not.toContain('Usou ferramenta')
+  })
+
+  it('keeps a browser row separate from a generic tool row instead of joining them with "e"', () => {
+    const items: TranscriptItem[] = [
+      { id: 't1:activity:0', role: 'tool', kind: 'activity', activityKind: 'browser', text: 'Leu página no Chrome', timestamp: 0 },
+      { id: 't1:activity:1', role: 'tool', kind: 'activity', activityKind: 'tool', text: 'Usou ferramenta', toolOutput: 'generic output', timestamp: 0 },
+    ]
+
+    const { container } = render(<StepFlow items={items} />)
+    const labels = Array.from(container.querySelectorAll('.step-actions-label')).map(node => node.textContent)
+
+    expect(container.querySelectorAll('.step-actions')).toHaveLength(2)
+    expect(labels).toEqual(['Leu página no Chrome', 'transcript.toolOne'])
+    expect(labels[0]).not.toContain('transcript.and')
+  })
 })

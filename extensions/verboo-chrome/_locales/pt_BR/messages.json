@@ -2,6 +2,7 @@
   "appName": { "message": "Verboo" },
   "appDesc": { "message": "Control Chrome with Verboo — painel de IA com automação e rotinas reutilizáveis" },
   "openSidePanel": { "message": "Abrir painel Verboo" },
+  "contextMenuAskVerboo": { "message": "Perguntar ao Verboo" },
   "branding_title": { "message": "Verboo" },
   "branding_tagline": { "message": "Control Chrome with Verboo" },
   "auth_login": { "message": "Entrar" },

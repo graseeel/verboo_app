@@ -140,22 +140,54 @@ impl BrowserSessionClient {
     }
 
     pub async fn complete_turn(&self) -> Result<(), RelayError> {
-        let response = self
-            .send_request(
-                &Uuid::new_v4().to_string(),
-                MessageKind::TurnComplete,
-                json!({}),
-            )
-            .await?;
+        // The native host may still be reading the response for a pending tool;
+        // cleanup must reach Chrome without waiting for that shared reader.
+        self.send_request_without_response(
+            &Uuid::new_v4().to_string(),
+            MessageKind::TurnComplete,
+            json!({}),
+        )
+        .await
+    }
 
-        match response.kind {
-            MessageKind::TurnCompleteAck => Ok(()),
-            MessageKind::Error => Err(relay_error_from_response(&response)),
-            _ => Err(RelayError::new(
-                RelayErrorCode::InvalidResponse,
-                "Chrome returned an unexpected bridge message.",
-            )),
-        }
+    async fn send_request_without_response(
+        &self,
+        id: &str,
+        kind: MessageKind,
+        payload: Value,
+    ) -> Result<(), RelayError> {
+        let record = self
+            .store
+            .discover_session()
+            .map_err(map_discovery_error)?
+            .ok_or_else(|| {
+                RelayError::new(
+                    RelayErrorCode::ChromeNotConnected,
+                    "Open Google Chrome with the Verboo extension enabled.",
+                )
+            })?;
+        let stream = match local_transport::connect(&record).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                let _ = self.store.remove_record(&record);
+                return Err(RelayError::new(
+                    RelayErrorCode::ConnectionLost,
+                    error.to_string(),
+                ));
+            }
+        };
+        let (_reader, mut writer) = tokio::io::split(stream);
+        let request = Envelope {
+            version: PROTOCOL_VERSION,
+            id: id.to_string(),
+            kind,
+            secret: Some(record.secret),
+            payload,
+        };
+        let encoded = serde_json::to_vec(&request).map_err(invalid_response)?;
+        writer.write_all(&encoded).await.map_err(connection_lost)?;
+        writer.write_all(b"\n").await.map_err(connection_lost)?;
+        writer.flush().await.map_err(connection_lost)
     }
 
     async fn send_request(
@@ -174,9 +206,16 @@ impl BrowserSessionClient {
                     "Open Google Chrome with the Verboo extension enabled.",
                 )
             })?;
-        let stream = local_transport::connect(&record)
-            .await
-            .map_err(|error| RelayError::new(RelayErrorCode::ConnectionLost, error.to_string()))?;
+        let stream = match local_transport::connect(&record).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                let _ = self.store.remove_record(&record);
+                return Err(RelayError::new(
+                    RelayErrorCode::ConnectionLost,
+                    error.to_string(),
+                ));
+            }
+        };
         let (reader, mut writer) = tokio::io::split(stream);
         let request = Envelope {
             version: PROTOCOL_VERSION,
@@ -380,9 +419,15 @@ impl ServerHandler for BrowserMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let arguments = Value::Object(request.arguments.unwrap_or_default());
-        Ok(Self::relay_result(
-            self.call_browser_tool(&context.id.to_string(), request.name.as_ref(), arguments)
-                .await,
-        ))
+        let request_id = context.id.to_string();
+        let tool_name = request.name.as_ref();
+        let result = tokio::select! {
+            result = self.call_browser_tool(&request_id, tool_name, arguments) => result,
+            _ = context.ct.cancelled() => Err(RelayError::new(
+                RelayErrorCode::ConnectionLost,
+                "The MCP turn ended before Chrome returned a result.",
+            )),
+        };
+        Ok(Self::relay_result(result))
     }
 }

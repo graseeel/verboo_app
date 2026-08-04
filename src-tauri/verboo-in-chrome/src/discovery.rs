@@ -17,6 +17,8 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 pub struct DiscoveryRecord {
     pub protocol_version: u32,
     pub pid: u32,
+    #[serde(default)]
+    pub parent_pid: Option<u32>,
     pub endpoint: String,
     pub secret: String,
     pub helper_version: String,
@@ -69,32 +71,63 @@ impl DiscoveryStore {
     }
 
     pub fn register(&self, pid: u32, extension_origin: String) -> DiscoveryResult<DiscoveryRecord> {
+        let record = self.prepare(pid, extension_origin)?;
+        self.write_record(&record)?;
+        Ok(record)
+    }
+
+    pub(crate) fn prepare(
+        &self,
+        pid: u32,
+        extension_origin: String,
+    ) -> DiscoveryResult<DiscoveryRecord> {
         self.ensure_private_root()?;
         let record = DiscoveryRecord {
             protocol_version: PROTOCOL_VERSION,
             pid,
+            parent_pid: current_parent_pid(),
             endpoint: endpoint_for(&self.root, pid),
             secret: Uuid::new_v4().simple().to_string(),
             helper_version: env!("CARGO_PKG_VERSION").to_string(),
             extension_origin,
         };
-        self.write_record(&record)?;
         Ok(record)
     }
 
     pub fn write_record(&self, record: &DiscoveryRecord) -> DiscoveryResult<()> {
+        self.write_record_with_hook(record, || {})
+    }
+
+    fn write_record_with_hook<F>(
+        &self,
+        record: &DiscoveryRecord,
+        before_replace: F,
+    ) -> DiscoveryResult<()>
+    where
+        F: FnOnce(),
+    {
         self.ensure_private_root()?;
         let path = self.record_path(record.pid);
+        let temporary_path =
+            self.root
+                .join(format!(".{}.{}.tmp", record.pid, Uuid::new_v4().simple()));
         let mut options = OpenOptions::new();
-        options.write(true).create(true).truncate(true);
+        options.write(true).create_new(true);
         #[cfg(unix)]
         options.mode(0o600);
-        let mut file = options.open(&path)?;
-        file.write_all(&serde_json::to_vec(record)?)?;
-        file.sync_all()?;
-        #[cfg(unix)]
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-        Ok(())
+        let result = (|| {
+            let mut file = options.open(&temporary_path)?;
+            file.write_all(&serde_json::to_vec(record)?)?;
+            file.sync_all()?;
+            #[cfg(unix)]
+            fs::set_permissions(&temporary_path, fs::Permissions::from_mode(0o600))?;
+            before_replace();
+            replace_record(&temporary_path, &path)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+        }
+        result
     }
 
     pub fn remove(&self, pid: u32) -> DiscoveryResult<()> {
@@ -103,6 +136,13 @@ impl DiscoveryStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),
         }
+    }
+
+    pub fn remove_record(&self, record: &DiscoveryRecord) -> DiscoveryResult<()> {
+        self.remove(record.pid)?;
+        #[cfg(unix)]
+        remove_endpoint(&record.endpoint)?;
+        Ok(())
     }
 
     pub fn discover_session(&self) -> DiscoveryResult<Option<DiscoveryRecord>> {
@@ -121,10 +161,30 @@ impl DiscoveryStore {
             {
                 continue;
             }
-            let record: DiscoveryRecord = serde_json::from_slice(&fs::read(entry.path())?)?;
-            if record.protocol_version == PROTOCOL_VERSION && process_is_alive(record.pid) {
+            let path = entry.path();
+            let record: DiscoveryRecord = serde_json::from_slice(&fs::read(&path)?)?;
+            let process_alive = process_is_alive(record.pid);
+            let parent_alive = parent_is_alive(record.parent_pid);
+            if record.protocol_version == PROTOCOL_VERSION
+                && process_alive
+                && parent_alive
+                && endpoint_path_exists(&record.endpoint)
+            {
                 live.push(record);
+            } else {
+                discard_record(&path, &record);
             }
+        }
+
+        if live.len() > 1 {
+            live.retain(|record| {
+                if endpoint_is_accepting(&record.endpoint) {
+                    true
+                } else {
+                    discard_record(&self.record_path(record.pid), record);
+                    false
+                }
+            });
         }
 
         match live.len() {
@@ -140,6 +200,76 @@ impl DiscoveryStore {
         fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))?;
         Ok(())
     }
+}
+
+fn discard_record(path: &Path, record: &DiscoveryRecord) {
+    let _ = fs::remove_file(path);
+    #[cfg(unix)]
+    let _ = remove_endpoint(&record.endpoint);
+}
+
+#[cfg(unix)]
+fn replace_record(temporary_path: &Path, path: &Path) -> DiscoveryResult<()> {
+    fs::rename(temporary_path, path)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn replace_record(temporary_path: &Path, path: &Path) -> DiscoveryResult<()> {
+    let _ = fs::remove_file(path);
+    fs::rename(temporary_path, path)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_endpoint(endpoint: &str) -> DiscoveryResult<()> {
+    match fs::remove_file(endpoint) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(unix)]
+fn endpoint_path_exists(endpoint: &str) -> bool {
+    Path::new(endpoint).exists()
+}
+
+#[cfg(not(unix))]
+fn endpoint_path_exists(_endpoint: &str) -> bool {
+    true
+}
+
+#[cfg(unix)]
+fn endpoint_is_accepting(endpoint: &str) -> bool {
+    std::os::unix::net::UnixStream::connect(endpoint).is_ok()
+}
+
+#[cfg(not(unix))]
+fn endpoint_is_accepting(_endpoint: &str) -> bool {
+    true
+}
+
+fn current_parent_pid() -> Option<u32> {
+    #[cfg(unix)]
+    {
+        let parent = unsafe { libc::getppid() };
+        return u32::try_from(parent).ok();
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+#[cfg(unix)]
+fn parent_is_alive(parent_pid: Option<u32>) -> bool {
+    parent_pid.is_some_and(process_is_alive)
+}
+
+#[cfg(not(unix))]
+fn parent_is_alive(_parent_pid: Option<u32>) -> bool {
+    true
 }
 
 #[cfg(unix)]
@@ -177,5 +307,36 @@ fn process_is_alive(pid: u32) -> bool {
     } else {
         unsafe { CloseHandle(handle) };
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn publishes_a_replacement_without_exposing_partial_state() {
+        let temp = TempDir::new().unwrap();
+        let store = DiscoveryStore::at(temp.path().join("runtime"));
+        let previous = store
+            .register(std::process::id(), "chrome-extension://previous".into())
+            .unwrap();
+        let previous_secret = previous.secret.clone();
+        let mut replacement = previous.clone();
+        replacement.secret = "replacement-secret".into();
+
+        store
+            .write_record_with_hook(&replacement, || {
+                let observed: DiscoveryRecord =
+                    serde_json::from_slice(&fs::read(store.record_path(previous.pid)).unwrap())
+                        .unwrap();
+                assert_eq!(observed.secret, previous_secret);
+            })
+            .unwrap();
+
+        let published: DiscoveryRecord =
+            serde_json::from_slice(&fs::read(store.record_path(previous.pid)).unwrap()).unwrap();
+        assert_eq!(published.secret, replacement.secret);
     }
 }

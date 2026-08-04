@@ -1,5 +1,5 @@
-import { ArrowLeft, ArrowUpRight, Camera, Loader2, RefreshCw, RotateCcw, ShieldCheck, X } from 'lucide-react'
-import { type CSSProperties, useState } from 'react'
+import { ArrowUpRight, Camera, Loader2, RefreshCw, RotateCcw, ShieldCheck, X } from 'lucide-react'
+import { type CSSProperties, useEffect, useRef, useState } from 'react'
 import type { AvatarSettings, ProfileActivityDay, ProfileResult } from '../../../shared/types'
 import { formatStandardNumber, useI18n, type Translator } from '../../i18n'
 import { useToast } from '../../components/Toast'
@@ -13,10 +13,9 @@ type ProfileViewProps = {
   onRefresh: () => void
   onManagePlan: () => void
   onUpdateAvatar: (settings: AvatarSettings) => void
-  onClose: () => void
 }
 
-export function ProfileView({ profile, loading, avatarSettings, onRefresh, onManagePlan, onUpdateAvatar, onClose }: ProfileViewProps) {
+export function ProfileView({ profile, loading, avatarSettings, onRefresh, onManagePlan, onUpdateAvatar }: ProfileViewProps) {
   const { language, t } = useI18n()
   const { toast } = useToast()
   const summary = profile.summary
@@ -24,28 +23,23 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
   // ── Upload state ──────────────────────────────────────────
   const [pendingFile, setPendingFile] = useState<{ file: File; previewUrl: string } | undefined>()
   const [isSaving, setIsSaving] = useState(false)
+  const initialProfileLoadAttempted = useRef(false)
+
+  useEffect(() => {
+    if (initialProfileLoadAttempted.current || profile.status === 'ready') return
+
+    initialProfileLoadAttempted.current = true
+    if (!loading) onRefresh()
+  }, [loading, onRefresh, profile.status])
 
   return (
-    <div className="profile-view page-surface">
-      <header className="view-heading">
-        <div>
-          {/* Back button sits ABOVE the H1, left-aligned, as a quiet breadcrumb
-             ghost — not the heavy boxed .settings-back. Refresh stays on the
-             right in view-heading-actions. */}
-          <button className="profile-back" type="button" onClick={onClose}>
-            <ArrowLeft size={14} />
-            {t('profile.back')}
-          </button>
-          <h1>{t('profile.title')}</h1>
-          <p>{t('profile.subtitle')}</p>
-        </div>
-        <div className="view-heading-actions">
-          <button className="ghost-button" type="button" onClick={onRefresh} disabled={loading}>
-            <RefreshCw size={15} />
-            {loading ? t('profile.refreshing') : t('common.refresh')}
-          </button>
-        </div>
-      </header>
+    <div className="profile-account-content">
+      <div className="profile-account-actions">
+        <button className="ghost-button" type="button" onClick={onRefresh} disabled={loading}>
+          <RefreshCw size={15} />
+          {loading ? t('profile.refreshing') : t('common.refresh')}
+        </button>
+      </div>
 
       {profile.status !== 'ready' && (
         <section className="profile-warning">
@@ -127,7 +121,7 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
               <label className="avatar-editor-upload-btn">
                 <Camera size={14} />
                 <span>{t('settings.avatarUpload')}</span>
-                <input type="file" accept=".png,.jpg,.jpeg,.webp" className="sr-only"
+                <input type="file" accept=".png,.jpg,.jpeg,.webp" className="sr-only" aria-label={t('settings.avatarUpload')}
                   onChange={e => {
                     const file = e.target.files?.[0]
                     if (!file) return
@@ -171,6 +165,7 @@ export function ProfileView({ profile, loading, avatarSettings, onRefresh, onMan
             <button key={id} type="button"
               className={`avatar-editor-icon ${avatarSettings?.presetId === id ? 'is-active' : ''}`}
               onClick={() => onUpdateAvatar({ kind: 'preset', presetId: id, presetColor: avatarSettings?.presetColor ?? '#6B7280' })}
+              aria-label={t(preset.labelKey)}
               title={t(preset.labelKey)}
             >
               {renderPreset(id, avatarSettings?.presetColor ?? '#6B7280')}

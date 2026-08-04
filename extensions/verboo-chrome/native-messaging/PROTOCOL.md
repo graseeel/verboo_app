@@ -5,7 +5,7 @@ The packaged Rust helper implements both the stdio MCP server and Chrome Native 
 ## Reserved contract
 
 - Host name: `com.verboo.code.browser_extension`
-- Protocol version: `2`
+- Protocol version: `1`
 - Envelope: `{ version, id, kind, secret?, payload }`
 - Kinds: `hello`, `toolRequest`, `turnComplete`, `toolResponse`, `turnCompleteAck`, `error`
 - Chrome Native Messaging platform limit: 1 MiB per message (Chrome's own cap on `chrome.runtime.connectNative` frames; not codified in this repo).
@@ -35,7 +35,7 @@ O helper Rust empacotado implementa tanto o servidor MCP por stdio quanto o host
 ### Contrato reservado
 
 - Nome do host: `com.verboo.code.browser_extension`
-- Versão do protocolo: `2`
+- Versão do protocolo: `1`
 - Envelope: `{ version, id, kind, secret?, payload }`
 - Kinds: `hello`, `toolRequest`, `turnComplete`, `toolResponse`, `turnCompleteAck`, `error`
 - Limite da plataforma Chrome Native Messaging: 1 MiB por mensagem (teto do próprio Chrome sobre quadros de `chrome.runtime.connectNative`; não codificado neste repositório).

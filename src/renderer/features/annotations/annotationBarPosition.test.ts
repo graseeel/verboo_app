@@ -3,6 +3,7 @@ import { resolveAnnotationBarPosition, type BarRect } from './annotationBarPosit
 
 const viewport = { width: 1280, height: 800 }
 const barSize = { width: 220, height: 40 }
+const compactBarSize = { width: 300, height: 44 }
 
 const rect = (top: number, left: number, width = 100, height = 20): BarRect => ({ top, left, width, height })
 
@@ -65,6 +66,13 @@ describe('resolveAnnotationBarPosition — colisão e clamp', () => {
     const selection = rect(200, 1240, 30, 20)
     const pos = resolveAnnotationBarPosition({ selectionRect: selection, barSize, viewport })
     expect(pos.left + barSize.width).toBeLessThanOrEqual(viewport.width - 8)
+    expect(pos.left).toBeGreaterThanOrEqual(8)
+  })
+
+  it('barra compacta com os dois botões também fica inteira na borda direita', () => {
+    const selection = rect(200, 1240, 30, 20)
+    const pos = resolveAnnotationBarPosition({ selectionRect: selection, barSize: compactBarSize, viewport })
+    expect(pos.left + compactBarSize.width).toBeLessThanOrEqual(viewport.width - 8)
     expect(pos.left).toBeGreaterThanOrEqual(8)
   })
 

@@ -4,11 +4,12 @@ import { resolveAnnotationBarPosition } from './annotationBarPosition'
 
 /**
  * Ouvinte de seleção ESCOPADO (F1): escuta selectionchange/pointer no
- * document, mas só produz barra quando resolveSelectionTarget confirma que a
- * seleção está CONTIDA num segmento de mensagem do MODELO
- * ([data-annotation-segment], fora de [data-turn-streaming]). A marca é o
- * escopo: mensagem de usuário, activity, summary e qualquer área sem marca
- * nem chegam a candidatar. R1 — copiar/colar: este hook NUNCA chama
+ * document, mas só produz barra quando resolveSelectionTarget encontra um
+ * segmento de resposta do MODELO ([data-annotation-segment], fora de
+ * [data-turn-streaming]). A exceção explícita é o cabeçalho do mesmo turno:
+ * a seleção é limitada ao segmento de resposta e sinalizada. Mensagem de
+ * usuário, activity, summary e área sem relação com um turno continuam fora.
+ * R1 — copiar/colar: este hook NUNCA chama
  * preventDefault nem stopPropagation; só observa. O gesto de copiar segue
  * intacto (há teste pinnando).
  *
@@ -35,8 +36,9 @@ export type AnnotationSelection = {
   placement: 'above' | 'below'
 }
 
-// Estimativa do tamanho da barra para o cálculo puro de colisão (a barra
-// real é medida pelo CSS; errar alguns pixels aqui só desloca a folga).
+// Tamanho conservador da barra compacta (dois botões) para o cálculo de
+// colisão. O modo de comentário é mais estreito; usar a largura compacta aqui
+// mantém o clamp horizontal seguro antes de a barra real ser montada.
 const BAR_SIZE = { width: 300, height: 44 }
 
 export function useAnnotationSelection(enabled: boolean): {
@@ -90,11 +92,12 @@ export function useAnnotationSelection(enabled: boolean): {
       const rect = sel.getRangeAt(0).getBoundingClientRect()
       // Obstáculos medidos NO MOMENTO: o cartão do checklist (FLUTUANTE e
       // ACOPLADO — o seletor casa a classe base, sem o modificador de estado),
-      // o painel do goal e o composer são superfícies que a barra não pode
-      // atropelar. O composer também define o teto dinâmico do comentário.
-      // Regra da casa: seletor de outro componente exige pin contra a fonte.
-      // annotationSendWiring.test.ts lê o Composer.tsx real para travar este.
-      const obstacles = Array.from(document.querySelectorAll('.checklist-panel, .goal-active-panel, .composer'))
+      // o painel do goal, o composer e a coluna do chat lateral são
+      // superfícies que a barra não pode atropelar. O composer também define
+      // o teto dinâmico do comentário.
+      // O consumidor e o Composer são montados no mesmo documento; os testes
+      // de seleção exercitam esse contrato pela presença real da barra.
+      const obstacles = Array.from(document.querySelectorAll('.checklist-panel, .goal-active-panel, .composer, .sidechat-panel'))
         .map(el => {
           const r = el.getBoundingClientRect()
           return { top: r.top, left: r.left, width: r.width, height: r.height }
