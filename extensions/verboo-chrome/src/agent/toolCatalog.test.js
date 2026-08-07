@@ -7,9 +7,23 @@ import assert from 'node:assert/strict'
 import { OPENAI_TOOLS, getToolRisk, toToolCall } from './toolCatalog.js'
 
 test('OPENAI_TOOLS: is derived from the executable browser tools', () => {
-  assert.equal(OPENAI_TOOLS.length, 8)
+  assert.equal(OPENAI_TOOLS.length, 10)
   const names = OPENAI_TOOLS.map(t => t.function.name)
-  assert.deepEqual(names, ['navigate', 'read_page', 'structured_extract', 'click', 'type', 'screenshot', 'tabs', 'tab_group'])
+  assert.deepEqual(names, ['navigate', 'read_page', 'find', 'extract_page_content', 'structured_extract', 'click', 'type', 'screenshot', 'tabs', 'tab_group'])
+})
+
+test('OPENAI_TOOLS: find requires text (discovery primitive)', () => {
+  const find = OPENAI_TOOLS.find(t => t.function.name === 'find')
+  assert.ok(find)
+  assert.deepEqual(find.function.parameters.required, ['text'])
+  assert.equal(find.function.parameters.properties.text.type, 'string')
+})
+
+test('OPENAI_TOOLS: extract_page_content has no required params (full-page read)', () => {
+  const extract = OPENAI_TOOLS.find(t => t.function.name === 'extract_page_content')
+  assert.ok(extract)
+  assert.ok(!extract.function.parameters.required || extract.function.parameters.required.length === 0)
+  assert.match(extract.function.description, /full|entire|truncat/i)
 })
 
 test('OPENAI_TOOLS: navigate has required url param', () => {

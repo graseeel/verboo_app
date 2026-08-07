@@ -1,6 +1,6 @@
 {
   "name": "verboo-chrome",
-  "version": "0.2.3",
+  "version": "0.3.1",
   "description": "Control Chrome with Verboo — MV3 extension",
   "private": true,
   "type": "module",

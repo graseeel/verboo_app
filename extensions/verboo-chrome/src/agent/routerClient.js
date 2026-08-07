@@ -19,6 +19,8 @@ const BROWSER_TOOL_NAMES = new Set([
   'click',
   'navigate',
   'read_page',
+  'find',
+  'extract_page_content',
   'structured_extract',
   'screenshot',
   'tab_group',
