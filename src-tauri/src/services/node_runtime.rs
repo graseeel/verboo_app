@@ -13,7 +13,8 @@
 //! the platform-specific tool directories so child processes find `gh`,
 //! `rg`, `cargo`, etc. (same as Electron).
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 /// Resolves the Node binary path, or None if not found.
 pub fn resolve_node_path() -> Option<PathBuf> {
@@ -43,6 +44,7 @@ pub fn platform_specific_path_entries() -> Vec<PathBuf> {
         if let Some(h) = home.as_ref() {
             entries.push(h.join(".local").join("bin"));
             entries.push(h.join(".cargo").join("bin"));
+            entries.extend(nvm_bin_dirs(h));
         }
         entries
     }
@@ -57,6 +59,7 @@ pub fn platform_specific_path_entries() -> Vec<PathBuf> {
         if let Some(h) = home.as_ref() {
             entries.push(h.join(".local").join("bin"));
             entries.push(h.join(".cargo").join("bin"));
+            entries.extend(nvm_bin_dirs(h));
         }
         entries
     }
@@ -180,10 +183,149 @@ fn platform_specific_node_candidates() -> Vec<PathBuf> {
         if let Some(h) = home.as_ref() {
             out.push(h.join(".local").join("share").join("fnm").join("aliases").join("default").join("bin").join("node"));
             out.push(h.join(".volta").join("bin").join("node"));
-            out.push(h.join(".nvm").join("versions").join("node").join("current").join("bin").join("node"));
+            out.extend(nvm_node_candidates(h));
         }
         out
     }
+}
+
+/// Returns the nvm root directory: `$NVM_DIR` if set, otherwise `~/.nvm`.
+fn nvm_dir(home: &Path) -> PathBuf {
+    std::env::var_os("NVM_DIR")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| home.join(".nvm"))
+}
+
+/// Node binary candidates under the nvm install tree, in resolution order.
+/// nvm has no stable "current" symlink across setups: stock nvm only creates
+/// `$NVM_DIR/current` on `nvm use`, and installed versions live at
+/// `$NVM_DIR/versions/node/v<X.Y.Z>/`. Probe every location nvm writes to.
+fn nvm_node_candidates(home: &Path) -> Vec<PathBuf> {
+    let nvm = nvm_dir(home);
+    let mut out = Vec::new();
+
+    // `NVM_BIN` — exported by the parent shell when nvm has activated a version.
+    if let Some(bin) = std::env::var_os("NVM_BIN") {
+        let bin = PathBuf::from(bin);
+        if !bin.as_os_str().is_empty() {
+            out.push(bin.join("node"));
+        }
+    }
+
+    // `$NVM_DIR/current` — the symlink nvm maintains on `nvm use`.
+    out.push(nvm.join("current").join("bin").join("node"));
+
+    // Concrete default alias from `$NVM_DIR/alias/default` (e.g. `v24.17.0`).
+    if let Some(version) = nvm_default_version(&nvm) {
+        out.push(
+            nvm.join("versions")
+                .join("node")
+                .join(version)
+                .join("bin")
+                .join("node"),
+        );
+    }
+
+    // `versions/node/current` — a `current` symlink kept by some setups.
+    out.push(
+        nvm.join("versions")
+            .join("node")
+            .join("current")
+            .join("bin")
+            .join("node"),
+    );
+
+    // Highest installed version — covers `lts/*`/`node` defaults, which don't
+    // resolve to a concrete dir without nvm's release-schedule lookup.
+    if let Some(dir) = nvm_highest_installed(&nvm) {
+        out.push(dir.join("bin").join("node"));
+    }
+
+    out
+}
+
+/// nvm bin directories to add to a spawned child's PATH so it finds `node`,
+/// `npm`, `npx`, and nvm-managed global bins.
+fn nvm_bin_dirs(home: &Path) -> Vec<PathBuf> {
+    let nvm = nvm_dir(home);
+    let mut out = vec![
+        nvm.join("current").join("bin"),
+        nvm.join("versions")
+            .join("node")
+            .join("current")
+            .join("bin"),
+    ];
+    if let Some(dir) = nvm_highest_installed(&nvm) {
+        out.push(dir.join("bin"));
+    }
+    out
+}
+
+/// Reads `$NVM_DIR/alias/default` and returns the concrete version dir name
+/// (e.g. `v24.17.0`) when the alias names a version directly. Symbolic
+/// aliases like `lts/*` or `node` return None — callers fall back to the
+/// highest installed version.
+fn nvm_default_version(nvm_dir: &Path) -> Option<String> {
+    let alias = fs::read_to_string(nvm_dir.join("alias").join("default")).ok()?;
+    let alias = alias.trim();
+    if alias.is_empty() {
+        return None;
+    }
+    let version = alias.strip_prefix('v').unwrap_or(alias);
+    if is_semver(version) {
+        Some(format!("v{version}"))
+    } else {
+        None
+    }
+}
+
+/// True for `X.Y.Z` with numeric components.
+fn is_semver(s: &str) -> bool {
+    let mut parts = s.split('.');
+    let major = parts.next();
+    let minor = parts.next();
+    let patch = parts.next();
+    let (Some(major), Some(minor), Some(patch)) = (major, minor, patch) else {
+        return false;
+    };
+    let digits = |c: char| c.is_ascii_digit();
+    major.chars().all(digits)
+        && minor.chars().all(digits)
+        && patch.chars().all(digits)
+        && parts.next().is_none()
+}
+
+/// Highest installed version dir under `$NVM_DIR/versions/node/` (dirs are
+/// named `v<X.Y.Z>`). None if the tree is empty or missing.
+fn nvm_highest_installed(nvm_dir: &Path) -> Option<PathBuf> {
+    let versions_dir = nvm_dir.join("versions").join("node");
+    let entries = fs::read_dir(&versions_dir).ok()?;
+    let mut best: Option<((u64, u64, u64), PathBuf)> = None;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(ver) = name.strip_prefix('v') else {
+            continue;
+        };
+        let Some((major, rest)) = ver.split_once('.') else {
+            continue;
+        };
+        let Some((minor, patch)) = rest.split_once('.') else {
+            continue;
+        };
+        let (Ok(major), Ok(minor), Ok(patch)) = (
+            major.parse::<u64>(),
+            minor.parse::<u64>(),
+            patch.parse::<u64>(),
+        ) else {
+            continue;
+        };
+        let key = (major, minor, patch);
+        if best.as_ref().map_or(true, |(b, _)| key > *b) {
+            best = Some((key, entry.path()));
+        }
+    }
+    best.map(|(_, path)| path)
 }
 
 /// Appends `.exe` on Windows if missing.
@@ -236,15 +378,20 @@ mod tests {
         // If this machine has Node, we should find it.
         // (If not, the test still passes — we just don't assert Some/None.)
         if let Some(p) = result {
-            assert!(p.exists() || p.is_symlink() || std::fs::canonicalize(&p).is_ok(),
-                "resolved path should exist: {p:?}");
+            assert!(
+                p.exists() || p.is_symlink() || std::fs::canonicalize(&p).is_ok(),
+                "resolved path should exist: {p:?}"
+            );
         }
     }
 
     #[test]
     fn platform_specific_path_entries_returns_known_dirs() {
         let entries = platform_specific_path_entries();
-        assert!(!entries.is_empty(), "should always return at least one entry");
+        assert!(
+            !entries.is_empty(),
+            "should always return at least one entry"
+        );
     }
 
     #[test]
@@ -272,6 +419,42 @@ mod tests {
 
     #[test]
     fn is_executable_returns_false_for_missing_path() {
-        assert!(!is_executable(&PathBuf::from("/nonexistent/path/that/should/not/exist")));
+        assert!(!is_executable(&PathBuf::from(
+            "/nonexistent/path/that/should/not/exist"
+        )));
+    }
+
+    #[test]
+    fn is_semver_accepts_plain_versions() {
+        assert!(is_semver("24.17.0"));
+        assert!(is_semver("0.10.1"));
+        assert!(!is_semver("lts/*"));
+        assert!(!is_semver("node"));
+        assert!(!is_semver("24.17"));
+        assert!(!is_semver("v24.17.0"));
+    }
+
+    #[test]
+    fn nvm_default_version_reads_concrete_alias() {
+        let dir = std::env::temp_dir().join(format!("nvm-runtime-alias-{}", std::process::id()));
+        let alias = dir.join("alias");
+        fs::create_dir_all(&alias).unwrap();
+        fs::write(alias.join("default"), "v24.17.0\n").unwrap();
+        assert_eq!(nvm_default_version(&dir).as_deref(), Some("v24.17.0"));
+        fs::write(alias.join("default"), "lts/*\n").unwrap();
+        assert_eq!(nvm_default_version(&dir), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nvm_highest_installed_picks_latest() {
+        let dir = std::env::temp_dir().join(format!("nvm-runtime-highest-{}", std::process::id()));
+        let versions = dir.join("versions").join("node");
+        fs::create_dir_all(versions.join("v20.11.1")).unwrap();
+        fs::create_dir_all(versions.join("v18.3.0")).unwrap();
+        fs::create_dir_all(versions.join("v24.17.0")).unwrap();
+        let got = nvm_highest_installed(&dir).unwrap();
+        assert_eq!(got.file_name().unwrap().to_string_lossy(), "v24.17.0");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
