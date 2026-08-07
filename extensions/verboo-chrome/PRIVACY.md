@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-04
 **Extension:** Verboo Code — Browser Control
-**Version:** 0.2.3
+**Version:** 0.3.1
 
 This privacy policy explains what data the Verboo Code browser extension handles when you use it to control Chrome with a Verboo account session.
 
@@ -103,7 +103,7 @@ Open an issue on the repository's issues tab. (TODO: confirm the canonical Verbo
 
 ## Português (Brasil)
 
-**Última atualização:** 2026-08-04 · **Extensão:** Verboo Code — Browser Control · **Versão:** 0.2.3
+**Última atualização:** 2026-08-04 · **Extensão:** Verboo Code — Browser Control · **Versão:** 0.3.1
 
 Esta política explica quais dados a extensão trata quando você a usa para controlar o Chrome com uma sessão de conta Verboo.
 

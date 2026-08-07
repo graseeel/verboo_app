@@ -133,24 +133,34 @@ const routineRunner = createRoutineRunner({
     ),
     makeApprovalUi(request?.runId, signal),
   ),
-  runAgent: (input) => runLlmAgentTurn({
-    ...input,
-    broadcast,
-    executeTool: (toolCall) => executeWithApproval(
-      toolCall,
-      () => makeExecutionContext(
-        input.senderTabId,
-        input.turnId,
-        input.routineAllowedOrigins,
+  runAgent: (input) => {
+    const runMcpAgentTurn = (overrides) => runLlmAgentTurn({
+      ...input,
+      ...overrides,
+      broadcast,
+      executeTool: (toolCall) => executeWithApproval(
+        toolCall,
+        () => makeExecutionContext(
+          input.senderTabId,
+          input.turnId,
+          input.routineAllowedOrigins,
+        ),
+        makeApprovalUi(input.turnId, input.signal),
       ),
-      makeApprovalUi(input.turnId, input.signal),
-    ),
-    getActiveTabMeta: queryActiveTabMeta,
-    refreshAccessToken: async () => {
-      const refreshed = await refreshSession()
-      return refreshed?.accessToken ?? null
-    },
-  }),
+      getActiveTabMeta: queryActiveTabMeta,
+      refreshAccessToken: async () => {
+        const refreshed = await refreshSession()
+        return refreshed?.accessToken ?? null
+      },
+    })
+    return runMcpAgentTurn({}).then((result) => {
+      // Defensive: routines always run with browser tools, so a reclassify
+      // signal should never surface here — but if it does, re-run with the
+      // tools forced (the routine runner owns its own serialization).
+      if (result?.reclassify === true) return runMcpAgentTurn({ forceBrowserTools: true })
+      return result
+    })
+  },
   assetsStore: routineAssetsStore,
   broadcast,
 })
@@ -903,7 +913,7 @@ async function runAgentTurn(
 
     if (accessToken && selectedModelId) {
       try {
-        const llmResult = await runLlmAgentTurn({
+        const llmOptions = () => ({
           turnId,
           userMessage,
           accessToken,
@@ -927,11 +937,37 @@ async function runAgentTurn(
           },
           signal: controller.signal,
         })
+        const llmResult = await runLlmAgentTurn(llmOptions())
+        // B2-CHROME reclassification: when the model emitted a browser tool
+        // call in a turn the classifier labeled as conversation, the loop
+        // returns { reclassify: true } instead of running the tool inline.
+        // Re-run the turn WITH the tools available, routed through the
+        // browserControlQueue so browser actions stay serialized across
+        // concurrent turns (two turns must never interleave actions on the
+        // user's browser).
+        //
+        // Queue ownership: the reclassified turn was classified as
+        // conversation at background.js:281, so it does NOT currently hold
+        // the queue. Still, defensively check activeId(): if this turn ever
+        // runs while holding the queue, enqueuing the re-run would deadlock
+        // (it would wait for itself) — in that case re-run inline instead.
+        let finalResult = llmResult
+        if (llmResult?.reclassify === true) {
+          const reclassifyTurn = () => runLlmAgentTurn({ ...llmOptions(), forceBrowserTools: true })
+          const ownsQueue = browserControlQueue.activeId() === turnId
+          finalResult = ownsQueue
+            ? await reclassifyTurn()
+            : await browserControlQueue.enqueue({
+                id: `${turnId}:reclassify`,
+                execute: reclassifyTurn,
+                cancel: () => abortTurnController(turnId),
+              })
+        }
         sendTerminal({
           type: MSG.AGENT_TURN_COMPLETE,
           turnId,
-          assistantMessage: llmResult.assistantMessage ?? 'Done.',
-          toolResults: slimToolResultsForBroadcast(llmResult.toolResults),
+          assistantMessage: finalResult.assistantMessage ?? 'Done.',
+          toolResults: slimToolResultsForBroadcast(finalResult.toolResults),
         })
         return
       } catch (llmErr) {

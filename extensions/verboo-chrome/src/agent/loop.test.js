@@ -6,6 +6,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createRunQueue } from '../routines/runQueue.js'
 
 // ── Save/restore original fetch ─────────────────────────────
 const origFetch = globalThis.fetch
@@ -899,6 +900,37 @@ test('shouldOfferBrowserTools: A2 regression — olhe alone (discourse marker) s
   }
 })
 
+// B1-CHROME: the user's field report — explicit action requests were being
+// classified as normal conversation, so browser tools never entered the
+// turn and the extension demanded a rephrase of what was already explicit.
+// The three print-case phrases below are LITERAL fixtures (pt-BR). They are
+// the load-bearing assertions — if any regresses to false, the fix is undone.
+// Also included: variations WITHOUT an imperative verb (the intent is
+// deictic/current-page, not a verb form), and contra-examples that MUST
+// remain normal conversation.
+test('shouldOfferBrowserTools: B1 regression — print-case phrases and intent-based variations liberate', () => {
+  for (const phrase of [
+    // Print case 1: answering requires looking at the page the agent is on.
+    'ja que voce esta no youtube, me diga quais videos voce esta vendo na aba inicial dele',
+    // Print case 2: explicit inspection verb + current-page reference.
+    'Analise o conteudo da pagina atual e me faca um resumo',
+    // Variations without an imperative verb — the intent is current-page state.
+    'o que esta escrito nessa pagina?',
+    'quais videos aparecem ai?',
+    'quais videos aparecem na aba inicial?',
+    'me diga o que tem na pagina atual',
+  ]) {
+    assert.equal(shouldOfferBrowserTools(phrase), true, phrase)
+  }
+  for (const phrase of [
+    'obrigado',
+    'o que voce acha de React?',
+    'me conte uma piada',
+  ]) {
+    assert.equal(shouldOfferBrowserTools(phrase), false, phrase)
+  }
+})
+
 test('shouldOfferBrowserTools: page references do not trigger on past or non-browser pages', () => {
   assert.equal(shouldOfferBrowserTools('o que tem na pagina 47 do livro'), false)
   assert.equal(shouldOfferBrowserTools('I read that page yesterday and liked it'), false)
@@ -1195,77 +1227,670 @@ test('runLlmAgentTurn: router fail after tools returns partial summary (no throw
   }
 })
 
-// A2-CHROME: when the turn is normal conversation (shouldOfferBrowserTools
-// returned false at the top of the turn) but the model STILL emits a tool
-// call — extracted by the parser from `<tool_call>` markup — the loop must
-// refuse to execute and explain instead. This is the security discipline:
-// a presentation bug (raw markup leaking) must NOT be turned into a
-// broader execution surface (silent execution in no-tools turns).
-test('runLlmAgentTurn: refuses to execute tool calls in a normal-conversation turn and explains', async () => {
-  let executeCalls = 0
+// B1-CHROME fallback of reclassification: when the turn was classified as
+// NORMAL CONVERSATION (shouldOfferBrowserTools returned false at the top of
+// the turn, and no saved routine was active) but the model STILL emits a
+// browser tool call — extracted by the parser from `<tool_call>` markup —
+// the loop must NOT return the reformulation error. The model's own
+// judgment that it needs a browser tool is the strongest signal that the
+// classifier got the turn wrong: reclassify the turn and re-run WITH the
+// browser tools available. This kills the whole class of classifier
+// false-negatives regardless of how the classifier is phrased.
+// B1-CHROME fallback harness: runs the conversation turn (which must return
+// { reclassify: true } instead of executing the tool inline) and then the
+// re-execution through the given queue, exactly like runAgentTurn does.
+async function runReclassifiedTurnThroughQueue(queue, options, respond) {
+  const requestBodies = []
   const origFetch = globalThis.fetch
   globalThis.fetch = async (_url, init) => {
     const body = JSON.parse(init.body)
-    // Confirm the request was sent WITHOUT browser tools (the gate is
-    // "turn offered no tools", not "model wanted no tools").
-    assert.equal(body?.tools, undefined, 'normal-conversation turn must not advertise browser tools')
+    requestBodies.push(body)
     return {
       ok: true,
       status: 200,
       json: async () => ({
         choices: [{
-          message: {
-            role: 'assistant',
-            // Exact shape from the user capture: function=computer,
-            // parameter=action=screenshot.
-            content: 'Vou tirar um screenshot.\n<tool_call>\n<function=computer>\n<parameter=action>screenshot</parameter>\n</function>\n</tool_call>',
-          },
+          message: { role: 'assistant', content: respond(requestBodies.length, body) },
         }],
       }),
     }
   }
   try {
+    const first = await runLlmAgentTurn(options)
+    if (first.reclassify !== true) return { first, reexecuted: null, requestBodies }
+    const reexecuted = await queue.enqueue({
+      id: `${options.turnId}:reclassify`,
+      execute: () => runLlmAgentTurn({ ...options, forceBrowserTools: true }),
+    })
+    return { first, reexecuted, requestBodies }
+  } finally {
+    globalThis.fetch = origFetch
+  }
+}
+
+// B1-CHROME: the four near-miss variants the classifier STILL denies must be
+// proven by EXECUTION, not by construction — each one is a full fallback
+// flow: classifier denies → model emits a browser tool call → the tool is
+// EXECUTED via the reclassification re-run. The assertion is about the tool
+// execution, never about the classification.
+const B1_RECLASSIFY_VARIANTS = [
+  'quais videos aparecem na aba do youtube?',
+  'voce pode ler a pagina para mim?',
+  'o que voce acha da pagina atual?',
+  'me diga qual e o titulo da aba atual',
+]
+
+for (const [variantIndex, variant] of B1_RECLASSIFY_VARIANTS.entries()) {
+  test(`B1 fallback: "${variant}" — tool EXECUTED via reclassification (variant ${variantIndex + 1}/4)`, async () => {
+    const queue = createRunQueue()
+    const executeCalls = []
     const thoughts = []
-    const result = await runLlmAgentTurn({
-      turnId: 'turn_a2_normal_blocks_tools',
-      // Short message that does NOT match shouldOfferBrowserTools:
-      // "olhe os cards" — no Portuguese action verb from the
-      // classifier's whitelist, just a "look" request. (Phrases like
-      // "o que esta escrito na pagina" do match the classifier and
-      // would offer tools legitimately — this test exercises the OTHER
-      // branch: classifier said no, but the model emitted a call
-      // anyway.)
+    const { first, reexecuted, requestBodies } = await runReclassifiedTurnThroughQueue(
+      queue,
+      {
+        turnId: `turn_b1_variant_${variantIndex + 1}`,
+        userMessage: variant,
+        accessToken: 'test-key',
+        modelId: 'normal-text-model',
+        modelSupportsVision: true,
+        broadcast: (event) => { if (event?.type === 'agent:thought') thoughts.push(event.text) },
+        executeTool: async (tc) => {
+          executeCalls.push(tc.name)
+          return { ok: true, result: '<div>conteudo</div>' }
+        },
+        getActiveTabMeta: async () => ({ url: 'https://example.com', title: 'Example' }),
+      },
+      (n) => n <= 2
+        ? 'Vou olhar.\n<tool_call>\n<function=read_page>\n<parameter=selector>body</parameter>\n</function>\n</tool_call>'
+        : 'Aqui está a resposta final.',
+    )
+    assert.equal(
+      first.reclassify,
+      true,
+      `"${variant}": o turno conversa deve sinalizar reclassificação — nunca executar inline`,
+    )
+    assert.equal(
+      first.toolResults.length,
+      0,
+      `"${variant}": nenhuma ferramenta pode ter sido executada inline no turno conversa`,
+    )
+    assert.ok(
+      executeCalls.includes('read_page'),
+      `"${variant}": a ferramenta deve ser EXECUTADA via fallback de reclassificação`,
+    )
+    assert.equal(reexecuted.assistantMessage, 'Aqui está a resposta final.')
+    assert.equal(requestBodies[0].tools, undefined, 'o 1º turno não pode anunciar tools')
+    assert.ok(
+      Array.isArray(requestBodies[1].tools) && requestBodies[1].tools.length > 0,
+      'a reexecução deve anunciar browser tools',
+    )
+    assert.ok(
+      thoughts.some((text) => /reclassificando|reexecutando|reclassifying|re-running/i.test(text)),
+      `"${variant}": o thought de reclassificação deve ter sido emitido`,
+    )
+  })
+}
+
+// B2-CHROME: the re-execution of a reclassified turn must be routed through
+// the browser control queue — browser actions from concurrent turns must
+// never interleave. Turn A is enqueued first (slow browser-control turn);
+// turn B is reclassified and its re-run joins the queue behind A.
+test('B2: reclassified turn re-execution is routed through the queue and stays serialized', async () => {
+  const queue = createRunQueue()
+  const order = []
+  const turnA = queue.enqueue({
+    id: 'turn_a_browser_control',
+    execute: async () => {
+      order.push('A:action-1')
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      order.push('A:action-2')
+    },
+  })
+  const executeCalls = []
+  const { first, reexecuted } = await runReclassifiedTurnThroughQueue(
+    queue,
+    {
+      turnId: 'turn_b_reexecuted',
+      // Classifier STILL denies this (weak "olhe" without a page
+      // reference), so the fallback is what reopens the tools.
       userMessage: 'olhe os cards',
       accessToken: 'test-key',
       modelId: 'normal-text-model',
       modelSupportsVision: true,
-      broadcast: (event) => { if (event?.type === 'agent:thought') thoughts.push(event.text) },
-      executeTool: async () => { executeCalls++; throw new Error('must not be called in a normal-conversation turn') },
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        executeCalls.push(tc.name)
+        order.push('B:tool')
+        return { ok: true, result: '<div class="card">Item 1</div>' }
+      },
       getActiveTabMeta: async () => ({ url: 'https://example.com/cards', title: 'Cards' }),
-    })
+    },
+    (n) => n <= 2
+      ? '<tool_call>\n<function=read_page>\n<parameter=selector>body</parameter>\n</function>\n</tool_call>'
+      : 'Os cards mostram três itens.',
+  )
+  await turnA
+  assert.equal(first.reclassify, true, 'o turno conversa deve sinalizar reclassificação')
+  assert.ok(executeCalls.includes('read_page'), 'a ferramenta deve ser executada na reexecução')
+  assert.ok(
+    order.indexOf('A:action-2') < order.indexOf('B:tool'),
+    'as ações de navegador dos dois turnos devem sair SERIALIZADAS: o turno B (reclassificado) atrás do turno A',
+  )
+})
 
-    assert.equal(executeCalls, 0, 'executeTool must not be invoked when the turn offered no tools')
-    // The raw markup MUST NOT appear in the assistant message (the
-    // user-facing bug). The parser is responsible for stripping it.
-    assert.ok(!result.assistantMessage.includes('<tool_call'), 'raw markup must not reach the user')
-    assert.ok(!result.assistantMessage.includes('<function=computer>'), 'raw XML must not reach the user')
-    // The explanation MUST mention the actual tools the model tried to
-    // call — so the user knows what to reformulate.
-    assert.match(result.assistantMessage, /screenshot/)
-    // And MUST tell the user how to fix it: rephrase with an explicit
-    // action verb + page reference. MUST NOT mention "Aja sem perguntar"
-    // / "Act without asking" mode — that mode does not force browser
-    // tools to be offered, so suggesting it would be a false fix (the
-    // user already tried it without effect, per the field report).
-    assert.match(result.assistantMessage, /(?:reformul|rephrase|explicit|explicito)/i)
-    assert.doesNotMatch(
-      result.assistantMessage,
-      /Aja sem perguntar|Act without asking|switch (?:to|para o) (?:modo|mode)/i,
-      'must not suggest the user toggle a mode that does not actually offer browser tools',
+// ── G1-CHROME: discovery over guessing ─────────────────────
+// The model must discover a user-named target by READING the page (find
+// returns real clickable references) and click the REAL reference — never
+// guess CSS selectors from memory. Contrafactual: a nonexistent target
+// ends honestly, with no series of guessed selectors.
+test('G1: named target is discovered via find and clicked on the REAL reference', async () => {
+  const requestBodies = []
+  const executedSelectors = []
+  const origFetch = globalThis.fetch
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    const index = requestBodies.length
+    if (index === 1) {
+      assert.ok(
+        Array.isArray(body?.tools) && body.tools.some((t) => t.function?.name === 'find'),
+        'o catálogo oferecido ao modelo deve incluir a primitiva find',
+      )
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: '<tool_call>\n<function=find>\n<parameter=text>ela</parameter>\n</function>\n</tool_call>' } }],
+        }),
+      }
+    }
+    if (index === 2) {
+      // O modelo clica na referência REAL devolvida pelo find.
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: '<tool_call>\n<function=click>\n<parameter=selector>a[href="/playlist?list=WL4E2A1B9"]</parameter>\n</function>\n</tool_call>' } }],
+        }),
+      }
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { role: 'assistant', content: 'Abri a playlist "ela".' } }],
+      }),
+    }
+  }
+  try {
+    await runLlmAgentTurn({
+      turnId: 'turn_g1_discover',
+      userMessage: 'coloque a playlist ela',
+      accessToken: 'test-key',
+      modelId: 'normal-text-model',
+      modelSupportsVision: true,
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        if (tc.name === 'find') {
+          return {
+            ok: true,
+            result: { text: '[1] text="Minha playlist ela" tag=a href="https://www.youtube.com/playlist?list=WL4E2A1B9" selector="a[href=\\"/playlist?list=WL4E2A1B9\\"]"' },
+          }
+        }
+        if (tc.name === 'click') {
+          executedSelectors.push(tc.params.selector)
+          return { ok: true, result: 'clicked' }
+        }
+        return { ok: true, result: 'ok' }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://www.youtube.com', title: 'YouTube' }),
+    })
+    assert.deepEqual(
+      executedSelectors,
+      ['a[href="/playlist?list=WL4E2A1B9"]'],
+      'o click deve usar a referência REAL devolvida pelo find — nunca um seletor chutado',
     )
-    // The agent loop should have emitted a thought explaining the block.
-    assert.ok(thoughts.length > 0, 'a TURN_MODE-NORMAL gate must emit an AGENT_THOUGHT explaining why the call was blocked')
-    assert.match(thoughts[thoughts.length - 1], /bloqueando|bloqueei|não serão executadas|blocking|will not be executed/i)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('G1: nonexistent named target ends honestly — zero guessed clicks', async () => {
+  const executeNames = []
+  const origFetch = globalThis.fetch
+  const requestBodies = []
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    if (requestBodies.length === 1) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: '<tool_call>\n<function=find>\n<parameter=text>album inexistente</parameter>\n</function>\n</tool_call>' } }],
+        }),
+      }
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { role: 'assistant', content: 'Não encontrei "album inexistente" na página.' } }],
+      }),
+    }
+  }
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_g1_honest',
+      userMessage: 'coloque o album inexistente',
+      accessToken: 'test-key',
+      modelId: 'normal-text-model',
+      modelSupportsVision: true,
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        executeNames.push(tc.name)
+        if (tc.name === 'find') return { ok: true, result: { text: 'Nenhum elemento encontrado para "album inexistente".' } }
+        return { ok: true, result: 'ok' }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://www.youtube.com', title: 'YouTube' }),
+    })
+    assert.ok(
+      !executeNames.includes('click'),
+      'alvo inexistente: nenhum click pode ter sido executado (sem chutes em série)',
+    )
+    assert.match(result.assistantMessage, /não encontrei|não achei|não existe/i)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+// ── G2-CHROME: executed actions + empty final reply = COMPLETE ──
+test('G2: executed actions + empty reply — loop re-asks once and completes with a closing summary', async () => {
+  const requestBodies = []
+  const executeCalls = []
+  const origFetch = globalThis.fetch
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    const index = requestBodies.length
+    if (index === 1) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: '<tool_call>\n<function=click>\n<parameter=selector>a[href="/playlist?list=WL1"]</parameter>\n</function>\n</tool_call>' } }],
+        }),
+      }
+    }
+    if (index === 2) {
+      // O modelo verifica o resultado da mutação (limpa requiresVerification).
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: '<tool_call>\n<function=read_page>\n<parameter=selector>body</parameter>\n</function>\n</tool_call>' } }],
+        }),
+      }
+    }
+    if (index === 3) {
+      // Resposta final VAZIA após ações executadas.
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: '   ' } }],
+        }),
+      }
+    }
+    // Re-pedido de fechamento: o modelo conclui.
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { role: 'assistant', content: 'Playlist aberta com sucesso.' } }],
+      }),
+    }
+  }
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_g2_retry',
+      userMessage: 'coloque a playlist',
+      accessToken: 'test-key',
+      modelId: 'normal-text-model',
+      modelSupportsVision: true,
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        executeCalls.push(tc.name)
+        return { ok: true, result: 'clicked' }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://www.youtube.com', title: 'YouTube' }),
+    })
+    assert.deepEqual(executeCalls, ['click', 'read_page'], 'a ação e a verificação devem ter sido executadas')
+    assert.equal(
+      result.assistantMessage,
+      'Playlist aberta com sucesso.',
+      'resposta vazia após ações: o loop deve re-pedir o fechamento UMA vez e concluir',
+    )
+    assert.ok(
+      requestBodies[3].messages.some((m) => m.role === 'system' && /conclude|summary|conclua|resumo/i.test(m.content)),
+      'o re-pedido de fechamento deve ter sido enviado ao modelo',
+    )
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('G2: executed actions + two empty replies — loop synthesizes the closing summary (still COMPLETE)', async () => {
+  const requestBodies = []
+  const origFetch = globalThis.fetch
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    const index = requestBodies.length
+    if (index === 1) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: '<tool_call>\n<function=click>\n<parameter=selector>a[href="/playlist?list=WL1"]</parameter>\n</function>\n</tool_call>' } }],
+        }),
+      }
+    }
+    if (index === 2) {
+      // Verificação da mutação (limpa requiresVerification).
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: '<tool_call>\n<function=read_page>\n<parameter=selector>body</parameter>\n</function>\n</tool_call>' } }],
+        }),
+      }
+    }
+    // O modelo segue devolvendo vazio mesmo após o re-pedido.
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { role: 'assistant', content: ' ' } }],
+      }),
+    }
+  }
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_g2_synthesize',
+      userMessage: 'coloque a playlist',
+      accessToken: 'test-key',
+      modelId: 'normal-text-model',
+      modelSupportsVision: true,
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        if (tc.name === 'click') return { ok: true, result: 'clicked' }
+        if (tc.name === 'read_page') return { ok: true, result: { text: 'página atual' } }
+        return { ok: true, result: 'ok' }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://www.youtube.com', title: 'YouTube' }),
+    })
+    assert.ok(
+      result.assistantMessage && result.assistantMessage.length > 0,
+      'turno com ações executadas + vazio duplo: o fechamento deve ser SINTETIZADO — nunca vazio',
+    )
+    assert.match(result.assistantMessage, /click|playlist/i, 'a síntese deve citar as ações executadas')
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('G2: zero actions + empty reply remains an honest failure (model_returned_empty_response)', async () => {
+  const origFetch = globalThis.fetch
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      choices: [{ message: { role: 'assistant', content: ' ' } }],
+    }),
+  })
+  try {
+    await assert.rejects(
+      () => runLlmAgentTurn({
+        turnId: 'turn_g2_honest_fail',
+        userMessage: 'ola',
+        accessToken: 'test-key',
+        modelId: 'normal-text-model',
+        modelSupportsVision: true,
+        broadcast: () => {},
+        executeTool: async () => ({ ok: true, result: 'ok' }),
+        getActiveTabMeta: async () => ({ url: 'https://example.com', title: 'Example' }),
+      }),
+      /model_returned_empty_response/,
+      'zero ações + resposta vazia: deve continuar sendo falha honesta',
+    )
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+// ── G3-CHROME: full-page extraction reaches the model, nothing truncated ──
+test('G3: long page extraction delivers the END of the page to the model', async () => {
+  const requestBodies = []
+  const TAIL = 'CONCLUSAO-UNICA-DO-FIM-DA-PAGINA'
+  const longContent = `INICIO ${'corpo intermediario do artigo. '.repeat(8000)} ${TAIL}`
+  const origFetch = globalThis.fetch
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    const index = requestBodies.length
+    if (index === 1) {
+      assert.ok(
+        Array.isArray(body?.tools) && body.tools.some((t) => t.function?.name === 'extract_page_content'),
+        'o catálogo deve oferecer a extração completa de página',
+      )
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: '<tool_call>\n<function=extract_page_content>\n<parameter=selector>article</parameter>\n</function>\n</tool_call>' } }],
+        }),
+      }
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { role: 'assistant', content: `Resumo: o artigo começa apresentando o tema e ${TAIL} no final.` } }],
+      }),
+    }
+  }
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_g3_full_page',
+      userMessage: 'extrai o conteudo e resume',
+      accessToken: 'test-key',
+      modelId: 'normal-text-model',
+      modelSupportsVision: true,
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        if (tc.name === 'extract_page_content') {
+          return { ok: true, result: { text: longContent } }
+        }
+        return { ok: true, result: 'ok' }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://long-blog.example/post', title: 'Long post' }),
+    })
+    const secondRequest = requestBodies[1]
+    assert.ok(secondRequest, 'deve haver um segundo request com a resposta do modelo')
+    assert.ok(
+      secondRequest.messages.some((m) => m.role === 'tool' && String(m.content).includes(TAIL)),
+      'o FIM da página longa deve chegar ao modelo em algum chunk — nada pode ser cortado',
+    )
+    assert.ok(
+      result.assistantMessage.includes(TAIL),
+      'o resumo do modelo referencia conteúdo do FIM da página',
+    )
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+// ── BLOQUEIO CADINHO 1 (G1 reativo): o caminho do vídeo ────
+// O defeito real é REATIVO: modelo chuta seletor → element-not-found
+// repetido → o loop injeta o STRATEGY_HINT → o modelo chama find →
+// clica na referência REAL descoberta. Asserção final no CLIQUE real.
+test('G1 reativo: guessed-click failures trigger the hint, then find → click on the REAL selector', async () => {
+  const requestBodies = []
+  const executedSelectors = []
+  const REAL_SELECTOR = 'a[href="/playlist?list=WL4E2A1B9"]'
+  const origFetch = globalThis.fetch
+  const guesses = [
+    'a[href*="/playlist?list=WL"]',
+    '#guide [title="Playlists"]',
+    'ytd-rich-grid-media a[href*="playlist"]',
+  ]
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    const index = requestBodies.length
+    if (index <= 3) {
+      // O modelo chuta um seletor diferente a cada vez (o comportamento do vídeo).
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: `<tool_call>\n<function=click>\n<parameter=selector>${guesses[index - 1]}</parameter>\n</function>\n</tool_call>` } }],
+        }),
+      }
+    }
+    if (index === 4) {
+      // Após o hint, o modelo descobre o elemento por texto.
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: '<tool_call>\n<function=find>\n<parameter=text>ela</parameter>\n</function>\n</tool_call>' } }],
+        }),
+      }
+    }
+    if (index === 5) {
+      // O modelo clica na referência REAL devolvida pelo find.
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: `<tool_call>\n<function=click>\n<parameter=selector>${REAL_SELECTOR}</parameter>\n</function>\n</tool_call>` } }],
+        }),
+      }
+    }
+    if (index === 6) {
+      // Verificação da mutação.
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: '<tool_call>\n<function=read_page>\n<parameter=selector>body</parameter>\n</function>\n</tool_call>' } }],
+        }),
+      }
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { role: 'assistant', content: 'Abri a playlist "ela".' } }],
+      }),
+    }
+  }
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_g1_reactive',
+      userMessage: 'coloque a playlist ela',
+      accessToken: 'test-key',
+      modelId: 'normal-text-model',
+      modelSupportsVision: true,
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        if (tc.name === 'find') {
+          return {
+            ok: true,
+            result: { text: `[1] text="Minha playlist ela" tag=a href="https://www.youtube.com/playlist?list=WL4E2A1B9" selector="${REAL_SELECTOR}"` },
+          }
+        }
+        if (tc.name === 'click') {
+          executedSelectors.push(tc.params.selector)
+          return tc.params.selector === REAL_SELECTOR
+            ? { ok: true, result: 'clicked' }
+            : { ok: false, error: 'element not found' }
+        }
+        if (tc.name === 'read_page') return { ok: true, result: { text: 'página' } }
+        return { ok: true, result: 'ok' }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://www.youtube.com', title: 'YouTube' }),
+    })
+    // A asserção FINAL: o último clique usou a referência REAL descoberta pelo find.
+    assert.equal(
+      executedSelectors.at(-1),
+      REAL_SELECTOR,
+      'o clique final deve usar o seletor REAL descoberto — não o 4º chute',
+    )
+    assert.equal(executedSelectors.length, 4, '3 chutes falhados + 1 clique real')
+    assert.ok(
+      requestBodies[3].messages.some((m) => m.role === 'system' && /STOP guessing/i.test(m.content)),
+      'o STRATEGY_HINT deve ter sido injetado após as falhas repetidas, antes do find',
+    )
+    assert.equal(result.assistantMessage, 'Abri a playlist "ela".')
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+// ── BLOQUEIO CADINHO 2 (G2): portão = sucesso REAL, não length ──
+// CASO A do vídeo: 4 element-not-found + resposta vazia deve continuar
+// falha honesta — nunca "Concluído: 0 ações".
+test('G2 CASO A: 4 falhas (element not found) + empty reply stays an honest failure', async () => {
+  const requestBodies = []
+  const origFetch = globalThis.fetch
+  const guesses = [
+    'a[href*="/playlist?list=WL"]',
+    '#guide [title="Playlists"]',
+    'ytd-rich-grid-media a[href*="playlist"]',
+    'a[href*="playlist?list="]:nth-of-type(7)',
+  ]
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    const index = requestBodies.length
+    if (index <= 4) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: `<tool_call>\n<function=click>\n<parameter=selector>${guesses[index - 1]}</parameter>\n</function>\n</tool_call>` } }],
+        }),
+      }
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { role: 'assistant', content: ' ' } }],
+      }),
+    }
+  }
+  try {
+    await assert.rejects(
+      () => runLlmAgentTurn({
+        turnId: 'turn_g2_case_a',
+        userMessage: 'coloque a playlist ela',
+        accessToken: 'test-key',
+        modelId: 'normal-text-model',
+        modelSupportsVision: true,
+        broadcast: () => {},
+        executeTool: async (tc) => {
+          if (tc.name === 'click') return { ok: false, error: 'element not found' }
+          return { ok: true, result: 'ok' }
+        },
+        getActiveTabMeta: async () => ({ url: 'https://www.youtube.com', title: 'YouTube' }),
+      }),
+      /model_returned_empty_response/,
+      '4 falhas + vazio: falha honesta — zero ações executadas com sucesso',
+    )
   } finally {
     globalThis.fetch = origFetch
   }

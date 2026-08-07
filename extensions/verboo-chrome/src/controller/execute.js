@@ -29,6 +29,8 @@ import { evaluateToolPolicy } from '../policy/evaluateToolPolicy.js'
 import { canonicalizeToolCall } from './protocol.js'
 import { navigate } from './tools/navigate.js'
 import { readPage } from './tools/readPage.js'
+import { findTool } from './tools/find.js'
+import { extractPageContent } from './tools/extractPageContent.js'
 import { structuredExtract } from './tools/structuredExtract.js'
 import { click } from './tools/click.js'
 import { typeText } from './tools/type.js'
@@ -130,6 +132,10 @@ async function dispatch(toolCall, ctx) {
       return navigate(args)
     case 'read_page':
       return readPage(args, ctx)
+    case 'find':
+      return findTool(args, ctx)
+    case 'extract_page_content':
+      return extractPageContent(args, ctx)
     case 'structured_extract':
       return structuredExtract(args, ctx)
     case 'click':

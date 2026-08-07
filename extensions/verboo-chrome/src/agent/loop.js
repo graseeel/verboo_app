@@ -42,12 +42,11 @@ const YOUTUBE_WATCH_POLL_ATTEMPTS = 8
 /**
  * Injected once after 3 consecutive failures of the same tool to unstick the agent.
  */
-const STRATEGY_HINT = `You seem stuck failing the same tool repeatedly. Strategy change:
-For YouTube music/video: Prefer ONE navigate to https://www.youtube.com/results?search_query=URL_ENCODED_QUERY
-Avoid typing on the homepage if you can open results URL directly.
-Working selectors: input[name="search_query"], #search-input input, button#search-icon-legacy, ytd-video-renderer a#video-title, a#video-title-link, a#video-title
-If a selector fails once, try a different selector — do not retry the same selector 5 times.
-Use screenshot only to disambiguate which video to click when results are ambiguous.`
+const STRATEGY_HINT = `You seem stuck failing the same tool repeatedly. STOP guessing — discover instead:
+1. Use find with the visible text the user mentioned to locate the REAL element on the current page (it returns working selectors derived from actual elements).
+2. If find finds nothing, read the page with read_page and look for the target's text.
+3. Click only a selector returned by find or read_page. Never invent CSS selectors from memory — site structure is not something you know.
+4. If the target genuinely does not exist on the page, tell the user honestly instead of trying more selectors.`
 
 /**
  * System prompt for the browser agent. Bilingual EN+PT to handle mixed requests.
@@ -77,15 +76,9 @@ LANGUAGE (mandatory):
 IMPORTANT RULES:
 - NEVER use chrome://, chrome-extension://, about:, or edge:// URLs
 - After navigating to a page, WAIT for the page to load before acting. Prefer read_page; use screenshot only when you need visual disambiguation.
-- Prefer precise CSS selectors (e.g. a#video-title, ytd-video-renderer a, input#search)
-- For YouTube music/video: Prefer ONE navigate to https://www.youtube.com/results?search_query=URL_ENCODED_QUERY
-  Avoid typing on the homepage if you can open results URL directly.
-  Working selectors: input[name="search_query"], #search-input input, button#search-icon-legacy, ytd-video-renderer a#video-title, a#video-title-link, a#video-title
-  If a selector fails once, try a different selector — do not retry the same selector 5 times.
-  Prefer read_page for titles; avoid screenshot unless results are ambiguous.
-  After a successful click that opens /watch (or the video is clearly playing): STOP.
-  Do NOT search again, do NOT re-navigate to results, do NOT take another screenshot.
-  Reply immediately with a short confirmation in the user's language.
+- DISCOVER BEFORE YOU CLICK: when the user names a target (a playlist, a button, an item) that is not visible to you yet, locate the REAL element first — call find with the user's wording, or read the page with read_page. Click only selectors returned by find/read_page.
+- Never invent or fabricate CSS selectors from memory — site structure is not something you know. If find/read_page return nothing for the named target, tell the user honestly that it was not found instead of trying more guessed selectors.
+- For a full-page extraction request (for example "extrai o conteudo e resume", "extract this page"), call extract_page_content to obtain the ENTIRE page text without truncation, then summarize from the full content.
 - For search: navigate to the search engine, type the query, submit
 - For reading a page: use read_page with a targeted selector, not the whole body when possible
 - For an explicit current-page inspection request (for example "o que é isso", "o que diz esta página", or "extract this page"), ALWAYS call read_page before answering. Do not answer that browser tools are unavailable when the current page is an HTTP(S) page.
@@ -113,6 +106,7 @@ export async function runLlmAgentTurn({
   getActiveTabMeta,
   refreshAccessToken,
   signal,
+  forceBrowserTools = false,
 }) {
   if (!accessToken) throw new Error('LLM agent: accessToken is required')
   if (!modelId) throw new Error('LLM agent: modelId is required')
@@ -121,7 +115,11 @@ export async function runLlmAgentTurn({
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'system', content: modelIdentityDirectiveFor(modelId, modelSupportsVision) },
   ]
-  const browserToolsEnabled = Boolean(routineContext) || shouldOfferBrowserTools(userMessage)
+  // forceBrowserTools is set by the caller when re-running a turn that was
+  // reclassified by the B1-CHROME fallback: the model already tried to call
+  // a browser tool, so the re-run opens the tools unconditionally.
+  const browserToolsEnabled =
+    forceBrowserTools === true || Boolean(routineContext) || shouldOfferBrowserTools(userMessage)
   const availableTools = browserToolsEnabled
     ? modelSupportsVision === true
       ? OPENAI_TOOLS
@@ -201,6 +199,8 @@ export async function runLlmAgentTurn({
 
   /** Tracks consecutive failures of the same tool to inject strategy / stop early. */
   let failStreak = { name: null, count: 0, afterHint: false }
+  // G2-CHROME: the model is asked to close an executed turn at most once.
+  let emptyCloseRetried = false
 
   // Some tasks have an observable terminal state. Once reached, the next
   // request asks only for the final reply and cannot trigger another action.
@@ -311,7 +311,34 @@ export async function runLlmAgentTurn({
           continue
         }
         const text = completion.content?.trim()
-        if (!text) throw new Error('model_returned_empty_response')
+        if (!text) {
+          // G2-CHROME: an empty final reply after EXECUTED actions must not
+          // become "Could not complete". Ask the model once to close, then
+          // synthesize a closing summary from the tool results — the turn
+          // counts as COMPLETE. The honest failure stays for turns with
+          // zero EXECUTED actions and an empty reply.
+          //
+          // The gate is REAL success, not tool-call count: the CASO A of the
+          // owner's video (4 element-not-found + empty reply) must stay an
+          // honest failure — never "Concluído: 0 ações".
+          if (allToolResults.some((r) => r && r.success)) {
+            if (!emptyCloseRetried) {
+              emptyCloseRetried = true
+              messages.push({
+                role: 'system',
+                content:
+                  'You executed browser actions but returned an empty final reply. Conclude now ' +
+                  'with a brief summary of the observed result, in the user\'s language.',
+              })
+              continue
+            }
+            return {
+              assistantMessage: synthesizeClosingSummary(userMessage, allToolResults),
+              toolResults: allToolResults,
+            }
+          }
+          throw new Error('model_returned_empty_response')
+        }
         return { assistantMessage: text, toolResults: allToolResults }
       }
     }
@@ -319,16 +346,25 @@ export async function runLlmAgentTurn({
     // Model emitted one or more tool calls, but this turn was classified as
     // NORMAL CONVERSATION (shouldOfferBrowserTools was false at the top of
     // the turn, and no saved routine was active) — so no browser tools were
-    // offered. Do NOT execute the calls: the loop must never expand the
-    // execution surface beyond what was explicitly offered. Tell the user
-    // why in plain language instead of letting the parser's structured
-    // output slip through to a controller that wasn't expecting it.
+    // offered. B1-CHROME: instead of returning the reformulation error, the
+    // loop returns a reclassify signal and the caller re-runs the turn WITH
+    // the browser tools available. The model's own judgment that it needs a
+    // browser tool is the strongest signal that the classifier got the turn
+    // wrong — this kills the whole class of classifier false-negatives
+    // regardless of phrasing.
     //
-    // Why this is a hard gate, not a soft preference: a model that emits
-    // `<tool_call>computer.screenshot</tool_call>` in a conversation-mode
-    // turn may be hallucinating an action the user never asked for, or
-    // following a prompt-injection seed from page content. Either way,
-    // the correct response is communication, not silent execution.
+    // Why this is safe: in a conversation turn the page content is NOT in
+    // the messages (activeTabMeta is only seeded when browserToolsEnabled),
+    // so a tool call here cannot come from a prompt-injection seed in page
+    // content — it comes from the user's request. The injection defense
+    // (inspectUntrustedBrowserContent + promptInjectionDetected below) still
+    // applies after the re-run, and execute() still gates mutations through
+    // the approval policy. The re-run offers the tools in the catalog; if
+    // the model calls again, the call is deliberate and executes.
+    //
+    // The loop itself never executes a tool inline here: the caller
+    // (background.js) routes the re-run through the browser control queue so
+    // browser actions stay serialized across concurrent turns.
     if (!browserToolsEnabled && completion.toolCalls.length > 0) {
       const attempted = completion.toolCalls.map((tc) => tc.name).filter(Boolean)
       const pt = looksPortuguese(userMessage)
@@ -343,31 +379,10 @@ export async function runLlmAgentTurn({
         type: MSG.AGENT_THOUGHT,
         turnId,
         text: pt
-          ? `Modelo tentou chamar ${attemptedLabel} em turno de conversa normal — bloqueando e pedindo reformulação.`
-          : `Model tried to call ${attemptedLabel} in a normal-conversation turn — blocking and asking for a rephrase.`,
+          ? `O modelo tentou chamar ${attemptedLabel} — reclassificando o turno e reexecutando com ferramentas de navegador.`
+          : `Model tried to call ${attemptedLabel} — reclassifying the turn and re-running with browser tools.`,
       })
-      // NOTE: do NOT suggest switching to "Aja sem perguntar" / "Act without
-      // asking" mode — that mode does NOT force browser tools to be offered
-      // (browserToolsEnabled = Boolean(routineContext) || shouldOfferBrowserTools
-      // at loop.js:122 has no term for that mode). Suggesting it would send
-      // the user to do something that demonstrably does not work, which is
-      // exactly what the field report showed. The only thing that actually
-      // offers browser tools is an explicit action verb + page reference
-      // matching shouldOfferBrowserTools — so tell the user to rephrase with
-      // an explicit verb.
-      return {
-        assistantMessage: pt
-          ? `Este turno foi classificado como conversa normal, então ferramentas de navegador ` +
-            `não estão disponíveis e não serão executadas. O modelo tentou chamar ${attemptedLabel}. ` +
-            `Reformule o pedido com um verbo de ação explícito e uma referência à página — por ` +
-            `exemplo, "abra a aba atual e me diga o que está escrito" ou "capture um screenshot ` +
-            `desta página".`
-          : `This turn was classified as normal conversation, so browser tools are not available ` +
-            `and will not be executed. The model tried to call ${attemptedLabel}. Rephrase the ` +
-            `request with an explicit action verb and a page reference — for example, "open the ` +
-            `current tab and tell me what's written" or "take a screenshot of this page".`,
-        toolResults: allToolResults,
-      }
+      return { reclassify: true, toolResults: allToolResults }
     }
 
     // Models may emit the same action more than once in a parallel tool-call
@@ -459,7 +474,11 @@ export async function runLlmAgentTurn({
           promptInjectionDetected = true
         }
         if (typeof raw === 'string') {
-          resultText = truncate(raw, MAX_RESULT_CHARS)
+          // G3-CHROME: full-page extraction keeps the WHOLE text — chunking
+          // happens at message insertion below, never a silent truncation.
+          resultText = tc.name === 'extract_page_content'
+            ? raw
+            : truncate(raw, MAX_RESULT_CHARS)
         } else if (raw && typeof raw === 'object') {
           if (raw.image || raw.dataUrl) {
             if (modelSupportsVision === true) {
@@ -470,7 +489,10 @@ export async function runLlmAgentTurn({
             if (raw.url) meta.push(`url=${raw.url}`)
             resultText = `Screenshot captured${meta.length ? ' (' + meta.join(', ') + ')' : ''}. Use read_page or click next; do not re-search unless needed.`
           } else if (raw.text) {
-            resultText = truncate(String(raw.text), MAX_RESULT_CHARS)
+            // G3-CHROME: same full-text rule for object-shaped results.
+            resultText = tc.name === 'extract_page_content'
+              ? String(raw.text)
+              : truncate(String(raw.text), MAX_RESULT_CHARS)
           } else if (Array.isArray(raw)) {
             resultText = truncate(JSON.stringify(raw), MAX_RESULT_CHARS)
           } else {
@@ -523,11 +545,23 @@ export async function runLlmAgentTurn({
       })
 
       // Tool role content must stay a plain string (OpenAI-compatible).
-      messages.push({
-        role: 'tool',
-        tool_call_id: tc.id,
-        content: resultText,
-      })
+      // G3-CHROME: full-page extractions are delivered as one message per
+      // chunk so the model receives the ENTIRE page, nothing truncated.
+      if (tc.name === 'extract_page_content' && resultText.length > MAX_RESULT_CHARS) {
+        for (const chunk of chunkText(resultText, MAX_RESULT_CHARS)) {
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: chunk,
+          })
+        }
+      } else {
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: resultText,
+        })
+      }
       if (screenshotDataUrl) {
         visualParts.push({
           type: 'image_url',
@@ -664,6 +698,14 @@ function sanitizeConversationHistory(history) {
  * This is a language-level intent guard, not a model or provider allowlist.
  * The Router still decides which browser tools to use after the guard opens.
  *
+ * B1-CHROME: the criterion is INTENT, not spelling. A request that can only
+ * be fulfilled by looking at / acting on the current page opens the tools.
+ * When in doubt the guard LIBERATES — the asymmetry decides: exposing tools
+ * in a conversation turn costs almost nothing (the model simply won't use
+ * them), while denying in an action turn makes the extension look dumb.
+ * The reclassification fallback in runLlmAgentTurn catches the residual
+ * classifier misses regardless of phrasing.
+ *
  * @param {string} userMessage
  * @returns {boolean}
  */
@@ -708,43 +750,48 @@ export function shouldOfferBrowserTools(userMessage) {
     /\b(?:whatsapp|gmail|e-?mail|instagram|facebook|linkedin|twitter|formulario|form|site)\b/i
   if (communicationAction.test(text) && externalDestination.test(text)) return true
 
-  // Page reference: the user points at the CURRENT page/tab/site with a
-  // demonstrative. Covers PT `esta/essa/desta/dessa/na` (already here)
-  // PLUS the contracted demonstratives Brazilians naturally use:
-  // `nesta/nessa/neste/nesse/nestes/nesses` and the EN `this/current`.
-  //
-  // INTENTIONAL EXCLUSIONS — `no` and `num` are bare prepositions, not
-  // demonstratives. `o que tem no site da Apple` is a general-knowledge
-  // question, not a pointer to the current tab — including them would
-  // expand the execution surface to any turn that mentions a site, even
-  // when the user never asked about the page they're on. They were
-  // briefly added in this cycle and reverted after the Maestro measured
-  // the false positive.
-  //
-  // Bare `na` is accepted only when it explicitly points to the currently
-  // open page (`na aba atual`, `na pagina aberta`, etc.). This avoids turning
-  // references to book pages or other historical content into browser work.
+  return hasPageInspectionIntent(text)
+}
+
+/**
+ * Shared page-inspection intent detector used by shouldOfferBrowserTools and
+ * shouldFallbackToPageRead. INTENT, not spelling: any signal that the request
+ * can only be fulfilled by looking at the current page opens the read tools.
+ * The asymmetry decides — when in doubt, liberate; the reclassification
+ * fallback in runLlmAgentTurn catches the residual misses.
+ *
+ * Page reference: the user points at the CURRENT page/tab/site with a
+ * demonstrative (`esta/essa/desta/dessa/na/nesta/nessa/...`) OR an article +
+ * page noun + current-qualifier (`a/da/na/o/do pagina/aba atual/inicial`).
+ *
+ * INTENTIONAL EXCLUSIONS — `no site da Apple` stays a general-knowledge
+ * question: `no`/`num` are bare prepositions and `da Apple` carries no
+ * current-qualifier, so article forms only count when the qualifier says
+ * current (atual/aberta/aberto/inicial/home/current). They were briefly
+ * added in an earlier cycle and reverted after the Maestro measured the
+ * false positive. References to book pages or past content (`na pagina 47`,
+ * `that page yesterday`) stay conversation.
+ *
+ * `olhe`/`look`/`show` alone are discourse markers in PT/EN ("olhe, eu acho
+ * que..."), so the CONJUNCTION with pageReference below is the load-bearing
+ * gate for that family — see the test "olhe alone, no page reference,
+ * denies browser tools".
+ *
+ * `ve` is split out of the alternation into its own guarded regex because
+ * the apostrophe is a word boundary, so bare `ve` was matching inside
+ * English contractions `I've`/`you've`/`we've`. The guard `(?<![''])`
+ * rejects matches preceded by an apostrophe (manifest requires Chrome 123,
+ * lookbehind is supported).
+ *
+ * @param {string} text normalized intent text
+ */
+function hasPageInspectionIntent(text) {
   const pageReference =
-    /\b(?:esta|essa|desta|dessa|nesta|nessa|neste|nesse|nestes|nesses|this|current)\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\b|\bna\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\s+(?:atual|aberta|aberto|aqui|current)\b/i
+    /\b(?:esta|essa|desta|dessa|nesta|nessa|neste|nesse|nestes|nesses|this|current)\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\b|\b(?:a|o|da|do|na|no)\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\s+(?:atual|aberta|aberto|aqui|current|inicial|home)\b/i
   // Page inspection: the user asks to look at / read / describe what's
-  // on the page. Covers PT `resuma/resume/leia/ler/analise/verifique/
-  // veja/descreva/diga o que/o que tem/o que esta` (already here) PLUS
-  // the look/show family Brazilians naturally use: `olhe/olha/olhar/
-  // mostre/mostra/mostrar/ve` and the EN `look/show/see`. `olhe` alone
-  // is also a discourse marker in PT ("olhe, eu acho que..."), so the
-  // CONJUNCTION with pageReference below is the load-bearing gate —
-  // `olhe` without a page reference must continue to DENY. See the
-  // test "olhe alone, no page reference, denies browser tools" — it
-  // locks this behavior in.
-  //
-  // `ve` is split out of the alternation into its own guarded regex
-  // because the apostrophe is a word boundary, so bare `ve` was
-  // matching inside English contractions `I've`/`you've`/`we've`.
-  // The guard `(?<![''])` rejects matches preceded by an apostrophe
-  // (manifest requires Chrome 123, lookbehind is supported). The
-  // alternation stays readable; the special case stays isolated.
+  // on the page.
   const pageInspection =
-    /\b(?:resuma|resume|leia|ler|analise|verifique|veja|descreva|diga o que|o que tem|o que esta|o que diz|o que aparece|o que ha|o que e|qual conteudo|extraia|extrair|copie|copiar|olhe|olha|olhar|mostre|mostra|mostrar|summarize|read|analyze|check|inspect|describe|look|show|see|what is on|what's on|what is visible)\b/i
+    /\b(?:resuma|resume|leia|ler|analise|verifique|veja|descreva|diga o que|o que tem|o que esta|o que diz|o que aparece|o que ha|o que e|qual conteudo|extraia|extrair|copie|copiar|olhe|olha|olhar|mostre|mostra|mostrar|summarize|read|analyze|check|inspect|describe|look|show|see|extract|what is on|what's on|what is visible)\b/i
   const bareVe = /(?<!['’])\bve\b/i
 
   // Some users omit the space in `o que` (`oque`) or point at a
@@ -753,12 +800,20 @@ export function shouldOfferBrowserTools(userMessage) {
   const deicticInspection =
     /\b(?:o\s*que|qual|me diga|diga|explique|descreva)\s+(?:e|significa|diz|tem|ha|aparece|vejo|ve)\s+(?:isso|isto|aqui)\b/i
   const contentInspection =
-    /\b(?:ver|ve|ler|leia|ler|extrair|extraia|copiar|copie|acessar|acesso|consegue|pode)\b.{0,64}\b(?:conteudo|html|dom|texto|body)\b/i
+    /\b(?:ver|ve|ler|leia|ler|extrair|extraia|extrai|copiar|copie|acessar|acesso|consegue|pode)\b.{0,64}\b(?:conteudo|html|dom|texto|body)\b/i
+  // Current-page state question WITHOUT an imperative verb: "quais videos
+  // aparecem ai?", "quais videos aparecem na aba inicial?" — the intent is
+  // deictic. The anchor (ai/aqui, demonstrative + page noun, or preposition
+  // + page noun + current-qualifier) is load-bearing: without it "quais
+  // filmes existem" stays general knowledge.
+  const currentPageStateQuestion =
+    /\b(?:quais|o que|oqe|que|qual)\b.{0,40}?\b(?:aparecem|aparece|estao|esta|tem|ha|vendo|vejo|existem|existe)\b.{0,30}\b(?:ai|aqui|(?:nessa|nesta|nesse|neste|essa|esta)\s+(?:aba|pagina|tela|tab|screen|page|site)\b|(?:na|da|a|em|o|do)\s+(?:aba|pagina|tela|tab|screen|page|site)\s+(?:atual|aberta|aberto|inicial|home|current)\b)/i
 
   return (
     (pageReference.test(text) && (pageInspection.test(text) || bareVe.test(text))) ||
     deicticInspection.test(text) ||
-    contentInspection.test(text)
+    contentInspection.test(text) ||
+    currentPageStateQuestion.test(text)
   )
 }
 
@@ -880,22 +935,7 @@ function normalizeIntentText(value) {
 function shouldFallbackToPageRead(userMessage) {
   const text = normalizeIntentText(userMessage)
   if (!text || requiresScreenshot(text)) return false
-
-  const pageReference =
-    /\b(?:esta|essa|desta|dessa|nesta|nessa|neste|nesse|nestes|nesses|this|current)\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\b|\bna\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\s+(?:atual|aberta|aberto|aqui|current)\b/i
-  const pageInspection =
-    /\b(?:resuma|resume|leia|ler|analise|verifique|veja|descreva|diga o que|o que tem|o que esta|o que diz|o que aparece|o que ha|o que e|qual conteudo|extraia|extrair|copie|copiar|olhe|olha|olhar|mostre|mostra|mostrar|summarize|read|analyze|check|inspect|describe|look|show|see|what is on|what's on|what is visible|extract)\b/i
-  const bareVe = /(?<!['’])\bve\b/i
-  const deicticInspection =
-    /\b(?:o\s*que|qual|me diga|diga|explique|descreva)\s+(?:e|significa|diz|tem|ha|aparece|vejo|ve)\s+(?:isso|isto|aqui)\b/i
-  const contentInspection =
-    /\b(?:ver|ve|ler|leia|extrair|extraia|copiar|copie|acessar|acesso|consegue|pode)\b.{0,64}\b(?:conteudo|html|dom|texto|body)\b/i
-
-  return (
-    (pageReference.test(text) && (pageInspection.test(text) || bareVe.test(text))) ||
-    deicticInspection.test(text) ||
-    contentInspection.test(text)
-  )
+  return hasPageInspectionIntent(text)
 }
 
 /**
@@ -1095,6 +1135,41 @@ function normalizeScreenshotDataUrl(value) {
 function truncate(text, max) {
   if (text.length <= max) return text
   return text.slice(0, max - 20) + '\n…(truncated)'
+}
+
+/**
+ * G3-CHROME: split a full-page extraction into per-message chunks so the
+ * whole document reaches the model (each tool message stays within
+ * MAX_RESULT_CHARS).
+ * @param {string} text
+ * @param {number} max
+ * @returns {string[]}
+ */
+function chunkText(text, max) {
+  if (text.length <= max) return [text]
+  const chunks = []
+  for (let start = 0; start < text.length; start += max) {
+    chunks.push(text.slice(start, start + max))
+  }
+  return chunks
+}
+
+/**
+ * G2-CHROME: closing summary synthesized from executed tool results when
+ * the model returns an empty final reply after real actions.
+ * @param {string} userMessage
+ * @param {Array<{ name?: string; success?: boolean }>} toolResults
+ * @returns {string}
+ */
+export function synthesizeClosingSummary(userMessage, toolResults) {
+  const results = Array.isArray(toolResults) ? toolResults : []
+  const ok = results.filter((r) => r && r.success).length
+  const names = [...new Set(results.map((r) => r?.name).filter(Boolean))]
+  const actions = names.length > 0 ? names.join(', ') : `${ok} ação(ões)`
+  const pt = looksPortuguese(userMessage)
+  return pt
+    ? `Concluído: executei ${ok} ação(ões) no navegador (${actions}) conforme o pedido.`
+    : `Done: I executed ${ok} browser action(s) (${actions}) as requested.`
 }
 
 function sleep(ms) {
