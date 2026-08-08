@@ -516,12 +516,20 @@ export function SettingsView({
                   </button>
                   {updateSnapshot?.status === 'available' && updateSnapshot.channel === userSettings.updates.channel && (
                     <button className="button button-sm" onClick={() => onDownloadUpdate()}>
-                      {t('updates.download')}
+                      {t(updateSnapshot.target === 'both'
+                        ? 'updates.downloadBoth'
+                        : updateSnapshot.target === 'cli'
+                          ? 'updates.downloadCli'
+                          : 'updates.download')}
                     </button>
                   )}
                   {updateSnapshot?.status === 'downloaded' && (
                     <button className="button button-sm button-primary" onClick={() => onInstallUpdate()}>
-                      {t('updates.restart')}
+                      {t(updateSnapshot.target === 'both'
+                        ? 'updates.restartBoth'
+                        : updateSnapshot.target === 'cli'
+                          ? 'updates.restartCli'
+                          : 'updates.restart')}
                     </button>
                   )}
                 </div>
@@ -788,11 +796,25 @@ function updateSummary(snapshot: UpdateSnapshot, t: (key: string, vars?: Record<
     case 'not-available':
       return t('updates.statusCurrent', { version: snapshot.currentVersion })
     case 'available':
-      return t('updates.statusAvailable', { version: snapshot.availableVersion })
+      return snapshot.target === 'both'
+        ? t('updates.statusBothAvailable', {
+            appVersion: snapshot.availableVersion,
+            cliVersion: snapshot.cliAvailableVersion,
+          })
+        : snapshot.target === 'cli'
+          ? t('updates.statusCliAvailable', { version: snapshot.cliAvailableVersion })
+          : t('updates.statusAvailable', { version: snapshot.availableVersion })
     case 'downloading':
       return t('updates.statusDownloading', { percent: Math.round(snapshot.percent ?? 0) })
     case 'downloaded':
-      return t('updates.statusDownloaded', { version: snapshot.availableVersion })
+      return snapshot.target === 'both'
+        ? t('updates.statusBothDownloaded', {
+            appVersion: snapshot.availableVersion,
+            cliVersion: snapshot.cliAvailableVersion,
+          })
+        : snapshot.target === 'cli'
+          ? t('updates.statusCliDownloaded', { version: snapshot.cliAvailableVersion })
+          : t('updates.statusDownloaded', { version: snapshot.availableVersion })
     case 'error':
       return t('updates.statusError')
     default:

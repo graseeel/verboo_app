@@ -55,4 +55,25 @@ describe('SidebarUpdateControl', () => {
     fireEvent.click(action)
     expect(onAction).not.toHaveBeenCalled()
   })
+
+  it('presents simultaneous app and CLI releases as one action', () => {
+    render(
+      <I18nProvider language="pt-BR">
+        <SidebarUpdateControl
+          presentation={{
+            phase: 'available',
+            target: 'both',
+            appVersion: '0.8.0',
+            cliVersion: '0.15.6',
+            actionEnabled: true,
+          }}
+          onAction={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+
+    expect(screen.getAllByRole('button')).toHaveLength(1)
+    expect(screen.getByText('Atualizações do app e do CLI disponíveis')).toBeVisible()
+    expect(screen.getByText('O app 0.8.0 e o CLI 0.15.6 estão disponíveis.')).toBeVisible()
+  })
 })

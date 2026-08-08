@@ -15,10 +15,8 @@
  *     exported api object. A missing method would surface as a runtime
  *     TypeError in the renderer, not a build error.
  *
- * What's NOT tested:
- *   - invoke() call payloads — those are integration tests (Tauri
- *     command layer) and belong in src-tauri/.
- *   - listen() event wiring — same reason.
+ * Critical intent-bearing invoke payloads and event channel wiring are also
+ * pinned here because changing either silently changes updater behavior.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
@@ -101,6 +99,7 @@ describe('verboo-bridge — API shape', () => {
       configurable: true,
     })
     vi.resetModules()
+    vi.mocked(invoke).mockClear()
     await import('./verboo-bridge')
     api = (window as unknown as { verboo?: Record<string, unknown> }).verboo
   })
@@ -263,6 +262,21 @@ describe('verboo-bridge — API shape', () => {
     for (const name of required) {
       expect(typeof (api as Record<string, unknown> | undefined)?.[name]).toBe('function')
     }
+  })
+
+  it('distinguishes confirmed CLI downloads from app auto-downloads', async () => {
+    expect(api).toBeDefined()
+    const download = api?.downloadUpdate as (userInitiated?: boolean) => Promise<unknown>
+
+    await download(false)
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith('download_update', {
+      userInitiated: false,
+    })
+
+    await download()
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith('download_update', {
+      userInitiated: true,
+    })
   })
 
   it('returns a cleanup function from event subscriptions', async () => {

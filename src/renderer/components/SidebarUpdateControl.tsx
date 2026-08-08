@@ -88,29 +88,64 @@ function getUpdateCopy(
   t: Translator,
 ): UpdateCopy {
   const version = presentation.version ?? ''
+  const appVersion = presentation.appVersion ?? version
+  const cliVersion = presentation.cliVersion ?? version
+  const target = presentation.target ?? 'app'
 
   switch (presentation.phase) {
     case 'available':
       return {
-        title: t('updates.sidebarAvailable'),
-        detail: t('updates.statusAvailable', { version }),
-        actionLabel: t('updates.downloadAria', { version }),
+        title: target === 'both'
+          ? t('updates.sidebarBothAvailable')
+          : target === 'cli'
+            ? t('updates.sidebarCliAvailable')
+            : t('updates.sidebarAvailable'),
+        detail: target === 'both'
+          ? t('updates.statusBothAvailable', { appVersion, cliVersion })
+          : target === 'cli'
+            ? t('updates.statusCliAvailable', { version: cliVersion })
+            : t('updates.statusAvailable', { version: appVersion }),
+        actionLabel: target === 'both'
+          ? t('updates.downloadBothAria', { appVersion, cliVersion })
+          : target === 'cli'
+            ? t('updates.downloadCliAria', { version: cliVersion })
+            : t('updates.downloadAria', { version: appVersion }),
         icon: <Download size={16} />,
         pending: false,
       }
     case 'downloading':
       return {
-        title: t('updates.sidebarDownloading'),
+        title: target === 'both'
+          ? t('updates.sidebarBothDownloading')
+          : target === 'cli'
+            ? t('updates.sidebarCliDownloading')
+            : t('updates.sidebarDownloading'),
         detail: t('updates.statusDownloading', { percent }),
-        actionLabel: t('updates.downloadingAria', { version }),
+        actionLabel: target === 'both'
+          ? t('updates.downloadingBothAria')
+          : target === 'cli'
+            ? t('updates.downloadingCliAria', { version: cliVersion })
+            : t('updates.downloadingAria', { version: appVersion }),
         icon: <Loader2 size={16} />,
         pending: true,
       }
     case 'ready':
       return {
-        title: t('updates.sidebarReady'),
-        detail: t('updates.statusDownloaded', { version }),
-        actionLabel: t('updates.restartAria', { version }),
+        title: target === 'both'
+          ? t('updates.sidebarBothReady')
+          : target === 'cli'
+            ? t('updates.sidebarCliReady')
+            : t('updates.sidebarReady'),
+        detail: target === 'both'
+          ? t('updates.statusBothDownloaded', { appVersion, cliVersion })
+          : target === 'cli'
+            ? t('updates.statusCliDownloaded', { version: cliVersion })
+            : t('updates.statusDownloaded', { version: appVersion }),
+        actionLabel: target === 'both'
+          ? t('updates.restartBothAria', { appVersion, cliVersion })
+          : target === 'cli'
+            ? t('updates.restartCliAria', { version: cliVersion })
+            : t('updates.restartAria', { version: appVersion }),
         icon: <CircleCheck size={16} />,
         pending: false,
       }

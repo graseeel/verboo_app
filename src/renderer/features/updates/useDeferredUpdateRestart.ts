@@ -10,7 +10,7 @@ export type UseDeferredUpdateRestartOptions = {
   snapshot?: UpdateSnapshot
   runningCount: number
   check: (userInitiated: boolean) => Promise<UpdateSnapshot>
-  download: () => Promise<UpdateSnapshot>
+  download: (userInitiated: boolean) => Promise<UpdateSnapshot>
   install: () => Promise<InstallUpdateResult>
   persistDrafts: () => void
   clearDrafts: () => void
@@ -66,7 +66,7 @@ export function useDeferredUpdateRestart({
         return
       }
 
-      const downloaded = await download()
+      const downloaded = await download(true)
       if (downloaded.status === 'error') {
         setRestartRequested(false)
         setFailure(downloaded.error ?? 'Update download failed')
@@ -141,22 +141,32 @@ export function useDeferredUpdateRestart({
     if (failure) {
       return {
         phase: 'error',
+        target: snapshot?.target ?? 'app',
+        appVersion: snapshot?.availableVersion,
+        cliVersion: snapshot?.cliAvailableVersion,
         error: failure,
         actionEnabled: true,
       }
     }
     if (!snapshot) return undefined
+    const target = snapshot.target ?? 'app'
+    const versions = {
+      target,
+      version: target === 'cli' ? snapshot.cliAvailableVersion : snapshot.availableVersion,
+      appVersion: snapshot.availableVersion,
+      cliVersion: snapshot.cliAvailableVersion,
+    } as const
     if (snapshot.status === 'available') {
       return {
         phase: 'available',
-        version: snapshot.availableVersion,
+        ...versions,
         actionEnabled: true,
       }
     }
     if (snapshot.status === 'downloading') {
       return {
         phase: 'downloading',
-        version: snapshot.availableVersion,
+        ...versions,
         percent: snapshot.percent,
         actionEnabled: false,
       }
@@ -164,7 +174,7 @@ export function useDeferredUpdateRestart({
     if (snapshot.status === 'downloaded' && !restartRequested) {
       return {
         phase: 'ready',
-        version: snapshot.availableVersion,
+        ...versions,
         actionEnabled: true,
       }
     }
@@ -174,14 +184,14 @@ export function useDeferredUpdateRestart({
     ) {
       return {
         phase: 'waiting',
-        version: snapshot.availableVersion,
+        ...versions,
         actionEnabled: false,
       }
     }
     if (snapshot.status === 'downloaded' && restartRequested) {
       return {
         phase: 'restarting',
-        version: snapshot.availableVersion,
+        ...versions,
         actionEnabled: false,
       }
     }

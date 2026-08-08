@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use semver::Version;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
 use super::contract::DesktopTarget;
@@ -178,6 +178,30 @@ impl CliStore {
         }
         self.write_pointer(CURRENT_POINTER, &pointer)?;
         Ok(pointer)
+    }
+
+    pub fn rollback_activation(
+        &self,
+        activated: &CliPointer,
+        previous: &CliPointer,
+    ) -> Result<(), String> {
+        validate_pointer(activated)?;
+        validate_pointer(previous)?;
+        let current = self
+            .current()?
+            .ok_or_else(|| "cannot roll back a missing CLI activation".to_string())?;
+        if current != *activated {
+            return Err("current CLI changed while an update was being installed".to_string());
+        }
+        let previous_cli = self.version_dir(&previous.version)?.join("dist/cli.mjs");
+        if !previous_cli.is_file() {
+            return Err(format!(
+                "cannot roll back because CLI {} is missing",
+                previous.version
+            ));
+        }
+        self.write_pointer(CURRENT_POINTER, previous)?;
+        self.write_pointer(LAST_KNOWN_GOOD_POINTER, previous)
     }
 
     pub fn acquire_runtime(&self, node_path: PathBuf) -> Result<CliRuntimeLease, String> {
@@ -402,7 +426,7 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
             return Err(format!(
                 "failed to read CLI state {}: {error}",
                 path.display()
-            ))
+            ));
         }
     };
     serde_json::from_slice(&bytes)
@@ -464,7 +488,7 @@ fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
 fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
     };
 
     let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();

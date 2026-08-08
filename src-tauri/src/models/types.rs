@@ -352,6 +352,14 @@ pub enum UpdateStatus {
     Unsupported,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateTarget {
+    App,
+    Cli,
+    Both,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum InstallUpdateStatus {
@@ -1466,9 +1474,15 @@ pub struct FileDiffResponse {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateSnapshot {
     pub status: UpdateStatus,
+    #[serde(default)]
+    pub target: Option<UpdateTarget>,
     pub channel: UpdateChannel,
     pub current_version: String,
     pub available_version: Option<String>,
+    #[serde(default)]
+    pub cli_current_version: Option<String>,
+    #[serde(default)]
+    pub cli_available_version: Option<String>,
     pub release_name: Option<String>,
     pub release_date: Option<String>,
     pub release_notes: Option<String>,

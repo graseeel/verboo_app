@@ -1398,8 +1398,11 @@ export type UpdateStatus =
 
 export type UpdateSnapshot = {
   status: UpdateStatus
+  target?: 'app' | 'cli' | 'both'
   channel: UpdateChannel
   currentVersion: string
+  cliCurrentVersion?: string
+  cliAvailableVersion?: string
   /**
    * True when a stable channel with a valid manifest exists. False on 404,
    * network error, or invalid manifest. Fail-closed: when in doubt, false.
@@ -1433,7 +1436,10 @@ export type SidebarUpdatePresentation = {
     | 'waiting'
     | 'restarting'
     | 'error'
+  target?: 'app' | 'cli' | 'both'
   version?: string
+  appVersion?: string
+  cliVersion?: string
   percent?: number
   error?: string
   actionEnabled: boolean

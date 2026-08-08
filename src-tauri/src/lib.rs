@@ -1217,29 +1217,80 @@ fn interrupt(
 
 #[tauri::command]
 fn get_update_status(
-    service: tauri::State<'_, crate::services::update_service::UpdateService>,
+    coordinator: tauri::State<'_, crate::services::update_coordinator::UpdateCoordinator>,
 ) -> Result<UpdateSnapshot, String> {
-    Ok(service.snapshot())
+    Ok(coordinator.snapshot())
+}
+
+fn emit_update_snapshot(
+    app: &tauri::AppHandle,
+    coordinator: &crate::services::update_coordinator::UpdateCoordinator,
+) -> UpdateSnapshot {
+    let snapshot = coordinator.snapshot();
+    let _ = app.emit("update:snapshot", snapshot.clone());
+    snapshot
 }
 
 #[tauri::command]
 async fn check_for_updates(
     user_initiated: bool,
     app: tauri::AppHandle,
-    service: tauri::State<'_, crate::services::update_service::UpdateService>,
+    coordinator: tauri::State<'_, crate::services::update_coordinator::UpdateCoordinator>,
 ) -> Result<UpdateSnapshot, String> {
-    use tauri_plugin_updater::UpdaterExt;
-    if !user_initiated && !service.should_auto_check() {
-        return Ok(service.snapshot());
+    let coordinator = coordinator.inner().clone();
+    let _operation = coordinator.begin_operation().await;
+    let app_updates = coordinator.app();
+    if !user_initiated && !app_updates.should_auto_check() {
+        return Ok(coordinator.snapshot());
     }
-    service.mark_checking();
-    let _ = app.emit("update:snapshot", service.snapshot());
+
+    let check_app = !app_updates.can_install();
+    let cli_updates = coordinator.cli().filter(|service| {
+        !matches!(
+            service.snapshot().status,
+            services::cli_update::service::CliUpdateStatus::Ready
+        )
+    });
+
+    if check_app {
+        app_updates.mark_checking();
+    }
+    emit_update_snapshot(&app, &coordinator);
+
+    let app_check = check_app_update(&app, &coordinator, &app_updates, check_app);
+    let cli_check = async move {
+        let Some(service) = cli_updates else {
+            return Ok::<(), String>(());
+        };
+        tauri::async_runtime::spawn_blocking(move || service.check())
+            .await
+            .map_err(|error| format!("Falha interna ao verificar o CLI: {error}"))?
+            .map(|_| ())
+    };
+    let (_, cli_result) = tokio::join!(app_check, cli_check);
+    if let Err(error) = cli_result {
+        eprintln!("[verboo:cli-update] {error}");
+    }
+    let snapshot = emit_update_snapshot(&app, &coordinator);
+    Ok(snapshot)
+}
+
+async fn check_app_update(
+    app: &tauri::AppHandle,
+    coordinator: &crate::services::update_coordinator::UpdateCoordinator,
+    service: &crate::services::update_service::UpdateService,
+    should_check: bool,
+) {
+    use tauri_plugin_updater::UpdaterExt;
+    if !should_check {
+        return;
+    }
     let endpoint: tauri::Url = match service.endpoint().parse() {
         Ok(endpoint) => endpoint,
         Err(e) => {
-            let snap = service.mark_error(format!("Endpoint de atualização inválido: {e}"));
-            let _ = app.emit("update:snapshot", snap.clone());
-            return Ok(snap);
+            service.mark_error(format!("Endpoint de atualização inválido: {e}"));
+            emit_update_snapshot(app, coordinator);
+            return;
         }
     };
     let updater = match app
@@ -1249,9 +1300,9 @@ async fn check_for_updates(
     {
         Ok(u) => u,
         Err(e) => {
-            let snap = service.mark_error(format!("Falha ao configurar updater: {e}"));
-            let _ = app.emit("update:snapshot", snap.clone());
-            return Ok(snap);
+            service.mark_error(format!("Falha ao configurar updater: {e}"));
+            emit_update_snapshot(app, coordinator);
+            return;
         }
     };
     let active_result = updater.check().await;
@@ -1260,14 +1311,14 @@ async fn check_for_updates(
     // Used by `run_stable_probe` to short-circuit a second probe when
     // the user is already on the Stable channel.
     let active_check_ok = matches!(&active_result, Ok(_));
-    let snap = match active_result {
+    match active_result {
         Ok(Some(update)) => {
             service.mark_available(update.version.clone(), None, None, update.body.clone())
         }
         Ok(None) => service.mark_not_available(),
         Err(e) => service.mark_error(format!("Falha ao verificar atualizações: {e}")),
     };
-    let _ = app.emit("update:snapshot", snap.clone());
+    emit_update_snapshot(app, coordinator);
 
     // Probe the Stable channel availability (silent — does NOT call
     // mark_error). When the user is on Beta, this is an independent
@@ -1280,9 +1331,8 @@ async fn check_for_updates(
             probe_endpoint_serves_manifest(&app_for_probe, endpoint).await
         })
         .await;
-    let _ = app.emit("update:snapshot", stable_snap);
-
-    Ok(snap)
+    let _ = stable_snap;
+    emit_update_snapshot(app, coordinator);
 }
 
 /// Probes a single updater endpoint and returns `true` when it serves a
@@ -1315,25 +1365,64 @@ async fn probe_endpoint_serves_manifest(app: &tauri::AppHandle, endpoint: &'stat
 
 #[tauri::command]
 async fn download_update(
+    user_initiated: bool,
     app: tauri::AppHandle,
-    service: tauri::State<'_, crate::services::update_service::UpdateService>,
+    coordinator: tauri::State<'_, crate::services::update_coordinator::UpdateCoordinator>,
 ) -> Result<UpdateSnapshot, String> {
+    let coordinator = coordinator.inner().clone();
+    let _operation = coordinator.begin_operation().await;
+    let app_updates = coordinator.app();
+    let download_app = matches!(app_updates.snapshot().status, UpdateStatus::Available);
+    let cli_updates = coordinator.cli().filter(|service| {
+        user_initiated
+            && matches!(
+                service.snapshot().status,
+                services::cli_update::service::CliUpdateStatus::Available
+            )
+    });
+
+    if !download_app && cli_updates.is_none() {
+        return Ok(coordinator.snapshot());
+    }
+
+    let app_download = download_app_update(
+        &app,
+        &coordinator,
+        &app_updates,
+        download_app,
+    );
+    let cli_download = prepare_cli_update(app.clone(), coordinator.clone(), cli_updates);
+    let (app_result, cli_result) = tokio::join!(app_download, cli_download);
+    app_result?;
+    cli_result?;
+    Ok(emit_update_snapshot(&app, &coordinator))
+}
+
+async fn download_app_update(
+    app: &tauri::AppHandle,
+    coordinator: &crate::services::update_coordinator::UpdateCoordinator,
+    service: &crate::services::update_service::UpdateService,
+    should_download: bool,
+) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
+    if !should_download {
+        return Ok(());
+    }
     let ticket = match service.begin_download()? {
         Some(ticket) => ticket,
-        None => return Ok(service.snapshot()),
+        None => return Ok(()),
     };
-    let _ = app.emit("update:snapshot", service.snapshot());
+    emit_update_snapshot(app, coordinator);
     let endpoint: tauri::Url =
         match crate::services::update_service::UpdateService::endpoint_for(&ticket).parse() {
             Ok(endpoint) => endpoint,
             Err(e) => {
-                let snap = service.finish_download_error(
+                service.finish_download_error(
                     &ticket,
                     format!("Endpoint de atualização inválido: {e}"),
                 );
-                let _ = app.emit("update:snapshot", snap.clone());
-                return Ok(snap);
+                emit_update_snapshot(app, coordinator);
+                return Ok(());
             }
         };
     let updater = match app
@@ -1343,30 +1432,29 @@ async fn download_update(
     {
         Ok(updater) => updater,
         Err(e) => {
-            let snap =
-                service.finish_download_error(&ticket, format!("Falha ao configurar updater: {e}"));
-            let _ = app.emit("update:snapshot", snap.clone());
-            return Ok(snap);
+            service.finish_download_error(&ticket, format!("Falha ao configurar updater: {e}"));
+            emit_update_snapshot(app, coordinator);
+            return Ok(());
         }
     };
     let update = match updater.check().await {
         Ok(Some(update)) => update,
         Ok(None) => {
-            let snap =
-                service.finish_download_error(&ticket, "Nenhuma atualização disponível".into());
-            let _ = app.emit("update:snapshot", snap.clone());
-            return Ok(snap);
+            service.finish_download_error(&ticket, "Nenhuma atualização disponível".into());
+            emit_update_snapshot(app, coordinator);
+            return Ok(());
         }
         Err(e) => {
-            let snap = service.finish_download_error(&ticket, format!("Falha ao verificar: {e}"));
-            let _ = app.emit("update:snapshot", snap.clone());
-            return Ok(snap);
+            service.finish_download_error(&ticket, format!("Falha ao verificar: {e}"));
+            emit_update_snapshot(app, coordinator);
+            return Ok(());
         }
     };
     if !service.bind_download_version(&ticket, &update.version)? {
-        return Ok(service.snapshot());
+        return Ok(());
     }
     let app_for_chunk = app.clone();
+    let coordinator_for_chunk = coordinator.clone();
     let service_handle = service.clone_handle();
     let ticket_for_chunk = ticket.clone();
     let mut transferred = 0_u64;
@@ -1377,14 +1465,14 @@ async fn download_update(
                 transferred = transferred.saturating_add(chunk_len as u64);
                 if let Some(total) = total {
                     let seconds = started.elapsed().as_secs_f64().max(0.001);
-                    let snap = service_handle.mark_download_progress_for(
+                    let changed = service_handle.mark_download_progress_for(
                         &ticket_for_chunk,
                         transferred,
                         total,
                         transferred as f64 / seconds,
                     );
-                    if let Some(snap) = snap {
-                        let _ = app_for_chunk.emit("update:snapshot", snap);
+                    if changed.is_some() {
+                        emit_update_snapshot(&app_for_chunk, &coordinator_for_chunk);
                     }
                 }
             },
@@ -1394,28 +1482,72 @@ async fn download_update(
     let bytes = match result {
         Ok(bytes) => bytes,
         Err(e) => {
-            let snap = service.finish_download_error(&ticket, format!("Falha ao baixar: {e}"));
-            let _ = app.emit("update:snapshot", snap.clone());
-            return Ok(snap);
+            service.finish_download_error(&ticket, format!("Falha ao baixar: {e}"));
+            emit_update_snapshot(app, coordinator);
+            return Ok(());
         }
     };
-    let snap = match service.stage_downloaded(&ticket, update, bytes) {
-        Ok(Some(snapshot)) => snapshot,
-        Ok(None) => service.snapshot(),
-        Err(error) => service
-            .finish_download_error(&ticket, format!("Falha ao preparar atualização: {error}")),
+    if let Err(error) = service.stage_downloaded(&ticket, update, bytes) {
+        service.finish_download_error(&ticket, format!("Falha ao preparar atualização: {error}"));
+    }
+    emit_update_snapshot(app, coordinator);
+    Ok(())
+}
+
+async fn prepare_cli_update(
+    app: tauri::AppHandle,
+    coordinator: crate::services::update_coordinator::UpdateCoordinator,
+    service: Option<services::cli_update::CliUpdateService>,
+) -> Result<(), String> {
+    let Some(service) = service else {
+        return Ok(());
     };
-    let _ = app.emit("update:snapshot", snap.clone());
-    Ok(snap)
+    let mut task = tauri::async_runtime::spawn_blocking(move || service.prepare());
+    loop {
+        tokio::select! {
+            result = &mut task => {
+                match result {
+                    Ok(Ok(_)) | Ok(Err(_)) => {
+                        emit_update_snapshot(&app, &coordinator);
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        return Err(format!("Falha interna ao preparar o CLI: {error}"));
+                    }
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                emit_update_snapshot(&app, &coordinator);
+            }
+        }
+    }
 }
 
 #[tauri::command]
-fn install_update(
+async fn install_update(
     app: tauri::AppHandle,
-    service: tauri::State<'_, crate::services::update_service::UpdateService>,
+    coordinator: tauri::State<'_, crate::services::update_coordinator::UpdateCoordinator>,
     turns: tauri::State<'_, TurnService>,
 ) -> Result<InstallUpdateResult, String> {
-    if !service.can_install() {
+    let coordinator = coordinator.inner().clone();
+    let _operation = coordinator.begin_operation().await;
+    let app_updates = coordinator.app();
+    let cli_updates = coordinator.cli();
+    let app_ready = app_updates.can_install();
+    let cli_ready = cli_updates.as_ref().is_some_and(|service| {
+        matches!(
+            service.snapshot().status,
+            services::cli_update::service::CliUpdateStatus::Ready
+        )
+    });
+    let app_still_available = matches!(app_updates.snapshot().status, UpdateStatus::Available);
+    let cli_still_available = cli_updates.as_ref().is_some_and(|service| {
+        matches!(
+            service.snapshot().status,
+            services::cli_update::service::CliUpdateStatus::Available
+        )
+    });
+    if (!app_ready && !cli_ready) || app_still_available || cli_still_available {
         return Err("Atualização ainda não foi baixada".into());
     }
     let _install_lease = match turns.begin_update_install()? {
@@ -1427,66 +1559,142 @@ fn install_update(
             });
         }
     };
-    let staged = service
-        .take_staged_update()?
-        .ok_or_else(|| "Atualização baixada não está mais disponível".to_string())?;
-    let bytes = match staged.read_verified() {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            let snapshot = service.mark_error(error.clone());
-            let _ = app.emit("update:snapshot", snapshot);
-            return Err(error);
-        }
+    let staged_app = if app_ready {
+        Some(
+            app_updates
+                .take_staged_update()?
+                .ok_or_else(|| "Atualização do app baixada não está mais disponível".to_string())?,
+        )
+    } else {
+        None
+    };
+    let app_bytes = match staged_app.as_ref() {
+        Some(staged) => match staged.read_verified() {
+            Ok(bytes) => Some(bytes),
+            Err(error) => {
+                app_updates.mark_error(error.clone());
+                emit_update_snapshot(&app, &coordinator);
+                return Err(error);
+            }
+        },
+        None => None,
     };
     #[cfg(target_os = "macos")]
-    let macos_bundle = match tauri::process::current_binary(&app.env())
-        .map_err(|e| format!("Falha ao localizar o app instalado: {e}"))
-        .and_then(|executable| {
-            crate::services::update_service::macos_bundle_path(&executable)
-                .ok_or_else(|| "O executável não está dentro de um bundle macOS válido".to_string())
-        }) {
-        Ok(bundle) => bundle,
-        Err(error) => {
-            service.restore_staged_update(staged)?;
-            return Err(error);
+    let macos_bundle = if app_ready {
+        match tauri::process::current_binary(&app.env())
+            .map_err(|e| format!("Falha ao localizar o app instalado: {e}"))
+            .and_then(|executable| {
+                crate::services::update_service::macos_bundle_path(&executable).ok_or_else(|| {
+                    "O executável não está dentro de um bundle macOS válido".to_string()
+                })
+            }) {
+            Ok(bundle) => Some(bundle),
+            Err(error) => {
+                app_updates.restore_staged_update(staged_app.expect("staged app"))?;
+                return Err(error);
+            }
         }
+    } else {
+        None
     };
-    if let Err(error) = std::fs::remove_file(&staged.artifact) {
-        service.restore_staged_update(staged)?;
-        return Err(format!("Falha ao preparar instalação: {error}"));
+
+    let mut app_payload = match (staged_app, app_bytes) {
+        (Some(staged), Some(bytes)) => {
+            if let Err(error) = std::fs::remove_file(&staged.artifact) {
+                app_updates.restore_staged_update(staged)?;
+                return Err(format!("Falha ao preparar instalação: {error}"));
+            }
+            Some((staged.update, bytes))
+        }
+        (None, None) => None,
+        _ => return Err("Estado interno inconsistente da atualização do app".to_string()),
+    };
+
+    let cli_activation = if cli_ready {
+        let service = cli_updates.as_ref().expect("CLI service must exist");
+        match service.activate_prepared_for_restart() {
+            Ok(activation) => Some(activation),
+            Err(error) => {
+                if let Some((update, bytes)) = app_payload.take() {
+                    app_updates.restore_failed_install(update, bytes)?;
+                }
+                return Err(format!("Falha ao ativar atualização do CLI: {error}"));
+            }
+        }
+    } else {
+        None
+    };
+
+    let installed_app = app_payload.is_some();
+    if let Some((update, bytes)) = app_payload.take() {
+        if let Err(error) = update.install(&bytes) {
+            let mut failures = vec![format!("Falha ao instalar atualização do app: {error}")];
+            if let Err(restore_error) = app_updates.restore_failed_install(update, bytes) {
+                failures.push(format!("falha ao restaurar download do app: {restore_error}"));
+            }
+            if let (Some(service), Some(activation)) =
+                (cli_updates.as_ref(), cli_activation.as_ref())
+            {
+                if let Err(rollback_error) = service.rollback_prepared_activation(activation) {
+                    failures.push(format!("falha ao restaurar o CLI anterior: {rollback_error}"));
+                }
+            }
+            emit_update_snapshot(&app, &coordinator);
+            return Err(failures.join("; "));
+        }
     }
-    let update = staged.update;
-    if let Err(error) = update.install(&bytes) {
-        service.restore_failed_install(update, bytes)?;
-        return Err(format!("Falha ao instalar atualização: {error}"));
+
+    if let (Some(service), Some(activation)) = (cli_updates.as_ref(), cli_activation.as_ref()) {
+        if let Err(error) = service.commit_prepared_activation(activation) {
+            if installed_app {
+                eprintln!(
+                    "[verboo:cli-update] app installed but CLI activation bookkeeping failed: {error}"
+                );
+            } else {
+                let rollback = service.rollback_prepared_activation(activation);
+                emit_update_snapshot(&app, &coordinator);
+                return match rollback {
+                    Ok(_) => Err(format!("Falha ao concluir atualização do CLI: {error}")),
+                    Err(rollback_error) => Err(format!(
+                        "Falha ao concluir atualização do CLI: {error}; falha no rollback: {rollback_error}"
+                    )),
+                };
+            }
+        }
     }
+
     #[cfg(target_os = "macos")]
     {
-        let relaunch = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg(crate::services::update_service::macos_relaunch_script())
-            .arg("verboo-update-relaunch")
-            .arg(std::process::id().to_string())
-            .arg(macos_bundle)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        if let Err(error) = relaunch {
-            eprintln!("[verboo:update] relaunch helper failed, using native restart: {error}");
+        _install_lease.keep_until_process_exit();
+        if let Some(macos_bundle) = macos_bundle {
+            let relaunch = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(crate::services::update_service::macos_relaunch_script())
+                .arg("verboo-update-relaunch")
+                .arg(std::process::id().to_string())
+                .arg(macos_bundle)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            if let Err(error) = relaunch {
+                eprintln!("[verboo:update] relaunch helper failed, using native restart: {error}");
+                app.restart();
+            }
+            app.exit(0);
+            return Ok(InstallUpdateResult {
+                status: InstallUpdateStatus::Restarting,
+                active_turns: 0,
+            });
+        } else {
             app.restart();
         }
-        _install_lease.keep_until_process_exit();
-        app.exit(0);
-        Ok(InstallUpdateResult {
-            status: InstallUpdateStatus::Restarting,
-            active_turns: 0,
-        })
     }
 
     #[cfg(not(target_os = "macos"))]
     {
         // Tauri's native restart remains the correct relaunch path on Windows/Linux.
+        _install_lease.keep_until_process_exit();
         app.restart();
     }
 }
@@ -1979,7 +2187,7 @@ pub fn run() {
             // CLI and Node have independent owners: Node is an app sidecar;
             // CLI versions live only under app-data/cli. Configure the single
             // runtime authority before any service can spawn a CLI process.
-            if let Some(node_path) = services::node_runtime::resolve_node_path() {
+            let cli_update_service = if let Some(node_path) = services::node_runtime::resolve_node_path() {
                 let cli_store = services::cli_update::CliStore::open(&app_data_dir)
                     .map_err(std::io::Error::other)?;
                 services::cli_update::runtime::configure(cli_store, node_path.clone())
@@ -2014,7 +2222,7 @@ pub fn run() {
                                 eprintln!("[verboo:cli-update] startup preparation failed: {error}");
                             }
                         });
-                        app.manage(cli_update_service);
+                        Some(cli_update_service)
                     }
                     Err(error) => {
                         // Development builds intentionally have no production
@@ -2022,13 +2230,15 @@ pub fn run() {
                         // usable; release builds fail earlier in CI if the key
                         // is absent.
                         eprintln!("[verboo:cli-update] updater unavailable: {error}");
+                        None
                     }
                 }
             } else {
                 eprintln!(
                     "[verboo:cli-update] embedded Node sidecar is unavailable; CLI bootstrap deferred"
                 );
-            }
+                None
+            };
             app.manage(
                 services::browser_panel::BrowserCaptureStore::new(app_data_dir.clone())
                     .map_err(std::io::Error::other)?,
@@ -2151,10 +2361,17 @@ pub fn run() {
             }
             // TrayService — owns the menubar state machine (icon/title animation)
             app.manage(crate::services::tray_service::TrayService::new());
-            // UpdateService — owns the updater snapshot + auto-check timer logic
-            app.manage(crate::services::update_service::UpdateService::new(
+            // The app and CLI updaters keep independent storage owners. The
+            // coordinator only combines their snapshots and serializes user
+            // operations into one card/restart flow.
+            let app_update_service = crate::services::update_service::UpdateService::new(
                 app.package_info().version.to_string(),
                 cfg!(debug_assertions) == false,
+            );
+            app.manage(app_update_service.clone());
+            app.manage(crate::services::update_coordinator::UpdateCoordinator::new(
+                app_update_service,
+                cli_update_service,
             ));
             // LifecycleService — owns the first-launch requirements flag
             app.manage(crate::services::lifecycle_service::LifecycleService::new(

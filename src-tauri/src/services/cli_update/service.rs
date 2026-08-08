@@ -9,12 +9,14 @@ use reqwest::redirect::Policy;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use super::archive::{extract_verified_archive, smoke_payload, validate_payload, ExtractionLimits};
+use super::archive::{ExtractionLimits, extract_verified_archive, smoke_payload, validate_payload};
 use super::contract::{
-    select_candidate, CliArtifact, DesktopTarget, ManifestVerifier, RuntimeCompatibility,
-    SelectedCandidate, VerifiedManifest,
+    CliArtifact, DesktopTarget, ManifestVerifier, RuntimeCompatibility, SelectedCandidate,
+    VerifiedManifest, select_candidate,
 };
-use super::download::{build_download_client, download_verified};
+#[cfg(test)]
+use super::download::build_download_client;
+use super::download::download_verified;
 use super::store::{CliPointer, CliStore};
 
 const LATEST_RELEASE_API: &str = "https://api.github.com/repos/verbeux-ai/code/releases/latest";
@@ -218,6 +220,13 @@ struct ServiceInner {
     app_version: String,
     target: DesktopTarget,
     state: Mutex<ServiceState>,
+    operation: Mutex<()>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedCliActivation {
+    previous: CliPointer,
+    activated: CliPointer,
 }
 
 #[derive(Clone)]
@@ -271,6 +280,7 @@ impl CliUpdateService {
                     candidate: None,
                     prepared: None,
                 }),
+                operation: Mutex::new(()),
             }),
         })
     }
@@ -289,14 +299,21 @@ impl CliUpdateService {
     }
 
     pub fn check(&self) -> Result<CliUpdateSnapshot, String> {
+        let _operation = self.lock_operation();
         self.check_with_context(false)
     }
 
     pub fn prepare(&self) -> Result<CliUpdateSnapshot, String> {
+        let _operation = self.lock_operation();
         self.prepare_with_context(false)
     }
 
     pub fn activate_prepared(&self) -> Result<CliUpdateSnapshot, String> {
+        let _operation = self.lock_operation();
+        self.activate_prepared_inner()
+    }
+
+    fn activate_prepared_inner(&self) -> Result<CliUpdateSnapshot, String> {
         let pointer = {
             let state = self.lock_state();
             state
@@ -320,7 +337,71 @@ impl CliUpdateService {
         Ok(state.snapshot.clone())
     }
 
+    pub fn activate_prepared_for_restart(&self) -> Result<PreparedCliActivation, String> {
+        let _operation = self.lock_operation();
+        let (previous, activated) = {
+            let state = self.lock_state();
+            let activated = state
+                .prepared
+                .clone()
+                .ok_or_else(|| "no prepared CLI update is ready to activate".to_string())?;
+            let previous = self.inner.store.current()?.ok_or_else(|| {
+                "normal CLI updates require an installed current version".to_string()
+            })?;
+            (previous, activated)
+        };
+        self.inner.store.activate(&activated)?;
+        Ok(PreparedCliActivation {
+            previous,
+            activated,
+        })
+    }
+
+    pub fn rollback_prepared_activation(
+        &self,
+        activation: &PreparedCliActivation,
+    ) -> Result<CliUpdateSnapshot, String> {
+        let _operation = self.lock_operation();
+        self.inner
+            .store
+            .rollback_activation(&activation.activated, &activation.previous)?;
+        let mut state = self.lock_state();
+        state.snapshot.status = CliUpdateStatus::Ready;
+        state.snapshot.current_version = Some(activation.previous.version.clone());
+        state.snapshot.available_version = Some(activation.activated.version.clone());
+        Ok(state.snapshot.clone())
+    }
+
+    pub fn commit_prepared_activation(
+        &self,
+        activation: &PreparedCliActivation,
+    ) -> Result<CliUpdateSnapshot, String> {
+        let _operation = self.lock_operation();
+        let current = self
+            .inner
+            .store
+            .current()?
+            .ok_or_else(|| "activated CLI pointer disappeared".to_string())?;
+        if current != activation.activated {
+            return Err("activated CLI changed before restart was committed".to_string());
+        }
+        self.inner.store.garbage_collect()?;
+        let mut state = self.lock_state();
+        state.snapshot = CliUpdateSnapshot {
+            status: CliUpdateStatus::Idle,
+            current_version: Some(activation.activated.version.clone()),
+            available_version: None,
+            downloaded_bytes: None,
+            total_bytes: None,
+            error: None,
+        };
+        state.candidate = None;
+        state.prepared = None;
+        Ok(state.snapshot.clone())
+    }
+
     pub fn bootstrap_if_missing(&self) -> Result<CliUpdateSnapshot, String> {
+        let _operation = self.lock_operation();
         if self.inner.store.current()?.is_some() {
             return Ok(self.snapshot());
         }
@@ -332,10 +413,11 @@ impl CliUpdateService {
             self.fail(error.clone(), true);
             return Err(error);
         }
-        self.activate_prepared()
+        self.activate_prepared_inner()
     }
 
     pub fn validate_startup(&self) -> Result<StartupValidation, String> {
+        let _operation = self.lock_operation();
         let Some(current) = self.inner.store.current()? else {
             return Ok(StartupValidation::Missing);
         };
@@ -554,14 +636,21 @@ impl CliUpdateService {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+
+    fn lock_operation(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.inner
+            .operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
 
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
     use sha2::{Digest, Sha256};
     use tar::{Builder, Header};
 
@@ -729,7 +818,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn prepares_then_activates_without_mutating_an_existing_version() {
+    fn prepared_activation_rolls_back_on_app_failure_then_commits_for_restart() {
         use std::os::unix::fs::PermissionsExt;
 
         let app_data = tempfile::tempdir().unwrap();
@@ -778,16 +867,37 @@ mod tests {
             Arc::new(AcceptedManifest(verified)),
             source,
         );
+        install_minimal(service.store(), "0.15.5");
+        service
+            .store()
+            .activate(&CliPointer::new("0.15.5", DesktopTarget::MacArm64, "a".repeat(64)).unwrap())
+            .unwrap();
         service.check().unwrap();
         assert_eq!(service.prepare().unwrap().status, CliUpdateStatus::Ready);
-        assert!(service
-            .store()
-            .version_dir("0.15.6")
-            .unwrap()
-            .join("dist/cli.mjs")
-            .is_file());
-        let activated = service.activate_prepared().unwrap();
-        assert_eq!(activated.current_version.as_deref(), Some("0.15.6"));
+        assert!(
+            service
+                .store()
+                .version_dir("0.15.6")
+                .unwrap()
+                .join("dist/cli.mjs")
+                .is_file()
+        );
+        let activation = service.activate_prepared_for_restart().unwrap();
+        assert_eq!(
+            service.store().current().unwrap().unwrap().version,
+            "0.15.6"
+        );
+        let rolled_back = service.rollback_prepared_activation(&activation).unwrap();
+        assert_eq!(rolled_back.status, CliUpdateStatus::Ready);
+        assert_eq!(
+            service.store().current().unwrap().unwrap().version,
+            "0.15.5"
+        );
+
+        let activation = service.activate_prepared_for_restart().unwrap();
+        let committed = service.commit_prepared_activation(&activation).unwrap();
+        assert_eq!(committed.status, CliUpdateStatus::Idle);
+        assert_eq!(committed.current_version.as_deref(), Some("0.15.6"));
         assert_eq!(
             service.store().current().unwrap().unwrap().version,
             "0.15.6"

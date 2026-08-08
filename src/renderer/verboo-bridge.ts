@@ -372,7 +372,8 @@ const api = {
   getUpdateStatus: () => invoke<UpdateSnapshot>('get_update_status'),
   checkForUpdates: (userInitiated = false) =>
     invoke<UpdateSnapshot>('check_for_updates', { userInitiated }),
-  downloadUpdate: () => invoke<UpdateSnapshot>('download_update'),
+  downloadUpdate: (userInitiated = true) =>
+    invoke<UpdateSnapshot>('download_update', { userInitiated }),
   installUpdate: () => invoke<InstallUpdateResult>('install_update'),
   onUpdateStatus: (callback: (snapshot: UpdateSnapshot) => void) =>
     onEvent<UpdateSnapshot>('update:snapshot', callback),

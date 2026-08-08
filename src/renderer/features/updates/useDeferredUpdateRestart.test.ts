@@ -160,6 +160,6 @@ describe('useDeferredUpdateRestart', () => {
     await act(async () => test.result.current.requestUpdate())
 
     expect(check).toHaveBeenCalledWith(true)
-    expect(download).toHaveBeenCalledTimes(1)
+    expect(download).toHaveBeenCalledWith(true)
   })
 })
