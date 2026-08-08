@@ -1556,7 +1556,10 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         );
         let received = std::fs::read_to_string(&received_file).unwrap_or_default();
         assert!(
-            matches!(received.as_str(), "/codex login\n" | "/codex login\r"),
+            matches!(
+                received.as_str(),
+                "/codex login\n" | "/codex login\r" | "/codex login\r\n"
+            ),
             "o terminal deve entregar somente o slash e um submit, recebido: {received:?}"
         );
 

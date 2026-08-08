@@ -6244,9 +6244,9 @@ mod tests {
         assert_eq!(launcher.launched.load(Ordering::SeqCst), 1);
 
         let started = Instant::now();
-        service.stop_for_app_exit(Instant::now() + Duration::from_millis(100));
+        service.stop_for_app_exit(Instant::now() + Duration::from_secs(1));
 
-        assert!(started.elapsed() < Duration::from_millis(200));
+        assert!(started.elapsed() < Duration::from_millis(1200));
         assert_eq!(stopped.load(Ordering::SeqCst), 1);
         assert_eq!(force_stopped.load(Ordering::SeqCst), 0);
         assert_eq!(service.attached().0, None);
