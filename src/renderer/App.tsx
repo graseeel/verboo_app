@@ -542,7 +542,7 @@ export function App() {
    * a conclusion sound (turn or goal/batch completed). Synthesized with
    * Web Audio (autocontained, all three WebViews) — see features/sound.
    * The master switch persists renderer-side (localStorage: the bridge
-   * settings contract is TORNO's) and the per-type notification prefs
+   * settings contract is PERISCOPIO's) and the per-type notification prefs
    * gate each event — integrated with Settings → Notifications, not a
    * parallel system. */
   const [soundsEnabled, setSoundsEnabled] = useState(readSoundsEnabled)

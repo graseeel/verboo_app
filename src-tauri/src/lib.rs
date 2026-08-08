@@ -231,9 +231,7 @@ fn open_chrome_extension_store(
     app: tauri::AppHandle,
     service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<bool, String> {
-    let url = service
-        .store_url()
-        .ok_or("chrome_store_url_missing")?;
+    let url = service.store_url().ok_or("chrome_store_url_missing")?;
     open_external_url(&app, url)
 }
 
@@ -330,15 +328,17 @@ fn send_feedback(
         "linux"
     };
     let app_for_url = app.clone();
-    Ok(crate::services::feedback_service::FeedbackService::send_feedback(
-        request,
-        &app_version,
-        platform,
-        |url| match app_for_url.opener().open_url(url, None::<&str>) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(format!("Falha ao abrir URL: {e}")),
-        },
-    ))
+    Ok(
+        crate::services::feedback_service::FeedbackService::send_feedback(
+            request,
+            &app_version,
+            platform,
+            |url| match app_for_url.opener().open_url(url, None::<&str>) {
+                Ok(_) => Ok(()),
+                Err(e) => Err(format!("Falha ao abrir URL: {e}")),
+            },
+        ),
+    )
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -393,18 +393,14 @@ async fn get_vision_fallback_state(
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
     let settings = store.get()?;
-    let consent = serde_json::to_value(&settings.vision_fallback_consent)
-        .map_err(|e| e.to_string())?;
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let consent =
+        serde_json::to_value(&settings.vision_fallback_consent).map_err(|e| e.to_string())?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
 
     // Run the blocking model list fetch on a background thread.
     let app_data_dir_clone = app_data_dir.clone();
     let helper_preview = tauri::async_runtime::spawn_blocking(move || {
-        let model_service =
-            crate::services::model_service::ModelService::new(app_data_dir_clone);
+        let model_service = crate::services::model_service::ModelService::new(app_data_dir_clone);
         let credentials_fresh = CredentialsStore::new();
         let token = crate::services::auth_token::resolve_token(&credentials_fresh);
         // force_refresh=false: try cache first (fast), fall back to API.
@@ -414,13 +410,14 @@ async fn get_vision_fallback_state(
             .list_models(token.as_deref(), false)
             .ok()
             .and_then(|discovery| {
-                crate::services::vision_fallback_service::resolve_vision_helper(&discovery)
-                    .map(|m| {
+                crate::services::vision_fallback_service::resolve_vision_helper(&discovery).map(
+                    |m| {
                         serde_json::json!({
                             "id": m.id,
                             "displayName": m.display_name,
                         })
-                    })
+                    },
+                )
             })
     })
     .await
@@ -506,7 +503,8 @@ fn heartbeat_menu_bar(
         crate::services::tray_service::TrayExecution::Permission => "permission",
         crate::services::tray_service::TrayExecution::Done => "done",
         crate::services::tray_service::TrayExecution::Error => "error",
-    }.to_string())
+    }
+    .to_string())
 }
 
 /// Pre-renders the Verboo mascot into the tray "breathing" frames, mirroring
@@ -579,10 +577,12 @@ fn check_skill_approval(
     store: tauri::State<'_, SettingsStore>,
 ) -> Result<Vec<SkillSummary>, String> {
     let settings = store.get()?;
-    Ok(crate::services::skills_service::SkillsService::pending_approval_skills(
-        &skills,
-        &settings.trusted_skills,
-    ))
+    Ok(
+        crate::services::skills_service::SkillsService::pending_approval_skills(
+            &skills,
+            &settings.trusted_skills,
+        ),
+    )
 }
 
 /// Persists a "Always Allow" decision for an untrusted skill. After this,
@@ -684,7 +684,10 @@ fn fire_completion_notification(
             })?;
         Ok(true)
     } else {
-        eprintln!("[verboo:notification] suppressed by settings (mode={:?})", settings.completion_notifications);
+        eprintln!(
+            "[verboo:notification] suppressed by settings (mode={:?})",
+            settings.completion_notifications
+        );
         Ok(false)
     }
 }
@@ -698,7 +701,6 @@ fn get_default_working_directory() -> String {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "/".to_string())
 }
-
 
 // ════════════════════════════════════════════════════════════════════
 // @-mention file listing (quick-win #1)
@@ -786,12 +788,16 @@ fn get_bundled_cli_version() -> String {
 
 #[tauri::command]
 fn get_workspace_changes(working_directory: String) -> Result<WorkspaceChangeSummary, String> {
-    Ok(services::git_service::read_workspace_change_summary(&working_directory))
+    Ok(services::git_service::read_workspace_change_summary(
+        &working_directory,
+    ))
 }
 
 #[tauri::command]
 fn get_workspace_branches(working_directory: String) -> Result<WorkspaceBranchInfo, String> {
-    Ok(services::git_service::read_workspace_branch_info(&working_directory))
+    Ok(services::git_service::read_workspace_branch_info(
+        &working_directory,
+    ))
 }
 
 #[tauri::command]
@@ -844,9 +850,7 @@ async fn create_workspace_pull_request(
 }
 
 #[tauri::command]
-async fn push_workspace_changes(
-    working_directory: String,
-) -> Result<WorkspacePushResult, String> {
+async fn push_workspace_changes(working_directory: String) -> Result<WorkspacePushResult, String> {
     tokio::task::spawn_blocking(move || {
         services::git_service::push_workspace_changes(&working_directory)
     })
@@ -906,10 +910,7 @@ fn get_file_diff(
 }
 
 #[tauri::command]
-fn revert_file(
-    working_directory: String,
-    file_path: String,
-) -> Result<FileDiffResponse, String> {
+fn revert_file(working_directory: String, file_path: String) -> Result<FileDiffResponse, String> {
     match services::git_service::revert_file(&working_directory, &file_path) {
         Ok(_) => Ok(FileDiffResponse {
             ok: true,
@@ -1000,7 +1001,10 @@ async fn pick_files(
     let paths = app
         .dialog()
         .file()
-        .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp", "heic", "heif"])
+        .add_filter(
+            "Images",
+            &["png", "jpg", "jpeg", "gif", "webp", "heic", "heif"],
+        )
         .add_filter("Videos", &["mp4", "mov", "webm", "mkv", "avi", "m4v"])
         .add_filter("All files", &["*"])
         .blocking_pick_files();
@@ -1097,11 +1101,8 @@ fn inspect_pasted_image(
     let pasted_dir = app_data_dir.join("pasted_images");
 
     // Delegate to the testable core function.
-    let meta = services::file_service::write_pasted_image_and_inspect(
-        &bytes,
-        &filename,
-        &pasted_dir,
-    )?;
+    let meta =
+        services::file_service::write_pasted_image_and_inspect(&bytes, &filename, &pasted_dir)?;
     Ok(vec![meta])
 }
 
@@ -1116,11 +1117,7 @@ fn inspect_pasted_image(
 /// Returns the absolute path of the saved file. The renderer stores this
 /// path in `UserSettings.avatar.uploadPath`.
 #[tauri::command]
-fn save_avatar_blob(
-    base64: String,
-    mime: String,
-    app: tauri::AppHandle,
-) -> Result<String, String> {
+fn save_avatar_blob(base64: String, mime: String, app: tauri::AppHandle) -> Result<String, String> {
     use base64::Engine;
 
     // Decode base64. Reject if invalid.
@@ -1147,7 +1144,9 @@ async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
         .file()
         .set_title("Selecionar pasta")
         .blocking_pick_folder();
-    Ok(folder.and_then(|p| p.into_path().ok()).map(|p| p.to_string_lossy().to_string()))
+    Ok(folder
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.to_string_lossy().to_string()))
 }
 
 #[tauri::command]
@@ -1262,12 +1261,9 @@ async fn check_for_updates(
     // the user is already on the Stable channel.
     let active_check_ok = matches!(&active_result, Ok(_));
     let snap = match active_result {
-        Ok(Some(update)) => service.mark_available(
-            update.version.clone(),
-            None,
-            None,
-            update.body.clone(),
-        ),
+        Ok(Some(update)) => {
+            service.mark_available(update.version.clone(), None, None, update.body.clone())
+        }
         Ok(None) => service.mark_not_available(),
         Err(e) => service.mark_error(format!("Falha ao verificar atualizações: {e}")),
     };
@@ -1328,21 +1324,18 @@ async fn download_update(
         None => return Ok(service.snapshot()),
     };
     let _ = app.emit("update:snapshot", service.snapshot());
-    let endpoint: tauri::Url = match crate::services::update_service::UpdateService::endpoint_for(
-        &ticket,
-    )
-    .parse()
-    {
-        Ok(endpoint) => endpoint,
-        Err(e) => {
-            let snap = service.finish_download_error(
-                &ticket,
-                format!("Endpoint de atualização inválido: {e}"),
-            );
-            let _ = app.emit("update:snapshot", snap.clone());
-            return Ok(snap);
-        }
-    };
+    let endpoint: tauri::Url =
+        match crate::services::update_service::UpdateService::endpoint_for(&ticket).parse() {
+            Ok(endpoint) => endpoint,
+            Err(e) => {
+                let snap = service.finish_download_error(
+                    &ticket,
+                    format!("Endpoint de atualização inválido: {e}"),
+                );
+                let _ = app.emit("update:snapshot", snap.clone());
+                return Ok(snap);
+            }
+        };
     let updater = match app
         .updater_builder()
         .endpoints(vec![endpoint])
@@ -1350,8 +1343,8 @@ async fn download_update(
     {
         Ok(updater) => updater,
         Err(e) => {
-            let snap = service
-                .finish_download_error(&ticket, format!("Falha ao configurar updater: {e}"));
+            let snap =
+                service.finish_download_error(&ticket, format!("Falha ao configurar updater: {e}"));
             let _ = app.emit("update:snapshot", snap.clone());
             return Ok(snap);
         }
@@ -1359,14 +1352,13 @@ async fn download_update(
     let update = match updater.check().await {
         Ok(Some(update)) => update,
         Ok(None) => {
-            let snap = service
-                .finish_download_error(&ticket, "Nenhuma atualização disponível".into());
+            let snap =
+                service.finish_download_error(&ticket, "Nenhuma atualização disponível".into());
             let _ = app.emit("update:snapshot", snap.clone());
             return Ok(snap);
         }
         Err(e) => {
-            let snap =
-                service.finish_download_error(&ticket, format!("Falha ao verificar: {e}"));
+            let snap = service.finish_download_error(&ticket, format!("Falha ao verificar: {e}"));
             let _ = app.emit("update:snapshot", snap.clone());
             return Ok(snap);
         }
@@ -1410,10 +1402,8 @@ async fn download_update(
     let snap = match service.stage_downloaded(&ticket, update, bytes) {
         Ok(Some(snapshot)) => snapshot,
         Ok(None) => service.snapshot(),
-        Err(error) => service.finish_download_error(
-            &ticket,
-            format!("Falha ao preparar atualização: {error}"),
-        ),
+        Err(error) => service
+            .finish_download_error(&ticket, format!("Falha ao preparar atualização: {error}")),
     };
     let _ = app.emit("update:snapshot", snap.clone());
     Ok(snap)
@@ -1797,10 +1787,17 @@ async fn plugin_skills(
 /// homepage, description, version, keywords, tags. The FE merges this
 /// with the CLI's `--available` JSON to reach Codex parity.
 #[tauri::command]
-async fn marketplace_manifests(
-) -> Result<std::collections::HashMap<String, services::marketplace_manifest_service::MarketplacePluginEntry>, models::plugins::PluginError> {
+async fn marketplace_manifests() -> Result<
+    std::collections::HashMap<
+        String,
+        services::marketplace_manifest_service::MarketplacePluginEntry,
+    >,
+    models::plugins::PluginError,
+> {
     let marketplaces = services::plugins_service::marketplace_list().await?;
-    Ok(services::marketplace_manifest_service::read_all_manifests(&marketplaces))
+    Ok(services::marketplace_manifest_service::read_all_manifests(
+        &marketplaces,
+    ))
 }
 
 /// 15. `plugin_icon(pluginId)` — fetches the plugin's icon from its homepage
@@ -1824,13 +1821,13 @@ async fn plugin_icon(
         .unwrap_or(true);
 
     // Resolve cache dir: <app_data_dir>/cache/plugin-icons/
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| models::plugins::PluginError::Unknown {
-            message: format!("failed to resolve app_data_dir: {e}"),
-            exit_code: None,
-        })?;
+    let app_data_dir =
+        app.path()
+            .app_data_dir()
+            .map_err(|e| models::plugins::PluginError::Unknown {
+                message: format!("failed to resolve app_data_dir: {e}"),
+                exit_code: None,
+            })?;
     let cache_dir = app_data_dir.join("cache").join("plugin-icons");
 
     // Fetch marketplace manifests via the in-memory cache (TTL 60s +
@@ -1921,10 +1918,7 @@ async fn remove_video_transcriber(
 /// raw bytes over IPC instead. Only files inside the app-private
 /// `video_jobs` tree are readable — never arbitrary paths.
 #[tauri::command]
-fn read_video_frame(
-    app: tauri::AppHandle,
-    path: String,
-) -> Result<tauri::ipc::Response, String> {
+fn read_video_frame(app: tauri::AppHandle, path: String) -> Result<tauri::ipc::Response, String> {
     use tauri::Manager;
     let app_data_dir = app
         .path()
@@ -1940,8 +1934,7 @@ fn read_video_frame(
     if !requested.starts_with(&allowed_root) {
         return Err("frame path outside the video jobs directory".to_string());
     }
-    let bytes =
-        std::fs::read(&requested).map_err(|error| format!("read frame: {error}"))?;
+    let bytes = std::fs::read(&requested).map_err(|error| format!("read frame: {error}"))?;
     Ok(tauri::ipc::Response::new(bytes))
 }
 
@@ -2032,13 +2025,8 @@ pub fn run() {
             if std::env::var_os("VERBOO_BROWSER_SMOKE_REPORT").is_none() {
                 use tauri_plugin_notification::NotificationExt;
                 match app.notification().request_permission() {
-                    Ok(state) => eprintln!(
-                        "[verboo:notification] permission state: {:?}",
-                        state
-                    ),
-                    Err(e) => eprintln!(
-                        "[verboo:notification] request_permission failed: {e}"
-                    ),
+                    Ok(state) => eprintln!("[verboo:notification] permission state: {:?}", state),
+                    Err(e) => eprintln!("[verboo:notification] request_permission failed: {e}"),
                 }
             }
 

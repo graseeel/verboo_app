@@ -43,3 +43,6 @@ src-tauri/.cargo/
 .verboo/
 extensions/verboo-chrome/dist/
 extensions/verboo-chrome/store-assets/*.zip
+
+# Editor config pessoal (Obsidian) — nao pertence ao repo
+.obsidian/

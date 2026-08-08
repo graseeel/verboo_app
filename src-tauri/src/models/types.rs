@@ -116,19 +116,6 @@ pub enum LanguageCode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub enum SettingsTab {
-    Permissions,
-    TrustedCommands,
-    App,
-    Notifications,
-    Personalization,
-    Memory,
-    Updates,
-    Archived,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum PersonalityMode {
     Pragmatic,
@@ -937,7 +924,7 @@ pub struct VideoProgress {
 /// F0-Annotate (2026-07-31) — the user-selected passage of the prior
 /// model response that the user wants to attach to the next turn, with
 /// optional commentary. Field shapes are fixed by the project's
-/// F0-Annotate contract (TORNO fence + MOSAICO fence) — neither side
+/// F0-Annotate contract (PERISCÓPIO fence + MOSAICO fence) — neither side
 /// invents or renames. The wire shape is camelCase via serde.
 ///
 /// SAFETY NOTE (load-bearing): the `quote` field is **safe — it is a
@@ -1746,10 +1733,6 @@ mod tests {
     fn enums_serialize_as_expected() {
         // kebab-case
         assert_eq!(serde_json::to_string(&ThemeMode::Dark).unwrap(), "\"dark\"");
-        assert_eq!(
-            serde_json::to_string(&SettingsTab::TrustedCommands).unwrap(),
-            "\"trusted-commands\""
-        );
         // lowercase
         assert_eq!(
             serde_json::to_string(&AccessMode::Full).unwrap(),
