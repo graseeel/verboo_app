@@ -147,6 +147,22 @@ jobs:
           VERBOO_NODE_SIDECAR_CACHE: ${{ runner.temp }}/verboo-node-sidecars-cache
         run: node scripts/tauri/build-node-sidecar.mjs --target ${{ matrix.target }}
 
+      - name: Prepare macOS WebDriverAgent resource
+        if: runner.os == 'macOS'
+        run: node scripts/tauri/copy-wda-resource.mjs
+
+      - name: Prepare build-only externalBin placeholders
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="${{ matrix.target }}"
+          EXT=""
+          if [ "$TARGET" = "x86_64-pc-windows-msvc" ]; then EXT=".exe"; fi
+          mkdir -p src-tauri/binaries
+          for binary in verboo-in-chrome verboo-ios-simulator verboo-ffmpeg verboo-ffprobe verboo-whisper; do
+            : > "src-tauri/binaries/$binary-$TARGET$EXT"
+          done
+
       - name: Run signed release E2E (Unix)
         if: runner.os != 'Windows'
         run: |
