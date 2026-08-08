@@ -64,7 +64,7 @@ Use this app as an experimental community/independent desktop build. Expect bugs
 - **Media sidecars** — `verboo-ffmpeg`, `verboo-ffprobe`, and `verboo-whisper`
   are bundled per platform for video/audio understanding without external
   installs.
-- **Chrome extension** (`extensions/verboo-chrome`, v0.2.3) — bridges the
+- **Chrome extension** (`extensions/verboo-chrome`, v0.3.1) — bridges the
   browser's active tab into the desktop app via native messaging.
 
 ## Requirements
@@ -226,7 +226,7 @@ Use este app como um build experimental independente/comunitário. Espere bugs, 
 - **Sidecars de mídia** — `verboo-ffmpeg`, `verboo-ffprobe` e `verboo-whisper`
   são embarcados por plataforma para compreensão de vídeo e áudio sem
   instalação externa.
-- **Extensão do Chrome** (`extensions/verboo-chrome`, v0.2.3) — conecta a aba
+- **Extensão do Chrome** (`extensions/verboo-chrome`, v0.3.1) — conecta a aba
   ativa do navegador ao app desktop via native messaging.
 
 ### Requisitos

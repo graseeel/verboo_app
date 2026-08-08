@@ -6,7 +6,7 @@ You do **not** need npm or the Verboo CLI installed — the app ships the embedd
 ## Requirements
 
 - macOS 12 (Monterey) or newer
-- Apple Silicon Mac (M1, M2, M3, M4…) — Intel builds are not supported
+- Apple Silicon Mac (M1, M2, M3, M4…). Intel x64 builds are available as Beta — see [README.md](README.md) for the Intel installer.
 
 ## First launch (important step)
 
@@ -57,7 +57,7 @@ Você **não** precisa de npm nem do CLI global do Verboo — o app embarca o `c
 ### Requisitos
 
 - macOS 12 (Monterey) ou superior
-- Mac com Apple Silicon (M1, M2, M3, M4…) — builds Intel não são suportados
+- Mac com Apple Silicon (M1, M2, M3, M4…). Builds Intel x64 estão disponíveis como Beta — veja [README.md](README.md) para o instalador Intel.
 
 ### Primeira abertura (passo importante)
 

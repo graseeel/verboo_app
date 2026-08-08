@@ -2,8 +2,12 @@
 
 This folder documents the runtime contract for the distributed Apple Silicon build.
 
-The packaged app is designed to be self-contained. A user should not need Node.js,
-npm, Homebrew, or a globally installed `@verboo/code` CLI to launch the app.
+The packaged app requires Node.js (≥22.0.0) on the host. The installer does not
+ship a Node runtime — Node is resolved from Homebrew, nvm, fnm, Volta, or PATH.
+npm, Homebrew, and a globally installed `@verboo/code` CLI are not required.
+
+Note: `macos-arm64.json` in this same directory has always listed Node.js as
+`required: true` — the JSON contract was honest even when this prose was not.
 
 ## Supported Target
 
@@ -65,7 +69,9 @@ not asking users to clear quarantine manually.
 
 Esta pasta documenta o contrato de runtime do build distribuído para Apple Silicon.
 
-O app empacotado é projetado para ser autossuficiente: o usuário não precisa de Node.js, npm, Homebrew nem de um CLI `@verboo/code` global para abrir o app.
+O app empacotado requer Node.js (≥22.0.0) no host. O instalador não embarca runtime Node — o Node é resolvido via Homebrew, nvm, fnm, Volta ou PATH. npm, Homebrew e um CLI `@verboo/code` global não são necessários.
+
+Nota: o `macos-arm64.json` neste mesmo diretório sempre listou Node.js como `required: true` — o contrato JSON foi honesto mesmo quando este texto não.
 
 ### Alvo suportado
 
