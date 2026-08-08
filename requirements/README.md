@@ -2,12 +2,8 @@
 
 This folder documents the runtime contract for the distributed Apple Silicon build.
 
-The packaged app requires Node.js (≥22.0.0) on the host. The installer does not
-ship a Node runtime — Node is resolved from Homebrew, nvm, fnm, Volta, or PATH.
-npm, Homebrew, and a globally installed `@verboo/code` CLI are not required.
-
-Note: `macos-arm64.json` in this same directory has always listed Node.js as
-`required: true` — the JSON contract was honest even when this prose was not.
+The packaged app embeds Node.js 24.19.0. System Node, npm, Homebrew, and a
+globally installed `@verboo/code` CLI are not required and are never modified.
 
 ## Supported Target
 
@@ -21,7 +17,7 @@ The Tauri bundle ships:
 
 - The Rust backend (`src-tauri/`) compiled into the native binary.
 - The system WebView (WKWebView on macOS) for the frontend — no bundled Chromium.
-- The embedded `cli-package` (the Verboo CLI plus its Node dependency closure) under `src-tauri/resources/cli-package/`.
+- The verified Node.js sidecar (`verboo-node`) and its license resource.
 - The local terminal module through the Rust `portable-pty` crate (Tauri terminal sidecar).
 - The local terminal UI through `@xterm/xterm`.
 - Image/OCR support through `sharp` and `tesseract.js`.
@@ -42,11 +38,12 @@ On first launch per app version, the Rust backend validates:
 - macOS platform.
 - arm64 CPU architecture.
 - minimum macOS version.
-- embedded Verboo CLI availability (the `cli-package` resource is present and runnable on the system Node runtime).
+- embedded Node.js version, module ABI, and N-API contract.
 - required bundled native packages.
 
-Fatal failures show a blocking dialog and the app exits. Optional tool gaps are
-warnings only.
+The signed CLI is not part of the bundle. First launch downloads it from the
+official upstream release into app-data. Network/bootstrap failures leave the
+rest of the app available and disable only CLI-backed actions until retry.
 
 ## Manual Preflight
 
@@ -69,9 +66,7 @@ not asking users to clear quarantine manually.
 
 Esta pasta documenta o contrato de runtime do build distribuído para Apple Silicon.
 
-O app empacotado requer Node.js (≥22.0.0) no host. O instalador não embarca runtime Node — o Node é resolvido via Homebrew, nvm, fnm, Volta ou PATH. npm, Homebrew e um CLI `@verboo/code` global não são necessários.
-
-Nota: o `macos-arm64.json` neste mesmo diretório sempre listou Node.js como `required: true` — o contrato JSON foi honesto mesmo quando este texto não.
+O app empacotado embarca Node.js 24.19.0. Node do sistema, npm, Homebrew e um CLI `@verboo/code` global não são necessários nem modificados.
 
 ### Alvo suportado
 
@@ -79,7 +74,7 @@ Nota: o `macos-arm64.json` neste mesmo diretório sempre listou Node.js como `re
 
 ### Obrigatório dentro do bundle
 
-O bundle Tauri inclui: o backend Rust compilado no binário nativo; o WebView do sistema (WKWebView) para o frontend — sem Chromium embutido; o `cli-package` embutido (CLI Verboo + dependências Node) em `src-tauri/resources/cli-package/`; o terminal local via crate Rust `portable-pty` e UI via `@xterm/xterm`; suporte a imagem/OCR via `sharp` e `tesseract.js`.
+O bundle Tauri inclui: backend Rust; WebView do sistema; sidecar Node.js verificado; terminal local via `portable-pty` e `@xterm/xterm`; suporte a imagem/OCR via `sharp` e `tesseract.js`.
 
 ### Ferramentas opcionais do usuário
 
@@ -87,7 +82,7 @@ Git e Apple Command Line Tools são úteis quando o assistente trabalha em repos
 
 ### Primeira abertura
 
-A cada versão, o backend Rust valida na primeira abertura: plataforma macOS; arquitetura arm64; versão mínima do macOS; disponibilidade do CLI embutido; pacotes nativos obrigatórios. Falhas fatais mostram um diálogo bloqueante e o app encerra; lacunas opcionais são apenas avisos.
+A cada versão, o backend Rust valida plataforma, arquitetura, versão mínima do macOS, Node embarcado e sidecars nativos. O CLI não faz parte do bundle: é baixado do release oficial, autenticado e instalado nos dados do app. Falhas de rede deixam o restante do app disponível e desabilitam somente ações que dependem do CLI até uma nova tentativa.
 
 ### Preflight manual
 

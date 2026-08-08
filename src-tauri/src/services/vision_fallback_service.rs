@@ -149,10 +149,9 @@ const HELPER_CLI_TIMEOUT: Duration = Duration::from_secs(30);
 /// containing the image as a base64 data URL + a "describe this image" prompt.
 /// The CLI's text output is captured and returned as the description.
 ///
-/// Uses `CliSpawn` (the same resolver the main turn uses) to find the bundled
-/// CLI + Node runtime. This is critical — `cli_path::resolve()` only checks
-/// `VERBOO_CLI_PATH` and returns `None` in the packaged app, which would
-/// silently skip the fallback.
+/// Uses `CliSpawn` (the same resolver the main turn uses) to acquire the active
+/// signed CLI and embedded Node runtime. This prevents any packaged build from
+/// falling back to a global CLI.
 ///
 /// **Timeout**: if the CLI doesn't produce a result within `HELPER_CLI_TIMEOUT`
 /// (30s), the process is killed and an error is returned. The caller injects
@@ -281,10 +280,8 @@ pub fn describe_image_once_with_prompt(
         stdin_payload.len()
     );
 
-    // Use CliSpawn — the same resolver the main turn uses. This finds the
-    // bundled cli.mjs + Node runtime in the packaged app. Using
-    // `cli_path::resolve()` here would return None (no VERBOO_CLI_PATH in
-    // packaged builds) and silently skip the fallback.
+    // Use CliSpawn — the same resolver the main turn uses. This acquires an
+    // immutable lease for the active signed CLI and embedded Node runtime.
     let spawn = crate::services::cli_spawn::CliSpawn::new(&args);
     let mut cmd = spawn.command;
     cmd.stdin(Stdio::piped())

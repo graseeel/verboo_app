@@ -1,7 +1,7 @@
 {
   "bundle": {
     "resources": [
-      "resources/cli-package/",
+      "resources/node-runtime/",
       "resources/WebDriverAgent/"
     ]
   }

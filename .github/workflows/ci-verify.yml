@@ -152,71 +152,13 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Prepare bundled CLI resource (cli-package)
-        # tauri.conf.json declares resources/cli-package/ as the ONLY
-        # resource. src-tauri/resources/ is gitignored (.gitignore:33) —
-        # a fresh checkout has no such dir, and tauri_build's build.rs
-        # aborts on the FIRST missing resource ("resource path
-        # 'resources/cli-package' doesn't exist"). copy-cli-resource.mjs
-        # (the existing step from build:tauri-deps) creates it from the
-        # installed @verboo/code. fetch:tessdata is NOT included: it
-        # writes to src/renderer/public/tessdata/, a renderer public
-        # asset, not a tauri.conf.json resource — dragging it into CI
-        # would download ~30MB nobody needs.
-        run: node scripts/verify/copy-cli-resource.mjs
+      - name: Prepare verified embedded Node runtime
+        env:
+          VERBOO_NODE_SIDECAR_CACHE: ${{ runner.temp }}/verboo-node-sidecars-cache
+        run: node scripts/tauri/build-node-sidecar.mjs
 
-      - name: Smoke bundled CLI (--list-models, isolated HOME)
-        # F1-PROVIDERS: canário permanente da fronteira app<->CLI. Roda o
-        # bundle gerado acima com `--list-models` sob HOME isolado e sem
-        # credencial, e aceita SOMENTE os dois contratos conhecidos
-        # (medidos 2026-08-06: sandbox do Prumo + PRENSA, CLI 0.15.2):
-        #   1) JSON array com campo provider em todo modelo (CLI
-        #      autenticado — o shape consumido por provider_catalog.rs);
-        #   2) erro headless determinístico "Não autenticado no Verboo..."
-        #      com rc!=0 e stdout vazio (CLI sem credencial — a resposta
-        #      real no CI, que não tem sessão Verboo).
-        # Qualquer outra resposta (ERR_MODULE_NOT_FOUND de closure
-        # incompleta, JSON inválido, mensagem nova, rc inesperado) =
-        # fronteira mudou → o CI acusa antes do usuário.
-        shell: bash
-        run: |
-          set -uo pipefail
-          CLI="src-tauri/resources/cli-package/dist/cli.mjs"
-          test -f "$CLI" || { echo "cli.mjs ausente: $CLI"; exit 1; }
-          HOME_DIR="$(mktemp -d)"
-          ERR_FILE="$(mktemp)"
-          trap 'rm -rf "$HOME_DIR" "$ERR_FILE"' EXIT
-          OUT="$(HOME="$HOME_DIR" node "$CLI" --list-models 2>"$ERR_FILE")"
-          RC=$?
-          ERR="$(cat "$ERR_FILE")"
-          echo "rc=$RC"
-          if [ -n "$OUT" ]; then echo "--- stdout:"; printf '%s\n' "$OUT" | head -15; fi
-          if [ -n "$ERR" ]; then echo "--- stderr:"; printf '%s\n' "$ERR" | head -5; fi
-          # Contrato 1: saída é JSON array com campo provider em todo modelo.
-          if printf '%s' "$OUT" | node -e '
-            const fs = require("fs");
-            const data = fs.readFileSync(0, "utf8").trim();
-            if (!data) process.exit(1);
-            try {
-              const arr = JSON.parse(data);
-              if (!Array.isArray(arr)) process.exit(1);
-              for (const m of arr) {
-                if (typeof m?.provider !== "string" || !m.provider) process.exit(1);
-                if (typeof m?.id !== "string" || !m.id) process.exit(1);
-              }
-              process.exit(0);
-            } catch { process.exit(1); }
-          '; then
-            echo "OK: saída é JSON de modelos com campo provider"
-            exit 0
-          fi
-          # Contrato 2: erro headless determinístico sem credencial.
-          if [ "$RC" -ne 0 ] && [ -z "$OUT" ] && printf '%s' "$ERR" | grep -q "autenticado no Verboo"; then
-            echo "OK: fronteira sem credencial preservada (erro headless determinístico)"
-            exit 0
-          fi
-          echo "FRONTEIRA MUDOU: o CLI empacotado não responde nenhum contrato conhecido"
-          exit 1
+      - name: Verify CLI update ownership boundary
+        run: npm run test:cli-update-ownership
 
       - name: Build renderer (tsc + vite)
         # tsc --noEmit gates type errors; vite produces dist-renderer/.

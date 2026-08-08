@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
@@ -385,9 +385,8 @@ impl TurnService {
         }
 
         // Describe each image attachment and inject as extracted_text.
-        // `describe_image` uses `CliSpawn` internally to find the bundled CLI
-        // + Node runtime — same resolver as the main turn. No need to resolve
-        // cli_path separately (which would return None in packaged builds).
+        // `describe_image` uses `CliSpawn` internally to acquire the active
+        // signed CLI + embedded Node runtime — same resolver as the main turn.
         //
         // Contract for the FE: once an attachment reaches this loop and
         // succeeds, its `extracted_text` is the authoritative image
@@ -2027,13 +2026,6 @@ fn infer_terminal_failure_category(normalized: &str) -> &'static str {
     } else {
         "process_error"
     }
-}
-
-/// Resolve the `verboo` CLI path: env override first, then PATH.
-/// Follow-up: bundled CLI via Node sidecar for packaged builds.
-#[allow(dead_code)]
-fn resolve_cli_path() -> String {
-    crate::services::cli_path::resolve().unwrap_or_else(|| "verboo".to_string())
 }
 
 /// Builds the stream-json stdin payload for a turn with image attachments.
@@ -3901,6 +3893,7 @@ fn snippet(value: Option<&str>, max_len: usize) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::process::Command;
 
     #[test]
     fn edit_stats_line_count_handles_trailing_newline() {

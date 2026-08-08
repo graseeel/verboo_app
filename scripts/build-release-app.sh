@@ -193,24 +193,6 @@ if [[ "$(uname -s)" == "Darwin" && "${VERBOO_SKIP_LOCAL_SIGN:-0}" != "1" ]]; the
       echo "    Identidade: $SIGNING_IDENTITY"
       echo "    Alvo: $APP_PATH"
 
-      # Sign embedded Mach-O binaries first (matching CI order — innermost out).
-      # Tauri already signs the main executable, but embedded CLI Mach-Os in
-      # resources/ need explicit signing for --deep --strict to pass.
-      RESOURCE_ROOT="$APP_PATH/Contents/Resources/resources/cli-package"
-      if [[ -d "$RESOURCE_ROOT" ]]; then
-        SIGNED_MACHO_COUNT=0
-        while IFS= read -r -d '' candidate; do
-          FILE_DESCRIPTION="$(file -b "$candidate")"
-          if [[ "$FILE_DESCRIPTION" == *"Mach-O"* ]]; then
-            codesign --force --options runtime --timestamp \
-              --sign "$SIGNING_IDENTITY" \
-              "$candidate" 2>&1 | sed 's/^/    /'
-            SIGNED_MACHO_COUNT=$((SIGNED_MACHO_COUNT + 1))
-          fi
-        done < <(find "$RESOURCE_ROOT" -type f -print0)
-        echo "    Assinados $SIGNED_MACHO_COUNT binários Mach-O embutidos."
-      fi
-
       # Sign the .app bundle itself (Tauri may have already signed the main
       # executable; --force overwrites with our Developer ID signature).
       codesign --force --options runtime --timestamp \

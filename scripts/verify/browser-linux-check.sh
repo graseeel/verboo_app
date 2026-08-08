@@ -2,10 +2,9 @@
 # Verificação de compilação e testes do adaptador Linux WebKitGTK dentro de
 # container Ubuntu, sem instalar toolchain nativo no runner macOS.
 #
-# DEFEITO 1 ORIGINAL — mount em /workspace quebra symlinks absolutos:
-#   src-tauri/resources/cli-package/node_modules/@types/node tem symlink
-#   absoluto para o path real do repo, que dentro do container não existe.
-#   FIX: monta no PRÓPRIO path ($REPO:$REPO), preservando a resolução.
+# DEFEITO 1 ORIGINAL — mount em /workspace quebrava symlinks absolutos de
+# dependências locais. FIX: monta no PRÓPRIO path ($REPO:$REPO), preservando
+# a resolução sem acoplar o gate ao layout interno de um pacote.
 #
 # DEFEITO 2 ORIGINAL — cargo check não compila testes:
 #   Escrevemos testes de contrato em browser_platform/ e o gate nunca os

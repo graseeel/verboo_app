@@ -2,7 +2,7 @@
 
 Verboo Code Desktop is an independent desktop client for working with the Verboo Code CLI from a focused app interface. It wraps the CLI-oriented workflow with project navigation, chat history, model selection, skill selection, permission controls, profile views, feedback reporting, and a desktop shell that runs on macOS, Windows, and Linux.
 
-The desktop shell is built with **Tauri v2** (Rust backend + system WebView frontend) and ships a bundled `cli-package` sidecar (the `@verboo/code` CLI, which requires Node.js ≥22 on the host).
+The desktop shell is built with **Tauri v2** (Rust backend + system WebView frontend). It embeds Node.js and installs the official signed CLI independently under the operating system's app-data directory.
 
 Official CLI upstream: [verbeux-ai/code](https://github.com/verbeux-ai/code).
 
@@ -24,12 +24,10 @@ Official CLI upstream: [verbeux-ai/code](https://github.com/verbeux-ai/code).
 | Windows | x64 | Beta | NSIS `.exe` |
 | Linux | x64 | Beta | AppImage, `.deb`, `.rpm` |
 
-The packaged bundle ships the Rust backend, the embedded `cli-package` (the
-Verboo CLI plus its Node dependency closure), and the image/OCR dependencies it
-needs to start. The bundled CLI is JavaScript and runs on a system Node.js
-runtime (≥22.0.0). The macOS, Linux, and Windows installers do not ship a Node
-runtime — the app resolves Node from the system (Homebrew, nvm, fnm, Volta, or
-PATH).
+The packaged bundle ships the Rust backend, a verified Node.js 24.19.0 sidecar,
+and the image/OCR dependencies it needs to start. On first launch, the app
+downloads the latest compatible CLI from the official upstream release,
+verifies its signed manifest and archive digest, and installs it under app-data.
 
 For per-platform setup, known issues, and troubleshooting, see
 [SETUP.md](SETUP.md).
@@ -44,7 +42,8 @@ Use this app as an experimental community/independent desktop build. Expect bugs
 
 ## What It Does
 
-- Runs the bundled Verboo CLI (`cli-package` sidecar) from a Tauri v2 desktop app with a Rust backend.
+- Runs a signed, versioned Verboo CLI through the app-owned Node.js sidecar.
+- Detects CLI updates independently from app updates, while presenting one update card and one restart flow.
 - Detects Verboo CLI authentication or a valid Verboo API key before unlocking the app.
 - Lists models available to the authenticated Verboo account when possible.
 - Supports model selection and per-model context-window configuration.
@@ -75,20 +74,18 @@ Use this app as an experimental community/independent desktop build. Expect bugs
   - Linux x64 with glibc 2.28+ (Ubuntu 20.04+, Debian 11+, Fedora 35+)
 - Internet access and a valid Verboo session or API key.
 
-The packaged bundle ships the Rust backend, the embedded `cli-package` (Verboo
-CLI + Node dependency closure), and the image/OCR dependencies it needs to
-start. The bundled CLI is JavaScript and runs on a system Node.js (≥22.0.0).
-
-npm, Homebrew, and a global `@verboo/code` CLI are not required to run the
-packaged app. The app resolves Node from the system (Homebrew, nvm, fnm,
-Volta, or PATH) and leaves user-installed Node untouched. If the user already
-has newer compatible versions of those tools, the app leaves them untouched.
+Node.js, npm, Homebrew, and a global `@verboo/code` CLI are not required. The
+app embeds its own Node runtime and never installs, replaces, or removes the
+user's system Node or global CLI. Internet access is required for the first
+signed CLI bootstrap; the rest of the app remains available if bootstrap is
+temporarily offline.
 
 Git is optional, but useful when the assistant works inside a real repository.
 
 On first launch per app version, Verboo Code runs a requirements check. It
-blocks only fatal package/platform problems: missing embedded CLI, or missing
-bundled native modules. Optional tools such as Git are warnings only.
+blocks only fatal package/platform problems such as a missing embedded Node or
+native sidecar. A CLI bootstrap/network failure disables agent actions until a
+retry succeeds, without falling back to an unverified global CLI.
 
 See [requirements/README.md](requirements/README.md) for the full runtime
 contract.
@@ -124,16 +121,15 @@ Build the renderer (TypeScript check + Vite bundle):
 npm run build:renderer
 ```
 
-Build the full Tauri bundle (renderer + Rust + cli-package copy):
+Build the full Tauri bundle (renderer + Rust + embedded runtimes):
 
 ```bash
 npm run tauri:build
 ```
 
-The `tauri:build` script runs `build:tauri-deps` (dedup the cli-package, copy
-it into `src-tauri/resources/cli-package/`, and build the renderer) and then
-`cargo +1.89.0 tauri build`. The resulting `.app`/`.dmg`/`.exe`/`.AppImage`/`.deb`/`.rpm`
-artifacts land in `src-tauri/target/release/bundle/`.
+The `tauri:build` script prepares app-owned resources, builds the renderer and
+verified Node/media sidecars, then runs `cargo +1.89.0 tauri build`. The app
+bundle deliberately contains no CLI payload.
 
 ### GitHub Releases
 
@@ -148,6 +144,9 @@ publishes:
 
 The Tauri updater downloads a per-release `latest.json` manifest and verifies
 each update bundle against the public key in `src-tauri/tauri.conf.json`.
+Separately, the CLI updater accepts only Minisign-authenticated manifests and
+matching archive digests published by `verbeux-ai/code`; it can write only to
+the CLI directory under app-data.
 
 > **macOS signing status:** Current builds are ad-hoc signed. They can be tested
 > locally, but macOS Gatekeeper and update installation are significantly more
@@ -191,7 +190,7 @@ The license applies to this repository's source code. It does not grant ownershi
 
 Verboo Code Desktop é um cliente desktop independente para trabalhar com o CLI do Verboo Code em uma interface focada. Ele envolve o fluxo orientado por CLI com navegação de projetos, histórico de chats, seleção de modelos, seleção de habilidades, controles de permissão, perfil, envio de feedback e uma experiência desktop amigável para macOS.
 
-O shell desktop é construído com **Tauri v2** (backend Rust + WebView nativo do sistema) e embarca um sidecar `cli-package` (o CLI `@verboo/code`, que precisa de Node.js ≥22 no host).
+O shell desktop é construído com **Tauri v2** (backend Rust + WebView nativo do sistema), embarca o próprio Node.js e instala o CLI oficial assinado separadamente na pasta de dados do app.
 
 CLI oficial usado como upstream: [verbeux-ai/code](https://github.com/verbeux-ai/code).
 
@@ -205,7 +204,8 @@ Use este app como um build experimental independente/comunitário. Espere bugs, 
 
 ### O que ele faz
 
-- Executa o CLI Verboo embutido (sidecar `cli-package`) a partir de um app Tauri v2 com backend Rust.
+- Executa um CLI Verboo assinado e versionado usando o Node.js embarcado pelo app.
+- Busca atualizações do CLI independentemente das atualizações do app, com um único card e um único reinício.
 - Detecta autenticação do CLI Verboo ou uma chave de API Verboo válida antes de liberar o app.
 - Lista os modelos disponíveis para a conta autenticada quando possível.
 - Suporta seleção de modelo e configuração de janela de contexto por modelo.
@@ -235,7 +235,7 @@ Use este app como um build experimental independente/comunitário. Espere bugs, 
 - Mac Apple Silicon arm64 (build Intel x64 disponível como beta).
 - Acesso à internet e uma sessão Verboo válida ou chave de API.
 
-O bundle Tauri embarca o backend Rust, o `cli-package` (CLI Verboo + closure de dependências Node) e as dependências de imagem/OCR necessárias para iniciar. O CLI embutido é JavaScript e roda em um Node.js de sistema (≥22.0.0) — npm, Homebrew e um CLI global `@verboo/code` não são necessários. O app resolve o Node pelo sistema (Homebrew, nvm, fnm, Volta ou PATH) e não altera Node instalado pelo usuário. Se o usuário já tiver versões mais recentes compatíveis dessas ferramentas, o app não altera essas instalações.
+O bundle Tauri embarca o backend Rust, Node.js 24.19.0 verificado e as dependências nativas do app. Node.js, npm, Homebrew e um CLI global `@verboo/code` não são necessários. Na primeira abertura, o app baixa o CLI compatível do release oficial, verifica assinatura e hash e o instala nos dados do app. Instalações de Node e CLI feitas pelo usuário permanecem intocadas.
 
 Git e Apple Command Line Tools são opcionais, mas úteis quando o assistente trabalha dentro de um repositório real:
 
@@ -244,7 +244,7 @@ git --version
 xcode-select -p
 ```
 
-No primeiro início por versão do app, o Verboo Code roda uma checagem de requisitos. Ele bloqueia apenas problemas fatais de pacote/plataforma: não ser macOS, não ser arm64, versão de macOS incompatível, CLI embutido ausente ou módulos nativos empacotados ausentes. Ferramentas opcionais como Git geram apenas avisos.
+No primeiro início por versão do app, o Verboo Code roda uma checagem de requisitos. Ele bloqueia apenas problemas fatais de pacote/plataforma, como Node ou sidecar nativo embarcado ausente. Uma falha de rede no bootstrap do CLI desabilita temporariamente as ações do agente e permite tentar novamente, sem usar um CLI global não verificado.
 
 Veja [requirements/README.md](requirements/README.md) para o contrato completo de runtime.
 
@@ -277,16 +277,15 @@ Build do renderer (checagem TypeScript + bundle Vite):
 npm run build:renderer
 ```
 
-Build do bundle Tauri completo (renderer + Rust + cópia do cli-package):
+Build do bundle Tauri completo (renderer + Rust + runtimes embarcados):
 
 ```bash
 npm run tauri:build
 ```
 
-O script `tauri:build` roda `build:tauri-deps` (dedup do cli-package, cópia
-para `src-tauri/resources/cli-package/` e build do renderer) e depois
-`cargo +1.89.0 tauri build`. Os artefatos `.app`/`.dmg`/`.exe`/`.AppImage`/`.deb`/`.rpm`
-ficam em `src-tauri/target/release/bundle/`.
+O script `tauri:build` prepara apenas recursos pertencentes ao app, compila o
+renderer e os sidecars verificados e depois roda `cargo +1.89.0 tauri build`.
+O bundle do app não contém payload do CLI.
 
 ### GitHub Releases
 
@@ -301,6 +300,9 @@ publica:
 
 O updater do Tauri baixa um manifesto `latest.json` por release e verifica cada
 bundle de atualização contra a chave pública em `src-tauri/tauri.conf.json`.
+Separadamente, o updater do CLI aceita apenas manifestos autenticados por
+Minisign e hashes publicados pelo `verbeux-ai/code`, escrevendo somente na
+pasta do CLI dentro dos dados do app.
 
 > **Status de assinatura macOS:** Os builds atuais são assinados como ad-hoc.
 > Eles funcionam para teste local, mas o Gatekeeper e a instalação de

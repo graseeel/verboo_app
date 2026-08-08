@@ -139,11 +139,12 @@ fn missing_spawn(arguments: &[std::ffi::OsString]) -> CliSpawn {
 #[cfg(debug_assertions)]
 fn development_override_pair() -> Result<Option<(PathBuf, PathBuf)>, String> {
     let cli = nonempty_env_path("VERBOO_CLI_PATH");
-    let mut node = nonempty_env_path("VERBOO_NODE_PATH");
+    let node = nonempty_env_path("VERBOO_NODE_PATH");
     #[cfg(test)]
-    if cli.is_some() && node.is_none() {
-        node = node_runtime::resolve_test_node_on_path();
-    }
+    let node = node.or_else(|| {
+        cli.as_ref()
+            .and_then(|_| node_runtime::resolve_test_node_on_path())
+    });
     match (node, cli) {
         (None, None) => Ok(None),
         (Some(node), Some(cli)) => {

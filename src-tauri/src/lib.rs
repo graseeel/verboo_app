@@ -774,9 +774,8 @@ async fn write_project_instruction_file(
     .map_err(|e| format!("Falha ao salvar instrução do projeto: {e}"))?
 }
 
-/// Returns the version of the bundled `@verboo/code` package (cli-package).
-/// Returns `"unknown"` if the package.json can't be read (e.g., in dev
-/// without a full bundle, or after a broken install).
+/// Returns the active signed CLI version managed under the app-data directory.
+/// The command name is retained for renderer API compatibility.
 #[tauri::command]
 fn get_bundled_cli_version() -> String {
     crate::services::cli_spawn::bundled_cli_version().unwrap_or_else(|| "unknown".to_string())

@@ -65,30 +65,26 @@ else
   print_fail "App executable not found or not executable."
 fi
 
-# Tauri bundles the CLI as a resource under
-# Contents/Resources/resources/cli-package/dist/cli.mjs (copied by
-# scripts/verify/copy-cli-resource.mjs at build time). The app spawns it via
-# system Node — it does NOT use ELECTRON_RUN_AS_NODE (that was Electron-only).
-CLI_PATH="$APP_PATH/Contents/Resources/resources/cli-package/dist/cli.mjs"
-if [[ -f "$CLI_PATH" ]]; then
-  print_pass "Embedded Verboo CLI entrypoint found: $CLI_PATH"
+# Node belongs to the app bundle. The signed CLI is intentionally absent from
+# the bundle and is installed under app-data after its upstream manifest and
+# archive digest are verified.
+NODE_PATH="$APP_PATH/Contents/MacOS/verboo-node"
+if [[ -x "$NODE_PATH" ]]; then
+  print_pass "Embedded Node runtime found: $NODE_PATH"
+  NODE_CONTRACT="$("$NODE_PATH" -p '`${process.versions.node}/${process.versions.modules}/${process.versions.napi}`' 2>&1)"
+  if [[ "$NODE_CONTRACT" == "24.19.0/137/10" ]]; then
+    print_pass "Embedded Node runtime contract: $NODE_CONTRACT"
+  else
+    print_fail "Embedded Node runtime contract mismatch: $NODE_CONTRACT"
+  fi
 else
-  print_fail "Embedded Verboo CLI not found at expected Tauri resource path: $CLI_PATH"
+  print_fail "Embedded Node runtime not found: $NODE_PATH"
 fi
 
-# Verify the bundled CLI actually runs under system Node. The Tauri app binary
-# is Rust, not Electron, so ELECTRON_RUN_AS_NODE does not apply. We require a
-# system Node on PATH (the same runtime the app uses at startup).
-if [[ -f "$CLI_PATH" ]]; then
-  if command -v node >/dev/null 2>&1; then
-    if CLI_VERSION="$(node "$CLI_PATH" --version 2>&1)"; then
-      print_pass "Embedded Verboo CLI runs: $CLI_VERSION"
-    else
-      print_fail "Embedded Verboo CLI failed: $CLI_VERSION"
-    fi
-  else
-    print_warn "System Node not on PATH; cannot verify embedded CLI runs. The app requires Node at runtime."
-  fi
+if find "$APP_PATH/Contents/Resources" -path '*cli-package*' -print -quit 2>/dev/null | grep -q .; then
+  print_fail "The app bundle still contains the obsolete cli-package resource."
+else
+  print_pass "App bundle contains no CLI payload."
 fi
 
 if /usr/bin/xattr -p com.apple.quarantine "$APP_PATH" >/dev/null 2>&1; then
@@ -126,16 +122,10 @@ else
   print_warn "Apple Command Line Tools are not installed. Build/git tasks may be limited."
 fi
 
-if command -v node >/dev/null 2>&1; then
-  print_pass "System Node is present: $(node --version)"
-else
-  print_warn "System Node is absent. The packaged Tauri app requires Node on PATH to run the embedded CLI."
-fi
-
 if command -v verboo >/dev/null 2>&1; then
-  print_pass "Global Verboo CLI is present but not required: $(command -v verboo)"
+  print_pass "Global Verboo CLI is present and remains untouched: $(command -v verboo)"
 else
-  print_pass "Global Verboo CLI is absent; packaged app uses embedded CLI."
+  print_pass "Global Verboo CLI is absent; the app manages its signed CLI under app-data."
 fi
 
 printf '\nSummary: %s failure(s), %s warning(s).\n' "$FAILURES" "$WARNINGS"

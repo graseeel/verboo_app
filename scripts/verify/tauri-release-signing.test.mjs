@@ -99,7 +99,7 @@ test("notarization key exists only for macOS build steps and is always removed",
   assert.match(workflow, /rm -f "\$\{APPLE_API_KEY_PATH:-\}"/);
 });
 
-test("embedded CLI Mach-O binaries receive Developer ID hardened signatures", async () => {
+test("embedded Node keeps a valid signature and native-module entitlement", async () => {
   const workflow = await readWorkflowText(workflowPath);
   const prepareStart = workflow.indexOf(
     "- name: Prepare Apple notarization credentials",
@@ -129,26 +129,22 @@ test("embedded CLI Mach-O binaries receive Developer ID hardened signatures", as
     'security list-keychains -d user -s "$KEYCHAIN_PATH"',
   );
   const identityIndex = prepareStep.indexOf("security find-identity");
-  const codesignIndex = prepareStep.indexOf("codesign --force");
   assert.ok(
     partitionIndex < searchListIndex &&
-      searchListIndex < identityIndex &&
-      identityIndex < codesignIndex,
-    "the prepared identity must enter the user search list before codesign",
+      searchListIndex < identityIndex,
+    "the prepared identity must enter the user search list before the build",
   );
-  assert.match(workflow, /find "\$RESOURCE_ROOT" -type f -print0/);
-  assert.match(workflow, /FILE_DESCRIPTION=.*file -b "\$candidate"/);
-  assert.match(workflow, /FILE_DESCRIPTION.*Mach-O/);
-  assert.match(workflow, /EXPECTED_MACHO_ARCH/);
+  assert.match(workflow, /NODE_PATH="\$APP_PATH\/Contents\/MacOS\/verboo-node"/);
+  assert.match(workflow, /codesign --verify --strict --verbose=2 "\$NODE_PATH"/);
   assert.match(
     workflow,
-    /FILE_DESCRIPTION.*EXPECTED_MACHO_ARCH[\s\S]*?exit 1/,
+    /codesign -d --entitlements - --xml "\$NODE_PATH"/,
   );
   assert.match(
     workflow,
-    /codesign --force --options runtime --timestamp[\s\S]*?"\$candidate"/,
+    /com\.apple\.security\.cs\.disable-library-validation/,
   );
-  assert.doesNotMatch(workflow, /ripgrep|libvips|sharp-darwin/);
+  assert.doesNotMatch(workflow, /resources\/cli-package|copy-cli-resource/);
 });
 
 test("macOS target architectures use matching native runners", async () => {

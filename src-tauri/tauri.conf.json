@@ -55,7 +55,6 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/cli-package/",
       "resources/node-runtime/"
     ],
     "externalBin": [
