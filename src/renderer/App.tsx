@@ -781,7 +781,7 @@ export function App() {
   )
   const mainQuestionPrompt = promptForConversation(Object.values(questionPrompts), activeConversationId)
   const sideQuestionPrompt = promptForConversation(Object.values(questionPrompts), sideChat?.conversation.id)
-  const shouldShowLogin = !noticeAccepted || !entryUnlocked
+  const shouldShowLogin = !entryUnlocked
   // When peeking (hidden + hover), the sidebar column expands visually to
   // the user's last expanded width — but the persisted mode stays 'hidden'.
   // During the leave fade (sidebarPeekLeaving), the column collapses to 0
@@ -1811,6 +1811,7 @@ export function App() {
   async function validateAccess(forceRefresh: boolean, allowRememberedSession = userSettings.staySignedIn): Promise<boolean> {
     setAuthChecking(true)
     setAuthError(undefined)
+    setAuthErrorDetail(undefined)
 
     try {
       const [credentialStatus, cliStatus, modelDiscovery] = await Promise.all([
@@ -1847,14 +1848,20 @@ export function App() {
       if (!allowRememberedSession) forgetRememberedAuthSession()
       setAuthError(authAccessMessage(modelDiscovery.error, cliStatus.error, t))
       return false
+    } catch (error) {
+      // T5: a rejected Rust command (Result<_, String> → Tauri invoke
+      // rejects) used to bypass both setAuthError setters above — the
+      // try body aborted before them — leaving the login surface mute
+      // and "Verificando sessão local…" stuck forever (field photo M4).
+      // Surface a friendly headline and stash the raw cause behind a
+      // details toggle. Never re-throw: the caller (checkExistingAuth)
+      // owns the status-message lifecycle.
+      setAuthError(t('login.sessionCheckFailed'))
+      setAuthErrorDetail(error instanceof Error ? error.message : String(error))
+      return false
     } finally {
       setAuthChecking(false)
     }
-  }
-
-  function acceptDevelopmentNotice() {
-    window.localStorage.setItem(DEVELOPMENT_NOTICE_KEY, 'true')
-    setNoticeAccepted(true)
   }
 
   async function updateUserSettings(patch: Partial<UserSettings>) {
@@ -5689,9 +5696,9 @@ export function App() {
       <I18nProvider language={userSettings.language}>
         <LoginScreen
           language={userSettings.language}
-          noticeAccepted={noticeAccepted}
           checking={authChecking}
           authError={authError}
+          authErrorDetail={authErrorDetail}
           credentials={credentials}
           cliAuth={cliAuth}
           modelResult={modelResult}
@@ -5703,7 +5710,6 @@ export function App() {
           onSaveApiKey={saveApiKey}
           onLanguageChange={updateLanguage}
           onStaySignedInChange={updateStaySignedIn}
-          onAcceptNotice={acceptDevelopmentNotice}
           onOpenFeedback={() => setFeedbackOpen(true)}
           onLoginComplete={(event) => {
             // A1: the CLI reported a successful login. Re-validate

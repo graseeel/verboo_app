@@ -196,7 +196,6 @@ async function sendSideChatMessage() {
 
 beforeEach(() => {
   window.localStorage.clear()
-  window.localStorage.setItem('verboo:development-notice-accepted', 'true')
   vi.stubGlobal('ResizeObserver', TestResizeObserver)
   vi.stubGlobal('requestAnimationFrame', () => 1)
   vi.stubGlobal('matchMedia', () => ({

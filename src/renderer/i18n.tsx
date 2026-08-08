@@ -32,15 +32,7 @@ const enUS: Record<string, string> = {
   'language.short.en-US': 'EN',
   'language.short.pt-BR': 'PT',
 
-  'login.developmentAria': 'Development notice',
-  'login.importantNotice': 'Important notice',
-  'login.developmentTitle': 'Development build',
-  'login.developmentBody': 'This app is under development and is not an official build created by Verboo. It uses your Verboo account, CLI, or API key only to reproduce the Verboo Code desktop experience.',
-  'login.warningTitle': 'Use it knowing that bugs or failures may exist.',
-  'login.warningBody': 'If you find any issue, strange behavior, or security concern, contact Gabriel directly before distributing or relying on this app for critical work.',
-  'login.supportContacts': 'Support contacts',
   'login.reportIssue': 'Report issue',
-  'login.acceptNotice': 'I understand and want to continue',
   'login.mainAria': 'Sign in to Verboo Code',
   'login.title': 'Sign in to Verboo Code',
   'login.body': 'The app stays locked until it validates a real Verboo CLI session or a valid API key. Validation must return the models available in your plan.',
@@ -54,7 +46,7 @@ const enUS: Record<string, string> = {
   'login.apiKeyLabel': 'Verboo API key',
   'login.apiKeyPlaceholder': 'Paste your API key',
   'login.apiKeyConfigured': 'Configured ({hint})',
-  'login.apiKeyHelp': 'The key is encrypted locally. The app only unlocks if it can list models available in your Verboo account. In unsigned beta builds, API key mode can reduce macOS Secure Store prompts compared with CLI token access.',
+  'login.apiKeyHelp': 'The key is encrypted locally. The app only unlocks if it can list models available in your Verboo account.',
   'login.openingCli': 'Opening Verboo login through the CLI...',
   // A1: the CLI login is event-driven (login:event channel) — there is
   // no "cliStarted" state anymore, progress is awaitingBrowser →
@@ -74,6 +66,7 @@ const enUS: Record<string, string> = {
   'login.checkingSession': 'Checking local Verboo session...',
   'login.sessionValid': 'Verboo session validated.',
   'login.sessionInvalid': 'No valid Verboo session was found.',
+  'login.sessionCheckFailed': 'Could not verify your Verboo session.',
 
   'sidebar.nav': 'Main navigation',
   'sidebar.newChat': 'New chat',
@@ -96,7 +89,6 @@ const enUS: Record<string, string> = {
   'sidebar.archivedChats': 'Archived chats',
   'sidebar.helpFeedback': 'Help and feedback',
   'sidebar.logout': 'Sign out',
-  'sidebar.devBuild': 'Independent development build',
   'sidebar.cliConnected': 'CLI connected',
   'sidebar.noApiKey': 'No API key',
   'sidebar.planUnavailable': 'Plan unavailable',
@@ -1373,15 +1365,7 @@ const ptBR: Record<string, string> = {
   'language.short.en-US': 'EN',
   'language.short.pt-BR': 'PT',
 
-  'login.developmentAria': 'Aviso de desenvolvimento',
-  'login.importantNotice': 'Aviso importante',
-  'login.developmentTitle': 'Versão em desenvolvimento',
-  'login.developmentBody': 'Este aplicativo está em desenvolvimento e não é uma versão oficial criada pela Verboo. Ele usa sua conta, CLI ou chave de API Verboo apenas para tentar reproduzir a experiência desktop do Verboo Code.',
-  'login.warningTitle': 'Use sabendo que podem existir bugs ou falhas.',
-  'login.warningBody': 'Se encontrar qualquer problema, comportamento estranho ou falha de segurança, fale diretamente com Gabriel antes de distribuir ou depender deste app em trabalho crítico.',
-  'login.supportContacts': 'Contatos para suporte',
   'login.reportIssue': 'Reportar problema',
-  'login.acceptNotice': 'Entendi e quero continuar',
   'login.mainAria': 'Entrar no Verboo Code',
   'login.title': 'Entrar no Verboo Code',
   'login.body': 'O app fica bloqueado até validar uma sessão real do CLI Verboo ou uma chave de API válida. A validação precisa retornar modelos disponíveis para o seu plano.',
@@ -1395,7 +1379,7 @@ const ptBR: Record<string, string> = {
   'login.apiKeyLabel': 'Chave de API Verboo',
   'login.apiKeyPlaceholder': 'Cole sua chave de API',
   'login.apiKeyConfigured': 'Configurada ({hint})',
-  'login.apiKeyHelp': 'A chave fica criptografada localmente. O app só libera o uso se ela conseguir listar os modelos disponíveis na sua conta Verboo. Em builds beta sem assinatura, usar chave API pode reduzir avisos do Secure Store do macOS em comparação ao token do CLI.',
+  'login.apiKeyHelp': 'A chave fica criptografada localmente. O app só libera o uso se ela conseguir listar os modelos disponíveis na sua conta Verboo.',
   'login.openingCli': 'Abrindo login do Verboo pelo CLI...',
   // A1: o login pelo CLI é guiado por evento (canal login:event) — não
   // existe mais estado "cliStarted"; o progresso é awaitingBrowser →
@@ -1415,6 +1399,7 @@ const ptBR: Record<string, string> = {
   'login.checkingSession': 'Verificando sessão local do Verboo...',
   'login.sessionValid': 'Sessão Verboo validada.',
   'login.sessionInvalid': 'Nenhuma sessão Verboo válida foi encontrada.',
+  'login.sessionCheckFailed': 'Não foi possível verificar sua sessão do Verboo.',
 
   'sidebar.nav': 'Navegação principal',
   'sidebar.newChat': 'Novo chat',
@@ -1437,7 +1422,6 @@ const ptBR: Record<string, string> = {
   'sidebar.archivedChats': 'Chats arquivados',
   'sidebar.helpFeedback': 'Ajuda e feedback',
   'sidebar.logout': 'Sair',
-  'sidebar.devBuild': 'Versão independente em desenvolvimento',
   'sidebar.cliConnected': 'CLI conectado',
   'sidebar.noApiKey': 'Sem chave de API',
   'sidebar.planUnavailable': 'Plano indisponível',
