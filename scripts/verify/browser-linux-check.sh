@@ -244,7 +244,26 @@ docker run --rm \
   -e CARGO_TARGET_DIR=/target \
   -w "$REPO" \
   "$IMAGE" \
-  cargo test --locked --manifest-path src-tauri/Cargo.toml --lib 2>&1 | tee "$TEST_OUTPUT"
+  bash -c '
+set -euo pipefail
+
+# generate_context! validates frontendDist even though this gate exercises only
+# the native crate. Keep the native check self-contained without rebuilding the
+# renderer (covered by its own three-OS matrix) or leaving a generated artifact.
+FRONTEND_DIST_CREATED=0
+if [ ! -d dist-renderer ]; then
+  mkdir -p dist-renderer
+  FRONTEND_DIST_CREATED=1
+fi
+cleanup_frontend_dist() {
+  if [ "$FRONTEND_DIST_CREATED" -eq 1 ]; then
+    rmdir dist-renderer || true
+  fi
+}
+trap cleanup_frontend_dist EXIT
+
+cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+' 2>&1 | tee "$TEST_OUTPUT"
 TEST_EXIT="${PIPESTATUS[0]}"
 set -e
 # Propagate cargo test exit first — a non-zero exit means compilation

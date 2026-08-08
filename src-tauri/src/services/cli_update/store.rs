@@ -549,7 +549,7 @@ fn process_may_be_alive(pid: u32) -> bool {
     let mut exit_code = 0_u32;
     let success = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
     unsafe { CloseHandle(handle) };
-    success == 0 || exit_code == STILL_ACTIVE
+    success == 0 || exit_code == STILL_ACTIVE as u32
 }
 
 #[cfg(not(any(unix, windows)))]

@@ -59,5 +59,7 @@ test('cross-platform Rust gates prepare every required external runtime', () => 
     linuxBrowserGate,
     /build-node-sidecar\.mjs --target "\$TRIPLE"/,
   )
+  assert.match(linuxBrowserGate, /if \[ ! -d dist-renderer \]/)
+  assert.match(linuxBrowserGate, /trap cleanup_frontend_dist EXIT/)
   assert.doesNotMatch(linuxBrowserGate, /DARWIN_COUNT_BEFORE[^\n]*-ne\s+\d+/)
 })

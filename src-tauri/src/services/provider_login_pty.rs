@@ -890,6 +890,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         }
     }
 
+    #[cfg(unix)]
     fn process_alive(pid: i32) -> bool {
         unsafe { libc::kill(pid, 0) == 0 }
     }
@@ -1710,6 +1711,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         clear_fake_cli();
     }
 
+    #[cfg(unix)]
     #[test]
     fn cancel_kills_the_whole_process_group_no_orphans() {
         let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
