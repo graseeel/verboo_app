@@ -221,6 +221,18 @@ fn read_credentials_from_store() -> Option<CliOAuthCredentials> {
 /// store per OS. This is the SINGLE chokepoint — all callers go through
 /// here, so Windows DPAPI is tried before the plaintext fallback.
 pub(crate) fn read_credentials_blob() -> Option<Value> {
+    // Test hook shared by every platform. Keeping it above the dispatch
+    // makes provider-login tests independent from the machine's real store.
+    #[cfg(test)]
+    if let Ok(path) = std::env::var("FAKE_CREDENTIALS_BLOB") {
+        if !path.is_empty() {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                return serde_json::from_str(&contents).ok();
+            }
+            return None;
+        }
+    }
+
     if cfg!(target_os = "macos") {
         read_keychain_blob()
     } else if cfg!(target_os = "windows") {
@@ -273,19 +285,6 @@ fn write_credentials_to_store(creds: &CliOAuthCredentials) {
 /// key under the same service with account `api-key`. A no-account lookup
 /// returns that first and is not OAuth JSON.
 fn read_keychain_blob() -> Option<Value> {
-    // Test hook: se FAKE_CREDENTIALS_BLOB aponta para um arquivo, lê dele
-    // em vez do keychain real. Mesmo padrão dos FAKE_* do provider_login_pty.
-    // Serializado pelo FAKE_CLI_ENV_GUARD compartilhado.
-    #[cfg(test)]
-    if let Ok(path) = std::env::var("FAKE_CREDENTIALS_BLOB") {
-        if !path.is_empty() {
-            if let Ok(contents) = std::fs::read_to_string(&path) {
-                return serde_json::from_str(&contents).ok();
-            }
-            return None;
-        }
-    }
-
     let account = std::env::var("USER")
         .ok()
         .filter(|s| !s.trim().is_empty())

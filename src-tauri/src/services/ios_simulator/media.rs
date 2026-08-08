@@ -324,6 +324,7 @@ fn partial_path_for(final_path: &Path) -> PathBuf {
 fn sync_file(path: &Path) -> Result<(), String> {
     OpenOptions::new()
         .read(true)
+        .write(true)
         .open(path)
         .map_err(|error| format!("não foi possível abrir o arquivo de mídia: {error}"))?
         .sync_all()

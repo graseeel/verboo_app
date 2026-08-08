@@ -4111,7 +4111,9 @@ fn issue_message(issue: &IosSimulatorIssue, xcode_version: Option<&str>) -> Stri
 #[cfg(test)]
 mod tests {
     use super::media::RecordingProcess;
-    use super::ownership::{IosSimulatorOwnership, OwnershipPhase};
+    use super::ownership::IosSimulatorOwnership;
+    #[cfg(target_os = "macos")]
+    use super::ownership::OwnershipPhase;
     use super::*;
     use std::sync::atomic::AtomicUsize;
     use std::sync::{Condvar, OnceLock};
@@ -4324,6 +4326,7 @@ mod tests {
             }
         }
 
+        #[cfg(target_os = "macos")]
         fn booted() -> Self {
             Self {
                 booted: true,
@@ -4332,6 +4335,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     struct ReconciliationRunner {
         calls: Mutex<Vec<(String, Vec<String>)>>,
         devices_json: String,
@@ -4454,6 +4458,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     impl ReconciliationRunner {
         fn new() -> Self {
             Self {
@@ -4526,6 +4531,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     struct LedgerObservingRunner {
         inner: RecordingRunner,
         ledger: Arc<OwnershipLedger>,
@@ -4533,6 +4539,7 @@ mod tests {
         boot_saw_requested: AtomicBool,
     }
 
+    #[cfg(target_os = "macos")]
     impl LedgerObservingRunner {
         fn new(ledger: Arc<OwnershipLedger>, udid: &str) -> Self {
             Self {
@@ -4548,6 +4555,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn is_simctl_command(args: &[String], command: &str) -> bool {
         args.first().map(String::as_str) == Some("simctl")
             && args.get(1).map(String::as_str) == Some(command)
@@ -4609,6 +4617,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     impl CommandRunner for LedgerObservingRunner {
         fn run(&self, program: &str, args: &[String]) -> Result<CommandOutput, String> {
             if program == "xcrun"
@@ -4623,6 +4632,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     impl CommandRunner for ReconciliationRunner {
         fn run(&self, program: &str, args: &[String]) -> Result<CommandOutput, String> {
             self.calls
@@ -6483,19 +6493,29 @@ mod tests {
             }
         }
 
-        fn wait_until_bootstatus_blocks(&self) {
+        fn wait_until_bootstatus_blocks(&self) -> bool {
             let (entered, ready) = &self.entered;
             let mut entered = entered.lock().unwrap();
+            let deadline = Instant::now() + Duration::from_millis(250);
             while !*entered {
-                entered = ready.wait(entered).unwrap();
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return false;
+                }
+                let (guard, timeout) = ready.wait_timeout(entered, remaining).unwrap();
+                entered = guard;
+                if timeout.timed_out() && !*entered {
+                    return false;
+                }
             }
+            true
         }
     }
 
     impl CommandRunner for ExitDuringBootRunner {
         fn run(&self, program: &str, args: &[String]) -> Result<CommandOutput, String> {
             if program == "xcodebuild" {
-                return Ok(output(true, b"Xcode 27.0\n", b""));
+                return Ok(output(false, b"", b"xcodebuild unavailable\n"));
             }
             if program == "xcrun" && args == ["--find", "simctl"] {
                 return Ok(output(true, b"/usr/bin/simctl\n", b""));
@@ -6555,8 +6575,18 @@ mod tests {
             let ledger = self.service.ownership.clone();
             let cancel = self.service.exiting.clone();
             thread::spawn(move || {
-                let preparation =
-                    prepare_device_for_attach(runner.as_ref(), ledger.as_ref(), "owned-phone")?;
+                ledger.mark_boot_requested("owned-phone")?;
+                let preparation = self::ownership::AttachPreparation {
+                    device: IosSimulatorDevice {
+                        name: "Owned Phone".into(),
+                        udid: "owned-phone".into(),
+                        state: "Shutdown".into(),
+                        ios_version: "26.5".into(),
+                        family: IosSimulatorDeviceFamily::Iphone,
+                    },
+                    ownership: IosSimulatorOwnership::Verboo,
+                    boot_required: true,
+                };
                 complete_device_boot(
                     runner.as_ref(),
                     ledger.as_ref(),
@@ -6568,8 +6598,8 @@ mod tests {
             })
         }
 
-        fn wait_until_bootstatus_blocks(&self) {
-            self.runner.wait_until_bootstatus_blocks();
+        fn wait_until_bootstatus_blocks(&self) -> bool {
+            self.runner.wait_until_bootstatus_blocks()
         }
 
         fn bootstatus_was_interrupted(&self) -> bool {
@@ -6615,7 +6645,10 @@ mod tests {
     fn exit_cancels_bootstatus_then_shuts_the_ledger_owned_device() {
         let harness = ExitDuringBootHarness::new();
         let attach = harness.spawn_attach();
-        harness.wait_until_bootstatus_blocks();
+        assert!(
+            harness.wait_until_bootstatus_blocks(),
+            "the cancellation harness must reach bootstatus without platform discovery"
+        );
         harness.service.begin_exit();
         let report = harness
             .service
@@ -6809,6 +6842,34 @@ mod tests {
         assert_eq!(phone.ios_version, "26.5");
     }
 
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn non_macos_reports_unsupported_without_running_discovery_commands() {
+        let runner = RecordingRunner::new();
+
+        let requirements = detect_requirements(&runner);
+
+        assert!(!requirements.ready);
+        assert_eq!(
+            requirements.issue,
+            Some(IosSimulatorIssue::UnsupportedPlatform)
+        );
+        assert!(runner.calls().is_empty());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn non_macos_reconciliation_preserves_the_ownership_ledger() {
+        let runner = Arc::new(RecordingRunner::new());
+        let service = IosSimulatorService::with_runner(runner.clone());
+        service.ownership.mark_booted("owned-phone").unwrap();
+
+        assert!(service.reconcile_owned_devices().unwrap().is_empty());
+        assert_eq!(service.ownership.owned_udids(), vec!["owned-phone"]);
+        assert!(runner.calls().is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn attach_boots_shutdown_device_but_skips_boot_for_booted_device() {
         let shutdown_runner = RecordingRunner::new();
@@ -6857,6 +6918,7 @@ mod tests {
             .any(|(_, args)| is_simctl_command(args, "bootstatus")));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn external_booted_device_never_enters_the_ownership_ledger() {
         let ledger = Arc::new(OwnershipLedger::in_memory());
@@ -6869,6 +6931,7 @@ mod tests {
         assert!(!has_argument_fragment(&runner.calls(), "bootstatus"));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn boot_intent_exists_before_simctl_boot_runs() {
         let ledger = Arc::new(OwnershipLedger::in_memory());
@@ -6895,6 +6958,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn startup_reconciliation_shuts_down_only_recorded_devices() {
         let runner = Arc::new(ReconciliationRunner::new());
@@ -6919,6 +6983,7 @@ mod tests {
         assert!(service.ownership.owned_udids().is_empty());
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn startup_reconciliation_keeps_failed_shutdown_in_ledger() {
         let runner = Arc::new(ReconciliationRunner::with_shutdown_failures(&[
@@ -6931,6 +6996,7 @@ mod tests {
         assert_eq!(service.ownership.owned_udids(), vec!["owned-phone"]);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn startup_reconciliation_continues_after_one_shutdown_failure() {
         let runner = Arc::new(ReconciliationRunner::with_shutdown_failures(&[
@@ -6954,11 +7020,9 @@ mod tests {
             .any(|(_, args)| { args == &["simctl", "shutdown", "owned-creating"] }));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn missing_xcode_does_not_abort_startup_and_preserves_owned_ledger() {
-        if !cfg!(target_os = "macos") {
-            return;
-        }
         let runner = Arc::new(RecordingRunner {
             xcode_available: false,
             ..RecordingRunner::default()

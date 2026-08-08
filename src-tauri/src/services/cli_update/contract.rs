@@ -344,6 +344,10 @@ mod tests {
     const MANIFEST: &str = include_str!("test-fixtures/manifest.json");
 
     fn verified() -> VerifiedManifest {
+        assert!(
+            !MANIFEST.as_bytes().contains(&b'\r'),
+            "the signed manifest fixture must be checked out with canonical LF bytes"
+        );
         ManifestVerifier::new(PUBLIC_KEY)
             .verify(MANIFEST.as_bytes(), SIGNATURE)
             .expect("fixture must verify")

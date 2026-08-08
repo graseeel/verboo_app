@@ -1091,12 +1091,15 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             "o CLI falso deve registrar o cwd usado"
         );
         let used_cwd = std::fs::read_to_string(&cwd_file).unwrap_or_default();
-        // O node resolve o symlink /var → /private/var no macOS — compara com
-        // o caminho canônico do workdir.
+        // Node can report a symlink-resolved path on macOS or an 8.3 short
+        // path on Windows. Canonicalize both representations before comparing.
         let canonical = workdir.canonicalize().unwrap_or(workdir.clone());
+        let used_canonical = std::path::PathBuf::from(used_cwd.trim())
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(used_cwd.trim()));
         assert_eq!(
-            used_cwd.trim(),
-            canonical.to_string_lossy(),
+            used_canonical,
+            canonical,
             "o CLI interativo deve rodar no cwd NEUTRO da ponte — nunca o herdado do app"
         );
         let lower = used_cwd.to_lowercase();
@@ -1552,9 +1555,9 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             "o CLI deve ter recebido o slash"
         );
         let received = std::fs::read_to_string(&received_file).unwrap_or_default();
-        assert_eq!(
-            received, "/codex login\n",
-            "o slash deve ser enviado exatamente após o prompt"
+        assert!(
+            matches!(received.as_str(), "/codex login\n" | "/codex login\r"),
+            "o terminal deve entregar somente o slash e um submit, recebido: {received:?}"
         );
 
         // Sucesso detectado FORA da tela: poll do blob POR PROVEDOR (nunca
