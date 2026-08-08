@@ -44,3 +44,16 @@ test('release builds embed the CLI trust root without bundling the CLI', () => {
   assert.match(workflow, /VERBOO_CLI_MINISIGN_PUBLIC_KEY:.*secrets\.VERBOO_CLI_MINISIGN_PUBLIC_KEY/)
   assert.doesNotMatch(workflow, /resources\/cli-package|copy-cli-resource|dedup-cli-package/)
 })
+
+test('cross-platform Rust gates prepare every required external runtime', () => {
+  const ci = read('.github/workflows/ci-verify.yml')
+  const linuxBrowserGate = read('scripts/verify/browser-linux-check.sh')
+
+  assert.equal(ci.match(/verboo-ios-simulator/g)?.length, 4)
+  assert.match(linuxBrowserGate, /verboo-ios-simulator/)
+  assert.match(
+    linuxBrowserGate,
+    /build-node-sidecar\.mjs --target "\$TRIPLE"/,
+  )
+  assert.doesNotMatch(linuxBrowserGate, /DARWIN_COUNT_BEFORE[^\n]*-ne\s+\d+/)
+})

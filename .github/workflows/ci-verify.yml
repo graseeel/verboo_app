@@ -30,10 +30,9 @@ name: CI Verify
 #   - Linux: apt (pacote Ubuntu 22.04, GPG-assinado)
 # Version pinada ffmpeg 8.1.2. actions/cache evita re-download.
 # Non-media sidecars (verboo-whisper, verboo-in-chrome,
-# computer-use-helper) stay as empty stubs because no cargo test --lib
-# actually executes them (transcribe.rs only resolves the path;
-# chrome_integration tests.rs mocks via TempDir; computer-use-helper
-# has no source references at all).
+# verboo-ios-simulator, computer-use-helper) stay as empty stubs because no
+# cargo test --lib actually executes them (transcribe.rs only resolves the
+# path; browser/simulator integration tests use isolated fixtures).
 # Triple mapping source of truth: src-tauri/src/services/video/target.rs
 # (publishes 6 platforms: macOS aarch64+x86_64, Windows x86_64+aarch64,
 # Linux x86_64+aarch64). CI must NOT use --skip — if a test fails on a
@@ -223,7 +222,7 @@ jobs:
           mv -f "$BINDIR/ffprobe" "$BINDIR/verboo-ffprobe-${TRIPLE}"
           chmod +x "$BINDIR/verboo-ffmpeg-${TRIPLE}"
           chmod +x "$BINDIR/verboo-ffprobe-${TRIPLE}"
-          for s in verboo-in-chrome verboo-whisper computer-use-helper; do
+          for s in verboo-in-chrome verboo-ios-simulator verboo-whisper computer-use-helper; do
             touch "$BINDIR/${s}-${TRIPLE}"
           done
           ls -la "$BINDIR/"
@@ -257,7 +256,7 @@ jobs:
           $FF_DIR = Get-ChildItem -Path $EXTRACTED -Directory | Select-Object -First 1
           Copy-Item -Force "$($FF_DIR.FullName)\bin\ffmpeg.exe" "$BINDIR\verboo-ffmpeg-$TRIPLE.exe"
           Copy-Item -Force "$($FF_DIR.FullName)\bin\ffprobe.exe" "$BINDIR\verboo-ffprobe-$TRIPLE.exe"
-          foreach ($s in @('verboo-in-chrome', 'verboo-whisper', 'computer-use-helper')) {
+          foreach ($s in @('verboo-in-chrome', 'verboo-ios-simulator', 'verboo-whisper', 'computer-use-helper')) {
             New-Item -ItemType File -Force -Path "$BINDIR\$s-$TRIPLE.exe" | Out-Null
           }
           Get-ChildItem $BINDIR
@@ -302,7 +301,7 @@ jobs:
           chmod +x "$BINDIR/verboo-ffprobe-${TRIPLE}"
           # :? guard — if either var were empty this would expand to / (SC2115)
           rm -rf "${BINDIR:?}/${FFVER:?}"
-          for s in verboo-in-chrome verboo-whisper computer-use-helper; do
+          for s in verboo-in-chrome verboo-ios-simulator verboo-whisper computer-use-helper; do
             touch "$BINDIR/${s}-${TRIPLE}"
           done
           ls -la "$BINDIR/"
