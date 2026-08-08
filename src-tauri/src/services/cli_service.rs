@@ -1,30 +1,17 @@
-use std::process::Command;
-
 use tauri::{AppHandle, Emitter};
 
 use crate::models::types::{CliAuthStatus, LoginEvent, LoginEventKind, LoginResult};
 
-/// Spawns the bundled `verboo` CLI to perform auth operations.
+/// Runs authentication operations through the app-owned CLI runtime.
 ///
-/// Resolution order (mirrors Electron's `resolveCliPath`):
-///   1. `VERBOO_CLI_PATH` env var (explicit override)
-///   2. `verboo` on PATH (system install — works in dev and on machines with
-///      `npm i -g @verboo/code`)
-///   3. (Fase 2+) bundled `@verboo/code/dist/cli.mjs` via bundled Node sidecar
-///
-/// For now we rely on (1) and (2). The bundled-CLI path requires the Node
-/// sidecar (R0) which lands in a later phase.
+/// Production uses the signed CLI selected under app data and the embedded
+/// Node sidecar. Debug builds may opt into an explicit Node/CLI path pair.
 
 pub struct CliService;
 
 impl CliService {
     pub fn new() -> Self {
         Self
-    }
-
-    /// Returns the path to the `verboo` CLI executable, if findable.
-    fn resolve_cli_path() -> Option<String> {
-        crate::services::cli_path::resolve().or_else(|| Some("verboo".to_string()))
     }
 
     /// Runs `verboo auth status --json` and parses the result.
@@ -37,8 +24,7 @@ impl CliService {
     /// API key. Returning `Ok(logged_in: false)` lets the renderer
     /// proceed to the API-key path and unlock without the CLI.
     pub fn get_auth_status(&self) -> Result<CliAuthStatus, String> {
-        // Use CliSpawn (resolves Node + bundled cli.mjs / VERBOO_CLI_PATH /
-        // global verboo) instead of spawning `verboo` by name directly.
+        // CliSpawn pins one immutable, app-owned CLI version for this process.
         let spawn = crate::services::cli_spawn::CliSpawn::new(["auth", "status", "--json"]);
         // T-B: explicit Missing check — return Ok(logged_in: false) with
         // a typed error, NOT Err. This unblocks the API-key gate.
@@ -460,13 +446,23 @@ mod tests {
     // get_auth_status returns Ok(logged_in: false) — NOT Err — so the
     // renderer's API-key gate can proceed and unlock without the CLI.
 
-    fn set_no_runtime() {
+    struct NoRuntimeGuard;
+
+    impl Drop for NoRuntimeGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("VERBOO_TEST_NO_NODE");
+            std::env::remove_var("VERBOO_TEST_NO_VERBOO");
+        }
+    }
+
+    fn set_no_runtime() -> NoRuntimeGuard {
         std::env::set_var("VERBOO_TEST_NO_NODE", "1");
         std::env::set_var("VERBOO_TEST_NO_VERBOO", "1");
         std::env::remove_var("VERBOO_CLI_PATH");
         std::env::remove_var("VERBOO_NODE_PATH");
         std::env::remove_var("NODE_BINARY");
         std::env::remove_var("NODE");
+        NoRuntimeGuard
     }
 
     /// T-A: `spawn_login_child` returns a typed `io::Error` when the
@@ -483,7 +479,7 @@ mod tests {
             crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-        set_no_runtime();
+        let _no_runtime = set_no_runtime();
 
         let result = CliService::spawn_login_child();
         assert!(result.is_err(), "spawn must fail when runtime missing");
@@ -498,12 +494,9 @@ mod tests {
             "error must not contain raw errno text; got: {msg}"
         );
         assert!(
-            msg.contains("Node.js") || msg.contains("verboo"),
-            "error should name the missing runtime; got: {msg}"
+            msg.contains("CLI do Verboo") && msg.contains("primeira inicialização"),
+            "error should explain the signed CLI bootstrap; got: {msg}"
         );
-
-        std::env::remove_var("VERBOO_TEST_NO_NODE");
-        std::env::remove_var("VERBOO_TEST_NO_VERBOO");
     }
 
     /// T-B: `get_auth_status` returns `Ok(logged_in: false)` with a
@@ -524,7 +517,7 @@ mod tests {
             crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-        set_no_runtime();
+        let _no_runtime = set_no_runtime();
 
         let cli = CliService::new();
         let result = cli.get_auth_status();
@@ -543,12 +536,9 @@ mod tests {
             "error field must not contain raw errno; got: {err_msg}"
         );
         assert!(
-            err_msg.contains("Node.js") || err_msg.contains("verboo"),
-            "error field should name the missing runtime; got: {err_msg}"
+            err_msg.contains("CLI do Verboo") && err_msg.contains("primeira inicialização"),
+            "error field should explain the signed CLI bootstrap; got: {err_msg}"
         );
-
-        std::env::remove_var("VERBOO_TEST_NO_NODE");
-        std::env::remove_var("VERBOO_TEST_NO_VERBOO");
     }
 
     /// T-A: `logout` returns `Ok(ok: true)` when the runtime is
@@ -560,7 +550,7 @@ mod tests {
             crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-        set_no_runtime();
+        let _no_runtime = set_no_runtime();
 
         let cli = CliService::new();
         let result = cli.logout();
@@ -570,9 +560,6 @@ mod tests {
         );
         let login_result = result.unwrap();
         assert!(login_result.ok, "logout should report success");
-
-        std::env::remove_var("VERBOO_TEST_NO_NODE");
-        std::env::remove_var("VERBOO_TEST_NO_VERBOO");
     }
 
     // ── A1: non-blocking login regression tests ──────────────────────

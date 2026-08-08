@@ -23,8 +23,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use portable_pty::Child as _;
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use uuid::Uuid;
 
 use crate::services::cli_spawn::{CliRuntime, CliSpawn};
@@ -101,15 +101,13 @@ pub struct ProviderAuthStatus {
 /// o auth status por provedor, a leitura troca SÓ neste módulo (ver
 /// CONTRATO DE REMOÇÃO acima).
 pub fn provider_auth_status() -> Result<Vec<ProviderAuthStatus>, String> {
-    let blob = provider_catalog::read_provider_credentials_blob()
-        .unwrap_or_else(|| serde_json::json!({}));
+    let blob =
+        provider_catalog::read_provider_credentials_blob().unwrap_or_else(|| serde_json::json!({}));
     Ok(provider_auth_status_from_blob(&blob))
 }
 
 /// A função pura do shape por provedor (testável com blobs de fixture).
-pub fn provider_auth_status_from_blob(
-    blob: &serde_json::Value,
-) -> Vec<ProviderAuthStatus> {
+pub fn provider_auth_status_from_blob(blob: &serde_json::Value) -> Vec<ProviderAuthStatus> {
     SUPPORTED_PROVIDERS
         .iter()
         .map(|provider| {
@@ -229,16 +227,15 @@ impl ProviderLoginService {
         // Resolve o CLI empacotado (node + cli.mjs) — NUNCA o verboo global.
         let spawn = CliSpawn::new(std::iter::empty::<&str>());
         let (node_path, cli_mjs) = match &spawn.runtime {
-            CliRuntime::BundledNode { node_path, cli_mjs_path }
-            | CliRuntime::EnvNode { node_path, cli_mjs_path } => {
-                (node_path.clone(), cli_mjs_path.clone())
+            CliRuntime::InstalledNode {
+                node_path,
+                cli_mjs_path,
+                ..
             }
-            CliRuntime::GlobalVerboo => {
-                return Err(
-                    "O CLI empacotado não está disponível — o login interativo exige o cli-package embutido."
-                        .to_string(),
-                );
-            }
+            | CliRuntime::DevelopmentOverride {
+                node_path,
+                cli_mjs_path,
+            } => (node_path.clone(), cli_mjs_path.clone()),
             CliRuntime::Missing => {
                 // T-A (2026-08-07): typed error for the no-runtime case,
                 // never raw ENOENT. The PTY login requires the bundled
@@ -446,7 +443,8 @@ impl ProviderLoginService {
                                 message: Some(if prompt_sent {
                                     "O CLI encerrou antes de concluir o login.".to_string()
                                 } else {
-                                    "O CLI encerrou antes de apresentar o prompt interativo.".to_string()
+                                    "O CLI encerrou antes de apresentar o prompt interativo."
+                                        .to_string()
                                 }),
                             });
                         }
@@ -726,11 +724,18 @@ mod tests {
     use super::*;
     use std::sync::mpsc as std_mpsc;
 
-
     /// Escreve o CLI falso (node): `auth status` lê um arquivo de estado;
     /// o modo interativo emite o prompt (ou tela inesperada), grava o slash
     /// recebido e spawna um filho (sleep) para a prova de órfão.
-    fn write_fake_cli(suffix: &str, unexpected: bool) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    fn write_fake_cli(
+        suffix: &str,
+        unexpected: bool,
+    ) -> (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
         let dir = std::env::temp_dir().join(format!(
             "verboo-login-fake-cli-{}-{suffix}",
             std::process::id()
@@ -850,7 +855,11 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
 "#
         );
         std::fs::write(&path, script).unwrap();
-        std::fs::write(&state_file, r#"{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}"#).unwrap();
+        std::fs::write(
+            &state_file,
+            r#"{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}"#,
+        )
+        .unwrap();
         // SAFETY: env global intencional, serializado pelo guard.
         unsafe {
             std::env::set_var("VERBOO_CLI_PATH", &path);
@@ -951,7 +960,10 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["provider"], "codex");
-        assert_eq!(json["state"], "awaiting_browser", "o state deve ser snake_case (contrato do Mosaico)");
+        assert_eq!(
+            json["state"], "awaiting_browser",
+            "o state deve ser snake_case (contrato do Mosaico)"
+        );
         assert!(
             !json.as_object().unwrap().contains_key("message"),
             "message ausente quando None (skip_serializing_if)"
@@ -965,7 +977,10 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         let error_json = serde_json::to_value(&error_event).unwrap();
         assert_eq!(error_json["state"], "error");
         assert_eq!(error_json["message"], "falhou");
-        assert_eq!(serde_json::to_value(&ProviderLoginState::Connected).unwrap(), "connected");
+        assert_eq!(
+            serde_json::to_value(&ProviderLoginState::Connected).unwrap(),
+            "connected"
+        );
     }
 
     #[test]
@@ -1033,25 +1048,31 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         let claude = statuses.iter().find(|e| e.provider == "claude").unwrap();
         assert!(!codex.connected, "codex null no blob → false");
         assert!(codex.account.is_none());
-        assert!(claude.connected, "claudeNative presente (dict não-nulo) → claude true");
-        assert_eq!(claude.account.as_deref(), Some("acct-42"), "account vem do blob do provedor (claudeNative)");
+        assert!(
+            claude.connected,
+            "claudeNative presente (dict não-nulo) → claude true"
+        );
+        assert_eq!(
+            claude.account.as_deref(),
+            Some("acct-42"),
+            "account vem do blob do provedor (claudeNative)"
+        );
     }
 
     #[test]
     fn spawn_uses_neutral_workdir_never_documents() {
-        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (_cli, _state, _received, _child) = write_fake_cli("cwd", false);
         // Workdir NEUTRO e fora de file provider (o app-data/provider-login-
         // workdir na produção; aqui um dir temp próprio).
-        let workdir = std::env::temp_dir().join(format!(
-            "verboo-login-workdir-{}",
-            std::process::id()
-        ));
+        let workdir =
+            std::env::temp_dir().join(format!("verboo-login-workdir-{}", std::process::id()));
         std::fs::create_dir_all(&workdir).unwrap();
-        let cwd_file = std::env::temp_dir().join(format!(
-            "verboo-login-fake-cli-{}-cwd",
-            std::process::id()
-        )).join("cwd.txt");
+        let cwd_file = std::env::temp_dir()
+            .join(format!("verboo-login-fake-cli-{}-cwd", std::process::id()))
+            .join("cwd.txt");
         let _ = std::fs::remove_file(&cwd_file);
         let service = ProviderLoginService::new(|_| {}, workdir.clone());
         let _id = service
@@ -1103,7 +1124,9 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
 
     #[test]
     fn risk_screen_emits_risk_notice_and_bridge_waits() {
-        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (_cli, _state, _received, _child) = write_fake_cli("risk", false);
         // SAFETY: env global intencional, serializado pelo guard.
         unsafe {
@@ -1139,7 +1162,13 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             }),
             "a tela de risco deve emitir o evento risk_notice (a ponte nunca aceita sozinha)"
         );
-        let risk = events.lock().unwrap().iter().find(|e| matches!(e.state, ProviderLoginState::RiskNotice)).unwrap().clone();
+        let risk = events
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|e| matches!(e.state, ProviderLoginState::RiskNotice))
+            .unwrap()
+            .clone();
         assert!(matches!(risk.state, ProviderLoginState::RiskNotice));
         assert_eq!(risk.provider, "claude");
         let text = risk.message.as_deref().unwrap_or("");
@@ -1185,8 +1214,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
     #[test]
     fn browser_evidence_anchors_on_oauth_url_not_policy_links() {
         // Tela de risco do Claude: URLs de politica/termos no texto.
-        let risk_screen_with_policy_urls =
-            "Aviso importante sobre o login Claude\n\
+        let risk_screen_with_policy_urls = "Aviso importante sobre o login Claude\n\
              Politica: https://code.claude.com/docs/en/legal-and-compliance\n\
              Termos: https://www.anthropic.com/legal/consumer-terms\n\
              1. Entendo e aceito o risco\n\
@@ -1231,7 +1259,9 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
 
     #[test]
     fn confirm_risk_navigates_to_option_1_and_enters() {
-        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (_cli, state_file, received_file, _child) = write_fake_cli("confirm", false);
         // SAFETY: env global intencional, serializado pelo guard.
         unsafe {
@@ -1286,8 +1316,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         // intervalo) — colados o Ink nao processa a navegacao.
         let received = std::fs::read_to_string(&received_file).unwrap_or_default();
         assert_eq!(
-            received,
-            "\x1b[A\r",
+            received, "\x1b[A\r",
             "o confirm deve navegar para a opção 1 (seta up) e Enter (raw mode, \\r)"
         );
         assert!(
@@ -1319,7 +1348,9 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
 
     #[test]
     fn cancel_on_risk_screen_kills_cleanly_never_accepts_alone() {
-        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (_cli, _state, received_file, _child) = write_fake_cli("riskcancel", false);
         // SAFETY: env global intencional, serializado pelo guard.
         unsafe {
@@ -1383,7 +1414,10 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         assert!(risk_notice_ready(screen), "o menu 1/2 deve ser reconhecido");
         // O texto do aviso pode mudar — a âncora (o menu) continua.
         let changed_text = "Aviso atualizado em 2027\n1. Entendo e aceito o risco\n2. Cancelar e continuar com o Verboo";
-        assert!(risk_notice_ready(changed_text), "a âncora é o menu, não o texto");
+        assert!(
+            risk_notice_ready(changed_text),
+            "a âncora é o menu, não o texto"
+        );
         // Sem o menu (ex.: o prompt normal) → não é a tela de risco.
         assert!(!risk_notice_ready("Verboo Code — primeiro uso\nverboo> "));
         assert!(!risk_notice_ready(""));
@@ -1398,7 +1432,11 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         let long = format!("{}çe", "a".repeat(1999));
         let text = risk_notice_text(&long);
         // 2000 bytes do texto + o "…" (3 bytes UTF-8).
-        assert!(text.len() <= 2003, "o texto deve ser truncado char-safe: {}", text.len());
+        assert!(
+            text.len() <= 2003,
+            "o texto deve ser truncado char-safe: {}",
+            text.len()
+        );
         assert!(text.ends_with('…'));
         // O truncate nunca pode dividir um char multibyte: o texto é sempre
         // uma String válida (o byte-slice cru panics em UTF-8) e o corte
@@ -1408,7 +1446,9 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
 
     #[test]
     fn unknown_screen_after_slash_is_honest_error_never_awaiting() {
-        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (_cli, _state, _received, _child) = write_fake_cli("unknown", false);
         // SAFETY: env global intencional, serializado pelo guard.
         unsafe {
@@ -1454,7 +1494,10 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         );
         let last = events.lock().unwrap().last().unwrap().clone();
         assert!(
-            last.message.as_deref().unwrap_or("").contains("não reconhecida"),
+            last.message
+                .as_deref()
+                .unwrap_or("")
+                .contains("não reconhecida"),
             "a mensagem deve dizer que a tela não foi reconhecida: {:?}",
             last.message
         );
@@ -1465,7 +1508,9 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
     #[test]
     fn start_requires_an_active_verboo_session() {
         let service = ProviderLoginService::default();
-        let error = service.start("codex", false, LoginOptions::default()).unwrap_err();
+        let error = service
+            .start("codex", false, LoginOptions::default())
+            .unwrap_err();
         assert!(
             error.contains("sessão Verboo ativa"),
             "gate de sessão deve dar erro claro: {error}"
@@ -1474,7 +1519,9 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
 
     #[test]
     fn login_success_prompt_then_slash_then_connected() {
-        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (_cli, state_file, received_file, _child_pid) = write_fake_cli("success", false);
         let events: Arc<Mutex<Vec<ProviderLoginEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let events_for_service = events.clone();
@@ -1504,7 +1551,10 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             "o CLI deve ter recebido o slash"
         );
         let received = std::fs::read_to_string(&received_file).unwrap_or_default();
-        assert_eq!(received, "/codex login\n", "o slash deve ser enviado exatamente após o prompt");
+        assert_eq!(
+            received, "/codex login\n",
+            "o slash deve ser enviado exatamente após o prompt"
+        );
 
         // Sucesso detectado FORA da tela: poll do blob POR PROVEDOR (nunca
         // o global logged_in, nunca TUI). O token daquele provider no blob
@@ -1550,8 +1600,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let (_cli, state_file, received_file, _child_pid) =
-            write_fake_cli("poll-blob", false);
+        let (_cli, state_file, received_file, _child_pid) = write_fake_cli("poll-blob", false);
         let events: Arc<Mutex<Vec<ProviderLoginEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let events_for_service = events.clone();
         let service = ProviderLoginService::new(
@@ -1617,7 +1666,9 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
 
     #[test]
     fn login_timeout_returns_honest_error() {
-        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (_cli, _state_file, _received_file, _child_pid) = write_fake_cli("timeout", false);
         let events: Arc<Mutex<Vec<ProviderLoginEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let events_for_service = events.clone();
@@ -1661,7 +1712,9 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
 
     #[test]
     fn cancel_kills_the_whole_process_group_no_orphans() {
-        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (_cli, _state_file, _received_file, child_pid_file) = write_fake_cli("cancel", false);
         let events: Arc<Mutex<Vec<ProviderLoginEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let events_for_service = events.clone();
@@ -1684,7 +1737,10 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             .expect("start deve abrir o PTY");
 
         assert!(
-            wait_until(Duration::from_secs(10), || std::path::Path::new(&child_pid_file).exists()),
+            wait_until(Duration::from_secs(10), || std::path::Path::new(
+                &child_pid_file
+            )
+            .exists()),
             "o CLI falso deve ter spawnado o filho"
         );
         let child_pid: i32 = std::fs::read_to_string(&child_pid_file)
@@ -1692,7 +1748,10 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             .trim()
             .parse()
             .unwrap();
-        assert!(process_alive(child_pid), "o filho deve estar vivo antes do cancel");
+        assert!(
+            process_alive(child_pid),
+            "o filho deve estar vivo antes do cancel"
+        );
 
         service.cancel().expect("cancel deve resolver");
 
@@ -1704,11 +1763,10 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         );
         // O cancel é ação do usuário: nenhum evento connected/error extra.
         assert!(
-            !events
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|e| matches!(e.state, ProviderLoginState::Connected | ProviderLoginState::Error)),
+            !events.lock().unwrap().iter().any(|e| matches!(
+                e.state,
+                ProviderLoginState::Connected | ProviderLoginState::Error
+            )),
             "o cancel não deve emitir connected/error"
         );
         clear_fake_cli();
@@ -1716,7 +1774,9 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
 
     #[test]
     fn unexpected_screen_never_gets_a_slash() {
-        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (_cli, _state_file, received_file, _child_pid) = write_fake_cli("unexpected", true);
         let events: Arc<Mutex<Vec<ProviderLoginEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let events_for_service = events.clone();

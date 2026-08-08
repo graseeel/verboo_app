@@ -518,6 +518,7 @@ mod tests {
             "src/services/cli_credentials.rs",
             "src/services/cli_service.rs",
             "src/services/cli_spawn.rs",
+            "src/services/cli_update/archive.rs",
             "src/services/git_service.rs",
             "src/services/goal_evaluator.rs",
             "src/services/ios_simulator.rs",

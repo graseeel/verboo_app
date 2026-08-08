@@ -1,6 +1,7 @@
 pub mod archive;
 pub mod contract;
 pub mod download;
+pub mod runtime;
 pub mod service;
 pub mod store;
 

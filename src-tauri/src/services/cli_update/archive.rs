@@ -235,11 +235,7 @@ pub fn smoke_payload(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
+    crate::services::cli_spawn::apply_creation_flags(&mut command);
     let mut child = command
         .spawn()
         .map_err(|error| format!("failed to start CLI smoke check: {error}"))?;

@@ -1975,6 +1975,60 @@ pub fn run() {
                 .app_data_dir()
                 .expect("app data dir must be available");
             let _ = std::fs::create_dir_all(&app_data_dir);
+
+            // CLI and Node have independent owners: Node is an app sidecar;
+            // CLI versions live only under app-data/cli. Configure the single
+            // runtime authority before any service can spawn a CLI process.
+            if let Some(node_path) = services::node_runtime::resolve_node_path() {
+                let cli_store = services::cli_update::CliStore::open(&app_data_dir)
+                    .map_err(std::io::Error::other)?;
+                services::cli_update::runtime::configure(cli_store, node_path.clone())
+                    .map_err(std::io::Error::other)?;
+
+                match services::cli_update::CliUpdateService::production(
+                    &app_data_dir,
+                    node_path,
+                ) {
+                    Ok(cli_update_service) => {
+                        let startup_service = cli_update_service.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            let result = match startup_service.validate_startup() {
+                                Ok(services::cli_update::service::StartupValidation::Missing) => {
+                                    startup_service.bootstrap_if_missing().map(|_| ())
+                                }
+                                Ok(services::cli_update::service::StartupValidation::Valid {
+                                    ..
+                                }) => Ok(()),
+                                Ok(services::cli_update::service::StartupValidation::RolledBack {
+                                    rejected,
+                                    restored,
+                                }) => {
+                                    eprintln!(
+                                        "[verboo:cli-update] rolled back {rejected} to {restored}; restart required"
+                                    );
+                                    Ok(())
+                                }
+                                Err(error) => Err(error),
+                            };
+                            if let Err(error) = result {
+                                eprintln!("[verboo:cli-update] startup preparation failed: {error}");
+                            }
+                        });
+                        app.manage(cli_update_service);
+                    }
+                    Err(error) => {
+                        // Development builds intentionally have no production
+                        // trust root. Explicit dev overrides keep local work
+                        // usable; release builds fail earlier in CI if the key
+                        // is absent.
+                        eprintln!("[verboo:cli-update] updater unavailable: {error}");
+                    }
+                }
+            } else {
+                eprintln!(
+                    "[verboo:cli-update] embedded Node sidecar is unavailable; CLI bootstrap deferred"
+                );
+            }
             app.manage(
                 services::browser_panel::BrowserCaptureStore::new(app_data_dir.clone())
                     .map_err(std::io::Error::other)?,
