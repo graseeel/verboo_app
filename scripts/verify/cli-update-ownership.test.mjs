@@ -34,7 +34,8 @@ test('app and CLI release discovery remain separate authorities', () => {
 
   assert.match(appUpdater, /github\.com\/graseeel\/verboo_app\/releases/)
   assert.doesNotMatch(appUpdater, /verbeux-ai\/code/)
-  assert.match(cliUpdater, /api\.github\.com\/repos\/verbeux-ai\/code\/releases\/latest/)
+  assert.match(cliUpdater, /github\.com\/verbeux-ai\/code\/releases\/latest\/download/)
+  assert.doesNotMatch(cliUpdater, /api\.github\.com/)
   assert.doesNotMatch(cliUpdater, /graseeel\/verboo_app/)
 })
 
