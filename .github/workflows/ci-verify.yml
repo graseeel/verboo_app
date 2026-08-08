@@ -154,6 +154,8 @@ jobs:
           TARGET="${{ matrix.target }}"
           EXT=""
           if [ "$TARGET" = "x86_64-pc-windows-msvc" ]; then EXT=".exe"; fi
+          mkdir -p dist-renderer
+          : > dist-renderer/index.html
           mkdir -p src-tauri/binaries
           for binary in verboo-in-chrome verboo-ios-simulator verboo-ffmpeg verboo-ffprobe verboo-whisper; do
             : > "src-tauri/binaries/$binary-$TARGET$EXT"
