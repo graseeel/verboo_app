@@ -1,6 +1,6 @@
 {
   "name": "verboo-desktop",
-  "version": "0.6.2-beta",
+  "version": "0.7.0-beta",
   "description": "Multi-platform desktop app for the Verboo Code CLI (macOS, Windows, Linux)",
   "author": {
     "name": "Gabriel Grasel de Moura",
@@ -43,7 +43,7 @@
     "@tauri-apps/plugin-updater": "^2.10.1",
     "@tesseract.js-data/eng": "^1.0.0",
     "@tesseract.js-data/por": "^1.0.0",
-    "@verboo/code": "0.14.5",
+    "@verboo/code": "0.15.2",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "highlight.js": "^11.11.1",

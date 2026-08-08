@@ -227,16 +227,40 @@ if [[ "$(uname -s)" == "Darwin" && "${VERBOO_SKIP_LOCAL_SIGN:-0}" != "1" ]]; the
         echo "    ✓ $AUTHORITY"
       fi
 
-      # Sign the DMG too if it exists. Same pipefail guard as above:
-      # `find ... | head -1` would abort under set -e if $DMG_ROOT is missing.
+      # Tauri creates the DMG before this local signing block runs. Rebuild it
+      # from the now-signed .app; merely signing the existing image would leave
+      # the unsigned pre-signing copy of the app inside the DMG.
+      # Same pipefail guard as above: `find ... | head -1` would abort under
+      # set -e if $DMG_ROOT is missing.
       DMG_PATH=$(find "$DMG_ROOT" -maxdepth 1 -type f -name '*.dmg' 2>/dev/null | head -1 || true)
       if [[ -n "$DMG_PATH" ]]; then
+        DMG_SCRIPT="$DMG_ROOT/bundle_dmg.sh"
+        DMG_ICON="$DMG_ROOT/icon.icns"
+        APP_BASENAME=$(basename "$APP_PATH")
+        if [[ ! -x "$DMG_SCRIPT" ]]; then
+          echo "FAIL: script de criação do DMG não encontrado: $DMG_SCRIPT"
+          exit 1
+        fi
+        echo "→ Recriando DMG com o .app assinado…"
+        rm -f "$DMG_PATH"
+        (
+          cd "$BUNDLE_ROOT"
+          "$DMG_SCRIPT" \
+            --volname "${APP_BASENAME%.app}" \
+            --icon "$APP_BASENAME" 180 170 \
+            --app-drop-link 480 170 \
+            --window-size 660 400 \
+            --hide-extension "$APP_BASENAME" \
+            --volicon "$DMG_ICON" \
+            "$DMG_PATH" "$APP_BASENAME"
+        )
         echo "→ Assinando DMG localmente…"
         echo "    Alvo: $DMG_PATH"
         codesign --force --timestamp \
           --sign "$SIGNING_IDENTITY" \
           "$DMG_PATH" 2>&1 | sed 's/^/    /'
         codesign --verify --strict --verbose=2 "$DMG_PATH" 2>&1 | sed 's/^/    /'
+        hdiutil verify "$DMG_PATH" 2>&1 | sed 's/^/    /'
       fi
     fi
   fi
