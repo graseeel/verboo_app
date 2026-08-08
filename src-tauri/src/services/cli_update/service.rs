@@ -19,8 +19,7 @@ use super::download::build_download_client;
 use super::download::download_verified;
 use super::store::{CliPointer, CliStore};
 
-const LATEST_RELEASE_API: &str = "https://api.github.com/repos/verbeux-ai/code/releases/latest";
-const RELEASE_DOWNLOAD_ROOT: &str = "https://github.com/verbeux-ai/code/releases/download";
+const LATEST_RELEASE_ROOT: &str = "https://github.com/verbeux-ai/code/releases/latest/download";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_SIGNATURE_BYTES: u64 = 64 * 1024;
 
@@ -71,7 +70,6 @@ pub enum StartupValidation {
 }
 
 pub struct SignedManifestBytes {
-    pub tag: String,
     pub manifest: Vec<u8>,
     pub signature: String,
 }
@@ -99,7 +97,7 @@ impl ManifestTrust for ManifestVerifier {
 
 pub struct GithubReleaseSource {
     client: Client,
-    latest_release_api: String,
+    latest_release_root: String,
 }
 
 impl GithubReleaseSource {
@@ -113,7 +111,7 @@ impl GithubReleaseSource {
             .map_err(|error| format!("failed to create CLI release client: {error}"))?;
         Ok(Self {
             client,
-            latest_release_api: LATEST_RELEASE_API.to_string(),
+            latest_release_root: LATEST_RELEASE_ROOT.to_string(),
         })
     }
 
@@ -121,54 +119,26 @@ impl GithubReleaseSource {
     fn with_endpoint(client: Client, endpoint: impl Into<String>) -> Self {
         Self {
             client,
-            latest_release_api: endpoint.into(),
+            latest_release_root: endpoint.into(),
         }
     }
 }
 
-#[derive(Deserialize)]
-struct GithubRelease {
-    tag_name: String,
-    draft: bool,
-    prerelease: bool,
-}
-
 impl CliReleaseSource for GithubReleaseSource {
     fn fetch_signed_manifest(&self) -> Result<SignedManifestBytes, String> {
-        let release: GithubRelease = self
-            .client
-            .get(&self.latest_release_api)
-            .send()
-            .map_err(|error| format!("failed to discover the latest CLI release: {error}"))?
-            .error_for_status()
-            .map_err(|error| format!("CLI release discovery returned an error: {error}"))?
-            .json()
-            .map_err(|error| format!("invalid CLI release discovery response: {error}"))?;
-        if release.draft || release.prerelease {
-            return Err("latest CLI release is not a stable published release".to_string());
-        }
-        let version = release
-            .tag_name
-            .strip_prefix('v')
-            .ok_or_else(|| "latest CLI release tag must start with v".to_string())?;
-        Version::parse(version)
-            .map_err(|error| format!("invalid latest CLI release tag: {error}"))?;
-
-        let base = format!("{RELEASE_DOWNLOAD_ROOT}/{}", release.tag_name);
         let manifest = fetch_bounded(
             &self.client,
-            &format!("{base}/verboo-cli-manifest.json"),
+            &format!("{}/verboo-cli-manifest.json", self.latest_release_root),
             MAX_MANIFEST_BYTES,
         )?;
         let signature_bytes = fetch_bounded(
             &self.client,
-            &format!("{base}/verboo-cli-manifest.minisig"),
+            &format!("{}/verboo-cli-manifest.minisig", self.latest_release_root),
             MAX_SIGNATURE_BYTES,
         )?;
         let signature = String::from_utf8(signature_bytes)
             .map_err(|_| "CLI manifest signature is not UTF-8".to_string())?;
         Ok(SignedManifestBytes {
-            tag: release.tag_name,
             manifest,
             signature,
         })
@@ -486,11 +456,8 @@ impl CliUpdateService {
                 .inner
                 .trust
                 .verify(&signed.manifest, &signed.signature)?;
-            if signed.tag != format!("v{}", verified.manifest.cli_version) {
-                return Err(
-                    "signed CLI manifest version does not match its release tag".to_string()
-                );
-            }
+            // The signed version plus validate_artifact's exact official URL
+            // bind every payload to releases/download/v{version}.
 
             let current = self.inner.store.current()?;
             if self.inner.store.was_rejected(&verified.digest)? {
@@ -665,7 +632,6 @@ mod tests {
     const SIGNED_MANIFEST: &[u8] = include_bytes!("test-fixtures/manifest.json");
 
     struct FixtureSource {
-        tag: String,
         manifest: Vec<u8>,
         signature: String,
         archive: Option<Vec<u8>>,
@@ -678,7 +644,6 @@ mod tests {
                 return Err(error.clone());
             }
             Ok(SignedManifestBytes {
-                tag: self.tag.clone(),
                 manifest: self.manifest.clone(),
                 signature: self.signature.clone(),
             })
@@ -708,7 +673,6 @@ mod tests {
 
     fn signed_source() -> Arc<dyn CliReleaseSource> {
         Arc::new(FixtureSource {
-            tag: "v0.15.6".to_string(),
             manifest: SIGNED_MANIFEST.to_vec(),
             signature: SIGNATURE.to_string(),
             archive: None,
@@ -777,7 +741,6 @@ mod tests {
     fn offline_first_run_is_retryable_and_selects_no_runtime() {
         let app_data = tempfile::tempdir().unwrap();
         let source = Arc::new(FixtureSource {
-            tag: String::new(),
             manifest: Vec::new(),
             signature: String::new(),
             archive: None,
@@ -855,7 +818,6 @@ mod tests {
             digest: "c".repeat(64),
         };
         let source = Arc::new(FixtureSource {
-            tag: "v0.15.6".to_string(),
             manifest: b"fixture".to_vec(),
             signature: "fixture".to_string(),
             archive: Some(archive),
@@ -946,9 +908,69 @@ mod tests {
     }
 
     #[test]
-    fn production_source_endpoint_is_not_replaceable_outside_tests() {
-        let client = build_download_client().unwrap();
-        let source = GithubReleaseSource::with_endpoint(client, "https://example.invalid/latest");
-        assert_eq!(source.latest_release_api, "https://example.invalid/latest");
+    fn release_discovery_reads_latest_signed_assets_without_the_github_api() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!(
+            "http://{}/releases/latest/download",
+            listener.local_addr().unwrap()
+        );
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let mut requests = Vec::new();
+            while requests.len() < 2 && Instant::now() < deadline {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(error) => panic!("failed to accept release request: {error}"),
+                };
+                let mut request = [0_u8; 4096];
+                let read = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..read]);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap()
+                    .to_string();
+                let body = if path.ends_with(".minisig") {
+                    SIGNATURE.as_bytes()
+                } else {
+                    SIGNED_MANIFEST
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(body).unwrap();
+                requests.push(path);
+            }
+            requests
+        });
+
+        let source = GithubReleaseSource::with_endpoint(build_download_client().unwrap(), endpoint);
+        let fetched = source.fetch_signed_manifest();
+        let requests = server.join().unwrap();
+
+        assert_eq!(
+            requests,
+            [
+                "/releases/latest/download/verboo-cli-manifest.json",
+                "/releases/latest/download/verboo-cli-manifest.minisig",
+            ]
+        );
+        let fetched = fetched.unwrap();
+        assert_eq!(fetched.manifest, SIGNED_MANIFEST);
+        assert_eq!(fetched.signature, SIGNATURE);
     }
 }
