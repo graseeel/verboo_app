@@ -639,6 +639,11 @@ pub struct VerbooModel {
     pub vision_support_source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ModelReasoning>,
+    /// Provider do modelo (ex.: "verboo", "claude", "codex"). Quando ausente,
+    /// o renderer trata como "verboo" (catálogo atual) — o serializado omite
+    /// o campo para modelos Verboo (sem quebra do contrato existente).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     pub raw: serde_json::Value,
 }
 

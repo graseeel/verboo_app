@@ -652,6 +652,7 @@ mod tests {
             supports_vision: vision,
             vision_support_source: source.map(|s| s.into()),
             reasoning: None,
+            provider: None,
             raw: serde_json::json!({}),
         }
     }

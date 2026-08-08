@@ -72,6 +72,16 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
   const menuRef = useRef<HTMLDivElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
   const selected = models.find(model => model.id === selectedModel)
+  // An explicit selection can be missing from a transient catalog snapshot:
+  // provider models are attached per refresh and the attach degrades
+  // silently (model_service.rs). Keep displaying the last known model — or
+  // at least the raw id — instead of dropping to the generic label. The
+  // popover listing itself stays catalog-truthful; only the pill/row do this.
+  const lastKnownRef = useRef<VerbooModel | undefined>(undefined)
+  useEffect(() => {
+    if (selected) lastKnownRef.current = selected
+  }, [selected])
+  const displayed = selected ?? (selectedModel ? lastKnownRef.current : undefined)
   const showSearch = panel === 'models' && models.length > SEARCH_THRESHOLD
   // Override is only "valid" when it's still in the model's current
   // effortLevels. A stale value (model changed its levels) falls back to
@@ -193,10 +203,10 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
     <div className="selector-wrap" ref={wrapRef}>
       <button ref={pillRef} className="composer-pill model-pill" style={selectedTone} type="button" onClick={() => setOpen(value => !value)}>
         <span className="model-pill-icon" aria-hidden="true">
-          {selected ? <ModelIcon modelId={selected.id} displayName={selected.displayName} size={15} /> : <ModelIcon modelId="" size={15} />}
+          {displayed ? <ModelIcon modelId={displayed.id} displayName={displayed.displayName} size={15} /> : <ModelIcon modelId="" size={15} />}
         </span>
         <span>
-          {selected ? readableModelName(selected) : t('model.label')}
+          {displayed ? readableModelName(displayed) : (selectedModel ?? t('model.label'))}
           {selected && selectedEffort ? <>{' · '}{effortLabel(selectedEffort, t)}</> : null}
         </span>
         <ChevronDown size={14} />
@@ -245,7 +255,7 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
                 >
                   <span className="model-row-label">{t('model.row.model')}</span>
                   <span className="model-row-value">
-                    {selected ? readableModelName(selected) : t('model.empty')}
+                    {displayed ? readableModelName(displayed) : (selectedModel ?? t('model.empty'))}
                   </span>
                   <ChevronRight size={15} className="model-row-chevron" />
                 </button>

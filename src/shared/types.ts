@@ -610,6 +610,10 @@ export type VerbooModel = {
   /** Promoted from raw.reasoning when the router serves it. FE reads this
    *  first, falling back to model.raw?.reasoning for backward compat. */
   reasoning?: ModelReasoning
+  /** Owning provider (F2 contract, mirrors Rust `VerbooModel.provider` with
+   *  `skip_serializing_if = "Option::is_none"`): ABSENT means 'verboo' — the
+   *  current catalog keeps working unchanged. Values seen: 'claude', 'codex'. */
+  provider?: string
   raw: unknown
 }
 
