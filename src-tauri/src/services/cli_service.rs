@@ -28,10 +28,32 @@ impl CliService {
     }
 
     /// Runs `verboo auth status --json` and parses the result.
+    ///
+    /// T-B (2026-08-07): if the CLI runtime is missing (no Node, no
+    /// `verboo` on PATH), returns `Ok(CliAuthStatus { logged_in: false,
+    /// error: Some(typed_message) })` — NOT `Err`. The renderer's login
+    /// gate calls this to check the session; an `Err` left the user
+    /// stuck at "Verificando sessão local do Verboo…" even with a valid
+    /// API key. Returning `Ok(logged_in: false)` lets the renderer
+    /// proceed to the API-key path and unlock without the CLI.
     pub fn get_auth_status(&self) -> Result<CliAuthStatus, String> {
         // Use CliSpawn (resolves Node + bundled cli.mjs / VERBOO_CLI_PATH /
         // global verboo) instead of spawning `verboo` by name directly.
         let spawn = crate::services::cli_spawn::CliSpawn::new(["auth", "status", "--json"]);
+        // T-B: explicit Missing check — return Ok(logged_in: false) with
+        // a typed error, NOT Err. This unblocks the API-key gate.
+        if spawn.runtime == crate::services::cli_spawn::CliRuntime::Missing {
+            return Ok(CliAuthStatus {
+                logged_in: false,
+                auth_method: None,
+                api_provider: None,
+                email: None,
+                org_id: None,
+                org_name: None,
+                subscription_type: None,
+                error: Some(crate::services::cli_spawn::runtime_missing_error()),
+            });
+        }
         let mut cmd = spawn.command;
         let output = cmd
             .stdin(std::process::Stdio::null())
@@ -203,6 +225,15 @@ impl CliService {
     /// A1: extracted from `start_cli_login_nonblocking` for testability.
     /// Spawns the auth login child and returns the alive `Child` plus
     /// the stdout/stderr pipes for incremental reading.
+    ///
+    /// T-A (2026-08-07): pre-checks the CLI runtime BEFORE spawning. On a
+    /// clean machine (no Node, no `verboo` on PATH) the old code fell
+    /// through to `Command::new("verboo")` by elimination and `spawn()`
+    /// returned raw ENOENT ("No such file or directory (os error 2)") —
+    /// which leaked to the UI as "Falha ao iniciar login do CLI Verboo:
+    /// No such file or directory (os error 2)". Now we surface a typed
+    /// `io::Error` with a user-facing message that also points to the
+    /// API-key alternative.
     pub fn spawn_login_child(
     ) -> std::io::Result<(
         std::process::Child,
@@ -210,6 +241,13 @@ impl CliService {
         std::process::ChildStderr,
     )> {
         let spawn = crate::services::cli_spawn::CliSpawn::new(["auth", "login"]);
+        // T-A: explicit Missing check — never let the raw ENOENT leak.
+        if spawn.runtime == crate::services::cli_spawn::CliRuntime::Missing {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                crate::services::cli_spawn::runtime_missing_error(),
+            ));
+        }
         let mut cmd = spawn.command;
         cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -223,8 +261,30 @@ impl CliService {
     }
 
     /// Runs `verboo auth logout`.
+    ///
+    /// T-A (2026-08-07): if the CLI runtime is missing, returns
+    /// `Ok(LoginResult { ok: true, ... })` — there's no CLI session to
+    /// log out of, so the operation "succeeds" (the user's intent —
+    /// clear the session — is satisfied). Avoids leaking ENOENT.
     pub fn logout(&self) -> Result<LoginResult, String> {
         let spawn = crate::services::cli_spawn::CliSpawn::new(["auth", "logout"]);
+        if spawn.runtime == crate::services::cli_spawn::CliRuntime::Missing {
+            // No CLI runtime → no CLI session to clear. Report success.
+            return Ok(LoginResult {
+                ok: true,
+                message: "Sessão Verboo encerrada.".to_string(),
+                status: Some(CliAuthStatus {
+                    logged_in: false,
+                    auth_method: None,
+                    api_provider: None,
+                    email: None,
+                    org_id: None,
+                    org_name: None,
+                    subscription_type: None,
+                    error: None,
+                }),
+            });
+        }
         let mut cmd = spawn.command;
         let output = cmd
             .stdin(std::process::Stdio::null())
@@ -392,6 +452,129 @@ mod tests {
         assert!(parse_auth_status_payload("{\"foo\":\"bar\"}").is_none());
     }
 
+    // ── T-A / T-B (2026-08-07): no-CLI-runtime gate ──────────────────
+    //
+    // On a clean machine (no Node, no `verboo` on PATH) the old code
+    // leaked raw ENOENT ("No such file or directory (os error 2)") to
+    // the UI. T-A: spawn_login_child returns a typed io::Error. T-B:
+    // get_auth_status returns Ok(logged_in: false) — NOT Err — so the
+    // renderer's API-key gate can proceed and unlock without the CLI.
+
+    fn set_no_runtime() {
+        std::env::set_var("VERBOO_TEST_NO_NODE", "1");
+        std::env::set_var("VERBOO_TEST_NO_VERBOO", "1");
+        std::env::remove_var("VERBOO_CLI_PATH");
+        std::env::remove_var("VERBOO_NODE_PATH");
+        std::env::remove_var("NODE_BINARY");
+        std::env::remove_var("NODE");
+    }
+
+    /// T-A: `spawn_login_child` returns a typed `io::Error` when the
+    /// runtime is missing — never raw ENOENT ("os error 2").
+    ///
+    /// Mutation: revert `spawn_login_child` to skip the Missing check
+    /// → `cmd.spawn()` fails with ENOENT → message contains
+    /// "No such file or directory (os error 2)" → assertions FAIL.
+    /// Named mutation:
+    /// `spawn_login_child_leaks_raw_enoent_when_runtime_missing`.
+    #[test]
+    fn spawn_login_child_returns_typed_error_when_runtime_missing() {
+        let _guard =
+            crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_no_runtime();
+
+        let result = CliService::spawn_login_child();
+        assert!(result.is_err(), "spawn must fail when runtime missing");
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("os error"),
+            "error must not contain raw OS errno; got: {msg}"
+        );
+        assert!(
+            !msg.contains("No such file or directory"),
+            "error must not contain raw errno text; got: {msg}"
+        );
+        assert!(
+            msg.contains("Node.js") || msg.contains("verboo"),
+            "error should name the missing runtime; got: {msg}"
+        );
+
+        std::env::remove_var("VERBOO_TEST_NO_NODE");
+        std::env::remove_var("VERBOO_TEST_NO_VERBOO");
+    }
+
+    /// T-B: `get_auth_status` returns `Ok(logged_in: false)` with a
+    /// typed error message when the runtime is missing — NOT `Err`.
+    /// The renderer's login gate calls this to check the session; an
+    /// `Err` left the user stuck at "Verificando sessão local do
+    /// Verboo…" even with a valid API key. Returning `Ok(logged_in:
+    /// false)` lets the renderer proceed to the API-key path.
+    ///
+    /// Mutation: revert `get_auth_status` to skip the Missing check →
+    /// `cmd.output()` fails → `Err("Falha ao executar CLI Verboo:
+    /// No such file or directory (os error 2)")` → `is_ok()` FAILS.
+    /// Named mutation:
+    /// `get_auth_status_returns_err_when_runtime_missing_blocks_api_key`.
+    #[test]
+    fn get_auth_status_returns_ok_not_err_when_runtime_missing() {
+        let _guard =
+            crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_no_runtime();
+
+        let cli = CliService::new();
+        let result = cli.get_auth_status();
+        assert!(
+            result.is_ok(),
+            "get_auth_status must return Ok (not Err) when runtime missing so the API-key gate can proceed"
+        );
+        let status = result.unwrap();
+        assert!(
+            !status.logged_in,
+            "logged_in must be false when runtime missing"
+        );
+        let err_msg = status.error.expect("error field should carry typed message");
+        assert!(
+            !err_msg.contains("os error"),
+            "error field must not contain raw errno; got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("Node.js") || err_msg.contains("verboo"),
+            "error field should name the missing runtime; got: {err_msg}"
+        );
+
+        std::env::remove_var("VERBOO_TEST_NO_NODE");
+        std::env::remove_var("VERBOO_TEST_NO_VERBOO");
+    }
+
+    /// T-A: `logout` returns `Ok(ok: true)` when the runtime is
+    /// missing — there's no CLI session to log out of, so the
+    /// operation "succeeds". Avoids leaking ENOENT.
+    #[test]
+    fn logout_returns_ok_when_runtime_missing() {
+        let _guard =
+            crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_no_runtime();
+
+        let cli = CliService::new();
+        let result = cli.logout();
+        assert!(
+            result.is_ok(),
+            "logout must return Ok when runtime missing (no session to clear)"
+        );
+        let login_result = result.unwrap();
+        assert!(login_result.ok, "logout should report success");
+
+        std::env::remove_var("VERBOO_TEST_NO_NODE");
+        std::env::remove_var("VERBOO_TEST_NO_VERBOO");
+    }
+
     // ── A1: non-blocking login regression tests ──────────────────────
     //
     // QA gate: two tests using a FAKE CLI via VERBOO_CLI_PATH pointing
@@ -425,7 +608,7 @@ mod tests {
             std::fs::set_permissions(&path, perm).unwrap();
         }
         // SAFETY: setting env var in a test is intentional. Tests are
-        // serialized via A1_FAKE_CLI_GUARD so the env var doesn't race
+        // serialized via the shared FAKE_CLI_ENV_GUARD so the env var doesn't race
         // between parallel test threads.
         unsafe {
             std::env::set_var("VERBOO_CLI_PATH", &path);
@@ -441,7 +624,6 @@ mod tests {
     /// between parallel test threads. cargo test runs in parallel
     /// by default; without this guard, test (ii) could pick up the env
     /// var set by test (i) and read the wrong child's stdout.
-    static A1_FAKE_CLI_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     const FAKE_CHILD_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -516,7 +698,7 @@ mod tests {
 
     #[test]
     fn a1_spawn_returns_in_less_than_one_second() {
-        let _guard = A1_FAKE_CLI_GUARD.lock().unwrap();
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         a1_node_precheck();
         // QA criterion (i): if any .output() leaked, this would block
         // on the fake child lifetime. CliSpawn invokes the fake via `node
@@ -556,7 +738,7 @@ mod tests {
 
     #[test]
     fn a1_url_extracted_before_process_exits() {
-        let _guard = A1_FAKE_CLI_GUARD.lock().unwrap();
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         a1_node_precheck();
         // QA criterion (ii): the URL must be reachable via incremental
         // stdout reading BEFORE the fake child lifetime ends. If we waited for

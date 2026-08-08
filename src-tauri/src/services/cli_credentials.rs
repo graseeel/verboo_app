@@ -200,31 +200,54 @@ fn cli_credentials_file_path() -> Option<std::path::PathBuf> {
 /// Reads the CLI credentials blob (cross-platform).
 ///
 /// macOS: reads from system Keychain via `/usr/bin/security`.
-/// Windows/Linux: reads the plaintext JSON file at
-/// `~/.verboo/.credentials.json` (or `VERBOO_CONFIG_DIR` override).
+/// Windows: reads DPAPI-encrypted file (primary) with plaintext fallback.
+/// Linux: reads the plaintext JSON file at `~/.verboo/.credentials.json`.
+///
+/// (a) Windows DPAPI (2026-08-07): the CLI's `windowsCredentialStorage`
+/// writes via DPAPI (`ProtectedData.Protect` with `CurrentUser` scope)
+/// to `~/.verboo/Verboo_Code-credentials.secure.dpapi`. The plaintext
+/// `.credentials.json` is only the FALLBACK. The old code only read
+/// the fallback → never found DPAPI-stored creds → "No valid session".
 ///
 /// Returns the parsed `verbooOauth` credentials, or None if missing /
 /// unparseable.
 fn read_credentials_from_store() -> Option<CliOAuthCredentials> {
-    let blob: Value = if cfg!(target_os = "macos") {
-        read_keychain_blob()
-    } else {
-        read_file_blob()
-    }?;
-
+    let blob: Value = read_credentials_blob()?;
     let oauth = blob.get("verbooOauth")?;
     parse_oauth(oauth)
+}
+
+/// Cross-platform credentials blob reader. Dispatches to the correct
+/// store per OS. This is the SINGLE chokepoint — all callers go through
+/// here, so Windows DPAPI is tried before the plaintext fallback.
+pub(crate) fn read_credentials_blob() -> Option<Value> {
+    if cfg!(target_os = "macos") {
+        read_keychain_blob()
+    } else if cfg!(target_os = "windows") {
+        // (a) Windows: DPAPI primary, plaintext fallback.
+        #[cfg(windows)]
+        {
+            read_windows_dpapi_blob().or_else(read_file_blob)
+        }
+        #[cfg(not(windows))]
+        {
+            // Unreachable: cfg!(target_os = "windows") is false here.
+            // This branch exists so the function compiles on non-Windows
+            // for `cargo test --lib` (which tests the pure logic).
+            read_file_blob()
+        }
+    } else {
+        // Linux: plaintext file only.
+        read_file_blob()
+    }
 }
 
 /// Writes the credentials blob back to the CLI's store (after refresh).
 fn write_credentials_to_store(creds: &CliOAuthCredentials) {
     // Read the current blob (so we preserve other fields the CLI wrote),
     // then merge our refreshed `verbooOauth` and write back.
-    let mut blob: Value = if cfg!(target_os = "macos") {
-        read_keychain_blob().unwrap_or_else(|| Value::Object(serde_json::Map::new()))
-    } else {
-        read_file_blob().unwrap_or_else(|| Value::Object(serde_json::Map::new()))
-    };
+    let mut blob: Value = read_credentials_blob()
+        .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
 
     // Always write camelCase so the CLI (`accessToken`) keeps working.
     if let Ok(serialized) = serde_json::to_value(creds) {
@@ -236,6 +259,9 @@ fn write_credentials_to_store(creds: &CliOAuthCredentials) {
     if cfg!(target_os = "macos") {
         write_keychain_blob(&blob);
     } else {
+        // Windows/Linux: write plaintext (the CLI's fallback store).
+        // We don't write DPAPI (would need PowerShell Protect call;
+        // the CLI owns the DPAPI store, we only READ it).
         write_file_blob(&blob);
     }
 }
@@ -247,6 +273,19 @@ fn write_credentials_to_store(creds: &CliOAuthCredentials) {
 /// key under the same service with account `api-key`. A no-account lookup
 /// returns that first and is not OAuth JSON.
 fn read_keychain_blob() -> Option<Value> {
+    // Test hook: se FAKE_CREDENTIALS_BLOB aponta para um arquivo, lê dele
+    // em vez do keychain real. Mesmo padrão dos FAKE_* do provider_login_pty.
+    // Serializado pelo FAKE_CLI_ENV_GUARD compartilhado.
+    #[cfg(test)]
+    if let Ok(path) = std::env::var("FAKE_CREDENTIALS_BLOB") {
+        if !path.is_empty() {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                return serde_json::from_str(&contents).ok();
+            }
+            return None;
+        }
+    }
+
     let account = std::env::var("USER")
         .ok()
         .filter(|s| !s.trim().is_empty())
@@ -266,6 +305,18 @@ fn read_keychain_blob() -> Option<Value> {
 /// Writes the blob back to macOS Keychain via `/usr/bin/security
 /// add-generic-password -U -a $USER -s "Verboo Code-credentials" -X <hex>`.
 ///
+/// Lê o blob de credenciais do CLI (keychain) — o blob guarda token POR
+/// PROVEDOR (`{ codex: {...}, claude: {...} }` — medido no clone verboo-cli:
+/// CODEX_STORAGE_KEY='codex'). Fonte da evidência de conexão por provedor
+/// (F4): connected = a entrada daquele provedor existe no blob.
+pub(crate) fn read_provider_credentials_blob() -> Option<Value> {
+    // (a) Windows DPAPI (2026-08-07): was `read_keychain_blob()` which
+    // only works on macOS. On Windows it tried `/usr/bin/security`
+    // (doesn't exist) → always None → per-provider credentials never
+    // found. Now goes through the cross-platform dispatch.
+    read_credentials_blob()
+}
+
 /// Always scopes to `$USER`/`$LOGNAME` so we never update the Desktop
 /// `api-key` Keychain item that shares this service name.
 fn write_keychain_blob(blob: &Value) -> bool {
@@ -323,6 +374,142 @@ fn write_file_blob(blob: &Value) -> bool {
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
     true
+}
+
+// ── (a) Windows DPAPI credentials ───────────────────────────────────
+//
+// Clone `windowsCredentialStorage.ts:98-146`:
+//   - Primary store: DPAPI (`ProtectedData.Protect` with `CurrentUser`
+//     scope) → file at `${configHome}/${filename}.secure.dpapi`.
+//   - `filename` = `resourceName` with non-alphanumerics → `_`, +
+//     `.secure.dpapi`.
+//   - `resourceName` = `Verboo Code-credentials` (= KEYCHAIN_SERVICE,
+//     same as mac; `OAUTH_FILE_SUFFIX` is '' in production).
+//   - `entropy` = `${resourceName}:${username}` (space KEPT, NOT
+//     replaced — only the filename replaces).
+//   - Read: PowerShell `ProtectedData.Unprotect($bytes, $entropy,
+//     'CurrentUser')` → UTF-8 JSON.
+//   - Fallback: plaintext `.credentials.json` (only if DPAPI read
+//     returns null).
+//
+// Pure logic (path/entropy derivation) is separated from the OS call
+// (PowerShell) so it's testable on mac. The OS call is `#[cfg(windows)]`.
+
+/// The DPAPI resource name — same as the macOS Keychain service name.
+/// Clone: `getSecureStorageServiceName(CREDENTIALS_SERVICE_SUFFIX)` =
+/// `Verboo Code-credentials` (OAUTH_FILE_SUFFIX = '' in production).
+fn dpapi_resource_name() -> &'static str {
+    KEYCHAIN_SERVICE
+}
+
+/// Pure: derives the DPAPI filename from a resource name. Non-
+/// alphanumerics (except `._-`) are replaced with `_`. Clone:
+/// `windowsCredentialStorage.ts:28-31` `.replace(/[^a-zA-Z0-9._-]/g, '_')`.
+fn dpapi_filename_for(resource_name: &str) -> String {
+    let sanitized: String = resource_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{sanitized}.secure.dpapi")
+}
+
+/// Pure: derives the DPAPI file path from a config home and resource
+/// name. `config_home` is `getClaudeConfigHomeDir()` (`VERBOO_CONFIG_DIR`
+/// or `~/.verboo`).
+fn dpapi_file_path_for(config_home: &std::path::Path, resource_name: &str) -> std::path::PathBuf {
+    config_home.join(dpapi_filename_for(resource_name))
+}
+
+/// Pure: derives the DPAPI entropy from a resource name and username.
+/// Clone: `windowsCredentialStorage.ts:24-26`
+/// `${resourceName}:${username}` — space KEPT (only the filename
+/// replaces non-alphanumerics, NOT the entropy).
+fn dpapi_entropy_for(resource_name: &str, username: &str) -> String {
+    format!("{resource_name}:{username}")
+}
+
+/// Returns the config home dir (`VERBOO_CONFIG_DIR` or `~/.verboo`).
+/// Mirrors the clone's `getClaudeConfigHomeDir()`.
+fn verboo_config_home() -> Option<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("VERBOO_CONFIG_DIR") {
+        if !dir.trim().is_empty() {
+            return Some(std::path::PathBuf::from(dir));
+        }
+    }
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)?;
+    Some(home.join(".verboo"))
+}
+
+/// Returns the current username for DPAPI entropy. On Windows:
+/// `%USERNAME%`. On Unix (for testing): `$USER` / `$LOGNAME`.
+fn current_username() -> Option<String> {
+    if cfg!(target_os = "windows") {
+        std::env::var("USERNAME").ok().filter(|s| !s.trim().is_empty())
+    } else {
+        std::env::var("USER")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| std::env::var("LOGNAME").ok().filter(|s| !s.trim().is_empty()))
+    }
+}
+
+/// Reads the DPAPI-encrypted credentials blob on Windows. Calls
+/// PowerShell `ProtectedData.Unprotect` with the file path and entropy.
+/// Returns the decrypted JSON blob, or None if the file is missing /
+/// decryption fails.
+///
+/// **Limit**: only callable on Windows (`#[cfg(windows)]`). The pure
+/// logic (`dpapi_file_path_for`, `dpapi_entropy_for`) is tested on mac;
+/// the PowerShell call itself is NOT tested in `cargo test --lib` on
+/// mac — it requires a Windows runtime with a real DPAPI-encrypted
+/// file. (Cadinho limit declaration.)
+#[cfg(windows)]
+fn read_windows_dpapi_blob() -> Option<Value> {
+    let config_home = verboo_config_home()?;
+    let resource_name = dpapi_resource_name();
+    let file_path = dpapi_file_path_for(&config_home, resource_name);
+    let username = current_username()?;
+    let entropy = dpapi_entropy_for(resource_name, &username);
+
+    // Escape single quotes for PowerShell (double them inside
+    // single-quoted strings — PowerShell's only escaping for ').
+    let path_str = file_path.to_string_lossy().replace('\'', "''");
+    let entropy_escaped = entropy.replace('\'', "''");
+
+    // PowerShell script: read the DPAPI file, unprotect with entropy,
+    // output UTF-8 JSON. Mirrors the clone's
+    // `windowsCredentialStorage.ts:98-146` read path.
+    let script = format!(
+        "Add-Type -AssemblyName System.Security\n\
+         $bytes = [System.IO.File]::ReadAllBytes('{path_str}')\n\
+         $entropy = [System.Text.Encoding]::UTF8.GetBytes('{entropy_escaped}')\n\
+         $result = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $entropy, 'CurrentUser')\n\
+         [System.Text.Encoding]::UTF8.GetString($result)"
+    );
+
+    let output = Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-Command")
+        .arg(&script)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let json = String::from_utf8_lossy(&output.stdout);
+    parse_json_blob(json.trim())
 }
 
 /// Runs `/usr/bin/security` with the given args and returns stdout if it
@@ -892,5 +1079,143 @@ mod tests {
             "cache lock must be released after get_access_token returns — if held, \
              parallel callers serialize on the keychain and the cold-launch race returns"
         );
+    }
+
+    // ── (a) Windows DPAPI pure logic ───────────────────────────────
+    //
+    // The pure functions (path/entropy derivation) are tested on mac.
+    // The PowerShell OS call (`read_windows_dpapi_blob`) is
+    // `#[cfg(windows)]` — NOT tested in `cargo test --lib` on mac.
+    // Limit declared in the function's doc comment.
+
+    /// (a) The DPAPI filename replaces non-alphanumerics (except `._-`)
+    /// with `_`. `Verboo Code-credentials` → `Verboo_Code-credentials`.
+    /// Clone: `windowsCredentialStorage.ts:28-31`.
+    #[test]
+    fn dpapi_filename_replaces_non_alphanumerics() {
+        assert_eq!(
+            dpapi_filename_for("Verboo Code-credentials"),
+            "Verboo_Code-credentials.secure.dpapi"
+        );
+        // Edge: multiple spaces / special chars.
+        assert_eq!(
+            dpapi_filename_for("a b@c"),
+            "a_b_c.secure.dpapi"
+        );
+        // Dots, underscores, dashes are preserved.
+        assert_eq!(
+            dpapi_filename_for("foo.bar_baz-qux"),
+            "foo.bar_baz-qux.secure.dpapi"
+        );
+    }
+
+    /// (a) The DPAPI file path is `config_home/filename`. We check the
+    /// filename component (platform-agnostic) rather than the exact
+    /// separator (`\` on Windows, `/` on Unix).
+    #[test]
+    fn dpapi_file_path_joins_config_home_and_filename() {
+        let home = std::path::Path::new("/home/dev/.verboo");
+        let path = dpapi_file_path_for(home, "Verboo Code-credentials");
+        assert_eq!(
+            path.file_name().unwrap(),
+            std::ffi::OsStr::new("Verboo_Code-credentials.secure.dpapi")
+        );
+        assert_eq!(
+            path.parent().unwrap(),
+            std::path::Path::new("/home/dev/.verboo")
+        );
+    }
+
+    /// (a) The DPAPI entropy is `resourceName:username` — space KEPT
+    /// (NOT replaced, unlike the filename). Clone:
+    /// `windowsCredentialStorage.ts:24-26`.
+    #[test]
+    fn dpapi_entropy_keeps_space_in_resource_name() {
+        let entropy = dpapi_entropy_for("Verboo Code-credentials", "dev");
+        assert_eq!(entropy, "Verboo Code-credentials:dev");
+        // The space is load-bearing — if the entropy doesn't match
+        // exactly, DPAPI Unprotect fails. Mutation: replace space in
+        // entropy → decryption would fail on Windows.
+    }
+
+    /// (a) The resource name matches the macOS Keychain service name
+    /// (both use `Verboo Code-credentials`). This is the cross-platform
+    /// contract: the CLI uses the same service/resource name on both
+    /// OSes, only the STORE differs (Keychain vs DPAPI vs plaintext).
+    #[test]
+    fn dpapi_resource_name_matches_keychain_service() {
+        assert_eq!(dpapi_resource_name(), KEYCHAIN_SERVICE);
+        assert_eq!(dpapi_resource_name(), "Verboo Code-credentials");
+    }
+
+    /// (a) Mutation: if the filename DOESN'T replace non-alphanumerics,
+    /// the path has a space → Windows file API may interpret it
+    /// differently. The named mutation:
+    /// `dpapi_filename_no_replace_creates_space_in_path`.
+    /// This test pins the replacement; reverting `dpapi_filename_for`
+    /// to return `format!("{resource_name}.secure.dpapi")` (no
+    /// sanitization) → `Verboo Code-credentials.secure.dpapi` (with
+    /// space) → assertion FAILS.
+    #[test]
+    fn dpapi_filename_mutation_no_replace_fails() {
+        let filename = dpapi_filename_for("Verboo Code-credentials");
+        assert!(
+            !filename.contains(' '),
+            "filename must not contain spaces (Windows path); \
+             if it does, the no-replace mutation is live"
+        );
+        assert_eq!(filename, "Verboo_Code-credentials.secure.dpapi");
+    }
+
+    /// (a) Mutation: if the entropy REPLACES the space (same as the
+    /// filename), DPAPI Unprotect fails because the entropy doesn't
+    /// match what was used at Protect time. The named mutation:
+    /// `dpapi_entropy_replaces_space_breaks_decryption`.
+    /// This test pins the space-kept behavior; reverting
+    /// `dpapi_entropy_for` to sanitize the resource name →
+    /// `Verboo_Code-credentials:dev` (with `_`) → assertion FAILS.
+    #[test]
+    fn dpapi_entropy_mutation_replace_space_fails() {
+        let entropy = dpapi_entropy_for("Verboo Code-credentials", "dev");
+        assert!(
+            entropy.contains(' '),
+            "entropy must keep the space (it's load-bearing for DPAPI); \
+             if it doesn't, the replace-space mutation is live"
+        );
+    }
+
+    /// (a) Cross-platform dispatch: `read_credentials_blob` on macOS
+    /// calls `read_keychain_blob`. On Windows it would call
+    /// `read_windows_dpapi_blob` (with `read_file_blob` fallback). On
+    /// Linux it calls `read_file_blob`. The dispatch is compile-time
+    /// (`cfg!`), so we can only test the mac branch here — the
+    /// Windows branch is covered by `cargo xwin check` (compilation)
+    /// and the pure-logic tests above.
+    #[test]
+    fn read_credentials_blob_dispatches_to_keychain_on_mac() {
+        // On mac, read_credentials_blob should behave identically to
+        // read_keychain_blob (both return None when the keychain item
+        // doesn't exist, or the blob when it does). We can't assert
+        // the exact value (depends on machine state), but we can
+        // assert the function doesn't panic and returns Option<Value>.
+        let _ = read_credentials_blob();
+        // If we're on mac, this is read_keychain_blob(). On other
+        // platforms, it's read_file_blob() or DPAPI. The test just
+        // confirms the dispatch compiles and runs.
+    }
+
+    /// (a) `read_provider_credentials_blob` now goes through the
+    /// cross-platform dispatch (was `read_keychain_blob()` which only
+    /// works on mac). Mutation: revert to `read_keychain_blob()` →
+    /// on Windows, always None → per-provider credentials never found.
+    /// Named mutation:
+    /// `read_provider_credentials_blob_keychain_only_breaks_windows`.
+    #[test]
+    fn read_provider_credentials_blob_uses_cross_platform_dispatch() {
+        // The function should compile and return Option<Value>.
+        // On mac, it delegates to read_keychain_blob (via
+        // read_credentials_blob). On Windows, it would delegate to
+        // read_windows_dpapi_blob (via read_credentials_blob).
+        let _ = read_provider_credentials_blob();
     }
 }

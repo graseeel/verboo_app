@@ -1317,7 +1317,10 @@ impl TurnService {
         };
         let mut args = build_cli_args(&request, &prompt, resume_id.as_deref(), use_stream_json);
 
-        let working_directory = safe_runtime_working_directory(&request.working_directory);
+        let working_directory = safe_runtime_working_directory(
+            &request.working_directory,
+            app_data_dir.as_deref(),
+        );
         let token = resolve_token(&credentials);
         let injected_oauth_token = token
             .as_deref()
@@ -1839,13 +1842,17 @@ impl TurnService {
         // background dev server behind) consume SIGINT without exiting. Give
         // the process a short graceful window, then guarantee that the turn
         // closes so the renderer can receive Done/Error and leave busy state.
+        // `terminate_process_group` kills the WHOLE group (CLI + subagents),
+        // not just the direct child — matches the `interrupt_child` group
+        // signal above so a subagent that survived SIGINT doesn't survive
+        // the hard-kill either.
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(750));
             let Ok(mut child) = child_handle.lock() else {
                 return;
             };
             if matches!(child.try_wait(), Ok(None)) {
-                let _ = child.kill();
+                let _ = crate::services::child_signal::terminate_process_group(&mut child);
             }
         });
         Ok(true)
@@ -2278,7 +2285,7 @@ pub(crate) fn build_prompt_internal(request: &AgentTurnRequest, is_resume: bool)
     }
 
     let language = request.response_language.unwrap_or(LanguageCode::EnUs);
-    let working_directory = safe_runtime_working_directory(&request.working_directory);
+    let working_directory = safe_runtime_working_directory(&request.working_directory, None);
     let _ = request.response_language; // already copied via Copy
 
     // T2-TodoWrite-i18n (2026-07-31): the TodoWrite language instruction
@@ -2685,12 +2692,41 @@ pub(crate) fn resolve_effort_env(
     resolve_effort_arg(effort_override, reasoning)
 }
 
-fn safe_runtime_working_directory(working_directory: &str) -> String {
+/// Resolves the working directory for a CLI chat spawn.
+///
+/// (b) Chat novo cwd neutro (2026-08-07): when the cwd is empty/"/"/"."
+/// OR equals the app's own data dir, redirect to a NEUTRAL empty workdir
+/// under app_data_dir. The old code returned `dirs::home_dir()` for empty
+/// cwd — on Windows the renderer passes `app_data_dir` for new chats, and
+/// the CLI scans it (listing resources/, etc.) instead of starting the
+/// chat. The neutral workdir is empty → the CLI finds nothing to scan →
+/// the prompt appears immediately. Mirrors the provider-login pattern
+/// (lib.rs:2085-2096).
+fn safe_runtime_working_directory(
+    working_directory: &str,
+    app_data_dir: Option<&std::path::Path>,
+) -> String {
     let trimmed = working_directory.trim();
-    if trimmed.is_empty() || trimmed == "/" || trimmed == "." {
-        dirs::home_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/".to_string())
+    let is_neutral_placeholder = trimmed.is_empty()
+        || trimmed == "/"
+        || trimmed == ".";
+    // Also redirect when the cwd IS the app's own data dir (the renderer
+    // passes it for new chats). Compare canonically to handle trailing
+    // slashes / symlinks.
+    let is_app_data_dir = app_data_dir
+        .map(|d| {
+            let cwd_path = std::path::Path::new(trimmed);
+            cwd_path == d
+        })
+        .unwrap_or(false);
+    if is_neutral_placeholder || is_app_data_dir {
+        // Neutral empty workdir under app_data_dir (created on demand).
+        // Fallback to temp_dir when app_data_dir is None (tests/CI).
+        let neutral = app_data_dir
+            .map(|d| d.join("chat-workdir"))
+            .unwrap_or_else(|| std::env::temp_dir().join("verboo-chat"));
+        let _ = std::fs::create_dir_all(&neutral);
+        neutral.to_string_lossy().to_string()
     } else {
         trimmed.to_string()
     }
@@ -2830,18 +2866,24 @@ fn attachment_kind_label(kind: &AttachmentKind) -> &'static str {
         AttachmentKind::Video => "video",
         AttachmentKind::File => "file",
         AttachmentKind::BrowserAnnotation => "browser annotation",
+        AttachmentKind::SimulatorAnnotation => "simulator annotation",
     }
 }
 
 fn is_visual_attachment(attachment: &AttachmentMeta) -> bool {
     matches!(
         attachment.kind,
-        AttachmentKind::Image | AttachmentKind::BrowserAnnotation
+        AttachmentKind::Image
+            | AttachmentKind::BrowserAnnotation
+            | AttachmentKind::SimulatorAnnotation
     )
 }
 
 fn merge_vision_description(attachment: &mut AttachmentMeta, description: String) {
-    if matches!(attachment.kind, AttachmentKind::BrowserAnnotation) {
+    if matches!(
+        attachment.kind,
+        AttachmentKind::BrowserAnnotation | AttachmentKind::SimulatorAnnotation
+    ) {
         if let Some(structured_context) = attachment
             .extracted_text
             .as_deref()
@@ -4367,18 +4409,102 @@ mod tests {
 
     #[test]
     fn safe_runtime_working_directory_handles_empty() {
-        let home = dirs::home_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/".to_string());
-        // Empty/slash/dot fall back to the user's home dir
-        assert_eq!(safe_runtime_working_directory(""), home);
-        assert_eq!(safe_runtime_working_directory("/"), home);
-        assert_eq!(safe_runtime_working_directory("."), home);
+        // Without app_data_dir, empty/slash/dot fall back to a neutral
+        // temp dir (not home_dir — that was the old behavior that made
+        // the CLI scan the user's home on Windows).
+        let neutral = std::env::temp_dir().join("verboo-chat");
+        let neutral_str = neutral.to_string_lossy().to_string();
+        // Empty/slash/dot → neutral workdir
+        assert_eq!(safe_runtime_working_directory("", None), neutral_str);
+        assert_eq!(safe_runtime_working_directory("/", None), neutral_str);
+        assert_eq!(safe_runtime_working_directory(".", None), neutral_str);
         // Real paths are kept as-is
         assert_eq!(
-            safe_runtime_working_directory("/Users/test/code"),
+            safe_runtime_working_directory("/Users/test/code", None),
             "/Users/test/code"
         );
+    }
+
+    /// (b) Chat novo cwd neutro: when app_data_dir is provided, empty
+    /// cwd redirects to `app_data_dir/chat-workdir` (NOT home_dir).
+    /// The old code returned `home_dir()` → the CLI scanned the user's
+    /// home (or app_data_dir passed by the renderer) and listed
+    /// resources/ instead of starting the chat.
+    #[test]
+    fn safe_runtime_working_directory_neutral_when_app_data_dir_set() {
+        let app_data = std::env::temp_dir().join("verboo_test_appdata");
+        let expected = app_data.join("chat-workdir");
+        let expected_str = expected.to_string_lossy().to_string();
+
+        // Empty cwd → neutral workdir under app_data_dir.
+        assert_eq!(
+            safe_runtime_working_directory("", Some(&app_data)),
+            expected_str
+        );
+        // "/" and "." → same neutral workdir.
+        assert_eq!(
+            safe_runtime_working_directory("/", Some(&app_data)),
+            expected_str
+        );
+        assert_eq!(
+            safe_runtime_working_directory(".", Some(&app_data)),
+            expected_str
+        );
+
+        // The neutral workdir is created on demand.
+        assert!(
+            expected.exists(),
+            "neutral workdir should be created on demand"
+        );
+        let _ = std::fs::remove_dir_all(&app_data);
+    }
+
+    /// (b) When the cwd IS the app's own data dir (the renderer passes
+    /// it for new chats), redirect to the neutral workdir. This is the
+    /// specific field-report scenario: "cwd = AppData\Local\Verboo Code,
+    /// modelo listando resources/".
+    #[test]
+    fn safe_runtime_working_directory_redirects_app_data_dir_to_neutral() {
+        let app_data = std::env::temp_dir().join("verboo_test_appdata2");
+        let expected = app_data.join("chat-workdir");
+        let expected_str = expected.to_string_lossy().to_string();
+        let app_data_str = app_data.to_string_lossy().to_string();
+
+        // cwd == app_data_dir → redirect to neutral.
+        assert_eq!(
+            safe_runtime_working_directory(&app_data_str, Some(&app_data)),
+            expected_str,
+            "cwd == app_data_dir must redirect to neutral workdir, not be used as-is"
+        );
+
+        // A real project path is kept as-is.
+        assert_eq!(
+            safe_runtime_working_directory("/Users/test/my-project", Some(&app_data)),
+            "/Users/test/my-project"
+        );
+
+        let _ = std::fs::remove_dir_all(&app_data);
+    }
+
+    /// (b) Mutation: revert to ignore app_data_dir (always return
+    /// home_dir for empty cwd) → the neutral workdir assertion FAILS.
+    /// Named mutation:
+    /// `safe_runtime_working_directory_ignores_app_data_dir_uses_home`.
+    #[test]
+    fn safe_runtime_working_directory_mutation_ignore_app_data_dir_fails() {
+        let app_data = std::env::temp_dir().join("verboo_test_appdata3");
+        let neutral = app_data.join("chat-workdir");
+        let neutral_str = neutral.to_string_lossy().to_string();
+        // With app_data_dir set, empty cwd must return the neutral
+        // workdir, NOT home_dir. If the mutation reverts to home_dir,
+        // this assertion fails (home_dir != neutral).
+        let result = safe_runtime_working_directory("", Some(&app_data));
+        assert_eq!(
+            result, neutral_str,
+            "empty cwd with app_data_dir must return neutral workdir; \
+             if it returns home_dir, the ignore-app_data_dir mutation is live"
+        );
+        let _ = std::fs::remove_dir_all(&app_data);
     }
 
     #[test]
@@ -4497,6 +4623,22 @@ mod tests {
         assert!(text.contains("Selector: #hero-cta"));
         assert!(text.contains("<visual-description>"));
         assert!(text.contains("violet outlined button"));
+    }
+
+    #[test]
+    fn vision_description_preserves_simulator_annotation_instructions() {
+        let mut annotation = attachment_with_text(
+            "User note (authoritative instruction): Increase the spacing.\nSelected component: Button “Save”.",
+        );
+        annotation.kind = AttachmentKind::SimulatorAnnotation;
+
+        merge_vision_description(&mut annotation, "A native Save button is visible.".into());
+
+        let text = annotation.extracted_text.unwrap();
+        assert!(text.contains("authoritative instruction"));
+        assert!(text.contains("Button “Save”"));
+        assert!(text.contains("<visual-description>"));
+        assert!(text.contains("native Save button"));
     }
 
     #[test]

@@ -37,6 +37,12 @@ pub enum CliRuntime {
     EnvNode { node_path: PathBuf, cli_mjs_path: PathBuf },
     /// Spawned `verboo` by name — OS resolves PATH. Last-resort fallback.
     GlobalVerboo,
+    /// No Node runtime AND no `verboo` on PATH. The CLI cannot be spawned.
+    /// This is an EXPLICIT state — not `GlobalVerboo` by elimination (the
+    /// "affirmative by absence" anti-pattern that leaked raw `os error 2`
+    /// to the UI on clean machines). Callers MUST check before spawning
+    /// and surface a typed error, never the OS errno.
+    Missing,
 }
 
 impl fmt::Display for CliRuntime {
@@ -59,6 +65,7 @@ impl fmt::Display for CliRuntime {
                 )
             }
             CliRuntime::GlobalVerboo => f.write_str("global-verboo(PATH)"),
+            CliRuntime::Missing => f.write_str("missing(no Node, no verboo on PATH)"),
         }
     }
 }
@@ -126,19 +133,76 @@ impl CliSpawn {
             }
         }
 
-        // Fallback: global `verboo` on PATH.
-        let mut command = Command::new("verboo");
-        for a in &args_vec {
-            command.arg(a);
-        }
-        augment_path_env(&mut command);
-        protect_user_cli_env(&mut command);
-        apply_creation_flags(&mut command);
-        CliSpawn {
-            command,
-            runtime: CliRuntime::GlobalVerboo,
+        // Fallback: global `verboo` on PATH. EXPLICIT check — if `verboo`
+        // is NOT on PATH, return `CliRuntime::Missing` instead of
+        // `GlobalVerboo` by elimination. The old code returned
+        // `GlobalVerboo` unconditionally and let `cmd.spawn()` fail with
+        // raw ENOENT ("os error 2") on clean machines — the
+        // "affirmative state by absence of evidence" anti-pattern.
+        //
+        // (Cadinho ressalva 1, 2026-08-07): `verboo` on PATH is typically
+        // an npm-installed Node-script shim — it needs Node to actually
+        // run. If `verboo` exists but Node is absent, the shim exists,
+        // the check passes, and the spawn dies with the same ENOENT we
+        // just eliminated. So `GlobalVerboo` requires BOTH `verboo` on
+        // PATH AND a usable Node. Without Node → `Missing`.
+        if verboo_on_path() && node_runtime::resolve_node_path().is_some() {
+            let mut command = Command::new("verboo");
+            for a in &args_vec {
+                command.arg(a);
+            }
+            augment_path_env(&mut command);
+            protect_user_cli_env(&mut command);
+            apply_creation_flags(&mut command);
+            CliSpawn {
+                command,
+                runtime: CliRuntime::GlobalVerboo,
+            }
+        } else {
+            // No Node, no `verboo` on PATH → explicit Missing. The
+            // command is a placeholder that will fail if spawned, but
+            // callers MUST check `runtime == Missing` BEFORE spawning
+            // and surface a typed error via `runtime_missing_error()`.
+            let mut command = Command::new("verboo");
+            for a in &args_vec {
+                command.arg(a);
+            }
+            apply_creation_flags(&mut command);
+            CliSpawn {
+                command,
+                runtime: CliRuntime::Missing,
+            }
         }
     }
+
+    /// Env entries aplicados a TODO spawn do CLI (PATH augmentado +
+    /// DISABLE_AUTOUPDATER=1). Fonte única — o PTY bridge (F4) precisa montar
+    /// um portable_pty CommandBuilder em vez de std Command e usa esta lista.
+    pub fn cli_env_entries() -> Vec<(String, String)> {
+        cli_spawn_env_entries()
+    }
+}
+
+/// Fonte única do env (usada pelo `augment_path_env` e pelo
+/// `CliSpawn::cli_env_entries`).
+fn cli_spawn_env_entries() -> Vec<(String, String)> {
+    let existing = std::env::var_os("PATH").unwrap_or_default();
+    let mut entries: Vec<PathBuf> = node_runtime::platform_specific_path_entries();
+
+    let mut current: Vec<PathBuf> = std::env::split_paths(&existing)
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect();
+    entries.append(&mut current);
+
+    // Dedupe while preserving order.
+    let mut seen = std::collections::HashSet::new();
+    entries.retain(|p| seen.insert(p.clone()));
+
+    let new_path = std::env::join_paths(entries.iter()).unwrap_or(existing);
+    vec![
+        ("PATH".to_string(), new_path.to_string_lossy().to_string()),
+        ("DISABLE_AUTOUPDATER".to_string(), "1".to_string()),
+    ]
 }
 
 /// Searches for the bundled `cli.mjs` resource next to the app binary.
@@ -193,20 +257,82 @@ pub fn bundled_cli_version() -> Option<String> {
 /// PATH from the launcher, so children need this help. Mirrors Electron's
 /// `createNodeRuntimeEnv`.
 fn augment_path_env(command: &mut Command) {
-    let existing = std::env::var_os("PATH").unwrap_or_default();
-    let mut entries: Vec<PathBuf> = node_runtime::platform_specific_path_entries();
+    for (key, value) in cli_spawn_env_entries() {
+        if key == "PATH" {
+            command.env(key, value);
+        }
+    }
+}
 
-    let mut current: Vec<PathBuf> = std::env::split_paths(&existing)
-        .filter(|p| !p.as_os_str().is_empty())
-        .collect();
-    entries.append(&mut current);
+/// Checks whether a `verboo` executable is resolvable on PATH. Used by
+/// `CliSpawn::new` to distinguish `GlobalVerboo` (verboo exists) from
+/// `Missing` (neither Node nor verboo) — the distinction the old
+/// by-elimination code erased, leaking raw `os error 2` to the UI.
+fn verboo_on_path() -> bool {
+    // Test-only hook: simulate a machine with no `verboo` on PATH.
+    // `#[cfg(test)]` makes this unreachable in release/dev builds.
+    // (Cadinho ressalva 2, 2026-08-07.)
+    #[cfg(test)]
+    if std::env::var_os("VERBOO_TEST_NO_VERBOO").is_some() {
+        return false;
+    }
+    // `which`-like search: don't rely on `Command::new("verboo")` spawn
+    // (that's the path we're trying to AVOID — it fails with ENOENT and
+    // the caller can't tell "no verboo" from "verboo exists but crashed").
+    let path_env = match std::env::var_os("PATH") {
+        Some(p) => p,
+        None => return false,
+    };
+    let ext = if cfg!(windows) { ".exe" } else { "" };
+    for dir in std::env::split_paths(&path_env) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let candidate = dir.join(format!("verboo{ext}"));
+        if node_runtime::is_executable(&candidate) {
+            return true;
+        }
+    }
+    false
+}
 
-    // Dedupe while preserving order.
-    let mut seen = std::collections::HashSet::new();
-    entries.retain(|p| seen.insert(p.clone()));
+/// Returns true if a CLI runtime is available (Node + cli.mjs, or
+/// `verboo` on PATH). Callers that spawn the CLI should check this
+/// BEFORE spawning and surface `runtime_missing_error()` if false,
+/// so the user sees a typed message — never raw `os error 2`.
+///
+/// (Cadinho ressalva 1, 2026-08-07): ALL CLI runtimes require Node —
+/// the npm-installed `verboo` is a Node-script shim. Without Node,
+/// `verboo` on PATH is useless → `false`, not `true`.
+pub fn runtime_available() -> bool {
+    if node_runtime::resolve_node_path().is_none() {
+        // No Node → can't run the CLI, even if `verboo` is on PATH
+        // (it's a Node-script shim that needs Node).
+        return false;
+    }
+    find_bundled_cli_mjs().is_some() || verboo_on_path()
+}
 
-    let new_path = std::env::join_paths(entries.iter()).unwrap_or(existing);
-    command.env("PATH", new_path);
+/// Typed error message for the "no CLI runtime" case. Never contains
+/// the raw OS errno text ("No such file or directory (os error 2)").
+/// The renderer shows this verbatim, so it must be user-facing.
+pub fn runtime_missing_error() -> String {
+    "Node.js não encontrado e o comando \"verboo\" não está no PATH. \
+     Instale o Node.js (https://nodejs.org) ou execute \"npm i -g @verboo/code\" \
+     para usar o login pelo CLI. Como alternativa, use uma chave de API \
+     (Configurações → Provedor)."
+        .to_string()
+}
+
+/// Pre-check: returns `Err(typed_message)` if no CLI runtime is
+/// available, `Ok(())` otherwise. Call before spawning the CLI so
+/// the error is typed, not raw ENOENT.
+pub fn check_runtime_available() -> Result<(), String> {
+    if runtime_available() {
+        Ok(())
+    } else {
+        Err(runtime_missing_error())
+    }
 }
 
 /// Policy: Desktop must **never** mutate the user's global `@verboo/code` install.
@@ -264,7 +390,14 @@ pub fn apply_creation_flags(command: &mut Command) {
 }
 
 #[cfg(not(windows))]
-pub fn apply_creation_flags(_command: &mut Command) {}
+pub fn apply_creation_flags(command: &mut Command) {
+    // On Unix, put the CLI child in its own process group (setpgid(0,0))
+    // so `interrupt_child` / `terminate_process_group` can signal the
+    // whole tree (CLI + forked subagents) via `kill(-pid, ...)`. Without
+    // this, `kill(pid, SIGINT)` only reaches the direct child and
+    // subagents survive Parar (field report: "Parar subagents").
+    crate::services::child_signal::configure_process_group(command);
+}
 
 #[cfg(test)]
 mod tests {
@@ -281,7 +414,10 @@ mod tests {
         // runtime should be GlobalVerboo OR BundledNode (if a bundled file
         // exists from a previous build).
         match spawn.runtime {
-            CliRuntime::GlobalVerboo | CliRuntime::BundledNode { .. } | CliRuntime::EnvNode { .. } => {}
+            CliRuntime::GlobalVerboo
+            | CliRuntime::BundledNode { .. }
+            | CliRuntime::EnvNode { .. }
+            | CliRuntime::Missing => {}
         }
     }
 
@@ -309,4 +445,224 @@ mod tests {
         assert!(s.contains("/usr/local/bin/node"));
         assert!(s.contains("/app/Resources/cli.mjs"));
     }
+
+    #[test]
+    fn display_runtime_missing() {
+        let r = CliRuntime::Missing;
+        assert_eq!(r.to_string(), "missing(no Node, no verboo on PATH)");
+    }
+
+    /// T-A: on a clean machine (no Node, no `verboo` on PATH),
+    /// `CliSpawn::new` returns `CliRuntime::Missing` — NOT
+    /// `GlobalVerboo` by elimination. The old code returned
+    /// `GlobalVerboo` unconditionally and let `cmd.spawn()` fail with
+    /// raw ENOENT ("os error 2") on clean machines.
+    ///
+    /// Mutation: revert `CliSpawn::new` to return `GlobalVerboo`
+    /// unconditionally (remove the `verboo_on_path()` check) →
+    /// `runtime == GlobalVerboo` (not `Missing`) → assertion FAILS.
+    /// Named mutation:
+    /// `cli_spawn_global_verboo_by_elimination_hides_missing`.
+    #[test]
+    fn cli_runtime_missing_when_no_node_and_no_verboo() {
+        let _guard = fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var("VERBOO_TEST_NO_NODE", "1");
+        std::env::set_var("VERBOO_TEST_NO_VERBOO", "1");
+        std::env::remove_var("VERBOO_CLI_PATH");
+        std::env::remove_var("VERBOO_NODE_PATH");
+        std::env::remove_var("NODE_BINARY");
+        std::env::remove_var("NODE");
+
+        let spawn = CliSpawn::new(["auth", "login"]);
+        assert_eq!(
+            spawn.runtime,
+            CliRuntime::Missing,
+            "clean machine (no Node, no verboo) must be Missing, not GlobalVerboo by elimination"
+        );
+
+        std::env::remove_var("VERBOO_TEST_NO_NODE");
+        std::env::remove_var("VERBOO_TEST_NO_VERBOO");
+    }
+
+    /// T-A: `runtime_missing_error()` produces a user-facing message
+    /// that NEVER contains the raw OS errno text. The old code leaked
+    /// "No such file or directory (os error 2)" to the UI.
+    #[test]
+    fn runtime_missing_error_does_not_contain_errno() {
+        let msg = runtime_missing_error();
+        assert!(
+            !msg.contains("os error"),
+            "typed error must not contain raw OS errno; got: {msg}"
+        );
+        assert!(
+            !msg.contains("No such file or directory"),
+            "typed error must not contain raw errno text; got: {msg}"
+        );
+        assert!(
+            msg.contains("Node.js") || msg.contains("verboo"),
+            "typed error should name the missing runtime; got: {msg}"
+        );
+    }
+
+    /// T-A: `check_runtime_available()` returns `Err(typed_message)`
+    /// when no runtime is available — never raw ENOENT.
+    #[test]
+    fn check_runtime_available_returns_err_when_missing() {
+        let _guard = fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var("VERBOO_TEST_NO_NODE", "1");
+        std::env::set_var("VERBOO_TEST_NO_VERBOO", "1");
+
+        let result = check_runtime_available();
+        assert!(result.is_err(), "check must fail when runtime missing");
+        let msg = result.unwrap_err();
+        assert!(
+            !msg.contains("os error"),
+            "error must not contain raw errno; got: {msg}"
+        );
+        assert!(
+            msg.contains("Node.js") || msg.contains("verboo"),
+            "error should name the missing runtime; got: {msg}"
+        );
+
+        std::env::remove_var("VERBOO_TEST_NO_NODE");
+        std::env::remove_var("VERBOO_TEST_NO_VERBOO");
+    }
+
+    /// T-A: `runtime_available()` returns false on a clean machine.
+    #[test]
+    fn runtime_available_false_when_missing() {
+        let _guard = fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var("VERBOO_TEST_NO_NODE", "1");
+        std::env::set_var("VERBOO_TEST_NO_VERBOO", "1");
+        assert!(
+            !runtime_available(),
+            "runtime_available must be false on clean machine"
+        );
+        std::env::remove_var("VERBOO_TEST_NO_NODE");
+        std::env::remove_var("VERBOO_TEST_NO_VERBOO");
+    }
+
+    /// Cadinho ressalva 1 (2026-08-07): `verboo` on PATH is typically
+    /// an npm-installed Node-script shim — it needs Node to run. If
+    /// `verboo` exists but Node is absent, the old code returned
+    /// `GlobalVerboo` (verboo_on_path() true) and the spawn died with
+    /// the same ENOENT we just eliminated. Now `GlobalVerboo` requires
+    /// BOTH `verboo` on PATH AND a usable Node.
+    ///
+    /// This test creates a real `verboo` shim on a temp PATH dir, sets
+    /// `VERBOO_TEST_NO_NODE=1` (Node absent), and asserts
+    /// `CliSpawn::new` returns `Missing` — not `GlobalVerboo`.
+    ///
+    /// Mutation: revert the `GlobalVerboo` check to `verboo_on_path()`
+    /// only (drop the `&& resolve_node_path().is_some()`) →
+    /// `runtime == GlobalVerboo` (not `Missing`) → assertion FAILS.
+    /// Named mutation:
+    /// `global_verboo_without_node_leaks_enoent`.
+    #[cfg(unix)]
+    #[test]
+    fn global_verboo_on_path_without_node_is_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        // Node absent, but verboo_on_path() still checks PATH.
+        std::env::set_var("VERBOO_TEST_NO_NODE", "1");
+        std::env::remove_var("VERBOO_TEST_NO_VERBOO");
+        std::env::remove_var("VERBOO_CLI_PATH");
+        std::env::remove_var("VERBOO_NODE_PATH");
+        std::env::remove_var("NODE_BINARY");
+        std::env::remove_var("NODE");
+
+        // Create a temp dir with a `verboo` shim (executable script).
+        // This simulates the npm-installed CLI: `verboo` exists on PATH
+        // but is a Node-script shim that can't run without Node.
+        let temp_dir = std::env::temp_dir().join(format!(
+            "verboo_test_shim_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let shim = temp_dir.join("verboo");
+        std::fs::write(&shim, "#!/bin/sh\nexec node \"$0\" \"$@\"\n")
+            .expect("write shim");
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod shim");
+
+        // Save PATH, point it at the temp dir so verboo_on_path() finds
+        // the shim.
+        let saved_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", temp_dir.as_os_str());
+
+        let spawn = CliSpawn::new(["auth", "login"]);
+        assert_eq!(
+            spawn.runtime,
+            CliRuntime::Missing,
+            "verboo on PATH but no Node → Missing, not GlobalVerboo \
+             (the shim is a Node script that can't run without Node)"
+        );
+
+        // Restore PATH and clean up.
+        match saved_path {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::env::remove_var("VERBOO_TEST_NO_NODE");
+    }
+
+    /// Cadinho ressalva 1 companion: `runtime_available()` returns
+    /// false when `verboo` is on PATH but Node is absent (same shim
+    /// scenario as above).
+    #[cfg(unix)]
+    #[test]
+    fn runtime_available_false_when_verboo_without_node() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        std::env::set_var("VERBOO_TEST_NO_NODE", "1");
+        std::env::remove_var("VERBOO_TEST_NO_VERBOO");
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "verboo_test_shim2_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let shim = temp_dir.join("verboo");
+        std::fs::write(&shim, "#!/bin/sh\nexec node \"$0\" \"$@\"\n")
+            .expect("write shim");
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod shim");
+        let saved_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", temp_dir.as_os_str());
+
+        assert!(
+            !runtime_available(),
+            "runtime_available must be false when verboo is on PATH but Node is absent"
+        );
+
+        match saved_path {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::env::remove_var("VERBOO_TEST_NO_NODE");
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod fake_cli_env {
+    /// Guard ÚNICO e compartilhado para os testes que mexem na env
+    /// VERBOO_CLI_PATH (e FAKE_* afins). Cada módulo tinha o próprio mutex —
+    /// o cargo test roda os testes de módulos diferentes em paralelo e as
+    /// env vars são globais do processo: a corrida quebrava os testes de
+    /// PTY/auth quando outro módulo trocava o VERBOO_CLI_PATH no meio.
+    pub(crate) static FAKE_CLI_ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 }

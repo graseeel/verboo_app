@@ -17,6 +17,18 @@ use std::path::PathBuf;
 
 /// Resolves the Node binary path, or None if not found.
 pub fn resolve_node_path() -> Option<PathBuf> {
+    // Test-only hook: simulate a machine with no Node installed.
+    // `#[cfg(test)]` makes this unreachable in release/dev builds —
+    // only `cargo test` compiles with `cfg(test)`, so a stray
+    // `VERBOO_TEST_NO_NODE` env var inherited from the parent process
+    // can NEVER make the production app report Missing. (Cadinho
+    // ressalva 2, 2026-08-07: the old `VERBOO_TEST_NO_RUNTIME` check
+    // ran in production code without `cfg(test)` — a name-by-convention
+    // guarantee, not a build guarantee.)
+    #[cfg(test)]
+    if std::env::var_os("VERBOO_TEST_NO_NODE").is_some() {
+        return None;
+    }
     for candidate in candidates() {
         if is_executable(&candidate) {
             return Some(candidate);
@@ -203,7 +215,7 @@ fn push_unique(out: &mut Vec<PathBuf>, p: PathBuf) {
     }
 }
 
-fn is_executable(path: &PathBuf) -> bool {
+pub fn is_executable(path: &PathBuf) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
