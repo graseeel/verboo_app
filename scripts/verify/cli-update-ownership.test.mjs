@@ -49,7 +49,7 @@ test('cross-platform Rust gates prepare every required external runtime', () => 
   const ci = read('.github/workflows/ci-verify.yml')
   const linuxBrowserGate = read('scripts/verify/browser-linux-check.sh')
 
-  assert.equal(ci.match(/verboo-ios-simulator/g)?.length, 4)
+  assert.equal(ci.match(/verboo-ios-simulator/g)?.length, 5)
   assert.match(
     ci,
     /Prepare macOS WebDriverAgent resource[\s\S]*?if: runner\.os == 'macOS'[\s\S]*?copy-wda-resource\.mjs/,
