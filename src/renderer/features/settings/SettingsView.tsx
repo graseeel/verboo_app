@@ -1,5 +1,6 @@
 import {
   ArrowLeft,
+  Blocks,
   Brain,
   Check,
   ChevronDown,
@@ -25,6 +26,7 @@ import type {
   ModelDiscoveryResult,
   PersonalityMode,
   ProfileResult,
+  ProviderAuthStatus,
   SettingsTab,
   ThemeMode,
   UpdateSettings,
@@ -35,6 +37,7 @@ import type {
 import { ProjectInstructionsEditor } from './ProjectInstructionsEditor'
 import { CustomCommandsManager } from './CustomCommandsManager'
 import { ChromeIntegrationSettings } from './ChromeIntegrationSettings'
+import { ProviderIntegrations } from './ProviderIntegrations'
 import { VideoUnderstandingSettings } from './VideoUnderstandingSettings'
 import { LanguageSelector } from '../language/LanguageSelector'
 import { ProfileView } from '../profile/ProfileView'
@@ -56,6 +59,16 @@ export type SettingsViewProps = {
   petSize: number
   profile: ProfileResult
   profileLoading: boolean
+  /** F4: the login bridge universe — one entry per supported provider,
+   *  connected=false included (provider_auth_status). */
+  providerStatuses: ProviderAuthStatus[]
+  /** Provider whose login flow is active (its card shows live progress). */
+  connectingProvider?: string
+  /** Stage of the active login flow, driven by provider-login:event. */
+  providerLoginStage?: 'starting' | 'awaiting_browser'
+  onProviderConnect: (providerId: string) => void
+  /** Aborts the active login flow (provider_login_cancel). */
+  onProviderLoginCancel: () => void
   updateSnapshot?: UpdateSnapshot
   workingDirectory: string
   onPetToggle: () => void
@@ -70,7 +83,7 @@ export type SettingsViewProps = {
   onUserSettingsChange: (patch: Partial<UserSettings>) => Promise<void>
   /** Master switch for the app's TWO sounds (notification + conclusion).
    *  Renderer-persisted (localStorage) — deliberately NOT in
-   *  UserSettings: that contract crosses the Rust bridge (TORNO). */
+   *  UserSettings: that contract crosses the Rust bridge (PERISCOPIO). */
   soundsEnabled: boolean
   onSoundsEnabledChange: (enabled: boolean) => void
   onResetUserSettings: () => Promise<void>
@@ -92,6 +105,11 @@ export function SettingsView({
   petSize,
   profile,
   profileLoading,
+  providerStatuses,
+  connectingProvider,
+  providerLoginStage,
+  onProviderConnect,
+  onProviderLoginCancel,
   updateSnapshot,
   workingDirectory,
   onPetToggle,
@@ -123,6 +141,10 @@ export function SettingsView({
     { id: 'account', label: t('settings.account'), icon: UserCog },
     { id: 'context', label: t('settings.context'), icon: Brain },
     { id: 'security', label: t('settings.security'), icon: Shield },
+    // T11 (owner's order): AI providers get their OWN tab — they sat inside
+    // Integrations (the Chrome tab, browser icon), a subject they don't
+    // belong to. Icon is lucide Blocks, NOT the browser logo.
+    { id: 'providers', label: t('settings.providers'), icon: Blocks },
     { id: 'integrations', label: t('settings.integrations'), icon: ChromeLogoIcon },
   ]
   const accessOptions: Array<{ id: AccessMode; title: string; body: string; tone?: 'danger' }> = [
@@ -663,6 +685,27 @@ export function SettingsView({
               <p>{t('settings.projectInstructionsSubtitle')}</p>
             </div>
             <ProjectInstructionsEditor workingDirectory={workingDirectory} />
+          </section>
+        )}
+
+        {activeTab === 'providers' && (
+          <section className="settings-section-view">
+            <SettingsHeading title={t('settings.providers')} subtitle={t('settings.providers.subtitle')} />
+            {/* T11: the provider cards (connect state, account, Connect/
+                Disconnect, cost note) MOVED here from Integrations — same
+                component, same behavior, new home. The risk-consent dialog
+                rides the connect flow and is rendered at App level.
+                The quota counters (Codex weekly; Claude 5h/weekly/Fable)
+                will LIVE in this tab — their design is Prumo's and lands
+                later. NO placeholder here: an empty box would fake data
+                that does not exist yet (owner's order). */}
+            <ProviderIntegrations
+              statuses={providerStatuses}
+              onConnect={onProviderConnect}
+              connectingProvider={connectingProvider}
+              loginStage={providerLoginStage}
+              onCancelLogin={onProviderLoginCancel}
+            />
           </section>
         )}
 

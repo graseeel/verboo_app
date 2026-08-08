@@ -363,6 +363,7 @@ export type SettingsTab =
   | 'account'
   | 'context'
   | 'security'
+  | 'providers'
   | 'integrations'
 export type PersonalityMode = 'pragmatic' | 'concise' | 'explanatory'
 export type CompletionNotificationMode = 'always' | 'background' | 'never'
