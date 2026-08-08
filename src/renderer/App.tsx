@@ -357,18 +357,33 @@ export function App() {
   const [configLoaded, setConfigLoaded] = useState(false)
   const [credentials, setCredentials] = useState<CredentialStatus>({ hasApiKey: false })
   const [cliAuth, setCliAuth] = useState<CliAuthStatus>({ loggedIn: false })
+  // F4: the login bridge universe (provider_auth_status) — one entry per
+  // supported provider, connected=false included. Empty = unavailable; the
+  // Integrations cards and the selector's dimmed groups degrade, nothing breaks.
+  const [providerAuth, setProviderAuth] = useState<ProviderAuthStatus[]>([])
+  const [connectingProvider, setConnectingProvider] = useState<string | undefined>(undefined)
+  // Live stage of the active login flow, driven by provider-login:event —
+  // feeds the card's progress button (field finding: the card said nothing).
+  const [providerLoginStage, setProviderLoginStage] = useState<'starting' | 'awaiting_browser' | undefined>(undefined)
+  // F4 risk_notice (claude): the Anthropic policy acceptance screen shown
+  // before the browser flow — full notice text, owner decides.
+  const [providerRiskNotice, setProviderRiskNotice] = useState<{ provider: string; message: string } | undefined>(undefined)
   const [profile, setProfile] = useState<ProfileResult>({ status: 'unauthenticated' })
   const [profileLoading, setProfileLoading] = useState(false)
   const [activeView, setActiveView] = useState<AppView>('chat')
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('security')
   const [userSettings, setUserSettings] = useState<UserSettings>(DEFAULT_USER_SETTINGS)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
-  const [noticeAccepted, setNoticeAccepted] = useState(
-    () => window.localStorage.getItem(DEVELOPMENT_NOTICE_KEY) === 'true',
-  )
   const [entryUnlocked, setEntryUnlocked] = useState(false)
   const [authChecking, setAuthChecking] = useState(true)
   const [authError, setAuthError] = useState<string | undefined>()
+  // T5: raw cause of a rejected validateAccess, shown behind a
+  // "Show technical details" toggle in the login warning. The friendly
+  // headline lives in authError; this is the diagnostic, never bare on
+  // the surface. A rejected Rust command (e.g. CLI spawn failed — no
+  // Node installed, field photo M4) used to leave the promise pending
+  // and "Verificando sessão local…" stuck forever.
+  const [authErrorDetail, setAuthErrorDetail] = useState<string | undefined>()
   const { theme, setTheme, cycleTheme } = useTheme()
   const [modelResult, setModelResult] = useState<ModelDiscoveryResult>({
     models: defaultModels,
@@ -1012,6 +1027,41 @@ export function App() {
     return () => { unlisten?.then((fn: () => void) => fn()) }
   }, [])
 
+  // F4: provider login progress (provider-login:event, shape verified in
+  // provider_login_pty.rs:45-58). The CLI owns the browser flow; the renderer
+  // reflects outcomes — connected refreshes the catalog + bridge universe,
+  // error surfaces the message (D1 rule: every failure visible).
+  useEffect(() => {
+    const unlisten = window.verboo.onProviderLoginEvent?.(event => {
+      if (event.state === 'awaiting_browser') {
+        toast(t('settings.provider.awaitingBrowser'), 'info')
+        setProviderLoginStage('awaiting_browser')
+        return
+      }
+      if (event.state === 'risk_notice') {
+        // Policy acceptance screen (claude): open the dialog with the FULL
+        // notice. The flow stays alive — connectingProvider is NOT cleared.
+        setProviderRiskNotice({ provider: event.provider, message: event.message ?? '' })
+        return
+      }
+      setConnectingProvider(undefined)
+      setProviderLoginStage(undefined)
+      setProviderRiskNotice(undefined)
+      if (event.state === 'connected') {
+        void refreshModels(true)
+        void reloadProviderAuth()
+        toast(t('settings.provider.connectedToast', { provider: providerDisplayName(event.provider, t) }))
+      } else if (event.state === 'error') {
+        toast(event.message ?? t('settings.provider.connectError', { message: '' }), 'error')
+      }
+    })
+    // The bridge returns a cleanup fn; anything else (incomplete test mock)
+    // degrades to a no-op destroy.
+    return () => { if (typeof unlisten === 'function') unlisten() }
+    // `t` is per-locale (createTranslator) — without it in deps the handler
+    // toasts in the INITIAL locale forever (field bug: pt-BR user, en toast).
+  }, [t])
+
   useEffect(() => {
     saveSidebarPreference({ mode: sidebarMode, width: sidebarWidth })
   }, [sidebarMode, sidebarWidth])
@@ -1502,11 +1552,69 @@ export function App() {
 
   async function refreshModels(forceRefresh: boolean): Promise<ModelDiscoveryResult> {
     const result = await window.verboo.listModels(forceRefresh)
-    setModelResult(result)
+    const deduped = { ...result, models: dedupModels(result.models) }
+    setModelResult(deduped)
     setSelectedModel(current => {
-      return resolveSelectedModel(result.models, current, userSettingsRef.current.lastSelectedModelId)
+      return resolveSelectedModel(deduped.models, current, userSettingsRef.current.lastSelectedModelId)
     })
-    return result
+    return deduped
+  }
+
+  // F4: provider auth is a Vec of PER-PROVIDER entries (the login bridge
+  // universe). Failure → empty: the cards/groups degrade.
+  async function reloadProviderAuth(): Promise<void> {
+    try {
+      const states = await window.verboo.providerAuthStatus()
+      // Tolerates a malformed/empty payload (or an incomplete test mock) —
+      // anything that is not an array degrades to "unknown".
+      setProviderAuth(Array.isArray(states) ? states : [])
+    } catch {
+      setProviderAuth([])
+    }
+  }
+
+  // F4: Conectar starts the bridge login (provider_login_start) — the CLI
+  // takes over in the browser; progress arrives on provider-login:event.
+  // Every failure must be VISIBLE (D1 rule): invoke rejections toast.
+  async function handleProviderConnect(providerId: string): Promise<void> {
+    setConnectingProvider(providerId)
+    setProviderLoginStage('starting')
+    try {
+      await window.verboo.providerLoginStart(providerId)
+    } catch (error) {
+      toast(t('settings.provider.connectError', { message: error instanceof Error ? error.message : String(error) }), 'error')
+      setConnectingProvider(undefined)
+      setProviderLoginStage(undefined)
+    }
+  }
+
+  // F4 risk_notice dialog: accept continues the bridge login
+  // (provider_login_confirm_risk); cancel aborts it (provider_login_cancel).
+  // Invoke rejections toast — every failure visible (D1 rule).
+  async function handleProviderRiskAccept(): Promise<void> {
+    const notice = providerRiskNotice
+    if (!notice) return
+    setProviderRiskNotice(undefined)
+    try {
+      await window.verboo.providerLoginConfirmRisk(notice.provider)
+    } catch (error) {
+      toast(t('settings.provider.connectError', { message: error instanceof Error ? error.message : String(error) }), 'error')
+      setConnectingProvider(undefined)
+      setProviderLoginStage(undefined)
+    }
+  }
+
+  // Aborts the active login flow — the SAME action whether it comes from the
+  // card's Cancelar button or the risk_notice dialog.
+  async function handleProviderLoginCancel(): Promise<void> {
+    setProviderRiskNotice(undefined)
+    setConnectingProvider(undefined)
+    setProviderLoginStage(undefined)
+    try {
+      await window.verboo.providerLoginCancel()
+    } catch {
+      // Best-effort abort: the login may already be gone on the CLI side.
+    }
   }
 
   function toggleSidebarVisibility() {
@@ -1692,17 +1800,20 @@ export function App() {
         window.verboo.getCliAuthStatus(),
         window.verboo.listModels(forceRefresh),
       ])
+      const dedupedDiscovery = { ...modelDiscovery, models: dedupModels(modelDiscovery.models) }
       setCredentials(credentialStatus)
       setCliAuth(cliStatus)
-      setModelResult(modelDiscovery)
+      setModelResult(dedupedDiscovery)
+      // F4: provider auth is non-critical — fire-and-forget, never gates entry.
+      void reloadProviderAuth()
       setSelectedModel(current => {
-        return resolveSelectedModel(modelDiscovery.models, current, userSettingsRef.current.lastSelectedModelId)
+        return resolveSelectedModel(dedupedDiscovery.models, current, userSettingsRef.current.lastSelectedModelId)
       })
 
-      const unlocked = isVerifiedModelDiscovery(modelDiscovery)
+      const unlocked = isVerifiedModelDiscovery(dedupedDiscovery)
       setEntryUnlocked(unlocked)
       if (unlocked) {
-        writeRememberedAuthSession(allowRememberedSession, credentialStatus, cliStatus, modelDiscovery)
+        writeRememberedAuthSession(allowRememberedSession, credentialStatus, cliStatus, dedupedDiscovery)
         await refreshProfile()
         return true
       }
@@ -5708,6 +5819,9 @@ export function App() {
                 onCancelVideo={() => { void interruptForUser(activeConversationId) }}
                 onEditSent={editSentMessage}
                 onUserExpand={handleUserExpand}
+                onStartNewConversation={() => newChat()}
+                models={modelResult.models}
+                apiRetryByTurn={apiRetryByTurn}
               />
               <div ref={transcriptEndRef} className="transcript-end" />
               {/* AnnotationLayer (F1): ouvinte de seleção + barra flutuante.
@@ -6128,6 +6242,9 @@ export function App() {
                   selectedModel={selectedModel}
                   hasConversationHistory={hasConversation}
                   modelResult={modelResult}
+                  verbooPlan={cliAuth.subscriptionType ?? undefined}
+                  providerStatuses={providerAuth}
+                  onConnectProvider={providerId => { void handleProviderConnect(providerId) }}
                   onSelect={handleModelSelect}
                   onRefresh={() => refreshModels(true)}
                   effortByModel={effortByModel}
@@ -6161,6 +6278,15 @@ export function App() {
       />
 
       <ConfirmDialog request={confirmRequest} onClose={() => setConfirmRequest(undefined)} />
+
+      {providerRiskNotice && (
+        <ProviderRiskDialog
+          provider={providerRiskNotice.provider}
+          message={providerRiskNotice.message}
+          onAccept={() => void handleProviderRiskAccept()}
+          onCancel={() => void handleProviderLoginCancel()}
+        />
+      )}
 
       <CommandPalette
         open={paletteOpen}

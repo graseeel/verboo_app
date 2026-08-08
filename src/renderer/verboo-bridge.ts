@@ -40,6 +40,8 @@ import type {
   ProfileResult,
   ProjectInstructionFile,
   ProjectInstructionReadResult,
+  ProviderAuthStatus,
+  ProviderLoginEvent,
   ResearchSubagentResult,
   ResearchSubagentsRunRequest,
   SkillSummary,
@@ -133,6 +135,14 @@ const api = {
   openDashboard: () => invoke<boolean>('open_dashboard'),
   openSubscriptions: () => invoke<boolean>('open_subscriptions'),
   openSignup: () => invoke<boolean>('open_signup'),
+
+  // ── Providers (F4; comandos registrados em lib.rs:2382-2385) ──
+  providerAuthStatus: () => invoke<ProviderAuthStatus[]>('provider_auth_status'),
+  providerLoginStart: (provider: string) => invoke<string>('provider_login_start', { provider }),
+  providerLoginConfirmRisk: (provider: string) => invoke<void>('provider_login_confirm_risk', { provider }),
+  providerLoginCancel: () => invoke<void>('provider_login_cancel'),
+  onProviderLoginEvent: (handler: (event: ProviderLoginEvent) => void) =>
+    onEvent<ProviderLoginEvent>('provider-login:event', handler),
 
   // ── Credentials ─────────────────────────────────────────────
   getCredentialStatus: () => invoke<CredentialStatus>('get_credential_status'),

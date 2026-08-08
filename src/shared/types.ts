@@ -854,6 +854,29 @@ export type CliAuthStatus = {
   error?: string
 }
 
+/** F4 contract, mirrors Rust `ProviderAuthStatus` (provider_login_pty.rs:74-79):
+ *  ONE ENTRY PER PROVIDER the login bridge supports — `connected: false`
+ *  entries included, so this IS the provider universe for the renderer.
+ *  `account` is absent when None (skip_serializing_if). The global CLI auth
+ *  state is an internal backend detail and does NOT cross to the renderer
+ *  (CONTRATO DE REMOÇÃO, provider_login_pty.rs:64-69). */
+export type ProviderAuthStatus = {
+  provider: string
+  connected: boolean
+  account?: string
+}
+
+/** F4 contract, mirrors Rust `ProviderLoginEvent` (provider_login_pty.rs:45)
+ *  emitted on the `provider-login:event` channel. `state` is snake_case on
+ *  the wire; `message` is absent when None (skip_serializing_if).
+ *  `risk_notice` (claude): the Anthropic policy acceptance screen — `message`
+ *  carries the FULL notice, verbatim; the owner accepts or cancels. */
+export type ProviderLoginEvent = {
+  provider: string
+  state: 'awaiting_browser' | 'risk_notice' | 'connected' | 'error'
+  message?: string
+}
+
 export type LoginResult = {
   ok: boolean
   message: string

@@ -1549,6 +1549,64 @@ fn terminal_get_state(
 }
 
 // ════════════════════════════════════════════════════════════════════
+// Provider login (F4) — ponte por pseudo-terminal.
+
+/// Inicia o login interativo do provedor (ex.: codex/claude) num PTY.
+/// Gate: exige sessão Verboo ativa — o próprio CLI exige; propagamos o erro
+/// claro quando não há.
+#[tauri::command]
+fn provider_login_start(
+    provider: String,
+    provider_login_service: tauri::State<'_, services::provider_login_pty::ProviderLoginService>,
+) -> Result<String, String> {
+    let has_session = match services::provider_catalog::read_provider_auth_state() {
+        Ok(state) if state.logged_in => true,
+        Ok(_) => {
+            return Err(
+                "Não há sessão Verboo ativa. Entre no Verboo pelo app ou pelo CLI antes de conectar um provedor."
+                    .to_string(),
+            );
+        }
+        Err(e) => {
+            return Err(format!(
+                "Não foi possível verificar a sessão Verboo: {e}"
+            ));
+        }
+    };
+    provider_login_service.start(&provider, has_session, Default::default())
+}
+
+/// Cancela o login de provedor em andamento (mata o PTY inteiro).
+#[tauri::command]
+fn provider_login_cancel(
+    provider_login_service: tauri::State<'_, services::provider_login_pty::ProviderLoginService>,
+) -> Result<(), String> {
+    provider_login_service.cancel()
+}
+
+/// Confirma o aceite de risco da tela (o usuário leu e decidiu): a ponte
+/// navega para a opção 1 (o padrão do menu é a 2) e Enter — o CLI segue ao
+/// navegador. A ponte NUNCA aceita risco sozinha.
+#[tauri::command]
+fn provider_login_confirm_risk(
+    provider: String,
+    provider_login_service: tauri::State<'_, services::provider_login_pty::ProviderLoginService>,
+) -> Result<(), String> {
+    provider_login_service.confirm_risk(&provider)
+}
+
+/// Estado de autenticação por provedor — uma entrada por provedor que a
+/// ponte suporta, shape `{ provider, connected, account? }`. O universo e a
+/// leitura moram na ponte (módulo descartável); quando o CLI entregar o
+/// auth status por provedor, a troca é só no backend — o renderer não muda
+/// (ver CONTRATO DE REMOÇÃO em provider_login_pty.rs).
+#[tauri::command]
+fn provider_auth_status(
+) -> Result<Vec<services::provider_login_pty::ProviderAuthStatus>, String> {
+    services::provider_login_pty::provider_auth_status()
+}
+
+// ════════════════════════════════════════════════════════════════════
 // Clipboard
 // ════════════════════════════════════════════════════════════════════
 
@@ -2009,16 +2067,46 @@ pub fn run() {
             ));
             app.manage(services::video::job::VideoOcrWaiters::default());
             // TurnService — spawns `verboo` CLI for agent turns with streaming
-            app.manage(TurnService::new(std::sync::Arc::new(CredentialsStore::new())).with_settings(std::sync::Arc::new(settings_store_for_turn)).with_app_data_dir(app_data_dir.clone()));
+            app.manage(
+                TurnService::new(std::sync::Arc::new(CredentialsStore::new()))
+                    .with_settings(std::sync::Arc::new(settings_store_for_turn))
+                    .with_app_data_dir(app_data_dir.clone()),
+            );
             // ResearchSubagentRunner — spawns read-only CLI turns for research
             // subagents. Shares a CredentialsStore (Arc) so it can resolve the
             // bearer token (CLI OAuth first, API key fallback) the same way
             // TurnService does.
-            app.manage(crate::services::research_subagent_runner::ResearchSubagentRunner::new(
-                std::sync::Arc::new(CredentialsStore::new()),
-            ));
+            app.manage(
+                crate::services::research_subagent_runner::ResearchSubagentRunner::new(
+                    std::sync::Arc::new(CredentialsStore::new()),
+                ),
+            );
             // TerminalService — PTY for the local terminal panel
             app.manage(TerminalService::new());
+            // ProviderLoginService — F4: ponte de login de provedor por PTY.
+            // Canal CONFIRMADO com o Mosaico: "provider-login:event", payload
+            // { provider, state, message? } (state: awaiting_browser |
+            // connected | error).
+            {
+                let app_for_login = app.handle().clone();
+                // cwd NEUTRO e fora de file provider para o CLI interativo:
+                // o CLI ao subir VARRE o cwd procurando projeto — herdado do
+                // app (Documents/iCloud) a leitura coordenada PENDURA e o
+                // prompt nunca aparece (defeito de campo). O workdir é um
+                // diretório próprio vazio sob o app-data, criado na hora.
+                let login_workdir = app
+                    .path()
+                    .app_data_dir()
+                    .map(|dir| dir.join("provider-login-workdir"))
+                    .unwrap_or_else(|_| std::env::temp_dir().join("verboo-provider-login"));
+                let _ = std::fs::create_dir_all(&login_workdir);
+                app.manage(services::provider_login_pty::ProviderLoginService::new(
+                    move |event| {
+                        let _ = app_for_login.emit("provider-login:event", event);
+                    },
+                    login_workdir,
+                ));
+            }
             // TrayService — owns the menubar state machine (icon/title animation)
             app.manage(crate::services::tray_service::TrayService::new());
             // UpdateService — owns the updater snapshot + auto-check timer logic
@@ -2312,6 +2400,10 @@ pub fn run() {
             terminal_resize,
             terminal_stop,
             terminal_get_state,
+            provider_login_start,
+            provider_login_cancel,
+            provider_login_confirm_risk,
+            provider_auth_status,
             // Clipboard
             clipboard_read_text,
             clipboard_write_text,

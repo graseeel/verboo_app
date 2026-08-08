@@ -603,6 +603,83 @@
   background: color-mix(in srgb, var(--bg-elevated) 82%, transparent);
 }
 
+/* F3 — provider integration cards (Ajustes → Integrações). One card per
+   external provider from the models listing; the group only renders when at
+   least one exists. */
+.provider-card {
+  display: grid;
+  gap: 4px;
+}
+
+.provider-card + .provider-card {
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.provider-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.provider-card-head strong {
+  font-weight: 680;
+}
+
+.provider-card-state {
+  color: var(--green);
+  font-size: 11.5px;
+  font-weight: 640;
+}
+
+.provider-card-state.is-dim {
+  color: var(--text-dim);
+}
+
+.provider-card-action {
+  margin-left: auto;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 560;
+  cursor: pointer;
+}
+
+.provider-card-action:hover:not(:disabled) {
+  background: var(--bg-soft);
+}
+
+/* In-progress login flow: progress button + Cancelar side by side. The
+   wrapper owns the auto margin so the inner buttons don't double-push. */
+.provider-card-actions {
+  display: inline-flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.provider-card-actions .provider-card-action {
+  margin-left: 0;
+}
+
+/* Scoped: the generic `.settings-panel button:disabled` (opacity .55) would
+   otherwise out-specificity this rule — the cards live inside .settings-panel.
+   Must read as disabled at a glance (owner field check). */
+.settings-panel .provider-card-action:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.provider-card-account,
+.provider-card-cost {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
 .trusted-command-panel {
   gap: 10px;
 }
@@ -1755,6 +1832,32 @@
   color: var(--text-dim);
   font-size: 11.5px;
   font-weight: 680;
+}
+
+/* F3: provider brand icon (inline SVG) in the turn header, integration cards
+   and selector group labels — rendered only for external providers. Unknown
+   ids get a generic initial tile on the provider's deterministic hue. */
+.provider-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  line-height: 0;
+}
+
+.provider-icon svg {
+  display: block;
+}
+
+.provider-icon-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: var(--provider-color, var(--text-dim));
+  color: #fff;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .message-row.user .message-meta {

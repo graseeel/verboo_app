@@ -2,9 +2,11 @@ import { Check, ChevronDown, ChevronRight, Eye, RefreshCw, Search } from 'lucide
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
-import type { ModelDiscoveryResult, VerbooModel } from '../../../shared/types'
+import type { ModelDiscoveryResult, ProviderAuthStatus, VerbooModel } from '../../../shared/types'
 import { formatCompactNumber, useI18n } from '../../i18n'
 import { ModelIcon } from './ModelIcon'
+import { ProviderIcon } from './ProviderIcon'
+import { VERBOO_PROVIDER, groupModelsByProvider, hasExternalProvider, hashString, modelProvider, providerDisplayName, providerToneStyle } from './providerCatalog'
 
 const SEARCH_THRESHOLD = 12
 
@@ -15,6 +17,16 @@ type ModelSelectorProps = {
   modelResult: ModelDiscoveryResult
   onSelect: (modelId: string) => void
   onRefresh: () => void
+  /** Verboo subscription label (e.g. "Pro") shown in the verboo group header
+   *  when the selector renders provider groups (F3). Unused in the verboo-only
+   *  selector, which stays byte-identical to today. */
+  verbooPlan?: string
+  /** F4: the login bridge universe ({ provider, connected, account? }).
+   *  connected=false entries render a DIMMED group with a Conectar action;
+   *  connected ones vanish — their models come from the listing. Prop absent
+   *  → no dimmed groups at all (zero regression). */
+  providerStatuses?: ProviderAuthStatus[]
+  onConnectProvider?: (providerId: string) => void
   // Reasoning effort integration
   effortByModel?: Record<string, string>
   selectedEffortLevels?: string[]
@@ -47,7 +59,7 @@ function effortLabel(level: string, t: (key: string) => string): string {
   return known[level] ?? level.charAt(0).toUpperCase() + level.slice(1)
 }
 
-export function ModelSelector({ models, selectedModel, hasConversationHistory = false, modelResult, onSelect, onRefresh, effortByModel, selectedEffortLevels = [], selectedEffort, onSelectEffort, onClearEffortOverride }: ModelSelectorProps) {
+export function ModelSelector({ models, selectedModel, hasConversationHistory = false, modelResult, onSelect, onRefresh, verbooPlan, providerStatuses, onConnectProvider, effortByModel, selectedEffortLevels = [], selectedEffort, onSelectEffort, onClearEffortOverride }: ModelSelectorProps) {
   const { language, t } = useI18n()
   const [open, setOpen] = useState(false)
   // Drill-in panel: 'root' | 'models' | 'effort'
@@ -77,10 +89,24 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
       || readableModelName(model).toLowerCase().includes(normalized),
     )
   }, [models, query])
-  const grouped = useMemo(() => groupModels(filtered, t), [filtered, t])
+  const providerMode = hasExternalProvider(filtered)
+  const grouped = useMemo<Array<{ label: string; models: VerbooModel[]; dotStyle?: CSSProperties; providerId?: string }>>(
+    // Provider mode (F3): one group per provider. Verboo-only: today's exact
+    // Available/Long-context grouping — zero visual regression.
+    () => providerMode ? groupModelsByProvider(filtered, t, verbooPlan) : groupModels(filtered, t),
+    [providerMode, filtered, t, verbooPlan],
+  )
+  // F4: disconnected bridge entries → dimmed groups. A provider whose models
+  // are already in the listing never renders dimmed (it is connected de
+  // facto); once connected, its group comes from the listing instead.
+  const disconnectedGroups = useMemo(() => {
+    if (!providerStatuses) return []
+    const listedProviders = new Set(models.map(modelProvider))
+    return providerStatuses.filter(status => !status.connected && !listedProviders.has(status.provider))
+  }, [providerStatuses, models])
   const flat = useMemo(() => grouped.flatMap(group => group.models), [grouped])
   const activeIndex = flat.length ? Math.min(highlighted, flat.length - 1) : 0
-  const selectedTone = selected ? modelToneStyle(selected.id) : undefined
+  const selectedTone = displayed ? modelToneStyle(displayed.id) : undefined
   const statusMessage = modelStatusMessage(modelResult, t)
   const showEffortRow = Boolean(selected && selectedEffortLevels.length > 0)
   // Portal sits outside wrapRef — treat pill + menu as the dismiss boundary.
@@ -278,7 +304,17 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
               ) : (
                 grouped.map(group => (
                   <div key={group.label} className="model-group">
-                    <div className="group-label">{group.label}</div>
+                    <div className="group-label" style={group.dotStyle}>
+                      {/* External providers get the official brand icon (unknown
+                          ids fall back to an initial tile); the verboo group
+                          keeps today's colored dot. */}
+                      {group.dotStyle && (group.providerId && group.providerId !== VERBOO_PROVIDER ? (
+                        <ProviderIcon providerId={group.providerId} size={13} />
+                      ) : (
+                        <span className="group-dot" aria-hidden="true" />
+                      ))}
+                      {group.label}
+                    </div>
                     {group.models.map(model => {
                       const index = flat.indexOf(model)
                       return (
@@ -317,6 +353,26 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
                   </div>
                 ))
               )}
+
+              {/* F4: dimmed groups for disconnected bridge providers — the
+                  Conectar action starts the login flow. They render even with
+                  an empty listing: the first connect happens exactly then. */}
+              {disconnectedGroups.map(status => (
+                <div key={status.provider} className="model-group">
+                  <div className="group-label is-dimmed" style={providerToneStyle(status.provider)}>
+                    <ProviderIcon providerId={status.provider} size={13} />
+                    {providerDisplayName(status.provider, t)} — {t('model.group.providerNotConnected')}
+                    {' · '}
+                    <button
+                      type="button"
+                      className="group-connect"
+                      onClick={() => onConnectProvider?.(status.provider)}
+                    >
+                      {t('settings.provider.connect')} →
+                    </button>
+                  </div>
+                </div>
+              ))}
             </>
           )}
 
@@ -383,14 +439,6 @@ function modelToneStyle(modelId: string): CSSProperties {
     '--model-bg': `hsl(${hue} 60% 58% / 0.08)`,
     '--model-border': `hsl(${hue} 48% 60% / 0.22)`,
   } as CSSProperties
-}
-
-function hashString(value: string): number {
-  let hash = 0
-  for (let index = 0; index < value.length; index += 1) {
-    hash = (hash * 31 + value.charCodeAt(index)) >>> 0
-  }
-  return hash
 }
 
 function groupModels(models: VerbooModel[], t: (key: string) => string): Array<{ label: string; models: VerbooModel[] }> {
