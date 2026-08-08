@@ -2,12 +2,13 @@ pub mod models;
 pub mod services;
 
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use models::types::*;
-use services::cli_service::CliService;
 use services::chrome_integration::{
     ChromeIntegrationRequest, ChromeIntegrationService, ChromeIntegrationStatus,
 };
+use services::cli_service::CliService;
 use services::credentials_store::CredentialsStore;
 use services::model_service::ModelService;
 use services::profile_service::ProfileService;
@@ -15,6 +16,26 @@ use services::settings_store::SettingsStore;
 use services::terminal_service::TerminalService;
 use services::turn_service::{TurnService, UpdateInstallAdmission};
 use tauri::{Emitter, Manager};
+
+// Derivation from current timing bounds: finalizing one recording is bounded by
+// RECORDING_STOP_TIMEOUT (8 s); WDA graceful escalation is bounded by
+// WDA_SIGINT_GRACE_PERIOD (5 s) plus WDA_SIGTERM_GRACE_PERIOD (2 s), leaving
+// 1 s of margin when no recording consumes it.
+// Recording and the cumulative shutdown pass over N ledger-owned UDIDs share
+// this same absolute deadline, so their worst-case maxima are not additive. N
+// is runtime ledger data, never a hardcoded owner/device count; remeasure the
+// end-to-end envelope before changing this value.
+const IOS_SIMULATOR_CLEANUP_BUDGET: Duration = Duration::from_secs(8);
+
+fn stop_ios_simulator_for_app_exit(app_handle: &tauri::AppHandle) {
+    let deadline = Instant::now() + IOS_SIMULATOR_CLEANUP_BUDGET;
+    let service = app_handle.state::<services::ios_simulator::IosSimulatorService>();
+    service.begin_exit();
+    app_handle
+        .state::<services::ios_simulator::IosSimulatorBridge>()
+        .stop();
+    let _ = service.stop_for_app_exit(deadline);
+}
 
 // ════════════════════════════════════════════════════════════════════
 // AppState — will be fleshed out in later phases
@@ -1907,6 +1928,38 @@ pub fn run() {
                 services::browser_panel::BrowserCaptureStore::new(app_data_dir.clone())
                     .map_err(std::io::Error::other)?,
             );
+            app.manage(
+                services::ios_simulator::IosSimulatorCaptureStore::new(app_data_dir.clone())
+                    .map_err(std::io::Error::other)?,
+            );
+            let simulator_service =
+                services::ios_simulator::IosSimulatorService::new(app_data_dir.clone())
+                    .map_err(std::io::Error::other)?;
+            simulator_service
+                .reconcile_owned_devices()
+                .map_err(std::io::Error::other)?;
+            app.manage(simulator_service.clone());
+            let simulator_cache_dir = app.path().app_cache_dir().map_err(std::io::Error::other)?;
+            let simulator_bridge = services::ios_simulator::IosSimulatorBridge::start(
+                simulator_cache_dir,
+                app.package_info().version.to_string(),
+                app.handle().clone(),
+                simulator_service,
+            )
+            .map_err(std::io::Error::other)?;
+            app.manage(simulator_bridge);
+            let simulator_mcp_app_data = app_data_dir.clone();
+            let simulator_mcp_version = app.package_info().version.to_string();
+            tauri::async_runtime::spawn_blocking(move || {
+                let result = services::ios_simulator_mcp::IosSimulatorMcpService::new(
+                    simulator_mcp_app_data,
+                    simulator_mcp_version,
+                )
+                .and_then(|service| service.ensure_registered());
+                if let Err(error) = result {
+                    eprintln!("[verboo:ios-simulator-mcp] setup skipped: {error}");
+                }
+            });
             let settings_store = SettingsStore::new(app_data_dir.clone());
             app.manage(
                 services::pasted_file_upload::PastedFileUploadService::new(app_data_dir.clone())
@@ -2067,23 +2120,13 @@ pub fn run() {
                 });
             }
 
-            // ── Close-to-tray (macOS hides, Win/Linux quits) ───────
-            // Mirrors Electron's `shouldCloseToTray` (src/main/index.ts:580).
+            // ── Close always requests an app exit ───────────────────
             if let Some(window) = app.get_webview_window("main") {
                 let app_handle = app.handle().clone();
-                let window_clone = window.clone();
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        if crate::services::lifecycle_service::should_close_to_tray() {
-                            // macOS: prevent the close, just hide. The tray icon
-                            // stays alive so the user can click it to re-show.
-                            api.prevent_close();
-                            let _ = window_clone.hide();
-                        } else {
-                            // Win/Linux: actually quit (the default behavior).
-                            // Allow the close so the app exits cleanly.
-                            let _ = app_handle.exit(0);
-                        }
+                        api.prevent_close();
+                        let _ = app_handle.exit(0);
                     }
                 });
             }
@@ -2143,6 +2186,30 @@ pub fn run() {
             services::browser_panel::browser_tab_set_media_suspended,
             services::browser_panel::browser_tab_evict,
             services::browser_panel::browser_tab_reactivate,
+            // iOS Simulator visual panel
+            services::ios_simulator::ios_simulator_requirements,
+            services::ios_simulator::ios_simulator_attach,
+            services::ios_simulator::ios_simulator_detach,
+            services::ios_simulator::ios_simulator_set_visible,
+            services::ios_simulator::ios_simulator_end,
+            services::ios_simulator::ios_simulator_retry_interaction,
+            services::ios_simulator::ios_simulator_system_action,
+            services::ios_simulator::ios_simulator_capture_screen,
+            services::ios_simulator::ios_simulator_recording_start,
+            services::ios_simulator::ios_simulator_recording_stop,
+            services::ios_simulator::ios_simulator_reveal_output,
+            services::ios_simulator::ios_simulator_set_stream_rate,
+            services::ios_simulator::ios_simulator_set_fallback_rate,
+            services::ios_simulator::ios_simulator_tap,
+            services::ios_simulator::ios_simulator_drag,
+            services::ios_simulator::ios_simulator_type_text,
+            services::ios_simulator::ios_simulator_press_key,
+            services::ios_simulator::ios_simulator_accessibility_snapshot,
+            services::ios_simulator::ios_simulator_capture_annotation,
+            services::ios_simulator::ios_simulator_delete_temp_files,
+            services::ios_simulator::ios_simulator_promote_temp_files,
+            services::ios_simulator::ios_simulator_delete_capture_owner,
+            services::ios_simulator::ios_simulator_cleanup_capture_owners,
             // Auth
             start_cli_login,
             get_cli_auth_status,
@@ -2272,11 +2339,15 @@ pub fn run() {
     let mut runtime_smoke_report =
         std::env::var_os("VERBOO_BROWSER_SMOKE_REPORT").map(std::path::PathBuf::from);
 
-    app.run(move |app_handle, event| {
-        if matches!(event, tauri::RunEvent::MainEventsCleared) {
+    app.run(move |app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+            stop_ios_simulator_for_app_exit(app_handle);
+        }
+        tauri::RunEvent::MainEventsCleared => {
             if let Some(report_path) = runtime_smoke_report.take() {
                 services::browser_panel::start_runtime_smoke(app_handle.clone(), report_path);
             }
         }
+        _ => {}
     });
 }

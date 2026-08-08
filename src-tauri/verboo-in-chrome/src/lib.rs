@@ -6,6 +6,10 @@ pub mod local_transport;
 pub mod mcp_server;
 pub mod native_host;
 pub mod protocol;
+pub mod simulator_catalog;
+pub mod simulator_client;
+pub mod simulator_mcp;
+pub mod simulator_protocol;
 
 use error::{BridgeError, Result};
 use mcp_server::{BrowserMcpServer, BrowserSessionClient};

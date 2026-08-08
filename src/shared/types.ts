@@ -935,7 +935,7 @@ export type ProfileResult = {
   error?: string
 }
 
-export type AttachmentKind = 'image' | 'video' | 'file' | 'browser-annotation'
+export type AttachmentKind = 'image' | 'video' | 'file' | 'browser-annotation' | 'simulator-annotation'
 
 export type VideoHdrKind = 'sdr' | 'hlg' | 'pq' | 'dolbyVision' | 'unknown'
 
@@ -1004,6 +1004,24 @@ export type BrowserAnnotation = {
   viewportSnapshot?: { path: string; width: number; height: number; size: number }
 }
 
+export type SimulatorAnnotation = {
+  kind: 'element' | 'area'
+  crop: string
+  note?: string
+  device: {
+    name: string
+    udid: string
+    iosVersion: string
+    orientation: 'portrait' | 'landscape'
+  }
+  deviceGeneration: number
+  frameGeneration: number
+  rect: { x: number; y: number; width: number; height: number }
+  deviceRect: { x: number; y: number; width: number; height: number }
+  element?: { id: string; role: string; label?: string }
+  viewportSnapshot: { path: string; width: number; height: number; size: number }
+}
+
 export type AttachmentMeta = {
   path: string
   name: string
@@ -1023,6 +1041,7 @@ export type AttachmentMeta = {
   extractionStatus?: ExtractionStatus
   video?: VideoStreamMetadata
   browserAnnotation?: BrowserAnnotation
+  simulatorAnnotation?: SimulatorAnnotation
 }
 
 export type AgentTurnRequest = {

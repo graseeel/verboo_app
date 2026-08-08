@@ -1,0 +1,119 @@
+{
+  "version": "1",
+  "tools": [
+    {
+      "name": "ios_simulator_list",
+      "description": "List available iOS Simulator devices and the currently attached device.",
+      "risk": "read",
+      "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "ios_simulator_attach",
+      "description": "Attach one iOS Simulator device to the Verboo desktop session.",
+      "risk": "mutate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "udid": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "streamFps": { "type": "integer", "enum": [30, 60] },
+          "fallbackFps": { "type": "number", "enum": [0.5, 1, 2] }
+        },
+        "required": ["udid"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ios_simulator_screenshot",
+      "description": "Capture the latest frame from the attached iOS Simulator.",
+      "risk": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "udid": { "type": "string", "minLength": 1, "maxLength": 256 } },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ios_simulator_tap",
+      "description": "Tap a normalized point in the attached iOS Simulator.",
+      "risk": "mutate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "udid": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "x": { "type": "number", "minimum": 0, "maximum": 1 },
+          "y": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "required": ["x", "y"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ios_simulator_drag",
+      "description": "Drag between two normalized points in the attached iOS Simulator.",
+      "risk": "mutate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "udid": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "from": { "$ref": "#/$defs/point" },
+          "to": { "$ref": "#/$defs/point" },
+          "durationMs": { "type": "integer", "minimum": 50, "maximum": 5000 }
+        },
+        "required": ["from", "to"],
+        "additionalProperties": false,
+        "$defs": {
+          "point": {
+            "type": "object",
+            "properties": {
+              "x": { "type": "number", "minimum": 0, "maximum": 1 },
+              "y": { "type": "number", "minimum": 0, "maximum": 1 }
+            },
+            "required": ["x", "y"],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "name": "ios_simulator_type_text",
+      "description": "Type text into the focused control in the attached iOS Simulator.",
+      "risk": "mutate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "udid": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "text": { "type": "string", "maxLength": 4000 }
+        },
+        "required": ["text"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ios_simulator_press_key",
+      "description": "Press a supported key in the attached iOS Simulator.",
+      "risk": "mutate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "udid": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "key": {
+            "type": "string",
+            "enum": ["enter", "backspace", "tab", "arrowUp", "arrowDown", "arrowLeft", "arrowRight"]
+          }
+        },
+        "required": ["key"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ios_simulator_detach",
+      "description": "Detach Verboo from the current iOS Simulator without shutting the device down.",
+      "risk": "mutate",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "udid": { "type": "string", "minLength": 1, "maxLength": 256 } },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

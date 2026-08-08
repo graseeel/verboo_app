@@ -8,6 +8,7 @@ type Props = {
   terminalOpen: boolean
   reviewOpen: boolean
   browserOpen: boolean
+  simulatorOpen?: boolean
 }
 
 const chatWithoutPanels: Props = {
@@ -98,5 +99,16 @@ describe('useWorkspacePanelSuspension', () => {
 
     expect(test.restorePanel).toHaveBeenCalledTimes(1)
     expect(test.restorePanel).toHaveBeenCalledWith('terminal')
+  })
+
+  it('suspends and restores the simulator panel through Settings', () => {
+    const test = setup({ ...chatWithoutPanels, simulatorOpen: true })
+
+    act(() => test.rerender({ ...fullscreenWithoutPanels, simulatorOpen: true }))
+    act(() => test.rerender(fullscreenWithoutPanels))
+    act(() => test.rerender(chatWithoutPanels))
+
+    expect(test.closeAll).toHaveBeenCalledTimes(1)
+    expect(test.restorePanel).toHaveBeenCalledWith('simulator')
   })
 })

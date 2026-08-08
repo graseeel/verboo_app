@@ -451,6 +451,11 @@
   grid-row: 1;
 }
 
+.ios-simulator-panel {
+  grid-column: 5;
+  grid-row: 1;
+}
+
 .review-panel {
   grid-column: 6;
   grid-row: 1;

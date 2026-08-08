@@ -24,6 +24,7 @@ import type {
   MenuBarState,
   ModelDiscoveryResult,
   ProfileResult,
+  ProviderAuthStatus,
   ResearchSubagentResult,
   RuntimeActivity,
   SettingsTab,
@@ -96,10 +97,13 @@ import { AppSidebar, type AppView } from './components/AppSidebar'
 import { CommandPalette, paletteIcons, type PaletteAction } from './components/CommandPalette'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { useToast } from './components/Toast'
+import { VERBOO_PROVIDER, dedupModels, providerAccountName, providerDisplayName } from './features/models/providerCatalog'
 import { VerbooPet, PET_MIN_SIZE, PET_MAX_SIZE, type PetState } from './features/pet/VerbooPet'
 import { BrowserPanel } from './features/browser/BrowserPanel'
 import { supportsEmbeddedBrowser } from './features/browser/browserAvailability'
 import { browserLayoutWidth, browserMaxWidth, useBrowserPanel } from './features/browser/useBrowserPanel'
+import { IosSimulatorPanel } from './features/simulator/IosSimulatorPanel'
+import { useIosSimulatorPanel } from './features/simulator/useIosSimulatorPanel'
 import { QuestionWizard, type ModelQuestion, type QuestionAnswer, type QuestionPromptState } from './features/questions/QuestionWizard'
 import { detectTextQuestionPrompt, extractModelQuestionsFromPayload, mergeModelQuestions } from './features/questions/questionDetection'
 import { MessageCircleQuestion } from 'lucide-react'
@@ -180,10 +184,10 @@ import {
 } from './state/chatStore'
 import { finishTurn, findNextRunnableQueueIndex, resolveEscapeConversation, startTurn } from './state/turnLifecycle'
 import { promptForConversation } from './state/promptRouting'
+import { installContextMenuGuard } from './features/window/contextMenuGuard'
 import packageJson from '../../package.json'
 
 const defaultModels: VerbooModel[] = []
-const DEVELOPMENT_NOTICE_KEY = 'verboo:development-notice-accepted'
 const AUTH_SESSION_KEY = 'verboo:last-verified-auth'
 const EFFORT_BY_MODEL_KEY = 'verboo:effort-by-model'
 const AUTH_SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
@@ -578,7 +582,10 @@ export function App() {
   const terminal = useLocalTerminal()
   const review = useReviewPanel()
   const browser = useBrowserPanel()
+  const simulator = useIosSimulatorPanel()
+  const consumedSimulatorOpenRequestRef = useRef(0)
   const browserAvailable = configLoaded && supportsEmbeddedBrowser(config.platform)
+  const simulatorAvailable = configLoaded && config.platform === 'darwin'
   const t = useMemo(() => createTranslator(userSettings.language), [userSettings.language])
   const [tokenRate, setTokenRate] = useState<TokenRateSnapshot | undefined>()
   const goalRef = useRef(goal)
@@ -757,7 +764,8 @@ export function App() {
     terminal.close()
     review.close()
     browser.close()
-  }, [browser.close, review.close, terminal.close])
+    simulator.close()
+  }, [browser.close, review.close, simulator.close, terminal.close])
   const restoreWorkspacePanel = useCallback((panel: WorkspacePanelKind) => {
     if (panel === 'terminal') {
       void terminal.open(currentWorkspaceDirectory)
@@ -768,20 +776,46 @@ export function App() {
       if (target) review.open(target.workingDirectory, target.files, target.index)
       return
     }
-    if (browserAvailable) browser.open()
-  }, [browser.open, browserAvailable, currentWorkspaceDirectory, review.open, review.target, terminal.open])
+    if (panel === 'browser' && browserAvailable) {
+      browser.open()
+      return
+    }
+    if (panel === 'simulator' && simulatorAvailable) simulator.open()
+  }, [browser.open, browserAvailable, currentWorkspaceDirectory, review.open, review.target, simulator.open, simulatorAvailable, terminal.open])
   const { workspacePanelsEnabled } = useWorkspacePanelSuspension({
     isFullscreenView,
     isChatView: activeView === 'chat',
     terminalOpen: terminal.terminalOpen,
     reviewOpen: review.reviewOpen,
     browserOpen: browser.browserOpen,
+    simulatorOpen: simulator.simulatorOpen,
     closeAll: closeWorkspacePanels,
     restorePanel: restoreWorkspacePanel,
   })
+
+  useEffect(() => {
+    const request = simulator.agentOpenRequest
+    if (!simulatorAvailable || request <= consumedSimulatorOpenRequestRef.current) return
+    consumedSimulatorOpenRequestRef.current = request
+    setActiveView('chat')
+    terminal.close()
+    review.close()
+    browser.close()
+    setSelectedSubagentId(undefined)
+    simulator.open()
+  }, [
+    browser.close,
+    review.close,
+    simulator.agentOpenRequest,
+    simulator.open,
+    simulatorAvailable,
+    terminal.close,
+  ])
   const visibleTerminalOpen = workspacePanelsEnabled && terminal.terminalOpen
   const visibleReviewOpen = workspacePanelsEnabled && review.reviewOpen
   const visibleBrowserOpen = browserAvailable && workspacePanelsEnabled && browser.browserOpen
+  const visibleSimulatorOpen = simulatorAvailable && workspacePanelsEnabled && simulator.simulatorOpen
+  const visibleVisualPanelOpen = visibleBrowserOpen || visibleSimulatorOpen
   const effectiveSidebarWidth = isFullscreenView
     ? 0
     : sidebarVisualMode === 'hidden'
@@ -797,12 +831,13 @@ export function App() {
 
   useEffect(() => {
     if (!browserAvailable) browser.close()
-  }, [browser.close, browserAvailable])
+    if (!simulatorAvailable) simulator.close()
+  }, [browser.close, browserAvailable, simulator.close, simulatorAvailable])
 
   useEffect(() => {
-    if (!browser.browserOpen || browser.browserWidth <= browserWidthLimit) return
+    if ((!browser.browserOpen && !simulator.simulatorOpen) || browser.browserWidth <= browserWidthLimit) return
     browser.setWidth(browserWidthLimit, effectiveSidebarWidth)
-  }, [browser.browserOpen, browser.browserWidth, browser.setWidth, browserWidthLimit, effectiveSidebarWidth])
+  }, [browser.browserOpen, browser.browserWidth, browser.setWidth, browserWidthLimit, effectiveSidebarWidth, simulator.simulatorOpen])
   const subagentThreads = activeConversation?.subagents ?? []
   const subagentIndicatorKey = `${activeConversationId ?? 'none'}:${subagentThreads.length}`
   const workingSubagentCount = subagentThreads.filter(isSubagentThreadWorking).length
@@ -829,7 +864,7 @@ export function App() {
     goalDocked: Boolean(goal) || Boolean(exitGoal),
     terminalOpen: visibleTerminalOpen,
     reviewOpen: visibleReviewOpen,
-    webOpen: visibleBrowserOpen,
+    webOpen: visibleVisualPanelOpen,
     sidebarOpen: sidebarVisualMode !== 'hidden',
     preference: checklistFormPref,
     otherRightLaneOpen: showSubagentThreadPanel || Boolean(sideChat),
@@ -872,6 +907,13 @@ export function App() {
     '--review-width': visibleReviewOpen ? `${review.reviewWidth}px` : '0px',
     '--browser-width': visibleBrowserOpen ? `${effectiveBrowserWidth}px` : '0px',
   } as CSSProperties
+  // Browser and simulator share the same right lane. Keep the browser branch
+  // explicit because the existing layout contract keys that lane by this
+  // variable, then hand the same measured width to the simulator when it owns
+  // the lane.
+  if (visibleSimulatorOpen) {
+    Object.assign(appLayoutStyle, { '--browser-width': `${effectiveBrowserWidth}px` })
+  }
 
   useEffect(() => {
     if (!selectedSubagentId) return
@@ -1151,7 +1193,7 @@ export function App() {
   }, [chatStore])
 
   useEffect(() => {
-    void cleanupBrowserCaptureOwners(chatStoreRef.current.conversations.map(conversation => conversation.id)).catch(() => {})
+    void cleanupVisualCaptureOwners(chatStoreRef.current.conversations.map(conversation => conversation.id)).catch(() => {})
   }, [])
 
   // Guarantee the latest store is flushed when the window closes or the app
@@ -2646,7 +2688,7 @@ export function App() {
       }
     }
 
-    turnAttachments = await promoteBrowserAttachments(turnAttachments, conversationId)
+    turnAttachments = await promoteVisualAttachments(turnAttachments, conversationId)
     // F3: pendingAnnotations foi lido do ref ANTES dos awaits acima — é o
     // retrato do clique, e é ele que viaja (congelado) no request da fila.
     const queued = createQueuedFollowUp(conversationId, trimmed, turnAttachments, pendingAnnotations)
@@ -2815,7 +2857,7 @@ export function App() {
         accessMode: accessMode === 'full' && !userSettings.fullAccessEnabled ? 'approval' : accessMode,
         workingDirectory: workingDirectoryForConversation(conversationId),
         skills: selectedSkillsUnion,
-        attachments: expandBrowserAnnotationSnapshots(attachments),
+        attachments: expandVisualAttachmentSnapshots(attachments),
         responseEnhancementsEnabled: userSettings.responseEnhancementsEnabled,
         personality: userSettings.personality,
         customInstructions: userSettings.customInstructions,
@@ -2903,7 +2945,7 @@ export function App() {
   function removeQueuedItem(queueItemId: string) {
     const item = queuedFollowUpsRef.current.find(q => q.id === queueItemId)
     if (!item) return
-    void deleteBrowserTempFiles(browserTempPaths(item.request.attachments ?? [])).catch(() => {})
+    void deleteVisualTempFiles(visualTempPaths(item.request.attachments ?? [])).catch(() => {})
     setQueuedFollowUpsList(current => current.filter(q => q.id !== queueItemId))
   }
 
@@ -3028,7 +3070,7 @@ export function App() {
     turnWorkingDirectories.current[turnId] = request.workingDirectory
     const browserAnnotations = request.attachments?.filter(attachment => attachment.kind === 'browser-annotation') ?? []
     if (browserAnnotations.length) turnBrowserAnnotations.current[turnId] = browserAnnotations
-    const browserTempFiles = browserTempPaths(request.attachments ?? [])
+    const browserTempFiles = visualTempPaths(request.attachments ?? [])
     if (browserTempFiles.length) turnBrowserTempFiles.current[turnId] = browserTempFiles
     return turnId
   }
@@ -4160,7 +4202,7 @@ export function App() {
     if (!request.autoVerify) {
       if (activeConversationIdRef.current !== request.conversationId) {
         const previous = pendingBrowserSnapshots.current[request.conversationId] ?? []
-        if (previous.length) void deleteBrowserTempFiles(browserTempPaths(previous)).catch(() => {})
+        if (previous.length) void deleteVisualTempFiles(visualTempPaths(previous)).catch(() => {})
         pendingBrowserSnapshots.current[request.conversationId] = [attachment]
         return
       }
@@ -4272,14 +4314,14 @@ export function App() {
     applyAttachmentOutcome(outcome)
   }
 
-  function clearAttachments(preserveBrowserTempFiles = false) {
+  function clearAttachments(preserveVisualTempFiles = false) {
     const current = attachmentQueueRef.current.snapshot()
     for (const controller of attachmentUploadControllersRef.current) controller.abort()
     attachmentUploadControllersRef.current.clear()
     attachmentQueueRef.current.reset()
     setAttachedFiles([])
-    if (!preserveBrowserTempFiles) {
-      void deleteBrowserTempFiles(browserTempPaths(current)).catch(() => {})
+    if (!preserveVisualTempFiles) {
+      void deleteVisualTempFiles(visualTempPaths(current)).catch(() => {})
     }
   }
 
@@ -4287,13 +4329,13 @@ export function App() {
     const removed = attachmentQueueRef.current.snapshot().find(attachment => attachment.path === path)
     setAttachedFiles(attachmentQueueRef.current.remove(path))
     setOcrProcessingPaths(current => current.filter(item => item !== path))
-    if (removed) void deleteBrowserTempFiles(browserTempPaths([removed])).catch(() => {})
+    if (removed) void deleteVisualTempFiles(visualTempPaths([removed])).catch(() => {})
   }
 
   function filterAttachments(keep: (attachment: AttachmentMeta) => boolean) {
     const removed = attachmentQueueRef.current.snapshot().filter(attachment => !keep(attachment))
     setAttachedFiles(attachmentQueueRef.current.filter(keep))
-    void deleteBrowserTempFiles(browserTempPaths(removed)).catch(() => {})
+    void deleteVisualTempFiles(visualTempPaths(removed)).catch(() => {})
   }
 
   function updateAttachment(path: string, transform: (attachment: AttachmentMeta) => AttachmentMeta) {
@@ -4595,11 +4637,11 @@ export function App() {
       danger: true,
       onConfirm: () => {
         const pending = pendingBrowserSnapshots.current[conversationId] ?? []
-        if (pending.length) void deleteBrowserTempFiles(browserTempPaths(pending)).catch(() => {})
+        if (pending.length) void deleteVisualTempFiles(visualTempPaths(pending)).catch(() => {})
         delete pendingBrowserSnapshots.current[conversationId]
         setQueuedFollowUpsList(current => current.filter(item => item.conversationId !== conversationId))
         setTodosByConversation(current => removeChecklistForConversation(current, conversationId))
-        void deleteBrowserCaptureOwner(conversationId).catch(() => {})
+        void deleteVisualCaptureOwner(conversationId).catch(() => {})
         updateChatStore(store => ({
           ...store,
           conversations: store.conversations.filter(conversation => conversation.id !== conversationId),
@@ -5005,7 +5047,7 @@ export function App() {
 
   function cleanupTurnState(turnId: string) {
     const tempFiles = turnBrowserTempFiles.current[turnId]
-    if (tempFiles?.length) void deleteBrowserTempFiles(tempFiles).catch(() => {})
+    if (tempFiles?.length) void deleteVisualTempFiles(tempFiles).catch(() => {})
     delete turnConversationIds.current[turnId]
     delete turnStartedAt.current[turnId]
     delete turnTokenRates.current[turnId]
@@ -5028,16 +5070,6 @@ export function App() {
     delete turnTextSegmentCount.current[turnId]
     delete turnCommandItemIds.current[turnId]
     delete turnToolUseItemIds.current[turnId]
-  }
-
-  function browserTempPaths(attachments: AttachmentMeta[]): string[] {
-    const paths = attachments.flatMap(attachment => [
-      attachment.path,
-      attachment.browserAnnotation?.viewportSnapshot?.path,
-    ])
-    return [...new Set(paths.filter((path): path is string =>
-      typeof path === 'string' && path.replaceAll('\\', '/').includes('/verboo-browser/'),
-    ))]
   }
 
   function appendTouchedFile(turnId: string, filePath: string) {
@@ -5150,9 +5182,10 @@ export function App() {
     setReviewUnavailableReason(undefined)
     review.close()
     browser.close()
+    simulator.close()
     setSelectedSubagentId(undefined)
     void terminal.toggle(cwd)
-  }, [review, terminal, browser, workspacePanelsEnabled])
+  }, [review, terminal, browser, simulator, workspacePanelsEnabled])
 
   const handleToggleSubagents = useCallback(() => {
     if (selectedSubagentId) {
@@ -5164,8 +5197,9 @@ export function App() {
     terminal.close()
     review.close()
     browser.close()
+    simulator.close()
     setSelectedSubagentId(latest.id)
-  }, [review, browser, selectedSubagentId, subagentThreads, terminal])
+  }, [review, browser, simulator, selectedSubagentId, subagentThreads, terminal])
 
   const handleToggleReview = useCallback(async () => {
     if (!workspacePanelsEnabled) return
@@ -5176,6 +5210,7 @@ export function App() {
 
     terminal.close()
     browser.close()
+    simulator.close()
     setSelectedSubagentId(undefined)
 
     const workingDirectory = currentWorkspaceDirectory
@@ -5203,16 +5238,17 @@ export function App() {
     terminal.close()
     setSelectedSubagentId(undefined)
     review.open(workingDirectory, summary.files, 0)
-  }, [currentWorkspaceDirectory, review, terminal, browser, t, workspacePanelsEnabled])
+  }, [currentWorkspaceDirectory, review, terminal, browser, simulator, t, workspacePanelsEnabled])
 
   const handleOpenReview = useCallback((files: WorkspaceChangeEntry[], index: number) => {
     const workingDirectory = currentWorkspaceDirectory
     if (!workingDirectory) return
     terminal.close()
     browser.close()
+    simulator.close()
     setSelectedSubagentId(undefined)
     review.open(workingDirectory, files, index)
-  }, [currentWorkspaceDirectory, review, terminal, browser])
+  }, [currentWorkspaceDirectory, review, terminal, browser, simulator])
 
   const handleToggleBrowser = useCallback(() => {
     if (!browserAvailable || !workspacePanelsEnabled) return
@@ -5222,9 +5258,23 @@ export function App() {
     }
     terminal.close()
     review.close()
+    simulator.close()
     setSelectedSubagentId(undefined)
     browser.toggle()
-  }, [browser, browserAvailable, terminal, review, workspacePanelsEnabled])
+  }, [browser, browserAvailable, simulator, terminal, review, workspacePanelsEnabled])
+
+  const handleToggleSimulator = useCallback(() => {
+    if (!simulatorAvailable || !workspacePanelsEnabled) return
+    if (simulator.simulatorOpen) {
+      simulator.close()
+      return
+    }
+    terminal.close()
+    review.close()
+    browser.close()
+    setSelectedSubagentId(undefined)
+    simulator.open()
+  }, [browser, review, simulator, simulatorAvailable, terminal, workspacePanelsEnabled])
 
   async function refreshWorkspaceReview() {
     if (!review.target) return
@@ -5432,11 +5482,15 @@ export function App() {
         browserAvailable={browserAvailable}
         browserOpen={visibleBrowserOpen}
         onToggleBrowser={handleToggleBrowser}
+        simulatorAvailable={simulatorAvailable}
+        simulatorOpen={visibleSimulatorOpen}
+        recordingActive={simulator.recordingActive}
+        onToggleSimulator={handleToggleSimulator}
         workspacePanelsEnabled={workspacePanelsEnabled}
       />
 
       <div
-        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${sideChat ? 'sidechat-open' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' ? 'view-fullscreen' : ''} ${visibleTerminalOpen ? 'terminal-open' : ''} ${visibleReviewOpen ? 'review-open' : ''} ${visibleBrowserOpen ? 'browser-open' : ''}`}
+        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${sideChat ? 'sidechat-open' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' ? 'view-fullscreen' : ''} ${visibleTerminalOpen ? 'terminal-open' : ''} ${visibleReviewOpen ? 'review-open' : ''} ${visibleBrowserOpen ? 'browser-open' : ''} ${visibleSimulatorOpen ? 'simulator-open' : ''}`}
       >
         {activeView !== 'settings' && sidebarMode === 'hidden' && !sidebarPeek && !sidebarPeekLeaving && (
           // Rail: thin hit-area on the left edge. Hover/focus expands the
@@ -5602,6 +5656,11 @@ export function App() {
               credentials={credentials}
               modelResult={modelResult}
               selectedModel={selectedModelInfo}
+              providerStatuses={providerAuth}
+              connectingProvider={connectingProvider}
+              providerLoginStage={providerLoginStage}
+              onProviderConnect={providerId => { void handleProviderConnect(providerId) }}
+              onProviderLoginCancel={() => { void handleProviderLoginCancel() }}
               theme={theme}
               activeTab={settingsTab}
               userSettings={userSettings}
@@ -5800,6 +5859,51 @@ export function App() {
           onActivateTab={browser.activateTab}
           onNavigateTab={browser.navigateTab}
           onCloseTab={browser.closeTab}
+        />
+      )}
+      {simulatorAvailable && (
+        <IosSimulatorPanel
+          simulatorOpen={visibleSimulatorOpen}
+          simulatorWidth={effectiveBrowserWidth}
+          onSetWidth={setBrowserWidth}
+          onClose={simulator.close}
+          requirements={simulator.requirements}
+          requirementsLoading={simulator.requirementsLoading}
+          attachedUdid={simulator.attachedUdid}
+          attachedDevice={simulator.attachedDevice}
+          frameDataUrl={simulator.frameDataUrl}
+          streamSource={simulator.streamSource}
+          effectiveFps={simulator.effectiveFps}
+          streamFps={simulator.streamFps}
+          streamRates={simulator.streamRates}
+          fallbackFps={simulator.fallbackFps}
+          fallbackRates={simulator.fallbackRates}
+          busyUdid={simulator.busyUdid}
+          error={simulator.error}
+          lifecycle={simulator.lifecycle}
+          lastMediaFile={simulator.lastMediaFile}
+          agentPresence={simulator.agentPresence}
+          onAttach={udid => { void simulator.attach(udid) }}
+          onDetach={() => { void simulator.detach() }}
+          onEndSimulation={() => { void simulator.endSimulation() }}
+          onSystemAction={action => { void simulator.runSystemAction(action) }}
+          onCaptureScreen={() => { void simulator.captureScreen() }}
+          onToggleRecording={() => { void simulator.toggleRecording() }}
+          onRetryAttach={() => { void simulator.retryAttach() }}
+          onRetryInteraction={() => { void simulator.retryInteraction() }}
+          onRevealOutput={path => { void simulator.revealOutput(path) }}
+          onSetStreamRate={fps => { void simulator.setStreamRate(fps) }}
+          onSetFallbackRate={fps => { void simulator.setFallbackRate(fps) }}
+          onTap={point => { void simulator.tap(point) }}
+          onDrag={(from, to, durationMs) => { void simulator.drag(from, to, durationMs) }}
+          onTypeText={text => { void simulator.typeText(text) }}
+          onPressKey={key => { void simulator.pressKey(key) }}
+          onCaptureAnnotation={(_kind, rect) => simulator.captureAnnotation(rect)}
+          onDeleteCapture={simulator.deleteCapture}
+          onAddAnnotation={addBrowserAnnotation}
+          onRefresh={() => { void simulator.refresh() }}
+          minWidth={browser.MIN_WIDTH}
+          maxWidth={browserWidthLimit}
         />
       )}
       </div>
@@ -6565,7 +6669,7 @@ function buildCliFailureMessage(lines: string[] | undefined, t: Translator): str
 // Strip non-essential fields from AttachmentMeta before persisting in a
 // TranscriptItem. Keeps path/name/kind (enough for chips + thumbnails) and
 // drops extractedText/extractionStatus which can be re-derived on re-attach.
-function slimMeta(a: AttachmentMeta): Pick<AttachmentMeta, 'path' | 'name' | 'kind' | 'size' | 'mediaType' | 'browserAnnotation'> {
+function slimMeta(a: AttachmentMeta): Pick<AttachmentMeta, 'path' | 'name' | 'kind' | 'size' | 'mediaType' | 'browserAnnotation' | 'simulatorAnnotation'> {
   return {
     path: a.path,
     name: a.name,
@@ -6573,6 +6677,7 @@ function slimMeta(a: AttachmentMeta): Pick<AttachmentMeta, 'path' | 'name' | 'ki
     size: a.size,
     mediaType: a.mediaType,
     browserAnnotation: a.browserAnnotation,
+    simulatorAnnotation: a.simulatorAnnotation,
   }
 }
 

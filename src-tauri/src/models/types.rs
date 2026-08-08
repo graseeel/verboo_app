@@ -173,6 +173,7 @@ pub enum AttachmentKind {
     Video,
     File,
     BrowserAnnotation,
+    SimulatorAnnotation,
 }
 
 /// Outcome of attempting text extraction on an attachment.
