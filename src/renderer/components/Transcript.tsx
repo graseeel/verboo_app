@@ -1,7 +1,10 @@
 import { Check, CheckCircle2, ChevronDown, ChevronRight, Clipboard, Clock3, FileSearch, FileText, GitBranch, Image as ImageIcon, ListChecks, LoaderCircle, Pencil, Search, Terminal, Wrench } from 'lucide-react'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { TranscriptItem, VideoProgress, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
+import type { TranscriptItem, VerbooModel, VideoProgress, WorkspaceChangeEntry, WorkspaceReviewMetadata } from '../../shared/types'
+import { assistantTurnLabel, providerAccountName, providerDisplayName, providerToneStyle, resolveTurnProvider, VERBOO_PROVIDER } from '../features/models/providerCatalog'
+import { ProviderIcon } from '../features/models/ProviderIcon'
 import { VideoProcessingRow } from '../features/video/VideoProcessingRow'
+import { ApiErrorAwareText } from '../features/transcript/ApiErrorText'
 import { MarkdownMessage } from '../features/transcript/MarkdownMessage'
 import { StepFlow } from '../features/transcript/StepFlow'
 import { ThinkingIcon } from '../features/transcript/TranscriptIcons'
@@ -32,12 +35,23 @@ type TranscriptProps = {
   /** Cancels the active video analysis via the same conversation interrupt
    *  the composer stop button uses. */
   onCancelVideo?: () => void
+  /** F3: model catalog used to resolve each turn's provider (id → provider,
+   *  displayName fallback). Absent → every header renders as verboo, exactly
+   *  as today. */
+  models?: VerbooModel[]
+  /** Live provider rate-limit retries per turn (system/api_retry payloads):
+   *  the thinking row says "retrying (N of M)" instead of sitting mute. */
+  apiRetryByTurn?: Record<string, { attempt: number; maxRetries: number }>
+  /** T8: offered as the exit when a turn hits the thinking-block 400 that
+   *  permanently kills the conversation. The old history stays saved and
+   *  readable; it just won't accept new turns. */
+  onStartNewConversation?: () => void
 }
 
 const MAX_ACTIVITY_DETAIL_LINES = 8
 const MAX_SUMMARY_DETAIL_LINES = 3
 
-export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, compactedTurnIds, imageReadingTurnId, conversationId, onEditSent, onUserExpand, videoProgressByTurn, onCancelVideo }: TranscriptProps) {
+export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, compactedTurnIds, imageReadingTurnId, conversationId, onEditSent, onUserExpand, videoProgressByTurn, onCancelVideo, models, apiRetryByTurn, onStartNewConversation }: TranscriptProps) {
   // `items` is a new array reference only when the conversation actually changes,
   // so this recomputes on real content changes but is skipped when the parent
   // re-renders for unrelated reasons (context-usage ticks, subagent updates…).
@@ -64,6 +78,9 @@ export const Transcript = memo(function Transcript({ items, onOpenReview, review
               onOpenReview={onOpenReview}
               reviewMetadata={reviewMetadata}
               onUserExpand={handleUserExpand}
+              models={models}
+              apiRetry={apiRetryByTurn?.[entry.turnId]}
+              onStartNewConversation={onStartNewConversation}
             />
           : <MessageArticle key={entry.item.id} item={entry.item} conversationId={conversationId} onCopy={() => {}} onEditSent={onEditSent} />
       ))}
@@ -102,7 +119,7 @@ function ThinkingRotator({ snippets }: { snippets: string[] }) {
   )
 }
 
-function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, readingImage, videoProgress, onCancelVideo, onOpenReview, reviewMetadata, onUserExpand }: {
+function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, readingImage, videoProgress, onCancelVideo, onOpenReview, reviewMetadata, onUserExpand, models, apiRetry, onStartNewConversation }: {
   entry: Extract<TranscriptEntry, { kind: 'assistant-turn' }>
   thinking: boolean
   thinkingSnippets?: string[]
@@ -114,6 +131,9 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
   onOpenReview?: TranscriptProps['onOpenReview']
   reviewMetadata?: WorkspaceReviewMetadata
   onUserExpand?: () => void
+  models?: VerbooModel[]
+  apiRetry?: { attempt: number; maxRetries: number }
+  onStartNewConversation?: () => void
 }) {
   const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
@@ -151,7 +171,23 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
   const finalTextItem = hasText ? textItems[textItems.length - 1] : undefined
   const finalText = finalTextItem?.text ?? ''
   const modelItem = entry.items.find(item => item.role === 'assistant' && item.modelDisplayName)
-  const label = modelItem?.modelDisplayName ? `Verboo - ${modelItem.modelDisplayName}` : 'Verboo'
+  // F3: external providers replace the "Verboo" prefix with the provider name
+  // and add the official brand icon (unknown ids: generic initial tile).
+  // Verboo turns render EXACTLY as today.
+  // The provider STAMPED at send time wins over re-resolving against the live
+  // catalog: the catalog can degrade mid-turn (provider CLI hiccup — exactly
+  // the 429-storm scenario) and a finished turn's header must not
+  // retroactively lose its provider. Catalog resolution stays for legacy
+  // items persisted before the stamp.
+  const turnProvider = modelItem?.provider ?? (models ? resolveTurnProvider(modelItem?.modelId, modelItem?.modelDisplayName, models) : VERBOO_PROVIDER)
+  const providerName = turnProvider !== VERBOO_PROVIDER ? providerDisplayName(turnProvider, t) : undefined
+  // T10: without a stamped modelDisplayName the app has NO evidence of who
+  // answered — the header must not invent a provider. The old fallback was
+  // the literal 'Verboo' regardless of the real provider (the owner's claude
+  // turn showed "Verboo" — a trust defect). Neutral role label instead.
+  // T12: the label itself is built by the ONE canonical helper
+  // (assistantTurnLabel) — shared with MessageArticle's standalone path.
+  const label = assistantTurnLabel(modelItem?.modelDisplayName, providerName, t)
   const summary = entry.summary
   // The backend always sends summary.text in English ("Worked for 8s").
   // When the user's locale is not en, localise via the i18n key instead of
@@ -173,6 +209,7 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
           the active action row below already signal progress — two indicators
           side-by-side read as noise. */}
       <div className="message-meta">
+        <ProviderIcon providerId={turnProvider} size={11} style={providerToneStyle(turnProvider)} />
         <span>{label}</span>
       </div>
 
@@ -202,6 +239,10 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
             <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm">
               {t('transcript.imageReading')}
             </span>
+          ) : apiRetry ? (
+            <span className="shimmer shimmer-color-purple shimmer-spread-24 shimmer-duration-calm">
+              {t('transcript.apiRetry', { attempt: apiRetry.attempt, max: apiRetry.maxRetries })}
+            </span>
           ) : thinkingSnippets && thinkingSnippets.length > 0 ? (
             <ThinkingRotator snippets={thinkingSnippets} />
           ) : (
@@ -221,7 +262,7 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
           )}
 
       {!streaming && finalText && (
-        <div className="step-text turn-recap" data-annotation-segment={finalTextItem?.id}><MarkdownMessage text={finalText} /></div>
+        <div className="step-text turn-recap" data-annotation-segment={finalTextItem?.id}><ApiErrorAwareText text={finalText} account={providerAccountName(turnProvider, t)} onStartNewConversation={onStartNewConversation} /></div>
       )}
 
       {/* G-C15-TS: goal-completion usage line, rendered inline after the
@@ -297,6 +338,11 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onCo
   const [copyFlash, setCopyFlash] = useState(false)
   const isUserMessage = item.role === 'user' && item.kind !== 'activity' && item.kind !== 'summary'
   const visualRole = item.presentation === 'interruption' ? 'assistant' : item.role
+  // T7: isTurnError (buildEntries, Transcript.tsx:731) — a linha de Sistema
+  // carrega erro (id termina em :error). Só aplicamos a variante de erro
+  // quando a linha é VISUALMENTE system (presentation !== 'interruption');
+  // o interruption é visualmente assistant e não herda o cartão verde.
+  const isTurnError = item.role === 'system' && item.id.endsWith(':error') && visualRole === 'system'
 
   function handleCopy() {
     const text = visibleText || item.text
@@ -363,7 +409,7 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onCo
   return (<>
     <div className={`msg-wrap ${isUserMessage ? 'msg-wrap-right' : ''}`}>
       <article
-        className={`message-row ${visualRole} ${item.kind ?? 'message'}`}
+        className={`message-row ${visualRole} ${item.kind ?? 'message'}${isTurnError ? ' is-turn-error' : ''}`}
         data-activity={item.activityKind}
         data-command={isInitialGoalUserItem(item) ? 'goal' : undefined}
       >
@@ -384,7 +430,9 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onCo
         {item.attachments?.length ? (
           <div className="message-attachments">
             {item.attachments.map(att => {
-              const isImage = att.kind === 'image' || att.kind === 'browser-annotation'
+              const isImage = att.kind === 'image'
+                || att.kind === 'browser-annotation'
+                || att.kind === 'simulator-annotation'
               return (
                 <button key={att.path} type="button" className={`message-attachment-chip ${isImage ? 'message-attachment-image' : 'message-attachment-file'}`}
                   onClick={() => window.verboo?.openExternalFile?.('', att.path)} title={att.path}>
@@ -718,7 +766,19 @@ function labelForItem(item: TranscriptItem, t: Translator): string {
   if (item.kind === 'activity') return item.text
   if (item.kind === 'summary') return item.text
   if (item.role === 'assistant') {
-    return item.modelDisplayName ? `Verboo - ${item.modelDisplayName}` : 'Verboo'
+    // T12 (the T10 sister Cadinho's sweep found): this used to hardcode the
+    // brand — `Verboo - <model>` or a bare 'Verboo' — regardless of the real
+    // provider. Same canonical rule as the turn header now: prefix from the
+    // send-time stamp, neutral role label without a stamp. UNREACHABLE today:
+    // buildTranscriptEntries groups EVERY assistant item into a turn
+    // (turnIdOf falls back to item.id), so no assistant item ever reaches
+    // MessageArticle — the reachability is pinned by test, and the fix keeps
+    // the branch honest if the grouping invariant ever changes.
+    return assistantTurnLabel(
+      item.modelDisplayName,
+      item.provider && item.provider !== VERBOO_PROVIDER ? providerDisplayName(item.provider, t) : undefined,
+      t,
+    )
   }
   if (item.role === 'tool') return t('transcript.tool')
   if (item.role === 'system') return t('transcript.system')

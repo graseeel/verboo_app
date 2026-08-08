@@ -319,6 +319,7 @@ type QueuedFollowUp = {
   turnModel: {
     modelId?: string
     modelDisplayName?: string
+    provider?: string
   }
 }
 
@@ -634,7 +635,7 @@ export function App() {
   }, [])
   const userSettingsRef = useRef(userSettings)
   const turnConversationIds = useRef<Record<string, string>>({})
-  const turnModels = useRef<Record<string, { modelId?: string; modelDisplayName?: string }>>({})
+  const turnModels = useRef<Record<string, { modelId?: string; modelDisplayName?: string; provider?: string }>>({})
   const pendingConversationId = useRef<string | undefined>(undefined)
   // Ref mirror of activeConversationId so the agent event handler (which has
   // a stale closure via useEffect []) can read the current value when a
@@ -656,6 +657,7 @@ export function App() {
   const queuedFollowUpsRef = useRef<QueuedFollowUp[]>([])
   const lastEscapeAt = useRef(0)
   const userInterruptedTurnsRef = useRef<Set<string>>(new Set())
+  const quotaResetTurnsRef = useRef<Set<string>>(new Set())
   const selectedContextWindowRef = useRef<number | undefined>(undefined)
   const turnStartedAt = useRef<Record<string, number>>({})
   const turnTokenRates = useRef<Record<string, TokenRateSample>>({})
@@ -687,6 +689,19 @@ export function App() {
   const turnThinkingSnippets = useRef<Record<string, string[]>>({})
   const [thinkingSnippets, setThinkingSnippets] = useState<string[]>([])
   const turnAssistantText = useRef<Record<string, string>>({})
+  // T17: when the CLI emits an assistant event flagged isApiErrorMessage, the
+  // raw error text is also forwarded as stdout (turn_service.rs extract_text) —
+  // the same bytes twice. The error event's handler (below) surfaces a readable
+  // headline in the system row with the raw blob in the collapsed technical
+  // detail toggle. If we also let the raw error land in the assistant body,
+  // the user sees the same diagnostic twice. This ref holds the flagged text
+  // for one-shot suppression in the stdout handler; it is consumed the moment
+  // the matching stdout arrives and never blocks an unrelated delta.
+  const turnApiErrorTextRef = useRef<Record<string, string>>({})
+  // Result-event text announced via json payloads (see extractResultText) —
+  // gates the stdout dedupe so only the exact re-emission is skipped, never
+  // a repeated streaming delta.
+  const turnResultEmittedText = useRef<Record<string, string>>({})
   const turnLastCommand = useRef<Record<string, string>>({})
   const turnCommands = useRef<Record<string, string[]>>({})
   const turnReferences = useRef<Record<string, string[]>>({})
@@ -716,6 +731,9 @@ export function App() {
   // extractToolResults can attach real output to their activity rows.
   const turnToolUseItemIds = useRef<Record<string, Record<string, string>>>({})
   const [thinkingTurnId, setThinkingTurnId] = useState<string | undefined>(undefined)
+  // Live provider rate-limit retries per turn (system/api_retry payloads) —
+  // the transcript says "retrying (N of M)" instead of a mute "Thinking…".
+  const [apiRetryByTurn, setApiRetryByTurn] = useState<Record<string, { attempt: number; maxRetries: number }>>({})
   const [compactingTurnId, setCompactingTurnId] = useState<string | undefined>(undefined)
   const [compactedTurnIds, setCompactedTurnIds] = useState<Set<string>>(new Set())
   // After compacting, skip the local transcript estimate for 15s so the meter
@@ -2084,6 +2102,34 @@ export function App() {
 
     if (event.type === 'stdout') {
       const conversationId = turnConversationIds.current[event.turnId]
+      // The result event's `result` string is forwarded as stdout AFTER the
+      // same text already arrived from the assistant event (turn_service.rs
+      // extract_text). Skip the exact re-emission — gated by the announced
+      // result text so a repeated streaming delta is never eaten.
+      const announcedResult = turnResultEmittedText.current[event.turnId]
+      const accumulated = (turnAssistantText.current[event.turnId] ?? '').trim()
+      if (
+        announcedResult !== undefined
+        && event.text.trim() === announcedResult.trim()
+        && accumulated === event.text.trim()
+      ) {
+        return
+      }
+      // T17: the CLI also forwards an isApiErrorMessage-flagged assistant
+      // event as stdout — the same raw diagnostic twice (once from the
+      // assistant event, once from the result event's extract_text). The
+      // error handler (below) already surfaces a readable headline in the
+      // system row with the raw blob in the collapsed technical-detail
+      // toggle, so letting the raw error also land in the assistant body
+      // is pure duplication. The ref persists for the turn (cleared on
+      // cleanup) so BOTH stdout re-emissions are skipped — the one-shot
+      // variant left the second copy alive because the announcedResult
+      // dedupe requires the first to have landed.
+      const apiErrorText = turnApiErrorTextRef.current[event.turnId]
+      if (apiErrorText !== undefined && event.text.trim() === apiErrorText.trim()) {
+        return
+      }
+      setApiRetryByTurn(prev => clearApiRetryNotice(prev, event.turnId))
       setThinkingTurnId(current => (current === event.turnId ? undefined : current))
       setThinkingSnippets([])
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
@@ -2121,6 +2167,52 @@ export function App() {
     }
 
     if (event.type === 'json') {
+      // Provider rate-limit retry in flight → live retry notice on the
+      // thinking row. Purely informational: no other extractor needs it.
+      const apiRetry = extractApiRetry(event.payload)
+      if (apiRetry) {
+        const conversationId = turnConversationIds.current[event.turnId]
+        const turnProvider = turnModels.current[event.turnId]?.provider ?? VERBOO_PROVIDER
+        const quotaMessage = quotaResetMessageFromRetry(apiRetry.retryDelayMs, providerAccountName(turnProvider, t), t)
+        if (quotaMessage && conversationId) {
+          // T13: the CLI declared an hour-scale wait before retrying — that's
+          // not a retry, it's a quota reset. End the turn and surface the
+          // readable headline immediately instead of sitting on a mute
+          // "Thinking…" for 43h. A terminal error may arrive after the
+          // interrupt; quotaResetTurnsRef suppresses its duplicate item (the
+          // quota message already told the user).
+          quotaResetTurnsRef.current.add(event.turnId)
+          appendConversationItem(conversationId, {
+            id: `${event.turnId}:error`,
+            role: 'system',
+            text: shouldSuppressSystemErrorText(turnAssistantText.current[event.turnId] ?? '')
+              ? ''
+              : quotaMessage,
+            timestamp: Date.now(),
+          })
+          void interruptForUser(conversationId)
+          setApiRetryByTurn(prev => clearApiRetryNotice(prev, event.turnId))
+          return
+        }
+        setApiRetryByTurn(prev => ({ ...prev, [event.turnId]: apiRetry }))
+        return
+      }
+      const announcedResult = extractResultText(event.payload)
+      if (announcedResult !== undefined) {
+        turnResultEmittedText.current[event.turnId] = announcedResult
+      }
+      // T17: capture assistant events flagged as API errors so the stdout
+      // re-emission of the same text is skipped (see turnApiErrorTextRef).
+      if (event.payload && typeof event.payload === 'object'
+        && (event.payload as { type?: unknown }).type === 'assistant'
+        && (event.payload as { isApiErrorMessage?: unknown }).isApiErrorMessage === true) {
+        const content = (event.payload as { message?: { content?: unknown[] } }).message?.content
+        const textBlock = Array.isArray(content) ? content.find((b): b is { type: string; text: string } =>
+          typeof b === 'object' && b !== null && (b as { type?: unknown }).type === 'text' && typeof (b as { text?: unknown }).text === 'string') : undefined
+        if (textBlock) {
+          turnApiErrorTextRef.current[event.turnId] = textBlock.text
+        }
+      }
       let conversationId = turnConversationIds.current[event.turnId]
       // Always signal image-reading UI when a kind=image activity arrives,
       // regardless of whether conversationId is already known (Geralt emits
@@ -2275,10 +2367,16 @@ export function App() {
 
     if (event.type === 'error') {
       const conversationId = turnConversationIds.current[event.turnId]
+      setApiRetryByTurn(prev => clearApiRetryNotice(prev, event.turnId))
+      // The provider behind THIS turn (stamped at send time) names the
+      // account in a readable quota message — the live catalog is NOT
+      // consulted here: it may have degraded during the failure itself.
+      const turnProvider = turnModels.current[event.turnId]?.provider ?? VERBOO_PROVIDER
       const errorPresentation = presentAgentError(
         event,
         userInterruptedTurnsRef.current,
         t,
+        providerAccountName(turnProvider, t),
       )
       setVideoProgressByTurn(prev => clearVideoProgress(prev, event.turnId))
       const failure = event.payload
@@ -2422,13 +2520,30 @@ export function App() {
           overflowRecovering.current.delete(conversationId)
         }
 
-        if (!willContinueAutomatically) {
+        // G.7: suppress only the interrupt duplicate (presentation === 'interruption')
+        // from a quota-reset turn. A real error (context overflow, crash, etc.) must
+        // always surface — even if it arrives first (e.g. when the interrupt failed
+        // and userInterruptedTurnsRef was rolled back). The ref is consumed only
+        // when the interrupt duplicate actually arrives, not on the first error of
+        // any kind (one-shot by position was the defect; this is by identity).
+        const isQuotaResetInterrupt = errorPresentation.presentation === 'interruption'
+          && quotaResetTurnsRef.current.delete(event.turnId)
+        // T19: shouldSuppressSystemErrorText is the unified guard applied at
+        // all 4 error-headline role:system insertion points (grep `role: 'system'`
+        // finds 5 — the 5th at the turn-summary is kind:'summary', not an error).
+        // See the helper for why this checks parseApiErrorText (would
+        // ApiErrorAwareText render a parsed headline?) rather than raw-text
+        // containment.
+        if (!willContinueAutomatically && !isQuotaResetInterrupt) {
+          const headline = isContextOverflow
+            ? `${t('context.overflowDetected')}\n\n${errorPresentation.text}`
+            : errorPresentation.text
           appendConversationItem(conversationId, {
             id: `${event.turnId}:error`,
             role: 'system',
-            text: isContextOverflow
-              ? `${t('context.overflowDetected')}\n\n${errorPresentation.text}`
-              : errorPresentation.text,
+            text: shouldSuppressSystemErrorText(turnAssistantText.current[event.turnId] ?? '')
+              ? ''
+              : headline,
             errorDetail: errorPresentation.technicalDetail,
             presentation: errorPresentation.presentation,
             timestamp: Date.now(),
@@ -2439,6 +2554,8 @@ export function App() {
       // to the resume prompt as anchor context for the model.
       const partialText = turnAssistantText.current[event.turnId] ?? ''
       delete turnAssistantText.current[event.turnId]
+      delete turnResultEmittedText.current[event.turnId]
+      delete turnApiErrorTextRef.current[event.turnId]
       delete turnRetryPayload.current[event.turnId]
       if (conversationId) finishAssistantMessage(conversationId, event.turnId)
       cleanupTurnState(event.turnId)
@@ -2460,10 +2577,16 @@ export function App() {
         if (completionDeferred) completionDeferred.turnId = retry.request.turnId
         void runTurn(retry, { skipResume: true }).catch(error => {
           const message = error instanceof Error ? error.message : String(error)
+          const retryTurnId = retry.request.turnId ?? ''
           appendConversationItem(conversationId, {
-            id: `${retry.request.turnId}:error`,
+            id: `${retryTurnId}:error`,
             role: 'system',
-            text: message,
+            text: shouldSuppressSystemErrorText(turnAssistantText.current[retryTurnId] ?? '')
+              ? ''
+              : message,
+            errorDetail: shouldSuppressSystemErrorText(turnAssistantText.current[retryTurnId] ?? '')
+              ? message
+              : undefined,
             timestamp: Date.now(),
           })
           if (turnCompletionDeferred.current === completionDeferred) {
@@ -2503,10 +2626,14 @@ export function App() {
           const message = error instanceof Error ? error.message : String(error)
           authRecovering.current.delete(conversationId)
           overflowRecovering.current.delete(conversationId)
+          const recoveryHeadline = t(willRecoverAuth ? 'auth.recoveryFailed' : 'context.recoveryFailed', { message })
+          const resumeTurnId = resume.request.turnId ?? ''
+          const suppress = shouldSuppressSystemErrorText(turnAssistantText.current[resumeTurnId] ?? '')
           appendConversationItem(conversationId, {
-            id: `${resume.request.turnId}:error`,
+            id: `${resumeTurnId}:error`,
             role: 'system',
-            text: t(willRecoverAuth ? 'auth.recoveryFailed' : 'context.recoveryFailed', { message }),
+            text: suppress ? '' : recoveryHeadline,
+            errorDetail: suppress ? message : undefined,
             timestamp: Date.now(),
           })
           flashPet('error')
@@ -2521,6 +2648,7 @@ export function App() {
 
     if (event.type === 'done') {
       const conversationId = turnConversationIds.current[event.turnId]
+      setApiRetryByTurn(prev => clearApiRetryNotice(prev, event.turnId))
       userInterruptedTurnsRef.current.delete(event.turnId)
       // A turn finished cleanly → clear any overflow-recovery guard so a future
       // overflow in this conversation can auto-recover again.
@@ -2943,6 +3071,9 @@ export function App() {
     const turnModel = {
       modelId: selectedModel,
       modelDisplayName: selectedModelInfo?.displayName ?? selectedModel,
+      // Stamp the provider at send time: the transcript header reads THIS,
+      // not a re-resolution against a catalog that can degrade mid-turn.
+      provider: selectedModelInfo?.provider,
     }
     const responseLanguage = inferResponseLanguage(message, conversationLanguageFallback(conversationId))
 
@@ -3330,6 +3461,7 @@ export function App() {
     const turnModel = {
       modelId: selectedModel,
       modelDisplayName: selectedModelInfo?.displayName ?? selectedModel,
+      provider: selectedModelInfo?.provider,
     }
 
     return {
@@ -3939,6 +4071,7 @@ export function App() {
         const turnModel = {
           modelId: selectedModel,
           modelDisplayName: selectedModelInfo?.displayName ?? selectedModel,
+          provider: selectedModelInfo?.provider,
         }
 
         appendConversationItem(conversationId, {
@@ -3982,6 +4115,9 @@ export function App() {
 
         turnConversationIds.current[turnId] = conversationId
         turnModels.current[turnId] = turnModel
+        // Same race as runTurn: `started` lands before this line, so the
+        // placeholder segment was born unstamped — re-stamp it now (T10).
+        tagAssistantMessage(conversationId, turnId, turnModel)
 
         setGoal(current => {
           if (!current) return current
@@ -4907,12 +5043,23 @@ export function App() {
   function tagAssistantMessage(
     conversationId: string,
     turnId: string,
-    turnModel: { modelId?: string; modelDisplayName?: string },
+    turnModel: { modelId?: string; modelDisplayName?: string; provider?: string },
   ) {
+    // The Rust side emits `started` BEFORE the send_turn invoke resolves, so
+    // the placeholder (`${turnId}:text:1`) is usually born BEFORE
+    // turnModels.current[turnId] is populated — and appendAssistantText's
+    // merge path only merges text. Nothing re-stamped the segment: this map
+    // used to target `item.id === turnId`, an id NO transcript item ever has
+    // (dead no-op), which is why pure-text turns persisted with no model
+    // fields and the header fell back to the literal 'Verboo' (T10, measured
+    // in the owner's verboo:chat-store:v1). Stamp every text segment of the
+    // turn — same id family finishAssistantMessage already matches.
     updateConversation(conversationId, conversation => ({
       ...conversation,
       items: conversation.items.map(item =>
-        item.id === turnId ? { ...item, ...turnModel } : item,
+        item.id === turnId || item.id.startsWith(`${turnId}:text:`)
+          ? { ...item, ...turnModel }
+          : item,
       ),
       updatedAt: Date.now(),
     }))
@@ -4940,6 +5087,7 @@ export function App() {
       updatedAt: Date.now(),
     }))
     delete turnAssistantText.current[turnId]
+    delete turnResultEmittedText.current[turnId]
     delete turnModels.current[turnId]
   }
 
@@ -5169,6 +5317,7 @@ export function App() {
     delete turnResultSnapshots.current[turnId]
     delete turnTerminalErrors.current[turnId]
     delete turnAssistantText.current[turnId]
+    delete turnResultEmittedText.current[turnId]
     delete turnLastCommand.current[turnId]
     delete turnCommands.current[turnId]
     delete turnReferences.current[turnId]
@@ -6498,7 +6647,52 @@ function resolveSelectedModel(
   if (models.length === 0) return currentModelId
   if (currentModelId && models.some(model => model.id === currentModelId)) return currentModelId
   if (preferredModelId && models.some(model => model.id === preferredModelId)) return preferredModelId
-  return models[0]?.id
+  // An explicit selection SURVIVES vanishing from a catalog snapshot: provider
+  // models are attached per refresh and degrade silently (model_service.rs
+  // attach_provider_models), so a transient provider-CLI hiccup must not
+  // demote the user's choice — every later refresh would keep the demotion.
+  // The persisted choice gets the same protection at startup under a degraded
+  // catalog. models[0] only when no explicit selection exists (first paint).
+  return currentModelId ?? preferredModelId ?? models[0]?.id
+}
+
+/** The CLI emits `{"type":"system","subtype":"api_retry","attempt":N,
+ *  "max_retries":M,"retry_delay_ms":D,...}` while it retries a rate-limited
+ *  request (measured: 10 attempts over ~3 min). The Rust forwarder rides it
+ *  as a json event — surface it instead of sitting on a mute "Thinking…"
+ *  (field defect). `retry_delay_ms` is the declared wait before the next
+ *  retry; when it's hour-scale the "retry" is really a quota reset (T13). */
+export function extractApiRetry(payload: unknown): { attempt: number; maxRetries: number; retryDelayMs?: number } | undefined {
+  if (!payload || typeof payload !== 'object') return undefined
+  const record = payload as Record<string, unknown>
+  if (record.type !== 'system' || record.subtype !== 'api_retry') return undefined
+  const attempt = typeof record.attempt === 'number' ? record.attempt : undefined
+  const maxRetries = typeof record.max_retries === 'number' ? record.max_retries : undefined
+  if (!attempt || !maxRetries) return undefined
+  const retryDelayMs = typeof record.retry_delay_ms === 'number' ? record.retry_delay_ms : undefined
+  return { attempt, maxRetries, retryDelayMs }
+}
+
+/** The Rust forwarder also turns a result event's `result` string into stdout
+ *  (turn_service.rs:3073-3077) AFTER the same text already streamed from the
+ *  assistant event. Remembering the announced result text lets the stdout
+ *  handler skip the exact re-emission — otherwise the final message renders
+ *  twice in the body (field defect: the quota error duplicated). */
+export function extractResultText(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') return undefined
+  const record = payload as Record<string, unknown>
+  if (record.type !== 'result') return undefined
+  return typeof record.result === 'string' && record.result.trim() ? record.result : undefined
+}
+
+function clearApiRetryNotice(
+  prev: Record<string, { attempt: number; maxRetries: number }>,
+  turnId: string,
+): Record<string, { attempt: number; maxRetries: number }> {
+  if (!(turnId in prev)) return prev
+  const next = { ...prev }
+  delete next[turnId]
+  return next
 }
 
 function parseResearchSubagentRequest(message: string): { count: number; requestedCount: number } | undefined {

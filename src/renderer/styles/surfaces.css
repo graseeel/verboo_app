@@ -1778,8 +1778,19 @@
 .message-row.system {
   justify-self: start;
   width: min(960px, calc(100% - 44px));
-  border-color: color-mix(in srgb, var(--green) 34%, var(--border));
-  background: color-mix(in srgb, var(--green) 7%, var(--bg-elevated));
+}
+
+/* T7/T17: a linha de Sistema carrega erro (id termina em :error,
+ * Transcript.tsx isTurnError). O cartao vermelho pesado SAIU (field photo
+ * do dono: "essa barra/card vermelho tem que sair! senao o transcript fica
+ * muito sujo/feio"). Substituido por uma marca sutil: apenas uma borda
+ * esquerda fina em --danger, sem fundo, sem borda completa. Usa a linguagem
+ * de erro do app (--danger, nunca --green) — o T7 pin continua valendo. */
+.message-row.system.is-turn-error {
+  border-color: transparent;
+  background: transparent;
+  border-left: 2px solid color-mix(in srgb, var(--danger) 55%, transparent);
+  padding-left: 10px;
 }
 
 /* ── Settings — Avatar picker ─────────────────────────────── */

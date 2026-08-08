@@ -3,6 +3,7 @@ import {
   CHAT_STORE_KEY,
   visibleConversations,
   createConversation,
+  persistChatStore,
   readChatStore,
   sanitizeConversation,
   updateConversation,
@@ -224,5 +225,43 @@ describe('updateConversation — identity preservation (G-C5)', () => {
     const aResult = result.conversations.find(c => c.id === 'chat:a')
     expect(aResult).not.toBe(a)
     expect(aResult?.title).toBe('Changed')
+  })
+})
+
+describe('T10 — o carimbo de modelo sobrevive a persistir + reler (medição da hipótese de persistência)', () => {
+  // T10 hypothesis (b) under test: "the stamp exists in memory but does NOT
+  // survive persistence". The Maestro measured the owner's real
+  // verboo:chat-store:v1 with NO model fields on assistant items. This test
+  // proves the store layer is INNOCENT: a stamped item round-trips
+  // byte-identically through persistChatStore → localStorage → readChatStore
+  // (which runs the full migrate + sanitize pipeline). The stripper was NOT
+  // here — it was the started-event race in App.tsx (see
+  // App.turnModelStamp.test.tsx).
+  it('persist + reler mantém modelId, modelDisplayName e provider no item', () => {
+    window.localStorage.clear()
+    const stamped = conversation({
+      id: 'chat:stamped',
+      title: 'Stamped chat',
+      items: [{
+        id: 'turn-1:text:1',
+        role: 'assistant',
+        text: 'ok',
+        timestamp: 10,
+        streaming: false,
+        modelId: 'claude-fable-5',
+        modelDisplayName: 'Claude Fable 5',
+        provider: 'claude',
+      }],
+    })
+    persistChatStore(storeWith([stamped]))
+
+    const reread = readChatStore()
+    const item = reread.conversations
+      .find(c => c.id === 'chat:stamped')
+      ?.items.find(i => i.id === 'turn-1:text:1')
+    expect(item).toBeTruthy()
+    expect(item?.modelId).toBe('claude-fable-5')
+    expect(item?.modelDisplayName).toBe('Claude Fable 5')
+    expect(item?.provider).toBe('claude')
   })
 })

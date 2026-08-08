@@ -449,11 +449,16 @@ export type TranscriptItem = {
   batchReportLines?: string[]
   modelId?: string
   modelDisplayName?: string
+  /** Provider stamped at send time (F3: absent = verboo). The transcript
+   *  header prefers this over re-resolving from the live catalog — the
+   *  catalog can degrade mid-turn (provider CLI hiccup) and the header of a
+   *  finished turn must not retroactively lose its provider. */
+  provider?: string
   streaming?: boolean
   skills?: SkillSummary[]
   // Attachments sent with this message — thumbnail metadata only (paths,
   // names, kinds), no base64 blobs. Survives conversation reload.
-  attachments?: Pick<AttachmentMeta, 'path' | 'name' | 'kind' | 'size' | 'mediaType' | 'browserAnnotation'>[]
+  attachments?: Pick<AttachmentMeta, 'path' | 'name' | 'kind' | 'size' | 'mediaType' | 'browserAnnotation' | 'simulatorAnnotation'>[]
   /** F3 (N3): the annotation TURN item — kind 'annotation'. The quote+comment
    *  pairs are FROZEN inside the item at send time: "consultable forever"
    *  never depends on re-anchoring against the transcript (the excerpt may
