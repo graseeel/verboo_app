@@ -1180,7 +1180,7 @@ export type RuntimeStatus = {
 
 /**
  * T1-TodoWrite (2026-07-31): one entry of a TodoWrite tool call.
- * Frontier with TORNO — mirrors `pub struct TodoItem` in
+ * Frontier with PERISCOPIO — mirrors `pub struct TodoItem` in
  * src-tauri/src/models/types.rs, which is `#[serde(rename_all =
  * "camelCase")]`: the Rust field `active_form` arrives as `activeForm`.
  * Declaring `active_form` here would compile and read `undefined`
@@ -1212,7 +1212,7 @@ export type RuntimeActivity = {
   diffPreview?: string
   /**
    * T1-TodoWrite: structured todo list from the todowrite tool.
-   * Frontier with TORNO (`todos: Option<Vec<TodoItem>>` in types.rs
+   * Frontier with PERISCOPIO (`todos: Option<Vec<TodoItem>>` in types.rs
    * with `skip_serializing_if = "Option::is_none"`): when there is no
    * list the KEY IS ABSENT from the JSON — it arrives `undefined`,
    * never `null`. Treat ABSENCE, not nullity. Populated only for
@@ -1467,7 +1467,7 @@ export type TerminalDataEvent = {
 }
 
 // --- Anotações (F0) -----------------------------------------------------------
-// Contrato FIXADO pelo Maestro, idêntico ao que o TORNO recebeu no Rust. Não
+// Contrato FIXADO pelo Maestro, idêntico ao que o PERISCOPIO recebeu no Rust. Não
 // renomear, não acrescentar campo: a fronteira Rust<->TS é camelCase e o Rust
 // já tem serde(rename_all = "camelCase") — um campo em snake_case aqui zera
 // silenciosamente o dado na ponte (já aconteceu com TokenUsage).

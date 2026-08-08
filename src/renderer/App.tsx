@@ -140,11 +140,13 @@ import {
   shouldRetryIncompleteTurn,
 } from './features/transcript/cliFailureRecovery'
 import { presentAgentError } from './features/transcript/agentErrorWiring'
+import { quotaResetMessageFromRetry, shouldSuppressSystemErrorText } from './features/transcript/apiErrorPresentation'
 import { truncateToolOutput } from './features/transcript/toolOutput'
 import { applySubagentThreadUpdate, isSubagentThreadWorking, latestSubagentThread } from './features/subagents/subagentThreads'
 import { SubagentIndicator } from './features/subagents/SubagentIndicator'
 import { SubagentThreadPanel } from './features/subagents/SubagentThreadPanel'
 import { FeedbackDialog } from './features/feedback/FeedbackDialog'
+import { ProviderRiskDialog } from './features/settings/ProviderRiskDialog'
 import { ModelSelector } from './features/models/ModelSelector'
 import { validOverride, displayEffort, migrateEffortPrefs } from './features/models/effortOverride'
 import { PluginsView } from './features/plugins/PluginsView'
@@ -160,13 +162,14 @@ import { OrderedAttachmentQueue } from './features/attachments/orderedAttachment
 import { uploadPastedFile } from './features/attachments/pastedFileUpload'
 import { inspectPathlessFiles } from './features/attachments/pathlessAttachmentIngestion'
 import {
-  cleanupBrowserCaptureOwners,
-  deleteBrowserCaptureOwner,
-  deleteBrowserTempFiles,
-  expandBrowserAnnotationSnapshots,
+  cleanupVisualCaptureOwners,
+  deleteVisualCaptureOwner,
+  deleteVisualTempFiles,
+  expandVisualAttachmentSnapshots,
   isVisualAttachment,
-  promoteBrowserAttachments,
-} from './features/browser/browserAnnotations'
+  promoteVisualAttachments,
+  visualTempPaths,
+} from './features/attachments/visualAttachments'
 import { findLocalBrowserUrl, postEditVerificationPrompt, shouldScheduleBrowserReload } from './features/browser/browserPostEdit'
 import type { BrowserReloadRequest } from './features/browser/useBrowserPanel'
 import {
