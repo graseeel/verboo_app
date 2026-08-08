@@ -1,6 +1,11 @@
 pub mod archive;
 pub mod contract;
 pub mod download;
+pub mod service;
+pub mod store;
+
+pub use service::CliUpdateService;
+pub use store::{CliRuntimeLease, CliStore};
 
 pub const DESKTOP_PROTOCOL: u32 = 1;
 pub const EMBEDDED_NODE_VERSION: &str = "24.19.0";
