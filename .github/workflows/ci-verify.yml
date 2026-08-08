@@ -151,6 +151,10 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Prepare macOS WebDriverAgent resource
+        if: runner.os == 'macOS'
+        run: node scripts/tauri/copy-wda-resource.mjs
+
       - name: Prepare verified embedded Node runtime
         env:
           VERBOO_NODE_SIDECAR_CACHE: ${{ runner.temp }}/verboo-node-sidecars-cache
