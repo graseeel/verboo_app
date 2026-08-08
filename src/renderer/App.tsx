@@ -416,6 +416,10 @@ export function App() {
     prevActiveViewRef.current = activeView
   }, [activeView, loadPluginSummaries])
 
+  // T3 (field report, Windows): suppress the webview's NATIVE context menu on
+  // empty chrome areas; editable elements and text selections keep it.
+  useEffect(() => installContextMenuGuard(window), [])
+
   const [effortByModel, setEffortByModel] = useState<Record<string, string>>(
     () => readEffortByModel(),
   )
