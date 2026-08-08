@@ -181,8 +181,8 @@ jobs:
         shell: pwsh
         run: |
           $env:PATH = "C:\Windows\System32;$env:PATH"
-          $USEP = [char]0x1F
-          $env:CARGO_ENCODED_RUSTFLAGS = "-Clink-arg=/MANIFEST:EMBED$USEP-Clink-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+          # Unlike the --lib job, this also builds the Tauri binary, whose
+          # resource.lib already contains the application manifest.
           cargo +1.89.0 test `
             --manifest-path src-tauri/Cargo.toml `
             --test cli_release_e2e `
