@@ -228,6 +228,12 @@ jobs:
           path: ${{ runner.temp }}/verboo-media-sidecars-cache
           key: media-sidecars-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('scripts/tauri/media-sidecars.json', 'scripts/tauri/build-media-sidecars.mjs') }}
 
+      - name: Cache verified embedded Node archives
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/verboo-node-sidecars-cache
+          key: node-sidecar-${{ matrix.target }}-${{ hashFiles('scripts/tauri/node-sidecars.json', 'scripts/tauri/build-node-sidecar.mjs') }}
+
       - name: Build renderer + bundle CLI (build:tauri-deps)
         # Mirrors local `npm run tauri:build` deps prep:
         #   1. dedup-cli-package.mjs  — strip iCloud conflict copies
@@ -239,6 +245,25 @@ jobs:
 
       - name: Build Verboo in Chrome sidecar
         run: node scripts/tauri/build-chrome-helper.mjs --target ${{ matrix.target }}
+
+      - name: Prepare verified embedded Node runtime
+        env:
+          VERBOO_NODE_SIDECAR_CACHE: ${{ runner.temp }}/verboo-node-sidecars-cache
+        run: node scripts/tauri/build-node-sidecar.mjs --target ${{ matrix.target }}
+
+      - name: Verify embedded Node runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="${{ matrix.target }}"
+          EXT=""
+          if [ "$TARGET" = "x86_64-pc-windows-msvc" ]; then EXT=".exe"; fi
+          NODE_BIN="src-tauri/binaries/verboo-node-$TARGET$EXT"
+          test -s "$NODE_BIN"
+          test -s "src-tauri/resources/node-runtime/LICENSE"
+          test "$("$NODE_BIN" -p 'process.versions.node')" = "24.19.0"
+          test "$("$NODE_BIN" -p 'process.versions.modules')" = "137"
+          test "$("$NODE_BIN" -p 'process.versions.napi')" = "10"
 
       - name: Build pinned media sidecars
         if: runner.os != 'Windows'

@@ -55,14 +55,16 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/cli-package/"
+      "resources/cli-package/",
+      "resources/node-runtime/"
     ],
     "externalBin": [
       "binaries/verboo-in-chrome",
       "binaries/verboo-ios-simulator",
       "binaries/verboo-ffmpeg",
       "binaries/verboo-ffprobe",
-      "binaries/verboo-whisper"
+      "binaries/verboo-whisper",
+      "binaries/verboo-node"
     ],
     "macOS": {
       "minimumSystemVersion": "12.0",
