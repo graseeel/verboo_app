@@ -51,6 +51,17 @@ on:
       - "package-lock.json"
       - ".github/workflows/ci-verify.yml"
   workflow_dispatch:
+    inputs:
+      run_cli_release_e2e:
+        description: "Download and execute the signed CLI release on all shipped targets"
+        required: true
+        default: false
+        type: boolean
+      expected_cli_version:
+        description: "Exact latest stable CLI version expected from upstream"
+        required: false
+        default: "0.15.10"
+        type: string
 
 permissions:
   contents: read
@@ -60,6 +71,107 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Manually controlled release-contract proof. It uses the same production
+  # updater, embedded Node runtime, public trust root, and upstream assets as
+  # the packaged app, but writes only to temporary app-data directories.
+  cli-release-e2e:
+    name: signed CLI E2E (${{ matrix.target }})
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_cli_release_e2e }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: "1.89.0"
+      RUSTFLAGS: ""
+      VERBOO_CLI_MINISIGN_PUBLIC_KEY: ${{ secrets.VERBOO_CLI_MINISIGN_PUBLIC_KEY }}
+      VERBOO_EXPECTED_CLI_VERSION: ${{ inputs.expected_cli_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify release test inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$VERBOO_CLI_MINISIGN_PUBLIC_KEY" || {
+            echo "::error::VERBOO_CLI_MINISIGN_PUBLIC_KEY is missing"
+            exit 1
+          }
+          test -n "$VERBOO_EXPECTED_CLI_VERSION" || {
+            echo "::error::expected_cli_version is missing"
+            exit 1
+          }
+
+      - name: Isolate cargo target dir
+        shell: bash
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TEMP/verboo-cli-release-e2e-target" >> "$GITHUB_ENV"
+
+      - name: Install Rust 1.89.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.89.0"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            build-essential \
+            pkg-config
+
+      - name: Prepare verified embedded Node runtime
+        env:
+          VERBOO_NODE_SIDECAR_CACHE: ${{ runner.temp }}/verboo-node-sidecars-cache
+        run: node scripts/tauri/build-node-sidecar.mjs --target ${{ matrix.target }}
+
+      - name: Run signed release E2E (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          set -euxo pipefail
+          cargo +1.89.0 test \
+            --manifest-path src-tauri/Cargo.toml \
+            --test cli_release_e2e \
+            --locked \
+            published_cli_release_bootstrap_and_update_e2e \
+            -- --ignored --exact --nocapture
+
+      - name: Run signed release E2E (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Windows\System32;$env:PATH"
+          $USEP = [char]0x1F
+          $env:CARGO_ENCODED_RUSTFLAGS = "-Clink-arg=/MANIFEST:EMBED$USEP-Clink-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+          cargo +1.89.0 test `
+            --manifest-path src-tauri/Cargo.toml `
+            --test cli_release_e2e `
+            --locked `
+            published_cli_release_bootstrap_and_update_e2e `
+            -- --ignored --exact --nocapture
+
   # ─────────────────────────────────────────────────────────────────────
   # Rust library tests (cargo test --lib) on the three shipped OSes.
   # This is the load-bearing job for the TORNO login fix: the test that

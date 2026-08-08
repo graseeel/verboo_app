@@ -20,7 +20,10 @@ pub struct ExtractionLimits {
 impl Default for ExtractionLimits {
     fn default() -> Self {
         Self {
-            max_entries: 100_000,
+            // v0.15.10 contains at most 109,164 regular files/directories
+            // across the four signed targets. Keep bounded headroom without
+            // weakening the independent extracted-byte limit below.
+            max_entries: 125_000,
             max_total_bytes: 2 * 1024 * 1024 * 1024,
         }
     }
