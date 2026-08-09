@@ -357,28 +357,36 @@ mod tests {
         use std::process::Command;
         use std::time::{Duration, Instant};
 
-        // Unique marker path to avoid parallel-test races.
-        let marker = std::env::temp_dir().join(format!(
-            "verboo_test_sigint_fallback_{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&marker);
+        let test_dir = tempfile::tempdir().expect("create signal test directory");
+        let marker = test_dir.path().join("sigint-delivered");
+        let ready = test_dir.path().join("handler-ready");
 
         // perl traps SIGINT, writes marker, continues sleeping.
         // NO setpgid — the child is NOT a group leader, so
         // `kill(-pid, ...)` returns ESRCH. The fallback `kill(pid,
         // ...)` is the only way SIGINT reaches perl.
-        let perl_code = format!(
-            "$SIG{{INT}}=sub{{open(F,'>','{}');close F}}; sleep 10",
-            marker.display()
-        );
+        let perl_code = "$SIG{INT}=sub{open(F,'>',$ARGV[0]) or die $!;close F}; \
+                         open(R,'>',$ARGV[1]) or die $!;close R;sleep 10";
         let mut child = Command::new("perl")
             .arg("-e")
-            .arg(&perl_code)
+            .arg(perl_code)
+            .arg(&marker)
+            .arg(&ready)
             .spawn()
             .expect("spawn perl");
-        // Give perl time to install the SIGINT handler.
-        std::thread::sleep(Duration::from_millis(300));
+        let ready_deadline = Instant::now() + Duration::from_secs(3);
+        while !ready.exists() && Instant::now() < ready_deadline {
+            assert_eq!(
+                child.try_wait().expect("poll perl readiness"),
+                None,
+                "perl exited before installing its SIGINT handler"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            ready.exists(),
+            "perl did not confirm its SIGINT handler before the readiness deadline"
+        );
 
         let deadline = Instant::now() + Duration::from_secs(3);
         interrupt_child_until(&mut child, deadline).expect("interrupt_child_until");
@@ -393,7 +401,6 @@ mod tests {
              marker absent means the graceful escalation was skipped \
              (kill(-pid)-only no-fallback mutation)"
         );
-        let _ = std::fs::remove_file(&marker);
     }
 
     /// (c) Companion: `terminate_process_group` kills the direct child
