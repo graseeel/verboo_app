@@ -14,6 +14,14 @@ const entitlementsPath = new URL(
   "../../src-tauri/Entitlements.plist",
   import.meta.url,
 );
+const nodeSigningHelperPath = new URL(
+  "../tauri/sign-macos-node-runtime.sh",
+  import.meta.url,
+);
+const localBuildPath = new URL(
+  "../build-release-app.sh",
+  import.meta.url,
+);
 
 // Normalize CRLF -> LF on read: git checkout on Windows brings CRLF into
 // the workflow files, and comparing/slicing workflow text with "\n" (or
@@ -111,6 +119,8 @@ test("embedded Node keeps a valid signature and native-module entitlement", asyn
   const workflow = await readWorkflowText(workflowPath);
   const tauriConfig = JSON.parse(await readFile(tauriConfigPath, "utf8"));
   const entitlements = await readFile(entitlementsPath, "utf8");
+  const signingHelper = await readWorkflowText(nodeSigningHelperPath);
+  const localBuild = await readWorkflowText(localBuildPath);
   const prepareStart = workflow.indexOf(
     "- name: Prepare Apple notarization credentials",
   );
@@ -144,7 +154,23 @@ test("embedded Node keeps a valid signature and native-module entitlement", asyn
       searchListIndex < identityIndex,
     "the prepared identity must enter the user search list before the build",
   );
-  assert.match(workflow, /NODE_PATH="\$APP_PATH\/Contents\/MacOS\/verboo-node"/);
+  assert.match(
+    workflow,
+    /scripts\/tauri\/sign-macos-node-runtime\.sh[\s\S]*?"\$APP_PATH"[\s\S]*?"\$APPLE_SIGNING_IDENTITY"[\s\S]*?"\$APPLE_CODESIGN_KEYCHAIN"/,
+  );
+  assert.match(
+    localBuild,
+    /scripts\/tauri\/sign-macos-node-runtime\.sh[\s\S]*?"\$APP_PATH"[\s\S]*?"\$SIGNING_IDENTITY"/,
+  );
+  assert.match(signingHelper, /NODE_PATH="\$APP_PATH\/Contents\/MacOS\/verboo-node"/);
+  assert.match(signingHelper, /--entitlements "\$ENTITLEMENTS_PATH"/);
+  assert.match(signingHelper, /codesign --verify --strict --verbose=2 "\$NODE_PATH"/);
+  assert.match(signingHelper, /codesign --verify --deep --strict --verbose=2 "\$APP_PATH"/);
+  assert.match(signingHelper, /com\.apple\.security\.cs\.allow-jit/);
+  assert.match(signingHelper, /com\.apple\.security\.cs\.allow-unsigned-executable-memory/);
+  assert.match(signingHelper, /com\.apple\.security\.cs\.disable-library-validation/);
+  assert.match(signingHelper, /"\$NODE_PATH" -e/);
+  assert.match(signingHelper, /embedded-node-js-ok/);
   assert.match(workflow, /codesign --verify --strict --verbose=2 "\$NODE_PATH"/);
   assert.match(
     workflow,

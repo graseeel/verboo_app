@@ -613,6 +613,21 @@ jobs:
             done
           fi
 
+      - name: Preserve embedded Node entitlements and verify JavaScript execution
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE_ROOT="src-tauri/target/${{ matrix.target }}/release/bundle"
+          APP_PATH=$(find "$BUNDLE_ROOT/macos" -maxdepth 1 -type d -name '*.app' | head -1)
+          test -n "$APP_PATH"
+          test -n "${APPLE_SIGNING_IDENTITY:-}"
+          test -n "${APPLE_CODESIGN_KEYCHAIN:-}"
+          scripts/tauri/sign-macos-node-runtime.sh \
+            "$APP_PATH" \
+            "$APPLE_SIGNING_IDENTITY" \
+            "$APPLE_CODESIGN_KEYCHAIN"
+
       - name: Create signed macOS DMG with bounded retry
         if: runner.os == 'macOS'
         env:

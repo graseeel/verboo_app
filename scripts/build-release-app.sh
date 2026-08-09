@@ -193,11 +193,12 @@ if [[ "$(uname -s)" == "Darwin" && "${VERBOO_SKIP_LOCAL_SIGN:-0}" != "1" ]]; the
       echo "    Identidade: $SIGNING_IDENTITY"
       echo "    Alvo: $APP_PATH"
 
-      # Sign the .app bundle itself (Tauri may have already signed the main
-      # executable; --force overwrites with our Developer ID signature).
-      codesign --force --options runtime --timestamp \
-        --sign "$SIGNING_IDENTITY" \
-        "$APP_PATH" 2>&1 | sed 's/^/    /'
+      # Tauri re-signs externalBin entries while assembling the bundle. Restore
+      # the embedded Node runtime's V8/JIT entitlements, execute JavaScript as
+      # a behavioral smoke, then re-sign the outer app seal.
+      scripts/tauri/sign-macos-node-runtime.sh \
+        "$APP_PATH" \
+        "$SIGNING_IDENTITY" 2>&1 | sed 's/^/    /'
 
       # Verify.
       codesign --verify --deep --strict --verbose=2 "$APP_PATH" 2>&1 | sed 's/^/    /'
