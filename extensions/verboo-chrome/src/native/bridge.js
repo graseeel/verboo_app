@@ -13,6 +13,8 @@ const MAX_RECONNECT_DELAY_MS = 30_000
  *   isApprovalUiAvailable: () => boolean;
  *   cancelPendingApprovals?: () => Promise<void>|void;
  *   clearPresenceOnAllTabs: () => Promise<void>;
+ *   createTurnId?: () => string;
+ *   onTurnEnded?: (turnId: string) => Promise<void>|void;
  *   reconnectDelayMs?: number;
  * }} dependencies
  */
@@ -24,6 +26,8 @@ export function createNativeBridge({
   isApprovalUiAvailable,
   cancelPendingApprovals = async () => {},
   clearPresenceOnAllTabs,
+  createTurnId = createNativeTurnId,
+  onTurnEnded = async () => {},
   reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
 }) {
   let port = null
@@ -31,6 +35,31 @@ export function createNativeBridge({
   let startupRegistered = false
   let reconnectAttempt = 0
   let reconnectTimer = null
+  let currentTurnId = null
+
+  const getTurnId = () => {
+    if (!currentTurnId) currentTurnId = createTurnId()
+    return currentTurnId
+  }
+
+  const takeTurnId = () => {
+    const turnId = currentTurnId
+    currentTurnId = null
+    return turnId
+  }
+
+  const cleanupTurn = async (turnId) => {
+    try {
+      try {
+        await cancelPendingApprovals()
+      } catch {
+        // Approval cancellation is best-effort; presence cleanup still runs.
+      }
+      await clearPresenceOnAllTabs()
+    } finally {
+      if (turnId) await onTurnEnded(turnId)
+    }
+  }
 
   // The host only exists after the desktop app configures the integration.
   // A single retry meant an extension installed before that step gave up
@@ -62,16 +91,12 @@ export function createNativeBridge({
       nextPort.onDisconnect.addListener(() => {
         if (port !== nextPort) return
         port = null
+        const turnId = takeTurnId()
         const failure = chromeApi.runtime?.lastError
         if (failure) {
           console.warn('[verboo] native bridge disconnected:', failure.message)
         }
-        void Promise.resolve()
-          .then(() => cancelPendingApprovals())
-          .catch(() => {
-            // Approval cancellation is best-effort; presence cleanup still runs.
-          })
-          .then(() => clearPresenceOnAllTabs())
+        void cleanupTurn(turnId)
           .catch(() => {
             // Cleanup is best-effort when the native host disappears abruptly.
           })
@@ -96,6 +121,10 @@ export function createNativeBridge({
     }
     const current = port
     port = null
+    const turnId = takeTurnId()
+    void cleanupTurn(turnId).catch(() => {
+      // Explicit shutdown remains best-effort.
+    })
     try {
       current?.disconnect()
     } catch {
@@ -135,13 +164,9 @@ export function createNativeBridge({
 
     const { id, payload } = envelope
     if (envelope.kind === 'turnComplete') {
+      const turnId = takeTurnId()
       try {
-        try {
-          await cancelPendingApprovals()
-        } catch {
-          // Approval cancellation is best-effort; presence cleanup still runs.
-        }
-        await clearPresenceOnAllTabs()
+        await cleanupTurn(turnId)
         postTo(sourcePort, {
           version: BROWSER_BRIDGE_PROTOCOL_VERSION,
           id,
@@ -159,7 +184,9 @@ export function createNativeBridge({
       name: payload.name,
       params: payload.arguments,
     }
-    const baseApprovalUi = approvalUiFactory()
+    const requestTurnId = getTurnId()
+    const requestContextFactory = () => contextFactory(requestTurnId)
+    const baseApprovalUi = approvalUiFactory(requestTurnId)
     const approvalUi = {
       ...baseApprovalUi,
       request: async (request) => {
@@ -173,7 +200,7 @@ export function createNativeBridge({
     }
 
     try {
-      const result = await executeWithApproval(rawToolCall, contextFactory, approvalUi)
+      const result = await executeWithApproval(rawToolCall, requestContextFactory, approvalUi)
       if (!result?.ok) {
         const code = executionErrorCode(result?.error)
         postTo(sourcePort, errorEnvelope(id, code, executionErrorMessage(code, result?.error)))
@@ -199,6 +226,11 @@ export function createNativeBridge({
     registerStartup,
     sendResponse,
   }
+}
+
+function createNativeTurnId() {
+  return globalThis.crypto?.randomUUID?.()
+    ?? `native-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
 function validateEnvelope(envelope) {

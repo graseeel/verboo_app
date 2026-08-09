@@ -1197,6 +1197,48 @@ test('runLlmAgentTurn: propagates fetch errors so background can fallback', asyn
   }
 })
 
+test('runLlmAgentTurn: aborts the real executor when the task time budget expires', async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+        { id: 'tc_budget', function: { name: 'read_page', arguments: '{"selector":"main"}' } },
+      ] } }],
+    }),
+  })
+  let executorSignal
+
+  try {
+    await assert.rejects(
+      () => runLlmAgentTurn({
+        turnId: 'turn_time_budget',
+        userMessage: 'read this page',
+        accessToken: 'test-key',
+        modelId: 'test-model',
+        broadcast: () => {},
+        executeTool: async (_toolCall, signal) => new Promise((_resolve, reject) => {
+          executorSignal = signal
+          const failSafe = setTimeout(
+            () => reject(new Error('executor signal was not aborted')),
+            50,
+          )
+          signal?.addEventListener('abort', () => {
+            clearTimeout(failSafe)
+            reject(new Error('executor cancelled'))
+          }, { once: true })
+        }),
+        getActiveTabMeta: async () => ({ url: 'https://example.com' }),
+        maxTurnMs: 5,
+      }),
+      (error) => error?.code === 'agent_turn_timeout',
+    )
+    assert.equal(executorSignal?.aborted, true)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
 test('runLlmAgentTurn: early-stop after 5 consecutive failures of same tool', async () => {
   // Mock fetch: always returns a click tool_call (never text-only).
   // After 3 fails → STRATEGY_HINT injected. After 2 more → early stop.

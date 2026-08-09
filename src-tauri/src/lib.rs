@@ -2293,16 +2293,16 @@ pub fn run() {
                 services::browser_panel::BrowserCaptureStore::new(app_data_dir.clone())
                     .map_err(std::io::Error::other)?,
             );
-            app.manage(
-                services::ios_simulator::IosSimulatorCaptureStore::new(app_data_dir.clone())
-                    .map_err(std::io::Error::other)?,
-            );
-            let simulator_service =
-                services::ios_simulator::IosSimulatorService::new(app_data_dir.clone())
-                    .map_err(std::io::Error::other)?;
-            app.manage(simulator_service.clone());
             #[cfg(target_os = "macos")]
             {
+                app.manage(
+                    services::ios_simulator::IosSimulatorCaptureStore::new(app_data_dir.clone())
+                        .map_err(std::io::Error::other)?,
+                );
+                let simulator_service =
+                    services::ios_simulator::IosSimulatorService::new(app_data_dir.clone())
+                        .map_err(std::io::Error::other)?;
+                app.manage(simulator_service.clone());
                 simulator_service
                     .reconcile_owned_devices()
                     .map_err(std::io::Error::other)?;
@@ -2316,19 +2316,19 @@ pub fn run() {
                 )
                 .map_err(std::io::Error::other)?;
                 app.manage(simulator_bridge);
+                let simulator_mcp_app_data = app_data_dir.clone();
+                let simulator_mcp_version = app.package_info().version.to_string();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let result = services::ios_simulator_mcp::IosSimulatorMcpService::new(
+                        simulator_mcp_app_data,
+                        simulator_mcp_version,
+                    )
+                    .and_then(|service| service.reconcile_for_platform(true));
+                    if let Err(error) = result {
+                        eprintln!("[verboo:ios-simulator-mcp] setup skipped: {error}");
+                    }
+                });
             }
-            let simulator_mcp_app_data = app_data_dir.clone();
-            let simulator_mcp_version = app.package_info().version.to_string();
-            tauri::async_runtime::spawn_blocking(move || {
-                let result = services::ios_simulator_mcp::IosSimulatorMcpService::new(
-                    simulator_mcp_app_data,
-                    simulator_mcp_version,
-                )
-                .and_then(|service| service.reconcile_for_platform(cfg!(target_os = "macos")));
-                if let Err(error) = result {
-                    eprintln!("[verboo:ios-simulator-mcp] setup skipped: {error}");
-                }
-            });
             let settings_store = SettingsStore::new(app_data_dir.clone());
             app.manage(
                 services::pasted_file_upload::PastedFileUploadService::new(app_data_dir.clone())
@@ -2588,30 +2588,55 @@ pub fn run() {
             services::browser_panel::browser_tab_evict,
             services::browser_panel::browser_tab_reactivate,
             // iOS Simulator visual panel
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_requirements,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_attach,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_detach,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_set_visible,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_end,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_shutdown_external,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_retry_interaction,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_system_action,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_capture_screen,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_recording_start,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_recording_stop,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_reveal_output,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_set_stream_rate,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_set_fallback_rate,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_tap,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_drag,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_type_text,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_press_key,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_accessibility_snapshot,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_inspect_point,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_capture_annotation,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_delete_temp_files,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_promote_temp_files,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_delete_capture_owner,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_cleanup_capture_owners,
             // Auth
             start_cli_login,
@@ -2758,4 +2783,37 @@ pub fn run() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod platform_contract_tests {
+    #[test]
+    fn ios_simulator_runtime_is_registered_only_on_macos() {
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
+        let setup_start = source.find(".setup(|app|").expect("setup callback");
+        let invoke_start = source
+            .find(".invoke_handler(tauri::generate_handler!")
+            .expect("invoke handler");
+        let setup = &source[setup_start..invoke_start];
+        assert!(
+            setup.contains(
+                "#[cfg(target_os = \"macos\")]\n            {\n                app.manage(\n                    services::ios_simulator::IosSimulatorCaptureStore",
+            ),
+            "the simulator state must be created inside a macOS-only setup block"
+        );
+
+        let handler = &source[invoke_start..];
+        for line in handler.lines().filter(|line| {
+            line.trim_start()
+                .starts_with("services::ios_simulator::ios_simulator_")
+        }) {
+            let offset = handler.find(line).expect("handler command offset");
+            let prefix = &handler[..offset];
+            assert_eq!(
+                prefix.lines().last().map(str::trim),
+                Some("#[cfg(target_os = \"macos\")]"),
+                "iOS simulator command is exposed without a macOS gate: {line}"
+            );
+        }
+    }
 }

@@ -140,14 +140,14 @@ const routineRunner = createRoutineRunner({
       ...input,
       ...overrides,
       broadcast,
-      executeTool: (toolCall) => executeWithApproval(
+      executeTool: (toolCall, executionSignal) => executeWithApproval(
         toolCall,
         () => makeExecutionContext(
           input.senderTabId,
           input.turnId,
           input.routineAllowedOrigins,
         ),
-        makeApprovalUi(input.turnId, input.signal),
+        makeApprovalUi(input.turnId, executionSignal ?? input.signal),
       ),
       getActiveTabMeta: queryActiveTabMeta,
       refreshAccessToken: async () => {
@@ -192,11 +192,19 @@ chrome.runtime.onConnect.addListener((port) => {
 
 const nativeBridge = createNativeBridge({
   executeWithApproval,
-  contextFactory: () => makeExecutionContext(undefined, undefined),
-  approvalUiFactory: () => makeApprovalUi(undefined, new AbortController().signal, 'native'),
+  contextFactory: async (turnId) => {
+    const turnTabLease = await backgroundWorkspace.acquire({ resume: true })
+    return makeExecutionContext(undefined, turnId, undefined, turnTabLease)
+  },
+  approvalUiFactory: (turnId) => makeApprovalUi(
+    turnId,
+    new AbortController().signal,
+    'native',
+  ),
   isApprovalUiAvailable: () => approvalSurfaces.size > 0,
   cancelPendingApprovals: () => cancelPendingApprovals('native'),
   clearPresenceOnAllTabs,
+  onTurnEnded: (turnId) => turnSiteGrants.delete(turnId),
 })
 nativeBridge.registerStartup()
 nativeBridge.connect()
@@ -952,10 +960,10 @@ async function runAgentTurn(
           conversationHistory,
           selectionContext,
           broadcast: (msg) => broadcast(msg),
-          executeTool: (tc) => executeWithApproval(
+          executeTool: (tc, executionSignal) => executeWithApproval(
             tc,
             () => makeExecutionContext(senderTabId, turnId, undefined, turnTabLease),
-            makeApprovalUi(turnId, controller.signal),
+            makeApprovalUi(turnId, executionSignal ?? controller.signal),
           ),
           getActiveTabMeta: () => queryActiveTabMeta(
             turnTabLease?.snapshot().tabId,

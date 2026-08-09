@@ -30,7 +30,7 @@ import {
   inspectUntrustedBrowserContent,
   wrapUntrustedBrowserContent,
 } from './untrustedContent.js'
-import { MAX_AGENT_STEPS } from './turnBudget.js'
+import { MAX_AGENT_STEPS, MAX_AGENT_TURN_MS } from './turnBudget.js'
 
 const MAX_RESULT_CHARS = 4000
 const MAX_HISTORY_MESSAGES = 12
@@ -88,10 +88,43 @@ IMPORTANT RULES:
 /**
  * Run a multi-step LLM agent turn.
  *
- * @param {{ turnId: string, userMessage: string, selectionContext?: {text:string,verification?:string}, accessToken: string, modelId: string, modelSupportsVision?: boolean, conversationHistory?: Array<object>, routineContext?: {name:string,instructions:string,assets?:Array<object>}, toolAllowlist?: string[], broadcast: Function, executeTool: Function, getActiveTabMeta: Function, refreshAccessToken?: () => Promise<string|null>, signal?: AbortSignal }} params
+ * @param {{ turnId: string, userMessage: string, selectionContext?: {text:string,verification?:string}, accessToken: string, modelId: string, modelSupportsVision?: boolean, conversationHistory?: Array<object>, routineContext?: {name:string,instructions:string,assets?:Array<object>}, toolAllowlist?: string[], broadcast: Function, executeTool: Function, getActiveTabMeta: Function, refreshAccessToken?: () => Promise<string|null>, signal?: AbortSignal, maxTurnMs?: number }} params
  * @returns {Promise<{ assistantMessage: string, toolResults: Array<object> }>}
  */
-export async function runLlmAgentTurn({
+export async function runLlmAgentTurn(params) {
+  const maxTurnMs = Number.isFinite(params?.maxTurnMs) && params.maxTurnMs > 0
+    ? params.maxTurnMs
+    : MAX_AGENT_TURN_MS
+  const controller = new AbortController()
+  let timeBudgetExpired = false
+  const externalSignal = params?.signal
+  const onExternalAbort = () => controller.abort()
+  if (externalSignal?.aborted) controller.abort()
+  else externalSignal?.addEventListener?.('abort', onExternalAbort, { once: true })
+  const timer = setTimeout(() => {
+    timeBudgetExpired = true
+    controller.abort()
+  }, maxTurnMs)
+
+  try {
+    return await runLlmAgentTurnWithinBudget({
+      ...params,
+      signal: controller.signal,
+    })
+  } catch (error) {
+    if (timeBudgetExpired) {
+      const timeout = new Error(`Agent turn timed out after ${maxTurnMs}ms`)
+      timeout.code = 'agent_turn_timeout'
+      throw timeout
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+    externalSignal?.removeEventListener?.('abort', onExternalAbort)
+  }
+}
+
+async function runLlmAgentTurnWithinBudget({
   turnId,
   userMessage,
   selectionContext,
@@ -462,7 +495,7 @@ export async function runLlmAgentTurn({
       })
       // Execute through the background's shared approval-aware controller.
       // That boundary emits AGENT_TOOL_EXECUTING only after policy approval.
-      const execResult = await executeTool(tc)
+      const execResult = await executeTool(tc, signal)
       const durationMs = Date.now() - startedAt
 
       // Build text result for the conversation.
