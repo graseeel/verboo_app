@@ -246,6 +246,35 @@ describe('t4 — submit clears tokenSkills', () => {
 
     expect(onSubmit).toHaveBeenCalledWith('browser.annotationDefaultPrompt')
   })
+
+  it('submits a simulator annotation without requiring extra composer text', () => {
+    const annotation: AttachmentMeta = {
+      path: '/tmp/verboo-ios-simulator/crop.png',
+      name: 'simulator-element.png',
+      size: 1,
+      kind: 'simulator-annotation',
+      mediaType: 'image/png',
+      simulatorAnnotation: {
+        kind: 'element',
+        crop: '/tmp/verboo-ios-simulator/crop.png',
+        device: { name: 'iPhone 17 Pro', udid: 'phone', iosVersion: '26.5', orientation: 'portrait' },
+        deviceGeneration: 1,
+        frameGeneration: 2,
+        rect: { x: 0.1, y: 0.2, width: 0.3, height: 0.1 },
+        deviceRect: { x: 39, y: 170, width: 118, height: 85 },
+        element: { id: 'save', role: 'Button', label: 'Save' },
+        viewportSnapshot: { path: '/tmp/verboo-ios-simulator/full.png', width: 393, height: 852, size: 2 },
+      },
+    }
+    const onSubmit = vi.fn()
+    const { container } = renderComposer({ attachments: [annotation], onSubmit })
+
+    expect(screen.getByRole('button', { name: 'simulator.annotationElement · Save' })).toBeVisible()
+    expect(container.querySelector<HTMLButtonElement>('.send-button')).not.toBeDisabled()
+    fireEvent.submit(container.querySelector('form')!)
+
+    expect(onSubmit).toHaveBeenCalledWith('simulator.annotationDefaultPrompt')
+  })
 })
 
 describe('t5 — overlay: @token with PluginIcon', () => {

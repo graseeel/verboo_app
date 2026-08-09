@@ -42,6 +42,7 @@ function mockAggregate(aggregate: ChromeIntegrationAggregate) {
     developmentExtensionId: '',
     developmentIdValid: true,
     lastTestPassed: undefined,
+    lastTestResult: undefined,
     setDevelopmentExtensionId: vi.fn(),
     refresh: vi.fn(),
     ...mutations,

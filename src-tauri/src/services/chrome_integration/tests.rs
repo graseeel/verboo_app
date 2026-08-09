@@ -12,7 +12,8 @@ use super::paths::{
     IntegrationPlatform,
 };
 use super::{
-    ChromeComponentState, ChromeIntegrationRequest, ChromeIntegrationService, ChromeReleaseMetadata,
+    ChromeComponentState, ChromeConnectionState, ChromeIntegrationRequest,
+    ChromeIntegrationService, ChromeReleaseMetadata,
 };
 
 #[test]
@@ -88,6 +89,7 @@ fn native_manifest_rejects_relative_paths_and_invalid_extension_ids() {
 struct FakeCliRunner {
     config_path: PathBuf,
     calls: Mutex<Vec<Vec<String>>>,
+    live_connected: Mutex<bool>,
 }
 
 impl FakeCliRunner {
@@ -95,7 +97,12 @@ impl FakeCliRunner {
         Self {
             config_path,
             calls: Mutex::new(Vec::new()),
+            live_connected: Mutex::new(false),
         }
+    }
+
+    fn set_live_connected(&self, connected: bool) {
+        *self.live_connected.lock().unwrap() = connected;
     }
 
     fn mutation_count(&self, command: &str) -> usize {
@@ -134,11 +141,25 @@ impl CliMcpRunner for FakeCliRunner {
     fn run(&self, args: &[String]) -> Result<CliRunOutput, String> {
         self.calls.lock().unwrap().push(args.to_vec());
         match args.get(1).map(String::as_str) {
-            Some("doctor") => Ok(CliRunOutput {
+            Some("doctor") if args.iter().any(|arg| arg == "--config-only") => Ok(CliRunOutput {
                 success: true,
                 stdout: "{\"servers\":[]}".into(),
                 stderr: String::new(),
             }),
+            Some("doctor") => {
+                let result = if *self.live_connected.lock().unwrap() {
+                    "connected"
+                } else {
+                    "failed"
+                };
+                Ok(CliRunOutput {
+                    success: true,
+                    stdout: format!(
+                        "{{\"servers\":[{{\"serverName\":\"verboo-in-chrome\",\"liveCheck\":{{\"attempted\":true,\"result\":\"{result}\"}}}}]}}"
+                    ),
+                    stderr: String::new(),
+                })
+            }
             Some("add") => {
                 // The real CLI parses `-e/--env` as variadic, so a positional
                 // that follows it is swallowed as another env var. Reproduce
@@ -212,6 +233,7 @@ fn service_fixture() -> (
             web_store_url: None,
         },
         runner.clone(),
+        ChromeConnectionState::Connected,
     );
     (temp, paths, runner, service)
 }
@@ -244,6 +266,7 @@ fn service_for(
             web_store_url: None,
         },
         runner,
+        ChromeConnectionState::Connected,
     );
     (paths, service)
 }
@@ -372,4 +395,53 @@ fn failed_atomic_manifest_write_rolls_back_new_managed_files() {
     assert!(!paths.helper_path().exists());
     assert!(!paths.installation_record_path().exists());
     assert_eq!(runner.mutation_count("add"), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn connection_test_rejects_a_pingable_helper_when_the_cli_cannot_reach_chrome() {
+    let temp = TempDir::new().unwrap();
+    let config_path = temp.path().join("home/.verboo/.config.json");
+    let runner = Arc::new(FakeCliRunner::new(config_path));
+    let (_paths, service) = service_for(
+        &temp,
+        "0.5.2-beta.1",
+        runner.clone(),
+        b"#!/bin/sh\nprintf '%s\\n' '{\"ok\":true}'\n",
+    );
+    service.configure(development_request()).unwrap();
+    runner.set_live_connected(false);
+
+    let result = service.test_connection().unwrap();
+    assert!(result.helper);
+    assert!(result.chrome);
+    assert!(!result.cli_mcp);
+    assert!(!result.connected);
+    assert_eq!(
+        result.error_code.as_deref(),
+        Some("chrome_cli_live_check_failed")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn connection_test_passes_only_when_helper_chrome_and_cli_are_live() {
+    let temp = TempDir::new().unwrap();
+    let config_path = temp.path().join("home/.verboo/.config.json");
+    let runner = Arc::new(FakeCliRunner::new(config_path));
+    let (_paths, service) = service_for(
+        &temp,
+        "0.5.2-beta.1",
+        runner.clone(),
+        b"#!/bin/sh\nprintf '%s\\n' '{\"ok\":true}'\n",
+    );
+    service.configure(development_request()).unwrap();
+    runner.set_live_connected(true);
+
+    let result = service.test_connection().unwrap();
+    assert!(result.helper);
+    assert!(result.chrome);
+    assert!(result.cli_mcp);
+    assert!(result.connected);
+    assert_eq!(result.error_code, None);
 }

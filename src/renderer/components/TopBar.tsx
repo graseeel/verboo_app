@@ -1,4 +1,4 @@
-import { FileSearch, Globe, PanelLeftOpen, Terminal as TerminalIcon } from 'lucide-react'
+import { FileSearch, Globe, PanelLeftOpen, Smartphone, Terminal as TerminalIcon } from 'lucide-react'
 import { useI18n } from '../i18n'
 
 type TopBarProps = {
@@ -13,6 +13,10 @@ type TopBarProps = {
   browserAvailable: boolean
   browserOpen: boolean
   onToggleBrowser: () => void
+  simulatorAvailable?: boolean
+  simulatorOpen?: boolean
+  recordingActive?: boolean
+  onToggleSimulator?: () => void
   workspacePanelsEnabled: boolean
 }
 
@@ -28,6 +32,10 @@ export function TopBar({
   browserAvailable,
   browserOpen,
   onToggleBrowser,
+  simulatorAvailable = false,
+  simulatorOpen = false,
+  recordingActive = false,
+  onToggleSimulator = () => {},
   workspacePanelsEnabled,
 }: TopBarProps) {
   const { t } = useI18n()
@@ -107,6 +115,28 @@ export function TopBar({
           >
             <Globe size={15} />
           </button>
+        )}
+        {simulatorAvailable && (
+          <button
+            className={`topbar-terminal-button ui-tooltip ${simulatorOpen ? 'active' : ''}`}
+            type="button"
+            disabled={!workspacePanelsEnabled}
+            onClick={event => {
+              event.stopPropagation()
+              onToggleSimulator()
+            }}
+            data-tooltip={simulatorOpen ? t('topbar.hideSimulator') : t('topbar.openSimulator')}
+            data-tooltip-align="end"
+            aria-label={simulatorOpen ? t('topbar.hideSimulator') : t('topbar.openSimulator')}
+          >
+            <Smartphone size={15} />
+          </button>
+        )}
+        {simulatorAvailable && recordingActive && (
+          <span
+            className="topbar-simulator-recording"
+            aria-label={t('simulator.recording.active')}
+          />
         )}
       </div>
     </header>

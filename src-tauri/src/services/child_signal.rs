@@ -1,7 +1,16 @@
-use std::process::Child;
+use std::process::{Child, Command};
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// Sends an interrupt signal (SIGINT on Unix, Ctrl+C on Windows) to a child
-/// process. Falls back to `child.kill()` if signal delivery fails.
+/// process AND its entire process group (subagents/forks inclusos).
+///
+/// On Unix, signals the process GROUP (`kill(-pid, SIGINT)`) so that
+/// subagents forked by the CLI die together — not just the direct child.
+/// This requires the child to have been spawned with
+/// `configure_process_group` (so `pid == pgid`). If the child was NOT
+/// spawned with `setpgid`, `kill(-pid, ...)` returns ESRCH and we fall
+/// back to `kill(pid, SIGINT)` (direct child only).
 ///
 /// On Windows, the child must have been created with
 /// `CREATE_NEW_PROCESS_GROUP` so `GenerateConsoleCtrlEvent` can target its
@@ -11,9 +20,12 @@ pub fn interrupt_child(child: &mut Child) -> Result<(), String> {
     {
         let pid = child.id() as i32;
         if pid > 0 {
-            // SAFETY: kill(pid, SIGINT) is async-signal-safe for valid pid.
-            let rc = unsafe { libc::kill(pid, libc::SIGINT) };
-            if rc == 0 {
+            // signal_process_tree tries the process GROUP first
+            // (`kill(-pid, SIGINT)`), then falls back to the direct
+            // child (`kill(pid, SIGINT)`) if the group signal failed
+            // (ESRCH — child not a group leader). See the helper's
+            // doc comment for the full rationale.
+            if unsafe { signal_process_tree(pid, libc::SIGINT) } {
                 return Ok(());
             }
         }
@@ -40,6 +52,134 @@ pub fn interrupt_child(child: &mut Child) -> Result<(), String> {
         .map_err(|e| format!("Falha ao interromper processo: {e}"))
 }
 
+/// Hard-kills the child's entire process group (SIGKILL to the group on
+/// Unix; `child.kill()` on Windows). Use as the escalation fallback after
+/// `interrupt_child` didn't produce an exit within the graceful window.
+///
+/// On Unix, tries `kill(-pid, SIGKILL)` (group) first; if that fails
+/// (ESRCH — child not a group leader), falls back to `child.kill()`
+/// (direct child). Same safety net as `interrupt_child` /
+/// `interrupt_child_until` — a child spawned without
+/// `configure_process_group` still gets killed (direct child), just not
+/// its subagents.
+pub fn terminate_process_group(child: &mut Child) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let pid = child.id() as i32;
+        if pid > 0 {
+            if unsafe { signal_process_tree(pid, libc::SIGKILL) } {
+                return Ok(());
+            }
+        }
+    }
+
+    child
+        .kill()
+        .map_err(|e| format!("Falha ao finalizar processo: {e}"))
+}
+
+/// Signals the child's process tree: tries the process GROUP
+/// (`kill(-pid, sig)`) first, then falls back to the direct child
+/// (`kill(pid, sig)`) if the group signal failed (ESRCH — child not a
+/// group leader, or group already gone). Returns true if either
+/// succeeded.
+///
+/// This is the safety net that makes `interrupt_child`,
+/// `interrupt_child_until`, and `terminate_process_group` work for
+/// children spawned WITHOUT `configure_process_group` (no setpgid) —
+/// they still receive the signal (direct child), just not their
+/// subagents. Without this net, `kill(-pid, ...)` is a silent no-op
+/// and the child survives the entire escalation until the final
+/// `child.kill()` (SIGKILL only, no graceful window).
+#[cfg(unix)]
+unsafe fn signal_process_tree(pid: libc::pid_t, sig: libc::c_int) -> bool {
+    if libc::kill(-pid, sig) == 0 {
+        return true;
+    }
+    libc::kill(pid, sig) == 0
+}
+
+#[cfg(unix)]
+pub fn configure_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+pub fn configure_process_group(_command: &mut Command) {}
+
+pub fn interrupt_child_until(child: &mut Child, deadline: Instant) -> Result<(), String> {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        let pid = child.id() as libc::pid_t;
+        if pid > 0 && Instant::now() < deadline {
+            // Each signal tries the process GROUP first (`kill(-pid, ...)`),
+            // then falls back to the direct child (`kill(pid, ...)`). A
+            // child spawned WITHOUT `configure_process_group` (no setpgid)
+            // is NOT a group leader → `kill(-pid, ...)` returns ESRCH →
+            // the fallback delivers the signal to the direct child. Without
+            // this fallback, all three signals are silent no-ops and the
+            // child goes straight to `child.kill()` (SIGKILL) at the end —
+            // no graceful window. (Maestro achado 2026-08-07: the old
+            // `kill(-pid, ...)`-only code was asymmetric with
+            // `interrupt_child` which DID fall back.)
+            unsafe {
+                let _ = signal_process_tree(pid, libc::SIGINT);
+            }
+            if wait_for_child_until(child, deadline) {
+                return Ok(());
+            }
+            unsafe {
+                let _ = signal_process_tree(pid, libc::SIGTERM);
+            }
+            if wait_for_child_until(child, deadline) {
+                return Ok(());
+            }
+            unsafe {
+                let _ = signal_process_tree(pid, libc::SIGKILL);
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = interrupt_child(child);
+        if wait_for_child_until(child, deadline) {
+            return Ok(());
+        }
+    }
+
+    child
+        .kill()
+        .map_err(|error| format!("Falha ao finalizar processo: {error}"))?;
+    child
+        .wait()
+        .map(|_| ())
+        .map_err(|error| format!("Falha ao aguardar processo: {error}"))
+}
+
+fn wait_for_child_until(child: &mut Child, deadline: Instant) -> bool {
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
+            Ok(None) | Err(_) => return false,
+        }
+    }
+}
+
 /// Returns the process creation flags required for interrupt AND console
 /// suppression on Windows.
 ///
@@ -64,9 +204,7 @@ pub fn interrupt_child(child: &mut Child) -> Result<(), String> {
 /// can't accidentally drop one for the other.
 #[cfg(windows)]
 pub fn process_creation_flags() -> u32 {
-    use windows_sys::Win32::System::Threading::{
-        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
-    };
+    use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
     CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
 }
 
@@ -86,6 +224,216 @@ mod tests {
         assert_eq!(process_creation_flags(), 0);
     }
 
+    /// (c) Parar mata subagentes: `interrupt_child` must signal the
+    /// process GROUP, not just the direct child. This test spawns a
+    /// perl process that `fork`s a child (the grandchild / "subagent")
+    /// and both sleep. perl does NOT do job control, so the forked
+    /// child stays in the same process group as the parent — unlike
+    /// `sh -c "sleep & wait"` where bash may put the backgrounded job
+    /// in its own group. We make the perl parent a group leader (same
+    /// as `configure_process_group` does for CliSpawn), then call
+    /// `interrupt_child` and assert the WHOLE group is gone.
+    ///
+    /// Mutation: revert `interrupt_child` to `kill(pid, SIGINT)`
+    /// (direct child only) → the forked grandchild survives →
+    /// `kill(-pid, 0)` returns 0 → assertion `post == -1` FAILS.
+    /// Named mutation:
+    /// `interrupt_child_direct_only_lets_subagent_survive`.
+    #[cfg(unix)]
+    #[test]
+    fn interrupt_child_kills_process_group_not_just_direct_child() {
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+        use std::time::Duration;
+
+        // perl -e 'fork; sleep 30' — fork() returns child PID to
+        // parent and 0 to child; BOTH fall through to `sleep 30`.
+        // Neither does job control, so both stay in the same process
+        // group. The parent is the "CLI child"; the forked child is
+        // the "subagent".
+        let mut cmd = Command::new("perl");
+        cmd.arg("-e").arg("fork; sleep 30");
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setpgid(0, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = cmd.spawn().expect("spawn perl");
+        let pid = child.id() as libc::pid_t;
+        assert!(pid > 0);
+
+        // Give perl time to fork + both reach sleep.
+        std::thread::sleep(Duration::from_millis(400));
+
+        // Pre-condition: group has 2 members (perl parent + forked child).
+        let pre = unsafe { libc::kill(-pid, 0) };
+        assert_eq!(pre, 0, "group should exist before interrupt");
+
+        interrupt_child(&mut child).expect("interrupt_child");
+        child.wait().expect("wait perl");
+
+        // Give the forked grandchild a moment to die from the group SIGINT.
+        std::thread::sleep(Duration::from_millis(300));
+
+        // Assert the WHOLE group is gone. If `interrupt_child` only
+        // killed the direct child (perl parent), the forked grandchild
+        // would still be alive → `kill(-pid, 0)` returns 0 → FAILS.
+        let post = unsafe { libc::kill(-pid, 0) };
+        assert_eq!(
+            post, -1,
+            "process group should be gone after interrupt_child; \
+             if post==0 a subagent survived (direct-child-only mutation)"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH),
+            "ESRCH expected (no such process group)"
+        );
+    }
+
+    /// (c) Companion: `terminate_process_group` hard-kills the whole
+    /// group with SIGKILL. Same forked-child pattern but the parent
+    /// ignores SIGINT (`$SIG{INT} = 'IGNORE'`) so only SIGKILL can
+    /// kill it — isolates the hard-kill path.
+    #[cfg(unix)]
+    #[test]
+    fn terminate_process_group_kills_whole_tree() {
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+        use std::time::Duration;
+
+        let mut cmd = Command::new("perl");
+        cmd.arg("-e").arg("$SIG{INT}='IGNORE'; fork; sleep 30");
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setpgid(0, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = cmd.spawn().expect("spawn perl");
+        let pid = child.id() as libc::pid_t;
+        std::thread::sleep(Duration::from_millis(400));
+
+        terminate_process_group(&mut child).expect("terminate_process_group");
+        child.wait().expect("wait perl");
+        std::thread::sleep(Duration::from_millis(300));
+
+        let post = unsafe { libc::kill(-pid, 0) };
+        assert_eq!(
+            post, -1,
+            "group should be gone after terminate_process_group; \
+             if post==0 a subagent survived the hard-kill"
+        );
+    }
+
+    /// (c) Maestro achado 2026-08-07: `interrupt_child_until` must
+    /// deliver the graceful escalation (SIGINT → SIGTERM → SIGKILL)
+    /// even to a child spawned WITHOUT `setpgid` (no
+    /// `configure_process_group`). The old code used `kill(-pid, ...)`
+    /// for all three signals with NO fallback — for a non-group-leader
+    /// child, all three were silent ESRCH no-ops and the child went
+    /// straight to `child.kill()` (SIGKILL only, no graceful window).
+    ///
+    /// This test spawns perl WITHOUT setpgid. perl traps SIGINT and
+    /// writes a marker file, then continues sleeping. If
+    /// `interrupt_child_until` delivers SIGINT (via the
+    /// `kill(pid, ...)` fallback), the marker file exists. If it
+    /// doesn't (the old `kill(-pid, ...)`-only code), the marker is
+    /// absent — perl went straight to SIGKILL.
+    ///
+    /// Mutation: revert `interrupt_child_until` to use bare
+    /// `kill(-pid, ...)` (no `signal_process_tree` fallback) →
+    /// SIGINT never reaches perl → marker file absent →
+    /// `marker.exists()` FAILS. Named mutation:
+    /// `interrupt_child_until_no_fallback_skips_graceful_escalation`.
+    #[cfg(unix)]
+    #[test]
+    fn interrupt_child_until_delivers_sigint_to_child_without_setpgid() {
+        use std::process::Command;
+        use std::time::{Duration, Instant};
+
+        let test_dir = tempfile::tempdir().expect("create signal test directory");
+        let marker = test_dir.path().join("sigint-delivered");
+        let ready = test_dir.path().join("handler-ready");
+
+        // perl traps SIGINT, writes marker, continues sleeping.
+        // NO setpgid — the child is NOT a group leader, so
+        // `kill(-pid, ...)` returns ESRCH. The fallback `kill(pid,
+        // ...)` is the only way SIGINT reaches perl.
+        let perl_code = "$SIG{INT}=sub{open(F,'>',$ARGV[0]) or die $!;close F}; \
+                         open(R,'>',$ARGV[1]) or die $!;close R;sleep 10";
+        let mut child = Command::new("perl")
+            .arg("-e")
+            .arg(perl_code)
+            .arg(&marker)
+            .arg(&ready)
+            .spawn()
+            .expect("spawn perl");
+        let ready_deadline = Instant::now() + Duration::from_secs(3);
+        while !ready.exists() && Instant::now() < ready_deadline {
+            assert_eq!(
+                child.try_wait().expect("poll perl readiness"),
+                None,
+                "perl exited before installing its SIGINT handler"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            ready.exists(),
+            "perl did not confirm its SIGINT handler before the readiness deadline"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        interrupt_child_until(&mut child, deadline).expect("interrupt_child_until");
+        child.wait().expect("wait perl");
+
+        // Assert SIGINT was delivered (marker file exists). Without
+        // the fallback, `kill(-pid, SIGINT)` is ESRCH → no SIGINT →
+        // marker absent → FAILS.
+        assert!(
+            marker.exists(),
+            "SIGINT must reach the child even without setpgid; \
+             marker absent means the graceful escalation was skipped \
+             (kill(-pid)-only no-fallback mutation)"
+        );
+    }
+
+    /// (c) Companion: `terminate_process_group` kills the direct child
+    /// even without setpgid (via `child.kill()` fallback). The
+    /// grandchild (fork) survives because it's in the test's group,
+    /// not the child's — but the direct child must die.
+    #[cfg(unix)]
+    #[test]
+    fn terminate_process_group_kills_direct_child_without_setpgid() {
+        use std::process::Command;
+        use std::time::Duration;
+
+        // NO setpgid — child is NOT a group leader.
+        let mut child = Command::new("perl")
+            .arg("-e")
+            .arg("fork; sleep 30")
+            .spawn()
+            .expect("spawn perl");
+        let pid = child.id() as libc::pid_t;
+        std::thread::sleep(Duration::from_millis(400));
+
+        terminate_process_group(&mut child).expect("terminate_process_group");
+        // Direct child must be dead (reaped).
+        child.wait().expect("wait perl");
+
+        // The direct child's PID must be gone.
+        let rc = unsafe { libc::kill(pid, 0) };
+        assert_eq!(
+            rc, -1,
+            "direct child must be dead after terminate_process_group"
+        );
+    }
+
     /// A2 pin test: on Windows, BOTH `CREATE_NEW_PROCESS_GROUP` and
     /// `CREATE_NO_WINDOW` must be set. This test runs only on Windows
     /// (cfg-gated) so it actually verifies the real flags. If someone
@@ -93,9 +441,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a2_process_creation_flags_has_both_no_window_and_new_process_group() {
-        use windows_sys::Win32::System::Threading::{
-            CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
-        };
+        use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
         let flags = process_creation_flags();
         assert!(
             flags & CREATE_NEW_PROCESS_GROUP != 0,
@@ -179,9 +525,14 @@ mod tests {
             "src/services/cli_credentials.rs",
             "src/services/cli_service.rs",
             "src/services/cli_spawn.rs",
+            "src/services/cli_update/archive.rs",
             "src/services/git_service.rs",
             "src/services/goal_evaluator.rs",
+            "src/services/ios_simulator.rs",
+            "src/services/ios_simulator/media.rs",
+            "src/services/ios_simulator_mcp.rs",
             "src/services/plugins_service.rs",
+            "src/services/provider_catalog.rs",
             "src/services/research_subagent_runner.rs",
             "src/services/turn_service.rs",
             "src/services/video/prepare.rs",
@@ -199,6 +550,10 @@ mod tests {
             (
                 "src/services/cli_credentials.rs",
                 "fn run_security (line ~331) spawns `/usr/bin/security` (macOS Keychain CLI) — macOS-only path, never runs on Windows, flags inapplicable",
+            ),
+            (
+                "src/services/provider_login_pty.rs",
+                "F4 PTY bridge spawns the CLI via portable_pty (never std::process::Command) — the PTY child is a session leader (process group) by construction and is killed via killpg; Windows CREATE_NEW_PROCESS_GROUP/CREATE_NO_WINDOW flags are inapplicable to PTY spawns",
             ),
         ];
 
@@ -243,9 +598,7 @@ mod tests {
                     if trimmed.starts_with("//") {
                         return None;
                     }
-                    if trimmed.contains("Command::new(")
-                        || trimmed.contains("TokioCommand::new(")
-                    {
+                    if trimmed.contains("Command::new(") || trimmed.contains("TokioCommand::new(") {
                         Some((idx + 1, "Command::new("))
                     } else if trimmed.contains("CliSpawn::new(") {
                         Some((idx + 1, "CliSpawn::new("))
@@ -257,7 +610,9 @@ mod tests {
         }
 
         fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
@@ -273,8 +628,7 @@ mod tests {
         collect_rs_files(services_dir, &mut all_rs);
         all_rs.sort();
 
-        let known: std::collections::HashSet<&str> =
-            FILES_WITH_SPAWNS.iter().copied().collect();
+        let known: std::collections::HashSet<&str> = FILES_WITH_SPAWNS.iter().copied().collect();
         let exempt_paths: std::collections::HashSet<&str> =
             EXEMPT.iter().map(|(p, _)| *p).collect();
 
@@ -319,8 +673,7 @@ mod tests {
             // Reusa o mesmo helper da etapa 1 — única fonte de verdade
             // para slice #[cfg(test)] + exclusão de comentário. As
             // duas etapas concordam por construção.
-            let spawn_lines: Vec<(usize, &'static str)> =
-                production_spawn_lines(&full_src);
+            let spawn_lines: Vec<(usize, &'static str)> = production_spawn_lines(&full_src);
 
             if spawn_lines.is_empty() {
                 // File was added to FILES_WITH_SPAWNS but no spawn
@@ -366,8 +719,8 @@ mod tests {
                     .collect::<Vec<_>>()
                     .join("\n");
 
-                let has_flag = window.contains("apply_creation_flags")
-                    || window.contains(".creation_flags(");
+                let has_flag =
+                    window.contains("apply_creation_flags") || window.contains(".creation_flags(");
 
                 if !has_flag {
                     if let Some(reason) = exempt_reason {

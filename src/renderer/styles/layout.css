@@ -451,6 +451,11 @@
   grid-row: 1;
 }
 
+.ios-simulator-panel {
+  grid-column: 5;
+  grid-row: 1;
+}
+
 .review-panel {
   grid-column: 6;
   grid-row: 1;
@@ -1049,6 +1054,10 @@
 .sidebar-update-copy small {
   color: var(--text-dim);
   font-size: 10.5px;
+}
+
+.sidebar-update-copy .sidebar-update-warning {
+  color: color-mix(in srgb, var(--danger) 82%, var(--text));
 }
 
 .sidebar-update-meta {

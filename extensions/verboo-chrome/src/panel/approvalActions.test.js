@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import { approvalMessage } from './approvalActions.js'
 
-test('approvalMessage distinguishes one-time and persistent approvals', () => {
+test('approvalMessage distinguishes call, turn, and persistent approvals', () => {
   assert.deepEqual(approvalMessage('tool-1', 'once'), {
     type: 'tool:approve',
     toolCallId: 'tool-1',
@@ -13,6 +13,11 @@ test('approvalMessage distinguishes one-time and persistent approvals', () => {
     type: 'tool:approve',
     toolCallId: 'tool-1',
     decision: 'always',
+  })
+  assert.deepEqual(approvalMessage('tool-1', 'turn'), {
+    type: 'tool:approve',
+    toolCallId: 'tool-1',
+    decision: 'turn',
   })
 })
 

@@ -23,6 +23,7 @@ import type {
   CliAuthStatus,
   ChromeIntegrationRequest,
   ChromeIntegrationStatus,
+  ChromeConnectionTestResult,
   CredentialStatus,
   FeedbackRequest,
   FeedbackResult,
@@ -40,6 +41,8 @@ import type {
   ProfileResult,
   ProjectInstructionFile,
   ProjectInstructionReadResult,
+  ProviderAuthStatus,
+  ProviderLoginEvent,
   ResearchSubagentResult,
   ResearchSubagentsRunRequest,
   SkillSummary,
@@ -134,6 +137,14 @@ const api = {
   openSubscriptions: () => invoke<boolean>('open_subscriptions'),
   openSignup: () => invoke<boolean>('open_signup'),
 
+  // ── Providers (F4; comandos registrados em lib.rs:2382-2385) ──
+  providerAuthStatus: () => invoke<ProviderAuthStatus[]>('provider_auth_status'),
+  providerLoginStart: (provider: string) => invoke<string>('provider_login_start', { provider }),
+  providerLoginConfirmRisk: (provider: string) => invoke<void>('provider_login_confirm_risk', { provider }),
+  providerLoginCancel: () => invoke<void>('provider_login_cancel'),
+  onProviderLoginEvent: (handler: (event: ProviderLoginEvent) => void) =>
+    onEvent<ProviderLoginEvent>('provider-login:event', handler),
+
   // ── Credentials ─────────────────────────────────────────────
   getCredentialStatus: () => invoke<CredentialStatus>('get_credential_status'),
   setApiKey: (apiKey: string) => invoke<CredentialStatus>('set_api_key', { apiKey }),
@@ -163,7 +174,7 @@ const api = {
     invoke<ChromeIntegrationStatus>('chrome_integration_configure', { request }),
   chromeIntegrationRepair: (request: ChromeIntegrationRequest) =>
     invoke<ChromeIntegrationStatus>('chrome_integration_repair', { request }),
-  chromeIntegrationTest: () => invoke<boolean>('chrome_integration_test'),
+  chromeIntegrationTest: () => invoke<ChromeConnectionTestResult>('chrome_integration_test'),
   chromeIntegrationRemove: () =>
     invoke<ChromeIntegrationStatus>('chrome_integration_remove'),
   openChromeExtensionStore: () => invoke<boolean>('open_chrome_extension_store'),
@@ -360,9 +371,11 @@ const api = {
 
   // ── Updates ─────────────────────────────────────────────────
   getUpdateStatus: () => invoke<UpdateSnapshot>('get_update_status'),
+  bootstrapCli: () => invoke<UpdateSnapshot>('bootstrap_cli'),
   checkForUpdates: (userInitiated = false) =>
     invoke<UpdateSnapshot>('check_for_updates', { userInitiated }),
-  downloadUpdate: () => invoke<UpdateSnapshot>('download_update'),
+  downloadUpdate: (userInitiated = true) =>
+    invoke<UpdateSnapshot>('download_update', { userInitiated }),
   installUpdate: () => invoke<InstallUpdateResult>('install_update'),
   onUpdateStatus: (callback: (snapshot: UpdateSnapshot) => void) =>
     onEvent<UpdateSnapshot>('update:snapshot', callback),

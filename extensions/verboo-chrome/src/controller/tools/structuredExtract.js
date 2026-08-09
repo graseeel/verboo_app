@@ -1,5 +1,6 @@
 import { isControllableUrl, nonControllablePageMessage } from '../../planMessage.js'
 import { preparePresenceForAction } from '../../presence/inject.js'
+import { resolveTargetTab } from '../targetTab.js'
 
 const FORMATS = new Set(['json', 'csv', 'table'])
 
@@ -66,16 +67,5 @@ function toMarkdownTable(data) {
 function csvCell(value) {
   const text = String(value ?? '')
   return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text
-}
-
-async function resolveTargetTab(preferredTabId) {
-  if (typeof preferredTabId === 'number') {
-    try {
-      const tab = await chrome.tabs.get(preferredTabId)
-      if (tab?.id) return tab
-    } catch {}
-  }
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
-  return tab ?? null
 }
 

@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "cliVersion": "0.15.6",
+  "releasedAt": "2026-08-08T12:00:00.000Z",
+  "desktopProtocol": 1,
+  "desktopVersion": {
+    "min": "0.7.0-beta",
+    "maxExclusive": "0.8.0"
+  },
+  "node": {
+    "range": ">=24.0.0 <25.0.0",
+    "modules": "137",
+    "napi": "10"
+  },
+  "signingKeyId": "7a4756ab1a7bd06e",
+  "artifacts": [
+    {
+      "target": "aarch64-apple-darwin",
+      "url": "https://github.com/verbeux-ai/code/releases/download/v0.15.6/verboo-cli-0.15.6-aarch64-apple-darwin.tar.gz",
+      "size": 100,
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "archive": "tar.gz"
+    },
+    {
+      "target": "x86_64-apple-darwin",
+      "url": "https://github.com/verbeux-ai/code/releases/download/v0.15.6/verboo-cli-0.15.6-x86_64-apple-darwin.tar.gz",
+      "size": 101,
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "archive": "tar.gz"
+    },
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "url": "https://github.com/verbeux-ai/code/releases/download/v0.15.6/verboo-cli-0.15.6-x86_64-pc-windows-msvc.tar.gz",
+      "size": 102,
+      "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "archive": "tar.gz"
+    },
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "url": "https://github.com/verbeux-ai/code/releases/download/v0.15.6/verboo-cli-0.15.6-x86_64-unknown-linux-gnu.tar.gz",
+      "size": 103,
+      "sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "archive": "tar.gz"
+    }
+  ]
+}

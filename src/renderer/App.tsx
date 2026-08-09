@@ -24,6 +24,7 @@ import type {
   MenuBarState,
   ModelDiscoveryResult,
   ProfileResult,
+  ProviderAuthStatus,
   ResearchSubagentResult,
   RuntimeActivity,
   SettingsTab,
@@ -93,13 +94,17 @@ import { createSoundPlayer, resolveSoundForEvent, type SoundEvent, type SoundPla
 import { readSoundsEnabled, writeSoundsEnabled } from './features/sound/soundStorage'
 import type { ReservedSlashCommand } from './features/composer/slashCommands'
 import { AppSidebar, type AppView } from './components/AppSidebar'
+import { CliBootstrapGate } from './components/CliBootstrapGate'
 import { CommandPalette, paletteIcons, type PaletteAction } from './components/CommandPalette'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { useToast } from './components/Toast'
+import { VERBOO_PROVIDER, dedupModels, providerAccountName, providerDisplayName } from './features/models/providerCatalog'
 import { VerbooPet, PET_MIN_SIZE, PET_MAX_SIZE, type PetState } from './features/pet/VerbooPet'
 import { BrowserPanel } from './features/browser/BrowserPanel'
 import { supportsEmbeddedBrowser } from './features/browser/browserAvailability'
 import { browserLayoutWidth, browserMaxWidth, useBrowserPanel } from './features/browser/useBrowserPanel'
+import { IosSimulatorPanel } from './features/simulator/IosSimulatorPanel'
+import { useIosSimulatorPanel } from './features/simulator/useIosSimulatorPanel'
 import { QuestionWizard, type ModelQuestion, type QuestionAnswer, type QuestionPromptState } from './features/questions/QuestionWizard'
 import { detectTextQuestionPrompt, extractModelQuestionsFromPayload, mergeModelQuestions } from './features/questions/questionDetection'
 import { MessageCircleQuestion } from 'lucide-react'
@@ -136,11 +141,13 @@ import {
   shouldRetryIncompleteTurn,
 } from './features/transcript/cliFailureRecovery'
 import { presentAgentError } from './features/transcript/agentErrorWiring'
+import { quotaResetMessageFromRetry, shouldSuppressSystemErrorText } from './features/transcript/apiErrorPresentation'
 import { truncateToolOutput } from './features/transcript/toolOutput'
 import { applySubagentThreadUpdate, isSubagentThreadWorking, latestSubagentThread } from './features/subagents/subagentThreads'
 import { SubagentIndicator } from './features/subagents/SubagentIndicator'
 import { SubagentThreadPanel } from './features/subagents/SubagentThreadPanel'
 import { FeedbackDialog } from './features/feedback/FeedbackDialog'
+import { ProviderRiskDialog } from './features/settings/ProviderRiskDialog'
 import { ModelSelector } from './features/models/ModelSelector'
 import { validOverride, displayEffort, migrateEffortPrefs } from './features/models/effortOverride'
 import { PluginsView } from './features/plugins/PluginsView'
@@ -156,13 +163,14 @@ import { OrderedAttachmentQueue } from './features/attachments/orderedAttachment
 import { uploadPastedFile } from './features/attachments/pastedFileUpload'
 import { inspectPathlessFiles } from './features/attachments/pathlessAttachmentIngestion'
 import {
-  cleanupBrowserCaptureOwners,
-  deleteBrowserCaptureOwner,
-  deleteBrowserTempFiles,
-  expandBrowserAnnotationSnapshots,
+  cleanupVisualCaptureOwners,
+  deleteVisualCaptureOwner,
+  deleteVisualTempFiles,
+  expandVisualAttachmentSnapshots,
   isVisualAttachment,
-  promoteBrowserAttachments,
-} from './features/browser/browserAnnotations'
+  promoteVisualAttachments,
+  visualTempPaths,
+} from './features/attachments/visualAttachments'
 import { findLocalBrowserUrl, postEditVerificationPrompt, shouldScheduleBrowserReload } from './features/browser/browserPostEdit'
 import type { BrowserReloadRequest } from './features/browser/useBrowserPanel'
 import {
@@ -180,10 +188,10 @@ import {
 } from './state/chatStore'
 import { finishTurn, findNextRunnableQueueIndex, resolveEscapeConversation, startTurn } from './state/turnLifecycle'
 import { promptForConversation } from './state/promptRouting'
+import { installContextMenuGuard } from './features/window/contextMenuGuard'
 import packageJson from '../../package.json'
 
 const defaultModels: VerbooModel[] = []
-const DEVELOPMENT_NOTICE_KEY = 'verboo:development-notice-accepted'
 const AUTH_SESSION_KEY = 'verboo:last-verified-auth'
 const EFFORT_BY_MODEL_KEY = 'verboo:effort-by-model'
 const AUTH_SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
@@ -315,6 +323,7 @@ type QueuedFollowUp = {
   turnModel: {
     modelId?: string
     modelDisplayName?: string
+    provider?: string
   }
 }
 
@@ -353,18 +362,33 @@ export function App() {
   const [configLoaded, setConfigLoaded] = useState(false)
   const [credentials, setCredentials] = useState<CredentialStatus>({ hasApiKey: false })
   const [cliAuth, setCliAuth] = useState<CliAuthStatus>({ loggedIn: false })
+  // F4: the login bridge universe (provider_auth_status) — one entry per
+  // supported provider, connected=false included. Empty = unavailable; the
+  // Integrations cards and the selector's dimmed groups degrade, nothing breaks.
+  const [providerAuth, setProviderAuth] = useState<ProviderAuthStatus[]>([])
+  const [connectingProvider, setConnectingProvider] = useState<string | undefined>(undefined)
+  // Live stage of the active login flow, driven by provider-login:event —
+  // feeds the card's progress button (field finding: the card said nothing).
+  const [providerLoginStage, setProviderLoginStage] = useState<'starting' | 'awaiting_browser' | undefined>(undefined)
+  // F4 risk_notice (claude): the Anthropic policy acceptance screen shown
+  // before the browser flow — full notice text, owner decides.
+  const [providerRiskNotice, setProviderRiskNotice] = useState<{ provider: string; message: string } | undefined>(undefined)
   const [profile, setProfile] = useState<ProfileResult>({ status: 'unauthenticated' })
   const [profileLoading, setProfileLoading] = useState(false)
   const [activeView, setActiveView] = useState<AppView>('chat')
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('security')
   const [userSettings, setUserSettings] = useState<UserSettings>(DEFAULT_USER_SETTINGS)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
-  const [noticeAccepted, setNoticeAccepted] = useState(
-    () => window.localStorage.getItem(DEVELOPMENT_NOTICE_KEY) === 'true',
-  )
   const [entryUnlocked, setEntryUnlocked] = useState(false)
   const [authChecking, setAuthChecking] = useState(true)
   const [authError, setAuthError] = useState<string | undefined>()
+  // T5: raw cause of a rejected validateAccess, shown behind a
+  // "Show technical details" toggle in the login warning. The friendly
+  // headline lives in authError; this is the diagnostic, never bare on
+  // the surface. A rejected Rust command (e.g. CLI spawn failed — no
+  // Node installed, field photo M4) used to leave the promise pending
+  // and "Verificando sessão local…" stuck forever.
+  const [authErrorDetail, setAuthErrorDetail] = useState<string | undefined>()
   const { theme, setTheme, cycleTheme } = useTheme()
   const [modelResult, setModelResult] = useState<ModelDiscoveryResult>({
     models: defaultModels,
@@ -396,10 +420,18 @@ export function App() {
     prevActiveViewRef.current = activeView
   }, [activeView, loadPluginSummaries])
 
+  // T3 (field report, Windows): suppress the webview's NATIVE context menu on
+  // empty chrome areas; editable elements and text selections keep it.
+  useEffect(() => installContextMenuGuard(window), [])
+
   const [effortByModel, setEffortByModel] = useState<Record<string, string>>(
     () => readEffortByModel(),
   )
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | undefined>(undefined)
+  const [cliBootstrapSuccessVisible, setCliBootstrapSuccessVisible] = useState(false)
+  const cliBootstrapInFlightRef = useRef(false)
+  const cliBootstrapWasRequiredRef = useRef(false)
+  const cliBootstrapSuccessTimerRef = useRef<number | undefined>(undefined)
   const [restoredUpdateDrafts] = useState(() => consumeUpdateDraftHandoff(window.localStorage))
   // Skills derived from / and @ tokens in the composer text. syncTokenSkills
   // (Composer) extracts both token types and sets this state. No parallel
@@ -518,7 +550,7 @@ export function App() {
    * a conclusion sound (turn or goal/batch completed). Synthesized with
    * Web Audio (autocontained, all three WebViews) — see features/sound.
    * The master switch persists renderer-side (localStorage: the bridge
-   * settings contract is TORNO's) and the per-type notification prefs
+   * settings contract is PERISCOPIO's) and the per-type notification prefs
    * gate each event — integrated with Settings → Notifications, not a
    * parallel system. */
   const [soundsEnabled, setSoundsEnabled] = useState(readSoundsEnabled)
@@ -578,7 +610,10 @@ export function App() {
   const terminal = useLocalTerminal()
   const review = useReviewPanel()
   const browser = useBrowserPanel()
+  const simulator = useIosSimulatorPanel()
+  const consumedSimulatorOpenRequestRef = useRef(0)
   const browserAvailable = configLoaded && supportsEmbeddedBrowser(config.platform)
+  const simulatorAvailable = configLoaded && config.platform === 'darwin'
   const t = useMemo(() => createTranslator(userSettings.language), [userSettings.language])
   const [tokenRate, setTokenRate] = useState<TokenRateSnapshot | undefined>()
   const goalRef = useRef(goal)
@@ -612,7 +647,7 @@ export function App() {
   }, [])
   const userSettingsRef = useRef(userSettings)
   const turnConversationIds = useRef<Record<string, string>>({})
-  const turnModels = useRef<Record<string, { modelId?: string; modelDisplayName?: string }>>({})
+  const turnModels = useRef<Record<string, { modelId?: string; modelDisplayName?: string; provider?: string }>>({})
   const pendingConversationId = useRef<string | undefined>(undefined)
   // Ref mirror of activeConversationId so the agent event handler (which has
   // a stale closure via useEffect []) can read the current value when a
@@ -634,6 +669,7 @@ export function App() {
   const queuedFollowUpsRef = useRef<QueuedFollowUp[]>([])
   const lastEscapeAt = useRef(0)
   const userInterruptedTurnsRef = useRef<Set<string>>(new Set())
+  const quotaResetTurnsRef = useRef<Set<string>>(new Set())
   const selectedContextWindowRef = useRef<number | undefined>(undefined)
   const turnStartedAt = useRef<Record<string, number>>({})
   const turnTokenRates = useRef<Record<string, TokenRateSample>>({})
@@ -665,6 +701,19 @@ export function App() {
   const turnThinkingSnippets = useRef<Record<string, string[]>>({})
   const [thinkingSnippets, setThinkingSnippets] = useState<string[]>([])
   const turnAssistantText = useRef<Record<string, string>>({})
+  // T17: when the CLI emits an assistant event flagged isApiErrorMessage, the
+  // raw error text is also forwarded as stdout (turn_service.rs extract_text) —
+  // the same bytes twice. The error event's handler (below) surfaces a readable
+  // headline in the system row with the raw blob in the collapsed technical
+  // detail toggle. If we also let the raw error land in the assistant body,
+  // the user sees the same diagnostic twice. This ref holds the flagged text
+  // for one-shot suppression in the stdout handler; it is consumed the moment
+  // the matching stdout arrives and never blocks an unrelated delta.
+  const turnApiErrorTextRef = useRef<Record<string, string>>({})
+  // Result-event text announced via json payloads (see extractResultText) —
+  // gates the stdout dedupe so only the exact re-emission is skipped, never
+  // a repeated streaming delta.
+  const turnResultEmittedText = useRef<Record<string, string>>({})
   const turnLastCommand = useRef<Record<string, string>>({})
   const turnCommands = useRef<Record<string, string[]>>({})
   const turnReferences = useRef<Record<string, string[]>>({})
@@ -694,6 +743,9 @@ export function App() {
   // extractToolResults can attach real output to their activity rows.
   const turnToolUseItemIds = useRef<Record<string, Record<string, string>>>({})
   const [thinkingTurnId, setThinkingTurnId] = useState<string | undefined>(undefined)
+  // Live provider rate-limit retries per turn (system/api_retry payloads) —
+  // the transcript says "retrying (N of M)" instead of a mute "Thinking…".
+  const [apiRetryByTurn, setApiRetryByTurn] = useState<Record<string, { attempt: number; maxRetries: number }>>({})
   const [compactingTurnId, setCompactingTurnId] = useState<string | undefined>(undefined)
   const [compactedTurnIds, setCompactedTurnIds] = useState<Set<string>>(new Set())
   // After compacting, skip the local transcript estimate for 15s so the meter
@@ -741,7 +793,7 @@ export function App() {
   )
   const mainQuestionPrompt = promptForConversation(Object.values(questionPrompts), activeConversationId)
   const sideQuestionPrompt = promptForConversation(Object.values(questionPrompts), sideChat?.conversation.id)
-  const shouldShowLogin = !noticeAccepted || !entryUnlocked
+  const shouldShowLogin = !entryUnlocked
   // When peeking (hidden + hover), the sidebar column expands visually to
   // the user's last expanded width — but the persisted mode stays 'hidden'.
   // During the leave fade (sidebarPeekLeaving), the column collapses to 0
@@ -757,7 +809,8 @@ export function App() {
     terminal.close()
     review.close()
     browser.close()
-  }, [browser.close, review.close, terminal.close])
+    simulator.close()
+  }, [browser.close, review.close, simulator.close, terminal.close])
   const restoreWorkspacePanel = useCallback((panel: WorkspacePanelKind) => {
     if (panel === 'terminal') {
       void terminal.open(currentWorkspaceDirectory)
@@ -768,20 +821,46 @@ export function App() {
       if (target) review.open(target.workingDirectory, target.files, target.index)
       return
     }
-    if (browserAvailable) browser.open()
-  }, [browser.open, browserAvailable, currentWorkspaceDirectory, review.open, review.target, terminal.open])
+    if (panel === 'browser' && browserAvailable) {
+      browser.open()
+      return
+    }
+    if (panel === 'simulator' && simulatorAvailable) simulator.open()
+  }, [browser.open, browserAvailable, currentWorkspaceDirectory, review.open, review.target, simulator.open, simulatorAvailable, terminal.open])
   const { workspacePanelsEnabled } = useWorkspacePanelSuspension({
     isFullscreenView,
     isChatView: activeView === 'chat',
     terminalOpen: terminal.terminalOpen,
     reviewOpen: review.reviewOpen,
     browserOpen: browser.browserOpen,
+    simulatorOpen: simulator.simulatorOpen,
     closeAll: closeWorkspacePanels,
     restorePanel: restoreWorkspacePanel,
   })
+
+  useEffect(() => {
+    const request = simulator.agentOpenRequest
+    if (!simulatorAvailable || request <= consumedSimulatorOpenRequestRef.current) return
+    consumedSimulatorOpenRequestRef.current = request
+    setActiveView('chat')
+    terminal.close()
+    review.close()
+    browser.close()
+    setSelectedSubagentId(undefined)
+    simulator.open()
+  }, [
+    browser.close,
+    review.close,
+    simulator.agentOpenRequest,
+    simulator.open,
+    simulatorAvailable,
+    terminal.close,
+  ])
   const visibleTerminalOpen = workspacePanelsEnabled && terminal.terminalOpen
   const visibleReviewOpen = workspacePanelsEnabled && review.reviewOpen
   const visibleBrowserOpen = browserAvailable && workspacePanelsEnabled && browser.browserOpen
+  const visibleSimulatorOpen = simulatorAvailable && workspacePanelsEnabled && simulator.simulatorOpen
+  const visibleVisualPanelOpen = visibleBrowserOpen || visibleSimulatorOpen
   const effectiveSidebarWidth = isFullscreenView
     ? 0
     : sidebarVisualMode === 'hidden'
@@ -797,12 +876,13 @@ export function App() {
 
   useEffect(() => {
     if (!browserAvailable) browser.close()
-  }, [browser.close, browserAvailable])
+    if (!simulatorAvailable) simulator.close()
+  }, [browser.close, browserAvailable, simulator.close, simulatorAvailable])
 
   useEffect(() => {
-    if (!browser.browserOpen || browser.browserWidth <= browserWidthLimit) return
+    if ((!browser.browserOpen && !simulator.simulatorOpen) || browser.browserWidth <= browserWidthLimit) return
     browser.setWidth(browserWidthLimit, effectiveSidebarWidth)
-  }, [browser.browserOpen, browser.browserWidth, browser.setWidth, browserWidthLimit, effectiveSidebarWidth])
+  }, [browser.browserOpen, browser.browserWidth, browser.setWidth, browserWidthLimit, effectiveSidebarWidth, simulator.simulatorOpen])
   const subagentThreads = activeConversation?.subagents ?? []
   const subagentIndicatorKey = `${activeConversationId ?? 'none'}:${subagentThreads.length}`
   const workingSubagentCount = subagentThreads.filter(isSubagentThreadWorking).length
@@ -829,7 +909,7 @@ export function App() {
     goalDocked: Boolean(goal) || Boolean(exitGoal),
     terminalOpen: visibleTerminalOpen,
     reviewOpen: visibleReviewOpen,
-    webOpen: visibleBrowserOpen,
+    webOpen: visibleVisualPanelOpen,
     sidebarOpen: sidebarVisualMode !== 'hidden',
     preference: checklistFormPref,
     otherRightLaneOpen: showSubagentThreadPanel || Boolean(sideChat),
@@ -872,6 +952,13 @@ export function App() {
     '--review-width': visibleReviewOpen ? `${review.reviewWidth}px` : '0px',
     '--browser-width': visibleBrowserOpen ? `${effectiveBrowserWidth}px` : '0px',
   } as CSSProperties
+  // Browser and simulator share the same right lane. Keep the browser branch
+  // explicit because the existing layout contract keys that lane by this
+  // variable, then hand the same measured width to the simulator when it owns
+  // the lane.
+  if (visibleSimulatorOpen) {
+    Object.assign(appLayoutStyle, { '--browser-width': `${effectiveBrowserWidth}px` })
+  }
 
   useEffect(() => {
     if (!selectedSubagentId) return
@@ -970,6 +1057,41 @@ export function App() {
     return () => { unlisten?.then((fn: () => void) => fn()) }
   }, [])
 
+  // F4: provider login progress (provider-login:event, shape verified in
+  // provider_login_pty.rs:45-58). The CLI owns the browser flow; the renderer
+  // reflects outcomes — connected refreshes the catalog + bridge universe,
+  // error surfaces the message (D1 rule: every failure visible).
+  useEffect(() => {
+    const unlisten = window.verboo.onProviderLoginEvent?.(event => {
+      if (event.state === 'awaiting_browser') {
+        toast(t('settings.provider.awaitingBrowser'), 'info')
+        setProviderLoginStage('awaiting_browser')
+        return
+      }
+      if (event.state === 'risk_notice') {
+        // Policy acceptance screen (claude): open the dialog with the FULL
+        // notice. The flow stays alive — connectingProvider is NOT cleared.
+        setProviderRiskNotice({ provider: event.provider, message: event.message ?? '' })
+        return
+      }
+      setConnectingProvider(undefined)
+      setProviderLoginStage(undefined)
+      setProviderRiskNotice(undefined)
+      if (event.state === 'connected') {
+        void refreshModels(true)
+        void reloadProviderAuth()
+        toast(t('settings.provider.connectedToast', { provider: providerDisplayName(event.provider, t) }))
+      } else if (event.state === 'error') {
+        toast(event.message ?? t('settings.provider.connectError', { message: '' }), 'error')
+      }
+    })
+    // The bridge returns a cleanup fn; anything else (incomplete test mock)
+    // degrades to a no-op destroy.
+    return () => { if (typeof unlisten === 'function') unlisten() }
+    // `t` is per-locale (createTranslator) — without it in deps the handler
+    // toasts in the INITIAL locale forever (field bug: pt-BR user, en toast).
+  }, [t])
+
   useEffect(() => {
     saveSidebarPreference({ mode: sidebarMode, width: sidebarWidth })
   }, [sidebarMode, sidebarWidth])
@@ -1047,10 +1169,32 @@ export function App() {
     })
   }, [])
 
+  const runCliBootstrap = useCallback(async () => {
+    if (cliBootstrapInFlightRef.current) return
+    cliBootstrapInFlightRef.current = true
+    try {
+      setUpdateSnapshot(await window.verboo.bootstrapCli())
+    } catch (error) {
+      setUpdateSnapshot(current => current ? {
+        ...current,
+        status: 'error',
+        target: 'cli',
+        cliBootstrapRequired: true,
+        error: error instanceof Error ? error.message : String(error),
+      } : current)
+    } finally {
+      cliBootstrapInFlightRef.current = false
+    }
+  }, [])
+
   useEffect(() => {
     let mounted = true
     void window.verboo.getUpdateStatus().then(snapshot => {
-      if (mounted) setUpdateSnapshot(snapshot)
+      if (!mounted || !snapshot) return
+      setUpdateSnapshot(snapshot)
+      if (snapshot.cliBootstrapRequired && snapshot.status !== 'error') {
+        void runCliBootstrap()
+      }
     })
     const unsubscribe = window.verboo.onUpdateStatus(snapshot => {
       setUpdateSnapshot(snapshot)
@@ -1064,7 +1208,37 @@ export function App() {
       mounted = false
       unsubscribe()
     }
-  }, [t, toast])
+  }, [runCliBootstrap, t, toast])
+
+  const cliBootstrapRequired = updateSnapshot?.cliBootstrapRequired === true
+
+  useEffect(() => {
+    if (cliBootstrapRequired) {
+      cliBootstrapWasRequiredRef.current = true
+      setCliBootstrapSuccessVisible(false)
+      if (cliBootstrapSuccessTimerRef.current !== undefined) {
+        window.clearTimeout(cliBootstrapSuccessTimerRef.current)
+        cliBootstrapSuccessTimerRef.current = undefined
+      }
+      return
+    }
+    if (!cliBootstrapWasRequiredRef.current) return
+
+    cliBootstrapWasRequiredRef.current = false
+    setCliBootstrapSuccessVisible(true)
+    cliBootstrapSuccessTimerRef.current = window.setTimeout(() => {
+      cliBootstrapSuccessTimerRef.current = undefined
+      setCliBootstrapSuccessVisible(false)
+    }, 1_400)
+  }, [cliBootstrapRequired])
+
+  useEffect(() => () => {
+    if (cliBootstrapSuccessTimerRef.current !== undefined) {
+      window.clearTimeout(cliBootstrapSuccessTimerRef.current)
+    }
+  }, [])
+
+  const cliAgentActionsBlocked = cliBootstrapRequired || cliBootstrapSuccessVisible
 
   const updateRestart = useDeferredUpdateRestart({
     snapshot: updateSnapshot,
@@ -1077,7 +1251,7 @@ export function App() {
   })
 
   useUpdateAutomation({
-    autoCheck: settingsLoaded && userSettings.updates.autoCheck,
+    autoCheck: settingsLoaded && updateSnapshot !== undefined && !cliBootstrapRequired && userSettings.updates.autoCheck,
     autoDownload: settingsLoaded && userSettings.updates.autoDownload,
     channel: userSettings.updates.channel,
     snapshot: updateSnapshot,
@@ -1151,7 +1325,7 @@ export function App() {
   }, [chatStore])
 
   useEffect(() => {
-    void cleanupBrowserCaptureOwners(chatStoreRef.current.conversations.map(conversation => conversation.id)).catch(() => {})
+    void cleanupVisualCaptureOwners(chatStoreRef.current.conversations.map(conversation => conversation.id)).catch(() => {})
   }, [])
 
   // Guarantee the latest store is flushed when the window closes or the app
@@ -1460,11 +1634,69 @@ export function App() {
 
   async function refreshModels(forceRefresh: boolean): Promise<ModelDiscoveryResult> {
     const result = await window.verboo.listModels(forceRefresh)
-    setModelResult(result)
+    const deduped = { ...result, models: dedupModels(result.models) }
+    setModelResult(deduped)
     setSelectedModel(current => {
-      return resolveSelectedModel(result.models, current, userSettingsRef.current.lastSelectedModelId)
+      return resolveSelectedModel(deduped.models, current, userSettingsRef.current.lastSelectedModelId)
     })
-    return result
+    return deduped
+  }
+
+  // F4: provider auth is a Vec of PER-PROVIDER entries (the login bridge
+  // universe). Failure → empty: the cards/groups degrade.
+  async function reloadProviderAuth(): Promise<void> {
+    try {
+      const states = await window.verboo.providerAuthStatus()
+      // Tolerates a malformed/empty payload (or an incomplete test mock) —
+      // anything that is not an array degrades to "unknown".
+      setProviderAuth(Array.isArray(states) ? states : [])
+    } catch {
+      setProviderAuth([])
+    }
+  }
+
+  // F4: Conectar starts the bridge login (provider_login_start) — the CLI
+  // takes over in the browser; progress arrives on provider-login:event.
+  // Every failure must be VISIBLE (D1 rule): invoke rejections toast.
+  async function handleProviderConnect(providerId: string): Promise<void> {
+    setConnectingProvider(providerId)
+    setProviderLoginStage('starting')
+    try {
+      await window.verboo.providerLoginStart(providerId)
+    } catch (error) {
+      toast(t('settings.provider.connectError', { message: error instanceof Error ? error.message : String(error) }), 'error')
+      setConnectingProvider(undefined)
+      setProviderLoginStage(undefined)
+    }
+  }
+
+  // F4 risk_notice dialog: accept continues the bridge login
+  // (provider_login_confirm_risk); cancel aborts it (provider_login_cancel).
+  // Invoke rejections toast — every failure visible (D1 rule).
+  async function handleProviderRiskAccept(): Promise<void> {
+    const notice = providerRiskNotice
+    if (!notice) return
+    setProviderRiskNotice(undefined)
+    try {
+      await window.verboo.providerLoginConfirmRisk(notice.provider)
+    } catch (error) {
+      toast(t('settings.provider.connectError', { message: error instanceof Error ? error.message : String(error) }), 'error')
+      setConnectingProvider(undefined)
+      setProviderLoginStage(undefined)
+    }
+  }
+
+  // Aborts the active login flow — the SAME action whether it comes from the
+  // card's Cancelar button or the risk_notice dialog.
+  async function handleProviderLoginCancel(): Promise<void> {
+    setProviderRiskNotice(undefined)
+    setConnectingProvider(undefined)
+    setProviderLoginStage(undefined)
+    try {
+      await window.verboo.providerLoginCancel()
+    } catch {
+      // Best-effort abort: the login may already be gone on the CLI side.
+    }
   }
 
   function toggleSidebarVisibility() {
@@ -1643,6 +1875,7 @@ export function App() {
   async function validateAccess(forceRefresh: boolean, allowRememberedSession = userSettings.staySignedIn): Promise<boolean> {
     setAuthChecking(true)
     setAuthError(undefined)
+    setAuthErrorDetail(undefined)
 
     try {
       const [credentialStatus, cliStatus, modelDiscovery] = await Promise.all([
@@ -1650,17 +1883,20 @@ export function App() {
         window.verboo.getCliAuthStatus(),
         window.verboo.listModels(forceRefresh),
       ])
+      const dedupedDiscovery = { ...modelDiscovery, models: dedupModels(modelDiscovery.models) }
       setCredentials(credentialStatus)
       setCliAuth(cliStatus)
-      setModelResult(modelDiscovery)
+      setModelResult(dedupedDiscovery)
+      // F4: provider auth is non-critical — fire-and-forget, never gates entry.
+      void reloadProviderAuth()
       setSelectedModel(current => {
-        return resolveSelectedModel(modelDiscovery.models, current, userSettingsRef.current.lastSelectedModelId)
+        return resolveSelectedModel(dedupedDiscovery.models, current, userSettingsRef.current.lastSelectedModelId)
       })
 
-      const unlocked = isVerifiedModelDiscovery(modelDiscovery)
+      const unlocked = isVerifiedModelDiscovery(dedupedDiscovery)
       setEntryUnlocked(unlocked)
       if (unlocked) {
-        writeRememberedAuthSession(allowRememberedSession, credentialStatus, cliStatus, modelDiscovery)
+        writeRememberedAuthSession(allowRememberedSession, credentialStatus, cliStatus, dedupedDiscovery)
         await refreshProfile()
         return true
       }
@@ -1676,14 +1912,20 @@ export function App() {
       if (!allowRememberedSession) forgetRememberedAuthSession()
       setAuthError(authAccessMessage(modelDiscovery.error, cliStatus.error, t))
       return false
+    } catch (error) {
+      // T5: a rejected Rust command (Result<_, String> → Tauri invoke
+      // rejects) used to bypass both setAuthError setters above — the
+      // try body aborted before them — leaving the login surface mute
+      // and "Verificando sessão local…" stuck forever (field photo M4).
+      // Surface a friendly headline and stash the raw cause behind a
+      // details toggle. Never re-throw: the caller (checkExistingAuth)
+      // owns the status-message lifecycle.
+      setAuthError(t('login.sessionCheckFailed'))
+      setAuthErrorDetail(error instanceof Error ? error.message : String(error))
+      return false
     } finally {
       setAuthChecking(false)
     }
-  }
-
-  function acceptDevelopmentNotice() {
-    window.localStorage.setItem(DEVELOPMENT_NOTICE_KEY, 'true')
-    setNoticeAccepted(true)
   }
 
   async function updateUserSettings(patch: Partial<UserSettings>) {
@@ -1931,6 +2173,34 @@ export function App() {
 
     if (event.type === 'stdout') {
       const conversationId = turnConversationIds.current[event.turnId]
+      // The result event's `result` string is forwarded as stdout AFTER the
+      // same text already arrived from the assistant event (turn_service.rs
+      // extract_text). Skip the exact re-emission — gated by the announced
+      // result text so a repeated streaming delta is never eaten.
+      const announcedResult = turnResultEmittedText.current[event.turnId]
+      const accumulated = (turnAssistantText.current[event.turnId] ?? '').trim()
+      if (
+        announcedResult !== undefined
+        && event.text.trim() === announcedResult.trim()
+        && accumulated === event.text.trim()
+      ) {
+        return
+      }
+      // T17: the CLI also forwards an isApiErrorMessage-flagged assistant
+      // event as stdout — the same raw diagnostic twice (once from the
+      // assistant event, once from the result event's extract_text). The
+      // error handler (below) already surfaces a readable headline in the
+      // system row with the raw blob in the collapsed technical-detail
+      // toggle, so letting the raw error also land in the assistant body
+      // is pure duplication. The ref persists for the turn (cleared on
+      // cleanup) so BOTH stdout re-emissions are skipped — the one-shot
+      // variant left the second copy alive because the announcedResult
+      // dedupe requires the first to have landed.
+      const apiErrorText = turnApiErrorTextRef.current[event.turnId]
+      if (apiErrorText !== undefined && event.text.trim() === apiErrorText.trim()) {
+        return
+      }
+      setApiRetryByTurn(prev => clearApiRetryNotice(prev, event.turnId))
       setThinkingTurnId(current => (current === event.turnId ? undefined : current))
       setThinkingSnippets([])
       setImageReadingTurnId(current => (current === event.turnId ? undefined : current))
@@ -1968,6 +2238,51 @@ export function App() {
     }
 
     if (event.type === 'json') {
+      // Provider rate-limit retry in flight → live retry notice on the
+      // thinking row. Purely informational: no other extractor needs it.
+      const apiRetry = extractApiRetry(event.payload)
+      if (apiRetry) {
+        const conversationId = turnConversationIds.current[event.turnId]
+        const turnProvider = turnModels.current[event.turnId]?.provider ?? VERBOO_PROVIDER
+        const quotaMessage = quotaResetMessageFromRetry(apiRetry.retryDelayMs, providerAccountName(turnProvider, t), t)
+        if (quotaMessage && conversationId) {
+          // T13: the CLI declared an hour-scale wait before retrying — that's
+          // not a retry, it's a quota reset. End the turn and surface the
+          // readable headline immediately instead of sitting on a mute
+          // "Thinking…" for 43h. A terminal error may arrive after the
+          // interrupt; quotaResetTurnsRef suppresses its duplicate item (the
+          // quota message already told the user).
+          quotaResetTurnsRef.current.add(event.turnId)
+          // T23: the quota message is the model's natural response, not a
+          // "Sistema" badge. appendAssistantText puts it in the turn body
+          // (same segment the model's own text would use); the turn header
+          // + "Trabalhou" sit above it as a normal response. No second block,
+          // no colored band. finishAssistantMessage closes the segment when
+          // the interrupt's error/done event lands (:2574 / :2771).
+          appendAssistantText(conversationId, event.turnId, quotaMessage)
+          void interruptForUser(conversationId)
+          setApiRetryByTurn(prev => clearApiRetryNotice(prev, event.turnId))
+          return
+        }
+        setApiRetryByTurn(prev => ({ ...prev, [event.turnId]: apiRetry }))
+        return
+      }
+      const announcedResult = extractResultText(event.payload)
+      if (announcedResult !== undefined) {
+        turnResultEmittedText.current[event.turnId] = announcedResult
+      }
+      // T17: capture assistant events flagged as API errors so the stdout
+      // re-emission of the same text is skipped (see turnApiErrorTextRef).
+      if (event.payload && typeof event.payload === 'object'
+        && (event.payload as { type?: unknown }).type === 'assistant'
+        && (event.payload as { isApiErrorMessage?: unknown }).isApiErrorMessage === true) {
+        const content = (event.payload as { message?: { content?: unknown[] } }).message?.content
+        const textBlock = Array.isArray(content) ? content.find((b): b is { type: string; text: string } =>
+          typeof b === 'object' && b !== null && (b as { type?: unknown }).type === 'text' && typeof (b as { text?: unknown }).text === 'string') : undefined
+        if (textBlock) {
+          turnApiErrorTextRef.current[event.turnId] = textBlock.text
+        }
+      }
       let conversationId = turnConversationIds.current[event.turnId]
       // Always signal image-reading UI when a kind=image activity arrives,
       // regardless of whether conversationId is already known (Geralt emits
@@ -2122,10 +2437,16 @@ export function App() {
 
     if (event.type === 'error') {
       const conversationId = turnConversationIds.current[event.turnId]
+      setApiRetryByTurn(prev => clearApiRetryNotice(prev, event.turnId))
+      // The provider behind THIS turn (stamped at send time) names the
+      // account in a readable quota message — the live catalog is NOT
+      // consulted here: it may have degraded during the failure itself.
+      const turnProvider = turnModels.current[event.turnId]?.provider ?? VERBOO_PROVIDER
       const errorPresentation = presentAgentError(
         event,
         userInterruptedTurnsRef.current,
         t,
+        providerAccountName(turnProvider, t),
       )
       setVideoProgressByTurn(prev => clearVideoProgress(prev, event.turnId))
       const failure = event.payload
@@ -2269,23 +2590,74 @@ export function App() {
           overflowRecovering.current.delete(conversationId)
         }
 
-        if (!willContinueAutomatically) {
-          appendConversationItem(conversationId, {
-            id: `${event.turnId}:error`,
-            role: 'system',
-            text: isContextOverflow
+        // G.7: suppress only the interrupt duplicate (presentation === 'interruption')
+        // from a quota-reset turn. A real error (context overflow, crash, etc.) must
+        // always surface — even if it arrives first (e.g. when the interrupt failed
+        // and userInterruptedTurnsRef was rolled back). The ref is consumed only
+        // when the interrupt duplicate actually arrives, not on the first error of
+        // any kind (one-shot by position was the defect; this is by identity).
+        const isQuotaResetInterrupt = errorPresentation.presentation === 'interruption'
+          && quotaResetTurnsRef.current.delete(event.turnId)
+        // T19: shouldSuppressSystemErrorText is the unified guard applied at
+        // all 4 error-headline role:system insertion points (grep `role: 'system'`
+        // finds 5 — the 5th at the turn-summary is kind:'summary', not an error).
+        // See the helper for why this checks parseApiErrorText (would
+        // ApiErrorAwareText render a parsed headline?) rather than raw-text
+        // containment.
+        if (!willContinueAutomatically && !isQuotaResetInterrupt) {
+          if (errorPresentation.presentation === 'interruption') {
+            // User-requested interruption: already renders as assistant (no
+            // "Sistema" label, no badge — Transcript.tsx visualRole override).
+            // Keep the system row; the T19 guard still suppresses its text
+            // when the body already carries a parseable API error.
+            appendConversationItem(conversationId, {
+              id: `${event.turnId}:error`,
+              role: 'system',
+              text: shouldSuppressSystemErrorText(turnAssistantText.current[event.turnId] ?? '')
+                ? ''
+                : errorPresentation.text,
+              errorDetail: errorPresentation.technicalDetail,
+              presentation: 'interruption',
+              timestamp: Date.now(),
+            })
+          } else {
+            // T23: the error message is the model's natural response, not a
+            // "Sistema" badge. Two sub-paths:
+            //  - bodyHasRawError: the CLI already sent the raw API error line
+            //    as assistant text (isApiErrorMessage flag); ApiErrorAwareText
+            //    in the turn-recap parses it into the readable headline (+ the
+            //    "Começar nova conversa" button for thinking-400). Just attach
+            //    errorDetail so the technical-detail toggle rides on the turn.
+            //  - !bodyHasRawError: no assistant text arrived. Put the message
+            //    as assistant text. For thinking-400 / quota 429 the raw API
+            //    Error line (technicalDetail) is what ApiErrorAwareText parses;
+            //    for other errors the readable headline is the response.
+            const bodyHasRawError = shouldSuppressSystemErrorText(turnAssistantText.current[event.turnId] ?? '')
+            const headline = isContextOverflow
               ? `${t('context.overflowDetected')}\n\n${errorPresentation.text}`
-              : errorPresentation.text,
-            errorDetail: errorPresentation.technicalDetail,
-            presentation: errorPresentation.presentation,
-            timestamp: Date.now(),
-          })
+              : errorPresentation.text
+            if (!bodyHasRawError) {
+              // If the technicalDetail is itself a parseable API error line
+              // (e.g. thinking-400 arriving as a single-line error event),
+              // put it raw so ApiErrorAwareText in the turn-recap parses it
+              // into the readable headline (+ the "Começar nova conversa"
+              // button for thinking-400). Otherwise the technicalDetail is a
+              // multi-line blob (or undefined) — put the readable headline so
+              // the user sees the message, not the raw blob.
+              const rawDetail = errorPresentation.technicalDetail
+              const text = rawDetail && shouldSuppressSystemErrorText(rawDetail) ? rawDetail : headline
+              appendAssistantText(conversationId, event.turnId, text)
+            }
+            stampErrorDetailOnAssistantText(conversationId, event.turnId, errorPresentation.technicalDetail)
+          }
         }
       }
       // Capture partial assistant text BEFORE cleanup, so it can be appended
       // to the resume prompt as anchor context for the model.
       const partialText = turnAssistantText.current[event.turnId] ?? ''
       delete turnAssistantText.current[event.turnId]
+      delete turnResultEmittedText.current[event.turnId]
+      delete turnApiErrorTextRef.current[event.turnId]
       delete turnRetryPayload.current[event.turnId]
       if (conversationId) finishAssistantMessage(conversationId, event.turnId)
       cleanupTurnState(event.turnId)
@@ -2307,12 +2679,13 @@ export function App() {
         if (completionDeferred) completionDeferred.turnId = retry.request.turnId
         void runTurn(retry, { skipResume: true }).catch(error => {
           const message = error instanceof Error ? error.message : String(error)
-          appendConversationItem(conversationId, {
-            id: `${retry.request.turnId}:error`,
-            role: 'system',
-            text: message,
-            timestamp: Date.now(),
-          })
+          const retryTurnId = retry.request.turnId ?? ''
+          // T23: the retry error is the model's natural response, not a
+          // "Sistema" badge. runTurn rejected before any stdout (T19 proved
+          // the body is always empty), so appendAssistantText creates a fresh
+          // segment; finishAssistantMessage closes it.
+          appendAssistantText(conversationId, retryTurnId, message)
+          finishAssistantMessage(conversationId, retryTurnId)
           if (turnCompletionDeferred.current === completionDeferred) {
             completionDeferred?.reject(error)
             turnCompletionDeferred.current = undefined
@@ -2350,12 +2723,16 @@ export function App() {
           const message = error instanceof Error ? error.message : String(error)
           authRecovering.current.delete(conversationId)
           overflowRecovering.current.delete(conversationId)
-          appendConversationItem(conversationId, {
-            id: `${resume.request.turnId}:error`,
-            role: 'system',
-            text: t(willRecoverAuth ? 'auth.recoveryFailed' : 'context.recoveryFailed', { message }),
-            timestamp: Date.now(),
-          })
+          const recoveryHeadline = t(willRecoverAuth ? 'auth.recoveryFailed' : 'context.recoveryFailed', { message })
+          const resumeTurnId = resume.request.turnId ?? ''
+          // T23: the recovery error is the model's natural response, not a
+          // "Sistema" badge. runTurn rejected before any stdout (T19 proved
+          // the body is always empty), so appendAssistantText creates a fresh
+          // segment; finishAssistantMessage closes it. The headline already
+          // carries the raw message (interpolated by the i18n key), so no
+          // separate errorDetail toggle is needed.
+          appendAssistantText(conversationId, resumeTurnId, recoveryHeadline)
+          finishAssistantMessage(conversationId, resumeTurnId)
           flashPet('error')
           if (turnCompletionDeferred.current === completionDeferred) {
             completionDeferred?.reject(error)
@@ -2368,6 +2745,7 @@ export function App() {
 
     if (event.type === 'done') {
       const conversationId = turnConversationIds.current[event.turnId]
+      setApiRetryByTurn(prev => clearApiRetryNotice(prev, event.turnId))
       userInterruptedTurnsRef.current.delete(event.turnId)
       // A turn finished cleanly → clear any overflow-recovery guard so a future
       // overflow in this conversation can auto-recover again.
@@ -2532,6 +2910,7 @@ export function App() {
   // The ref resets in the `finally` block at the end of the function.
   const sendMessageLock = useRef(false)
   async function sendMessage(message: string) {
+    if (cliAgentActionsBlocked) return
     const trimmed = message.trim()
     // F3 — guarda do vazio ALARGADA: enviar SÓ a anotação é comportamento
     // exigido pelo usuário ("posso apenas enviar a anotação"). O retrato vem
@@ -2646,7 +3025,7 @@ export function App() {
       }
     }
 
-    turnAttachments = await promoteBrowserAttachments(turnAttachments, conversationId)
+    turnAttachments = await promoteVisualAttachments(turnAttachments, conversationId)
     // F3: pendingAnnotations foi lido do ref ANTES dos awaits acima — é o
     // retrato do clique, e é ele que viaja (congelado) no request da fila.
     const queued = createQueuedFollowUp(conversationId, trimmed, turnAttachments, pendingAnnotations)
@@ -2790,6 +3169,9 @@ export function App() {
     const turnModel = {
       modelId: selectedModel,
       modelDisplayName: selectedModelInfo?.displayName ?? selectedModel,
+      // Stamp the provider at send time: the transcript header reads THIS,
+      // not a re-resolution against a catalog that can degrade mid-turn.
+      provider: selectedModelInfo?.provider,
     }
     const responseLanguage = inferResponseLanguage(message, conversationLanguageFallback(conversationId))
 
@@ -2815,7 +3197,7 @@ export function App() {
         accessMode: accessMode === 'full' && !userSettings.fullAccessEnabled ? 'approval' : accessMode,
         workingDirectory: workingDirectoryForConversation(conversationId),
         skills: selectedSkillsUnion,
-        attachments: expandBrowserAnnotationSnapshots(attachments),
+        attachments: expandVisualAttachmentSnapshots(attachments),
         responseEnhancementsEnabled: userSettings.responseEnhancementsEnabled,
         personality: userSettings.personality,
         customInstructions: userSettings.customInstructions,
@@ -2903,7 +3285,7 @@ export function App() {
   function removeQueuedItem(queueItemId: string) {
     const item = queuedFollowUpsRef.current.find(q => q.id === queueItemId)
     if (!item) return
-    void deleteBrowserTempFiles(browserTempPaths(item.request.attachments ?? [])).catch(() => {})
+    void deleteVisualTempFiles(visualTempPaths(item.request.attachments ?? [])).catch(() => {})
     setQueuedFollowUpsList(current => current.filter(q => q.id !== queueItemId))
   }
 
@@ -3028,7 +3410,7 @@ export function App() {
     turnWorkingDirectories.current[turnId] = request.workingDirectory
     const browserAnnotations = request.attachments?.filter(attachment => attachment.kind === 'browser-annotation') ?? []
     if (browserAnnotations.length) turnBrowserAnnotations.current[turnId] = browserAnnotations
-    const browserTempFiles = browserTempPaths(request.attachments ?? [])
+    const browserTempFiles = visualTempPaths(request.attachments ?? [])
     if (browserTempFiles.length) turnBrowserTempFiles.current[turnId] = browserTempFiles
     return turnId
   }
@@ -3177,6 +3559,7 @@ export function App() {
     const turnModel = {
       modelId: selectedModel,
       modelDisplayName: selectedModelInfo?.displayName ?? selectedModel,
+      provider: selectedModelInfo?.provider,
     }
 
     return {
@@ -3508,6 +3891,8 @@ export function App() {
   }
 
   function handleGoalCommand(command: Extract<ReservedSlashCommand, { kind: 'goal' }>) {
+    if (cliAgentActionsBlocked && (command.action === 'start' || command.action === 'resume')) return
+
     if (command.action === 'show' || command.action === 'status') {
       const conversationId = ensureActiveConversation()
       const current = goalRef.current
@@ -3786,6 +4171,7 @@ export function App() {
         const turnModel = {
           modelId: selectedModel,
           modelDisplayName: selectedModelInfo?.displayName ?? selectedModel,
+          provider: selectedModelInfo?.provider,
         }
 
         appendConversationItem(conversationId, {
@@ -3829,6 +4215,9 @@ export function App() {
 
         turnConversationIds.current[turnId] = conversationId
         turnModels.current[turnId] = turnModel
+        // Same race as runTurn: `started` lands before this line, so the
+        // placeholder segment was born unstamped — re-stamp it now (T10).
+        tagAssistantMessage(conversationId, turnId, turnModel)
 
         setGoal(current => {
           if (!current) return current
@@ -4160,7 +4549,7 @@ export function App() {
     if (!request.autoVerify) {
       if (activeConversationIdRef.current !== request.conversationId) {
         const previous = pendingBrowserSnapshots.current[request.conversationId] ?? []
-        if (previous.length) void deleteBrowserTempFiles(browserTempPaths(previous)).catch(() => {})
+        if (previous.length) void deleteVisualTempFiles(visualTempPaths(previous)).catch(() => {})
         pendingBrowserSnapshots.current[request.conversationId] = [attachment]
         return
       }
@@ -4272,14 +4661,14 @@ export function App() {
     applyAttachmentOutcome(outcome)
   }
 
-  function clearAttachments(preserveBrowserTempFiles = false) {
+  function clearAttachments(preserveVisualTempFiles = false) {
     const current = attachmentQueueRef.current.snapshot()
     for (const controller of attachmentUploadControllersRef.current) controller.abort()
     attachmentUploadControllersRef.current.clear()
     attachmentQueueRef.current.reset()
     setAttachedFiles([])
-    if (!preserveBrowserTempFiles) {
-      void deleteBrowserTempFiles(browserTempPaths(current)).catch(() => {})
+    if (!preserveVisualTempFiles) {
+      void deleteVisualTempFiles(visualTempPaths(current)).catch(() => {})
     }
   }
 
@@ -4287,13 +4676,13 @@ export function App() {
     const removed = attachmentQueueRef.current.snapshot().find(attachment => attachment.path === path)
     setAttachedFiles(attachmentQueueRef.current.remove(path))
     setOcrProcessingPaths(current => current.filter(item => item !== path))
-    if (removed) void deleteBrowserTempFiles(browserTempPaths([removed])).catch(() => {})
+    if (removed) void deleteVisualTempFiles(visualTempPaths([removed])).catch(() => {})
   }
 
   function filterAttachments(keep: (attachment: AttachmentMeta) => boolean) {
     const removed = attachmentQueueRef.current.snapshot().filter(attachment => !keep(attachment))
     setAttachedFiles(attachmentQueueRef.current.filter(keep))
-    void deleteBrowserTempFiles(browserTempPaths(removed)).catch(() => {})
+    void deleteVisualTempFiles(visualTempPaths(removed)).catch(() => {})
   }
 
   function updateAttachment(path: string, transform: (attachment: AttachmentMeta) => AttachmentMeta) {
@@ -4437,6 +4826,7 @@ export function App() {
   }
 
   async function sendSideChatMessage(message: string) {
+    if (cliAgentActionsBlocked) return
     const state = sideChatRef.current
     const trimmed = message.trim()
     if (!state || !trimmed || isConversationRunning(state.conversation.id)) return
@@ -4595,11 +4985,11 @@ export function App() {
       danger: true,
       onConfirm: () => {
         const pending = pendingBrowserSnapshots.current[conversationId] ?? []
-        if (pending.length) void deleteBrowserTempFiles(browserTempPaths(pending)).catch(() => {})
+        if (pending.length) void deleteVisualTempFiles(visualTempPaths(pending)).catch(() => {})
         delete pendingBrowserSnapshots.current[conversationId]
         setQueuedFollowUpsList(current => current.filter(item => item.conversationId !== conversationId))
         setTodosByConversation(current => removeChecklistForConversation(current, conversationId))
-        void deleteBrowserCaptureOwner(conversationId).catch(() => {})
+        void deleteVisualCaptureOwner(conversationId).catch(() => {})
         updateChatStore(store => ({
           ...store,
           conversations: store.conversations.filter(conversation => conversation.id !== conversationId),
@@ -4754,12 +5144,23 @@ export function App() {
   function tagAssistantMessage(
     conversationId: string,
     turnId: string,
-    turnModel: { modelId?: string; modelDisplayName?: string },
+    turnModel: { modelId?: string; modelDisplayName?: string; provider?: string },
   ) {
+    // The Rust side emits `started` BEFORE the send_turn invoke resolves, so
+    // the placeholder (`${turnId}:text:1`) is usually born BEFORE
+    // turnModels.current[turnId] is populated — and appendAssistantText's
+    // merge path only merges text. Nothing re-stamped the segment: this map
+    // used to target `item.id === turnId`, an id NO transcript item ever has
+    // (dead no-op), which is why pure-text turns persisted with no model
+    // fields and the header fell back to the literal 'Verboo' (T10, measured
+    // in the owner's verboo:chat-store:v1). Stamp every text segment of the
+    // turn — same id family finishAssistantMessage already matches.
     updateConversation(conversationId, conversation => ({
       ...conversation,
       items: conversation.items.map(item =>
-        item.id === turnId ? { ...item, ...turnModel } : item,
+        item.id === turnId || item.id.startsWith(`${turnId}:text:`)
+          ? { ...item, ...turnModel }
+          : item,
       ),
       updatedAt: Date.now(),
     }))
@@ -4776,6 +5177,21 @@ export function App() {
     delete turnModels.current[turnId]
   }
 
+  /** T23: stamp errorDetail on the turn's open assistant text segment so the
+   *  "Mostrar detalhes técnicos" toggle (TurnErrorDetails, Transcript.tsx:461)
+   *  renders on the turn body — not a separate "Sistema" badge. No-op when
+   *  there is no open segment or no detail to attach. */
+  function stampErrorDetailOnAssistantText(conversationId: string, turnId: string, errorDetail: string | undefined) {
+    if (!errorDetail) return
+    const segId = turnOpenTextSegment.current[turnId]
+    if (!segId) return
+    updateConversation(conversationId, conversation => ({
+      ...conversation,
+      items: conversation.items.map(item => item.id === segId ? { ...item, errorDetail } : item),
+      updatedAt: Date.now(),
+    }))
+  }
+
   /** Remove all transcript rows belonging to a turn (text segments, thinking, etc.). */
   function removeTurnTranscriptItems(conversationId: string, turnId: string) {
     updateConversation(conversationId, conversation => ({
@@ -4787,6 +5203,7 @@ export function App() {
       updatedAt: Date.now(),
     }))
     delete turnAssistantText.current[turnId]
+    delete turnResultEmittedText.current[turnId]
     delete turnModels.current[turnId]
   }
 
@@ -5005,7 +5422,7 @@ export function App() {
 
   function cleanupTurnState(turnId: string) {
     const tempFiles = turnBrowserTempFiles.current[turnId]
-    if (tempFiles?.length) void deleteBrowserTempFiles(tempFiles).catch(() => {})
+    if (tempFiles?.length) void deleteVisualTempFiles(tempFiles).catch(() => {})
     delete turnConversationIds.current[turnId]
     delete turnStartedAt.current[turnId]
     delete turnTokenRates.current[turnId]
@@ -5016,6 +5433,7 @@ export function App() {
     delete turnResultSnapshots.current[turnId]
     delete turnTerminalErrors.current[turnId]
     delete turnAssistantText.current[turnId]
+    delete turnResultEmittedText.current[turnId]
     delete turnLastCommand.current[turnId]
     delete turnCommands.current[turnId]
     delete turnReferences.current[turnId]
@@ -5028,16 +5446,6 @@ export function App() {
     delete turnTextSegmentCount.current[turnId]
     delete turnCommandItemIds.current[turnId]
     delete turnToolUseItemIds.current[turnId]
-  }
-
-  function browserTempPaths(attachments: AttachmentMeta[]): string[] {
-    const paths = attachments.flatMap(attachment => [
-      attachment.path,
-      attachment.browserAnnotation?.viewportSnapshot?.path,
-    ])
-    return [...new Set(paths.filter((path): path is string =>
-      typeof path === 'string' && path.replaceAll('\\', '/').includes('/verboo-browser/'),
-    ))]
   }
 
   function appendTouchedFile(turnId: string, filePath: string) {
@@ -5150,9 +5558,10 @@ export function App() {
     setReviewUnavailableReason(undefined)
     review.close()
     browser.close()
+    simulator.close()
     setSelectedSubagentId(undefined)
     void terminal.toggle(cwd)
-  }, [review, terminal, browser, workspacePanelsEnabled])
+  }, [review, terminal, browser, simulator, workspacePanelsEnabled])
 
   const handleToggleSubagents = useCallback(() => {
     if (selectedSubagentId) {
@@ -5164,8 +5573,9 @@ export function App() {
     terminal.close()
     review.close()
     browser.close()
+    simulator.close()
     setSelectedSubagentId(latest.id)
-  }, [review, browser, selectedSubagentId, subagentThreads, terminal])
+  }, [review, browser, simulator, selectedSubagentId, subagentThreads, terminal])
 
   const handleToggleReview = useCallback(async () => {
     if (!workspacePanelsEnabled) return
@@ -5176,6 +5586,7 @@ export function App() {
 
     terminal.close()
     browser.close()
+    simulator.close()
     setSelectedSubagentId(undefined)
 
     const workingDirectory = currentWorkspaceDirectory
@@ -5203,16 +5614,17 @@ export function App() {
     terminal.close()
     setSelectedSubagentId(undefined)
     review.open(workingDirectory, summary.files, 0)
-  }, [currentWorkspaceDirectory, review, terminal, browser, t, workspacePanelsEnabled])
+  }, [currentWorkspaceDirectory, review, terminal, browser, simulator, t, workspacePanelsEnabled])
 
   const handleOpenReview = useCallback((files: WorkspaceChangeEntry[], index: number) => {
     const workingDirectory = currentWorkspaceDirectory
     if (!workingDirectory) return
     terminal.close()
     browser.close()
+    simulator.close()
     setSelectedSubagentId(undefined)
     review.open(workingDirectory, files, index)
-  }, [currentWorkspaceDirectory, review, terminal, browser])
+  }, [currentWorkspaceDirectory, review, terminal, browser, simulator])
 
   const handleToggleBrowser = useCallback(() => {
     if (!browserAvailable || !workspacePanelsEnabled) return
@@ -5222,9 +5634,23 @@ export function App() {
     }
     terminal.close()
     review.close()
+    simulator.close()
     setSelectedSubagentId(undefined)
     browser.toggle()
-  }, [browser, browserAvailable, terminal, review, workspacePanelsEnabled])
+  }, [browser, browserAvailable, simulator, terminal, review, workspacePanelsEnabled])
+
+  const handleToggleSimulator = useCallback(() => {
+    if (!simulatorAvailable || !workspacePanelsEnabled) return
+    if (simulator.simulatorOpen) {
+      simulator.close()
+      return
+    }
+    terminal.close()
+    review.close()
+    browser.close()
+    setSelectedSubagentId(undefined)
+    simulator.open()
+  }, [browser, review, simulator, simulatorAvailable, terminal, workspacePanelsEnabled])
 
   async function refreshWorkspaceReview() {
     if (!review.target) return
@@ -5379,9 +5805,9 @@ export function App() {
       <I18nProvider language={userSettings.language}>
         <LoginScreen
           language={userSettings.language}
-          noticeAccepted={noticeAccepted}
           checking={authChecking}
           authError={authError}
+          authErrorDetail={authErrorDetail}
           credentials={credentials}
           cliAuth={cliAuth}
           modelResult={modelResult}
@@ -5393,7 +5819,6 @@ export function App() {
           onSaveApiKey={saveApiKey}
           onLanguageChange={updateLanguage}
           onStaySignedInChange={updateStaySignedIn}
-          onAcceptNotice={acceptDevelopmentNotice}
           onOpenFeedback={() => setFeedbackOpen(true)}
           onLoginComplete={(event) => {
             // A1: the CLI reported a successful login. Re-validate
@@ -5432,11 +5857,15 @@ export function App() {
         browserAvailable={browserAvailable}
         browserOpen={visibleBrowserOpen}
         onToggleBrowser={handleToggleBrowser}
+        simulatorAvailable={simulatorAvailable}
+        simulatorOpen={visibleSimulatorOpen}
+        recordingActive={simulator.recordingActive}
+        onToggleSimulator={handleToggleSimulator}
         workspacePanelsEnabled={workspacePanelsEnabled}
       />
 
       <div
-        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${sideChat ? 'sidechat-open' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' ? 'view-fullscreen' : ''} ${visibleTerminalOpen ? 'terminal-open' : ''} ${visibleReviewOpen ? 'review-open' : ''} ${visibleBrowserOpen ? 'browser-open' : ''}`}
+        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${sideChat ? 'sidechat-open' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' ? 'view-fullscreen' : ''} ${visibleTerminalOpen ? 'terminal-open' : ''} ${visibleReviewOpen ? 'review-open' : ''} ${visibleBrowserOpen ? 'browser-open' : ''} ${visibleSimulatorOpen ? 'simulator-open' : ''}`}
       >
         {activeView !== 'settings' && sidebarMode === 'hidden' && !sidebarPeek && !sidebarPeekLeaving && (
           // Rail: thin hit-area on the left edge. Hover/focus expands the
@@ -5479,7 +5908,7 @@ export function App() {
               profile={profile}
               cliAuth={cliAuth}
               avatarSettings={userSettings.avatar}
-              updatePresentation={updateRestart.presentation}
+              updatePresentation={cliAgentActionsBlocked ? undefined : updateRestart.presentation}
               onRequestUpdate={() => { void updateRestart.requestUpdate() }}
               compact={sidebarMode === 'compact'}
               peek={sidebarPeek || sidebarPeekLeaving}
@@ -5602,6 +6031,11 @@ export function App() {
               credentials={credentials}
               modelResult={modelResult}
               selectedModel={selectedModelInfo}
+              providerStatuses={providerAuth}
+              connectingProvider={connectingProvider}
+              providerLoginStage={providerLoginStage}
+              onProviderConnect={providerId => { void handleProviderConnect(providerId) }}
+              onProviderLoginCancel={() => { void handleProviderLoginCancel() }}
               theme={theme}
               activeTab={settingsTab}
               userSettings={userSettings}
@@ -5649,6 +6083,9 @@ export function App() {
                 onCancelVideo={() => { void interruptForUser(activeConversationId) }}
                 onEditSent={editSentMessage}
                 onUserExpand={handleUserExpand}
+                onStartNewConversation={() => newChat()}
+                models={modelResult.models}
+                apiRetryByTurn={apiRetryByTurn}
               />
               <div ref={transcriptEndRef} className="transcript-end" />
               {/* AnnotationLayer (F1): ouvinte de seleção + barra flutuante.
@@ -5685,9 +6122,26 @@ export function App() {
             <EmptyChat hasProject={Boolean(activeProject?.name)} projectName={projectName} line={emptyLine} />
           )}
         </section>
+        {activeView === 'chat' && cliAgentActionsBlocked && (
+          <CliBootstrapGate
+            phase={cliBootstrapSuccessVisible
+              ? 'success'
+              : updateSnapshot?.status === 'error'
+                ? 'error'
+                : 'installing'}
+            percent={updateSnapshot?.percent}
+            error={updateSnapshot?.error}
+            onRetry={() => { void runCliBootstrap() }}
+            onOpenSettings={() => {
+              setSettingsTab('security')
+              setActiveView('settings')
+            }}
+          />
+        )}
         <SideChatSurface
           sideChat={sideChat}
           busy={sideChat ? runningConversations.has(sideChat.conversation.id) : false}
+          disabled={cliAgentActionsBlocked}
           onSubmit={message => { void sendSideChatMessage(message) }}
           onClose={closeSideChat}
           onFocusConversation={() => {
@@ -5800,6 +6254,54 @@ export function App() {
           onActivateTab={browser.activateTab}
           onNavigateTab={browser.navigateTab}
           onCloseTab={browser.closeTab}
+        />
+      )}
+      {simulatorAvailable && (
+        <IosSimulatorPanel
+          simulatorOpen={visibleSimulatorOpen}
+          simulatorWidth={effectiveBrowserWidth}
+          onSetWidth={setBrowserWidth}
+          onClose={simulator.close}
+          requirements={simulator.requirements}
+          requirementsLoading={simulator.requirementsLoading}
+          attachedUdid={simulator.attachedUdid}
+          attachedDevice={simulator.attachedDevice}
+          frameDataUrl={simulator.frameDataUrl}
+          streamUrl={simulator.streamUrl}
+          streamSource={simulator.streamSource}
+          effectiveFps={simulator.effectiveFps}
+          streamFps={simulator.streamFps}
+          streamRates={simulator.streamRates}
+          fallbackFps={simulator.fallbackFps}
+          fallbackRates={simulator.fallbackRates}
+          busyUdid={simulator.busyUdid}
+          error={simulator.error}
+          lifecycle={simulator.lifecycle}
+          lastMediaFile={simulator.lastMediaFile}
+          agentPresence={simulator.agentPresence}
+          onAttach={udid => { void simulator.attach(udid) }}
+          onDetach={() => { void simulator.detach() }}
+          onEndSimulation={() => { void simulator.endSimulation() }}
+          onShutdownExternalSimulation={() => { void simulator.shutdownExternalSimulation() }}
+          onSystemAction={action => { void simulator.runSystemAction(action) }}
+          onCaptureScreen={() => { void simulator.captureScreen() }}
+          onToggleRecording={() => { void simulator.toggleRecording() }}
+          onRetryAttach={() => { void simulator.retryAttach() }}
+          onRetryInteraction={() => { void simulator.retryInteraction() }}
+          onRevealOutput={path => { void simulator.revealOutput(path) }}
+          onSetStreamRate={fps => { void simulator.setStreamRate(fps) }}
+          onSetFallbackRate={fps => { void simulator.setFallbackRate(fps) }}
+          onTap={point => { void simulator.tap(point) }}
+          onDrag={(from, to, durationMs) => { void simulator.drag(from, to, durationMs) }}
+          onTypeText={text => { void simulator.typeText(text) }}
+          onPressKey={key => { void simulator.pressKey(key) }}
+          onInspectPoint={simulator.inspectPoint}
+          onCaptureAnnotation={(_kind, rect, element) => simulator.captureAnnotation(rect, element)}
+          onDeleteCapture={simulator.deleteCapture}
+          onAddAnnotation={addBrowserAnnotation}
+          onRefresh={() => { void simulator.refresh() }}
+          minWidth={browser.MIN_WIDTH}
+          maxWidth={browserWidthLimit}
         />
       )}
       </div>
@@ -5971,7 +6473,7 @@ export function App() {
             />
           )}
           <Composer
-            disabled={false}
+            disabled={cliAgentActionsBlocked}
             workingDirectory={config.workingDirectory}
             skills={mentionableSkills}
             customSlashCommands={userSettings.customSlashCommands}
@@ -6024,6 +6526,9 @@ export function App() {
                   selectedModel={selectedModel}
                   hasConversationHistory={hasConversation}
                   modelResult={modelResult}
+                  verbooPlan={cliAuth.subscriptionType ?? undefined}
+                  providerStatuses={providerAuth}
+                  onConnectProvider={providerId => { void handleProviderConnect(providerId) }}
                   onSelect={handleModelSelect}
                   onRefresh={() => refreshModels(true)}
                   effortByModel={effortByModel}
@@ -6057,6 +6562,15 @@ export function App() {
       />
 
       <ConfirmDialog request={confirmRequest} onClose={() => setConfirmRequest(undefined)} />
+
+      {providerRiskNotice && (
+        <ProviderRiskDialog
+          provider={providerRiskNotice.provider}
+          message={providerRiskNotice.message}
+          onAccept={() => void handleProviderRiskAccept()}
+          onCancel={() => void handleProviderLoginCancel()}
+        />
+      )}
 
       <CommandPalette
         open={paletteOpen}
@@ -6268,7 +6782,52 @@ function resolveSelectedModel(
   if (models.length === 0) return currentModelId
   if (currentModelId && models.some(model => model.id === currentModelId)) return currentModelId
   if (preferredModelId && models.some(model => model.id === preferredModelId)) return preferredModelId
-  return models[0]?.id
+  // An explicit selection SURVIVES vanishing from a catalog snapshot: provider
+  // models are attached per refresh and degrade silently (model_service.rs
+  // attach_provider_models), so a transient provider-CLI hiccup must not
+  // demote the user's choice — every later refresh would keep the demotion.
+  // The persisted choice gets the same protection at startup under a degraded
+  // catalog. models[0] only when no explicit selection exists (first paint).
+  return currentModelId ?? preferredModelId ?? models[0]?.id
+}
+
+/** The CLI emits `{"type":"system","subtype":"api_retry","attempt":N,
+ *  "max_retries":M,"retry_delay_ms":D,...}` while it retries a rate-limited
+ *  request (measured: 10 attempts over ~3 min). The Rust forwarder rides it
+ *  as a json event — surface it instead of sitting on a mute "Thinking…"
+ *  (field defect). `retry_delay_ms` is the declared wait before the next
+ *  retry; when it's hour-scale the "retry" is really a quota reset (T13). */
+export function extractApiRetry(payload: unknown): { attempt: number; maxRetries: number; retryDelayMs?: number } | undefined {
+  if (!payload || typeof payload !== 'object') return undefined
+  const record = payload as Record<string, unknown>
+  if (record.type !== 'system' || record.subtype !== 'api_retry') return undefined
+  const attempt = typeof record.attempt === 'number' ? record.attempt : undefined
+  const maxRetries = typeof record.max_retries === 'number' ? record.max_retries : undefined
+  if (!attempt || !maxRetries) return undefined
+  const retryDelayMs = typeof record.retry_delay_ms === 'number' ? record.retry_delay_ms : undefined
+  return { attempt, maxRetries, retryDelayMs }
+}
+
+/** The Rust forwarder also turns a result event's `result` string into stdout
+ *  (turn_service.rs:3073-3077) AFTER the same text already streamed from the
+ *  assistant event. Remembering the announced result text lets the stdout
+ *  handler skip the exact re-emission — otherwise the final message renders
+ *  twice in the body (field defect: the quota error duplicated). */
+export function extractResultText(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') return undefined
+  const record = payload as Record<string, unknown>
+  if (record.type !== 'result') return undefined
+  return typeof record.result === 'string' && record.result.trim() ? record.result : undefined
+}
+
+function clearApiRetryNotice(
+  prev: Record<string, { attempt: number; maxRetries: number }>,
+  turnId: string,
+): Record<string, { attempt: number; maxRetries: number }> {
+  if (!(turnId in prev)) return prev
+  const next = { ...prev }
+  delete next[turnId]
+  return next
 }
 
 function parseResearchSubagentRequest(message: string): { count: number; requestedCount: number } | undefined {
@@ -6565,7 +7124,7 @@ function buildCliFailureMessage(lines: string[] | undefined, t: Translator): str
 // Strip non-essential fields from AttachmentMeta before persisting in a
 // TranscriptItem. Keeps path/name/kind (enough for chips + thumbnails) and
 // drops extractedText/extractionStatus which can be re-derived on re-attach.
-function slimMeta(a: AttachmentMeta): Pick<AttachmentMeta, 'path' | 'name' | 'kind' | 'size' | 'mediaType' | 'browserAnnotation'> {
+function slimMeta(a: AttachmentMeta): Pick<AttachmentMeta, 'path' | 'name' | 'kind' | 'size' | 'mediaType' | 'browserAnnotation' | 'simulatorAnnotation'> {
   return {
     path: a.path,
     name: a.name,
@@ -6573,6 +7132,7 @@ function slimMeta(a: AttachmentMeta): Pick<AttachmentMeta, 'path' | 'name' | 'ki
     size: a.size,
     mediaType: a.mediaType,
     browserAnnotation: a.browserAnnotation,
+    simulatorAnnotation: a.simulatorAnnotation,
   }
 }
 

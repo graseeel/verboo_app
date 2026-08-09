@@ -363,6 +363,7 @@ export type SettingsTab =
   | 'account'
   | 'context'
   | 'security'
+  | 'providers'
   | 'integrations'
 export type PersonalityMode = 'pragmatic' | 'concise' | 'explanatory'
 export type CompletionNotificationMode = 'always' | 'background' | 'never'
@@ -449,11 +450,16 @@ export type TranscriptItem = {
   batchReportLines?: string[]
   modelId?: string
   modelDisplayName?: string
+  /** Provider stamped at send time (F3: absent = verboo). The transcript
+   *  header prefers this over re-resolving from the live catalog — the
+   *  catalog can degrade mid-turn (provider CLI hiccup) and the header of a
+   *  finished turn must not retroactively lose its provider. */
+  provider?: string
   streaming?: boolean
   skills?: SkillSummary[]
   // Attachments sent with this message — thumbnail metadata only (paths,
   // names, kinds), no base64 blobs. Survives conversation reload.
-  attachments?: Pick<AttachmentMeta, 'path' | 'name' | 'kind' | 'size' | 'mediaType' | 'browserAnnotation'>[]
+  attachments?: Pick<AttachmentMeta, 'path' | 'name' | 'kind' | 'size' | 'mediaType' | 'browserAnnotation' | 'simulatorAnnotation'>[]
   /** F3 (N3): the annotation TURN item — kind 'annotation'. The quote+comment
    *  pairs are FROZEN inside the item at send time: "consultable forever"
    *  never depends on re-anchoring against the transcript (the excerpt may
@@ -610,6 +616,10 @@ export type VerbooModel = {
   /** Promoted from raw.reasoning when the router serves it. FE reads this
    *  first, falling back to model.raw?.reasoning for backward compat. */
   reasoning?: ModelReasoning
+  /** Owning provider (F2 contract, mirrors Rust `VerbooModel.provider` with
+   *  `skip_serializing_if = "Option::is_none"`): ABSENT means 'verboo' — the
+   *  current catalog keeps working unchanged. Values seen: 'claude', 'codex'. */
+  provider?: string
   raw: unknown
 }
 
@@ -623,6 +633,7 @@ export type ModelDiscoveryResult = {
   source: 'cli' | 'api-key' | 'cache' | 'none'
   stale: boolean
   error?: string
+  providerError?: string
 }
 
 export type CustomSlashCommand = {
@@ -854,6 +865,29 @@ export type CliAuthStatus = {
   error?: string
 }
 
+/** F4 contract, mirrors Rust `ProviderAuthStatus` (provider_login_pty.rs:74-79):
+ *  ONE ENTRY PER PROVIDER the login bridge supports — `connected: false`
+ *  entries included, so this IS the provider universe for the renderer.
+ *  `account` is absent when None (skip_serializing_if). The global CLI auth
+ *  state is an internal backend detail and does NOT cross to the renderer
+ *  (CONTRATO DE REMOÇÃO, provider_login_pty.rs:64-69). */
+export type ProviderAuthStatus = {
+  provider: string
+  connected: boolean
+  account?: string
+}
+
+/** F4 contract, mirrors Rust `ProviderLoginEvent` (provider_login_pty.rs:45)
+ *  emitted on the `provider-login:event` channel. `state` is snake_case on
+ *  the wire; `message` is absent when None (skip_serializing_if).
+ *  `risk_notice` (claude): the Anthropic policy acceptance screen — `message`
+ *  carries the FULL notice, verbatim; the owner accepts or cancels. */
+export type ProviderLoginEvent = {
+  provider: string
+  state: 'awaiting_browser' | 'risk_notice' | 'connected' | 'error'
+  message?: string
+}
+
 export type LoginResult = {
   ok: boolean
   message: string
@@ -935,7 +969,7 @@ export type ProfileResult = {
   error?: string
 }
 
-export type AttachmentKind = 'image' | 'video' | 'file' | 'browser-annotation'
+export type AttachmentKind = 'image' | 'video' | 'file' | 'browser-annotation' | 'simulator-annotation'
 
 export type VideoHdrKind = 'sdr' | 'hlg' | 'pq' | 'dolbyVision' | 'unknown'
 
@@ -1004,6 +1038,24 @@ export type BrowserAnnotation = {
   viewportSnapshot?: { path: string; width: number; height: number; size: number }
 }
 
+export type SimulatorAnnotation = {
+  kind: 'element' | 'area'
+  crop: string
+  note?: string
+  device: {
+    name: string
+    udid: string
+    iosVersion: string
+    orientation: 'portrait' | 'landscape'
+  }
+  deviceGeneration: number
+  frameGeneration: number
+  rect: { x: number; y: number; width: number; height: number }
+  deviceRect: { x: number; y: number; width: number; height: number }
+  element?: { id: string; role: string; label?: string }
+  viewportSnapshot: { path: string; width: number; height: number; size: number }
+}
+
 export type AttachmentMeta = {
   path: string
   name: string
@@ -1023,6 +1075,7 @@ export type AttachmentMeta = {
   extractionStatus?: ExtractionStatus
   video?: VideoStreamMetadata
   browserAnnotation?: BrowserAnnotation
+  simulatorAnnotation?: SimulatorAnnotation
 }
 
 export type AgentTurnRequest = {
@@ -1128,7 +1181,7 @@ export type RuntimeStatus = {
 
 /**
  * T1-TodoWrite (2026-07-31): one entry of a TodoWrite tool call.
- * Frontier with TORNO — mirrors `pub struct TodoItem` in
+ * Frontier with PERISCOPIO — mirrors `pub struct TodoItem` in
  * src-tauri/src/models/types.rs, which is `#[serde(rename_all =
  * "camelCase")]`: the Rust field `active_form` arrives as `activeForm`.
  * Declaring `active_form` here would compile and read `undefined`
@@ -1160,7 +1213,7 @@ export type RuntimeActivity = {
   diffPreview?: string
   /**
    * T1-TodoWrite: structured todo list from the todowrite tool.
-   * Frontier with TORNO (`todos: Option<Vec<TodoItem>>` in types.rs
+   * Frontier with PERISCOPIO (`todos: Option<Vec<TodoItem>>` in types.rs
    * with `skip_serializing_if = "Option::is_none"`): when there is no
    * list the KEY IS ABSENT from the JSON — it arrives `undefined`,
    * never `null`. Treat ABSENCE, not nullity. Populated only for
@@ -1226,6 +1279,14 @@ export type ChromeIntegrationStatus = {
 
 export type ChromeIntegrationRequest = {
   developmentExtensionId?: string
+}
+
+export type ChromeConnectionTestResult = {
+  helper: boolean
+  chrome: boolean
+  cliMcp: boolean
+  connected: boolean
+  errorCode?: string
 }
 
 // ── Review types ────────────────────────────────────────────────
@@ -1346,8 +1407,13 @@ export type UpdateStatus =
 
 export type UpdateSnapshot = {
   status: UpdateStatus
+  target?: 'app' | 'cli' | 'both'
   channel: UpdateChannel
   currentVersion: string
+  cliCurrentVersion?: string
+  cliAvailableVersion?: string
+  /** True until the first signed CLI has been installed into app data. */
+  cliBootstrapRequired?: boolean
   /**
    * True when a stable channel with a valid manifest exists. False on 404,
    * network error, or invalid manifest. Fail-closed: when in doubt, false.
@@ -1381,7 +1447,10 @@ export type SidebarUpdatePresentation = {
     | 'waiting'
     | 'restarting'
     | 'error'
+  target?: 'app' | 'cli' | 'both'
   version?: string
+  appVersion?: string
+  cliVersion?: string
   percent?: number
   error?: string
   actionEnabled: boolean
@@ -1415,7 +1484,7 @@ export type TerminalDataEvent = {
 }
 
 // --- Anotações (F0) -----------------------------------------------------------
-// Contrato FIXADO pelo Maestro, idêntico ao que o TORNO recebeu no Rust. Não
+// Contrato FIXADO pelo Maestro, idêntico ao que o PERISCOPIO recebeu no Rust. Não
 // renomear, não acrescentar campo: a fronteira Rust<->TS é camelCase e o Rust
 // já tem serde(rename_all = "camelCase") — um campo em snake_case aqui zera
 // silenciosamente o dado na ponte (já aconteceu com TokenUsage).

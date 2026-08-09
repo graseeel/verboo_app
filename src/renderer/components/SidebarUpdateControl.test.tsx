@@ -55,4 +55,51 @@ describe('SidebarUpdateControl', () => {
     fireEvent.click(action)
     expect(onAction).not.toHaveBeenCalled()
   })
+
+  it('presents simultaneous app and CLI releases as one action', () => {
+    render(
+      <I18nProvider language="pt-BR">
+        <SidebarUpdateControl
+          presentation={{
+            phase: 'available',
+            target: 'both',
+            appVersion: '0.8.0',
+            cliVersion: '0.15.6',
+            actionEnabled: true,
+          }}
+          onAction={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+
+    expect(screen.getAllByRole('button')).toHaveLength(1)
+    expect(screen.getByText('Atualizações do app e do CLI disponíveis')).toBeVisible()
+    expect(screen.getByText('O app 0.8.0 e o CLI 0.15.6 estão disponíveis.')).toBeVisible()
+  })
+
+  it('shows a component warning without disabling the healthy update action', () => {
+    const onAction = vi.fn()
+
+    render(
+      <I18nProvider language="en-US">
+        <SidebarUpdateControl
+          presentation={{
+            phase: 'available',
+            target: 'app',
+            appVersion: '0.8.0',
+            error: 'CLI: offline',
+            actionEnabled: true,
+          }}
+          onAction={onAction}
+        />
+      </I18nProvider>,
+    )
+
+    const action = screen.getByRole('button', { name: 'Download Verboo Code 0.8.0' })
+    expect(action).toBeEnabled()
+    expect(screen.getByText('CLI: offline')).toBeVisible()
+
+    fireEvent.click(action)
+    expect(onAction).toHaveBeenCalledOnce()
+  })
 })

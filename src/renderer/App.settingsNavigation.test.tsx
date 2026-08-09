@@ -1,9 +1,26 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import type { UserSettings } from '../shared/types'
 import { App } from './App'
 import { CHAT_STORE_KEY, createConversation } from './state/chatStore'
+import type { IosSimulatorLifecycleSnapshot } from './features/simulator/iosSimulatorApi'
+
+const { listenMock } = vi.hoisted(() => ({
+  listenMock: vi.fn<(
+    eventName: string,
+    callback: (event: { payload: unknown }) => void,
+  ) => Promise<() => void>>(() => Promise.resolve(() => {})),
+}))
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: (eventName: string, callback: (event: { payload: unknown }) => void) =>
+    listenMock(eventName, callback),
+}))
 
 type ComposerProps = {
   leftToolbar?: ReactNode
@@ -66,6 +83,8 @@ class TestResizeObserver {
   unobserve() {}
   disconnect() {}
 }
+
+let lifecycleForward: ((event: { payload: unknown }) => void) | undefined
 
 function createBridge() {
   const unsubscribe = () => {}
@@ -161,7 +180,6 @@ function seedArchivedChats() {
 
 beforeEach(() => {
   window.localStorage.clear()
-  window.localStorage.setItem('verboo:development-notice-accepted', 'true')
   vi.stubGlobal('ResizeObserver', TestResizeObserver)
   vi.stubGlobal('matchMedia', () => ({
     matches: false,
@@ -173,15 +191,58 @@ beforeEach(() => {
     removeEventListener: () => {},
     dispatchEvent: () => false,
   }))
+  Object.defineProperty(window, '__TAURI_INTERNALS__', {
+    configurable: true,
+    value: {},
+  })
+  lifecycleForward = undefined
+  listenMock.mockImplementation((eventName, callback) => {
+    if (eventName === 'ios-simulator:lifecycle') lifecycleForward = callback
+    return Promise.resolve(() => {})
+  })
   ;(window as unknown as { verboo: unknown }).verboo = createBridge()
 })
 
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__
 })
 
 describe('App settings shortcuts', () => {
+  it('restores the simulator and carries a hidden-panel lifecycle event into TopBar', async () => {
+    const avatar = await renderApp()
+    const topbar = screen.getAllByRole('banner').find(element => element.classList.contains('topbar'))
+    expect(topbar).toBeDefined()
+    if (!topbar) throw new Error('TopBar was not rendered')
+    fireEvent.click(await within(topbar).findByRole('button', { name: 'Open iOS simulator' }))
+    await waitFor(() => expect(within(topbar).getByRole('button', { name: 'Hide iOS simulator' })).toBeInTheDocument())
+
+    fireEvent.click(avatar)
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByRole('heading', { name: 'Security', level: 1 })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to app' }))
+    await waitFor(() => expect(within(topbar).getByRole('button', { name: 'Hide iOS simulator' })).toBeInTheDocument())
+
+    fireEvent.click(within(topbar).getByRole('button', { name: 'Hide iOS simulator' }))
+    await waitFor(() => expect(within(topbar).getByRole('button', { name: 'Open iOS simulator' })).toBeInTheDocument())
+    await waitFor(() => expect(lifecycleForward).toBeDefined())
+
+    const lifecycle: IosSimulatorLifecycleSnapshot = {
+      udid: 'phone-17-pro',
+      deviceGeneration: 1,
+      stage: 'ready',
+      ownership: 'verboo',
+      previewSuspended: true,
+      interactionReady: true,
+      recording: { state: 'recording', startedAtMs: Date.now() - 1_000 },
+      recoverableError: null,
+    }
+    act(() => lifecycleForward?.({ payload: lifecycle }))
+
+    expect(screen.getByLabelText('Screen recording in progress')).toBeInTheDocument()
+  })
+
   it('routes the avatar Settings shortcut to Security', async () => {
     fireEvent.click(await renderApp())
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))

@@ -1,4 +1,4 @@
-import { AtSign, Bug, Check, CheckCircle2, Copy, ExternalLink, KeyRound, LogIn, Mail, Phone, RefreshCw, ShieldAlert, UserPlus } from 'lucide-react'
+import { Bug, Check, Copy, ExternalLink, KeyRound, LogIn, RefreshCw, UserPlus } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
@@ -10,9 +10,11 @@ import { useI18n } from '../i18n'
 
 type LoginScreenProps = {
   language: LanguageCode
-  noticeAccepted: boolean
   checking: boolean
   authError?: string
+  /** T5: raw cause of a rejected validateAccess, shown behind a
+   *  "Show technical details" toggle inside the login warning. */
+  authErrorDetail?: string
   credentials: CredentialStatus
   cliAuth: CliAuthStatus
   modelResult: ModelDiscoveryResult
@@ -24,7 +26,6 @@ type LoginScreenProps = {
   onSaveApiKey: (apiKey: string) => Promise<boolean>
   onLanguageChange: (language: LanguageCode) => Promise<void> | void
   onStaySignedInChange: (staySignedIn: boolean) => Promise<void> | void
-  onAcceptNotice: () => void
   onOpenFeedback: () => void
   /**
    * A1: called when a `login:event` with kind `complete` reports success
@@ -57,9 +58,9 @@ type CliLoginFlow =
 
 export function LoginScreen({
   language,
-  noticeAccepted,
   checking,
   authError,
+  authErrorDetail,
   credentials,
   cliAuth,
   modelResult,
@@ -71,7 +72,6 @@ export function LoginScreen({
   onSaveApiKey,
   onLanguageChange,
   onStaySignedInChange,
-  onAcceptNotice,
   onOpenFeedback,
   onLoginComplete,
 }: LoginScreenProps) {
@@ -228,67 +228,28 @@ export function LoginScreen({
 
   async function checkExistingAuth() {
     setStatusMessage(t('login.checkingSession'))
-    const valid = await onCheckExistingAuth()
-    setStatusMessage(valid ? t('login.sessionValid') : t('login.sessionInvalid'))
-  }
-
-  if (!noticeAccepted) {
-    return (
-      <main className="login-screen">
-        <section className="login-panel development-panel" aria-label={t('login.developmentAria')}>
-          <div className="login-language-row">
-            <LanguageSelector value={language} onChange={next => void onLanguageChange(next)} compact />
-          </div>
-          <div className="login-brand">
-            <img className="login-mascot" src={mascotUrl} alt="" />
-            <img className="login-wordmark" src={wordmarkUrl} alt="Verboo" />
-          </div>
-
-          <div className="login-copy">
-            <p className="login-eyebrow">{t('login.importantNotice')}</p>
-            <h1>{t('login.developmentTitle')}</h1>
-            <p>{t('login.developmentBody')}</p>
-          </div>
-
-          <div className="development-warning">
-            <ShieldAlert size={20} />
-            <div>
-              <strong>{t('login.warningTitle')}</strong>
-              <p>{t('login.warningBody')}</p>
-            </div>
-          </div>
-
-          <div className="contact-list" aria-label={t('login.supportContacts')}>
-            <a href="mailto:grasel.moura05@gmail.com">
-              <Mail size={16} />
-              grasel.moura05@gmail.com
-            </a>
-            <a href="tel:+5547999479438">
-              <Phone size={16} />
-              +55 (47) 9 9947-9438
-            </a>
-            <a href="https://x.com/grrL_" target="_blank" rel="noreferrer">
-              <AtSign size={16} />
-              @grrL_
-            </a>
-          </div>
-
-          <button className="secondary-action wide-action development-feedback-button" type="button" onClick={onOpenFeedback}>
-            <Bug size={17} />
-            {t('login.reportIssue')}
-          </button>
-
-          <button className="primary-action wide-action" type="button" onClick={onAcceptNotice}>
-            <CheckCircle2 size={18} />
-            {t('login.acceptNotice')}
-          </button>
-        </section>
-      </main>
-    )
+    try {
+      const valid = await onCheckExistingAuth()
+      // The parent owns the FAILURE message (authError prop → .login-warning):
+      // setting the same session-invalid text locally rendered it TWICE,
+      // stacked (field photo). Success keeps its local confirmation.
+      setStatusMessage(valid ? t('login.sessionValid') : undefined)
+    } catch {
+      // T5: if validateAccess rejects, the parent's catch surfaces the
+      // banner (authError + authErrorDetail). Locally we must END the
+      // "verificando" state regardless — without this, the pre-await
+      // setStatusMessage is the last line that ran and "Verificando
+      // sessão local…" sticks forever (field photo M4).
+      setStatusMessage(undefined)
+    }
   }
 
   return (
     <main className="login-screen">
+      {/* T-C: window drag lives on this dedicated top strip, NOT on the
+          whole screen — the screen is a scroll container now, and a full-
+          surface drag region swallows the scroll gesture and clicks. */}
+      <div className="login-drag-strip" aria-hidden="true" />
       <section className="login-panel" aria-label={t('login.mainAria')}>
         <div className="login-language-row">
           <LanguageSelector value={language} onChange={next => void onLanguageChange(next)} compact />
@@ -426,7 +387,15 @@ export function LoginScreen({
         )}
 
         {(authError || modelResult.error) && (
-          <div className="login-warning">{authError ?? modelResult.error}</div>
+          <div className="login-warning">
+            {authError ?? modelResult.error}
+            {authErrorDetail && (
+              <details className="login-warning-details">
+                <summary>{t('transcript.showTechnicalDetails')}</summary>
+                <pre>{authErrorDetail}</pre>
+              </details>
+            )}
+          </div>
         )}
 
         <form className="api-login-form" onSubmit={submitApiKey}>

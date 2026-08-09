@@ -194,6 +194,9 @@ export default {
   "tool_deny": {
     "message": "Negar"
   },
+  "tool_allowTurn": {
+    "message": "Permitir nesta tarefa"
+  },
   "tool_approved": {
     "message": "Aprovado"
   },
@@ -202,6 +205,9 @@ export default {
   },
   "tool_cancelled": {
     "message": "Cancelado"
+  },
+  "tool_approvalExpired": {
+    "message": "Aprovação expirada"
   },
   "tool_executing": {
     "message": "Executando…"

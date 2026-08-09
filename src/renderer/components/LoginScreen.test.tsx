@@ -4,7 +4,7 @@
  * Production defects this guards (both reported by REAL users):
  *   - Windows: app showed "Verboo Code — Not responding" stuck on the
  *     login screen after "Sign in with CLI" — the Rust command blocked
- *     on .output() until the CLI exited (now non-blocking, TORNO).
+ *     on .output() until the CLI exited (now non-blocking, PERISCOPIO).
  *   - Linux (issue #59, Fedora 43): "login doesn't open any window" —
  *     the browser may never open by itself, so the login URL must be
  *     VISIBLE and COPYABLE in the UI, not buried in a log.
@@ -59,7 +59,6 @@ type LoginScreenProps = ComponentProps<typeof LoginScreen>
 function makeProps(overrides: Partial<LoginScreenProps> = {}): LoginScreenProps {
   return {
     language: 'pt-BR' as const,
-    noticeAccepted: true,
     checking: false,
     authError: undefined,
     credentials: { hasApiKey: false },
@@ -73,7 +72,6 @@ function makeProps(overrides: Partial<LoginScreenProps> = {}): LoginScreenProps 
     onSaveApiKey: vi.fn(() => Promise.resolve(false)),
     onLanguageChange: vi.fn(),
     onStaySignedInChange: vi.fn(),
-    onAcceptNotice: vi.fn(),
     onOpenFeedback: vi.fn(),
     onLoginComplete: vi.fn(),
     ...overrides,
@@ -243,5 +241,154 @@ describe('A1: event-driven CLI login (login:event)', () => {
     expect(second.textContent).toBe('segunda causa')
     expect(second.className).toContain('is-shaking')
     expect(second).not.toBe(first) // remounted → animation replays
+  })
+})
+
+// Ivo's order: NO project-status content in the login UI — the interstitial
+// and the personal contact block are gone for good. This is a
+// multi-pattern VOCABULARY SWEEP (not an item pin): reintroducing a personal
+// channel or dev-version copy fails here automatically.
+describe('LoginScreen — no project-status interstitial (Ivo\'s order)', () => {
+  it('carries no project-status vocabulary and no personal contact channels (multi-pattern sweep)', () => {
+    const { container } = renderLogin()
+    expect(container.textContent).not.toMatch(/important notice|aviso importante|development build|versão (em desenvolvimento|independente)|not an official|não é uma versão oficial/i)
+    // Personal channels (the removed contact block): mailto/tel links, the
+    // personal handle — the sweep is by PATTERN, never by the owner's data.
+    expect(container.innerHTML).not.toMatch(/mailto:|tel:|x\.com\//i)
+    expect(container.querySelector('.contact-list')).toBeNull()
+    expect(screen.queryByRole('button', { name: /I understand and want to continue|Entendi e quero continuar/ })).toBeNull()
+  })
+
+  it('keeps the Report issue channel — the AUTHORIZED exception (feedback flow stays)', () => {
+    const { props } = renderLogin()
+    fireEvent.click(screen.getByRole('button', { name: /Reportar problema/ }))
+    expect(props.onOpenFeedback).toHaveBeenCalledTimes(1)
+  })
+})
+
+// T-C (critical field report, M4): with error banners stacked the panel grew
+// past the window and the user could NOT reach the API key field — the screen
+// had no scroll container at all (body overflow:hidden + .login-screen without
+// overflow-y). jsdom cannot prove real scrollability (layout is runtime —
+// declared in the report); what it DOES pin: the FULL state renders COMPLETE
+// (every section coexists, key field at the bottom of the stack) and the
+// window-drag affordance is a dedicated top strip, not the whole screen.
+describe('LoginScreen — T-C: the FULL state (banners + key field) stays complete', () => {
+  it('error banner + session note + login URL block + API key form ALL render in one panel, key field LAST', async () => {
+    const props = makeProps({
+      authError: 'Nenhuma sessão Verboo válida foi encontrada.',
+      onCheckExistingAuth: vi.fn(() => Promise.resolve(true)),
+    })
+    renderLogin(props)
+
+    // Stack the states: session note (success), CLI login URL block.
+    fireEvent.click(screen.getByRole('button', { name: /Já autentiquei/ }))
+    await screen.findByText('Sessão Verboo validada.')
+    fireEvent.click(screen.getByRole('button', { name: /Entrar pelo CLI/ }))
+    emitLoginEvent({ kind: 'url', url: LOGIN_URL })
+    await screen.findByLabelText('Link de login do Verboo')
+
+    // Everything coexists in ONE document — nothing is dropped when full…
+    const warning = screen.getByText('Nenhuma sessão Verboo válida foi encontrada.')
+    expect(screen.getByText('Sessão Verboo validada.')).toBeTruthy()
+    expect(screen.getByLabelText('Link de login do Verboo')).toBeTruthy()
+    const apiKeyInput = screen.getByLabelText(/Chave de API Verboo/) as HTMLInputElement
+    expect(screen.getByRole('button', { name: /^Salvar$/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Reportar problema/ })).toBeTruthy()
+
+    // …and the key field — the element M4 could not reach — sits BELOW the
+    // banners in document order (the bottom of the overflowing stack).
+    expect(warning.compareDocumentPosition(apiKeyInput) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('the window-drag affordance is a dedicated top strip, NOT the content surface', () => {
+    const { container } = renderLogin()
+    const strip = container.querySelector('.login-drag-strip')
+    expect(strip, 'login screen must carry a dedicated drag strip').toBeTruthy()
+    const panel = container.querySelector('.login-panel')
+    expect(panel).toBeTruthy()
+    // The strip must never cover the panel's interactive content.
+    expect(strip!.contains(panel!)).toBe(false)
+    expect(panel!.contains(strip!)).toBe(false)
+  })
+})
+
+describe('T5: a rejected onCheckExistingAuth never sticks "Verificando…" (field photo M4)', () => {
+  it('pt-BR: rejecting onCheckExistingAuth ends "Verificando…" — not stuck forever', async () => {
+    const props = makeProps({
+      onCheckExistingAuth: vi.fn(() => Promise.reject(new Error('CLI spawn failed'))),
+    })
+    renderLogin(props)
+
+    const button = screen.getByRole('button', { name: /Já autentiquei/ })
+    fireEvent.click(button)
+
+    // The "verificando" message appears immediately…
+    await screen.findByText('Verificando sessão local do Verboo...')
+
+    // …and leaves when the promise rejects — NOT stuck forever (field photo M4).
+    await waitFor(() => {
+      expect(screen.queryByText('Verificando sessão local do Verboo...')).toBeNull()
+    })
+    // The button is interactive again (no eternal spinner).
+    expect((screen.getByRole('button', { name: /Já autentiquei/ }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('en-US: rejecting onCheckExistingAuth ends "Checking…" — not stuck forever', async () => {
+    const props = makeProps({
+      language: 'en-US' as const,
+      onCheckExistingAuth: vi.fn(() => Promise.reject(new Error('CLI spawn failed'))),
+    })
+    render(
+      <I18nProvider language="en-US">
+        <LoginScreen {...props} />
+      </I18nProvider>,
+    )
+
+    const button = screen.getByRole('button', { name: /I already authenticated/ })
+    fireEvent.click(button)
+    await screen.findByText('Checking local Verboo session...')
+    await waitFor(() => {
+      expect(screen.queryByText('Checking local Verboo session...')).toBeNull()
+    })
+    expect((screen.getByRole('button', { name: /I already authenticated/ }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('authErrorDetail renders behind a "Mostrar detalhes técnicos" toggle, not bare on the surface (pt-BR)', () => {
+    const props = makeProps({
+      authError: 'Não foi possível verificar sua sessão do Verboo.',
+      authErrorDetail: 'No such file or directory (os error 2)',
+    })
+    const { container } = renderLogin(props)
+
+    // Friendly headline is on the surface…
+    expect(screen.getByText('Não foi possível verificar sua sessão do Verboo.')).toBeTruthy()
+    // …the toggle uses the existing 429 pattern's key…
+    expect(screen.getByText('Mostrar detalhes técnicos')).toBeTruthy()
+    // …and the raw cause lives inside a <details> element (collapsed by
+    // default), not as a bare text node on the login surface.
+    const details = container.querySelector('details.login-warning-details')
+    expect(details, 'authErrorDetail must render inside a <details> toggle').toBeTruthy()
+    expect(details!.textContent).toContain('No such file or directory (os error 2)')
+  })
+})
+
+describe('T6: apiKeyHelp no longer mentions unsigned beta builds (factually false — builds are signed)', () => {
+  it('pt-BR: the help text omits "beta sem assinatura" vocabulary', () => {
+    renderLogin()
+    const help = screen.getByText(/A chave fica criptografada localmente/)
+    // The signed-builds claim was factually false and removed from both locales.
+    expect(help.textContent).not.toMatch(/beta sem assinatura|sem assinatura/i)
+  })
+
+  it('en-US: the help text omits "unsigned beta" vocabulary', () => {
+    const props = makeProps({ language: 'en-US' as const })
+    render(
+      <I18nProvider language="en-US">
+        <LoginScreen {...props} />
+      </I18nProvider>,
+    )
+    const help = screen.getByText(/The key is encrypted locally/)
+    expect(help.textContent).not.toMatch(/unsigned beta|unsigned/i)
   })
 })

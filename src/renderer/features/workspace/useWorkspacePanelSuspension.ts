@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from 'react'
 
-export type WorkspacePanelKind = 'terminal' | 'review' | 'browser'
+export type WorkspacePanelKind = 'terminal' | 'review' | 'browser' | 'simulator'
 
 export type UseWorkspacePanelSuspensionOptions = {
   isFullscreenView: boolean
@@ -8,6 +8,7 @@ export type UseWorkspacePanelSuspensionOptions = {
   terminalOpen: boolean
   reviewOpen: boolean
   browserOpen: boolean
+  simulatorOpen?: boolean
   closeAll: () => void
   restorePanel: (panel: WorkspacePanelKind) => void
 }
@@ -18,6 +19,7 @@ export function useWorkspacePanelSuspension({
   terminalOpen,
   reviewOpen,
   browserOpen,
+  simulatorOpen = false,
   closeAll,
   restorePanel,
 }: UseWorkspacePanelSuspensionOptions) {
@@ -33,10 +35,12 @@ export function useWorkspacePanelSuspension({
             ? 'review'
             : browserOpen
               ? 'browser'
-              : undefined
+              : simulatorOpen
+                ? 'simulator'
+                : undefined
       }
       wasFullscreenRef.current = true
-      if (terminalOpen || reviewOpen || browserOpen) closeAll()
+      if (terminalOpen || reviewOpen || browserOpen || simulatorOpen) closeAll()
       return
     }
 
@@ -53,6 +57,7 @@ export function useWorkspacePanelSuspension({
     restorePanel,
     reviewOpen,
     terminalOpen,
+    simulatorOpen,
   ])
 
   return { workspacePanelsEnabled: !isFullscreenView }

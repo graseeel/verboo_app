@@ -9,19 +9,21 @@
  * target before clicking so the user can see where Verboo will act.
  *
  * @param {{ name: 'click'; selector: string; button?: number; risk?: string; input?: string }} tool
+ * @param {{ activeTabId?: number }} [ctx]
  * @returns {Promise<{ selector: string; clicked: boolean; url: string }>}
  */
 
 import { preparePresenceForAction, pulseAgentCursor } from '../../presence/inject.js'
+import { resolveTargetTab } from '../targetTab.js'
 
-export async function click(tool) {
+export async function click(tool, ctx = {}) {
   const selector = tool?.selector
   if (!selector || typeof selector !== 'string') {
     throw new Error('click: missing selector')
   }
   const button = typeof tool.button === 'number' ? tool.button : 0
 
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  const tab = await resolveTargetTab(ctx.activeTabId)
   if (!tab?.id) throw new Error('click: no active tab')
 
   // Agent presence: frame + cursor glide to target, dwell, click pulse, then DOM click.

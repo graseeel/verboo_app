@@ -6,6 +6,10 @@ pub mod local_transport;
 pub mod mcp_server;
 pub mod native_host;
 pub mod protocol;
+pub mod simulator_catalog;
+pub mod simulator_client;
+pub mod simulator_mcp;
+pub mod simulator_protocol;
 
 use error::{BridgeError, Result};
 use mcp_server::{BrowserMcpServer, BrowserSessionClient};
@@ -20,8 +24,7 @@ use std::{
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::oneshot;
 
-// Derived from the bundled cli.mjs `StdioClientTransport.close()` sequence
-// (src-tauri/target/release/resources/cli-package/dist/cli.mjs:212933-212955):
+// Derived from the CLI 0.15.2 `StdioClientTransport.close()` sequence:
 // Normal close is stdin.end() -> 2,000 ms -> SIGTERM -> 2,000 ms -> SIGKILL.
 // Registered MCP cleanup is stricter: SIGINT -> 100 ms -> SIGTERM -> 400 ms
 // -> SIGKILL. Keep the one-way browser cleanup inside that final window.

@@ -75,6 +75,28 @@ describe('SideChatPanel', () => {
     expect(onSubmit).toHaveBeenCalledTimes(1)
   })
 
+  it('blocks side-chat questions while the CLI is unavailable', () => {
+    const sideChat = createSideChatState(context, 'sidechat:disabled', 1_700_000_000_001)
+    const onSubmit = vi.fn()
+
+    render(
+      <I18nProvider language="en-US">
+        <SideChatPanel
+          conversation={sideChat.conversation}
+          context={sideChat.context}
+          busy={false}
+          disabled
+          onSubmit={onSubmit}
+          onClose={() => {}}
+        />
+      </I18nProvider>,
+    )
+
+    expect(screen.getByRole('textbox', { name: 'Side-chat question' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Send side-chat question' })).toBeDisabled()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
   it('closes without changing the selected context', () => {
     const sideChat = createSideChatState(context, 'sidechat:panel-close', 1_700_000_000_001)
     const onClose = vi.fn()

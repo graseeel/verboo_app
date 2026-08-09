@@ -1,5 +1,6 @@
 import type { AgentEvent } from '../../../shared/types'
 import type { Translator } from '../../i18n'
+import { parseApiErrorFromBlob, presentApiErrorMessage } from './apiErrorPresentation'
 import { presentTurnError, type TurnErrorPresentation } from './turnOutcomePresentation'
 
 /**
@@ -11,6 +12,17 @@ export function presentAgentError(
   event: Extract<AgentEvent, { type: 'error' }>,
   userInterruptedTurns: Set<string>,
   t: Translator,
+  accountLabel?: string,
 ): TurnErrorPresentation {
-  return presentTurnError(event, userInterruptedTurns, t('transcript.turnInterrupted'))
+  const base = presentTurnError(event, userInterruptedTurns, t('transcript.turnInterrupted'))
+  // Interruptions keep their own presentation untouched.
+  if (base.presentation === 'interruption') return base
+  // A recognized provider API error (usage_limit_reached) surfaces as a
+  // readable headline; the raw diagnostic blob (exit code, runtime, cli
+  // path, cwd) moves to the collapsed technical detail — internal internals
+  // are never the first thing the user reads (field defect).
+  const info = parseApiErrorFromBlob(event.message)
+  const readable = info && accountLabel ? presentApiErrorMessage(info, accountLabel, t) : undefined
+  if (!readable) return base
+  return { text: readable, technicalDetail: event.message }
 }

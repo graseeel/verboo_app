@@ -193,29 +193,12 @@ if [[ "$(uname -s)" == "Darwin" && "${VERBOO_SKIP_LOCAL_SIGN:-0}" != "1" ]]; the
       echo "    Identidade: $SIGNING_IDENTITY"
       echo "    Alvo: $APP_PATH"
 
-      # Sign embedded Mach-O binaries first (matching CI order — innermost out).
-      # Tauri already signs the main executable, but embedded CLI Mach-Os in
-      # resources/ need explicit signing for --deep --strict to pass.
-      RESOURCE_ROOT="$APP_PATH/Contents/Resources/resources/cli-package"
-      if [[ -d "$RESOURCE_ROOT" ]]; then
-        SIGNED_MACHO_COUNT=0
-        while IFS= read -r -d '' candidate; do
-          FILE_DESCRIPTION="$(file -b "$candidate")"
-          if [[ "$FILE_DESCRIPTION" == *"Mach-O"* ]]; then
-            codesign --force --options runtime --timestamp \
-              --sign "$SIGNING_IDENTITY" \
-              "$candidate" 2>&1 | sed 's/^/    /'
-            SIGNED_MACHO_COUNT=$((SIGNED_MACHO_COUNT + 1))
-          fi
-        done < <(find "$RESOURCE_ROOT" -type f -print0)
-        echo "    Assinados $SIGNED_MACHO_COUNT binários Mach-O embutidos."
-      fi
-
-      # Sign the .app bundle itself (Tauri may have already signed the main
-      # executable; --force overwrites with our Developer ID signature).
-      codesign --force --options runtime --timestamp \
-        --sign "$SIGNING_IDENTITY" \
-        "$APP_PATH" 2>&1 | sed 's/^/    /'
+      # Tauri re-signs externalBin entries while assembling the bundle. Restore
+      # the embedded Node runtime's V8/JIT entitlements, execute JavaScript as
+      # a behavioral smoke, then re-sign the outer app seal.
+      scripts/tauri/sign-macos-node-runtime.sh \
+        "$APP_PATH" \
+        "$SIGNING_IDENTITY" 2>&1 | sed 's/^/    /'
 
       # Verify.
       codesign --verify --deep --strict --verbose=2 "$APP_PATH" 2>&1 | sed 's/^/    /'
@@ -227,16 +210,40 @@ if [[ "$(uname -s)" == "Darwin" && "${VERBOO_SKIP_LOCAL_SIGN:-0}" != "1" ]]; the
         echo "    ✓ $AUTHORITY"
       fi
 
-      # Sign the DMG too if it exists. Same pipefail guard as above:
-      # `find ... | head -1` would abort under set -e if $DMG_ROOT is missing.
+      # Tauri creates the DMG before this local signing block runs. Rebuild it
+      # from the now-signed .app; merely signing the existing image would leave
+      # the unsigned pre-signing copy of the app inside the DMG.
+      # Same pipefail guard as above: `find ... | head -1` would abort under
+      # set -e if $DMG_ROOT is missing.
       DMG_PATH=$(find "$DMG_ROOT" -maxdepth 1 -type f -name '*.dmg' 2>/dev/null | head -1 || true)
       if [[ -n "$DMG_PATH" ]]; then
+        DMG_SCRIPT="$DMG_ROOT/bundle_dmg.sh"
+        DMG_ICON="$DMG_ROOT/icon.icns"
+        APP_BASENAME=$(basename "$APP_PATH")
+        if [[ ! -x "$DMG_SCRIPT" ]]; then
+          echo "FAIL: script de criação do DMG não encontrado: $DMG_SCRIPT"
+          exit 1
+        fi
+        echo "→ Recriando DMG com o .app assinado…"
+        rm -f "$DMG_PATH"
+        (
+          cd "$BUNDLE_ROOT"
+          "$DMG_SCRIPT" \
+            --volname "${APP_BASENAME%.app}" \
+            --icon "$APP_BASENAME" 180 170 \
+            --app-drop-link 480 170 \
+            --window-size 660 400 \
+            --hide-extension "$APP_BASENAME" \
+            --volicon "$DMG_ICON" \
+            "$DMG_PATH" "$APP_BASENAME"
+        )
         echo "→ Assinando DMG localmente…"
         echo "    Alvo: $DMG_PATH"
         codesign --force --timestamp \
           --sign "$SIGNING_IDENTITY" \
           "$DMG_PATH" 2>&1 | sed 's/^/    /'
         codesign --verify --strict --verbose=2 "$DMG_PATH" 2>&1 | sed 's/^/    /'
+        hdiutil verify "$DMG_PATH" 2>&1 | sed 's/^/    /'
       fi
     fi
   fi

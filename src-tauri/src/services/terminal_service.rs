@@ -414,7 +414,7 @@ fn sanitize_startup_terminal_data(data: &str) -> String {
     strip_terminal_controls(&out)
 }
 
-fn strip_terminal_controls(data: &str) -> String {
+pub(crate) fn strip_terminal_controls(data: &str) -> String {
     // Strip CSI (ESC [ ... terminator), OSC (ESC ] ... BEL/ST), two-byte
     // escapes, and bare control chars. Preserves UTF-8 multi-byte sequences
     // by copying clean regions as &str slices.

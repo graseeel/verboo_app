@@ -7,11 +7,9 @@
 - Apple Silicon (M1, M2, M3, M4) arm64
 
 ### Dependencies
-The packaged bundle ships the Rust backend, the embedded `cli-package` (Verboo
-CLI + Node dependency closure), and the image/OCR dependencies it needs to
-start. The bundled CLI is JavaScript and requires Node.js (≥22.0.0) on the
-host — Node is resolved from Homebrew, nvm, fnm, Volta, or PATH. npm is **not**
-required.
+The packaged bundle ships Node.js 24.19.0. On first launch it installs the
+latest compatible signed CLI under app-data. System Node, npm, Homebrew, and a
+global Verboo CLI are not required and are never modified.
 
 For development:
 
@@ -40,11 +38,9 @@ scripts/requirements/macos-arm64-preflight.sh "/Applications/Verboo Code.app"
 - [ConPTY](https://devblogs.microsoft.com/commandline/windows-command-line-introducing-the-windows-pseudo-console-conpty/) support required for terminal integration (built into Windows 10 1809+)
 
 ### Dependencies
-The packaged bundle ships the Rust backend, the embedded `cli-package` (Verboo
-CLI + Node dependency closure), and the image/OCR dependencies it needs to
-start. The bundled CLI is JavaScript and requires Node.js (≥22.0.0) on the
-host — Node is resolved from `%PROGRAMFILES%\nodejs`, nvm-windows, fnm, Volta,
-or PATH. npm is **not** required.
+The packaged bundle ships Node.js 24.19.0. On first launch it installs the
+latest compatible signed CLI under app-data. System Node, npm, and a global
+Verboo CLI are not required and are never modified.
 
 For development:
 
@@ -64,7 +60,6 @@ scripts/requirements/win-x64-preflight.ps1
 
 ### Known Issues
 - Credentials are encrypted with Windows DPAPI via the Tauri keyring plugin — credentials are machine-specific and bound to the user account.
-- Node.js detection searches `%PROGRAMFILES%\nodejs`, nvm-windows, fnm, and Volta paths to run the bundled `cli-package` sidecar.
 - Terminal defaults to `powershell.exe`. If you have PowerShell Core installed, set `$env:SHELL` to `pwsh.exe` for an improved experience.
 - WSL users: GUI requires WSLg (Windows 11) or a third-party X server. The terminal panel works with WSL bash if `wsl.exe` is found.
 
@@ -78,11 +73,9 @@ scripts/requirements/win-x64-preflight.ps1
 - GNOME, KDE, or other standards-compliant desktop environment
 
 ### Dependencies
-The packaged bundle ships the Rust backend, the embedded `cli-package` (Verboo
-CLI + Node dependency closure), and the image/OCR dependencies it needs to
-start. The bundled CLI is JavaScript and requires Node.js (≥22.0.0) on the
-host — Node is resolved from the system toolchain (nvm, fnm, Volta, or PATH).
-npm is **not** required.
+The packaged bundle ships Node.js 24.19.0. On first launch it installs the
+latest compatible signed CLI under app-data. System Node, npm, and a global
+Verboo CLI are not required and are never modified.
 
 For development:
 
@@ -144,7 +137,7 @@ npm run tauri:dev
 npm run build:renderer
 
 # Build the full Tauri bundle for the current platform
-# (renderer + Rust + cli-package copy + cargo tauri build)
+# (renderer + Rust + verified embedded runtimes + cargo tauri build)
 npm run tauri:build
 
 # Run frontend unit tests
@@ -157,24 +150,24 @@ For cross-platform builds, push a tag and let the GitHub Actions matrix build ea
 
 ### macOS (Estável)
 
-- Requisitos: macOS 12 Monterey ou superior; Apple Silicon (M1–M4) arm64; Node.js ≥22.0.0 no sistema (resolvido via Homebrew, nvm, fnm, Volta ou PATH — o instalador não embarca runtime Node).
-- O bundle embarca o backend Rust, o `cli-package` (CLI Verboo + closure de dependências Node) e as dependências de imagem/OCR. O CLI embutido é JavaScript e roda pelo Node de sistema — npm **não é necessário**.
+- Requisitos: macOS 12 Monterey ou superior; Apple Silicon (M1–M4) arm64.
+- O bundle embarca Node.js 24.19.0. Na primeira abertura, instala o CLI assinado compatível nos dados do app. Node, npm, Homebrew e CLI global do usuário não são necessários nem modificados.
 - Para desenvolvimento: `xcode-select --install` (Command Line Tools, para módulos nativos).
 - Preflight de builds sem assinatura: `scripts/requirements/macos-arm64-preflight.sh "/Applications/Verboo Code.app"`.
 - Problemas conhecidos: builds sem assinatura podem ser bloqueados pelo Gatekeeper (use `--clear-quarantine` ou assinatura Developer ID para distribuição); a integração de terminal usa o crate Rust `portable-pty`.
 
 ### Windows (Beta)
 
-- Requisitos: Windows 10 build 17763 (1809) ou superior; x64; suporte a ConPTY (embutido no 1809+); Node.js ≥22.0.0 no sistema (resolvido via `%PROGRAMFILES%\nodejs`, nvm-windows, fnm, Volta ou PATH — o instalador não embarca runtime Node).
-- O bundle embarca o backend Rust, o `cli-package` (CLI Verboo + closure de dependências Node) e as dependências de imagem/OCR. O CLI embutido é JavaScript e roda pelo Node de sistema — npm **não é necessário**.
+- Requisitos: Windows 10 build 17763 (1809) ou superior; x64; suporte a ConPTY (embutido no 1809+).
+- O bundle embarca Node.js 24.19.0. Na primeira abertura, instala o CLI assinado compatível nos dados do app. Node, npm e CLI global do usuário não são necessários nem modificados.
 - Para desenvolvimento: `winget install Git.Git` e Visual Studio Build Tools (workload "Desktop development with C++").
 - Preflight: `scripts/requirements/win-x64-preflight.ps1`.
-- Problemas conhecidos: credenciais criptografadas com DPAPI via plugin keyring do Tauri (presas à máquina/usuário); a detecção do Node procura `%PROGRAMFILES%\nodejs`, nvm-windows, fnm e Volta; o terminal usa `powershell.exe` por padrão (defina `$env:SHELL` como `pwsh.exe` se preferir); WSL: GUI requer WSLg (Windows 11) ou X server de terceiros.
+- Problemas conhecidos: credenciais criptografadas com DPAPI via plugin keyring do Tauri (presas à máquina/usuário); o terminal usa `powershell.exe` por padrão (defina `$env:SHELL` como `pwsh.exe` se preferir); WSL: GUI requer WSLg (Windows 11) ou X server de terceiros.
 
 ### Linux (Beta)
 
-- Requisitos: glibc 2.28+ (Ubuntu 20.04+, Debian 11+, Fedora 35+); x64; desktop compatível (GNOME, KDE etc.); Node.js ≥22.0.0 no sistema (resolvido via nvm, fnm, Volta ou PATH — o instalador não embarca runtime Node).
-- O bundle embarca o backend Rust, o `cli-package` (CLI Verboo + closure de dependências Node) e as dependências de imagem/OCR. O CLI embutido é JavaScript e roda pelo Node de sistema — npm **não é necessário**.
+- Requisitos: glibc 2.28+ (Ubuntu 20.04+, Debian 11+, Fedora 35+); x64; desktop compatível (GNOME, KDE etc.).
+- O bundle embarca Node.js 24.19.0. Na primeira abertura, instala o CLI assinado compatível nos dados do app. Node, npm e CLI global do usuário não são necessários nem modificados.
 - Para desenvolvimento, instale as dependências listadas na seção em inglês (`build-essential`, `libsecret-1-dev` etc.).
 - Preflight: `scripts/requirements/linux-x64-preflight.sh`.
 - Problemas conhecidos: criptografia de credenciais requer `libsecret-1` (sem ele, fallback em arquivo texto `chmod 600`); terminal usa `$SHELL` ou `/bin/bash`; decorações de janela seguem o window manager; o Tauri usa o WebKitGTK do sistema (Wayland nativo nas distros modernas, fallback XWayland).

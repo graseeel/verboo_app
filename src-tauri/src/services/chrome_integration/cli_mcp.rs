@@ -48,10 +48,7 @@ impl CliMcpRunner for RealCliMcpRunner {
         augment_identity_env(&mut spawn.command);
         let credentials = CredentialsStore::new();
         let _guard = inject_api_key(resolve_token(&credentials).as_deref(), &mut spawn.command);
-        let output = spawn
-            .command
-            .output()
-            .map_err(|error| error.to_string())?;
+        let output = spawn.command.output().map_err(|error| error.to_string())?;
         Ok(CliRunOutput {
             success: output.status.success(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -114,13 +111,39 @@ pub(crate) fn inspect(
 }
 
 fn contains_json_value(output: &str) -> bool {
+    first_json_value(output).is_some()
+}
+
+fn first_json_value(output: &str) -> Option<Value> {
     let Some(start) = output.find('{') else {
-        return false;
+        return None;
     };
     serde_json::Deserializer::from_str(&output[start..])
         .into_iter::<Value>()
         .next()
-        .is_some_and(|value| value.is_ok())
+        .and_then(Result::ok)
+}
+
+fn live_doctor_connected(output: &str) -> bool {
+    first_json_value(output)
+        .and_then(|value| value.get("servers").and_then(Value::as_array).cloned())
+        .is_some_and(|servers| {
+            servers.iter().any(|server| {
+                server.get("serverName").and_then(Value::as_str) == Some(MCP_NAME)
+                    && server
+                        .pointer("/liveCheck/attempted")
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                    && server.pointer("/liveCheck/result").and_then(Value::as_str)
+                        == Some("connected")
+            })
+        })
+}
+
+pub(crate) fn test_live_connection(runner: &dyn CliMcpRunner) -> Result<bool, String> {
+    let args = strings(&["mcp", "doctor", MCP_NAME, "--json", "--scope", "user"]);
+    let output = runner.run(&args)?;
+    Ok(output.success && live_doctor_connected(&output.stdout))
 }
 
 pub(crate) fn add(
@@ -222,7 +245,7 @@ fn to_string(error: impl std::fmt::Display) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::contains_json_value;
+    use super::{contains_json_value, live_doctor_connected};
 
     #[test]
     fn doctor_json_accepts_cli_terminal_wrappers_but_rejects_invalid_output() {
@@ -230,5 +253,26 @@ mod tests {
             "\u{1b}[?2026h\n\u{1b}[?2026l{\"servers\":[]}\n"
         ));
         assert!(!contains_json_value("\u{1b}[?2026hnot-json"));
+    }
+
+    #[test]
+    fn live_doctor_requires_the_named_server_to_complete_a_real_connection() {
+        let connected = r#"{
+          "servers": [{
+            "serverName": "verboo-in-chrome",
+            "liveCheck": { "attempted": true, "result": "connected" }
+          }]
+        }"#;
+        let disconnected = r#"{
+          "servers": [{
+            "serverName": "verboo-in-chrome",
+            "liveCheck": { "attempted": true, "result": "failed" }
+          }]
+        }"#;
+
+        assert!(live_doctor_connected(connected));
+        assert!(!live_doctor_connected(disconnected));
+        assert!(!live_doctor_connected(r#"{"servers":[]}"#));
+        assert!(!live_doctor_connected("not-json"));
     }
 }

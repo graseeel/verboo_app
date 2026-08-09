@@ -83,7 +83,7 @@ jobs:
           VERSION="${TAG#v}"
           # Prerelease if the version matches x.y.z-<channel> or x.y.z-<channel>.<n>.
           # Both forms must be detected so legacy tags (v0.6.0-beta.2) and the new
-          # channel-only form (v0.6.2-beta) are marked prerelease on GitHub.
+          # channel-only form (v0.7.0-beta) are marked prerelease on GitHub.
           if [[ "$VERSION" =~ -(beta|alpha|rc)(\.[0-9]+)?$ ]]; then
             IS_PRE="true"
           else
@@ -97,7 +97,7 @@ jobs:
         run: node scripts/verify/verify-release-version.mjs --tag "${{ steps.release.outputs.tag }}"
 
       - name: Test release contracts
-        run: node --test scripts/verify/update-manifest.test.mjs scripts/verify/verify-release-version.test.mjs scripts/verify/tauri-release-signing.test.mjs
+        run: node --test scripts/verify/update-manifest.test.mjs scripts/verify/verify-release-version.test.mjs scripts/verify/tauri-release-signing.test.mjs scripts/verify/cli-update-ownership.test.mjs
 
   # ─────────────────────────────────────────────────────────────────────
   # Per-platform builds. Each job:
@@ -228,17 +228,44 @@ jobs:
           path: ${{ runner.temp }}/verboo-media-sidecars-cache
           key: media-sidecars-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('scripts/tauri/media-sidecars.json', 'scripts/tauri/build-media-sidecars.mjs') }}
 
-      - name: Build renderer + bundle CLI (build:tauri-deps)
+      - name: Cache verified embedded Node archives
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/verboo-node-sidecars-cache
+          key: node-sidecar-${{ matrix.target }}-${{ hashFiles('scripts/tauri/node-sidecars.json', 'scripts/tauri/build-node-sidecar.mjs') }}
+
+      - name: Build renderer and app-owned resources
         # Mirrors local `npm run tauri:build` deps prep:
-        #   1. dedup-cli-package.mjs  — strip iCloud conflict copies
-        #   2. copy-cli-resource.mjs — copy cli.mjs + cli-package/ to src-tauri/resources/
-        #   3. build:renderer        — tsc --noEmit + vite build → dist-renderer/
+        #   1. copy-wda-resource.mjs — macOS simulator bridge resource
+        #   2. fetch:tessdata        — renderer OCR assets
+        #   3. build:renderer        — tsc --noEmit + Vite
+        # The CLI is deliberately absent; it is installed from the separately
+        # signed upstream release into app-data on first launch.
         # beforeBuildCommand is intentionally empty in tauri.conf.json (commit 30fd235)
         # to avoid a double vite build locally, so CI must build the renderer here.
         run: npm run build:tauri-deps
 
       - name: Build Verboo in Chrome sidecar
         run: node scripts/tauri/build-chrome-helper.mjs --target ${{ matrix.target }}
+
+      - name: Prepare verified embedded Node runtime
+        env:
+          VERBOO_NODE_SIDECAR_CACHE: ${{ runner.temp }}/verboo-node-sidecars-cache
+        run: node scripts/tauri/build-node-sidecar.mjs --target ${{ matrix.target }}
+
+      - name: Verify embedded Node runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="${{ matrix.target }}"
+          EXT=""
+          if [ "$TARGET" = "x86_64-pc-windows-msvc" ]; then EXT=".exe"; fi
+          NODE_BIN="src-tauri/binaries/verboo-node-$TARGET$EXT"
+          test -s "$NODE_BIN"
+          test -s "src-tauri/resources/node-runtime/LICENSE"
+          test "$("$NODE_BIN" -p 'process.versions.node')" = "24.19.0"
+          test "$("$NODE_BIN" -p 'process.versions.modules')" = "137"
+          test "$("$NODE_BIN" -p 'process.versions.napi')" = "10"
 
       - name: Build pinned media sidecars
         if: runner.os != 'Windows'
@@ -528,38 +555,6 @@ jobs:
             exit 1
           fi
 
-          RESOURCE_ROOT="src-tauri/resources/cli-package"
-          test -d "$RESOURCE_ROOT"
-          case "${{ matrix.target }}" in
-            aarch64-apple-darwin) EXPECTED_MACHO_ARCH="arm64" ;;
-            x86_64-apple-darwin) EXPECTED_MACHO_ARCH="x86_64" ;;
-            *)
-              echo "::error::Unsupported macOS target ${{ matrix.target }}"
-              exit 1
-              ;;
-          esac
-          SIGNED_MACHO_COUNT=0
-          while IFS= read -r -d '' candidate; do
-            FILE_DESCRIPTION="$(file -b "$candidate")"
-            if [[ "$FILE_DESCRIPTION" == *"Mach-O"* ]]; then
-              if [[ "$FILE_DESCRIPTION" != *"$EXPECTED_MACHO_ARCH"* ]]; then
-                echo "::error file=$candidate::Expected $EXPECTED_MACHO_ARCH Mach-O, found: $FILE_DESCRIPTION"
-                exit 1
-              fi
-              echo "Signing embedded Mach-O: $candidate ($FILE_DESCRIPTION)"
-              codesign --force --options runtime --timestamp \
-                --keychain "$KEYCHAIN_PATH" \
-                --sign "$SIGNING_IDENTITY" \
-                "$candidate"
-              codesign --verify --strict --verbose=2 "$candidate"
-              SIGNED_MACHO_COUNT=$((SIGNED_MACHO_COUNT + 1))
-            fi
-          done < <(find "$RESOURCE_ROOT" -type f -print0)
-          if [ "$SIGNED_MACHO_COUNT" -eq 0 ]; then
-            echo "::error::No Mach-O binaries found in the embedded CLI resources"
-            exit 1
-          fi
-          echo "Signed $SIGNED_MACHO_COUNT embedded CLI Mach-O binaries"
           rm -f "$CERTIFICATE_PATH"
           {
             echo "APPLE_CODESIGN_KEYCHAIN=$KEYCHAIN_PATH"
@@ -617,6 +612,21 @@ jobs:
               cargo +1.89.0 tauri signer sign "$PACKAGES"
             done
           fi
+
+      - name: Preserve embedded Node entitlements and verify JavaScript execution
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE_ROOT="src-tauri/target/${{ matrix.target }}/release/bundle"
+          APP_PATH=$(find "$BUNDLE_ROOT/macos" -maxdepth 1 -type d -name '*.app' | head -1)
+          test -n "$APP_PATH"
+          test -n "${APPLE_SIGNING_IDENTITY:-}"
+          test -n "${APPLE_CODESIGN_KEYCHAIN:-}"
+          scripts/tauri/sign-macos-node-runtime.sh \
+            "$APP_PATH" \
+            "$APPLE_SIGNING_IDENTITY" \
+            "$APPLE_CODESIGN_KEYCHAIN"
 
       - name: Create signed macOS DMG with bounded retry
         if: runner.os == 'macOS'
@@ -722,6 +732,13 @@ jobs:
           DMG_PATH=$(find "$BUNDLE_ROOT/dmg" -maxdepth 1 -type f -name '*.dmg' | head -1)
           test -n "$APP_PATH"
           test -n "$DMG_PATH"
+
+          NODE_PATH="$APP_PATH/Contents/MacOS/verboo-node"
+          test -x "$NODE_PATH"
+          codesign --verify --strict --verbose=2 "$NODE_PATH"
+          NODE_ENTITLEMENTS="$(codesign -d --entitlements - --xml "$NODE_PATH" 2>&1)"
+          printf '%s\n' "$NODE_ENTITLEMENTS"
+          printf '%s\n' "$NODE_ENTITLEMENTS" | grep -F '<key>com.apple.security.cs.disable-library-validation</key><true/>'
 
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           CODESIGN_INFO=$(codesign --display --verbose=4 "$APP_PATH" 2>&1)

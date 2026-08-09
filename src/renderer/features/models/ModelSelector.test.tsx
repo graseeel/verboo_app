@@ -7,6 +7,7 @@ vi.mock('./ModelIcon', () => ({ ModelIcon: () => null }))
 
 import type { ModelDiscoveryResult, VerbooModel } from '../../../shared/types'
 import { ModelSelector } from './ModelSelector'
+import { dedupModels } from './providerCatalog'
 
 /**
  * Regression tests for the Codex-style ModelSelector refactor.
@@ -87,6 +88,37 @@ beforeEach(() => {
 })
 
 describe('ModelSelector — Codex rows + effort drill-in', () => {
+  it('warns when provider refresh fails while keeping Verboo models selectable', () => {
+    const onSelect = vi.fn()
+    const providerFailure = {
+      ...discoveryOk,
+      models: [baseModel],
+      providerError: 'O CLI não retornou modelos de provedor.',
+    }
+
+    render(
+      <ModelSelector
+        models={providerFailure.models}
+        selectedModel="glm-5.2"
+        modelResult={providerFailure}
+        onSelect={onSelect}
+        onRefresh={() => {}}
+      />,
+    )
+
+    openMenu()
+    expect(screen.getByText(
+      /Provider models couldn't be refreshed|Não foi possível atualizar os modelos dos provedores/,
+    )).toBeVisible()
+
+    const modelRow = [...document.querySelectorAll<HTMLButtonElement>('.model-row')]
+      .find(button => /Model|Modelo/.test(button.textContent ?? ''))!
+    fireEvent.click(modelRow)
+    fireEvent.click(document.querySelector<HTMLButtonElement>('.model-option')!)
+
+    expect(onSelect).toHaveBeenCalledWith('glm-5.2')
+  })
+
   it('renders pill label "Model · effort" using effective effort', () => {
     render(
       <ModelSelector
@@ -346,5 +378,359 @@ describe('ModelSelector — Codex rows + effort drill-in', () => {
     // label "Modelo" coexists with the popover title, so getAllByText).
     expect(screen.queryByText(/Usar padrão|Use default/i)).toBeNull()
     expect(screen.getAllByText(/Modelo|Model/i).length).toBeGreaterThan(0)
+  })
+})
+
+describe('ModelSelector — provider grouping (F3)', () => {
+  // Real F2 contract shapes: `provider` absent = verboo; 'claude'/'codex' seen
+  // in the wild; an unknown id must still appear on its own (no hardcoding).
+  const verbooUltra: VerbooModel = {
+    id: 'glm-5.2',
+    displayName: 'Ultra',
+    contextWindow: 200000,
+    supportsVision: false,
+    raw: {},
+  }
+  const verbooLong: VerbooModel = {
+    id: 'glm-4.7',
+    displayName: 'GLM 4.7',
+    contextWindow: 1_000_000,
+    supportsVision: false,
+    raw: {},
+  }
+  const claudeSonnet: VerbooModel = {
+    id: 'claude-sonnet-4.6',
+    displayName: 'Claude Sonnet 4.6',
+    contextWindow: 200000,
+    supportsVision: false,
+    raw: {},
+    provider: 'claude',
+  }
+  const codexGpt: VerbooModel = {
+    id: 'gpt-5',
+    displayName: 'GPT-5',
+    contextWindow: 400000,
+    supportsVision: false,
+    raw: {},
+    provider: 'codex',
+  }
+  const acmeModel: VerbooModel = {
+    id: 'acme-1',
+    displayName: 'Acme One',
+    contextWindow: 64000,
+    supportsVision: false,
+    raw: {},
+    provider: 'acme',
+  }
+
+  function discovery(models: VerbooModel[]): ModelDiscoveryResult {
+    return { models, source: 'cli', stale: false }
+  }
+
+  /** Root menu → drill into the models panel (where the groups render). The
+   *  menu is a portal to document.body, so queries go to `document`, not the
+   *  render container. */
+  function openModelsPanel() {
+    fireEvent.click(document.querySelector('.model-pill')!)
+    const row = screen.getAllByText(/^Modelo$|^Model$/i)
+      .map(el => el.closest('button'))
+      .find(btn => btn?.classList.contains('model-row'))!
+    fireEvent.click(row)
+  }
+
+  function groupLabels(): string[] {
+    return Array.from(document.querySelectorAll('.group-label')).map(el => el.textContent ?? '')
+  }
+
+  it('groups by provider when external providers are present — verboo first, account label, colored dots', () => {
+    const models = [verbooUltra, claudeSonnet, codexGpt]
+    render(
+      <ModelSelector
+        models={models}
+        selectedModel="glm-5.2"
+        modelResult={discovery(models)}
+        onSelect={() => {}}
+        onRefresh={() => {}}
+      />,
+    )
+    openModelsPanel()
+    const labels = groupLabels()
+    // One group per provider, verboo first.
+    expect(labels.length).toBe(3)
+    expect(labels[0]).toMatch(/^Verboo/)
+    expect(labels.some(label => /Claude — (your account|sua conta)/.test(label))).toBe(true)
+    expect(labels.some(label => /Codex — (your account|sua conta)/.test(label))).toBe(true)
+    // Brand icons for the external providers; the verboo group keeps today's
+    // colored dot (its identity is unchanged).
+    expect(document.querySelectorAll('.group-label .group-dot').length).toBe(1)
+    expect(document.querySelector('.group-label [data-testid="provider-icon-claude"]')).toBeTruthy()
+    expect(document.querySelector('.group-label [data-testid="provider-icon-codex"]')).toBeTruthy()
+    // The provider IS the grouping axis — today's Available/Long-context
+    // labels must not appear in provider mode.
+    expect(labels.some(label => /Available|Disponíveis|Long context|Contexto longo/i.test(label))).toBe(false)
+    // Models still render with name + slug inside their provider group.
+    expect(screen.getByText('Claude Sonnet 4.6')).toBeTruthy()
+    expect(screen.getByText('claude-sonnet-4.6')).toBeTruthy()
+    expect(screen.getByText('gpt-5')).toBeTruthy()
+  })
+
+  it('shows the Verboo plan in the verboo group label when provided', () => {
+    const models = [verbooUltra, claudeSonnet]
+    render(
+      <ModelSelector
+        models={models}
+        selectedModel="glm-5.2"
+        modelResult={discovery(models)}
+        onSelect={() => {}}
+        onRefresh={() => {}}
+        verbooPlan="Pro"
+      />,
+    )
+    openModelsPanel()
+    expect(groupLabels()[0]).toMatch(/Verboo — (plan Pro|plano Pro)/)
+  })
+
+  it('gives an unknown provider a generic title-case label so it appears on its own', () => {
+    const models = [verbooUltra, acmeModel]
+    render(
+      <ModelSelector
+        models={models}
+        selectedModel="acme-1"
+        modelResult={discovery(models)}
+        onSelect={() => {}}
+        onRefresh={() => {}}
+      />,
+    )
+    openModelsPanel()
+    expect(groupLabels().some(label => /Acme — (your account|sua conta)/.test(label))).toBe(true)
+    expect(screen.getByText('acme-1')).toBeTruthy()
+    // Unknown provider: generic initial tile, no invented glyph.
+    const icon = document.querySelector('.group-label [data-testid="provider-icon-acme"]')!
+    expect(icon.querySelector('svg')).toBeNull()
+    expect(icon.querySelector('.provider-icon-fallback')!.textContent).toBe('A')
+  })
+
+  it('verboo-only list keeps today\'s exact groups — Available/Long context, no dots, no provider labels', () => {
+    const models = [verbooUltra, verbooLong]
+    render(
+      <ModelSelector
+        models={models}
+        selectedModel="glm-5.2"
+        modelResult={discovery(models)}
+        onSelect={() => {}}
+        onRefresh={() => {}}
+      />,
+    )
+    openModelsPanel()
+    const labels = groupLabels()
+    expect(labels).toEqual(['Available', 'Long context'])
+    expect(document.querySelectorAll('.group-dot').length).toBe(0)
+    expect(document.querySelectorAll('[data-testid^="provider-icon-"]').length).toBe(0)
+    expect(labels.some(label => /your account|sua conta|plano|plan/i.test(label))).toBe(false)
+  })
+
+  it('disconnected bridge entries render a DIMMED group whose Conectar action fires onConnectProvider', () => {
+    const onConnectProvider = vi.fn()
+    const models = [verbooUltra]
+    render(
+      <ModelSelector
+        models={models}
+        selectedModel="glm-5.2"
+        modelResult={discovery(models)}
+        onSelect={() => {}}
+        onRefresh={() => {}}
+        providerStatuses={[{ provider: 'codex', connected: false }]}
+        onConnectProvider={onConnectProvider}
+      />,
+    )
+    openModelsPanel()
+    // Mockup: "Codex — não conectado · Conectar →" (en-US default context).
+    const dimmed = document.querySelector('.group-label.is-dimmed')
+    expect(dimmed).toBeTruthy()
+    expect(dimmed!.textContent).toMatch(/Codex — (not connected|não conectado)/i)
+    expect(dimmed!.textContent).toMatch(/Connect|Conectar/i)
+    // The disconnected provider still carries its official brand icon.
+    expect(dimmed!.querySelector('[data-testid="provider-icon-codex"]')).toBeTruthy()
+    const connectButton = dimmed!.querySelector('button')!
+    fireEvent.click(connectButton)
+    expect(onConnectProvider).toHaveBeenCalledWith('codex')
+  })
+
+  it('connected bridge entries do NOT get a dimmed group — their models come from the listing', () => {
+    const models = [verbooUltra, claudeSonnet]
+    render(
+      <ModelSelector
+        models={models}
+        selectedModel="glm-5.2"
+        modelResult={discovery(models)}
+        onSelect={() => {}}
+        onRefresh={() => {}}
+        providerStatuses={[
+          { provider: 'claude', connected: true, account: 'user@example.com' },
+          { provider: 'codex', connected: false },
+        ]}
+        onConnectProvider={() => {}}
+      />,
+    )
+    openModelsPanel()
+    const dimmed = document.querySelectorAll('.group-label.is-dimmed')
+    expect(dimmed.length).toBe(1)
+    expect(dimmed[0].textContent).toMatch(/Codex/)
+    // The connected provider renders as a normal provider group instead.
+    expect(groupLabels().some(label => /Claude — (your account|sua conta)/.test(label))).toBe(true)
+  })
+
+  it('no providerStatuses prop → no dimmed groups at all (zero regression for old mounts)', () => {
+    const models = [verbooUltra, claudeSonnet]
+    render(
+      <ModelSelector
+        models={models}
+        selectedModel="glm-5.2"
+        modelResult={discovery(models)}
+        onSelect={() => {}}
+        onRefresh={() => {}}
+      />,
+    )
+    openModelsPanel()
+    expect(document.querySelectorAll('.group-label.is-dimmed').length).toBe(0)
+    expect(document.querySelectorAll('.group-connect').length).toBe(0)
+  })
+})
+
+describe('T14: dedupModels — uma entrada por id no seletor', () => {
+  // T14 field defect: the Rust merge (model_service.rs:190
+  // `models.extend(provider_models)`) produces duplicates when the router
+  // cache and the CLI listing both contain the same model. The two entries
+  // differ by field — router has maxOutputTokens, CLI has provider/vision.
+  // Dropping either loses information, so dedupModels merges per field.
+
+  it('uma entrada por id quando router e CLI both tem o mesmo id', () => {
+    const routerEntry: VerbooModel = {
+      id: 'ultra/glm-5.2',
+      displayName: 'Ultra (glm-5.2)',
+      contextWindow: 200000,
+      maxOutputTokens: 16384,
+      supportsVision: false,
+      visionSupportSource: 'router',
+      raw: { id: 'ultra/glm-5.2' },
+    }
+    const cliEntry: VerbooModel = {
+      id: 'ultra/glm-5.2',
+      displayName: 'Ultra (glm-5.2)',
+      contextWindow: 200000,
+      supportsVision: true,
+      visionSupportSource: 'raw-capabilities',
+      provider: 'verboo',
+      reasoning: { effortLevels: ['low', 'medium', 'high'], defaultEffort: 'medium' },
+      raw: { provider: 'verboo', id: 'ultra/glm-5.2' },
+    }
+    const deduped = dedupModels([routerEntry, cliEntry])
+    expect(deduped).toHaveLength(1)
+    const merged = deduped[0]
+    // CLI wins: provider, vision, reasoning
+    expect(merged.provider).toBe('verboo')
+    expect(merged.supportsVision).toBe(true)
+    expect(merged.reasoning).toEqual({ effortLevels: ['low', 'medium', 'high'], defaultEffort: 'medium' })
+    // Router wins: maxOutputTokens (CLI lacks it)
+    expect(merged.maxOutputTokens).toBe(16384)
+  })
+
+  it('preserva maxOutputTokens do router quando CLI nao tem', () => {
+    const routerEntry: VerbooModel = {
+      id: 'm1',
+      displayName: 'M1',
+      maxOutputTokens: 8192,
+      supportsVision: false,
+      raw: {},
+    }
+    const cliEntry: VerbooModel = {
+      id: 'm1',
+      displayName: 'M1',
+      supportsVision: true,
+      provider: 'verboo',
+      raw: {},
+    }
+    const deduped = dedupModels([routerEntry, cliEntry])
+    expect(deduped).toHaveLength(1)
+    expect(deduped[0].maxOutputTokens).toBe(8192)
+    expect(deduped[0].supportsVision).toBe(true)
+    expect(deduped[0].provider).toBe('verboo')
+  })
+
+  it('nao duplica quando so uma fonte tem o id', () => {
+    const models: VerbooModel[] = [
+      { id: 'a', displayName: 'A', raw: {} },
+      { id: 'b', displayName: 'B', raw: {} },
+      { id: 'c', displayName: 'C', raw: {} },
+    ]
+    const deduped = dedupModels(models)
+    expect(deduped).toHaveLength(3)
+    expect(deduped.map(m => m.id).sort()).toEqual(['a', 'b', 'c'])
+  })
+
+  it('H.6: deixa rastro (console.warn) quando funde duplicatas', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const router: VerbooModel = { id: 'ultra/glm-5.2', displayName: 'Ultra', maxOutputTokens: 16384, raw: {} }
+    const cli: VerbooModel = { id: 'ultra/glm-5.2', displayName: 'Ultra', provider: 'verboo', supportsVision: true, raw: {} }
+    dedupModels([router, cli])
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    const msg = warnSpy.mock.calls[0][0] as string
+    expect(msg).toContain('ultra/glm-5.2')
+    expect(msg).toContain('fused 2')
+    warnSpy.mockRestore()
+  })
+
+  it('H.6: silencio quando nao ha duplicatas (rastro so quando funde)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    dedupModels([
+      { id: 'a', displayName: 'A', raw: {} },
+      { id: 'b', displayName: 'B', raw: {} },
+    ])
+    expect(warnSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+
+  it('T14 seletor: renderiza UMA entrada por id mesmo com duplicatas na entrada', () => {
+    // Simulates the Rust merge output: router entry + CLI entry for the same id.
+    const routerEntry: VerbooModel = {
+      id: 'ultra/glm-5.2',
+      displayName: 'Ultra (glm-5.2)',
+      contextWindow: 200000,
+      maxOutputTokens: 16384,
+      supportsVision: false,
+      raw: {},
+    }
+    const cliEntry: VerbooModel = {
+      id: 'ultra/glm-5.2',
+      displayName: 'Ultra (glm-5.2)',
+      contextWindow: 200000,
+      supportsVision: true,
+      provider: 'verboo',
+      raw: {},
+    }
+    const models = dedupModels([routerEntry, cliEntry])
+    const discovery: ModelDiscoveryResult = {
+      models,
+      source: 'cache',
+      stale: false,
+    }
+    render(
+      <ModelSelector
+        models={models}
+        selectedModel="ultra/glm-5.2"
+        modelResult={discovery}
+        onSelect={() => {}}
+        onRefresh={() => {}}
+      />,
+    )
+    fireEvent.click(document.querySelector('.model-pill')!)
+    const row = screen.getAllByText(/^Modelo$|^Model$/i)
+      .map(el => el.closest('button'))
+      .find(btn => btn?.classList.contains('model-row'))!
+    fireEvent.click(row)
+    // Pin ONE entry per id — the selector must not show duplicates.
+    const modelRows = [...document.querySelectorAll('.model-option')]
+      .filter(btn => btn.querySelector('small')?.textContent === 'ultra/glm-5.2')
+    expect(modelRows).toHaveLength(1)
   })
 })

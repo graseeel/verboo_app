@@ -15,9 +15,9 @@ use super::manifest::{
     unregister_manifest, valid_extension_id, write_native_manifest,
 };
 use super::models::{
-    ChromeComponentState, ChromeConnectionState, ChromeExtensionIdSource,
-    ChromeIntegrationAggregate, ChromeIntegrationRequest, ChromeIntegrationStatus,
-    ChromePanelState, ChromeReleaseMetadata, InstallationRecord,
+    ChromeComponentState, ChromeConnectionState, ChromeConnectionTestResult,
+    ChromeExtensionIdSource, ChromeIntegrationAggregate, ChromeIntegrationRequest,
+    ChromeIntegrationStatus, ChromePanelState, ChromeReleaseMetadata, InstallationRecord,
 };
 use super::paths::ChromeIntegrationPaths;
 
@@ -28,6 +28,7 @@ pub struct ChromeIntegrationService {
     bundled_helper: PathBuf,
     release: ChromeReleaseMetadata,
     cli: Arc<dyn CliMcpRunner>,
+    connection_state: Arc<dyn Fn() -> ChromeConnectionState + Send + Sync>,
 }
 
 impl std::fmt::Debug for ChromeIntegrationService {
@@ -50,6 +51,7 @@ impl ChromeIntegrationService {
             bundled_helper: bundled_helper_path()?,
             release: ChromeReleaseMetadata::from_build(),
             cli: Arc::new(RealCliMcpRunner),
+            connection_state: Arc::new(diagnostics::connection_state),
         })
     }
 
@@ -58,12 +60,14 @@ impl ChromeIntegrationService {
         bundled_helper: PathBuf,
         release: ChromeReleaseMetadata,
         cli: Arc<dyn CliMcpRunner>,
+        connection_state: ChromeConnectionState,
     ) -> Self {
         Self {
             paths,
             bundled_helper,
             release,
             cli,
+            connection_state: Arc::new(move || connection_state),
         }
     }
 
@@ -129,7 +133,7 @@ impl ChromeIntegrationService {
         self.configure(request)
     }
 
-    pub fn test_connection(&self) -> Result<bool, String> {
+    pub fn test_connection(&self) -> Result<ChromeConnectionTestResult, String> {
         let record = self
             .read_record()?
             .ok_or("chrome_integration_not_configured")?;
@@ -139,15 +143,49 @@ impl ChromeIntegrationService {
         }
         let mut command = Command::new(&record.helper_path);
         apply_creation_flags(&mut command);
-        let output = command
-            .arg("ping")
-            .output()
-            .map_err(|error| error.to_string())?;
-        Ok(output.status.success()
-            && serde_json::from_slice::<serde_json::Value>(&output.stdout)
-                .ok()
-                .and_then(|value| value.get("ok").and_then(|ok| ok.as_bool()))
-                == Some(true))
+        let helper = command.arg("ping").output().is_ok_and(|output| {
+            output.status.success()
+                && serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                    .ok()
+                    .and_then(|value| value.get("ok").and_then(|ok| ok.as_bool()))
+                    == Some(true)
+        });
+        if !helper {
+            return Ok(ChromeConnectionTestResult {
+                helper: false,
+                chrome: false,
+                cli_mcp: false,
+                connected: false,
+                error_code: Some("chrome_helper_ping_failed".into()),
+            });
+        }
+
+        let connection = (self.connection_state)();
+        let chrome = connection == ChromeConnectionState::Connected;
+        if !chrome {
+            let error_code = match connection {
+                ChromeConnectionState::WaitingForChrome => "chrome_extension_not_connected",
+                ChromeConnectionState::Ambiguous => "multiple_browser_sessions",
+                ChromeConnectionState::Incompatible => "chrome_protocol_incompatible",
+                ChromeConnectionState::Connected => unreachable!(),
+            };
+            return Ok(ChromeConnectionTestResult {
+                helper: true,
+                chrome: false,
+                cli_mcp: false,
+                connected: false,
+                error_code: Some(error_code.into()),
+            });
+        }
+
+        let cli_mcp = cli_mcp::test_live_connection(self.cli.as_ref()).unwrap_or(false);
+        Ok(ChromeConnectionTestResult {
+            helper: true,
+            chrome: true,
+            cli_mcp,
+            connected: cli_mcp,
+            error_code: (!cli_mcp).then(|| "chrome_cli_live_check_failed".into()),
+        })
     }
 
     pub fn remove(&self) -> Result<ChromeIntegrationStatus, String> {
@@ -323,7 +361,7 @@ impl ChromeIntegrationService {
         } else {
             ChromeComponentState::Missing
         };
-        let connection = diagnostics::connection_state();
+        let connection = (self.connection_state)();
         let conflict = [extension, bridge, mcp].contains(&ChromeComponentState::Conflict);
         let ready = extension == ChromeComponentState::Managed
             && bridge == ChromeComponentState::Managed

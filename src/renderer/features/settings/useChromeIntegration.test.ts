@@ -34,7 +34,12 @@ beforeEach(() => {
   api.chromeIntegrationStatus.mockResolvedValue(readyStatus)
   api.chromeIntegrationConfigure.mockResolvedValue(readyStatus)
   api.chromeIntegrationRepair.mockResolvedValue(readyStatus)
-  api.chromeIntegrationTest.mockResolvedValue(true)
+  api.chromeIntegrationTest.mockResolvedValue({
+    helper: true,
+    chrome: true,
+    cliMcp: true,
+    connected: true,
+  })
   api.chromeIntegrationRemove.mockResolvedValue({
     ...readyStatus,
     extension: 'missing',
@@ -104,5 +109,22 @@ describe('useChromeIntegration', () => {
     await act(async () => { await result.current.configure() })
 
     expect(result.current.error).toBe('chrome_mcp_conflict')
+  })
+
+  it('keeps the failing end-to-end stage visible after refreshing status', async () => {
+    api.chromeIntegrationTest.mockResolvedValue({
+      helper: true,
+      chrome: true,
+      cliMcp: false,
+      connected: false,
+      errorCode: 'chrome_cli_live_check_failed',
+    })
+    const { result } = renderHook(() => useChromeIntegration())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(async () => { await result.current.testConnection() })
+
+    expect(result.current.lastTestPassed).toBe(false)
+    expect(result.current.error).toBe('chrome_cli_live_check_failed')
   })
 })

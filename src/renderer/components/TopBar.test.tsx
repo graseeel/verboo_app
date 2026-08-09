@@ -117,6 +117,80 @@ describe('TopBar workspace panel controls', () => {
     expect(screen.queryByRole('button', { name: 'Abrir navegador' })).not.toBeInTheDocument()
   })
 
+  it('exposes the iOS simulator control when the native capability is available', () => {
+    render(
+      <I18nProvider language="pt-BR">
+        <TopBar
+          sidebarVisible
+          onToggleSidebar={vi.fn()}
+          terminalOpen={false}
+          onToggleTerminal={vi.fn()}
+          reviewOpen={false}
+          onToggleReview={vi.fn()}
+          browserAvailable={false}
+          browserOpen={false}
+          onToggleBrowser={vi.fn()}
+          simulatorAvailable
+          simulatorOpen={false}
+          onToggleSimulator={vi.fn()}
+          workspacePanelsEnabled
+        />
+      </I18nProvider>,
+    )
+
+    expect(screen.getByRole('button', { name: 'Abrir simulador do iOS' })).toBeEnabled()
+  })
+
+  it('does not advertise the iOS simulator on unsupported platforms', () => {
+    render(
+      <I18nProvider language="pt-BR">
+        <TopBar
+          sidebarVisible
+          onToggleSidebar={vi.fn()}
+          terminalOpen={false}
+          onToggleTerminal={vi.fn()}
+          reviewOpen={false}
+          onToggleReview={vi.fn()}
+          browserAvailable={false}
+          browserOpen={false}
+          onToggleBrowser={vi.fn()}
+          simulatorAvailable={false}
+          simulatorOpen={false}
+          onToggleSimulator={vi.fn()}
+          workspacePanelsEnabled
+        />
+      </I18nProvider>,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Abrir simulador do iOS' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Gravação de tela em andamento')).not.toBeInTheDocument()
+  })
+
+  it('keeps the simulator recording indicator in the top bar while the panel is hidden', () => {
+    render(
+      <I18nProvider language="pt-BR">
+        <TopBar
+          sidebarVisible
+          onToggleSidebar={vi.fn()}
+          terminalOpen={false}
+          onToggleTerminal={vi.fn()}
+          reviewOpen={false}
+          onToggleReview={vi.fn()}
+          browserAvailable={false}
+          browserOpen={false}
+          onToggleBrowser={vi.fn()}
+          simulatorAvailable
+          simulatorOpen={false}
+          recordingActive
+          onToggleSimulator={vi.fn()}
+          workspacePanelsEnabled
+        />
+      </I18nProvider>,
+    )
+
+    expect(screen.getByLabelText('Gravação de tela em andamento')).toBeInTheDocument()
+  })
+
   it('the globe suspends media when minimizing and returns control when reopening', () => {
     render(<BrowserGlobeHarness />)
 

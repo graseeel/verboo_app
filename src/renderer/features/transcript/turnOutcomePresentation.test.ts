@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { AgentEvent } from '../../../shared/types'
 import { presentTurnError } from './turnOutcomePresentation'
 
-const rawSignalMessage = '(signal, runtime=bundled-node(node=/opt/homebrew/bin/node, cli=/Applications/Verboo Code.app/Contents/Resources/resources/cli-package/dist/cli.mjs), cwd=/workspace)'
+const rawSignalMessage = '(signal, runtime=managed-cli(node=/Applications/Verboo Code.app/Contents/MacOS/verboo-node, cli=/Users/example/Library/Application Support/ai.verboo.code.desktop/cli/versions/0.15.6/dist/cli.mjs), cwd=/workspace)'
 
 describe('turn error presentation', () => {
   it('turns an explicitly requested interruption into a friendly result and keeps the diagnostic expandable', () => {

@@ -9,12 +9,14 @@
  * target before typing so the user can see where Verboo will act.
  *
  * @param {{ name: 'type'; selector: string; text: string; clear?: boolean; risk?: string; input?: string }} tool
+ * @param {{ activeTabId?: number }} [ctx]
  * @returns {Promise<{ selector: string; textLength: number; url: string }>}
  */
 
 import { preparePresenceForAction } from '../../presence/inject.js'
+import { resolveTargetTab } from '../targetTab.js'
 
-export async function typeText(tool) {
+export async function typeText(tool, ctx = {}) {
   const selector = tool?.selector
   if (!selector || typeof selector !== 'string') {
     throw new Error('type: missing selector')
@@ -23,7 +25,7 @@ export async function typeText(tool) {
   if (typeof text !== 'string') throw new Error('type: missing text')
   const clear = tool?.clear === true
 
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  const tab = await resolveTargetTab(ctx.activeTabId)
   if (!tab?.id) throw new Error('type: no active tab')
 
   // Agent presence: frame + cursor at target, brief delay, then type.
