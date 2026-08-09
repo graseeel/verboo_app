@@ -30,6 +30,7 @@ type SimulatorControlDockProps = {
   onToggleRecording: () => void
   onDetach: () => void
   onEnd: () => void
+  onShutdownExternal: () => void
   onRevealOutput: (path: string) => void
 }
 
@@ -58,10 +59,11 @@ export function SimulatorControlDock({
   onToggleRecording,
   onDetach,
   onEnd,
+  onShutdownExternal,
   onRevealOutput,
 }: SimulatorControlDockProps) {
   const { t } = useI18n()
-  const [confirmingEnd, setConfirmingEnd] = useState(false)
+  const [confirmingEnd, setConfirmingEnd] = useState<'owned' | 'external' | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const endButtonRef = useRef<HTMLButtonElement | null>(null)
   const cancelButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -94,10 +96,10 @@ export function SimulatorControlDock({
   const recordingBusy = recording.state === 'starting' || recording.state === 'finalizing'
   const endLabel = ownership === 'verboo'
     ? t('simulator.control.end')
-    : t('simulator.control.detach')
+    : t('simulator.control.endExternal')
 
   const cancelEnd = () => {
-    setConfirmingEnd(false)
+    setConfirmingEnd(null)
     endButtonRef.current?.focus()
   }
 
@@ -146,15 +148,26 @@ export function SimulatorControlDock({
           )}
         </div>
         <div className="ios-simulator-control-group">
+          {ownership === 'external' && (
+            <button
+              type="button"
+              className="ios-simulator-dock-button ui-tooltip"
+              aria-label={t('simulator.control.detach')}
+              data-tooltip={t('simulator.control.detach')}
+              onClick={onDetach}
+            >
+              <Unplug size={16} aria-hidden />
+            </button>
+          )}
           <button
             ref={endButtonRef}
             type="button"
             className="ios-simulator-dock-button ui-tooltip"
             aria-label={endLabel}
             data-tooltip={endLabel}
-            onClick={() => ownership === 'verboo' ? setConfirmingEnd(true) : onDetach()}
+            onClick={() => setConfirmingEnd(ownership === 'verboo' ? 'owned' : 'external')}
           >
-            {ownership === 'verboo' ? <Power size={16} aria-hidden /> : <Unplug size={16} aria-hidden />}
+            <Power size={16} aria-hidden />
           </button>
         </div>
       </div>
@@ -188,8 +201,10 @@ export function SimulatorControlDock({
             if (event.key === 'Escape') cancelEnd()
           }}
         >
-          <strong id="ios-simulator-end-title">{t('simulator.end.title', { name: deviceName })}</strong>
-          <p>{t('simulator.end.body')}</p>
+          <strong id="ios-simulator-end-title">
+            {t(confirmingEnd === 'external' ? 'simulator.endExternal.title' : 'simulator.end.title', { name: deviceName })}
+          </strong>
+          <p>{t(confirmingEnd === 'external' ? 'simulator.endExternal.body' : 'simulator.end.body')}</p>
           <div>
             <button ref={cancelButtonRef} type="button" className="ghost-button" onClick={cancelEnd}>
               {t('common.cancel')}
@@ -198,11 +213,13 @@ export function SimulatorControlDock({
               type="button"
               className="primary-button"
               onClick={() => {
-                setConfirmingEnd(false)
-                onEnd()
+                const action = confirmingEnd
+                setConfirmingEnd(null)
+                if (action === 'external') onShutdownExternal()
+                else onEnd()
               }}
             >
-              {t('simulator.end.confirm')}
+              {t(confirmingEnd === 'external' ? 'simulator.endExternal.confirm' : 'simulator.end.confirm')}
             </button>
           </div>
         </div>

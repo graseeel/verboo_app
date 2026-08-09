@@ -17,6 +17,7 @@ export type IosSimulatorDevice = {
   state: string
   iosVersion: string
   family: IosSimulatorDeviceFamily
+  ownership?: IosSimulatorOwnership | null
 }
 
 export type IosSimulatorOwnership = 'external' | 'verboo'
@@ -137,6 +138,11 @@ export type IosSimulatorAccessibilityNode = {
 
 export type IosSimulatorRect = { x: number; y: number; width: number; height: number }
 
+export type IosSimulatorElementHit = {
+  element: IosSimulatorAccessibilityNode
+  rect: IosSimulatorRect
+}
+
 export type IosSimulatorAnnotationCapture = {
   cropPath: string
   viewportPath: string
@@ -164,6 +170,8 @@ export const iosSimulatorApi = {
   detach: () => invoke<void>('ios_simulator_detach'),
   setVisible: (visible: boolean) => invoke<void>('ios_simulator_set_visible', { visible }),
   end: () => invoke<void>('ios_simulator_end'),
+  shutdownExternal: (udid: string) =>
+    invoke<void>('ios_simulator_shutdown_external', { udid }),
   systemAction: (action: IosSimulatorSystemAction) =>
     invoke<void>('ios_simulator_system_action', { action }),
   retryInteraction: () => invoke<IosSimulatorLifecycleSnapshot>('ios_simulator_retry_interaction'),
@@ -180,13 +188,19 @@ export const iosSimulatorApi = {
     invoke<void>('ios_simulator_drag', { from, to, durationMs }),
   typeText: (text: string) => invoke<void>('ios_simulator_type_text', { text }),
   pressKey: (key: IosSimulatorKey) => invoke<void>('ios_simulator_press_key', { key }),
+  inspectPoint: (deviceGeneration: number, point: IosSimulatorPoint) =>
+    invoke<IosSimulatorElementHit | null>('ios_simulator_inspect_point', {
+      deviceGeneration,
+      point,
+    }),
   captureAnnotation: (
     deviceGeneration: number,
     rect: IosSimulatorRect,
+    element: IosSimulatorAccessibilityNode | null = null,
   ) => invoke<IosSimulatorAnnotationCapture>('ios_simulator_capture_annotation', {
     deviceGeneration,
     rect,
-    element: null,
+    element,
   }),
   deleteTempFiles: (paths: string[]) =>
     invoke<void>('ios_simulator_delete_temp_files', { paths }),

@@ -38,6 +38,7 @@ const api = vi.hoisted(() => ({
   drag: vi.fn(),
   typeText: vi.fn(),
   pressKey: vi.fn(),
+  inspectPoint: vi.fn(),
   captureAnnotation: vi.fn(),
   deleteTempFiles: vi.fn(),
   onFrame: vi.fn(),
@@ -130,6 +131,7 @@ function Harness({ hookRef }: { hookRef: { current: HookApi | undefined } }) {
       lifecycle={simulator.lifecycle}
       lastMediaFile={simulator.lastMediaFile}
       onEndSimulation={() => { void simulator.endSimulation() }}
+      onShutdownExternalSimulation={() => { void simulator.shutdownExternalSimulation() }}
       onSystemAction={action => { void simulator.runSystemAction(action) }}
       onCaptureScreen={() => { void simulator.captureScreen() }}
       onToggleRecording={() => { void simulator.toggleRecording() }}
@@ -142,7 +144,8 @@ function Harness({ hookRef }: { hookRef: { current: HookApi | undefined } }) {
       onDrag={(from, to, durationMs) => { void simulator.drag(from, to, durationMs) }}
       onTypeText={text => { void simulator.typeText(text) }}
       onPressKey={key => { void simulator.pressKey(key) }}
-      onCaptureAnnotation={(_kind, rect) => simulator.captureAnnotation(rect)}
+      onInspectPoint={simulator.inspectPoint}
+      onCaptureAnnotation={(_kind, rect, element) => simulator.captureAnnotation(rect, element)}
       onDeleteCapture={simulator.deleteCapture}
       onAddAnnotation={() => {}}
       agentPresence={simulator.agentPresence}
@@ -216,6 +219,7 @@ describe('IosSimulatorPanel integration', () => {
     api.end.mockImplementation(async () => {
       lifecycleHandler?.(idleLifecycle)
     })
+    api.inspectPoint.mockResolvedValue(null)
     api.systemAction.mockResolvedValue(undefined)
     api.captureScreen.mockResolvedValue({ path: '/Desktop/screenshot.png', fileName: 'screenshot.png' })
     api.onFrame.mockImplementation((handler: typeof frameHandler) => {

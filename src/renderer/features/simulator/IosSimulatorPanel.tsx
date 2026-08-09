@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { LoaderCircle, PanelRightClose, RefreshCw, Smartphone } from 'lucide-react'
+import { Gauge, LoaderCircle, PanelRightClose, RefreshCw, Smartphone } from 'lucide-react'
 import { useI18n } from '../../i18n'
 import { simulatorIssueMessageKey, simulatorStageMessageKey } from './iosSimulatorModel'
 import { SimulatorSurface } from './SimulatorSurface'
@@ -8,7 +8,9 @@ import { SimulatorControlDock } from './SimulatorControlDock'
 import type { SimulatorInteractionMode } from './useSimulatorInteraction'
 import type {
   IosSimulatorAnnotationCapture,
+  IosSimulatorAccessibilityNode,
   IosSimulatorDevice,
+  IosSimulatorElementHit,
   IosSimulatorFallbackFps,
   IosSimulatorKey,
   IosSimulatorLifecycleSnapshot,
@@ -46,6 +48,7 @@ type IosSimulatorPanelProps = {
   lifecycle: IosSimulatorLifecycleSnapshot
   lastMediaFile?: IosSimulatorMediaFile
   onEndSimulation: () => void
+  onShutdownExternalSimulation: () => void
   onSystemAction: (action: IosSimulatorSystemAction) => void
   onCaptureScreen: () => void
   onToggleRecording: () => void
@@ -58,9 +61,11 @@ type IosSimulatorPanelProps = {
   onDrag: (from: IosSimulatorPoint, to: IosSimulatorPoint, durationMs: number) => void
   onTypeText: (text: string) => void
   onPressKey: (key: IosSimulatorKey) => void
+  onInspectPoint: (point: IosSimulatorPoint) => Promise<IosSimulatorElementHit | undefined>
   onCaptureAnnotation: (
-    kind: 'area',
+    kind: 'element' | 'area',
     rect: IosSimulatorRect,
+    element?: IosSimulatorAccessibilityNode | null,
   ) => Promise<IosSimulatorAnnotationCapture | undefined>
   onDeleteCapture: (paths: string[]) => Promise<void>
   onAddAnnotation: (attachment: AttachmentMeta) => void
@@ -93,6 +98,7 @@ export function IosSimulatorPanel({
   lifecycle,
   lastMediaFile,
   onEndSimulation,
+  onShutdownExternalSimulation,
   onSystemAction,
   onCaptureScreen,
   onToggleRecording,
@@ -105,6 +111,7 @@ export function IosSimulatorPanel({
   onDrag,
   onTypeText,
   onPressKey,
+  onInspectPoint,
   onCaptureAnnotation,
   onDeleteCapture,
   onAddAnnotation,
@@ -117,6 +124,7 @@ export function IosSimulatorPanel({
   const resizerRef = useRef<HTMLDivElement | null>(null)
   const [interactionMode, setInteractionMode] = useState<SimulatorInteractionMode>('interact')
   const [selectedUdid, setSelectedUdid] = useState<string | undefined>(attachedUdid)
+  const [performanceOpen, setPerformanceOpen] = useState(false)
 
   useEffect(() => {
     if (attachedUdid) setSelectedUdid(attachedUdid)
@@ -144,7 +152,7 @@ export function IosSimulatorPanel({
   const showDeviceList = Boolean(requirements?.ready && requirements.devices.length > 0)
   const handleDeviceSelect = (udid: string) => {
     setSelectedUdid(udid)
-    if (attachedUdid && udid !== attachedUdid) onAttach(udid)
+    if (udid !== attachedUdid) onAttach(udid)
   }
   const interactionFailure = lifecycle.stage === 'preparingInteraction'
     && !lifecycle.interactionReady
@@ -197,6 +205,28 @@ export function IosSimulatorPanel({
         </div>
       </header>
 
+      {showDeviceList && (
+        <div className="ios-simulator-device-bar">
+          <SimulatorDevicePicker
+            devices={requirements?.devices ?? []}
+            selectedUdid={selectedUdid ?? attachedUdid}
+            busyUdid={busyUdid}
+            compact
+            onSelect={handleDeviceSelect}
+          />
+          <div className="ios-simulator-device-status">
+            <span role="status" aria-live="polite">
+              {t(simulatorStageMessageKey(lifecycle.stage), { name: stageDeviceName })}
+            </span>
+            {lifecycle.ownership && (
+              <span className={`ios-simulator-origin is-${lifecycle.ownership}`}>
+                {t(`simulator.origin.${lifecycle.ownership}`)}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="ios-simulator-content">
         {requirementsLoading && !requirements && (
           <div className="ios-simulator-state" role="status">
@@ -232,12 +262,6 @@ export function IosSimulatorPanel({
           </div>
         )}
 
-        {!unavailable && (showDeviceList || attachedUdid) && (
-          <div className="ios-simulator-lifecycle-stage" role="status" aria-live="polite">
-            {t(simulatorStageMessageKey(lifecycle.stage), { name: stageDeviceName })}
-          </div>
-        )}
-
         {!unavailable && lifecycle.recoverableError && (
           <div className="ios-simulator-error" role="alert">
             <span>{lifecycle.recoverableError}</span>
@@ -261,36 +285,8 @@ export function IosSimulatorPanel({
               </div>
             )}
 
-            {!attachedUdid && (
-              <div className="ios-simulator-picker-row">
-                <SimulatorDevicePicker
-                  devices={requirements?.devices ?? []}
-                  selectedUdid={selectedUdid}
-                  busyUdid={busyUdid}
-                  onSelect={handleDeviceSelect}
-                />
-                <button
-                  type="button"
-                  className="ghost-button"
-                  disabled={!selectedUdid || Boolean(busyUdid)}
-                  onClick={() => selectedUdid && onAttach(selectedUdid)}
-                >
-                  {t('simulator.attach')}
-                </button>
-              </div>
-            )}
-
             {attachedUdid && device && (
               <section className="ios-simulator-view" aria-label={t('simulator.previewLabel', { name: device.name })}>
-                <div className="ios-simulator-view-toolbar">
-                  <SimulatorDevicePicker
-                    devices={requirements?.devices ?? []}
-                    selectedUdid={selectedUdid ?? attachedUdid}
-                    busyUdid={busyUdid}
-                    compact
-                    onSelect={handleDeviceSelect}
-                  />
-                </div>
                 <div className="ios-simulator-frame">
                   {frameDataUrl ? (
                     <SimulatorSurface
@@ -301,6 +297,7 @@ export function IosSimulatorPanel({
                       interactive={lifecycle.interactionReady && streamSource === 'mjpeg'}
                       labels={{
                         interact: t('simulator.mode.interact'),
+                        selectElement: t('simulator.mode.selectElement'),
                         selectArea: t('simulator.mode.selectArea'),
                         interaction: t('simulator.interactionLabel', { name: device.name }),
                         keyboardHint: t('simulator.keyboardHint'),
@@ -311,13 +308,16 @@ export function IosSimulatorPanel({
                         cancel: t('common.cancel'),
                         capturing: t('simulator.annotation.capturing'),
                         selectionTooSmall: t('simulator.annotation.selectionTooSmall'),
+                        elementUnavailable: t('simulator.annotation.elementUnavailable'),
                         agentActive: t('simulator.agentActive'),
+                        agentBadge: t('simulator.agentBadge'),
                       }}
                       onModeChange={setInteractionMode}
                       onTap={onTap}
                       onDrag={onDrag}
                       onTypeText={onTypeText}
                       onPressKey={onPressKey}
+                      onInspectPoint={onInspectPoint}
                       onCaptureAnnotation={onCaptureAnnotation}
                       onDeleteCapture={onDeleteCapture}
                       onAddAnnotation={onAddAnnotation}
@@ -343,43 +343,59 @@ export function IosSimulatorPanel({
                     onToggleRecording={onToggleRecording}
                     onDetach={onDetach}
                     onEnd={onEndSimulation}
+                    onShutdownExternal={onShutdownExternalSimulation}
                     onRevealOutput={onRevealOutput}
                   />
                 )}
-                <div className="ios-simulator-stream-status" role="status" aria-live="polite">
-                  <span className="ios-simulator-stream-source">
-                    {streamSource === 'mjpeg' ? t('simulator.stream.mjpeg') : t('simulator.stream.simctl')}
-                  </span>
-                  <span>
-                    {effectiveFps != null
-                      ? t('simulator.effectiveRate', { fps: effectiveFps.toFixed(1) })
-                      : t('simulator.measuringRate')}
-                  </span>
+                <div className="ios-simulator-stream-bar">
+                  <div className="ios-simulator-stream-status" role="status" aria-live="polite">
+                    <span className="ios-simulator-stream-source">
+                      {streamSource === 'mjpeg' ? t('simulator.stream.mjpeg') : t('simulator.stream.simctl')}
+                    </span>
+                    <span>
+                      {effectiveFps != null
+                        ? t('simulator.effectiveRate', { fps: effectiveFps.toFixed(1) })
+                        : t('simulator.measuringRate')}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="ios-simulator-performance-toggle"
+                    aria-expanded={performanceOpen}
+                    onClick={() => setPerformanceOpen(current => !current)}
+                  >
+                    <Gauge size={13} aria-hidden="true" />
+                    {t('simulator.performance')}
+                  </button>
                 </div>
-                <label className="ios-simulator-rate">
-                  <span>{t('simulator.streamRate')}</span>
-                  <select
-                    value={streamFps}
-                    onChange={event => onSetStreamRate(Number(event.target.value) as IosSimulatorStreamFps)}
-                  >
-                    {streamRates.map(rate => <option key={rate} value={rate}>{rate} fps</option>)}
-                  </select>
-                </label>
-                {streamFps === 60 && (
-                  <p className="ios-simulator-performance-note" role="note">
-                    {t('simulator.highFluencyWarning')}
-                  </p>
+                {performanceOpen && (
+                  <div className="ios-simulator-performance-settings">
+                    <label className="ios-simulator-rate">
+                      <span>{t('simulator.streamRate')}</span>
+                      <select
+                        value={streamFps}
+                        onChange={event => onSetStreamRate(Number(event.target.value) as IosSimulatorStreamFps)}
+                      >
+                        {streamRates.map(rate => <option key={rate} value={rate}>{rate} fps</option>)}
+                      </select>
+                    </label>
+                    {streamFps === 60 && (
+                      <p className="ios-simulator-performance-note" role="note">
+                        {t('simulator.highFluencyWarning')}
+                      </p>
+                    )}
+                    <label className="ios-simulator-rate">
+                      <span>{t('simulator.fallbackRate')}</span>
+                      <select
+                        value={fallbackFps}
+                        onChange={event => onSetFallbackRate(Number(event.target.value) as IosSimulatorFallbackFps)}
+                      >
+                        {fallbackRates.map(rate => <option key={rate} value={rate}>{rate} fps</option>)}
+                      </select>
+                    </label>
+                    <p className="ios-simulator-disclaimer">{t('simulator.disclaimer')}</p>
+                  </div>
                 )}
-                <label className="ios-simulator-rate">
-                  <span>{t('simulator.fallbackRate')}</span>
-                  <select
-                    value={fallbackFps}
-                    onChange={event => onSetFallbackRate(Number(event.target.value) as IosSimulatorFallbackFps)}
-                  >
-                    {fallbackRates.map(rate => <option key={rate} value={rate}>{rate} fps</option>)}
-                  </select>
-                </label>
-                <p className="ios-simulator-disclaimer">{t('simulator.disclaimer')}</p>
               </section>
             )}
 

@@ -15,6 +15,7 @@ const api = vi.hoisted(() => ({
   detach: vi.fn(),
   setVisible: vi.fn(),
   end: vi.fn(),
+  shutdownExternal: vi.fn(),
   systemAction: vi.fn(),
   retryInteraction: vi.fn(),
   captureScreen: vi.fn(),
@@ -27,6 +28,7 @@ const api = vi.hoisted(() => ({
   drag: vi.fn(),
   typeText: vi.fn(),
   pressKey: vi.fn(),
+  inspectPoint: vi.fn(),
   captureAnnotation: vi.fn(),
   onFrame: vi.fn(),
   onError: vi.fn(),
@@ -130,6 +132,9 @@ describe('useIosSimulatorPanel', () => {
     api.end.mockImplementation(async () => {
       lifecycleHandler?.(idleLifecycle)
     })
+    api.shutdownExternal.mockImplementation(async () => {
+      lifecycleHandler?.(idleLifecycle)
+    })
     api.systemAction.mockResolvedValue(undefined)
     api.retryInteraction.mockResolvedValue({ ...readyLifecycle, stage: 'preparingInteraction' })
     api.captureScreen.mockResolvedValue({ path: '/Desktop/screenshot.png', fileName: 'screenshot.png' })
@@ -142,6 +147,7 @@ describe('useIosSimulatorPanel', () => {
     api.drag.mockResolvedValue(undefined)
     api.typeText.mockResolvedValue(undefined)
     api.pressKey.mockResolvedValue(undefined)
+    api.inspectPoint.mockResolvedValue(null)
     api.captureAnnotation.mockResolvedValue(undefined)
     api.onFrame.mockImplementation((handler: typeof frameHandler) => {
       frameHandler = handler
@@ -209,6 +215,10 @@ describe('useIosSimulatorPanel', () => {
   })
 
   it('derives owned end behavior and recording state from lifecycle events', async () => {
+    api.requirements.mockResolvedValueOnce({
+      ...requirements,
+      devices: [{ ...device, state: 'Shutdown', ownership: null }],
+    })
     const view = renderHook(() => useIosSimulatorPanel())
     await act(async () => { lifecycleHandler?.({
       ...readyLifecycle,
@@ -220,6 +230,24 @@ describe('useIosSimulatorPanel', () => {
     expect(view.result.current.recordingActive).toBe(true)
     await act(async () => { await view.result.current.endSimulation() })
     expect(api.end).toHaveBeenCalledTimes(1)
+    expect(api.requirements).toHaveBeenCalledTimes(1)
+    expect(view.result.current.requirements?.devices[0]?.state).toBe('Shutdown')
+  })
+
+  it('shuts down only the attached external simulator selected by lifecycle authority', async () => {
+    api.requirements.mockResolvedValueOnce({
+      ...requirements,
+      devices: [{ ...device, state: 'Shutdown', ownership: null }],
+    })
+    const view = renderHook(() => useIosSimulatorPanel())
+    act(() => lifecycleHandler?.(readyLifecycle))
+
+    await act(async () => { await view.result.current.shutdownExternalSimulation() })
+
+    expect(api.shutdownExternal).toHaveBeenCalledWith('phone-17-pro')
+    expect(api.requirements).toHaveBeenCalledTimes(1)
+    expect(view.result.current.requirements?.devices[0]?.state).toBe('Shutdown')
+    expect(view.result.current.attachedUdid).toBeUndefined()
   })
 
   it('ignores a late frame from an older generation of the same udid', () => {
@@ -482,6 +510,32 @@ describe('useIosSimulatorPanel', () => {
     expect(api.typeText).toHaveBeenCalledWith('Verboo')
     expect(api.pressKey).toHaveBeenCalledWith('backspace')
     expect(view.result.current.agentPresence).toBeUndefined()
+  })
+
+  it('generation-guards point inspection and preserves the selected element in its capture', async () => {
+    const hit = {
+      rect: { x: 0.1, y: 0.2, width: 0.3, height: 0.1 },
+      element: {
+        id: 'save-button', role: 'Button', label: 'Save', value: null,
+        frame: { x: 40, y: 120, width: 80, height: 44 },
+        enabled: true, visible: true, actionable: true,
+      },
+    }
+    api.inspectPoint.mockResolvedValue(hit)
+    const view = renderHook(() => useIosSimulatorPanel())
+    act(() => lifecycleHandler?.(readyLifecycle))
+
+    let inspected
+    await act(async () => {
+      inspected = await view.result.current.inspectPoint({ x: 0.25, y: 0.5 })
+    })
+    await act(async () => {
+      await view.result.current.captureAnnotation(hit.rect, hit.element)
+    })
+
+    expect(inspected).toEqual(hit)
+    expect(api.inspectPoint).toHaveBeenCalledWith(1, { x: 0.25, y: 0.5 })
+    expect(api.captureAnnotation).toHaveBeenCalledWith(1, hit.rect, hit.element)
   })
 
   it('keeps newer agent presence when an older completion arrives and clears its owner', () => {

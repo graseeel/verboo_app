@@ -85,6 +85,23 @@ describe('SimulatorDevicePicker', () => {
     expect(onSelect).toHaveBeenCalledWith('iphone-17-pro')
   })
 
+  it('reopens on click after selection returns focus to the combobox', () => {
+    renderPicker([
+      phone('iPhone Air', 'Booted', '26.5'),
+      phone('iPhone 17 Pro', 'Shutdown', '27.0'),
+    ])
+    const combo = screen.getByRole('combobox', { name: 'Buscar simulador' })
+
+    fireEvent.focus(combo)
+    fireEvent.click(screen.getByRole('option', { name: /iPhone 17 Pro/ }))
+    expect(combo).toHaveAttribute('aria-expanded', 'false')
+
+    fireEvent.click(combo)
+
+    expect(combo).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('listbox')).toBeInTheDocument()
+  })
+
   it('points aria-activedescendant to the real highlighted option after ArrowDown', () => {
     renderPicker([
       phone('iPhone Air', 'Booted', '26.5'),
@@ -128,5 +145,25 @@ describe('SimulatorDevicePicker', () => {
     expect(screen.getByRole('combobox', { name: 'Buscar simulador' }))
       .toHaveValue('iPhone 17 Pro')
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+  })
+
+  it('renders the open device list outside scroll-clipped panel content', () => {
+    renderPicker([phone('iPhone 17 Pro', 'Shutdown', '27.0')])
+
+    fireEvent.focus(screen.getByRole('combobox', { name: 'Buscar simulador' }))
+
+    expect(screen.getByRole('listbox').parentElement).toBe(document.body)
+  })
+
+  it('identifies running simulators by their backend-reported origin', () => {
+    renderPicker([
+      { ...phone('iPhone 17 Pro', 'Booted', '27.0'), ownership: 'external' },
+      { ...ipad('iPad Pro', 'Booted', '27.0'), ownership: 'verboo' },
+    ])
+
+    fireEvent.focus(screen.getByRole('combobox', { name: 'Buscar simulador' }))
+
+    expect(screen.getByRole('option', { name: /iPhone 17 Pro/ })).toHaveTextContent('Externo')
+    expect(screen.getByRole('option', { name: /iPad Pro/ })).toHaveTextContent('Verboo')
   })
 })

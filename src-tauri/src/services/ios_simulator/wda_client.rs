@@ -5,7 +5,7 @@ use reqwest::blocking::{Client, RequestBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::system_controls::SystemGesture;
+use super::{system_controls::SystemGesture, IosSimulatorAccessibilityNode};
 
 const WDA_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 const WDA_READY_RETRY: Duration = Duration::from_millis(100);
@@ -144,6 +144,13 @@ pub(crate) trait WdaClient: Send + Sync {
         control: &WdaControlHandle,
         orientation: WdaInterfaceOrientation,
     ) -> Result<(), String>;
+    fn inspect_point(
+        &self,
+        _control: &WdaControlHandle,
+        _point: WdaPoint,
+    ) -> Result<Option<IosSimulatorAccessibilityNode>, String> {
+        Err("a inspeção pontual não está disponível neste cliente WDA".to_string())
+    }
 }
 
 pub(crate) struct SystemWdaClient {
@@ -332,6 +339,27 @@ impl WdaClient for SystemWdaClient {
         )?;
         Ok(())
     }
+
+    fn inspect_point(
+        &self,
+        control: &WdaControlHandle,
+        point: WdaPoint,
+    ) -> Result<Option<IosSimulatorAccessibilityNode>, String> {
+        let value = self.request_value(
+            self.client
+                .post(Self::endpoint(
+                    &control.base_url,
+                    "/wda/verboo/inspectPoint",
+                ))
+                .json(&json!({ "x": point.x, "y": point.y })),
+        )?;
+        if !value.get("found").and_then(Value::as_bool).unwrap_or(false) {
+            return Ok(None);
+        }
+        serde_json::from_value(value)
+            .map(Some)
+            .map_err(|error| format!("o WDA retornou um elemento inválido: {error}"))
+    }
 }
 
 #[cfg(test)]
@@ -355,12 +383,25 @@ mod tests {
 
     impl FakeWdaHttpServer {
         fn start(expected_requests: usize) -> Self {
+            let values = (0..expected_requests)
+                .map(|request_index| {
+                    if request_index == 0 {
+                        serde_json::json!({"sessionId": "session-1", "capabilities": {}})
+                    } else {
+                        Value::Null
+                    }
+                })
+                .collect();
+            Self::start_with_values(values)
+        }
+
+        fn start_with_values(values: Vec<Value>) -> Self {
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let address = listener.local_addr().unwrap();
             let requests = Arc::new(Mutex::new(Vec::new()));
             let worker_requests = requests.clone();
             let worker = thread::spawn(move || {
-                for request_index in 0..expected_requests {
+                for value in values {
                     let (mut stream, _) = listener.accept().unwrap();
                     let mut buffer = Vec::new();
                     let mut chunk = [0_u8; 4096];
@@ -400,11 +441,7 @@ mod tests {
                         }
                     }
 
-                    let body = if request_index == 0 {
-                        r#"{"value":{"sessionId":"session-1","capabilities":{}}}"#
-                    } else {
-                        r#"{"value":null}"#
-                    };
+                    let body = serde_json::json!({ "value": value }).to_string();
                     write!(
                         stream,
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -594,6 +631,48 @@ mod tests {
             body,
             Value::Null,
             "o POST /wda/verboo/home precisa de corpo JSON — o WDA responde 400 vazio sem corpo (medido no iOS 26.5)"
+        );
+    }
+
+    #[test]
+    fn wda_point_inspection_is_sessionless_and_returns_one_shallow_node() {
+        let http = FakeWdaHttpServer::start_with_values(vec![serde_json::json!({
+            "found": true,
+            "id": "button-save",
+            "role": "Button",
+            "label": "Save",
+            "value": null,
+            "frame": { "x": 20.0, "y": 100.0, "width": 80.0, "height": 44.0 },
+            "enabled": true,
+            "visible": true,
+            "actionable": true
+        })]);
+        let client = SystemWdaClient::default();
+        let control = WdaControlHandle {
+            base_url: http.base_url.clone(),
+            window_size: WdaWindowSize {
+                width: 402.0,
+                height: 874.0,
+            },
+            orientation: WdaInterfaceOrientation::Portrait,
+        };
+
+        let node = client
+            .inspect_point(&control, WdaPoint { x: 60.0, y: 122.0 })
+            .unwrap()
+            .expect("one point target");
+
+        assert_eq!(node.id, "button-save");
+        assert_eq!(node.label.as_deref(), Some("Save"));
+        assert_eq!(node.frame.width, 80.0);
+        assert!(node.actionable);
+        assert_eq!(
+            http.finish(),
+            vec![(
+                "POST".into(),
+                "/wda/verboo/inspectPoint".into(),
+                serde_json::json!({ "x": 60.0, "y": 122.0 }),
+            )]
         );
     }
 }

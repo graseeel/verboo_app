@@ -716,6 +716,7 @@ mod tests {
                 state: "Booted".into(),
                 ios_version: "26.5".into(),
                 family: crate::services::ios_simulator::IosSimulatorDeviceFamily::Iphone,
+                ownership: Some(crate::services::ios_simulator::IosSimulatorOwnership::External),
             },
             device_generation: 1,
             ownership: crate::services::ios_simulator::IosSimulatorOwnership::External,

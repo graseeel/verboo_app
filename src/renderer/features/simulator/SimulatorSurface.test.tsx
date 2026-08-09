@@ -1,11 +1,11 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { SimulatorSurface } from './SimulatorSurface'
 import type { IosSimulatorPresenceEvent } from './iosSimulatorApi'
 import { paintedContainRect } from './simulatorGeometry'
 
 function renderSurface(
-  mode: 'interact' | 'select-area' = 'interact',
+  mode: 'interact' | 'select-element' | 'select-area' = 'interact',
   agentPresence?: IosSimulatorPresenceEvent,
 ) {
   const callbacks = {
@@ -14,6 +14,13 @@ function renderSurface(
     onTypeText: vi.fn(),
     onPressKey: vi.fn(),
     onModeChange: vi.fn(),
+    onInspectPoint: vi.fn().mockResolvedValue({
+      rect: { x: 120 / 393, y: 180 / 852, width: 100 / 393, height: 48 / 852 },
+      element: {
+        id: 'save', role: 'Button', label: 'Save', frame: { x: 120, y: 180, width: 100, height: 48 },
+        enabled: true, visible: true, actionable: true,
+      },
+    }),
     onCaptureAnnotation: vi.fn().mockResolvedValue({
       cropPath: '/tmp/verboo-ios-simulator/a-crop.png',
       viewportPath: '/tmp/verboo-ios-simulator/a-viewport.png',
@@ -40,6 +47,7 @@ function renderSurface(
       interactive
       labels={{
         interact: 'Interact',
+        selectElement: 'Select component',
         selectArea: 'Select area',
         interaction: 'Control iPhone 17 Pro',
         keyboardHint: 'Type, paste, or use special keys. Escape releases focus.',
@@ -50,7 +58,9 @@ function renderSurface(
         cancel: 'Cancel',
         capturing: 'Capturing selection…',
         selectionTooSmall: 'Select a larger area.',
+        elementUnavailable: 'No component found here.',
         agentActive: 'Verboo is controlling this simulator.',
+        agentBadge: 'Verboo at work',
       }}
       agentPresence={agentPresence}
       {...callbacks}
@@ -116,6 +126,7 @@ describe('SimulatorSurface', () => {
 
     fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 200, clientY: 300 })
     fireEvent.pointerUp(surface, { pointerId: 1, button: 0, clientX: 202, clientY: 302 })
+    fireEvent.click(surface, { button: 0, clientX: 202, clientY: 302 })
     expect(callbacks.onTap).toHaveBeenCalledWith(expect.objectContaining({
       x: expect.any(Number),
       y: expect.any(Number),
@@ -125,12 +136,51 @@ describe('SimulatorSurface', () => {
     fireEvent.pointerDown(surface, { pointerId: 2, button: 0, clientX: 200, clientY: 700 })
     fireEvent.pointerMove(surface, { pointerId: 2, clientX: 200, clientY: 200 })
     fireEvent.pointerUp(surface, { pointerId: 2, button: 0, clientX: 200, clientY: 200 })
+    fireEvent.click(surface, { button: 0, clientX: 200, clientY: 200 })
     expect(callbacks.onDrag).toHaveBeenCalledTimes(1)
     expect(callbacks.onDrag).toHaveBeenCalledWith(
       expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }),
       expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }),
       180,
     )
+  })
+
+  it('accepts WebKit mouse pointers even when primary metadata is unreliable', () => {
+    const { surface, callbacks } = renderSurface()
+
+    fireEvent.pointerDown(surface, {
+      pointerId: 1,
+      pointerType: 'Mouse',
+      isPrimary: false,
+      button: 0,
+      clientX: 200,
+      clientY: 300,
+    })
+    fireEvent.pointerUp(surface, {
+      pointerId: 1,
+      pointerType: 'Mouse',
+      isPrimary: false,
+      button: 0,
+      clientX: 200,
+      clientY: 300,
+    })
+    fireEvent.click(surface, { button: 0, clientX: 200, clientY: 300 })
+
+    expect(callbacks.onTap).toHaveBeenCalledOnce()
+  })
+
+  it('uses the same contained frame rectangle for painting and hit testing', () => {
+    const { surface } = renderSurface()
+    const image = screen.getByAltText('Live iPhone preview')
+
+    fireEvent.load(image)
+
+    const expected = paintedContainRect({ width: 600, height: 900 }, { width: 393, height: 852 })
+    expect(Number.parseFloat(image.style.left)).toBeCloseTo(expected.x)
+    expect(Number.parseFloat(image.style.top)).toBeCloseTo(expected.y)
+    expect(Number.parseFloat(image.style.width)).toBeCloseTo(expected.width)
+    expect(Number.parseFloat(image.style.height)).toBeCloseTo(expected.height)
+    expect(surface).toContainElement(image)
   })
 
   it('routes text, paste, composition, and supported special keys', () => {
@@ -176,11 +226,44 @@ describe('SimulatorSurface', () => {
     expect(callbacks.onDrag).not.toHaveBeenCalled()
   })
 
-  it('offers interaction and rectangular selection without the unsafe accessibility mode', () => {
+  it('offers compact interaction, point element selection, and rectangular selection modes', () => {
     renderSurface()
 
     expect(screen.getByRole('button', { name: 'Interact' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Select component' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Select area' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Select component' })).not.toBeInTheDocument()
+  })
+
+  it('inspects one hovered point and captures the selected component metadata', async () => {
+    const { surface, callbacks } = renderSurface('select-element')
+    callbacks.onInspectPoint.mockReset()
+      .mockResolvedValueOnce({
+        rect: { x: 20 / 393, y: 80 / 852, width: 80 / 393, height: 40 / 852 },
+        element: {
+          id: 'old', role: 'Button', label: 'Old hover',
+          frame: { x: 20, y: 80, width: 80, height: 40 },
+          enabled: true, visible: true, actionable: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        rect: { x: 120 / 393, y: 180 / 852, width: 100 / 393, height: 48 / 852 },
+        element: {
+          id: 'save', role: 'Button', label: 'Save',
+          frame: { x: 120, y: 180, width: 100, height: 48 },
+          enabled: true, visible: true, actionable: true,
+        },
+      })
+
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 300, clientY: 450 })
+    await waitFor(() => expect(callbacks.onInspectPoint).toHaveBeenCalledTimes(1))
+    expect(document.querySelector('.ios-simulator-selection-outline')).toBeInTheDocument()
+
+    fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 450 })
+    await waitFor(() => expect(callbacks.onInspectPoint).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(callbacks.onCaptureAnnotation).toHaveBeenCalledWith(
+      'element',
+      expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) }),
+      expect.objectContaining({ id: 'save', label: 'Save' }),
+    ))
   })
 })

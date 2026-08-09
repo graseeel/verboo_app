@@ -134,7 +134,6 @@
   XCPointerEventPath *path = [[XCPointerEventPath alloc]
                               initForTouchAtPoint:CGPointMake(fromX.doubleValue, fromY.doubleValue)
                               offset:0.0];
-  CGPoint destination = CGPointMake(toX.doubleValue, toY.doubleValue);
   NSUInteger moveSteps = MAX(1, (NSUInteger)ceil(duration.doubleValue * 60.0));
   for (NSUInteger step = 1; step <= moveSteps; step++) {
     double progress = (double)step / (double)moveSteps;
@@ -145,9 +144,11 @@
     [path moveToPoint:point atOffset:duration.doubleValue * progress];
   }
   if (hold.doubleValue > 0.0) {
-    // Emit the held position explicitly. A single start/end path can be
-    // accepted by XCTest but ignored by SpringBoard's app-switcher gesture.
-    [path moveToPoint:destination atOffset:duration.doubleValue + hold.doubleValue];
+    // Emit an explicit stationary event at the end of the hold. Merely
+    // delaying liftUp leaves no pointer sample for SpringBoard's App Switcher
+    // recognizer on recent Simulator runtimes.
+    [path moveToPoint:CGPointMake(toX.doubleValue, toY.doubleValue)
+             atOffset:duration.doubleValue + hold.doubleValue];
   }
   [path liftUpAtOffset:duration.doubleValue + hold.doubleValue + 0.01];
   [event addPointerEventPath:path];
@@ -163,6 +164,98 @@
   }
   XCUIDevice.sharedDevice.orientation = target;
   return FBResponseWithOK();
+}
+
++ (id<FBResponsePayload>)handleVerbooInspectPoint:(FBRouteRequest *)request
+{
+  NSNumber *x = request.arguments[@"x"];
+  NSNumber *y = request.arguments[@"y"];
+  if (!FBVerbooFiniteCoordinate(x) || !FBVerbooFiniteCoordinate(y)) {
+    return FBVerbooInvalidArgument(@"finite x and y coordinates are required");
+  }
+
+  id<XCTestManager_ManagerInterface> proxy = [FBXCTestDaemonsProxy testRunnerProxy];
+  __block id<FBXCAccessibilityElement> element = nil;
+  __block BOOL pointRequestCompleted = NO;
+  [proxy _XCT_requestElementAtPoint:CGPointMake(x.doubleValue, y.doubleValue)
+                              reply:^(id candidate, NSError *requestError) {
+    element = nil == requestError ? candidate : nil;
+    pointRequestCompleted = YES;
+  }];
+  FBRunLoopSpinner *pointSpinner = [[FBRunLoopSpinner alloc] init];
+  [pointSpinner timeout:1.0];
+  [pointSpinner interval:0.01];
+  if (![pointSpinner spinUntilTrue:^BOOL {
+    return pointRequestCompleted;
+  }] || nil == element) {
+    return FBResponseWithObject(@{@"found": @NO});
+  }
+
+  NSArray<NSString *> *attributeNames = @[
+    @"XC_kAXXCAttributeAutomationType",
+    @"XC_kAXXCAttributeIdentifier",
+    @"XC_kAXXCAttributeLabel",
+    @"XC_kAXXCAttributeTruncatedValue",
+    @"XC_kAXXCAttributeFrame",
+    @"XC_kAXXCAttributeIsUserInteractionEnabled",
+  ];
+  __block NSDictionary *attributes = nil;
+  __block BOOL attributesRequestCompleted = NO;
+  [proxy _XCT_fetchAttributes:attributeNames
+                   forElement:element
+                        reply:^(NSDictionary *fetchedAttributes, NSError *requestError) {
+    attributes = nil == requestError ? fetchedAttributes : nil;
+    attributesRequestCompleted = YES;
+  }];
+  FBRunLoopSpinner *attributesSpinner = [[FBRunLoopSpinner alloc] init];
+  [attributesSpinner timeout:1.0];
+  [attributesSpinner interval:0.01];
+  if (![attributesSpinner spinUntilTrue:^BOOL {
+    return attributesRequestCompleted;
+  }] || nil == attributes) {
+    return FBResponseWithObject(@{@"found": @NO});
+  }
+
+  NSDictionary *frameValue = attributes[@"XC_kAXXCAttributeFrame"];
+  NSNumber *frameX = frameValue[@"X"];
+  NSNumber *frameY = frameValue[@"Y"];
+  NSNumber *frameWidth = frameValue[@"Width"];
+  NSNumber *frameHeight = frameValue[@"Height"];
+  BOOL hasFiniteFrame = FBVerbooFiniteCoordinate(frameX) && FBVerbooFiniteCoordinate(frameY) &&
+    FBVerbooFiniteCoordinate(frameWidth) && FBVerbooFiniteCoordinate(frameHeight) &&
+    frameWidth.doubleValue > 0.0 && frameHeight.doubleValue > 0.0;
+  if (!hasFiniteFrame) return FBResponseWithObject(@{@"found": @NO});
+
+  NSNumber *automationType = attributes[@"XC_kAXXCAttributeAutomationType"];
+  XCUIElementType elementType = [automationType isKindOfClass:NSNumber.class]
+    ? (XCUIElementType)automationType.unsignedIntegerValue
+    : XCUIElementTypeOther;
+  NSNumber *interactionEnabled = attributes[@"XC_kAXXCAttributeIsUserInteractionEnabled"];
+  BOOL enabled = ![interactionEnabled isKindOfClass:NSNumber.class] || interactionEnabled.boolValue;
+  NSString *identifier = FBVerbooInspectableText(attributes[@"XC_kAXXCAttributeIdentifier"]);
+  NSString *label = FBVerbooInspectableText(attributes[@"XC_kAXXCAttributeLabel"]);
+  NSString *value = FBVerbooInspectableText(attributes[@"XC_kAXXCAttributeTruncatedValue"]);
+  NSString *uid = [FBElementUtils uidWithAccessibilityElement:element];
+  NSString *role = [FBElementTypeTransformer shortStringWithElementType:elementType];
+  BOOL actionable = enabled && FBVerbooActionableElementType(elementType);
+  NSMutableDictionary *result = [@{
+    @"found": @YES,
+    @"id": uid ?: identifier ?: @"point-element",
+    @"role": role ?: @"Other",
+    @"frame": @{
+      @"x": frameX,
+      @"y": frameY,
+      @"width": frameWidth,
+      @"height": frameHeight,
+    },
+    @"enabled": @(enabled),
+    @"visible": @YES,
+    @"actionable": @(actionable),
+  } mutableCopy];
+  if (nil != identifier) result[@"identifier"] = identifier;
+  if (nil != label) result[@"label"] = label;
+  if (nil != value) result[@"value"] = value;
+  return FBResponseWithObject(result);
 }
 #endif
 // VERBOO_SESSIONLESS_HANDLERS_END

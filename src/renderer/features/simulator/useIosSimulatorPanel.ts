@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { iosSimulatorApi } from './iosSimulatorApi'
 import type {
   IosSimulatorAnnotationCapture,
+  IosSimulatorAccessibilityNode,
+  IosSimulatorElementHit,
   IosSimulatorFallbackFps,
   IosSimulatorFrame,
   IosSimulatorKey,
@@ -309,10 +311,28 @@ export function useIosSimulatorPanel() {
       await iosSimulatorApi.end()
       // Session teardown arrives as the end-of-session lifecycle event
       // (backend R1-B1); applyLifecycle is the single source for it.
+      await refresh()
     } catch (reason) {
       setActionError(reason instanceof Error ? reason.message : String(reason))
     }
-  }, [])
+  }, [refresh])
+
+  const shutdownExternalSimulation = useCallback(async () => {
+    setActionError(undefined)
+    const snapshot = lifecycleRef.current
+    if (snapshot.ownership !== 'external' || !snapshot.udid) {
+      setActionError('Nenhum simulador externo está anexado.')
+      return
+    }
+    try {
+      await iosSimulatorApi.shutdownExternal(snapshot.udid)
+      // The backend emits the idle lifecycle snapshot after stopping the
+      // workers and before the exact external UDID is shut down.
+      await refresh()
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [refresh])
 
   const runSystemAction = useCallback(async (action: Parameters<typeof iosSimulatorApi.systemAction>[0]) => {
     setActionError(undefined)
@@ -460,22 +480,39 @@ export function useIosSimulatorPanel() {
 
   const captureAnnotation = useCallback(async (
     rect: IosSimulatorRect,
+    element: IosSimulatorAccessibilityNode | null = null,
   ): Promise<IosSimulatorAnnotationCapture | undefined> => {
-    if (lifecycle.deviceGeneration == null) {
+    const deviceGeneration = lifecycleRef.current.deviceGeneration
+    if (deviceGeneration == null) {
       setActionError('Aguardando um quadro estável do simulador.')
       return undefined
     }
     setActionError(undefined)
     try {
       return await iosSimulatorApi.captureAnnotation(
-        lifecycle.deviceGeneration,
+        deviceGeneration,
         rect,
+        element,
       )
     } catch (reason) {
       setActionError(reason instanceof Error ? reason.message : String(reason))
       return undefined
     }
-  }, [lifecycle.deviceGeneration])
+  }, [])
+
+  const inspectPoint = useCallback(async (
+    point: IosSimulatorPoint,
+  ): Promise<IosSimulatorElementHit | undefined> => {
+    const deviceGeneration = lifecycleRef.current.deviceGeneration
+    if (deviceGeneration == null) return undefined
+    try {
+      const hit = await iosSimulatorApi.inspectPoint(deviceGeneration, point)
+      if (lifecycleRef.current.deviceGeneration !== deviceGeneration) return undefined
+      return hit ?? undefined
+    } catch {
+      return undefined
+    }
+  }, [])
 
   const deleteCapture = useCallback(async (paths: string[]) => {
     try {
@@ -527,12 +564,14 @@ export function useIosSimulatorPanel() {
     typeText,
     pressKey,
     endSimulation,
+    shutdownExternalSimulation,
     runSystemAction,
     retryInteraction,
     captureScreen,
     toggleRecording,
     revealOutput,
     retryAttach,
+    inspectPoint,
     captureAnnotation,
     deleteCapture,
   }

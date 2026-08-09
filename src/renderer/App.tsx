@@ -6281,6 +6281,7 @@ export function App() {
           onAttach={udid => { void simulator.attach(udid) }}
           onDetach={() => { void simulator.detach() }}
           onEndSimulation={() => { void simulator.endSimulation() }}
+          onShutdownExternalSimulation={() => { void simulator.shutdownExternalSimulation() }}
           onSystemAction={action => { void simulator.runSystemAction(action) }}
           onCaptureScreen={() => { void simulator.captureScreen() }}
           onToggleRecording={() => { void simulator.toggleRecording() }}
@@ -6293,7 +6294,8 @@ export function App() {
           onDrag={(from, to, durationMs) => { void simulator.drag(from, to, durationMs) }}
           onTypeText={text => { void simulator.typeText(text) }}
           onPressKey={key => { void simulator.pressKey(key) }}
-          onCaptureAnnotation={(_kind, rect) => simulator.captureAnnotation(rect)}
+          onInspectPoint={simulator.inspectPoint}
+          onCaptureAnnotation={(_kind, rect, element) => simulator.captureAnnotation(rect, element)}
           onDeleteCapture={simulator.deleteCapture}
           onAddAnnotation={addBrowserAnnotation}
           onRefresh={() => { void simulator.refresh() }}

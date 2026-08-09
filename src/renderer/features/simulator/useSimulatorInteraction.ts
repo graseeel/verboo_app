@@ -2,13 +2,14 @@ import { useEffect, useRef, type RefObject } from 'react'
 import type { IosSimulatorKey, IosSimulatorPoint } from './iosSimulatorApi'
 import { clientPointToNormalized, paintedContainRect } from './simulatorGeometry'
 
-export type SimulatorInteractionMode = 'interact' | 'select-area'
+export type SimulatorInteractionMode = 'interact' | 'select-element' | 'select-area'
 
 export type SimulatorInteractionHandlers = {
   onPointerDown: React.PointerEventHandler<HTMLDivElement>
   onPointerMove: React.PointerEventHandler<HTMLDivElement>
   onPointerUp: React.PointerEventHandler<HTMLDivElement>
   onPointerCancel: React.PointerEventHandler<HTMLDivElement>
+  onClick: React.MouseEventHandler<HTMLDivElement>
   onKeyDown: React.KeyboardEventHandler<HTMLDivElement>
   onPaste: React.ClipboardEventHandler<HTMLDivElement>
   onCompositionStart: React.CompositionEventHandler<HTMLDivElement>
@@ -51,6 +52,7 @@ export function simulatorKeyForKeyboardEvent(event: Pick<KeyboardEvent, 'key'>):
 
 export function useSimulatorInteraction(options: Options): SimulatorInteractionHandlers {
   const pointerRef = useRef<PointerStart | null>(null)
+  const suppressClickRef = useRef(false)
   const composingRef = useRef(false)
 
   function normalizedAt(clientX: number, clientY: number) {
@@ -94,7 +96,7 @@ export function useSimulatorInteraction(options: Options): SimulatorInteractionH
       if (
         !ownsInteraction()
         || event.button !== 0
-        || (event.isPrimary === false && Boolean(event.pointerType))
+        || pointerRef.current !== null
       ) return
       const normalized = normalizedAt(event.clientX, event.clientY)
       if (!normalized) return
@@ -112,6 +114,7 @@ export function useSimulatorInteraction(options: Options): SimulatorInteractionH
         normalized,
         target: event.currentTarget,
       }
+      suppressClickRef.current = false
     },
     onPointerMove(event) {
       if (pointerRef.current?.pointerId === event.pointerId) event.preventDefault()
@@ -124,11 +127,24 @@ export function useSimulatorInteraction(options: Options): SimulatorInteractionH
       clearPointer()
       if (!end || !ownsInteraction()) return
       const distance = Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY)
-      if (distance <= TAP_MOVEMENT_PX) options.onTap(start.normalized)
-      else options.onDrag(start.normalized, end, 180)
+      if (distance > TAP_MOVEMENT_PX) {
+        suppressClickRef.current = true
+        options.onDrag(start.normalized, end, 180)
+      }
     },
     onPointerCancel(event) {
       if (pointerRef.current?.pointerId === event.pointerId) clearPointer()
+    },
+    onClick(event) {
+      if (!ownsInteraction() || event.button !== 0) return
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false
+        return
+      }
+      const point = normalizedAt(event.clientX, event.clientY)
+      if (!point) return
+      event.preventDefault()
+      options.onTap(point)
     },
     onKeyDown(event) {
       if (!ownsInteraction()) return

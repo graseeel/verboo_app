@@ -21,6 +21,7 @@ function renderDock(overrides: Partial<React.ComponentProps<typeof SimulatorCont
     onToggleRecording: vi.fn(),
     onDetach: vi.fn(),
     onEnd: vi.fn(),
+    onShutdownExternal: vi.fn(),
     onRevealOutput: vi.fn(),
     ...overrides,
   }
@@ -35,11 +36,12 @@ function renderDock(overrides: Partial<React.ComponentProps<typeof SimulatorCont
 }
 
 describe('SimulatorControlDock', () => {
-  it('exposes all eight controls with names and one-click callbacks', () => {
+  it('exposes the compact controls and both safe external session actions', () => {
     const { props } = renderDock()
     for (const name of [
       'Início', 'Apps abertos', 'Notificações', 'Central de Controle',
       'Capturar tela', 'Iniciar gravação', 'Girar aparelho', 'Desanexar',
+      'Encerrar simulador externo',
     ]) expect(screen.getByRole('button', { name })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Início' }))
@@ -68,6 +70,19 @@ describe('SimulatorControlDock', () => {
 
     expect(props.onDetach).toHaveBeenCalledTimes(1)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('requires a named confirmation before shutting down an external simulator', () => {
+    const { props } = renderDock({ ownership: 'external' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Encerrar simulador externo' }))
+
+    expect(screen.getByRole('dialog')).toHaveTextContent(
+      'Encerrar o simulador externo iPhone 17 Pro?',
+    )
+    expect(props.onShutdownExternal).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Encerrar externo' }))
+    expect(props.onShutdownExternal).toHaveBeenCalledTimes(1)
   })
 
   it('confirms only the owned end-simulation action', () => {

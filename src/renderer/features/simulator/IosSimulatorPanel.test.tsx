@@ -52,6 +52,7 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof IosSimulator
     onDetach: vi.fn(),
     lifecycle: idleLifecycle,
     onEndSimulation: vi.fn(),
+    onShutdownExternalSimulation: vi.fn(),
     onSystemAction: vi.fn(),
     onCaptureScreen: vi.fn(),
     onToggleRecording: vi.fn(),
@@ -64,6 +65,7 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof IosSimulator
     onDrag: vi.fn(),
     onTypeText: vi.fn(),
     onPressKey: vi.fn(),
+    onInspectPoint: vi.fn().mockResolvedValue(undefined),
     onCaptureAnnotation: vi.fn().mockResolvedValue(undefined),
     onDeleteCapture: vi.fn().mockResolvedValue(undefined),
     onAddAnnotation: vi.fn(),
@@ -82,19 +84,13 @@ describe('IosSimulatorPanel', () => {
     expect(screen.getByText('Nenhum simulador anexado')).toBeInTheDocument()
     fireEvent.focus(screen.getByRole('combobox', { name: 'Buscar simulador' }))
     expect(screen.getByRole('option', { name: /iPhone 17 Pro/ })).toHaveTextContent('26.5 · desligado')
-    expect(screen.getByRole('button', { name: 'Anexar' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Anexar' })).not.toBeInTheDocument()
   })
 
-  it('executes attachment from the empty state after choosing a device', () => {
+  it('attaches immediately after choosing a different device', () => {
     const { props } = renderPanel()
-    const attach = screen.getByRole('button', { name: 'Anexar' })
-
-    expect(attach).toBeDisabled()
     fireEvent.focus(screen.getByRole('combobox', { name: 'Buscar simulador' }))
     fireEvent.click(screen.getByRole('option', { name: /iPhone 17 Pro/ }))
-    expect(attach).toBeEnabled()
-
-    fireEvent.click(attach)
 
     expect(props.onAttach).toHaveBeenCalledWith('phone-17-pro')
   })
@@ -124,8 +120,12 @@ describe('IosSimulatorPanel', () => {
 
     expect(screen.getByAltText('Prévia visual ao vivo de iPhone 17 Pro')).toBeInTheDocument()
     expect(screen.getByRole('application', { name: 'Controlar iPhone 17 Pro' })).toHaveAttribute('tabindex', '0')
+    expect(screen.getByRole('button', { name: 'Selecionar componente' })).toBeInTheDocument()
     expect(screen.getByText('MJPEG')).toBeInTheDocument()
     expect(screen.getByText('Taxa real: 9.2 fps')).toBeInTheDocument()
+    expect(screen.getByText('Externo')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Fluidez')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('Desempenho'))
     fireEvent.change(screen.getByLabelText('Fluidez'), { target: { value: '60' } })
     view.rerender(
       <I18nProvider language="pt-BR">
@@ -141,6 +141,13 @@ describe('IosSimulatorPanel', () => {
     expect(onSetStreamRate).toHaveBeenCalledWith(60)
     expect(onSetFallbackRate).toHaveBeenCalledWith(1)
     expect(onDetach).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the device selector in the fixed top control bar', () => {
+    renderPanel()
+
+    expect(screen.getByRole('combobox', { name: 'Buscar simulador' }))
+      .toHaveAttribute('data-panel-placement', 'top')
   })
 
   it('renders the backend lifecycle stage and keeps interaction guarded until ready', () => {

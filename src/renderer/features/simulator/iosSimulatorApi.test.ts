@@ -23,6 +23,7 @@ describe('iosSimulatorApi event listeners', () => {
     originalInternals = Object.getOwnPropertyDescriptor(window, '__TAURI_INTERNALS__')
     delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__
     listenMock.mockClear()
+    vi.mocked(invoke).mockClear()
   })
 
   afterEach(() => {
@@ -67,6 +68,45 @@ describe('iosSimulatorApi event listeners', () => {
     expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(1, 'ios_simulator_set_visible', { visible: false })
     expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(2, 'ios_simulator_system_action', { action: 'home' })
     expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(3, 'ios_simulator_retry_interaction')
+  })
+
+  it('forwards the exact confirmed external simulator to the shutdown command', async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    await iosSimulatorApi.shutdownExternal('external-phone-17-pro')
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith('ios_simulator_shutdown_external', {
+      udid: 'external-phone-17-pro',
+    })
+  })
+
+  it('generation-guards point inspection and preserves element metadata in capture', async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined)
+    const point = { x: 0.25, y: 0.5 }
+    const rect = { x: 0.1, y: 0.2, width: 0.3, height: 0.1 }
+    const element = {
+      id: 'save-button',
+      role: 'Button',
+      label: 'Save',
+      value: null,
+      frame: { x: 40, y: 120, width: 80, height: 44 },
+      enabled: true,
+      visible: true,
+      actionable: true,
+    }
+
+    await iosSimulatorApi.inspectPoint(7, point)
+    await iosSimulatorApi.captureAnnotation(7, rect, element)
+
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(1, 'ios_simulator_inspect_point', {
+      deviceGeneration: 7,
+      point,
+    })
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(2, 'ios_simulator_capture_annotation', {
+      deviceGeneration: 7,
+      rect,
+      element,
+    })
   })
 
   it('registers and forwards the serialized lifecycle snapshot event', async () => {

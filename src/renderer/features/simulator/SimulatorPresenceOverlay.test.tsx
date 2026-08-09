@@ -15,6 +15,7 @@ describe('SimulatorPresenceOverlay', () => {
         }}
         reducedMotion={false}
         label="Verboo is controlling this simulator."
+        badgeLabel="Verboo at work"
       />,
     )
 
@@ -28,6 +29,7 @@ describe('SimulatorPresenceOverlay', () => {
     })
     expect(screen.getByTestId('simulator-agent-cursor')).toHaveStyle({ left: '25%', top: '75%' })
     expect(screen.getByTestId('simulator-agent-ripple')).toBeInTheDocument()
+    expect(screen.getByText('Verboo at work')).toBeInTheDocument()
   })
 
   it('renders the drag path and disables cursor travel for reduced motion', () => {
@@ -43,6 +45,7 @@ describe('SimulatorPresenceOverlay', () => {
         }}
         reducedMotion
         label="Verboo is controlling this simulator."
+        badgeLabel="Verboo at work"
       />,
     )
 

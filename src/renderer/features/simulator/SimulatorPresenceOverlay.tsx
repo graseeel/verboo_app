@@ -7,6 +7,7 @@ type SimulatorPresenceOverlayProps = {
   presence?: IosSimulatorPresenceEvent
   reducedMotion?: boolean
   label: string
+  badgeLabel: string
 }
 
 const DEFAULT_CURSOR_POINT: IosSimulatorPoint = { x: 0.5, y: 0.5 }
@@ -16,6 +17,7 @@ export function SimulatorPresenceOverlay({
   presence,
   reducedMotion = prefersReducedMotion(),
   label,
+  badgeLabel,
 }: SimulatorPresenceOverlayProps) {
   const cursorRef = useRef<HTMLDivElement | null>(null)
   const animationRef = useRef<Animation | null>(null)
@@ -77,6 +79,10 @@ export function SimulatorPresenceOverlay({
       role="status"
       aria-label={label}
     >
+      <div className="ios-simulator-agent-badge" aria-hidden="true">
+        <span />
+        {badgeLabel}
+      </div>
       {dragStart && dragEnd && (
         <svg
           className="ios-simulator-agent-drag"

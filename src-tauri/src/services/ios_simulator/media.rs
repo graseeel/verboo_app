@@ -571,6 +571,7 @@ mod tests {
             state: "Booted".into(),
             ios_version: "26.5".into(),
             family: IosSimulatorDeviceFamily::Iphone,
+            ownership: None,
         }
     }
 

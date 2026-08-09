@@ -109,6 +109,7 @@ pub struct IosSimulatorDevice {
     pub state: String,
     pub ios_version: String,
     pub family: IosSimulatorDeviceFamily,
+    pub ownership: Option<IosSimulatorOwnership>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,6 +225,13 @@ pub struct IosSimulatorAccessibilityNode {
     pub enabled: bool,
     pub visible: bool,
     pub actionable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IosSimulatorElementHit {
+    pub element: IosSimulatorAccessibilityNode,
+    pub rect: NormalizedRect,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -487,6 +495,28 @@ impl WdaClient for OkWdaClient {
         _orientation: WdaInterfaceOrientation,
     ) -> Result<(), String> {
         Ok(())
+    }
+
+    fn inspect_point(
+        &self,
+        _control: &WdaControlHandle,
+        _point: WdaPoint,
+    ) -> Result<Option<IosSimulatorAccessibilityNode>, String> {
+        Ok(Some(IosSimulatorAccessibilityNode {
+            id: "button-save".into(),
+            role: "Button".into(),
+            label: Some("Save".into()),
+            value: None,
+            frame: IosSimulatorDeviceRect {
+                x: 39.3,
+                y: 85.2,
+                width: 78.6,
+                height: 42.6,
+            },
+            enabled: true,
+            visible: true,
+            actionable: true,
+        }))
     }
 }
 
@@ -1221,6 +1251,24 @@ impl IosSimulatorService {
         }
         self.stop_session(None);
         Ok(())
+    }
+
+    pub(crate) fn end_external_sync(&self, expected_udid: &str) -> Result<(), String> {
+        self.reject_if_exiting()?;
+        let _operation = self
+            .operation_lock
+            .lock()
+            .expect("iOS simulator operation lock poisoned");
+        self.reject_if_exiting()?;
+        let (udid, ownership) = self.current_identity()?;
+        if ownership != IosSimulatorOwnership::External {
+            return Err("Somente um simulador externo pode ser encerrado por esta ação.".into());
+        }
+        if udid != expected_udid {
+            return Err("O simulador externo solicitado não é o dispositivo anexado.".into());
+        }
+        self.stop_session(None);
+        run_simctl(self.runner.as_ref(), &["shutdown".into(), udid]).map(|_| ())
     }
 
     pub(crate) fn end_owned_sync(&self) -> Result<(), String> {
@@ -2053,7 +2101,8 @@ impl IosSimulatorService {
         }
         let preparation =
             prepare_device_for_attach(self.runner.as_ref(), self.ownership.as_ref(), &udid)?;
-        let device_for_lifecycle = preparation.device.clone();
+        let mut device_for_lifecycle = preparation.device.clone();
+        device_for_lifecycle.ownership = Some(preparation.ownership);
         let device_generation = self
             .next_device_generation
             .fetch_add(1, Ordering::AcqRel)
@@ -2092,7 +2141,8 @@ impl IosSimulatorService {
         if self.current_session_summary().is_some() {
             self.switch_cleanup()?;
         }
-        let device = prepared.device;
+        let mut device = prepared.device;
+        device.ownership = Some(prepared.ownership);
         let sink = Arc::new(TauriFrameSink {
             app: app.clone(),
             presence_snapshot: self.presence_snapshot.clone(),
@@ -2381,6 +2431,49 @@ impl IosSimulatorService {
         self.wda_client.press_key(&handle, key)
     }
 
+    pub(crate) fn inspect_point_sync(
+        &self,
+        device_generation: u64,
+        point: NormalizedPoint,
+    ) -> Result<Option<IosSimulatorElementHit>, String> {
+        self.reject_if_exiting()?;
+        let (input_lock, stop, handle) = {
+            let state = self.state.lock().expect("iOS simulator state poisoned");
+            let session = state
+                .session
+                .as_ref()
+                .ok_or_else(|| "Nenhum simulador está anexado.".to_string())?;
+            if session.device_generation != device_generation {
+                return Err("A inspeção pertence a outra sessão do simulador.".to_string());
+            }
+            let handle = session
+                .wda_control
+                .lock()
+                .expect("iOS simulator WDA control poisoned")
+                .clone()
+                .ok_or_else(|| {
+                    "A inspeção fica disponível quando o stream MJPEG do WDA está pronto."
+                        .to_string()
+                })?;
+            (session.input_lock.clone(), session.stop.clone(), handle)
+        };
+        let wda_point = normalized_to_wda_point(point, handle.window_size)?;
+        let _guard = input_lock
+            .lock()
+            .expect("iOS simulator input queue poisoned");
+        if stop.load(Ordering::Acquire) {
+            return Err("A sessão do simulador foi encerrada.".to_string());
+        }
+        let Some(element) = self.wda_client.inspect_point(&handle, wda_point)? else {
+            return Ok(None);
+        };
+        if self.current_session_generation() != Some(device_generation) {
+            return Err("A inspeção pertence a outra sessão do simulador.".to_string());
+        }
+        let rect = device_rect_to_normalized(element.frame, handle.window_size)?;
+        Ok(Some(IosSimulatorElementHit { element, rect }))
+    }
+
     pub(crate) fn accessibility_snapshot_sync(
         &self,
     ) -> Result<Vec<IosSimulatorAccessibilityNode>, String> {
@@ -2503,10 +2596,12 @@ pub async fn ios_simulator_requirements(
     service: State<'_, IosSimulatorService>,
 ) -> Result<IosSimulatorRequirements, String> {
     let runner = service.runner.clone();
+    let ownership = service.ownership.clone();
     let (attached_udid, stream_fps, fallback_fps, source, effective_fps) = service.attached();
     let lifecycle = service.lifecycle.snapshot();
     tauri::async_runtime::spawn_blocking(move || {
         let mut requirements = detect_requirements(runner.as_ref());
+        annotate_device_ownership(&mut requirements.devices, ownership.as_ref());
         requirements.attached_udid = attached_udid;
         requirements.stream_fps = stream_fps;
         requirements.fallback_fps = fallback_fps;
@@ -2554,6 +2649,17 @@ pub fn ios_simulator_set_visible(
 #[tauri::command]
 pub fn ios_simulator_end(service: State<'_, IosSimulatorService>) -> Result<(), String> {
     service.end_owned_sync()
+}
+
+#[tauri::command]
+pub async fn ios_simulator_shutdown_external(
+    service: State<'_, IosSimulatorService>,
+    udid: String,
+) -> Result<(), String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.end_external_sync(&udid))
+        .await
+        .map_err(|error| format!("falha ao encerrar simulador externo: {error}"))?
 }
 
 #[tauri::command]
@@ -2680,6 +2786,20 @@ pub async fn ios_simulator_accessibility_snapshot(
     tauri::async_runtime::spawn_blocking(move || service.accessibility_snapshot_sync())
         .await
         .map_err(|error| format!("falha ao inspecionar o simulador: {error}"))?
+}
+
+#[tauri::command]
+pub async fn ios_simulator_inspect_point(
+    service: State<'_, IosSimulatorService>,
+    device_generation: u64,
+    point: NormalizedPoint,
+) -> Result<Option<IosSimulatorElementHit>, String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.inspect_point_sync(device_generation, point)
+    })
+    .await
+    .map_err(|error| format!("falha ao inspecionar o ponto do simulador: {error}"))?
 }
 
 #[tauri::command]
@@ -2978,6 +3098,38 @@ fn normalized_to_wda_point(
     })
 }
 
+fn device_rect_to_normalized(
+    rect: IosSimulatorDeviceRect,
+    window: WdaWindowSize,
+) -> Result<NormalizedRect, String> {
+    if !rect.x.is_finite()
+        || !rect.y.is_finite()
+        || !rect.width.is_finite()
+        || !rect.height.is_finite()
+        || rect.width <= 0.0
+        || rect.height <= 0.0
+        || !window.width.is_finite()
+        || !window.height.is_finite()
+        || window.width <= 0.0
+        || window.height <= 0.0
+    {
+        return Err("O WDA retornou uma área inválida para o elemento.".to_string());
+    }
+    let left = rect.x.clamp(0.0, window.width);
+    let top = rect.y.clamp(0.0, window.height);
+    let right = (rect.x + rect.width).clamp(0.0, window.width);
+    let bottom = (rect.y + rect.height).clamp(0.0, window.height);
+    if right <= left || bottom <= top {
+        return Err("O elemento inspecionado está fora da tela atual.".to_string());
+    }
+    Ok(NormalizedRect {
+        x: left / window.width,
+        y: top / window.height,
+        width: (right - left) / window.width,
+        height: (bottom - top) / window.height,
+    })
+}
+
 fn validate_input_text(text: &str) -> Result<(), String> {
     if text.is_empty() {
         return Err("O texto não pode estar vazio.".to_string());
@@ -3117,6 +3269,7 @@ fn parse_simctl_devices(stdout: &[u8]) -> Result<Vec<IosSimulatorDevice>, String
                 state: device.state,
                 ios_version: version.clone(),
                 family: simulator_device_family(&device.device_type_identifier)?,
+                ownership: None,
             });
         }
     }
@@ -3126,6 +3279,18 @@ fn parse_simctl_devices(stdout: &[u8]) -> Result<Vec<IosSimulatorDevice>, String
             .then(left.ios_version.cmp(&right.ios_version))
     });
     Ok(devices)
+}
+
+fn annotate_device_ownership(devices: &mut [IosSimulatorDevice], ledger: &OwnershipLedger) {
+    for device in devices {
+        device.ownership = if device.state == "Shutdown" {
+            None
+        } else if ledger.phase(&device.udid).is_some() {
+            Some(IosSimulatorOwnership::Verboo)
+        } else {
+            Some(IosSimulatorOwnership::External)
+        };
+    }
 }
 
 fn simctl_runtime_version(runtime: &str) -> Option<String> {
@@ -3173,6 +3338,12 @@ fn wait_for_target_display_metrics(
         match simulator_display_metrics(runner, udid) {
             Ok(metrics) if metrics.interface_orientation == target => return Ok(metrics),
             Ok(metrics) => {
+                if ios27 {
+                    return Err(display_error(
+                        SimulatorDisplayErrorKind::AmbiguousOrientation,
+                        "a tela integrada do iOS 27 ainda não reflete a orientação solicitada — limitação do runtime; a rotação foi enviada, mas a confirmação fica pendente",
+                    ));
+                }
                 last_error = Some(display_error(
                     SimulatorDisplayErrorKind::InvalidDisplayMetrics,
                     &format!(
@@ -3273,11 +3444,16 @@ fn parse_simctl_display_metrics(
         }
         Some(value) => match parse_simctl_orientation(value) {
             Some(orientation) => orientation,
+            // Xcode 27 may keep reporting `Ambiguous` after the integrated
+            // display is already usable. Its pixel buffer still follows the
+            // rendered orientation, so derive the axis without touching the
+            // accessibility hierarchy that caused the prior XCTest crashes.
             None if value.eq_ignore_ascii_case("ambiguous") => {
-                return Err(display_error(
-                    SimulatorDisplayErrorKind::AmbiguousOrientation,
-                    "a orientação da tela integrada ainda está ambígua",
-                ));
+                if pixel_size.0 <= pixel_size.1 {
+                    WdaInterfaceOrientation::Portrait
+                } else {
+                    WdaInterfaceOrientation::LandscapeRight
+                }
             }
             None => {
                 return Err(display_error(
@@ -4223,7 +4399,7 @@ mod tests {
             &runner,
             "phone-17-pro",
             WdaInterfaceOrientation::LandscapeRight,
-            Instant::now() + Duration::from_secs(45),
+            Instant::now() + Duration::from_millis(50),
             true,
         )
         .unwrap_err();
@@ -4692,6 +4868,7 @@ mod tests {
             state: "Booted".into(),
             ios_version: "26.5".into(),
             family: IosSimulatorDeviceFamily::Iphone,
+            ownership: None,
         }
     }
 
@@ -5582,6 +5759,26 @@ mod tests {
     }
 
     #[test]
+    fn annotates_running_device_origin_without_claiming_powered_off_devices() {
+        let ledger = OwnershipLedger::in_memory();
+        ledger.mark_booted("owned-phone").unwrap();
+        let mut owned = test_device();
+        owned.udid = "owned-phone".into();
+        let mut external = test_device();
+        external.udid = "external-phone".into();
+        let mut powered_off = test_device();
+        powered_off.udid = "off-phone".into();
+        powered_off.state = "Shutdown".into();
+        let mut devices = vec![owned, external, powered_off];
+
+        annotate_device_ownership(&mut devices, &ledger);
+
+        assert_eq!(devices[0].ownership, Some(IosSimulatorOwnership::Verboo));
+        assert_eq!(devices[1].ownership, Some(IosSimulatorOwnership::External));
+        assert_eq!(devices[2].ownership, None);
+    }
+
+    #[test]
     fn parses_integrated_simulator_display_without_accessibility() {
         let output = br#"
     (3) Wireless:
@@ -5610,7 +5807,35 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_orientation_retries_until_integrated_display_is_ready() {
+    fn derives_ambiguous_integrated_orientation_from_its_pixel_shape() {
+        let portrait = parse_simctl_display_metrics(AMBIGUOUS_DISPLAY).unwrap();
+        assert_eq!(
+            portrait.interface_orientation,
+            WdaInterfaceOrientation::Portrait
+        );
+        assert_eq!(portrait.window_size.width, 402.0);
+        assert_eq!(portrait.window_size.height, 874.0);
+
+        let landscape = parse_simctl_display_metrics(
+            br#"
+    (1) LCD:
+        Screen Type: Integrated
+        Pixel Size: {2622, 1206}
+        Preferred UI Scale: 3
+        UI Orientation: Ambiguous
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            landscape.interface_orientation,
+            WdaInterfaceOrientation::LandscapeRight
+        );
+        assert_eq!(landscape.window_size.width, 874.0);
+        assert_eq!(landscape.window_size.height, 402.0);
+    }
+
+    #[test]
+    fn ambiguous_orientation_uses_pixel_shape_without_waiting_for_another_enumeration() {
         let runner = SequencedDisplayRunner::new(vec![AMBIGUOUS_DISPLAY, PORTRAIT_DISPLAY]);
         let metrics = wait_for_display_metrics(
             &runner,
@@ -5623,12 +5848,14 @@ mod tests {
             metrics.interface_orientation,
             WdaInterfaceOrientation::Portrait
         );
-        assert_eq!(runner.enumerate_calls(), 2);
+        assert_eq!(runner.enumerate_calls(), 1);
     }
 
     #[test]
     fn display_readiness_timeout_is_recoverable_and_keeps_device_context() {
-        let runner = SequencedDisplayRunner::repeating(AMBIGUOUS_DISPLAY);
+        let runner = SequencedDisplayRunner::repeating(
+            b"(3) Wireless:\nScreen Type: CarPlay\nPixel Size: {720, 480}\nPreferred UI Scale: 1",
+        );
         let error = wait_for_display_metrics(
             &runner,
             "phone-17-pro",
@@ -5637,7 +5864,10 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.recoverable);
-        assert_eq!(error.kind, SimulatorDisplayErrorKind::AmbiguousOrientation);
+        assert_eq!(
+            error.kind,
+            SimulatorDisplayErrorKind::IntegratedDisplayUnavailable
+        );
     }
 
     #[test]
@@ -6089,6 +6319,26 @@ mod tests {
     }
 
     #[test]
+    fn point_inspection_returns_one_generation_guarded_normalized_element() {
+        let service = service_with_active_wda(Arc::new(OkWdaClient));
+
+        let hit = service
+            .inspect_point_sync(1, NormalizedPoint { x: 0.25, y: 0.25 })
+            .unwrap()
+            .expect("one shallow point target");
+
+        assert_eq!(hit.element.label.as_deref(), Some("Save"));
+        assert!((hit.rect.x - (39.3 / 393.0)).abs() < 0.0001);
+        assert!((hit.rect.y - (85.2 / 852.0)).abs() < 0.0001);
+        assert!((hit.rect.width - (78.6 / 393.0)).abs() < 0.0001);
+        assert!((hit.rect.height - (42.6 / 852.0)).abs() < 0.0001);
+        assert!(service
+            .inspect_point_sync(2, NormalizedPoint { x: 0.25, y: 0.25 })
+            .unwrap_err()
+            .contains("outra sessão"));
+    }
+
+    #[test]
     fn input_queue_prevents_text_from_overtaking_a_blocked_tap() {
         let client = Arc::new(BlockingInputWdaClient::new());
         let service = service_with_active_wda(client.clone());
@@ -6160,6 +6410,49 @@ mod tests {
         assert_eq!(harness.wda_stops(), 1);
         assert!(harness.shutdown_udids().is_empty());
         harness.release_blocked_wda();
+    }
+
+    #[test]
+    fn explicit_external_shutdown_stops_workers_and_shuts_down_only_the_exact_attached_udid() {
+        let harness = ActiveSessionHarness::new(IosSimulatorOwnership::External);
+        let ledger_before = harness.ledger.owned_udids();
+
+        harness
+            .service
+            .end_external_sync("phone-17-pro")
+            .unwrap();
+
+        assert!(harness.stop_happened_before_shutdown());
+        assert_eq!(harness.shutdown_udids(), vec!["phone-17-pro"]);
+        assert_eq!(harness.ledger.owned_udids(), ledger_before);
+        harness.release_blocked_wda();
+    }
+
+    #[test]
+    fn explicit_external_shutdown_rejects_owned_or_mismatched_devices_without_touching_them() {
+        let owned = ActiveSessionHarness::new(IosSimulatorOwnership::Verboo);
+        let owned_ledger_before = owned.ledger.owned_udids();
+
+        let owned_error = owned
+            .service
+            .end_external_sync("phone-17-pro")
+            .unwrap_err();
+
+        assert!(owned_error.contains("externo"));
+        assert!(owned.shutdown_udids().is_empty());
+        assert_eq!(owned.ledger.owned_udids(), owned_ledger_before);
+        owned.release_blocked_wda();
+
+        let external = ActiveSessionHarness::new(IosSimulatorOwnership::External);
+        let mismatched_error = external
+            .service
+            .end_external_sync("another-device")
+            .unwrap_err();
+
+        assert!(mismatched_error.contains("anexado"));
+        assert!(external.shutdown_udids().is_empty());
+        assert!(external.ledger.owned_udids().is_empty());
+        external.release_blocked_wda();
     }
 
     #[test]
@@ -6401,6 +6694,7 @@ mod tests {
                 state: "Booted".into(),
                 ios_version: "26.5".into(),
                 family: IosSimulatorDeviceFamily::Iphone,
+                ownership: Some(IosSimulatorOwnership::Verboo),
             };
             service.ownership.mark_booted("owned-phone").unwrap();
             service
@@ -6583,6 +6877,7 @@ mod tests {
                         state: "Shutdown".into(),
                         ios_version: "26.5".into(),
                         family: IosSimulatorDeviceFamily::Iphone,
+                        ownership: Some(IosSimulatorOwnership::Verboo),
                     },
                     ownership: IosSimulatorOwnership::Verboo,
                     boot_required: true,
