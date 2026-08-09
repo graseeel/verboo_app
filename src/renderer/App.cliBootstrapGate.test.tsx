@@ -70,7 +70,7 @@ let bridge: ReturnType<typeof createBridge>
 
 function createBridge() {
   const unsubscribe = () => {}
-  return new Proxy({
+  const knownBridge = {
     getUserSettings: vi.fn(async () => settings),
     updateUserSettings: vi.fn(async () => settings),
     getConfig: vi.fn(async () => ({ workingDirectory: '', accessMode: 'approval', platform: 'darwin' })),
@@ -106,9 +106,10 @@ function createBridge() {
     updateMenuBar: vi.fn(async () => {}),
     heartbeatMenuBar: vi.fn(async () => {}),
     providerAuthStatus: vi.fn(async () => []),
-  } as Record<PropertyKey, unknown>, {
+  }
+  return new Proxy(knownBridge, {
     get(target, property) {
-      if (property in target) return target[property]
+      if (property in target) return Reflect.get(target, property)
       return vi.fn(async () => undefined)
     },
   })
