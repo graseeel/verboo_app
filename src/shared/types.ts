@@ -633,6 +633,7 @@ export type ModelDiscoveryResult = {
   source: 'cli' | 'api-key' | 'cache' | 'none'
   stale: boolean
   error?: string
+  providerError?: string
 }
 
 export type CustomSlashCommand = {

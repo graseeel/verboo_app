@@ -62,6 +62,7 @@ impl ModelService {
                             source: "cache".into(),
                             stale: false,
                             error: None,
+                            provider_error: None,
                         }));
                     }
                 }
@@ -80,6 +81,7 @@ impl ModelService {
                         source: "api-key".into(),
                         stale: false,
                         error: None,
+                        provider_error: None,
                     }));
                 }
                 Err(e) => {
@@ -100,6 +102,7 @@ impl ModelService {
                             .into()
                     }),
                 ),
+                provider_error: None,
             }));
         }
 
@@ -112,6 +115,7 @@ impl ModelService {
                     "Entre com Verboo pelo CLI/app ou configure uma chave API.".into()
                 }),
             ),
+            provider_error: None,
         }))
     }
 
@@ -186,13 +190,13 @@ struct CachedModels {
 /// feature degrada, o app não quebra.
 fn attach_provider_models(mut result: ModelDiscoveryResult) -> ModelDiscoveryResult {
     match provider_catalog::list_provider_models() {
-        Ok(provider_models) if !provider_models.is_empty() => {
-            result.models.extend(provider_models);
-            result.models = dedup_and_merge_models(result.models);
+        Ok(provider_models) => {
+            if !provider_models.is_empty() {
+                result.models.extend(provider_models);
+                result.models = dedup_and_merge_models(result.models);
+            }
         }
-        _ => {
-            // Degrada: catálogo atual.
-        }
+        Err(error) => result.provider_error = Some(error),
     }
     result
 }
@@ -929,6 +933,7 @@ mod tests {
             source: "api-key".into(),
             stale: false,
             error: None,
+            provider_error: None,
         }
     }
 
@@ -956,6 +961,10 @@ mod tests {
             3,
             "1 modelo verboo do router + 2 modelos de provedor do CLI"
         );
+        assert!(
+            merged.provider_error.is_none(),
+            "uma listagem saudável não deve inventar aviso de provedor"
+        );
     }
 
     #[test]
@@ -974,6 +983,14 @@ mod tests {
             "falha da listagem do CLI → o catálogo atual continua como hoje (sem provedores)"
         );
         assert_eq!(merged.models[0].provider, None, "provider implícito verboo");
+        assert!(
+            merged
+                .provider_error
+                .as_deref()
+                .is_some_and(|error| error.contains("não retornou modelos")),
+            "a degradação precisa ser explícita para o renderer: {:?}",
+            merged.provider_error
+        );
     }
 
     /// (a) duas entradas do mesmo id → UMA com os campos das duas fontes.

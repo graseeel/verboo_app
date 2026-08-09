@@ -88,6 +88,37 @@ beforeEach(() => {
 })
 
 describe('ModelSelector — Codex rows + effort drill-in', () => {
+  it('warns when provider refresh fails while keeping Verboo models selectable', () => {
+    const onSelect = vi.fn()
+    const providerFailure = {
+      ...discoveryOk,
+      models: [baseModel],
+      providerError: 'O CLI não retornou modelos de provedor.',
+    }
+
+    render(
+      <ModelSelector
+        models={providerFailure.models}
+        selectedModel="glm-5.2"
+        modelResult={providerFailure}
+        onSelect={onSelect}
+        onRefresh={() => {}}
+      />,
+    )
+
+    openMenu()
+    expect(screen.getByText(
+      /Provider models couldn't be refreshed|Não foi possível atualizar os modelos dos provedores/,
+    )).toBeVisible()
+
+    const modelRow = [...document.querySelectorAll<HTMLButtonElement>('.model-row')]
+      .find(button => /Model|Modelo/.test(button.textContent ?? ''))!
+    fireEvent.click(modelRow)
+    fireEvent.click(document.querySelector<HTMLButtonElement>('.model-option')!)
+
+    expect(onSelect).toHaveBeenCalledWith('glm-5.2')
+  })
+
   it('renders pill label "Model · effort" using effective effort', () => {
     render(
       <ModelSelector

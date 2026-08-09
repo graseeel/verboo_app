@@ -660,6 +660,7 @@ mod tests {
             source: "router".into(),
             stale: false,
             error: None,
+            provider_error: None,
         }
     }
 

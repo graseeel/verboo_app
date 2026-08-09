@@ -661,6 +661,11 @@ pub struct ModelDiscoveryResult {
     pub source: String,
     pub stale: bool,
     pub error: Option<String>,
+    /// A falha do catálogo de Claude/Codex não invalida os modelos Verboo.
+    /// Mantemos os canais separados para a UI explicar a degradação sem
+    /// transformar uma descoberta base saudável em erro global.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

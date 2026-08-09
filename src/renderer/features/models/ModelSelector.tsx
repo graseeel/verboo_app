@@ -118,6 +118,9 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
   const activeIndex = flat.length ? Math.min(highlighted, flat.length - 1) : 0
   const selectedTone = displayed ? modelToneStyle(displayed.id) : undefined
   const statusMessage = modelStatusMessage(modelResult, t)
+  const providerStatusMessage = modelResult.providerError
+    ? t('model.providerRefreshError')
+    : undefined
   const showEffortRow = Boolean(selected && selectedEffortLevels.length > 0)
   // Portal sits outside wrapRef — treat pill + menu as the dismiss boundary.
   useEffect(() => {
@@ -238,6 +241,12 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
                 <div className={`model-menu-status ${modelResult.stale && models.length > 0 ? 'subtle' : ''}`}>
                   <span>{statusMessage}</span>
                   {modelResult.stale && models.length > 0 && <small>{t('model.usingSaved')}</small>}
+                </div>
+              )}
+
+              {providerStatusMessage && (
+                <div className="model-menu-status subtle" role="status">
+                  <span>{providerStatusMessage}</span>
                 </div>
               )}
 
