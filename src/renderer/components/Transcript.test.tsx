@@ -677,10 +677,12 @@ describe('T7: a linha de Sistema nunca é verde — erro usa a linguagem de erro
     expect(article).not.toHaveClass('is-turn-error')
   })
 
-  // T7 CSS: a regra .message-row.system (base) não pode referenciar --green,
-  // e a variante .is-turn-error deve usar --danger (não --green). Pina a
-  // regressão: se alguém reintroduzir o verde, o teste falha.
-  it('CSS: .message-row.system base é neutra (sem --green) e .is-turn-error usa --danger (sem --green)', () => {
+  // T7/T23 CSS: a regra .message-row.system (base) não pode referenciar --green.
+  // T23 removed the .is-turn-error variant entirely — the error message is
+  // now the model's natural response (appendAssistantText), not a "Sistema"
+  // badge. Pin that the colored band is gone: if someone reintroduces
+  // .message-row.system.is-turn-error, the test fails.
+  it('CSS: .message-row.system base é neutra (sem --green) e .is-turn-error foi removida (T23)', () => {
     const here = dirname(fileURLToPath(import.meta.url))
     const css = readFileSync(resolve(here, '../styles/surfaces.css'), 'utf8')
 
@@ -689,10 +691,8 @@ describe('T7: a linha de Sistema nunca é verde — erro usa a linguagem de erro
     expect(baseMatch, '.message-row.system base rule must exist').toBeTruthy()
     expect(baseMatch![1], 'base .message-row.system must not paint green (field photo)').not.toMatch(/--green/)
 
-    // Error variant: .message-row.system.is-turn-error { ... }
+    // T23: the .is-turn-error variant must NOT exist — the colored band is gone.
     const errorMatch = css.match(/\.message-row\.system\.is-turn-error\s*\{([^}]*)\}/)
-    expect(errorMatch, '.message-row.system.is-turn-error variant must exist').toBeTruthy()
-    expect(errorMatch![1], 'error variant must use the app danger language').toMatch(/--danger/)
-    expect(errorMatch![1], 'error variant must not paint green').not.toMatch(/--green/)
+    expect(errorMatch, '.message-row.system.is-turn-error must be removed (T23: no colored badge)').toBeNull()
   })
 })

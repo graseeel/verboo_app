@@ -1780,18 +1780,10 @@
   width: min(960px, calc(100% - 44px));
 }
 
-/* T7/T17: a linha de Sistema carrega erro (id termina em :error,
- * Transcript.tsx isTurnError). O cartao vermelho pesado SAIU (field photo
- * do dono: "essa barra/card vermelho tem que sair! senao o transcript fica
- * muito sujo/feio"). Substituido por uma marca sutil: apenas uma borda
- * esquerda fina em --danger, sem fundo, sem borda completa. Usa a linguagem
- * de erro do app (--danger, nunca --green) — o T7 pin continua valendo. */
-.message-row.system.is-turn-error {
-  border-color: transparent;
-  background: transparent;
-  border-left: 2px solid color-mix(in srgb, var(--danger) 55%, transparent);
-  padding-left: 10px;
-}
+/* T23: the colored "Sistema" badge (.is-turn-error) is gone — the error
+ * message is now the model's natural response (appendAssistantText), not a
+ * role:system row. Old conversations with persisted role:system items keep
+ * the "Sistema" label (Transcript.tsx message-meta) but no colored band. */
 
 /* ── Settings — Avatar picker ─────────────────────────────── */
 .settings-avatar-section { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }

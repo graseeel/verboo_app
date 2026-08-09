@@ -262,7 +262,14 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
           )}
 
       {!streaming && finalText && (
-        <div className="step-text turn-recap" data-annotation-segment={finalTextItem?.id}><ApiErrorAwareText text={finalText} account={providerAccountName(turnProvider, t)} onStartNewConversation={onStartNewConversation} /></div>
+        <div className="step-text turn-recap" data-annotation-segment={finalTextItem?.id}>
+          <ApiErrorAwareText text={finalText} account={providerAccountName(turnProvider, t)} onStartNewConversation={onStartNewConversation} />
+          {/* T23: the technical-detail toggle rides on the turn body (the
+           * errorDetail is stamped on the final text segment by App.tsx).
+           * The StepFlow hides the final text item (hideFinalTextId), so the
+           * toggle must render here in the turn-recap alongside the headline. */}
+          {finalTextItem?.errorDetail && <TurnErrorDetails detail={finalTextItem.errorDetail} />}
+        </div>
       )}
 
       {/* G-C15-TS: goal-completion usage line, rendered inline after the

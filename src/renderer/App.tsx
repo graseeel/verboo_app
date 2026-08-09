@@ -2196,14 +2196,13 @@ export function App() {
           // interrupt; quotaResetTurnsRef suppresses its duplicate item (the
           // quota message already told the user).
           quotaResetTurnsRef.current.add(event.turnId)
-          appendConversationItem(conversationId, {
-            id: `${event.turnId}:error`,
-            role: 'system',
-            text: shouldSuppressSystemErrorText(turnAssistantText.current[event.turnId] ?? '')
-              ? ''
-              : quotaMessage,
-            timestamp: Date.now(),
-          })
+          // T23: the quota message is the model's natural response, not a
+          // "Sistema" badge. appendAssistantText puts it in the turn body
+          // (same segment the model's own text would use); the turn header
+          // + "Trabalhou" sit above it as a normal response. No second block,
+          // no colored band. finishAssistantMessage closes the segment when
+          // the interrupt's error/done event lands (:2574 / :2771).
+          appendAssistantText(conversationId, event.turnId, quotaMessage)
           void interruptForUser(conversationId)
           setApiRetryByTurn(prev => clearApiRetryNotice(prev, event.turnId))
           return
@@ -2549,19 +2548,51 @@ export function App() {
         // ApiErrorAwareText render a parsed headline?) rather than raw-text
         // containment.
         if (!willContinueAutomatically && !isQuotaResetInterrupt) {
-          const headline = isContextOverflow
-            ? `${t('context.overflowDetected')}\n\n${errorPresentation.text}`
-            : errorPresentation.text
-          appendConversationItem(conversationId, {
-            id: `${event.turnId}:error`,
-            role: 'system',
-            text: shouldSuppressSystemErrorText(turnAssistantText.current[event.turnId] ?? '')
-              ? ''
-              : headline,
-            errorDetail: errorPresentation.technicalDetail,
-            presentation: errorPresentation.presentation,
-            timestamp: Date.now(),
-          })
+          if (errorPresentation.presentation === 'interruption') {
+            // User-requested interruption: already renders as assistant (no
+            // "Sistema" label, no badge — Transcript.tsx visualRole override).
+            // Keep the system row; the T19 guard still suppresses its text
+            // when the body already carries a parseable API error.
+            appendConversationItem(conversationId, {
+              id: `${event.turnId}:error`,
+              role: 'system',
+              text: shouldSuppressSystemErrorText(turnAssistantText.current[event.turnId] ?? '')
+                ? ''
+                : errorPresentation.text,
+              errorDetail: errorPresentation.technicalDetail,
+              presentation: 'interruption',
+              timestamp: Date.now(),
+            })
+          } else {
+            // T23: the error message is the model's natural response, not a
+            // "Sistema" badge. Two sub-paths:
+            //  - bodyHasRawError: the CLI already sent the raw API error line
+            //    as assistant text (isApiErrorMessage flag); ApiErrorAwareText
+            //    in the turn-recap parses it into the readable headline (+ the
+            //    "Começar nova conversa" button for thinking-400). Just attach
+            //    errorDetail so the technical-detail toggle rides on the turn.
+            //  - !bodyHasRawError: no assistant text arrived. Put the message
+            //    as assistant text. For thinking-400 / quota 429 the raw API
+            //    Error line (technicalDetail) is what ApiErrorAwareText parses;
+            //    for other errors the readable headline is the response.
+            const bodyHasRawError = shouldSuppressSystemErrorText(turnAssistantText.current[event.turnId] ?? '')
+            const headline = isContextOverflow
+              ? `${t('context.overflowDetected')}\n\n${errorPresentation.text}`
+              : errorPresentation.text
+            if (!bodyHasRawError) {
+              // If the technicalDetail is itself a parseable API error line
+              // (e.g. thinking-400 arriving as a single-line error event),
+              // put it raw so ApiErrorAwareText in the turn-recap parses it
+              // into the readable headline (+ the "Começar nova conversa"
+              // button for thinking-400). Otherwise the technicalDetail is a
+              // multi-line blob (or undefined) — put the readable headline so
+              // the user sees the message, not the raw blob.
+              const rawDetail = errorPresentation.technicalDetail
+              const text = rawDetail && shouldSuppressSystemErrorText(rawDetail) ? rawDetail : headline
+              appendAssistantText(conversationId, event.turnId, text)
+            }
+            stampErrorDetailOnAssistantText(conversationId, event.turnId, errorPresentation.technicalDetail)
+          }
         }
       }
       // Capture partial assistant text BEFORE cleanup, so it can be appended
@@ -2592,17 +2623,12 @@ export function App() {
         void runTurn(retry, { skipResume: true }).catch(error => {
           const message = error instanceof Error ? error.message : String(error)
           const retryTurnId = retry.request.turnId ?? ''
-          appendConversationItem(conversationId, {
-            id: `${retryTurnId}:error`,
-            role: 'system',
-            text: shouldSuppressSystemErrorText(turnAssistantText.current[retryTurnId] ?? '')
-              ? ''
-              : message,
-            errorDetail: shouldSuppressSystemErrorText(turnAssistantText.current[retryTurnId] ?? '')
-              ? message
-              : undefined,
-            timestamp: Date.now(),
-          })
+          // T23: the retry error is the model's natural response, not a
+          // "Sistema" badge. runTurn rejected before any stdout (T19 proved
+          // the body is always empty), so appendAssistantText creates a fresh
+          // segment; finishAssistantMessage closes it.
+          appendAssistantText(conversationId, retryTurnId, message)
+          finishAssistantMessage(conversationId, retryTurnId)
           if (turnCompletionDeferred.current === completionDeferred) {
             completionDeferred?.reject(error)
             turnCompletionDeferred.current = undefined
@@ -2642,14 +2668,14 @@ export function App() {
           overflowRecovering.current.delete(conversationId)
           const recoveryHeadline = t(willRecoverAuth ? 'auth.recoveryFailed' : 'context.recoveryFailed', { message })
           const resumeTurnId = resume.request.turnId ?? ''
-          const suppress = shouldSuppressSystemErrorText(turnAssistantText.current[resumeTurnId] ?? '')
-          appendConversationItem(conversationId, {
-            id: `${resumeTurnId}:error`,
-            role: 'system',
-            text: suppress ? '' : recoveryHeadline,
-            errorDetail: suppress ? message : undefined,
-            timestamp: Date.now(),
-          })
+          // T23: the recovery error is the model's natural response, not a
+          // "Sistema" badge. runTurn rejected before any stdout (T19 proved
+          // the body is always empty), so appendAssistantText creates a fresh
+          // segment; finishAssistantMessage closes it. The headline already
+          // carries the raw message (interpolated by the i18n key), so no
+          // separate errorDetail toggle is needed.
+          appendAssistantText(conversationId, resumeTurnId, recoveryHeadline)
+          finishAssistantMessage(conversationId, resumeTurnId)
           flashPet('error')
           if (turnCompletionDeferred.current === completionDeferred) {
             completionDeferred?.reject(error)
@@ -5088,6 +5114,21 @@ export function App() {
       updatedAt: Date.now(),
     }))
     delete turnModels.current[turnId]
+  }
+
+  /** T23: stamp errorDetail on the turn's open assistant text segment so the
+   *  "Mostrar detalhes técnicos" toggle (TurnErrorDetails, Transcript.tsx:461)
+   *  renders on the turn body — not a separate "Sistema" badge. No-op when
+   *  there is no open segment or no detail to attach. */
+  function stampErrorDetailOnAssistantText(conversationId: string, turnId: string, errorDetail: string | undefined) {
+    if (!errorDetail) return
+    const segId = turnOpenTextSegment.current[turnId]
+    if (!segId) return
+    updateConversation(conversationId, conversation => ({
+      ...conversation,
+      items: conversation.items.map(item => item.id === segId ? { ...item, errorDetail } : item),
+      updatedAt: Date.now(),
+    }))
   }
 
   /** Remove all transcript rows belonging to a turn (text segments, thinking, etc.). */

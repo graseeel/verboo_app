@@ -328,7 +328,7 @@ describe('App — provider quota-error UX (field defect)', () => {
     expect(thinkingRow?.textContent).not.toContain('Thinking...')
   })
 
-  it('terminal quota error: readable headline in the system row ONCE, raw diagnostic collapsed, provider in the header', async () => {
+  it('terminal quota error: readable headline in the turn body ONCE, raw diagnostic collapsed, provider in the header', async () => {
     seedConversation()
     const { emitAgentEvent, turnId } = await renderAppAndSendTurn()
 
@@ -341,32 +341,30 @@ describe('App — provider quota-error UX (field defect)', () => {
       expect(turnArticle().querySelector('.message-meta')?.textContent).toContain('Codex')
     })
 
-    // T17: the readable headline lives in the system row (subtle notice), NOT
-    // in the assistant body. Before T17, the CLI forwarded the raw API error
-    // as assistant text and ApiErrorAwareText parsed it into the SAME headline
-    // that the error handler placed in the system row — the same sentence
-    // twice. The stdout suppression (turnApiErrorTextRef) keeps the raw error
-    // out of the assistant body so the headline appears only in the system row.
+    // T23: the readable headline lives in the turn body as the model's natural
+    // response (ApiErrorAwareText parses the raw API error line the CLI sent
+    // as assistant text). No "Sistema" badge, no colored band. The headline
+    // appears EXACTLY ONCE — the stdout suppression (turnApiErrorTextRef)
+    // keeps the raw error from landing a second time in the body.
     const readable = 'Usage limit reached on your ChatGPT account (plus plan). Renews in ~20 hours.'
     await waitFor(() => {
-      expect(systemRow().textContent).toContain(readable)
+      expect(turnArticle().textContent).toContain(readable)
     })
-    // The turn container's assistant text does NOT carry the readable headline
-    // (no ApiErrorAwareText parsing — the raw error was suppressed from stdout).
-    expect(turnArticle().textContent?.match(/Usage limit reached/g) ?? []).toHaveLength(0)
-    // No raw JSON in the assistant body.
-    expect(turnArticle().textContent).not.toContain('usage_limit_reached')
-
-    // System row: readable headline; the raw diagnostic blob only behind a
-    // CLOSED details element.
-    const row = systemRow()
-    expect(row.textContent).toContain(readable)
-    const details = row.querySelector('details')
+    const occurrences = (document.body.textContent ?? '').split(readable).length - 1
+    expect(occurrences).toBe(1)
+    // No "Sistema" row — the message is the model's response, not a system badge.
+    expect(document.querySelectorAll('article.message-row.system')).toHaveLength(0)
+    // No colored band (T23 removed .is-turn-error from the DOM path).
+    expect(document.querySelectorAll('article.is-turn-error')).toHaveLength(0)
+    // No raw JSON in the visible turn body text (ApiErrorAwareText replaced
+    // it with the readable headline). The raw error IS in the <details> toggle
+    // (closed, not visible) — exclude it from the check.
+    const details = turnArticle().querySelector('details')
     expect(details).toBeTruthy()
     expect(details?.hasAttribute('open')).toBe(false)
     expect(details?.textContent).toContain('usage_limit_reached')
-    const rowWithoutDetails = (row.textContent ?? '').replace(details?.textContent ?? '', '')
-    expect(rowWithoutDetails).not.toContain('usage_limit_reached')
+    const visibleText = (turnArticle().textContent ?? '').replace(details?.textContent ?? '', '')
+    expect(visibleText).not.toContain('usage_limit_reached')
   })
 
   it('header keeps the provider even when the catalog degrades mid-turn (429 storm kills the provider CLI read)', async () => {
@@ -408,7 +406,8 @@ describe('App — provider quota-error UX (field defect)', () => {
     })
 
     await waitFor(() => {
-      expect(systemRow().textContent).toContain('Limite de uso da sua conta ChatGPT (plano plus) atingido. Renova em ~20 horas.')
+      // T23: the readable quota message lives in the turn body, not a system row.
+      expect(turnArticle().textContent).toContain('Limite de uso da sua conta ChatGPT (plano plus) atingido. Renova em ~20 horas.')
     })
   })
 
@@ -424,13 +423,13 @@ describe('App — provider quota-error UX (field defect)', () => {
       for (const event of quotaFailureEvents(turnId)) emitAgentEvent(event)
     })
 
-    // T17: the readable headline lives in the system row (subtle notice).
+    // T23: the readable headline lives in the turn body (model's response).
     const readable = 'Usage limit reached on your Claude account (plus plan). Renews in ~20 hours.'
     await waitFor(() => {
-      expect(systemRow().textContent).toContain(readable)
+      expect(turnArticle().textContent).toContain(readable)
     })
-    expect(systemRow().textContent).not.toContain('Verboo account')
-    expect(systemRow().textContent).not.toContain('ChatGPT')
+    expect(turnArticle().textContent).not.toContain('Verboo account')
+    expect(turnArticle().textContent).not.toContain('ChatGPT')
   })
 
   // T2 — the header in the error path is byte-identical to the success path:
@@ -452,11 +451,12 @@ describe('App — provider quota-error UX (field defect)', () => {
 
   // T17a — Codex terminal error path: the CLI emits the raw API error as
   // assistant text (forwarded as stdout) AND as the error event's message.
-  // The raw diagnostic must appear ONCE — in the system row's collapsed
-  // technical-detail toggle, never in the assistant body. The readable
-  // headline (account name + reset window) is the only thing the user reads
-  // first. Mutation: remove the turnApiErrorTextRef suppression in the stdout
-  // handler — the raw error lands in the body AND the toggle (duplication).
+  // The readable headline (account name + reset window) must appear EXACTLY
+  // ONCE — in the turn body as the model's response (ApiErrorAwareText parses
+  // the raw line). The raw diagnostic rides behind the errorDetail toggle on
+  // the assistant segment. Mutation: remove the turnApiErrorTextRef suppression
+  // in the stdout handler — the raw error lands twice in the body and
+  // ApiErrorAwareText parses both → headline appears twice.
   it('T17a: Codex terminal error — raw API error NOT duplicated in the assistant body', async () => {
     seedConversation()
     const { emitAgentEvent, turnId } = await renderAppAndSendTurn()
@@ -466,31 +466,30 @@ describe('App — provider quota-error UX (field defect)', () => {
     })
 
     const readable = 'Usage limit reached on your ChatGPT account (plus plan). Renews in ~20 hours.'
-    await waitFor(() => { expect(systemRow().textContent).toContain(readable) })
+    await waitFor(() => { expect(turnArticle().textContent).toContain(readable) })
 
-    // T17a: the readable headline must appear EXACTLY ONCE in the transcript.
-    // Before T17, the CLI forwarded the raw API error as assistant text (via
-    // stdout), and ApiErrorAwareText in the turn-recap parsed it into the
-    // SAME readable headline that the error handler placed in the system row —
-    // the same sentence twice. The turnApiErrorTextRef suppression in the
-    // stdout handler (App.tsx) keeps the raw error out of the assistant body
-    // so ApiErrorAwareText has nothing to parse; the headline lives only in
-    // the system row. Mutation: remove the suppression — the headline appears
-    // twice (turn-recap + system row).
+    // T17a/T23: the readable headline appears EXACTLY ONCE in the transcript.
+    // The turnApiErrorTextRef suppression keeps the raw error from landing a
+    // second time in the body so ApiErrorAwareText parses it once.
     const allText = document.body.textContent ?? ''
     const occurrences = allText.split(readable).length - 1
     expect(occurrences).toBe(1)
-    // The raw error IS available in the system row's technical detail toggle.
-    expect(systemRow().textContent).toContain(API_ERROR_TEXT)
+    // No "Sistema" row — the message is the model's response (T23).
+    expect(document.querySelectorAll('article.message-row.system')).toHaveLength(0)
+    // The raw error IS available in the errorDetail toggle on the assistant segment.
+    const details = turnArticle().querySelector('details')
+    expect(details).toBeTruthy()
+    expect(details?.textContent).toContain(API_ERROR_TEXT)
   })
 
   // T17b — Claude T13 fast failure path: the error event arrives WITHOUT a
-  // prior stdout (no assistant text emitted). The readable headline must be
-  // visible in the system row, and the heavy red card is gone — the system
-  // row carries the subtle .is-turn-error notice (left border, transparent
-  // background — pinned in surfaces.css T7/T17). Mutation: remove the system
-  // row append in the error handler — the message vanishes from the transcript.
-  it('T17b: Claude fast failure — readable message visible in the subtle system row, no heavy card', async () => {
+  // prior stdout (no assistant text emitted). T23: the readable headline must
+  // be visible in the turn body as the model's response (the error handler
+  // puts the raw error line into appendAssistantText; ApiErrorAwareText in
+  // the turn-recap parses it into the readable headline). No "Sistema" badge,
+  // no colored band. Mutation: remove the appendAssistantText call in the
+  // error handler — the message vanishes from the transcript.
+  it('T17b: Claude fast failure — readable message visible in the turn body, no system badge', async () => {
     activeCatalog = [verbooUltra, claudeSonnet]
     settingsStore = { ...baseSettings(), lastSelectedModelId: 'claude-sonnet-4.6' }
     seedConversation()
@@ -508,27 +507,29 @@ describe('App — provider quota-error UX (field defect)', () => {
     })
 
     const readable = 'Usage limit reached on your Claude account (plus plan). Renews in ~20 hours.'
-    await waitFor(() => { expect(systemRow().textContent).toContain(readable) })
-    // The subtle notice class is present (T7/T17 CSS pins the transparent
-    // background + left border — no heavy red card).
-    expect(systemRow().classList.contains('is-turn-error')).toBe(true)
-    // The raw error is NOT in the assistant body (no stdout was emitted).
-    const assistantRows = [...document.querySelectorAll('article.message-row.assistant')]
-    for (const row of assistantRows) {
-      expect(row.textContent).not.toContain(API_ERROR_TEXT)
-    }
+    await waitFor(() => { expect(turnArticle().textContent).toContain(readable) })
+    // T23: no "Sistema" row, no colored band — the message is the model's response.
+    expect(document.querySelectorAll('article.message-row.system')).toHaveLength(0)
+    expect(document.querySelectorAll('article.is-turn-error')).toHaveLength(0)
+    // The raw error is NOT bare in the visible turn body text (ApiErrorAwareText
+    // replaced it with the readable headline); it IS in the <details> toggle
+    // (closed, not visible) — exclude it from the check.
+    const details = turnArticle().querySelector('details')
+    expect(details).toBeTruthy()
+    expect(details?.textContent).toContain(API_ERROR_TEXT)
+    const visibleText = (turnArticle().textContent ?? '').replace(details?.textContent ?? '', '')
+    expect(visibleText).not.toContain(API_ERROR_TEXT)
   })
 
   // T18 — thinking-block 400 duplication (sister to T17a that survived).
   // The CLI forwards the raw 400 as assistant text (via stdout, WITHOUT an
   // isApiErrorMessage flag), and ApiErrorAwareText in the turn-recap parses
-  // it into the SAME "Esta conversa não pode continuar..." headline that
-  // the error handler places in the system row — the same sentence twice.
-  // The bodyHasRawError guard in the error handler suppresses the system
-  // row's text so the headline appears only once (in the body, via
-  // ApiErrorAwareText, with its "Start new conversation" exit). The raw
-  // diagnostic stays in the collapsed toggle. Mutation: remove the
-  // bodyHasRawError guard — the headline appears twice (body + system row).
+  // it into the "Esta conversa não pode continuar..." headline with its
+  // "Começar nova conversa" exit. T23: the error handler stamps errorDetail
+  // on the assistant segment (the body already has the raw error); no system
+  // row is created. The headline appears ONCE. Mutation: remove the
+  // bodyHasRawError branch — appendAssistantText duplicates the raw error in
+  // the body and ApiErrorAwareText parses both → headline appears twice.
   it('T18: thinking-block 400 — headline appears ONCE, raw diagnostic in the toggle', async () => {
     settingsStore = { ...baseSettings(), language: 'pt-BR' }
     seedConversation()
@@ -547,32 +548,31 @@ describe('App — provider quota-error UX (field defect)', () => {
       })
     })
 
-    // The headline appears EXACTLY ONCE in the document — in the body via
-    // ApiErrorAwareText, NOT duplicated in the system row.
+    // The headline appears EXACTLY ONCE in the document — in the turn body via
+    // ApiErrorAwareText, NOT duplicated in a system row.
     const headline = 'Esta conversa não pode continuar'
     await waitFor(() => {
       const allText = document.body.textContent ?? ''
       const occurrences = allText.split(headline).length - 1
       expect(occurrences).toBe(1)
     })
-    // The raw error IS available in the system row's technical detail toggle.
-    expect(systemRow().textContent).toContain('invalid_request_error')
+    // T23: no "Sistema" row — the message is the model's response.
+    expect(document.querySelectorAll('article.message-row.system')).toHaveLength(0)
+    // The raw error IS available in the errorDetail toggle on the assistant segment.
+    const details = turnArticle().querySelector('details')
+    expect(details).toBeTruthy()
+    expect(details?.textContent).toContain('invalid_request_error')
   })
 
-  // T19-retry — covers the retry-error system row at App.tsx:2594 (the
-  // `.catch` handler when `runTurn(retry)` rejects). The guard
-  // shouldSuppressSystemErrorText is applied here, but the suppression is
-  // UNREACHABLE today: runTurn rejects only when sendTurn (or
-  // prepareRequestWithResearchSubagents) rejects — BEFORE any stdout events
-  // are emitted for the retry turn. So turnAssistantText[retryTurnId] is
-  // always empty, parseApiErrorText('') returns undefined, and the guard
-  // always returns false. This test PROVES the unreachability: the path is
-  // reached (system row appended), the text is NOT suppressed (guard
-  // returned false), and the headline appears exactly once.
-  // Mutation: replace shouldSuppressSystemErrorText(...) with true at the
-  // retry call site — text becomes '' and the headline vanishes from the
-  // system row → occurrence count drops to 0 → test fails.
-  it('T19-retry: retry-error system row — headline ONCE, guard applied but unreachable for suppression', async () => {
+  // T19-retry — covers the retry-error path at App.tsx:2594 (the `.catch`
+  // handler when `runTurn(retry)` rejects). T23: the error message is the
+  // model's natural response (appendAssistantText), not a "Sistema" badge.
+  // runTurn rejects before any stdout, so the body is empty and
+  // appendAssistantText creates a fresh segment; ApiErrorAwareText in the
+  // turn-recap parses the raw API error line into the readable headline.
+  // No system row, no errorDetail toggle (path 3 stamps none).
+  // Mutation: remove the appendAssistantText call — the message vanishes.
+  it('T19-retry: retry error — headline in the turn body, no system row', async () => {
     seedConversation()
     const { emitAgentEvent, turnId, sendTurn } = await renderAppAndSendTurn()
 
@@ -590,19 +590,15 @@ describe('App — provider quota-error UX (field defect)', () => {
       })
     })
 
+    // T23: the thinking-400 headline appears in the turn body (ApiErrorAwareText
+    // parsed the raw error line), not in a system row.
+    const headline = 'This conversation can\'t continue'
     await waitFor(() => {
-      const rows = [...document.querySelectorAll('article.message-row.system')]
-      expect(rows.some(r => r.textContent?.includes(RETRY_ERROR))).toBe(true)
+      expect(document.body.textContent).toContain(headline)
     })
-    // The guard returned false (body is empty — runTurn rejected before any
-    // stdout) — text is the raw error, NO toggle (errorDetail is undefined).
-    // This is the unreachability proof: if the guard had fired, text would be
-    // '' and a <details> toggle would carry the raw error instead.
-    const retryRow = [...document.querySelectorAll('article.message-row.system')]
-      .find(r => r.textContent?.includes(RETRY_ERROR)) as HTMLElement | undefined
-    expect(retryRow?.querySelector('details')).toBeNull()
-    const occurrences = (document.body.textContent ?? '').split(RETRY_ERROR).length - 1
-    expect(occurrences).toBe(1)
+    expect(document.querySelectorAll('article.message-row.system')).toHaveLength(0)
+    // No errorDetail toggle on the retry segment (path 3 stamps none).
+    expect(turnArticle().querySelector('details')).toBeNull()
   })
 
   // T19-recovery — covers the recovery-error system row at App.tsx:2637
@@ -614,7 +610,7 @@ describe('App — provider quota-error UX (field defect)', () => {
   // Mutation: replace shouldSuppressSystemErrorText(...) with true at the
   // recovery call site — text becomes '' and the headline vanishes → test
   // fails.
-  it('T19-recovery: recovery-error system row — headline ONCE, guard applied but unreachable for suppression', async () => {
+  it('T19-recovery: recovery error — headline in the turn body, no system row', async () => {
     seedConversation()
     const { emitAgentEvent, turnId, sendTurn } = await renderAppAndSendTurn()
 
@@ -632,18 +628,14 @@ describe('App — provider quota-error UX (field defect)', () => {
       })
     })
 
+    // T23: the recovery headline appears in the turn body (appendAssistantText),
+    // not in a system row. The headline already carries the raw error (i18n
+    // interpolation), so no errorDetail toggle is needed.
     const headline = 'Authentication was renewed, but the task could not resume'
     await waitFor(() => {
-      const rows = [...document.querySelectorAll('article.message-row.system')]
-      expect(rows.some(r => r.textContent?.includes(headline))).toBe(true)
+      expect(document.body.textContent).toContain(headline)
     })
-    // Same unreachability proof as T19-retry: guard returned false (body is
-    // empty), text is the recovery headline, NO toggle.
-    const recoveryRow = [...document.querySelectorAll('article.message-row.system')]
-      .find(r => r.textContent?.includes(headline)) as HTMLElement | undefined
-    expect(recoveryRow?.querySelector('details')).toBeNull()
-    const occurrences = (document.body.textContent ?? '').split(headline).length - 1
-    expect(occurrences).toBe(1)
+    expect(document.querySelectorAll('article.message-row.system')).toHaveLength(0)
   })
 
   it('header keeps provider + model when the turn dies BEFORE any assistant text', async () => {
@@ -677,11 +669,13 @@ describe('App — provider quota-error UX (field defect)', () => {
     // api_retry event. The app must not sit on a mute "Thinking…" for 43h.
     act(() => { emitAgentEvent(apiRetryEvent(turnId, 1, 154_650_000)) })
 
-    // The readable quota message appears immediately — no 43h mute wait.
+    // T23: the readable quota message appears in the turn body as the model's
+    // response (appendAssistantText), not a "Sistema" badge.
     await waitFor(() => {
-      expect(systemRow().textContent).toContain('Usage limit reached')
-      expect(systemRow().textContent).toContain('~2 days')
+      expect(turnArticle().textContent).toContain('Usage limit reached')
+      expect(turnArticle().textContent).toContain('~2 days')
     })
+    expect(document.querySelectorAll('article.message-row.system')).toHaveLength(0)
     // The retry notice does NOT appear — this is not a retry, it's a quota reset.
     expect(turnArticle().textContent).not.toContain('retrying')
     // The turn was ended — interrupt was called.
@@ -710,7 +704,8 @@ describe('App — provider quota-error UX (field defect)', () => {
     act(() => { emitAgentEvent({ type: 'started', turnId }) })
     act(() => { emitAgentEvent(apiRetryEvent(turnId, 1, 154_650_000)) })
     await waitFor(() => {
-      expect(systemRow().textContent).toContain('Usage limit reached')
+      // T23: the quota message is in the turn body, not a system row.
+      expect(turnArticle().textContent).toContain('Usage limit reached')
     })
     // The interrupt kills the CLI; a terminal error event arrives.
     act(() => {
@@ -723,11 +718,12 @@ describe('App — provider quota-error UX (field defect)', () => {
       })
     })
 
-    // Only ONE system row — the quota message. The error event's item is
-    // suppressed by quotaResetTurnsRef (the quota message already told the user).
-    const systemRows = [...document.querySelectorAll('article.message-row.system')]
-    expect(systemRows).toHaveLength(1)
-    expect(systemRows[0].textContent).toContain('Usage limit reached')
+    // T23: NO system row — the quota message is in the turn body, and the
+    // error event's item is suppressed by quotaResetTurnsRef (the quota
+    // message already told the user). The quota message appears ONCE.
+    expect(document.querySelectorAll('article.message-row.system')).toHaveLength(0)
+    const occurrences = (document.body.textContent ?? '').split('Usage limit reached').length - 1
+    expect(occurrences).toBe(1)
   })
 
   it('T13 pt-BR: a mensagem de cota imediata está em português (sem jargão inglês cru)', async () => {
@@ -739,7 +735,8 @@ describe('App — provider quota-error UX (field defect)', () => {
     act(() => { emitAgentEvent(apiRetryEvent(turnId, 1, 154_650_000)) })
 
     await waitFor(() => {
-      expect(systemRow().textContent).toContain('Limite de uso da sua conta ChatGPT atingido. Renova em ~2 dias.')
+      // T23: the quota message is in the turn body, not a system row.
+      expect(turnArticle().textContent).toContain('Limite de uso da sua conta ChatGPT atingido. Renova em ~2 dias.')
     })
   })
 
@@ -754,7 +751,8 @@ describe('App — provider quota-error UX (field defect)', () => {
     act(() => { emitAgentEvent({ type: 'started', turnId }) })
     act(() => { emitAgentEvent(apiRetryEvent(turnId, 1, 154_650_000)) })
     await waitFor(() => {
-      expect(systemRow().textContent).toContain('Usage limit reached')
+      // T23: the quota message is in the turn body, not a system row.
+      expect(turnArticle().textContent).toContain('Usage limit reached')
     })
     // Wait for interruptForUser to complete (interrupt returns false → rollback
     // of userInterruptedTurnsRef). Without this, the ref still has the turnId
@@ -778,11 +776,13 @@ describe('App — provider quota-error UX (field defect)', () => {
       })
     })
 
-    const systemRows = [...document.querySelectorAll('article.message-row.system')]
-    // TWO system rows: the quota message + the real error. Neither is suppressed.
-    expect(systemRows).toHaveLength(2)
-    expect(systemRows[0].textContent).toContain('Usage limit reached')
-    expect(systemRows[1].textContent).toContain('código 137')
+    // T23: NO system rows — both the quota message and the real error are in
+    // the turn body as the model's response. Neither is suppressed. The
+    // identity-based check (presentation === 'interruption') let the real
+    // error through; appendAssistantText put it in the body.
+    expect(document.querySelectorAll('article.message-row.system')).toHaveLength(0)
+    expect(turnArticle().textContent).toContain('Usage limit reached')
+    expect(turnArticle().textContent).toContain('código 137')
   })
 
   it('G.8: cota na conversa A não encerra turno nem suprime erro da conversa B (isolamento entre conversas vivas)', async () => {
@@ -841,10 +841,14 @@ describe('App — provider quota-error UX (field defect)', () => {
       })
     })
 
-    // B is active — B's transcript is visible. The error must appear.
+    // B is active — B's transcript is visible. T23: the error appears in B's
+    // turn body (appendAssistantText), not a system row. It must NOT be
+    // suppressed by A's quota-reset ref (which holds turnIdA, not turnIdB).
     await waitFor(() => {
-      const systemRows = [...document.querySelectorAll('article.message-row.system')]
-      expect(systemRows.some(r => r.textContent?.includes('código 137'))).toBe(true)
+      expect(document.body.textContent).toContain('código 137')
     })
+    // No system row for B's error — it's the model's response.
+    const bSystemRows = [...document.querySelectorAll('article.message-row.system')]
+    expect(bSystemRows.some(r => r.textContent?.includes('código 137'))).toBe(false)
   })
 })
