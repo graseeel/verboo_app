@@ -4,7 +4,7 @@ Thanks for helping improve Verboo Code Desktop.
 
 ## Project Status
 
-This is an independent, non-official desktop build. Contributions should preserve that distinction in copy, UI, and documentation.
+This repository is developed with authorization from the Verboo owner. Contributions must not describe the app as an official Verboo product.
 
 ## Local Setup
 
@@ -26,7 +26,7 @@ deno lint --config supabase/functions/feedback/deno.json supabase/functions/feed
 - Keep changes focused and small.
 - Do not commit generated build output.
 - Do not commit real secrets or local credentials.
-- Keep user-facing text clear about risky permissions and independent-build status.
+- Keep user-facing text clear about risky permissions.
 - Prefer existing app patterns over adding new frameworks or abstractions.
 
 ## Feedback Backend
@@ -41,7 +41,7 @@ Obrigado por ajudar a melhorar o Verboo Code Desktop.
 
 ### Status do projeto
 
-Este é um build desktop independente e não oficial. Contribuições devem preservar essa distinção em textos, UI e documentação.
+Este repositório é desenvolvido com autorização do proprietário da Verboo. Contribuições não devem descrever o app como um produto oficial da Verboo.
 
 ### Setup local
 
@@ -63,7 +63,7 @@ deno lint --config supabase/functions/feedback/deno.json supabase/functions/feed
 - Mantenha as mudanças pequenas e focadas.
 - Não commite saída de build gerada.
 - Não commite segredos reais ou credenciais locais.
-- Mantenha os textos claros sobre permissões arriscadas e o status de build independente.
+- Mantenha os textos claros sobre permissões arriscadas.
 - Prefira os padrões existentes do app a novos frameworks ou abstrações.
 
 ### Backend de feedback

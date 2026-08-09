@@ -94,6 +94,7 @@ import { createSoundPlayer, resolveSoundForEvent, type SoundEvent, type SoundPla
 import { readSoundsEnabled, writeSoundsEnabled } from './features/sound/soundStorage'
 import type { ReservedSlashCommand } from './features/composer/slashCommands'
 import { AppSidebar, type AppView } from './components/AppSidebar'
+import { CliBootstrapGate } from './components/CliBootstrapGate'
 import { CommandPalette, paletteIcons, type PaletteAction } from './components/CommandPalette'
 import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
 import { useToast } from './components/Toast'
@@ -427,6 +428,10 @@ export function App() {
     () => readEffortByModel(),
   )
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | undefined>(undefined)
+  const [cliBootstrapSuccessVisible, setCliBootstrapSuccessVisible] = useState(false)
+  const cliBootstrapInFlightRef = useRef(false)
+  const cliBootstrapWasRequiredRef = useRef(false)
+  const cliBootstrapSuccessTimerRef = useRef<number | undefined>(undefined)
   const [restoredUpdateDrafts] = useState(() => consumeUpdateDraftHandoff(window.localStorage))
   // Skills derived from / and @ tokens in the composer text. syncTokenSkills
   // (Composer) extracts both token types and sets this state. No parallel
@@ -1164,10 +1169,32 @@ export function App() {
     })
   }, [])
 
+  const runCliBootstrap = useCallback(async () => {
+    if (cliBootstrapInFlightRef.current) return
+    cliBootstrapInFlightRef.current = true
+    try {
+      setUpdateSnapshot(await window.verboo.bootstrapCli())
+    } catch (error) {
+      setUpdateSnapshot(current => current ? {
+        ...current,
+        status: 'error',
+        target: 'cli',
+        cliBootstrapRequired: true,
+        error: error instanceof Error ? error.message : String(error),
+      } : current)
+    } finally {
+      cliBootstrapInFlightRef.current = false
+    }
+  }, [])
+
   useEffect(() => {
     let mounted = true
     void window.verboo.getUpdateStatus().then(snapshot => {
-      if (mounted) setUpdateSnapshot(snapshot)
+      if (!mounted || !snapshot) return
+      setUpdateSnapshot(snapshot)
+      if (snapshot.cliBootstrapRequired && snapshot.status !== 'error') {
+        void runCliBootstrap()
+      }
     })
     const unsubscribe = window.verboo.onUpdateStatus(snapshot => {
       setUpdateSnapshot(snapshot)
@@ -1181,7 +1208,37 @@ export function App() {
       mounted = false
       unsubscribe()
     }
-  }, [t, toast])
+  }, [runCliBootstrap, t, toast])
+
+  const cliBootstrapRequired = updateSnapshot?.cliBootstrapRequired === true
+
+  useEffect(() => {
+    if (cliBootstrapRequired) {
+      cliBootstrapWasRequiredRef.current = true
+      setCliBootstrapSuccessVisible(false)
+      if (cliBootstrapSuccessTimerRef.current !== undefined) {
+        window.clearTimeout(cliBootstrapSuccessTimerRef.current)
+        cliBootstrapSuccessTimerRef.current = undefined
+      }
+      return
+    }
+    if (!cliBootstrapWasRequiredRef.current) return
+
+    cliBootstrapWasRequiredRef.current = false
+    setCliBootstrapSuccessVisible(true)
+    cliBootstrapSuccessTimerRef.current = window.setTimeout(() => {
+      cliBootstrapSuccessTimerRef.current = undefined
+      setCliBootstrapSuccessVisible(false)
+    }, 1_400)
+  }, [cliBootstrapRequired])
+
+  useEffect(() => () => {
+    if (cliBootstrapSuccessTimerRef.current !== undefined) {
+      window.clearTimeout(cliBootstrapSuccessTimerRef.current)
+    }
+  }, [])
+
+  const cliAgentActionsBlocked = cliBootstrapRequired || cliBootstrapSuccessVisible
 
   const updateRestart = useDeferredUpdateRestart({
     snapshot: updateSnapshot,
@@ -1194,7 +1251,7 @@ export function App() {
   })
 
   useUpdateAutomation({
-    autoCheck: settingsLoaded && userSettings.updates.autoCheck,
+    autoCheck: settingsLoaded && updateSnapshot !== undefined && !cliBootstrapRequired && userSettings.updates.autoCheck,
     autoDownload: settingsLoaded && userSettings.updates.autoDownload,
     channel: userSettings.updates.channel,
     snapshot: updateSnapshot,
@@ -2853,6 +2910,7 @@ export function App() {
   // The ref resets in the `finally` block at the end of the function.
   const sendMessageLock = useRef(false)
   async function sendMessage(message: string) {
+    if (cliAgentActionsBlocked) return
     const trimmed = message.trim()
     // F3 — guarda do vazio ALARGADA: enviar SÓ a anotação é comportamento
     // exigido pelo usuário ("posso apenas enviar a anotação"). O retrato vem
@@ -3833,6 +3891,8 @@ export function App() {
   }
 
   function handleGoalCommand(command: Extract<ReservedSlashCommand, { kind: 'goal' }>) {
+    if (cliAgentActionsBlocked && (command.action === 'start' || command.action === 'resume')) return
+
     if (command.action === 'show' || command.action === 'status') {
       const conversationId = ensureActiveConversation()
       const current = goalRef.current
@@ -4766,6 +4826,7 @@ export function App() {
   }
 
   async function sendSideChatMessage(message: string) {
+    if (cliAgentActionsBlocked) return
     const state = sideChatRef.current
     const trimmed = message.trim()
     if (!state || !trimmed || isConversationRunning(state.conversation.id)) return
@@ -5847,7 +5908,7 @@ export function App() {
               profile={profile}
               cliAuth={cliAuth}
               avatarSettings={userSettings.avatar}
-              updatePresentation={updateRestart.presentation}
+              updatePresentation={cliAgentActionsBlocked ? undefined : updateRestart.presentation}
               onRequestUpdate={() => { void updateRestart.requestUpdate() }}
               compact={sidebarMode === 'compact'}
               peek={sidebarPeek || sidebarPeekLeaving}
@@ -6061,9 +6122,26 @@ export function App() {
             <EmptyChat hasProject={Boolean(activeProject?.name)} projectName={projectName} line={emptyLine} />
           )}
         </section>
+        {activeView === 'chat' && cliAgentActionsBlocked && (
+          <CliBootstrapGate
+            phase={cliBootstrapSuccessVisible
+              ? 'success'
+              : updateSnapshot?.status === 'error'
+                ? 'error'
+                : 'installing'}
+            percent={updateSnapshot?.percent}
+            error={updateSnapshot?.error}
+            onRetry={() => { void runCliBootstrap() }}
+            onOpenSettings={() => {
+              setSettingsTab('security')
+              setActiveView('settings')
+            }}
+          />
+        )}
         <SideChatSurface
           sideChat={sideChat}
           busy={sideChat ? runningConversations.has(sideChat.conversation.id) : false}
+          disabled={cliAgentActionsBlocked}
           onSubmit={message => { void sendSideChatMessage(message) }}
           onClose={closeSideChat}
           onFocusConversation={() => {
@@ -6392,7 +6470,7 @@ export function App() {
             />
           )}
           <Composer
-            disabled={false}
+            disabled={cliAgentActionsBlocked}
             workingDirectory={config.workingDirectory}
             skills={mentionableSkills}
             customSlashCommands={userSettings.customSlashCommands}

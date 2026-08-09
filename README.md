@@ -1,8 +1,8 @@
 # Verboo Code Desktop
 
-Verboo Code Desktop is an independent desktop client for working with the Verboo Code CLI from a focused app interface. It wraps the CLI-oriented workflow with project navigation, chat history, model selection, skill selection, permission controls, profile views, feedback reporting, and a desktop shell that runs on macOS, Windows, and Linux.
+Verboo Code Desktop is a desktop client for working with the Verboo Code CLI from a focused app interface. It wraps the CLI-oriented workflow with project navigation, chat history, model selection, skill selection, permission controls, profile views, feedback reporting, and a desktop shell that runs on macOS, Windows, and Linux.
 
-The desktop shell is built with **Tauri v2** (Rust backend + system WebView frontend). It embeds Node.js and installs the official signed CLI independently under the operating system's app-data directory.
+The desktop shell is built with **Tauri v2** (Rust backend + system WebView frontend). It embeds Node.js and installs the official signed CLI separately under the operating system's app-data directory.
 
 Official CLI upstream: [verbeux-ai/code](https://github.com/verbeux-ai/code).
 
@@ -32,18 +32,16 @@ verifies its signed manifest and archive digest, and installs it under app-data.
 For per-platform setup, known issues, and troubleshooting, see
 [SETUP.md](SETUP.md).
 
-## Independent Build Notice
+## Project Notice
 
 This is not an official Verboo product.
 
-This repository is an independent build created with authorization to work on a Verboo desktop experience, but it is not developed, maintained, reviewed, endorsed, or shipped by Verboo as an official desktop product. Verboo, Verboo Code, the Verboo mascot, and related brand assets remain the property of their respective owners.
-
-Use this app as an experimental community/independent desktop build. Expect bugs, incomplete behavior, and implementation differences from the official Verboo CLI.
+This repository is developed with authorization from the Verboo owner. Verboo, Verboo Code, the Verboo mascot, and related brand assets remain the property of their respective owners.
 
 ## What It Does
 
 - Runs a signed, versioned Verboo CLI through the app-owned Node.js sidecar.
-- Detects CLI updates independently from app updates, while presenting one update card and one restart flow.
+- Detects CLI updates separately from app updates, while presenting one update card and one restart flow.
 - Detects Verboo CLI authentication or a valid Verboo API key before unlocking the app.
 - Lists models available to the authenticated Verboo account when possible.
 - Supports model selection and per-model context-window configuration.
@@ -148,14 +146,15 @@ Separately, the CLI updater accepts only Minisign-authenticated manifests and
 matching archive digests published by `verbeux-ai/code`; it can write only to
 the CLI directory under app-data.
 
-> **macOS signing status:** Current builds are ad-hoc signed. They can be tested
-> locally, but macOS Gatekeeper and update installation are significantly more
-> reliable after Developer ID signing and notarization. The updater code is
-> designed to keep working when signing is enabled later.
+> **macOS signing status:** Release builds require Developer ID signing and are
+> submitted for notarization before publication. Unsigned/ad-hoc local builds
+> remain suitable only for development testing.
 
 See [.github/workflows/tauri-release.yml](.github/workflows/tauri-release.yml)
-for the active release pipeline; the updater key and endpoints live in
-[src-tauri/tauri.conf.json](src-tauri/tauri.conf.json) under `plugins.updater`.
+for the active release pipeline. The app updater key and endpoints live in
+[src-tauri/tauri.conf.json](src-tauri/tauri.conf.json) under `plugins.updater`;
+the CLI Minisign trust root is pinned in
+[src-tauri/src/services/cli_update/service.rs](src-tauri/src/services/cli_update/service.rs).
 
 ## Feedback Backend
 
@@ -188,24 +187,22 @@ The license applies to this repository's source code. It does not grant ownershi
 
 ## Português (Brasil)
 
-Verboo Code Desktop é um cliente desktop independente para trabalhar com o CLI do Verboo Code em uma interface focada. Ele envolve o fluxo orientado por CLI com navegação de projetos, histórico de chats, seleção de modelos, seleção de habilidades, controles de permissão, perfil, envio de feedback e uma experiência desktop amigável para macOS.
+Verboo Code Desktop é um cliente desktop para trabalhar com o CLI do Verboo Code em uma interface focada. Ele envolve o fluxo orientado por CLI com navegação de projetos, histórico de chats, seleção de modelos, seleção de habilidades, controles de permissão, perfil, envio de feedback e uma experiência desktop amigável para macOS.
 
 O shell desktop é construído com **Tauri v2** (backend Rust + WebView nativo do sistema), embarca o próprio Node.js e instala o CLI oficial assinado separadamente na pasta de dados do app.
 
 CLI oficial usado como upstream: [verbeux-ai/code](https://github.com/verbeux-ai/code).
 
-### Aviso de build independente
+### Aviso do projeto
 
 Este não é um produto oficial da Verboo.
 
-Este repositório é um build independente criado com autorização para trabalhar em uma experiência desktop do Verboo, mas não é desenvolvido, mantido, revisado, endossado ou distribuído pela Verboo como produto desktop oficial. Verboo, Verboo Code, o mascote Verboo e os ativos de marca relacionados continuam sendo propriedade dos respectivos donos.
-
-Use este app como um build experimental independente/comunitário. Espere bugs, comportamentos incompletos e diferenças de implementação em relação ao CLI oficial do Verboo.
+Este repositório é desenvolvido com autorização do proprietário da Verboo. Verboo, Verboo Code, o mascote Verboo e os ativos de marca relacionados continuam sendo propriedade dos respectivos donos.
 
 ### O que ele faz
 
 - Executa um CLI Verboo assinado e versionado usando o Node.js embarcado pelo app.
-- Busca atualizações do CLI independentemente das atualizações do app, com um único card e um único reinício.
+- Busca atualizações do CLI separadamente das atualizações do app, com um único card e um único reinício.
 - Detecta autenticação do CLI Verboo ou uma chave de API Verboo válida antes de liberar o app.
 - Lista os modelos disponíveis para a conta autenticada quando possível.
 - Suporta seleção de modelo e configuração de janela de contexto por modelo.
@@ -304,15 +301,16 @@ Separadamente, o updater do CLI aceita apenas manifestos autenticados por
 Minisign e hashes publicados pelo `verbeux-ai/code`, escrevendo somente na
 pasta do CLI dentro dos dados do app.
 
-> **Status de assinatura macOS:** Os builds atuais são assinados como ad-hoc.
-> Eles funcionam para teste local, mas o Gatekeeper e a instalação de
-> atualizações são significativamente mais confiáveis após assinatura Developer
-> ID e notarização. O código do updater foi projetado para continuar funcionando
-> quando a assinatura for ativada.
+> **Status de assinatura macOS:** Os builds de release exigem assinatura
+> Developer ID e são enviados para notarização antes da publicação. Builds
+> locais sem assinatura/ad-hoc continuam adequados apenas para testes de
+> desenvolvimento.
 
 Veja [.github/workflows/tauri-release.yml](.github/workflows/tauri-release.yml)
-para o pipeline de release ativo; a chave e os endpoints do updater ficam em
-[src-tauri/tauri.conf.json](src-tauri/tauri.conf.json) em `plugins.updater`.
+para o pipeline de release ativo. A chave e os endpoints do updater do app
+ficam em [src-tauri/tauri.conf.json](src-tauri/tauri.conf.json) em
+`plugins.updater`; a raiz de confiança Minisign do CLI fica fixada em
+[src-tauri/src/services/cli_update/service.rs](src-tauri/src/services/cli_update/service.rs).
 
 ### Backend de feedback
 

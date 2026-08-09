@@ -54,6 +54,9 @@ export function SidebarUpdateControl({ presentation, onAction }: SidebarUpdateCo
         <span key={`copy-${presentation.phase}`} className="sidebar-update-copy">
           <strong>{copy.title}</strong>
           <small>{copy.detail}</small>
+          {presentation.phase !== 'error' && presentation.error && (
+            <small className="sidebar-update-warning">{presentation.error}</small>
+          )}
         </span>
 
         <span className="sidebar-update-meta" aria-hidden="true">

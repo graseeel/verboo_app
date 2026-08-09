@@ -162,4 +162,21 @@ describe('useDeferredUpdateRestart', () => {
     expect(check).toHaveBeenCalledWith(true)
     expect(download).toHaveBeenCalledWith(true)
   })
+
+  it('keeps a healthy update actionable while exposing the other updater warning', () => {
+    const test = setup({
+      snapshot: {
+        ...snapshot('available'),
+        target: 'app',
+        error: 'CLI: offline',
+      },
+    })
+
+    expect(test.result.current.presentation).toMatchObject({
+      phase: 'available',
+      target: 'app',
+      error: 'CLI: offline',
+      actionEnabled: true,
+    })
+  })
 })

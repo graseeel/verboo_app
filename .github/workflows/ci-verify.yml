@@ -95,7 +95,6 @@ jobs:
       CARGO_TERM_COLOR: always
       RUSTUP_TOOLCHAIN: "1.89.0"
       RUSTFLAGS: ""
-      VERBOO_CLI_MINISIGN_PUBLIC_KEY: ${{ secrets.VERBOO_CLI_MINISIGN_PUBLIC_KEY }}
       VERBOO_EXPECTED_CLI_VERSION: ${{ inputs.expected_cli_version }}
     steps:
       - name: Checkout repository
@@ -105,10 +104,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$VERBOO_CLI_MINISIGN_PUBLIC_KEY" || {
-            echo "::error::VERBOO_CLI_MINISIGN_PUBLIC_KEY is missing"
-            exit 1
-          }
           test -n "$VERBOO_EXPECTED_CLI_VERSION" || {
             echo "::error::expected_cli_version is missing"
             exit 1

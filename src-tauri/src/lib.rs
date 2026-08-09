@@ -1221,6 +1221,43 @@ fn get_update_status(
     Ok(coordinator.snapshot())
 }
 
+#[tauri::command]
+async fn bootstrap_cli(
+    app: tauri::AppHandle,
+    coordinator: tauri::State<'_, crate::services::update_coordinator::UpdateCoordinator>,
+) -> Result<UpdateSnapshot, String> {
+    let coordinator = coordinator.inner().clone();
+    let _operation = coordinator.begin_operation().await;
+    let service = coordinator
+        .cli()
+        .ok_or_else(|| "Verboo CLI bootstrap is unavailable in this build".to_string())?;
+
+    if service.snapshot().current_version.is_some() {
+        return Ok(emit_update_snapshot(&app, &coordinator));
+    }
+
+    let mut task = tauri::async_runtime::spawn_blocking(move || service.bootstrap_if_missing());
+    loop {
+        tokio::select! {
+            result = &mut task => {
+                match result {
+                    Ok(Ok(_)) => return Ok(emit_update_snapshot(&app, &coordinator)),
+                    Ok(Err(error)) => {
+                        eprintln!("[verboo:cli-update] bootstrap failed: {error}");
+                        return Ok(emit_update_snapshot(&app, &coordinator));
+                    }
+                    Err(error) => {
+                        return Err(format!("Falha interna ao instalar o CLI: {error}"));
+                    }
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                emit_update_snapshot(&app, &coordinator);
+            }
+        }
+    }
+}
+
 fn emit_update_snapshot(
     app: &tauri::AppHandle,
     coordinator: &crate::services::update_coordinator::UpdateCoordinator,
@@ -2201,7 +2238,11 @@ pub fn run() {
                         tauri::async_runtime::spawn_blocking(move || {
                             let result = match startup_service.validate_startup() {
                                 Ok(services::cli_update::service::StartupValidation::Missing) => {
-                                    startup_service.bootstrap_if_missing().map(|_| ())
+                                    // The renderer starts first installation through
+                                    // `bootstrap_cli`, which emits progress and owns the
+                                    // retry UX. Startup validation remains responsible
+                                    // for existing installs and rollback only.
+                                    Ok(())
                                 }
                                 Ok(services::cli_update::service::StartupValidation::Valid {
                                     ..
@@ -2224,10 +2265,6 @@ pub fn run() {
                         Some(cli_update_service)
                     }
                     Err(error) => {
-                        // Development builds intentionally have no production
-                        // trust root. Explicit dev overrides keep local work
-                        // usable; release builds fail earlier in CI if the key
-                        // is absent.
                         eprintln!("[verboo:cli-update] updater unavailable: {error}");
                         None
                     }
@@ -2649,6 +2686,7 @@ pub fn run() {
             interrupt,
             // Updates
             get_update_status,
+            bootstrap_cli,
             check_for_updates,
             download_update,
             install_update,

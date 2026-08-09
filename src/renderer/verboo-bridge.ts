@@ -370,6 +370,7 @@ const api = {
 
   // ── Updates ─────────────────────────────────────────────────
   getUpdateStatus: () => invoke<UpdateSnapshot>('get_update_status'),
+  bootstrapCli: () => invoke<UpdateSnapshot>('bootstrap_cli'),
   checkForUpdates: (userInitiated = false) =>
     invoke<UpdateSnapshot>('check_for_updates', { userInitiated }),
   downloadUpdate: (userInitiated = true) =>

@@ -152,10 +152,6 @@ jobs:
       # Clear RUSTFLAGS so cargo-tauri's default flags don't break proc-macro
       # linking (ctor-proc-macro "can't find crate" error on Rust 1.89).
       RUSTFLAGS: ""
-      # Public trust root for the independent CLI release manifest. It is
-      # compiled into the app and never grants the CLI updater access to the
-      # app bundle or the app updater's signing key.
-      VERBOO_CLI_MINISIGN_PUBLIC_KEY: ${{ secrets.VERBOO_CLI_MINISIGN_PUBLIC_KEY }}
       # Published Chrome Web Store identity, read at compile time by
       # option_env! (chrome_integration/models.rs, native_host.rs). Without
       # these the shipped app reports "this build has no production extension
@@ -168,14 +164,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Verify CLI update trust root
-        shell: bash
-        run: |
-          test -n "$VERBOO_CLI_MINISIGN_PUBLIC_KEY" || {
-            echo "::error::VERBOO_CLI_MINISIGN_PUBLIC_KEY is missing"
-            exit 1
-          }
 
       - name: Install Rust 1.89.0
         uses: dtolnay/rust-toolchain@master

@@ -1038,3 +1038,180 @@
   .verboo-pet[data-state='command'] .pet-command-key { opacity: 0.24; }
   .verboo-pet[data-state='editing'] .pet-ink { stroke-dashoffset: 0; }
 }
+.cli-bootstrap-gate {
+  position: fixed;
+  z-index: 140;
+  top: var(--titlebar-height);
+  right: calc(var(--sidechat-width, 0px) + var(--terminal-width) + var(--review-width) + var(--browser-width) + var(--subagents-panel-width, 0px));
+  bottom: 0;
+  left: var(--sidebar-width);
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: color-mix(in srgb, var(--bg) 62%, transparent);
+  backdrop-filter: blur(12px) saturate(0.85);
+}
+
+.cli-bootstrap-card {
+  display: grid;
+  justify-items: center;
+  gap: 18px;
+  width: min(440px, 100%);
+  padding: 28px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  border-radius: calc(var(--radius) * 1.8);
+  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+  box-shadow: 0 24px 70px color-mix(in srgb, black 28%, transparent);
+  text-align: center;
+}
+
+.cli-bootstrap-visual {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 88px;
+  height: 88px;
+}
+
+.cli-bootstrap-aura {
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, transparent, var(--accent), transparent 62%);
+  filter: blur(8px);
+  opacity: 0.7;
+  animation: cli-bootstrap-orbit 2.4s linear infinite;
+}
+
+.cli-bootstrap-mascot-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--accent) 13%, var(--bg-elevated));
+  box-shadow: 0 0 32px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.cli-bootstrap-mascot-wrap img {
+  width: 38px;
+  height: 38px;
+  object-fit: contain;
+}
+
+.cli-bootstrap-state-icon {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--bg-elevated);
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.cli-bootstrap-gate--installing .cli-bootstrap-state-icon svg {
+  animation: cli-bootstrap-spin 900ms linear infinite;
+}
+
+.cli-bootstrap-gate--error .cli-bootstrap-state-icon {
+  background: var(--danger);
+  color: white;
+}
+
+.cli-bootstrap-gate--success .cli-bootstrap-state-icon {
+  background: var(--green);
+  color: var(--bg);
+}
+
+.cli-bootstrap-copy {
+  display: grid;
+  gap: 7px;
+}
+
+.cli-bootstrap-copy h2,
+.cli-bootstrap-copy p {
+  margin: 0;
+}
+
+.cli-bootstrap-copy h2 {
+  color: var(--text);
+  font-size: 18px;
+  letter-spacing: -0.02em;
+}
+
+.cli-bootstrap-copy p {
+  max-width: 360px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.cli-bootstrap-progress {
+  position: relative;
+  width: min(300px, 100%);
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--border));
+}
+
+.cli-bootstrap-progress > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transform-origin: left center;
+  transition: transform 180ms linear;
+}
+
+.cli-bootstrap-progress small {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  transform: translateX(-50%);
+}
+
+.cli-bootstrap-error-detail {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.cli-bootstrap-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.cli-bootstrap-actions .button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+@keyframes cli-bootstrap-orbit {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes cli-bootstrap-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cli-bootstrap-aura,
+  .cli-bootstrap-gate--installing .cli-bootstrap-state-icon svg {
+    animation: none;
+  }
+}

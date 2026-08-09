@@ -6,6 +6,14 @@ const workflowPath = new URL(
   "../../.github/workflows/tauri-release.yml",
   import.meta.url,
 );
+const tauriConfigPath = new URL(
+  "../../src-tauri/tauri.conf.json",
+  import.meta.url,
+);
+const entitlementsPath = new URL(
+  "../../src-tauri/Entitlements.plist",
+  import.meta.url,
+);
 
 // Normalize CRLF -> LF on read: git checkout on Windows brings CRLF into
 // the workflow files, and comparing/slicing workflow text with "\n" (or
@@ -101,6 +109,8 @@ test("notarization key exists only for macOS build steps and is always removed",
 
 test("embedded Node keeps a valid signature and native-module entitlement", async () => {
   const workflow = await readWorkflowText(workflowPath);
+  const tauriConfig = JSON.parse(await readFile(tauriConfigPath, "utf8"));
+  const entitlements = await readFile(entitlementsPath, "utf8");
   const prepareStart = workflow.indexOf(
     "- name: Prepare Apple notarization credentials",
   );
@@ -142,6 +152,16 @@ test("embedded Node keeps a valid signature and native-module entitlement", asyn
   );
   assert.match(
     workflow,
+    /com\.apple\.security\.cs\.disable-library-validation/,
+  );
+  assert.equal(tauriConfig.bundle.macOS.entitlements, "Entitlements.plist");
+  assert.match(entitlements, /com\.apple\.security\.cs\.allow-jit/);
+  assert.match(
+    entitlements,
+    /com\.apple\.security\.cs\.allow-unsigned-executable-memory/,
+  );
+  assert.match(
+    entitlements,
     /com\.apple\.security\.cs\.disable-library-validation/,
   );
   assert.doesNotMatch(workflow, /resources\/cli-package|copy-cli-resource/);

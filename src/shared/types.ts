@@ -1403,6 +1403,8 @@ export type UpdateSnapshot = {
   currentVersion: string
   cliCurrentVersion?: string
   cliAvailableVersion?: string
+  /** True until the first signed CLI has been installed into app data. */
+  cliBootstrapRequired?: boolean
   /**
    * True when a stable channel with a valid manifest exists. False on 404,
    * network error, or invalid manifest. Fail-closed: when in doubt, false.

@@ -244,6 +244,7 @@ describe('verboo-bridge — API shape', () => {
     expect(api).toBeDefined()
     const required = [
       'getUpdateStatus',
+      'bootstrapCli',
       'checkForUpdates',
       'downloadUpdate',
       'installUpdate',
@@ -277,6 +278,14 @@ describe('verboo-bridge — API shape', () => {
     expect(vi.mocked(invoke)).toHaveBeenLastCalledWith('download_update', {
       userInitiated: true,
     })
+  })
+
+  it('routes first-install retry through the dedicated CLI bootstrap command', async () => {
+    expect(api).toBeDefined()
+
+    await (api as Record<string, () => Promise<unknown>>).bootstrapCli()
+
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith('bootstrap_cli')
   })
 
   it('returns a cleanup function from event subscriptions', async () => {

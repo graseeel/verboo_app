@@ -22,6 +22,7 @@ use super::store::{CliPointer, CliStore};
 const LATEST_RELEASE_ROOT: &str = "https://github.com/verbeux-ai/code/releases/latest/download";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_SIGNATURE_BYTES: u64 = 64 * 1024;
+const PRODUCTION_MINISIGN_PUBLIC_KEY: &str = "untrusted comment: minisign public key BDFB90D8E81C7A23\nRWQjehzo2JD7vasdwqX2eXrGVlAucr62mJI2MqH50mKuE99cW9P8gvCw\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -206,12 +207,6 @@ pub struct CliUpdateService {
 
 impl CliUpdateService {
     pub fn production(app_data_dir: impl AsRef<Path>, node_path: PathBuf) -> Result<Self, String> {
-        let public_key = option_env!("VERBOO_CLI_MINISIGN_PUBLIC_KEY")
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                "this build has no Verboo CLI signing public key; CLI updates are disabled"
-                    .to_string()
-            })?;
         let target = DesktopTarget::host()
             .ok_or_else(|| "this platform does not support Verboo CLI updates".to_string())?;
         Self::new(
@@ -219,7 +214,7 @@ impl CliUpdateService {
             node_path,
             env!("CARGO_PKG_VERSION"),
             target,
-            Arc::new(ManifestVerifier::new(public_key)),
+            Arc::new(ManifestVerifier::new(PRODUCTION_MINISIGN_PUBLIC_KEY)),
             Arc::new(GithubReleaseSource::production()?),
         )
     }
@@ -615,6 +610,7 @@ impl CliUpdateService {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use flate2::Compression;
     use flate2::write::GzEncoder;
@@ -660,6 +656,30 @@ mod tests {
                 .as_ref()
                 .ok_or_else(|| "fixture has no archive".to_string())?;
             write_verified_archive(Cursor::new(archive), artifact, destination, progress)
+        }
+    }
+
+    struct RetryOnceSource {
+        inner: FixtureSource,
+        fail_first: AtomicBool,
+    }
+
+    impl CliReleaseSource for RetryOnceSource {
+        fn fetch_signed_manifest(&self) -> Result<SignedManifestBytes, String> {
+            if self.fail_first.swap(false, Ordering::SeqCst) {
+                return Err("offline".to_string());
+            }
+            self.inner.fetch_signed_manifest()
+        }
+
+        fn download_artifact(
+            &self,
+            artifact: &CliArtifact,
+            destination: &Path,
+            progress: &mut dyn FnMut(u64, u64),
+        ) -> Result<(), String> {
+            self.inner
+                .download_artifact(artifact, destination, progress)
         }
     }
 
@@ -777,6 +797,69 @@ mod tests {
             builder.append(&header, Cursor::new(bytes)).unwrap();
         }
         builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_first_bootstrap_can_retry_through_the_same_install_flow() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let app_data = tempfile::tempdir().unwrap();
+        let node = app_data.path().join("embedded-node");
+        fs::write(&node, b"#!/bin/sh\nprintf '0.15.6 (Verboo Code)\\n'\n").unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let archive = payload_archive("0.15.6", DesktopTarget::MacArm64);
+        let artifact = CliArtifact {
+            target: DesktopTarget::MacArm64,
+            url: "https://github.com/verbeux-ai/code/releases/download/v0.15.6/verboo-cli-0.15.6-aarch64-apple-darwin.tar.gz".to_string(),
+            size: archive.len() as u64,
+            sha256: hex::encode(Sha256::digest(&archive)),
+            archive: "tar.gz".to_string(),
+        };
+        let verified = VerifiedManifest {
+            manifest: CliManifest {
+                schema_version: 1,
+                cli_version: "0.15.6".to_string(),
+                released_at: "2026-08-08T12:00:00.000Z".to_string(),
+                desktop_protocol: 1,
+                desktop_version: DesktopVersionCompatibility {
+                    min: "0.7.0-beta".to_string(),
+                    max_exclusive: "0.8.0".to_string(),
+                },
+                node: NodeCompatibility {
+                    range: ">=24.0.0 <25.0.0".to_string(),
+                    modules: "137".to_string(),
+                    napi: "10".to_string(),
+                },
+                signing_key_id: "fixture".to_string(),
+                artifacts: vec![artifact],
+            },
+            digest: "d".repeat(64),
+        };
+        let source = Arc::new(RetryOnceSource {
+            inner: FixtureSource {
+                manifest: b"fixture".to_vec(),
+                signature: "fixture".to_string(),
+                archive: Some(archive),
+                error: None,
+            },
+            fail_first: AtomicBool::new(true),
+        });
+        let service = service(
+            app_data.path(),
+            node,
+            Arc::new(AcceptedManifest(verified)),
+            source,
+        );
+
+        assert!(service.bootstrap_if_missing().is_err());
+        assert_eq!(service.snapshot().status, CliUpdateStatus::BootstrapError);
+        assert!(service.store().current().unwrap().is_none());
+
+        let retried = service.bootstrap_if_missing().unwrap();
+        assert_eq!(retried.status, CliUpdateStatus::Idle);
+        assert_eq!(retried.current_version.as_deref(), Some("0.15.6"));
     }
 
     #[cfg(unix)]

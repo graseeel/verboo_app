@@ -155,6 +155,7 @@ export function useDeferredUpdateRestart({
       version: target === 'cli' ? snapshot.cliAvailableVersion : snapshot.availableVersion,
       appVersion: snapshot.availableVersion,
       cliVersion: snapshot.cliAvailableVersion,
+      error: snapshot.error,
     } as const
     if (snapshot.status === 'available') {
       return {

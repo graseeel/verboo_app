@@ -1158,6 +1158,15 @@ const enUS: Record<string, string> = {
   'updates.waitingAria': 'Waiting to restart Verboo Code',
   'updates.restartingAria': 'Restarting Verboo Code',
   'updates.retryAria': 'Retry Verboo Code update',
+  'cliBootstrap.installingTitle': 'Installing the Verboo CLI',
+  'cliBootstrap.installingBody': 'This may take a few minutes. You can configure the app while Verboo finishes the first-time setup.',
+  'cliBootstrap.errorTitle': "Couldn't install the Verboo CLI",
+  'cliBootstrap.errorBody': 'Check your connection and try again. Your settings remain available.',
+  'cliBootstrap.successTitle': 'Verboo CLI installed',
+  'cliBootstrap.successBody': 'Everything is ready. You can start a chat now.',
+  'cliBootstrap.progress': 'Verboo CLI installation progress',
+  'cliBootstrap.openSettings': 'Configure the app',
+  'cliBootstrap.retry': 'Try again',
 
   'performance.multiChatWarning': 'Multiple active chats consume more resources. Request rate and memory usage increase proportionally to the number of conversations running in parallel.',
 
@@ -2460,6 +2469,15 @@ const ptBR: Record<string, string> = {
   'updates.waitingAria': 'Aguardando para reiniciar o Verboo Code',
   'updates.restartingAria': 'Reiniciando o Verboo Code',
   'updates.retryAria': 'Tentar novamente a atualização do Verboo Code',
+  'cliBootstrap.installingTitle': 'Instalando o CLI do Verboo',
+  'cliBootstrap.installingBody': 'Isso pode levar alguns minutos. Você pode configurar o app enquanto o Verboo conclui a configuração inicial.',
+  'cliBootstrap.errorTitle': 'Não foi possível instalar o CLI do Verboo',
+  'cliBootstrap.errorBody': 'Confira sua conexão e tente novamente. Suas configurações continuam disponíveis.',
+  'cliBootstrap.successTitle': 'CLI do Verboo instalado',
+  'cliBootstrap.successBody': 'Tudo pronto. Você já pode iniciar uma conversa.',
+  'cliBootstrap.progress': 'Progresso da instalação do CLI do Verboo',
+  'cliBootstrap.openSettings': 'Configurar o app',
+  'cliBootstrap.retry': 'Tentar novamente',
 
   'performance.multiChatWarning': 'Múltiplos chats ativos consomem mais recursos. A taxa de requisições e o uso de memória aumentam proporcionalmente ao número de conversas rodando em paralelo.',
 

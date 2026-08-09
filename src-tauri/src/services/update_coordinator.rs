@@ -51,21 +51,17 @@ pub fn combine_snapshots(
 
     app.cli_current_version = cli.current_version.clone();
     app.cli_available_version = cli.available_version.clone();
+    app.cli_bootstrap_required = cli.current_version.is_none();
 
     let app_error = matches!(app.status, UpdateStatus::Error);
     let cli_error = matches!(
         cli.status,
         CliUpdateStatus::Error | CliUpdateStatus::BootstrapError
     );
-    if app_error || cli_error {
-        app.status = UpdateStatus::Error;
-        app.target = merge_targets(app_error, cli_error);
-        app.error = merge_errors(
-            app_error.then_some(app.error).flatten(),
-            cli_error.then_some(cli.error).flatten(),
-        );
-        return app;
-    }
+    let component_error = merge_errors(
+        app_error.then_some(app.error.clone()).flatten(),
+        cli_error.then_some(cli.error.clone()).flatten(),
+    );
 
     let app_ready = matches!(app.status, UpdateStatus::Downloaded);
     let cli_ready = matches!(cli.status, CliUpdateStatus::Ready);
@@ -77,6 +73,7 @@ pub fn combine_snapshots(
     if app_downloading || cli_downloading {
         app.status = UpdateStatus::Downloading;
         app.target = merge_targets(app_downloading || app_ready, cli_downloading || cli_ready);
+        app.error = component_error;
         apply_combined_progress(&mut app, &cli, app_downloading, app_ready);
         return app;
     }
@@ -89,6 +86,7 @@ pub fn combine_snapshots(
     if app_checking || cli_checking {
         app.status = UpdateStatus::Checking;
         app.target = merge_targets(app_checking, cli_checking);
+        app.error = component_error;
         return app;
     }
 
@@ -97,7 +95,7 @@ pub fn combine_snapshots(
     if app_available || cli_available {
         app.status = UpdateStatus::Available;
         app.target = merge_targets(app_available, cli_available);
-        app.error = None;
+        app.error = component_error;
         return app;
     }
 
@@ -105,7 +103,14 @@ pub fn combine_snapshots(
         app.status = UpdateStatus::Downloaded;
         app.target = merge_targets(app_ready, cli_ready);
         app.percent = Some(100.0);
-        app.error = None;
+        app.error = component_error;
+        return app;
+    }
+
+    if app_error || cli_error {
+        app.status = UpdateStatus::Error;
+        app.target = merge_targets(app_error, cli_error);
+        app.error = component_error;
         return app;
     }
 
@@ -147,8 +152,8 @@ fn merge_targets(app: bool, cli: bool) -> Option<UpdateTarget> {
 fn merge_errors(app: Option<String>, cli: Option<String>) -> Option<String> {
     match (app, cli) {
         (Some(app), Some(cli)) => Some(format!("App: {app}; CLI: {cli}")),
-        (Some(app), None) => Some(app),
-        (None, Some(cli)) => Some(cli),
+        (Some(app), None) => Some(format!("App: {app}")),
+        (None, Some(cli)) => Some(format!("CLI: {cli}")),
         (None, None) => None,
     }
 }
@@ -293,5 +298,51 @@ mod tests {
         assert_eq!(combined.status, UpdateStatus::Available);
         assert_eq!(combined.target, Some(UpdateTarget::App));
         assert_eq!(combined.cli_current_version, None);
+    }
+
+    #[test]
+    fn missing_cli_marks_the_first_bootstrap_as_required() {
+        let mut missing_cli = cli(CliUpdateStatus::Idle);
+        missing_cli.current_version = None;
+        let combined = combine_snapshots(app(UpdateStatus::Idle), Some(missing_cli));
+
+        assert!(combined.cli_bootstrap_required);
+    }
+
+    #[test]
+    fn installed_cli_clears_the_first_bootstrap_gate() {
+        let combined = combine_snapshots(
+            app(UpdateStatus::Idle),
+            Some(cli(CliUpdateStatus::NotAvailable)),
+        );
+
+        assert!(!combined.cli_bootstrap_required);
+    }
+
+    #[test]
+    fn cli_failure_does_not_hide_an_available_app_update() {
+        let mut cli = cli(CliUpdateStatus::Error);
+        cli.error = Some("offline".to_string());
+
+        let combined = combine_snapshots(app(UpdateStatus::Available), Some(cli));
+
+        assert_eq!(combined.status, UpdateStatus::Available);
+        assert_eq!(combined.target, Some(UpdateTarget::App));
+        assert_eq!(combined.error.as_deref(), Some("CLI: offline"));
+    }
+
+    #[test]
+    fn app_failure_does_not_hide_an_available_cli_update() {
+        let mut app = app(UpdateStatus::Error);
+        app.error = Some("app endpoint unavailable".to_string());
+
+        let combined = combine_snapshots(app, Some(cli(CliUpdateStatus::Available)));
+
+        assert_eq!(combined.status, UpdateStatus::Available);
+        assert_eq!(combined.target, Some(UpdateTarget::Cli));
+        assert_eq!(
+            combined.error.as_deref(),
+            Some("App: app endpoint unavailable")
+        );
     }
 }

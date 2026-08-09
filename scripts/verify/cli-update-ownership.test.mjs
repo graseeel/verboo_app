@@ -41,8 +41,11 @@ test('app and CLI release discovery remain separate authorities', () => {
 
 test('release builds embed the CLI trust root without bundling the CLI', () => {
   const workflow = read('.github/workflows/tauri-release.yml')
+  const cliUpdater = read('src-tauri/src/services/cli_update/service.rs')
 
-  assert.match(workflow, /VERBOO_CLI_MINISIGN_PUBLIC_KEY:.*secrets\.VERBOO_CLI_MINISIGN_PUBLIC_KEY/)
+  assert.match(cliUpdater, /BDFB90D8E81C7A23/)
+  assert.match(cliUpdater, /RWQjehzo2JD7vasdwqX2eXrGVlAucr62mJI2MqH50mKuE99cW9P8gvCw/)
+  assert.doesNotMatch(workflow, /VERBOO_CLI_MINISIGN_PUBLIC_KEY/)
   assert.doesNotMatch(workflow, /resources\/cli-package|copy-cli-resource|dedup-cli-package/)
 })
 

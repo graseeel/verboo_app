@@ -244,12 +244,12 @@ describe('A1: event-driven CLI login (login:event)', () => {
   })
 })
 
-// Ivo's order: NO "independent/development version" content in the login UI —
-// the interstitial and the personal contact block are gone for good. This is a
+// Ivo's order: NO project-status content in the login UI — the interstitial
+// and the personal contact block are gone for good. This is a
 // multi-pattern VOCABULARY SWEEP (not an item pin): reintroducing a personal
 // channel or dev-version copy fails here automatically.
-describe('LoginScreen — no development-version content (Ivo\'s order)', () => {
-  it('carries no dev-version vocabulary and no personal contact channels (multi-pattern sweep)', () => {
+describe('LoginScreen — no project-status interstitial (Ivo\'s order)', () => {
+  it('carries no project-status vocabulary and no personal contact channels (multi-pattern sweep)', () => {
     const { container } = renderLogin()
     expect(container.textContent).not.toMatch(/important notice|aviso importante|development build|versão (em desenvolvimento|independente)|not an official|não é uma versão oficial/i)
     // Personal channels (the removed contact block): mailto/tel links, the

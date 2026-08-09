@@ -1483,6 +1483,8 @@ pub struct UpdateSnapshot {
     pub cli_current_version: Option<String>,
     #[serde(default)]
     pub cli_available_version: Option<String>,
+    #[serde(default)]
+    pub cli_bootstrap_required: bool,
     pub release_name: Option<String>,
     pub release_date: Option<String>,
     pub release_notes: Option<String>,

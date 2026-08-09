@@ -1056,6 +1056,10 @@
   font-size: 10.5px;
 }
 
+.sidebar-update-copy .sidebar-update-warning {
+  color: color-mix(in srgb, var(--danger) 82%, var(--text));
+}
+
 .sidebar-update-meta {
   min-width: 23px;
   color: var(--accent-strong);
