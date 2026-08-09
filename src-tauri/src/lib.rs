@@ -1616,22 +1616,26 @@ async fn install_update(
         None => None,
     };
     #[cfg(target_os = "macos")]
-    let macos_bundle = if app_ready {
-        match tauri::process::current_binary(&app.env())
-            .map_err(|e| format!("Falha ao localizar o app instalado: {e}"))
-            .and_then(|executable| {
-                crate::services::update_service::macos_bundle_path(&executable).ok_or_else(|| {
-                    "O executável não está dentro de um bundle macOS válido".to_string()
-                })
-            }) {
-            Ok(bundle) => Some(bundle),
-            Err(error) => {
-                app_updates.restore_staged_update(staged_app.expect("staged app"))?;
-                return Err(error);
+    let macos_bundle = match tauri::process::current_binary(&app.env())
+        .map_err(|e| format!("Falha ao localizar o app instalado: {e}"))
+        .and_then(|executable| {
+            crate::services::update_service::macos_bundle_path(&executable).ok_or_else(|| {
+                "O executável não está dentro de um bundle macOS válido".to_string()
+            })
+        }) {
+        Ok(bundle) => Some(bundle),
+        Err(error) if app_ready => {
+            if let Some(staged) = staged_app {
+                app_updates.restore_staged_update(staged)?;
             }
+            return Err(error);
         }
-    } else {
-        None
+        Err(error) => {
+            eprintln!(
+                "[verboo:update] macOS bundle unavailable for CLI-only update, using native restart: {error}"
+            );
+            None
+        }
     };
 
     let mut app_payload = match (staged_app, app_bytes) {
@@ -1702,6 +1706,10 @@ async fn install_update(
     #[cfg(target_os = "macos")]
     {
         _install_lease.keep_until_process_exit();
+        // LaunchServices is required for every macOS update target, including
+        // CLI-only updates. Tauri's native restart can respawn the executable
+        // as a headless process with no main window, which makes a successful
+        // CLI update look as if the app vanished.
         if let Some(macos_bundle) = macos_bundle {
             let relaunch = std::process::Command::new("/bin/sh")
                 .arg("-c")
@@ -1718,13 +1726,13 @@ async fn install_update(
                 app.restart();
             }
             app.exit(0);
-            return Ok(InstallUpdateResult {
-                status: InstallUpdateStatus::Restarting,
-                active_turns: 0,
-            });
         } else {
             app.restart();
         }
+        return Ok(InstallUpdateResult {
+            status: InstallUpdateStatus::Restarting,
+            active_turns: 0,
+        });
     }
 
     #[cfg(not(target_os = "macos"))]
