@@ -45,6 +45,7 @@ export function useIosSimulatorPanel() {
   const [requirementsLoading, setRequirementsLoading] = useState(false)
   const [lifecycle, setLifecycle] = useState<IosSimulatorLifecycleSnapshot>(IDLE_LIFECYCLE)
   const [frameDataUrl, setFrameDataUrl] = useState<string | undefined>()
+  const [streamUrl, setStreamUrl] = useState<string | undefined>()
   const [frameGeneration, setFrameGeneration] = useState<number | undefined>()
   const [streamSource, setStreamSource] = useState<IosSimulatorStreamSource | undefined>()
   const [effectiveFps, setEffectiveFps] = useState<number | undefined>()
@@ -120,10 +121,12 @@ export function useIosSimulatorPanel() {
       || previous.deviceGeneration !== snapshot.deviceGeneration
     lifecycleRef.current = snapshot
     setLifecycle(snapshot)
+    if (snapshot.previewSuspended) setStreamUrl(undefined)
     if (generationChanged && (previous.deviceGeneration !== null || snapshot.deviceGeneration !== null)) {
       disposeFrameCoalescer()
       hasPublishedFrameRef.current = false
       setFrameDataUrl(undefined)
+      setStreamUrl(undefined)
       setFrameGeneration(undefined)
       telemetryRef.current = { at: 0 }
     }
@@ -197,6 +200,7 @@ export function useIosSimulatorPanel() {
 
   const close = useCallback(() => {
     setSimulatorOpen(false)
+    setStreamUrl(undefined)
     clearLocalPresence()
     disposeFrameCoalescer()
     void iosSimulatorApi.setVisible(false).catch(reason => {
@@ -215,7 +219,10 @@ export function useIosSimulatorPanel() {
         hasPublishedFrameRef.current = false
         telemetryRef.current = { at: 0 }
       }
-      if (!sameDevice) setFrameDataUrl(undefined)
+      if (!sameDevice) {
+        setFrameDataUrl(undefined)
+        setStreamUrl(undefined)
+      }
       setStreamFps(session.streamFps)
       setFallbackFps(session.fallbackFps)
       setStreamSource(session.source)
@@ -433,6 +440,8 @@ export function useIosSimulatorPanel() {
         && frame.udid === currentLifecycle.udid
         && frame.deviceGeneration === currentLifecycle.deviceGeneration) {
         if ('agentPresence' in frame) handleAgentPresence(frame.agentPresence ?? null)
+        if (frame.streamUrl) setStreamUrl(frame.streamUrl)
+        else if (frame.source === 'simctl') setStreamUrl(undefined)
         if (frame.dataUrl) {
           if (!hasPublishedFrameRef.current) {
             hasPublishedFrameRef.current = true
@@ -536,6 +545,7 @@ export function useIosSimulatorPanel() {
     attachedUdid,
     attachedDevice,
     frameDataUrl,
+    streamUrl,
     deviceGeneration,
     frameGeneration,
     streamSource,

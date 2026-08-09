@@ -83,6 +83,7 @@ export type IosSimulatorSession = {
 export type IosSimulatorFrame = {
   udid: string
   dataUrl: string
+  streamUrl?: string | null
   deviceGeneration: number
   frameGeneration: number
   capturedAtMs: number
@@ -107,6 +108,9 @@ export type IosSimulatorPresenceAction =
   | 'screenshot'
   | 'attach'
   | 'detach'
+  | 'systemAction'
+  | 'listApps'
+  | 'launchApp'
 
 export type IosSimulatorPresenceEvent = {
   generation: number

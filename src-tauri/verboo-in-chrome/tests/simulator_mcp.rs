@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use rmcp::model::RawContent;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -114,6 +115,32 @@ async fn simulator_mcp_invalid_arguments_are_structured_without_contacting_the_d
             .and_then(Value::as_str),
         Some("invalid_arguments"),
     );
+}
+
+#[test]
+fn simulator_screenshot_uses_content_blocks_so_the_cli_cannot_hide_the_image() {
+    let result = SimulatorMcpServer::relay_result(Ok(SimulatorToolRelayResult::Success(json!({
+        "udid": "phone-17-pro",
+        "deviceGeneration": 4,
+        "frameGeneration": 9,
+        "mediaType": "image/jpeg",
+        "dataUrl": "data:image/jpeg;base64,aGVsbG8=",
+    }))));
+
+    assert_eq!(result.is_error, Some(false));
+    assert!(matches!(
+        result.content.first().map(|content| &content.raw),
+        Some(RawContent::Image(image))
+            if image.mime_type == "image/jpeg" && image.data == "aGVsbG8="
+    ));
+    assert!(result.structured_content.is_none());
+    assert!(matches!(
+        result.content.get(1).map(|content| &content.raw),
+        Some(RawContent::Text(text))
+            if text.text.contains("phone-17-pro")
+                && text.text.contains("frameGeneration")
+                && !text.text.contains("aGVsbG8=")
+    ));
 }
 
 #[cfg(unix)]

@@ -42,7 +42,8 @@ type Labels = {
 }
 
 type SimulatorSurfaceProps = {
-  frameDataUrl: string
+  frameDataUrl?: string
+  streamUrl?: string
   deviceName: string
   previewAlt: string
   mode: SimulatorInteractionMode
@@ -74,6 +75,7 @@ const ELEMENT_INSPECTION_INTERVAL_MS = 100
 
 export function SimulatorSurface({
   frameDataUrl,
+  streamUrl,
   deviceName,
   previewAlt,
   mode,
@@ -108,6 +110,7 @@ export function SimulatorSurface({
   const [capturing, setCapturing] = useState(false)
   const [selectionError, setSelectionError] = useState<string | undefined>()
   const [hoveredElement, setHoveredElement] = useState<IosSimulatorElementHit | undefined>()
+  const [failedStreamUrl, setFailedStreamUrl] = useState<string | undefined>()
   const paintedRectRef = useRef<Rect>({ x: 0, y: 0, width: 0, height: 0 })
   const [stablePaintedRect, setStablePaintedRect] = useState<Rect>(paintedRectRef.current)
   const interactionHandlers = useSimulatorInteraction({
@@ -120,6 +123,11 @@ export function SimulatorSurface({
     onTypeText,
     onPressKey,
   })
+  const previewSource = streamUrl && streamUrl !== failedStreamUrl ? streamUrl : frameDataUrl
+
+  useEffect(() => {
+    setFailedStreamUrl(undefined)
+  }, [streamUrl])
 
   const updatePaintedRect = useCallback(() => {
     const next = paintedSurfaceRect(surfaceRef.current, imageRef.current)
@@ -383,11 +391,14 @@ export function SimulatorSurface({
       >
         <img
           ref={imageRef}
-          src={frameDataUrl}
+          src={previewSource}
           alt={previewAlt}
           draggable={false}
           style={frameStyle}
           onLoad={updatePaintedRect}
+          onError={() => {
+            if (streamUrl && previewSource === streamUrl) setFailedStreamUrl(streamUrl)
+          }}
         />
         <SimulatorPresenceOverlay
           paintedRect={stablePaintedRect}

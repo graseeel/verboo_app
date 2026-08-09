@@ -6,20 +6,21 @@
 //!   - **macOS**: System Keychain, service `Verboo Code-credentials`, account
 //!     `$USER` (or no account, as fallback). Read/written via
 //!     `/usr/bin/security`.
-//!   - **Windows / Linux**: Plaintext JSON at
-//!     `~/.verboo/.credentials.json` (the CLI's own config dir, overridable
-//!     via `VERBOO_CONFIG_DIR`). The CLI uses libsecret when available and
-//!     falls back to this file; we read the file directly because libsecret
-//!     support in Rust isn't always reliable across desktop environments.
+//!   - **Windows**: the CLI's DPAPI file, with its plaintext fallback.
+//!   - **Linux**: Secret Service through `secret-tool`, with the CLI's
+//!     plaintext fallback when no keyring is available.
 //!
 //! All functions are blocking (keychain + HTTP). The caller is expected to
 //! run them on `spawn_blocking` if called from an async context.
 
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::io::Write as _;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -201,7 +202,7 @@ fn cli_credentials_file_path() -> Option<std::path::PathBuf> {
 ///
 /// macOS: reads from system Keychain via `/usr/bin/security`.
 /// Windows: reads DPAPI-encrypted file (primary) with plaintext fallback.
-/// Linux: reads the plaintext JSON file at `~/.verboo/.credentials.json`.
+/// Linux: reads Secret Service first, then the plaintext fallback.
 ///
 /// (a) Windows DPAPI (2026-08-07): the CLI's `windowsCredentialStorage`
 /// writes via DPAPI (`ProtectedData.Protect` with `CurrentUser` scope)
@@ -249,8 +250,14 @@ pub(crate) fn read_credentials_blob() -> Option<Value> {
             read_file_blob()
         }
     } else {
-        // Linux: plaintext file only.
-        read_file_blob()
+        #[cfg(target_os = "linux")]
+        {
+            read_linux_secret_blob().or_else(read_file_blob)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            read_file_blob()
+        }
     }
 }
 
@@ -270,10 +277,19 @@ fn write_credentials_to_store(creds: &CliOAuthCredentials) {
 
     if cfg!(target_os = "macos") {
         write_keychain_blob(&blob);
+    } else if cfg!(target_os = "windows") {
+        #[cfg(windows)]
+        if !write_windows_dpapi_blob(&blob) {
+            write_file_blob(&blob);
+        }
+        #[cfg(not(windows))]
+        write_file_blob(&blob);
     } else {
-        // Windows/Linux: write plaintext (the CLI's fallback store).
-        // We don't write DPAPI (would need PowerShell Protect call;
-        // the CLI owns the DPAPI store, we only READ it).
+        #[cfg(target_os = "linux")]
+        if !write_linux_secret_blob(&blob) {
+            write_file_blob(&blob);
+        }
+        #[cfg(not(target_os = "linux"))]
         write_file_blob(&blob);
     }
 }
@@ -375,6 +391,69 @@ fn write_file_blob(blob: &Value) -> bool {
     true
 }
 
+fn read_linux_secret_blob_with<F>(account: &str, mut lookup: F) -> Option<Value>
+where
+    F: FnMut(&[&str]) -> Option<String>,
+{
+    let output = lookup(&[
+        "lookup",
+        "service",
+        KEYCHAIN_SERVICE,
+        "account",
+        account,
+    ])?;
+    parse_json_blob(&output)
+}
+
+#[cfg(target_os = "linux")]
+fn read_linux_secret_blob() -> Option<Value> {
+    let account = current_username()?;
+    read_linux_secret_blob_with(&account, |args| {
+        let output = Command::new("secret-tool")
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn write_linux_secret_blob(blob: &Value) -> bool {
+    let Some(account) = current_username() else {
+        return false;
+    };
+    let Ok(json) = serde_json::to_string(blob) else {
+        return false;
+    };
+    let Ok(mut child) = Command::new("secret-tool")
+        .args([
+            "store",
+            "--label=Verboo Code",
+            "service",
+            KEYCHAIN_SERVICE,
+            "account",
+            &account,
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let wrote = child
+        .stdin
+        .take()
+        .is_some_and(|mut stdin| stdin.write_all(json.as_bytes()).is_ok());
+    wrote && child.wait().is_ok_and(|status| status.success())
+}
+
 // ── (a) Windows DPAPI credentials ───────────────────────────────────
 //
 // Clone `windowsCredentialStorage.ts:98-146`:
@@ -433,6 +512,16 @@ fn dpapi_entropy_for(resource_name: &str, username: &str) -> String {
     format!("{resource_name}:{username}")
 }
 
+fn decode_windows_dpapi_payload(bytes: &[u8]) -> Option<Vec<u8>> {
+    let encoded = std::str::from_utf8(bytes).ok()?.trim();
+    if encoded.is_empty() {
+        return None;
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()
+}
+
 /// Returns the config home dir (`VERBOO_CONFIG_DIR` or `~/.verboo`).
 /// Mirrors the clone's `getClaudeConfigHomeDir()`.
 fn verboo_config_home() -> Option<std::path::PathBuf> {
@@ -478,9 +567,9 @@ fn read_windows_dpapi_blob() -> Option<Value> {
     let username = current_username()?;
     let entropy = dpapi_entropy_for(resource_name, &username);
 
-    // Escape single quotes for PowerShell (double them inside
-    // single-quoted strings — PowerShell's only escaping for ').
-    let path_str = file_path.to_string_lossy().replace('\'', "''");
+    // The CLI writes Base64 text, not the raw DPAPI bytes.
+    let protected = decode_windows_dpapi_payload(&std::fs::read(file_path).ok()?)?;
+    let protected_b64 = base64::engine::general_purpose::STANDARD.encode(protected);
     let entropy_escaped = entropy.replace('\'', "''");
 
     // PowerShell script: read the DPAPI file, unprotect with entropy,
@@ -488,7 +577,7 @@ fn read_windows_dpapi_blob() -> Option<Value> {
     // `windowsCredentialStorage.ts:98-146` read path.
     let script = format!(
         "Add-Type -AssemblyName System.Security\n\
-         $bytes = [System.IO.File]::ReadAllBytes('{path_str}')\n\
+         $bytes = [Convert]::FromBase64String('{protected_b64}')\n\
          $entropy = [System.Text.Encoding]::UTF8.GetBytes('{entropy_escaped}')\n\
          $result = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $entropy, 'CurrentUser')\n\
          [System.Text.Encoding]::UTF8.GetString($result)"
@@ -509,6 +598,62 @@ fn read_windows_dpapi_blob() -> Option<Value> {
     }
     let json = String::from_utf8_lossy(&output.stdout);
     parse_json_blob(json.trim())
+}
+
+#[cfg(windows)]
+fn write_windows_dpapi_blob(blob: &Value) -> bool {
+    let Some(config_home) = verboo_config_home() else {
+        return false;
+    };
+    let resource_name = dpapi_resource_name();
+    let file_path = dpapi_file_path_for(&config_home, resource_name);
+    let Some(username) = current_username() else {
+        return false;
+    };
+    let entropy = dpapi_entropy_for(resource_name, &username).replace('\'', "''");
+    let Ok(json) = serde_json::to_string(blob) else {
+        return false;
+    };
+    let script = format!(
+        "Add-Type -AssemblyName System.Security\n\
+         $plain = [Console]::In.ReadToEnd()\n\
+         $bytes = [System.Text.Encoding]::UTF8.GetBytes($plain)\n\
+         $entropy = [System.Text.Encoding]::UTF8.GetBytes('{entropy}')\n\
+         $result = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $entropy, 'CurrentUser')\n\
+         [Convert]::ToBase64String($result)"
+    );
+    let Ok(mut child) = Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-Command")
+        .arg(script)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let wrote = child
+        .stdin
+        .take()
+        .is_some_and(|mut stdin| std::io::Write::write_all(&mut stdin, json.as_bytes()).is_ok());
+    let Ok(output) = child.wait_with_output() else {
+        return false;
+    };
+    if !wrote || !output.status.success() {
+        return false;
+    }
+    let encoded = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if decode_windows_dpapi_payload(encoded.as_bytes()).is_none() {
+        return false;
+    }
+    if let Some(parent) = file_path.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return false;
+        }
+    }
+    std::fs::write(file_path, encoded).is_ok()
 }
 
 /// Runs `/usr/bin/security` with the given args and returns stdout if it
@@ -1216,5 +1361,33 @@ mod tests {
         // read_credentials_blob). On Windows, it would delegate to
         // read_windows_dpapi_blob (via read_credentials_blob).
         let _ = read_provider_credentials_blob();
+    }
+
+    #[test]
+    fn windows_dpapi_file_decodes_the_cli_base64_text_contract() {
+        let protected = b"dpapi encrypted bytes";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(protected);
+
+        assert_eq!(
+            decode_windows_dpapi_payload(format!("  {encoded}\r\n").as_bytes()).unwrap(),
+            protected,
+        );
+        assert!(decode_windows_dpapi_payload(protected).is_none());
+    }
+
+    #[test]
+    fn linux_secret_service_lookup_uses_the_cli_service_and_account_contract() {
+        let mut observed = Vec::new();
+        let blob = read_linux_secret_blob_with("dev", |args| {
+            observed = args.iter().map(|value| value.to_string()).collect();
+            Some(r#"{"verbooOauth":{"accessToken":"token"}}"#.to_string())
+        })
+        .unwrap();
+
+        assert_eq!(
+            observed,
+            ["lookup", "service", "Verboo Code-credentials", "account", "dev"]
+        );
+        assert_eq!(blob["verbooOauth"]["accessToken"], "token");
     }
 }

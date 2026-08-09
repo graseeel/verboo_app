@@ -66,6 +66,7 @@ const MAX_FALLBACK_FPS: f64 = 2.0;
 #[cfg(test)]
 const MAX_FPS: f64 = MAX_FALLBACK_FPS;
 const WDA_READY_TIMEOUT: Duration = Duration::from_secs(45);
+const WDA_STARTUP_TIMEOUT: Duration = Duration::from_secs(90);
 const WDA_SIGINT_GRACE_PERIOD: Duration = Duration::from_secs(5);
 const WDA_SIGTERM_GRACE_PERIOD: Duration = Duration::from_secs(2);
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
@@ -152,6 +153,8 @@ pub enum IosSimulatorStreamSource {
 pub struct IosSimulatorFrame {
     pub udid: String,
     pub data_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_url: Option<String>,
     pub device_generation: u64,
     pub frame_generation: u64,
     pub captured_at_ms: u64,
@@ -185,6 +188,17 @@ pub enum IosSimulatorPresenceAction {
     Screenshot,
     Attach,
     Detach,
+    SystemAction,
+    ListApps,
+    LaunchApp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IosSimulatorInstalledApp {
+    pub bundle_id: String,
+    pub display_name: String,
+    pub application_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1166,6 +1180,19 @@ impl IosSimulatorService {
         })
     }
 
+    pub(crate) fn current_requirements_sync(&self) -> IosSimulatorRequirements {
+        let mut requirements = detect_requirements(self.runner.as_ref());
+        annotate_device_ownership(&mut requirements.devices, self.ownership.as_ref());
+        let (attached_udid, stream_fps, fallback_fps, source, effective_fps) = self.attached();
+        requirements.attached_udid = attached_udid;
+        requirements.stream_fps = stream_fps;
+        requirements.fallback_fps = fallback_fps;
+        requirements.source = source;
+        requirements.effective_fps = effective_fps;
+        requirements.lifecycle = self.lifecycle.snapshot();
+        requirements
+    }
+
     fn emit_lifecycle_snapshot(&self) {
         let snapshot = self.lifecycle.snapshot();
         #[cfg(test)]
@@ -1438,15 +1465,6 @@ impl IosSimulatorService {
             let _ = app.emit(PRESENCE_EVENT, presence);
         }
         generation
-    }
-
-    pub(crate) fn complete_agent_action(&self, generation: u64) -> bool {
-        if !self.presence.complete(generation) {
-            return false;
-        }
-        self.clear_presence_snapshot(generation);
-        self.emit_presence_clear(generation);
-        true
     }
 
     pub(crate) fn clear_agent_presence(&self) {
@@ -2373,6 +2391,38 @@ impl IosSimulatorService {
         }
     }
 
+    pub(crate) fn list_installed_apps_sync(&self) -> Result<Vec<IosSimulatorInstalledApp>, String> {
+        self.reject_if_exiting()?;
+        let (udid, _) = self.current_identity()?;
+        let output = run_simctl(self.runner.as_ref(), &["listapps".into(), udid])?;
+        parse_simctl_listapps(&output.stdout)
+    }
+
+    pub(crate) fn launch_app_sync(&self, bundle_id: &str) -> Result<Option<u32>, String> {
+        self.reject_if_exiting()?;
+        let bundle_id = bundle_id.trim();
+        if bundle_id.is_empty()
+            || bundle_id.len() > 512
+            || bundle_id.chars().any(char::is_control)
+        {
+            return Err("O identificador do app é inválido.".into());
+        }
+        let (udid, _) = self.current_identity()?;
+        let output = run_simctl(
+            self.runner.as_ref(),
+            &[
+                "launch".into(),
+                "--terminate-running-process".into(),
+                udid,
+                bundle_id.into(),
+            ],
+        )?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(stdout
+            .rsplit_once(':')
+            .and_then(|(_, pid)| pid.trim().parse::<u32>().ok()))
+    }
+
     pub(crate) fn tap_sync(&self, point: NormalizedPoint) -> Result<(), String> {
         self.reject_if_exiting()?;
         let (input_lock, stop, handle) = self.active_wda_access()?;
@@ -2595,21 +2645,8 @@ impl IosSimulatorService {
 pub async fn ios_simulator_requirements(
     service: State<'_, IosSimulatorService>,
 ) -> Result<IosSimulatorRequirements, String> {
-    let runner = service.runner.clone();
-    let ownership = service.ownership.clone();
-    let (attached_udid, stream_fps, fallback_fps, source, effective_fps) = service.attached();
-    let lifecycle = service.lifecycle.snapshot();
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut requirements = detect_requirements(runner.as_ref());
-        annotate_device_ownership(&mut requirements.devices, ownership.as_ref());
-        requirements.attached_udid = attached_udid;
-        requirements.stream_fps = stream_fps;
-        requirements.fallback_fps = fallback_fps;
-        requirements.source = source;
-        requirements.effective_fps = effective_fps;
-        requirements.lifecycle = lifecycle;
-        Ok(requirements)
-    })
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || Ok(service.current_requirements_sync()))
     .await
     .map_err(|error| format!("falha ao detectar simuladores: {error}"))?
 }
@@ -3532,6 +3569,71 @@ fn parse_simctl_orientation(value: &str) -> Option<WdaInterfaceOrientation> {
     }
 }
 
+fn parse_simctl_listapps(bytes: &[u8]) -> Result<Vec<IosSimulatorInstalledApp>, String> {
+    let output = String::from_utf8_lossy(bytes);
+    let mut apps = Vec::new();
+    let mut block = String::new();
+    let mut fallback_bundle_id = None;
+    let mut depth = 0_i32;
+
+    for line in output.lines() {
+        if depth == 0 {
+            let trimmed = line.trim();
+            let Some((key, value)) = trimmed.split_once('=') else {
+                continue;
+            };
+            if !value.trim_start().starts_with('{') {
+                continue;
+            }
+            fallback_bundle_id = Some(key.trim().trim_matches('"').to_string());
+            block.clear();
+        }
+        block.push_str(line);
+        block.push('\n');
+        depth += line.chars().filter(|character| *character == '{').count() as i32;
+        depth -= line.chars().filter(|character| *character == '}').count() as i32;
+        if depth > 0 {
+            continue;
+        }
+
+        let bundle_id = openstep_value(&block, "CFBundleIdentifier")
+            .or_else(|| fallback_bundle_id.take())
+            .unwrap_or_default();
+        if bundle_id.is_empty() {
+            continue;
+        }
+        let display_name = openstep_value(&block, "CFBundleDisplayName")
+            .or_else(|| openstep_value(&block, "CFBundleName"))
+            .unwrap_or_else(|| bundle_id.clone());
+        apps.push(IosSimulatorInstalledApp {
+            bundle_id,
+            display_name,
+            application_type: openstep_value(&block, "ApplicationType"),
+        });
+    }
+    if depth != 0 {
+        return Err("O simctl retornou uma lista de apps incompleta.".into());
+    }
+    apps.sort_by(|left, right| {
+        left.display_name
+            .to_lowercase()
+            .cmp(&right.display_name.to_lowercase())
+            .then_with(|| left.bundle_id.cmp(&right.bundle_id))
+    });
+    Ok(apps)
+}
+
+fn openstep_value(block: &str, key: &str) -> Option<String> {
+    block.lines().find_map(|line| {
+        let (candidate, value) = line.trim().split_once('=')?;
+        if candidate.trim() != key {
+            return None;
+        }
+        let value = value.trim().trim_end_matches(';').trim().trim_matches('"');
+        (!value.is_empty()).then(|| value.to_string())
+    })
+}
+
 fn run_simctl(runner: &dyn CommandRunner, args: &[String]) -> Result<CommandOutput, String> {
     let mut command_args = Vec::with_capacity(args.len() + 1);
     command_args.push("simctl".into());
@@ -3653,6 +3755,7 @@ fn spawn_capture_loop_internal(
                             &udid,
                             bytes,
                             "image/png",
+                            None,
                             IosSimulatorStreamSource::Simctl,
                             effective_fps,
                             device_generation,
@@ -3874,7 +3977,7 @@ fn spawn_wda_worker(
                 wda_client.as_ref(),
                 &base_url,
                 stop.as_ref(),
-                Instant::now() + WDA_READY_TIMEOUT,
+                Instant::now() + WDA_STARTUP_TIMEOUT,
             ) {
                 if !stop.load(Ordering::Acquire) {
                     mark_interaction_failure(
@@ -3971,6 +4074,7 @@ fn spawn_wda_worker(
             let mut buffer = Vec::new();
             let mut meter = FrameRateMeter::default();
             let mut activated = false;
+            let stream_url = format!("http://127.0.0.1:{mjpeg_port}/");
 
             while !stop.load(Ordering::Acquire) {
                 if !gate.is_visible() {
@@ -4050,6 +4154,7 @@ fn spawn_wda_worker(
                             &udid,
                             bytes,
                             "image/jpeg",
+                            Some(&stream_url),
                             IosSimulatorStreamSource::Mjpeg,
                             effective_fps,
                             device_generation,
@@ -4208,6 +4313,7 @@ fn frame_from_bytes(
     udid: &str,
     bytes: Vec<u8>,
     media_type: &'static str,
+    stream_url: Option<&str>,
     source: IosSimulatorStreamSource,
     effective_fps: Option<f64>,
     device_generation: u64,
@@ -4217,7 +4323,10 @@ fn frame_from_bytes(
     let frame_generation = next_frame_generation
         .fetch_add(1, Ordering::AcqRel)
         .wrapping_add(1);
-    let data_url = image_data_url(&bytes, media_type);
+    let data_url = stream_url
+        .is_none()
+        .then(|| image_data_url(&bytes, media_type))
+        .unwrap_or_default();
     *latest_frame
         .lock()
         .expect("iOS simulator latest frame poisoned") = Some(LatestFrame {
@@ -4229,6 +4338,7 @@ fn frame_from_bytes(
     IosSimulatorFrame {
         udid: udid.to_string(),
         data_url,
+        stream_url: stream_url.map(str::to_string),
         device_generation,
         frame_generation,
         captured_at_ms: unix_time_ms(),
@@ -5676,6 +5786,12 @@ mod tests {
         assert_eq!(presence.current_generation(), None);
     }
 
+    #[test]
+    fn cold_wda_startup_has_a_separate_budget_from_regular_readiness_checks() {
+        assert_eq!(WDA_STARTUP_TIMEOUT, Duration::from_secs(90));
+        assert!(WDA_STARTUP_TIMEOUT > WDA_READY_TIMEOUT);
+    }
+
     impl WdaLauncher for NonResponsiveWdaLauncher {
         fn launch(
             &self,
@@ -5933,6 +6049,32 @@ mod tests {
     }
 
     #[test]
+    fn listapps_parser_returns_generic_bundle_ids_and_display_names() {
+        let output = br#"{
+    "com.example.Notes" =     {
+        ApplicationType = User;
+        CFBundleDisplayName = "My Notes";
+        CFBundleIdentifier = "com.example.Notes";
+        CFBundleName = Notes;
+    };
+    "com.apple.Preferences" =     {
+        ApplicationType = System;
+        CFBundleDisplayName = Ajustes;
+        CFBundleIdentifier = "com.apple.Preferences";
+        CFBundleName = Preferences;
+    };
+}"#;
+
+        let apps = parse_simctl_listapps(output).unwrap();
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0].display_name, "Ajustes");
+        assert_eq!(apps[0].bundle_id, "com.apple.Preferences");
+        assert_eq!(apps[0].application_type.as_deref(), Some("System"));
+        assert_eq!(apps[1].display_name, "My Notes");
+        assert_eq!(apps[1].bundle_id, "com.example.Notes");
+    }
+
+    #[test]
     fn wda_command_is_loopback_and_uses_the_selected_runtime_project() {
         let spec = WdaLaunchSpec {
             project: PathBuf::from(
@@ -6179,8 +6321,17 @@ mod tests {
         );
         assert!(records[..first_mjpeg]
             .iter()
-            .all(|frame| frame.source == IosSimulatorStreamSource::Simctl));
-        assert!(records.iter().all(|frame| !frame.data_url.is_empty()));
+            .all(|frame| frame.source == IosSimulatorStreamSource::Simctl
+                && !frame.data_url.is_empty()
+                && frame.stream_url.is_none()));
+        assert!(records[first_mjpeg..].iter().all(|frame| {
+            frame.source == IosSimulatorStreamSource::Mjpeg
+                && frame.data_url.is_empty()
+                && frame
+                    .stream_url
+                    .as_deref()
+                    .is_some_and(|url| url.starts_with("http://127.0.0.1:"))
+        }));
         assert_eq!(launcher.launched.load(Ordering::SeqCst), 1);
         assert_eq!(stopped.load(Ordering::SeqCst), 1);
     }

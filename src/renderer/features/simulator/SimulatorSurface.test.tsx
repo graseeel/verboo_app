@@ -7,6 +7,7 @@ import { paintedContainRect } from './simulatorGeometry'
 function renderSurface(
   mode: 'interact' | 'select-element' | 'select-area' = 'interact',
   agentPresence?: IosSimulatorPresenceEvent,
+  streamUrl?: string,
 ) {
   const callbacks = {
     onTap: vi.fn(),
@@ -41,6 +42,7 @@ function renderSurface(
   render(
     <SimulatorSurface
       frameDataUrl="data:image/jpeg;base64,frame"
+      streamUrl={streamUrl}
       deviceName="iPhone 17 Pro"
       previewAlt="Live iPhone preview"
       mode={mode}
@@ -79,6 +81,24 @@ function renderSurface(
 }
 
 describe('SimulatorSurface', () => {
+  it('renders the binary MJPEG stream instead of replacing a base64 URL every frame', () => {
+    renderSurface('interact', undefined, 'http://127.0.0.1:12345/')
+
+    expect(screen.getByAltText('Live iPhone preview')).toHaveAttribute(
+      'src',
+      'http://127.0.0.1:12345/',
+    )
+  })
+
+  it('falls back to the last stable frame when the direct MJPEG image cannot load', () => {
+    renderSurface('interact', undefined, 'http://127.0.0.1:12345/')
+    const image = screen.getByAltText('Live iPhone preview')
+
+    fireEvent.error(image)
+
+    expect(image).toHaveAttribute('src', 'data:image/jpeg;base64,frame')
+  })
+
   it('bounds agent presence to the object-fit painted device instead of the whole surface', () => {
     const bounds = vi.spyOn(HTMLDivElement.prototype, 'getBoundingClientRect').mockReturnValue({
       left: 0, top: 0, width: 600, height: 900, right: 600, bottom: 900,

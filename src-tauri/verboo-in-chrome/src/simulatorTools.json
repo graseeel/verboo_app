@@ -55,23 +55,14 @@
         "type": "object",
         "properties": {
           "udid": { "type": "string", "minLength": 1, "maxLength": 256 },
-          "from": { "$ref": "#/$defs/point" },
-          "to": { "$ref": "#/$defs/point" },
+          "fromX": { "type": "number", "minimum": 0, "maximum": 1 },
+          "fromY": { "type": "number", "minimum": 0, "maximum": 1 },
+          "toX": { "type": "number", "minimum": 0, "maximum": 1 },
+          "toY": { "type": "number", "minimum": 0, "maximum": 1 },
           "durationMs": { "type": "integer", "minimum": 50, "maximum": 5000 }
         },
-        "required": ["from", "to"],
-        "additionalProperties": false,
-        "$defs": {
-          "point": {
-            "type": "object",
-            "properties": {
-              "x": { "type": "number", "minimum": 0, "maximum": 1 },
-              "y": { "type": "number", "minimum": 0, "maximum": 1 }
-            },
-            "required": ["x", "y"],
-            "additionalProperties": false
-          }
-        }
+        "required": ["fromX", "fromY", "toX", "toY"],
+        "additionalProperties": false
       }
     },
     {
@@ -102,6 +93,49 @@
           }
         },
         "required": ["key"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ios_simulator_system_action",
+      "description": "Perform a generic iOS system action on the attached Simulator.",
+      "risk": "mutate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "udid": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "action": {
+            "type": "string",
+            "enum": ["home", "appSwitcher", "notifications", "controlCenter", "rotateClockwise"]
+          }
+        },
+        "required": ["action"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ios_simulator_list_apps",
+      "description": "List installed applications on the attached iOS Simulator, including their display names and bundle identifiers.",
+      "risk": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "udid": { "type": "string", "minLength": 1, "maxLength": 256 }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ios_simulator_launch_app",
+      "description": "Launch any installed application on the attached iOS Simulator by bundle identifier.",
+      "risk": "mutate",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "udid": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "bundleId": { "type": "string", "minLength": 1, "maxLength": 512 }
+        },
+        "required": ["bundleId"],
         "additionalProperties": false
       }
     },

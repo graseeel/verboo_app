@@ -125,6 +125,54 @@ impl IosSimulatorMcpService {
         }
     }
 
+    pub fn reconcile_for_platform(&self, is_macos: bool) -> Result<(), String> {
+        if is_macos {
+            return self.ensure_registered();
+        }
+        self.remove_managed_entry_from_config()
+    }
+
+    fn remove_managed_entry_from_config(&self) -> Result<(), String> {
+        if !self.config_path.exists() {
+            return Ok(());
+        }
+        let mut config: Value = serde_json::from_slice(
+            &fs::read(&self.config_path).map_err(|error| error.to_string())?,
+        )
+        .map_err(|_| "ios_simulator_mcp_config_invalid".to_string())?;
+        let Some(servers) = config
+            .get_mut("mcpServers")
+            .and_then(Value::as_object_mut)
+        else {
+            return Ok(());
+        };
+        let should_remove = servers.get(MCP_NAME).is_some_and(|entry| {
+            let managed = entry
+                .get("env")
+                .and_then(Value::as_object)
+                .and_then(|env| env.get(MANAGED_MARKER))
+                .and_then(Value::as_str)
+                == Some("1");
+            let command = entry
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let command_path = Path::new(command);
+            managed
+                && command_path.starts_with(&self.integration_root)
+                && command_path.file_name()
+                    == Some(std::ffi::OsStr::new(helper_filename()))
+        });
+        if !should_remove {
+            return Ok(());
+        }
+        servers.remove(MCP_NAME);
+        atomic_write_config(
+            &self.config_path,
+            &serde_json::to_vec_pretty(&config).map_err(|error| error.to_string())?,
+        )
+    }
+
     fn managed_helper_path(&self) -> PathBuf {
         self.integration_root
             .join(&self.app_version)
@@ -518,5 +566,62 @@ mod tests {
             service.managed_helper_path().to_string_lossy().as_ref(),
         );
         assert_eq!(config["mcpServers"][MCP_NAME]["env"][MANAGED_MARKER], "1");
+    }
+
+    #[test]
+    fn non_macos_reconciliation_removes_only_the_managed_simulator_entry() {
+        let (_temp, service, runner) = fixture(None);
+        fs::create_dir_all(service.config_path.parent().unwrap()).unwrap();
+        fs::write(
+            &service.config_path,
+            serde_json::to_vec(&json!({
+                "theme": "dark",
+                "mcpServers": {
+                    MCP_NAME: {
+                        "type": "stdio",
+                        "command": service.managed_helper_path(),
+                        "args": ["mcp"],
+                        "env": {
+                            MANAGED_MARKER: "1",
+                            VERSION_MARKER: "1.2.3"
+                        }
+                    },
+                    "user-owned": {"command": "/usr/bin/example"}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        service.reconcile_for_platform(false).unwrap();
+
+        let config: Value =
+            serde_json::from_slice(&fs::read(&service.config_path).unwrap()).unwrap();
+        assert!(config["mcpServers"].get(MCP_NAME).is_none());
+        assert_eq!(config["mcpServers"]["user-owned"]["command"], "/usr/bin/example");
+        assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn non_macos_reconciliation_preserves_a_foreign_simulator_entry() {
+        let (_temp, service, runner) = fixture(Some(json!({
+            "mcpServers": {
+                MCP_NAME: {
+                    "command": "/foreign/verboo-ios-simulator",
+                    "args": ["mcp"],
+                    "env": {}
+                }
+            }
+        })));
+
+        service.reconcile_for_platform(false).unwrap();
+
+        let config: Value =
+            serde_json::from_slice(&fs::read(&service.config_path).unwrap()).unwrap();
+        assert_eq!(
+            config["mcpServers"][MCP_NAME]["command"],
+            "/foreign/verboo-ios-simulator"
+        );
+        assert!(runner.calls.lock().unwrap().is_empty());
     }
 }

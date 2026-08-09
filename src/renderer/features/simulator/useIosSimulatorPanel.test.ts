@@ -479,6 +479,36 @@ describe('useIosSimulatorPanel', () => {
     expect(view.result.current.streamSource).toBe('mjpeg')
   })
 
+  it('switches to the binary MJPEG URL without committing per-frame base64 into React', async () => {
+    const view = renderHook(() => useIosSimulatorPanel())
+    await act(async () => { await view.result.current.open() })
+    await act(async () => { await view.result.current.attach('phone-17-pro') })
+
+    act(() => frameHandler?.({
+      udid: 'phone-17-pro',
+      dataUrl: 'data:image/png;base64,warmup',
+      streamUrl: null,
+      deviceGeneration: 1,
+      frameGeneration: 1,
+      capturedAtMs: 1,
+      source: 'simctl',
+      effectiveFps: 1.8,
+    }))
+    act(() => frameHandler?.({
+      udid: 'phone-17-pro',
+      dataUrl: '',
+      streamUrl: 'http://127.0.0.1:12345/',
+      deviceGeneration: 1,
+      frameGeneration: 2,
+      capturedAtMs: 2,
+      source: 'mjpeg',
+      effectiveFps: 30,
+    }))
+
+    expect(view.result.current.frameDataUrl).toBe('data:image/png;base64,warmup')
+    expect(view.result.current.streamUrl).toBe('http://127.0.0.1:12345/')
+  })
+
   it('changes stream fluency and fallback rate independently while attached', async () => {
     const view = renderHook(() => useIosSimulatorPanel())
     await act(async () => { await view.result.current.open() })

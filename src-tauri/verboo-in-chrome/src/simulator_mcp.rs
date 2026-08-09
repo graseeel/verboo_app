@@ -130,12 +130,21 @@ impl SimulatorMcpServer {
         result: Result<SimulatorToolRelayResult, SimulatorRelayError>,
     ) -> CallToolResult {
         match result {
-            Ok(SimulatorToolRelayResult::Success(value)) => CallToolResult {
-                content: vec![Content::text(value.to_string())],
-                structured_content: Some(value),
-                is_error: Some(false),
-                meta: None,
-            },
+            Ok(SimulatorToolRelayResult::Success(mut value)) => {
+                let image = take_data_url_image(&mut value);
+                let has_image = image.is_some();
+                let mut content = Vec::with_capacity(if image.is_some() { 2 } else { 1 });
+                if let Some((data, media_type)) = image {
+                    content.push(Content::image(data, media_type));
+                }
+                content.push(Content::text(value.to_string()));
+                CallToolResult {
+                    content,
+                    structured_content: (!has_image).then_some(value),
+                    is_error: Some(false),
+                    meta: None,
+                }
+            }
             Err(error) => {
                 let value = error.structured_value();
                 CallToolResult {
@@ -147,6 +156,18 @@ impl SimulatorMcpServer {
             }
         }
     }
+}
+
+fn take_data_url_image(value: &mut Value) -> Option<(String, String)> {
+    let data_url = value.get("dataUrl")?.as_str()?.to_string();
+    let encoded = data_url.strip_prefix("data:")?;
+    let (header, data) = encoded.split_once(",")?;
+    let media_type = header.strip_suffix(";base64")?;
+    if media_type.is_empty() || data.is_empty() {
+        return None;
+    }
+    value.as_object_mut()?.remove("dataUrl");
+    Some((data.to_string(), media_type.to_string()))
 }
 
 impl ServerHandler for SimulatorMcpServer {

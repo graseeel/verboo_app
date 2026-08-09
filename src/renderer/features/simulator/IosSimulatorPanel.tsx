@@ -35,6 +35,7 @@ type IosSimulatorPanelProps = {
   attachedUdid?: string
   attachedDevice?: IosSimulatorDevice
   frameDataUrl?: string
+  streamUrl?: string
   streamSource?: IosSimulatorStreamSource
   effectiveFps?: number
   streamFps: IosSimulatorStreamFps
@@ -85,6 +86,7 @@ export function IosSimulatorPanel({
   attachedUdid,
   attachedDevice,
   frameDataUrl,
+  streamUrl,
   streamSource,
   effectiveFps,
   streamFps,
@@ -156,7 +158,7 @@ export function IosSimulatorPanel({
   }
   const interactionFailure = lifecycle.stage === 'preparingInteraction'
     && !lifecycle.interactionReady
-    && Boolean(frameDataUrl)
+    && Boolean(frameDataUrl || streamUrl)
     && Boolean(lifecycle.recoverableError)
   const stageDeviceName = device?.name ?? ''
 
@@ -288,9 +290,10 @@ export function IosSimulatorPanel({
             {attachedUdid && device && (
               <section className="ios-simulator-view" aria-label={t('simulator.previewLabel', { name: device.name })}>
                 <div className="ios-simulator-frame">
-                  {frameDataUrl ? (
+                  {frameDataUrl || streamUrl ? (
                     <SimulatorSurface
                       frameDataUrl={frameDataUrl}
+                      streamUrl={streamUrl}
                       deviceName={device.name}
                       previewAlt={t('simulator.previewAlt', { name: device.name })}
                       mode={interactionMode}

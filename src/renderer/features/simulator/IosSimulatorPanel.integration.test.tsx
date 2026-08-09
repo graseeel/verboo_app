@@ -118,6 +118,7 @@ function Harness({ hookRef }: { hookRef: { current: HookApi | undefined } }) {
       attachedUdid={simulator.attachedUdid}
       attachedDevice={simulator.attachedDevice}
       frameDataUrl={simulator.frameDataUrl}
+      streamUrl={simulator.streamUrl}
       streamSource={simulator.streamSource}
       effectiveFps={simulator.effectiveFps}
       streamFps={simulator.streamFps}

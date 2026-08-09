@@ -2,7 +2,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
 use std::thread::{self, JoinHandle};
@@ -14,14 +14,17 @@ use tauri::AppHandle;
 use uuid::Uuid;
 
 use super::{
-    detect_requirements, image_data_url, IosSimulatorKey, IosSimulatorPresenceAction,
-    IosSimulatorService, NormalizedPoint, PreviewGate, StreamProfile, DEFAULT_FALLBACK_FPS,
+    image_data_url, IosSimulatorKey, IosSimulatorPresenceAction, IosSimulatorService,
+    IosSimulatorSystemAction, NormalizedPoint, StreamProfile, DEFAULT_FALLBACK_FPS,
 };
+#[cfg(test)]
+use super::PreviewGate;
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
 
 const PROTOCOL_VERSION: u32 = 1;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const ACCEPT_POLL: Duration = Duration::from_millis(25);
-const AGENT_PRESENCE_PRELUDE: Duration = Duration::from_millis(840);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -279,7 +282,7 @@ fn dispatch_tool(
 ) -> Result<Value, DispatchError> {
     match tool {
         "ios_simulator_list" => {
-            let requirements = detect_requirements(service.runner.as_ref());
+            let requirements = service.current_requirements_sync();
             serde_json::to_value(requirements).map_err(internal_error)
         }
         "ios_simulator_attach" => {
@@ -296,17 +299,15 @@ fn dispatch_tool(
                 .current_session_summary()
                 .filter(|session| session.device.udid == args.udid)
             {
-                let generation = service.begin_agent_action(
+                service.begin_agent_action(
                     IosSimulatorPresenceAction::Attach,
                     None,
                     None,
                     None,
                 );
-                service.complete_agent_action(generation);
                 return serde_json::to_value(session).map_err(internal_error);
             }
-            let generation =
-                service.begin_agent_action(IosSimulatorPresenceAction::Attach, None, None, None);
+            service.begin_agent_action(IosSimulatorPresenceAction::Attach, None, None, None);
             let result = service.attach_sync(
                 app.cloned().ok_or_else(|| {
                     DispatchError::new("internal_error", "app handle unavailable")
@@ -315,7 +316,6 @@ fn dispatch_tool(
                 args.stream_fps.unwrap_or(StreamProfile::DEFAULT.fps()),
                 args.fallback_fps.unwrap_or(DEFAULT_FALLBACK_FPS),
             );
-            service.complete_agent_action(generation);
             if result.is_ok() {
                 // The first open request is intentionally pre-action so the
                 // panel appears before control. A second request refreshes the
@@ -393,28 +393,25 @@ fn dispatch_tool(
             .map_err(tool_error)
         }
         "ios_simulator_drag" => {
-            #[derive(Deserialize, Clone, Copy)]
-            struct Point {
-                x: f64,
-                y: f64,
-            }
             #[derive(Deserialize)]
             #[serde(rename_all = "camelCase")]
             struct Args {
                 udid: Option<String>,
-                from: Point,
-                to: Point,
+                from_x: f64,
+                from_y: f64,
+                to_x: f64,
+                to_y: f64,
                 duration_ms: Option<u64>,
             }
             let args: Args = parse_args(arguments)?;
             ensure_device(service, args.udid.as_deref())?;
             let start = NormalizedPoint {
-                x: args.from.x,
-                y: args.from.y,
+                x: args.from_x,
+                y: args.from_y,
             };
             let end = NormalizedPoint {
-                x: args.to.x,
-                y: args.to.y,
+                x: args.to_x,
+                y: args.to_y,
             };
             with_presence(
                 service,
@@ -465,12 +462,62 @@ fn dispatch_tool(
             .map(|_| json!({ "ok": true }))
             .map_err(tool_error)
         }
+        "ios_simulator_system_action" => {
+            #[derive(Deserialize)]
+            struct Args {
+                udid: Option<String>,
+                action: IosSimulatorSystemAction,
+            }
+            let args: Args = parse_args(arguments)?;
+            ensure_device(service, args.udid.as_deref())?;
+            with_presence(
+                service,
+                IosSimulatorPresenceAction::SystemAction,
+                None,
+                None,
+                None,
+                || service.system_action_sync(args.action),
+            )
+            .map(|_| json!({ "ok": true }))
+            .map_err(tool_error)
+        }
+        "ios_simulator_list_apps" => {
+            ensure_requested_device(service, &arguments)?;
+            let apps = with_presence(
+                service,
+                IosSimulatorPresenceAction::ListApps,
+                None,
+                None,
+                None,
+                || service.list_installed_apps_sync(),
+            )
+            .map_err(tool_error)?;
+            Ok(json!({ "apps": apps }))
+        }
+        "ios_simulator_launch_app" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                udid: Option<String>,
+                bundle_id: String,
+            }
+            let args: Args = parse_args(arguments)?;
+            ensure_device(service, args.udid.as_deref())?;
+            let pid = with_presence(
+                service,
+                IosSimulatorPresenceAction::LaunchApp,
+                None,
+                None,
+                None,
+                || service.launch_app_sync(&args.bundle_id),
+            )
+            .map_err(tool_error)?;
+            Ok(json!({ "ok": true, "bundleId": args.bundle_id, "pid": pid }))
+        }
         "ios_simulator_detach" => {
             ensure_requested_device(service, &arguments)?;
-            let generation =
-                service.begin_agent_action(IosSimulatorPresenceAction::Detach, None, None, None);
+            service.begin_agent_action(IosSimulatorPresenceAction::Detach, None, None, None);
             service.detach_sync().map_err(tool_error)?;
-            service.complete_agent_action(generation);
             Ok(json!({ "ok": true }))
         }
         _ => Err(DispatchError::new(
@@ -488,14 +535,8 @@ fn with_presence<T>(
     end: Option<NormalizedPoint>,
     operation: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    let generation = service.begin_agent_action(action, target, start, end);
-    // Match the Chrome presence contract: let the cursor reach its target
-    // before WDA mutates the device. Connections are handled independently,
-    // so turnComplete can still clear presence during this prelude.
-    thread::sleep(AGENT_PRESENCE_PRELUDE);
-    let result = operation();
-    service.complete_agent_action(generation);
-    result
+    service.begin_agent_action(action, target, start, end);
+    operation()
 }
 
 fn ensure_attach_compatible(
@@ -756,7 +797,7 @@ mod tests {
     }
 
     #[test]
-    fn presence_is_active_before_the_agent_operation_and_clears_afterward() {
+    fn presence_stays_active_after_an_agent_operation_until_turn_complete() {
         let mut service = IosSimulatorService::default();
         service.presence = Arc::new(PresenceAuthority::default());
         let observed = with_presence(
@@ -771,6 +812,66 @@ mod tests {
             },
         );
         assert!(observed.is_ok());
+        assert!(service.presence.current_generation().is_some());
+
+        let completion = json!({
+            "protocolVersion": 1,
+            "type": "turnComplete",
+            "id": "turn-done",
+            "secret": "right",
+            "arguments": {},
+        });
+        let response = handle_request_line(
+            completion.to_string().as_bytes(),
+            "right",
+            &service,
+            None,
+        );
+        assert_eq!(response_value(response)["result"]["cleared"], true);
         assert_eq!(service.presence.current_generation(), None);
+    }
+
+    #[test]
+    fn list_reports_the_live_attached_session_instead_of_only_static_requirements() {
+        let service = attached_service("phone-17-pro");
+        let result = dispatch_tool("ios_simulator_list", json!({}), &service, None).unwrap();
+
+        assert_eq!(result["attachedUdid"], "phone-17-pro");
+        assert_eq!(result["streamFps"], StreamProfile::DEFAULT.fps());
+        assert_eq!(result["source"], "mjpeg");
+    }
+
+    #[test]
+    fn drag_accepts_flat_coordinates_from_all_provider_transports() {
+        let service = attached_service("phone-17-pro");
+        let error = dispatch_tool(
+            "ios_simulator_drag",
+            json!({
+                "fromX": 0.5,
+                "fromY": 0.9,
+                "toX": 0.5,
+                "toY": 0.2,
+                "durationMs": 180,
+            }),
+            &service,
+            None,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "tool_error", "flat arguments must reach WDA");
+    }
+
+    #[test]
+    fn generic_system_action_reaches_the_existing_system_control_path() {
+        let service = attached_service("phone-17-pro");
+        let error = dispatch_tool(
+            "ios_simulator_system_action",
+            json!({"action": "home"}),
+            &service,
+            None,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "tool_error", "home must reach WDA, not be unknown");
     }
 }

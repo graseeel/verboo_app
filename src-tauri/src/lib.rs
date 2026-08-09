@@ -2,7 +2,7 @@ pub mod models;
 pub mod services;
 
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use models::types::*;
 use services::chrome_integration::{
@@ -25,10 +25,12 @@ use tauri::{Emitter, Manager};
 // this same absolute deadline, so their worst-case maxima are not additive. N
 // is runtime ledger data, never a hardcoded owner/device count; remeasure the
 // end-to-end envelope before changing this value.
+#[cfg(target_os = "macos")]
 const IOS_SIMULATOR_CLEANUP_BUDGET: Duration = Duration::from_secs(8);
 
+#[cfg(target_os = "macos")]
 fn stop_ios_simulator_for_app_exit(app_handle: &tauri::AppHandle) {
-    let deadline = Instant::now() + IOS_SIMULATOR_CLEANUP_BUDGET;
+    let deadline = std::time::Instant::now() + IOS_SIMULATOR_CLEANUP_BUDGET;
     let service = app_handle.state::<services::ios_simulator::IosSimulatorService>();
     service.begin_exit();
     app_handle
@@ -36,6 +38,9 @@ fn stop_ios_simulator_for_app_exit(app_handle: &tauri::AppHandle) {
         .stop();
     let _ = service.stop_for_app_exit(deadline);
 }
+
+#[cfg(not(target_os = "macos"))]
+fn stop_ios_simulator_for_app_exit(_app_handle: &tauri::AppHandle) {}
 
 // ════════════════════════════════════════════════════════════════════
 // AppState — will be fleshed out in later phases
@@ -2294,19 +2299,23 @@ pub fn run() {
             let simulator_service =
                 services::ios_simulator::IosSimulatorService::new(app_data_dir.clone())
                     .map_err(std::io::Error::other)?;
-            simulator_service
-                .reconcile_owned_devices()
-                .map_err(std::io::Error::other)?;
             app.manage(simulator_service.clone());
-            let simulator_cache_dir = app.path().app_cache_dir().map_err(std::io::Error::other)?;
-            let simulator_bridge = services::ios_simulator::IosSimulatorBridge::start(
-                simulator_cache_dir,
-                app.package_info().version.to_string(),
-                app.handle().clone(),
-                simulator_service,
-            )
-            .map_err(std::io::Error::other)?;
-            app.manage(simulator_bridge);
+            #[cfg(target_os = "macos")]
+            {
+                simulator_service
+                    .reconcile_owned_devices()
+                    .map_err(std::io::Error::other)?;
+                let simulator_cache_dir =
+                    app.path().app_cache_dir().map_err(std::io::Error::other)?;
+                let simulator_bridge = services::ios_simulator::IosSimulatorBridge::start(
+                    simulator_cache_dir,
+                    app.package_info().version.to_string(),
+                    app.handle().clone(),
+                    simulator_service,
+                )
+                .map_err(std::io::Error::other)?;
+                app.manage(simulator_bridge);
+            }
             let simulator_mcp_app_data = app_data_dir.clone();
             let simulator_mcp_version = app.package_info().version.to_string();
             tauri::async_runtime::spawn_blocking(move || {
@@ -2314,7 +2323,7 @@ pub fn run() {
                     simulator_mcp_app_data,
                     simulator_mcp_version,
                 )
-                .and_then(|service| service.ensure_registered());
+                .and_then(|service| service.reconcile_for_platform(cfg!(target_os = "macos")));
                 if let Err(error) = result {
                     eprintln!("[verboo:ios-simulator-mcp] setup skipped: {error}");
                 }
