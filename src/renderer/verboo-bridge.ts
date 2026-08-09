@@ -42,6 +42,10 @@ import type {
   ProjectInstructionFile,
   ProjectInstructionReadResult,
   ProviderAuthStatus,
+  ProviderAccountSummary,
+  ProviderCapabilities,
+  ProviderUsageResult,
+  ExternalProviderId,
   ProviderLoginEvent,
   ResearchSubagentResult,
   ResearchSubagentsRunRequest,
@@ -49,6 +53,7 @@ import type {
   TerminalDataEvent,
   UpdateSnapshot,
   UserSettings,
+  VerbooModel,
   VideoComponentState,
   VideoOcrRequest,
   VideoOcrText,
@@ -139,9 +144,20 @@ const api = {
 
   // ── Providers (F4; comandos registrados em lib.rs:2382-2385) ──
   providerAuthStatus: () => invoke<ProviderAuthStatus[]>('provider_auth_status'),
-  providerLoginStart: (provider: string) => invoke<string>('provider_login_start', { provider }),
+  providerLoginStart: (provider: string, reconnectAccountId?: string) =>
+    invoke<string>('provider_login_start', { provider, reconnectAccountId }),
   providerLoginConfirmRisk: (provider: string) => invoke<void>('provider_login_confirm_risk', { provider }),
   providerLoginCancel: () => invoke<void>('provider_login_cancel'),
+  providerCapabilities: () => invoke<ProviderCapabilities>('provider_capabilities'),
+  providerAccountsList: () => invoke<ProviderAccountSummary[]>('provider_accounts_list'),
+  providerAccountsUsage: (provider?: ExternalProviderId, accountId?: string) =>
+    invoke<ProviderUsageResult[]>('provider_accounts_usage', { provider, accountId }),
+  providerAccountModels: (provider: ExternalProviderId, accountId: string) =>
+    invoke<VerbooModel[]>('provider_account_models', { provider, accountId }),
+  providerAccountSetDefault: (provider: ExternalProviderId, accountId: string) =>
+    invoke<void>('provider_account_set_default', { provider, accountId }),
+  providerAccountRemove: (provider: ExternalProviderId, accountId: string) =>
+    invoke<void>('provider_account_remove', { provider, accountId }),
   onProviderLoginEvent: (handler: (event: ProviderLoginEvent) => void) =>
     onEvent<ProviderLoginEvent>('provider-login:event', handler),
 

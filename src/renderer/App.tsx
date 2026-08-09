@@ -25,6 +25,8 @@ import type {
   ModelDiscoveryResult,
   ProfileResult,
   ProviderAuthStatus,
+  ExternalProviderId,
+  ProviderTurnAccount,
   ResearchSubagentResult,
   RuntimeActivity,
   SettingsTab,
@@ -141,7 +143,7 @@ import {
   shouldRetryIncompleteTurn,
 } from './features/transcript/cliFailureRecovery'
 import { presentAgentError } from './features/transcript/agentErrorWiring'
-import { quotaResetMessageFromRetry, shouldSuppressSystemErrorText } from './features/transcript/apiErrorPresentation'
+import { parseApiErrorFromBlob, presentProviderQuotaMessage, quotaResetMessageFromRetry, shouldSuppressSystemErrorText } from './features/transcript/apiErrorPresentation'
 import { truncateToolOutput } from './features/transcript/toolOutput'
 import { applySubagentThreadUpdate, isSubagentThreadWorking, latestSubagentThread } from './features/subagents/subagentThreads'
 import { SubagentIndicator } from './features/subagents/SubagentIndicator'
@@ -154,6 +156,9 @@ import { PluginsView } from './features/plugins/PluginsView'
 import { loadPluginSkillSummaries } from './features/plugins/pluginSkillSummaries'
 import { ProjectPicker } from './features/projects/ProjectPicker'
 import { SettingsView } from './features/settings/SettingsView'
+import { useProviderAccounts } from './features/settings/useProviderAccounts'
+import { bindProviderAccount, recordProviderSessionAccount } from './features/providers/providerAccountBindings'
+import { formatQuotaReset, selectedExhaustedQuota } from './features/providers/providerQuotaPresentation'
 import { clearUpdateDraftHandoff, consumeUpdateDraftHandoff, writeUpdateDraftHandoff } from './features/updates/updateDraftHandoff'
 import { useDeferredUpdateRestart } from './features/updates/useDeferredUpdateRestart'
 import { useUpdateAutomation } from './features/updates/useUpdateAutomation'
@@ -396,6 +401,17 @@ export function App() {
     stale: false,
   })
   const [selectedModel, setSelectedModel] = useState<string | undefined>()
+  const [providerModelBlocker, setProviderModelBlocker] = useState<{
+    conversationId: string
+    provider: ExternalProviderId
+    accountId: string
+    modelId: string
+  } | undefined>()
+  const [providerAccountMissing, setProviderAccountMissing] = useState<{
+    conversationId: string
+    provider: ExternalProviderId
+    accountId: string
+  } | undefined>()
   const [skills, setSkills] = useState<SkillSummary[]>([])
   const [pluginSkillSummaries, setPluginSkillSummaries] = useState<SkillSummary[]>([])
 
@@ -648,6 +664,7 @@ export function App() {
   const userSettingsRef = useRef(userSettings)
   const turnConversationIds = useRef<Record<string, string>>({})
   const turnModels = useRef<Record<string, { modelId?: string; modelDisplayName?: string; provider?: string }>>({})
+  const turnProviderAccounts = useRef<Record<string, ProviderTurnAccount | undefined>>({})
   const pendingConversationId = useRef<string | undefined>(undefined)
   // Ref mirror of activeConversationId so the agent event handler (which has
   // a stale closure via useEffect []) can read the current value when a
@@ -765,6 +782,16 @@ export function App() {
     () => chatStore.conversations.find(conversation => conversation.id === activeConversationId),
     [chatStore.conversations, activeConversationId],
   )
+  const providersVisible = activeView === 'settings' && settingsTab === 'providers'
+  const providerAccounts = useProviderAccounts({ visible: providersVisible, bridge: window.verboo })
+  // The agent-event subscription is intentionally installed once. Mirror the
+  // provider controller and visibility into refs so quota refreshes always use
+  // the latest account list after entering/leaving Settings, instead of the
+  // controller captured by the initial render.
+  const providerAccountsRef = useRef(providerAccounts)
+  providerAccountsRef.current = providerAccounts
+  const providersVisibleRef = useRef(providersVisible)
+  providersVisibleRef.current = providersVisible
   // activeProject resolves the project that owns the current conversation.
   // Only fall back to selectedProjectId when there is NO active conversation —
   // otherwise, a chat without a project would inherit the previously-selected
@@ -1080,6 +1107,7 @@ export function App() {
       if (event.state === 'connected') {
         void refreshModels(true)
         void reloadProviderAuth()
+        void providerAccountsRef.current.reloadAccounts()
         toast(t('settings.provider.connectedToast', { provider: providerDisplayName(event.provider, t) }))
       } else if (event.state === 'error') {
         toast(event.message ?? t('settings.provider.connectError', { message: '' }), 'error')
@@ -1426,6 +1454,15 @@ export function App() {
     () => modelResult.models.find(model => model.id === selectedModel),
     [modelResult.models, selectedModel],
   )
+  const providerModelBlockerVisible = Boolean(
+    providerModelBlocker
+    && providerModelBlocker.conversationId === activeConversationId
+    && providerModelBlocker.modelId === selectedModelInfo?.id,
+  )
+  const providerAccountMissingVisible = Boolean(
+    providerAccountMissing
+    && providerAccountMissing.conversationId === activeConversationId,
+  )
   const maxContextWindow = selectedModelInfo?.contextWindow
     ?? (selectedModel ? reportedContextWindows[selectedModel] : undefined)
   const selectedContextWindow = selectedModelInfo?.contextWindow
@@ -1658,16 +1695,48 @@ export function App() {
   // F4: Conectar starts the bridge login (provider_login_start) — the CLI
   // takes over in the browser; progress arrives on provider-login:event.
   // Every failure must be VISIBLE (D1 rule): invoke rejections toast.
-  async function handleProviderConnect(providerId: string): Promise<void> {
+  async function handleProviderConnect(providerId: string, reconnectAccountId?: string): Promise<void> {
     setConnectingProvider(providerId)
     setProviderLoginStage('starting')
     try {
-      await window.verboo.providerLoginStart(providerId)
+      if (reconnectAccountId) await window.verboo.providerLoginStart(providerId, reconnectAccountId)
+      else await window.verboo.providerLoginStart(providerId)
     } catch (error) {
       toast(t('settings.provider.connectError', { message: error instanceof Error ? error.message : String(error) }), 'error')
       setConnectingProvider(undefined)
       setProviderLoginStage(undefined)
     }
+  }
+
+  async function handleProviderAccountUse(provider: ExternalProviderId, accountId: string): Promise<void> {
+    const conversationId = activeConversationIdRef.current
+    if (!conversationId || runningTurnByConversationRef.current[conversationId]) return
+    const selected = selectedModelInfo
+    let modelAvailable = true
+    if (selected?.provider === provider) {
+      try {
+        const accountModels = await window.verboo.providerAccountModels(provider, accountId)
+        modelAvailable = accountModels.some(model => model.id === selected.id)
+      } catch {
+        // An old/temporarily unavailable CLI cannot prove account-specific
+        // model availability. Keep the account selection usable and let the
+        // normal turn error surface the provider's own diagnostic.
+        modelAvailable = true
+      }
+    }
+    updateConversation(conversationId, conversation => bindProviderAccount(conversation, provider, accountId))
+    setProviderAccountMissing(current => current?.conversationId === conversationId ? undefined : current)
+    if (!modelAvailable && selected?.id) {
+      setProviderModelBlocker({ conversationId, provider, accountId, modelId: selected.id })
+    } else {
+      setProviderModelBlocker(current => current?.conversationId === conversationId ? undefined : current)
+    }
+  }
+
+  function handleProviderAccountRemove(provider: ExternalProviderId, accountId: string): void {
+    // Keep a removed historical binding intact. The next send will surface an
+    // unresolved-account blocker instead of silently moving the conversation.
+    void providerAccounts.remove(provider, accountId)
   }
 
   // F4 risk_notice dialog: accept continues the bridge login
@@ -2407,13 +2476,14 @@ export function App() {
       if (event.result.sessionId) goalSessionId.current = event.result.sessionId
       const conversationId = turnConversationIds.current[event.turnId]
       if (conversationId && event.result.sessionId) {
-        updateConversationSession(conversationId, event.result.sessionId)
+        updateConversationSession(conversationId, event.result.sessionId, turnProviderAccounts.current[event.turnId])
       }
       // Stable sidebar ordering: bump lastTurnEndedAt when the turn result
       // arrives (streaming tokens alone no longer reshuffle the sidebar).
       if (conversationId) {
         updateConversation(conversationId, c => ({ ...c, lastTurnEndedAt: Date.now() }))
       }
+      refreshProviderAccountAfterTurn(event.turnId)
       if (event.result.usage && shouldAccumulateTokensForTurn(hadSnapshot)) {
         setGoal(current => {
           if (!current) return current
@@ -2450,9 +2520,43 @@ export function App() {
       )
       setVideoProgressByTurn(prev => clearVideoProgress(prev, event.turnId))
       const failure = event.payload
+      let normalizedProviderQuotaMessage: string | undefined
+      const stampedProviderAccount = turnProviderAccounts.current[event.turnId]
+      const apiError = parseApiErrorFromBlob(event.message)
+      const isProviderQuotaFailure = failure?.category === 'rate_limit' || apiError?.type === 'usage_limit_reached'
+      const providerAccountsController = providerAccountsRef.current
+      if (
+        conversationId
+        && stampedProviderAccount
+        && providerAccountsController.capabilities.providerUsageV1
+        && isProviderQuotaFailure
+        && !shouldSuppressSystemErrorText(turnAssistantText.current[event.turnId] ?? '')
+      ) {
+        // Usage is refreshed only after a real quota failure. The normalized
+        // snapshot supplies the provider's absolute reset time and decides
+        // whether this account or every connected account is exhausted; no
+        // automatic rotation or model change happens here.
+        const refreshedRows = await providerAccountsController.refreshProvider(stampedProviderAccount.provider)
+        const quota = selectedExhaustedQuota(refreshedRows, stampedProviderAccount.accountId)
+        if (quota) {
+          const selectedLabel = providerAccountsController.snapshot().accounts.find(account =>
+            account.provider === stampedProviderAccount.provider
+            && account.accountId === stampedProviderAccount.accountId,
+          )?.displayLabel ?? providerAccountName(stampedProviderAccount.provider, t)
+          const label = quota.allExhausted
+            ? providerAccountName(stampedProviderAccount.provider, t)
+            : selectedLabel
+          normalizedProviderQuotaMessage = presentProviderQuotaMessage(
+            label,
+            formatQuotaReset(quota.resetAt, userSettings.language),
+            quota.allExhausted,
+            t,
+          )
+        }
+      }
       if (conversationId && failure?.sessionId) {
         goalSessionId.current = failure.sessionId
-        updateConversationSession(conversationId, failure.sessionId)
+        updateConversationSession(conversationId, failure.sessionId, turnProviderAccounts.current[event.turnId])
       }
 
       const lowerMessage = event.message.toLowerCase()
@@ -2515,6 +2619,7 @@ export function App() {
       if (conversationId) {
         updateConversation(conversationId, c => ({ ...c, lastTurnEndedAt: Date.now() }))
       }
+      if (!isProviderQuotaFailure) refreshProviderAccountAfterTurn(event.turnId)
       if (conversationId) markTurnFinished(conversationId, event.turnId)
       clearPermissionPromptForTurn(event.turnId)
       setTokenRate(undefined)
@@ -2633,9 +2738,9 @@ export function App() {
             //    Error line (technicalDetail) is what ApiErrorAwareText parses;
             //    for other errors the readable headline is the response.
             const bodyHasRawError = shouldSuppressSystemErrorText(turnAssistantText.current[event.turnId] ?? '')
-            const headline = isContextOverflow
+            const headline = normalizedProviderQuotaMessage ?? (isContextOverflow
               ? `${t('context.overflowDetected')}\n\n${errorPresentation.text}`
-              : errorPresentation.text
+              : errorPresentation.text)
             if (!bodyHasRawError) {
               // If the technicalDetail is itself a parseable API error line
               // (e.g. thinking-400 arriving as a single-line error event),
@@ -2645,7 +2750,9 @@ export function App() {
               // multi-line blob (or undefined) — put the readable headline so
               // the user sees the message, not the raw blob.
               const rawDetail = errorPresentation.technicalDetail
-              const text = rawDetail && shouldSuppressSystemErrorText(rawDetail) ? rawDetail : headline
+              const text = normalizedProviderQuotaMessage
+                ? normalizedProviderQuotaMessage
+                : rawDetail && shouldSuppressSystemErrorText(rawDetail) ? rawDetail : headline
               appendAssistantText(conversationId, event.turnId, text)
             }
             stampErrorDetailOnAssistantText(conversationId, event.turnId, errorPresentation.technicalDetail)
@@ -2910,7 +3017,7 @@ export function App() {
   // The ref resets in the `finally` block at the end of the function.
   const sendMessageLock = useRef(false)
   async function sendMessage(message: string) {
-    if (cliAgentActionsBlocked) return
+    if (cliAgentActionsBlocked || providerModelBlockerVisible || providerAccountMissingVisible) return
     const trimmed = message.trim()
     // F3 — guarda do vazio ALARGADA: enviar SÓ a anotação é comportamento
     // exigido pelo usuário ("posso apenas enviar a anotação"). O retrato vem
@@ -2924,6 +3031,23 @@ export function App() {
     sendMessageLock.current = true
     try {
     const conversationId = ensureActiveConversation()
+    const selectedProvider = selectedModelInfo?.provider
+    if (selectedProvider === 'codex' || selectedProvider === 'claude') {
+      let providerSnapshot = providerAccounts.snapshot()
+      if (!providerSnapshot.accountsLoaded) {
+        providerSnapshot = await providerAccounts.reloadAccounts(false)
+      }
+      const conversation = chatStoreRef.current.conversations.find(item => item.id === conversationId)
+      const boundAccountId = conversation?.providerAccountBindings?.[selectedProvider]
+      if (boundAccountId
+        && providerSnapshot.capabilities.providerAccountsV1
+        && !providerSnapshot.accounts.some(account =>
+        account.provider === selectedProvider && account.accountId === boundAccountId,
+      )) {
+        setProviderAccountMissing({ conversationId, provider: selectedProvider, accountId: boundAccountId })
+        return
+      }
+    }
     let turnAttachments = attachedFiles
 
     // ── Vision fallback consent check ──
@@ -3174,6 +3298,10 @@ export function App() {
       provider: selectedModelInfo?.provider,
     }
     const responseLanguage = inferResponseLanguage(message, conversationLanguageFallback(conversationId))
+    const providerAccount = selectedModelInfo?.provider &&
+      (selectedModelInfo.provider === 'codex' || selectedModelInfo.provider === 'claude')
+      ? providerAccountForConversation(conversationId, selectedModelInfo.provider)
+      : undefined
 
     return {
       id: `queue:${crypto.randomUUID()}`,
@@ -3202,8 +3330,38 @@ export function App() {
         personality: userSettings.personality,
         customInstructions: userSettings.customInstructions,
         memoryContext: buildMemoryContext(chatStore, conversationId, userSettings),
+        providerAccount,
       }, annotations),
     }
+  }
+
+  function providerAccountForConversation(
+    conversationId: string,
+    provider: ExternalProviderId,
+  ): ProviderTurnAccount | undefined {
+    const providerSnapshot = providerAccounts.snapshot()
+    if (!providerSnapshot.capabilities.providerAccountsV1) return undefined
+    const conversation = sideChatRef.current?.conversation.id === conversationId
+      ? sideChatRef.current.conversation
+      : chatStoreRef.current.conversations.find(item => item.id === conversationId)
+    const bound = conversation?.providerAccountBindings?.[provider]
+    const selected = bound
+      ? bound
+      : providerSnapshot.accounts.find(account => account.provider === provider && account.isDefault)?.accountId
+    if (!selected) return undefined
+    const sessionAccount = conversation?.cliSessionProviderAccounts?.[provider]
+    return {
+      provider,
+      accountId: selected,
+      forkSession: Boolean(conversation?.cliSessionId && sessionAccount && sessionAccount !== selected),
+    }
+  }
+
+  function refreshProviderAccountAfterTurn(turnId: string): void {
+    if (!providersVisibleRef.current) return
+    const account = turnProviderAccounts.current[turnId]
+    if (!account) return
+    void providerAccountsRef.current.refreshAccount(account.provider, account.accountId)
   }
 
   function conversationLanguageFallback(conversationId: string): LanguageCode {
@@ -3342,6 +3500,16 @@ export function App() {
     let acceptedTurnId = parentTurnId
     try {
       const request = await prepareRequestWithResearchSubagents(item, parentTurnId)
+      if (request.providerAccount && !item.sideChat) {
+        const currentConversation = chatStoreRef.current.conversations.find(conversation => conversation.id === item.conversationId)
+        if (currentConversation && !currentConversation.providerAccountBindings?.[request.providerAccount.provider]) {
+          updateConversation(item.conversationId, conversation => bindProviderAccount(
+            conversation,
+            request.providerAccount!.provider,
+            request.providerAccount!.accountId,
+          ))
+        }
+      }
       const resumeId = options?.skipResume ? undefined : conversationCliSessionId(item.conversationId)
       const turnId = await sendTrackedTurn({ ...request, turnId: parentTurnId }, resumeId)
       acceptedTurnId = turnId
@@ -3374,6 +3542,7 @@ export function App() {
     }
     turnConversationIds.current[turnId] = item.conversationId
     turnModels.current[turnId] = item.turnModel
+    turnProviderAccounts.current[turnId] = request.providerAccount
     // Track last user text for one-shot session-resume recovery.
     // The payload carries the click-time annotations too (QA a-i): a
     // dead-session retry replays what the user SENT, not a stripped copy.
@@ -5075,14 +5244,18 @@ export function App() {
     return resolveSideChatSessionId(sideChatRef.current, conversationId, persistedSessionId)
   }
 
-  function updateConversationSession(conversationId: string, cliSessionId: string) {
+  function updateConversationSession(conversationId: string, cliSessionId: string, providerAccount?: ProviderTurnAccount) {
     updateConversation(conversationId, conversation => {
-      if (conversation.cliSessionId === cliSessionId) return conversation
-      return {
-        ...conversation,
-        cliSessionId,
-        updatedAt: Date.now(),
+      if (providerAccount) {
+        return recordProviderSessionAccount(
+          conversation,
+          providerAccount.provider,
+          providerAccount.accountId,
+          cliSessionId,
+        )
       }
+      if (conversation.cliSessionId === cliSessionId) return conversation
+      return { ...conversation, cliSessionId, updatedAt: Date.now() }
     })
   }
 
@@ -5174,7 +5347,6 @@ export function App() {
       ),
       updatedAt: Date.now(),
     }))
-    delete turnModels.current[turnId]
   }
 
   /** T23: stamp errorDetail on the turn's open assistant text segment so the
@@ -5205,6 +5377,7 @@ export function App() {
     delete turnAssistantText.current[turnId]
     delete turnResultEmittedText.current[turnId]
     delete turnModels.current[turnId]
+    delete turnProviderAccounts.current[turnId]
   }
 
   function appendActivityItem(conversationId: string, turnId: string, activity: TurnActivity) {
@@ -6032,9 +6205,14 @@ export function App() {
               modelResult={modelResult}
               selectedModel={selectedModelInfo}
               providerStatuses={providerAuth}
+              providerAccounts={providerAccounts}
+              conversationProviderBindings={activeConversation?.providerAccountBindings}
+              providerSwitchLocked={Boolean(activeConversationId && runningConversations.has(activeConversationId))}
+              onProviderAccountUse={handleProviderAccountUse}
+              onProviderAccountRemoved={handleProviderAccountRemove}
               connectingProvider={connectingProvider}
               providerLoginStage={providerLoginStage}
-              onProviderConnect={providerId => { void handleProviderConnect(providerId) }}
+              onProviderConnect={(providerId, reconnectAccountId) => { void handleProviderConnect(providerId, reconnectAccountId) }}
               onProviderLoginCancel={() => { void handleProviderLoginCancel() }}
               theme={theme}
               activeTab={settingsTab}
@@ -6472,8 +6650,18 @@ export function App() {
               }}
             />
           )}
+          {providerAccountMissingVisible && (
+            <p className="provider-model-blocker" role="alert">
+              {t('settings.provider.accountRemoved')}
+            </p>
+          )}
+          {providerModelBlockerVisible && !providerAccountMissingVisible && (
+            <p className="provider-model-blocker" role="alert">
+              {t('settings.provider.modelUnavailable')}
+            </p>
+          )}
           <Composer
-            disabled={cliAgentActionsBlocked}
+            disabled={cliAgentActionsBlocked || providerModelBlockerVisible || providerAccountMissingVisible}
             workingDirectory={config.workingDirectory}
             skills={mentionableSkills}
             customSlashCommands={userSettings.customSlashCommands}

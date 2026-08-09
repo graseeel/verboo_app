@@ -27,7 +27,7 @@ function conversation(overrides: Partial<StoredConversation>): StoredConversatio
 }
 
 function storeWith(conversations: StoredConversation[]): ChatStore {
-  return { version: 3, projects: [], conversations }
+  return { version: 4, projects: [], conversations }
 }
 
 describe('visibleConversations — stable sidebar order', () => {
@@ -152,7 +152,7 @@ describe('sanitizeConversation — legacy migration', () => {
 })
 
 describe('readChatStore — subagent persistence migration', () => {
-  it.each([1, 2])('migrates a v%s store to v3 with empty subagent collections', version => {
+  it.each([1, 2, 3])('migrates a v%s store to v4 with sanitized account collections', version => {
     window.localStorage.setItem(CHAT_STORE_KEY, JSON.stringify({
       version,
       projects: [],
@@ -164,7 +164,7 @@ describe('readChatStore — subagent persistence migration', () => {
 
     const store = readChatStore()
 
-    expect(store.version).toBe(3)
+    expect(store.version).toBe(4)
     expect(store.conversations[0].subagents).toEqual([])
   })
 })

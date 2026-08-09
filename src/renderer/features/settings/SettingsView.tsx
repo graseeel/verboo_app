@@ -46,6 +46,8 @@ import { useToast } from '../../components/Toast'
 import { AVATAR_PALETTE, AVATAR_PRESETS, renderPreset } from '../profile/avatarPresets'
 import { AvatarIcon } from '../../components/AvatarIcon'
 import { formatDateTime, useI18n } from '../../i18n'
+import type { ProviderAccountsController } from './useProviderAccounts'
+import type { ExternalProviderId } from '../../../shared/types'
 
 export type SettingsViewProps = {
   credentials: CredentialStatus
@@ -66,9 +68,14 @@ export type SettingsViewProps = {
   connectingProvider?: string
   /** Stage of the active login flow, driven by provider-login:event. */
   providerLoginStage?: 'starting' | 'awaiting_browser'
-  onProviderConnect: (providerId: string) => void
+  onProviderConnect: (providerId: string, reconnectAccountId?: string) => void
   /** Aborts the active login flow (provider_login_cancel). */
   onProviderLoginCancel: () => void
+  providerAccounts?: ProviderAccountsController
+  conversationProviderBindings?: Partial<Record<ExternalProviderId, string>>
+  providerSwitchLocked?: boolean
+  onProviderAccountUse?: (provider: ExternalProviderId, accountId: string) => void
+  onProviderAccountRemoved?: (provider: ExternalProviderId, accountId: string) => void
   updateSnapshot?: UpdateSnapshot
   workingDirectory: string
   onPetToggle: () => void
@@ -110,6 +117,11 @@ export function SettingsView({
   providerLoginStage,
   onProviderConnect,
   onProviderLoginCancel,
+  providerAccounts,
+  conversationProviderBindings = {},
+  providerSwitchLocked = false,
+  onProviderAccountUse = () => {},
+  onProviderAccountRemoved = () => {},
   updateSnapshot,
   workingDirectory,
   onPetToggle,
@@ -713,6 +725,14 @@ export function SettingsView({
               connectingProvider={connectingProvider}
               loginStage={providerLoginStage}
               onCancelLogin={onProviderLoginCancel}
+              capabilities={providerAccounts?.capabilities}
+              accountRows={providerAccounts?.rows}
+              conversationBindings={conversationProviderBindings}
+              switchLocked={providerSwitchLocked}
+              onSetDefault={(provider, accountId) => { void providerAccounts?.setDefault(provider, accountId) }}
+              onUse={onProviderAccountUse}
+              onRemove={onProviderAccountRemoved}
+              onRefreshAccount={(provider, accountId) => { void providerAccounts?.refreshAccount(provider, accountId) }}
             />
           </section>
         )}

@@ -469,6 +469,8 @@ export type TranscriptItem = {
    *  not know kind 'annotation' still shows the content as a plain user
    *  message instead of breaking or hiding it. */
   annotationEntries?: { quote: string; comment: string | null }[]
+  /** Local UI activity, never serialized into model context. */
+  localOnly?: boolean
 }
 
 export type WorkspaceChangeEntry = {
@@ -586,6 +588,8 @@ export type StoredConversation = {
   id: string
   title: string
   cliSessionId?: string
+  providerAccountBindings?: ProviderAccountBindings
+  cliSessionProviderAccounts?: ProviderAccountBindings
   projectId?: string
   items: TranscriptItem[]
   subagents: SubagentThread[]
@@ -601,7 +605,7 @@ export type StoredConversation = {
 }
 
 export type ChatStore = {
-  version: 3
+  version: 4
   projects: ChatProject[]
   conversations: StoredConversation[]
 }
@@ -877,6 +881,59 @@ export type ProviderAuthStatus = {
   account?: string
 }
 
+export type ExternalProviderId = 'codex' | 'claude'
+
+export type ProviderCapabilities = {
+  providerAccountsV1: boolean
+  providerUsageV1: boolean
+  loginTransport?: 'pty-slash-v1'
+}
+
+export type ProviderAccountSummary = {
+  schemaVersion: 1
+  provider: ExternalProviderId
+  accountId: string
+  displayLabel: string
+  planId?: string
+  planDisplayName?: string
+  isDefault: boolean
+  connectionState: 'connected' | 'needs_reconnect'
+  lastValidatedAt?: string
+}
+
+export type ProviderUsageWindow = {
+  id: string
+  kind: 'session' | 'weekly' | 'model-scoped-weekly' | 'unknown'
+  displayLabel: string
+  modelScope?: string
+  usedPercent: number
+  resetsAt?: string
+}
+
+export type ProviderUsageSnapshot = {
+  schemaVersion: 1
+  provider: ExternalProviderId
+  accountId: string
+  plan?: { id: string; displayName: string }
+  windows: ProviderUsageWindow[]
+  fetchedAt: string
+}
+
+export type ProviderUsageResult = {
+  provider: ExternalProviderId
+  accountId: string
+  snapshot?: ProviderUsageSnapshot
+  errorCode?: string
+}
+
+export type ProviderAccountBindings = Partial<Record<ExternalProviderId, string>>
+
+export type ProviderTurnAccount = {
+  provider: ExternalProviderId
+  accountId: string
+  forkSession: boolean
+}
+
 /** F4 contract, mirrors Rust `ProviderLoginEvent` (provider_login_pty.rs:45)
  *  emitted on the `provider-login:event` channel. `state` is snake_case on
  *  the wire; `message` is absent when None (skip_serializing_if).
@@ -1082,6 +1139,7 @@ export type AgentTurnRequest = {
   turnId?: string
   conversationId: string
   message: string
+  providerAccount?: ProviderTurnAccount
   model?: string
   modelSupportsVision?: boolean
   runVisionFallback?: boolean

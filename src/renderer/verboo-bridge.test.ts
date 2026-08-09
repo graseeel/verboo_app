@@ -141,6 +141,29 @@ describe('verboo-bridge — API shape', () => {
     }
   })
 
+  it('forwards the versioned provider account commands with sanitized camelCase payloads', async () => {
+    expect(api).toBeDefined()
+    vi.mocked(invoke).mockClear()
+    const providers = api as Record<string, (...args: unknown[]) => Promise<unknown>>
+    await providers.providerCapabilities()
+    await providers.providerAccountsList()
+    await providers.providerAccountsUsage('codex', 'local-a')
+    await providers.providerAccountModels('codex', 'local-a')
+    await providers.providerAccountSetDefault('codex', 'local-a')
+    await providers.providerAccountRemove('codex', 'local-a')
+    await providers.providerLoginStart('codex', 'local-a')
+
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ['provider_capabilities'],
+      ['provider_accounts_list'],
+      ['provider_accounts_usage', { provider: 'codex', accountId: 'local-a' }],
+      ['provider_account_models', { provider: 'codex', accountId: 'local-a' }],
+      ['provider_account_set_default', { provider: 'codex', accountId: 'local-a' }],
+      ['provider_account_remove', { provider: 'codex', accountId: 'local-a' }],
+      ['provider_login_start', { provider: 'codex', reconnectAccountId: 'local-a' }],
+    ])
+  })
+
   it('exposes every settings/menu/window/skills method', () => {
     expect(api).toBeDefined()
     const required = [

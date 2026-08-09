@@ -970,10 +970,20 @@ pub struct Annotation {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProviderTurnAccount {
+    pub provider: String,
+    pub account_id: String,
+    pub fork_session: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentTurnRequest {
     pub turn_id: Option<String>,
     pub conversation_id: String,
     pub message: String,
+    #[serde(default)]
+    pub provider_account: Option<ProviderTurnAccount>,
     pub model: Option<String>,
     pub model_supports_vision: Option<bool>,
     #[serde(default)]

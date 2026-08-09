@@ -7,6 +7,7 @@ import {
   presentInvalidThinkingMessage,
   presentUsageLimitMessage,
   presentApiErrorMessage,
+  presentProviderQuotaMessage,
 } from './apiErrorPresentation'
 
 // T8: the REAL payload that kills the conversation (field photo do dono,
@@ -79,5 +80,12 @@ describe('T8: the dispatcher does not regress the 429 quota classification', () 
   it('presentInvalidThinkingMessage returns undefined for the 429 quota payload', () => {
     const info = parseApiErrorText(API_ERROR_429_QUOTA)!
     expect(presentInvalidThinkingMessage(info, t)).toBeUndefined()
+  })
+
+  it('presents normalized selected-account and aggregate reset copy', () => {
+    expect(presentProviderQuotaMessage('Codex 1', 'Aug 12, 2026, 2:30 PM', false, t))
+      .toContain('transcript.providerQuotaSelectedAccount')
+    expect(presentProviderQuotaMessage('Codex', undefined, true, t))
+      .toContain('transcript.providerQuotaAllAccounts')
   })
 })

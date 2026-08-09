@@ -1805,6 +1805,7 @@ fn terminal_get_state(
 #[tauri::command]
 fn provider_login_start(
     provider: String,
+    reconnect_account_id: Option<String>,
     provider_login_service: tauri::State<'_, services::provider_login_pty::ProviderLoginService>,
 ) -> Result<String, String> {
     let has_session = match services::provider_catalog::read_provider_auth_state() {
@@ -1821,7 +1822,7 @@ fn provider_login_start(
             ));
         }
     };
-    provider_login_service.start(&provider, has_session, Default::default())
+    provider_login_service.start(&provider, has_session, reconnect_account_id, Default::default())
 }
 
 /// Cancela o login de provedor em andamento (mata o PTY inteiro).
@@ -1852,6 +1853,42 @@ fn provider_login_confirm_risk(
 fn provider_auth_status(
 ) -> Result<Vec<services::provider_login_pty::ProviderAuthStatus>, String> {
     services::provider_login_pty::provider_auth_status()
+}
+
+#[tauri::command]
+fn provider_capabilities() -> Result<services::provider_accounts::ProviderCapabilities, String> {
+    services::provider_accounts::provider_capabilities()
+}
+
+#[tauri::command]
+fn provider_accounts_list() -> Result<Vec<services::provider_accounts::ProviderAccountSummary>, String> {
+    services::provider_accounts::provider_accounts_list()
+}
+
+#[tauri::command]
+fn provider_accounts_usage(
+    provider: Option<String>,
+    account_id: Option<String>,
+) -> Result<Vec<services::provider_accounts::ProviderUsageResult>, String> {
+    services::provider_accounts::provider_accounts_usage(provider, account_id)
+}
+
+#[tauri::command]
+fn provider_account_models(
+    provider: String,
+    account_id: String,
+) -> Result<Vec<VerbooModel>, String> {
+    services::provider_accounts::provider_account_models(provider, account_id)
+}
+
+#[tauri::command]
+fn provider_account_set_default(provider: String, account_id: String) -> Result<(), String> {
+    services::provider_accounts::provider_account_set_default(provider, account_id)
+}
+
+#[tauri::command]
+fn provider_account_remove(provider: String, account_id: String) -> Result<(), String> {
+    services::provider_accounts::provider_account_remove(provider, account_id)
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -2745,6 +2782,12 @@ pub fn run() {
             provider_login_cancel,
             provider_login_confirm_risk,
             provider_auth_status,
+            provider_capabilities,
+            provider_accounts_list,
+            provider_accounts_usage,
+            provider_account_models,
+            provider_account_set_default,
+            provider_account_remove,
             // Clipboard
             clipboard_read_text,
             clipboard_write_text,

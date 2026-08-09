@@ -2,6 +2,9 @@ import type { ProviderAuthStatus } from '../../../shared/types'
 import { useI18n } from '../../i18n'
 import { providerDisplayName, providerToneStyle } from '../models/providerCatalog'
 import { ProviderIcon } from '../models/ProviderIcon'
+import { ProviderAccountList } from './ProviderAccountList'
+import type { ExternalProviderId, ProviderCapabilities } from '../../../shared/types'
+import type { ProviderUsageRowState } from './useProviderAccounts'
 
 export type ProviderIntegrationsProps = {
   /** The provider universe — one entry per provider the login bridge
@@ -9,7 +12,7 @@ export type ProviderIntegrationsProps = {
    *  empty list renders nothing, so the tab stays identical to today. */
   statuses: ProviderAuthStatus[]
   /** Starts the provider login flow (provider_login_start → browser). */
-  onConnect: (providerId: string) => void
+  onConnect: (providerId: string, reconnectAccountId?: string) => void
   /** Provider whose login flow is active (its card shows live progress). */
   connectingProvider?: string
   /** Flow stage driven by provider-login:event: 'starting' until the CLI
@@ -17,6 +20,14 @@ export type ProviderIntegrationsProps = {
   loginStage?: 'starting' | 'awaiting_browser'
   /** Aborts the active login flow (provider_login_cancel). */
   onCancelLogin: () => void
+  capabilities?: ProviderCapabilities
+  accountRows?: ProviderUsageRowState[]
+  conversationBindings?: Partial<Record<ExternalProviderId, string>>
+  switchLocked?: boolean
+  onSetDefault?: (provider: ExternalProviderId, accountId: string) => void
+  onUse?: (provider: ExternalProviderId, accountId: string) => void
+  onRemove?: (provider: ExternalProviderId, accountId: string) => void
+  onRefreshAccount?: (provider: ExternalProviderId, accountId: string) => void
 }
 
 /** T11 — Ajustes → Provedores: one card per provider from the login bridge.
@@ -28,8 +39,37 @@ export type ProviderIntegrationsProps = {
  *  GLOBAL (it drops the whole Verboo session, lib.rs:1588-1591) — it must
  *  never sit behind a per-provider button. It unlocks when the CLI offers
  *  per-provider logout (already requested from the CLI team). */
-export function ProviderIntegrations({ statuses, onConnect, connectingProvider, loginStage, onCancelLogin }: ProviderIntegrationsProps) {
+export function ProviderIntegrations({
+  statuses,
+  onConnect,
+  connectingProvider,
+  loginStage,
+  onCancelLogin,
+  capabilities,
+  accountRows,
+  conversationBindings = {},
+  switchLocked = false,
+  onSetDefault = () => {},
+  onUse = () => {},
+  onRemove = () => {},
+  onRefreshAccount = () => {},
+}: ProviderIntegrationsProps) {
   const { t } = useI18n()
+  if (capabilities?.providerAccountsV1 && accountRows) {
+    return (
+      <ProviderAccountList
+        rows={accountRows}
+        conversationBindings={conversationBindings}
+        switchLocked={switchLocked}
+        onAdd={provider => onConnect(provider)}
+        onSetDefault={onSetDefault}
+        onUse={onUse}
+        onReconnect={(provider, accountId) => onConnect(provider, accountId)}
+        onRemove={onRemove}
+        onRefresh={onRefreshAccount}
+      />
+    )
+  }
   if (statuses.length === 0) return null
 
   return (

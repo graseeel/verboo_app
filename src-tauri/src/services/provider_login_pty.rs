@@ -200,6 +200,7 @@ impl ProviderLoginService {
         &self,
         provider: &str,
         has_session: bool,
+        reconnect_account_id: Option<String>,
         options: LoginOptions,
     ) -> Result<String, String> {
         let provider = provider.trim().to_string();
@@ -329,6 +330,7 @@ impl ProviderLoginService {
 
         // Thread de login: prompt-ready → slash → (tela de risco?) → poll.
         let provider_for_thread = provider.clone();
+        let reconnect_for_thread = reconnect_account_id;
         let stop_for_thread = stop.clone();
         let master_for_cleanup = master_arc.clone();
         let writer_for_slash = writer_arc.clone();
@@ -462,9 +464,12 @@ impl ProviderLoginService {
                                         // CAUSA RAIZ DO CONECTAR: o TUI em modo raw SÓ SUBMETE com \r
                                         // (CR) — \n (LF) fica parado no buffer. Prova A/B do dono no CLI
                                         // real: com \n o comando nunca submete; com \r o fluxo vai ao OAuth.
-                                        let _ = writer.write_all(
-                                            format!("/{provider_for_thread} login\r").as_bytes(),
-                                        );
+                                        let command = reconnect_for_thread
+                                            .as_deref()
+                                            .filter(|id| !id.trim().is_empty())
+                                            .map(|id| format!("/{provider_for_thread} login --reconnect {id}\r"))
+                                            .unwrap_or_else(|| format!("/{provider_for_thread} login\r"));
+                                        let _ = writer.write_all(command.as_bytes());
                                         let _ = writer.flush();
                                     }
                                 }
@@ -1080,6 +1085,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             .start(
                 "codex",
                 true,
+                None,
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(5),
                     login_timeout: Duration::from_secs(10),
@@ -1149,6 +1155,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             .start(
                 "claude",
                 true,
+                None,
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(10),
                     login_timeout: Duration::from_secs(15),
@@ -1284,6 +1291,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             .start(
                 "claude",
                 true,
+                None,
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(10),
                     login_timeout: Duration::from_secs(30),
@@ -1373,6 +1381,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             .start(
                 "claude",
                 true,
+                None,
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(10),
                     login_timeout: Duration::from_secs(30),
@@ -1471,6 +1480,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             .start(
                 "codex",
                 true,
+                None,
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(10),
                     login_timeout: Duration::from_secs(30),
@@ -1513,7 +1523,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
     fn start_requires_an_active_verboo_session() {
         let service = ProviderLoginService::default();
         let error = service
-            .start("codex", false, LoginOptions::default())
+            .start("codex", false, None, LoginOptions::default())
             .unwrap_err();
         assert!(
             error.contains("sessão Verboo ativa"),
@@ -1540,6 +1550,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             .start(
                 "codex",
                 true,
+                None,
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(10),
                     login_timeout: Duration::from_secs(30),
@@ -1621,6 +1632,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             .start(
                 "codex",
                 true,
+                None,
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(10),
                     login_timeout: Duration::from_secs(60),
@@ -1690,6 +1702,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             .start(
                 "claude",
                 true,
+                None,
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(5),
                     login_timeout: Duration::from_secs(3),
@@ -1737,6 +1750,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             .start(
                 "codex",
                 true,
+                None,
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(10),
                     login_timeout: Duration::from_secs(60),
@@ -1799,6 +1813,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             .start(
                 "codex",
                 true,
+                None,
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(2),
                     login_timeout: Duration::from_secs(10),

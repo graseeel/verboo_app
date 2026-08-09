@@ -156,3 +156,20 @@ export function presentInvalidThinkingMessage(info: ApiErrorInfo, t: Translator)
 export function presentApiErrorMessage(info: ApiErrorInfo, account: string, t: Translator): string | undefined {
   return presentUsageLimitMessage(info, account, t) ?? presentInvalidThinkingMessage(info, t)
 }
+
+/** Presentation for the normalized provider-usage protocol. Reset dates are
+ * already locale-formatted by the renderer; an absent date stays explicit. */
+export function presentProviderQuotaMessage(
+  account: string,
+  resetAt: string | undefined,
+  allAccounts: boolean,
+  t: Translator,
+): string {
+  const key = allAccounts
+    ? 'transcript.providerQuotaAllAccounts'
+    : 'transcript.providerQuotaSelectedAccount'
+  return t(key, {
+    account,
+    reset: resetAt ?? t('transcript.providerQuotaResetUnknown'),
+  })
+}

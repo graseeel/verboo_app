@@ -2634,6 +2634,15 @@ pub(crate) fn build_cli_args(
         args.push("--resume".to_string());
         args.push(sid.to_string());
     }
+    if let Some(selection) = &request.provider_account {
+        if !selection.account_id.trim().is_empty() {
+            args.push("--provider-account".to_string());
+            args.push(selection.account_id.clone());
+            if resume_session_id.is_some() && selection.fork_session {
+                args.push("--fork-session".to_string());
+            }
+        }
+    }
     if let Some(model) = &request.model {
         if !model.trim().is_empty() {
             args.push("--model".to_string());
@@ -4506,6 +4515,7 @@ mod tests {
             turn_id: None,
             conversation_id: "c1".into(),
             message: "Hello".into(),
+            provider_account: None,
             model: None,
             model_supports_vision: None,
             context_window: None,
@@ -4537,6 +4547,7 @@ mod tests {
             turn_id: None,
             conversation_id: "c1".into(),
             message: "Next step".into(),
+            provider_account: None,
             model: None,
             model_supports_vision: None,
             context_window: None,
@@ -4770,6 +4781,7 @@ mod tests {
             turn_id: None,
             conversation_id: "c1".into(),
             message: "describe this".into(),
+            provider_account: None,
             model: Some("glm-5.2".into()),
             model_supports_vision: Some(false),
             context_window: None,
@@ -4804,6 +4816,7 @@ mod tests {
             turn_id: None,
             conversation_id: "c1".into(),
             message: "hello".into(),
+            provider_account: None,
             model: Some("claude-sonnet-4-6".into()),
             model_supports_vision: Some(true),
             context_window: None,
@@ -4838,6 +4851,7 @@ mod tests {
             turn_id: None,
             conversation_id: "c1".into(),
             message: "hello".into(),
+            provider_account: None,
             model: None,
             model_supports_vision: None,
             context_window: None,
@@ -4884,6 +4898,7 @@ mod tests {
             turn_id: None,
             conversation_id: "c1".into(),
             message: "describe this image".into(),
+            provider_account: None,
             model: Some("claude-sonnet-4-6".into()),
             model_supports_vision: Some(true),
             context_window: None,
@@ -4953,6 +4968,7 @@ mod tests {
             turn_id: None,
             conversation_id: "c1".into(),
             message: "describe".into(),
+            provider_account: None,
             model: Some("claude-sonnet-4-6".into()),
             model_supports_vision: Some(true),
             context_window: None,
@@ -5102,6 +5118,7 @@ mod tests {
             turn_id: None,
             conversation_id: "c1".into(),
             message: "hello".into(),
+            provider_account: None,
             model: Some("ultra/glm-5.2".into()),
             model_supports_vision: None,
             run_vision_fallback: None,
@@ -5197,11 +5214,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn build_cli_args_include_explicit_account_and_fork_only_on_resume() {
+        let mut request = request_with_message("hello");
+        request.provider_account = Some(crate::models::types::ProviderTurnAccount {
+            provider: "codex".into(),
+            account_id: "local-b".into(),
+            fork_session: true,
+        });
+        let args = build_cli_args(&request, "hello", Some("session-a"), false);
+        assert!(args.windows(2).any(|pair| {
+            pair[0] == "--provider-account" && pair[1] == "local-b"
+        }));
+        assert!(args.iter().any(|arg| arg == "--fork-session"));
+
+        let fresh = build_cli_args(&request, "hello", None, false);
+        assert!(!fresh.iter().any(|arg| arg == "--fork-session"));
+    }
+
     fn request_with_image(vision: Option<bool>) -> AgentTurnRequest {
         AgentTurnRequest {
             turn_id: None,
             conversation_id: "c1".into(),
             message: "describe this".into(),
+            provider_account: None,
             model: Some("glm-5.2".into()),
             model_supports_vision: vision,
             context_window: None,
@@ -5851,6 +5887,7 @@ mod tests {
             turn_id: None,
             conversation_id: "c1".into(),
             message: message.into(),
+            provider_account: None,
             model: None,
             model_supports_vision: None,
             context_window: None,
@@ -6266,6 +6303,7 @@ mod tests {
             turn_id: None,
             conversation_id: "c1".into(),
             message: message.into(),
+            provider_account: None,
             model: None,
             model_supports_vision: None,
             context_window: None,

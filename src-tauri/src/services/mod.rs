@@ -34,6 +34,7 @@ pub mod plugin_icon_service;
 pub mod plugins_service;
 pub mod prevent_sleep;
 pub mod profile_service;
+pub mod provider_accounts;
 pub mod project_instructions_service;
 pub mod research_subagent_runner;
 pub mod research_subagent_service;
