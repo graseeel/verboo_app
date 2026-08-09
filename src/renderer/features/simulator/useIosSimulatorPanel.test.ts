@@ -200,7 +200,6 @@ describe('useIosSimulatorPanel', () => {
       dataUrl: 'data:image/jpeg;base64,last-visible', capturedAtMs: 12,
       source: 'mjpeg', effectiveFps: 30,
     }))
-    flushAnimationFrame()
     expect(view.result.current.frameDataUrl).toBe('data:image/jpeg;base64,last-visible')
 
     act(() => view.result.current.close())
@@ -277,9 +276,50 @@ describe('useIosSimulatorPanel', () => {
     })
 
     expect(requestAnimationFrame).toHaveBeenCalledTimes(1)
-    expect(view.result.current.frameDataUrl).toBeUndefined()
+    expect(view.result.current.frameDataUrl).toBe('data:image/jpeg;base64,frame-0')
     flushAnimationFrame()
     expect(view.result.current.frameDataUrl).toBe('data:image/jpeg;base64,frame-59')
+  })
+
+  it('publishes the first frame without waiting for requestAnimationFrame', async () => {
+    const view = renderHook(() => useIosSimulatorPanel())
+    await act(async () => { await view.result.current.open() })
+    await act(async () => { await view.result.current.attach('phone-17-pro') })
+
+    act(() => frameHandler?.({
+      udid: 'phone-17-pro',
+      dataUrl: 'data:image/jpeg;base64,first-visible',
+      deviceGeneration: 1,
+      frameGeneration: 1,
+      capturedAtMs: 1,
+      source: 'simctl',
+      effectiveFps: 2,
+    }))
+
+    expect(view.result.current.frameDataUrl).toBe('data:image/jpeg;base64,first-visible')
+    expect(view.result.current.frameGeneration).toBe(1)
+    expect(requestAnimationFrame).not.toHaveBeenCalled()
+  })
+
+  it('publishes later frames when requestAnimationFrame is starved', async () => {
+    const view = renderHook(() => useIosSimulatorPanel())
+    await act(async () => { await view.result.current.open() })
+    await act(async () => { await view.result.current.attach('phone-17-pro') })
+
+    act(() => frameHandler?.({
+      udid: 'phone-17-pro', dataUrl: 'data:image/jpeg;base64,first',
+      deviceGeneration: 1, frameGeneration: 1, capturedAtMs: 1,
+      source: 'mjpeg', effectiveFps: 30,
+    }))
+    act(() => frameHandler?.({
+      udid: 'phone-17-pro', dataUrl: 'data:image/jpeg;base64,next',
+      deviceGeneration: 1, frameGeneration: 2, capturedAtMs: 2,
+      source: 'mjpeg', effectiveFps: 30,
+    }))
+
+    expect(view.result.current.frameDataUrl).toBe('data:image/jpeg;base64,first')
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)) })
+    expect(view.result.current.frameDataUrl).toBe('data:image/jpeg;base64,next')
   })
 
   it('uses frame-carried presence when the standalone event is missed', async () => {
@@ -339,7 +379,6 @@ describe('useIosSimulatorPanel', () => {
     act(() => frameHandler?.({ udid: 'other-device', dataUrl: 'wrong', deviceGeneration: 1, frameGeneration: 1, capturedAtMs: 1, source: 'simctl', effectiveFps: 1.8 }))
     expect(view.result.current.frameDataUrl).toBeUndefined()
     act(() => frameHandler?.({ udid: 'phone-17-pro', dataUrl: 'data:image/png;base64,frame', deviceGeneration: 1, frameGeneration: 2, capturedAtMs: 2, source: 'simctl', effectiveFps: 1.8 }))
-    flushAnimationFrame()
     expect(view.result.current.frameDataUrl).toBe('data:image/png;base64,frame')
     expect(view.result.current.streamSource).toBe('simctl')
     expect(view.result.current.effectiveFps).toBe(1.8)
@@ -408,8 +447,6 @@ describe('useIosSimulatorPanel', () => {
       source: 'mjpeg',
       effectiveFps: 9.2,
     }))
-    flushAnimationFrame()
-
     expect(view.result.current.frameDataUrl).toBe('data:image/png;base64,warmup')
     expect(view.result.current.streamSource).toBe('mjpeg')
   })

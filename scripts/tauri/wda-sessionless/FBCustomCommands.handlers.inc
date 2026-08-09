@@ -134,8 +134,22 @@
   XCPointerEventPath *path = [[XCPointerEventPath alloc]
                               initForTouchAtPoint:CGPointMake(fromX.doubleValue, fromY.doubleValue)
                               offset:0.0];
-  [path moveToPoint:CGPointMake(toX.doubleValue, toY.doubleValue) atOffset:duration.doubleValue];
-  [path liftUpAtOffset:duration.doubleValue + hold.doubleValue];
+  CGPoint destination = CGPointMake(toX.doubleValue, toY.doubleValue);
+  NSUInteger moveSteps = MAX(1, (NSUInteger)ceil(duration.doubleValue * 60.0));
+  for (NSUInteger step = 1; step <= moveSteps; step++) {
+    double progress = (double)step / (double)moveSteps;
+    CGPoint point = CGPointMake(
+      fromX.doubleValue + ((toX.doubleValue - fromX.doubleValue) * progress),
+      fromY.doubleValue + ((toY.doubleValue - fromY.doubleValue) * progress)
+    );
+    [path moveToPoint:point atOffset:duration.doubleValue * progress];
+  }
+  if (hold.doubleValue > 0.0) {
+    // Emit the held position explicitly. A single start/end path can be
+    // accepted by XCTest but ignored by SpringBoard's app-switcher gesture.
+    [path moveToPoint:destination atOffset:duration.doubleValue + hold.doubleValue];
+  }
+  [path liftUpAtOffset:duration.doubleValue + hold.doubleValue + 0.01];
   [event addPointerEventPath:path];
   return FBVerbooSynthesizePointerEvent(event);
 }

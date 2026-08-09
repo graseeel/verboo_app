@@ -30,7 +30,7 @@ pub(crate) fn system_gesture(
     let landscape = orientation.is_landscape();
     match action {
         IosSimulatorSystemAction::AppSwitcher => Some(SystemGesture {
-            start: NormalizedPoint { x: 0.50, y: 0.98 },
+            start: NormalizedPoint { x: 0.50, y: 0.995 },
             end: NormalizedPoint {
                 x: 0.50,
                 y: if landscape { 0.58 } else { 0.62 },

@@ -43,4 +43,35 @@ describe('LatestFrameCoalescer', () => {
     expect(cancel).toHaveBeenCalledWith(41)
     expect(commit).not.toHaveBeenCalled()
   })
+
+  it('commits through a fallback when animation frames are starved', () => {
+    const animationCallbacks: FrameRequestCallback[] = []
+    const fallbackCallbacks: FrameRequestCallback[] = []
+    const cancelAnimation = vi.fn()
+    const cancelFallback = vi.fn()
+    const commit = vi.fn()
+    const coalescer = new LatestFrameCoalescer<number>(
+      callback => {
+        animationCallbacks.push(callback)
+        return 11
+      },
+      cancelAnimation,
+      commit,
+      callback => {
+        fallbackCallbacks.push(callback)
+        return 22
+      },
+      cancelFallback,
+    )
+
+    coalescer.push(1)
+    coalescer.push(2)
+    fallbackCallbacks[0](16)
+
+    expect(commit).toHaveBeenCalledOnce()
+    expect(commit).toHaveBeenCalledWith(2)
+    expect(cancelAnimation).toHaveBeenCalledWith(11)
+    animationCallbacks[0](17)
+    expect(commit).toHaveBeenCalledOnce()
+  })
 })

@@ -51,6 +51,8 @@ test('copies the WDA resource on macOS', async () => {
     .split('// VERBOO_SESSIONLESS_HANDLERS_BEGIN')[1]
     .split('// VERBOO_SESSIONLESS_HANDLERS_END')[0]
   assert.doesNotMatch(handlers, /request\.session|XCUIApplication|fb_activeApplication/)
+  assert.match(handlers, /ceil\(duration\.doubleValue \* 60\.0\)/)
+  assert.match(handlers, /duration\.doubleValue \+ hold\.doubleValue/)
 })
 
 test('declares the WDA bundle resource only in the macOS overlay', () => {

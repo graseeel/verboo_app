@@ -24,6 +24,7 @@ import { LatestFrameCoalescer } from './frameCoalescer'
 
 const TELEMETRY_INTERVAL_MS = 500
 const AGENT_PRESENCE_CLEAR_GRACE_MS = 900
+const FRAME_COMMIT_FALLBACK_MS = 16
 
 const IDLE_LIFECYCLE: IosSimulatorLifecycleSnapshot = {
   udid: null,
@@ -59,6 +60,7 @@ export function useIosSimulatorPanel() {
   const [lastMediaFile, setLastMediaFile] = useState<IosSimulatorMediaFile | undefined>()
   const lifecycleRef = useRef<IosSimulatorLifecycleSnapshot>(IDLE_LIFECYCLE)
   const frameCoalescerRef = useRef<LatestFrameCoalescer<IosSimulatorFrame> | undefined>(undefined)
+  const hasPublishedFrameRef = useRef(false)
   const telemetryRef = useRef<{ at: number; source?: IosSimulatorStreamSource }>({ at: 0 })
   const latestPresenceGenerationRef = useRef(0)
   const activePresenceGenerationRef = useRef<number | undefined>(undefined)
@@ -118,6 +120,7 @@ export function useIosSimulatorPanel() {
     setLifecycle(snapshot)
     if (generationChanged && (previous.deviceGeneration !== null || snapshot.deviceGeneration !== null)) {
       disposeFrameCoalescer()
+      hasPublishedFrameRef.current = false
       setFrameDataUrl(undefined)
       setFrameGeneration(undefined)
       telemetryRef.current = { at: 0 }
@@ -207,6 +210,7 @@ export function useIosSimulatorPanel() {
       const sameDevice = lifecycleRef.current.udid === session.device.udid
       if (!sameDevice) {
         disposeFrameCoalescer()
+        hasPublishedFrameRef.current = false
         telemetryRef.current = { at: 0 }
       }
       if (!sameDevice) setFrameDataUrl(undefined)
@@ -410,17 +414,28 @@ export function useIosSimulatorPanel() {
         && frame.deviceGeneration === currentLifecycle.deviceGeneration) {
         if ('agentPresence' in frame) handleAgentPresence(frame.agentPresence ?? null)
         if (frame.dataUrl) {
-          if (!frameCoalescerRef.current) {
-            frameCoalescerRef.current = new LatestFrameCoalescer<IosSimulatorFrame>(
-              callback => requestAnimationFrame(callback),
-              requestId => cancelAnimationFrame(requestId),
-              newest => {
-                setFrameDataUrl(newest.dataUrl)
-                setFrameGeneration(newest.frameGeneration)
-              },
-            )
+          if (!hasPublishedFrameRef.current) {
+            hasPublishedFrameRef.current = true
+            setFrameDataUrl(frame.dataUrl)
+            setFrameGeneration(frame.frameGeneration)
+          } else {
+            if (!frameCoalescerRef.current) {
+              frameCoalescerRef.current = new LatestFrameCoalescer<IosSimulatorFrame>(
+                callback => requestAnimationFrame(callback),
+                requestId => cancelAnimationFrame(requestId),
+                newest => {
+                  setFrameDataUrl(newest.dataUrl)
+                  setFrameGeneration(newest.frameGeneration)
+                },
+                callback => window.setTimeout(
+                  () => callback(performance.now()),
+                  FRAME_COMMIT_FALLBACK_MS,
+                ),
+                requestId => window.clearTimeout(requestId),
+              )
+            }
+            frameCoalescerRef.current.push(frame)
           }
-          frameCoalescerRef.current.push(frame)
         }
         const now = Date.now()
         const telemetry = telemetryRef.current

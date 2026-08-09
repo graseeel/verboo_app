@@ -4139,7 +4139,7 @@ mod tests {
             WdaInterfaceOrientation::Portrait,
         )
         .unwrap();
-        assert_eq!(phone.start, NormalizedPoint { x: 0.50, y: 0.98 });
+        assert_eq!(phone.start, NormalizedPoint { x: 0.50, y: 0.995 });
         assert_eq!(phone.end, NormalizedPoint { x: 0.50, y: 0.62 });
         assert_eq!(phone.hold, Duration::from_millis(450));
 
