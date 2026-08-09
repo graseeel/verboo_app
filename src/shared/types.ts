@@ -1281,6 +1281,14 @@ export type ChromeIntegrationRequest = {
   developmentExtensionId?: string
 }
 
+export type ChromeConnectionTestResult = {
+  helper: boolean
+  chrome: boolean
+  cliMcp: boolean
+  connected: boolean
+  errorCode?: string
+}
+
 // ── Review types ────────────────────────────────────────────────
 
 export type WorkspaceReviewScope = 'github-repo' | 'git-repo' | 'local-folder'

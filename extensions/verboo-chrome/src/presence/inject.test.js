@@ -176,7 +176,10 @@ test('openVerbooWorkspace scopes the panel to one tab and groups that tab', asyn
         enabled: true,
       }],
       ['open', { tabId: 42 }],
-      ['group', { tabIds: [42] }],
+      ['group', {
+        tabIds: [42],
+        createProperties: { windowId: 3 },
+      }],
       ['updateGroup', 12, { title: 'Verboo', color: 'purple' }],
     ])
   } finally {

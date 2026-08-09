@@ -1,7 +1,7 @@
 import { MSG } from '../controller/protocol.js'
 
 export function approvalMessage(toolCallId, decision) {
-  if (decision !== 'once' && decision !== 'always') {
+  if (decision !== 'once' && decision !== 'turn' && decision !== 'always') {
     throw new Error('invalid_approval_decision')
   }
   return {

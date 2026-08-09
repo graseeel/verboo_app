@@ -264,9 +264,15 @@ export async function ensureVerbooTabGroup(tabId) {
     } catch {
       // Fall through to create/move.
     }
-    groupId = await chrome.tabs.group({ tabIds: [tabId] })
+    groupId = await chrome.tabs.group({
+      tabIds: [tabId],
+      createProperties: { windowId },
+    })
   } else {
-    groupId = await chrome.tabs.group({ tabIds: [tabId] })
+    groupId = await chrome.tabs.group({
+      tabIds: [tabId],
+      createProperties: { windowId },
+    })
   }
 
   await chrome.tabGroups.update(groupId, {

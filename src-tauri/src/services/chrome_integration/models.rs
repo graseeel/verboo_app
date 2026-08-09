@@ -74,6 +74,16 @@ pub struct ChromeIntegrationStatus {
     pub error_code: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChromeConnectionTestResult {
+    pub helper: bool,
+    pub chrome: bool,
+    pub cli_mcp: bool,
+    pub connected: bool,
+    pub error_code: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChromeIntegrationRequest {

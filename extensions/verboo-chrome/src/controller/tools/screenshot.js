@@ -16,6 +16,7 @@
  */
 
 import { preparePresenceForAction } from '../../presence/inject.js'
+import { resolveTargetTab } from '../targetTab.js'
 
 const CAPTURE_RETRIES = 4
 const CAPTURE_RETRY_MS = 180
@@ -39,28 +40,21 @@ export async function screenshot(tool, ctx = {}) {
     )
   }
 
-  // Focus window + tab. captureVisibleTab needs the window focused; the
-  // side panel often leaves the last browser window unfocused.
-  try {
-    await chrome.windows.update(tab.windowId, { focused: true })
-  } catch {
-    /* some window types reject focus — still try capture */
+  // captureVisibleTab targets the active tab in the specified window. The
+  // window does not need to become the user's focused window, which lets a
+  // dedicated Verboo workspace stay behind whatever the user is doing.
+  const visible = await isTabActiveInWindow(tab)
+  let dataUrl
+  if (visible) {
+    try {
+      await preparePresenceForAction(tab.id)
+    } catch {
+      /* presence is best-effort */
+    }
+    dataUrl = await captureWithRetries(tab.windowId)
+  } else {
+    throw new Error('screenshot failed: target_tab_not_active_in_workspace')
   }
-  try {
-    await chrome.tabs.update(tab.id, { active: true })
-  } catch {
-    /* ignore */
-  }
-  await sleep(80)
-
-  // Keep agent cursor visible while capturing (frame + cursor = control UX).
-  try {
-    await preparePresenceForAction(tab.id)
-  } catch {
-    /* presence is best-effort */
-  }
-
-  const dataUrl = await captureWithRetries(tab.windowId)
 
   let width = 0
   let height = 0
@@ -84,38 +78,18 @@ export async function screenshot(tool, ctx = {}) {
 }
 
 /**
- * Prefer an explicit tab id from the agent context; fall back to the
- * last focused normal browser window (not the side-panel's notion of current).
- * @param {number | undefined} preferredTabId
+ * Check if the target is the active tab in its own window. Window focus is
+ * deliberately irrelevant: changing it would steal the user's screen.
+ * @param {{ id: number, windowId: number }} tab
+ * @returns {Promise<boolean>}
  */
-async function resolveTargetTab(preferredTabId) {
-  if (typeof preferredTabId === 'number') {
-    try {
-      const tab = await chrome.tabs.get(preferredTabId)
-      if (tab?.id) return tab
-    } catch {
-      /* tab closed — fall through */
-    }
-  }
-
-  // Prefer last focused normal window (service workers have no "current" UI).
+async function isTabActiveInWindow(tab) {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
-    if (tab?.id) return tab
+    const [active] = await chrome.tabs.query({ active: true, windowId: tab.windowId })
+    return active?.id === tab.id
   } catch {
-    /* ignore */
+    return false
   }
-
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-  if (tab?.id) return tab
-
-  // Last resort: any active tab in a normal window.
-  const windows = await chrome.windows.getAll({ populate: true, windowTypes: ['normal'] })
-  for (const win of windows) {
-    const active = win.tabs?.find((t) => t.active)
-    if (active?.id) return active
-  }
-  return null
 }
 
 /**
@@ -142,7 +116,7 @@ async function captureWithRetries(windowId) {
   }
   const detail = lastErr?.message ?? String(lastErr ?? 'captureVisibleTab denied')
   throw new Error(
-    `screenshot failed: ${detail}. Ensure the browser window is focused and the page is http(s). Reload the extension after permission updates.`,
+    `screenshot failed: ${detail}. Ensure the workspace tab is active in its own window and the page is http(s). Reload the extension after permission updates.`,
   )
 }
 

@@ -10,6 +10,7 @@
 
 import { isControllableUrl, nonControllablePageMessage } from '../../planMessage.js'
 import { preparePresenceForAction } from '../../presence/inject.js'
+import { resolveTargetTab } from '../targetTab.js'
 
 /**
  * @param {{ name: 'extract_page_content'; selector?: string; risk?: string; input?: string }} tool
@@ -40,27 +41,6 @@ export async function extractPageContent(tool, ctx = {}) {
     selector,
     url: tab.url ?? '',
   }
-}
-
-/** @param {number | undefined} preferredTabId */
-async function resolveTargetTab(preferredTabId) {
-  if (typeof preferredTabId === 'number') {
-    try {
-      const tab = await chrome.tabs.get(preferredTabId)
-      if (tab?.id) return tab
-    } catch {
-      /* tab closed — fall through */
-    }
-  }
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
-    if (tab?.id) return tab
-  } catch {
-    /* ignore */
-  }
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-  if (tab?.id) return tab
-  return null
 }
 
 /**

@@ -17,12 +17,15 @@
  * read; site grants (deny) and Hard Blocks apply normally.
  *
  * @param {{ name: 'console_reader'; action?: 'list' | 'clear'; risk?: string; input?: string }} tool
+ * @param {{ activeTabId?: number }} [ctx]
  * @returns {Promise<{ messages: Array<{ level: string; text: string; ts: number }>; note: string }>}
  */
-export async function consoleReader(tool) {
+import { resolveTargetTab } from '../targetTab.js'
+
+export async function consoleReader(tool, ctx = {}) {
   const action = tool?.action ?? 'list'
   if (action === 'clear') {
-    return clearConsole()
+    return clearConsole(ctx)
   }
   return listConsole()
 }
@@ -44,9 +47,9 @@ async function listConsole() {
   return { messages: events, note: 'debugger_attached' }
 }
 
-async function clearConsole() {
+async function clearConsole(ctx) {
   // script console.clear() works without the debugger permission.
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  const tab = await resolveTargetTab(ctx?.activeTabId)
   if (!tab?.id) throw new Error('console.clear: no active tab')
   await chrome.scripting.executeScript({
     target: { tabId: tab.id },

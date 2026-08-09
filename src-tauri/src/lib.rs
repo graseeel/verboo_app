@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use models::types::*;
 use services::chrome_integration::{
-    ChromeIntegrationRequest, ChromeIntegrationService, ChromeIntegrationStatus,
+    ChromeConnectionTestResult, ChromeIntegrationRequest, ChromeIntegrationService,
+    ChromeIntegrationStatus,
 };
 use services::cli_service::CliService;
 use services::credentials_store::CredentialsStore;
@@ -220,7 +221,7 @@ async fn chrome_integration_repair(
 #[tauri::command]
 async fn chrome_integration_test(
     service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
-) -> Result<bool, String> {
+) -> Result<ChromeConnectionTestResult, String> {
     with_chrome_service(service, |service| service.test_connection()).await
 }
 

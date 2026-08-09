@@ -810,6 +810,123 @@ test('shouldOfferBrowserTools: separates browser actions from normal conversatio
   )
 })
 
+test('interrupted browser work resumes with tools and executes instead of returning a promise', async () => {
+  const requestBodies = []
+  const executeCalls = []
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    if (requestBodies.length === 1) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+            { id: 'resume_nav', function: { name: 'navigate', arguments: '{"url":"https://example.com/?step=4"}' } },
+          ] } }],
+        }),
+      }
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { role: 'assistant', content: 'Retomada concluída.' } }],
+      }),
+    }
+  }
+
+  try {
+    const history = [
+      { role: 'user', content: 'navegue pelos passos 1 a 8' },
+      {
+        role: 'assistant',
+        content: 'Execução interrompida pelo usuário após 8 etapas. O pedido ainda não foi concluído; retome a partir do estado atual da página quando o usuário pedir para continuar.',
+      },
+    ]
+    assert.equal(
+      shouldOfferBrowserTools('Continue exatamente de onde parou.', history),
+      true,
+    )
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_resume_interrupted',
+      userMessage: 'Continue exatamente de onde parou.',
+      conversationHistory: history,
+      accessToken: 'test-key',
+      modelId: 'test-model',
+      broadcast: () => {},
+      executeTool: async (toolCall) => {
+        executeCalls.push(toolCall)
+        return { ok: true, result: { url: toolCall.params.url } }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://example.com/?step=3', title: 'Example' }),
+    })
+
+    assert.ok(Array.isArray(requestBodies[0].tools) && requestBodies[0].tools.length > 0)
+    assert.deepEqual(executeCalls.map((call) => call.name), ['navigate'])
+    assert.equal(result.assistantMessage, 'Retomada concluída.')
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('read_page forwards discovered interactive selectors to the next model step', async () => {
+  let requestCount = 0
+  let selectorForwarded = false
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestCount += 1
+    if (requestCount === 1) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+            { id: 'read_controls', function: { name: 'read_page', arguments: '{}' } },
+          ] } }],
+        }),
+      }
+    }
+    const toolMessage = body.messages.find((message) => message.role === 'tool')
+    selectorForwarded = typeof toolMessage?.content === 'string'
+      && toolMessage.content.includes('#name')
+      && toolMessage.content.includes('#apply')
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { role: 'assistant', content: 'Controles encontrados.' } }],
+      }),
+    }
+  }
+
+  try {
+    await runLlmAgentTurn({
+      turnId: 'turn_read_interactive_controls',
+      userMessage: 'leia esta página',
+      accessToken: 'test-key',
+      modelId: 'test-model',
+      broadcast: () => {},
+      executeTool: async () => ({
+        ok: true,
+        result: {
+          text: 'Name\nApply',
+          interactiveElements: [
+            { selector: '#name', tag: 'input', label: 'Name', type: 'text', disabled: false },
+            { selector: '#apply', tag: 'button', label: 'Apply', disabled: false },
+          ],
+          interactiveElementsTruncated: false,
+        },
+      }),
+      getActiveTabMeta: async () => ({ url: 'https://example.com/form', title: 'Form' }),
+    })
+
+    assert.equal(selectorForwarded, true)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
 // A2-CHROME Correction 4: the classifier's pageReference and
 // pageInspection regexes had holes that silently denied browser tools
 // to users phrasing the request the most natural way.
@@ -1102,7 +1219,7 @@ test('runLlmAgentTurn: early-stop after 5 consecutive failures of same tool', as
       getActiveTabMeta: async () => null,
     })
 
-    // Stopped early with a friendly message, not burning all 20 steps.
+    // Stopped early with a friendly message, not burning all 200 steps.
     assert.ok(
       result.assistantMessage.includes('try a different approach') ||
       result.assistantMessage.includes('try a more specific instruction') ||
@@ -1144,9 +1261,9 @@ test('runLlmAgentTurn: reaching the step limit reports incomplete work', async (
       getActiveTabMeta: async () => ({ url: 'https://example.com', title: 'Example' }),
     })
 
-    assert.equal(result.toolResults.length, 20)
+    assert.equal(result.toolResults.length, 200)
     assert.match(result.assistantMessage, /partial|incomplete|not completed|not verified|model connection/i)
-    assert.doesNotMatch(result.assistantMessage, /^Completed 20 action/i)
+    assert.doesNotMatch(result.assistantMessage, /^Completed 200 action/i)
   } finally {
     globalThis.fetch = origFetch
   }

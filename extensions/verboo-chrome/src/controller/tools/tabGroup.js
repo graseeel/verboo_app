@@ -5,15 +5,22 @@
  * are per-window; we operate on the current window.
  *
  * @param {{ name: 'tab_group'; action: 'create' | 'remove' | 'assign' | 'unassign'; groupId?: number; tabIds?: number[]; title?: string; color?: string; risk?: string; input?: string }} tool
+ * @param {{ workspaceWindowId?: number }} [ctx]
  * @returns {Promise<unknown>}
  */
-export async function tabGroup(tool) {
+export async function tabGroup(tool, ctx = {}) {
   const action = tool?.action
   switch (action) {
     case 'create': {
       const tabIds = Array.isArray(tool.tabIds) ? tool.tabIds : []
       if (tabIds.length === 0) throw new Error('tab_group.create: missing tabIds')
-      const groupId = await chrome.tabs.group({ tabIds })
+      await assertWorkspaceTabs(tabIds, ctx.workspaceWindowId)
+      const groupId = await chrome.tabs.group({
+        tabIds,
+        ...(Number.isInteger(ctx.workspaceWindowId)
+          ? { createProperties: { windowId: ctx.workspaceWindowId } }
+          : {}),
+      })
       if (tool.title || tool.color) {
         const update = {}
         if (tool.title) update.title = tool.title
@@ -24,6 +31,7 @@ export async function tabGroup(tool) {
     }
     case 'remove': {
       if (typeof tool.groupId !== 'number') throw new Error('tab_group.remove: missing groupId')
+      await assertWorkspaceGroup(tool.groupId, ctx.workspaceWindowId)
       await chrome.tabGroups.ungroup(tool.groupId)
       return { groupId: tool.groupId, removed: true }
     }
@@ -31,12 +39,15 @@ export async function tabGroup(tool) {
       const tabIds = Array.isArray(tool.tabIds) ? tool.tabIds : []
       if (tabIds.length === 0) throw new Error('tab_group.assign: missing tabIds')
       if (typeof tool.groupId !== 'number') throw new Error('tab_group.assign: missing groupId')
+      await assertWorkspaceTabs(tabIds, ctx.workspaceWindowId)
+      await assertWorkspaceGroup(tool.groupId, ctx.workspaceWindowId)
       const groupId = await chrome.tabs.group({ groupId: tool.groupId, tabIds })
       return { groupId, tabIds }
     }
     case 'unassign': {
       const tabIds = Array.isArray(tool.tabIds) ? tool.tabIds : []
       if (tabIds.length === 0) throw new Error('tab_group.unassign: missing tabIds')
+      await assertWorkspaceTabs(tabIds, ctx.workspaceWindowId)
       // Ungroup specific tabs by passing them to tabs.group with create
       // (a new group) then immediately ungrouping — but the simpler API
       // is chrome.tabs.ungroup if available. MV3 exposes it as
@@ -45,7 +56,12 @@ export async function tabGroup(tool) {
         await chrome.tabs.ungroup(tabIds)
       } else {
         // Fallback: create a temp group and ungroup it.
-        const tmp = await chrome.tabs.group({ tabIds })
+        const tmp = await chrome.tabs.group({
+          tabIds,
+          ...(Number.isInteger(ctx.workspaceWindowId)
+            ? { createProperties: { windowId: ctx.workspaceWindowId } }
+            : {}),
+        })
         await chrome.tabGroups.ungroup(tmp)
       }
       return { tabIds, unassigned: true }
@@ -53,4 +69,18 @@ export async function tabGroup(tool) {
     default:
       throw new Error(`tab_group: unknown action: ${action}`)
   }
+}
+
+async function assertWorkspaceTabs(tabIds, workspaceWindowId) {
+  if (!Number.isInteger(workspaceWindowId)) return
+  const tabs = await Promise.all(tabIds.map((tabId) => chrome.tabs.get(tabId)))
+  if (tabs.some((tab) => tab?.windowId !== workspaceWindowId)) {
+    throw new Error('outside_workspace')
+  }
+}
+
+async function assertWorkspaceGroup(groupId, workspaceWindowId) {
+  if (!Number.isInteger(workspaceWindowId)) return
+  const group = await chrome.tabGroups.get(groupId)
+  if (group?.windowId !== workspaceWindowId) throw new Error('outside_workspace')
 }

@@ -38,7 +38,7 @@ export function createApprovalExecutor(executeTool) {
       }
     }
 
-    if (decision !== 'once' && decision !== 'always') {
+    if (decision !== 'once' && decision !== 'turn' && decision !== 'always') {
       return {
         ok: false,
         error: 'invalid_approval_decision',
@@ -48,6 +48,17 @@ export function createApprovalExecutor(executeTool) {
     }
 
     const context = await contextFactory()
+    if (decision === 'turn') {
+      if (!first.policyHost || typeof context.setTurnGrant !== 'function') {
+        return {
+          ok: false,
+          error: 'turn_grant_unavailable',
+          policy: first.policy,
+          toolCall: first.toolCall,
+        }
+      }
+      await context.setTurnGrant(first.policyHost)
+    }
     if (decision === 'always') {
       if (!first.policyHost || typeof context.setSiteGrant !== 'function') {
         return {

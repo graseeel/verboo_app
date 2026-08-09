@@ -10,12 +10,14 @@
  * purple viewport frame + animated agent cursor on the new page.
  *
  * @param {{ name: 'navigate'; url: string; risk?: string; input?: string }} tool
+ * @param {{ activeTabId?: number }} [ctx]
  * @returns {Promise<{ tabId: number; url: string }>}
  */
 
 import { ensureVerbooTabGroup, ensureAgentPresence } from '../../presence/inject.js'
+import { resolveTargetTab } from '../targetTab.js'
 
-export async function navigate(tool) {
+export async function navigate(tool, ctx = {}) {
   const url = tool?.url
   if (!url || typeof url !== 'string') {
     throw new Error('navigate: missing url')
@@ -27,7 +29,7 @@ export async function navigate(tool) {
     throw new Error(`navigate: unsupported scheme: ${url.split(':')[0]}`)
   }
 
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  const tab = await resolveTargetTab(ctx.activeTabId)
   if (!tab?.id) throw new Error('navigate: no active tab')
 
   await chrome.tabs.update(tab.id, { url })
@@ -56,18 +58,20 @@ export async function navigate(tool) {
 function waitForTabComplete(tabId) {
   return new Promise((resolve) => {
     let resolved = false
+    let timeoutId
     const done = () => {
       if (resolved) return
       resolved = true
+      clearTimeout(timeoutId)
       chrome.tabs.onUpdated.removeListener(listener)
       resolve()
     }
     const listener = (id, info) => {
       if (id === tabId && info.status === 'complete') done()
     }
-    chrome.tabs.onUpdated.addListener(listener)
     // Timeout fallback — some pages never fire 'complete' (e.g. SPA
     // navigations, downloads). 30s matches the design spec §6.4.
-    setTimeout(done, 30_000)
+    timeoutId = setTimeout(done, 30_000)
+    chrome.tabs.onUpdated.addListener(listener)
   })
 }

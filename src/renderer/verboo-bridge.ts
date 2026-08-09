@@ -23,6 +23,7 @@ import type {
   CliAuthStatus,
   ChromeIntegrationRequest,
   ChromeIntegrationStatus,
+  ChromeConnectionTestResult,
   CredentialStatus,
   FeedbackRequest,
   FeedbackResult,
@@ -173,7 +174,7 @@ const api = {
     invoke<ChromeIntegrationStatus>('chrome_integration_configure', { request }),
   chromeIntegrationRepair: (request: ChromeIntegrationRequest) =>
     invoke<ChromeIntegrationStatus>('chrome_integration_repair', { request }),
-  chromeIntegrationTest: () => invoke<boolean>('chrome_integration_test'),
+  chromeIntegrationTest: () => invoke<ChromeConnectionTestResult>('chrome_integration_test'),
   chromeIntegrationRemove: () =>
     invoke<ChromeIntegrationStatus>('chrome_integration_remove'),
   openChromeExtensionStore: () => invoke<boolean>('open_chrome_extension_store'),

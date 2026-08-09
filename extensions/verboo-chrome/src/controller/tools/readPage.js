@@ -12,11 +12,12 @@
 
 import { isControllableUrl, nonControllablePageMessage } from '../../planMessage.js'
 import { preparePresenceForAction } from '../../presence/inject.js'
+import { resolveTargetTab } from '../targetTab.js'
 
 /**
  * @param {{ name: 'read_page'; selector?: string; attribute?: string; risk?: string; input?: string }} tool
  * @param {{ activeTabId?: number }} [ctx]
- * @returns {Promise<{ text: string; selector?: string; attribute?: string; url: string }>}
+ * @returns {Promise<{ text: string; interactiveElements: Array<{ selector: string; tag: string; label: string; type?: string; role?: string; disabled: boolean }>; interactiveElementsTruncated: boolean; selector?: string; attribute?: string; url: string }>}
  */
 export async function readPage(tool, ctx = {}) {
   const selector = tool?.selector
@@ -39,51 +40,18 @@ export async function readPage(tool, ctx = {}) {
   })
 
   if (!result) throw new Error('read_page: no result from page')
+  const payload = result.result
+  const structuredPayload = payload && typeof payload === 'object' ? payload : null
   return {
-    text: String(result.result ?? ''),
+    text: String(structuredPayload?.text ?? payload ?? ''),
+    interactiveElements: Array.isArray(structuredPayload?.interactiveElements)
+      ? structuredPayload.interactiveElements
+      : [],
+    interactiveElementsTruncated: structuredPayload?.interactiveElementsTruncated === true,
     selector: selector,
     attribute: attribute,
     url: tab.url ?? '',
   }
-}
-
-/**
- * Prefer the tab captured when the panel turn started. A side panel can keep
- * a different window focused while its page remains the user's target; using
- * `currentWindow` alone can therefore inject into the wrong tab and return an
- * empty body. The fallback mirrors screenshot.js for older callers.
- * @param {number | undefined} preferredTabId
- */
-async function resolveTargetTab(preferredTabId) {
-  if (typeof preferredTabId === 'number') {
-    try {
-      const tab = await chrome.tabs.get(preferredTabId)
-      if (tab?.id) return tab
-    } catch {
-      /* tab closed — fall through */
-    }
-  }
-
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
-    if (tab?.id) return tab
-  } catch {
-    /* ignore */
-  }
-
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-  if (tab?.id) return tab
-
-  try {
-    const windows = await chrome.windows.getAll({ populate: true, windowTypes: ['normal'] })
-    for (const win of windows) {
-      const active = win.tabs?.find((candidate) => candidate.active)
-      if (active?.id) return active
-    }
-  } catch {
-    /* ignore */
-  }
-  return null
 }
 
 /**
@@ -93,14 +61,73 @@ async function resolveTargetTab(preferredTabId) {
  * instead of visible text.
  * @param {string | null} selector
  * @param {string | null} attribute
- * @returns {string}
+ * @returns {{ text: string; interactiveElements: Array<{ selector: string; tag: string; label: string; type?: string; role?: string; disabled: boolean }>; interactiveElementsTruncated: boolean }}
  */
 function readInPage(selector, attribute) {
   const el = selector ? document.querySelector(selector) : document.body
-  if (!el) return ''
+  if (!el) return { text: '', interactiveElements: [], interactiveElementsTruncated: false }
   if (attribute) {
     const v = el.getAttribute(attribute)
-    return v ?? ''
+    return { text: v ?? '', interactiveElements: [], interactiveElementsTruncated: false }
   }
-  return el.innerText ?? el.textContent ?? ''
+  const text = el.innerText ?? el.textContent ?? ''
+  const candidates = typeof el.querySelectorAll === 'function'
+    ? Array.from(el.querySelectorAll('a[href], button, input:not([type="hidden"]), textarea, select, [role="button"], [contenteditable="true"]'))
+    : []
+  const visible = candidates.filter((candidate) => {
+    if (candidate.hidden || candidate.getAttribute?.('aria-hidden') === 'true') return false
+    if (typeof getComputedStyle !== 'function') return true
+    const style = getComputedStyle(candidate)
+    return style.display !== 'none' && style.visibility !== 'hidden'
+  })
+  const interactiveElements = visible.slice(0, 40).map((candidate) => {
+    const tag = String(candidate.tagName ?? '').toLowerCase()
+    const escapeCss = (value) => typeof globalThis.CSS?.escape === 'function'
+      ? globalThis.CSS.escape(value)
+      : String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&')
+    let elementSelector = tag
+    if (candidate.id) {
+      elementSelector = `#${escapeCss(candidate.id)}`
+    } else if (candidate.getAttribute?.('name')) {
+      elementSelector = `${tag}[name="${escapeCss(candidate.getAttribute('name'))}"]`
+    } else {
+      const path = []
+      let current = candidate
+      while (current && current !== document.body) {
+        const currentTag = String(current.tagName ?? '').toLowerCase()
+        if (!currentTag) break
+        const siblings = current.parentElement
+          ? Array.from(current.parentElement.children).filter((sibling) => sibling.tagName === current.tagName)
+          : []
+        const position = siblings.indexOf(current)
+        path.unshift(siblings.length > 1 && position >= 0 ? `${currentTag}:nth-of-type(${position + 1})` : currentTag)
+        current = current.parentElement
+      }
+      if (path.length) elementSelector = `body > ${path.join(' > ')}`
+    }
+    const normalizedLabel = String(
+      candidate.getAttribute?.('aria-label')
+      ?? candidate.labels?.[0]?.innerText
+      ?? candidate.getAttribute?.('placeholder')
+      ?? candidate.getAttribute?.('title')
+      ?? candidate.innerText
+      ?? candidate.getAttribute?.('name')
+      ?? '',
+    ).replace(/\s+/g, ' ').trim().slice(0, 120)
+    const item = {
+      selector: elementSelector,
+      tag,
+      label: normalizedLabel,
+      disabled: candidate.disabled === true,
+    }
+    if (tag === 'input' && candidate.type) item.type = String(candidate.type)
+    const role = candidate.getAttribute?.('role')
+    if (role) item.role = String(role)
+    return item
+  })
+  return {
+    text,
+    interactiveElements,
+    interactiveElementsTruncated: visible.length > interactiveElements.length,
+  }
 }
