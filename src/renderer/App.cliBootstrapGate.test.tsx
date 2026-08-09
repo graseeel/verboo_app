@@ -169,4 +169,34 @@ describe('App first CLI installation gate', () => {
     expect(screen.queryByText('Verboo CLI installed')).toBeNull()
     expect(screen.getByTestId('composer-submit')).toBeEnabled()
   })
+
+  it('keeps an installed but unhealthy CLI blocked until retry is authoritatively validated', async () => {
+    const installedButBroken: UpdateSnapshot = {
+      ...bootstrapSnapshot,
+      status: 'error',
+      cliCurrentVersion: '0.15.10',
+      cliAvailableVersion: undefined,
+      error: 'CLI: CLI smoke check failed: CodeRange failed',
+      percent: undefined,
+    }
+    bridge.getUpdateStatus.mockResolvedValueOnce(installedButBroken)
+    bridge.bootstrapCli.mockResolvedValueOnce({
+      status: 'idle',
+      channel: 'beta',
+      currentVersion: '0.7.0-beta',
+      cliCurrentVersion: '0.15.10',
+      cliBootstrapRequired: false,
+    })
+
+    render(<App />)
+
+    expect(await screen.findByText("Couldn't install the Verboo CLI")).toBeVisible()
+    expect(screen.getByText(/CodeRange failed/)).toBeVisible()
+    expect(screen.getByTestId('composer-submit')).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+
+    expect(bridge.bootstrapCli).toHaveBeenCalledTimes(1)
+    expect(await screen.findByText('Verboo CLI installed')).toBeVisible()
+  })
 })

@@ -1232,11 +1232,11 @@ async fn bootstrap_cli(
         .cli()
         .ok_or_else(|| "Verboo CLI bootstrap is unavailable in this build".to_string())?;
 
-    if service.snapshot().current_version.is_some() {
+    if !service.snapshot().bootstrap_required {
         return Ok(emit_update_snapshot(&app, &coordinator));
     }
 
-    let mut task = tauri::async_runtime::spawn_blocking(move || service.bootstrap_if_missing());
+    let mut task = tauri::async_runtime::spawn_blocking(move || service.bootstrap_if_required());
     loop {
         tokio::select! {
             result = &mut task => {

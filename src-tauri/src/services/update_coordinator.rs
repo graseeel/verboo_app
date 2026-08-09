@@ -51,7 +51,7 @@ pub fn combine_snapshots(
 
     app.cli_current_version = cli.current_version.clone();
     app.cli_available_version = cli.available_version.clone();
-    app.cli_bootstrap_required = cli.current_version.is_none();
+    app.cli_bootstrap_required = cli.bootstrap_required;
 
     let app_error = matches!(app.status, UpdateStatus::Error);
     let cli_error = matches!(
@@ -225,6 +225,7 @@ mod tests {
             downloaded_bytes: None,
             total_bytes: None,
             error: None,
+            bootstrap_required: false,
         }
     }
 
@@ -304,6 +305,7 @@ mod tests {
     fn missing_cli_marks_the_first_bootstrap_as_required() {
         let mut missing_cli = cli(CliUpdateStatus::Idle);
         missing_cli.current_version = None;
+        missing_cli.bootstrap_required = true;
         let combined = combine_snapshots(app(UpdateStatus::Idle), Some(missing_cli));
 
         assert!(combined.cli_bootstrap_required);
@@ -317,6 +319,22 @@ mod tests {
         );
 
         assert!(!combined.cli_bootstrap_required);
+    }
+
+    #[test]
+    fn installed_but_unhealthy_cli_keeps_the_bootstrap_gate() {
+        let mut unhealthy = cli(CliUpdateStatus::BootstrapError);
+        unhealthy.bootstrap_required = true;
+        unhealthy.error = Some("CLI smoke check failed".to_string());
+
+        let combined = combine_snapshots(app(UpdateStatus::Idle), Some(unhealthy));
+
+        assert!(combined.cli_bootstrap_required);
+        assert_eq!(combined.status, UpdateStatus::Error);
+        assert_eq!(
+            combined.error.as_deref(),
+            Some("CLI: CLI smoke check failed")
+        );
     }
 
     #[test]

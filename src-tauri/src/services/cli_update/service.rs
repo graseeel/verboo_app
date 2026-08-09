@@ -48,6 +48,9 @@ pub struct CliUpdateSnapshot {
     pub downloaded_bytes: Option<u64>,
     pub total_bytes: Option<u64>,
     pub error: Option<String>,
+    /// True until the selected app-owned CLI has passed a real smoke through
+    /// the embedded Node runtime. Pointer presence alone is not readiness.
+    pub bootstrap_required: bool,
 }
 
 impl Default for CliUpdateSnapshot {
@@ -59,6 +62,7 @@ impl Default for CliUpdateSnapshot {
             downloaded_bytes: None,
             total_bytes: None,
             error: None,
+            bootstrap_required: true,
         }
     }
 }
@@ -296,6 +300,7 @@ impl CliUpdateService {
             downloaded_bytes: None,
             total_bytes: None,
             error: None,
+            bootstrap_required: false,
         };
         state.candidate = None;
         state.prepared = None;
@@ -359,6 +364,7 @@ impl CliUpdateService {
             downloaded_bytes: None,
             total_bytes: None,
             error: None,
+            bootstrap_required: false,
         };
         state.candidate = None;
         state.prepared = None;
@@ -381,26 +387,59 @@ impl CliUpdateService {
         self.activate_prepared_inner()
     }
 
+    /// Ensures the runtime selected for agent work is actually executable.
+    /// A first install downloads the signed payload; an existing pointer is
+    /// re-smoked so Retry can recover after an app/runtime repair.
+    pub fn bootstrap_if_required(&self) -> Result<CliUpdateSnapshot, String> {
+        if self.inner.store.current()?.is_some() {
+            self.validate_startup()?;
+            return Ok(self.snapshot());
+        }
+        self.bootstrap_if_missing()
+    }
+
     pub fn validate_startup(&self) -> Result<StartupValidation, String> {
         let _operation = self.lock_operation();
+        let result = self.validate_startup_inner();
+        match &result {
+            Ok(StartupValidation::Missing) => {
+                let mut state = self.lock_state();
+                state.snapshot.status = CliUpdateStatus::Idle;
+                state.snapshot.current_version = None;
+                state.snapshot.error = None;
+                state.snapshot.bootstrap_required = true;
+            }
+            Ok(StartupValidation::Valid { version }) => {
+                self.mark_runtime_ready(version.clone());
+            }
+            Ok(StartupValidation::RolledBack { restored, .. }) => {
+                self.mark_runtime_ready(restored.clone());
+            }
+            Err(error) => self.fail(error.clone(), true),
+        }
+        result
+    }
+
+    fn validate_startup_inner(&self) -> Result<StartupValidation, String> {
         let Some(current) = self.inner.store.current()? else {
             return Ok(StartupValidation::Missing);
         };
         let current_root = self.inner.store.version_dir(&current.version)?;
-        if smoke_payload(
+        let current_smoke_error = match smoke_payload(
             &self.inner.node_path,
             &current_root,
             &current.version,
             Duration::from_secs(30),
-        )
-        .is_ok()
-        {
-            self.inner.store.mark_current_good()?;
-            self.inner.store.garbage_collect()?;
-            return Ok(StartupValidation::Valid {
-                version: current.version,
-            });
-        }
+        ) {
+            Ok(()) => {
+                self.inner.store.mark_current_good()?;
+                self.inner.store.garbage_collect()?;
+                return Ok(StartupValidation::Valid {
+                    version: current.version,
+                });
+            }
+            Err(error) => error,
+        };
 
         if self.inner.store.was_rejected(&current.manifest_digest)? {
             return Err(format!(
@@ -409,7 +448,9 @@ impl CliUpdateService {
             ));
         }
         let last_known_good = self.inner.store.last_known_good()?.ok_or_else(|| {
-            "current CLI failed and no last-known-good version exists".to_string()
+            format!(
+                "{current_smoke_error}; current CLI failed and no last-known-good version exists"
+            )
         })?;
         if last_known_good.manifest_digest == current.manifest_digest {
             return Err(
@@ -429,6 +470,14 @@ impl CliUpdateService {
             rejected: current.version,
             restored: restored.version,
         })
+    }
+
+    fn mark_runtime_ready(&self, version: String) {
+        let mut state = self.lock_state();
+        state.snapshot.status = CliUpdateStatus::Idle;
+        state.snapshot.current_version = Some(version);
+        state.snapshot.error = None;
+        state.snapshot.bootstrap_required = false;
     }
 
     fn check_with_context(&self, bootstrap: bool) -> Result<CliUpdateSnapshot, String> {
@@ -590,6 +639,9 @@ impl CliUpdateService {
             CliUpdateStatus::Error
         };
         state.snapshot.error = Some(error);
+        if bootstrap {
+            state.snapshot.bootstrap_required = true;
+        }
     }
 
     fn lock_state(&self) -> std::sync::MutexGuard<'_, ServiceState> {
@@ -776,6 +828,75 @@ mod tests {
         assert_eq!(service.snapshot().status, CliUpdateStatus::BootstrapError);
         assert_eq!(service.snapshot().error.as_deref(), Some("offline"));
         assert!(service.store().current().unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_cli_stays_gated_until_startup_smoke_succeeds() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let app_data = tempfile::tempdir().unwrap();
+        let store = CliStore::open(app_data.path()).unwrap();
+        install_minimal(&store, "0.15.6");
+        store
+            .activate(&CliPointer::new("0.15.6", DesktopTarget::MacArm64, "a".repeat(64)).unwrap())
+            .unwrap();
+        let node = app_data.path().join("embedded-node");
+        fs::write(&node, b"#!/bin/sh\nprintf '0.15.6 (Verboo Code)\\n'\n").unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+        let service = service(
+            app_data.path(),
+            node,
+            Arc::new(ManifestVerifier::new(PUBLIC_KEY)),
+            signed_source(),
+        );
+
+        assert!(service.snapshot().bootstrap_required);
+        assert!(matches!(
+            service.validate_startup().unwrap(),
+            StartupValidation::Valid { .. }
+        ));
+        assert!(!service.snapshot().bootstrap_required);
+        assert_eq!(service.snapshot().status, CliUpdateStatus::Idle);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retry_revalidates_an_installed_cli_after_runtime_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let app_data = tempfile::tempdir().unwrap();
+        let store = CliStore::open(app_data.path()).unwrap();
+        install_minimal(&store, "0.15.6");
+        store
+            .activate(&CliPointer::new("0.15.6", DesktopTarget::MacArm64, "a".repeat(64)).unwrap())
+            .unwrap();
+        let node = app_data.path().join("embedded-node");
+        fs::write(&node, b"#!/bin/sh\nprintf 'CodeRange failed' >&2\nexit 1\n").unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+        let service = service(
+            app_data.path(),
+            node.clone(),
+            Arc::new(ManifestVerifier::new(PUBLIC_KEY)),
+            signed_source(),
+        );
+
+        assert!(service.bootstrap_if_required().is_err());
+        let failed = service.snapshot();
+        assert!(failed.bootstrap_required);
+        assert_eq!(failed.status, CliUpdateStatus::BootstrapError);
+        assert!(failed
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("CodeRange failed")));
+
+        fs::write(&node, b"#!/bin/sh\nprintf '0.15.6 (Verboo Code)\\n'\n").unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+        let recovered = service.bootstrap_if_required().unwrap();
+
+        assert!(!recovered.bootstrap_required);
+        assert_eq!(recovered.status, CliUpdateStatus::Idle);
+        assert_eq!(recovered.current_version.as_deref(), Some("0.15.6"));
     }
 
     fn payload_archive(version: &str, target: DesktopTarget) -> Vec<u8> {
