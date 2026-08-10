@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderAccountSummary, ProviderUsageWindow } from '../../../shared/types'
 import type { ProviderUsageRowState } from '../settings/useProviderAccounts'
-import { classifyProviderQuota, selectedExhaustedQuota, selectedQuotaReset } from './providerQuotaPresentation'
+import { classifyProviderQuota, formatQuotaReset, parseResetsAt, selectedExhaustedQuota, selectedQuotaReset } from './providerQuotaPresentation'
 
 function row(accountId: string, status: ProviderUsageRowState['status'], kind: 'weekly' | 'model-scoped-weekly', resetsAt?: string, modelScope?: string, extraWindows: ProviderUsageWindow[] = []): ProviderUsageRowState {
   const account: ProviderAccountSummary = {
@@ -64,5 +64,31 @@ describe('provider quota presentation', () => {
     )
 
     expect(selectedExhaustedQuota([selected], 'local-a')).toBeUndefined()
+  })
+
+  describe('parseResetsAt', () => {
+    it('normalizes the captured microsecond+offset timestamp to spec milliseconds', () => {
+      // Captured real value from the provider envelope (2026-08-10):
+      // "2026-08-10T16:00:00.349529+00:00" — six-digit fraction, offset form.
+      expect(parseResetsAt('2026-08-10T16:00:00.349529+00:00')?.toISOString()).toBe('2026-08-10T16:00:00.349Z')
+    })
+
+    it('trims surrounding whitespace before parsing', () => {
+      expect(parseResetsAt(' 2026-08-10T16:00:00.349529+00:00 ')?.toISOString()).toBe('2026-08-10T16:00:00.349Z')
+    })
+
+    it('keeps the millisecond form untouched', () => {
+      expect(parseResetsAt('2026-08-10T12:00:00.000Z')?.toISOString()).toBe('2026-08-10T12:00:00.000Z')
+    })
+
+    it('returns undefined for missing or unparseable values so the fallback stays honest', () => {
+      expect(parseResetsAt(undefined)).toBeUndefined()
+      expect(parseResetsAt('')).toBeUndefined()
+      expect(parseResetsAt('not-a-date')).toBeUndefined()
+    })
+
+    it('formats the captured microsecond timestamp through formatQuotaReset', () => {
+      expect(formatQuotaReset('2026-08-10T16:00:00.349529+00:00', 'en-US')).toMatch(/Aug 10, 2026/)
+    })
   })
 })

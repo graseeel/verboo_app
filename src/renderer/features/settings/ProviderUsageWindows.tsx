@@ -1,5 +1,6 @@
 import type { ExternalProviderId, ProviderUsageSnapshot, ProviderUsageWindow } from '../../../shared/types'
 import { useI18n } from '../../i18n'
+import { parseResetsAt } from '../providers/providerQuotaPresentation'
 import type { ProviderUsageRowState } from './useProviderAccounts'
 
 export function visibleProviderWindows(snapshot: ProviderUsageSnapshot): ProviderUsageWindow[] {
@@ -12,9 +13,8 @@ export function visibleProviderWindows(snapshot: ProviderUsageSnapshot): Provide
 }
 
 export function formatProviderReset(resetsAt: string | undefined, locale: string): string | undefined {
-  if (!resetsAt) return undefined
-  const date = new Date(resetsAt)
-  if (Number.isNaN(date.getTime())) return undefined
+  const date = parseResetsAt(resetsAt)
+  if (!date) return undefined
   return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
 }
 

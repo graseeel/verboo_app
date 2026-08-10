@@ -1,10 +1,30 @@
 import type { ProviderUsageWindow } from '../../../shared/types'
 import type { ProviderUsageRowState } from '../settings/useProviderAccounts'
 
-export function formatQuotaReset(resetsAt: string | undefined, locale: string): string | undefined {
+/**
+ * Parses a provider reset timestamp into a valid Date, tolerating the
+ * microsecond+offset ISO format the provider API emits (captured real value:
+ * "2026-08-10T16:00:00.349529+00:00").
+ *
+ * The ECMAScript Date Time String Format defines fractional seconds as
+ * exactly three digits (milliseconds). `new Date()` accepts longer fractions
+ * and rejects surrounding whitespace only by engine leniency, so we normalize
+ * the fraction to three digits and trim before parsing — every engine renders
+ * the same reset time. Returns undefined for missing or unparseable values so
+ * callers keep the honest "not reported" fallback.
+ */
+export function parseResetsAt(resetsAt: string | undefined): Date | undefined {
   if (!resetsAt) return undefined
-  const date = new Date(resetsAt)
-  if (Number.isNaN(date.getTime())) return undefined
+  const normalized = resetsAt
+    .trim()
+    .replace(/\.(\d+)/, (_, fraction: string) => `.${fraction.slice(0, 3).padEnd(3, '0')}`)
+  const date = new Date(normalized)
+  return Number.isNaN(date.getTime()) ? undefined : date
+}
+
+export function formatQuotaReset(resetsAt: string | undefined, locale: string): string | undefined {
+  const date = parseResetsAt(resetsAt)
+  if (!date) return undefined
   return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
 }
 
@@ -32,7 +52,7 @@ export function classifyProviderQuota(
   if (matches.some(window => window === undefined)) return { allExhausted: false }
   const resets = matches
     .flatMap(window => window?.resetsAt ? [window.resetsAt] : [])
-    .filter(value => !Number.isNaN(new Date(value).getTime()))
+    .filter(value => parseResetsAt(value) !== undefined)
     .sort()
   return { allExhausted: true, nextResetAt: resets[0] }
 }

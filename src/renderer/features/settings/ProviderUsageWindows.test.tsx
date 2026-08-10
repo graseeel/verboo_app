@@ -58,8 +58,8 @@ describe('ProviderUsageWindows', () => {
       ],
       fetchedAt: '2026-08-09T12:00:00.000Z',
     }))
-    expect(screen.getByText('32%')).toBeInTheDocument()
-    expect(screen.getByText('71%')).toBeInTheDocument()
+    expect(screen.getByText(/32% used|32% usado/)).toBeInTheDocument()
+    expect(screen.getByText(/71% used|71% usado/)).toBeInTheDocument()
     expect(screen.queryByText(/5 hours|5 horas/i)).toBeNull()
   })
 
@@ -94,5 +94,105 @@ describe('ProviderUsageWindows', () => {
     renderUsage({ account, status: 'unavailable', errorCode: 'provider_usage_timeout' })
     expect(screen.getByText(/usage unavailable|uso indisponível/i)).toBeInTheDocument()
     expect(screen.queryByText('0%')).toBeNull()
+  })
+
+  // P2 — a 100% weekly window was unreadable (read as 100% available). The
+  // label must say "used" and the remaining percentage must be explicit.
+  it('P2: labels a 100% weekly window as used with 0% remaining', () => {
+    renderUsage(state({
+      schemaVersion: 1,
+      provider: 'codex',
+      accountId: 'codex-a',
+      plan: { id: 'plus', displayName: 'Plus' },
+      windows: [windowOf('weekly', 'weekly', 100)],
+      fetchedAt: '2026-08-09T12:00:00.000Z',
+    }))
+    expect(screen.getByText(/100% used|100% usado/)).toBeInTheDocument()
+    expect(screen.getByText(/0% remaining|0% restante/)).toBeInTheDocument()
+    expect(screen.queryByText(/^100%$/)).toBeNull()
+  })
+
+  it('P2: shows used and remaining labels on a partially used window', () => {
+    renderUsage(state({
+      schemaVersion: 1,
+      provider: 'codex',
+      accountId: 'codex-a',
+      plan: { id: 'plus', displayName: 'Plus' },
+      windows: [windowOf('weekly', 'weekly', 32)],
+      fetchedAt: '2026-08-09T12:00:00.000Z',
+    }))
+    expect(screen.getByText(/32% used|32% usado/)).toBeInTheDocument()
+    expect(screen.getByText(/68% remaining|68% restante/)).toBeInTheDocument()
+  })
+
+  it('P2: colors the bar by band — warning at >=80%, danger at 100%', () => {
+    const warning = renderUsage(state({
+      schemaVersion: 1,
+      provider: 'codex',
+      accountId: 'codex-a',
+      plan: { id: 'plus', displayName: 'Plus' },
+      windows: [windowOf('weekly', 'weekly', 80)],
+      fetchedAt: '2026-08-09T12:00:00.000Z',
+    }))
+    expect(warning.container.querySelector('.provider-usage-window')?.className).toContain('is-warning')
+
+    cleanup()
+
+    const exhausted = renderUsage(state({
+      schemaVersion: 1,
+      provider: 'codex',
+      accountId: 'codex-a',
+      plan: { id: 'plus', displayName: 'Plus' },
+      windows: [windowOf('weekly', 'weekly', 100)],
+      fetchedAt: '2026-08-09T12:00:00.000Z',
+    }))
+    expect(exhausted.container.querySelector('.provider-usage-window')?.className).toContain('is-exhausted')
+  })
+
+  // Captured 2026-08-10 — real envelope value for the Claude 5-hour window:
+  // resetsAt: "2026-08-10T16:00:00.349529+00:00" (microseconds + offset).
+  it('shows the reset time of a 5-hour window when resetsAt carries microseconds+offset', () => {
+    renderUsage(state({
+      schemaVersion: 1,
+      provider: 'claude',
+      accountId: 'claude-a',
+      plan: { id: 'pro', displayName: 'Pro' },
+      windows: [{ ...windowOf('5h', 'session', 15), resetsAt: '2026-08-10T16:00:00.349529+00:00' }],
+      fetchedAt: '2026-08-09T12:00:00.000Z',
+    }))
+    // The captured microsecond timestamp must render a concrete reset time,
+    // never the "Horário de reset não informado" fallback.
+    expect(screen.queryByText(/reset time not reported|horário de reset não informado/i)).toBeNull()
+    expect(screen.getByText(/2026/i)).toBeInTheDocument()
+  })
+
+  // Boundary artifact: the same captured timestamp wrapped in whitespace.
+  // new Date() rejects any surrounding whitespace (returns Invalid Date),
+  // so the raw parse shows the "não informado" fallback — the presentation
+  // must normalize before parsing.
+  it('renders the reset time even when the captured resetsAt carries surrounding whitespace', () => {
+    renderUsage(state({
+      schemaVersion: 1,
+      provider: 'claude',
+      accountId: 'claude-a',
+      plan: { id: 'pro', displayName: 'Pro' },
+      windows: [{ ...windowOf('5h', 'session', 15), resetsAt: ' 2026-08-10T16:00:00.349529+00:00 ' }],
+      fetchedAt: '2026-08-09T12:00:00.000Z',
+    }))
+    expect(screen.queryByText(/reset time not reported|horário de reset não informado/i)).toBeNull()
+    expect(screen.getByText(/2026/i)).toBeInTheDocument()
+  })
+
+  it('P2: exposes used and remaining in the progressbar aria-valuetext', () => {
+    renderUsage(state({
+      schemaVersion: 1,
+      provider: 'codex',
+      accountId: 'codex-a',
+      plan: { id: 'plus', displayName: 'Plus' },
+      windows: [windowOf('weekly', 'weekly', 100)],
+      fetchedAt: '2026-08-09T12:00:00.000Z',
+    }))
+    const bar = screen.getByRole('progressbar')
+    expect(bar.getAttribute('aria-valuetext')).toMatch(/100% used, 0% remaining|100% usado, 0% restante/i)
   })
 })
