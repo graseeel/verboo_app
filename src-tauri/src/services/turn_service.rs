@@ -6013,8 +6013,7 @@ mod tests {
     // Fixture format mirrors the CLI's actual TodoListSchema
     // (cli.mjs: `TodoListSchema = z.array(z.object({ content, status,
     // activeForm }))`, status ∈ {"pending","in_progress","completed"}).
-    // Captured from the bundled CLI at /Users/grasel/Library/Caches/
-    // verboo/target/.../cli.mjs — not invented.
+    // Captured from the bundled CLI — not invented.
 
     #[test]
     fn todowrite_extracts_items_and_statuses_to_structured_field() {
