@@ -532,6 +532,7 @@ mod tests {
             "src/services/ios_simulator/media.rs",
             "src/services/ios_simulator_mcp.rs",
             "src/services/plugins_service.rs",
+            "src/services/provider_accounts.rs",
             "src/services/provider_catalog.rs",
             "src/services/research_subagent_runner.rs",
             "src/services/turn_service.rs",

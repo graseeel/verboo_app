@@ -155,6 +155,11 @@ struct AccountsData {
     accounts: Vec<ProviderAccountSummary>,
 }
 
+/// Maps CLI-provided error codes to stable, renderer-facing codes. Known
+/// codes pass through; anything else becomes a generic protocol error. Raw
+/// CLI output never reaches this function — the envelope is parsed before any
+/// code is extracted — so provider tokens or subject IDs can never become a
+/// renderer-facing message.
 fn stable_error(code: &str) -> String {
     match code {
         "provider_auth_required"
@@ -166,12 +171,6 @@ fn stable_error(code: &str) -> String {
         | "provider_argument_required" => code.to_string(),
         _ => "provider_protocol_error".to_string(),
     }
-}
-
-/// Converts all protocol failures to a stable local code.  Raw CLI output is
-/// intentionally ignored: it can contain provider tokens or subject IDs.
-pub fn sanitize_protocol_error(code: &str, _raw: &str) -> String {
-    stable_error(code)
 }
 
 fn parse_envelope<T: serde::de::DeserializeOwned>(stdout: &str) -> Result<T, String> {
@@ -470,10 +469,14 @@ mod tests {
     }
 
     #[test]
-    fn protocol_error_never_returns_raw_cli_output() {
-        let error = sanitize_protocol_error("provider_usage_unavailable", "token-secret provider-subject-secret");
-        assert_eq!(error, "provider_usage_unavailable");
-        assert!(!error.contains("secret"));
+    fn stable_error_keeps_known_code_and_never_leaks_raw_cli_text() {
+        // stable_error is the production error path: known codes pass
+        // through and unknown text becomes a generic protocol error, so raw
+        // CLI output can never become a renderer-facing message.
+        assert_eq!(stable_error("provider_usage_unavailable"), "provider_usage_unavailable");
+        let unknown = stable_error("token-secret provider-subject-secret");
+        assert_eq!(unknown, "provider_protocol_error");
+        assert!(!unknown.contains("secret"));
     }
 
     #[test]

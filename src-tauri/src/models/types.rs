@@ -973,6 +973,8 @@ pub struct Annotation {
 pub struct ProviderTurnAccount {
     pub provider: String,
     pub account_id: String,
+    /// Absent from a fresh-conversation payload; deserializes to `false`.
+    #[serde(default)]
     pub fork_session: bool,
 }
 
@@ -2100,5 +2102,17 @@ mod tests {
             msg.contains("not a valid u32") || msg.contains("overflows u32"),
             "got: {msg}"
         );
+    }
+
+    #[test]
+    fn provider_turn_account_defaults_fork_session_when_absent() {
+        // A renderer payload may omit `forkSession` for a fresh conversation;
+        // the invoke must not fail on the missing boolean field.
+        let account: ProviderTurnAccount =
+            serde_json::from_str(r#"{"provider":"codex","accountId":"local-a"}"#)
+                .expect("partial ProviderTurnAccount must deserialize");
+        assert_eq!(account.provider, "codex");
+        assert_eq!(account.account_id, "local-a");
+        assert!(!account.fork_session);
     }
 }
