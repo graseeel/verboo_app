@@ -737,6 +737,33 @@
 .provider-usage-window-head span { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .provider-usage-track { height: 5px; border-radius: 99px; overflow: hidden; background: var(--surface-subtle); }
 .provider-usage-track span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms ease; }
+/* P2 — usage bands: warning at >=80%, exhausted at 100%. Mirrors the app's
+   existing --danger tone instead of inventing a third visual language. */
+.provider-usage-window.is-warning .provider-usage-track span { background: var(--text-warning, #b45309); }
+.provider-usage-window.is-exhausted .provider-usage-track span { background: var(--danger, var(--text-danger)); }
+.provider-usage-window.is-exhausted .provider-usage-window-head strong,
+.provider-usage-window.is-exhausted .provider-usage-window-head span { color: var(--text-danger); }
+/* P1 — the bound account's primary action reads as a state, not a button. */
+.provider-account-actions .provider-card-action.is-current {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-color: transparent;
+  background: var(--surface-subtle);
+  color: var(--accent);
+  cursor: default;
+  font-weight: 560;
+}
+.provider-nickname-edit { display: inline-flex; }
+.provider-nickname-edit input {
+  width: 180px;
+  padding: 3px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--surface-base);
+  color: var(--text);
+  font-size: 13px;
+}
 .provider-usage-window small,
 .provider-usage-state { color: var(--text-muted); font-size: 11px; margin: 0; }
 .provider-usage-state.is-error { color: var(--text-danger); }

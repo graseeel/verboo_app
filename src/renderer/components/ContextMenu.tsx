@@ -6,6 +6,7 @@ export type ContextMenuItem = {
   label: string
   icon?: ReactNode
   danger?: boolean
+  disabled?: boolean
   onSelect: () => void
 }
 
@@ -41,7 +42,9 @@ export function ContextMenu({ menu, onClose }: { menu?: ContextMenuState; onClos
           type="button"
           role="menuitem"
           className={`context-menu-item ${item.danger ? 'danger' : ''}`}
+          disabled={item.disabled}
           onClick={() => {
+            if (item.disabled) return
             onClose()
             item.onSelect()
           }}

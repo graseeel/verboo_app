@@ -48,17 +48,26 @@ export function ProviderUsageWindows({ state }: { state: ProviderUsageRowState }
       {windows.map(window => {
         const printed = Math.round(window.usedPercent)
         const width = Math.min(100, Math.max(0, window.usedPercent))
+        const remaining = 100 - printed
         const reset = formatProviderReset(window.resetsAt, language)
+        const bandClass = printed >= 100
+          ? ' is-exhausted'
+          : printed >= 80
+            ? ' is-warning'
+            : ''
+        const valueText = t('settings.provider.usedPercent', { percent: printed })
+          + ', '
+          + t('settings.provider.remainingPercent', { percent: Math.max(0, remaining) })
         return (
-          <div className="provider-usage-window" key={window.id}>
+          <div className={`provider-usage-window${bandClass}`} key={window.id}>
             <div className="provider-usage-window-head">
               <strong>{kindLabel(state.snapshot!.provider, window, t)}</strong>
-              <span>{printed}%</span>
+              <span>{t('settings.provider.usedPercent', { percent: printed })}</span>
             </div>
-            <div className="provider-usage-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={width}>
+            <div className="provider-usage-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={width} aria-valuetext={valueText}>
               <span style={{ width: `${width}%` }} />
             </div>
-            <small>{reset ?? t('settings.provider.resetNotReported')}</small>
+            <small>{reset ?? t('settings.provider.resetNotReported')}{reset ? ` · ${t('settings.provider.remainingPercent', { percent: Math.max(0, remaining) })}` : ''}</small>
           </div>
         )
       })}
