@@ -753,11 +753,21 @@ fn browser_evidence(output: &str) -> bool {
     has_oauth_url || output.contains("Opening browser")
 }
 
+/// Remove os chars de frame do TUI (╭╮╰╯│─) que a renderização deixa no
+/// buffer do PTY, preservando quebras e URLs — a tela de risco tem os links
+/// de política/termos e o texto reportado precisa continuar fiel (contrato
+/// com a Aquarela: renderer recebe texto limpo, sem frames).
+fn strip_tui_frames(text: &str) -> String {
+    text.chars()
+        .filter(|ch| !matches!(ch, '╭' | '╮' | '╰' | '╯' | '│' | '─'))
+        .collect()
+}
+
 /// Texto da tela de risco reportado no evento (o que a ponte viu — o aviso
 /// + os links de política/termos que o CLI exibe). Resumo fiel, não
-/// reconstrução.
+/// reconstrução: sem ANSI nem frames do TUI, com quebras e URLs intactas.
 fn risk_notice_text(output: &str) -> String {
-    let cleaned = strip_terminal_controls(output);
+    let cleaned = strip_tui_frames(&strip_terminal_controls(output));
     let trimmed = cleaned.trim();
     // Char-safe: o byte-slice cru PANICS em UTF-8 multibyte (a tela de risco
     // PT-BR tem acentos) — recua até a fronteira de char.
@@ -1203,6 +1213,31 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         // O fake do harness usa "verboo> " (a última linha com >).
         assert!(prompt_ready("Verboo Code — primeiro uso\nverboo> "));
         assert!(!prompt_ready("Tela de primeira execucao sem prompt..."));
+    }
+
+    #[test]
+    fn risk_notice_text_strips_tui_frames_and_keeps_urls() {
+        // Chunk REAL capturado do PTY (CLI 0.15.12, /claude login, 2026-08-10)
+        // — frames do TUI (╭╮╰╯│─), ANSI e as URLs de política/termos da tela
+        // de risco. O texto reportado precisa sair LIMPO (contrato com a
+        // Aquarela: renderer recebe texto limpo) mas fiel: sem frames, com as
+        // URLs e as quebras.
+        let raw_chunk = "[1C0\u{1b}[1C/\u{1b}[1C1.0m\n\n╭──────────────────────────────────────────────────────────────────────────────╮\n\n│\u{1b}[1C❯\u{a0}Describe\u{1b}[1Ca\u{1b}[1Ctask,\u{1b}[1Cbug,\u{1b}[1Cor\u{1b}[1Cidea…\u{1b}[45C│\n\n╰──────────────────────────────────────────────────────────────────────────────╯\n\n\u{1b}[2C?\u{1b}[1Cfor\u{1b}[1Cshortcuts\u{1b}[46C◉\u{1b}[1Cmax\u{1b}[1C·\u{1b}[1C/effort\n\n\u{1b}[4C\u{1b}[3A\u{1b}[?2026l\u{1b}[>0q\u{1b}[c\u{1b}[?2026h\u{1b}[4D\u{1b}[3B\n\u{1b}[32C\u{1b}[5AVerboo ultra/glm-5.2 ·\u{1b}[1Ccontext 0% ·\u{1b}[1C838\n\n\u{1b}[4C\u{1b}[3A\u{1b}[?2026l\u{1b}[?2026h\u{1b}[4D\u{1b}[3B\n\u{1b}[4C\u{1b}[3A/claude login   \u{1b}[1C    \u{1b}[1C  \u{1b}[1C     \n\n\u{1b}[17C\u{1b}[3A\u{1b}[?2026l\u{1b}]0;⠂ Verboo Code\u{7}\u{1b}[?2026h\u{1b}[17D\u{1b}[3B\n\u{1b}[5A❯\u{1b}[1C/claude\u{1b}[1Clogin\u{1b}[17C      \u{1b}[1C             \u{1b}[1C \u{1b}[1C       \u{1b}[1C  \u{1b}[1C \u{1b}[1C   \u{1b}[1C \u{1b}[1C    \n\u{1b}[1B                                                                                \n\u{1b}[1B────────────────────────────────────────────────────────────────────────────────\n\u{1b}[1B  Aviso importante sobre o login Claude                                         \n\u{1b}[2C\u{1b}[1B \u{1b}[1C   \u{1b}[1C         \u{1b}[46C \u{1b}[1C   \u{1b}[1C \u{1b}[1C       \n\n\u{1b}[2CA\u{1b}[1CAnthropic\u{1b}[1Cinforma\u{1b}[1Cque\u{1b}[1Co\u{1b}[1COAuth\u{1b}[1Cde\u{1b}[1Cassinaturas\u{1b}[1CClaude\u{1b}[1Cé\u{1b}[1Cdestinado\u{1b}[1Cao\u{1b}[1CClaude\n\n\u{1b}[2CCode\u{1b}[1Ce\u{1b}[1Ca\u{1b}[1Coutros\u{1b}[1Caplicativos\u{1b}[1Cnativos.\u{1b}[1CEla\u{1b}[1Cnão\u{1b}[1Cpermite\u{1b}[1Cque\u{1b}[1Cterceiros\u{1b}[1Cofereçam\n\n\u{1b}[2Clogin\u{1b}[1CClaude.ai\u{1b}[1Cnem\u{1b}[1Croteiem\u{1b}[1Csolicitações\u{1b}[1Cusando\u{1b}[1Ccredenciais\u{1b}[1CFree,\u{1b}[1CPro\u{1b}[1Cou\n\n\u{1b}[2CMax.\n\n\n\u{1b}[2CO\u{1b}[1CVerboo\u{1b}[1CCode\u{1b}[1Cnão\u{1b}[1Cé\u{1b}[1Cafiliado\u{1b}[1Cnem\u{1b}[1Cendossado\u{1b}[1Cpela\u{1b}[1CAnthropic.\u{1b}[1CEste\u{1b}[1Cuso\u{1b}[1Cpode\n\n\u{1b}[2Cdeixar\u{1b}[1Cde\u{1b}[1Cfuncionar\u{1b}[1Csem\u{1b}[1Caviso\u{1b}[1Ce\u{1b}[1Cpode\u{1b}[1Cresultar\u{1b}[1Cem\u{1b}[1Climitação\u{1b}[1Cou\u{1b}[1Csuspensão\u{1b}[1Cda\n\n\u{1b}[2Cconta.\u{1b}[1CPrompts,\u{1b}[1Ccódigo\u{1b}[1Ce\u{1b}[1Cresultados\u{1b}[1Cde\u{1b}[1Cferramentas\u{1b}[1Cserão\u{1b}[1Cenviados\n\n\u{1b}[2Cdiretamente\u{1b}[1Cà\u{1b}[1CAnthropic.\n\n\n\u{1b}[2CO\u{1b}[1Caceite\u{1b}[1Cregistra\u{1b}[1Capenas\u{1b}[1Csua\u{1b}[1Cciência\u{1b}[1Ce\u{1b}[1Cnão\u{1b}[1Cconcede\u{1b}[1Cpermissão\u{1b}[1Cda\u{1b}[1CAnthropic.\n\n\n\u{1b}[2CPolítica:\u{1b}[1Chttps://code.claude.com/docs/en/legal-and-compliance\n\n\n\u{1b}[2CTermos:\u{1b}[1Chttps://www.anthropic.com/legal/consumer-terms\n\n\n\u{1b}[4C1.\u{1b}[1CEntendo\u{1b}[1Ce\u{1b}[1Caceito\u{1b}[1Co\u{1b}[1Crisco\n\n\u{1b}[2C❯\u{1b}[1C2.\u{1b}[1CCancelar\u{1b}[1Ce\u{1b}[1Ccontinuar\u{1b}[1Ccom\u{1b}[1Co\u{1b}[1CVerboo\n\n\n\u{1b}[2CEnter\u{1b}[1Cto\u{1b}[1Cconfirm\u{1b}[1C·\u{1b}[1CEsc\u{1b}[1Cto\u{1b}[1Ccancel\n\n\u{1b}[2C\u{1b}[3A\u{1b}[?2026l\u{1b}]0;✳ Verboo Code\u{7}\u{1b}[?2026h\u{1b}[2D\u{1b}[3B\n\u{1b}[2C\u{1b}[1APress\u{1b}[1CCtrl-C again\u{1b}[1Cto exit      \n\n\u{1b}[2C\u{1b}[3A\u{1b}[?2026l\u{1b}[?2026h\u{1b}[2D\u{1b}[3B\n\u{1b}[2C\u{1b}[1AEnter\u{1b}[1Cto confirm ·\u{1b}[1CEsc to cancel\n\n\u{1b}[2C\u{1b}[3A\u{1b}[?2026l";
+
+        let notice = risk_notice_text(raw_chunk);
+        for frame in ['╭', '╮', '╰', '╯', '│', '─'] {
+            assert!(
+                !notice.contains(frame),
+                "o char de frame TUI {frame} deve sair do texto reportado"
+            );
+        }
+        assert!(notice.contains("https://www.anthropic.com/legal/consumer-terms"));
+        assert!(notice.contains("https://code.claude.com/docs/en/legal-and-compliance"));
+        assert!(
+            notice.contains("Entendoeaceitoorisco") || notice.contains("Entendo e aceito o risco"),
+            "o menu de risco deve sobreviver ao sanitize"
+        );
+        assert!(notice.contains('\n'), "quebras preservadas no texto reportado");
     }
 
     #[test]
