@@ -2,7 +2,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 
 import type { ProviderAuthStatus } from '../../../shared/types'
+import type { ProviderUsageRowState } from './useProviderAccounts'
 import { ProviderIntegrations } from './ProviderIntegrations'
+
+const connectedCodexRow: ProviderUsageRowState = {
+  account: {
+    schemaVersion: 1,
+    provider: 'codex',
+    accountId: 'local-a',
+    displayLabel: 'Codex 1',
+    isDefault: true,
+    connectionState: 'connected',
+  },
+  status: 'idle',
+}
 
 /**
  * F3 retrabalho — Ajustes → Integrações: um cartão por provedor, com o
@@ -113,5 +126,39 @@ describe('ProviderIntegrations — cartões por provedor (universo da ponte)', (
     expect(screen.getByRole('button', { name: /^Cancel$|^Cancelar$/i })).toHaveProperty('disabled', false)
     // The old static Conectar must NOT linger next to the progress state.
     expect(screen.queryByRole('button', { name: /^Connect$|^Conectar$/i })).toBeNull()
+  })
+
+  // M5 — a CLI with provider_accounts_v1 but WITHOUT provider_usage_v1 is an
+  // old-CLI gap, not an app failure: the accounts list renders, but the usage
+  // windows are replaced by the "update the CLI" message (i18n key
+  // settings.provider.updateCliForUsage already exists in both locales).
+  it('M5: accounts v1 without usage v1 shows the update-the-CLI message instead of usage windows', () => {
+    render(
+      <ProviderIntegrations
+        statuses={[codexDisconnected]}
+        onConnect={() => {}}
+        onCancelLogin={() => {}}
+        capabilities={{ providerAccountsV1: true, providerUsageV1: false }}
+        accountRows={[connectedCodexRow]}
+        conversationBindings={{}}
+        switchLocked={false}
+      />,
+    )
+    expect(screen.getByText(/Update the CLI to see usage windows|Atualize o CLI para ver as janelas de uso/i)).toBeInTheDocument()
+  })
+
+  it('M5: usage v1 active does not show the update-the-CLI message', () => {
+    render(
+      <ProviderIntegrations
+        statuses={[codexDisconnected]}
+        onConnect={() => {}}
+        onCancelLogin={() => {}}
+        capabilities={{ providerAccountsV1: true, providerUsageV1: true }}
+        accountRows={[connectedCodexRow]}
+        conversationBindings={{}}
+        switchLocked={false}
+      />,
+    )
+    expect(screen.queryByText(/Update the CLI to see usage windows|Atualize o CLI para ver as janelas de uso/i)).toBeNull()
   })
 })

@@ -61,6 +61,7 @@ export function ProviderIntegrations({
         rows={accountRows}
         conversationBindings={conversationBindings}
         switchLocked={switchLocked}
+        usageCapable={Boolean(capabilities.providerUsageV1)}
         onAdd={provider => onConnect(provider)}
         onSetDefault={onSetDefault}
         onUse={onUse}

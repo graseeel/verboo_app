@@ -4,6 +4,7 @@ import type { ProviderAccountBindings, StoredConversation } from '../../../share
 import {
   bindProviderAccount,
   recordProviderSessionAccount,
+  resolveProviderAccountForConversation,
   resolveProviderTurnAccount,
 } from './providerAccountBindings'
 
@@ -17,6 +18,34 @@ function conversation(patch: Partial<StoredConversation> = {}): StoredConversati
 }
 
 describe('provider account bindings', () => {
+  it('resolves only connected accounts when the provider-account capability is active', () => {
+    const bound = conversation({ providerAccountBindings: { codex: 'local-a' } })
+    expect(resolveProviderAccountForConversation(
+      bound,
+      'codex',
+      'default-a',
+      new Set(['local-a']),
+      { providerAccountsV1: true },
+    )).toEqual({ provider: 'codex', accountId: 'local-a', forkSession: false })
+    expect(resolveProviderAccountForConversation(
+      bound,
+      'codex',
+      'default-a',
+      new Set(['default-a']),
+      { providerAccountsV1: true },
+    )).toBeUndefined()
+  })
+
+  it('does not stamp provider-account state when the capability is unavailable', () => {
+    expect(resolveProviderAccountForConversation(
+      conversation(),
+      'claude',
+      'default-a',
+      new Set(['default-a']),
+      { providerAccountsV1: false },
+    )).toBeUndefined()
+  })
+
   it('binds the first provider use and keeps it stable after the default changes', () => {
     const first = ready(resolveProviderTurnAccount(conversation(), 'codex', 'default-a', new Set(['default-a'])))
     const bound = bindProviderAccount(conversation(), 'codex', first.accountId)

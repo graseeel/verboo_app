@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type { ProviderAccountSummary } from '../../../shared/types'
+import type { ProviderAccountSummary, ProviderUsageWindow } from '../../../shared/types'
 import type { ProviderUsageRowState } from '../settings/useProviderAccounts'
-import { classifyProviderQuota, selectedQuotaReset } from './providerQuotaPresentation'
+import { classifyProviderQuota, selectedExhaustedQuota, selectedQuotaReset } from './providerQuotaPresentation'
 
-function row(accountId: string, status: ProviderUsageRowState['status'], kind: 'weekly' | 'model-scoped-weekly', resetsAt?: string, modelScope?: string): ProviderUsageRowState {
+function row(accountId: string, status: ProviderUsageRowState['status'], kind: 'weekly' | 'model-scoped-weekly', resetsAt?: string, modelScope?: string, extraWindows: ProviderUsageWindow[] = []): ProviderUsageRowState {
   const account: ProviderAccountSummary = {
     schemaVersion: 1,
     provider: 'codex',
@@ -19,7 +19,7 @@ function row(accountId: string, status: ProviderUsageRowState['status'], kind: '
       schemaVersion: 1,
       provider: 'codex',
       accountId,
-      windows: [{ id: modelScope ?? 'base', kind, displayLabel: 'Weekly', modelScope, usedPercent: 100, resetsAt }],
+      windows: [{ id: modelScope ?? 'base', kind, displayLabel: 'Weekly', modelScope, usedPercent: 100, resetsAt }, ...extraWindows],
       fetchedAt: '2026-08-09T12:00:00.000Z',
     },
   }
@@ -44,5 +44,25 @@ describe('provider quota presentation', () => {
   it('keeps a selected reset separate from the aggregate claim', () => {
     expect(selectedQuotaReset({ kind: 'weekly' }, row('local-a', 'fresh', 'weekly', '2026-08-12T17:30:00.000Z'))).toBe('2026-08-12T17:30:00.000Z')
     expect(selectedQuotaReset({ kind: 'weekly' }, row('local-a', 'stale', 'weekly', '2026-08-12T17:30:00.000Z'))).toBeUndefined()
+  })
+
+  it('does not guess which reset applies when the selected account has multiple exhausted windows', () => {
+    const selected = row(
+      'local-a',
+      'fresh',
+      'weekly',
+      '2026-08-12T17:30:00.000Z',
+      undefined,
+      [{
+        id: 'fable',
+        kind: 'model-scoped-weekly',
+        displayLabel: 'Fable weekly',
+        modelScope: 'fable',
+        usedPercent: 100,
+        resetsAt: '2026-08-13T17:30:00.000Z',
+      }],
+    )
+
+    expect(selectedExhaustedQuota([selected], 'local-a')).toBeUndefined()
   })
 })

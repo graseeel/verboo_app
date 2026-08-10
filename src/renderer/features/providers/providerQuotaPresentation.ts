@@ -56,9 +56,14 @@ export function selectedExhaustedQuota(
   selectedAccountId: string,
 ): { target: QuotaTarget; allExhausted: boolean; resetAt?: string } | undefined {
   const selected = rows.find(row => row.account.accountId === selectedAccountId)
-  const exhausted = selected?.snapshot?.windows.find(window => window.usedPercent >= 100)
-  if (!selected || selected.status !== 'fresh' || !exhausted) return undefined
-  const target: QuotaTarget = { kind: exhausted.kind, modelScope: exhausted.modelScope }
+  const exhausted = selected?.snapshot?.windows.filter(window => window.usedPercent >= 100) ?? []
+  // A provider may expose independent windows (for example base and Fable).
+  // Without an explicit target from the provider error, choosing the first
+  // exhausted window would show a potentially incorrect reset time.
+  if (!selected || selected.status !== 'fresh' || exhausted.length !== 1) return undefined
+  const [targetWindow] = exhausted
+  if (!targetWindow) return undefined
+  const target: QuotaTarget = { kind: targetWindow.kind, modelScope: targetWindow.modelScope }
   const aggregate = classifyProviderQuota(target, rows)
   return {
     target,

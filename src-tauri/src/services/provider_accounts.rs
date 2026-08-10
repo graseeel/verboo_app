@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 
 use crate::models::types::VerbooModel;
 use crate::services::cli_spawn::CliSpawn;
-use crate::services::provider_catalog;
 
 const CLI_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_STDOUT_BYTES: usize = 1024 * 1024;
@@ -83,6 +82,45 @@ pub struct ProviderUsageResult {
     pub snapshot: Option<ProviderUsageSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SupportedProvider {
+    Codex,
+    Claude,
+}
+
+impl SupportedProvider {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "codex" => Ok(Self::Codex),
+            "claude" => Ok(Self::Claude),
+            _ => Err("provider_argument_required".to_string()),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderAccountId(String);
+
+impl ProviderAccountId {
+    fn parse(value: String) -> Result<Self, String> {
+        if value.trim().is_empty() {
+            return Err("provider_argument_required".to_string());
+        }
+        Ok(Self(value))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -248,11 +286,12 @@ pub fn provider_accounts_usage(
     provider: Option<String>,
     account_id: Option<String>,
 ) -> Result<Vec<ProviderUsageResult>, String> {
-    let provider = provider.ok_or_else(|| "provider_argument_required".to_string())?;
-    if provider != "codex" && provider != "claude" {
-        return Err("provider_argument_required".to_string());
-    }
-    let account_id = account_id.ok_or_else(|| "provider_argument_required".to_string())?;
+    let provider = SupportedProvider::parse(
+        provider.as_deref().ok_or_else(|| "provider_argument_required".to_string())?,
+    )?;
+    let account_id = ProviderAccountId::parse(
+        account_id.ok_or_else(|| "provider_argument_required".to_string())?,
+    )?;
     let stdout = run_cli(&[
         "provider-accounts",
         "usage",
@@ -262,22 +301,42 @@ pub fn provider_accounts_usage(
         account_id.as_str(),
     ])?;
     match parse_envelope::<ProviderUsageSnapshot>(&stdout) {
-        Ok(snapshot) => Ok(vec![ProviderUsageResult {
-            provider,
-            account_id,
+        Ok(snapshot) if validate_usage_snapshot_identity(&snapshot, provider.as_str(), account_id.as_str()).is_ok() => Ok(vec![ProviderUsageResult {
+            provider: provider.as_str().to_string(),
+            account_id: account_id.as_str().to_string(),
             snapshot: Some(snapshot),
             error_code: None,
         }]),
+        Ok(_) => Ok(vec![ProviderUsageResult {
+            provider: provider.as_str().to_string(),
+            account_id: account_id.as_str().to_string(),
+            snapshot: None,
+            error_code: Some("provider_protocol_error".to_string()),
+        }]),
         Err(error_code) => Ok(vec![ProviderUsageResult {
-            provider,
-            account_id,
+            provider: provider.as_str().to_string(),
+            account_id: account_id.as_str().to_string(),
             snapshot: None,
             error_code: Some(stable_error(&error_code)),
         }]),
     }
 }
 
+fn validate_usage_snapshot_identity(
+    snapshot: &ProviderUsageSnapshot,
+    provider: &str,
+    account_id: &str,
+) -> Result<(), String> {
+    if snapshot.provider == provider && snapshot.account_id == account_id {
+        Ok(())
+    } else {
+        Err("provider_protocol_error".to_string())
+    }
+}
+
 pub fn provider_account_set_default(provider: String, account_id: String) -> Result<(), String> {
+    let provider = SupportedProvider::parse(&provider)?;
+    let account_id = ProviderAccountId::parse(account_id)?;
     let stdout = run_cli(&[
         "provider-accounts",
         "set-default",
@@ -290,6 +349,8 @@ pub fn provider_account_set_default(provider: String, account_id: String) -> Res
 }
 
 pub fn provider_account_remove(provider: String, account_id: String) -> Result<(), String> {
+    let provider = SupportedProvider::parse(&provider)?;
+    let account_id = ProviderAccountId::parse(account_id)?;
     let stdout = run_cli(&[
         "provider-accounts",
         "remove",
@@ -301,40 +362,87 @@ pub fn provider_account_remove(provider: String, account_id: String) -> Result<(
     parse_envelope::<serde_json::Value>(&stdout).map(|_| ())
 }
 
-/// Ask the CLI for the account-specific model catalog. A legacy CLI without
-/// this command still degrades to the existing provider-wide catalog so the
-/// account switch remains usable instead of failing closed on an upgrade gap.
+/// Maps a `provider-accounts models` failure to a stable local code.
+///
+/// An older CLI that does not implement the `models` subcommand reports
+/// `provider_command_unknown`. That is remapped to a distinct code so the
+/// renderer can show "update the CLI" instead of a generic failure. Every
+/// other failure keeps its stable code: a real error must never be
+/// relabeled as an old-CLI gap.
+fn models_error_code(code: &str) -> String {
+    match code {
+        "provider_command_unknown" => "provider_models_unsupported".to_string(),
+        other => stable_error(other),
+    }
+}
+
+/// Ask the CLI for the account-specific model catalog. The account-specific
+/// response is authoritative: a missing command or malformed response must
+/// remain an error so the renderer cannot send a model that this account does
+/// not support. An old CLI without the subcommand surfaces the distinct
+/// `provider_models_unsupported` code.
 pub fn provider_account_models(provider: String, account_id: String) -> Result<Vec<VerbooModel>, String> {
-    let stdout = match run_cli(&[
+    let provider = SupportedProvider::parse(&provider)?;
+    let account_id = ProviderAccountId::parse(account_id)?;
+    let stdout = run_cli(&[
         "provider-accounts",
         "models",
         "--provider",
         provider.as_str(),
         "--account",
         account_id.as_str(),
-    ]) {
-        Ok(value) => value,
-        Err(_) => return provider_wide_models(&provider),
-    };
-    match parse_envelope::<Vec<VerbooModel>>(&stdout) {
-        Ok(models) => Ok(models
-            .into_iter()
-            .filter(|model| model.provider.as_deref() == Some(provider.as_str()))
-            .collect()),
-        Err(_) => provider_wide_models(&provider),
-    }
-}
-
-fn provider_wide_models(provider: &str) -> Result<Vec<VerbooModel>, String> {
-    Ok(provider_catalog::list_provider_models()?
+    ])?;
+    let models = parse_envelope::<Vec<VerbooModel>>(&stdout).map_err(|code| models_error_code(&code))?;
+    Ok(models
         .into_iter()
-        .filter(|model| model.provider.as_deref() == Some(provider))
+        .filter(|model| model.provider.as_deref() == Some(provider.as_str()))
         .collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_usage_snapshot_for_a_different_account() {
+        let snapshot = ProviderUsageSnapshot {
+            schema_version: 1,
+            provider: "codex".to_string(),
+            account_id: "local-b".to_string(),
+            plan: None,
+            windows: vec![],
+            fetched_at: "2026-08-09T00:00:00.000Z".to_string(),
+        };
+
+        assert_eq!(validate_usage_snapshot_identity(&snapshot, "codex", "local-a"), Err("provider_protocol_error".to_string()));
+    }
+
+    #[test]
+    fn accepts_usage_snapshot_for_the_requested_account() {
+        let snapshot = ProviderUsageSnapshot {
+            schema_version: 1,
+            provider: "codex".to_string(),
+            account_id: "local-a".to_string(),
+            plan: None,
+            windows: vec![],
+            fetched_at: "2026-08-09T00:00:00.000Z".to_string(),
+        };
+
+        assert_eq!(validate_usage_snapshot_identity(&snapshot, "codex", "local-a"), Ok(()));
+    }
+
+    #[test]
+    fn unknown_models_subcommand_maps_to_models_unsupported() {
+        let stdout = r#"{"schemaVersion":1,"ok":false,"error":{"code":"provider_command_unknown","message":"unknown command 'models'"}}"#;
+        let code = parse_envelope::<serde_json::Value>(stdout).expect_err("unknown command must fail");
+        assert_eq!(models_error_code(&code), "provider_models_unsupported");
+    }
+
+    #[test]
+    fn models_error_without_unknown_command_keeps_its_stable_code() {
+        assert_eq!(models_error_code("provider_account_not_found"), "provider_account_not_found");
+        assert_eq!(models_error_code("provider_protocol_error"), "provider_protocol_error");
+    }
 
     #[test]
     fn parses_sanitized_account_list_and_ignores_unknown_fields() {

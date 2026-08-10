@@ -50,6 +50,7 @@ import { createGoalState, goalSystemMessage, resumeGoalSessionId, sanitizeStored
 // (moved out of this file verbatim) so the frontier signal (ii) is
 // testable without importing the component tree.
 import { extractContextUsage, extractUsageObject, isRecord, numberValue, numberValueOptional } from './features/context/contextUsage'
+import { buildMemoryContext, snippet } from './features/context/memoryContext'
 import { GoalStatusBar, type GoalStatusBarState } from './features/goal/GoalStatusBar'
 import { GoalActivePanel } from './features/goal/GoalActivePanel'
 import { useGoalPanelExit } from './features/goal/useGoalPanelExit'
@@ -124,6 +125,12 @@ import { AccessSelector } from './features/access/AccessSelector'
 import { PermissionApprovalPanel, type PendingPermissionPrompt } from './features/permission/PermissionApprovalPanel'
 import { VisionFallbackModal } from './features/vision/VisionFallbackModal'
 import {
+  canClearProviderModelBlocker,
+  invalidateProviderModelsCache,
+  type ProviderModelBlocker,
+} from './features/providers/providerModelValidation'
+import { preflightProviderTurn } from './features/providers/providerTurnPreflight'
+import {
   DEFAULT_VIDEO_FALLBACK_CONSENT,
   shouldBlockVideoBeforeCli,
   VideoFallbackModal,
@@ -157,7 +164,11 @@ import { loadPluginSkillSummaries } from './features/plugins/pluginSkillSummarie
 import { ProjectPicker } from './features/projects/ProjectPicker'
 import { SettingsView } from './features/settings/SettingsView'
 import { useProviderAccounts } from './features/settings/useProviderAccounts'
-import { bindProviderAccount, recordProviderSessionAccount } from './features/providers/providerAccountBindings'
+import {
+  bindProviderAccount,
+  recordProviderSessionAccount,
+  resolveProviderAccountForConversation,
+} from './features/providers/providerAccountBindings'
 import { formatQuotaReset, selectedExhaustedQuota } from './features/providers/providerQuotaPresentation'
 import { clearUpdateDraftHandoff, consumeUpdateDraftHandoff, writeUpdateDraftHandoff } from './features/updates/updateDraftHandoff'
 import { useDeferredUpdateRestart } from './features/updates/useDeferredUpdateRestart'
@@ -401,12 +412,8 @@ export function App() {
     stale: false,
   })
   const [selectedModel, setSelectedModel] = useState<string | undefined>()
-  const [providerModelBlocker, setProviderModelBlocker] = useState<{
-    conversationId: string
-    provider: ExternalProviderId
-    accountId: string
-    modelId: string
-  } | undefined>()
+  const [providerModelBlocker, setProviderModelBlocker] = useState<ProviderModelBlocker | undefined>()
+  const providerModelValidationGeneration = useRef(0)
   const [providerAccountMissing, setProviderAccountMissing] = useState<{
     conversationId: string
     provider: ExternalProviderId
@@ -1712,31 +1719,66 @@ export function App() {
     const conversationId = activeConversationIdRef.current
     if (!conversationId || runningTurnByConversationRef.current[conversationId]) return
     const selected = selectedModelInfo
-    let modelAvailable = true
+    const validationGeneration = ++providerModelValidationGeneration.current
+    let preflight
     if (selected?.provider === provider) {
-      try {
-        const accountModels = await window.verboo.providerAccountModels(provider, accountId)
-        modelAvailable = accountModels.some(model => model.id === selected.id)
-      } catch {
-        // An old/temporarily unavailable CLI cannot prove account-specific
-        // model availability. Keep the account selection usable and let the
-        // normal turn error surface the provider's own diagnostic.
-        modelAvailable = true
-      }
+      setProviderModelBlocker({ conversationId, provider, accountId, modelId: selected.id })
+      const conversation = chatStoreRef.current.conversations.find(item => item.id === conversationId)
+      preflight = await preflightProviderTurn({
+        provider,
+        modelId: selected.id,
+        conversation: conversation ? bindProviderAccount(conversation, provider, accountId) : undefined,
+        capabilities: providerAccounts.snapshot().capabilities,
+        accounts: providerAccounts.snapshot().accounts,
+        fetchModels: window.verboo.providerAccountModels,
+      })
+    }
+    if (validationGeneration !== providerModelValidationGeneration.current) return
+    const conversation = chatStoreRef.current.conversations.find(item => item.id === conversationId)
+    const previousAccountId = conversation?.providerAccountBindings?.[provider]
+    if (previousAccountId !== accountId) {
+      // M2 — switching the conversation account invalidates the cached model
+      // list for that account so the next turn validates against a fresh
+      // catalog, not one fetched for the previous account context.
+      invalidateProviderModelsCache(provider, accountId)
     }
     updateConversation(conversationId, conversation => bindProviderAccount(conversation, provider, accountId))
     setProviderAccountMissing(current => current?.conversationId === conversationId ? undefined : current)
-    if (!modelAvailable && selected?.id) {
-      setProviderModelBlocker({ conversationId, provider, accountId, modelId: selected.id })
-    } else {
-      setProviderModelBlocker(current => current?.conversationId === conversationId ? undefined : current)
+    if (previousAccountId !== accountId) {
+      const accountLabel = providerAccounts.snapshot().accounts.find(account =>
+        account.provider === provider && account.accountId === accountId,
+      )?.displayLabel ?? providerDisplayName(provider, t)
+      appendConversationItem(conversationId, {
+        id: `provider-account:${crypto.randomUUID()}`,
+        role: 'tool',
+        kind: 'activity',
+        activityKind: 'context',
+        text: t('settings.provider.accountChangedActivity', { account: accountLabel }),
+        timestamp: Date.now(),
+        localOnly: true,
+      })
+    }
+    if (selected?.id && selected.provider === provider) {
+      if (preflight?.status === 'blocked' || preflight?.status === 'missing-account' || preflight?.status === 'bound-account-missing') {
+        setProviderModelBlocker({ conversationId, provider, accountId, modelId: selected.id })
+      } else if (preflight?.status === 'ready') {
+        setProviderModelBlocker(current => canClearProviderModelBlocker(
+          current,
+          { conversationId, provider, accountId, modelId: selected.id },
+          preflight.validation,
+        ) ? undefined : current)
+      } else if (preflight?.status === 'legacy' || preflight?.status === 'not-required') {
+        setProviderModelBlocker(current => current?.conversationId === conversationId ? undefined : current)
+      }
     }
   }
 
   function handleProviderAccountRemove(provider: ExternalProviderId, accountId: string): void {
     // Keep a removed historical binding intact. The next send will surface an
     // unresolved-account blocker instead of silently moving the conversation.
-    void providerAccounts.remove(provider, accountId)
+    void providerAccounts.remove(provider, accountId).catch(error => {
+      toast(t('settings.provider.connectError', { message: error instanceof Error ? error.message : String(error) }), 'error')
+    })
   }
 
   // F4 risk_notice dialog: accept continues the bridge login
@@ -2018,6 +2060,47 @@ export function App() {
   function handleModelSelect(modelId: string) {
     setSelectedModel(modelId)
     void updateUserSettings({ lastSelectedModelId: modelId })
+
+    const conversationId = activeConversationIdRef.current
+    const selected = modelResult.models.find(model => model.id === modelId)
+    const provider = selected?.provider
+    if (!conversationId || (provider !== 'codex' && provider !== 'claude')) {
+      providerModelValidationGeneration.current += 1
+      setProviderModelBlocker(current => current?.conversationId === conversationId ? undefined : current)
+      return
+    }
+    const validationGeneration = ++providerModelValidationGeneration.current
+    const initialAccount = providerAccountForConversation(conversationId, provider)
+    setProviderModelBlocker({ conversationId, provider, accountId: initialAccount?.accountId ?? '', modelId })
+    void (async () => {
+      let snapshot = providerAccounts.snapshot()
+      if (!snapshot.accountsLoaded) snapshot = await providerAccounts.reloadAccounts(false)
+      const result = await preflightProviderTurn({
+        provider,
+        modelId,
+        conversation: chatStoreRef.current.conversations.find(item => item.id === conversationId),
+        capabilities: snapshot.capabilities,
+        accounts: snapshot.accounts,
+        fetchModels: window.verboo.providerAccountModels,
+      })
+      if (validationGeneration !== providerModelValidationGeneration.current) return
+      if (result.status === 'blocked') {
+        setProviderModelBlocker({ conversationId, provider, accountId: result.accountId, modelId })
+      } else if (result.status === 'missing-account' || result.status === 'bound-account-missing') {
+        setProviderModelBlocker({ conversationId, provider, accountId: '', modelId })
+      } else if (result.status === 'ready') {
+        setProviderModelBlocker(current => canClearProviderModelBlocker(
+          current,
+          { conversationId, provider, accountId: result.account.accountId, modelId },
+          result.validation,
+        ) ? undefined : current)
+      } else {
+        setProviderModelBlocker(current => current?.conversationId === conversationId ? undefined : current)
+      }
+    })().catch(() => {
+      if (validationGeneration !== providerModelValidationGeneration.current) return
+      setProviderModelBlocker({ conversationId, provider, accountId: initialAccount?.accountId ?? '', modelId })
+    })
   }
 
   function handleEffortSelect(modelId: string, effort: string) {
@@ -3032,22 +3115,6 @@ export function App() {
     try {
     const conversationId = ensureActiveConversation()
     const selectedProvider = selectedModelInfo?.provider
-    if (selectedProvider === 'codex' || selectedProvider === 'claude') {
-      let providerSnapshot = providerAccounts.snapshot()
-      if (!providerSnapshot.accountsLoaded) {
-        providerSnapshot = await providerAccounts.reloadAccounts(false)
-      }
-      const conversation = chatStoreRef.current.conversations.find(item => item.id === conversationId)
-      const boundAccountId = conversation?.providerAccountBindings?.[selectedProvider]
-      if (boundAccountId
-        && providerSnapshot.capabilities.providerAccountsV1
-        && !providerSnapshot.accounts.some(account =>
-        account.provider === selectedProvider && account.accountId === boundAccountId,
-      )) {
-        setProviderAccountMissing({ conversationId, provider: selectedProvider, accountId: boundAccountId })
-        return
-      }
-    }
     let turnAttachments = attachedFiles
 
     // ── Vision fallback consent check ──
@@ -3150,6 +3217,52 @@ export function App() {
     }
 
     turnAttachments = await promoteVisualAttachments(turnAttachments, conversationId)
+    // Revalidate at the last possible point before creating the queued
+    // request. Attachment/OCR/approval awaits above can outlive an account
+    // removal or a provider quota change; unknown stays fail-closed.
+    if (selectedProvider === 'codex' || selectedProvider === 'claude') {
+      let providerSnapshot = providerAccounts.snapshot()
+      if (!providerSnapshot.accountsLoaded) {
+        providerSnapshot = await providerAccounts.reloadAccounts(false)
+      }
+      const preflight = await preflightProviderTurn({
+        provider: selectedProvider,
+        modelId: selectedModelInfo?.id ?? selectedModel ?? '',
+        conversation: chatStoreRef.current.conversations.find(item => item.id === conversationId),
+        capabilities: providerSnapshot.capabilities,
+        accounts: providerSnapshot.accounts,
+        fetchModels: window.verboo.providerAccountModels,
+      })
+      if (preflight.status === 'bound-account-missing') {
+        setProviderAccountMissing({ conversationId, provider: selectedProvider, accountId: preflight.accountId })
+        return
+      }
+      if (preflight.status === 'missing-account') {
+        setProviderModelBlocker({ conversationId, provider: selectedProvider, accountId: '', modelId: preflight.modelId })
+        return
+      }
+      if (preflight.status === 'blocked') {
+        setProviderModelBlocker({
+          conversationId,
+          provider: selectedProvider,
+          accountId: preflight.accountId,
+          modelId: preflight.modelId,
+        })
+        return
+      }
+      if (preflight.status === 'ready') {
+        setProviderModelBlocker(current => canClearProviderModelBlocker(
+          current,
+          {
+            conversationId,
+            provider: selectedProvider,
+            accountId: preflight.account.accountId,
+            modelId: selectedModelInfo?.id ?? selectedModel ?? '',
+          },
+          preflight.validation,
+        ) ? undefined : current)
+      }
+    }
     // F3: pendingAnnotations foi lido do ref ANTES dos awaits acima — é o
     // retrato do clique, e é ele que viaja (congelado) no request da fila.
     const queued = createQueuedFollowUp(conversationId, trimmed, turnAttachments, pendingAnnotations)
@@ -3340,21 +3453,24 @@ export function App() {
     provider: ExternalProviderId,
   ): ProviderTurnAccount | undefined {
     const providerSnapshot = providerAccounts.snapshot()
-    if (!providerSnapshot.capabilities.providerAccountsV1) return undefined
     const conversation = sideChatRef.current?.conversation.id === conversationId
       ? sideChatRef.current.conversation
       : chatStoreRef.current.conversations.find(item => item.id === conversationId)
-    const bound = conversation?.providerAccountBindings?.[provider]
-    const selected = bound
-      ? bound
-      : providerSnapshot.accounts.find(account => account.provider === provider && account.isDefault)?.accountId
-    if (!selected) return undefined
-    const sessionAccount = conversation?.cliSessionProviderAccounts?.[provider]
-    return {
+    const defaultAccountId = providerSnapshot.accounts.find(account =>
+      account.provider === provider && account.isDefault,
+    )?.accountId
+    const connectedAccountIds = new Set(
+      providerSnapshot.accounts
+        .filter(account => account.provider === provider)
+        .map(account => account.accountId),
+    )
+    return resolveProviderAccountForConversation(
+      conversation,
       provider,
-      accountId: selected,
-      forkSession: Boolean(conversation?.cliSessionId && sessionAccount && sessionAccount !== selected),
-    }
+      defaultAccountId,
+      connectedAccountIds,
+      providerSnapshot.capabilities,
+    )
   }
 
   function refreshProviderAccountAfterTurn(turnId: string): void {
@@ -7490,40 +7606,4 @@ function toolResultText(content: unknown): string {
       .trim()
   }
   return ''
-}
-
-function buildMemoryContext(
-  store: ChatStore,
-  currentConversationId: string,
-  settings: UserSettings,
-): string | undefined {
-  if (!settings.memoriesEnabled) return undefined
-
-  const current = store.conversations.find(conversation => conversation.id === currentConversationId)
-  const related = store.conversations
-    .filter(conversation => conversation.id !== currentConversationId)
-    .filter(conversation => !conversation.archivedAt)
-    .filter(conversation => conversation.projectId === current?.projectId)
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, 6)
-
-  if (!related.length) return undefined
-
-  const lines = related.flatMap(conversation => {
-    const usefulItems = conversation.items
-      .filter(item => settings.ignoreToolChatsForMemory ? item.role !== 'tool' : true)
-      .filter(item => item.role === 'user' || item.role === 'assistant' || item.role === 'system')
-      .slice(-4)
-    if (!usefulItems.length) return []
-    return [
-      `Chat: ${conversation.title}`,
-      ...usefulItems.map(item => `${item.role}: ${snippet(item.text)}`),
-    ]
-  })
-
-  return lines.length ? lines.join('\n') : undefined
-}
-
-function snippet(value: string): string {
-  return value.replace(/\s+/g, ' ').trim().slice(0, 360)
 }

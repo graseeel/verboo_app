@@ -729,10 +729,18 @@ export function SettingsView({
               accountRows={providerAccounts?.rows}
               conversationBindings={conversationProviderBindings}
               switchLocked={providerSwitchLocked}
-              onSetDefault={(provider, accountId) => { void providerAccounts?.setDefault(provider, accountId) }}
+              onSetDefault={(provider, accountId) => {
+                void providerAccounts?.setDefault(provider, accountId).catch(error => {
+                  toast(t('settings.provider.connectError', { message: error instanceof Error ? error.message : String(error) }), 'error')
+                })
+              }}
               onUse={onProviderAccountUse}
               onRemove={onProviderAccountRemoved}
-              onRefreshAccount={(provider, accountId) => { void providerAccounts?.refreshAccount(provider, accountId) }}
+              onRefreshAccount={(provider, accountId) => {
+                void providerAccounts?.refreshAccount(provider, accountId).catch(error => {
+                  toast(t('settings.provider.connectError', { message: error instanceof Error ? error.message : String(error) }), 'error')
+                })
+              }}
             />
           </section>
         )}

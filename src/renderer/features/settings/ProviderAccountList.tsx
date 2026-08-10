@@ -11,6 +11,9 @@ export type ProviderAccountListProps = {
   rows: ProviderUsageRowState[]
   conversationBindings: Partial<Record<ExternalProviderId, string>>
   switchLocked: boolean
+  /** M5 — false when the CLI exposes accounts but not usage (old CLI): the
+   *  list renders without usage bars and shows the "update the CLI" message. */
+  usageCapable?: boolean
   onAdd: (provider: ExternalProviderId) => void
   onSetDefault: (provider: ExternalProviderId, accountId: string) => void
   onUse: (provider: ExternalProviderId, accountId: string) => void
@@ -23,6 +26,7 @@ export function ProviderAccountList({
   rows,
   conversationBindings,
   switchLocked,
+  usageCapable = true,
   onAdd,
   onSetDefault,
   onUse,
@@ -59,6 +63,9 @@ export function ProviderAccountList({
   return (
     <>
       <section className="provider-account-list">
+        {!usageCapable && rows.length > 0 && (
+          <p className="provider-usage-state">{t('settings.provider.updateCliForUsage')}</p>
+        )}
         {groups.map(({ provider, rows: providerRows }) => (
           <div className="provider-account-group" key={provider}>
             <div className="provider-account-group-head">
@@ -66,7 +73,7 @@ export function ProviderAccountList({
                 <ProviderIcon providerId={provider} size={20} style={providerToneStyle(provider)} />
                 <h2>{providerDisplayName(provider, t)}</h2>
               </div>
-              <button type="button" className="provider-card-action" onClick={() => onAdd(provider)}>
+              <button type="button" className="provider-card-action" onClick={() => onAdd(provider)} disabled={switchLocked}>
                 {t('settings.provider.addAccount')}
               </button>
             </div>
@@ -92,10 +99,10 @@ export function ProviderAccountList({
                     <button type="button" className="provider-card-action" onClick={() => requestUse(provider, account.accountId, account.displayLabel)} disabled={switchLocked}>
                       {t('settings.provider.useHere')}
                     </button>
-                    {!account.isDefault && <button type="button" className="provider-card-action" onClick={() => onSetDefault(provider, account.accountId)}>{t('settings.provider.makeDefault')}</button>}
-                    <button type="button" className="provider-card-action" onClick={() => onReconnect(provider, account.accountId)}>{t('settings.provider.reconnect')}</button>
-                    <button type="button" className="provider-card-action" onClick={() => onRefresh(provider, account.accountId)}>{t('common.refresh')}</button>
-                    <button type="button" className="provider-card-action danger" onClick={() => requestRemove(provider, account.accountId)}>{t('settings.provider.remove')}</button>
+                    {!account.isDefault && <button type="button" className="provider-card-action" onClick={() => onSetDefault(provider, account.accountId)} disabled={switchLocked}>{t('settings.provider.makeDefault')}</button>}
+                    <button type="button" className="provider-card-action" onClick={() => onReconnect(provider, account.accountId)} disabled={switchLocked}>{t('settings.provider.reconnect')}</button>
+                    <button type="button" className="provider-card-action" onClick={() => onRefresh(provider, account.accountId)} disabled={switchLocked}>{t('common.refresh')}</button>
+                    <button type="button" className="provider-card-action danger" onClick={() => requestRemove(provider, account.accountId)} disabled={switchLocked}>{t('settings.provider.remove')}</button>
                   </div>
                 </article>
               )

@@ -7,6 +7,7 @@ import type {
   ProviderUsageResult,
 } from '../../../shared/types'
 import type { VerbooDesktopApi } from '../../verboo-bridge'
+import { invalidateProviderModelsCache } from '../providers/providerModelValidation'
 
 export type ProviderUsageRowState = {
   account: ProviderAccountSummary
@@ -209,6 +210,11 @@ export function useProviderAccounts({
       setAccounts(nextAccounts)
       setAccountsLoaded(true)
       setRows(previous => mergeRows(nextAccounts, previous))
+      // M2 — a reloaded accounts list means accounts may have been added,
+      // removed, or reconnected: the cached model lists (keyed per
+      // provider:account) can no longer be trusted. Drop them so the next
+      // preflight fetches a fresh catalog instead of spawning stale entries.
+      invalidateProviderModelsCache()
       if (refreshUsage && nextCapabilities.providerUsageV1) {
         // Refresh from the response rather than waiting for state to commit.
         let cursor = 0

@@ -40,7 +40,10 @@ describe('ProviderAccountList', () => {
   it('renders an explicit active-turn lock and disables account switching', () => {
     renderList({ switchLocked: true })
     expect(screen.getByText('Verboo is responding. Wait or stop the response before switching accounts.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Use here' })).toHaveProperty('disabled', true)
+    expect(screen.getAllByRole('button', { name: 'Add account' })).toHaveLength(2)
+    for (const button of screen.getAllByRole('button')) {
+      expect(button).toHaveProperty('disabled', true)
+    }
   })
 
   it('requires confirmation before binding an account to the conversation', () => {
