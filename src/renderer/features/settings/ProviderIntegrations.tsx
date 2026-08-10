@@ -68,6 +68,9 @@ export function ProviderIntegrations({
         onReconnect={(provider, accountId) => onConnect(provider, accountId)}
         onRemove={onRemove}
         onRefresh={onRefreshAccount}
+        connectingProvider={connectingProvider}
+        loginStage={loginStage}
+        onCancelLogin={onCancelLogin}
       />
     )
   }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, within } from '@testing-library/react'
 
 import type { ProviderAuthStatus } from '../../../shared/types'
 import type { ProviderUsageRowState } from './useProviderAccounts'
@@ -160,5 +160,33 @@ describe('ProviderIntegrations — cartões por provedor (universo da ponte)', (
       />,
     )
     expect(screen.queryByText(/Update the CLI to see usage windows|Atualize o CLI para ver as janelas de uso/i)).toBeNull()
+  })
+
+  // L1 — Wire-up: o ramo providerAccountsV1 (caminho novo) precisa receber
+  // connectingProvider/loginStage/onCancelLogin do App, igual ao ramo legacy.
+  // Hoje ProviderIntegrations.tsx:58-72 renderiza o ProviderAccountList sem
+  // essas props — durante o login não há indicador de progresso nem Cancelar
+  // no card, e o botão "Adicionar conta" segue clicável.
+  it('L1: passes the connecting state + cancel handler down to ProviderAccountList', () => {
+    const onCancelLogin = vi.fn()
+    render(
+      <ProviderIntegrations
+        statuses={[codexDisconnected]}
+        onConnect={() => {}}
+        onCancelLogin={onCancelLogin}
+        capabilities={{ providerAccountsV1: true, providerUsageV1: true }}
+        accountRows={[connectedCodexRow]}
+        conversationBindings={{}}
+        switchLocked={false}
+        connectingProvider="codex"
+        loginStage="starting"
+      />,
+    )
+    const codexGroup = screen.getByRole('heading', { name: 'Codex' }).closest('.provider-account-group') as HTMLElement
+    // Add account DESLIGADO durante o login daquele provedor.
+    expect(within(codexGroup).getByRole('button', { name: /add account|adicionar conta/i })).toHaveProperty('disabled', true)
+    // Cancelar visível + clicável + dispara o invoke cancel.
+    fireEvent.click(within(codexGroup).getByRole('button', { name: /^cancel$|^cancelar$/i }))
+    expect(onCancelLogin).toHaveBeenCalledTimes(1)
   })
 })

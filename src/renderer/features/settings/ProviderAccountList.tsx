@@ -26,6 +26,16 @@ export type ProviderAccountListProps = {
   onReconnect: (provider: ExternalProviderId, accountId: string) => void
   onRemove: (provider: ExternalProviderId, accountId: string) => void
   onRefresh: (provider: ExternalProviderId, accountId: string) => void
+  /** L1 — provider whose login flow is active (its group head shows live
+   *  progress + Cancel, and the Add account button is disabled to prevent
+   *  two simultaneous provider_login_start for the same provider). */
+  connectingProvider?: string
+  /** L1 — flow stage driven by provider-login:event. 'starting' until the
+   *  CLI reports awaiting_browser, then 'awaiting_browser' until connected. */
+  loginStage?: 'starting' | 'awaiting_browser'
+  /** L1 — Aborts the active login flow (provider_login_cancel). The invoke
+   *  is the SAME one used by the legacy Connect/Disconnect card flow. */
+  onCancelLogin?: () => void
 }
 
 export function ProviderAccountList({
@@ -39,6 +49,9 @@ export function ProviderAccountList({
   onReconnect,
   onRemove,
   onRefresh,
+  connectingProvider,
+  loginStage,
+  onCancelLogin,
 }: ProviderAccountListProps) {
   const { t } = useI18n()
   const [confirm, setConfirm] = useState<ConfirmRequest>()
@@ -118,7 +131,43 @@ export function ProviderAccountList({
                 <ProviderIcon providerId={provider} size={20} style={providerToneStyle(provider)} />
                 <h2>{providerDisplayName(provider, t)}</h2>
               </div>
-              <button type="button" className="provider-card-action" onClick={() => onAdd(provider)} disabled={switchLocked}>
+              {/* L1 — enquanto um login deste provedor está em andamento, o
+                  card mostra o estágio (Connecting…/Waiting for browser…) e
+                  o botão Cancelar, e o Adicionar conta fica travado para
+                  evitar dois provider_login_start simultâneos. Mesmo invoke
+                  provider_login_cancel do caminho legacy. */}
+              {connectingProvider === provider && (
+                <span className="provider-card-actions">
+                  <button
+                    type="button"
+                    className="provider-card-action"
+                    disabled
+                    aria-label={
+                      loginStage === 'awaiting_browser'
+                        ? t('settings.provider.waitingBrowser')
+                        : t('settings.provider.connecting')
+                    }
+                  >
+                    {loginStage === 'awaiting_browser'
+                      ? t('settings.provider.waitingBrowser')
+                      : t('settings.provider.connecting')}
+                  </button>
+                  <button
+                    type="button"
+                    className="provider-card-action"
+                    onClick={() => onCancelLogin?.()}
+                  >
+                    {t('common.cancel')}
+                  </button>
+                </span>
+              )}
+              <button
+                type="button"
+                className="provider-card-action"
+                onClick={() => onAdd(provider)}
+                disabled={switchLocked || connectingProvider === provider}
+                title={connectingProvider === provider ? t('settings.provider.addAccountInProgressTitle') : undefined}
+              >
                 {t('settings.provider.addAccount')}
               </button>
             </div>

@@ -186,4 +186,41 @@ describe('ProviderAccountList', () => {
     expect(screen.getByText('Home')).toBeInTheDocument()
     expect(screen.queryByText('Codex 1')).toBeNull()
   })
+
+  // L1 — UX do login no caminho novo (providerAccountsV1): o card do grupo
+  // precisa mostrar o estágio + Cancelar durante o fluxo, e o botão
+  // Adicionar conta precisa travar para evitar dois providerLoginStart
+  // simultâneos. O App.tsx já mantém connectingProvider/providerLoginStage
+  // e o invoke provider_login_cancel já existe no caminho legacy.
+  function codexGroup(): HTMLElement {
+    return screen.getByRole('heading', { name: 'Codex' }).closest('.provider-account-group') as HTMLElement
+  }
+
+  it('L1: disables the Add account button when a login for that provider is in progress', () => {
+    renderList({ connectingProvider: 'codex' })
+    const addBtn = within(codexGroup()).getByRole('button', { name: /add account|adicionar conta/i })
+    expect(addBtn).toHaveProperty('disabled', true)
+  })
+
+  it('L1: the Add account button stays enabled when a different provider is connecting', () => {
+    renderList({ connectingProvider: 'claude' })
+    const addBtn = within(codexGroup()).getByRole('button', { name: /add account|adicionar conta/i })
+    expect(addBtn).toHaveProperty('disabled', false)
+  })
+
+  it('L1: renders the starting stage on the group head and Cancel fires onCancelLogin', () => {
+    const onCancelLogin = vi.fn()
+    renderList({ connectingProvider: 'codex', loginStage: 'starting', onCancelLogin })
+    // Stage label rendered as a DISABLED button (matches the legacy card).
+    expect(within(codexGroup()).getByRole('button', { name: /connecting…|conectando…/i })).toHaveProperty('disabled', true)
+    const cancel = within(codexGroup()).getByRole('button', { name: /^cancel$|^cancelar$/i })
+    expect(cancel).toHaveProperty('disabled', false)
+    fireEvent.click(cancel)
+    expect(onCancelLogin).toHaveBeenCalledTimes(1)
+  })
+
+  it('L1: renders the awaiting_browser stage label on the connecting group', () => {
+    renderList({ connectingProvider: 'codex', loginStage: 'awaiting_browser' })
+    expect(within(codexGroup()).getByRole('button', { name: /waiting for browser…|aguardando navegador…/i })).toBeInTheDocument()
+  })
 })
