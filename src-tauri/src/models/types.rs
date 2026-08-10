@@ -1283,6 +1283,12 @@ pub struct FeedbackResult {
     pub channel: FeedbackChannel,
     pub message: String,
     pub error: Option<String>,
+    /// Stable contract code for the fallback path. The renderer localizes
+    /// its text from this value instead of parsing `message`. One of
+    /// `supabase_unconfigured` or `supabase_failed`, or `None` when the
+    /// feedback reached Supabase successfully.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

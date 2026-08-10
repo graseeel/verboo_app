@@ -4,9 +4,13 @@ use crate::models::types::{
     FeedbackCategory, FeedbackChannel, FeedbackRequest, FeedbackResult,
 };
 
-const FEEDBACK_EMAIL: &str = "grasel.moura05@gmail.com";
+/// New-issue page pre-filled via `?title=` / `?body=` query parameters.
+const FEEDBACK_ISSUE_URL: &str = "https://github.com/graseeel/verboo_app/issues/new";
 
-/// Sends user feedback via Supabase (if configured) or falls back to mailto.
+/// Sends user feedback via Supabase (if configured) or falls back to a
+/// pre-filled GitHub issue. The fallback path reports a stable `code`
+/// (`supabase_unconfigured` / `supabase_failed`) so the renderer can
+/// localize its text instead of parsing `message`.
 /// Mirrors Electron's `FeedbackService` (src/main/services/feedbackService.ts:6).
 pub struct FeedbackService;
 
@@ -14,7 +18,7 @@ impl FeedbackService {
     /// Sends feedback. Reads Supabase config from env vars
     /// (`VERBOO_FEEDBACK_ENDPOINT`, `VERBOO_FEEDBACK_PUBLIC_KEY` or
     /// `VERBOO_FEEDBACK_ANON_KEY`), tries Supabase first, falls back to a
-    /// pre-filled email on any failure.
+    /// pre-filled GitHub issue on any failure.
     pub fn send_feedback(
         request: FeedbackRequest,
         app_version: &str,
@@ -65,31 +69,34 @@ impl FeedbackService {
                     channel: FeedbackChannel::Supabase,
                     message: "Feedback enviado.".into(),
                     error: None,
+                    code: None,
                 },
                 Err(message) => {
-                    let mailto = build_mailto(&normalized, &message);
-                    let _ = open_url(&mailto);
+                    let issue_url = build_issue_url(&normalized, &message);
+                    let _ = open_url(&issue_url);
                     return FeedbackResult {
                         ok: true,
                         channel: FeedbackChannel::Mailto,
                         message:
-                            "Não foi possível enviar pelo Supabase. Um e-mail preenchido foi aberto como fallback."
+                            "Não foi possível enviar pelo Supabase. Uma issue pré-preenchida foi aberta como fallback."
                                 .into(),
                         error: Some(message),
+                        code: Some("supabase_failed".into()),
                     };
                 }
             }
         }
 
         let reason = "VERBOO_FEEDBACK_ENDPOINT não configurado.";
-        let mailto = build_mailto(&normalized, reason);
-        let _ = open_url(&mailto);
+        let issue_url = build_issue_url(&normalized, reason);
+        let _ = open_url(&issue_url);
         FeedbackResult {
             ok: true,
             channel: FeedbackChannel::Mailto,
-            message: "Supabase não está configurado neste build. Um e-mail preenchido foi aberto."
+            message: "Supabase não está configurado neste build. Uma issue pré-preenchida foi aberta."
                 .into(),
             error: None,
+            code: Some("supabase_unconfigured".into()),
         }
     }
 }
@@ -138,10 +145,10 @@ fn post_to_supabase(
     })
 }
 
-/// Builds a `mailto:` URL with subject + body pre-filled. Mirrors Electron's
-/// `openMailto` (feedbackService.ts:62).
-fn build_mailto(request: &FeedbackRequest, fallback_reason: &str) -> String {
-    let subject = format!(
+/// Builds the new-issue GitHub URL with `title` + `body` pre-filled via
+/// query parameters, URL-encoded with the same content the mailto carried.
+fn build_issue_url(request: &FeedbackRequest, fallback_reason: &str) -> String {
+    let title = format!(
         "[Verboo Code Desktop] {}: {}",
         label_for_category(&request.category),
         request.title
@@ -167,9 +174,9 @@ fn build_mailto(request: &FeedbackRequest, fallback_reason: &str) -> String {
         diag = diagnostics_line,
     );
     format!(
-        "mailto:{email}?subject={subject}&body={body}",
-        email = FEEDBACK_EMAIL,
-        subject = url_encode(&subject),
+        "{base}?title={title}&body={body}",
+        base = FEEDBACK_ISSUE_URL,
+        title = url_encode(&title),
         body = url_encode(&body),
     )
 }
@@ -320,11 +327,11 @@ mod tests {
     }
 
     #[test]
-    fn mailto_includes_subject_body_and_contact() {
+    fn issue_url_includes_title_body_and_contact() {
         let req = sample_request();
-        let url = build_mailto(&req, "test reason");
-        assert!(url.starts_with("mailto:grasel.moura05@gmail.com?"));
-        assert!(url.contains("subject="));
+        let url = build_issue_url(&req, "test reason");
+        assert!(url.starts_with("https://github.com/graseeel/verboo_app/issues/new?"));
+        assert!(url.contains("title="));
         assert!(url.contains("body="));
         assert!(url.contains("App%20crashed"));
         assert!(url.contains("user%40example.com"));
@@ -332,15 +339,15 @@ mod tests {
     }
 
     #[test]
-    fn mailto_uses_default_contact_when_missing() {
+    fn issue_url_uses_default_contact_when_missing() {
         let mut req = sample_request();
         req.contact = None;
-        let url = build_mailto(&req, "r");
+        let url = build_issue_url(&req, "r");
         assert!(url.contains("n%C3%A3o%20informado"));
     }
 
     #[test]
-    fn mailto_includes_diagnostics_when_requested() {
+    fn issue_url_includes_diagnostics_when_requested() {
         let mut req = sample_request();
         req.include_diagnostics = true;
         req.diagnostics = Some(FeedbackDiagnostics {
@@ -359,13 +366,13 @@ mod tests {
             cli_logged_in: None,
             has_api_key: None,
         });
-        let url = build_mailto(&req, "r");
+        let url = build_issue_url(&req, "r");
         assert!(url.contains("Diagnosticos"));
         assert!(url.contains("0.3.0-beta.1"));
     }
 
     #[test]
-    fn send_feedback_falls_back_to_mailto_when_endpoint_unset() {
+    fn send_feedback_falls_back_to_issue_url_when_endpoint_unset() {
         let mut captured = String::new();
         let mut open = |url: &str| {
             captured = url.to_string();
@@ -381,14 +388,15 @@ mod tests {
         );
         assert!(result.ok);
         assert_eq!(result.channel, FeedbackChannel::Mailto);
-        assert!(captured.starts_with("mailto:grasel.moura05@gmail.com"));
+        assert!(captured.starts_with("https://github.com/graseeel/verboo_app/issues/new"));
         assert!(result.message.contains("Supabase"));
         assert!(result.error.is_none());
+        assert_eq!(result.code.as_deref(), Some("supabase_unconfigured"));
     }
 
     #[test]
-    fn send_feedback_falls_back_to_mailto_on_supabase_failure() {
-        // Point to an unreachable endpoint to force the failure path → mailto fallback.
+    fn send_feedback_falls_back_to_issue_url_on_supabase_failure() {
+        // Point to an unreachable endpoint to force the failure path → issue fallback.
         let mut captured = String::new();
         let mut open = |url: &str| {
             captured = url.to_string();
@@ -402,10 +410,11 @@ mod tests {
             None,
             &mut open,
         );
-        // Even on Supabase failure, ok=true because mailto fallback opened.
+        // Even on Supabase failure, ok=true because the issue fallback opened.
         assert!(result.ok);
         assert_eq!(result.channel, FeedbackChannel::Mailto);
-        assert!(captured.starts_with("mailto:"));
+        assert!(captured.starts_with("https://github.com/"));
         assert!(result.error.is_some());
+        assert_eq!(result.code.as_deref(), Some("supabase_failed"));
     }
 }

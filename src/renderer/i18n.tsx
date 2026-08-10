@@ -1324,7 +1324,7 @@ const enUS: Record<string, string> = {
   'profile.unavailable': 'Unavailable',
 
   'feedback.title': 'Help and feedback',
-  'feedback.subtitle': 'Describe the issue or suggestion. If Supabase fails, we will open a prefilled email.',
+  'feedback.subtitle': 'Describe the issue or suggestion. If Supabase fails, we will open a pre-filled GitHub issue.',
   'feedback.close': 'Close feedback',
   'feedback.type': 'Type',
   'feedback.typeHelp': 'Helps route the submission to the right flow.',
@@ -1345,8 +1345,10 @@ const enUS: Record<string, string> = {
   'feedback.submit': 'Send',
   'feedback.sending': 'Sending',
   'feedback.sentSupabase': 'Feedback sent.',
-  'feedback.mailFallback': 'A prefilled email was opened as a fallback.',
-  'feedback.submitWarning': 'The main feedback channel failed. Use the opened email fallback if needed.',
+  'feedback.mailFallback': 'A pre-filled GitHub issue was opened as a fallback.',
+  'feedback.issueUnconfigured': 'Supabase is not configured in this build. A pre-filled GitHub issue was opened.',
+  'feedback.issueFailed': 'Could not send via Supabase. A pre-filled GitHub issue was opened as a fallback.',
+  'feedback.submitWarning': 'The main feedback channel failed. Use the opened GitHub issue as a fallback if needed.',
   'feedback.titleError': 'Enter a title with at least 3 characters.',
   'feedback.descriptionError': 'Describe the issue or suggestion with at least 12 characters.',
 
@@ -2677,7 +2679,7 @@ const ptBR: Record<string, string> = {
   'profile.unavailable': 'Indisponível',
 
   'feedback.title': 'Ajuda e feedback',
-  'feedback.subtitle': 'Descreva o problema ou sugestão. Se o Supabase falhar, abriremos um e-mail preenchido.',
+  'feedback.subtitle': 'Descreva o problema ou sugestão. Se o Supabase falhar, abriremos uma issue pré-preenchida no GitHub.',
   'feedback.close': 'Fechar feedback',
   'feedback.type': 'Tipo',
   'feedback.typeHelp': 'Ajuda a direcionar o envio para o fluxo correto.',
@@ -2698,8 +2700,10 @@ const ptBR: Record<string, string> = {
   'feedback.submit': 'Enviar',
   'feedback.sending': 'Enviando',
   'feedback.sentSupabase': 'Feedback enviado.',
-  'feedback.mailFallback': 'Um e-mail preenchido foi aberto como alternativa.',
-  'feedback.submitWarning': 'O canal principal de feedback falhou. Use o e-mail aberto como alternativa, se necessário.',
+  'feedback.mailFallback': 'Uma issue pré-preenchida foi aberta no GitHub como alternativa.',
+  'feedback.issueUnconfigured': 'Supabase não está configurado neste build. Uma issue pré-preenchida foi aberta no GitHub.',
+  'feedback.issueFailed': 'Não foi possível enviar pelo Supabase. Uma issue pré-preenchida foi aberta no GitHub como fallback.',
+  'feedback.submitWarning': 'O canal principal de feedback falhou. Use a issue aberta no GitHub como alternativa, se necessário.',
   'feedback.titleError': 'Informe um título com pelo menos 3 caracteres.',
   'feedback.descriptionError': 'Descreva o problema ou sugestão com pelo menos 12 caracteres.',
 

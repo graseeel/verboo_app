@@ -1225,9 +1225,12 @@ export type FeedbackRequest = {
   diagnostics?: FeedbackDiagnostics
 }
 
+export type FeedbackResultCode = 'supabase_unconfigured' | 'supabase_failed'
+
 export type FeedbackResult = {
   ok: boolean
   channel: 'supabase' | 'mailto'
+  code?: FeedbackResultCode
   message: string
   error?: string
 }
