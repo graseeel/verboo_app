@@ -607,6 +607,7 @@ impl ProviderLoginService {
                 if prompt_sent
                     && !at_risk
                     && !awaiting_emitted
+                    && !oauth_evidence(&output)
                     && post_slash_deadline.is_some_and(|d| now > d)
                 {
                     emit_logged(&emit, ProviderLoginEvent {
@@ -741,16 +742,24 @@ fn risk_notice_ready(output: &str) -> bool {
 /// VERDADE: oauth/authorize + redirect_uri (localhost:1455). Os links de
 /// politica NAO casam nada disso.
 fn browser_evidence(output: &str) -> bool {
-    // NAO depende da porta 1455 — o codex usa 1455, o claude SORTEIA uma
-    // porta efemera (ex.: 51866). As alternativas sao redirect_uri (presente
-    // em ambos) ou localhost%3A/localhost: (URL-encoded ou literal, qualquer
-    // porta). oauth/authorize e a ancora principal — os links de politica
-    // nao tem.
-    let has_oauth_url = output.contains("oauth/authorize")
-        && (output.contains("redirect_uri")
-            || output.contains("localhost%3A")
-            || output.contains("localhost:"));
-    has_oauth_url || output.contains("Opening browser")
+    // O TUI corrompe o URL no buffer do PTY (evidência REAL, 2026-08-10:
+    // "oauth/authorize" vira "outh/uthorize" — letras comidas na
+    // re-renderização — e o URL é quebrado em linhas). As âncoras ESTÁVEIS
+    // à corrupção são o redirect_uri (íntegro no buffer real) e o localhost
+    // (URL-encoded ou literal, porta efêmera ou fixa 1455). Os links de
+    // política/termos não têm nenhuma delas. NAO depende da porta fixa.
+    output.contains("redirect_uri")
+        || output.contains("localhost%3A")
+        || output.contains("localhost:")
+        || output.contains("Opening browser")
+}
+
+/// Evidência de que o fluxo OAuth começou, mesmo com o URL corrompido pelo
+/// TUI: o domínio auth.openai.com (íntegro no buffer real) ou o redirect_uri
+/// (também íntegro). Com essa evidência o post-slash NÃO mata o CLI — o
+/// usuário pode estar no browser; o prazo vira o browser_timeout.
+fn oauth_evidence(output: &str) -> bool {
+    output.contains("auth.openai.com") || output.contains("redirect_uri")
 }
 
 /// Remove os chars de frame do TUI (╭╮╰╯│─) que a renderização deixa no
@@ -876,6 +885,23 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
     }}
   }});
   setInterval(() => {{}}, 1000);
+}} else if (process.env.FAKE_OAUTH_CORRUPTED === '1') {{
+  console.log('Verboo Code — primeiro uso\nverboo> ');
+  process.stdin.on('data', (d) => {{
+    const s = d.toString();
+    if (s.includes('/codex login')) {{
+      // Fixture REAL do buffer do PTY (CLI 0.15.12, 2026-08-10): o TUI
+      // corrompe "oauth/authorize" -> "outh/uthorize" (letras comidas na
+      // re-renderização) e quebra o URL em linhas — mas o redirect_uri
+      // permanece íntegro. O CLI fica vivo esperando o callback.
+      console.log('Preparandoologinnonavegador…');
+      console.log('Conclu o lgin noavegador.');
+      console.log('http://auth.openai.com/outh/uthorize?response_type=code&client_id=app_EMoamEE\\nZ73f0CkXaXp7hrann&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid+profile+email+offline_acc');
+    }} else {{
+      fs.writeFileSync(receivedFile, d.toString());
+    }}
+  }});
+  setInterval(() => {{}}, 1000);
 }} else if (process.env.FAKE_RISK === '1') {{
   console.log('Verboo Code — primeiro uso\nverboo> ');
   // Raw mode: o Ink real poe o terminal em raw mode (sem line buffering).
@@ -973,6 +999,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             std::env::remove_var("FAKE_UNEXPECTED");
             std::env::remove_var("FAKE_RISK");
             std::env::remove_var("FAKE_UNKNOWN");
+            std::env::remove_var("FAKE_OAUTH_CORRUPTED");
             std::env::remove_var("FAKE_CREDENTIALS_BLOB");
         }
     }
@@ -1691,6 +1718,80 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
                 .contains("não reconhecida"),
             "a mensagem deve dizer que a tela não foi reconhecida: {:?}",
             last.message
+        );
+        service.cancel().ok();
+        clear_fake_cli();
+    }
+
+    #[test]
+    fn browser_evidence_recognizes_corrupted_oauth_url_with_redirect_uri() {
+        // Fixture REAL capturada do PTY (CLI 0.15.12, /codex login,
+        // 2026-08-10): o TUI corrompe "oauth/authorize" -> "outh/uthorize"
+        // no buffer (letras comidas na re-renderização) e quebra o URL em
+        // linhas — mas o redirect_uri permanece íntegro. Sem o fix, o
+        // browser_evidence (âncora oauth/authorize) NÃO casa e o poll mata
+        // o CLI 10s depois (ERR_CONNECTION_REFUSED no callback).
+        let raw = "Conclu o lgin noavegador.\nhttp://auth.openai.com/outh/uthorize?response_type=code&client_id=app_EMoamEE\nZ73f0CkXaXp7hrann&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid+profile+email+offline_acc";
+        assert!(
+            browser_evidence(raw),
+            "o redirect_uri íntegro é evidência de OAuth — o URL corrompido NÃO pode escapar"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oauth_evidence_prevents_post_slash_kill() {
+        // Caso REAL (vídeo 11:52): o URL do OAuth sai corrompido no buffer
+        // ("outh/uthorize") mas com redirect_uri íntegro. O awaiting deve ser
+        // emitido (evidência de OAuth) e o post-slash NÃO pode matar o CLI:
+        // nenhum erro de "tela não reconhecida" em 12s (> post_slash 10s).
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (_cli, _state, _received, _child) = write_fake_cli("oauth_corrupted", false);
+        // SAFETY: env global intencional, serializado pelo guard.
+        unsafe {
+            std::env::set_var("FAKE_OAUTH_CORRUPTED", "1");
+        }
+        let events: Arc<Mutex<Vec<ProviderLoginEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_for_service = events.clone();
+        let service = ProviderLoginService::new(
+            move |event| {
+                events_for_service.lock().unwrap().push(event);
+            },
+            std::env::temp_dir(),
+        );
+
+        let _id = service
+            .start(
+                "codex",
+                true,
+                None,
+                LoginOptions {
+                    prompt_timeout: Duration::from_secs(10),
+                    login_timeout: Duration::from_secs(30),
+                    browser_timeout: Duration::from_secs(60),
+                },
+            )
+            .expect("start deve abrir o PTY");
+
+        assert!(
+            wait_until(Duration::from_secs(12), || {
+                events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|e| matches!(e.state, ProviderLoginState::AwaitingBrowser))
+            }),
+            "o URL corrompido com redirect_uri deve emitir awaiting_browser (evidência de OAuth)"
+        );
+        assert!(
+            !events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| matches!(e.state, ProviderLoginState::Error)),
+            "o post-slash NÃO pode matar o CLI com evidência de OAuth no buffer"
         );
         service.cancel().ok();
         clear_fake_cli();
