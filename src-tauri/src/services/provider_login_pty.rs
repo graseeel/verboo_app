@@ -34,6 +34,11 @@ use crate::services::terminal_service::strip_terminal_controls;
 /// Prazo honesto do login: o usuário pode fechar o navegador a qualquer
 /// momento — voltamos para erro com mensagem, não penduramos.
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(180);
+/// Prazo na fase de browser (awaiting emitido): o usuário pode demorar no
+/// OAuth (2º e-mail, senha, MFA) — 10 min honestos. O login_timeout (180s)
+/// vale ANTES do navegador abrir; depois dele o browser_timeout assume
+/// (evidência D: o CLI era morto no redirect do browser — ERR_CONNECTION_REFUSED).
+const BROWSER_TIMEOUT: Duration = Duration::from_secs(600);
 /// O CLI interativo pode mostrar telas de primeira execução antes do prompt.
 const PROMPT_READY_TIMEOUT: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -131,6 +136,7 @@ pub fn provider_auth_status_from_blob(blob: &serde_json::Value) -> Vec<ProviderA
 pub struct LoginOptions {
     pub prompt_timeout: Duration,
     pub login_timeout: Duration,
+    pub browser_timeout: Duration,
 }
 
 impl Default for LoginOptions {
@@ -138,8 +144,54 @@ impl Default for LoginOptions {
         Self {
             prompt_timeout: PROMPT_READY_TIMEOUT,
             login_timeout: LOGIN_TIMEOUT,
+            browser_timeout: BROWSER_TIMEOUT,
         }
     }
+}
+
+/// Prazo efetivo do fluxo de login. Antes do navegador abrir, o login tem
+/// `login_timeout` (180s) desde o start. Depois do awaiting (browser aberto),
+/// o usuário pode demorar no OAuth (2º e-mail, senha, MFA) — o prazo passa a
+/// ser `browser_timeout` (10 min) a partir da emissão do awaiting. A ponte
+/// NUNCA mata o CLI no redirect do browser (evidência D: ERR_CONNECTION_REFUSED).
+fn deadline_expired(
+    awaiting_emitted: bool,
+    login_started: Instant,
+    awaiting_emitted_at: Option<Instant>,
+    browser_timeout: Duration,
+    login_timeout: Duration,
+    now: Instant,
+) -> bool {
+    let deadline = if awaiting_emitted {
+        awaiting_emitted_at.unwrap_or(login_started) + browser_timeout
+    } else {
+        login_started + login_timeout
+    };
+    now > deadline
+}
+
+/// Reconhece a tela de LOGIN do provedor (não risco, não navegador): o
+/// /codex login mostra "Login Codex" + "Entre com sua conta ChatGPT" +
+/// "Preparando o login no navegador…" antes do URL do OAuth (medido no PTY
+/// real, 2ª conta). A tela de 2ª conta/choose-account é FLUXO EM ANDAMENTO:
+/// reconhecer estende o post_slash_deadline em vez de virar "tela não
+/// reconhecida" e matar o CLI antes do browser abrir (evidência D).
+fn login_screen_ready(output: &str) -> bool {
+    let normalized = normalize_risk_text(output);
+    normalized.contains("LoginCodex")
+        || normalized.contains("contaChatGPT")
+        || normalized.contains("Preparandoologinnonavegador")
+}
+
+/// Loga e emite o evento de login no stderr — o erro do usuário (D) era
+/// invisível: o toast do renderer some e nenhum log registrava o motivo.
+/// Os 4 erros + connected são os que decidem o desfecho do fluxo.
+fn emit_logged(emit: &Arc<dyn Fn(ProviderLoginEvent) + Send + Sync>, event: ProviderLoginEvent) {
+    eprintln!(
+        "[verboo:provider-login] provider={} state={:?} message={:?}",
+        event.provider, event.state, event.message
+    );
+    emit(event);
 }
 
 /// Serviço de login por PTY. Um único login ativo por vez.
@@ -342,10 +394,11 @@ impl ProviderLoginService {
             let mut prompt_sent = false;
             let mut at_risk = false;
             let mut awaiting_emitted = false;
+            let mut awaiting_emitted_at: Option<Instant> = None;
             let mut post_slash_deadline: Option<Instant> = None;
             let mut last_poll = Instant::now();
-            let prompt_deadline = Instant::now() + options.prompt_timeout;
-            let login_deadline = Instant::now() + options.login_timeout;
+            let login_started = Instant::now();
+            let prompt_deadline = login_started + options.prompt_timeout;
 
             loop {
                 let now = Instant::now();
@@ -413,7 +466,7 @@ impl ProviderLoginService {
                             &provider_for_thread,
                             &blob,
                         ) {
-                            (emit)(ProviderLoginEvent {
+                            emit_logged(&emit, ProviderLoginEvent {
                                 provider: provider_for_thread.clone(),
                                 state: ProviderLoginState::Connected,
                                 message: None,
@@ -421,8 +474,15 @@ impl ProviderLoginService {
                             break;
                         }
                     }
-                    if now > login_deadline {
-                        (emit)(ProviderLoginEvent {
+                    if deadline_expired(
+                        awaiting_emitted,
+                        login_started,
+                        awaiting_emitted_at,
+                        options.browser_timeout,
+                        options.login_timeout,
+                        now,
+                    ) {
+                        emit_logged(&emit, ProviderLoginEvent {
                             provider: provider_for_thread.clone(),
                             state: ProviderLoginState::Error,
                             message: Some(
@@ -439,7 +499,7 @@ impl ProviderLoginService {
                     Ok(chunk) if chunk.is_empty() => {
                         // EOF do PTY: o CLI saiu sozinho.
                         if !stop_for_thread.load(Ordering::SeqCst) {
-                            (emit)(ProviderLoginEvent {
+                            emit_logged(&emit, ProviderLoginEvent {
                                 provider: provider_for_thread.clone(),
                                 state: ProviderLoginState::Error,
                                 message: Some(if prompt_sent {
@@ -477,7 +537,7 @@ impl ProviderLoginService {
                                 // (o URL do navegador no drain), nunca por
                                 // eliminação — ver o bloco pós-slash abaixo.
                             } else if now > prompt_deadline {
-                                (emit)(ProviderLoginEvent {
+                                emit_logged(&emit, ProviderLoginEvent {
                                     provider: provider_for_thread.clone(),
                                     state: ProviderLoginState::Error,
                                     message: Some(
@@ -506,12 +566,24 @@ impl ProviderLoginService {
                                 });
                             } else if !awaiting_emitted && browser_evidence(&output) {
                                 awaiting_emitted = true;
+                                awaiting_emitted_at = Some(now);
                                 last_poll = now;
                                 (emit)(ProviderLoginEvent {
                                     provider: provider_for_thread.clone(),
                                     state: ProviderLoginState::AwaitingBrowser,
                                     message: None,
                                 });
+                            } else if login_screen_ready(&output) {
+                                // Tela de login/choose-account (2ª conta):
+                                // fluxo em andamento, o URL do navegador vem
+                                // em seguida. Estende o post_slash_deadline:
+                                // a tela da 2ª conta não pode virar "tela
+                                // não reconhecida" e matar o CLI antes do
+                                // browser abrir (evidência D). Ordem: o
+                                // browser_evidence tem prioridade (o URL é a
+                                // evidência mais forte; o "Preparando o
+                                // login" vem no MESMO chunk que o URL).
+                                post_slash_deadline = Some(now + POST_SLASH_DEADLINE);
                             }
                         }
                     }
@@ -520,7 +592,7 @@ impl ProviderLoginService {
                 }
 
                 if !prompt_sent && now > prompt_deadline {
-                    (emit)(ProviderLoginEvent {
+                    emit_logged(&emit, ProviderLoginEvent {
                         provider: provider_for_thread.clone(),
                         state: ProviderLoginState::Error,
                         message: Some(
@@ -537,7 +609,7 @@ impl ProviderLoginService {
                     && !awaiting_emitted
                     && post_slash_deadline.is_some_and(|d| now > d)
                 {
-                    (emit)(ProviderLoginEvent {
+                    emit_logged(&emit, ProviderLoginEvent {
                         provider: provider_for_thread.clone(),
                         state: ProviderLoginState::Error,
                         message: Some(
@@ -1089,6 +1161,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(5),
                     login_timeout: Duration::from_secs(10),
+                    browser_timeout: Duration::from_secs(60),
                 },
             )
             .expect("start deve abrir o PTY");
@@ -1133,6 +1206,71 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
     }
 
     #[test]
+    fn login_deadline_extends_while_browser_is_open() {
+        // Evidência D (2026-08-10): o usuário demorou no OAuth da 2ª conta
+        // (segundo e-mail, senha) e o CLI foi morto no redirect do browser —
+        // ERR_CONNECTION_REFUSED em localhost:1455. Causa: o login_deadline
+        // de 180s é FIXO desde o start e o cleanup mata o PTY (killpg) em
+        // todo break. Na fase de browser o prazo é BROWSER_TIMEOUT, não o de
+        // login — o usuário não pode ser morto no redirect do browser.
+        let started = Instant::now();
+        let awaiting_at = started + Duration::from_secs(60);
+        // 5 min após o start, browser aberto há 4 min → NÃO expira
+        // (browser_timeout de 10 min).
+        let now = started + Duration::from_secs(300);
+        assert!(
+            !deadline_expired(
+                true,
+                started,
+                Some(awaiting_at),
+                Duration::from_secs(600),
+                Duration::from_secs(180),
+                now
+            ),
+            "com o browser aberto o prazo é o do browser (10 min), não os 180s do login"
+        );
+        // Sem browser: 300s > 180s → expira (prazo honesto do login).
+        assert!(deadline_expired(
+            false,
+            started,
+            None,
+            Duration::from_secs(600),
+            Duration::from_secs(180),
+            now
+        ));
+        // Com browser, 11 min > 10 min → expira (prazo honesto, não pendura).
+        let now2 = started + Duration::from_secs(661);
+        assert!(deadline_expired(
+            true,
+            started,
+            Some(awaiting_at),
+            Duration::from_secs(600),
+            Duration::from_secs(180),
+            now2
+        ));
+    }
+
+    #[test]
+    fn login_screen_ready_recognizes_second_account_flow() {
+        // Chunk REAL do PTY (CLI 0.15.12, /codex login com a 1ª conta já
+        // conectada, capturado 2026-08-10): "Login Codex" + "Entre com sua
+        // conta ChatGPT" + "Preparando o login no navegador…" + URL OAuth.
+        // A tela da 2ª conta não é risco nem browser_evidence — sem o
+        // reconhecimento, o post_slash_deadline (10s) vira "tela não
+        // reconhecida" e o cleanup mata o CLI antes do URL aparecer.
+        let raw = "[1C1.0m\r\r\n╭──────────────────────────────────────────────────────────────────────────────╮\r\r\n│\u{1b}[1C❯\u{a0}Describe\u{1b}[1Ca\u{1b}[1Ctask,\u{1b}[1Cbug,\u{1b}[1Cor\u{1b}[1Cidea…\u{1b}[45C│\r\r\n╰──────────────────────────────────────────────────────────────────────────────╯\r\r\n\u{1b}[2C?\u{1b}[1Cfor\u{1b}[1Cshortcuts\u{1b}[46C◉\u{1b}[1Cmax\u{1b}[1C·\u{1b}[1C/effort\r\r\n\u{1b}[4C\u{1b}[3A\u{1b}[?2026l\u{1b}[>0q\u{1b}[c\u{1b}[?2026h\u{1b}[4D\u{1b}[3B\r\u{1b}[32C\u{1b}[5AVerboo ultra/glm-5.2 ·\u{1b}[1Ccontext 0% ·\u{1b}[1C838\r\r\n\r\n\r\n\r\n\r\n\u{1b}[4C\u{1b}[3A\u{1b}[?2026l\u{1b}[?2026h\u{1b}[4D\u{1b}[3B\r\u{1b}[4C\u{1b}[3A/codex login    \u{1b}[1C    \u{1b}[1C  \u{1b}[1C     \r\r\n\r\n\r\n\u{1b}[16C\u{1b}[3A\u{1b}[?2026l\u{1b}]0;⠂ Verboo Code\u{7}\u{1b}]0;✳ Verboo Code\u{7}\u{1b}[?2026h\u{1b}[16D\u{1b}[3B\r\u{1b}[5A❯\u{1b}[1C/codex\u{1b}[1Clogin\u{1b}[18C      \u{1b}[1C             \u{1b}[1C \u{1b}[1C       \u{1b}[1C  \u{1b}[1C \u{1b}[1C   \u{1b}[1C \u{1b}[1C    \r\u{1b}[1BLogin Codex                                                                     \r\u{1b}[1B \u{1b}[1C        \u{1b}[1C     \u{1b}[63C \r\u{1b}[1BEntre com sua conta ChatGPT. As credenciais serão guardadas somente no          \r\u{1b}[1Barmazenamento seguro\u{1b}[1Cdo\u{1b}[1CVerboo\u{1b}[1CCode.\u{1b}[27C \u{1b}[1C   \u{1b}[1C \u{1b}[1C       \r\r\n\r\r\nPreparando\u{1b}[1Co\u{1b}[1Clogin\u{1b}[1Cno\u{1b}[1Cnavegador…\r\r\n\r\r\nPressione\u{1b}[1CEsc\u{1b}[1Cou\u{1b}[1CCtrl+C\u{1b}[1Cpara\u{1b}[1Ccancelar.\r\r\n\u{1b}[?2026l\u{1b}[?2026h\r\u{1b}[3AConclu\u{1b}[1C o l\u{1b}[1Cgin no\u{1b}[2Cavegador.   \r\u{1b}[2Bhttp\u{1b}[1C://auth.openai.com/o\u{1b}[1Cuth/\u{1b}[1Cauthorize?response_type=code&client_id=app_EMoamEE\r\r\nZ73f0CkXa";
+        assert!(
+            login_screen_ready(raw),
+            "a tela de login da 2ª conta deve ser reconhecida como fluxo em andamento"
+        );
+        // A tela de risco do Claude (o aviso da Anthropic) NÃO é tela de login.
+        assert!(!login_screen_ready(
+            "AvisoimportantesobreologinClaude\nPolitica:https://code.claude.com/docs/en/legal-and-compliance"
+        ));
+        assert!(!login_screen_ready("Tela de primeira execucao sem prompt..."));
+    }
+
+    #[test]
     fn risk_screen_emits_risk_notice_and_bridge_waits() {
         let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
             .lock()
@@ -1159,6 +1297,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(10),
                     login_timeout: Duration::from_secs(15),
+                    browser_timeout: Duration::from_secs(60),
                 },
             )
             .expect("start deve abrir o PTY");
@@ -1295,6 +1434,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(10),
                     login_timeout: Duration::from_secs(30),
+                    browser_timeout: Duration::from_secs(60),
                 },
             )
             .expect("start deve abrir o PTY");
@@ -1385,6 +1525,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(10),
                     login_timeout: Duration::from_secs(30),
+                    browser_timeout: Duration::from_secs(60),
                 },
             )
             .expect("start deve abrir o PTY");
@@ -1484,6 +1625,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(10),
                     login_timeout: Duration::from_secs(30),
+                    browser_timeout: Duration::from_secs(60),
                 },
             )
             .expect("start deve abrir o PTY");
@@ -1554,6 +1696,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(10),
                     login_timeout: Duration::from_secs(30),
+                    browser_timeout: Duration::from_secs(60),
                 },
             )
             .expect("start deve abrir o PTY");
@@ -1636,6 +1779,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(10),
                     login_timeout: Duration::from_secs(60),
+                    browser_timeout: Duration::from_secs(60),
                 },
             )
             .expect("start deve abrir o PTY");
@@ -1706,6 +1850,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(5),
                     login_timeout: Duration::from_secs(3),
+                    browser_timeout: Duration::from_secs(3),
                 },
             )
             .expect("start deve abrir o PTY");
@@ -1754,6 +1899,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(10),
                     login_timeout: Duration::from_secs(60),
+                    browser_timeout: Duration::from_secs(60),
                 },
             )
             .expect("start deve abrir o PTY");
@@ -1817,6 +1963,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
                 LoginOptions {
                     prompt_timeout: Duration::from_secs(2),
                     login_timeout: Duration::from_secs(10),
+                    browser_timeout: Duration::from_secs(60),
                 },
             )
             .expect("start deve abrir o PTY");
