@@ -16,6 +16,7 @@ static VISION_METADATA_CACHE_REFRESHED: AtomicBool = AtomicBool::new(false);
 ///   2. CLI token → fetch from router (live) — requires reading keychain
 ///   3. Disk cache (stale, with TTL check)
 ///   4. Empty result with error
+#[derive(Clone)]
 pub struct ModelService {
     cache_dir: PathBuf,
 }

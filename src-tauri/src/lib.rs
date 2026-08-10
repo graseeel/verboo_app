@@ -272,17 +272,24 @@ fn clear_api_key(
 // ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
-fn list_models(
+async fn list_models(
     force_refresh: bool,
     model_service: tauri::State<'_, ModelService>,
     _credentials: tauri::State<'_, CredentialsStore>,
 ) -> Result<ModelDiscoveryResult, String> {
-    // Resolve CLI OAuth token first (with refresh), fall back to API key.
-    // The CLI token gives models with `display_name` (rich names); the API
-    // key gives models without `display_name` (raw ids like "glm-5.2").
-    let credentials_fresh = CredentialsStore::new();
-    let token = crate::services::auth_token::resolve_token(&credentials_fresh);
-    model_service.list_models(token.as_deref(), force_refresh)
+    // E-3: resolve token (keychain + refresh POST) e o fetch do router
+    // rodam no spawn_blocking — o main thread nunca bloqueia. O ModelService
+    // é clonado (só cache_dir) para cruzar o await. `_credentials` declarado
+    // para o resolver de dependências do Tauri (padrão get_profile).
+    let model_service = model_service.inner().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let credentials = CredentialsStore::new();
+        let token = crate::services::auth_token::resolve_token(&credentials);
+        model_service.list_models(token.as_deref(), force_refresh)
+    })
+    .await
+    .map_err(|e| format!("Falha ao listar modelos: {e}"))?;
+    result
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1850,45 +1857,79 @@ fn provider_login_confirm_risk(
 /// auth status por provedor, a troca é só no backend — o renderer não muda
 /// (ver CONTRATO DE REMOÇÃO em provider_login_pty.rs).
 #[tauri::command]
-fn provider_auth_status(
+async fn provider_auth_status(
 ) -> Result<Vec<services::provider_login_pty::ProviderAuthStatus>, String> {
-    services::provider_login_pty::provider_auth_status()
+    // E: spawn do CLI/keychain fora do main thread — o primeiro paint não
+    // espera provider.
+    let result = tauri::async_runtime::spawn_blocking(
+        services::provider_login_pty::provider_auth_status,
+    )
+    .await
+    .map_err(|e| format!("Falha ao obter status de autenticação: {e}"))?;
+    result
 }
 
 #[tauri::command]
-fn provider_capabilities() -> Result<services::provider_accounts::ProviderCapabilities, String> {
-    services::provider_accounts::provider_capabilities()
+async fn provider_capabilities() -> Result<services::provider_accounts::ProviderCapabilities, String> {
+    let result = tauri::async_runtime::spawn_blocking(services::provider_accounts::provider_capabilities)
+        .await
+        .map_err(|e| format!("Falha ao obter capacidades: {e}"))?;
+    result
 }
 
 #[tauri::command]
-fn provider_accounts_list() -> Result<Vec<services::provider_accounts::ProviderAccountSummary>, String> {
-    services::provider_accounts::provider_accounts_list()
+async fn provider_accounts_list() -> Result<Vec<services::provider_accounts::ProviderAccountSummary>, String> {
+    let result = tauri::async_runtime::spawn_blocking(services::provider_accounts::provider_accounts_list)
+        .await
+        .map_err(|e| format!("Falha ao listar contas: {e}"))?;
+    result
 }
 
 #[tauri::command]
-fn provider_accounts_usage(
+async fn provider_accounts_usage(
     provider: Option<String>,
     account_id: Option<String>,
 ) -> Result<Vec<services::provider_accounts::ProviderUsageResult>, String> {
-    services::provider_accounts::provider_accounts_usage(provider, account_id)
+    // E-2/E-4: async + spawn_blocking — o renderer paraleliza as chamadas
+    // por conta (Promise.all) e o tokio as executa em paralelo; o main
+    // thread nunca bloqueia durante o spawn do CLI.
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        services::provider_accounts::provider_accounts_usage(provider, account_id)
+    })
+    .await
+    .map_err(|e| format!("Falha ao obter uso do provedor: {e}"))?;
+    result
 }
 
 #[tauri::command]
-fn provider_account_models(
+async fn provider_account_models(
     provider: String,
     account_id: String,
 ) -> Result<Vec<VerbooModel>, String> {
-    services::provider_accounts::provider_account_models(provider, account_id)
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        services::provider_accounts::provider_account_models(provider, account_id)
+    })
+    .await
+    .map_err(|e| format!("Falha ao obter modelos da conta: {e}"))?;
+    result
 }
 
 #[tauri::command]
-fn provider_account_set_default(provider: String, account_id: String) -> Result<(), String> {
-    services::provider_accounts::provider_account_set_default(provider, account_id)
+async fn provider_account_set_default(provider: String, account_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        services::provider_accounts::provider_account_set_default(provider, account_id)
+    })
+    .await
+    .map_err(|e| format!("Falha ao definir conta padrão: {e}"))?
 }
 
 #[tauri::command]
-fn provider_account_remove(provider: String, account_id: String) -> Result<(), String> {
-    services::provider_accounts::provider_account_remove(provider, account_id)
+async fn provider_account_remove(provider: String, account_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        services::provider_accounts::provider_account_remove(provider, account_id)
+    })
+    .await
+    .map_err(|e| format!("Falha ao remover conta: {e}"))?
 }
 
 // ════════════════════════════════════════════════════════════════════
