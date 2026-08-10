@@ -150,7 +150,7 @@ import {
   shouldRetryIncompleteTurn,
 } from './features/transcript/cliFailureRecovery'
 import { presentAgentError } from './features/transcript/agentErrorWiring'
-import { parseApiErrorFromBlob, presentProviderQuotaMessage, quotaResetMessageFromRetry, shouldSuppressSystemErrorText } from './features/transcript/apiErrorPresentation'
+import { isInvalidThinkingError, parseApiErrorFromBlob, presentProviderQuotaMessage, quotaResetMessageFromRetry, shouldSuppressSystemErrorText } from './features/transcript/apiErrorPresentation'
 import { truncateToolOutput } from './features/transcript/toolOutput'
 import { applySubagentThreadUpdate, isSubagentThreadWorking, latestSubagentThread } from './features/subagents/subagentThreads'
 import { SubagentIndicator } from './features/subagents/SubagentIndicator'
@@ -747,6 +747,17 @@ export function App() {
   const turnBrowserAnnotations = useRef<Record<string, AttachmentMeta[]>>({})
   const turnBrowserTempFiles = useRef<Record<string, string[]>>({})
   const pendingBrowserSnapshots = useRef<Record<string, AttachmentMeta[]>>({})
+  /** L4-A — the thinking-400 banner offers "Restart session": the payload of
+   *  the dead turn is preserved here (turnRetryPayload is cleared at the end
+   *  of the error handler) so the restart can replay the SAME user message
+   *  from a clean CLI session. Cleared on restart and when a new turn starts
+   *  in the same conversation. */
+  const restartableThinkingTurns = useRef<Record<string, {
+    conversationId: string
+    message: string
+    sideChat?: boolean
+    annotations?: Annotation[]
+  }>>({})
   /** One-shot recovery when CLI rejects a stale --resume session id. */
   const turnRetryPayload = useRef<Record<string, {
     conversationId: string
@@ -2852,39 +2863,41 @@ export function App() {
       delete turnAssistantText.current[event.turnId]
       delete turnResultEmittedText.current[event.turnId]
       delete turnApiErrorTextRef.current[event.turnId]
+      // L4-A — preserve the dead turn's payload for the banner's "Restart
+      // session" action before the generic cleanup below discards it.
+      if (isInvalidThinkingError(apiError)) {
+        const deadPayload = turnRetryPayload.current[event.turnId]
+        if (deadPayload && deadPayload.message.trim()) {
+          restartableThinkingTurns.current[event.turnId] = {
+            conversationId,
+            message: deadPayload.message,
+            sideChat: deadPayload.sideChat,
+            annotations: deadPayload.annotations,
+          }
+        }
+      }
       delete turnRetryPayload.current[event.turnId]
       if (conversationId) finishAssistantMessage(conversationId, event.turnId)
       cleanupTurnState(event.turnId)
 
       if (willRestartSession && conversationId && retryMeta) {
-        clearConversationSession(conversationId)
         removeTurnTranscriptItems(conversationId, event.turnId)
         // QA a-i: the retry replays the SAME send — annotations included
         // (frozen at the click, carried by the retry payload). Without this
         // the retried turn silently lost the user's excerpts.
-        const retry = createQueuedFollowUp(
+        const retryTurnId = replayTurnCleanSession(
           conversationId,
           retryMeta.message,
-          undefined,
-          retryMeta.annotations ?? [],
+          retryMeta.annotations,
           retryMeta.sideChat ?? false,
+          error => {
+            if (turnCompletionDeferred.current === completionDeferred) {
+              completionDeferred?.reject(error)
+              turnCompletionDeferred.current = undefined
+            }
+          },
         )
-        retry.request.turnId = crypto.randomUUID()
-        if (completionDeferred) completionDeferred.turnId = retry.request.turnId
-        void runTurn(retry, { skipResume: true }).catch(error => {
-          const message = error instanceof Error ? error.message : String(error)
-          const retryTurnId = retry.request.turnId ?? ''
-          // T23: the retry error is the model's natural response, not a
-          // "Sistema" badge. runTurn rejected before any stdout (T19 proved
-          // the body is always empty), so appendAssistantText creates a fresh
-          // segment; finishAssistantMessage closes it.
-          appendAssistantText(conversationId, retryTurnId, message)
-          finishAssistantMessage(conversationId, retryTurnId)
-          if (turnCompletionDeferred.current === completionDeferred) {
-            completionDeferred?.reject(error)
-            turnCompletionDeferred.current = undefined
-          }
-        })
+        if (completionDeferred) completionDeferred.turnId = retryTurnId
         return
       }
 
@@ -3689,6 +3702,11 @@ export function App() {
       alreadyRetriedWithoutSession: Boolean(options?.skipResume),
       sideChat: item.sideChat,
       annotations: request.annotations,
+    }
+    // L4-A — a fresh turn supersedes any pending thinking-400 restart of the
+    // same conversation (its banner belongs to a dead turn).
+    for (const [restartableTurnId, entry] of Object.entries(restartableThinkingTurns.current)) {
+      if (entry.conversationId === item.conversationId) delete restartableThinkingTurns.current[restartableTurnId]
     }
     tagAssistantMessage(item.conversationId, turnId, item.turnModel)
     if (pendingConversationId.current === item.conversationId) pendingConversationId.current = undefined
@@ -5402,6 +5420,47 @@ export function App() {
     })
   }
 
+  /** L4-A — replay a dead turn from a CLEAN CLI session: clears the stored
+   *  session id (next turn goes without --resume), keeping the visible
+   *  transcript. Shared by the dead-session auto-retry and the thinking-400
+   *  banner's "Restart session". Returns the new retry turn id. */
+  function replayTurnCleanSession(
+    conversationId: string,
+    message: string,
+    annotations: Annotation[] | undefined,
+    sideChat: boolean,
+    onError?: (error: unknown) => void,
+  ): string {
+    clearConversationSession(conversationId)
+    const retry = createQueuedFollowUp(conversationId, message, undefined, annotations ?? [], sideChat)
+    retry.request.turnId = crypto.randomUUID()
+    const retryTurnId = retry.request.turnId
+    void runTurn(retry, { skipResume: true }).catch(error => {
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      // T23: the retry error is the model's natural response, not a
+      // "Sistema" badge. runTurn rejected before any stdout, so the body is
+      // always empty; appendAssistantText creates a fresh segment and
+      // finishAssistantMessage closes it.
+      appendAssistantText(conversationId, retryTurnId, errorMessage)
+      finishAssistantMessage(conversationId, retryTurnId)
+      onError?.(error)
+    })
+    return retryTurnId
+  }
+
+  /** L4-A — banner action: the conversation's last turn died with the
+   *  thinking-block 400; replay that SAME user turn from a clean CLI session.
+   *  The visible transcript stays; the assistant restarts WITHOUT the
+   *  internal conversation memory (the honest hint next to the button says
+   *  exactly that). No-op if the dead turn is no longer restartable. */
+  function restartProviderSession(conversationId: string, turnId: string) {
+    const payload = restartableThinkingTurns.current[turnId]
+    if (!conversationId || !payload || !payload.message.trim()) return
+    delete restartableThinkingTurns.current[turnId]
+    removeTurnTranscriptItems(conversationId, turnId)
+    replayTurnCleanSession(conversationId, payload.message, payload.annotations, payload.sideChat ?? false)
+  }
+
   function appendAssistantPlaceholder(conversationId: string, turnId: string) {
     const turnModel = turnModels.current[turnId]
     const segId = `${turnId}:text:1`
@@ -6394,6 +6453,7 @@ export function App() {
                 onEditSent={editSentMessage}
                 onUserExpand={handleUserExpand}
                 onStartNewConversation={() => newChat()}
+                onRestartProviderSession={(conversationId, turnId) => restartProviderSession(conversationId, turnId)}
                 models={modelResult.models}
                 apiRetryByTurn={apiRetryByTurn}
               />

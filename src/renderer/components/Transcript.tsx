@@ -46,12 +46,16 @@ type TranscriptProps = {
    *  permanently kills the conversation. The old history stays saved and
    *  readable; it just won't accept new turns. */
   onStartNewConversation?: () => void
+  /** L4-A: restarts the provider session from the thinking-400 banner —
+   *  clears the CLI session so the next turn starts clean (no resume),
+   *  keeping the visible transcript. */
+  onRestartProviderSession?: (conversationId: string, turnId: string) => void
 }
 
 const MAX_ACTIVITY_DETAIL_LINES = 8
 const MAX_SUMMARY_DETAIL_LINES = 3
 
-export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, compactedTurnIds, imageReadingTurnId, conversationId, onEditSent, onUserExpand, videoProgressByTurn, onCancelVideo, models, apiRetryByTurn, onStartNewConversation }: TranscriptProps) {
+export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, compactedTurnIds, imageReadingTurnId, conversationId, onEditSent, onUserExpand, videoProgressByTurn, onCancelVideo, models, apiRetryByTurn, onStartNewConversation, onRestartProviderSession }: TranscriptProps) {
   // `items` is a new array reference only when the conversation actually changes,
   // so this recomputes on real content changes but is skipped when the parent
   // re-renders for unrelated reasons (context-usage ticks, subagent updates…).
@@ -81,6 +85,7 @@ export const Transcript = memo(function Transcript({ items, onOpenReview, review
               models={models}
               apiRetry={apiRetryByTurn?.[entry.turnId]}
               onStartNewConversation={onStartNewConversation}
+              onRestartSession={onRestartProviderSession ? () => onRestartProviderSession(conversationId ?? '', entry.turnId) : undefined}
             />
           : <MessageArticle key={entry.item.id} item={entry.item} conversationId={conversationId} onCopy={() => {}} onEditSent={onEditSent} />
       ))}
@@ -119,7 +124,7 @@ function ThinkingRotator({ snippets }: { snippets: string[] }) {
   )
 }
 
-function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, readingImage, videoProgress, onCancelVideo, onOpenReview, reviewMetadata, onUserExpand, models, apiRetry, onStartNewConversation }: {
+function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, readingImage, videoProgress, onCancelVideo, onOpenReview, reviewMetadata, onUserExpand, models, apiRetry, onStartNewConversation, onRestartSession }: {
   entry: Extract<TranscriptEntry, { kind: 'assistant-turn' }>
   thinking: boolean
   thinkingSnippets?: string[]
@@ -134,6 +139,8 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
   models?: VerbooModel[]
   apiRetry?: { attempt: number; maxRetries: number }
   onStartNewConversation?: () => void
+  /** L4-A: restart the provider session for THIS turn (clean session). */
+  onRestartSession?: () => void
 }) {
   const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
@@ -263,7 +270,7 @@ function TurnView({ entry, thinking, thinkingSnippets, compacting, compacted, re
 
       {!streaming && finalText && (
         <div className="step-text turn-recap" data-annotation-segment={finalTextItem?.id}>
-          <ApiErrorAwareText text={finalText} account={providerAccountName(turnProvider, t)} onStartNewConversation={onStartNewConversation} />
+          <ApiErrorAwareText text={finalText} account={providerAccountName(turnProvider, t)} onStartNewConversation={onStartNewConversation} onRestartSession={onRestartSession} />
           {/* T23: the technical-detail toggle rides on the turn body (the
            * errorDetail is stamped on the final text segment by App.tsx).
            * The StepFlow hides the final text item (hideFinalTextId), so the

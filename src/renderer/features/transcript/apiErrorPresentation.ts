@@ -134,7 +134,8 @@ export function quotaResetMessageFromRetry(
  *  without knowing. Match on the stable shape (status 400 +
  *  invalid_request_error + "thinking" in the message), not the exact
  *  index, so a different turn depth still classifies. */
-export function isInvalidThinkingError(info: ApiErrorInfo): boolean {
+export function isInvalidThinkingError(info: ApiErrorInfo | undefined): boolean {
+  if (!info) return false
   if (info.status !== 400) return false
   if (info.type !== 'invalid_request_error') return false
   return /thinking/i.test(info.message ?? '')

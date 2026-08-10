@@ -9,10 +9,15 @@ import { shouldSuppressSystemErrorText } from './apiErrorPresentation'
 const API_ERROR_400_THINKING =
   'API Error: 400 {"error":{"type":"invalid_request_error","message":"messages.157.content.0.thinking... each thinking block must contain non-whitespace thinking"}}'
 
-function renderWith(text: string, onStartNewConversation?: () => void, language: 'en-US' | 'pt-BR' = 'en-US') {
+function renderWith(
+  text: string,
+  onStartNewConversation?: () => void,
+  language: 'en-US' | 'pt-BR' = 'en-US',
+  onRestartSession?: () => void,
+) {
   return render(
     <I18nProvider language={language}>
-      <ApiErrorAwareText text={text} account="Ada" onStartNewConversation={onStartNewConversation} />
+      <ApiErrorAwareText text={text} account="Ada" onStartNewConversation={onStartNewConversation} onRestartSession={onRestartSession} />
     </I18nProvider>,
   )
 }
@@ -56,6 +61,50 @@ describe('T8: ApiErrorAwareText surfaces the thinking-block 400 with an exit, no
     renderWith(API_ERROR_400_THINKING, undefined, 'en-US')
     expect(screen.getByText(/This conversation can't continue/)).toBeTruthy()
     expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  // L4-A — the thinking-400 banner also offers "Restart session" (keeps the
+  // visible history; the assistant restarts without the internal memory).
+  it('L4-A en: offers Restart session with the honest memory hint next to the exit', () => {
+    const onRestartSession = vi.fn()
+    renderWith(API_ERROR_400_THINKING, vi.fn(), 'en-US', onRestartSession)
+
+    expect(screen.getByRole('button', { name: /Restart session/ })).toBeTruthy()
+    // Honest copy: the assistant restarts without the internal conversation
+    // memory — the visible history stays.
+    expect(screen.getByText(/without the internal memory/i)).toBeTruthy()
+    expect(screen.getByText(/history above stays/i)).toBeTruthy()
+    // The exit remains next to it.
+    expect(screen.getByRole('button', { name: /Start a new conversation/ })).toBeTruthy()
+  })
+
+  it('L4-A pt-BR: offers "Reiniciar sessão" with the honest hint', () => {
+    renderWith(API_ERROR_400_THINKING, vi.fn(), 'pt-BR', vi.fn())
+    expect(screen.getByRole('button', { name: /Reiniciar sessão/ })).toBeTruthy()
+    expect(screen.getByText(/sem a memória interna/i)).toBeTruthy()
+    expect(screen.getByText(/histórico acima permanece/i)).toBeTruthy()
+  })
+
+  it('L4-A: clicking Restart session fires onRestartSession (not the exit)', () => {
+    const onRestartSession = vi.fn()
+    const onStartNewConversation = vi.fn()
+    renderWith(API_ERROR_400_THINKING, onStartNewConversation, 'en-US', onRestartSession)
+    fireEvent.click(screen.getByRole('button', { name: /Restart session/ }))
+    expect(onRestartSession).toHaveBeenCalledTimes(1)
+    expect(onStartNewConversation).not.toHaveBeenCalled()
+  })
+
+  it('L4-A: other API errors (quota 429) do NOT gain the Restart session button', () => {
+    const QUOTA = 'API Error: 429 {"error":{"type":"usage_limit_reached","plan_type":"plus","resets_in_seconds":72000}}'
+    renderWith(QUOTA, vi.fn(), 'en-US', vi.fn())
+    expect(screen.queryByRole('button', { name: /Restart session/ })).toBeNull()
+    expect(screen.getByText(/renews|renews in/i)).toBeTruthy()
+  })
+
+  it('L4-A: without onRestartSession the restart button is not offered', () => {
+    renderWith(API_ERROR_400_THINKING, vi.fn(), 'en-US', undefined)
+    expect(screen.queryByRole('button', { name: /Restart session/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /Start a new conversation/ })).toBeTruthy()
   })
 })
 

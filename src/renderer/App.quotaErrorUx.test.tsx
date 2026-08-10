@@ -140,7 +140,7 @@ class TestResizeObserver {
 
 function createBridge() {
   const unsubscribe = () => {}
-  const sendTurn = vi.fn(async (request: AgentTurnRequest) => request.turnId ?? 'turn:test')
+  const sendTurn = vi.fn(async (request: AgentTurnRequest, resumeSessionId?: string) => request.turnId ?? 'turn:test')
   const interrupt = vi.fn(async () => true)
   const bridge = {
     getUserSettings: vi.fn(async () => settingsStore),
@@ -204,7 +204,7 @@ function createBridge() {
   }
 }
 
-function seedConversation() {
+function seedConversation(extra: Partial<Record<string, unknown>> = {}) {
   const conversation = {
     ...createConversation(),
     id: 'chat:main',
@@ -213,6 +213,7 @@ function seedConversation() {
     updatedAt: 10,
     lastTurnEndedAt: 10,
     items: [{ id: 'message:existing', role: 'user' as const, text: 'Existing message', timestamp: 10 }],
+    ...extra,
   }
   window.localStorage.setItem(CHAT_STORE_KEY, JSON.stringify({
     version: 3,
@@ -599,6 +600,46 @@ describe('App — provider quota-error UX (field defect)', () => {
     expect(document.querySelectorAll('article.message-row.system')).toHaveLength(0)
     // No errorDetail toggle on the retry segment (path 3 stamps none).
     expect(turnArticle().querySelector('details')).toBeNull()
+  })
+
+  // L4-A — "Restart session" on the thinking-400 banner clears the stored
+  // CLI session and replays the SAME user turn from a clean session (no
+  // --resume), keeping the visible transcript. Other turn errors never gain
+  // the button (covered at unit level in ApiErrorText.test.tsx).
+  it('L4-A: Restart session clears the session and replays the turn clean', async () => {
+    seedConversation({ cliSessionId: 'sess-rotten' })
+    const { emitAgentEvent, turnId, sendTurn } = await renderAppAndSendTurn('Refactor the parser')
+    // The first send carries the stored (rotten) session.
+    expect(sendTurn.mock.calls[0][1]).toBe('sess-rotten')
+
+    const THINKING_ERROR = 'API Error: 400 {"error":{"type":"invalid_request_error","message":"messages.157.content.0.thinking... each thinking block must contain non-whitespace thinking"}}'
+    act(() => { emitAgentEvent({ type: 'started', turnId }) })
+    act(() => {
+      emitAgentEvent({ type: 'json', turnId, payload: { type: 'assistant', message: { content: [{ type: 'text', text: THINKING_ERROR }] }, isApiErrorMessage: true } })
+    })
+    act(() => {
+      emitAgentEvent({
+        type: 'error',
+        turnId,
+        message: THINKING_ERROR,
+        payload: { category: 'unknown', message: THINKING_ERROR, details: [], exitCode: 1, recoveryReady: false },
+        exitCode: 1,
+      })
+    })
+
+    // The thinking-400 banner offers the restart action next to the exit.
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Restart session/ })).toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Restart session/ }))
+
+    // The replay goes out WITHOUT the stored session (clean session)…
+    await waitFor(() => {
+      expect(sendTurn.mock.calls.length).toBeGreaterThanOrEqual(2)
+    })
+    expect(sendTurn.mock.calls[1][1]).toBeUndefined()
+    // …replaying the same user message, with the visible history preserved.
+    expect(sendTurn.mock.calls[1][0].message).toBe('Refactor the parser')
   })
 
   // T19-recovery — covers the recovery-error system row at App.tsx:2637

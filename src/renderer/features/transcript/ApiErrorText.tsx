@@ -11,7 +11,14 @@ import { MarkdownMessage } from './MarkdownMessage'
  *  T8: the thinking-block 400 also offers an exit — a button to start a
  *  new conversation, since THIS conversation is permanently dead (every
  *  new turn fails the same way until the CLI fixes the block). */
-export function ApiErrorAwareText({ text, account, onStartNewConversation }: { text: string; account: string; onStartNewConversation?: () => void }) {
+export function ApiErrorAwareText({ text, account, onStartNewConversation, onRestartSession }: {
+  text: string
+  account: string
+  onStartNewConversation?: () => void
+  /** L4-A — restarts the provider session (clean CLI session, keeps the
+   *  visible history; the assistant restarts without the internal memory). */
+  onRestartSession?: () => void
+}) {
   const { t } = useI18n()
   const info = parseApiErrorText(text)
   const usageLimit = info ? presentUsageLimitMessage(info, account, t) : undefined
@@ -21,6 +28,14 @@ export function ApiErrorAwareText({ text, account, onStartNewConversation }: { t
     return (
       <span className="api-error-readable api-error-thinking-block">
         <span className="api-error-headline">{thinkingBlock}</span>
+        {onRestartSession && (
+          <span className="api-error-restart">
+            <button type="button" className="api-error-action" onClick={onRestartSession}>
+              {t('transcript.restartProviderSession')}
+            </button>
+            <span className="api-error-hint">{t('transcript.restartSessionHint')}</span>
+          </span>
+        )}
         {onStartNewConversation && (
           <button type="button" className="api-error-action" onClick={onStartNewConversation}>
             {t('transcript.startNewConversation')}

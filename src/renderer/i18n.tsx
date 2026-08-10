@@ -697,6 +697,10 @@ const enUS: Record<string, string> = {
   'transcript.showTechnicalDetails': 'Show technical details',
   'transcript.conversationCannotContinue': 'This conversation can\'t continue — a turn left an empty thinking block that the model rejects, so every new turn fails the same way. Your history is saved and readable; it just won\'t accept new turns. Recovering it depends on a CLI fix.',
   'transcript.startNewConversation': 'Start a new conversation',
+  'transcript.restartProviderSession': 'Restart session',
+  // L4-A — honest copy: the visible history stays, but the assistant
+  // restarts WITHOUT the internal conversation memory (new CLI session).
+  'transcript.restartSessionHint': 'The assistant restarts without the internal memory of this conversation; the history above stays.',
   'transcript.apiRetry': 'The provider rate-limited the request — retrying ({attempt} of {max})…',
   'transcript.usageLimitReached': 'Usage limit reached on your {account} account.',
   'transcript.usageLimitReachedPlan': 'Usage limit reached on your {account} account ({plan} plan).',
@@ -2110,6 +2114,10 @@ const ptBR: Record<string, string> = {
   'transcript.showTechnicalDetails': 'Mostrar detalhes técnicos',
   'transcript.conversationCannotContinue': 'Esta conversa não pode continuar — um turno deixou um bloco de raciocínio vazio que o modelo rejeita, então todo novo turno falha igual. Seu histórico está salvo e legível; só não aceita novos turnos. Recuperá-lo depende de um conserto no CLI.',
   'transcript.startNewConversation': 'Começar uma nova conversa',
+  'transcript.restartProviderSession': 'Reiniciar sessão',
+  // L4-A — copy honesta: o histórico visível fica, mas o assistente
+  // recomeça SEM a memória interna da conversa (sessão CLI nova).
+  'transcript.restartSessionHint': 'O assistente recomeça sem a memória interna desta conversa; o histórico acima permanece.',
   'transcript.apiRetry': 'O provedor limitou a taxa — tentando de novo ({attempt} de {max})…',
   'transcript.usageLimitReached': 'Limite de uso da sua conta {account} atingido.',
   'transcript.usageLimitReachedPlan': 'Limite de uso da sua conta {account} (plano {plan}) atingido.',
