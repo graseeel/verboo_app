@@ -40,6 +40,9 @@ export type ProviderAccountsController = {
   refreshAccount: (provider: ExternalProviderId, accountId: string) => Promise<ProviderUsageRowState | undefined>
   setDefault: (provider: ExternalProviderId, accountId: string) => Promise<void>
   remove: (provider: ExternalProviderId, accountId: string) => Promise<void>
+  /** L2 — drop the cached capabilities/list so the next reload re-fetches,
+   *  e.g. right after a provider connect event (no TTL wait). */
+  invalidateDiscoveryCache: () => void
   reloadAccounts: (refreshUsage?: boolean) => Promise<ProviderAccountsSnapshot>
   snapshot: () => ProviderAccountsSnapshot
 }
@@ -47,6 +50,17 @@ export type ProviderAccountsController = {
 const fallbackCapabilities: ProviderCapabilities = {
   providerAccountsV1: false,
   providerUsageV1: false,
+}
+
+/** L2 — capabilities + account list are cached for 30s so re-entering the
+ *  Providers tab does not re-spawn the CLI on every visit. Mutations
+ *  (setDefault/remove) and the connected event force a fresh fetch. */
+const DISCOVERY_CACHE_TTL_MS = 30_000
+
+type DiscoveryCache = {
+  at: number
+  capabilities: ProviderCapabilities
+  accounts: ProviderAccountSummary[]
 }
 
 function accountKey(provider: ExternalProviderId, accountId: string): string {
@@ -85,6 +99,7 @@ export function useProviderAccounts({
   accountsRef.current = accounts
   const accountsLoadedRef = useRef(accountsLoaded)
   accountsLoadedRef.current = accountsLoaded
+  const discoveryCacheRef = useRef<DiscoveryCache | undefined>(undefined)
 
   useEffect(() => () => { mounted.current = false }, [])
 
@@ -176,63 +191,97 @@ export function useProviderAccounts({
     accountsLoaded: accountsLoadedRef.current,
   }), [])
 
-  const reloadAccounts = useCallback(async (refreshUsage = visible): Promise<ProviderAccountsSnapshot> => {
-    let nextCapabilities = fallbackCapabilities
-    try {
-      const reported = await bridge.providerCapabilities()
-      if (reported && typeof reported === 'object') nextCapabilities = reported
-    } catch {
-      capabilitiesRef.current = fallbackCapabilities
-      setCapabilities(fallbackCapabilities)
-      setAccounts([])
-      setRows([])
-      accountsRef.current = []
-      accountsLoadedRef.current = true
-      setAccountsLoaded(true)
-      return snapshot()
-    }
-    if (!mounted.current) return snapshot()
-    capabilitiesRef.current = nextCapabilities
-    setCapabilities(nextCapabilities)
-    if (!nextCapabilities.providerAccountsV1) {
-      accountsRef.current = []
-      accountsLoadedRef.current = true
-      setAccounts([])
-      setRows([])
-      setAccountsLoaded(true)
-      return snapshot()
-    }
-    try {
-      const nextAccounts = await bridge.providerAccountsList()
-      if (!mounted.current) return snapshot()
-      accountsRef.current = nextAccounts
-      accountsLoadedRef.current = true
-      setAccounts(nextAccounts)
-      setAccountsLoaded(true)
-      setRows(previous => mergeRows(nextAccounts, previous))
-      // M2 — a reloaded accounts list means accounts may have been added,
-      // removed, or reconnected: the cached model lists (keyed per
-      // provider:account) can no longer be trusted. Drop them so the next
-      // preflight fetches a fresh catalog instead of spawning stale entries.
-      invalidateProviderModelsCache()
-      if (refreshUsage && nextCapabilities.providerUsageV1) {
-        // Refresh from the response rather than waiting for state to commit.
+  const reloadAccounts = useCallback(async (refreshUsage = visible, force = false): Promise<ProviderAccountsSnapshot> => {
+    // L2 — within the TTL a tab re-entry must NOT re-spawn the CLI: serve the
+    // cached capabilities + list, then refresh usage per account on demand.
+    const cached = discoveryCacheRef.current
+    if (!force && cached && Date.now() - cached.at < DISCOVERY_CACHE_TTL_MS) {
+      capabilitiesRef.current = cached.capabilities
+      setCapabilities(cached.capabilities)
+      if (cached.capabilities.providerAccountsV1) {
+        accountsRef.current = cached.accounts
+        accountsLoadedRef.current = true
+        setAccounts(cached.accounts)
+        setAccountsLoaded(true)
+        setRows(previous => mergeRows(cached.accounts, previous))
+      }
+      if (refreshUsage && cached.capabilities.providerUsageV1 && cached.capabilities.providerAccountsV1) {
         let cursor = 0
         const worker = async () => {
-          while (cursor < nextAccounts.length) {
-            const account = nextAccounts[cursor++]
+          while (cursor < cached.accounts.length) {
+            const account = cached.accounts[cursor++]
             await refreshAccount(account.provider, account.accountId)
           }
         }
-        await Promise.all(Array.from({ length: Math.min(3, Math.max(1, nextAccounts.length)) }, () => worker()))
+        await Promise.all(Array.from({ length: Math.min(3, Math.max(1, cached.accounts.length)) }, () => worker()))
       }
       return snapshot()
-    } catch {
-      // Account discovery failure is local to this entry; leave the old rows
-      // visible so the user can retry rather than losing context.
+    }
+
+    // L1 — capabilities and the account list are two INDEPENDENT CLI spawns:
+    // fetch them in parallel instead of serially. A list failure with healthy
+    // capabilities leaves the previous rows visible (retry next entry).
+    const [capabilitiesResult, listResult] = await Promise.all([
+      bridge.providerCapabilities().then(
+        value => (value && typeof value === 'object' ? value : fallbackCapabilities),
+        () => fallbackCapabilities,
+      ),
+      bridge.providerAccountsList().then(
+        value => (Array.isArray(value) ? value : undefined),
+        () => undefined,
+      ),
+    ])
+    if (!mounted.current) return snapshot()
+
+    if (!capabilitiesResult.providerAccountsV1) {
+      capabilitiesRef.current = capabilitiesResult
+      setCapabilities(capabilitiesResult)
+      accountsRef.current = []
+      accountsLoadedRef.current = true
+      setAccounts([])
+      setRows([])
+      setAccountsLoaded(true)
       return snapshot()
     }
+    capabilitiesRef.current = capabilitiesResult
+    setCapabilities(capabilitiesResult)
+    if (!listResult) {
+      // Account discovery failed while capabilities succeeded: keep the old
+      // rows so the user can retry rather than losing context.
+      accountsLoadedRef.current = false
+      setAccountsLoaded(false)
+      return snapshot()
+    }
+    discoveryCacheRef.current = { at: Date.now(), capabilities: capabilitiesResult, accounts: listResult }
+    accountsRef.current = listResult
+    accountsLoadedRef.current = true
+    setAccounts(listResult)
+    setAccountsLoaded(true)
+    setRows(previous => mergeRows(listResult, previous))
+    // M2 — a reloaded accounts list means accounts may have been added,
+    // removed, or reconnected: the cached model lists (keyed per
+    // provider:account) can no longer be trusted. Drop them so the next
+    // preflight fetches a fresh catalog instead of spawning stale entries.
+    invalidateProviderModelsCache()
+    if (refreshUsage && capabilitiesResult.providerUsageV1) {
+      // Refresh from the response rather than waiting for state to commit.
+      let cursor = 0
+      const worker = async () => {
+        while (cursor < listResult.length) {
+          const account = listResult[cursor++]
+          await refreshAccount(account.provider, account.accountId)
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(3, Math.max(1, listResult.length)) }, () => worker()))
+    }
+    return snapshot()
   }, [bridge, refreshAccount, snapshot, visible])
+
+  /** L2 — invalidate the discovery cache after a mutation (setDefault/remove)
+   *  so the next reload reflects the change instead of serving the snapshot. */
+  const invalidateDiscoveryCache = useCallback(() => {
+    discoveryCacheRef.current = undefined
+  }, [])
 
   useEffect(() => {
     const firstRender = previousVisible.current === undefined
@@ -243,13 +292,15 @@ export function useProviderAccounts({
 
   const setDefault = useCallback(async (provider: ExternalProviderId, accountId: string) => {
     await bridge.providerAccountSetDefault(provider, accountId)
+    invalidateDiscoveryCache()
     await reloadAccounts()
-  }, [bridge, reloadAccounts])
+  }, [bridge, invalidateDiscoveryCache, reloadAccounts])
 
   const remove = useCallback(async (provider: ExternalProviderId, accountId: string) => {
     await bridge.providerAccountRemove(provider, accountId)
+    invalidateDiscoveryCache()
     await reloadAccounts()
-  }, [bridge, reloadAccounts])
+  }, [bridge, invalidateDiscoveryCache, reloadAccounts])
 
   return {
     capabilities,
@@ -261,6 +312,7 @@ export function useProviderAccounts({
     refreshAccount,
     setDefault,
     remove,
+    invalidateDiscoveryCache,
     reloadAccounts,
     snapshot,
   }

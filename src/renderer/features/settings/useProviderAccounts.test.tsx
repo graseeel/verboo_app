@@ -56,7 +56,9 @@ describe('useProviderAccounts', () => {
     rerender({ visible: false })
     rerender({ visible: true })
     await waitFor(() => expect(usage).toHaveBeenCalledTimes(4))
-    expect(result.current.rows.every(row => row.status === 'fresh')).toBe(true)
+    // The rows commit on a separate microtask from the usage mock resolution —
+    // assert inside waitFor (deterministic race under load, not flaky).
+    await waitFor(() => expect(result.current.rows.every(row => row.status === 'fresh')).toBe(true))
   })
 
   it('reuses only the identical request that is currently in flight', async () => {
@@ -87,5 +89,87 @@ describe('useProviderAccounts', () => {
     await waitFor(() => expect(result.current.rows).toHaveLength(2))
     await waitFor(() => expect(result.current.rows.find(row => row.account.accountId === 'local-a')?.status).toBe('fresh'))
     await waitFor(() => expect(result.current.rows.find(row => row.account.accountId === 'local-b')?.status).toBe('unavailable'))
+  })
+
+  // L1 — capabilities and the account list are two independent CLI spawns.
+  // The list must be requested in parallel with capabilities, not after them.
+  it('L1: requests the account list without waiting for capabilities to resolve', async () => {
+    let resolveCaps!: (value: ProviderCapabilities) => void
+    const pendingCaps = new Promise<ProviderCapabilities>(done => { resolveCaps = done })
+    const list = vi.fn(async () => accounts)
+    const api = {
+      ...bridge(vi.fn(async () => [])),
+      providerCapabilities: vi.fn(() => pendingCaps),
+      providerAccountsList: list,
+    }
+    renderHook(() => useProviderAccounts({ visible: false, bridge: api }))
+    // Capabilities never resolves here — the list request must still go out.
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(1), { timeout: 1500 })
+    resolveCaps(capabilities)
+  })
+
+  // L2 — capabilities + list are cached for ~30s so re-entering the tab does
+  // not re-spawn the CLI. Usage per account still refreshes on every entry.
+  it('L2: re-entering within the TTL reuses cached capabilities and list', async () => {
+    const api = bridge(vi.fn(async () => []))
+    const { result, rerender } = renderHook(
+      ({ visible }) => useProviderAccounts({ visible, bridge: api }),
+      { initialProps: { visible: true } },
+    )
+    // First entry fetches capabilities + list and fills the cache.
+    await waitFor(() => expect(api.providerCapabilities).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(api.providerAccountsList).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(result.current.accountsLoaded).toBe(true))
+    rerender({ visible: false })
+    rerender({ visible: true })
+    // TTL still valid → no new spawns.
+    await waitFor(() => expect(api.providerCapabilities).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(api.providerAccountsList).toHaveBeenCalledTimes(1))
+  })
+
+  it('L2: after the TTL expires the next entry re-fetches capabilities and list', async () => {
+    const t0 = Date.now()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const api = bridge(vi.fn(async () => []))
+      const { result, rerender } = renderHook(
+        ({ visible }) => useProviderAccounts({ visible, bridge: api }),
+        { initialProps: { visible: true } },
+      )
+      await waitFor(() => expect(api.providerCapabilities).toHaveBeenCalledTimes(1))
+      await waitFor(() => expect(result.current.accountsLoaded).toBe(true))
+      rerender({ visible: false })
+      vi.setSystemTime(t0 + 31_000)
+      rerender({ visible: true })
+      await waitFor(() => expect(api.providerCapabilities).toHaveBeenCalledTimes(2))
+      await waitFor(() => expect(api.providerAccountsList).toHaveBeenCalledTimes(2))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // L2 — the connected event invalidates the discovery cache so a just-linked
+  // account appears immediately, without waiting out the 30s TTL.
+  it('L2: invalidating the discovery cache makes a connected account appear before the TTL elapses', async () => {
+    const api = bridge(vi.fn(async () => []))
+    const { result, rerender } = renderHook(
+      ({ visible }) => useProviderAccounts({ visible, bridge: api }),
+      { initialProps: { visible: true } },
+    )
+    // First entry fetches capabilities + list and fills the cache.
+    await waitFor(() => expect(api.providerCapabilities).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(api.providerAccountsList).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(result.current.accountsLoaded).toBe(true))
+
+    // Within the TTL a plain reload must serve the cache (no re-spawn).
+    await act(async () => { await result.current.reloadAccounts() })
+    expect(api.providerCapabilities).toHaveBeenCalledTimes(1)
+    expect(api.providerAccountsList).toHaveBeenCalledTimes(1)
+
+    // The connected path invalidates, so the very next reload re-fetches.
+    act(() => { result.current.invalidateDiscoveryCache() })
+    await act(async () => { await result.current.reloadAccounts() })
+    expect(api.providerCapabilities).toHaveBeenCalledTimes(2)
+    expect(api.providerAccountsList).toHaveBeenCalledTimes(2)
   })
 })

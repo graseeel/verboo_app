@@ -1114,6 +1114,10 @@ export function App() {
       if (event.state === 'connected') {
         void refreshModels(true)
         void reloadProviderAuth()
+        // L2 — the just-linked account must appear immediately: drop the
+        // discovery cache so this reload re-fetches instead of serving the
+        // 30s TTL snapshot.
+        providerAccountsRef.current.invalidateDiscoveryCache()
         void providerAccountsRef.current.reloadAccounts()
         toast(t('settings.provider.connectedToast', { provider: providerDisplayName(event.provider, t) }))
       } else if (event.state === 'error') {
@@ -3221,14 +3225,26 @@ export function App() {
     // request. Attachment/OCR/approval awaits above can outlive an account
     // removal or a provider quota change; unknown stays fail-closed.
     if (selectedProvider === 'codex' || selectedProvider === 'claude') {
+      const conversation = chatStoreRef.current.conversations.find(item => item.id === conversationId)
       let providerSnapshot = providerAccounts.snapshot()
       if (!providerSnapshot.accountsLoaded) {
-        providerSnapshot = await providerAccounts.reloadAccounts(false)
+        // L3 — with a conversation-level account binding the send must WAIT
+        // for the accounts reload so the bound account resolves with
+        // --provider-account instead of degrading to legacy. Without a
+        // binding the parallel path stays: kick the reload off and run the
+        // preflight against the CURRENT snapshot as fallback (degrades to
+        // legacy/not-required when capabilities are unknown, safe for an old
+        // CLI).
+        if (conversation?.providerAccountBindings?.[selectedProvider]) {
+          providerSnapshot = await providerAccounts.reloadAccounts(false)
+        } else {
+          void providerAccounts.reloadAccounts(false)
+        }
       }
       const preflight = await preflightProviderTurn({
         provider: selectedProvider,
         modelId: selectedModelInfo?.id ?? selectedModel ?? '',
-        conversation: chatStoreRef.current.conversations.find(item => item.id === conversationId),
+        conversation,
         capabilities: providerSnapshot.capabilities,
         accounts: providerSnapshot.accounts,
         fetchModels: window.verboo.providerAccountModels,
