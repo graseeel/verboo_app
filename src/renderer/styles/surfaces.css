@@ -720,6 +720,19 @@
 }
 .provider-account-row-head strong { display: block; font-size: 13px; }
 .provider-account-plan { display: block; color: var(--text-muted); font-size: 11px; margin-top: 2px; }
+/* UI — the nickname pencil sits inline, right of the account name. */
+.provider-account-name { display: inline-flex; align-items: center; gap: 6px; }
+.provider-name-edit-button {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.provider-name-edit-button:hover:not(:disabled) { color: var(--text); }
+.settings-panel .provider-name-edit-button:disabled { opacity: 0.4; cursor: not-allowed; }
 .provider-account-badges { gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .provider-account-badge {
   border-radius: 999px;
@@ -743,8 +756,9 @@
 .provider-usage-window.is-exhausted .provider-usage-track span { background: var(--danger, var(--text-danger)); }
 .provider-usage-window.is-exhausted .provider-usage-window-head strong,
 .provider-usage-window.is-exhausted .provider-usage-window-head span { color: var(--text-danger); }
-/* P1 — the bound account's primary action reads as a state, not a button. */
-.provider-account-actions .provider-card-action.is-current {
+/* P1 — the bound account's primary action reads as a state, not a button.
+   UI — it now lives in its own centered row below the usage windows. */
+.provider-card-action.is-current {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -754,6 +768,10 @@
   cursor: default;
   font-weight: 560;
 }
+/* UI — Use here / In use centered below the usage windows. The generic
+   .provider-card-action margin-left:auto must not fight the centering. */
+.provider-account-use-row { display: flex; justify-content: center; }
+.provider-account-use-row .provider-card-action { margin-left: 0; }
 .provider-nickname-edit { display: inline-flex; }
 .provider-nickname-edit input {
   width: 180px;

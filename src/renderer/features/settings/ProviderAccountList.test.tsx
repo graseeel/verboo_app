@@ -151,6 +151,31 @@ describe('ProviderAccountList', () => {
     expect(getProviderAccountNickname('codex', 'codex-a')).toBe('Work Codex')
   })
 
+  it('UI: the nickname pencil sits inline, right of the account name (not in the kebab row)', () => {
+    renderList({})
+    const editButton = screen.getByRole('button', { name: /edit nickname|editar apelido/i })
+    const nameRow = document.querySelector('.provider-account-name') as HTMLElement
+    const actionsRow = document.querySelector('.provider-account-actions') as HTMLElement
+    expect(nameRow).not.toBeNull()
+    expect(actionsRow).not.toBeNull()
+    expect(nameRow.contains(editButton)).toBe(true)
+    expect(actionsRow.contains(editButton)).toBe(false)
+  })
+
+  it('UI: Use here sits centered below the usage windows, not in the kebab row', () => {
+    renderList({})
+    const useButton = screen.getByRole('button', { name: 'Use here' })
+    const useRow = document.querySelector('.provider-account-use-row') as HTMLElement
+    const actionsRow = document.querySelector('.provider-account-actions') as HTMLElement
+    expect(useRow).not.toBeNull()
+    expect(actionsRow).not.toBeNull()
+    expect(useRow.contains(useButton)).toBe(true)
+    expect(actionsRow.contains(useButton)).toBe(false)
+    // The kebab stays exactly where it was: in the actions row.
+    const kebab = screen.getByRole('button', { name: /account menu|menu da conta/i })
+    expect(actionsRow.contains(kebab)).toBe(true)
+  })
+
   it('P3: edits the nickname inline and persists it locally', () => {
     renderList({})
     fireEvent.click(screen.getByRole('button', { name: /edit nickname|editar apelido/i }))

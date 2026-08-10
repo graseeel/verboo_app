@@ -134,24 +134,39 @@ export function ProviderAccountList({
                 <article className="provider-account-row" key={account.accountId}>
                   <div className="provider-account-row-head">
                     <div>
-                      {editing ? (
-                        <span className="provider-nickname-edit">
-                          <input
-                            type="text"
-                            value={nicknameDraft}
-                            aria-label={t('settings.provider.nickname')}
-                            onChange={event => setNicknameDraft(event.target.value)}
-                            onKeyDown={event => {
-                              if (event.key === 'Enter') commitNickname(provider, account.accountId)
-                              if (event.key === 'Escape') setEditingNickname(undefined)
-                            }}
-                            onBlur={() => commitNickname(provider, account.accountId)}
-                            autoFocus
-                          />
-                        </span>
-                      ) : (
-                        <strong>{displayName}</strong>
-                      )}
+                      <span className="provider-account-name">
+                        {editing ? (
+                          <span className="provider-nickname-edit">
+                            <input
+                              type="text"
+                              value={nicknameDraft}
+                              aria-label={t('settings.provider.nickname')}
+                              onChange={event => setNicknameDraft(event.target.value)}
+                              onKeyDown={event => {
+                                if (event.key === 'Enter') commitNickname(provider, account.accountId)
+                                if (event.key === 'Escape') setEditingNickname(undefined)
+                              }}
+                              onBlur={() => commitNickname(provider, account.accountId)}
+                              autoFocus
+                            />
+                          </span>
+                        ) : (
+                          <>
+                            <strong>{displayName}</strong>
+                            {/* UI — the nickname pencil sits inline, right of
+                                the account name (approved annotated print). */}
+                            <button
+                              type="button"
+                              className="provider-name-edit-button"
+                              aria-label={t('settings.provider.editNickname')}
+                              onClick={() => startNicknameEdit(provider, account.accountId)}
+                              disabled={switchLocked}
+                            >
+                              <Pencil size={12} />
+                            </button>
+                          </>
+                        )}
+                      </span>
                       {account.planDisplayName && <span className="provider-account-plan">{account.planDisplayName}</span>}
                     </div>
                     <div className="provider-account-badges">
@@ -160,7 +175,9 @@ export function ProviderAccountList({
                     </div>
                   </div>
                   <ProviderUsageWindows state={row} />
-                  <div className="provider-account-actions">
+                  {/* UI — Use here / In use sits centered BELOW the usage
+                      windows (approved annotated print). */}
+                  <div className="provider-account-use-row">
                     {usedHere ? (
                       <span className="provider-card-action is-current" aria-label={t('settings.provider.inUse')}>
                         <Check size={13} /> {t('settings.provider.inUse')}
@@ -170,9 +187,9 @@ export function ProviderAccountList({
                         {t('settings.provider.useHere')}
                       </button>
                     )}
-                    <button type="button" className="provider-card-action" aria-label={t('settings.provider.editNickname')} onClick={() => startNicknameEdit(provider, account.accountId)} disabled={switchLocked}>
-                      <Pencil size={13} />
-                    </button>
+                  </div>
+                  {/* UI — the kebab stays exactly where it was (approved). */}
+                  <div className="provider-account-actions">
                     <button type="button" className="provider-card-action" aria-label={t('settings.provider.accountMenu')} onClick={event => openAccountMenu(event, provider, account)} disabled={false}>
                       <MoreVertical size={14} />
                     </button>
