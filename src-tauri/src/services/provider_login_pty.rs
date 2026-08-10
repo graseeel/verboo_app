@@ -399,6 +399,14 @@ impl ProviderLoginService {
             let mut last_poll = Instant::now();
             let login_started = Instant::now();
             let prompt_deadline = login_started + options.prompt_timeout;
+            // Snapshot do token do provedor NO MOMENTO DO SLASH (2ª conta:
+            // o blob JÁ tem o token da conexão existente). O poll só emite
+            // Connected quando este token MUDA — distinguindo "token prévio"
+            // de "token novo do OAuth que acabou de completar". Sem isto, o
+            // fluxo de 2ª conta emite Connected prematuro (evidência
+            // 2026-08-10) e o teardown mata o CLI no meio do OAuth do
+            // usuário → ERR_CONNECTION_REFUSED no callback 1455.
+            let mut initial_provider_entry: Option<serde_json::Value> = None;
 
             loop {
                 let now = Instant::now();
@@ -462,10 +470,26 @@ impl ProviderLoginService {
                     // morre => ERR_CONNECTION_REFUSED no redirecionamento).
                     // 5a instância da mancha global — a mesma dos cartões.
                     if let Some(blob) = provider_catalog::read_provider_credentials_blob() {
-                        if provider_catalog::provider_connected_from_blob(
+                        let current_entry = provider_catalog::cli_storage_key(
                             &provider_for_thread,
-                            &blob,
-                        ) {
+                        )
+                        .and_then(|key| blob.get(key))
+                        .cloned();
+                        let connected = current_entry
+                            .as_ref()
+                            .map(|entry| !entry.is_null())
+                            .unwrap_or(false);
+                        // CHANGE DETECTION (2ª conta, evidência 2026-08-10):
+                        // emite Connected SOMENTE quando o token do provedor
+                        // MUDA do snapshot capturado no momento do slash. No
+                        // fluxo de 2ª conta o blob JÁ tem o token da conexão
+                        // existente — sem isto o poll casa o token PRÉVIO e
+                        // emite Connected antes do OAuth do usuário completar,
+                        // o teardown mata o PTY, o CLI morre, o listener 1455
+                        // morre e o callback recebe ERR_CONNECTION_REFUSED.
+                        // 1º login: snapshot None → Some é mudança → Connected
+                        // continua sendo detectado normalmente.
+                        if connected && current_entry != initial_provider_entry {
                             emit_logged(&emit, ProviderLoginEvent {
                                 provider: provider_for_thread.clone(),
                                 state: ProviderLoginState::Connected,
@@ -518,6 +542,19 @@ impl ProviderLoginService {
                             output.push_str(&strip_terminal_controls(&raw));
                             if prompt_ready(&output) {
                                 prompt_sent = true;
+                                // Baseline do change detection: o token do
+                                // provedor ANTES do slash. O OAuth do usuário
+                                // ainda não começou — qualquer "connected"
+                                // neste instante é o estado PRÉVIO (2ª conta).
+                                let snapshot_blob =
+                                    provider_catalog::read_provider_credentials_blob();
+                                let snapshot_key =
+                                    provider_catalog::cli_storage_key(&provider_for_thread);
+                                initial_provider_entry = match (snapshot_blob.as_ref(), snapshot_key)
+                                {
+                                    (Some(blob), Some(key)) => blob.get(key).cloned(),
+                                    _ => None,
+                                };
                                 post_slash_deadline = Some(now + POST_SLASH_DEADLINE);
                                 if let Ok(mut w) = writer_for_slash.lock() {
                                     if let Some(writer) = w.as_mut() {
@@ -987,6 +1024,17 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             }
         }
         (path, state_file, received_file, child_pid_file)
+    }
+
+    /// Drop-guard para limpar o ambiente fake mesmo quando o teste PANICA.
+    /// Sem isto, um env residual (ex.: FAKE_OAUTH_CORRUPTED) quebra os
+    /// testes PTY seguintes do módulo (lição 2026-08-10: residual quebrou
+    /// deterministicamente 2 testes seguintes — módulo falha, isolado passa).
+    struct FakeCliCleanup;
+    impl Drop for FakeCliCleanup {
+        fn drop(&mut self) {
+            clear_fake_cli();
+        }
     }
 
     fn clear_fake_cli() {
@@ -1957,6 +2005,200 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
                     .any(|e| matches!(e.state, ProviderLoginState::Connected))
             }),
             "o poll detecta o token do provedor no blob e emite Connected"
+        );
+
+        service.cancel().ok();
+        clear_fake_cli();
+    }
+
+    /// CAMPO DO DEFEITO (CLI 0.15.12, 2026-08-10): o usuário TEM uma conta
+    /// codex conectada e clica "Adicionar conta". O blob JÁ tem o token
+    /// codex da conexão existente; o poll atual casa esse token PRÉVIO e
+    /// emite Connected ANTES do OAuth do usuário completar — o teardown
+    /// mata o PTY, o CLI morre, o listener 1455 morre, e o callback do
+    /// OAuth do usuário recebe ERR_CONNECTION_REFUSED. Evidência real:
+    /// bridge emitiu `[verboo:provider-login] provider=codex state=Connected
+    /// message=None` segundos após o clique, SEM awaiting_browser.
+    ///
+    /// FIX: snapshot do token do provedor no momento do slash; o poll só
+    /// emite Connected quando o token MUDA do snapshot. O token PRÉVIO
+    /// (conta existente) NÃO dispara — só o token NOVO do OAuth completado.
+    /// O gate em oauth_evidence sozinho é insuficiente: o URL é observado
+    /// ~100ms depois do prompt, mas o token PRÉVIO continua no blob até o
+    /// OAuth completar — o gate apenas adiantaria o Connected em ~1s, e o
+    /// usuário ainda receberia ERR_CONNECTION_REFUSED no callback.
+    #[test]
+    fn second_account_with_existing_token_does_not_emit_connected_prematurely() {
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cleanup = FakeCliCleanup;
+        let (_cli, _state, _received, _child) = write_fake_cli("second-account", false);
+        // SAFETY: env global intencional, serializado pelo guard.
+        unsafe {
+            std::env::set_var("FAKE_OAUTH_CORRUPTED", "1");
+        }
+        // BLOB com token codex PRÉVIO (conta existente). O fake CLI NÃO
+        // atualiza o blob — o OAuth do usuário não completou. Sem o fix,
+        // o poll casa este token PRÉVIO e emite Connected prematuro.
+        set_fake_blob("codex", Some("old-codex-tok"));
+
+        let events: Arc<Mutex<Vec<ProviderLoginEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_for_service = events.clone();
+        let service = ProviderLoginService::new(
+            move |event| {
+                events_for_service.lock().unwrap().push(event);
+            },
+            std::env::temp_dir(),
+        );
+
+        let _id = service
+            .start(
+                "codex",
+                true,
+                None,
+                LoginOptions {
+                    prompt_timeout: Duration::from_secs(10),
+                    login_timeout: Duration::from_secs(30),
+                    browser_timeout: Duration::from_secs(3),
+                },
+            )
+            .expect("start deve abrir o PTY");
+
+        // Hoje (sem fix): o poll dispara Connected ANTES do URL ser
+        // processado (o break encerra o chunk handler) → awaiting_browser
+        // nunca é emitido → esta asserção fica RED.
+        // Pós-fix: o poll não casa (token unchanged) → URL é processado
+        // → awaiting_browser emitido.
+        assert!(
+            wait_until(Duration::from_secs(15), || {
+                events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|e| matches!(e.state, ProviderLoginState::AwaitingBrowser))
+            }),
+            "awaiting_browser deve ser emitido — o URL do OAuth DEVE ser \
+             observado (evidência real 2026-08-10: o URL é impresso pelo CLI)"
+        );
+
+        // Espera o browser_timeout (3s) expirar — bridge emite Error.
+        assert!(
+            wait_until(Duration::from_secs(10), || {
+                events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|e| matches!(e.state, ProviderLoginState::Error))
+            }),
+            "o timeout honesto deve disparar — o OAuth não completou"
+        );
+
+        // NENHUM Connected pode ter sido emitido — o token do blob NÃO
+        // mudou do snapshot no momento do slash. Sem o fix, o poll casa o
+        // token PRÉVIO e emite Connected prematuro → teardown do PTY →
+        // CLI morto → listener 1455 morto → callback do OAuth do usuário
+        // recebe ERR_CONNECTION_REFUSED.
+        assert!(
+            !events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| matches!(e.state, ProviderLoginState::Connected)),
+            "o poll NÃO pode emitir Connected com o token PRÉVIO do blob — \
+             aguardar MUDANÇA de token (OAuth completou). Sem o fix, o dono \
+             recebe ERR_CONNECTION_REFUSED no callback 1455."
+        );
+
+        service.cancel().ok();
+        clear_fake_cli();
+    }
+
+    /// Direção negativa do `second_account_with_existing_token_does_not_emit_connected_prematurely`:
+    /// 1º login (sem conta prévia) DEVE continuar detectando Connected. O
+    /// snapshot no momento do slash é None (blob vazio); quando o OAuth
+    /// completa e o token do provedor aparece no blob, o poll vê a MUDANÇA
+    /// (None → Some) e emite Connected normalmente.
+    #[test]
+    fn first_login_emits_connected_when_token_appears_after_oauth_evidence() {
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cleanup = FakeCliCleanup;
+        let (_cli, _state, _received, _child) = write_fake_cli("first-login", false);
+        // SAFETY: env global intencional, serializado pelo guard.
+        unsafe {
+            std::env::set_var("FAKE_OAUTH_CORRUPTED", "1");
+        }
+        // BLOB VAZIO no start — 1º login (sem conta prévia). O fake CLI
+        // imprime o URL do OAuth; depois do URL, o teste escreve o token
+        // novo no blob (simula callback do OAuth completado).
+        set_fake_blob("codex", None);
+
+        let events: Arc<Mutex<Vec<ProviderLoginEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_for_service = events.clone();
+        let service = ProviderLoginService::new(
+            move |event| {
+                events_for_service.lock().unwrap().push(event);
+            },
+            std::env::temp_dir(),
+        );
+
+        let _id = service
+            .start(
+                "codex",
+                true,
+                None,
+                LoginOptions {
+                    prompt_timeout: Duration::from_secs(10),
+                    login_timeout: Duration::from_secs(30),
+                    browser_timeout: Duration::from_secs(60),
+                },
+            )
+            .expect("start deve abrir o PTY");
+
+        // Espera o URL do OAuth ser observado (awaiting_browser) — isto
+        // confirma que o slash foi enviado E o URL processado.
+        assert!(
+            wait_until(Duration::from_secs(10), || {
+                events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|e| matches!(e.state, ProviderLoginState::AwaitingBrowser))
+            }),
+            "awaiting_browser deve ser emitido quando o URL é observado"
+        );
+
+        // OAuth completou: callback escreve token NOVO no blob.
+        set_fake_blob("codex", Some("new-codex-tok"));
+
+        // O poll DEVE detectar a MUDANÇA (None → Some) e emitir Connected.
+        assert!(
+            wait_until(Duration::from_secs(10), || {
+                events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|e| matches!(e.state, ProviderLoginState::Connected))
+            }),
+            "1º login (sem conta prévia) DEVE emitir Connected quando o token \
+             aparece no blob após o OAuth — snapshot None → Some é mudança"
+        );
+
+        // Sequência esperada: awaiting_browser → connected.
+        let snap: Vec<String> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| format!("{:?}", e.state))
+            .collect();
+        let awaiting_idx = snap.iter().position(|s| s == "AwaitingBrowser");
+        let connected_idx = snap.iter().position(|s| s == "Connected");
+        assert!(
+            awaiting_idx.is_some() && connected_idx.is_some()
+                && awaiting_idx < connected_idx,
+            "a sequência deve ser awaiting_browser → connected: {snap:?}"
         );
 
         service.cancel().ok();
