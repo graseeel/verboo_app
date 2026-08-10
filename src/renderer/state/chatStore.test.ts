@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   CHAT_STORE_KEY,
+  PERSISTED_CHAT_STORE_VERSIONS,
   visibleConversations,
   createConversation,
   persistChatStore,
@@ -166,6 +167,24 @@ describe('readChatStore — subagent persistence migration', () => {
 
     expect(store.version).toBe(4)
     expect(store.conversations[0].subagents).toEqual([])
+  })
+
+  it('round-trips a v4 store without migration (version 4 is a persisted value)', () => {
+    const store = storeWith([conversation({ id: 'chat:v4' })])
+    persistChatStore(store)
+
+    const restored = readChatStore()
+
+    expect(restored.version).toBe(4)
+    expect(restored.conversations.map(item => item.id)).toEqual(['chat:v4'])
+  })
+
+  // B3 — the accepted persisted versions are derived from ONE typed constant
+  // (chatStore.ts PERSISTED_CHAT_STORE_VERSIONS) that the guard also uses, so
+  // the type `LegacyChatStore.version` (1|2|3) and the guard's acceptance of
+  // v4 can never drift apart again.
+  it('B3: the persisted versions constant covers the legacy schemas and v4', () => {
+    expect(PERSISTED_CHAT_STORE_VERSIONS).toEqual([1, 2, 3, 4])
   })
 })
 

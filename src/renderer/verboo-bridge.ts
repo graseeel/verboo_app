@@ -150,7 +150,7 @@ const api = {
   providerLoginCancel: () => invoke<void>('provider_login_cancel'),
   providerCapabilities: () => invoke<ProviderCapabilities>('provider_capabilities'),
   providerAccountsList: () => invoke<ProviderAccountSummary[]>('provider_accounts_list'),
-  providerAccountsUsage: (provider?: ExternalProviderId, accountId?: string) =>
+  providerAccountsUsage: (provider: ExternalProviderId, accountId: string) =>
     invoke<ProviderUsageResult[]>('provider_accounts_usage', { provider, accountId }),
   providerAccountModels: (provider: ExternalProviderId, accountId: string) =>
     invoke<VerbooModel[]>('provider_account_models', { provider, accountId }),

@@ -7,11 +7,17 @@ export const DEFAULT_PROJECT_NAME = 'Projeto'
 
 type LegacyStoredConversation = Omit<StoredConversation, 'subagents'> & { subagents?: unknown }
 type LegacyChatStore = {
-  version: 1 | 2 | 3
+  version: Exclude<PersistedChatStoreVersion, ChatStore['version']>
   projects: ChatProject[]
   conversations: LegacyStoredConversation[]
 }
 type PersistedChatStore = ChatStore | LegacyChatStore
+/** Every schema version that can exist on disk. v4 is the current ChatStore;
+ *  v1-v3 are legacy schemas the migration path understands. The read guard
+ *  derives from this single constant so the accepted set can never drift from
+ *  the persisted type. */
+export const PERSISTED_CHAT_STORE_VERSIONS = [1, 2, 3, 4] as const
+type PersistedChatStoreVersion = (typeof PERSISTED_CHAT_STORE_VERSIONS)[number]
 
 export function readChatStore(): ChatStore {
   try {
@@ -127,7 +133,7 @@ function isPersistedChatStore(value: unknown): value is PersistedChatStore {
   if (!value || typeof value !== 'object') return false
   const candidate = value as Partial<PersistedChatStore>
   return (
-    (candidate.version === 1 || candidate.version === 2 || candidate.version === 3 || candidate.version === 4) &&
+    (PERSISTED_CHAT_STORE_VERSIONS as readonly number[]).includes(candidate.version as number) &&
     Array.isArray(candidate.projects) &&
     Array.isArray(candidate.conversations)
   )

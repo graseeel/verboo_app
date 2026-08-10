@@ -21,6 +21,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import type { VerbooDesktopApi } from './verboo-bridge'
 
 // Mock @tauri-apps/api before importing the shim — otherwise the shim
 // calls getCurrentWebview() at module load, which throws in jsdom.
@@ -162,6 +163,22 @@ describe('verboo-bridge — API shape', () => {
       ['provider_account_remove', { provider: 'codex', accountId: 'local-a' }],
       ['provider_login_start', { provider: 'codex', reconnectAccountId: 'local-a' }],
     ])
+  })
+
+  // B1 — provider_accounts_usage requires both provider and accountId at the
+  // type level. The Rust command (provider_accounts.rs:286-321) returns
+  // `provider_argument_required` if either is missing, so the renderer type
+  // must not advertise an optional signature that the backend rejects.
+  it('B1: providerAccountsUsage requires both provider and accountId', async () => {
+    expect(api).toBeDefined()
+    if (!api) return
+    const providers = api as VerbooDesktopApi
+    // @ts-expect-error — calling without arguments must be a type error.
+    await providers.providerAccountsUsage()
+    // @ts-expect-error — calling with only the provider must be a type error.
+    await providers.providerAccountsUsage('codex')
+    // OK: both arguments present.
+    await providers.providerAccountsUsage('codex', 'local-a')
   })
 
   it('exposes every settings/menu/window/skills method', () => {
