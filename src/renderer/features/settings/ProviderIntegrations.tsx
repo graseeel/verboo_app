@@ -22,6 +22,7 @@ export type ProviderIntegrationsProps = {
   onCancelLogin: () => void
   capabilities?: ProviderCapabilities
   accountRows?: ProviderUsageRowState[]
+  accountsLoaded?: boolean
   conversationBindings?: Partial<Record<ExternalProviderId, string>>
   switchLocked?: boolean
   onSetDefault?: (provider: ExternalProviderId, accountId: string) => void
@@ -47,6 +48,7 @@ export function ProviderIntegrations({
   onCancelLogin,
   capabilities,
   accountRows,
+  accountsLoaded = true,
   conversationBindings = {},
   switchLocked = false,
   onSetDefault = () => {},
@@ -55,6 +57,18 @@ export function ProviderIntegrations({
   onRefreshAccount = () => {},
 }: ProviderIntegrationsProps) {
   const { t } = useI18n()
+  if (!accountsLoaded) {
+    return (
+      <section
+        className="provider-account-loading"
+        role="status"
+        aria-label={t('settings.provider.loadingAccounts')}
+      >
+        <span className="provider-account-loading-dot" aria-hidden="true" />
+        <span>{t('settings.provider.loadingAccounts')}</span>
+      </section>
+    )
+  }
   if (capabilities?.providerAccountsV1 && accountRows) {
     return (
       <ProviderAccountList

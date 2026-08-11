@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { ArrowDown, FolderClosed, X } from 'lucide-react'
 import type {
@@ -112,10 +112,8 @@ import { QuestionWizard, type ModelQuestion, type QuestionAnswer, type QuestionP
 import { detectTextQuestionPrompt, extractModelQuestionsFromPayload, mergeModelQuestions } from './features/questions/questionDetection'
 import { MessageCircleQuestion } from 'lucide-react'
 import { useLocalTerminal } from './features/terminal/useLocalTerminal'
-import { LocalTerminalPanel } from './features/terminal/LocalTerminalPanel'
 import { useWorkspacePanelSuspension, type WorkspacePanelKind } from './features/workspace/useWorkspacePanelSuspension'
 import { useTheme } from './features/theme/useTheme'
-import { ReviewPanel } from './features/review/ReviewPanel'
 import { useReviewPanel } from './features/review/useReviewPanel'
 import { EmptyChat } from './components/EmptyChat'
 import { LoginScreen } from './components/LoginScreen'
@@ -138,7 +136,6 @@ import {
 } from './features/video/VideoFallbackModal'
 import { SkillApprovalPanel } from './features/skills/SkillApprovalPanel'
 import type { ExtractionStatus, ModelReasoning, VideoProgress, VideoUnderstandingRoute, VisionFallbackConsent, VisionFallbackState } from '../shared/types'
-import { recognizeImage } from './features/ocr/ocrService'
 import { createVideoOcrCoordinator } from './features/video/VideoOcrCoordinator'
 import { applyVideoProgress, clearVideoProgress } from './features/video/videoProgressState'
 import { Composer } from './features/composer/Composer'
@@ -159,10 +156,8 @@ import { FeedbackDialog } from './features/feedback/FeedbackDialog'
 import { ProviderRiskDialog } from './features/settings/ProviderRiskDialog'
 import { ModelSelector } from './features/models/ModelSelector'
 import { validOverride, displayEffort, migrateEffortPrefs } from './features/models/effortOverride'
-import { PluginsView } from './features/plugins/PluginsView'
 import { loadPluginSkillSummaries } from './features/plugins/pluginSkillSummaries'
 import { ProjectPicker } from './features/projects/ProjectPicker'
-import { SettingsView } from './features/settings/SettingsView'
 import { useProviderAccounts } from './features/settings/useProviderAccounts'
 import {
   bindProviderAccount,
@@ -206,6 +201,20 @@ import { finishTurn, findNextRunnableQueueIndex, resolveEscapeConversation, star
 import { promptForConversation } from './state/promptRouting'
 import { installContextMenuGuard } from './features/window/contextMenuGuard'
 import packageJson from '../../package.json'
+
+const loadPluginsView = () => import('./features/plugins/PluginsView')
+const loadSettingsView = () => import('./features/settings/SettingsView')
+const loadLocalTerminalPanel = () => import('./features/terminal/LocalTerminalPanel')
+const loadReviewPanel = () => import('./features/review/ReviewPanel')
+const LazyPluginsView = lazy(() => loadPluginsView().then(module => ({ default: module.PluginsView })))
+const LazySettingsView = lazy(() => loadSettingsView().then(module => ({ default: module.SettingsView })))
+const LazyLocalTerminalPanel = lazy(() => loadLocalTerminalPanel().then(module => ({ default: module.LocalTerminalPanel })))
+const LazyReviewPanel = lazy(() => loadReviewPanel().then(module => ({ default: module.ReviewPanel })))
+
+async function recognizeImageDeferred(image: string | Blob) {
+  const { recognizeImage } = await import('./features/ocr/ocrService')
+  return recognizeImage(image)
+}
 
 const defaultModels: VerbooModel[] = []
 const AUTH_SESSION_KEY = 'verboo:last-verified-auth'
@@ -411,6 +420,7 @@ export function App() {
     source: 'none',
     stale: false,
   })
+  const providerCatalogRecoveryGenerationRef = useRef(0)
   const [selectedModel, setSelectedModel] = useState<string | undefined>()
   const [providerModelBlocker, setProviderModelBlocker] = useState<ProviderModelBlocker | undefined>()
   const providerModelValidationGeneration = useRef(0)
@@ -446,6 +456,22 @@ export function App() {
   // T3 (field report, Windows): suppress the webview's NATIVE context menu on
   // empty chrome areas; editable elements and text selections keep it.
   useEffect(() => installContextMenuGuard(window), [])
+
+  // Keep Settings/Providers and Plugins ready without putting their parse and
+  // evaluation on the first-paint path. The provider account discovery itself
+  // remains eager and independent from these renderer chunks.
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      void loadSettingsView()
+    })
+    const timer = window.setTimeout(() => {
+      void loadPluginsView()
+    }, 400)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.clearTimeout(timer)
+    }
+  }, [])
 
   const [effortByModel, setEffortByModel] = useState<Record<string, string>>(
     () => readEffortByModel(),
@@ -858,12 +884,16 @@ export function App() {
   }, [browser.close, review.close, simulator.close, terminal.close])
   const restoreWorkspacePanel = useCallback((panel: WorkspacePanelKind) => {
     if (panel === 'terminal') {
+      void loadLocalTerminalPanel()
       void terminal.open(currentWorkspaceDirectory)
       return
     }
     if (panel === 'review') {
       const target = review.target
-      if (target) review.open(target.workingDirectory, target.files, target.index)
+      if (target) {
+        void loadReviewPanel()
+        review.open(target.workingDirectory, target.files, target.index)
+      }
       return
     }
     if (panel === 'browser' && browserAvailable) {
@@ -1210,7 +1240,7 @@ export function App() {
       // Blob.
       recognize: async path => {
         const bytes = await window.verboo.readVideoFrame(path)
-        return recognizeImage(new Blob([bytes], { type: 'image/png' }))
+        return recognizeImageDeferred(new Blob([bytes], { type: 'image/png' }))
       },
       complete: (jobId, results) => window.verboo.completeVideoOcrBatch(jobId, results),
     })
@@ -1713,6 +1743,44 @@ export function App() {
       setProviderAuth([])
     }
   }
+
+  // Provider CLI reads are best-effort, so startup can temporarily return only
+  // Verboo models. Once auth confirms an external provider, recover in the
+  // background with a small bounded sequence. The pauses keep transient
+  // initialization contention from turning all attempts into the same failure;
+  // there is no permanent timer or polling after these three reads.
+  const connectedCatalogProviders = providerAuth
+    .filter(status => status.connected)
+    .map(status => status.provider)
+  const connectedCatalogProviderKey = connectedCatalogProviders.slice().sort().join('|')
+  const missingConnectedCatalogProvider = connectedCatalogProviders.some(provider => (
+    !modelResult.models.some(model => model.provider === provider)
+  ))
+  useEffect(() => {
+    const generation = ++providerCatalogRecoveryGenerationRef.current
+    if (!missingConnectedCatalogProvider || connectedCatalogProviders.length === 0) return
+    let cancelled = false
+    const recover = async () => {
+      const retryDelays = [0, 300, 900]
+      for (const delay of retryDelays) {
+        if (delay > 0) {
+          await new Promise<void>(resolve => window.setTimeout(resolve, delay))
+        }
+        if (cancelled || generation !== providerCatalogRecoveryGenerationRef.current) return
+        try {
+          const result = await refreshModels(true)
+          const complete = connectedCatalogProviders.every(provider => (
+            result.models.some(model => model.provider === provider)
+          ))
+          if (complete) return
+        } catch {
+          // A later bounded attempt can still recover a transient CLI read.
+        }
+      }
+    }
+    void recover()
+    return () => { cancelled = true }
+  }, [connectedCatalogProviderKey, missingConnectedCatalogProvider])
 
   // F4: Conectar starts the bridge login (provider_login_start) — the CLI
   // takes over in the browser; progress arrives on provider-login:event.
@@ -5025,7 +5093,7 @@ export function App() {
       const promise = new Promise<void>(resolve => { _resolve = resolve })
       ocrCompletionsRef.current[att.path] = { resolve: _resolve!, promise }
 
-      recognizeImage(imageUrl)
+      recognizeImageDeferred(imageUrl)
         .then(result => {
           ocrCompletionsRef.current[att.path]?.resolve()
           delete ocrCompletionsRef.current[att.path]
@@ -5913,6 +5981,7 @@ export function App() {
     browser.close()
     simulator.close()
     setSelectedSubagentId(undefined)
+    if (!terminal.terminalOpen) void loadLocalTerminalPanel()
     void terminal.toggle(cwd)
   }, [review, terminal, browser, simulator, workspacePanelsEnabled])
 
@@ -5936,6 +6005,8 @@ export function App() {
       review.close()
       return
     }
+
+    void loadReviewPanel()
 
     terminal.close()
     browser.close()
@@ -5976,6 +6047,7 @@ export function App() {
     browser.close()
     simulator.close()
     setSelectedSubagentId(undefined)
+    void loadReviewPanel()
     review.open(workingDirectory, files, index)
   }, [currentWorkspaceDirectory, review, terminal, browser, simulator])
 
@@ -6329,101 +6401,105 @@ export function App() {
             />
           )}
           {activeView === 'plugins' ? (
-            <PluginsView
-              onClose={() => setActiveView('chat')}
-              loadIcons={userSettings.loadWebIcons}
-              onManageChromeIntegration={() => {
-                setSettingsTab('integrations')
-                setActiveView('settings')
-              }}
-              onUsePlugin={(payload) => {
-                setActiveView('chat')
-                const { pluginId, pluginName, suggestion } = payload
+            <Suspense fallback={null}>
+              <LazyPluginsView
+                onClose={() => setActiveView('chat')}
+                loadIcons={userSettings.loadWebIcons}
+                onManageChromeIntegration={() => {
+                  setSettingsTab('integrations')
+                  setActiveView('settings')
+                }}
+                onUsePlugin={(payload) => {
+                  setActiveView('chat')
+                  const { pluginId, pluginName, suggestion } = payload
 
-                // ITEM B: sempre insere @token do payload (sem async).
-                const token = `@${pluginName}`
-                const extra = suggestion ? ` ${suggestion}` : ''
-                if (!composerValue?.trim()) {
-                  setComposerValue(`${token}${extra}`.trim())
-                } else {
-                  setComposerValue(`${token} ${composerValue}`)
-                }
+                  // ITEM B: sempre insere @token do payload (sem async).
+                  const token = `@${pluginName}`
+                  const extra = suggestion ? ` ${suggestion}` : ''
+                  if (!composerValue?.trim()) {
+                    setComposerValue(`${token}${extra}`.trim())
+                  } else {
+                    setComposerValue(`${token} ${composerValue}`)
+                  }
 
-                // Optimistic mention entry — paint highlight instantly.
-                setPluginSkillSummaries(current => {
-                  if (current.some(s => s.id === `plugin-mention:${pluginId}`)) return current
-                  return [...current, {
-                    id: `plugin-mention:${pluginId}`,
-                    name: pluginName,
-                    description: '',
-                    path: '',
-                    source: 'managed',
-                    trusted: true,
-                    pluginId,
-                    pluginName,
-                    isPluginMention: true,
-                  } satisfies SkillSummary]
-                })
+                  // Optimistic mention entry — paint highlight instantly.
+                  setPluginSkillSummaries(current => {
+                    if (current.some(s => s.id === `plugin-mention:${pluginId}`)) return current
+                    return [...current, {
+                      id: `plugin-mention:${pluginId}`,
+                      name: pluginName,
+                      description: '',
+                      path: '',
+                      source: 'managed',
+                      trusted: true,
+                      pluginId,
+                      pluginName,
+                      isPluginMention: true,
+                    } satisfies SkillSummary]
+                  })
 
-                requestAnimationFrame(() => {
-                  window.dispatchEvent(new CustomEvent('verboo:focus-composer'))
-                })
-              }}
-              onSeedComposer={(text: string) => {
-                setComposerValue(text)
-                setActiveView('chat')
-                // Focus the composer after the view switch commits. rAF
-                // ensures the textarea is mounted before we dispatch.
-                requestAnimationFrame(() => {
-                  window.dispatchEvent(new CustomEvent('verboo:focus-composer'))
-                })
-              }}
-            />
+                  requestAnimationFrame(() => {
+                    window.dispatchEvent(new CustomEvent('verboo:focus-composer'))
+                  })
+                }}
+                onSeedComposer={(text: string) => {
+                  setComposerValue(text)
+                  setActiveView('chat')
+                  // Focus the composer after the view switch commits. rAF
+                  // ensures the textarea is mounted before we dispatch.
+                  requestAnimationFrame(() => {
+                    window.dispatchEvent(new CustomEvent('verboo:focus-composer'))
+                  })
+                }}
+              />
+            </Suspense>
           ) : activeView === 'settings' ? (
-            <SettingsView
-              credentials={credentials}
-              modelResult={modelResult}
-              selectedModel={selectedModelInfo}
-              providerStatuses={providerAuth}
-              providerAccounts={providerAccounts}
-              conversationProviderBindings={activeConversation?.providerAccountBindings}
-              providerSwitchLocked={Boolean(activeConversationId && runningConversations.has(activeConversationId))}
-              onProviderAccountUse={handleProviderAccountUse}
-              onProviderAccountRemoved={handleProviderAccountRemove}
-              connectingProvider={connectingProvider}
-              providerLoginStage={providerLoginStage}
-              onProviderConnect={(providerId, reconnectAccountId) => { void handleProviderConnect(providerId, reconnectAccountId) }}
-              onProviderLoginCancel={() => { void handleProviderLoginCancel() }}
-              theme={theme}
-              activeTab={settingsTab}
-              userSettings={userSettings}
-              petEnabled={petEnabled}
-              petSize={petSize}
-              profile={profile}
-              profileLoading={profileLoading}
-              workingDirectory={currentWorkspaceDirectory}
-              onPetToggle={togglePet}
-              onPetSizeChange={updatePetSize}
-              browserAvailable={browserAvailable}
-              onOpenDashboard={() => window.verboo.openDashboard()}
-              onRefreshProfile={refreshProfile}
-              onManagePlan={() => window.verboo.openSubscriptions()}
-              onUpdateAvatar={avatar => updateUserSettings({ avatar })}
-              onSaveApiKey={async apiKey => {
-                await saveApiKey(apiKey)
-              }}
-              onThemeChange={setTheme}
-              onActiveTabChange={setSettingsTab}
-              onUserSettingsChange={updateUserSettings}
-              soundsEnabled={soundsEnabled}
-              onSoundsEnabledChange={setSoundsEnabled}
-              onResetUserSettings={resetUserSettings}
-              updateSnapshot={updateSnapshot}
-              onCheckForUpdates={onCheckForUpdates}
-              onDownloadUpdate={onDownloadUpdate}
-              onInstallUpdate={onInstallUpdate}
-              onClose={() => setActiveView('chat')}
-            />
+            <Suspense fallback={null}>
+              <LazySettingsView
+                credentials={credentials}
+                modelResult={modelResult}
+                selectedModel={selectedModelInfo}
+                providerStatuses={providerAuth}
+                providerAccounts={providerAccounts}
+                conversationProviderBindings={activeConversation?.providerAccountBindings}
+                providerSwitchLocked={Boolean(activeConversationId && runningConversations.has(activeConversationId))}
+                onProviderAccountUse={handleProviderAccountUse}
+                onProviderAccountRemoved={handleProviderAccountRemove}
+                connectingProvider={connectingProvider}
+                providerLoginStage={providerLoginStage}
+                onProviderConnect={(providerId, reconnectAccountId) => { void handleProviderConnect(providerId, reconnectAccountId) }}
+                onProviderLoginCancel={() => { void handleProviderLoginCancel() }}
+                theme={theme}
+                activeTab={settingsTab}
+                userSettings={userSettings}
+                petEnabled={petEnabled}
+                petSize={petSize}
+                profile={profile}
+                profileLoading={profileLoading}
+                workingDirectory={currentWorkspaceDirectory}
+                onPetToggle={togglePet}
+                onPetSizeChange={updatePetSize}
+                browserAvailable={browserAvailable}
+                onOpenDashboard={() => window.verboo.openDashboard()}
+                onRefreshProfile={refreshProfile}
+                onManagePlan={() => window.verboo.openSubscriptions()}
+                onUpdateAvatar={avatar => updateUserSettings({ avatar })}
+                onSaveApiKey={async apiKey => {
+                  await saveApiKey(apiKey)
+                }}
+                onThemeChange={setTheme}
+                onActiveTabChange={setSettingsTab}
+                onUserSettingsChange={updateUserSettings}
+                soundsEnabled={soundsEnabled}
+                onSoundsEnabledChange={setSoundsEnabled}
+                onResetUserSettings={resetUserSettings}
+                updateSnapshot={updateSnapshot}
+                onCheckForUpdates={onCheckForUpdates}
+                onDownloadUpdate={onDownloadUpdate}
+                onInstallUpdate={onInstallUpdate}
+                onClose={() => setActiveView('chat')}
+              />
+            </Suspense>
           ) : hasConversation ? (
             <>
               <Transcript
@@ -6560,37 +6636,45 @@ export function App() {
             onClose={() => setSelectedSubagentId(undefined)}
           />
         )}
-        <LocalTerminalPanel
-          terminalOpen={visibleTerminalOpen}
-          terminalWidth={terminal.terminalWidth}
-          onSetWidth={terminal.setWidth}
-          onWrite={terminal.write}
-          onResize={terminal.resize}
-          onClose={terminal.close}
-          onStop={terminal.stop}
-          onRestartInProject={async () => terminal.restartInProject(workspaceDirectory || '')}
-          onTerminalData={terminal.onTerminalData}
-          onTerminalExit={terminal.onTerminalExit}
-          session={terminal.terminalSession}
-          workingDirectory={workspaceDirectory || ''}
-          minWidth={terminal.MIN_WIDTH}
-          maxWidth={terminal.MAX_WIDTH}
-        />
-        <ReviewPanel
-          open={visibleReviewOpen}
-          width={review.reviewWidth}
-          target={review.target}
-          onSetWidth={review.setWidth}
-          onClose={review.close}
-          onReverted={refreshWorkspaceReview}
-          onSwitchBranch={handleSwitchReviewBranch}
-          minWidth={review.MIN_WIDTH}
-          maxWidth={review.MAX_WIDTH}
-          capabilities={reviewMetadata?.capabilities}
-          metadata={reviewMetadata}
-          branchInfo={branchInfo}
-          includeVerbooCoAuthor={userSettings.includeVerbooCoAuthor}
-        />
+        {terminal.terminalSession && (
+          <Suspense fallback={null}>
+            <LazyLocalTerminalPanel
+              terminalOpen={visibleTerminalOpen}
+              terminalWidth={terminal.terminalWidth}
+              onSetWidth={terminal.setWidth}
+              onWrite={terminal.write}
+              onResize={terminal.resize}
+              onClose={terminal.close}
+              onStop={terminal.stop}
+              onRestartInProject={async () => terminal.restartInProject(workspaceDirectory || '')}
+              onTerminalData={terminal.onTerminalData}
+              onTerminalExit={terminal.onTerminalExit}
+              session={terminal.terminalSession}
+              workingDirectory={workspaceDirectory || ''}
+              minWidth={terminal.MIN_WIDTH}
+              maxWidth={terminal.MAX_WIDTH}
+            />
+          </Suspense>
+        )}
+        {visibleReviewOpen && review.target && (
+          <Suspense fallback={null}>
+            <LazyReviewPanel
+              open={visibleReviewOpen}
+              width={review.reviewWidth}
+              target={review.target}
+              onSetWidth={review.setWidth}
+              onClose={review.close}
+              onReverted={refreshWorkspaceReview}
+              onSwitchBranch={handleSwitchReviewBranch}
+              minWidth={review.MIN_WIDTH}
+              maxWidth={review.MAX_WIDTH}
+              capabilities={reviewMetadata?.capabilities}
+              metadata={reviewMetadata}
+              branchInfo={branchInfo}
+              includeVerbooCoAuthor={userSettings.includeVerbooCoAuthor}
+            />
+          </Suspense>
+        )}
       {browserAvailable && (
         <BrowserPanel
           browserOpen={visibleBrowserOpen}

@@ -24,7 +24,6 @@ use std::sync::atomic::AtomicU64;
 
 const PROTOCOL_VERSION: u32 = 1;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
-const ACCEPT_POLL: Duration = Duration::from_millis(25);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,6 +93,25 @@ pub struct IosSimulatorBridge {
     service: IosSimulatorService,
 }
 
+fn run_accept_loop(
+    listener: TcpListener,
+    stop: Arc<AtomicBool>,
+    mut on_connection: impl FnMut(TcpStream),
+) {
+    while !stop.load(Ordering::Acquire) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                if stop.load(Ordering::Acquire) {
+                    break;
+                }
+                on_connection(stream);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+}
+
 impl IosSimulatorBridge {
     pub fn start(
         cache_dir: PathBuf,
@@ -108,9 +126,6 @@ impl IosSimulatorBridge {
 
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .map_err(|error| format!("não foi possível iniciar o relay do simulador: {error}"))?;
-        listener.set_nonblocking(true).map_err(|error| {
-            format!("não foi possível configurar o relay do simulador: {error}")
-        })?;
         let endpoint = listener
             .local_addr()
             .map_err(|error| format!("não foi possível ler o relay do simulador: {error}"))?
@@ -132,29 +147,21 @@ impl IosSimulatorBridge {
         let worker = thread::Builder::new()
             .name("verboo-ios-simulator-bridge".into())
             .spawn(move || {
-                while !worker_stop.load(Ordering::Acquire) {
-                    match listener.accept() {
-                        Ok((stream, _)) => {
-                            let connection_secret = secret.clone();
-                            let connection_service = worker_service.clone();
-                            let connection_app = app.clone();
-                            let _ = thread::Builder::new()
-                                .name("verboo-ios-simulator-request".into())
-                                .spawn(move || {
-                                    handle_connection(
-                                        stream,
-                                        connection_secret.as_str(),
-                                        &connection_service,
-                                        &connection_app,
-                                    )
-                                });
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            thread::sleep(ACCEPT_POLL)
-                        }
-                        Err(_) => break,
-                    }
-                }
+                run_accept_loop(listener, worker_stop, move |stream| {
+                    let connection_secret = secret.clone();
+                    let connection_service = worker_service.clone();
+                    let connection_app = app.clone();
+                    let _ = thread::Builder::new()
+                        .name("verboo-ios-simulator-request".into())
+                        .spawn(move || {
+                            handle_connection(
+                                stream,
+                                connection_secret.as_str(),
+                                &connection_service,
+                                &connection_app,
+                            )
+                        });
+                });
             })
             .map_err(|error| format!("não foi possível iniciar o relay do simulador: {error}"))?;
 
@@ -697,9 +704,43 @@ mod tests {
     use crate::services::ios_simulator::{
         IosSimulatorDevice, IosSimulatorStreamSource, PresenceAuthority, Session, StreamStats,
     };
+    use std::sync::mpsc;
 
     fn response_value(response: BridgeResponse) -> Value {
         serde_json::to_value(response).unwrap()
+    }
+
+    #[test]
+    fn blocking_accept_handles_a_connection_and_wakes_for_shutdown() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let (handled_tx, handled_rx) = mpsc::channel();
+        let (stopped_tx, stopped_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            run_accept_loop(listener, worker_stop, move |_stream| {
+                handled_tx.send(()).unwrap();
+            });
+            stopped_tx.send(()).unwrap();
+        });
+
+        let first = TcpStream::connect(endpoint).unwrap();
+        handled_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the blocking listener must dispatch real connections");
+        drop(first);
+
+        stop.store(true, Ordering::Release);
+        // The worker may observe `stop` between dispatching the first stream
+        // and entering accept again. In that valid faster path the listener is
+        // already closed and the wake connection is refused.
+        let wake = TcpStream::connect(endpoint).ok();
+        stopped_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the wake connection must release blocking accept during shutdown");
+        drop(wake);
+        worker.join().unwrap();
     }
 
     #[test]

@@ -42,6 +42,80 @@ function renderList(overrides: Partial<React.ComponentProps<typeof ProviderAccou
 }
 
 describe('ProviderAccountList', () => {
+  it('shows the detected usage plan when the account summary has no plan yet', () => {
+    const row: ProviderUsageRowState = {
+      account: { ...account, planDisplayName: undefined },
+      status: 'fresh',
+      snapshot: {
+        schemaVersion: 1,
+        provider: 'codex',
+        accountId: 'codex-a',
+        fetchedAt: '2026-08-11T12:00:00.000Z',
+        plan: { id: 'plus', displayName: 'Plus' },
+        windows: [],
+      },
+    }
+    renderList({ rows: [row] })
+    expect(screen.getByText('Plus')).toHaveClass('provider-account-plan')
+  })
+
+  it('shows Claude Max when the CLI omits plan metadata but reports the Fable weekly window', () => {
+    const claudeAccount: ProviderAccountSummary = {
+      ...account,
+      provider: 'claude',
+      accountId: 'claude-a',
+      displayLabel: 'Claude 1',
+      planDisplayName: undefined,
+    }
+    renderList({
+      rows: [{
+        account: claudeAccount,
+        status: 'fresh',
+        snapshot: {
+          schemaVersion: 1,
+          provider: 'claude',
+          accountId: 'claude-a',
+          fetchedAt: '2026-08-11T12:00:00.000Z',
+          windows: [
+            { id: 'claude:five-hour', kind: 'session', displayLabel: '5 hours', usedPercent: 0 },
+            { id: 'claude:weekly', kind: 'weekly', displayLabel: 'Weekly', usedPercent: 17 },
+            { id: 'claude:weekly-fable', kind: 'model-scoped-weekly', displayLabel: 'Fable Weekly', modelScope: 'fable', usedPercent: 31 },
+          ],
+        },
+      }],
+    })
+
+    expect(screen.getByText('Max')).toHaveClass('provider-account-plan')
+  })
+
+  it('shows Claude Pro when the CLI omits plan metadata and reports only the 5-hour and weekly windows', () => {
+    const claudeAccount: ProviderAccountSummary = {
+      ...account,
+      provider: 'claude',
+      accountId: 'claude-a',
+      displayLabel: 'Claude 1',
+      planDisplayName: undefined,
+    }
+    renderList({
+      rows: [{
+        account: claudeAccount,
+        status: 'fresh',
+        snapshot: {
+          schemaVersion: 1,
+          provider: 'claude',
+          accountId: 'claude-a',
+          fetchedAt: '2026-08-11T12:00:00.000Z',
+          windows: [
+            { id: 'claude:five-hour', kind: 'session', displayLabel: '5 hours', usedPercent: 0 },
+            { id: 'claude:weekly', kind: 'weekly', displayLabel: 'Weekly', usedPercent: 17 },
+          ],
+        },
+      }],
+    })
+
+    expect(screen.getByText('Pro')).toHaveClass('provider-account-plan')
+  })
+
   it('renders an explicit active-turn lock and disables every account-switching action', () => {
     const nonDefaultRow: ProviderUsageRowState = {
       account: { ...account, isDefault: false },
@@ -320,31 +394,72 @@ describe('ProviderAccountList', () => {
     renderList({})
     expect(document.querySelector('.provider-account-cards')).not.toBeNull()
     expect(document.querySelector('.provider-account-row')).toBeNull()
-    const toggle = screen.getByRole('button', { name: /view: simple|visualização: simples/i })
-    expect(toggle).toHaveProperty('title', 'View: simple')
+    const toggle = screen.getByRole('button', { name: /switch to expanded view|mudar para visualização expandida/i })
+    expect(toggle).toHaveAttribute('data-tooltip', 'Switch to expanded view')
+    expect(toggle).toHaveTextContent('Expand')
     fireEvent.click(toggle)
-    expect(document.querySelector('.provider-account-cards')).toBeNull()
+    expect(document.querySelector('.provider-account-cards')).not.toBeNull()
     expect(document.querySelector('.provider-account-row')).not.toBeNull()
     expect(document.querySelector('.provider-account-list')?.className).toContain('is-expanded')
   })
 
   it('VIEW: toggling back returns to simple cards', () => {
     renderList({})
-    fireEvent.click(screen.getByRole('button', { name: /view: simple|visualização: simples/i }))
+    fireEvent.click(screen.getByRole('button', { name: /switch to expanded view|mudar para visualização expandida/i }))
     expect(document.querySelector('.provider-account-row')).not.toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /view: expanded|visualização: expandida/i }))
+    const toggle = screen.getByRole('button', { name: /switch to simple view|mudar para visualização simples/i })
+    expect(toggle).toHaveAttribute('data-tooltip', 'Switch to simple view')
+    expect(toggle).toHaveTextContent('Simplify')
+    fireEvent.click(toggle)
     expect(document.querySelector('.provider-account-cards')).not.toBeNull()
     expect(document.querySelector('.provider-account-row')).toBeNull()
   })
 
+  it('VIEW: preserves the account DOM node while the layout changes', () => {
+    renderList({})
+    const before = screen.getByText('Codex 1').closest('article')
+    expect(before).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /switch to expanded view|mudar para visualização expandida/i }))
+
+    const after = screen.getByText('Codex 1').closest('article')
+    expect(after).toBe(before)
+    expect(after).toHaveClass('provider-account-row')
+  })
+
+  it('VIEW: uses the browser view-transition path when it is available', () => {
+    const original = (document as Document & { startViewTransition?: (callback: () => void) => unknown }).startViewTransition
+    const startViewTransition = vi.fn((callback: () => void) => {
+      callback()
+      return { finished: Promise.resolve() }
+    })
+    Object.defineProperty(document, 'startViewTransition', {
+      configurable: true,
+      value: startViewTransition,
+    })
+    try {
+      renderList({})
+      const toggle = screen.getByRole('button', { name: /switch to expanded view|mudar para visualização expandida/i })
+      expect(toggle.querySelectorAll('svg')).toHaveLength(2)
+      fireEvent.click(toggle)
+      expect(startViewTransition).toHaveBeenCalledTimes(1)
+      expect(document.querySelector('.provider-account-list')).toHaveClass('is-expanded')
+    } finally {
+      Object.defineProperty(document, 'startViewTransition', {
+        configurable: true,
+        value: original,
+      })
+    }
+  })
+
   it('VIEW: the mode persists across re-renders (localStorage, never the CLI)', () => {
     renderList({})
-    fireEvent.click(screen.getByRole('button', { name: /view: simple|visualização: simples/i }))
+    fireEvent.click(screen.getByRole('button', { name: /switch to expanded view|mudar para visualização expandida/i }))
     expect(document.querySelector('.provider-account-row')).not.toBeNull()
     cleanup()
     renderList({})
     expect(document.querySelector('.provider-account-row')).not.toBeNull()
-    expect(document.querySelector('.provider-account-cards')).toBeNull()
+    expect(document.querySelector('.provider-account-cards')).not.toBeNull()
     expect(window.localStorage.getItem('verboo.providerAccountViewMode')).toBe('expanded')
   })
 
@@ -359,7 +474,7 @@ describe('ProviderAccountList', () => {
 // VIEW — os comportamentos-chave rodam nos DOIS modos, sem afrouxar pin.
 describe.each([
   ['simple', 'provider-account-card', 'provider-account-cards'],
-  ['expanded', 'provider-account-row', 'provider-account-group'],
+  ['expanded', 'provider-account-row', 'provider-account-cards'],
 ] as const)('VIEW behaviors in %s mode', (viewMode, accountClass, parentClass) => {
   beforeEach(() => {
     setProviderAccountViewMode(viewMode)

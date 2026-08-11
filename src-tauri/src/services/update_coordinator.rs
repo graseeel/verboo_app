@@ -171,6 +171,18 @@ impl UpdateCoordinator {
         snapshot
     }
 
+    /// Returns the first renderer-facing snapshot only after the existing
+    /// runtime/CLI pair has had a chance to initialize. Setup starts that work
+    /// in the background, but the renderer can request status before the
+    /// background thread acquires the initialization lock. Running the same
+    /// idempotent initializer here closes that race without blocking app setup.
+    pub fn snapshot_after_startup_initialization(&self) -> UpdateSnapshot {
+        if let Err(error) = self.initialize_existing_cli() {
+            eprintln!("[verboo:cli-update] startup status preparation failed: {error}");
+        }
+        self.snapshot()
+    }
+
     pub async fn begin_operation(&self) -> tokio::sync::OwnedMutexGuard<()> {
         self.operation.clone().lock_owned().await
     }
@@ -410,6 +422,64 @@ mod tests {
             coordinator.snapshot().bootstrap_stage,
             Some(BootstrapStage::Cli)
         );
+        crate::services::cli_update::runtime::reset();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_status_initializes_an_installed_cli_before_reporting_bootstrap() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::services::cli_update::runtime::reset();
+        let app_data = tempfile::tempdir().unwrap();
+        let node = app_data.path().join("node");
+        fs::write(&node, b"#!/bin/sh\nprintf '0.15.12 (Verboo Code)\\n'\n").unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+        let override_cli = app_data.path().join("override/dist/cli.mjs");
+        fs::create_dir_all(override_cli.parent().unwrap()).unwrap();
+        fs::write(&override_cli, b"entry").unwrap();
+        let previous_node = std::env::var_os("VERBOO_NODE_PATH");
+        let previous_cli = std::env::var_os("VERBOO_CLI_PATH");
+        std::env::set_var("VERBOO_NODE_PATH", &node);
+        std::env::set_var("VERBOO_CLI_PATH", &override_cli);
+
+        let store = crate::services::cli_update::store::CliStore::open(app_data.path()).unwrap();
+        let version_root = store.version_dir("0.15.12").unwrap();
+        fs::create_dir_all(version_root.join("dist")).unwrap();
+        fs::write(version_root.join("dist/cli.mjs"), b"entry").unwrap();
+        store
+            .activate(
+                &crate::services::cli_update::store::CliPointer::new(
+                    "0.15.12",
+                    crate::services::cli_update::contract::DesktopTarget::host().unwrap(),
+                    "a".repeat(64),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let coordinator = UpdateCoordinator::new_for_test(
+            UpdateService::new("0.7.0-beta".to_string(), true),
+            NodeRuntimeService::production(app_data.path()).unwrap(),
+            app_data.path().to_path_buf(),
+        );
+
+        let snapshot = coordinator.snapshot_after_startup_initialization();
+        assert!(!snapshot.cli_bootstrap_required);
+        assert_eq!(snapshot.cli_current_version.as_deref(), Some("0.15.12"));
+
+        match previous_node {
+            Some(value) => std::env::set_var("VERBOO_NODE_PATH", value),
+            None => std::env::remove_var("VERBOO_NODE_PATH"),
+        }
+        match previous_cli {
+            Some(value) => std::env::set_var("VERBOO_CLI_PATH", value),
+            None => std::env::remove_var("VERBOO_CLI_PATH"),
+        }
         crate::services::cli_update::runtime::reset();
     }
 

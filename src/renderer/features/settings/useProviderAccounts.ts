@@ -78,6 +78,26 @@ function mergeRows(
   })
 }
 
+type UsageTarget = Pick<ProviderAccountSummary, 'provider' | 'accountId'>
+
+function markRowsLoading(
+  previous: ProviderUsageRowState[],
+  targets: UsageTarget[],
+): ProviderUsageRowState[] {
+  const keys = new Set(targets.map(target => accountKey(target.provider, target.accountId)))
+  return previous.map(row => keys.has(accountKey(row.account.provider, row.account.accountId))
+    ? { ...row, status: 'loading', errorCode: undefined }
+    : row)
+}
+
+function applyUsageRows(
+  previous: ProviderUsageRowState[],
+  completed: ProviderUsageRowState[],
+): ProviderUsageRowState[] {
+  const byKey = new Map(completed.map(row => [accountKey(row.account.provider, row.account.accountId), row]))
+  return previous.map(row => byKey.get(accountKey(row.account.provider, row.account.accountId)) ?? row)
+}
+
 export function useProviderAccounts({
   visible,
   bridge,
@@ -100,19 +120,14 @@ export function useProviderAccounts({
   const accountsLoadedRef = useRef(accountsLoaded)
   accountsLoadedRef.current = accountsLoaded
   const discoveryCacheRef = useRef<DiscoveryCache | undefined>(undefined)
+  const discoveryGenerationRef = useRef(0)
 
   useEffect(() => () => { mounted.current = false }, [])
 
-  const refreshAccount = useCallback(async (provider: ExternalProviderId, accountId: string): Promise<ProviderUsageRowState | undefined> => {
+  const fetchAccountUsage = useCallback((provider: ExternalProviderId, accountId: string): Promise<ProviderUsageRowState | undefined> => {
     const key = accountKey(provider, accountId)
     const current = inFlight.current.get(key)
     if (current) return current
-
-    setRows(previous => previous.map(row =>
-      row.account.provider === provider && row.account.accountId === accountId
-        ? { ...row, status: 'loading', errorCode: undefined }
-        : row,
-    ))
 
     const request = (async () => {
       let result: ProviderUsageResult | undefined
@@ -121,13 +136,8 @@ export function useProviderAccounts({
         const results = await bridge.providerAccountsUsage(provider, accountId)
         result = results.find(item => item.provider === provider && item.accountId === accountId)
         if (result?.snapshot) {
-          if (!account) return undefined
+          if (!mounted.current || !account) return undefined
           const next: ProviderUsageRowState = { account, status: 'fresh', snapshot: result.snapshot }
-          setRows(previous => previous.map(row =>
-            row.account.provider === provider && row.account.accountId === accountId
-              ? next
-              : row,
-          ))
           return next
         } else {
           throw new Error(result?.errorCode ?? 'provider_usage_unavailable')
@@ -143,10 +153,6 @@ export function useProviderAccounts({
           snapshot: previous?.snapshot,
           errorCode: code,
         }
-        setRows(previous => previous.map(row => {
-          if (row.account.provider !== provider || row.account.accountId !== accountId) return row
-          return next
-        }))
         return next
       } finally {
         inFlight.current.delete(key)
@@ -156,34 +162,45 @@ export function useProviderAccounts({
     return request
   }, [bridge])
 
-  const refreshAll = useCallback(async () => {
-    const targets = accounts.map(account => ({ provider: account.provider, accountId: account.accountId }))
+  const refreshAccount = useCallback(async (provider: ExternalProviderId, accountId: string): Promise<ProviderUsageRowState | undefined> => {
+    const target = { provider, accountId }
+    setRows(previous => markRowsLoading(previous, [target]))
+    const next = await fetchAccountUsage(provider, accountId)
+    if (mounted.current && next) setRows(previous => applyUsageRows(previous, [next]))
+    return next
+  }, [fetchAccountUsage])
+
+  const refreshBatch = useCallback(async (targets: UsageTarget[]): Promise<ProviderUsageRowState[]> => {
+    if (targets.length === 0) return []
+    setRows(previous => markRowsLoading(previous, targets))
     let cursor = 0
+    const completed: ProviderUsageRowState[] = []
     const worker = async () => {
       while (cursor < targets.length) {
         const target = targets[cursor++]
-        await refreshAccount(target.provider, target.accountId)
+        const row = await fetchAccountUsage(target.provider, target.accountId)
+        if (row) completed.push(row)
       }
     }
-    await Promise.all(Array.from({ length: Math.min(3, Math.max(1, targets.length)) }, () => worker()))
-  }, [accounts, refreshAccount])
+    await Promise.all(Array.from({ length: Math.min(3, targets.length) }, () => worker()))
+    if (mounted.current && completed.length > 0) {
+      setRows(previous => applyUsageRows(previous, completed))
+    }
+    return completed
+  }, [fetchAccountUsage])
+
+  const refreshAll = useCallback(async () => {
+    const targets = accounts.map(account => ({ provider: account.provider, accountId: account.accountId }))
+    await refreshBatch(targets)
+  }, [accounts, refreshBatch])
 
   const refreshProvider = useCallback(async (provider: ExternalProviderId): Promise<ProviderUsageRowState[]> => {
     const targets = accounts
       .filter(account => account.provider === provider)
       .map(account => ({ provider: account.provider, accountId: account.accountId }))
-    let cursor = 0
-    const refreshed: ProviderUsageRowState[] = []
-    const worker = async () => {
-      while (cursor < targets.length) {
-        const target = targets[cursor++]
-        const row = await refreshAccount(target.provider, target.accountId)
-        if (row) refreshed.push(row)
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(3, Math.max(1, targets.length)) }, () => worker()))
+    const refreshed = await refreshBatch(targets)
     return refreshed.sort((left, right) => left.account.accountId.localeCompare(right.account.accountId))
-  }, [accounts, refreshAccount])
+  }, [accounts, refreshBatch])
 
   const snapshot = useCallback((): ProviderAccountsSnapshot => ({
     capabilities: capabilitiesRef.current,
@@ -192,6 +209,7 @@ export function useProviderAccounts({
   }), [])
 
   const reloadAccounts = useCallback(async (refreshUsage = visible, force = false): Promise<ProviderAccountsSnapshot> => {
+    const generation = ++discoveryGenerationRef.current
     // L2 — within the TTL a tab re-entry must NOT re-spawn the CLI: serve the
     // cached capabilities + list, then refresh usage per account on demand.
     const cached = discoveryCacheRef.current
@@ -206,14 +224,7 @@ export function useProviderAccounts({
         setRows(previous => mergeRows(cached.accounts, previous))
       }
       if (refreshUsage && cached.capabilities.providerUsageV1 && cached.capabilities.providerAccountsV1) {
-        let cursor = 0
-        const worker = async () => {
-          while (cursor < cached.accounts.length) {
-            const account = cached.accounts[cursor++]
-            await refreshAccount(account.provider, account.accountId)
-          }
-        }
-        await Promise.all(Array.from({ length: Math.min(3, Math.max(1, cached.accounts.length)) }, () => worker()))
+        await refreshBatch(cached.accounts)
       }
       return snapshot()
     }
@@ -223,24 +234,40 @@ export function useProviderAccounts({
     // capabilities leaves the previous rows visible (retry next entry).
     const [capabilitiesResult, listResult] = await Promise.all([
       bridge.providerCapabilities().then(
-        value => (value && typeof value === 'object' ? value : fallbackCapabilities),
-        () => fallbackCapabilities,
+        value => (value
+          && typeof value === 'object'
+          && typeof value.providerAccountsV1 === 'boolean'
+          && typeof value.providerUsageV1 === 'boolean'
+          ? value
+          : undefined),
+        () => undefined,
       ),
       bridge.providerAccountsList().then(
         value => (Array.isArray(value) ? value : undefined),
         () => undefined,
       ),
     ])
-    if (!mounted.current) return snapshot()
+    if (!mounted.current || generation !== discoveryGenerationRef.current) return snapshot()
+
+    if (!capabilitiesResult) {
+      // A transient CLI/bootstrap failure is not evidence of a legacy CLI.
+      // Keep an already-rendered account surface intact; on first discovery,
+      // remain in the neutral loading state until the visible retry runs.
+      if (!accountsLoadedRef.current) setAccountsLoaded(false)
+      return snapshot()
+    }
 
     if (!capabilitiesResult.providerAccountsV1) {
       capabilitiesRef.current = capabilitiesResult
       setCapabilities(capabilitiesResult)
       accountsRef.current = []
-      accountsLoadedRef.current = true
+      // Background prefetch cannot choose the legacy surface. Confirm it once
+      // more while Providers is visible, preventing a one-frame legacy flash
+      // when startup briefly reaches the CLI before it is ready.
+      accountsLoadedRef.current = visible
       setAccounts([])
       setRows([])
-      setAccountsLoaded(true)
+      setAccountsLoaded(visible)
       return snapshot()
     }
     capabilitiesRef.current = capabilitiesResult
@@ -265,17 +292,10 @@ export function useProviderAccounts({
     invalidateProviderModelsCache()
     if (refreshUsage && capabilitiesResult.providerUsageV1) {
       // Refresh from the response rather than waiting for state to commit.
-      let cursor = 0
-      const worker = async () => {
-        while (cursor < listResult.length) {
-          const account = listResult[cursor++]
-          await refreshAccount(account.provider, account.accountId)
-        }
-      }
-      await Promise.all(Array.from({ length: Math.min(3, Math.max(1, listResult.length)) }, () => worker()))
+      await refreshBatch(listResult)
     }
     return snapshot()
-  }, [bridge, refreshAccount, snapshot, visible])
+  }, [bridge, refreshBatch, snapshot, visible])
 
   /** L2 — invalidate the discovery cache after a mutation (setDefault/remove)
    *  so the next reload reflects the change instead of serving the snapshot. */

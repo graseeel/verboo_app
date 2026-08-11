@@ -131,6 +131,7 @@ class TestResizeObserver {
 }
 
 let providerLoginForward: ((event: ProviderLoginEvent) => void) | undefined
+let listModelsMock: ReturnType<typeof vi.fn>
 
 function createBridge() {
   const unsubscribe = () => {}
@@ -141,7 +142,7 @@ function createBridge() {
     getDefaultWorkingDirectory: vi.fn(async () => ''),
     getCredentialStatus: vi.fn(async () => ({ hasApiKey: true, apiKeyHint: '…1234' })),
     getCliAuthStatus: vi.fn(async () => ({ loggedIn: true, email: 'ada@example.test' })),
-    listModels: vi.fn(async () => ({ models: activeCatalog, source: 'cli', stale: false })),
+    listModels: listModelsMock,
     getProfile: vi.fn(async () => ({
       status: 'ready',
       user: { name: 'Ada' },
@@ -205,6 +206,7 @@ beforeEach(() => {
   })
   providerLoginForward = undefined
   activeCatalog = catalog
+  listModelsMock = vi.fn(async () => ({ models: activeCatalog, source: 'cli', stale: false }))
   settingsStore = baseSettings()
   // The Rust echo: merges the patch and returns the whole settings object.
   updateUserSettingsMock = vi.fn(async (patch: Partial<UserSettings>) => {
@@ -221,6 +223,30 @@ afterEach(() => {
 })
 
 describe('App — selecting a PROVIDER model applies it (field defect)', () => {
+  it('automatically recovers when two startup catalog reads miss a connected provider', async () => {
+    listModelsMock
+      .mockResolvedValueOnce({
+        models: [verbooUltra],
+        source: 'cli',
+        stale: false,
+        providerError: 'provider catalog temporarily unavailable',
+      })
+      .mockResolvedValueOnce({
+        models: [verbooUltra],
+        source: 'cli',
+        stale: false,
+        providerError: 'provider catalog still initializing',
+      })
+      .mockResolvedValue({ models: catalog, source: 'cli', stale: false })
+
+    await renderApp()
+    await waitFor(() => expect(listModelsMock).toHaveBeenCalledTimes(3), { timeout: 2_500 })
+
+    fireEvent.click(modelPill())
+    fireEvent.click(await screen.findByRole('button', { name: /Model|Modelo/i }))
+    expect(await screen.findByRole('button', { name: /GPT-5\.6-Sol/ })).toBeInTheDocument()
+  })
+
   it('catalog with provider model → click GPT-5.6-Sol → the ACTIVE model changes on screen and persists', async () => {
     await renderApp()
 

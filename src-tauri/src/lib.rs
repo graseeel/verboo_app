@@ -1228,10 +1228,15 @@ fn interrupt(
 // ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
-fn get_update_status(
+async fn get_update_status(
     coordinator: tauri::State<'_, crate::services::update_coordinator::UpdateCoordinator>,
 ) -> Result<UpdateSnapshot, String> {
-    Ok(coordinator.snapshot())
+    let coordinator = coordinator.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        coordinator.snapshot_after_startup_initialization()
+    })
+    .await
+    .map_err(|error| format!("Falha interna ao verificar o CLI: {error}"))
 }
 
 #[tauri::command]

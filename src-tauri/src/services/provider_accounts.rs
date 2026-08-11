@@ -174,8 +174,8 @@ fn stable_error(code: &str) -> String {
 }
 
 fn parse_envelope<T: serde::de::DeserializeOwned>(stdout: &str) -> Result<T, String> {
-    let envelope: Envelope<T> = serde_json::from_str(stdout.trim())
-        .map_err(|_| "provider_protocol_error".to_string())?;
+    let envelope: Envelope<T> =
+        serde_json::from_str(stdout.trim()).map_err(|_| "provider_protocol_error".to_string())?;
     if envelope.schema_version != 1 {
         return Err("provider_protocol_error".to_string());
     }
@@ -188,7 +188,9 @@ fn parse_envelope<T: serde::de::DeserializeOwned>(stdout: &str) -> Result<T, Str
                 .unwrap_or("provider_protocol_error"),
         ));
     }
-    envelope.data.ok_or_else(|| "provider_protocol_error".to_string())
+    envelope
+        .data
+        .ok_or_else(|| "provider_protocol_error".to_string())
 }
 
 fn run_cli(args: &[&str]) -> Result<String, String> {
@@ -244,31 +246,27 @@ fn run_cli(args: &[&str]) -> Result<String, String> {
 }
 
 pub fn provider_capabilities() -> Result<ProviderCapabilities, String> {
-    let stdout = match run_cli(&["provider-accounts", "capabilities"]) {
-        Ok(value) => value,
-        Err(_) => {
-            return Ok(ProviderCapabilities {
-                provider_accounts_v1: false,
-                provider_usage_v1: false,
-                login_transport: None,
-            })
-        }
-    };
-    let data: CapabilitiesData = match parse_envelope(&stdout) {
-        Ok(value) => value,
-        Err(_) => {
-            return Ok(ProviderCapabilities {
-                provider_accounts_v1: false,
-                provider_usage_v1: false,
-                login_transport: None,
-            })
-        }
-    };
-    Ok(ProviderCapabilities {
-        provider_accounts_v1: data.protocols.iter().any(|p| p == "provider_accounts_v1"),
-        provider_usage_v1: data.protocols.iter().any(|p| p == "provider_usage_v1"),
-        login_transport: data.login_transport,
-    })
+    let stdout = run_cli(&["provider-accounts", "capabilities"])?;
+    parse_capabilities(&stdout)
+}
+
+fn parse_capabilities(stdout: &str) -> Result<ProviderCapabilities, String> {
+    match parse_envelope::<CapabilitiesData>(stdout) {
+        Ok(data) => Ok(ProviderCapabilities {
+            provider_accounts_v1: data.protocols.iter().any(|p| p == "provider_accounts_v1"),
+            provider_usage_v1: data.protocols.iter().any(|p| p == "provider_usage_v1"),
+            login_transport: data.login_transport,
+        }),
+        // A valid legacy response may explicitly report an unknown command.
+        // Process/bootstrap failures and malformed output remain errors so the
+        // renderer cannot mistake them for a supported legacy state.
+        Err(code) if code == "provider_command_unknown" => Ok(ProviderCapabilities {
+            provider_accounts_v1: false,
+            provider_usage_v1: false,
+            login_transport: None,
+        }),
+        Err(code) => Err(code),
+    }
 }
 
 pub fn provider_accounts_list() -> Result<Vec<ProviderAccountSummary>, String> {
@@ -277,7 +275,10 @@ pub fn provider_accounts_list() -> Result<Vec<ProviderAccountSummary>, String> {
     Ok(data
         .accounts
         .into_iter()
-        .filter(|account| account.schema_version == 1 && (account.provider == "codex" || account.provider == "claude"))
+        .filter(|account| {
+            account.schema_version == 1
+                && (account.provider == "codex" || account.provider == "claude")
+        })
         .collect())
 }
 
@@ -286,7 +287,9 @@ pub fn provider_accounts_usage(
     account_id: Option<String>,
 ) -> Result<Vec<ProviderUsageResult>, String> {
     let provider = SupportedProvider::parse(
-        provider.as_deref().ok_or_else(|| "provider_argument_required".to_string())?,
+        provider
+            .as_deref()
+            .ok_or_else(|| "provider_argument_required".to_string())?,
     )?;
     let account_id = ProviderAccountId::parse(
         account_id.ok_or_else(|| "provider_argument_required".to_string())?,
@@ -300,12 +303,21 @@ pub fn provider_accounts_usage(
         account_id.as_str(),
     ])?;
     match parse_envelope::<ProviderUsageSnapshot>(&stdout) {
-        Ok(snapshot) if validate_usage_snapshot_identity(&snapshot, provider.as_str(), account_id.as_str()).is_ok() => Ok(vec![ProviderUsageResult {
-            provider: provider.as_str().to_string(),
-            account_id: account_id.as_str().to_string(),
-            snapshot: Some(snapshot),
-            error_code: None,
-        }]),
+        Ok(snapshot)
+            if validate_usage_snapshot_identity(
+                &snapshot,
+                provider.as_str(),
+                account_id.as_str(),
+            )
+            .is_ok() =>
+        {
+            Ok(vec![ProviderUsageResult {
+                provider: provider.as_str().to_string(),
+                account_id: account_id.as_str().to_string(),
+                snapshot: Some(snapshot),
+                error_code: None,
+            }])
+        }
         Ok(_) => Ok(vec![ProviderUsageResult {
             provider: provider.as_str().to_string(),
             account_id: account_id.as_str().to_string(),
@@ -380,7 +392,10 @@ fn models_error_code(code: &str) -> String {
 /// remain an error so the renderer cannot send a model that this account does
 /// not support. An old CLI without the subcommand surfaces the distinct
 /// `provider_models_unsupported` code.
-pub fn provider_account_models(provider: String, account_id: String) -> Result<Vec<VerbooModel>, String> {
+pub fn provider_account_models(
+    provider: String,
+    account_id: String,
+) -> Result<Vec<VerbooModel>, String> {
     let provider = SupportedProvider::parse(&provider)?;
     let account_id = ProviderAccountId::parse(account_id)?;
     let stdout = run_cli(&[
@@ -391,7 +406,8 @@ pub fn provider_account_models(provider: String, account_id: String) -> Result<V
         "--account",
         account_id.as_str(),
     ])?;
-    let models = parse_envelope::<Vec<VerbooModel>>(&stdout).map_err(|code| models_error_code(&code))?;
+    let models =
+        parse_envelope::<Vec<VerbooModel>>(&stdout).map_err(|code| models_error_code(&code))?;
     Ok(models
         .into_iter()
         .filter(|model| model.provider.as_deref() == Some(provider.as_str()))
@@ -413,7 +429,10 @@ mod tests {
             fetched_at: "2026-08-09T00:00:00.000Z".to_string(),
         };
 
-        assert_eq!(validate_usage_snapshot_identity(&snapshot, "codex", "local-a"), Err("provider_protocol_error".to_string()));
+        assert_eq!(
+            validate_usage_snapshot_identity(&snapshot, "codex", "local-a"),
+            Err("provider_protocol_error".to_string())
+        );
     }
 
     #[test]
@@ -427,20 +446,30 @@ mod tests {
             fetched_at: "2026-08-09T00:00:00.000Z".to_string(),
         };
 
-        assert_eq!(validate_usage_snapshot_identity(&snapshot, "codex", "local-a"), Ok(()));
+        assert_eq!(
+            validate_usage_snapshot_identity(&snapshot, "codex", "local-a"),
+            Ok(())
+        );
     }
 
     #[test]
     fn unknown_models_subcommand_maps_to_models_unsupported() {
         let stdout = r#"{"schemaVersion":1,"ok":false,"error":{"code":"provider_command_unknown","message":"unknown command 'models'"}}"#;
-        let code = parse_envelope::<serde_json::Value>(stdout).expect_err("unknown command must fail");
+        let code =
+            parse_envelope::<serde_json::Value>(stdout).expect_err("unknown command must fail");
         assert_eq!(models_error_code(&code), "provider_models_unsupported");
     }
 
     #[test]
     fn models_error_without_unknown_command_keeps_its_stable_code() {
-        assert_eq!(models_error_code("provider_account_not_found"), "provider_account_not_found");
-        assert_eq!(models_error_code("provider_protocol_error"), "provider_protocol_error");
+        assert_eq!(
+            models_error_code("provider_account_not_found"),
+            "provider_account_not_found"
+        );
+        assert_eq!(
+            models_error_code("provider_protocol_error"),
+            "provider_protocol_error"
+        );
     }
 
     #[test]
@@ -473,7 +502,10 @@ mod tests {
         // stable_error is the production error path: known codes pass
         // through and unknown text becomes a generic protocol error, so raw
         // CLI output can never become a renderer-facing message.
-        assert_eq!(stable_error("provider_usage_unavailable"), "provider_usage_unavailable");
+        assert_eq!(
+            stable_error("provider_usage_unavailable"),
+            "provider_usage_unavailable"
+        );
         let unknown = stable_error("token-secret provider-subject-secret");
         assert_eq!(unknown, "provider_protocol_error");
         assert!(!unknown.contains("secret"));
@@ -481,7 +513,26 @@ mod tests {
 
     #[test]
     fn unsupported_capabilities_degrade_to_false_flags() {
-        let data: CapabilitiesData = parse_envelope(r#"{"schemaVersion":1,"ok":true,"data":{"protocols":[]}}"#).unwrap();
-        assert!(data.protocols.is_empty());
+        let capabilities =
+            parse_capabilities(r#"{"schemaVersion":1,"ok":true,"data":{"protocols":[]}}"#).unwrap();
+        assert!(!capabilities.provider_accounts_v1);
+        assert!(!capabilities.provider_usage_v1);
+    }
+
+    #[test]
+    fn unknown_capabilities_command_is_the_only_legacy_fallback() {
+        let capabilities = parse_capabilities(
+            r#"{"schemaVersion":1,"ok":false,"error":{"code":"provider_command_unknown","message":"unknown command"}}"#,
+        ).unwrap();
+        assert!(!capabilities.provider_accounts_v1);
+        assert!(!capabilities.provider_usage_v1);
+    }
+
+    #[test]
+    fn malformed_capabilities_are_not_misreported_as_legacy() {
+        assert_eq!(
+            parse_capabilities(""),
+            Err("provider_protocol_error".to_string())
+        );
     }
 }

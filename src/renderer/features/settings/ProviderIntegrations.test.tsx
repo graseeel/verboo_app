@@ -35,6 +35,21 @@ const acmeConnected: ProviderAuthStatus = { provider: 'acme', connected: true }
 beforeEach(() => cleanup())
 
 describe('ProviderIntegrations — cartões por provedor (universo da ponte)', () => {
+  it('does not flash the legacy provider cards while account discovery is still loading', () => {
+    render(
+      <ProviderIntegrations
+        statuses={[claudeConnected]}
+        onConnect={() => {}}
+        onCancelLogin={() => {}}
+        accountsLoaded={false}
+      />,
+    )
+
+    expect(screen.getByRole('status', { name: /loading provider accounts|carregando contas de provedores/i })).toBeInTheDocument()
+    expect(document.querySelector('.provider-card')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Disconnect|Desconectar/i })).toBeNull()
+  })
+
   it('real empty state: EMPTY status list → renders nothing (tab identical to today)', () => {
     const { container } = render(
       <ProviderIntegrations statuses={[]} onConnect={() => {}} onCancelLogin={() => {}} />,

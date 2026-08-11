@@ -141,6 +141,12 @@ function createBridge() {
       return unsubscribe
     }),
     providerAuthStatus: vi.fn(async () => authList),
+    // This suite deliberately exercises the legacy single-account cards.
+    // Declare that capability result explicitly: an absent/rejected command
+    // now means a transient discovery failure and must stay in loading.
+    providerCapabilities: vi.fn(async () => ({ providerAccountsV1: false, providerUsageV1: false })),
+    providerAccountsList: vi.fn(async () => []),
+    providerAccountsUsage: vi.fn(async () => []),
     providerLoginStart,
     providerLoginCancel,
     providerLoginConfirmRisk,

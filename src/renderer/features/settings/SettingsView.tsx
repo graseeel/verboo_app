@@ -709,16 +709,11 @@ export function SettingsView({
         )}
 
         {activeTab === 'providers' && (
-          <section className="settings-section-view">
+          <section className="settings-section-view settings-providers-view">
             <SettingsHeading title={t('settings.providers')} subtitle={t('settings.providers.subtitle')} />
-            {/* T11: the provider cards (connect state, account, Connect/
-                Disconnect, cost note) MOVED here from Integrations — same
-                component, same behavior, new home. The risk-consent dialog
-                rides the connect flow and is rendered at App level.
-                The quota counters (Codex weekly; Claude 5h/weekly/Fable)
-                will LIVE in this tab — their design is Prumo's and lands
-                later. NO placeholder here: an empty box would fake data
-                that does not exist yet (owner's order). */}
+            {/* The risk-consent dialog rides the connect flow and is rendered
+                at App level. Account discovery must finish before choosing
+                between the multi-account surface and the legacy CLI fallback. */}
             <ProviderIntegrations
               statuses={providerStatuses}
               onConnect={onProviderConnect}
@@ -727,6 +722,7 @@ export function SettingsView({
               onCancelLogin={onProviderLoginCancel}
               capabilities={providerAccounts?.capabilities}
               accountRows={providerAccounts?.rows}
+              accountsLoaded={providerAccounts ? providerAccounts.accountsLoaded : true}
               conversationBindings={conversationProviderBindings}
               switchLocked={providerSwitchLocked}
               onSetDefault={(provider, accountId) => {

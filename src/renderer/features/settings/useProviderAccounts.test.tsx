@@ -40,6 +40,49 @@ function bridge(usage: ProviderAccountsBridge['providerAccountsUsage']): Provide
 }
 
 describe('useProviderAccounts', () => {
+  it('keeps legacy cards hidden when the background capability prefetch fails', async () => {
+    const api = {
+      ...bridge(vi.fn(async () => [])),
+      providerCapabilities: vi.fn(async () => {
+        throw new Error('provider_cli_unavailable')
+      }),
+    }
+    const { result } = renderHook(() => useProviderAccounts({ visible: false, bridge: api }))
+
+    await waitFor(() => expect(api.providerCapabilities).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(api.providerAccountsList).toHaveBeenCalledTimes(1))
+    expect(result.current.accountsLoaded).toBe(false)
+    expect(result.current.capabilities.providerAccountsV1).toBe(false)
+  })
+
+  it('does not commit a stale hidden prefetch after the visible discovery succeeds', async () => {
+    let resolveHidden!: (value: ProviderCapabilities) => void
+    const hiddenCapabilities = new Promise<ProviderCapabilities>(resolve => { resolveHidden = resolve })
+    const api = {
+      ...bridge(vi.fn(async () => [])),
+      providerCapabilities: vi.fn()
+        .mockImplementationOnce(() => hiddenCapabilities)
+        .mockResolvedValueOnce(capabilities),
+    }
+    const { result, rerender } = renderHook(
+      ({ visible }) => useProviderAccounts({ visible, bridge: api }),
+      { initialProps: { visible: false } },
+    )
+    await waitFor(() => expect(api.providerCapabilities).toHaveBeenCalledTimes(1))
+
+    rerender({ visible: true })
+    await waitFor(() => expect(api.providerCapabilities).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(result.current.capabilities.providerAccountsV1).toBe(true))
+    await waitFor(() => expect(result.current.accountsLoaded).toBe(true))
+
+    await act(async () => {
+      resolveHidden({ providerAccountsV1: false, providerUsageV1: false })
+      await hiddenCapabilities
+    })
+    expect(result.current.capabilities.providerAccountsV1).toBe(true)
+    expect(result.current.accountsLoaded).toBe(true)
+  })
+
   it('revalidates every account on every false-to-true Providers entry', async () => {
     const usage = vi.fn(async (_provider?: 'codex' | 'claude', accountId?: string): Promise<ProviderUsageResult[]> => [{
       provider: 'codex',
@@ -89,6 +132,34 @@ describe('useProviderAccounts', () => {
     await waitFor(() => expect(result.current.rows).toHaveLength(2))
     await waitFor(() => expect(result.current.rows.find(row => row.account.accountId === 'local-a')?.status).toBe('fresh'))
     await waitFor(() => expect(result.current.rows.find(row => row.account.accountId === 'local-b')?.status).toBe('unavailable'))
+  })
+
+  it('commits a multi-account usage refresh as one completed batch', async () => {
+    let resolveA!: (value: ProviderUsageResult[]) => void
+    let resolveB!: (value: ProviderUsageResult[]) => void
+    const pendingA = new Promise<ProviderUsageResult[]>(resolve => { resolveA = resolve })
+    const pendingB = new Promise<ProviderUsageResult[]>(resolve => { resolveB = resolve })
+    const usage = vi.fn((_provider?: 'codex' | 'claude', accountId?: string) => (
+      accountId === 'local-a' ? pendingA : pendingB
+    ))
+    const { result } = renderHook(() => useProviderAccounts({ visible: true, bridge: bridge(usage) }))
+
+    await waitFor(() => {
+      expect(result.current.rows).toHaveLength(2)
+      expect(result.current.rows.every(row => row.status === 'loading')).toBe(true)
+    })
+
+    await act(async () => {
+      resolveA([{ provider: 'codex', accountId: 'local-a', snapshot: snapshot('local-a') }])
+      await pendingA
+    })
+    expect(result.current.rows.every(row => row.status === 'loading')).toBe(true)
+
+    await act(async () => {
+      resolveB([{ provider: 'codex', accountId: 'local-b', snapshot: snapshot('local-b') }])
+      await Promise.all([pendingA, pendingB])
+    })
+    await waitFor(() => expect(result.current.rows.every(row => row.status === 'fresh')).toBe(true))
   })
 
   // L1 — capabilities and the account list are two independent CLI spawns.
