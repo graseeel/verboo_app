@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { ExternalLink, Sparkles } from 'lucide-react'
+import { ExternalLink } from 'lucide-react'
 import { openUrl } from '@tauri-apps/plugin-opener'
+import mascotUrl from '../../../../assets/branding/verboo-mascot.png'
 import type { WhatsNewAcknowledgeResult, WhatsNewStatus } from '../../../shared/types'
 import { useI18n } from '../../i18n'
 import { getReleaseCopy, releaseTagUrl } from './releaseCatalog'
@@ -89,8 +90,8 @@ function WhatsNewDialog({
       setOpenError(true)
       return
     }
-    const result = await finishAcknowledgment()
-    onDismiss(result)
+    busyRef.current = false
+    setBusy(false)
   }
 
   useEffect(() => {
@@ -155,7 +156,9 @@ function WhatsNewDialog({
         aria-describedby="whats-new-summary"
       >
         <header className="whats-new-header">
-          <span className="whats-new-mark" aria-hidden="true"><Sparkles size={19} /></span>
+          <span className="whats-new-mark" aria-hidden="true">
+            <img className="whats-new-brand-icon" src={mascotUrl} alt="" />
+          </span>
           <div>
             <span className="whats-new-eyebrow">
               {t('whatsNew.eyebrow')} · v{status.version}

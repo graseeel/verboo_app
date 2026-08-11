@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '../../i18n'
 import { WhatsNewModal } from './WhatsNewModal'
 
+vi.mock('../../../../assets/branding/verboo-mascot.png', () => ({ default: 'verboo-mascot.png' }))
+
 const status = { version: '0.7.0-beta', tag: 'v0.7.0-beta', preview: false }
 
 function renderModal(overrides: Partial<ComponentProps<typeof WhatsNewModal>> = {}) {
@@ -33,8 +35,10 @@ afterEach(() => vi.restoreAllMocks())
 
 describe('WhatsNewModal', () => {
   it('renders version, summary, six highlights, and exactly two actions', () => {
-    renderModal()
-    expect(screen.getByRole('dialog', { name: 'Verboo Code 0.7.0-beta is here' })).toBeVisible()
+    const { view } = renderModal()
+    const dialog = screen.getByRole('dialog', { name: 'Verboo Code 0.7.0-beta is here' })
+    expect(dialog).toBeVisible()
+    expect(view.container.querySelector('.whats-new-brand-icon')).toHaveAttribute('src', 'verboo-mascot.png')
     expect(screen.getByText(/major update for working with iOS apps/i)).toBeVisible()
     expect(screen.getByText('Built-in iOS Simulator — macOS')).toBeVisible()
     expect(screen.getAllByRole('listitem')).toHaveLength(6)
@@ -58,15 +62,16 @@ describe('WhatsNewModal', () => {
     expect(onDismiss).toHaveBeenCalledWith({ persisted: true })
   })
 
-  it('opens the exact tag and acknowledges only after a successful open', async () => {
+  it('opens the exact tag without acknowledging or dismissing the release', async () => {
     const { openReleaseUrl, onAcknowledge, onDismiss } = renderModal()
     fireEvent.click(screen.getByRole('button', { name: 'Learn more' }))
     await waitFor(() => expect(openReleaseUrl).toHaveBeenCalledWith(
       'https://github.com/graseeel/verboo_app/releases/tag/v0.7.0-beta',
     ))
-    await waitFor(() => expect(onAcknowledge).toHaveBeenCalledWith('0.7.0-beta'))
-    expect(openReleaseUrl.mock.invocationCallOrder[0]).toBeLessThan(onAcknowledge.mock.invocationCallOrder[0])
-    expect(onDismiss).toHaveBeenCalledWith({ persisted: true })
+    expect(onAcknowledge).not.toHaveBeenCalled()
+    expect(onDismiss).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Learn more' })).toBeEnabled()
   })
 
   it('keeps the modal open and does not acknowledge when opening fails', async () => {

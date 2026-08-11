@@ -41,6 +41,13 @@
   border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
+.whats-new-brand-icon {
+  display: block;
+  width: 27px;
+  height: 27px;
+  object-fit: contain;
+}
+
 .whats-new-eyebrow {
   display: block;
   margin: 1px 0 7px;
