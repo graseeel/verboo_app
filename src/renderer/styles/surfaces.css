@@ -708,7 +708,7 @@
   background: var(--surface-raised);
 }
 .provider-account-group-head,
-.provider-account-row-head,
+.provider-account-card-head,
 .provider-account-actions,
 .provider-account-badges,
 .provider-account-provider,
@@ -717,21 +717,35 @@
   align-items: center;
 }
 .provider-account-group-head,
-.provider-account-row-head {
+.provider-account-card-head {
   justify-content: space-between;
   gap: 10px;
 }
 .provider-account-provider { gap: 8px; }
 .provider-account-provider h2 { margin: 0; font-size: 14px; }
-.provider-account-row {
+/* ONDA B — contas viram CARDS COMPACTOS lado a lado; o container rola
+   horizontalmente (overflow-x: auto) quando não couberem — nunca a página.
+   Card 12px de radius, BORDA sem sombra (impeccable: proibido border +
+   sombra no mesmo elemento). */
+.provider-account-cards {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  padding-bottom: 4px;
+}
+.provider-account-card {
+  flex: 0 0 250px;
+  scroll-snap-align: start;
   display: grid;
   gap: 9px;
+  align-content: start;
   padding: 12px;
   border: 1px solid var(--border-subtle);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--surface-base);
 }
-.provider-account-row-head strong { display: block; font-size: 13px; }
+.provider-account-card-head strong { display: block; font-size: 13px; }
 .provider-account-plan { display: block; color: var(--text-muted); font-size: 11px; margin-top: 2px; }
 /* UI — the nickname pencil sits inline, right of the account name. */
 .provider-account-name { display: inline-flex; align-items: center; gap: 6px; }
@@ -755,19 +769,16 @@
   font-size: 10px;
 }
 .provider-account-badge.is-current { color: var(--accent); }
-/* L2 — UMA linha de ações por conta: a ação primária (Usar aqui / Em uso)
-   centralizada, o kebab ancorado à direita, alinhados verticalmente. O kebab
-   é absolute para não deslocar o centro da ação (não ocupa espaço flex). */
+/* L2 + A2 — UMA linha de ações por conta: a ação primária (Usar aqui / Em
+   uso) fica ABAIXO das janelas de uso, alinhada à ESQUERDA com o bloco; o
+   kebab fica à DIREITA na mesma linha (space-between). */
 .provider-account-actions {
-  position: relative;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
   gap: 8px;
-  padding: 0 30px;
 }
 .provider-account-actions .provider-card-action { margin-left: 0; }
-.provider-account-kebab { position: absolute; right: 0; }
 .provider-account-actions .provider-card-action.danger { color: var(--text-danger); }
 .provider-usage-windows { display: grid; gap: 8px; }
 .provider-usage-window { display: grid; gap: 4px; }
@@ -821,7 +832,8 @@
   line-height: 1.4;
 }
 @media (max-width: 520px) {
-  .provider-account-row-head { align-items: flex-start; flex-direction: column; }
+  .provider-account-card-head { align-items: flex-start; flex-direction: column; }
+  .provider-account-card { flex-basis: 220px; }
   .provider-account-badges { justify-content: flex-start; }
 }
 

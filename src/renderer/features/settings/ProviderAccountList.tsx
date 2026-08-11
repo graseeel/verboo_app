@@ -166,22 +166,24 @@ export function ProviderAccountList({
             </div>
             {providerRows.length === 0 ? (
               <p className="provider-usage-state">{t('settings.provider.notConnectedAccounts')}</p>
-            ) : providerRows.map(row => {
-              const account = row.account
-              const usedHere = conversationBindings[provider] === account.accountId
-              const nickname = getProviderAccountNickname(provider, account.accountId)
-              const displayName = nickname ?? account.displayLabel
-              const editing = editingNickname === account.accountId
-              return (
-                <article className="provider-account-row" key={account.accountId}>
-                  <div className="provider-account-row-head">
-                    <div>
-                      <span className="provider-account-name">
-                        {/* L2 — o símbolo do provedor fica na linha da conta
-                            SEMPRE (renomeada ou não): renomear substitui o
-                            displayLabel do CLI ("Codex 2") pelo apelido, e sem
-                            o ícone a linha perde a identidade do provedor
-                            (relato do usuário com screenshot). */}
+            ) : (
+              <div className="provider-account-cards">
+                {providerRows.map(row => {
+                  const account = row.account
+                  const usedHere = conversationBindings[provider] === account.accountId
+                  const nickname = getProviderAccountNickname(provider, account.accountId)
+                  const displayName = nickname ?? account.displayLabel
+                  const editing = editingNickname === account.accountId
+                  return (
+                    <article className="provider-account-card" key={account.accountId}>
+                      <div className="provider-account-card-head">
+                        <div>
+                          <span className="provider-account-name">
+                            {/* L2 — o símbolo do provedor fica no card da conta
+                                SEMPRE (renomeada ou não): renomear substitui o
+                                displayLabel do CLI ("Codex 2") pelo apelido, e sem
+                                o ícone o card perde a identidade do provedor
+                                (relato do usuário com screenshot). */}
                         <ProviderIcon providerId={provider} size={16} style={providerToneStyle(provider)} />
                         {editing ? (
                           <span className="provider-nickname-edit">
@@ -223,12 +225,12 @@ export function ProviderAccountList({
                     </div>
                   </div>
                   <ProviderUsageWindows state={row} />
-                  {/* L2 — UMA linha de ações: ação primária (Usar aqui / Em
-                      uso) centralizada + kebab à direita, alinhados
-                      verticalmente. Hoje viviam em rows separadas,
-                      desalinhados (relato do usuário com screenshot). Em uso
-                      é ESTADO SELECIONADO (check + acento), não um botão
-                      desabilitado; Usar aqui é botão secundário padrão. */}
+                  {/* L2 + A2 — UMA linha de ações: ação primária (Usar aqui /
+                      Em uso) imediatamente ABAIXO das janelas, alinhada à
+                      esquerda com o bloco de uso; kebab à direita na MESMA
+                      linha. Em uso é ESTADO SELECIONADO (check + acento),
+                      não um botão desabilitado; Usar aqui é botão
+                      secundário padrão. */}
                   <div className="provider-account-actions">
                     {usedHere ? (
                       <span className="provider-card-action is-current" role="status" aria-label={t('settings.provider.inUse')}>
@@ -238,14 +240,16 @@ export function ProviderAccountList({
                       <button type="button" className="provider-card-action" onClick={() => requestUse(provider, account.accountId, displayName)} disabled={switchLocked}>
                         {t('settings.provider.useHere')}
                       </button>
-                    )}
-                    <button type="button" className="provider-card-action provider-account-kebab" aria-label={t('settings.provider.accountMenu')} onClick={event => openAccountMenu(event, provider, account)}>
-                      <MoreVertical size={14} />
-                    </button>
-                  </div>
-                </article>
-              )
-            })}
+                          )}
+                          <button type="button" className="provider-card-action provider-account-kebab" aria-label={t('settings.provider.accountMenu')} onClick={event => openAccountMenu(event, provider, account)}>
+                            <MoreVertical size={14} />
+                          </button>
+                        </div>
+                      </article>
+                  )
+                })}
+              </div>
+            )}
           </div>
         ))}
         {switchLocked && <p className="provider-switch-locked">{t('settings.provider.switchLocked')}</p>}

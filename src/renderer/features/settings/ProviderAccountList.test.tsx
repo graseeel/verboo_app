@@ -227,33 +227,89 @@ describe('ProviderAccountList', () => {
     expect(within(codexGroup()).queryByRole('button', { name: /waiting for browser…/i })).toBeNull()
   })
 
-  // L2 (1) — renomear a conta não pode apagar o símbolo do provedor. A linha
+  // L2 (1) — renomear a conta não pode apagar o símbolo do provedor. O card
   // da conta precisa exibir o ícone do provedor SEMPRE (com e sem nickname):
   // o relato do usuário (screenshot) mostra a conta renomeada "Sharon g" sem
   // nenhuma referência visual ao provedor depois que o displayLabel do CLI
   // ("Codex 2") foi substituído pelo apelido.
-  it('L2: the provider symbol stays on the account row after renaming', () => {
+  it('L2: the provider symbol stays on the account card after renaming', () => {
     setProviderAccountNickname('codex', 'codex-a', 'Home')
     renderList({})
-    expect(document.querySelector('.provider-account-row [data-testid="provider-icon-codex"]')).toBeTruthy()
+    expect(document.querySelector('.provider-account-card [data-testid="provider-icon-codex"]')).toBeTruthy()
   })
 
-  it('L2: the provider symbol is visible on every account row, renamed or not', () => {
+  it('L2: the provider symbol is visible on every account card, renamed or not', () => {
     renderList({})
-    expect(document.querySelector('.provider-account-row [data-testid="provider-icon-codex"]')).toBeTruthy()
+    expect(document.querySelector('.provider-account-card [data-testid="provider-icon-codex"]')).toBeTruthy()
   })
 
   // L2 (2) — uma única linha de ações: a ação primária (Usar aqui / Em uso)
-  // e o kebab alinhados verticalmente na MESMA row (hoje ficam em rows
-  // separadas, desalinhados — relato do usuário com screenshot).
+  // e o kebab alinhados verticalmente na MESMA row.
   it('L2: primary action and kebab share one aligned actions row', () => {
     renderList({})
     const actionsRow = document.querySelector('.provider-account-actions') as HTMLElement
     const useButton = screen.getByRole('button', { name: 'Use here' })
     const kebab = screen.getByRole('button', { name: /account menu|menu da conta/i })
     expect(actionsRow).not.toBeNull()
-    expect(document.querySelector('.provider-account-use-row')).toBeNull()
     expect(actionsRow.contains(useButton)).toBe(true)
     expect(actionsRow.contains(kebab)).toBe(true)
+  })
+
+  // ONDA B — a lista vertical de contas vira CARDS COMPACTOS por conta, lado
+  // a lado, com ROLAGEM HORIZONTAL no container (nunca a página) quando não
+  // couberem; replicado em Codex e Claude.
+  it('ONDA B: multiple accounts render as sibling compact cards in one horizontal-scroll container', () => {
+    const secondAccount: ProviderAccountSummary = {
+      ...account,
+      accountId: 'codex-b',
+      displayLabel: 'Codex 2',
+      isDefault: false,
+    }
+    const secondRow: ProviderUsageRowState = {
+      account: secondAccount,
+      status: 'unavailable',
+      errorCode: 'provider_usage_unavailable',
+    }
+    renderList({ rows: [{ account, status: 'unavailable', errorCode: 'provider_usage_unavailable' }, secondRow] })
+    const container = document.querySelector('.provider-account-cards')
+    expect(container).not.toBeNull()
+    const cards = Array.from(container?.querySelectorAll('.provider-account-card') ?? [])
+    expect(cards.length).toBe(2)
+    // Irmãos lado a lado: cada card é filho DIRETO do container rolável.
+    for (const card of cards) {
+      expect(card.parentElement).toBe(container)
+    }
+  })
+
+  // A2 — a ação primária fica imediatamente ABAIXO das janelas de uso,
+  // alinhada à esquerda com o bloco; o kebab permanece à direita na MESMA
+  // linha (não mais centralizado na largura toda).
+  it('A2: primary action sits below the usage windows, left-aligned, kebab right on the same line', () => {
+    const readyRow: ProviderUsageRowState = {
+      account,
+      status: 'fresh',
+      snapshot: {
+        schemaVersion: 1,
+        provider: 'codex',
+        accountId: 'codex-a',
+        fetchedAt: '2026-08-09T12:00:00.000Z',
+        plan: undefined,
+        windows: [{ id: 'weekly', kind: 'weekly', displayLabel: 'Weekly', usedPercent: 20, resetsAt: '2026-08-16T18:00:00.000Z' }],
+      },
+    }
+    renderList({ rows: [readyRow] })
+    const card = document.querySelector('.provider-account-card') as HTMLElement
+    expect(card).not.toBeNull()
+    const usage = card.querySelector('.provider-usage-windows') as HTMLElement
+    const actions = card.querySelector('.provider-account-actions') as HTMLElement
+    expect(usage).not.toBeNull()
+    expect(actions).not.toBeNull()
+    // Actions vêm DEPOIS (abaixo) das janelas de uso.
+    expect(usage.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // Ação primeiro (à esquerda), kebab depois (à direita), mesma linha.
+    const useButton = screen.getByRole('button', { name: 'Use here' })
+    const kebab = screen.getByRole('button', { name: /account menu|menu da conta/i })
+    expect(actions.firstElementChild).toBe(useButton)
+    expect(actions.lastElementChild).toBe(kebab)
   })
 })
