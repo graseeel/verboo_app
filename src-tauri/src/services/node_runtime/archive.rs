@@ -77,11 +77,6 @@ fn extract_declared_inner(
         let is_license = path == artifact.license;
         let entry_type = entry.header().entry_type();
 
-        if !entry_type.is_file() && !entry_type.is_dir() {
-            return Err(format!(
-                "managed Node archive contains unsupported entry type at {path}"
-            ));
-        }
         if !is_executable && !is_license {
             continue;
         }
@@ -147,14 +142,6 @@ fn extract_declared_inner(
         let is_license = path == artifact.license;
         let mode_type = entry.unix_mode().map(|mode| mode & 0o170000).unwrap_or(0);
         let regular_or_unspecified = mode_type == 0 || mode_type == 0o100000;
-        let directory_or_unspecified = mode_type == 0 || mode_type == 0o040000;
-        if (entry.is_dir() && !directory_or_unspecified)
-            || (!entry.is_dir() && !regular_or_unspecified)
-        {
-            return Err(format!(
-                "managed Node archive contains unsupported entry type at {path}"
-            ));
-        }
         if !is_executable && !is_license {
             continue;
         }
@@ -584,7 +571,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn rejects_links_traversal_duplicates_and_wrong_entry_types() {
+    fn rejects_traversal_duplicates_and_declared_links_or_wrong_entry_types() {
         let executable = "node-v24.19.0-fixture/bin/node";
         let license = "node-v24.19.0-fixture/LICENSE";
         let fixtures = [
@@ -599,8 +586,7 @@ mod tests {
                 (license, b"license", EntryType::Regular),
             ]),
             archive_fixture(&[
-                ("node-v24.19.0-fixture/link", b"", EntryType::Symlink),
-                (executable, b"node", EntryType::Regular),
+                (executable, b"", EntryType::Symlink),
                 (license, b"license", EntryType::Regular),
             ]),
             archive_fixture(&[
@@ -614,6 +600,35 @@ mod tests {
             assert!(extract_declared(&fixture.artifact, &fixture.archive, root.path()).is_err());
             assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ignores_unrelated_links_without_materializing_them() {
+        let fixture = archive_fixture(&[
+            (
+                "node-v24.19.0-fixture/bin/corepack",
+                b"",
+                EntryType::Symlink,
+            ),
+            (
+                "node-v24.19.0-fixture/bin/node",
+                b"node",
+                EntryType::Regular,
+            ),
+            (
+                "node-v24.19.0-fixture/LICENSE",
+                b"license",
+                EntryType::Regular,
+            ),
+        ]);
+        let root = tempfile::tempdir().unwrap();
+
+        extract_declared(&fixture.artifact, &fixture.archive, root.path()).unwrap();
+
+        assert_eq!(fs::read(root.path().join("node")).unwrap(), b"node");
+        assert_eq!(fs::read(root.path().join("LICENSE")).unwrap(), b"license");
+        assert!(!root.path().join("corepack").exists());
     }
 
     #[cfg(unix)]
