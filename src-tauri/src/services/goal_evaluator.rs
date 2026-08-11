@@ -2492,7 +2492,7 @@ mod tests {
     //
     // The fix migrates `goal_evaluator` to `CliSpawn::new(...)`, the
     // SAME route as chat/turn_service, which acquires the active signed
-    // cli.mjs version and spawns it with the embedded Node sidecar.
+    // cli.mjs version and spawns it with the app-managed Node runtime.
     //
     // This test asserts that the source-level wiring is present:
     //   - `CliSpawn::new(...)` is INVOKED (not just imported)
@@ -2549,7 +2549,7 @@ mod tests {
 
         // Must NOT call Command::new directly — the legacy manual-spawn
         // path bypassed CliSpawn entirely. The packaged app needs CliSpawn
-        // so embedded Node and the leased signed cli.mjs get wired correctly.
+        // so managed Node and the leased signed cli.mjs get wired correctly.
         assert!(
             !production_src.contains("Command::new("),
             "src/services/goal_evaluator.rs production code still uses \

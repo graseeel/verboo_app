@@ -1,8 +1,8 @@
 //! Builds every Verboo CLI command from one immutable runtime authority.
 //!
 //! Production has no system Node or global `verboo` fallback. A packaged
-//! process uses the CLI selected under app-data plus the Node sidecar owned by
-//! the app. Debug builds may use an explicit Node/CLI path pair.
+//! process uses the CLI and managed Node runtime selected under app data.
+//! Debug builds may use an explicit Node/CLI path pair.
 
 use std::fmt;
 use std::path::{Path, PathBuf};

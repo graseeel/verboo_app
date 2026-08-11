@@ -23,8 +23,10 @@ fn published_cli_release_bootstrap_and_update_e2e() {
         "the release under test must be newer than the seeded installed CLI"
     );
     let target = DesktopTarget::host().expect("host must be a shipped Verboo desktop target");
-    let node_path = node_runtime::resolve_embedded_node_path()
-        .expect("the target-qualified embedded Node runtime must be prepared first");
+    let runtime_data = tempfile::tempdir().unwrap();
+    let runtime = node_runtime::NodeRuntimeService::production(runtime_data.path()).unwrap();
+    let node_path = runtime.ensure_ready().unwrap();
+    assert_eq!(node_path, runtime.managed_executable_path());
 
     let bootstrap_data = tempfile::tempdir().unwrap();
     let bootstrap = CliUpdateService::production(bootstrap_data.path(), node_path.clone()).unwrap();

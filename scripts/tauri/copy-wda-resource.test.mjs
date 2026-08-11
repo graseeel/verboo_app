@@ -71,8 +71,8 @@ test('declares the WDA bundle resource only in the macOS overlay', () => {
 
   assert.equal(baseResources.includes('resources/WebDriverAgent/'), false)
   assert.equal(macosResources.includes('resources/WebDriverAgent/'), true)
-  assert.equal(baseResources.includes('resources/node-runtime/'), true)
-  assert.equal(macosResources.includes('resources/node-runtime/'), true)
+  assert.equal(baseResources.includes('resources/node-runtime/'), false)
+  assert.equal(macosResources.includes('resources/node-runtime/'), false)
   assert.equal(baseResources.includes('resources/cli-package/'), false)
   assert.equal(macosResources.includes('resources/cli-package/'), false)
 })

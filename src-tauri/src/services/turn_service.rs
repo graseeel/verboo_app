@@ -386,7 +386,7 @@ impl TurnService {
 
         // Describe each image attachment and inject as extracted_text.
         // `describe_image` uses `CliSpawn` internally to acquire the active
-        // signed CLI + embedded Node runtime — same resolver as the main turn.
+        // signed CLI + app-managed Node runtime — same resolver as the main turn.
         //
         // Contract for the FE: once an attachment reaches this loop and
         // succeeds, its `extracted_text` is the authoritative image

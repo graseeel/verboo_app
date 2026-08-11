@@ -4,8 +4,8 @@ use crate::models::types::{CliAuthStatus, LoginEvent, LoginEventKind, LoginResul
 
 /// Runs authentication operations through the app-owned CLI runtime.
 ///
-/// Production uses the signed CLI selected under app data and the embedded
-/// Node sidecar. Debug builds may opt into an explicit Node/CLI path pair.
+/// Production uses the signed CLI and managed Node runtime selected under app
+/// data. Debug builds may opt into an explicit Node/CLI path pair.
 
 pub struct CliService;
 

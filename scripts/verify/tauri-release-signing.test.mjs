@@ -14,10 +14,6 @@ const entitlementsPath = new URL(
   "../../src-tauri/Entitlements.plist",
   import.meta.url,
 );
-const nodeSigningHelperPath = new URL(
-  "../tauri/sign-macos-node-runtime.sh",
-  import.meta.url,
-);
 const localBuildPath = new URL(
   "../build-release-app.sh",
   import.meta.url,
@@ -115,11 +111,10 @@ test("notarization key exists only for macOS build steps and is always removed",
   assert.match(workflow, /rm -f "\$\{APPLE_API_KEY_PATH:-\}"/);
 });
 
-test("embedded Node keeps a valid signature and native-module entitlement", async () => {
+test("macOS release and local builds sign only the app-owned bundle", async () => {
   const workflow = await readWorkflowText(workflowPath);
   const tauriConfig = JSON.parse(await readFile(tauriConfigPath, "utf8"));
   const entitlements = await readFile(entitlementsPath, "utf8");
-  const signingHelper = await readWorkflowText(nodeSigningHelperPath);
   const localBuild = await readWorkflowText(localBuildPath);
   const prepareStart = workflow.indexOf(
     "- name: Prepare Apple notarization credentials",
@@ -154,32 +149,12 @@ test("embedded Node keeps a valid signature and native-module entitlement", asyn
       searchListIndex < identityIndex,
     "the prepared identity must enter the user search list before the build",
   );
-  assert.match(
-    workflow,
-    /scripts\/tauri\/sign-macos-node-runtime\.sh[\s\S]*?"\$APP_PATH"[\s\S]*?"\$APPLE_SIGNING_IDENTITY"[\s\S]*?"\$APPLE_CODESIGN_KEYCHAIN"/,
-  );
-  assert.match(
-    localBuild,
-    /scripts\/tauri\/sign-macos-node-runtime\.sh[\s\S]*?"\$APP_PATH"[\s\S]*?"\$SIGNING_IDENTITY"/,
-  );
-  assert.match(signingHelper, /NODE_PATH="\$APP_PATH\/Contents\/MacOS\/verboo-node"/);
-  assert.match(signingHelper, /--entitlements "\$ENTITLEMENTS_PATH"/);
-  assert.match(signingHelper, /codesign --verify --strict --verbose=2 "\$NODE_PATH"/);
-  assert.match(signingHelper, /codesign --verify --deep --strict --verbose=2 "\$APP_PATH"/);
-  assert.match(signingHelper, /com\.apple\.security\.cs\.allow-jit/);
-  assert.match(signingHelper, /com\.apple\.security\.cs\.allow-unsigned-executable-memory/);
-  assert.match(signingHelper, /com\.apple\.security\.cs\.disable-library-validation/);
-  assert.match(signingHelper, /"\$NODE_PATH" -e/);
-  assert.match(signingHelper, /embedded-node-js-ok/);
-  assert.match(workflow, /codesign --verify --strict --verbose=2 "\$NODE_PATH"/);
-  assert.match(
-    workflow,
-    /codesign -d --entitlements - --xml "\$NODE_PATH"/,
-  );
-  assert.match(
-    workflow,
-    /com\.apple\.security\.cs\.disable-library-validation/,
-  );
+  assert.doesNotMatch(workflow, /sign-macos-node-runtime|resources\/node-runtime/);
+  assert.doesNotMatch(localBuild, /sign-macos-node-runtime|Contents\/MacOS\/verboo-node|resources\/node-runtime/);
+  assert.match(localBuild, /codesign[\s\S]*?--entitlements[\s\S]*?"\$APP_PATH"/);
+  assert.match(workflow, /test ! -e "\$APP_PATH\/Contents\/MacOS\/verboo-node"/);
+  assert.equal([...workflow.matchAll(/Contents\/MacOS\/verboo-node/g)].length, 1);
+  assert.match(workflow, /codesign --verify --deep --strict --verbose=2 "\$APP_PATH"/);
   assert.equal(tauriConfig.bundle.macOS.entitlements, "Entitlements.plist");
   assert.match(entitlements, /com\.apple\.security\.cs\.allow-jit/);
   assert.match(

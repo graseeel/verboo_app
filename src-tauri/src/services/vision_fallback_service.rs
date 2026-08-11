@@ -150,7 +150,7 @@ const HELPER_CLI_TIMEOUT: Duration = Duration::from_secs(30);
 /// The CLI's text output is captured and returned as the description.
 ///
 /// Uses `CliSpawn` (the same resolver the main turn uses) to acquire the active
-/// signed CLI and embedded Node runtime. This prevents any packaged build from
+/// signed CLI and app-managed Node runtime. This prevents any packaged build from
 /// falling back to a global CLI.
 ///
 /// **Timeout**: if the CLI doesn't produce a result within `HELPER_CLI_TIMEOUT`
@@ -281,7 +281,7 @@ pub fn describe_image_once_with_prompt(
     );
 
     // Use CliSpawn — the same resolver the main turn uses. This acquires an
-    // immutable lease for the active signed CLI and embedded Node runtime.
+    // immutable lease for the active signed CLI and app-managed Node runtime.
     let spawn = crate::services::cli_spawn::CliSpawn::new(&args);
     let mut cmd = spawn.command;
     cmd.stdin(Stdio::piped())

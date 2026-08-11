@@ -65,20 +65,13 @@ else
   print_fail "App executable not found or not executable."
 fi
 
-# Node belongs to the app bundle. The signed CLI is intentionally absent from
-# the bundle and is installed under app-data after its upstream manifest and
-# archive digest are verified.
+# Node and the signed CLI are intentionally absent from the bundle. They are
+# installed under app data after their trusted contracts are verified.
 NODE_PATH="$APP_PATH/Contents/MacOS/verboo-node"
-if [[ -x "$NODE_PATH" ]]; then
-  print_pass "Embedded Node runtime found: $NODE_PATH"
-  NODE_CONTRACT="$("$NODE_PATH" -p '`${process.versions.node}/${process.versions.modules}/${process.versions.napi}`' 2>&1)"
-  if [[ "$NODE_CONTRACT" == "24.19.0/137/10" ]]; then
-    print_pass "Embedded Node runtime contract: $NODE_CONTRACT"
-  else
-    print_fail "Embedded Node runtime contract mismatch: $NODE_CONTRACT"
-  fi
+if [[ -e "$NODE_PATH" ]]; then
+  print_fail "The app bundle still contains the obsolete Node runtime: $NODE_PATH"
 else
-  print_fail "Embedded Node runtime not found: $NODE_PATH"
+  print_pass "App bundle contains no Node runtime payload."
 fi
 
 if find "$APP_PATH/Contents/Resources" -path '*cli-package*' -print -quit 2>/dev/null | grep -q .; then

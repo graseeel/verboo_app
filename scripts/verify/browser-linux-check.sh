@@ -66,8 +66,7 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   docker build $PLATFORM_FLAGS -t "$IMAGE" - <<'DOCKERFILE'
 FROM ubuntu:24.04
 
-# Node 22 pinado em 22.11.0 (LTS "Jod") executa os scripts do gate. O runtime
-# embarcado Node 24 é preparado e verificado separadamente pelo builder do app.
+# Node 22 pinado em 22.11.0 (LTS "Jod") executa somente os scripts do gate.
 ENV NODE_VERSION=22.11.0
 
 RUN export DEBIAN_FRONTEND=noninteractive && \
@@ -204,10 +203,6 @@ for SIDECAR in verboo-in-chrome verboo-ios-simulator verboo-ffmpeg verboo-ffprob
       ;;
   esac
 done
-
-# O Node é parte do contrato real do app, não um stub. O builder baixa o
-# arquivo oficial pinado, verifica SHA-256 e materializa o sidecar Linux x64.
-node scripts/tauri/build-node-sidecar.mjs --target "$TRIPLE"
 
 # Verificação pós-escrita: compara hash sha256 de cada binário apple-darwin
 # com o snapshot capturado ANTES dos writes. Detecta sobrescrita de conteúdo,

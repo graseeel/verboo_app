@@ -228,12 +228,6 @@ jobs:
           path: ${{ runner.temp }}/verboo-media-sidecars-cache
           key: media-sidecars-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('scripts/tauri/media-sidecars.json', 'scripts/tauri/build-media-sidecars.mjs') }}
 
-      - name: Cache verified embedded Node archives
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/verboo-node-sidecars-cache
-          key: node-sidecar-${{ matrix.target }}-${{ hashFiles('scripts/tauri/node-sidecars.json', 'scripts/tauri/build-node-sidecar.mjs') }}
-
       - name: Build renderer and app-owned resources
         # Mirrors local `npm run tauri:build` deps prep:
         #   1. copy-wda-resource.mjs — macOS simulator bridge resource
@@ -247,25 +241,6 @@ jobs:
 
       - name: Build Verboo in Chrome sidecar
         run: node scripts/tauri/build-chrome-helper.mjs --target ${{ matrix.target }}
-
-      - name: Prepare verified embedded Node runtime
-        env:
-          VERBOO_NODE_SIDECAR_CACHE: ${{ runner.temp }}/verboo-node-sidecars-cache
-        run: node scripts/tauri/build-node-sidecar.mjs --target ${{ matrix.target }}
-
-      - name: Verify embedded Node runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          TARGET="${{ matrix.target }}"
-          EXT=""
-          if [ "$TARGET" = "x86_64-pc-windows-msvc" ]; then EXT=".exe"; fi
-          NODE_BIN="src-tauri/binaries/verboo-node-$TARGET$EXT"
-          test -s "$NODE_BIN"
-          test -s "src-tauri/resources/node-runtime/LICENSE"
-          test "$("$NODE_BIN" -p 'process.versions.node')" = "24.19.0"
-          test "$("$NODE_BIN" -p 'process.versions.modules')" = "137"
-          test "$("$NODE_BIN" -p 'process.versions.napi')" = "10"
 
       - name: Build pinned media sidecars
         if: runner.os != 'Windows'
@@ -613,21 +588,6 @@ jobs:
             done
           fi
 
-      - name: Preserve embedded Node entitlements and verify JavaScript execution
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          set -euo pipefail
-          BUNDLE_ROOT="src-tauri/target/${{ matrix.target }}/release/bundle"
-          APP_PATH=$(find "$BUNDLE_ROOT/macos" -maxdepth 1 -type d -name '*.app' | head -1)
-          test -n "$APP_PATH"
-          test -n "${APPLE_SIGNING_IDENTITY:-}"
-          test -n "${APPLE_CODESIGN_KEYCHAIN:-}"
-          scripts/tauri/sign-macos-node-runtime.sh \
-            "$APP_PATH" \
-            "$APPLE_SIGNING_IDENTITY" \
-            "$APPLE_CODESIGN_KEYCHAIN"
-
       - name: Create signed macOS DMG with bounded retry
         if: runner.os == 'macOS'
         env:
@@ -733,13 +693,7 @@ jobs:
           test -n "$APP_PATH"
           test -n "$DMG_PATH"
 
-          NODE_PATH="$APP_PATH/Contents/MacOS/verboo-node"
-          test -x "$NODE_PATH"
-          codesign --verify --strict --verbose=2 "$NODE_PATH"
-          NODE_ENTITLEMENTS="$(codesign -d --entitlements - --xml "$NODE_PATH" 2>&1)"
-          printf '%s\n' "$NODE_ENTITLEMENTS"
-          printf '%s\n' "$NODE_ENTITLEMENTS" | grep -F '<key>com.apple.security.cs.disable-library-validation</key><true/>'
-
+          test ! -e "$APP_PATH/Contents/MacOS/verboo-node"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           CODESIGN_INFO=$(codesign --display --verbose=4 "$APP_PATH" 2>&1)
           printf '%s\n' "$CODESIGN_INFO"

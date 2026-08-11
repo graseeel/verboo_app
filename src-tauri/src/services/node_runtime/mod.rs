@@ -1,9 +1,11 @@
 //! Resolves and manages only the Node runtime owned by Verboo Desktop.
 //!
-//! Packaged builds accept the target-qualified Tauri sidecar beside the app
-//! executable. Debug builds may use the explicit `VERBOO_NODE_PATH` override.
-//! System Node locations, npm, nvm, Homebrew, and PATH are deliberately not
-//! runtime fallbacks; the desktop app must work on a clean machine.
+//! Packaged builds install an exact verified runtime under app data. A fully
+//! validated adjacent sidecar remains only as a transition fallback for older
+//! development packages. Debug builds may use the explicit
+//! `VERBOO_NODE_PATH` override. System Node locations, npm, nvm, Homebrew, and
+//! PATH are deliberately not runtime fallbacks; the app must work on a clean
+//! machine.
 
 use std::fs;
 use std::path::{Path, PathBuf};

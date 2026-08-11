@@ -4,7 +4,7 @@ import test from 'node:test'
 
 const read = path => readFileSync(path, 'utf8')
 
-test('the app bundle owns Node but never owns a CLI payload', () => {
+test('the app manages Node after install but never bundles Node or CLI payloads', () => {
   const packageJson = JSON.parse(read('package.json'))
   const tauri = JSON.parse(read('src-tauri/tauri.conf.json'))
   const macos = JSON.parse(read('src-tauri/tauri.macos.conf.json'))
@@ -13,7 +13,8 @@ test('the app bundle owns Node but never owns a CLI payload', () => {
   assert.equal(packageJson.dependencies?.['@verboo/code'], undefined)
   assert.doesNotMatch(packageJson.scripts['build:tauri-deps'], /cli-package|copy-cli|dedup-cli/)
   assert.equal(resources.some(resource => resource.includes('cli-package')), false)
-  assert.equal(tauri.bundle.externalBin.includes('binaries/verboo-node'), true)
+  assert.equal(tauri.bundle.externalBin.includes('binaries/verboo-node'), false)
+  assert.equal(resources.some(resource => resource.includes('node-runtime')), false)
 })
 
 test('the obsolete app-owned CLI update path cannot return', () => {
@@ -59,10 +60,7 @@ test('cross-platform Rust gates prepare every required external runtime', () => 
     /Prepare macOS WebDriverAgent resource[\s\S]*?if: runner\.os == 'macOS'[\s\S]*?copy-wda-resource\.mjs/,
   )
   assert.match(linuxBrowserGate, /verboo-ios-simulator/)
-  assert.match(
-    linuxBrowserGate,
-    /build-node-sidecar\.mjs --target "\$TRIPLE"/,
-  )
+  assert.doesNotMatch(linuxBrowserGate, /build-node-sidecar|verboo-node/)
   assert.match(linuxBrowserGate, /if \[ ! -d dist-renderer \]/)
   assert.match(linuxBrowserGate, /trap cleanup_frontend_dist EXIT/)
   assert.doesNotMatch(linuxBrowserGate, /DARWIN_COUNT_BEFORE[^\n]*-ne\s+\d+/)

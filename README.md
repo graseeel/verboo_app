@@ -40,7 +40,7 @@ This repository is developed with authorization from the Verboo owner. Verboo, V
 
 ## What It Does
 
-- Runs a signed, versioned Verboo CLI through the app-owned Node.js sidecar.
+- Runs a signed, versioned Verboo CLI through an app-managed Node.js runtime.
 - Detects CLI updates separately from app updates, while presenting one update card and one restart flow.
 - Detects Verboo CLI authentication or a valid Verboo API key before unlocking the app.
 - Lists models available to the authenticated Verboo account when possible.
@@ -72,18 +72,18 @@ This repository is developed with authorization from the Verboo owner. Verboo, V
   - Linux x64 with glibc 2.28+ (Ubuntu 20.04+, Debian 11+, Fedora 35+)
 - Internet access and a valid Verboo session or API key.
 
-Node.js, npm, Homebrew, and a global `@verboo/code` CLI are not required. The
-app embeds its own Node runtime and never installs, replaces, or removes the
-user's system Node or global CLI. Internet access is required for the first
-signed CLI bootstrap; the rest of the app remains available if bootstrap is
-temporarily offline.
+Node.js, npm, Homebrew, and a global `@verboo/code` CLI are not required. On
+first use, the app downloads and validates its private Node runtime under app
+data; it never installs, replaces, or removes the user's system Node or global
+CLI. Internet access is required for this runtime and signed CLI bootstrap; the
+rest of the app remains available if bootstrap is temporarily offline.
 
 Git is optional, but useful when the assistant works inside a real repository.
 
 On first launch per app version, Verboo Code runs a requirements check. It
-blocks only fatal package/platform problems such as a missing embedded Node or
-native sidecar. A CLI bootstrap/network failure disables agent actions until a
-retry succeeds, without falling back to an unverified global CLI.
+blocks only fatal package/platform problems such as a missing native sidecar.
+A runtime or CLI bootstrap failure disables agent actions until a retry
+succeeds, without falling back to system Node or an unverified global CLI.
 
 See [requirements/README.md](requirements/README.md) for the full runtime
 contract.
@@ -232,7 +232,7 @@ Este repositório é desenvolvido com autorização do proprietário da Verboo. 
 - Mac Apple Silicon arm64 (build Intel x64 disponível como beta).
 - Acesso à internet e uma sessão Verboo válida ou chave de API.
 
-O bundle Tauri embarca o backend Rust, Node.js 24.19.0 verificado e as dependências nativas do app. Node.js, npm, Homebrew e um CLI global `@verboo/code` não são necessários. Na primeira abertura, o app baixa o CLI compatível do release oficial, verifica assinatura e hash e o instala nos dados do app. Instalações de Node e CLI feitas pelo usuário permanecem intocadas.
+O bundle Tauri embarca o backend Rust e as dependências nativas do app. Node.js, npm, Homebrew e um CLI global `@verboo/code` não são necessários. Na primeira abertura, o app baixa e valida seu runtime Node privado e depois instala o CLI compatível do release oficial nos dados do app. Instalações de Node e CLI feitas pelo usuário permanecem intocadas.
 
 Git e Apple Command Line Tools são opcionais, mas úteis quando o assistente trabalha dentro de um repositório real:
 
@@ -241,7 +241,7 @@ git --version
 xcode-select -p
 ```
 
-No primeiro início por versão do app, o Verboo Code roda uma checagem de requisitos. Ele bloqueia apenas problemas fatais de pacote/plataforma, como Node ou sidecar nativo embarcado ausente. Uma falha de rede no bootstrap do CLI desabilita temporariamente as ações do agente e permite tentar novamente, sem usar um CLI global não verificado.
+No primeiro início por versão do app, o Verboo Code roda uma checagem de requisitos. Ele bloqueia apenas problemas fatais de pacote/plataforma, como um sidecar nativo ausente. Uma falha de rede no bootstrap do runtime ou do CLI desabilita temporariamente as ações do agente e permite tentar novamente, sem usar o Node do sistema ou um CLI global não verificado.
 
 Veja [requirements/README.md](requirements/README.md) para o contrato completo de runtime.
 
