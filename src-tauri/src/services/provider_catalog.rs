@@ -158,6 +158,75 @@ pub fn provider_connected_from_blob(provider: &str, blob: &serde_json::Value) ->
         .unwrap_or(false)
 }
 
+/// Snapshot canônico do estado de login DO provedor para o poll da ponte
+/// (`provider_login_pty`). Duas partes:
+///
+/// 1. **Chave token** (`cli_storage_key`) — o token do provedor no blob,
+///    NORMALIZADO SEM os voláteis de refresh (`lastRefreshAt`,
+///    `lastRefreshFailureAt`, `lastValidatedAt`): um refresh de fundo que só
+///    mexe nesses campos não pode parecer "conta nova".
+/// 2. **Registro de contas** (`providerAccounts.<provider>`) — normalizado
+///    para identidade estável: `defaultAccountId` + map
+///    `localAccountId → providerSubjectId`. Credential, planId, displayLabel
+///    e voláteis são descartados.
+///
+/// O poll emite Connected quando QUALQUER parte muda do snapshot capturado
+/// no momento do slash:
+/// - 1º login: token `null` → Some;
+/// - 2ª conta NÃO-default: o registro ganha uma conta sem a chave token mudar
+///   (o CLI 0.15.12 aditivo espelha a conta DEFAULT na chave token via
+///   `mirrorDefaultCredential` — evidência real 2026-08-10: `codex` == conta
+///   default, a 2ª conta só no `providerAccounts`);
+/// - reconnect: a chave token muda;
+/// - refresh de fundo (só voláteis): nada muda — a guarda obrigatória.
+pub fn provider_login_state_snapshot(
+    provider: &str,
+    blob: &serde_json::Value,
+) -> serde_json::Value {
+    let token = cli_storage_key(provider)
+        .and_then(|key| blob.get(key))
+        .map(|entry| match entry.as_object() {
+            Some(obj) => {
+                let mut normalized = obj.clone();
+                normalized.remove("lastRefreshAt");
+                normalized.remove("lastRefreshFailureAt");
+                normalized.remove("lastValidatedAt");
+                serde_json::Value::Object(normalized)
+            }
+            None => entry.clone(),
+        });
+    let accounts = blob
+        .get("providerAccounts")
+        .and_then(|registry| registry.get(provider))
+        .map(|section| {
+            let default_account_id = section
+                .get("defaultAccountId")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let mut account_ids = serde_json::Map::new();
+            if let Some(items) = section.get("accounts").and_then(|v| v.as_object()) {
+                for (local_id, account) in items {
+                    let subject = account.get("providerSubjectId").and_then(|v| v.as_str());
+                    account_ids.insert(
+                        local_id.clone(),
+                        match subject {
+                            Some(subject) => serde_json::Value::String(subject.to_string()),
+                            None => serde_json::Value::Null,
+                        },
+                    );
+                }
+            }
+            serde_json::json!({
+                "defaultAccountId": default_account_id,
+                "accounts": serde_json::Value::Object(account_ids),
+            })
+        });
+    serde_json::json!({
+        "token": token,
+        "accounts": accounts,
+    })
+}
+
 /// Parse de uma linha da listagem. Linhas não-JSON (erros, ruído) → None.
 fn parse_cli_line(line: &str) -> Option<CliModelLine> {
     let trimmed = line.trim();
@@ -257,6 +326,100 @@ fn run_cli(args: &[&str], label: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fixture do shape REAL do registro de contas do CLI 0.15.12
+    /// (evidência do keychain 2026-08-10): defaultAccountId + accounts map
+    /// com providerSubjectId/credential/voláteis.
+    fn blob_com_contas(account_ids: &[(&str, &str)]) -> serde_json::Value {
+        let mut accounts = serde_json::Map::new();
+        for (local_id, subject) in account_ids {
+            accounts.insert(
+                (*local_id).to_string(),
+                serde_json::json!({
+                    "localAccountId": local_id,
+                    "providerSubjectId": subject,
+                    "displayLabel": "Codex",
+                    "connectionState": "connected",
+                    "credential": { "accessToken": format!("tok-{subject}"), "lastRefreshAt": 1000 },
+                    "lastValidatedAt": "2026-08-10T00:00:00.000Z",
+                }),
+            );
+        }
+        serde_json::json!({
+            "codex": {
+                "accessToken": "tok-default", "refreshToken": "ref-default",
+                "accountId": account_ids.first().map(|(_, s)| *s).unwrap_or(""),
+                "idToken": "id-default", "lastRefreshAt": 1000, "lastRefreshFailureAt": 0,
+            },
+            "providerAccounts": {
+                "schemaVersion": 1,
+                "codex": {
+                    "defaultAccountId": account_ids.first().map(|(id, _)| *id).unwrap_or(""),
+                    "accounts": accounts,
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn provider_login_state_snapshot_normalizes_registry_to_stable_identity() {
+        let blob = blob_com_contas(&[("local-a", "subj-a"), ("local-b", "subj-b")]);
+        let snap = provider_login_state_snapshot("codex", &blob);
+        // Chave token: voláteis de refresh REMOVIDOS.
+        assert!(snap["token"].get("lastRefreshAt").is_none());
+        assert!(snap["token"].get("lastRefreshFailureAt").is_none());
+        assert!(snap["token"].get("accessToken").is_some());
+        // Registro: só identidade estável.
+        assert_eq!(snap["accounts"]["defaultAccountId"], "local-a");
+        assert_eq!(snap["accounts"]["accounts"]["local-a"], "subj-a");
+        assert_eq!(snap["accounts"]["accounts"]["local-b"], "subj-b");
+        // Voláteis/credential não vazam para o snapshot.
+        assert!(snap["accounts"]["accounts"]["local-a"].get("credential").is_none());
+        assert!(snap["accounts"].get("lastValidatedAt").is_none());
+    }
+
+    #[test]
+    fn provider_login_state_snapshot_ignores_volatile_only_changes() {
+        let antes = blob_com_contas(&[("local-a", "subj-a")]);
+        let mut depois = antes.clone();
+        // Refresh de fundo: só os voláteis mudam (token key + registro).
+        depois["codex"]["lastRefreshAt"] = serde_json::json!(9999);
+        depois["codex"]["lastRefreshFailureAt"] = serde_json::json!(1);
+        depois["providerAccounts"]["codex"]["accounts"]["local-a"]["credential"]
+            ["lastRefreshAt"] = serde_json::json!(9999);
+        depois["providerAccounts"]["codex"]["accounts"]["local-a"]["lastValidatedAt"] =
+            serde_json::json!("2026-08-11T00:00:00.000Z");
+        assert_eq!(
+            provider_login_state_snapshot("codex", &antes),
+            provider_login_state_snapshot("codex", &depois),
+            "refresh de fundo (só lastRefreshAt/lastValidatedAt) NÃO pode mudar o snapshot"
+        );
+    }
+
+    #[test]
+    fn provider_login_state_snapshot_detects_registry_account_gain_without_token_change() {
+        // 2ª conta NÃO-default: o registro ganha a conta B, a chave token
+        // NÃO muda (espelhada na conta default pelo CLI aditivo 0.15.12).
+        let antes = blob_com_contas(&[("local-a", "subj-a")]);
+        let depois = blob_com_contas(&[("local-a", "subj-a"), ("local-b", "subj-b")]);
+        assert_eq!(antes["codex"], depois["codex"], "chave token inalterada");
+        assert_ne!(
+            provider_login_state_snapshot("codex", &antes),
+            provider_login_state_snapshot("codex", &depois),
+            "o registro ganhou a conta B → o snapshot DEVE mudar → Connected"
+        );
+    }
+
+    #[test]
+    fn provider_login_state_snapshot_first_login_token_null_to_some() {
+        let antes = serde_json::json!({});
+        let depois = blob_com_contas(&[("local-a", "subj-a")]);
+        assert_ne!(
+            provider_login_state_snapshot("codex", &antes),
+            provider_login_state_snapshot("codex", &depois),
+            "1º login: token null → Some é mudança → Connected"
+        );
+    }
 
     /// Fixture LITERAL do shape da listagem (medição do Prumo, CLI 0.15.2):
     /// provider, id, displayName, contextWindow, defaultReasoningLevel,

@@ -399,14 +399,19 @@ impl ProviderLoginService {
             let mut last_poll = Instant::now();
             let login_started = Instant::now();
             let prompt_deadline = login_started + options.prompt_timeout;
-            // Snapshot do token do provedor NO MOMENTO DO SLASH (2ª conta:
-            // o blob JÁ tem o token da conexão existente). O poll só emite
-            // Connected quando este token MUDA — distinguindo "token prévio"
-            // de "token novo do OAuth que acabou de completar". Sem isto, o
-            // fluxo de 2ª conta emite Connected prematuro (evidência
-            // 2026-08-10) e o teardown mata o CLI no meio do OAuth do
-            // usuário → ERR_CONNECTION_REFUSED no callback 1455.
-            let mut initial_provider_entry: Option<serde_json::Value> = None;
+            // Snapshot do estado de login DO provedor NO MOMENTO DO SLASH
+            // (2ª conta: o blob JÁ tem o token da conexão existente). O poll
+            // só emite Connected quando ESTE snapshot muda — token key OU
+            // registro de contas (`providerAccounts.<provider>`), normalizado
+            // sem voláteis de refresh (guarda obrigatória: refresh de fundo
+            // não é conta nova). Sem isto, o fluxo de 2ª conta emite
+            // Connected prematuro (evidência 2026-08-10) e o teardown mata o
+            // CLI no meio do OAuth do usuário → ERR_CONNECTION_REFUSED no
+            // callback 1455; E a 2ª conta NÃO-default (registro ganha conta
+            // sem a chave token mudar) nunca emite Connected → lista stale
+            // até reiniciar.
+            let mut initial_login_state: serde_json::Value =
+                serde_json::json!({ "token": null, "accounts": null });
 
             loop {
                 let now = Instant::now();
@@ -480,16 +485,25 @@ impl ProviderLoginService {
                             .map(|entry| !entry.is_null())
                             .unwrap_or(false);
                         // CHANGE DETECTION (2ª conta, evidência 2026-08-10):
-                        // emite Connected SOMENTE quando o token do provedor
-                        // MUDA do snapshot capturado no momento do slash. No
-                        // fluxo de 2ª conta o blob JÁ tem o token da conexão
-                        // existente — sem isto o poll casa o token PRÉVIO e
-                        // emite Connected antes do OAuth do usuário completar,
-                        // o teardown mata o PTY, o CLI morre, o listener 1455
-                        // morre e o callback recebe ERR_CONNECTION_REFUSED.
-                        // 1º login: snapshot None → Some é mudança → Connected
-                        // continua sendo detectado normalmente.
-                        if connected && current_entry != initial_provider_entry {
+                        // emite Connected SOMENTE quando o SNAPSHOT do provedor
+                        // MUDA do capturado no momento do slash — a chave token
+                        // OU o registro de contas `providerAccounts.<provider>`
+                        // (normalizado sem voláteis de refresh). No fluxo de 2ª
+                        // conta o blob JÁ tem o token da conexão existente —
+                        // sem isto o poll casa o token PRÉVIO e emite Connected
+                        // antes do OAuth do usuário completar, o teardown mata
+                        // o PTY, o CLI morre, o listener 1455 morre e o
+                        // callback recebe ERR_CONNECTION_REFUSED. E sem o
+                        // registro, a 2ª conta NÃO-default (registro ganha
+                        // conta, chave token espelhada na default) nunca emite
+                        // Connected → lista stale até reiniciar (2026-08-10).
+                        // 1º login: snapshot token null → Some é mudança →
+                        // Connected continua sendo detectado normalmente.
+                        let current_state = provider_catalog::provider_login_state_snapshot(
+                            &provider_for_thread,
+                            &blob,
+                        );
+                        if connected && current_state != initial_login_state {
                             emit_logged(&emit, ProviderLoginEvent {
                                 provider: provider_for_thread.clone(),
                                 state: ProviderLoginState::Connected,
@@ -542,19 +556,21 @@ impl ProviderLoginService {
                             output.push_str(&strip_terminal_controls(&raw));
                             if prompt_ready(&output) {
                                 prompt_sent = true;
-                                // Baseline do change detection: o token do
-                                // provedor ANTES do slash. O OAuth do usuário
-                                // ainda não começou — qualquer "connected"
-                                // neste instante é o estado PRÉVIO (2ª conta).
-                                let snapshot_blob =
-                                    provider_catalog::read_provider_credentials_blob();
-                                let snapshot_key =
-                                    provider_catalog::cli_storage_key(&provider_for_thread);
-                                initial_provider_entry = match (snapshot_blob.as_ref(), snapshot_key)
+                                // Baseline do change detection: o estado do
+                                // provedor ANTES do slash (chave token +
+                                // registro de contas, normalizado). O OAuth
+                                // do usuário ainda não começou — qualquer
+                                // "connected" neste instante é o estado
+                                // PRÉVIO (2ª conta).
+                                if let Some(snapshot_blob) =
+                                    provider_catalog::read_provider_credentials_blob()
                                 {
-                                    (Some(blob), Some(key)) => blob.get(key).cloned(),
-                                    _ => None,
-                                };
+                                    initial_login_state = provider_catalog::
+                                        provider_login_state_snapshot(
+                                            &provider_for_thread,
+                                            &snapshot_blob,
+                                        );
+                                }
                                 post_slash_deadline = Some(now + POST_SLASH_DEADLINE);
                                 if let Ok(mut w) = writer_for_slash.lock() {
                                     if let Some(writer) = w.as_mut() {
@@ -1093,6 +1109,27 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             }
             None => serde_json::json!({}),
         };
+        std::fs::write(&blob_file, serde_json::to_string(&blob).unwrap()).unwrap();
+        // SAFETY: env global intencional, serializado pelo guard.
+        unsafe {
+            std::env::set_var("FAKE_CREDENTIALS_BLOB", &blob_file);
+        }
+        blob_file
+    }
+
+    /// Escreve um blob COMPLETO (chave token + providerAccounts) no arquivo
+    /// fake e aponta FAKE_CREDENTIALS_BLOB para ele. Os testes montam o JSON
+    /// com o shape REAL do CLI 0.15.12 — a 2ª conta aditiva entra no registro
+    /// `providerAccounts.<provider>.accounts` sem mudar a chave token
+    /// (espelhada na conta DEFAULT por mirrorDefaultCredential).
+    fn set_fake_blob_json(provider: &str, blob: serde_json::Value) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "verboo-login-fake-blob-{}-{}",
+            std::process::id(),
+            provider
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let blob_file = dir.join("credentials.json");
         std::fs::write(&blob_file, serde_json::to_string(&blob).unwrap()).unwrap();
         // SAFETY: env global intencional, serializado pelo guard.
         unsafe {
@@ -2199,6 +2236,276 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             awaiting_idx.is_some() && connected_idx.is_some()
                 && awaiting_idx < connected_idx,
             "a sequência deve ser awaiting_browser → connected: {snap:?}"
+        );
+
+        service.cancel().ok();
+        clear_fake_cli();
+    }
+
+    /// Campo reportado pelo dono (2026-08-10): a 2ª conta Codex conecta com
+    /// sucesso mas SÓ aparece na lista após reiniciar. Evidência do keychain
+    /// real + cli.mjs 0.15.12: o login ADITIVO escreve a conta nova no
+    /// REGISTRO `providerAccounts.codex.accounts`, mas a chave `codex`
+    /// (token) fica espelhada na conta DEFAULT (`mirrorDefaultCredential`)
+    /// — a chave token NÃO muda. O poll só observava a chave token → nunca
+    /// emitia Connected → o reload do renderer nunca rodava.
+    ///
+    /// RED (hoje): registro ganha a conta B sem mudar a chave token → NÃO
+    /// emite Connected. GREEN (pós-fix): o snapshot cobre token + registro
+    /// normalizado → emite Connected.
+    #[test]
+    fn second_account_gaining_registry_account_emits_connected_without_token_change() {
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cleanup = FakeCliCleanup;
+        let (_cli, _state, _received, _child) = write_fake_cli("second-account-registry", false);
+        // SAFETY: env global intencional, serializado pelo guard.
+        unsafe {
+            std::env::set_var("FAKE_OAUTH_CORRUPTED", "1");
+        }
+        // Conta A (default) — chave token + registro consistentes.
+        let blob_conta_a = serde_json::json!({
+            "codex": {
+                "accessToken": "tok-a", "refreshToken": "ref-a",
+                "accountId": "subj-a", "idToken": "id-a", "lastRefreshAt": 1000,
+            },
+            "providerAccounts": {
+                "schemaVersion": 1,
+                "codex": {
+                    "defaultAccountId": "local-a",
+                    "accounts": {
+                        "local-a": {
+                            "localAccountId": "local-a",
+                            "providerSubjectId": "subj-a",
+                            "displayLabel": "Codex 1",
+                            "connectionState": "connected",
+                            "credential": { "accessToken": "tok-a", "lastRefreshAt": 1000 },
+                        }
+                    }
+                }
+            }
+        });
+        set_fake_blob_json("codex", blob_conta_a.clone());
+
+        let events: Arc<Mutex<Vec<ProviderLoginEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_for_service = events.clone();
+        let service = ProviderLoginService::new(
+            move |event| {
+                events_for_service.lock().unwrap().push(event);
+            },
+            std::env::temp_dir(),
+        );
+
+        let _id = service
+            .start(
+                "codex",
+                true,
+                None,
+                LoginOptions {
+                    prompt_timeout: Duration::from_secs(10),
+                    login_timeout: Duration::from_secs(30),
+                    browser_timeout: Duration::from_secs(20),
+                },
+            )
+            .expect("start deve abrir o PTY");
+
+        // URL do OAuth observado (awaiting_browser).
+        assert!(
+            wait_until(Duration::from_secs(15), || {
+                events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|e| matches!(e.state, ProviderLoginState::AwaitingBrowser))
+            }),
+            "awaiting_browser deve ser emitido — o URL do OAuth deve ser observado"
+        );
+
+        // OAuth completa: o registro ganha a conta B; a chave token NÃO muda
+        // (continua espelhada na conta DEFAULT A — mirrorDefaultCredential).
+        let blob_conta_a_e_b = serde_json::json!({
+            "codex": {
+                "accessToken": "tok-a", "refreshToken": "ref-a",
+                "accountId": "subj-a", "idToken": "id-a", "lastRefreshAt": 1000,
+            },
+            "providerAccounts": {
+                "schemaVersion": 1,
+                "codex": {
+                    "defaultAccountId": "local-a",
+                    "accounts": {
+                        "local-a": {
+                            "localAccountId": "local-a",
+                            "providerSubjectId": "subj-a",
+                            "displayLabel": "Codex 1",
+                            "connectionState": "connected",
+                            "credential": { "accessToken": "tok-a", "lastRefreshAt": 1000 },
+                        },
+                        "local-b": {
+                            "localAccountId": "local-b",
+                            "providerSubjectId": "subj-b",
+                            "displayLabel": "Codex 2",
+                            "connectionState": "connected",
+                            "credential": { "accessToken": "tok-b", "lastRefreshAt": 2000 },
+                        }
+                    }
+                }
+            }
+        });
+        set_fake_blob_json("codex", blob_conta_a_e_b);
+
+        // RED hoje: o poll só observa a chave `codex` (inalterada) → NUNCA
+        // emite Connected → timeout. GREEN pós-fix: o registro normalizado
+        // ganhou a conta B → Connected.
+        assert!(
+            wait_until(Duration::from_secs(10), || {
+                events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|e| matches!(e.state, ProviderLoginState::Connected))
+            }),
+            "o registro ganhou a conta B (chave token inalterada) — Connected DEVE \
+             emitir. Sem o fix, o poll só observa a chave `codex` (espelhada na \
+             conta default) e nunca emite → lista stale até reiniciar (campo 2026-08-10)"
+        );
+
+        service.cancel().ok();
+        clear_fake_cli();
+    }
+
+    /// GUARDA OBRIGATÓRIA (GO do Maestro): um refresh de fundo que SÓ muda os
+    /// voláteis (`lastRefreshAt`/`lastValidatedAt`/`lastRefreshFailureAt`) no
+    /// token key E no registro NÃO pode disparar Connected. O snapshot é
+    /// normalizado SEM esses campos — refresh de fundo não é conta nova.
+    ///
+    /// RED hoje: o poll compara a chave token INTEIRA → lastRefreshAt novo →
+    /// Connected prematuro. GREEN pós-fix: snapshot normalizado → nada muda →
+    /// Error honesto no browser_timeout, NENHUM Connected.
+    #[test]
+    fn background_refresh_changing_only_volatile_fields_does_not_emit_connected() {
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cleanup = FakeCliCleanup;
+        let (_cli, _state, _received, _child) = write_fake_cli("background-refresh", false);
+        // SAFETY: env global intencional, serializado pelo guard.
+        unsafe {
+            std::env::set_var("FAKE_OAUTH_CORRUPTED", "1");
+        }
+        // Conta A conectada (token + registro). Chave token IGUAL em ambos os
+        // estados — só os voláteis mudam no "refresh".
+        let blob_antes = serde_json::json!({
+            "codex": {
+                "accessToken": "tok-a", "refreshToken": "ref-a",
+                "accountId": "subj-a", "idToken": "id-a",
+                "lastRefreshAt": 1000, "lastRefreshFailureAt": 0,
+            },
+            "providerAccounts": {
+                "schemaVersion": 1,
+                "codex": {
+                    "defaultAccountId": "local-a",
+                    "accounts": {
+                        "local-a": {
+                            "localAccountId": "local-a",
+                            "providerSubjectId": "subj-a",
+                            "displayLabel": "Codex 1",
+                            "connectionState": "connected",
+                            "credential": {
+                                "accessToken": "tok-a",
+                                "lastRefreshAt": 1000, "lastRefreshFailureAt": 0,
+                            },
+                            "lastValidatedAt": "2026-08-09T00:00:00.000Z",
+                        }
+                    }
+                }
+            }
+        });
+        let blob_depois = serde_json::json!({
+            "codex": {
+                "accessToken": "tok-a", "refreshToken": "ref-a",
+                "accountId": "subj-a", "idToken": "id-a",
+                "lastRefreshAt": 9999, "lastRefreshFailureAt": 0,
+            },
+            "providerAccounts": {
+                "schemaVersion": 1,
+                "codex": {
+                    "defaultAccountId": "local-a",
+                    "accounts": {
+                        "local-a": {
+                            "localAccountId": "local-a",
+                            "providerSubjectId": "subj-a",
+                            "displayLabel": "Codex 1",
+                            "connectionState": "connected",
+                            "credential": {
+                                "accessToken": "tok-a",
+                                "lastRefreshAt": 9999, "lastRefreshFailureAt": 0,
+                            },
+                            "lastValidatedAt": "2026-08-10T00:00:00.000Z",
+                        }
+                    }
+                }
+            }
+        });
+        set_fake_blob_json("codex", blob_antes);
+
+        let events: Arc<Mutex<Vec<ProviderLoginEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_for_service = events.clone();
+        let service = ProviderLoginService::new(
+            move |event| {
+                events_for_service.lock().unwrap().push(event);
+            },
+            std::env::temp_dir(),
+        );
+
+        let _id = service
+            .start(
+                "codex",
+                true,
+                None,
+                LoginOptions {
+                    prompt_timeout: Duration::from_secs(10),
+                    login_timeout: Duration::from_secs(30),
+                    browser_timeout: Duration::from_secs(5),
+                },
+            )
+            .expect("start deve abrir o PTY");
+
+        // URL do OAuth observado (awaiting_browser).
+        assert!(
+            wait_until(Duration::from_secs(15), || {
+                events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|e| matches!(e.state, ProviderLoginState::AwaitingBrowser))
+            }),
+            "awaiting_browser deve ser emitido — o URL do OAuth deve ser observado"
+        );
+
+        // Refresh de fundo: SÓ os voláteis mudam (token key e registro).
+        set_fake_blob_json("codex", blob_depois);
+
+        // O bridge deve esperar o browser_timeout e emitir Error honesto —
+        // NENHUM Connected (a normalização descarta os voláteis).
+        assert!(
+            wait_until(Duration::from_secs(10), || {
+                events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|e| matches!(e.state, ProviderLoginState::Error))
+            }),
+            "o timeout honesto deve disparar — o OAuth não completou"
+        );
+        assert!(
+            !events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| matches!(e.state, ProviderLoginState::Connected)),
+            "refresh de fundo (só lastRefreshAt/lastValidatedAt) NÃO pode emitir \
+             Connected — a guarda de normalização é obrigatória"
         );
 
         service.cancel().ok();
