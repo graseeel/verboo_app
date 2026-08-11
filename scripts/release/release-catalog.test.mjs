@@ -7,6 +7,7 @@ import {
   releaseEntry,
   validateReleaseCatalog,
 } from "./release-catalog.mjs";
+import { renderReleaseNotes } from "./render-release-notes.mjs";
 
 test("0.7.0-beta has complete reviewed pt-BR and en-US copy", async () => {
   const catalog = await readReleaseCatalog();
@@ -48,4 +49,16 @@ test("rejects non-canonical release versions", async () => {
   const catalog = await readReleaseCatalog();
   assert.throws(() => validateReleaseCatalog(catalog, "v0.7.0-beta"), /canonical/i);
   assert.throws(() => validateReleaseCatalog(catalog, "0.7"), /canonical/i);
+});
+
+test("renders GitHub notes from the reviewed English catalog entry", async () => {
+  const catalog = await readReleaseCatalog();
+  const entry = validateReleaseCatalog(catalog, "0.7.0-beta");
+  const markdown = renderReleaseNotes(entry, "0.7.0-beta");
+
+  assert.match(markdown, /^## Verboo Code 0\.7\.0-beta/m);
+  assert.match(markdown, /Built-in iOS Simulator — macOS/);
+  assert.match(markdown, /A much lighter installation/);
+  assert.match(markdown, /Verboo-Code-0\.7\.0-beta-Windows-x64-Setup\.exe/);
+  assert.doesNotMatch(markdown, /EDITORIAL_COPY_REQUIRED/);
 });

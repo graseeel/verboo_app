@@ -22,7 +22,11 @@ export async function buildUpdateManifest({
   bundlesDir,
   releaseBaseUrl,
   publishedAt = new Date().toISOString(),
+  notes,
 }) {
+  if (typeof notes !== "string" || notes.trim().length === 0) {
+    throw new Error("update manifest requires reviewed release notes");
+  }
   if (tag !== `v${version}`) {
     throw new Error(`release tag ${tag} does not match version ${version}`);
   }
@@ -63,7 +67,7 @@ export async function buildUpdateManifest({
 
   return {
     version,
-    notes: `Verboo Code ${version}`,
+    notes,
     pub_date: publishedAt,
     platforms,
   };

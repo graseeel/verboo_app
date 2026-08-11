@@ -220,3 +220,18 @@ test("notarization finalizer polls the saved IDs and republishes only after stap
   assert.match(workflow, /generate-tauri-update-manifest\.mjs/);
   assert.match(workflow, /gh release upload updater-beta "\$MANIFEST"/);
 });
+
+test("release artifacts are stamped and published from the reviewed catalog", async () => {
+  const workflow = await readWorkflowText(workflowPath);
+
+  assert.match(
+    workflow,
+    /VERBOO_RELEASE_TAG:\s*\$\{\{ needs\.resolve-tag\.outputs\.tag \}\}/,
+  );
+  assert.match(workflow, /render-release-notes\.mjs/);
+  assert.doesNotMatch(workflow, /This beta brings a macOS embedded browser/);
+  assert.doesNotMatch(
+    workflow,
+    /printf '%s\\n' "- On macOS, work beside a live local site/,
+  );
+});
