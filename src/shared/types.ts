@@ -1466,6 +1466,8 @@ export type UpdateStatus =
   | 'error'
   | 'unsupported'
 
+export type BootstrapStage = 'runtime' | 'cli'
+
 export type UpdateSnapshot = {
   status: UpdateStatus
   target?: 'app' | 'cli' | 'both'
@@ -1473,8 +1475,9 @@ export type UpdateSnapshot = {
   currentVersion: string
   cliCurrentVersion?: string
   cliAvailableVersion?: string
-  /** True until the first signed CLI has been installed into app data. */
+  /** True until the app-owned runtime and first signed CLI are ready. */
   cliBootstrapRequired?: boolean
+  bootstrapStage?: BootstrapStage
   /**
    * True when a stable channel with a valid manifest exists. False on 404,
    * network error, or invalid manifest. Fail-closed: when in doubt, false.

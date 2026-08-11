@@ -6488,6 +6488,7 @@ export function App() {
               : updateSnapshot?.status === 'error'
                 ? 'error'
                 : 'installing'}
+            stage={updateSnapshot?.bootstrapStage ?? 'cli'}
             percent={updateSnapshot?.percent}
             error={updateSnapshot?.error}
             onRetry={() => { void runCliBootstrap() }}

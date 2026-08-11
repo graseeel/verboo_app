@@ -1,17 +1,20 @@
 import { Check, CircleAlert, Loader2, Settings2 } from 'lucide-react'
 import mascotUrl from '../../../assets/branding/verboo-mascot.png'
+import type { BootstrapStage } from '../../shared/types'
 import { useI18n } from '../i18n'
 
 export type CliBootstrapGatePhase = 'installing' | 'error' | 'success'
 
 export function CliBootstrapGate({
   phase,
+  stage,
   percent,
   error,
   onRetry,
   onOpenSettings,
 }: {
   phase: CliBootstrapGatePhase
+  stage: BootstrapStage
   percent?: number
   error?: string
   onRetry: () => void
@@ -21,6 +24,10 @@ export function CliBootstrapGate({
   const installing = phase === 'installing'
   const failed = phase === 'error'
   const progress = Math.round(Math.min(100, Math.max(0, percent ?? 0)))
+  const copyPrefix = phase === 'success' ? 'cliBootstrap.success' : `cliBootstrap.${stage}.${phase}`
+  const errorDetail = error && !error.includes('runtime_install_failed') && !error.includes('cli_initialization_failed')
+    ? error
+    : undefined
 
   return (
     <section
@@ -41,15 +48,15 @@ export function CliBootstrapGate({
         </div>
 
         <div className="cli-bootstrap-copy">
-          <h2>{t(`cliBootstrap.${phase}Title`)}</h2>
-          <p>{t(`cliBootstrap.${phase}Body`)}</p>
+          <h2>{t(`${copyPrefix}Title`)}</h2>
+          <p>{t(`${copyPrefix}Body`)}</p>
         </div>
 
         {installing && typeof percent === 'number' && (
           <div
             className="cli-bootstrap-progress"
             role="progressbar"
-            aria-label={t('cliBootstrap.progress')}
+            aria-label={t(`cliBootstrap.${stage}.progress`)}
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={progress}
@@ -59,7 +66,7 @@ export function CliBootstrapGate({
           </div>
         )}
 
-        {failed && error && <small className="cli-bootstrap-error-detail">{error}</small>}
+        {failed && errorDetail && <small className="cli-bootstrap-error-detail">{errorDetail}</small>}
 
         {phase !== 'success' && (
           <div className="cli-bootstrap-actions">

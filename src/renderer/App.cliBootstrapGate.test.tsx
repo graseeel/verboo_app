@@ -62,6 +62,7 @@ const bootstrapSnapshot: UpdateSnapshot = {
   currentVersion: '0.7.0-beta',
   cliAvailableVersion: '0.15.9',
   cliBootstrapRequired: true,
+  bootstrapStage: 'runtime',
   percent: 37,
 }
 
@@ -145,8 +146,16 @@ describe('App first CLI installation gate', () => {
   it('starts bootstrap, blocks prompts, keeps Settings usable, then unlocks after verified success', async () => {
     render(<App />)
 
-    expect(await screen.findByText('Installing the Verboo CLI')).toBeVisible()
+    expect(await screen.findByText('Preparing Verboo')).toBeVisible()
     expect(bridge.bootstrapCli).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('composer-submit')).toBeDisabled()
+
+    act(() => updateListener?.({
+      ...bootstrapSnapshot,
+      bootstrapStage: 'cli',
+      percent: 72,
+    }))
+    expect(screen.getByText('Installing the Verboo CLI')).toBeVisible()
     expect(screen.getByTestId('composer-submit')).toBeDisabled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Configure the app' }))
@@ -163,11 +172,11 @@ describe('App first CLI installation gate', () => {
       cliBootstrapRequired: false,
     }))
 
-    expect(screen.getByText('Verboo CLI installed')).toBeVisible()
+    expect(screen.getByText('Verboo is ready')).toBeVisible()
     expect(screen.getByTestId('composer-submit')).toBeDisabled()
 
     act(() => vi.advanceTimersByTime(1_600))
-    expect(screen.queryByText('Verboo CLI installed')).toBeNull()
+    expect(screen.queryByText('Verboo is ready')).toBeNull()
     expect(screen.getByTestId('composer-submit')).toBeEnabled()
   })
 
@@ -177,6 +186,7 @@ describe('App first CLI installation gate', () => {
       status: 'error',
       cliCurrentVersion: '0.15.10',
       cliAvailableVersion: undefined,
+      bootstrapStage: 'cli',
       error: 'CLI: CLI smoke check failed: CodeRange failed',
       percent: undefined,
     }
@@ -198,6 +208,6 @@ describe('App first CLI installation gate', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
 
     expect(bridge.bootstrapCli).toHaveBeenCalledTimes(1)
-    expect(await screen.findByText('Verboo CLI installed')).toBeVisible()
+    expect(await screen.findByText('Verboo is ready')).toBeVisible()
   })
 })

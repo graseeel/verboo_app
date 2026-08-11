@@ -11,6 +11,7 @@ describe('CliBootstrapGate', () => {
       <I18nProvider language="pt-BR">
         <CliBootstrapGate
           phase="installing"
+          stage="cli"
           percent={42}
           onRetry={vi.fn()}
           onOpenSettings={onOpenSettings}
@@ -33,6 +34,7 @@ describe('CliBootstrapGate', () => {
       <I18nProvider language="en-US">
         <CliBootstrapGate
           phase="error"
+          stage="cli"
           error="CLI: offline"
           onRetry={onRetry}
           onOpenSettings={vi.fn()}
@@ -51,13 +53,44 @@ describe('CliBootstrapGate', () => {
       <I18nProvider language="en-US">
         <CliBootstrapGate
           phase="success"
+          stage="cli"
           onRetry={vi.fn()}
           onOpenSettings={vi.fn()}
         />
       </I18nProvider>,
     )
 
-    expect(screen.getByRole('status')).toHaveTextContent('Verboo CLI installed')
+    expect(screen.getByRole('status')).toHaveTextContent('Verboo is ready')
     expect(screen.getByText('Everything is ready. You can start a chat now.')).toBeVisible()
+  })
+
+  it('names runtime preparation separately from CLI installation', () => {
+    const { rerender } = render(
+      <I18nProvider language="en-US">
+        <CliBootstrapGate
+          phase="installing"
+          stage="runtime"
+          percent={20}
+          onRetry={vi.fn()}
+          onOpenSettings={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+
+    expect(screen.getByText('Preparing Verboo')).toBeVisible()
+    expect(screen.getByText(/secure runtime/i)).toBeVisible()
+
+    rerender(
+      <I18nProvider language="en-US">
+        <CliBootstrapGate
+          phase="installing"
+          stage="cli"
+          percent={70}
+          onRetry={vi.fn()}
+          onOpenSettings={vi.fn()}
+        />
+      </I18nProvider>,
+    )
+    expect(screen.getByText('Installing the Verboo CLI')).toBeVisible()
   })
 })
