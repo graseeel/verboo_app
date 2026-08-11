@@ -1,6 +1,13 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { UserSettings, UpdateSnapshot } from '../shared/types'
+import type {
+  CliAuthStatus,
+  CredentialStatus,
+  UserSettings,
+  UpdateSnapshot,
+  WhatsNewAcknowledgeResult,
+  WhatsNewStatus,
+} from '../shared/types'
 import { App } from './App'
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -66,6 +73,12 @@ const bootstrapSnapshot: UpdateSnapshot = {
   percent: 37,
 }
 
+const pendingWhatsNew = {
+  version: '0.7.0-beta',
+  tag: 'v0.7.0-beta',
+  preview: false,
+} satisfies WhatsNewStatus
+
 let updateListener: ((snapshot: UpdateSnapshot) => void) | undefined
 let bridge: ReturnType<typeof createBridge>
 
@@ -76,8 +89,12 @@ function createBridge() {
     updateUserSettings: vi.fn(async () => settings),
     getConfig: vi.fn(async () => ({ workingDirectory: '', accessMode: 'approval', platform: 'darwin' })),
     getDefaultWorkingDirectory: vi.fn(async () => ''),
-    getCredentialStatus: vi.fn(async () => ({ hasApiKey: true, apiKeyHint: '…1234' })),
-    getCliAuthStatus: vi.fn(async () => ({ loggedIn: true, email: 'ada@example.test' })),
+    getCredentialStatus: vi.fn<() => Promise<CredentialStatus>>(
+      async () => ({ hasApiKey: true, apiKeyHint: '…1234' }),
+    ),
+    getCliAuthStatus: vi.fn<() => Promise<CliAuthStatus>>(
+      async () => ({ loggedIn: true, email: 'ada@example.test' }),
+    ),
     listModels: vi.fn(async () => ({
       models: [{ id: 'model-1', displayName: 'Test model', raw: {} }],
       source: 'api-key',
@@ -91,6 +108,10 @@ function createBridge() {
     })),
     pluginList: vi.fn(async () => []),
     pluginSkills: vi.fn(async () => []),
+    getWhatsNewStatus: vi.fn<() => Promise<WhatsNewStatus | undefined>>(async () => undefined),
+    acknowledgeWhatsNew: vi.fn<(version: string) => Promise<WhatsNewAcknowledgeResult>>(
+      async () => ({ persisted: true }),
+    ),
     getUpdateStatus: vi.fn(async () => bootstrapSnapshot),
     bootstrapCli: vi.fn(() => new Promise<UpdateSnapshot>(() => {})),
     onUpdateStatus: vi.fn((callback: (snapshot: UpdateSnapshot) => void) => {
@@ -209,5 +230,47 @@ describe('App first CLI installation gate', () => {
 
     expect(bridge.bootstrapCli).toHaveBeenCalledTimes(1)
     expect(await screen.findByText('Verboo is ready')).toBeVisible()
+  })
+
+  it('waits for CLI bootstrap and its success animation before showing release notes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    bridge.getWhatsNewStatus.mockResolvedValue(pendingWhatsNew)
+    render(<App />)
+
+    expect(await screen.findByText('Preparing Verboo')).toBeVisible()
+    expect(bridge.getWhatsNewStatus).not.toHaveBeenCalled()
+
+    act(() => updateListener?.({
+      ...bootstrapSnapshot,
+      status: 'idle',
+      cliBootstrapRequired: false,
+      percent: 100,
+    }))
+    expect(screen.getByText('Verboo is ready')).toBeVisible()
+    expect(bridge.getWhatsNewStatus).not.toHaveBeenCalled()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_400) })
+    expect(await screen.findByRole('dialog', { name: 'Verboo Code 0.7.0-beta is here' })).toBeVisible()
+    expect(bridge.getWhatsNewStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows on the login surface for a first tagged clean install and closes once', async () => {
+    bridge.getUpdateStatus.mockResolvedValue({
+      status: 'idle',
+      channel: 'beta',
+      currentVersion: '0.7.0-beta',
+      cliBootstrapRequired: false,
+    })
+    bridge.getWhatsNewStatus.mockResolvedValue(pendingWhatsNew)
+    bridge.acknowledgeWhatsNew.mockResolvedValue({ persisted: true })
+    bridge.getCliAuthStatus.mockResolvedValue({ loggedIn: false })
+    bridge.getCredentialStatus.mockResolvedValue({ hasApiKey: false })
+    bridge.listModels.mockResolvedValue({ models: [], source: 'none', stale: false })
+    render(<App />)
+
+    expect(await screen.findByRole('dialog')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(bridge.acknowledgeWhatsNew).toHaveBeenCalledWith('0.7.0-beta'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })

@@ -168,6 +168,8 @@ import { formatQuotaReset, selectedExhaustedQuota } from './features/providers/p
 import { clearUpdateDraftHandoff, consumeUpdateDraftHandoff, writeUpdateDraftHandoff } from './features/updates/updateDraftHandoff'
 import { useDeferredUpdateRestart } from './features/updates/useDeferredUpdateRestart'
 import { useUpdateAutomation } from './features/updates/useUpdateAutomation'
+import { WhatsNewModal } from './features/whats-new/WhatsNewModal'
+import { useWhatsNew } from './features/whats-new/useWhatsNew'
 import { I18nProvider, createTranslator, type Translator } from './i18n'
 import { attachmentInspectionErrorKey } from './features/attachments/attachmentInspectionError'
 import { OrderedAttachmentQueue } from './features/attachments/orderedAttachmentQueue'
@@ -1319,6 +1321,26 @@ export function App() {
   }, [])
 
   const cliAgentActionsBlocked = cliBootstrapRequired || cliBootstrapSuccessVisible
+  const whatsNewReady = configLoaded
+    && settingsLoaded
+    && updateSnapshot !== undefined
+    && !cliBootstrapRequired
+    && !cliBootstrapSuccessVisible
+    && !cliBootstrapWasRequiredRef.current
+  const whatsNew = useWhatsNew({ enabled: whatsNewReady })
+
+  function whatsNewOverlay() {
+    if (!whatsNew.status) return null
+    return (
+      <WhatsNewModal
+        status={whatsNew.status}
+        onAcknowledge={whatsNew.acknowledge}
+        onDismiss={(result) => {
+          if (result.error) toast(t('whatsNew.persistenceFailed'), 'error')
+        }}
+      />
+    )
+  }
 
   const updateRestart = useDeferredUpdateRestart({
     snapshot: updateSnapshot,
@@ -6263,6 +6285,7 @@ export function App() {
           onClose={() => setFeedbackOpen(false)}
           onSubmit={sendFeedback}
         />
+        {whatsNewOverlay()}
       </I18nProvider>
     )
   }
@@ -7061,6 +7084,7 @@ export function App() {
       )}
 
     </main>
+    {whatsNewOverlay()}
     </I18nProvider>
   )
 }
