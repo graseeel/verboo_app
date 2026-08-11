@@ -1,5 +1,5 @@
 import { useState, type MouseEvent } from 'react'
-import { Check, MoreVertical, Pencil } from 'lucide-react'
+import { Check, LoaderCircle, MoreVertical, Pencil } from 'lucide-react'
 import type { ExternalProviderId, ProviderAccountSummary } from '../../../shared/types'
 import { useI18n } from '../../i18n'
 import { ConfirmDialog, type ConfirmRequest } from '../../components/ConfirmDialog'
@@ -132,26 +132,19 @@ export function ProviderAccountList({
                 <h2>{providerDisplayName(provider, t)}</h2>
               </div>
               {/* L1 — enquanto um login deste provedor está em andamento, o
-                  card mostra o estágio (Connecting…/Waiting for browser…) e
-                  o botão Cancelar, e o Adicionar conta fica travado para
+                  card mostra o estágio como STATUS QUIETO (spinner pequeno +
+                  rótulo, NÃO um botão desabilitado) e o botão Cancelar —
+                  mesma linha, alinhados. O Adicionar conta fica travado para
                   evitar dois provider_login_start simultâneos. Mesmo invoke
                   provider_login_cancel do caminho legacy. */}
               {connectingProvider === provider && (
                 <span className="provider-card-actions">
-                  <button
-                    type="button"
-                    className="provider-card-action"
-                    disabled
-                    aria-label={
-                      loginStage === 'awaiting_browser'
-                        ? t('settings.provider.waitingBrowser')
-                        : t('settings.provider.connecting')
-                    }
-                  >
+                  <span className="provider-login-stage" role="status">
+                    <LoaderCircle size={12} className="spin-icon" aria-hidden="true" />
                     {loginStage === 'awaiting_browser'
                       ? t('settings.provider.waitingBrowser')
                       : t('settings.provider.connecting')}
-                  </button>
+                  </span>
                   <button
                     type="button"
                     className="provider-card-action"
@@ -184,6 +177,12 @@ export function ProviderAccountList({
                   <div className="provider-account-row-head">
                     <div>
                       <span className="provider-account-name">
+                        {/* L2 — o símbolo do provedor fica na linha da conta
+                            SEMPRE (renomeada ou não): renomear substitui o
+                            displayLabel do CLI ("Codex 2") pelo apelido, e sem
+                            o ícone a linha perde a identidade do provedor
+                            (relato do usuário com screenshot). */}
+                        <ProviderIcon providerId={provider} size={16} style={providerToneStyle(provider)} />
                         {editing ? (
                           <span className="provider-nickname-edit">
                             <input
@@ -224,22 +223,23 @@ export function ProviderAccountList({
                     </div>
                   </div>
                   <ProviderUsageWindows state={row} />
-                  {/* UI — Use here / In use sits centered BELOW the usage
-                      windows (approved annotated print). */}
-                  <div className="provider-account-use-row">
+                  {/* L2 — UMA linha de ações: ação primária (Usar aqui / Em
+                      uso) centralizada + kebab à direita, alinhados
+                      verticalmente. Hoje viviam em rows separadas,
+                      desalinhados (relato do usuário com screenshot). Em uso
+                      é ESTADO SELECIONADO (check + acento), não um botão
+                      desabilitado; Usar aqui é botão secundário padrão. */}
+                  <div className="provider-account-actions">
                     {usedHere ? (
-                      <span className="provider-card-action is-current" aria-label={t('settings.provider.inUse')}>
-                        <Check size={13} /> {t('settings.provider.inUse')}
+                      <span className="provider-card-action is-current" role="status" aria-label={t('settings.provider.inUse')}>
+                        <Check size={13} aria-hidden="true" /> {t('settings.provider.inUse')}
                       </span>
                     ) : (
                       <button type="button" className="provider-card-action" onClick={() => requestUse(provider, account.accountId, displayName)} disabled={switchLocked}>
                         {t('settings.provider.useHere')}
                       </button>
                     )}
-                  </div>
-                  {/* UI — the kebab stays exactly where it was (approved). */}
-                  <div className="provider-account-actions">
-                    <button type="button" className="provider-card-action" aria-label={t('settings.provider.accountMenu')} onClick={event => openAccountMenu(event, provider, account)} disabled={false}>
+                    <button type="button" className="provider-card-action provider-account-kebab" aria-label={t('settings.provider.accountMenu')} onClick={event => openAccountMenu(event, provider, account)}>
                       <MoreVertical size={14} />
                     </button>
                   </div>

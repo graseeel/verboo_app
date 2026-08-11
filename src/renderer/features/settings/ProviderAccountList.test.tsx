@@ -162,17 +162,13 @@ describe('ProviderAccountList', () => {
     expect(actionsRow.contains(editButton)).toBe(false)
   })
 
-  it('UI: Use here sits centered below the usage windows, not in the kebab row', () => {
+  it('UI: Use here and the kebab sit on one aligned actions row', () => {
     renderList({})
     const useButton = screen.getByRole('button', { name: 'Use here' })
-    const useRow = document.querySelector('.provider-account-use-row') as HTMLElement
     const actionsRow = document.querySelector('.provider-account-actions') as HTMLElement
-    expect(useRow).not.toBeNull()
-    expect(actionsRow).not.toBeNull()
-    expect(useRow.contains(useButton)).toBe(true)
-    expect(actionsRow.contains(useButton)).toBe(false)
-    // The kebab stays exactly where it was: in the actions row.
     const kebab = screen.getByRole('button', { name: /account menu|menu da conta/i })
+    expect(actionsRow).not.toBeNull()
+    expect(actionsRow.contains(useButton)).toBe(true)
     expect(actionsRow.contains(kebab)).toBe(true)
   })
 
@@ -208,11 +204,16 @@ describe('ProviderAccountList', () => {
     expect(addBtn).toHaveProperty('disabled', false)
   })
 
-  it('L1: renders the starting stage on the group head and Cancel fires onCancelLogin', () => {
+  it('L1: renders the starting stage as quiet status and Cancel fires onCancelLogin', () => {
     const onCancelLogin = vi.fn()
     renderList({ connectingProvider: 'codex', loginStage: 'starting', onCancelLogin })
-    // Stage label rendered as a DISABLED button (matches the legacy card).
-    expect(within(codexGroup()).getByRole('button', { name: /connecting…|conectando…/i })).toHaveProperty('disabled', true)
+    // O estágio NÃO é um botão — é status quieto (texto + spinner pequeno).
+    expect(within(codexGroup()).queryByRole('button', { name: /connecting…|conectando…/i })).toBeNull()
+    const stage = within(codexGroup()).getByText(/connecting…|conectando…/i)
+    const stageBox = stage.closest('.provider-login-stage')
+    expect(stageBox).not.toBeNull()
+    expect(stageBox?.querySelector('.spin-icon')).toBeTruthy()
+    // Cancelar é botão secundário padrão, clicável, mesma linha.
     const cancel = within(codexGroup()).getByRole('button', { name: /^cancel$|^cancelar$/i })
     expect(cancel).toHaveProperty('disabled', false)
     fireEvent.click(cancel)
@@ -221,6 +222,38 @@ describe('ProviderAccountList', () => {
 
   it('L1: renders the awaiting_browser stage label on the connecting group', () => {
     renderList({ connectingProvider: 'codex', loginStage: 'awaiting_browser' })
-    expect(within(codexGroup()).getByRole('button', { name: /waiting for browser…|aguardando navegador…/i })).toBeInTheDocument()
+    const stage = within(codexGroup()).getByText(/waiting for browser…|aguardando navegador…/i)
+    expect(stage.closest('.provider-login-stage')).not.toBeNull()
+    expect(within(codexGroup()).queryByRole('button', { name: /waiting for browser…/i })).toBeNull()
+  })
+
+  // L2 (1) — renomear a conta não pode apagar o símbolo do provedor. A linha
+  // da conta precisa exibir o ícone do provedor SEMPRE (com e sem nickname):
+  // o relato do usuário (screenshot) mostra a conta renomeada "Sharon g" sem
+  // nenhuma referência visual ao provedor depois que o displayLabel do CLI
+  // ("Codex 2") foi substituído pelo apelido.
+  it('L2: the provider symbol stays on the account row after renaming', () => {
+    setProviderAccountNickname('codex', 'codex-a', 'Home')
+    renderList({})
+    expect(document.querySelector('.provider-account-row [data-testid="provider-icon-codex"]')).toBeTruthy()
+  })
+
+  it('L2: the provider symbol is visible on every account row, renamed or not', () => {
+    renderList({})
+    expect(document.querySelector('.provider-account-row [data-testid="provider-icon-codex"]')).toBeTruthy()
+  })
+
+  // L2 (2) — uma única linha de ações: a ação primária (Usar aqui / Em uso)
+  // e o kebab alinhados verticalmente na MESMA row (hoje ficam em rows
+  // separadas, desalinhados — relato do usuário com screenshot).
+  it('L2: primary action and kebab share one aligned actions row', () => {
+    renderList({})
+    const actionsRow = document.querySelector('.provider-account-actions') as HTMLElement
+    const useButton = screen.getByRole('button', { name: 'Use here' })
+    const kebab = screen.getByRole('button', { name: /account menu|menu da conta/i })
+    expect(actionsRow).not.toBeNull()
+    expect(document.querySelector('.provider-account-use-row')).toBeNull()
+    expect(actionsRow.contains(useButton)).toBe(true)
+    expect(actionsRow.contains(kebab)).toBe(true)
   })
 })

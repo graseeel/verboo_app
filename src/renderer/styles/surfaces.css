@@ -647,10 +647,23 @@
   font-size: 12px;
   font-weight: 560;
   cursor: pointer;
+  /* impeccable: 150-250ms só para mudança de estado (hover/active). */
+  transition: background-color 160ms ease, border-color 160ms ease;
 }
 
 .provider-card-action:hover:not(:disabled) {
   background: var(--bg-soft);
+}
+
+/* L1 — estágio do login em progresso como STATUS QUIETO: spinner pequeno +
+   rótulo, alinhado ao botão Cancelar na mesma linha. Não é um botão — não
+   deve parecer interativo nem desabilitado. */
+.provider-login-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 /* In-progress login flow: progress button + Cancelar side by side. The
@@ -742,7 +755,19 @@
   font-size: 10px;
 }
 .provider-account-badge.is-current { color: var(--accent); }
-.provider-account-actions { gap: 6px; flex-wrap: wrap; }
+/* L2 — UMA linha de ações por conta: a ação primária (Usar aqui / Em uso)
+   centralizada, o kebab ancorado à direita, alinhados verticalmente. O kebab
+   é absolute para não deslocar o centro da ação (não ocupa espaço flex). */
+.provider-account-actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 30px;
+}
+.provider-account-actions .provider-card-action { margin-left: 0; }
+.provider-account-kebab { position: absolute; right: 0; }
 .provider-account-actions .provider-card-action.danger { color: var(--text-danger); }
 .provider-usage-windows { display: grid; gap: 8px; }
 .provider-usage-window { display: grid; gap: 4px; }
@@ -756,22 +781,19 @@
 .provider-usage-window.is-exhausted .provider-usage-track span { background: var(--danger, var(--text-danger)); }
 .provider-usage-window.is-exhausted .provider-usage-window-head strong,
 .provider-usage-window.is-exhausted .provider-usage-window-head span { color: var(--text-danger); }
-/* P1 — the bound account's primary action reads as a state, not a button.
-   UI — it now lives in its own centered row below the usage windows. */
+/* P1 + L2 — the bound account's primary action reads as a SELECTED STATE,
+   not a disabled button: accent border + accent tint + check (impeccable:
+   acento só em seleção/estado; mesma shape de botão do resto do app). */
 .provider-card-action.is-current {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  border-color: transparent;
-  background: var(--surface-subtle);
+  gap: 5px;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--accent);
   cursor: default;
   font-weight: 560;
 }
-/* UI — Use here / In use centered below the usage windows. The generic
-   .provider-card-action margin-left:auto must not fight the centering. */
-.provider-account-use-row { display: flex; justify-content: center; }
-.provider-account-use-row .provider-card-action { margin-left: 0; }
 .provider-nickname-edit { display: inline-flex; }
 .provider-nickname-edit input {
   width: 180px;

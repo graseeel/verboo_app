@@ -28,3 +28,16 @@ Limpar a sessão (L4-A) afeta todos os provedores; o modelo recomeça sem memór
 
 **Envolve:** `src/shared/types.ts` (contrato da conversa) + persistência +
 lógica de resume no turno (renderer e/ou Rust — fence da Solda para o Rust).
+
+## Risco residual: rotação de accessToken durante login pode disparar Connected — registrado 2026-08-10
+
+**Contexto:** o login aditivo exige evidência OAuth (redirect_uri/localhost) antes de
+emitir Connected (fix `53fef51`). A mitigação atual cobre a âncora do URL; a rotação
+do accessToken (o CLI re-emite o token no fim do fluxo) ainda pode, em cenário de
+timing, disparar Connected sem mudança de identidade.
+
+**Mitigação futura (não implementada):** aceitar rotação-sem-mudança-de-identidade
+SÓ após o awaiting ter sido emitido — se a rotação chegar antes do awaiting, tratar
+como fluxo em andamento e não como Connected.
+
+**Envolve:** `src-tauri/src/services/provider_login_pty.rs` (gate do Connected).
