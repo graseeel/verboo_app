@@ -531,6 +531,7 @@ mod tests {
             "src/services/ios_simulator.rs",
             "src/services/ios_simulator/media.rs",
             "src/services/ios_simulator_mcp.rs",
+            "src/services/node_runtime/archive.rs",
             "src/services/plugins_service.rs",
             "src/services/provider_accounts.rs",
             "src/services/provider_catalog.rs",
