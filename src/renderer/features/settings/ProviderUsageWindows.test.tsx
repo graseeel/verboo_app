@@ -183,6 +183,64 @@ describe('ProviderUsageWindows', () => {
     expect(screen.getByText(/2026/i)).toBeInTheDocument()
   })
 
+  // A3 — o card do Claude mostrava "5 horas / Semanal / Fable Weekly": o
+  // último é o displayLabel CRU do CLI (vaza inglês). Para kind
+  // model-scoped-weekly o rótulo deve ser {modelScope capitalizado} + a
+  // palavra semanal/weekly LOCALIZADA (pt: "Fable semanal"; en: "Fable
+  // Weekly") — nunca o displayLabel.
+  it('A3: localizes the model-scoped weekly label in pt-BR (never the raw CLI displayLabel)', () => {
+    renderUsage(state({
+      schemaVersion: 1,
+      provider: 'claude',
+      accountId: 'claude-a',
+      plan: { id: 'max', displayName: 'Max' },
+      windows: [{
+        id: 'fable-weekly',
+        kind: 'model-scoped-weekly',
+        displayLabel: 'Fable Weekly',
+        modelScope: 'fable',
+        usedPercent: 22,
+        resetsAt: '2026-08-16T18:00:00.000Z',
+      }],
+      fetchedAt: '2026-08-09T12:00:00.000Z',
+    }), 'pt-BR')
+    expect(screen.getByText(/Fable semanal/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Fable Weekly/i)).toBeNull()
+  })
+
+  it('A3: builds the model-scoped weekly label with the localized weekly word in en-US', () => {
+    renderUsage(state({
+      schemaVersion: 1,
+      provider: 'claude',
+      accountId: 'claude-a',
+      plan: { id: 'max', displayName: 'Max' },
+      windows: [{
+        id: 'fable-weekly',
+        kind: 'model-scoped-weekly',
+        displayLabel: 'Fable Weekly',
+        modelScope: 'fable',
+        usedPercent: 22,
+        resetsAt: '2026-08-16T18:00:00.000Z',
+      }],
+      fetchedAt: '2026-08-09T12:00:00.000Z',
+    }), 'en-US')
+    expect(screen.getByText(/Fable Weekly/i)).toBeInTheDocument()
+  })
+
+  it('A3: other window kinds stay localized (five hours + weekly)', () => {
+    renderUsage(state({
+      schemaVersion: 1,
+      provider: 'claude',
+      accountId: 'claude-a',
+      plan: { id: 'pro', displayName: 'Pro' },
+      windows: [windowOf('5h', 'session', 15), windowOf('weekly', 'weekly', 20)],
+      fetchedAt: '2026-08-09T12:00:00.000Z',
+    }), 'pt-BR')
+    expect(screen.getByText(/5 horas/i)).toBeInTheDocument()
+    expect(screen.getByText(/Semanal/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Weekly/i)).toBeNull()
+  })
+
   it('P2: exposes used and remaining in the progressbar aria-valuetext', () => {
     renderUsage(state({
       schemaVersion: 1,

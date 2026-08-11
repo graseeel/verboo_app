@@ -1759,20 +1759,9 @@ export function App() {
     }
     updateConversation(conversationId, conversation => bindProviderAccount(conversation, provider, accountId))
     setProviderAccountMissing(current => current?.conversationId === conversationId ? undefined : current)
-    if (previousAccountId !== accountId) {
-      const accountLabel = providerAccounts.snapshot().accounts.find(account =>
-        account.provider === provider && account.accountId === accountId,
-      )?.displayLabel ?? providerDisplayName(provider, t)
-      appendConversationItem(conversationId, {
-        id: `provider-account:${crypto.randomUUID()}`,
-        role: 'tool',
-        kind: 'activity',
-        activityKind: 'context',
-        text: t('settings.provider.accountChangedActivity', { account: accountLabel }),
-        timestamp: Date.now(),
-        localOnly: true,
-      })
-    }
+    // A1 — NÃO emite mais a notice "…for the next turn" no transcript: o
+    // usuário considera ruído e a informação já existe na tela de Provedores
+    // ("Usada nesta conversa"). Remoção completa — não virou toast.
     if (selected?.id && selected.provider === provider) {
       if (preflight?.status === 'blocked' || preflight?.status === 'missing-account' || preflight?.status === 'bound-account-missing') {
         setProviderModelBlocker({ conversationId, provider, accountId, modelId: selected.id })

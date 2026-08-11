@@ -18,10 +18,15 @@ export function formatProviderReset(resetsAt: string | undefined, locale: string
   return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
 }
 
-function kindLabel(provider: ExternalProviderId, window: ProviderUsageWindow, t: (key: string) => string): string {
+function kindLabel(window: ProviderUsageWindow, t: (key: string) => string): string {
   if (window.kind === 'session') return t('settings.provider.fiveHours')
   if (window.kind === 'weekly') return t('settings.provider.weekly')
-  return window.displayLabel || (provider === 'codex' ? t('settings.provider.weekly') : window.modelScope ?? 'Scoped')
+  // A3 — model-scoped-weekly: NUNCA imprima o displayLabel cru do CLI
+  // ("Fable Weekly" vaza inglês). O rótulo é {modelScope capitalizado} + a
+  // palavra semanal/weekly LOCALIZADA (pt: "Fable semanal"; en: "Fable
+  // Weekly").
+  const scope = window.modelScope || 'Scoped'
+  return `${scope.charAt(0).toUpperCase()}${scope.slice(1)} ${t('settings.provider.weekly')}`
 }
 
 export function ProviderUsageWindows({ state }: { state: ProviderUsageRowState }) {
@@ -61,7 +66,7 @@ export function ProviderUsageWindows({ state }: { state: ProviderUsageRowState }
         return (
           <div className={`provider-usage-window${bandClass}`} key={window.id}>
             <div className="provider-usage-window-head">
-              <strong>{kindLabel(state.snapshot!.provider, window, t)}</strong>
+              <strong>{kindLabel(window, t)}</strong>
               <span>{t('settings.provider.usedPercent', { percent: printed })}</span>
             </div>
             <div className="provider-usage-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={width} aria-valuetext={valueText}>
