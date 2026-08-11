@@ -709,6 +709,7 @@
 }
 .provider-account-group-head,
 .provider-account-card-head,
+.provider-account-row-head,
 .provider-account-actions,
 .provider-account-badges,
 .provider-account-provider,
@@ -723,20 +724,45 @@
 }
 .provider-account-provider { gap: 8px; }
 .provider-account-provider h2 { margin: 0; font-size: 14px; }
-/* ONDA B — contas viram CARDS COMPACTOS lado a lado; o container rola
-   horizontalmente (overflow-x: auto) quando não couberem — nunca a página.
-   Card 12px de radius, BORDA sem sombra (impeccable: proibido border +
-   sombra no mesmo elemento). */
+/* VIEW toolbar — alternância simples/expandida no topo da aba. Mesmo shape
+   do .provider-card-action (vocabulário de botão consistente); transição
+   160ms só para mudança de estado. */
+.provider-account-list-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+.provider-view-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+.provider-view-toggle:hover:not(:disabled) {
+  background: var(--bg-soft);
+  color: var(--text);
+}
+.settings-panel .provider-view-toggle:disabled { opacity: 0.4; cursor: not-allowed; }
+/* ONDA B + EMENDA — contas viram CARDS COMPACTOS por conta, no máximo 3 por
+   linha; a partir da 4ª conta QUEBRA para a linha de baixo (flex-wrap).
+   SEM rolagem lateral (o usuário não gostou do scroll). Card 12px de
+   radius, BORDA sem sombra (impeccable: proibido border + sombra no mesmo
+   elemento). */
 .provider-account-cards {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
-  overflow-x: auto;
-  scroll-snap-type: x proximity;
-  padding-bottom: 4px;
 }
 .provider-account-card {
-  flex: 0 0 250px;
-  scroll-snap-align: start;
+  flex: 0 1 250px;
+  max-width: calc((100% - 20px) / 3);
   display: grid;
   gap: 9px;
   align-content: start;
@@ -746,6 +772,28 @@
   background: var(--surface-base);
 }
 .provider-account-card-head strong { display: block; font-size: 13px; }
+/* VIEW — modo EXPANDIDO: lista vertical largura-total recuperada de
+   a4ba525 (estado antes de 76c4227), escopada sob .is-expanded. Uma conta
+   abaixo da outra, barras longas. */
+.provider-account-list.is-expanded .provider-account-row {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--surface-base);
+}
+.provider-account-list.is-expanded .provider-account-row-head {
+  justify-content: space-between;
+  gap: 10px;
+}
+.provider-account-list.is-expanded .provider-account-row-head strong { display: block; font-size: 13px; }
+.provider-account-list.is-expanded .provider-account-actions {
+  position: relative;
+  justify-content: center;
+  padding: 0 30px;
+}
+.provider-account-list.is-expanded .provider-account-kebab { position: absolute; right: 0; }
 .provider-account-plan { display: block; color: var(--text-muted); font-size: 11px; margin-top: 2px; }
 /* UI — the nickname pencil sits inline, right of the account name. */
 .provider-account-name { display: inline-flex; align-items: center; gap: 6px; }
@@ -834,6 +882,7 @@
 @media (max-width: 520px) {
   .provider-account-card-head { align-items: flex-start; flex-direction: column; }
   .provider-account-card { flex-basis: 220px; }
+  .provider-account-list.is-expanded .provider-account-row-head { align-items: flex-start; flex-direction: column; }
   .provider-account-badges { justify-content: flex-start; }
 }
 

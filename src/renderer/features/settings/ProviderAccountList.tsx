@@ -1,5 +1,5 @@
 import { useState, type MouseEvent } from 'react'
-import { Check, LoaderCircle, MoreVertical, Pencil } from 'lucide-react'
+import { Check, LayoutGrid, LayoutList, LoaderCircle, MoreVertical, Pencil } from 'lucide-react'
 import type { ExternalProviderId, ProviderAccountSummary } from '../../../shared/types'
 import { useI18n } from '../../i18n'
 import { ConfirmDialog, type ConfirmRequest } from '../../components/ConfirmDialog'
@@ -12,6 +12,11 @@ import {
   getProviderAccountNickname,
   setProviderAccountNickname,
 } from './providerAccountNicknames'
+import {
+  getProviderAccountViewMode,
+  setProviderAccountViewMode,
+  type ProviderAccountViewMode,
+} from './providerAccountViewMode'
 
 export type ProviderAccountListProps = {
   rows: ProviderUsageRowState[]
@@ -58,10 +63,109 @@ export function ProviderAccountList({
   const [menu, setMenu] = useState<ContextMenuState>()
   const [editingNickname, setEditingNickname] = useState<string>()
   const [nicknameDraft, setNicknameDraft] = useState('')
+  const [viewMode, setViewMode] = useState<ProviderAccountViewMode>(getProviderAccountViewMode)
   const groups = (['codex', 'claude'] as ExternalProviderId[]).map(provider => ({
     provider,
     rows: rows.filter(row => row.account.provider === provider),
   }))
+
+  /** VIEW — alterna entre cards compactos (simple) e lista vertical
+   *  (expanded), persistindo a escolha em localStorage (padrão
+   *  providerAccountNicknames — nunca no protocolo CLI). */
+  function toggleViewMode() {
+    const next: ProviderAccountViewMode = viewMode === 'simple' ? 'expanded' : 'simple'
+    setProviderAccountViewMode(next)
+    setViewMode(next)
+  }
+
+  /** VIEW — corpo da conta COMPARTILHADO pelos dois modos: só o wrapper muda
+   *  (provider-account-card/-card-head no simple; provider-account-row/
+   *  -row-head no expanded, recuperado de a4ba525). Todo o estado de
+   *  interação (kebab, nickname, use/in-use, ícone, badges) vive aqui e
+   *  vale identicamente nos dois modos. */
+  function renderAccount(provider: ExternalProviderId, row: ProviderUsageRowState) {
+    const account = row.account
+    const usedHere = conversationBindings[provider] === account.accountId
+    const nickname = getProviderAccountNickname(provider, account.accountId)
+    const displayName = nickname ?? account.displayLabel
+    const editing = editingNickname === account.accountId
+    const expanded = viewMode === 'expanded'
+    const articleClass = expanded ? 'provider-account-row' : 'provider-account-card'
+    const headClass = expanded ? 'provider-account-row-head' : 'provider-account-card-head'
+    return (
+      <article className={articleClass} key={account.accountId}>
+        <div className={headClass}>
+          <div>
+            <span className="provider-account-name">
+              {/* L2 — o símbolo do provedor fica na conta (card ou row)
+                  SEMPRE (renomeada ou não): renomear substitui o
+                  displayLabel do CLI ("Codex 2") pelo apelido, e sem
+                  o ícone a conta perde a identidade do provedor
+                  (relato do usuário com screenshot). */}
+              <ProviderIcon providerId={provider} size={16} style={providerToneStyle(provider)} />
+              {editing ? (
+                <span className="provider-nickname-edit">
+                  <input
+                    type="text"
+                    value={nicknameDraft}
+                    aria-label={t('settings.provider.nickname')}
+                    onChange={event => setNicknameDraft(event.target.value)}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') commitNickname(provider, account.accountId)
+                      if (event.key === 'Escape') setEditingNickname(undefined)
+                    }}
+                    onBlur={() => commitNickname(provider, account.accountId)}
+                    autoFocus
+                  />
+                </span>
+              ) : (
+                <>
+                  <strong>{displayName}</strong>
+                  {/* UI — the nickname pencil sits inline, right of
+                      the account name (approved annotated print). */}
+                  <button
+                    type="button"
+                    className="provider-name-edit-button"
+                    aria-label={t('settings.provider.editNickname')}
+                    onClick={() => startNicknameEdit(provider, account.accountId)}
+                    disabled={switchLocked}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                </>
+              )}
+            </span>
+            {account.planDisplayName && <span className="provider-account-plan">{account.planDisplayName}</span>}
+          </div>
+          <div className="provider-account-badges">
+            {account.isDefault && <span className="provider-account-badge">{t('settings.provider.default')}</span>}
+            {usedHere && <span className="provider-account-badge is-current">{t('settings.provider.usedInConversation')}</span>}
+          </div>
+        </div>
+        <ProviderUsageWindows state={row} />
+        {/* L2 + A2 — UMA linha de ações: ação primária (Usar aqui / Em uso)
+            abaixo das janelas de uso (simple: alinhada à esquerda com o
+            bloco; expanded: centralizada — CSS recuperado de a4ba525), kebab
+            à direita na MESMA linha. Em uso é ESTADO SELECIONADO (check +
+            acento), não um botão desabilitado; Usar aqui é botão secundário
+            padrão. */}
+        <div className="provider-account-actions">
+          {usedHere ? (
+            <span className="provider-card-action is-current" role="status" aria-label={t('settings.provider.inUse')}>
+              <Check size={13} aria-hidden="true" /> {t('settings.provider.inUse')}
+            </span>
+          ) : (
+            <button type="button" className="provider-card-action" onClick={() => requestUse(provider, account.accountId, displayName)} disabled={switchLocked}>
+              {t('settings.provider.useHere')}
+            </button>
+          )}
+          <button type="button" className="provider-card-action provider-account-kebab" aria-label={t('settings.provider.accountMenu')} onClick={event => openAccountMenu(event, provider, account)}>
+            <MoreVertical size={14} />
+          </button>
+        </div>
+      </article>
+    )
+  }
 
   function openAccountMenu(event: MouseEvent<HTMLButtonElement>, provider: ExternalProviderId, account: ProviderAccountSummary) {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -120,7 +224,31 @@ export function ProviderAccountList({
 
   return (
     <>
-      <section className="provider-account-list">
+      <section className={`provider-account-list${viewMode === 'expanded' ? ' is-expanded' : ''}`}>
+        {/* VIEW — alternância simples/expandida no topo da aba, persistida
+            em localStorage. Ícone reflete o modo ATUAL (LayoutGrid = cards
+            compactos; LayoutList = lista vertical). */}
+        <div className="provider-account-list-toolbar">
+          <button
+            type="button"
+            className="provider-view-toggle"
+            aria-label={
+              viewMode === 'simple'
+                ? t('settings.provider.viewModeSimple')
+                : t('settings.provider.viewModeExpanded')
+            }
+            title={
+              viewMode === 'simple'
+                ? t('settings.provider.viewModeSimple')
+                : t('settings.provider.viewModeExpanded')
+            }
+            onClick={toggleViewMode}
+          >
+            {viewMode === 'simple'
+              ? <LayoutGrid size={14} aria-hidden="true" />
+              : <LayoutList size={14} aria-hidden="true" />}
+          </button>
+        </div>
         {!usageCapable && rows.length > 0 && (
           <p className="provider-usage-state">{t('settings.provider.updateCliForUsage')}</p>
         )}
@@ -166,88 +294,11 @@ export function ProviderAccountList({
             </div>
             {providerRows.length === 0 ? (
               <p className="provider-usage-state">{t('settings.provider.notConnectedAccounts')}</p>
+            ) : viewMode === 'expanded' ? (
+              providerRows.map(row => renderAccount(provider, row))
             ) : (
               <div className="provider-account-cards">
-                {providerRows.map(row => {
-                  const account = row.account
-                  const usedHere = conversationBindings[provider] === account.accountId
-                  const nickname = getProviderAccountNickname(provider, account.accountId)
-                  const displayName = nickname ?? account.displayLabel
-                  const editing = editingNickname === account.accountId
-                  return (
-                    <article className="provider-account-card" key={account.accountId}>
-                      <div className="provider-account-card-head">
-                        <div>
-                          <span className="provider-account-name">
-                            {/* L2 — o símbolo do provedor fica no card da conta
-                                SEMPRE (renomeada ou não): renomear substitui o
-                                displayLabel do CLI ("Codex 2") pelo apelido, e sem
-                                o ícone o card perde a identidade do provedor
-                                (relato do usuário com screenshot). */}
-                        <ProviderIcon providerId={provider} size={16} style={providerToneStyle(provider)} />
-                        {editing ? (
-                          <span className="provider-nickname-edit">
-                            <input
-                              type="text"
-                              value={nicknameDraft}
-                              aria-label={t('settings.provider.nickname')}
-                              onChange={event => setNicknameDraft(event.target.value)}
-                              onKeyDown={event => {
-                                if (event.key === 'Enter') commitNickname(provider, account.accountId)
-                                if (event.key === 'Escape') setEditingNickname(undefined)
-                              }}
-                              onBlur={() => commitNickname(provider, account.accountId)}
-                              autoFocus
-                            />
-                          </span>
-                        ) : (
-                          <>
-                            <strong>{displayName}</strong>
-                            {/* UI — the nickname pencil sits inline, right of
-                                the account name (approved annotated print). */}
-                            <button
-                              type="button"
-                              className="provider-name-edit-button"
-                              aria-label={t('settings.provider.editNickname')}
-                              onClick={() => startNicknameEdit(provider, account.accountId)}
-                              disabled={switchLocked}
-                            >
-                              <Pencil size={12} />
-                            </button>
-                          </>
-                        )}
-                      </span>
-                      {account.planDisplayName && <span className="provider-account-plan">{account.planDisplayName}</span>}
-                    </div>
-                    <div className="provider-account-badges">
-                      {account.isDefault && <span className="provider-account-badge">{t('settings.provider.default')}</span>}
-                      {usedHere && <span className="provider-account-badge is-current">{t('settings.provider.usedInConversation')}</span>}
-                    </div>
-                  </div>
-                  <ProviderUsageWindows state={row} />
-                  {/* L2 + A2 — UMA linha de ações: ação primária (Usar aqui /
-                      Em uso) imediatamente ABAIXO das janelas, alinhada à
-                      esquerda com o bloco de uso; kebab à direita na MESMA
-                      linha. Em uso é ESTADO SELECIONADO (check + acento),
-                      não um botão desabilitado; Usar aqui é botão
-                      secundário padrão. */}
-                  <div className="provider-account-actions">
-                    {usedHere ? (
-                      <span className="provider-card-action is-current" role="status" aria-label={t('settings.provider.inUse')}>
-                        <Check size={13} aria-hidden="true" /> {t('settings.provider.inUse')}
-                      </span>
-                    ) : (
-                      <button type="button" className="provider-card-action" onClick={() => requestUse(provider, account.accountId, displayName)} disabled={switchLocked}>
-                        {t('settings.provider.useHere')}
-                      </button>
-                          )}
-                          <button type="button" className="provider-card-action provider-account-kebab" aria-label={t('settings.provider.accountMenu')} onClick={event => openAccountMenu(event, provider, account)}>
-                            <MoreVertical size={14} />
-                          </button>
-                        </div>
-                      </article>
-                  )
-                })}
+                {providerRows.map(row => renderAccount(provider, row))}
               </div>
             )}
           </div>
