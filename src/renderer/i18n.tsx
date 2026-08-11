@@ -234,6 +234,10 @@ const enUS: Record<string, string> = {
   'access.full.description': 'Run without new approvals in trusted workspaces',
   'access.heading': 'How should Verboo actions be approved?',
   'access.learnMore': 'Learn more',
+  'whatsNew.eyebrow': "What's new",
+  'whatsNew.openFailed': 'Could not open the release page. Try again.',
+  'whatsNew.persistenceFailed': 'The app could not remember this acknowledgment. The update notes may appear again next time.',
+  'whatsNew.preview': 'Preview',
   'access.fullLocked': 'Enable it in Settings > Security to unlock this mode.',
 
   'composer.goalDescription': 'Set an objective and Verboo works in autonomous cycles until it is complete.',
@@ -1664,6 +1668,10 @@ const ptBR: Record<string, string> = {
   'access.full.description': 'Executar sem novas aprovações em workspaces confiáveis',
   'access.heading': 'Como as ações do Verboo devem ser aprovadas?',
   'access.learnMore': 'Saiba mais',
+  'whatsNew.eyebrow': 'Novidades',
+  'whatsNew.openFailed': 'Não foi possível abrir a página da versão. Tente novamente.',
+  'whatsNew.persistenceFailed': 'O app não conseguiu salvar esta confirmação. As novidades podem aparecer novamente na próxima vez.',
+  'whatsNew.preview': 'Prévia',
   'access.fullLocked': 'Ative em Configurações > Segurança para liberar este modo.',
 
   'composer.goalDescription': 'Defina um objetivo e o Verboo trabalha em ciclos autônomos até concluí-lo.',
