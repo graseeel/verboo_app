@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
-    DESKTOP_PROTOCOL, EMBEDDED_NODE_MODULES, EMBEDDED_NODE_NAPI, EMBEDDED_NODE_VERSION,
-    MAX_ARCHIVE_BYTES,
+    DESKTOP_PROTOCOL, MAX_ARCHIVE_BYTES, PINNED_NODE_MODULES, PINNED_NODE_NAPI, PINNED_NODE_VERSION,
 };
 
 const OFFICIAL_RELEASE_PREFIX: &str = "https://github.com/verbeux-ai/code/releases/download/";
@@ -119,14 +118,14 @@ pub struct RuntimeCompatibility<'a> {
 }
 
 impl RuntimeCompatibility<'_> {
-    pub fn embedded(target: DesktopTarget, app_version: &str) -> RuntimeCompatibility<'_> {
+    pub fn pinned(target: DesktopTarget, app_version: &str) -> RuntimeCompatibility<'_> {
         RuntimeCompatibility {
             target,
             app_version,
             desktop_protocol: DESKTOP_PROTOCOL,
-            node_version: EMBEDDED_NODE_VERSION,
-            node_modules: EMBEDDED_NODE_MODULES,
-            node_napi: EMBEDDED_NODE_NAPI,
+            node_version: PINNED_NODE_VERSION,
+            node_modules: PINNED_NODE_MODULES,
+            node_napi: PINNED_NODE_NAPI,
             current_cli_version: None,
         }
     }
@@ -204,11 +203,11 @@ pub fn select_candidate(
     }
 
     if manifest.node.range != SUPPORTED_NODE_RANGE
-        || runtime.node_version != EMBEDDED_NODE_VERSION
+        || runtime.node_version != PINNED_NODE_VERSION
         || manifest.node.modules != runtime.node_modules
         || manifest.node.napi != runtime.node_napi
-        || runtime.node_modules != EMBEDDED_NODE_MODULES
-        || runtime.node_napi != EMBEDDED_NODE_NAPI
+        || runtime.node_modules != PINNED_NODE_MODULES
+        || runtime.node_napi != PINNED_NODE_NAPI
     {
         return Err("CLI Node runtime compatibility mismatch".to_string());
     }
@@ -266,8 +265,8 @@ fn validate_authenticated_manifest(
         &manifest.desktop_version.max_exclusive,
     )?;
     if manifest.node.range != SUPPORTED_NODE_RANGE
-        || manifest.node.modules != EMBEDDED_NODE_MODULES
-        || manifest.node.napi != EMBEDDED_NODE_NAPI
+        || manifest.node.modules != PINNED_NODE_MODULES
+        || manifest.node.napi != PINNED_NODE_NAPI
     {
         return Err("invalid CLI Node compatibility contract".to_string());
     }
@@ -380,20 +379,20 @@ mod tests {
     fn selects_only_the_exact_target_and_embedded_runtime() {
         let selected = select_candidate(
             &verified(),
-            RuntimeCompatibility::embedded(DesktopTarget::MacArm64, "0.7.0-beta"),
+            RuntimeCompatibility::pinned(DesktopTarget::MacArm64, "0.7.0-beta"),
         )
         .unwrap();
         assert_eq!(selected.version, Version::parse("0.15.6").unwrap());
         assert_eq!(selected.artifact.target, DesktopTarget::MacArm64);
 
-        let mut wrong_abi = RuntimeCompatibility::embedded(DesktopTarget::WindowsX64, "0.7.0-beta");
+        let mut wrong_abi = RuntimeCompatibility::pinned(DesktopTarget::WindowsX64, "0.7.0-beta");
         wrong_abi.node_modules = "136";
         assert!(select_candidate(&verified(), wrong_abi).is_err());
     }
 
     #[test]
     fn rejects_downgrades_and_equal_versions() {
-        let mut runtime = RuntimeCompatibility::embedded(DesktopTarget::LinuxX64, "0.7.0-beta");
+        let mut runtime = RuntimeCompatibility::pinned(DesktopTarget::LinuxX64, "0.7.0-beta");
         runtime.current_cli_version = Some("0.15.6");
         assert!(select_candidate(&verified(), runtime.clone()).is_err());
         runtime.current_cli_version = Some("0.16.0");
@@ -402,10 +401,10 @@ mod tests {
 
     #[test]
     fn rejects_wrong_app_or_protocol() {
-        let runtime = RuntimeCompatibility::embedded(DesktopTarget::MacX64, "0.8.0");
+        let runtime = RuntimeCompatibility::pinned(DesktopTarget::MacX64, "0.8.0");
         assert!(select_candidate(&verified(), runtime).is_err());
 
-        let mut runtime = RuntimeCompatibility::embedded(DesktopTarget::MacX64, "0.7.0-beta");
+        let mut runtime = RuntimeCompatibility::pinned(DesktopTarget::MacX64, "0.7.0-beta");
         runtime.desktop_protocol = 2;
         assert!(select_candidate(&verified(), runtime).is_err());
     }

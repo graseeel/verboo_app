@@ -1,4 +1,4 @@
-//! Resolves only the Node runtime owned by Verboo Desktop.
+//! Resolves and manages only the Node runtime owned by Verboo Desktop.
 //!
 //! Packaged builds accept the target-qualified Tauri sidecar beside the app
 //! executable. Debug builds may use the explicit `VERBOO_NODE_PATH` override.
@@ -6,6 +6,8 @@
 //! runtime fallbacks; the desktop app must work on a clean machine.
 
 use std::path::{Path, PathBuf};
+
+pub mod contract;
 
 pub fn resolve_node_path() -> Option<PathBuf> {
     development_override().or_else(resolve_embedded_node_path)

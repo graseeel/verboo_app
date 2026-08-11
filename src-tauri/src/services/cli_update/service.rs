@@ -9,10 +9,10 @@ use reqwest::redirect::Policy;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use super::archive::{ExtractionLimits, extract_verified_archive, smoke_payload, validate_payload};
+use super::archive::{extract_verified_archive, smoke_payload, validate_payload, ExtractionLimits};
 use super::contract::{
-    CliArtifact, DesktopTarget, ManifestVerifier, RuntimeCompatibility, SelectedCandidate,
-    VerifiedManifest, select_candidate,
+    select_candidate, CliArtifact, DesktopTarget, ManifestVerifier, RuntimeCompatibility,
+    SelectedCandidate, VerifiedManifest,
 };
 #[cfg(test)]
 use super::download::build_download_client;
@@ -526,7 +526,7 @@ impl CliUpdateService {
 
             let runtime = RuntimeCompatibility {
                 current_cli_version: current.as_ref().map(|pointer| pointer.version.as_str()),
-                ..RuntimeCompatibility::embedded(self.inner.target, &self.inner.app_version)
+                ..RuntimeCompatibility::pinned(self.inner.target, &self.inner.app_version)
             };
             let candidate = select_candidate(&verified, runtime)?;
             let mut state = self.lock_state();
@@ -664,8 +664,8 @@ mod tests {
     use std::io::Cursor;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use flate2::Compression;
     use flate2::write::GzEncoder;
+    use flate2::Compression;
     use sha2::{Digest, Sha256};
     use tar::{Builder, Header};
 
@@ -1040,14 +1040,12 @@ mod tests {
             .unwrap();
         service.check().unwrap();
         assert_eq!(service.prepare().unwrap().status, CliUpdateStatus::Ready);
-        assert!(
-            service
-                .store()
-                .version_dir("0.15.6")
-                .unwrap()
-                .join("dist/cli.mjs")
-                .is_file()
-        );
+        assert!(service
+            .store()
+            .version_dir("0.15.6")
+            .unwrap()
+            .join("dist/cli.mjs")
+            .is_file());
         let activation = service.activate_prepared_for_restart().unwrap();
         assert_eq!(
             service.store().current().unwrap().unwrap().version,
