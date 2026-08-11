@@ -49,7 +49,7 @@ pub struct CliUpdateSnapshot {
     pub total_bytes: Option<u64>,
     pub error: Option<String>,
     /// True until the selected app-owned CLI has passed a real smoke through
-    /// the embedded Node runtime. Pointer presence alone is not readiness.
+    /// the app-owned Node runtime. Pointer presence alone is not readiness.
     pub bootstrap_required: bool,
 }
 

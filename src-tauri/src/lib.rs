@@ -1241,9 +1241,28 @@ async fn bootstrap_cli(
 ) -> Result<UpdateSnapshot, String> {
     let coordinator = coordinator.inner().clone();
     let _operation = coordinator.begin_operation().await;
-    let service = coordinator
-        .cli()
-        .ok_or_else(|| "Verboo CLI bootstrap is unavailable in this build".to_string())?;
+    let coordinator_for_runtime = coordinator.clone();
+    let mut runtime_task =
+        tauri::async_runtime::spawn_blocking(move || coordinator_for_runtime.ensure_cli_service());
+    let service = loop {
+        tokio::select! {
+            result = &mut runtime_task => {
+                match result {
+                    Ok(Ok(service)) => break service,
+                    Ok(Err(error)) => {
+                        eprintln!("[verboo:node-runtime] bootstrap failed: {error}");
+                        return Ok(emit_update_snapshot(&app, &coordinator));
+                    }
+                    Err(error) => {
+                        return Err(format!("Falha interna ao preparar o runtime: {error}"));
+                    }
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                emit_update_snapshot(&app, &coordinator);
+            }
+        }
+    };
 
     if !service.snapshot().bootstrap_required {
         return Ok(emit_update_snapshot(&app, &coordinator));
@@ -1254,7 +1273,12 @@ async fn bootstrap_cli(
         tokio::select! {
             result = &mut task => {
                 match result {
-                    Ok(Ok(_)) => return Ok(emit_update_snapshot(&app, &coordinator)),
+                    Ok(Ok(_)) => {
+                        if let Err(error) = coordinator.node().garbage_collect_obsolete(true) {
+                            eprintln!("[verboo:node-runtime] deferred cleanup failed: {error}");
+                        }
+                        return Ok(emit_update_snapshot(&app, &coordinator));
+                    }
                     Ok(Err(error)) => {
                         eprintln!("[verboo:cli-update] bootstrap failed: {error}");
                         return Ok(emit_update_snapshot(&app, &coordinator));
@@ -2312,61 +2336,6 @@ pub fn run() {
                 .expect("app data dir must be available");
             let _ = std::fs::create_dir_all(&app_data_dir);
 
-            // CLI and Node have independent owners: Node is an app sidecar;
-            // CLI versions live only under app-data/cli. Configure the single
-            // runtime authority before any service can spawn a CLI process.
-            let cli_update_service = if let Some(node_path) = services::node_runtime::resolve_node_path() {
-                let cli_store = services::cli_update::CliStore::open(&app_data_dir)
-                    .map_err(std::io::Error::other)?;
-                services::cli_update::runtime::configure(cli_store, node_path.clone())
-                    .map_err(std::io::Error::other)?;
-
-                match services::cli_update::CliUpdateService::production(
-                    &app_data_dir,
-                    node_path,
-                ) {
-                    Ok(cli_update_service) => {
-                        let startup_service = cli_update_service.clone();
-                        tauri::async_runtime::spawn_blocking(move || {
-                            let result = match startup_service.validate_startup() {
-                                Ok(services::cli_update::service::StartupValidation::Missing) => {
-                                    // The renderer starts first installation through
-                                    // `bootstrap_cli`, which emits progress and owns the
-                                    // retry UX. Startup validation remains responsible
-                                    // for existing installs and rollback only.
-                                    Ok(())
-                                }
-                                Ok(services::cli_update::service::StartupValidation::Valid {
-                                    ..
-                                }) => Ok(()),
-                                Ok(services::cli_update::service::StartupValidation::RolledBack {
-                                    rejected,
-                                    restored,
-                                }) => {
-                                    eprintln!(
-                                        "[verboo:cli-update] rolled back {rejected} to {restored}; restart required"
-                                    );
-                                    Ok(())
-                                }
-                                Err(error) => Err(error),
-                            };
-                            if let Err(error) = result {
-                                eprintln!("[verboo:cli-update] startup preparation failed: {error}");
-                            }
-                        });
-                        Some(cli_update_service)
-                    }
-                    Err(error) => {
-                        eprintln!("[verboo:cli-update] updater unavailable: {error}");
-                        None
-                    }
-                }
-            } else {
-                eprintln!(
-                    "[verboo:cli-update] embedded Node sidecar is unavailable; CLI bootstrap deferred"
-                );
-                None
-            };
             app.manage(
                 services::browser_panel::BrowserCaptureStore::new(app_data_dir.clone())
                     .map_err(std::io::Error::other)?,
@@ -2493,18 +2462,29 @@ pub fn run() {
             }
             // TrayService — owns the menubar state machine (icon/title animation)
             app.manage(crate::services::tray_service::TrayService::new());
-            // The app and CLI updaters keep independent storage owners. The
-            // coordinator only combines their snapshots and serializes user
-            // operations into one card/restart flow.
+            // Node, CLI, and app updates keep independent storage owners. The
+            // coordinator stages the app-owned runtime before the signed CLI
+            // and combines both update streams into one card/restart flow.
             let app_update_service = crate::services::update_service::UpdateService::new(
                 app.package_info().version.to_string(),
                 cfg!(debug_assertions) == false,
             );
             app.manage(app_update_service.clone());
-            app.manage(crate::services::update_coordinator::UpdateCoordinator::new(
+            let node_runtime =
+                services::node_runtime::NodeRuntimeService::production(&app_data_dir)
+                    .map_err(std::io::Error::other)?;
+            let update_coordinator = crate::services::update_coordinator::UpdateCoordinator::new(
                 app_update_service,
-                cli_update_service,
-            ));
+                node_runtime,
+                app_data_dir.clone(),
+            );
+            let startup_coordinator = update_coordinator.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(error) = startup_coordinator.initialize_existing_cli() {
+                    eprintln!("[verboo:cli-update] startup preparation failed: {error}");
+                }
+            });
+            app.manage(update_coordinator);
             // LifecycleService — owns the first-launch requirements flag
             app.manage(crate::services::lifecycle_service::LifecycleService::new(
                 app_data_dir.clone(),

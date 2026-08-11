@@ -360,6 +360,13 @@ pub enum UpdateTarget {
     Both,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BootstrapStage {
+    Runtime,
+    Cli,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum InstallUpdateStatus {
@@ -1508,6 +1515,8 @@ pub struct UpdateSnapshot {
     pub cli_available_version: Option<String>,
     #[serde(default)]
     pub cli_bootstrap_required: bool,
+    #[serde(default)]
+    pub bootstrap_stage: Option<BootstrapStage>,
     pub release_name: Option<String>,
     pub release_date: Option<String>,
     pub release_notes: Option<String>,

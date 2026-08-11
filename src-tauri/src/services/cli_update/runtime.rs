@@ -29,7 +29,7 @@ fn authority() -> &'static Mutex<Option<RuntimeAuthority>> {
 pub fn configure(store: CliStore, node_path: PathBuf) -> Result<(), String> {
     if !crate::services::node_runtime::is_executable(&node_path) {
         return Err(format!(
-            "embedded Node runtime is not executable at {}",
+            "Verboo Node runtime is not executable at {}",
             node_path.display()
         ));
     }

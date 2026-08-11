@@ -211,7 +211,7 @@ impl CliStore {
         let cli_mjs_path = self.version_dir(&pointer.version)?.join("dist/cli.mjs");
         if !node_path.is_file() {
             return Err(format!(
-                "embedded Node runtime is missing at {}",
+                "Verboo Node runtime is missing at {}",
                 node_path.display()
             ));
         }

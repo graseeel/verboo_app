@@ -132,6 +132,7 @@ impl NodeRuntimeService {
     pub fn resolve_existing(&self) -> Result<Option<PathBuf>, String> {
         if self.inner.honor_development_override {
             if let Some(override_path) = development_override_result()? {
+                self.mark_ready();
                 return Ok(Some(override_path));
             }
         }
@@ -143,7 +144,10 @@ impl NodeRuntimeService {
             &managed_root,
             RUNTIME_SMOKE_TIMEOUT,
         ) {
-            Ok(executable) => return Ok(Some(executable)),
+            Ok(executable) => {
+                self.mark_ready();
+                return Ok(Some(executable));
+            }
             Err(error) if managed_root.exists() => {
                 eprintln!("[verboo:node-runtime] managed runtime rejected: {error}");
             }
@@ -159,7 +163,10 @@ impl NodeRuntimeService {
                 candidate,
                 RUNTIME_SMOKE_TIMEOUT,
             ) {
-                Ok(()) => return Ok(Some(candidate.clone())),
+                Ok(()) => {
+                    self.mark_ready();
+                    return Ok(Some(candidate.clone()));
+                }
                 Err(error) => eprintln!(
                     "[verboo:node-runtime] legacy runtime rejected at {}: {error}",
                     candidate.display()

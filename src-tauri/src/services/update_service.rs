@@ -163,6 +163,7 @@ impl UpdateService {
             cli_current_version: None,
             cli_available_version: None,
             cli_bootstrap_required: false,
+            bootstrap_stage: None,
             release_name: None,
             release_date: None,
             release_notes: None,

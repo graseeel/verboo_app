@@ -1,23 +1,44 @@
-use crate::models::types::{UpdateSnapshot, UpdateStatus, UpdateTarget};
-use std::sync::Arc;
+use crate::models::types::{BootstrapStage, UpdateSnapshot, UpdateStatus, UpdateTarget};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, RwLock};
 
-use super::cli_update::service::{CliUpdateService, CliUpdateSnapshot, CliUpdateStatus};
+use super::cli_update::service::{
+    CliUpdateService, CliUpdateSnapshot, CliUpdateStatus, StartupValidation,
+};
+use super::node_runtime::{NodeRuntimeService, NodeRuntimeStatus};
 use super::update_service::UpdateService;
 
 #[derive(Clone)]
 pub struct UpdateCoordinator {
     app: UpdateService,
-    cli: Option<CliUpdateService>,
+    node: NodeRuntimeService,
+    cli: Arc<RwLock<Option<CliUpdateService>>>,
+    app_data_dir: PathBuf,
     operation: Arc<tokio::sync::Mutex<()>>,
+    cli_initialization: Arc<Mutex<()>>,
+    cli_initialization_error: Arc<Mutex<Option<String>>>,
 }
 
 impl UpdateCoordinator {
-    pub fn new(app: UpdateService, cli: Option<CliUpdateService>) -> Self {
+    pub fn new(app: UpdateService, node: NodeRuntimeService, app_data_dir: PathBuf) -> Self {
         Self {
             app,
-            cli,
+            node,
+            cli: Arc::new(RwLock::new(None)),
+            app_data_dir,
             operation: Arc::new(tokio::sync::Mutex::new(())),
+            cli_initialization: Arc::new(Mutex::new(())),
+            cli_initialization_error: Arc::new(Mutex::new(None)),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        app: UpdateService,
+        node: NodeRuntimeService,
+        app_data_dir: PathBuf,
+    ) -> Self {
+        Self::new(app, node, app_data_dir)
     }
 
     pub fn app(&self) -> UpdateService {
@@ -25,14 +46,129 @@ impl UpdateCoordinator {
     }
 
     pub fn cli(&self) -> Option<CliUpdateService> {
-        self.cli.clone()
+        self.cli
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn node(&self) -> NodeRuntimeService {
+        self.node.clone()
+    }
+
+    pub fn initialize_existing_cli(&self) -> Result<(), String> {
+        let _initialization = self
+            .cli_initialization
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.cli().is_some() {
+            return Ok(());
+        }
+        let Some(node_path) = self.node.resolve_existing()? else {
+            return Ok(());
+        };
+        let service = self.try_construct_cli_service(node_path)?;
+        self.store_cli(service.clone());
+        match service.validate_startup()? {
+            StartupValidation::Missing => Ok(()),
+            StartupValidation::Valid { .. } => self.node.garbage_collect_obsolete(true),
+            StartupValidation::RolledBack { rejected, restored } => {
+                eprintln!(
+                    "[verboo:cli-update] rolled back {rejected} to {restored}; restart required"
+                );
+                self.node.garbage_collect_obsolete(true)
+            }
+        }
+    }
+
+    pub fn ensure_cli_service(&self) -> Result<CliUpdateService, String> {
+        if let Some(service) = self.cli() {
+            return Ok(service);
+        }
+        let _initialization = self
+            .cli_initialization
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(service) = self.cli() {
+            return Ok(service);
+        }
+        let node_path = self.node.ensure_ready()?;
+        let service = self.try_construct_cli_service(node_path)?;
+        self.store_cli(service.clone());
+        Ok(service)
+    }
+
+    fn construct_cli_service(&self, node_path: PathBuf) -> Result<CliUpdateService, String> {
+        let service = CliUpdateService::production(&self.app_data_dir, node_path.clone())?;
+        super::cli_update::runtime::configure(service.store().clone(), node_path)?;
+        Ok(service)
+    }
+
+    fn try_construct_cli_service(&self, node_path: PathBuf) -> Result<CliUpdateService, String> {
+        self.set_cli_initialization_error(None);
+        self.construct_cli_service(node_path).map_err(|detail| {
+            eprintln!("[verboo:cli-update] initialization failed: {detail}");
+            self.set_cli_initialization_error(Some("cli_initialization_failed".to_string()));
+            "Verboo CLI preparation failed".to_string()
+        })
+    }
+
+    fn set_cli_initialization_error(&self, error: Option<String>) {
+        *self
+            .cli_initialization_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = error;
+    }
+
+    fn store_cli(&self, service: CliUpdateService) {
+        *self
+            .cli
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(service);
     }
 
     pub fn snapshot(&self) -> UpdateSnapshot {
-        combine_snapshots(
-            self.app.snapshot(),
-            self.cli.as_ref().map(CliUpdateService::snapshot),
-        )
+        if let Some(cli) = self.cli() {
+            let cli_snapshot = cli.snapshot();
+            let bootstrap_required = cli_snapshot.bootstrap_required;
+            let mut snapshot = combine_snapshots(self.app.snapshot(), Some(cli_snapshot));
+            snapshot.bootstrap_stage = bootstrap_required.then_some(BootstrapStage::Cli);
+            return snapshot;
+        }
+
+        let node = self.node.snapshot();
+        let cli_initialization_error = self
+            .cli_initialization_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let cli = CliUpdateSnapshot {
+            status: match (&cli_initialization_error, node.status) {
+                (Some(_), _) => CliUpdateStatus::BootstrapError,
+                (None, NodeRuntimeStatus::Missing)
+                | (None, NodeRuntimeStatus::Checking)
+                | (None, NodeRuntimeStatus::Ready) => CliUpdateStatus::BootstrapChecking,
+                (None, NodeRuntimeStatus::Downloading) => CliUpdateStatus::BootstrapDownloading,
+                (None, NodeRuntimeStatus::Error) => CliUpdateStatus::BootstrapError,
+            },
+            current_version: None,
+            available_version: None,
+            downloaded_bytes: node.downloaded_bytes,
+            total_bytes: node.total_bytes,
+            error: cli_initialization_error.clone().or(node.error),
+            bootstrap_required: true,
+        };
+        let mut snapshot = combine_snapshots(self.app.snapshot(), Some(cli));
+        snapshot.cli_bootstrap_required = true;
+        snapshot.bootstrap_stage = Some(if cli_initialization_error.is_some() {
+            BootstrapStage::Cli
+        } else {
+            BootstrapStage::Runtime
+        });
+        if snapshot.target.is_none() {
+            snapshot.target = Some(UpdateTarget::Cli);
+        }
+        snapshot
     }
 
     pub async fn begin_operation(&self) -> tokio::sync::OwnedMutexGuard<()> {
@@ -44,6 +180,7 @@ pub fn combine_snapshots(
     mut app: UpdateSnapshot,
     cli: Option<CliUpdateSnapshot>,
 ) -> UpdateSnapshot {
+    app.bootstrap_stage = None;
     let Some(cli) = cli else {
         app.target = target_for_app_status(&app.status);
         return app;
@@ -206,7 +343,75 @@ fn apply_combined_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::types::UpdateTarget;
+    use crate::models::types::{BootstrapStage, UpdateTarget};
+    use crate::services::node_runtime::{NodeRuntimeService, NodeRuntimeStatus};
+
+    fn coordinator_with_runtime(
+        status: NodeRuntimeStatus,
+        downloaded: Option<u64>,
+        total: Option<u64>,
+    ) -> UpdateCoordinator {
+        UpdateCoordinator::new_for_test(
+            UpdateService::new("0.7.0-beta".to_string(), true),
+            NodeRuntimeService::test_fixture(status, downloaded, total),
+            tempfile::tempdir().unwrap().path().to_path_buf(),
+        )
+    }
+
+    #[test]
+    fn missing_runtime_is_exposed_as_runtime_bootstrap() {
+        let coordinator = coordinator_with_runtime(NodeRuntimeStatus::Missing, None, None);
+        let snapshot = coordinator.snapshot();
+        assert!(snapshot.cli_bootstrap_required);
+        assert_eq!(snapshot.bootstrap_stage, Some(BootstrapStage::Runtime));
+        assert_eq!(snapshot.target, Some(UpdateTarget::Cli));
+    }
+
+    #[test]
+    fn runtime_download_progress_uses_the_existing_cli_target() {
+        let coordinator =
+            coordinator_with_runtime(NodeRuntimeStatus::Downloading, Some(25), Some(100));
+        let snapshot = coordinator.snapshot();
+        assert_eq!(snapshot.status, UpdateStatus::Downloading);
+        assert_eq!(snapshot.percent, Some(25.0));
+        assert_eq!(snapshot.bootstrap_stage, Some(BootstrapStage::Runtime));
+        assert_eq!(snapshot.target, Some(UpdateTarget::Cli));
+    }
+
+    #[test]
+    fn cli_initialization_failure_is_retryable_in_the_cli_stage() {
+        let coordinator = coordinator_with_runtime(NodeRuntimeStatus::Ready, None, None);
+        coordinator.set_cli_initialization_error(Some("cli_initialization_failed".to_string()));
+        let snapshot = coordinator.snapshot();
+        assert_eq!(snapshot.status, UpdateStatus::Error);
+        assert!(snapshot.cli_bootstrap_required);
+        assert_eq!(snapshot.bootstrap_stage, Some(BootstrapStage::Cli));
+        assert_eq!(snapshot.target, Some(UpdateTarget::Cli));
+    }
+
+    #[test]
+    fn cli_service_materializes_only_after_an_owned_node_is_ready() {
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::services::cli_update::runtime::reset();
+        let app_data = tempfile::tempdir().unwrap();
+        let node = NodeRuntimeService::production(app_data.path()).unwrap();
+        let coordinator = UpdateCoordinator::new_for_test(
+            UpdateService::new("0.7.0-beta".to_string(), true),
+            node,
+            app_data.path().to_path_buf(),
+        );
+
+        assert!(coordinator.cli().is_none());
+        coordinator.ensure_cli_service().unwrap();
+        assert!(coordinator.cli().is_some());
+        assert_eq!(
+            coordinator.snapshot().bootstrap_stage,
+            Some(BootstrapStage::Cli)
+        );
+        crate::services::cli_update::runtime::reset();
+    }
 
     fn app(status: UpdateStatus) -> UpdateSnapshot {
         UpdateSnapshot {
