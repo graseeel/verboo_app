@@ -60,6 +60,8 @@ import type {
   VideoTranscriberProgress,
   VisionFallbackConsent,
   VisionFallbackState,
+  WhatsNewAcknowledgeResult,
+  WhatsNewStatus,
   WorkspaceBranchInfo,
   WorkspaceBranchSwitchResult,
   WorkspaceChangeSummary,
@@ -386,6 +388,10 @@ const api = {
     onEvent<void>('app:refresh-data', callback),
 
   // ── Updates ─────────────────────────────────────────────────
+  getWhatsNewStatus: () =>
+    invoke<WhatsNewStatus | undefined>('get_whats_new_status'),
+  acknowledgeWhatsNew: (version: string) =>
+    invoke<WhatsNewAcknowledgeResult>('acknowledge_whats_new', { version }),
   getUpdateStatus: () => invoke<UpdateSnapshot>('get_update_status'),
   bootstrapCli: () => invoke<UpdateSnapshot>('bootstrap_cli'),
   checkForUpdates: (userInitiated = false) =>

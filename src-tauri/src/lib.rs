@@ -1228,6 +1228,21 @@ fn interrupt(
 // ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
+fn get_whats_new_status(
+    service: tauri::State<'_, crate::services::whats_new_service::WhatsNewService>,
+) -> Result<Option<WhatsNewStatus>, String> {
+    service.status()
+}
+
+#[tauri::command]
+fn acknowledge_whats_new(
+    version: String,
+    service: tauri::State<'_, crate::services::whats_new_service::WhatsNewService>,
+) -> Result<WhatsNewAcknowledgeResult, String> {
+    service.acknowledge(&version)
+}
+
+#[tauri::command]
 async fn get_update_status(
     coordinator: tauri::State<'_, crate::services::update_coordinator::UpdateCoordinator>,
 ) -> Result<UpdateSnapshot, String> {
@@ -2341,6 +2356,16 @@ pub fn run() {
                 .expect("app data dir must be available");
             let _ = std::fs::create_dir_all(&app_data_dir);
 
+            let whats_new_preview = std::env::var("VERBOO_WHATS_NEW_PREVIEW")
+                .map(|value| value == "1")
+                .unwrap_or(false);
+            app.manage(crate::services::whats_new_service::WhatsNewService::new(
+                app_data_dir.clone(),
+                app.package_info().version.to_string(),
+                option_env!("VERBOO_RELEASE_TAG").map(str::to_owned),
+                whats_new_preview,
+            ));
+
             app.manage(
                 services::browser_panel::BrowserCaptureStore::new(app_data_dir.clone())
                     .map_err(std::io::Error::other)?,
@@ -2793,6 +2818,8 @@ pub fn run() {
             cancel_research_subagents,
             interrupt,
             // Updates
+            get_whats_new_status,
+            acknowledge_whats_new,
             get_update_status,
             bootstrap_cli,
             check_for_updates,

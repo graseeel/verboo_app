@@ -1503,6 +1503,17 @@ export type InstallUpdateResult = {
   activeTurns: number
 }
 
+export type WhatsNewStatus = {
+  version: string
+  tag: string
+  preview: boolean
+}
+
+export type WhatsNewAcknowledgeResult = {
+  persisted: boolean
+  error?: string
+}
+
 export type SidebarUpdatePresentation = {
   phase:
     | 'available'
