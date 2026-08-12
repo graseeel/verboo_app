@@ -99,6 +99,24 @@ describe('checklistContract: multiplatform CSS pins', () => {
     expect(floating![0]).not.toMatch(/opacity:\s*0\./)
   })
 
+  it('the DOCKED form is fully OPAQUE — never translucent over the transcript (text-over-text defect)', () => {
+    // Field defect (2026-08-12, user print): the docked form's 30%
+    // transparent wash let transcript text bleed through — two texts
+    // rendered one over the other. The panel must either reserve flow
+    // space or sit ABOVE with an opaque background; translucency over
+    // text is illegible noise and is banned in BOTH forms.
+    const docked = css.match(/\.checklist-panel\.docked\s*\{[^}]*\}/)
+    expect(docked, '.checklist-panel.docked block must exist').not.toBeNull()
+    expect(docked![0]).toMatch(/background:\s*var\(--bg/)
+    expect(docked![0]).not.toMatch(/background:[^;]*transparent/)
+  })
+
+  it('the minimized bar is opaque too (it inherits the floating card surface)', () => {
+    const minibar = css.match(/\.checklist-minibar\s*\{[^}]*\}/)
+    expect(minibar, '.checklist-minibar block must exist').not.toBeNull()
+    expect(minibar![0]).not.toMatch(/transparent/)
+  })
+
   it('floating rows wrap to AT MOST two lines; docked rows keep the single-line ellipsis', () => {
     // Field defect (2026-07-31): real TodoWrite items are whole
     // sentences and the single-line ellipsis made steps illegible
@@ -152,13 +170,15 @@ describe('checklistContract: App.tsx wiring pins (JSX order + possession)', () =
   })
 })
 
-describe('checklistContract: i18n — the five keys exist in BOTH locales, never orphaned', () => {
+describe('checklistContract: i18n — the checklist keys exist in BOTH locales, never orphaned', () => {
   const KEYS = [
     'checklist.regionLabel',
     'checklist.allDone',
     'checklist.float',
     'checklist.dock',
     'checklist.progress',
+    'checklist.minimize',
+    'checklist.expand',
   ]
 
   for (const key of KEYS) {

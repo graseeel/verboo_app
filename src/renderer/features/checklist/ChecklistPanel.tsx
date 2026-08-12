@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react'
-import { ListChecks, PanelBottom, PanelRight } from 'lucide-react'
+import { ListChecks, Maximize2, Minus, PanelBottom, PanelRight } from 'lucide-react'
 import type { TodoItem } from '../../../shared/types'
 import { useI18n } from '../../i18n'
 import {
@@ -25,6 +25,10 @@ import {
  *     than the goal panel, which keeps the border (hierarquia aprovada:
  *     goal-com-borda > lista-sem-borda). Collapses to a single row when
  *     every item is completed.
+ *   - minimized (floating sub-state, 2026-08-12): the card compresses
+ *     to a compact bar — icon + fraction + expand/dock actions. The
+ *     state is lifted to the parent and persists during the
+ *     conversation.
  *
  * USER RULES baked in here:
  *   1. The card NEVER rests over the transcript. During the drag it
@@ -68,6 +72,13 @@ export type ChecklistPanelProps = {
   cardPos: ChecklistCardPos | null
   onCardPosChange: (pos: ChecklistCardPos) => void
   onToggleForm: () => void
+  /** MINIMIZE (user requirement, 2026-08-12): the floating card
+   *  compresses to a compact bar with the fraction ("2/5") and a
+   *  re-expand action. Lifted to the parent — the state persists during
+   *  the conversation, so the remounts a form switch causes never lose
+   *  it. Floating form only; the docked form ignores it. */
+  minimized?: boolean
+  onToggleMinimized?: () => void
   /** FLIP flight: fixed geometry + zIndex while migrating between
    *  forms (computed by useChecklistFlight). */
   flightStyle?: CSSProperties
@@ -396,6 +407,36 @@ export function ChecklistPanel(props: ChecklistPanelProps) {
       onPointerCancel={endDrag}
     >
       {form === 'floating' ? (
+        props.minimized ? (
+          /* MINIMIZED: compact bar — icon, fraction, expand + dock
+           * actions. Still the floating surface (opaque bg inherited
+           * from .checklist-panel.floating), still draggable via the
+           * root's pointer handlers. */
+          <div className="checklist-minibar">
+            <ListChecks size={13} strokeWidth={1.8} aria-hidden="true" />
+            <span className="checklist-card-frac">
+              {doneCount}/{total}
+            </span>
+            <button
+              type="button"
+              className="checklist-toggle"
+              title={t('checklist.expand')}
+              aria-label={t('checklist.expand')}
+              onClick={props.onToggleMinimized}
+            >
+              <Maximize2 size={13} strokeWidth={1.8} />
+            </button>
+            <button
+              type="button"
+              className="checklist-toggle"
+              title={t('checklist.dock')}
+              aria-label={t('checklist.dock')}
+              onClick={props.onToggleForm}
+            >
+              <PanelBottom size={13} strokeWidth={1.8} />
+            </button>
+          </div>
+        ) : (
         <div className="checklist-card-box">
           <div className="checklist-card-head">
             <ListChecks size={13} strokeWidth={1.8} aria-hidden="true" />
@@ -403,6 +444,15 @@ export function ChecklistPanel(props: ChecklistPanelProps) {
             <span className="checklist-card-frac">
               {doneCount}/{total}
             </span>
+            <button
+              type="button"
+              className="checklist-toggle"
+              title={t('checklist.minimize')}
+              aria-label={t('checklist.minimize')}
+              onClick={props.onToggleMinimized}
+            >
+              <Minus size={13} strokeWidth={1.8} />
+            </button>
             <button
               type="button"
               className="checklist-toggle"
@@ -435,6 +485,7 @@ export function ChecklistPanel(props: ChecklistPanelProps) {
             })}
           </div>
         </div>
+        )
       ) : (
         <div className="checklist-docked-box" aria-label={progressLabel}>
           {dockedRows()}

@@ -89,6 +89,7 @@ import { runGoalCycle, type GoalSchedulerDelegate } from './features/goal/goalSc
 import { shouldAccumulateTokensForTurn, accumulateTurnUsage, accumulateEvaluatorUsage, shouldAccumulateEvaluatorUsage } from './features/goal/tokenAccumulator'
 import { ChecklistPanel } from './features/checklist/ChecklistPanel'
 import { useChecklistFlight } from './features/checklist/useChecklistFlight'
+import { useChecklistMinimized } from './features/checklist/useChecklistMinimized'
 import { useChecklistCompletionExit } from './features/checklist/useChecklistCompletionExit'
 import { applyTodoWrite, removeChecklistForConversation, resolveChecklistPlacement, type ChecklistCardPos, type ChecklistFormPreference } from './features/checklist/checklistPlacement'
 import { readChecklistCardPos, readChecklistFormPreference, writeChecklistCardPos, writeChecklistFormPreference } from './features/checklist/checklistStorage'
@@ -596,6 +597,14 @@ export function App() {
   // Floating card's resting position; null = home corner. Persisted and
   // re-clamped into the window bounds by the panel (multiplatform rule).
   const [checklistCardPos, setChecklistCardPos] = useState<ChecklistCardPos | null>(readChecklistCardPos)
+  // MINIMIZE (2026-08-12): the floating card compressed to a compact
+  // bar. POSSE: keyed by the ACTIVE conversation — switching
+  // conversations re-expands (the checklist itself is per-conversation;
+  // a single boolean leaked the bar into other conversations' lists).
+  // Deliberately NOT in localStorage: minimizing is a per-session focus
+  // choice, not a durable preference like the form or the parked
+  // position. See useChecklistMinimized for the reset semantics.
+  const { minimized: checklistMinimized, toggleMinimized: toggleChecklistMinimized } = useChecklistMinimized(activeConversationId)
   /* TWO SOUNDS, EXACTLY TWO (user order, 2026-08-01 — "APENAS ISSO,
    * NADA MAIS"): a notification sound (permission/question waiting) and
    * a conclusion sound (turn or goal/batch completed). Synthesized with
@@ -7074,6 +7083,8 @@ export function App() {
           cardPos={checklistCardPos}
           onCardPosChange={setChecklistCardPos}
           onToggleForm={() => setChecklistFormPref('dock')}
+          minimized={checklistMinimized}
+          onToggleMinimized={toggleChecklistMinimized}
           flightStyle={checklistFlight.flightStyle}
           flying={checklistFlight.flying}
           entering={checklistFlight.entering}

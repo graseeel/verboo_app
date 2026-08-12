@@ -90,10 +90,29 @@
 
 /* ── Docked condensed window ──────────────────────────────────────── */
 .checklist-panel.docked {
-  /* Quieter than the goal panel: no border, translucent soft wash. */
-  background: color-mix(in srgb, var(--bg-soft) 30%, transparent);
+  /* Quieter than the goal panel (no border) but FULLY OPAQUE: the 30%
+   * transparent wash let transcript text bleed through (text-over-text,
+   * field defect 2026-08-12). A panel over content either reserves flow
+   * space or sits above with a solid background — never translucency. */
+  background: var(--bg-soft);
   border-radius: var(--radius);
   padding: 4px 10px;
+}
+
+/* ── Minimized floating bar ───────────────────────────────────────── */
+/* Compact sub-state of the floating card (2026-08-12): icon + fraction
+ * + expand/dock actions. Opaque by inheritance — it lives INSIDE
+ * .checklist-panel.floating, which carries the solid elevated surface. */
+.checklist-minibar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.checklist-minibar .checklist-card-frac {
+  margin-left: 0;
 }
 .checklist-docked-box {
   display: flex;
