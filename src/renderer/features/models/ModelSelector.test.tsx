@@ -531,6 +531,10 @@ describe('ModelSelector — provider grouping (F3)', () => {
         modelResult={discovery(models)}
         onSelect={() => {}}
         onRefresh={() => {}}
+        providerStatuses={[
+          { provider: 'claude', connected: true },
+          { provider: 'codex', connected: true },
+        ]}
       />,
     )
     openModelsPanel()
@@ -564,6 +568,7 @@ describe('ModelSelector — provider grouping (F3)', () => {
         onSelect={() => {}}
         onRefresh={() => {}}
         verbooPlan="Pro"
+        providerStatuses={[{ provider: 'claude', connected: true }]}
       />,
     )
     openModelsPanel()
@@ -579,6 +584,7 @@ describe('ModelSelector — provider grouping (F3)', () => {
         modelResult={discovery(models)}
         onSelect={() => {}}
         onRefresh={() => {}}
+        providerStatuses={[{ provider: 'acme', connected: true }]}
       />,
     )
     openModelsPanel()
@@ -609,9 +615,8 @@ describe('ModelSelector — provider grouping (F3)', () => {
     expect(labels.some(label => /your account|sua conta|plano|plan/i.test(label))).toBe(false)
   })
 
-  it('disconnected bridge entries render a DIMMED group whose Conectar action fires onConnectProvider', () => {
-    const onConnectProvider = vi.fn()
-    const models = [verbooUltra]
+  it('hides a disconnected external provider even when its models remain in the discovered catalog', () => {
+    const models = [verbooUltra, codexGpt]
     render(
       <ModelSelector
         models={models}
@@ -620,24 +625,17 @@ describe('ModelSelector — provider grouping (F3)', () => {
         onSelect={() => {}}
         onRefresh={() => {}}
         providerStatuses={[{ provider: 'codex', connected: false }]}
-        onConnectProvider={onConnectProvider}
       />,
     )
     openModelsPanel()
-    // Mockup: "Codex — não conectado · Conectar →" (en-US default context).
-    const dimmed = document.querySelector('.group-label.is-dimmed')
-    expect(dimmed).toBeTruthy()
-    expect(dimmed!.textContent).toMatch(/Codex — (not connected|não conectado)/i)
-    expect(dimmed!.textContent).toMatch(/Connect|Conectar/i)
-    // The disconnected provider still carries its official brand icon.
-    expect(dimmed!.querySelector('[data-testid="provider-icon-codex"]')).toBeTruthy()
-    const connectButton = dimmed!.querySelector('button')!
-    fireEvent.click(connectButton)
-    expect(onConnectProvider).toHaveBeenCalledWith('codex')
+
+    expect(screen.queryByText('GPT-5')).toBeNull()
+    expect(groupLabels().some(label => /Codex/i.test(label))).toBe(false)
+    expect(document.querySelector('.group-connect')).toBeNull()
   })
 
-  it('connected bridge entries do NOT get a dimmed group — their models come from the listing', () => {
-    const models = [verbooUltra, claudeSonnet]
+  it('shows external models only when the matching provider is connected', () => {
+    const models = [verbooUltra, claudeSonnet, codexGpt]
     render(
       <ModelSelector
         models={models}
@@ -649,18 +647,17 @@ describe('ModelSelector — provider grouping (F3)', () => {
           { provider: 'claude', connected: true, account: 'user@example.com' },
           { provider: 'codex', connected: false },
         ]}
-        onConnectProvider={() => {}}
       />,
     )
     openModelsPanel()
-    const dimmed = document.querySelectorAll('.group-label.is-dimmed')
-    expect(dimmed.length).toBe(1)
-    expect(dimmed[0].textContent).toMatch(/Codex/)
-    // The connected provider renders as a normal provider group instead.
+
+    expect(screen.getByText('Claude Sonnet 4.6')).toBeTruthy()
+    expect(screen.queryByText('GPT-5')).toBeNull()
     expect(groupLabels().some(label => /Claude — (your account|sua conta)/.test(label))).toBe(true)
+    expect(groupLabels().some(label => /Codex/i.test(label))).toBe(false)
   })
 
-  it('no providerStatuses prop → no dimmed groups at all (zero regression for old mounts)', () => {
+  it('treats a missing provider status as disconnected for external catalog entries', () => {
     const models = [verbooUltra, claudeSonnet]
     render(
       <ModelSelector
@@ -672,8 +669,9 @@ describe('ModelSelector — provider grouping (F3)', () => {
       />,
     )
     openModelsPanel()
-    expect(document.querySelectorAll('.group-label.is-dimmed').length).toBe(0)
-    expect(document.querySelectorAll('.group-connect').length).toBe(0)
+
+    expect(screen.queryByText('Claude Sonnet 4.6')).toBeNull()
+    expect(groupLabels()).toEqual(['Available'])
   })
 })
 

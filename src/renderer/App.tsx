@@ -7014,7 +7014,6 @@ export function App() {
                   modelResult={modelResult}
                   verbooPlan={cliAuth.subscriptionType ?? undefined}
                   providerStatuses={providerAuth}
-                  onConnectProvider={providerId => { void handleProviderConnect(providerId) }}
                   onSelect={handleModelSelect}
                   onRefresh={() => refreshModels(true)}
                   effortByModel={effortByModel}

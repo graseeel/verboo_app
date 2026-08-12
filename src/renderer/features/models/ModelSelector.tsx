@@ -6,7 +6,7 @@ import type { ModelDiscoveryResult, ProviderAuthStatus, VerbooModel } from '../.
 import { formatCompactNumber, useI18n } from '../../i18n'
 import { ModelIcon } from './ModelIcon'
 import { ProviderIcon } from './ProviderIcon'
-import { VERBOO_PROVIDER, groupModelsByProvider, hasExternalProvider, hashString, modelProvider, providerDisplayName, providerToneStyle } from './providerCatalog'
+import { VERBOO_PROVIDER, groupModelsByProvider, hasExternalProvider, hashString, modelProvider } from './providerCatalog'
 
 const SEARCH_THRESHOLD = 12
 
@@ -21,12 +21,9 @@ type ModelSelectorProps = {
    *  when the selector renders provider groups (F3). Unused in the verboo-only
    *  selector, which stays byte-identical to today. */
   verbooPlan?: string
-  /** F4: the login bridge universe ({ provider, connected, account? }).
-   *  connected=false entries render a DIMMED group with a Conectar action;
-   *  connected ones vanish — their models come from the listing. Prop absent
-   *  → no dimmed groups at all (zero regression). */
+  /** Login bridge universe ({ provider, connected, account? }). External
+   *  models render only when their matching provider is connected. */
   providerStatuses?: ProviderAuthStatus[]
-  onConnectProvider?: (providerId: string) => void
   // Reasoning effort integration
   effortByModel?: Record<string, string>
   selectedEffortLevels?: string[]
@@ -59,7 +56,7 @@ function effortLabel(level: string, t: (key: string) => string): string {
   return known[level] ?? level.charAt(0).toUpperCase() + level.slice(1)
 }
 
-export function ModelSelector({ models, selectedModel, hasConversationHistory = false, modelResult, onSelect, onRefresh, verbooPlan, providerStatuses, onConnectProvider, effortByModel, selectedEffortLevels = [], selectedEffort, onSelectEffort, onClearEffortOverride }: ModelSelectorProps) {
+export function ModelSelector({ models, selectedModel, hasConversationHistory = false, modelResult, onSelect, onRefresh, verbooPlan, providerStatuses, effortByModel, selectedEffortLevels = [], selectedEffort, onSelectEffort, onClearEffortOverride }: ModelSelectorProps) {
   const { language, t } = useI18n()
   const [open, setOpen] = useState(false)
   // Drill-in panel: 'root' (settings rows) | 'models' | 'effort'. The chip
@@ -84,7 +81,22 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
     if (selected) lastKnownRef.current = selected
   }, [selected])
   const displayed = selected ?? (selectedModel ? lastKnownRef.current : undefined)
-  const showSearch = panel === 'models' && models.length > SEARCH_THRESHOLD
+  const connectedProviders = useMemo(
+    () => new Set(
+      (providerStatuses ?? [])
+        .filter(status => status.connected)
+        .map(status => status.provider),
+    ),
+    [providerStatuses],
+  )
+  const visibleModels = useMemo(
+    () => models.filter(model => {
+      const provider = modelProvider(model)
+      return provider === VERBOO_PROVIDER || connectedProviders.has(provider)
+    }),
+    [models, connectedProviders],
+  )
+  const showSearch = panel === 'models' && visibleModels.length > SEARCH_THRESHOLD
   // Override is only "valid" when it's still in the model's current
   // effortLevels. A stale value (model changed its levels) falls back to
   // defaultEffort, surfaced as "Usar padrão" selected in the effort panel.
@@ -95,12 +107,12 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
   )
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase()
-    if (!normalized) return models
-    return models.filter(model =>
+    if (!normalized) return visibleModels
+    return visibleModels.filter(model =>
       model.id.toLowerCase().includes(normalized)
       || readableModelName(model).toLowerCase().includes(normalized),
     )
-  }, [models, query])
+  }, [visibleModels, query])
   const providerMode = hasExternalProvider(filtered)
   const grouped = useMemo<Array<{ label: string; models: VerbooModel[]; dotStyle?: CSSProperties; providerId?: string }>>(
     // Provider mode (F3): one group per provider. Verboo-only: today's exact
@@ -108,14 +120,6 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
     () => providerMode ? groupModelsByProvider(filtered, t, verbooPlan) : groupModels(filtered, t),
     [providerMode, filtered, t, verbooPlan],
   )
-  // F4: disconnected bridge entries → dimmed groups. A provider whose models
-  // are already in the listing never renders dimmed (it is connected de
-  // facto); once connected, its group comes from the listing instead.
-  const disconnectedGroups = useMemo(() => {
-    if (!providerStatuses) return []
-    const listedProviders = new Set(models.map(modelProvider))
-    return providerStatuses.filter(status => !status.connected && !listedProviders.has(status.provider))
-  }, [providerStatuses, models])
   const flat = useMemo(() => grouped.flatMap(group => group.models), [grouped])
   const activeIndex = flat.length ? Math.min(highlighted, flat.length - 1) : 0
   const selectedTone = displayed ? modelToneStyle(displayed.id) : undefined
@@ -387,25 +391,6 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
                 ))
               )}
 
-              {/* F4: dimmed groups for disconnected bridge providers — the
-                  Conectar action starts the login flow. They render even with
-                  an empty listing: the first connect happens exactly then. */}
-              {disconnectedGroups.map(status => (
-                <div key={status.provider} className="model-group">
-                  <div className="group-label is-dimmed" style={providerToneStyle(status.provider)}>
-                    <ProviderIcon providerId={status.provider} size={13} />
-                    {providerDisplayName(status.provider, t)} — {t('model.group.providerNotConnected')}
-                    {' · '}
-                    <button
-                      type="button"
-                      className="group-connect"
-                      onClick={() => onConnectProvider?.(status.provider)}
-                    >
-                      {t('settings.provider.connect')} →
-                    </button>
-                  </div>
-                </div>
-              ))}
             </>
           )}
 
