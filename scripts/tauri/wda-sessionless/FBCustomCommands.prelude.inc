@@ -4,13 +4,22 @@
 #import "FBElementTypeTransformer.h"
 #import "FBElementUtils.h"
 #import "FBRunLoopSpinner.h"
+#import "FBXCAXClientProxy.h"
+#import "FBXCElementSnapshot.h"
 #import "FBXCTestDaemonsProxy.h"
 #import "XCTestManager_ManagerInterface-Protocol.h"
+#import "XCUIApplication+FBHelpers.h"
 #import "XCUIDevice.h"
 #import "XCUIDevice+FBHelpers.h"
 #import "XCUIElement+FBTyping.h"
+#import "XCUIElement+FBUtilities.h"
 #import "XCPointerEventPath.h"
 #import "XCSynthesizedEventRecord.h"
+
+// Exact clicks may land on a leaf whose actionable Cell/Button ancestor is
+// deeper than WDA's lightweight point snapshot. Keep hover on the fast path;
+// this bounded full-tree depth is used only as an exact-click fallback.
+static const int FB_VERBOO_EXACT_SNAPSHOT_MAX_DEPTH = 50;
 
 static UIInterfaceOrientation FBVerbooInterfaceOrientation(FBRouteRequest *request)
 {
@@ -87,9 +96,103 @@ static BOOL FBVerbooActionableElementType(XCUIElementType type)
     case XCUIElementTypePicker:
     case XCUIElementTypePickerWheel:
     case XCUIElementTypeCell:
+    case XCUIElementTypeIcon:
       return YES;
     default:
       return NO;
   }
+}
+
+static BOOL FBVerbooGenericElementType(XCUIElementType type)
+{
+  return type == XCUIElementTypeAny ||
+    type == XCUIElementTypeOther ||
+    type == XCUIElementTypeApplication ||
+    type == XCUIElementTypeWindow;
+}
+
+static BOOL FBVerbooFrameContainsPoint(CGRect frame, CGPoint point)
+{
+  return !CGRectIsNull(frame) && !CGRectIsInfinite(frame) && !CGRectIsEmpty(frame) &&
+    CGRectContainsPoint(frame, point);
+}
+
+static CGFloat FBVerbooDistanceSquaredToFrame(CGPoint point, CGRect frame)
+{
+  CGFloat dx = point.x - CGRectGetMidX(frame);
+  CGFloat dy = point.y - CGRectGetMidY(frame);
+  return (dx * dx) + (dy * dy);
+}
+
+static id<FBXCElementSnapshot> FBVerbooBestSnapshotAtPoint(
+  id<FBXCElementSnapshot> root,
+  CGPoint point
+)
+{
+  if (nil == root) return nil;
+
+  id<FBXCElementSnapshot> smallest = nil;
+  id<FBXCElementSnapshot> smallestDescriptive = nil;
+  id<FBXCElementSnapshot> smallestActionable = nil;
+  CGFloat smallestArea = CGFLOAT_MAX;
+  CGFloat smallestDescriptiveArea = CGFLOAT_MAX;
+  CGFloat smallestActionableArea = CGFLOAT_MAX;
+
+  NSArray<id<FBXCElementSnapshot>> *candidates = [@[root]
+    arrayByAddingObjectsFromArray:root._allDescendants];
+  for (id<FBXCElementSnapshot> candidate in candidates) {
+    CGRect frame = candidate.frame;
+    if (!FBVerbooFrameContainsPoint(frame, point)) continue;
+    CGFloat area = CGRectGetWidth(frame) * CGRectGetHeight(frame);
+    if (area < smallestArea) {
+      smallestArea = area;
+      smallest = candidate;
+    }
+    if (!FBVerbooGenericElementType(candidate.elementType) &&
+        area < smallestDescriptiveArea) {
+      smallestDescriptiveArea = area;
+      smallestDescriptive = candidate;
+    }
+    if (FBVerbooActionableElementType(candidate.elementType) &&
+        area < smallestActionableArea) {
+      smallestActionableArea = area;
+      smallestActionable = candidate;
+    }
+  }
+  return smallestActionable ?: smallestDescriptive ?: smallest;
+}
+
+static id<FBXCElementSnapshot> FBVerbooNearestActionableAncestor(
+  id<FBXCElementSnapshot> snapshot,
+  CGPoint point
+)
+{
+  id<FBXCElementSnapshot> candidate = snapshot;
+  while (nil != candidate) {
+    if (FBVerbooActionableElementType(candidate.elementType) &&
+        FBVerbooFrameContainsPoint(candidate.frame, point)) {
+      return candidate;
+    }
+    candidate = candidate.parent;
+  }
+  return nil;
+}
+
+static id<FBXCElementSnapshot> FBVerbooDeepestSnapshotAtPoint(
+  XCUIApplication *application,
+  CGPoint point
+)
+{
+  int previousMaxDepth = FBConfiguration.snapshotMaxDepth;
+  [FBConfiguration setSnapshotMaxDepth:FB_VERBOO_EXACT_SNAPSHOT_MAX_DEPTH];
+  id<FBXCElementSnapshot> root = nil;
+  @try {
+    root = application.fb_standardSnapshot;
+  } @catch (NSException *exception) {
+    root = nil;
+  } @finally {
+    [FBConfiguration setSnapshotMaxDepth:previousMaxDepth];
+  }
+  return FBVerbooBestSnapshotAtPoint(root, point);
 }
 // VERBOO_SESSIONLESS_PRELUDE_END

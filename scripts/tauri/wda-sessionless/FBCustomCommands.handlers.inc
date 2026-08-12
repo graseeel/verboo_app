@@ -170,6 +170,9 @@
 {
   NSNumber *x = request.arguments[@"x"];
   NSNumber *y = request.arguments[@"y"];
+  NSNumber *windowWidth = request.arguments[@"windowWidth"];
+  NSNumber *windowHeight = request.arguments[@"windowHeight"];
+  BOOL exact = [request.arguments[@"exact"] boolValue];
   if (!FBVerbooFiniteCoordinate(x) || !FBVerbooFiniteCoordinate(y)) {
     return FBVerbooInvalidArgument(@"finite x and y coordinates are required");
   }
@@ -236,6 +239,72 @@
   NSString *label = FBVerbooInspectableText(attributes[@"XC_kAXXCAttributeLabel"]);
   NSString *value = FBVerbooInspectableText(attributes[@"XC_kAXXCAttributeTruncatedValue"]);
   NSString *uid = [FBElementUtils uidWithAccessibilityElement:element];
+  BOOL coversViewport = FBVerbooFiniteCoordinate(windowWidth) &&
+    FBVerbooFiniteCoordinate(windowHeight) &&
+    frameWidth.doubleValue >= windowWidth.doubleValue * 0.9 &&
+    frameHeight.doubleValue >= windowHeight.doubleValue * 0.9;
+  CGPoint requestedPoint = CGPointMake(x.doubleValue, y.doubleValue);
+  BOOL rawContainsPoint = FBVerbooFrameContainsPoint(
+    CGRectMake(frameX.doubleValue, frameY.doubleValue, frameWidth.doubleValue, frameHeight.doubleValue),
+    requestedPoint
+  );
+  if (!exact && (!rawContainsPoint || FBVerbooGenericElementType(elementType) || coversViewport)) {
+    return FBResponseWithObject(@{@"found": @NO});
+  }
+  if (exact) {
+    NSError *snapshotError = nil;
+    id<FBXCElementSnapshot> elementSnapshot = [[FBXCAXClientProxy sharedClient]
+      snapshotForElement:element
+      attributes:nil
+      inDepth:YES
+      error:&snapshotError];
+    id<FBXCElementSnapshot> refined = FBVerbooBestSnapshotAtPoint(elementSnapshot, requestedPoint);
+    id<FBXCElementSnapshot> actionableAncestor = FBVerbooNearestActionableAncestor(refined, requestedPoint);
+    if (nil != actionableAncestor) refined = actionableAncestor;
+    BOOL refinedCoversViewport = nil != refined &&
+      FBVerbooFiniteCoordinate(windowWidth) &&
+      FBVerbooFiniteCoordinate(windowHeight) &&
+      CGRectGetWidth(refined.frame) >= windowWidth.doubleValue * 0.9 &&
+      CGRectGetHeight(refined.frame) >= windowHeight.doubleValue * 0.9;
+    if (nil == refined ||
+        FBVerbooGenericElementType(refined.elementType) ||
+        !FBVerbooFrameContainsPoint(refined.frame, requestedPoint) ||
+        refinedCoversViewport) {
+      refined = FBVerbooDeepestSnapshotAtPoint(
+        XCUIApplication.fb_activeApplication,
+        requestedPoint
+      );
+    }
+    if (nil != refined) {
+      CGRect refinedFrame = refined.frame;
+      frameX = @(CGRectGetMinX(refinedFrame));
+      frameY = @(CGRectGetMinY(refinedFrame));
+      frameWidth = @(CGRectGetWidth(refinedFrame));
+      frameHeight = @(CGRectGetHeight(refinedFrame));
+      elementType = refined.elementType;
+      enabled = refined.enabled;
+      identifier = FBVerbooInspectableText(refined.identifier);
+      label = FBVerbooInspectableText(refined.label);
+      value = FBVerbooInspectableText(refined.value);
+      uid = [FBElementUtils uidWithAccessibilityElement:refined.accessibilityElement];
+    }
+  }
+  CGRect selectedFrame = CGRectMake(
+    frameX.doubleValue,
+    frameY.doubleValue,
+    frameWidth.doubleValue,
+    frameHeight.doubleValue
+  );
+  if (!FBVerbooFrameContainsPoint(selectedFrame, requestedPoint)) {
+    return FBResponseWithObject(@{@"found": @NO});
+  }
+  BOOL selectedCoversViewport = FBVerbooFiniteCoordinate(windowWidth) &&
+    FBVerbooFiniteCoordinate(windowHeight) &&
+    CGRectGetWidth(selectedFrame) >= windowWidth.doubleValue * 0.9 &&
+    CGRectGetHeight(selectedFrame) >= windowHeight.doubleValue * 0.9;
+  if (FBVerbooGenericElementType(elementType) || selectedCoversViewport) {
+    return FBResponseWithObject(@{@"found": @NO});
+  }
   NSString *role = [FBElementTypeTransformer shortStringWithElementType:elementType];
   BOOL actionable = enabled && FBVerbooActionableElementType(elementType);
   NSMutableDictionary *result = [@{
@@ -253,6 +322,89 @@
     @"actionable": @(actionable),
   } mutableCopy];
   if (nil != identifier) result[@"identifier"] = identifier;
+  if (nil != label) result[@"label"] = label;
+  if (nil != value) result[@"value"] = value;
+  return FBResponseWithObject(result);
+}
+
++ (id<FBResponsePayload>)handleVerbooResolveTarget:(FBRouteRequest *)request
+{
+  NSString *target = request.arguments[@"target"];
+  NSNumber *x = request.arguments[@"x"];
+  NSNumber *y = request.arguments[@"y"];
+  NSNumber *windowWidth = request.arguments[@"windowWidth"];
+  NSNumber *windowHeight = request.arguments[@"windowHeight"];
+  if (![target isKindOfClass:NSString.class] || target.length == 0 || target.length > 256 ||
+      !FBVerbooFiniteCoordinate(x) || !FBVerbooFiniteCoordinate(y) ||
+      !FBVerbooFiniteCoordinate(windowWidth) || windowWidth.doubleValue <= 0.0 ||
+      !FBVerbooFiniteCoordinate(windowHeight) || windowHeight.doubleValue <= 0.0) {
+    return FBVerbooInvalidArgument(@"target and finite window coordinates are required");
+  }
+
+  NSPredicate *targetPredicate = [NSPredicate predicateWithFormat:
+    @"label ==[cd] %@ OR identifier ==[cd] %@ OR value ==[cd] %@",
+    target, target, target];
+  NSArray<XCUIElement *> *candidates = [[XCUIApplication.fb_activeApplication
+    descendantsMatchingType:XCUIElementTypeAny]
+    matchingPredicate:targetPredicate].allElementsBoundByIndex;
+  CGPoint requestedPoint = CGPointMake(x.doubleValue, y.doubleValue);
+  CGRect viewport = CGRectMake(0.0, 0.0, windowWidth.doubleValue, windowHeight.doubleValue);
+  XCUIElement *(^closestActionableCandidate)(NSArray<XCUIElement *> *) =
+    ^XCUIElement *(NSArray<XCUIElement *> *matches) {
+      XCUIElement *closest = nil;
+      CGFloat closestDistance = CGFLOAT_MAX;
+      NSUInteger candidateLimit = MIN(matches.count, (NSUInteger)64);
+      for (NSUInteger index = 0; index < candidateLimit; index++) {
+        XCUIElement *candidate = matches[index];
+        CGRect frame = candidate.frame;
+        CGPoint center = CGPointMake(CGRectGetMidX(frame), CGRectGetMidY(frame));
+        if (!candidate.enabled || !FBVerbooActionableElementType(candidate.elementType) ||
+            CGRectIsNull(frame) || CGRectIsInfinite(frame) || CGRectIsEmpty(frame) ||
+            !CGRectContainsPoint(viewport, center)) {
+          continue;
+        }
+        CGFloat distance = FBVerbooDistanceSquaredToFrame(requestedPoint, frame);
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          closest = candidate;
+        }
+      }
+      return closest;
+    };
+  XCUIElement *best = closestActionableCandidate(candidates);
+  if (nil == best && target.length >= 3) {
+    // Some iOS controls append dynamic metadata to their accessible label
+    // (for example, a visible list name followed by its item count). Keep the
+    // exact query as the fast path, then use the coordinate hint to disambiguate
+    // a bounded contained-text fallback.
+    NSPredicate *containedTargetPredicate = [NSPredicate predicateWithFormat:
+      @"label CONTAINS[cd] %@ OR value CONTAINS[cd] %@", target, target];
+    NSArray<XCUIElement *> *containedCandidates = [[XCUIApplication.fb_activeApplication
+      descendantsMatchingType:XCUIElementTypeAny]
+      matchingPredicate:containedTargetPredicate].allElementsBoundByIndex;
+    best = closestActionableCandidate(containedCandidates);
+  }
+  if (nil == best) return FBResponseWithObject(@{@"found": @NO});
+
+  CGRect frame = best.frame;
+  NSString *identifier = FBVerbooInspectableText(best.identifier);
+  NSString *label = FBVerbooInspectableText(best.label);
+  NSString *value = FBVerbooInspectableText(best.value);
+  NSString *role = [FBElementTypeTransformer shortStringWithElementType:best.elementType];
+  NSMutableDictionary *result = [@{
+    @"found": @YES,
+    @"id": identifier ?: label ?: @"semantic-target",
+    @"role": role ?: @"Other",
+    @"frame": @{
+      @"x": @(CGRectGetMinX(frame)),
+      @"y": @(CGRectGetMinY(frame)),
+      @"width": @(CGRectGetWidth(frame)),
+      @"height": @(CGRectGetHeight(frame)),
+    },
+    @"enabled": @YES,
+    @"visible": @YES,
+    @"actionable": @YES,
+  } mutableCopy];
   if (nil != label) result[@"label"] = label;
   if (nil != value) result[@"value"] = value;
   return FBResponseWithObject(result);

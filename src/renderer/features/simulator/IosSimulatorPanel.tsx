@@ -63,7 +63,10 @@ type IosSimulatorPanelProps = {
   onDrag: (from: IosSimulatorPoint, to: IosSimulatorPoint, durationMs: number) => void
   onTypeText: (text: string) => void
   onPressKey: (key: IosSimulatorKey) => void
-  onInspectPoint: (point: IosSimulatorPoint) => Promise<IosSimulatorElementHit | undefined>
+  onInspectPoint: (
+    point: IosSimulatorPoint,
+    exact?: boolean,
+  ) => Promise<IosSimulatorElementHit | undefined>
   onCaptureAnnotation: (
     kind: 'element' | 'area',
     rect: IosSimulatorRect,

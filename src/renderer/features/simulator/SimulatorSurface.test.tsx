@@ -1,8 +1,14 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { SimulatorSurface } from './SimulatorSurface'
 import type { IosSimulatorPresenceEvent } from './iosSimulatorApi'
 import { paintedContainRect } from './simulatorGeometry'
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(next => { resolve = next })
+  return { promise, resolve }
+}
 
 function renderSurface(
   mode: 'interact' | 'select-element' | 'select-area' = 'interact',
@@ -254,6 +260,62 @@ describe('SimulatorSurface', () => {
     expect(screen.getByRole('button', { name: 'Select area' })).toBeInTheDocument()
   })
 
+  it('describes every interaction mode with a keyboard-accessible tooltip', () => {
+    renderSurface()
+
+    for (const label of ['Interact', 'Select component', 'Select area']) {
+      const button = screen.getByRole('button', { name: label })
+      fireEvent.focus(button)
+      expect(screen.getByRole('tooltip')).toHaveTextContent(label)
+      fireEvent.blur(button)
+      expect(screen.queryByRole('tooltip')).toBeNull()
+    }
+  })
+
+  it('never paints an obsolete component while a newer pointer inspection is queued', async () => {
+    const { surface, callbacks } = renderSurface('select-element')
+    const first = deferred<Awaited<ReturnType<typeof callbacks.onInspectPoint>>>()
+    const second = deferred<Awaited<ReturnType<typeof callbacks.onInspectPoint>>>()
+    callbacks.onInspectPoint.mockReset()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise)
+
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 200, clientY: 300 })
+    await waitFor(() => expect(callbacks.onInspectPoint).toHaveBeenCalledTimes(1))
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 400, clientY: 600 })
+
+    await act(async () => {
+      first.resolve({
+        rect: { x: 20 / 393, y: 80 / 852, width: 80 / 393, height: 40 / 852 },
+        element: {
+          id: 'obsolete', role: 'Button', label: 'Obsolete hover',
+          frame: { x: 20, y: 80, width: 80, height: 40 },
+          enabled: true, visible: true, actionable: true,
+        },
+      })
+      await first.promise
+    })
+
+    expect(document.querySelector('.ios-simulator-selection-outline')).toBeNull()
+    await waitFor(() => expect(callbacks.onInspectPoint).toHaveBeenCalledTimes(2))
+
+    await act(async () => {
+      second.resolve({
+        rect: { x: 200 / 393, y: 500 / 852, width: 100 / 393, height: 48 / 852 },
+        element: {
+          id: 'latest', role: 'Button', label: 'Latest hover',
+          frame: { x: 200, y: 500, width: 100, height: 48 },
+          enabled: true, visible: true, actionable: true,
+        },
+      })
+      await second.promise
+    })
+
+    await waitFor(() => {
+      expect(document.querySelector('.ios-simulator-selection-outline')).toBeInTheDocument()
+    })
+  })
+
   it('inspects one hovered point and captures the selected component metadata', async () => {
     const { surface, callbacks } = renderSurface('select-element')
     callbacks.onInspectPoint.mockReset()
@@ -276,10 +338,12 @@ describe('SimulatorSurface', () => {
 
     fireEvent.pointerMove(surface, { pointerId: 1, clientX: 300, clientY: 450 })
     await waitFor(() => expect(callbacks.onInspectPoint).toHaveBeenCalledTimes(1))
+    expect(callbacks.onInspectPoint).toHaveBeenNthCalledWith(1, expect.any(Object), false)
     expect(document.querySelector('.ios-simulator-selection-outline')).toBeInTheDocument()
 
     fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 450 })
     await waitFor(() => expect(callbacks.onInspectPoint).toHaveBeenCalledTimes(2))
+    expect(callbacks.onInspectPoint).toHaveBeenNthCalledWith(2, expect.any(Object), true)
     await waitFor(() => expect(callbacks.onCaptureAnnotation).toHaveBeenCalledWith(
       'element',
       expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) }),

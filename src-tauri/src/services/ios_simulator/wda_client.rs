@@ -150,8 +150,17 @@ pub(crate) trait WdaClient: Send + Sync {
         &self,
         _control: &WdaControlHandle,
         _point: WdaPoint,
+        _exact: bool,
     ) -> Result<Option<IosSimulatorAccessibilityNode>, String> {
         Err("a inspeção pontual não está disponível neste cliente WDA".to_string())
+    }
+    fn resolve_target(
+        &self,
+        _control: &WdaControlHandle,
+        _target: &str,
+        _near: WdaPoint,
+    ) -> Result<Option<IosSimulatorAccessibilityNode>, String> {
+        Err("a resolução semântica não está disponível neste cliente WDA".to_string())
     }
     fn focused_element(
         &self,
@@ -352,6 +361,7 @@ impl WdaClient for SystemWdaClient {
         &self,
         control: &WdaControlHandle,
         point: WdaPoint,
+        exact: bool,
     ) -> Result<Option<IosSimulatorAccessibilityNode>, String> {
         let value = self.request_value(
             self.client
@@ -359,7 +369,13 @@ impl WdaClient for SystemWdaClient {
                     &control.base_url,
                     "/wda/verboo/inspectPoint",
                 ))
-                .json(&json!({ "x": point.x, "y": point.y })),
+                .json(&json!({
+                    "x": point.x,
+                    "y": point.y,
+                    "windowWidth": control.window_size.width,
+                    "windowHeight": control.window_size.height,
+                    "exact": exact,
+                })),
         )?;
         if !value.get("found").and_then(Value::as_bool).unwrap_or(false) {
             return Ok(None);
@@ -367,6 +383,34 @@ impl WdaClient for SystemWdaClient {
         serde_json::from_value(value)
             .map(Some)
             .map_err(|error| format!("o WDA retornou um elemento inválido: {error}"))
+    }
+
+    fn resolve_target(
+        &self,
+        control: &WdaControlHandle,
+        target: &str,
+        near: WdaPoint,
+    ) -> Result<Option<IosSimulatorAccessibilityNode>, String> {
+        let value = self.request_value(
+            self.client
+                .post(Self::endpoint(
+                    &control.base_url,
+                    "/wda/verboo/resolveTarget",
+                ))
+                .json(&json!({
+                    "target": target,
+                    "x": near.x,
+                    "y": near.y,
+                    "windowWidth": control.window_size.width,
+                    "windowHeight": control.window_size.height,
+                })),
+        )?;
+        if !value.get("found").and_then(Value::as_bool).unwrap_or(false) {
+            return Ok(None);
+        }
+        serde_json::from_value(value)
+            .map(Some)
+            .map_err(|error| format!("o WDA retornou um alvo semântico inválido: {error}"))
     }
 
     fn focused_element(
@@ -686,7 +730,7 @@ mod tests {
         };
 
         let node = client
-            .inspect_point(&control, WdaPoint { x: 60.0, y: 122.0 })
+            .inspect_point(&control, WdaPoint { x: 60.0, y: 122.0 }, true)
             .unwrap()
             .expect("one point target");
 
@@ -699,7 +743,58 @@ mod tests {
             vec![(
                 "POST".into(),
                 "/wda/verboo/inspectPoint".into(),
-                serde_json::json!({ "x": 60.0, "y": 122.0 }),
+                serde_json::json!({
+                    "x": 60.0,
+                    "y": 122.0,
+                    "windowWidth": 402.0,
+                    "windowHeight": 874.0,
+                    "exact": true,
+                }),
+            )]
+        );
+    }
+
+    #[test]
+    fn wda_semantic_target_resolution_is_sessionless_and_keeps_the_coordinate_hint() {
+        let http = FakeWdaHttpServer::start_with_values(vec![serde_json::json!({
+            "found": true,
+            "id": "not-now",
+            "role": "Button",
+            "label": "Not Now",
+            "value": null,
+            "frame": { "x": 31.0, "y": 405.0, "width": 340.0, "height": 44.0 },
+            "enabled": true,
+            "visible": true,
+            "actionable": true
+        })]);
+        let client = SystemWdaClient::default();
+        let control = WdaControlHandle {
+            base_url: http.base_url.clone(),
+            window_size: WdaWindowSize {
+                width: 402.0,
+                height: 874.0,
+            },
+            orientation: WdaInterfaceOrientation::Portrait,
+        };
+
+        let node = client
+            .resolve_target(&control, "Not Now", WdaPoint { x: 200.0, y: 500.0 })
+            .unwrap()
+            .expect("one semantic button");
+
+        assert_eq!(node.label.as_deref(), Some("Not Now"));
+        assert_eq!(
+            http.finish(),
+            vec![(
+                "POST".into(),
+                "/wda/verboo/resolveTarget".into(),
+                serde_json::json!({
+                    "target": "Not Now",
+                    "x": 200.0,
+                    "y": 500.0,
+                    "windowWidth": 402.0,
+                    "windowHeight": 874.0,
+                }),
             )]
         );
     }

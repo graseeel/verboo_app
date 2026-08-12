@@ -69,7 +69,7 @@ async fn simulator_mcp_relays_a_valid_tap_to_the_authenticated_desktop_bridge() 
         .call_simulator_tool(
             "request-42",
             "ios_simulator_tap",
-            json!({"x": 0.25, "y": 0.75}),
+            json!({"target": "Not Now"}),
         )
         .await
         .unwrap();
@@ -85,7 +85,10 @@ async fn simulator_mcp_relays_a_valid_tap_to_the_authenticated_desktop_bridge() 
     let request = request_task.await.unwrap();
     assert_eq!(request.kind, "toolRequest");
     assert_eq!(request.tool.as_deref(), Some("ios_simulator_tap"));
-    assert_eq!(request.arguments, json!({"x": 0.25, "y": 0.75}));
+    assert_eq!(
+        request.arguments,
+        json!({"target": "Not Now"})
+    );
 }
 
 #[tokio::test]

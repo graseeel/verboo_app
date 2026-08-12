@@ -44,7 +44,7 @@ test('copies the WDA resource on macOS', async () => {
     path.join(target, 'WebDriverAgentLib', 'Commands', 'FBCustomCommands.m'),
     'utf8',
   )
-  for (const route of ['settings', 'tap', 'drag', 'type', 'key', 'home', 'systemGesture', 'rotate', 'inspectPoint', 'focusedElement']) {
+  for (const route of ['settings', 'tap', 'drag', 'type', 'key', 'home', 'systemGesture', 'rotate', 'inspectPoint', 'resolveTarget', 'focusedElement']) {
     assert.match(commands, new RegExp(`/wda/verboo/${route}`))
   }
   const handlers = commands
@@ -59,8 +59,22 @@ test('copies the WDA resource on macOS', async () => {
   assert.match(handlers, /XC_kAXXCAttributeFrame/)
   assert.match(handlers, /spinUntilTrue/)
   assert.doesNotMatch(handlers, /elementAtPoint:error:/)
-  assert.doesNotMatch(handlers, /snapshotForElement|spinUntilCompletion/)
-  assert.doesNotMatch(handlers, /\.children|recursiveDescription/)
+  assert.match(handlers, /FBVerbooDeepestSnapshotAtPoint/)
+  assert.match(handlers, /BOOL exact = \[request\.arguments\[@"exact"\] boolValue\]/)
+  assert.match(commands, /application\.fb_standardSnapshot/)
+  assert.match(commands, /snapshotForElement:element/)
+  assert.match(commands, /FBVerbooNearestActionableAncestor\(refined, requestedPoint\)/)
+  assert.match(handlers, /matchingPredicate:targetPredicate/)
+  assert.match(handlers, /allElementsBoundByIndex/)
+  assert.match(handlers, /FBVerbooDistanceSquaredToFrame/)
+  assert.match(commands, /setSnapshotMaxDepth:FB_VERBOO_EXACT_SNAPSHOT_MAX_DEPTH/)
+  assert.match(commands, /setSnapshotMaxDepth:previousMaxDepth/)
+  assert.match(commands, /\._allDescendants/)
+  assert.doesNotMatch(commands, /recursiveDescription|spinUntilCompletion/)
+  assert.match(commands, /FB_VERBOO_EXACT_SNAPSHOT_MAX_DEPTH = 50/)
+  assert.match(handlers, /FBVerbooGenericElementType\(refined\.elementType\)/)
+  assert.match(handlers, /refined = FBVerbooDeepestSnapshotAtPoint/)
+  assert.match(handlers, /FBVerbooGenericElementType\(elementType\) \|\| selectedCoversViewport/)
   assert.match(handlers, /ceil\(duration\.doubleValue \* 60\.0\)/)
   assert.match(handlers, /atOffset:duration\.doubleValue \+ hold\.doubleValue/)
   assert.match(handlers, /duration\.doubleValue \+ hold\.doubleValue/)

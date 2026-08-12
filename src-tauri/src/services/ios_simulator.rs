@@ -66,9 +66,12 @@ const MAX_FALLBACK_FPS: f64 = 2.0;
 #[cfg(test)]
 const MAX_FPS: f64 = MAX_FALLBACK_FPS;
 const WDA_READY_TIMEOUT: Duration = Duration::from_secs(45);
-const WDA_STARTUP_TIMEOUT: Duration = Duration::from_secs(90);
+const WDA_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
+const WDA_CACHED_STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
 const WDA_SIGINT_GRACE_PERIOD: Duration = Duration::from_secs(5);
 const WDA_SIGTERM_GRACE_PERIOD: Duration = Duration::from_secs(2);
+const USER_END_WORKER_CLEANUP_BUDGET: Duration = Duration::from_secs(8);
+const SIMCTL_SHUTDOWN_BUDGET: Duration = Duration::from_secs(2);
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 const FIRST_FRAME_RETRY: Duration = Duration::from_millis(100);
 const MJPEG_CONNECT_RETRY: Duration = Duration::from_millis(50);
@@ -263,6 +266,24 @@ pub struct IosSimulatorAccessibilityNode {
     pub actionable: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum IosSimulatorAgentTapMethod {
+    Semantic,
+    Accessibility,
+    Coordinate,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IosSimulatorAgentTapResult {
+    pub method: IosSimulatorAgentTapMethod,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested_target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_element: Option<IosSimulatorAccessibilityNode>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct IosSimulatorFocusedElement {
@@ -354,6 +375,13 @@ struct WdaLaunchSpec {
     destination_udid: String,
     http_port: u16,
     mjpeg_port: u16,
+    mode: WdaLaunchMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WdaLaunchMode {
+    Build,
+    Cached,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -516,11 +544,7 @@ impl WdaClient for OkWdaClient {
         Ok(())
     }
 
-    fn press_key(
-        &self,
-        _control: &WdaControlHandle,
-        _key: IosSimulatorKey,
-    ) -> Result<(), String> {
+    fn press_key(&self, _control: &WdaControlHandle, _key: IosSimulatorKey) -> Result<(), String> {
         Ok(())
     }
 
@@ -548,6 +572,7 @@ impl WdaClient for OkWdaClient {
         &self,
         _control: &WdaControlHandle,
         _point: WdaPoint,
+        _exact: bool,
     ) -> Result<Option<IosSimulatorAccessibilityNode>, String> {
         Ok(Some(IosSimulatorAccessibilityNode {
             id: "button-save".into(),
@@ -725,6 +750,7 @@ fn build_wda_launch_spec(
         destination_udid: destination_udid.to_string(),
         http_port,
         mjpeg_port,
+        mode: WdaLaunchMode::Build,
     }
 }
 
@@ -740,7 +766,11 @@ fn wda_command_args(spec: &WdaLaunchSpec) -> Vec<String> {
         format!("platform=iOS Simulator,id={}", spec.destination_udid),
         "-collect-test-diagnostics".into(),
         "never".into(),
-        "test".into(),
+        match spec.mode {
+            WdaLaunchMode::Build => "test",
+            WdaLaunchMode::Cached => "test-without-building",
+        }
+        .into(),
         "CODE_SIGN_IDENTITY=".into(),
         "CODE_SIGNING_REQUIRED=NO".into(),
         "CODE_SIGNING_ALLOWED=NO".into(),
@@ -748,6 +778,15 @@ fn wda_command_args(spec: &WdaLaunchSpec) -> Vec<String> {
         format!("USE_PORT={}", spec.http_port),
         format!("MJPEG_SERVER_PORT={}", spec.mjpeg_port),
     ]
+}
+
+fn wda_cached_build_available(derived_data: &Path) -> bool {
+    let products = derived_data.join("Build/Products/Debug-iphonesimulator");
+    let runner_app = products.join("WebDriverAgentRunner-Runner.app");
+    runner_app.join("WebDriverAgentRunner-Runner").is_file()
+        && runner_app
+            .join("PlugIns/WebDriverAgentRunner.xctest/WebDriverAgentRunner")
+            .is_file()
 }
 
 #[cfg(unix)]
@@ -1336,12 +1375,8 @@ impl IosSimulatorService {
                 session.stop.clone(),
             )
         };
-        let frame = latest_frame.wait_after(
-            device_generation,
-            after_generation,
-            timeout,
-            stop.as_ref(),
-        )?;
+        let frame =
+            latest_frame.wait_after(device_generation, after_generation, timeout, stop.as_ref())?;
         Ok(IosSimulatorScreenshotObservation {
             udid,
             device_generation,
@@ -1473,6 +1508,10 @@ impl IosSimulatorService {
     }
 
     pub(crate) fn end_owned_sync(&self) -> Result<(), String> {
+        self.end_owned_until(Instant::now() + USER_END_WORKER_CLEANUP_BUDGET)
+    }
+
+    fn end_owned_until(&self, worker_deadline: Instant) -> Result<(), String> {
         self.reject_if_exiting()?;
         let _operation = self
             .operation_lock
@@ -1485,8 +1524,12 @@ impl IosSimulatorService {
                 "Este simulador foi iniciado fora do Verboo e só pode ser desanexado.".into(),
             );
         }
-        self.stop_session(None);
-        run_simctl(self.runner.as_ref(), &["shutdown".into(), udid.clone()])?;
+        self.stop_session(Some(worker_deadline));
+        run_simctl_until(
+            self.runner.as_ref(),
+            &["shutdown".into(), udid.clone()],
+            Instant::now() + SIMCTL_SHUTDOWN_BUDGET,
+        )?;
         self.ownership.remove(&udid)
     }
 
@@ -1841,11 +1884,11 @@ impl IosSimulatorService {
         self.clear_agent_presence();
         self.finalize_active_recording(deadline);
         let (session, generation) = {
-            let mut state = self
-                .state
-                .lock()
-                .expect("iOS simulator state poisoned");
-            let generation = state.session.as_ref().map(|session| session.device_generation);
+            let mut state = self.state.lock().expect("iOS simulator state poisoned");
+            let generation = state
+                .session
+                .as_ref()
+                .map(|session| session.device_generation);
             (state.session.take(), generation)
         };
         if let Some(session) = session {
@@ -2537,10 +2580,10 @@ impl IosSimulatorService {
                         // não uma falha da ação.
                         let message = error.message;
                         let generation = device_generation;
-                        if self
-                            .lifecycle
-                            .transition(generation, LifecycleSignal::RecoverableError(message.clone()))
-                        {
+                        if self.lifecycle.transition(
+                            generation,
+                            LifecycleSignal::RecoverableError(message.clone()),
+                        ) {
                             self.emit_lifecycle_snapshot();
                         }
                         return Err(message);
@@ -2580,9 +2623,7 @@ impl IosSimulatorService {
     pub(crate) fn launch_app_sync(&self, bundle_id: &str) -> Result<Option<u32>, String> {
         self.reject_if_exiting()?;
         let bundle_id = bundle_id.trim();
-        if bundle_id.is_empty()
-            || bundle_id.len() > 512
-            || bundle_id.chars().any(char::is_control)
+        if bundle_id.is_empty() || bundle_id.len() > 512 || bundle_id.chars().any(char::is_control)
         {
             return Err("O identificador do app é inválido.".into());
         }
@@ -2613,6 +2654,85 @@ impl IosSimulatorService {
             return Err("A sessão do simulador foi encerrada.".to_string());
         }
         self.wda_client.tap(&handle, point)
+    }
+
+    pub(crate) fn agent_tap_sync(
+        &self,
+        point: Option<NormalizedPoint>,
+        target: Option<&str>,
+    ) -> Result<IosSimulatorAgentTapResult, String> {
+        self.reject_if_exiting()?;
+        let (input_lock, stop, handle) = self.active_wda_access()?;
+        let target = validate_agent_tap_target(target)?;
+        let requested = point
+            .map(|point| normalized_to_wda_point(point, handle.window_size))
+            .transpose()?;
+        if requested.is_none() && target.is_none() {
+            return Err("Informe um alvo semântico ou um par de coordenadas para o toque.".into());
+        }
+        let _guard = input_lock
+            .lock()
+            .expect("iOS simulator input queue poisoned");
+        if stop.load(Ordering::Acquire) {
+            return Err("A sessão do simulador foi encerrada.".to_string());
+        }
+
+        if let Some(target) = target {
+            let near = requested.unwrap_or(WdaPoint {
+                x: handle.window_size.width / 2.0,
+                y: handle.window_size.height / 2.0,
+            });
+            let element = self
+                .wda_client
+                .resolve_target(&handle, target, near)
+                .map_err(|error| {
+                    format!(
+                        "Não foi possível resolver o alvo semântico {target:?}; nenhum toque foi executado. Detalhe: {error}"
+                    )
+                })?
+                .ok_or_else(|| {
+                    format!(
+                        "O alvo semântico {target:?} não foi encontrado na tela atual; nenhum toque foi executado. Capture uma nova imagem ou tente outro texto ou identificador."
+                    )
+                })?;
+            let resolved = accessibility_element_center(&element, handle.window_size).ok_or_else(
+                || {
+                    format!(
+                        "O alvo semântico {target:?} foi encontrado, mas não está visível, habilitado e acionável; nenhum toque foi executado."
+                    )
+                },
+            )?;
+            self.wda_client.tap(&handle, resolved)?;
+            return Ok(IosSimulatorAgentTapResult {
+                method: IosSimulatorAgentTapMethod::Semantic,
+                requested_target: Some(target.to_string()),
+                matched_element: Some(element),
+            });
+        }
+
+        let requested = requested.expect("coordinate presence checked above");
+        let inspected = self
+            .wda_client
+            .inspect_point(&handle, requested, true)
+            .ok()
+            .flatten();
+        let resolved = inspected
+            .as_ref()
+            .map(|element| {
+                preferred_accessibility_tap_point(requested, element, handle.window_size)
+            })
+            .unwrap_or(requested);
+        let snapped = resolved != requested;
+        self.wda_client.tap(&handle, resolved)?;
+        Ok(IosSimulatorAgentTapResult {
+            method: if snapped {
+                IosSimulatorAgentTapMethod::Accessibility
+            } else {
+                IosSimulatorAgentTapMethod::Coordinate
+            },
+            requested_target: None,
+            matched_element: snapped.then_some(inspected).flatten(),
+        })
     }
 
     pub(crate) fn drag_sync(
@@ -2664,6 +2784,7 @@ impl IosSimulatorService {
         &self,
         device_generation: u64,
         point: NormalizedPoint,
+        exact: bool,
     ) -> Result<Option<IosSimulatorElementHit>, String> {
         self.reject_if_exiting()?;
         let (input_lock, stop, handle) = {
@@ -2693,7 +2814,7 @@ impl IosSimulatorService {
         if stop.load(Ordering::Acquire) {
             return Err("A sessão do simulador foi encerrada.".to_string());
         }
-        let Some(element) = self.wda_client.inspect_point(&handle, wda_point)? else {
+        let Some(element) = self.wda_client.inspect_point(&handle, wda_point, exact)? else {
             return Ok(None);
         };
         if self.current_session_generation() != Some(device_generation) {
@@ -2838,8 +2959,8 @@ pub async fn ios_simulator_requirements(
 ) -> Result<IosSimulatorRequirements, String> {
     let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || Ok(service.current_requirements_sync()))
-    .await
-    .map_err(|error| format!("falha ao detectar simuladores: {error}"))?
+        .await
+        .map_err(|error| format!("falha ao detectar simuladores: {error}"))?
 }
 
 #[tauri::command]
@@ -2874,9 +2995,15 @@ pub fn ios_simulator_set_visible(
     service.set_visible_sync(visible)
 }
 
+async fn end_owned_async(service: IosSimulatorService) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || service.end_owned_sync())
+        .await
+        .map_err(|error| format!("falha ao encerrar simulador: {error}"))?
+}
+
 #[tauri::command]
-pub fn ios_simulator_end(service: State<'_, IosSimulatorService>) -> Result<(), String> {
-    service.end_owned_sync()
+pub async fn ios_simulator_end(service: State<'_, IosSimulatorService>) -> Result<(), String> {
+    end_owned_async(service.inner().clone()).await
 }
 
 #[tauri::command]
@@ -3021,10 +3148,11 @@ pub async fn ios_simulator_inspect_point(
     service: State<'_, IosSimulatorService>,
     device_generation: u64,
     point: NormalizedPoint,
+    exact: bool,
 ) -> Result<Option<IosSimulatorElementHit>, String> {
     let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        service.inspect_point_sync(device_generation, point)
+        service.inspect_point_sync(device_generation, point, exact)
     })
     .await
     .map_err(|error| format!("falha ao inspecionar o ponto do simulador: {error}"))?
@@ -3324,6 +3452,64 @@ fn normalized_to_wda_point(
         x: point.x * window.width,
         y: point.y * window.height,
     })
+}
+
+fn validate_agent_tap_target(target: Option<&str>) -> Result<Option<&str>, String> {
+    let Some(target) = target.map(str::trim) else {
+        return Ok(None);
+    };
+    if target.is_empty() || target.chars().count() > 256 || target.chars().any(char::is_control) {
+        return Err("O alvo do toque deve conter entre 1 e 256 caracteres.".to_string());
+    }
+    Ok(Some(target))
+}
+
+fn accessibility_element_center(
+    element: &IosSimulatorAccessibilityNode,
+    window: WdaWindowSize,
+) -> Option<WdaPoint> {
+    let frame = element.frame;
+    let right = frame.x + frame.width;
+    let bottom = frame.y + frame.height;
+    let valid_geometry = frame.x.is_finite()
+        && frame.y.is_finite()
+        && frame.width.is_finite()
+        && frame.height.is_finite()
+        && frame.width > 0.0
+        && frame.height > 0.0
+        && window.width.is_finite()
+        && window.height.is_finite()
+        && window.width > 0.0
+        && window.height > 0.0
+        && frame.x >= 0.0
+        && frame.y >= 0.0
+        && right <= window.width
+        && bottom <= window.height;
+    (element.actionable && element.enabled && element.visible && valid_geometry).then_some(
+        WdaPoint {
+            x: frame.x + frame.width / 2.0,
+            y: frame.y + frame.height / 2.0,
+        },
+    )
+}
+
+fn preferred_accessibility_tap_point(
+    requested: WdaPoint,
+    element: &IosSimulatorAccessibilityNode,
+    window: WdaWindowSize,
+) -> WdaPoint {
+    let frame = element.frame;
+    let Some(center) = accessibility_element_center(element, window) else {
+        return requested;
+    };
+    if requested.x < frame.x
+        || requested.x > frame.x + frame.width
+        || requested.y < frame.y
+        || requested.y > frame.y + frame.height
+    {
+        return requested;
+    }
+    center
 }
 
 fn device_rect_to_normalized(
@@ -3842,6 +4028,28 @@ fn run_simctl(runner: &dyn CommandRunner, args: &[String]) -> Result<CommandOutp
     }
 }
 
+fn run_simctl_until(
+    runner: &dyn CommandRunner,
+    args: &[String],
+    deadline: Instant,
+) -> Result<CommandOutput, String> {
+    let mut command_args = Vec::with_capacity(args.len() + 1);
+    command_args.push("simctl".into());
+    command_args.extend(args.iter().cloned());
+    let cancel = AtomicBool::new(false);
+    let output = runner.run_interruptible("xcrun", &command_args, &cancel, deadline)?;
+    if output.success {
+        Ok(output)
+    } else {
+        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if message.is_empty() {
+            "O simctl não conseguiu completar a operação.".to_string()
+        } else {
+            message
+        })
+    }
+}
+
 fn spawn_capture_loop(
     runner: Arc<dyn CommandRunner>,
     udid: String,
@@ -4134,13 +4342,66 @@ fn spawn_wda_worker(
                     return;
                 }
             };
-            let spec = build_wda_launch_spec(staged_wda, &udid, http_port, mjpeg_port);
-            if stop.load(Ordering::Acquire) {
-                return;
+            let mut spec = build_wda_launch_spec(staged_wda, &udid, http_port, mjpeg_port);
+            if wda_cached_build_available(&spec.derived_data) {
+                spec.mode = WdaLaunchMode::Cached;
             }
-            let WdaProcessHandle { mut process } =
-                match launcher.launch(&spec, stop.as_ref(), wda_force_stop.as_ref()) {
-                    Ok(process) => process,
+            let base_url = format!("http://127.0.0.1:{http_port}");
+            let mut process = loop {
+                if stop.load(Ordering::Acquire) {
+                    return;
+                }
+                let WdaProcessHandle { mut process } =
+                    match launcher.launch(&spec, stop.as_ref(), wda_force_stop.as_ref()) {
+                        Ok(process) => process,
+                        Err(_) if spec.mode == WdaLaunchMode::Cached => {
+                            spec.mode = WdaLaunchMode::Build;
+                            continue;
+                        }
+                        Err(message) => {
+                            if !stop.load(Ordering::Acquire) {
+                                mark_interaction_failure(
+                                    &lifecycle,
+                                    device_generation,
+                                    &message,
+                                    &lifecycle_emitter,
+                                );
+                                emit_wda_fallback_error(&sink, &udid, message);
+                            }
+                            return;
+                        }
+                    };
+                if stop.load(Ordering::Acquire) {
+                    process.stop();
+                    let _ = wda_force_stop
+                        .lock()
+                        .expect("iOS simulator WDA control poisoned")
+                        .take();
+                    return;
+                }
+
+                let startup_timeout = match spec.mode {
+                    WdaLaunchMode::Cached => WDA_CACHED_STARTUP_TIMEOUT,
+                    WdaLaunchMode::Build => WDA_STARTUP_TIMEOUT,
+                };
+                match wait_for_wda_or_stop(
+                    wda_client.as_ref(),
+                    &base_url,
+                    stop.as_ref(),
+                    process.as_mut(),
+                    Instant::now() + startup_timeout,
+                ) {
+                    Ok(()) => break process,
+                    Err(_)
+                        if spec.mode == WdaLaunchMode::Cached && !stop.load(Ordering::Acquire) =>
+                    {
+                        process.stop();
+                        let _ = wda_force_stop
+                            .lock()
+                            .expect("iOS simulator WDA control poisoned")
+                            .take();
+                        spec.mode = WdaLaunchMode::Build;
+                    }
                     Err(message) => {
                         if !stop.load(Ordering::Acquire) {
                             mark_interaction_failure(
@@ -4151,41 +4412,15 @@ fn spawn_wda_worker(
                             );
                             emit_wda_fallback_error(&sink, &udid, message);
                         }
+                        process.stop();
+                        let _ = wda_force_stop
+                            .lock()
+                            .expect("iOS simulator WDA control poisoned")
+                            .take();
                         return;
                     }
-                };
-            if stop.load(Ordering::Acquire) {
-                process.stop();
-                let _ = wda_force_stop
-                    .lock()
-                    .expect("iOS simulator WDA control poisoned")
-                    .take();
-                return;
-            }
-
-            let base_url = format!("http://127.0.0.1:{http_port}");
-            if let Err(message) = wait_for_wda_or_stop(
-                wda_client.as_ref(),
-                &base_url,
-                stop.as_ref(),
-                Instant::now() + WDA_STARTUP_TIMEOUT,
-            ) {
-                if !stop.load(Ordering::Acquire) {
-                    mark_interaction_failure(
-                        &lifecycle,
-                        device_generation,
-                        &message,
-                        &lifecycle_emitter,
-                    );
-                    emit_wda_fallback_error(&sink, &udid, message);
                 }
-                process.stop();
-                let _ = wda_force_stop
-                    .lock()
-                    .expect("iOS simulator WDA control poisoned")
-                    .take();
-                return;
-            }
+            };
             let control_handle = WdaControlHandle {
                 base_url,
                 window_size: display_metrics.window_size,
@@ -4384,12 +4619,26 @@ fn wait_for_wda_or_stop(
     client: &dyn WdaClient,
     base_url: &str,
     stop: &AtomicBool,
+    process: &mut dyn WdaProcess,
     deadline: Instant,
 ) -> Result<(), String> {
     let mut last_error = "o WDA ainda não respondeu".to_string();
     while Instant::now() < deadline {
         if stop.load(Ordering::Acquire) {
             return Err("inicialização do WDA cancelada".to_string());
+        }
+        match process.try_wait() {
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "o runner do WDA encerrou durante a inicialização ({status})"
+                ));
+            }
+            Ok(None) => {}
+            Err(message) => {
+                return Err(format!(
+                    "não foi possível verificar o runner do WDA durante a inicialização: {message}"
+                ));
+            }
         }
         let attempt_deadline = (Instant::now() + Duration::from_millis(150)).min(deadline);
         match client.wait_until_ready(base_url, attempt_deadline) {
@@ -4722,17 +4971,19 @@ mod tests {
     fn rotate_on_ios26_succeeds_after_ambiguous_retries() {
         let client = Arc::new(OkWdaClient);
         let runner = SequencedDisplayRunner::new(vec![AMBIGUOUS_DISPLAY, LANDSCAPE_RIGHT_DISPLAY]);
-        let service = service_with_active_wda_and_device(
-            client,
-            Arc::new(runner),
-            test_device(),
-        );
+        let service = service_with_active_wda_and_device(client, Arc::new(runner), test_device());
         service
             .system_action_sync(IosSimulatorSystemAction::RotateClockwise)
             .unwrap();
         let state = service.state.lock().unwrap();
         let session = state.session.as_ref().unwrap();
-        let handle = session.wda_control.lock().unwrap().as_ref().unwrap().clone();
+        let handle = session
+            .wda_control
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .clone();
         assert_eq!(
             handle.orientation,
             WdaInterfaceOrientation::LandscapeRight,
@@ -4744,14 +4995,12 @@ mod tests {
     fn rotate_on_ios27_ambiguous_reports_runtime_limitation() {
         let client = Arc::new(OkWdaClient);
         let runner = SequencedDisplayRunner::repeating(AMBIGUOUS_DISPLAY);
-        let service = service_with_active_wda_and_device(
-            client,
-            Arc::new(runner),
-            ios27_device(),
-        );
+        let service = service_with_active_wda_and_device(client, Arc::new(runner), ios27_device());
         // O lifecycle precisa pertencer à geração da sessão para o
         // RecoverableError ser aceito pelo transition.
-        service.lifecycle.begin(1, test_device(), IosSimulatorOwnership::External, true);
+        service
+            .lifecycle
+            .begin(1, test_device(), IosSimulatorOwnership::External, true);
         let error = service
             .system_action_sync(IosSimulatorSystemAction::RotateClockwise)
             .unwrap_err();
@@ -4977,6 +5226,20 @@ mod tests {
         inner: RecordingRunner,
         wda_stops: Arc<AtomicUsize>,
         shutdown_before_stop: Arc<AtomicBool>,
+    }
+
+    struct DelayedShutdownRunner {
+        inner: RecordingRunner,
+        delay: Duration,
+    }
+
+    impl CommandRunner for DelayedShutdownRunner {
+        fn run(&self, program: &str, args: &[String]) -> Result<CommandOutput, String> {
+            if program == "xcrun" && args.starts_with(&["simctl".into(), "shutdown".into()]) {
+                sleep(self.delay);
+            }
+            self.inner.run(program, args)
+        }
     }
 
     impl OrderedCleanupRunner {
@@ -5382,6 +5645,7 @@ mod tests {
     struct FirstFailureWdaLauncher {
         inner: FakeWdaLauncher,
         attempts: Arc<AtomicUsize>,
+        modes: Arc<Mutex<Vec<WdaLaunchMode>>>,
     }
 
     impl WdaLauncher for FirstFailureWdaLauncher {
@@ -5391,6 +5655,7 @@ mod tests {
             stop: &AtomicBool,
             force_stop_slot: &Mutex<Option<WdaForceStop>>,
         ) -> Result<WdaProcessHandle, String> {
+            self.modes.lock().unwrap().push(spec.mode);
             let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
             if attempt == 0 {
                 return Err("primeira inicialização falhou no teste".to_string());
@@ -5473,6 +5738,110 @@ mod tests {
         calls: Mutex<Vec<&'static str>>,
         tap_started: (Mutex<bool>, Condvar),
         release_tap: (Mutex<bool>, Condvar),
+    }
+
+    struct SemanticTapWdaClient {
+        resolution: Mutex<Result<Option<IosSimulatorAccessibilityNode>, String>>,
+        resolve_hints: Mutex<Vec<(String, WdaPoint)>>,
+        inspections: AtomicUsize,
+        taps: Mutex<Vec<WdaPoint>>,
+    }
+
+    impl SemanticTapWdaClient {
+        fn with_resolution(
+            resolution: Result<Option<IosSimulatorAccessibilityNode>, String>,
+        ) -> Self {
+            Self {
+                resolution: Mutex::new(resolution),
+                resolve_hints: Mutex::new(Vec::new()),
+                inspections: AtomicUsize::new(0),
+                taps: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl WdaClient for SemanticTapWdaClient {
+        fn wait_until_ready(&self, _base_url: &str, _deadline: Instant) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn apply_stream_settings(
+            &self,
+            _control: &WdaControlHandle,
+            _profile: StreamProfile,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn tap(&self, _control: &WdaControlHandle, point: WdaPoint) -> Result<(), String> {
+            self.taps.lock().unwrap().push(point);
+            Ok(())
+        }
+
+        fn drag(
+            &self,
+            _control: &WdaControlHandle,
+            _from: WdaPoint,
+            _to: WdaPoint,
+            _duration: Duration,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn type_text(&self, _control: &WdaControlHandle, _text: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn press_key(
+            &self,
+            _control: &WdaControlHandle,
+            _key: IosSimulatorKey,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn home(&self, _control: &WdaControlHandle) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn system_gesture(
+            &self,
+            _control: &WdaControlHandle,
+            _gesture: SystemGesture,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn rotate(
+            &self,
+            _control: &WdaControlHandle,
+            _orientation: WdaInterfaceOrientation,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn inspect_point(
+            &self,
+            _control: &WdaControlHandle,
+            _point: WdaPoint,
+            _exact: bool,
+        ) -> Result<Option<IosSimulatorAccessibilityNode>, String> {
+            self.inspections.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+
+        fn resolve_target(
+            &self,
+            _control: &WdaControlHandle,
+            target: &str,
+            near: WdaPoint,
+        ) -> Result<Option<IosSimulatorAccessibilityNode>, String> {
+            self.resolve_hints
+                .lock()
+                .unwrap()
+                .push((target.to_string(), near));
+            self.resolution.lock().unwrap().clone()
+        }
     }
 
     impl BlockingInputWdaClient {
@@ -6069,8 +6438,14 @@ mod tests {
 
     #[test]
     fn cold_wda_startup_has_a_separate_budget_from_regular_readiness_checks() {
-        assert_eq!(WDA_STARTUP_TIMEOUT, Duration::from_secs(90));
+        assert_eq!(WDA_STARTUP_TIMEOUT, Duration::from_secs(120));
         assert!(WDA_STARTUP_TIMEOUT > WDA_READY_TIMEOUT);
+    }
+
+    #[test]
+    fn cached_wda_waits_through_a_cold_device_boot_before_rebuilding() {
+        assert_eq!(WDA_CACHED_STARTUP_TIMEOUT, Duration::from_secs(45));
+        assert!(WDA_CACHED_STARTUP_TIMEOUT >= WDA_READY_TIMEOUT);
     }
 
     impl WdaLauncher for NonResponsiveWdaLauncher {
@@ -6365,6 +6740,7 @@ mod tests {
             destination_udid: "phone-17-pro".into(),
             http_port: 12345,
             mjpeg_port: 23456,
+            mode: WdaLaunchMode::Build,
         };
         let args = wda_command_args(&spec);
         assert!(args.contains(&"USE_IP=127.0.0.1".to_string()));
@@ -6382,6 +6758,34 @@ mod tests {
             .iter()
             .any(|arg| arg.contains("platform=iOS Simulator,id=phone-17-pro")));
         assert!(!args.iter().any(|arg| arg.contains("Xcode_27_beta.app")));
+
+        let cached_args = wda_command_args(&WdaLaunchSpec {
+            mode: WdaLaunchMode::Cached,
+            ..spec
+        });
+        assert!(cached_args.contains(&"test-without-building".to_string()));
+        assert!(!cached_args.contains(&"test".to_string()));
+    }
+
+    #[test]
+    fn cached_wda_requires_both_runner_binaries() {
+        let derived_data = tempfile::tempdir().unwrap();
+        assert!(!wda_cached_build_available(derived_data.path()));
+
+        let products = derived_data
+            .path()
+            .join("Build/Products/Debug-iphonesimulator");
+        let runner = products.join("WebDriverAgentRunner-Runner.app/WebDriverAgentRunner-Runner");
+        let tests = products.join(
+            "WebDriverAgentRunner-Runner.app/PlugIns/WebDriverAgentRunner.xctest/WebDriverAgentRunner",
+        );
+        std::fs::create_dir_all(runner.parent().unwrap()).unwrap();
+        std::fs::write(&runner, b"runner").unwrap();
+        assert!(!wda_cached_build_available(derived_data.path()));
+
+        std::fs::create_dir_all(tests.parent().unwrap()).unwrap();
+        std::fs::write(&tests, b"tests").unwrap();
+        assert!(wda_cached_build_available(derived_data.path()));
     }
 
     #[test]
@@ -6751,11 +7155,189 @@ mod tests {
     }
 
     #[test]
+    fn actionable_accessibility_target_snaps_a_tap_to_the_control_center() {
+        let requested = WdaPoint { x: 53.0, y: 117.0 };
+        let element = IosSimulatorAccessibilityNode {
+            id: "button-continue".into(),
+            role: "Button".into(),
+            label: Some("Continue".into()),
+            value: None,
+            frame: IosSimulatorDeviceRect {
+                x: 38.0,
+                y: 100.0,
+                width: 326.0,
+                height: 52.0,
+            },
+            enabled: true,
+            visible: true,
+            actionable: true,
+        };
+
+        assert_eq!(
+            preferred_accessibility_tap_point(
+                requested,
+                &element,
+                WdaWindowSize {
+                    width: 402.0,
+                    height: 874.0,
+                },
+            ),
+            WdaPoint { x: 201.0, y: 126.0 },
+        );
+    }
+
+    #[test]
+    fn semantic_accessibility_target_corrects_a_coordinate_that_missed_the_control() {
+        let element = IosSimulatorAccessibilityNode {
+            id: "not-now".into(),
+            role: "Button".into(),
+            label: Some("Not Now".into()),
+            value: None,
+            frame: IosSimulatorDeviceRect {
+                x: 31.0,
+                y: 405.0,
+                width: 340.0,
+                height: 44.0,
+            },
+            enabled: true,
+            visible: true,
+            actionable: true,
+        };
+
+        assert_eq!(
+            accessibility_element_center(
+                &element,
+                WdaWindowSize {
+                    width: 402.0,
+                    height: 874.0,
+                },
+            ),
+            Some(WdaPoint { x: 201.0, y: 427.0 }),
+        );
+        assert_eq!(
+            validate_agent_tap_target(Some("  Not Now  ")).unwrap(),
+            Some("Not Now")
+        );
+        assert!(validate_agent_tap_target(Some("\n")).is_err());
+    }
+
+    fn semantic_button() -> IosSimulatorAccessibilityNode {
+        IosSimulatorAccessibilityNode {
+            id: "not-now".into(),
+            role: "Button".into(),
+            label: Some("Not Now".into()),
+            value: None,
+            frame: IosSimulatorDeviceRect {
+                x: 31.0,
+                y: 405.0,
+                width: 340.0,
+                height: 44.0,
+            },
+            enabled: true,
+            visible: true,
+            actionable: true,
+        }
+    }
+
+    #[test]
+    fn semantic_tap_needs_no_coordinates_and_reports_the_matched_element() {
+        let client = Arc::new(SemanticTapWdaClient::with_resolution(Ok(Some(
+            semantic_button(),
+        ))));
+        let service = service_with_active_wda(client.clone());
+
+        let result = service
+            .agent_tap_sync(None, Some("  Not Now  "))
+            .expect("semantic target should be enough");
+        let result = serde_json::to_value(result).unwrap();
+
+        assert_eq!(result["method"], "semantic");
+        assert_eq!(result["requestedTarget"], "Not Now");
+        assert_eq!(result["matchedElement"]["label"], "Not Now");
+        assert_eq!(
+            client.resolve_hints.lock().unwrap().as_slice(),
+            [("Not Now".into(), WdaPoint { x: 196.5, y: 426.0 })],
+            "target-only resolution should use the screen center only to disambiguate duplicates",
+        );
+        assert_eq!(
+            client.taps.lock().unwrap().as_slice(),
+            [WdaPoint { x: 201.0, y: 427.0 }],
+            "the synthesized touch must use the matched control center",
+        );
+        assert_eq!(client.inspections.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn missing_semantic_target_is_explicit_and_never_taps_a_coordinate_fallback() {
+        let client = Arc::new(SemanticTapWdaClient::with_resolution(Ok(None)));
+        let service = service_with_active_wda(client.clone());
+
+        let error = service
+            .agent_tap_sync(Some(NormalizedPoint { x: 0.15, y: 0.25 }), Some("Not Now"))
+            .unwrap_err();
+
+        assert!(error.contains("não foi encontrado"));
+        assert!(error.contains("nenhum toque foi executado"));
+        assert!(client.taps.lock().unwrap().is_empty());
+        assert_eq!(client.inspections.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn semantic_resolution_failure_preserves_the_cause_and_never_taps() {
+        let client = Arc::new(SemanticTapWdaClient::with_resolution(Err(
+            "WDA respondeu 503".into(),
+        )));
+        let service = service_with_active_wda(client.clone());
+
+        let error = service.agent_tap_sync(None, Some("Continue")).unwrap_err();
+
+        assert!(error.contains("WDA respondeu 503"));
+        assert!(error.contains("nenhum toque foi executado"));
+        assert!(client.taps.lock().unwrap().is_empty());
+        assert_eq!(client.inspections.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn accessibility_tap_falls_back_for_non_actionable_or_invalid_targets() {
+        let requested = WdaPoint { x: 53.0, y: 117.0 };
+        let mut element = IosSimulatorAccessibilityNode {
+            id: "label".into(),
+            role: "StaticText".into(),
+            label: Some("Continue".into()),
+            value: None,
+            frame: IosSimulatorDeviceRect {
+                x: 38.0,
+                y: 100.0,
+                width: 326.0,
+                height: 52.0,
+            },
+            enabled: true,
+            visible: true,
+            actionable: false,
+        };
+        let window = WdaWindowSize {
+            width: 402.0,
+            height: 874.0,
+        };
+
+        assert_eq!(
+            preferred_accessibility_tap_point(requested, &element, window),
+            requested,
+        );
+        element.actionable = true;
+        element.frame.width = f64::NAN;
+        assert_eq!(
+            preferred_accessibility_tap_point(requested, &element, window),
+            requested,
+        );
+    }
+
+    #[test]
     fn point_inspection_returns_one_generation_guarded_normalized_element() {
         let service = service_with_active_wda(Arc::new(OkWdaClient));
 
         let hit = service
-            .inspect_point_sync(1, NormalizedPoint { x: 0.25, y: 0.25 })
+            .inspect_point_sync(1, NormalizedPoint { x: 0.25, y: 0.25 }, true)
             .unwrap()
             .expect("one shallow point target");
 
@@ -6765,7 +7347,7 @@ mod tests {
         assert!((hit.rect.width - (78.6 / 393.0)).abs() < 0.0001);
         assert!((hit.rect.height - (42.6 / 852.0)).abs() < 0.0001);
         assert!(service
-            .inspect_point_sync(2, NormalizedPoint { x: 0.25, y: 0.25 })
+            .inspect_point_sync(2, NormalizedPoint { x: 0.25, y: 0.25 }, true)
             .unwrap_err()
             .contains("outra sessão"));
     }
@@ -6835,6 +7417,102 @@ mod tests {
         harness.release_blocked_wda();
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn end_owned_keeps_the_async_runtime_responsive_during_native_shutdown() {
+        let runner = Arc::new(DelayedShutdownRunner {
+            inner: RecordingRunner::new(),
+            delay: Duration::from_millis(120),
+        });
+        let service = service_with_active_wda_on_runner(Arc::new(NoopWdaClient), runner);
+        service
+            .state
+            .lock()
+            .unwrap()
+            .session
+            .as_mut()
+            .unwrap()
+            .ownership = IosSimulatorOwnership::Verboo;
+        service.ownership.mark_booted("phone-17-pro").unwrap();
+
+        let heartbeat = Arc::new(AtomicBool::new(false));
+        let heartbeat_result = heartbeat.clone();
+        let pulse = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            heartbeat_result.store(true, Ordering::Release);
+        });
+
+        end_owned_async(service).await.unwrap();
+
+        assert!(
+            heartbeat.load(Ordering::Acquire),
+            "native cleanup must not beachball the Tauri async runtime"
+        );
+        pulse.await.unwrap();
+    }
+
+    #[test]
+    fn end_owned_force_stops_a_stuck_worker_at_its_cleanup_deadline() {
+        let service = IosSimulatorService::with_runner(Arc::new(RecordingRunner::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let released = Arc::new(AtomicBool::new(false));
+        let worker_finished = Arc::new(AtomicBool::new(false));
+        let worker_released = released.clone();
+        let worker_done = worker_finished.clone();
+        let worker = thread::spawn(move || {
+            while !worker_released.load(Ordering::Acquire) {
+                sleep(Duration::from_millis(1));
+            }
+            worker_done.store(true, Ordering::Release);
+        });
+        let force_stopped = Arc::new(AtomicUsize::new(0));
+        let forced = force_stopped.clone();
+        let force_release = released.clone();
+        let force_stop: WdaForceStop = Arc::new(move || {
+            forced.fetch_add(1, Ordering::SeqCst);
+            force_release.store(true, Ordering::Release);
+        });
+        service.state.lock().unwrap().session = Some(Session {
+            device: test_device(),
+            device_generation: 1,
+            ownership: IosSimulatorOwnership::Verboo,
+            fallback_fps: Arc::new(Mutex::new(DEFAULT_FALLBACK_FPS)),
+            stream_profile: Arc::new(Mutex::new(StreamProfile::DEFAULT)),
+            stats: Arc::new(Mutex::new(StreamStats {
+                source: IosSimulatorStreamSource::Mjpeg,
+                effective_fps: Some(30.0),
+            })),
+            stop,
+            input_lock: Arc::new(Mutex::new(())),
+            latest_frame: Arc::new(LatestFrameStore::default()),
+            gate: Arc::new(PreviewGate::new(true)),
+            mjpeg_active: Arc::new(AtomicBool::new(false)),
+            next_frame_generation: Arc::new(AtomicU64::new(0)),
+            wda_control: Arc::new(Mutex::new(None)),
+            wda_force_stop: Arc::new(Mutex::new(Some(force_stop))),
+            staged_wda: None,
+            sink: None,
+            recording: Arc::new(Mutex::new(None)),
+            workers: Mutex::new(vec![worker]),
+        });
+        service.ownership.mark_booted("phone-17-pro").unwrap();
+
+        let started = Instant::now();
+        service
+            .end_owned_until(started + Duration::from_millis(30))
+            .unwrap();
+
+        assert!(started.elapsed() >= Duration::from_millis(20));
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert_eq!(force_stopped.load(Ordering::SeqCst), 1);
+        assert!(service.ownership.owned_udids().is_empty());
+        assert!(service.current_session_summary().is_none());
+        let finish_deadline = Instant::now() + Duration::from_millis(100);
+        while !worker_finished.load(Ordering::Acquire) && Instant::now() < finish_deadline {
+            sleep(Duration::from_millis(1));
+        }
+        assert!(worker_finished.load(Ordering::Acquire));
+    }
+
     #[test]
     fn detach_external_stops_verboo_workers_but_never_shuts_device_down() {
         let harness = ActiveSessionHarness::new(IosSimulatorOwnership::External);
@@ -6849,10 +7527,7 @@ mod tests {
         let harness = ActiveSessionHarness::new(IosSimulatorOwnership::External);
         let ledger_before = harness.ledger.owned_udids();
 
-        harness
-            .service
-            .end_external_sync("phone-17-pro")
-            .unwrap();
+        harness.service.end_external_sync("phone-17-pro").unwrap();
 
         assert!(harness.stop_happened_before_shutdown());
         assert_eq!(harness.shutdown_udids(), vec!["phone-17-pro"]);
@@ -6865,10 +7540,7 @@ mod tests {
         let owned = ActiveSessionHarness::new(IosSimulatorOwnership::Verboo);
         let owned_ledger_before = owned.ledger.owned_udids();
 
-        let owned_error = owned
-            .service
-            .end_external_sync("phone-17-pro")
-            .unwrap_err();
+        let owned_error = owned.service.end_external_sync("phone-17-pro").unwrap_err();
 
         assert!(owned_error.contains("externo"));
         assert!(owned.shutdown_udids().is_empty());
@@ -6901,6 +7573,7 @@ mod tests {
                 ports: Arc::new(Mutex::new(Vec::new())),
             },
             attempts: attempts.clone(),
+            modes: Arc::new(Mutex::new(Vec::new())),
         });
         let service =
             IosSimulatorService::with_dependencies(Arc::new(RecordingRunner::new()), launcher);
@@ -6937,6 +7610,66 @@ mod tests {
             generation
         );
         assert!(sink.frames.load(Ordering::Acquire) > 0);
+        let _ = service.detach_sync();
+    }
+
+    #[test]
+    fn stale_cached_wda_falls_back_to_one_normal_build_in_the_same_session() {
+        let stage_root = tempfile::tempdir().unwrap();
+        let staged = WdaStagedPaths {
+            project: stage_root.path().join("project/WebDriverAgent.xcodeproj"),
+            derived_data: stage_root.path().join("derived-data"),
+        };
+        let products = staged
+            .derived_data
+            .join("Build/Products/Debug-iphonesimulator");
+        let runner = products.join("WebDriverAgentRunner-Runner.app/WebDriverAgentRunner-Runner");
+        let tests = products.join(
+            "WebDriverAgentRunner-Runner.app/PlugIns/WebDriverAgentRunner.xctest/WebDriverAgentRunner",
+        );
+        std::fs::create_dir_all(runner.parent().unwrap()).unwrap();
+        std::fs::write(&runner, b"runner").unwrap();
+        std::fs::create_dir_all(tests.parent().unwrap()).unwrap();
+        std::fs::write(&tests, b"tests").unwrap();
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let modes = Arc::new(Mutex::new(Vec::new()));
+        let stopped = Arc::new(AtomicUsize::new(0));
+        let launcher = Arc::new(FirstFailureWdaLauncher {
+            inner: FakeWdaLauncher {
+                delay: Duration::ZERO,
+                fail: false,
+                launched: AtomicUsize::new(0),
+                stopped: stopped.clone(),
+                force_stopped: Arc::new(AtomicUsize::new(0)),
+                ports: Arc::new(Mutex::new(Vec::new())),
+            },
+            attempts: attempts.clone(),
+            modes: modes.clone(),
+        });
+        let service =
+            IosSimulatorService::with_dependencies(Arc::new(RecordingRunner::new()), launcher);
+        service.start_session(
+            test_device(),
+            StreamProfile::DEFAULT,
+            MAX_FPS,
+            test_display_metrics(),
+            Some(staged),
+            Arc::new(CountingSink::default()),
+        );
+
+        wait_until(
+            || attempts.load(Ordering::Acquire) == 2,
+            Duration::from_secs(1),
+        );
+        assert!(wait_for_wda_control(
+            &service,
+            Instant::now() + Duration::from_secs(2)
+        ));
+        assert_eq!(
+            *modes.lock().unwrap(),
+            vec![WdaLaunchMode::Cached, WdaLaunchMode::Build]
+        );
         let _ = service.detach_sync();
     }
 
@@ -7070,7 +7803,10 @@ mod tests {
 
     impl SimulatorMediaBackend for ExitMediaBackend {
         fn screenshot(&self, _udid: &str, _display: &str, path: &Path) -> Result<(), String> {
-            assert!(path.is_absolute(), "fake write must use absolute path, got: {path:?}");
+            assert!(
+                path.is_absolute(),
+                "fake write must use absolute path, got: {path:?}"
+            );
             fs::write(path, b"fake-png").map_err(|error| error.to_string())
         }
 
@@ -7827,7 +8563,10 @@ mod tests {
             IosSimulatorLifecycleSnapshot::default(),
             "o ÚLTIMO evento de lifecycle após detach deve ser o snapshot Idle (sem udid, sem geração)"
         );
-        assert_eq!(last.udid, None, "o snapshot de fim de sessão não pode carregar udid");
+        assert_eq!(
+            last.udid, None,
+            "o snapshot de fim de sessão não pode carregar udid"
+        );
         assert_eq!(
             last.device_generation, None,
             "o snapshot de fim de sessão não pode carregar geração"
@@ -7850,7 +8589,9 @@ mod tests {
         );
         let emissions_before = service.emitted_lifecycle_snapshots().len();
         // A sessão seguinte (geração 2) já começou: o lifecycle pertence a ela.
-        service.lifecycle.begin(2, test_device(), IosSimulatorOwnership::External, true);
+        service
+            .lifecycle
+            .begin(2, test_device(), IosSimulatorOwnership::External, true);
         // O fim da sessão velha (geração 1) chega atrasado.
         service.stop_current();
         let snapshot = service.lifecycle.snapshot();
@@ -7919,6 +8660,7 @@ mod tests {
             destination_udid: "phone-17-pro".into(),
             http_port: 12345,
             mjpeg_port: 23456,
+            mode: WdaLaunchMode::Build,
         };
         let stop = AtomicBool::new(false);
         let force_stop_slot = Mutex::new(None);

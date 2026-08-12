@@ -68,16 +68,24 @@
     },
     {
       "name": "ios_simulator_tap",
-      "description": "Tap a normalized point in the attached iOS Simulator.",
+      "description": "Tap a control in the attached iOS Simulator. Semantic-first rule: when the intended control has visible text or a known accessibility identifier, you must provide target. Verboo uses target as the primary locator and does not fall back to an unrelated coordinate tap when it cannot resolve that target. Coordinates are an optional disambiguation hint when supplied as a complete pair. Omit target only when no usable text or identifier exists.",
       "risk": "mutate",
       "inputSchema": {
         "type": "object",
         "properties": {
           "udid": { "type": "string", "minLength": 1, "maxLength": 256 },
-          "x": { "type": "number", "minimum": 0, "maximum": 1 },
-          "y": { "type": "number", "minimum": 0, "maximum": 1 }
+          "x": { "type": "number", "minimum": 0, "maximum": 1, "description": "Normalized horizontal coordinate. With target it is only a disambiguation hint; without target it is the coordinate locator." },
+          "y": { "type": "number", "minimum": 0, "maximum": 1, "description": "Normalized vertical coordinate. With target it is only a disambiguation hint; without target it is the coordinate locator." },
+          "target": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Primary semantic locator. You must provide it when the intended control has visible text or a known accessibility identifier; omit it only when neither exists." }
         },
-        "required": ["x", "y"],
+        "anyOf": [
+          { "required": ["target"] },
+          { "required": ["x", "y"] }
+        ],
+        "dependentRequired": {
+          "x": ["y"],
+          "y": ["x"]
+        },
         "additionalProperties": false
       }
     },

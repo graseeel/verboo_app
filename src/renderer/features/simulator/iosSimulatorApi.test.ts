@@ -95,12 +95,13 @@ describe('iosSimulatorApi event listeners', () => {
       actionable: true,
     }
 
-    await iosSimulatorApi.inspectPoint(7, point)
+    await iosSimulatorApi.inspectPoint(7, point, true)
     await iosSimulatorApi.captureAnnotation(7, rect, element)
 
     expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(1, 'ios_simulator_inspect_point', {
       deviceGeneration: 7,
       point,
+      exact: true,
     })
     expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(2, 'ios_simulator_capture_annotation', {
       deviceGeneration: 7,

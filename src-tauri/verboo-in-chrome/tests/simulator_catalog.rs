@@ -37,6 +37,32 @@ fn simulator_catalog_exposes_only_the_safe_generic_tools() {
 }
 
 #[test]
+fn simulator_tap_contract_accepts_a_semantic_target_without_coordinates() {
+    let catalog = simulator_catalog().unwrap();
+    let tap = catalog
+        .tools
+        .iter()
+        .find(|tool| tool.name == "ios_simulator_tap")
+        .unwrap();
+    let description = tap.description.to_ascii_lowercase();
+    assert!(description.contains("must provide target"));
+    assert!(description.contains("primary locator"));
+    assert!(description.contains("does not fall back"));
+
+    let properties = tap.input_schema["properties"].as_object().unwrap();
+    let target_description = properties["target"]["description"]
+        .as_str()
+        .unwrap()
+        .to_ascii_lowercase();
+    assert!(target_description.contains("must provide"));
+    assert!(target_description.contains("visible text"));
+    assert!(target_description.contains("accessibility identifier"));
+
+    let validator = jsonschema::validator_for(&tap.input_schema).unwrap();
+    assert!(validator.validate(&json!({"target": "Not Now"})).is_ok());
+}
+
+#[test]
 fn simulator_catalog_bounds_points_and_text_and_marks_only_observations_read_only() {
     let catalog = simulator_catalog().unwrap();
     let read_only = catalog
@@ -65,6 +91,21 @@ fn simulator_catalog_bounds_points_and_text_and_marks_only_observations_read_onl
         .unwrap();
     let tap_validator = jsonschema::validator_for(&tap.input_schema).unwrap();
     assert!(tap_validator.validate(&json!({"x": 0.0, "y": 1.0})).is_ok());
+    assert!(tap_validator
+        .validate(&json!({"target": "Not Now"}))
+        .is_ok());
+    assert!(tap_validator
+        .validate(&json!({"x": 0.5, "y": 0.5, "target": "Not Now"}))
+        .is_ok());
+    assert!(tap_validator
+        .validate(&json!({"x": 0.5, "y": 0.5, "target": ""}))
+        .is_err());
+    assert!(tap_validator
+        .validate(&json!({"x": 0.5, "y": 0.5, "target": "a".repeat(257)}))
+        .is_err());
+    assert!(tap_validator.validate(&json!({})).is_err());
+    assert!(tap_validator.validate(&json!({"x": 0.5})).is_err());
+    assert!(tap_validator.validate(&json!({"y": 0.5})).is_err());
     assert!(tap_validator
         .validate(&json!({"x": -0.01, "y": 0.5}))
         .is_err());
@@ -120,7 +161,9 @@ fn simulator_catalog_supports_bounded_native_waits_and_exact_attach_selectors() 
         .find(|tool| tool.name == "ios_simulator_attach")
         .unwrap();
     let attach_validator = jsonschema::validator_for(&attach.input_schema).unwrap();
-    assert!(attach_validator.validate(&json!({"udid": "phone-a"})).is_ok());
+    assert!(attach_validator
+        .validate(&json!({"udid": "phone-a"}))
+        .is_ok());
     assert!(attach_validator
         .validate(&json!({"model": "iPhone 17 Pro", "iosVersion": "27.0"}))
         .is_ok());
@@ -137,8 +180,12 @@ fn simulator_catalog_supports_bounded_native_waits_and_exact_attach_selectors() 
         .find(|tool| tool.name == "ios_simulator_wait_until_ready")
         .unwrap();
     let wait_validator = jsonschema::validator_for(&wait.input_schema).unwrap();
-    assert!(wait_validator.validate(&json!({"timeoutMs": 90_000})).is_ok());
-    assert!(wait_validator.validate(&json!({"timeoutMs": 90_001})).is_err());
+    assert!(wait_validator
+        .validate(&json!({"timeoutMs": 90_000}))
+        .is_ok());
+    assert!(wait_validator
+        .validate(&json!({"timeoutMs": 90_001}))
+        .is_err());
 
     let screenshot = catalog
         .tools

@@ -13,12 +13,12 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 use uuid::Uuid;
 
+#[cfg(test)]
+use super::PreviewGate;
 use super::{
     IosSimulatorKey, IosSimulatorPresenceAction, IosSimulatorService, IosSimulatorSystemAction,
     NormalizedPoint, StreamProfile, DEFAULT_FALLBACK_FPS,
 };
-#[cfg(test)]
-use super::PreviewGate;
 #[cfg(test)]
 use std::sync::atomic::AtomicU64;
 
@@ -319,12 +319,7 @@ fn dispatch_tool(
                 .current_session_summary()
                 .filter(|session| session.device.udid == udid)
             {
-                service.begin_agent_action(
-                    IosSimulatorPresenceAction::Attach,
-                    None,
-                    None,
-                    None,
-                );
+                service.begin_agent_action(IosSimulatorPresenceAction::Attach, None, None, None);
                 return serde_json::to_value(session).map_err(internal_error);
             }
             service.begin_agent_action(IosSimulatorPresenceAction::Attach, None, None, None);
@@ -353,9 +348,8 @@ fn dispatch_tool(
             }
             let args: Args = parse_args(arguments)?;
             ensure_device(service, args.udid.as_deref())?;
-            let timeout = Duration::from_millis(
-                args.timeout_ms.unwrap_or(90_000).clamp(100, 90_000),
-            );
+            let timeout =
+                Duration::from_millis(args.timeout_ms.unwrap_or(90_000).clamp(100, 90_000));
             let observation = service.wait_until_ready_sync(timeout).map_err(tool_error)?;
             serde_json::to_value(observation).map_err(internal_error)
         }
@@ -389,9 +383,8 @@ fn dispatch_tool(
                 None,
                 None,
                 || {
-                    let timeout = Duration::from_millis(
-                        args.timeout_ms.unwrap_or(5_000).clamp(50, 10_000),
-                    );
+                    let timeout =
+                        Duration::from_millis(args.timeout_ms.unwrap_or(5_000).clamp(50, 10_000));
                     service
                         .screenshot_sync(args.after_frame_generation, timeout)
                         .and_then(|observation| {
@@ -421,25 +414,37 @@ fn dispatch_tool(
             #[derive(Deserialize)]
             struct Args {
                 udid: Option<String>,
-                x: f64,
-                y: f64,
+                x: Option<f64>,
+                y: Option<f64>,
+                target: Option<String>,
             }
             let args: Args = parse_args(arguments)?;
             ensure_device(service, args.udid.as_deref())?;
-            let target = NormalizedPoint {
-                x: args.x,
-                y: args.y,
+            let point = match (args.x, args.y) {
+                (Some(x), Some(y)) => Some(NormalizedPoint { x, y }),
+                (None, None) if args.target.is_some() => None,
+                _ => {
+                    return Err(DispatchError::new(
+                        "invalid_arguments",
+                        "provide target, or provide both x and y",
+                    ));
+                }
             };
-            with_presence(
+            let result = with_presence(
                 service,
                 IosSimulatorPresenceAction::Tap,
-                Some(target),
+                point,
                 None,
                 None,
-                || service.tap_sync(target),
+                || service.agent_tap_sync(point, args.target.as_deref()),
             )
-            .map(|_| json!({ "ok": true }))
-            .map_err(tool_error)
+            .map_err(tool_error)?;
+            let mut result = serde_json::to_value(result).map_err(internal_error)?;
+            result
+                .as_object_mut()
+                .expect("agent tap result must serialize as an object")
+                .insert("ok".into(), json!(true));
+            Ok(result)
         }
         "ios_simulator_drag" => {
             #[derive(Deserialize)]
@@ -785,8 +790,8 @@ fn process_is_alive(_pid: u32) -> bool {
 mod tests {
     use super::*;
     use crate::services::ios_simulator::{
-        IosSimulatorDevice, IosSimulatorOwnership, IosSimulatorStreamSource, LatestFrame,
-        LatestFrameStore, LifecycleSignal, PresenceAuthority, Session, StreamStats, unix_time_ms,
+        unix_time_ms, IosSimulatorDevice, IosSimulatorOwnership, IosSimulatorStreamSource,
+        LatestFrame, LatestFrameStore, LifecycleSignal, PresenceAuthority, Session, StreamStats,
     };
     use std::sync::mpsc;
 
@@ -1059,8 +1064,8 @@ mod tests {
             resolve_attach_udid(&devices, None, Some("iphone 17 pro"), Some("27.0")).unwrap(),
             "phone-27",
         );
-        let missing = resolve_attach_udid(&devices, None, Some("iPad Pro"), Some("27.0"))
-            .unwrap_err();
+        let missing =
+            resolve_attach_udid(&devices, None, Some("iPad Pro"), Some("27.0")).unwrap_err();
         assert_eq!(missing.code, "device_not_found");
         let ambiguous = resolve_attach_udid(
             &[devices[0].clone(), devices[0].clone()],
@@ -1097,12 +1102,8 @@ mod tests {
             "secret": "right",
             "arguments": {},
         });
-        let response = handle_request_line(
-            completion.to_string().as_bytes(),
-            "right",
-            &service,
-            None,
-        );
+        let response =
+            handle_request_line(completion.to_string().as_bytes(), "right", &service, None);
         assert_eq!(response_value(response)["result"]["cleared"], true);
         assert_eq!(service.presence.current_generation(), None);
     }
@@ -1148,15 +1149,31 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_eq!(error.code, "tool_error", "home must reach WDA, not be unknown");
+        assert_eq!(
+            error.code, "tool_error",
+            "home must reach WDA, not be unknown"
+        );
     }
 
     #[test]
     fn focused_element_tool_reaches_the_existing_serialized_wda_path() {
         let service = attached_service("phone-17-pro");
+        let error =
+            dispatch_tool("ios_simulator_focused_element", json!({}), &service, None).unwrap_err();
+
+        assert_eq!(
+            error.code, "tool_error",
+            "focused inspection must reach WDA, not be unknown"
+        );
+    }
+
+    #[test]
+    fn semantic_tap_accepts_target_without_coordinates_before_reaching_wda() {
+        let service = attached_service("phone-17-pro");
+
         let error = dispatch_tool(
-            "ios_simulator_focused_element",
-            json!({}),
+            "ios_simulator_tap",
+            json!({"target": "Not Now"}),
             &service,
             None,
         )
@@ -1164,7 +1181,17 @@ mod tests {
 
         assert_eq!(
             error.code, "tool_error",
-            "focused inspection must reach WDA, not be unknown"
+            "target-only arguments must reach the native WDA path",
         );
+    }
+
+    #[test]
+    fn tap_rejects_an_incomplete_or_missing_locator_at_the_bridge_boundary() {
+        let service = attached_service("phone-17-pro");
+
+        for arguments in [json!({}), json!({"x": 0.5}), json!({"y": 0.5})] {
+            let error = dispatch_tool("ios_simulator_tap", arguments, &service, None).unwrap_err();
+            assert_eq!(error.code, "invalid_arguments");
+        }
     }
 }

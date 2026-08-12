@@ -9,6 +9,7 @@
     [[FBRoute POST:@"/wda/verboo/systemGesture"].withoutSession respondWithTarget:self action:@selector(handleVerbooSystemGesture:)],
     [[FBRoute POST:@"/wda/verboo/rotate"].withoutSession respondWithTarget:self action:@selector(handleVerbooRotate:)],
     [[FBRoute POST:@"/wda/verboo/inspectPoint"].withoutSession respondWithTarget:self action:@selector(handleVerbooInspectPoint:)],
+    [[FBRoute POST:@"/wda/verboo/resolveTarget"].withoutSession respondWithTarget:self action:@selector(handleVerbooResolveTarget:)],
     [[FBRoute POST:@"/wda/verboo/focusedElement"].withoutSession respondWithTarget:self action:@selector(handleVerbooFocusedElement:)],
 #endif
     // VERBOO_SESSIONLESS_ROUTES_END

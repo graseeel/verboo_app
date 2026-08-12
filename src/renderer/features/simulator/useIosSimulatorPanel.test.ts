@@ -557,14 +557,14 @@ describe('useIosSimulatorPanel', () => {
 
     let inspected
     await act(async () => {
-      inspected = await view.result.current.inspectPoint({ x: 0.25, y: 0.5 })
+      inspected = await view.result.current.inspectPoint({ x: 0.25, y: 0.5 }, true)
     })
     await act(async () => {
       await view.result.current.captureAnnotation(hit.rect, hit.element)
     })
 
     expect(inspected).toEqual(hit)
-    expect(api.inspectPoint).toHaveBeenCalledWith(1, { x: 0.25, y: 0.5 })
+    expect(api.inspectPoint).toHaveBeenCalledWith(1, { x: 0.25, y: 0.5 }, true)
     expect(api.captureAnnotation).toHaveBeenCalledWith(1, hit.rect, hit.element)
   })
 

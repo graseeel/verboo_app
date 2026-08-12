@@ -192,10 +192,11 @@ export const iosSimulatorApi = {
     invoke<void>('ios_simulator_drag', { from, to, durationMs }),
   typeText: (text: string) => invoke<void>('ios_simulator_type_text', { text }),
   pressKey: (key: IosSimulatorKey) => invoke<void>('ios_simulator_press_key', { key }),
-  inspectPoint: (deviceGeneration: number, point: IosSimulatorPoint) =>
+  inspectPoint: (deviceGeneration: number, point: IosSimulatorPoint, exact: boolean) =>
     invoke<IosSimulatorElementHit | null>('ios_simulator_inspect_point', {
       deviceGeneration,
       point,
+      exact,
     }),
   captureAnnotation: (
     deviceGeneration: number,

@@ -511,11 +511,12 @@ export function useIosSimulatorPanel() {
 
   const inspectPoint = useCallback(async (
     point: IosSimulatorPoint,
+    exact = false,
   ): Promise<IosSimulatorElementHit | undefined> => {
     const deviceGeneration = lifecycleRef.current.deviceGeneration
     if (deviceGeneration == null) return undefined
     try {
-      const hit = await iosSimulatorApi.inspectPoint(deviceGeneration, point)
+      const hit = await iosSimulatorApi.inspectPoint(deviceGeneration, point, exact)
       if (lifecycleRef.current.deviceGeneration !== deviceGeneration) return undefined
       return hit ?? undefined
     } catch {

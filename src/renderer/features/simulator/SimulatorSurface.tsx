@@ -18,6 +18,7 @@ import {
 } from './simulatorGeometry'
 import { createSimulatorAnnotationAttachment } from './simulatorAnnotations'
 import { SimulatorPresenceOverlay } from './SimulatorPresenceOverlay'
+import { SimulatorTooltipButton } from './SimulatorTooltip'
 import {
   useSimulatorInteraction,
   type SimulatorInteractionMode,
@@ -54,7 +55,10 @@ type SimulatorSurfaceProps = {
   onDrag: (from: IosSimulatorPoint, to: IosSimulatorPoint, durationMs: number) => void
   onTypeText: (text: string) => void
   onPressKey: (key: IosSimulatorKey) => void
-  onInspectPoint: (point: IosSimulatorPoint) => Promise<IosSimulatorElementHit | undefined>
+  onInspectPoint: (
+    point: IosSimulatorPoint,
+    exact?: boolean,
+  ) => Promise<IosSimulatorElementHit | undefined>
   onCaptureAnnotation: (
     kind: 'element' | 'area',
     rect: IosSimulatorRect,
@@ -99,10 +103,11 @@ export function SimulatorSurface({
   const inspectionRef = useRef<{
     timer?: number
     inFlight: boolean
+    selecting: boolean
     queued?: IosSimulatorPoint
     sequence: number
     lastStartedAt: number
-  }>({ inFlight: false, sequence: 0, lastStartedAt: 0 })
+  }>({ inFlight: false, selecting: false, sequence: 0, lastStartedAt: 0 })
   const hintId = useId()
   const [selectionRect, setSelectionRect] = useState<IosSimulatorRect | undefined>()
   const [pendingCapture, setPendingCapture] = useState<PendingCapture | undefined>()
@@ -152,6 +157,7 @@ export function SimulatorSurface({
   useEffect(() => {
     modeRef.current = mode
     inspectionRef.current.sequence += 1
+    inspectionRef.current.selecting = false
     inspectionRef.current.queued = undefined
     if (inspectionRef.current.timer !== undefined) {
       window.clearTimeout(inspectionRef.current.timer)
@@ -222,7 +228,9 @@ export function SimulatorSurface({
 
   function scheduleElementInspection(point: IosSimulatorPoint) {
     const inspection = inspectionRef.current
+    if (inspection.selecting) return
     inspection.queued = point
+    inspection.sequence += 1
     if (inspection.inFlight || inspection.timer !== undefined) return
     const wait = Math.max(
       0,
@@ -243,7 +251,7 @@ export function SimulatorSurface({
     inspection.lastStartedAt = performance.now()
     const sequence = inspection.sequence
     try {
-      const hit = await onInspectPoint(point)
+      const hit = await onInspectPoint(point, false)
       if (sequence !== inspection.sequence || modeRef.current !== 'select-element') return
       setHoveredElement(hit)
       setSelectionRect(hit?.rect)
@@ -258,17 +266,31 @@ export function SimulatorSurface({
 
   async function selectElementAt(point: IosSimulatorPoint) {
     if (capturing || pendingCapture) return
+    const inspection = inspectionRef.current
+    inspection.sequence += 1
+    inspection.selecting = true
+    inspection.queued = undefined
+    if (inspection.timer !== undefined) {
+      window.clearTimeout(inspection.timer)
+      inspection.timer = undefined
+    }
+    const sequence = inspection.sequence
     // Re-inspect the exact click point. The last hover result may belong to a
     // neighbouring control while a newer throttled inspection is still queued.
-    const hit = await onInspectPoint(point)
-    if (!hit) {
-      setSelectionRect(undefined)
-      setSelectionError(labels.elementUnavailable)
-      return
+    try {
+      const hit = await onInspectPoint(point, true)
+      if (sequence !== inspection.sequence || modeRef.current !== 'select-element') return
+      if (!hit) {
+        setSelectionRect(undefined)
+        setSelectionError(labels.elementUnavailable)
+        return
+      }
+      setHoveredElement(hit)
+      setSelectionRect(hit.rect)
+      await captureSelection('element', hit.rect, hit.element)
+    } finally {
+      if (sequence === inspection.sequence) inspection.selecting = false
     }
-    setHoveredElement(hit)
-    setSelectionRect(hit.rect)
-    await captureSelection('element', hit.rect, hit.element)
   }
 
   function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
@@ -357,8 +379,9 @@ export function SimulatorSurface({
     <div className="ios-simulator-surface-shell">
       <div className="ios-simulator-mode-toolbar" role="toolbar" aria-label={deviceName}>
         {modes.map(item => (
-          <button
+          <SimulatorTooltipButton
             key={item.value}
+            label={item.label}
             type="button"
             className={mode === item.value ? 'is-active' : ''}
             aria-pressed={mode === item.value}
@@ -367,7 +390,7 @@ export function SimulatorSurface({
           >
             {item.icon}
             <span>{item.label}</span>
-          </button>
+          </SimulatorTooltipButton>
         ))}
       </div>
       <div
