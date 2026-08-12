@@ -243,7 +243,7 @@ describe('App — selecting a PROVIDER model applies it (field defect)', () => {
     await waitFor(() => expect(listModelsMock).toHaveBeenCalledTimes(3), { timeout: 2_500 })
 
     fireEvent.click(modelPill())
-    fireEvent.click(await screen.findByRole('button', { name: /Model|Modelo/i }))
+    // Single popover: the pill opens the model list DIRECTLY.
     expect(await screen.findByRole('button', { name: /GPT-5\.6-Sol/ })).toBeInTheDocument()
   })
 
@@ -251,8 +251,7 @@ describe('App — selecting a PROVIDER model applies it (field defect)', () => {
     await renderApp()
 
     fireEvent.click(modelPill())
-    // The pill opens the ROOT menu; the models live behind the "Model" row.
-    fireEvent.click(await screen.findByRole('button', { name: /Model|Modelo/i }))
+    // Single popover: the list itself greets the user — no drill-in row.
     const option = await screen.findByRole('button', { name: /GPT-5\.6-Sol/ })
     fireEvent.click(option)
 
@@ -266,7 +265,6 @@ describe('App — selecting a PROVIDER model applies it (field defect)', () => {
   it('a DEGRADED refresh (catalog transiently without provider models) must NOT demote the explicit selection', async () => {
     await renderApp()
     fireEvent.click(modelPill())
-    fireEvent.click(await screen.findByRole('button', { name: /Model|Modelo/i }))
     fireEvent.click(await screen.findByRole('button', { name: /GPT-5\.6-Sol/ }))
     await waitFor(() => expect(modelPill().textContent).toContain('GPT-5.6-Sol'))
 
@@ -274,11 +272,9 @@ describe('App — selecting a PROVIDER model applies it (field defect)', () => {
     // provider CLI read fails: the next refresh can carry a codex-less catalog.
     activeCatalog = [verbooUltra]
     fireEvent.click(modelPill())
-    // Reopening RESETS to the root panel (ModelSelector.tsx:139-145); drill
-    // back into the models list so the refresh's effect is visible on screen.
-    fireEvent.click(await screen.findByRole('button', { name: /Model|Modelo/i }))
-    // The GPT-5.5 OPTION on screen proves the list is visible BEFORE the
-    // refresh — the disappearance wait below is meaningful.
+    // Reopening lands on the models list again (single popover) — the GPT-5.5
+    // OPTION on screen proves the list is visible BEFORE the refresh, so the
+    // disappearance wait below is meaningful.
     await screen.findByRole('button', { name: /GPT-5\.5/ })
     fireEvent.click(await screen.findByRole('button', { name: /^Refresh$|^Atualizar$/ }))
 
@@ -323,8 +319,7 @@ describe('App — selecting a PROVIDER model applies it (field defect)', () => {
     await renderApp('Verboo Model 0')
 
     fireEvent.click(modelPill())
-    // The pill opens the ROOT menu; the models live behind the first row.
-    fireEvent.click(document.querySelector('.model-rows .model-row') as HTMLElement)
+    // Single popover: the search box is right there (catalog > 12 models).
     const search = await screen.findByRole('textbox')
     fireEvent.change(search, { target: { value: 'gpt' } })
     fireEvent.click(await screen.findByRole('button', { name: /GPT-5\.6-Sol/ }))

@@ -62,8 +62,10 @@ function effortLabel(level: string, t: (key: string) => string): string {
 export function ModelSelector({ models, selectedModel, hasConversationHistory = false, modelResult, onSelect, onRefresh, verbooPlan, providerStatuses, onConnectProvider, effortByModel, selectedEffortLevels = [], selectedEffort, onSelectEffort, onClearEffortOverride }: ModelSelectorProps) {
   const { language, t } = useI18n()
   const [open, setOpen] = useState(false)
-  // Drill-in panel: 'root' | 'models' | 'effort'
-  const [panel, setPanel] = useState<'root' | 'models' | 'effort'>('root')
+  // Drill-in panel: 'root' (settings rows) | 'models' | 'effort'. The chip
+  // opens DIRECTLY on 'models' (single popover — no intermediate dialog);
+  // 'root' is reachable via the list's back button for the effort row.
+  const [panel, setPanel] = useState<'root' | 'models' | 'effort'>('models')
   const [query, setQuery] = useState('')
   const [highlighted, setHighlighted] = useState(0)
   const [menuPos, setMenuPos] = useState<{ bottom: number; right: number } | null>(null)
@@ -134,8 +136,14 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
     }
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
-        if (panel !== 'root') {
+        // 'models' is the entry panel: Escape closes from it directly
+        // (single-popover rule). Drill-ins step back one level instead.
+        if (panel === 'effort') {
           setPanel('root')
+          return
+        }
+        if (panel === 'root') {
+          setPanel('models')
           return
         }
         setOpen(false)
@@ -151,7 +159,7 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
 
   useEffect(() => {
     if (!open) return
-    setPanel('root')
+    setPanel('models')
     setQuery('')
     setHighlighted(Math.max(0, flat.findIndex(model => model.id === selectedModel)))
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -188,7 +196,7 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
   }
 
   function handleSearchKeyDown(event: React.KeyboardEvent) {
-    if (event.key === 'Escape') { setPanel('root'); return }
+    if (event.key === 'Escape') { setOpen(false); return }
     if (!flat.length) return
     if (event.key === 'ArrowDown') {
       event.preventDefault()
@@ -236,25 +244,6 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
                   <RefreshCw size={13} />
                 </button>
               </div>
-
-              {statusMessage && (
-                <div className={`model-menu-status ${modelResult.stale && models.length > 0 ? 'subtle' : ''}`}>
-                  <span>{statusMessage}</span>
-                  {modelResult.stale && models.length > 0 && <small>{t('model.usingSaved')}</small>}
-                </div>
-              )}
-
-              {providerStatusMessage && (
-                <div className="model-menu-status subtle" role="status">
-                  <span>{providerStatusMessage}</span>
-                </div>
-              )}
-
-              {hasConversationHistory && (
-                <div className="model-menu-hint">
-                  {t('model.switchWarning')}
-                </div>
-              )}
 
               <div className="model-rows">
                 <button
@@ -304,6 +293,31 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
                   <RefreshCw size={13} />
                 </button>
               </div>
+
+              {/* The continuity warning is a discreet TOP LINE of the
+                  selector itself — never a separate step before it. */}
+              {hasConversationHistory && (
+                <div className="model-menu-hint">
+                  {t('model.switchWarning')}
+                </div>
+              )}
+
+              {/* Listing statuses ride the models panel — it is the
+                  surface the chip opens on (single popover), so a stale
+                  cache or a provider failure is visible without any
+                  drill-in. */}
+              {statusMessage && (
+                <div className={`model-menu-status ${modelResult.stale && models.length > 0 ? 'subtle' : ''}`}>
+                  <span>{statusMessage}</span>
+                  {modelResult.stale && models.length > 0 && <small>{t('model.usingSaved')}</small>}
+                </div>
+              )}
+
+              {providerStatusMessage && (
+                <div className="model-menu-status subtle" role="status">
+                  <span>{providerStatusMessage}</span>
+                </div>
+              )}
 
               {showSearch && (
                 <div className="model-search">

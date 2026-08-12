@@ -75,16 +75,100 @@ function openMenu() {
   fireEvent.click(Pill())
 }
 
-/** Open the effort drill-in panel from the root menu. */
+/** Open the effort drill-in panel: the chip lands on the model list
+ *  (single popover), the back button reveals the settings rows, and the
+ *  "Esforço" row drills in. */
 function openEffortPanel() {
   openMenu()
-  // Click the "Esforço" row (labelled with the effort row label).
+  fireEvent.click(document.querySelector<HTMLButtonElement>('.model-back-button')!)
   const effortRow = screen.getByText(/Esforço|Effort/i).closest('button')!
   fireEvent.click(effortRow)
 }
 
 beforeEach(() => {
   cleanup()
+})
+
+describe('ModelSelector — single popover: the chip opens the model list DIRECTLY', () => {
+  /* User requirement: today the chip opens an intermediate dialog
+   * (continuity warning + a "Modelo >" row) that demands a SECOND click
+   * to reach the real selector. The chip must open the model list in ONE
+   * popover: provider-grouped, current model highlighted, the continuity
+   * warning demoted to a discreet line at the top of the selector itself.
+   * Selecting applies and closes. */
+  function renderSelector(overrides: Partial<Parameters<typeof ModelSelector>[0]> = {}) {
+    return render(
+      <ModelSelector
+        models={discoveryOk.models}
+        selectedModel="glm-5.2"
+        modelResult={discoveryOk}
+        onSelect={() => {}}
+        onRefresh={() => {}}
+        {...overrides}
+      />,
+    )
+  }
+
+  it('ONE click on the chip shows the model options — no intermediate "Modelo >" row in the way', () => {
+    renderSelector()
+    openMenu()
+    // The list itself is what greets the user…
+    expect(document.querySelectorAll('.model-option').length).toBe(discoveryOk.models.length)
+    // …not the drill-in rows of the old intermediate dialog.
+    expect(document.querySelector('.model-rows .model-row')).toBeNull()
+  })
+
+  it('the continuity warning is a discreet line AT THE TOP of the selector, not a separate step', () => {
+    renderSelector({ hasConversationHistory: true })
+    openMenu()
+    const hint = document.querySelector('.model-menu-hint')
+    expect(hint).toBeTruthy()
+    expect(hint!.textContent).toMatch(/continuity|continuidade/i)
+    // It rides the SAME panel as the options (top), never instead of them.
+    const menu = document.querySelector('.model-menu')!
+    expect(menu.contains(hint)).toBe(true)
+    expect(menu.querySelector('.model-option')).toBeTruthy()
+    // And it comes BEFORE the first option (top line, not a footer).
+    const first = menu.querySelector('.model-option')!
+    expect(hint!.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('without conversation history there is no warning line (nothing to warn about)', () => {
+    renderSelector({ hasConversationHistory: false })
+    openMenu()
+    expect(document.querySelector('.model-menu-hint')).toBeNull()
+  })
+
+  it('the CURRENT model renders highlighted with its check in the list', () => {
+    renderSelector({ selectedModel: 'kimi-k2' })
+    openMenu()
+    const selected = document.querySelector('.model-option.selected')!
+    expect(selected.textContent).toContain('kimi-k2')
+    expect(selected.querySelector('.model-option-check')).toBeTruthy()
+  })
+
+  it('selecting a model applies onSelect AND closes the popover', () => {
+    const onSelect = vi.fn()
+    renderSelector({ onSelect })
+    openMenu()
+    fireEvent.click(document.querySelector<HTMLButtonElement>('.model-option')!)
+    expect(onSelect).toHaveBeenCalledWith('glm-5.2')
+    expect(document.querySelector('.model-menu')).toBeNull()
+  })
+
+  it('the effort drill-in stays reachable: back row → effort row → effort panel', () => {
+    renderSelector({
+      effortByModel: {},
+      selectedEffortLevels: ['low', 'high', 'max'],
+      selectedEffort: 'high',
+    })
+    openMenu()
+    // From the list, the back affordance leads to the settings rows…
+    fireEvent.click(document.querySelector<HTMLButtonElement>('.model-back-button')!)
+    const effortRow = screen.getByText(/Esforço|Effort/i).closest('button')!
+    fireEvent.click(effortRow)
+    expect(screen.getByText(/Usar padrão|Use default/i)).toBeTruthy()
+  })
 })
 
 describe('ModelSelector — Codex rows + effort drill-in', () => {
@@ -111,9 +195,8 @@ describe('ModelSelector — Codex rows + effort drill-in', () => {
       /Provider models couldn't be refreshed|Não foi possível atualizar os modelos dos provedores/,
     )).toBeVisible()
 
-    const modelRow = [...document.querySelectorAll<HTMLButtonElement>('.model-row')]
-      .find(button => /Model|Modelo/.test(button.textContent ?? ''))!
-    fireEvent.click(modelRow)
+    // Single popover: the Verboo models stay selectable right there —
+    // no intermediate row to drill through.
     fireEvent.click(document.querySelector<HTMLButtonElement>('.model-option')!)
 
     expect(onSelect).toHaveBeenCalledWith('glm-5.2')
@@ -427,15 +510,12 @@ describe('ModelSelector — provider grouping (F3)', () => {
     return { models, source: 'cli', stale: false }
   }
 
-  /** Root menu → drill into the models panel (where the groups render). The
-   *  menu is a portal to document.body, so queries go to `document`, not the
-   *  render container. */
+  /** The chip opens DIRECTLY on the models panel (single popover) — one
+   *  click on the pill is the whole navigation. The menu is a portal to
+   *  document.body, so queries go to `document`, not the render
+   *  container. */
   function openModelsPanel() {
     fireEvent.click(document.querySelector('.model-pill')!)
-    const row = screen.getAllByText(/^Modelo$|^Model$/i)
-      .map(el => el.closest('button'))
-      .find(btn => btn?.classList.contains('model-row'))!
-    fireEvent.click(row)
   }
 
   function groupLabels(): string[] {
@@ -724,10 +804,6 @@ describe('T14: dedupModels — uma entrada por id no seletor', () => {
       />,
     )
     fireEvent.click(document.querySelector('.model-pill')!)
-    const row = screen.getAllByText(/^Modelo$|^Model$/i)
-      .map(el => el.closest('button'))
-      .find(btn => btn?.classList.contains('model-row'))!
-    fireEvent.click(row)
     // Pin ONE entry per id — the selector must not show duplicates.
     const modelRows = [...document.querySelectorAll('.model-option')]
       .filter(btn => btn.querySelector('small')?.textContent === 'ultra/glm-5.2')
