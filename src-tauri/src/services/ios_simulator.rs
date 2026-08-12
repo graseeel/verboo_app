@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc, Mutex,
+    Arc, Condvar, Mutex,
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -165,6 +165,28 @@ pub struct IosSimulatorFrame {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct IosSimulatorReadyObservation {
+    pub udid: String,
+    pub device_generation: u64,
+    pub frame_generation: u64,
+    pub lifecycle: IosSimulatorLifecycleSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IosSimulatorScreenshotObservation {
+    pub udid: String,
+    pub device_generation: u64,
+    pub frame_generation: u64,
+    pub captured_at_ms: u64,
+    pub frame_age_ms: u64,
+    pub source: IosSimulatorStreamSource,
+    pub media_type: &'static str,
+    pub data_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IosSimulatorError {
     pub udid: String,
     pub message: String,
@@ -239,6 +261,17 @@ pub struct IosSimulatorAccessibilityNode {
     pub enabled: bool,
     pub visible: bool,
     pub actionable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IosSimulatorFocusedElement {
+    pub role: String,
+    pub identifier: Option<String>,
+    pub label: Option<String>,
+    pub value: Option<String>,
+    pub enabled: bool,
+    pub focused: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -867,12 +900,80 @@ struct StreamStats {
     effective_fps: Option<f64>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct LatestFrame {
     device_generation: u64,
     frame_generation: u64,
     bytes: Vec<u8>,
     media_type: &'static str,
+    captured_at_ms: u64,
+    source: IosSimulatorStreamSource,
+}
+
+#[derive(Default)]
+struct LatestFrameStore {
+    frame: Mutex<Option<LatestFrame>>,
+    changed: Condvar,
+}
+
+impl LatestFrameStore {
+    fn publish(&self, frame: LatestFrame) {
+        *self
+            .frame
+            .lock()
+            .expect("iOS simulator latest frame poisoned") = Some(frame);
+        self.changed.notify_all();
+    }
+
+    fn latest(&self) -> Option<LatestFrame> {
+        self.frame
+            .lock()
+            .expect("iOS simulator latest frame poisoned")
+            .clone()
+    }
+
+    fn wait_after(
+        &self,
+        device_generation: u64,
+        after_generation: Option<u64>,
+        timeout: Duration,
+        stop: &AtomicBool,
+    ) -> Result<LatestFrame, String> {
+        let deadline = Instant::now() + timeout;
+        let mut frame = self
+            .frame
+            .lock()
+            .expect("iOS simulator latest frame poisoned");
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return Err("A sessão do simulador foi encerrada.".into());
+            }
+            if let Some(current) = frame.as_ref() {
+                if current.device_generation != device_generation {
+                    return Err("O quadro pertence a outra sessão do simulador.".into());
+                }
+                if after_generation.is_none_or(|after| current.frame_generation > after) {
+                    return Ok(current.clone());
+                }
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("Nenhum quadro novo chegou dentro do prazo.".into());
+            }
+            let (next, result) = self
+                .changed
+                .wait_timeout(frame, remaining)
+                .expect("iOS simulator latest frame poisoned");
+            frame = next;
+            if result.timed_out() {
+                return Err("Nenhum quadro novo chegou dentro do prazo.".into());
+            }
+        }
+    }
+
+    fn wake_all(&self) {
+        self.changed.notify_all();
+    }
 }
 
 struct FrameRateMeter {
@@ -936,7 +1037,7 @@ struct Session {
     stats: Arc<Mutex<StreamStats>>,
     stop: Arc<AtomicBool>,
     input_lock: Arc<Mutex<()>>,
-    latest_frame: Arc<Mutex<Option<LatestFrame>>>,
+    latest_frame: Arc<LatestFrameStore>,
     gate: Arc<PreviewGate>,
     mjpeg_active: Arc<AtomicBool>,
     next_frame_generation: Arc<AtomicU64>,
@@ -1177,6 +1278,79 @@ impl IosSimulatorService {
             source: stats.source,
             effective_fps: stats.effective_fps,
             lifecycle: self.lifecycle.snapshot(),
+        })
+    }
+
+    pub(crate) fn wait_until_ready_sync(
+        &self,
+        timeout: Duration,
+    ) -> Result<IosSimulatorReadyObservation, String> {
+        self.reject_if_exiting()?;
+        let deadline = Instant::now() + timeout;
+        let (udid, device_generation, latest_frame, stop) = {
+            let state = self.state.lock().expect("iOS simulator state poisoned");
+            let session = state
+                .session
+                .as_ref()
+                .ok_or_else(|| "Nenhum simulador está anexado.".to_string())?;
+            (
+                session.device.udid.clone(),
+                session.device_generation,
+                session.latest_frame.clone(),
+                session.stop.clone(),
+            )
+        };
+        let lifecycle = self
+            .lifecycle
+            .wait_until_ready(device_generation, timeout)?;
+        let frame = latest_frame.wait_after(
+            device_generation,
+            None,
+            deadline.saturating_duration_since(Instant::now()),
+            stop.as_ref(),
+        )?;
+        Ok(IosSimulatorReadyObservation {
+            udid,
+            device_generation,
+            frame_generation: frame.frame_generation,
+            lifecycle,
+        })
+    }
+
+    pub(crate) fn screenshot_sync(
+        &self,
+        after_generation: Option<u64>,
+        timeout: Duration,
+    ) -> Result<IosSimulatorScreenshotObservation, String> {
+        self.reject_if_exiting()?;
+        let (udid, device_generation, latest_frame, stop) = {
+            let state = self.state.lock().expect("iOS simulator state poisoned");
+            let session = state
+                .session
+                .as_ref()
+                .ok_or_else(|| "Nenhum simulador está anexado.".to_string())?;
+            (
+                session.device.udid.clone(),
+                session.device_generation,
+                session.latest_frame.clone(),
+                session.stop.clone(),
+            )
+        };
+        let frame = latest_frame.wait_after(
+            device_generation,
+            after_generation,
+            timeout,
+            stop.as_ref(),
+        )?;
+        Ok(IosSimulatorScreenshotObservation {
+            udid,
+            device_generation,
+            frame_generation: frame.frame_generation,
+            captured_at_ms: frame.captured_at_ms,
+            frame_age_ms: unix_time_ms().saturating_sub(frame.captured_at_ms),
+            source: frame.source,
+            media_type: frame.media_type,
+            data_url: image_data_url(&frame.bytes, frame.media_type),
         })
     }
 
@@ -1442,6 +1616,10 @@ impl IosSimulatorService {
         if self.exiting.load(Ordering::Acquire) {
             return 0;
         }
+        // Resume the backend producer before the renderer reacts to the open
+        // event. This makes the next observation fresh even when the user had
+        // hidden the panel.
+        let _ = self.set_visible_sync(true);
         let generation = self.presence.begin();
         let presence = IosSimulatorPresenceEvent {
             generation,
@@ -1674,6 +1852,7 @@ impl IosSimulatorService {
             // Detach is intentionally only a stream cancellation. It does
             // not call `simctl shutdown`: the user's device remains usable.
             session.gate.stop_and_wake(&session.stop);
+            session.latest_frame.wake_all();
             session.gate.set_visible(false);
             {
                 let _input_guard = session
@@ -2011,7 +2190,7 @@ impl IosSimulatorService {
             self.desired_visibility.load(Ordering::Acquire),
         ));
         let input_lock = Arc::new(Mutex::new(()));
-        let latest_frame = Arc::new(Mutex::new(None));
+        let latest_frame = Arc::new(LatestFrameStore::default());
         let next_frame_generation = Arc::new(AtomicU64::new(0));
         let wda_force_stop = Arc::new(Mutex::new(None));
         let wda_control = Arc::new(Mutex::new(None));
@@ -2534,6 +2713,20 @@ impl IosSimulatorService {
         )
     }
 
+    pub(crate) fn focused_element_sync(
+        &self,
+    ) -> Result<Option<IosSimulatorFocusedElement>, String> {
+        self.reject_if_exiting()?;
+        let (input_lock, stop, handle) = self.active_wda_access()?;
+        let _guard = input_lock
+            .lock()
+            .expect("iOS simulator input queue poisoned");
+        if stop.load(Ordering::Acquire) {
+            return Err("A sessão do simulador foi encerrada.".to_string());
+        }
+        self.wda_client.focused_element(&handle)
+    }
+
     fn capture_annotation_sync(
         &self,
         store: &IosSimulatorCaptureStore,
@@ -2564,9 +2757,7 @@ impl IosSimulatorService {
             }
             let latest = session
                 .latest_frame
-                .lock()
-                .expect("iOS simulator latest frame poisoned")
-                .clone()
+                .latest()
                 .ok_or_else(|| "Aguardando a primeira captura do simulador.".to_string())?;
             if latest.device_generation != device_generation {
                 return Err("O quadro selecionado pertence a outra sessão.".into());
@@ -3659,7 +3850,7 @@ fn spawn_capture_loop(
     mjpeg_active: Arc<AtomicBool>,
     stats: Arc<Mutex<StreamStats>>,
     device_generation: u64,
-    latest_frame: Arc<Mutex<Option<LatestFrame>>>,
+    latest_frame: Arc<LatestFrameStore>,
     next_frame_generation: Arc<AtomicU64>,
     sink: Arc<dyn FrameSink>,
 ) -> JoinHandle<()> {
@@ -3690,7 +3881,7 @@ fn spawn_capture_loop_internal(
     mjpeg_active: Arc<AtomicBool>,
     stats: Arc<Mutex<StreamStats>>,
     device_generation: u64,
-    latest_frame: Arc<Mutex<Option<LatestFrame>>>,
+    latest_frame: Arc<LatestFrameStore>,
     next_frame_generation: Arc<AtomicU64>,
     sink: Arc<dyn FrameSink>,
     gate: Arc<PreviewGate>,
@@ -3825,7 +4016,7 @@ fn spawn_capture_loop_with_first_frame_policy(
             effective_fps: None,
         })),
         1,
-        Arc::new(Mutex::new(None)),
+        Arc::new(LatestFrameStore::default()),
         Arc::new(AtomicU64::new(0)),
         sink,
         Arc::new(PreviewGate::new(true)),
@@ -3894,7 +4085,7 @@ fn spawn_wda_worker(
     mjpeg_active: Arc<AtomicBool>,
     stats: Arc<Mutex<StreamStats>>,
     device_generation: u64,
-    latest_frame: Arc<Mutex<Option<LatestFrame>>>,
+    latest_frame: Arc<LatestFrameStore>,
     next_frame_generation: Arc<AtomicU64>,
     wda_force_stop: Arc<Mutex<Option<WdaForceStop>>>,
     wda_control: Arc<Mutex<Option<WdaControlHandle>>>,
@@ -4317,7 +4508,7 @@ fn frame_from_bytes(
     source: IosSimulatorStreamSource,
     effective_fps: Option<f64>,
     device_generation: u64,
-    latest_frame: &Arc<Mutex<Option<LatestFrame>>>,
+    latest_frame: &Arc<LatestFrameStore>,
     next_frame_generation: &Arc<AtomicU64>,
 ) -> IosSimulatorFrame {
     let frame_generation = next_frame_generation
@@ -4327,13 +4518,14 @@ fn frame_from_bytes(
         .is_none()
         .then(|| image_data_url(&bytes, media_type))
         .unwrap_or_default();
-    *latest_frame
-        .lock()
-        .expect("iOS simulator latest frame poisoned") = Some(LatestFrame {
+    let captured_at_ms = unix_time_ms();
+    latest_frame.publish(LatestFrame {
         device_generation,
         frame_generation,
         bytes,
         media_type,
+        captured_at_ms,
+        source,
     });
     IosSimulatorFrame {
         udid: udid.to_string(),
@@ -4341,7 +4533,7 @@ fn frame_from_bytes(
         stream_url: stream_url.map(str::to_string),
         device_generation,
         frame_generation,
-        captured_at_ms: unix_time_ms(),
+        captured_at_ms,
         source,
         effective_fps,
         agent_presence: None,
@@ -4402,7 +4594,7 @@ mod tests {
     use super::ownership::OwnershipPhase;
     use super::*;
     use std::sync::atomic::AtomicUsize;
-    use std::sync::{Condvar, OnceLock};
+    use std::sync::{mpsc, Condvar, OnceLock};
     use std::thread::{self, sleep};
 
     const DEVICES_JSON: &str = r#"{
@@ -5552,7 +5744,7 @@ mod tests {
             })),
             stop: Arc::new(AtomicBool::new(false)),
             input_lock: Arc::new(Mutex::new(())),
-            latest_frame: Arc::new(Mutex::new(None)),
+            latest_frame: Arc::new(LatestFrameStore::default()),
             gate: Arc::new(PreviewGate::new(true)),
             mjpeg_active: Arc::new(AtomicBool::new(false)),
             next_frame_generation: Arc::new(AtomicU64::new(0)),
@@ -5573,11 +5765,13 @@ mod tests {
     fn set_test_latest_frame(service: &IosSimulatorService, frame_generation: u64) {
         let state = service.state.lock().unwrap();
         let session = state.session.as_ref().unwrap();
-        *session.latest_frame.lock().unwrap() = Some(LatestFrame {
+        session.latest_frame.publish(LatestFrame {
             device_generation: session.device_generation,
             frame_generation,
             bytes: test_png(400, 800),
             media_type: "image/png",
+            captured_at_ms: 1_762_790_400_000,
+            source: IosSimulatorStreamSource::Simctl,
         });
     }
 
@@ -5708,6 +5902,93 @@ mod tests {
         }
 
         fn release_blocked_wda(&self) {}
+    }
+
+    #[test]
+    fn latest_frame_store_waits_for_a_strictly_newer_generation() {
+        let store = Arc::new(LatestFrameStore::default());
+        let stop = Arc::new(AtomicBool::new(false));
+        store.publish(LatestFrame {
+            device_generation: 4,
+            frame_generation: 10,
+            bytes: vec![1],
+            media_type: "image/png",
+            captured_at_ms: 100,
+            source: IosSimulatorStreamSource::Simctl,
+        });
+        let waiting_store = store.clone();
+        let waiting_stop = stop.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            result_tx
+                .send(waiting_store.wait_after(
+                    4,
+                    Some(10),
+                    Duration::from_secs(1),
+                    waiting_stop.as_ref(),
+                ))
+                .unwrap();
+        });
+
+        started_rx.recv_timeout(Duration::from_millis(100)).unwrap();
+        store.publish(LatestFrame {
+            device_generation: 4,
+            frame_generation: 11,
+            bytes: vec![2],
+            media_type: "image/jpeg",
+            captured_at_ms: 101,
+            source: IosSimulatorStreamSource::Mjpeg,
+        });
+
+        let frame = result_rx
+            .recv_timeout(Duration::from_millis(250))
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame.frame_generation, 11);
+        assert_eq!(frame.bytes, vec![2]);
+        waiter.join().unwrap();
+    }
+
+    #[test]
+    fn latest_frame_store_wakes_when_the_session_stops() {
+        let store = Arc::new(LatestFrameStore::default());
+        let stop = Arc::new(AtomicBool::new(false));
+        store.publish(LatestFrame {
+            device_generation: 4,
+            frame_generation: 10,
+            bytes: vec![1],
+            media_type: "image/png",
+            captured_at_ms: 100,
+            source: IosSimulatorStreamSource::Simctl,
+        });
+        let waiting_store = store.clone();
+        let waiting_stop = stop.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            result_tx
+                .send(waiting_store.wait_after(
+                    4,
+                    Some(10),
+                    Duration::from_secs(1),
+                    waiting_stop.as_ref(),
+                ))
+                .unwrap();
+        });
+
+        started_rx.recv_timeout(Duration::from_millis(100)).unwrap();
+        stop.store(true, Ordering::Release);
+        store.wake_all();
+
+        let error = result_rx
+            .recv_timeout(Duration::from_millis(250))
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("encerrada"), "unexpected error: {error}");
+        waiter.join().unwrap();
     }
 
     #[test]
@@ -6863,7 +7144,7 @@ mod tests {
                 })),
                 stop,
                 input_lock: Arc::new(Mutex::new(())),
-                latest_frame: Arc::new(Mutex::new(None)),
+                latest_frame: Arc::new(LatestFrameStore::default()),
                 gate: Arc::new(PreviewGate::new(true)),
                 mjpeg_active: Arc::new(AtomicBool::new(false)),
                 next_frame_generation: Arc::new(AtomicU64::new(0)),
@@ -7169,7 +7450,7 @@ mod tests {
             })),
             stop,
             input_lock: Arc::new(Mutex::new(())),
-            latest_frame: Arc::new(Mutex::new(None)),
+            latest_frame: Arc::new(LatestFrameStore::default()),
             gate: Arc::new(PreviewGate::new(true)),
             mjpeg_active: Arc::new(AtomicBool::new(false)),
             next_frame_generation: Arc::new(AtomicU64::new(0)),

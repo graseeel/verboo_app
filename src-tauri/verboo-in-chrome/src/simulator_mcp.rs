@@ -183,7 +183,7 @@ impl ServerHandler for SimulatorMcpServer {
                 website_url: None,
             },
             instructions: Some(
-                "Uses the iOS Simulator session already attached in Verboo desktop. It never launches a second device session."
+                "Uses the iOS Simulator session owned by Verboo desktop and never launches a second device session. After attaching, call ios_simulator_wait_until_ready instead of using shell sleep or polling. Keep the last observed frameGeneration and, after every mutating action, call ios_simulator_screenshot with afterFrameGeneration so verification cannot reuse a stale frame. After typing, use ios_simulator_focused_element to verify the exact focused value when one is available. Do not report an item as saved, created, submitted, or sent while a visible confirmation action is still pending or the final state has not been observed. These rules apply generically to every app."
                     .into(),
             ),
             ..Default::default()

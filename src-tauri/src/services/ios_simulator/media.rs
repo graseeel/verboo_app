@@ -345,8 +345,8 @@ fn media_file(path: &Path) -> IosSimulatorMediaFile {
 mod tests {
     use super::super::{
         IosSimulatorDevice, IosSimulatorDeviceFamily, IosSimulatorOwnership,
-        IosSimulatorRecordingState, IosSimulatorStreamSource, PreviewGate, Session, StreamProfile,
-        StreamStats,
+        IosSimulatorRecordingState, IosSimulatorStreamSource, LatestFrameStore, PreviewGate,
+        Session, StreamProfile, StreamStats,
     };
     use super::*;
     use std::path::Path;
@@ -537,7 +537,7 @@ mod tests {
                 })),
                 stop: Arc::new(AtomicBool::new(false)),
                 input_lock: Arc::new(Mutex::new(())),
-                latest_frame: Arc::new(Mutex::new(None)),
+                latest_frame: Arc::new(LatestFrameStore::default()),
                 gate: Arc::new(PreviewGate::new(true)),
                 mjpeg_active: Arc::new(AtomicBool::new(false)),
                 next_frame_generation: Arc::new(AtomicU64::new(0)),
@@ -641,7 +641,7 @@ mod tests {
             })),
             stop: Arc::new(AtomicBool::new(false)),
             input_lock: Arc::new(Mutex::new(())),
-            latest_frame: Arc::new(Mutex::new(None)),
+            latest_frame: Arc::new(LatestFrameStore::default()),
             gate: Arc::new(PreviewGate::new(true)),
             mjpeg_active: Arc::new(AtomicBool::new(false)),
             next_frame_generation: Arc::new(AtomicU64::new(0)),

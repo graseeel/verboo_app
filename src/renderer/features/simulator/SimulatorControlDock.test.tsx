@@ -63,6 +63,21 @@ describe('SimulatorControlDock', () => {
     expect(screen.getByRole('button', { name: 'Desanexar' })).toBeEnabled()
   })
 
+  it('shows a visible tooltip for every icon-only dock control', () => {
+    renderDock()
+    for (const name of [
+      'Início', 'Apps abertos', 'Notificações', 'Central de Controle',
+      'Girar aparelho', 'Capturar tela', 'Iniciar gravação', 'Desanexar',
+      'Encerrar simulador externo',
+    ]) {
+      const button = screen.getByRole('button', { name })
+      fireEvent.focus(button)
+      expect(screen.getByRole('tooltip')).toHaveTextContent(name)
+      fireEvent.blur(button)
+      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    }
+  })
+
   it('detaches an external device immediately without opening a shutdown confirmation', () => {
     const { props } = renderDock({ ownership: 'external' })
 

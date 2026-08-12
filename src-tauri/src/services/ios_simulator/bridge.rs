@@ -14,8 +14,8 @@ use tauri::AppHandle;
 use uuid::Uuid;
 
 use super::{
-    image_data_url, IosSimulatorKey, IosSimulatorPresenceAction, IosSimulatorService,
-    IosSimulatorSystemAction, NormalizedPoint, StreamProfile, DEFAULT_FALLBACK_FPS,
+    IosSimulatorKey, IosSimulatorPresenceAction, IosSimulatorService, IosSimulatorSystemAction,
+    NormalizedPoint, StreamProfile, DEFAULT_FALLBACK_FPS,
 };
 #[cfg(test)]
 use super::PreviewGate;
@@ -296,15 +296,28 @@ fn dispatch_tool(
             #[derive(Deserialize)]
             #[serde(rename_all = "camelCase")]
             struct Args {
-                udid: String,
+                udid: Option<String>,
+                model: Option<String>,
+                ios_version: Option<String>,
                 stream_fps: Option<u16>,
                 fallback_fps: Option<f64>,
             }
             let args: Args = parse_args(arguments)?;
-            ensure_attach_compatible(service, &args.udid)?;
+            let devices = if args.udid.is_none() {
+                service.current_requirements_sync().devices
+            } else {
+                Vec::new()
+            };
+            let udid = resolve_attach_udid(
+                &devices,
+                args.udid.as_deref(),
+                args.model.as_deref(),
+                args.ios_version.as_deref(),
+            )?;
+            ensure_attach_compatible(service, &udid)?;
             if let Some(session) = service
                 .current_session_summary()
-                .filter(|session| session.device.udid == args.udid)
+                .filter(|session| session.device.udid == udid)
             {
                 service.begin_agent_action(
                     IosSimulatorPresenceAction::Attach,
@@ -319,7 +332,7 @@ fn dispatch_tool(
                 app.cloned().ok_or_else(|| {
                     DispatchError::new("internal_error", "app handle unavailable")
                 })?,
-                args.udid,
+                udid,
                 args.stream_fps.unwrap_or(StreamProfile::DEFAULT.fps()),
                 args.fallback_fps.unwrap_or(DEFAULT_FALLBACK_FPS),
             );
@@ -330,6 +343,21 @@ fn dispatch_tool(
                 service.request_agent_panel_open();
             }
             serde_json::to_value(result.map_err(tool_error)?).map_err(internal_error)
+        }
+        "ios_simulator_wait_until_ready" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                udid: Option<String>,
+                timeout_ms: Option<u64>,
+            }
+            let args: Args = parse_args(arguments)?;
+            ensure_device(service, args.udid.as_deref())?;
+            let timeout = Duration::from_millis(
+                args.timeout_ms.unwrap_or(90_000).clamp(100, 90_000),
+            );
+            let observation = service.wait_until_ready_sync(timeout).map_err(tool_error)?;
+            serde_json::to_value(observation).map_err(internal_error)
         }
         "ios_simulator_inspect" => {
             ensure_requested_device(service, &arguments)?;
@@ -345,7 +373,15 @@ fn dispatch_tool(
             serde_json::to_value(result).map_err(internal_error)
         }
         "ios_simulator_screenshot" => {
-            ensure_requested_device(service, &arguments)?;
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                udid: Option<String>,
+                after_frame_generation: Option<u64>,
+                timeout_ms: Option<u64>,
+            }
+            let args: Args = parse_args(arguments)?;
+            ensure_device(service, args.udid.as_deref())?;
             with_presence(
                 service,
                 IosSimulatorPresenceAction::Screenshot,
@@ -353,27 +389,33 @@ fn dispatch_tool(
                 None,
                 None,
                 || {
-                    let state = service.state.lock().expect("iOS simulator state poisoned");
-                    let session = state
-                        .session
-                        .as_ref()
-                        .ok_or_else(|| "Nenhum simulador está anexado.".to_string())?;
-                    let frame = session
-                        .latest_frame
-                        .lock()
-                        .expect("latest frame poisoned")
-                        .clone()
-                        .ok_or_else(|| "Aguardando a primeira captura do simulador.".to_string())?;
-                    Ok(json!({
-                        "udid": session.device.udid,
-                        "deviceGeneration": frame.device_generation,
-                        "frameGeneration": frame.frame_generation,
-                        "mediaType": frame.media_type,
-                        "dataUrl": image_data_url(&frame.bytes, frame.media_type),
-                    }))
+                    let timeout = Duration::from_millis(
+                        args.timeout_ms.unwrap_or(5_000).clamp(50, 10_000),
+                    );
+                    service
+                        .screenshot_sync(args.after_frame_generation, timeout)
+                        .and_then(|observation| {
+                            serde_json::to_value(observation).map_err(|error| error.to_string())
+                        })
                 },
             )
             .map_err(tool_error)
+        }
+        "ios_simulator_focused_element" => {
+            ensure_requested_device(service, &arguments)?;
+            let element = with_presence(
+                service,
+                IosSimulatorPresenceAction::Inspect,
+                None,
+                None,
+                None,
+                || service.focused_element_sync(),
+            )
+            .map_err(tool_error)?;
+            Ok(json!({
+                "found": element.is_some(),
+                "element": element,
+            }))
         }
         "ios_simulator_tap" => {
             #[derive(Deserialize)]
@@ -565,6 +607,47 @@ fn ensure_attach_compatible(
     Ok(())
 }
 
+fn resolve_attach_udid(
+    devices: &[super::IosSimulatorDevice],
+    udid: Option<&str>,
+    model: Option<&str>,
+    ios_version: Option<&str>,
+) -> Result<String, DispatchError> {
+    match (udid, model, ios_version) {
+        (Some(udid), None, None) if !udid.trim().is_empty() => Ok(udid.trim().to_string()),
+        (None, Some(model), Some(ios_version))
+            if !model.trim().is_empty() && !ios_version.trim().is_empty() =>
+        {
+            let matches = devices
+                .iter()
+                .filter(|device| {
+                    device.name.eq_ignore_ascii_case(model.trim())
+                        && device.ios_version.eq_ignore_ascii_case(ios_version.trim())
+                })
+                .collect::<Vec<_>>();
+            match matches.as_slice() {
+                [device] => Ok(device.udid.clone()),
+                [] => Err(DispatchError::new(
+                    "device_not_found",
+                    format!(
+                        "no simulator exactly matches model {model:?} with iOS {ios_version:?}"
+                    ),
+                )),
+                _ => Err(DispatchError::new(
+                    "ambiguous_device",
+                    format!(
+                        "multiple simulators match model {model:?} with iOS {ios_version:?}; use an exact UDID"
+                    ),
+                )),
+            }
+        }
+        _ => Err(DispatchError::new(
+            "invalid_arguments",
+            "provide either udid or both model and iosVersion",
+        )),
+    }
+}
+
 fn ensure_requested_device(
     service: &IosSimulatorService,
     arguments: &Value,
@@ -702,7 +785,8 @@ fn process_is_alive(_pid: u32) -> bool {
 mod tests {
     use super::*;
     use crate::services::ios_simulator::{
-        IosSimulatorDevice, IosSimulatorStreamSource, PresenceAuthority, Session, StreamStats,
+        IosSimulatorDevice, IosSimulatorOwnership, IosSimulatorStreamSource, LatestFrame,
+        LatestFrameStore, LifecycleSignal, PresenceAuthority, Session, StreamStats, unix_time_ms,
     };
     use std::sync::mpsc;
 
@@ -789,6 +873,28 @@ mod tests {
         assert!(service.desired_visibility.load(Ordering::Acquire));
     }
 
+    #[test]
+    fn agent_action_resumes_hidden_preview_before_the_operation_runs() {
+        let service = attached_service("phone-17-pro");
+        service.set_visible_sync(false).unwrap();
+
+        let observed = with_presence(
+            &service,
+            IosSimulatorPresenceAction::Screenshot,
+            None,
+            None,
+            None,
+            || {
+                let state = service.state.lock().unwrap();
+                Ok(state.session.as_ref().unwrap().gate.is_visible())
+            },
+        )
+        .unwrap();
+
+        assert!(observed, "agent operation must observe resumed preview");
+        assert!(service.desired_visibility.load(Ordering::Acquire));
+    }
+
     fn attached_service(udid: &str) -> IosSimulatorService {
         let service = IosSimulatorService::default();
         service.state.lock().unwrap().session = Some(Session {
@@ -810,7 +916,7 @@ mod tests {
             })),
             stop: Arc::new(AtomicBool::new(false)),
             input_lock: Arc::new(Mutex::new(())),
-            latest_frame: Arc::new(Mutex::new(None)),
+            latest_frame: Arc::new(LatestFrameStore::default()),
             gate: Arc::new(PreviewGate::new(true)),
             mjpeg_active: Arc::new(AtomicBool::new(false)),
             next_frame_generation: Arc::new(AtomicU64::new(0)),
@@ -824,6 +930,37 @@ mod tests {
         service
     }
 
+    fn mark_service_ready(service: &IosSimulatorService, frame_generation: u64) {
+        let (device, generation, latest_frame) = {
+            let state = service.state.lock().unwrap();
+            let session = state.session.as_ref().unwrap();
+            (
+                session.device.clone(),
+                session.device_generation,
+                session.latest_frame.clone(),
+            )
+        };
+        service
+            .lifecycle
+            .begin(generation, device, IosSimulatorOwnership::External, true);
+        for signal in [
+            LifecycleSignal::BootComplete,
+            LifecycleSignal::DisplayReady,
+            LifecycleSignal::FirstFrameReady,
+            LifecycleSignal::InteractionReady,
+        ] {
+            assert!(service.lifecycle.transition(generation, signal));
+        }
+        latest_frame.publish(LatestFrame {
+            device_generation: generation,
+            frame_generation,
+            bytes: vec![1, 2, 3],
+            media_type: "image/png",
+            captured_at_ms: unix_time_ms(),
+            source: IosSimulatorStreamSource::Simctl,
+        });
+    }
+
     #[test]
     fn attach_refuses_to_replace_a_different_active_device() {
         let service = attached_service("phone-a");
@@ -835,6 +972,104 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, "device_mismatch");
+    }
+
+    #[test]
+    fn readiness_tool_returns_the_authoritative_ready_generation() {
+        let service = attached_service("phone-17-pro");
+        mark_service_ready(&service, 12);
+
+        let result = dispatch_tool(
+            "ios_simulator_wait_until_ready",
+            json!({"timeoutMs": 100}),
+            &service,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(result["udid"], "phone-17-pro");
+        assert_eq!(result["deviceGeneration"], 1);
+        assert_eq!(result["frameGeneration"], 12);
+        assert_eq!(result["lifecycle"]["stage"], "ready");
+    }
+
+    #[test]
+    fn screenshot_waits_for_a_frame_newer_than_the_observed_generation() {
+        let service = attached_service("phone-17-pro");
+        mark_service_ready(&service, 20);
+        let waiting_service = service.clone();
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            result_tx
+                .send(dispatch_tool(
+                    "ios_simulator_screenshot",
+                    json!({"afterFrameGeneration": 20, "timeoutMs": 1_000}),
+                    &waiting_service,
+                    None,
+                ))
+                .unwrap();
+        });
+
+        let latest_frame = {
+            let state = service.state.lock().unwrap();
+            state.session.as_ref().unwrap().latest_frame.clone()
+        };
+        latest_frame.publish(LatestFrame {
+            device_generation: 1,
+            frame_generation: 21,
+            bytes: vec![4, 5, 6],
+            media_type: "image/jpeg",
+            captured_at_ms: unix_time_ms(),
+            source: IosSimulatorStreamSource::Mjpeg,
+        });
+
+        let result = result_rx
+            .recv_timeout(Duration::from_millis(250))
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["frameGeneration"], 21);
+        assert_eq!(result["source"], "mjpeg");
+        assert!(result["capturedAtMs"].as_u64().is_some());
+        assert!(result["frameAgeMs"].as_u64().is_some());
+        waiter.join().unwrap();
+    }
+
+    #[test]
+    fn model_and_version_selector_requires_one_exact_unambiguous_device() {
+        let devices = vec![
+            IosSimulatorDevice {
+                name: "iPhone 17 Pro".into(),
+                udid: "phone-27".into(),
+                state: "Shutdown".into(),
+                ios_version: "27.0".into(),
+                family: crate::services::ios_simulator::IosSimulatorDeviceFamily::Iphone,
+                ownership: None,
+            },
+            IosSimulatorDevice {
+                name: "iPhone 17 Pro".into(),
+                udid: "phone-26".into(),
+                state: "Shutdown".into(),
+                ios_version: "26.5".into(),
+                family: crate::services::ios_simulator::IosSimulatorDeviceFamily::Iphone,
+                ownership: None,
+            },
+        ];
+
+        assert_eq!(
+            resolve_attach_udid(&devices, None, Some("iphone 17 pro"), Some("27.0")).unwrap(),
+            "phone-27",
+        );
+        let missing = resolve_attach_udid(&devices, None, Some("iPad Pro"), Some("27.0"))
+            .unwrap_err();
+        assert_eq!(missing.code, "device_not_found");
+        let ambiguous = resolve_attach_udid(
+            &[devices[0].clone(), devices[0].clone()],
+            None,
+            Some("iPhone 17 Pro"),
+            Some("27.0"),
+        )
+        .unwrap_err();
+        assert_eq!(ambiguous.code, "ambiguous_device");
     }
 
     #[test]
@@ -914,5 +1149,22 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.code, "tool_error", "home must reach WDA, not be unknown");
+    }
+
+    #[test]
+    fn focused_element_tool_reaches_the_existing_serialized_wda_path() {
+        let service = attached_service("phone-17-pro");
+        let error = dispatch_tool(
+            "ios_simulator_focused_element",
+            json!({}),
+            &service,
+            None,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code, "tool_error",
+            "focused inspection must reach WDA, not be unknown"
+        );
     }
 }

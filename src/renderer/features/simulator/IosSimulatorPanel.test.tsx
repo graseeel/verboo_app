@@ -150,6 +150,16 @@ describe('IosSimulatorPanel', () => {
       .toHaveAttribute('data-panel-placement', 'top')
   })
 
+  it('explains both icon-only header controls with visible tooltips', () => {
+    renderPanel()
+    for (const name of ['Atualizar simuladores', 'Ocultar simulador do iOS']) {
+      const button = screen.getByRole('button', { name })
+      fireEvent.focus(button)
+      expect(screen.getByRole('tooltip')).toHaveTextContent(name)
+      fireEvent.blur(button)
+    }
+  })
+
   it('renders the backend lifecycle stage and keeps interaction guarded until ready', () => {
     renderPanel({
       attachedUdid: device.udid,

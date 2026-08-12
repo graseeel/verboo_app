@@ -257,5 +257,28 @@
   if (nil != value) result[@"value"] = value;
   return FBResponseWithObject(result);
 }
+
++ (id<FBResponsePayload>)handleVerbooFocusedElement:(FBRouteRequest *)request
+{
+  XCUIElement *element = XCUIApplication.fb_activeApplication.fb_activeElement;
+  if (nil == element) {
+    return FBResponseWithObject(@{@"found": @NO});
+  }
+
+  NSString *identifier = FBVerbooInspectableText(element.identifier);
+  NSString *label = FBVerbooInspectableText(element.label);
+  NSString *value = FBVerbooInspectableText(element.value);
+  NSString *role = [FBElementTypeTransformer shortStringWithElementType:element.elementType];
+  NSMutableDictionary *result = [@{
+    @"found": @YES,
+    @"role": role ?: @"Other",
+    @"enabled": @(element.enabled),
+    @"focused": @(element.hasKeyboardFocus),
+  } mutableCopy];
+  if (nil != identifier) result[@"identifier"] = identifier;
+  if (nil != label) result[@"label"] = label;
+  if (nil != value) result[@"value"] = value;
+  return FBResponseWithObject(result);
+}
 #endif
 // VERBOO_SESSIONLESS_HANDLERS_END

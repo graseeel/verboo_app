@@ -3,10 +3,12 @@ use std::collections::HashSet;
 use serde_json::json;
 use verboo_in_chrome::simulator_catalog::simulator_catalog;
 
-const EXPECTED_NAMES: [&str; 11] = [
+const EXPECTED_NAMES: [&str; 13] = [
     "ios_simulator_list",
     "ios_simulator_attach",
+    "ios_simulator_wait_until_ready",
     "ios_simulator_screenshot",
+    "ios_simulator_focused_element",
     "ios_simulator_tap",
     "ios_simulator_drag",
     "ios_simulator_type_text",
@@ -47,7 +49,9 @@ fn simulator_catalog_bounds_points_and_text_and_marks_only_observations_read_onl
         read_only,
         [
             "ios_simulator_list",
+            "ios_simulator_wait_until_ready",
             "ios_simulator_screenshot",
+            "ios_simulator_focused_element",
             "ios_simulator_list_apps",
         ]
         .into_iter()
@@ -104,5 +108,51 @@ fn simulator_catalog_bounds_points_and_text_and_marks_only_observations_read_onl
         .is_ok());
     assert!(type_validator
         .validate(&json!({"text": "a".repeat(4_001)}))
+        .is_err());
+}
+
+#[test]
+fn simulator_catalog_supports_bounded_native_waits_and_exact_attach_selectors() {
+    let catalog = simulator_catalog().unwrap();
+    let attach = catalog
+        .tools
+        .iter()
+        .find(|tool| tool.name == "ios_simulator_attach")
+        .unwrap();
+    let attach_validator = jsonschema::validator_for(&attach.input_schema).unwrap();
+    assert!(attach_validator.validate(&json!({"udid": "phone-a"})).is_ok());
+    assert!(attach_validator
+        .validate(&json!({"model": "iPhone 17 Pro", "iosVersion": "27.0"}))
+        .is_ok());
+    assert!(attach_validator
+        .validate(&json!({"udid": "phone-a", "model": "iPhone 17 Pro", "iosVersion": "27.0"}))
+        .is_err());
+    assert!(attach_validator
+        .validate(&json!({"model": "iPhone 17 Pro"}))
+        .is_err());
+
+    let wait = catalog
+        .tools
+        .iter()
+        .find(|tool| tool.name == "ios_simulator_wait_until_ready")
+        .unwrap();
+    let wait_validator = jsonschema::validator_for(&wait.input_schema).unwrap();
+    assert!(wait_validator.validate(&json!({"timeoutMs": 90_000})).is_ok());
+    assert!(wait_validator.validate(&json!({"timeoutMs": 90_001})).is_err());
+
+    let screenshot = catalog
+        .tools
+        .iter()
+        .find(|tool| tool.name == "ios_simulator_screenshot")
+        .unwrap();
+    let screenshot_validator = jsonschema::validator_for(&screenshot.input_schema).unwrap();
+    assert!(screenshot_validator
+        .validate(&json!({"afterFrameGeneration": 42, "timeoutMs": 5_000}))
+        .is_ok());
+    assert!(screenshot_validator
+        .validate(&json!({"afterFrameGeneration": -1}))
+        .is_err());
+    assert!(screenshot_validator
+        .validate(&json!({"timeoutMs": 10_001}))
         .is_err());
 }

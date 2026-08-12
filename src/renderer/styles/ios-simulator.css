@@ -263,6 +263,61 @@
   border-left: 1px solid var(--border);
 }
 
+.simulator-tooltip-trigger {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.simulator-tooltip-bubble {
+  position: fixed;
+  z-index: 10000;
+  top: var(--simulator-tooltip-top);
+  left: var(--simulator-tooltip-left);
+  max-width: min(260px, calc(100vw - 24px));
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-elevated) 96%, black);
+  box-shadow: 0 10px 28px color-mix(in srgb, black 34%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.2;
+  pointer-events: none;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.simulator-tooltip-bubble[data-placement='top'] {
+  transform: translate(-50%, -100%);
+  animation: simulator-tooltip-in-top 120ms ease-out both;
+}
+
+.simulator-tooltip-bubble[data-placement='bottom'] {
+  transform: translateX(-50%);
+  animation: simulator-tooltip-in-bottom 120ms ease-out both;
+}
+
+@keyframes simulator-tooltip-in-top {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-100% + 3px));
+  }
+}
+
+@keyframes simulator-tooltip-in-bottom {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -3px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .simulator-tooltip-bubble {
+    animation: none;
+  }
+}
+
 .ios-simulator-dock-button {
   display: inline-grid;
   flex: 0 0 32px;

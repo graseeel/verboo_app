@@ -93,6 +93,7 @@ struct LifecycleState {
 
 pub(crate) struct LifecycleAuthority {
     state: Mutex<LifecycleState>,
+    changed: Condvar,
 }
 
 pub(crate) struct PreviewGate {
@@ -157,6 +158,7 @@ impl Default for LifecycleAuthority {
                 first_frame_ready: false,
                 interaction_ready: false,
             }),
+            changed: Condvar::new(),
         }
     }
 }
@@ -184,7 +186,9 @@ impl LifecycleAuthority {
             recording: IosSimulatorRecordingState::Idle,
             recoverable_error: None,
         };
-        state.snapshot.clone()
+        let snapshot = state.snapshot.clone();
+        self.changed.notify_all();
+        snapshot
     }
 
     pub(crate) fn transition(&self, generation: u64, signal: LifecycleSignal) -> bool {
@@ -219,6 +223,7 @@ impl LifecycleAuthority {
             }
         }
         state.snapshot.stage = derive_stage(&state);
+        self.changed.notify_all();
         true
     }
 
@@ -240,7 +245,46 @@ impl LifecycleAuthority {
         state.first_frame_ready = false;
         state.interaction_ready = false;
         state.snapshot = IosSimulatorLifecycleSnapshot::default();
+        self.changed.notify_all();
         true
+    }
+
+    pub(crate) fn wait_until_ready(
+        &self,
+        generation: u64,
+        timeout: Duration,
+    ) -> Result<IosSimulatorLifecycleSnapshot, String> {
+        let deadline = Instant::now() + timeout;
+        let mut state = self.state.lock().expect("iOS simulator lifecycle poisoned");
+        loop {
+            match state.snapshot.device_generation {
+                Some(current) if current != generation => {
+                    return Err("A prontidão pertence a outra sessão do simulador.".into());
+                }
+                None => return Err("A sessão do simulador foi encerrada.".into()),
+                Some(_) => {}
+            }
+            if state.snapshot.stage == IosSimulatorStartupStage::Ready
+                && state.snapshot.interaction_ready
+            {
+                return Ok(state.snapshot.clone());
+            }
+            if let Some(message) = state.snapshot.recoverable_error.as_ref() {
+                return Err(message.clone());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("O simulador não ficou pronto dentro do prazo.".into());
+            }
+            let (next, result) = self
+                .changed
+                .wait_timeout(state, remaining)
+                .expect("iOS simulator lifecycle poisoned");
+            state = next;
+            if result.timed_out() {
+                return Err("O simulador não ficou pronto dentro do prazo.".into());
+            }
+        }
     }
 }
 
@@ -301,6 +345,83 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::sync::Arc;
+
+    fn test_device() -> IosSimulatorDevice {
+        IosSimulatorDevice {
+            name: "iPhone 17 Pro".into(),
+            udid: "phone-17-pro".into(),
+            state: "Booted".into(),
+            ios_version: "27.0".into(),
+            family: super::super::IosSimulatorDeviceFamily::Iphone,
+            ownership: Some(IosSimulatorOwnership::External),
+        }
+    }
+
+    #[test]
+    fn readiness_wait_parks_until_the_same_generation_is_fully_ready() {
+        let authority = Arc::new(LifecycleAuthority::default());
+        authority.begin(7, test_device(), IosSimulatorOwnership::External, true);
+        let waiting = authority.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            result_tx
+                .send(waiting.wait_until_ready(7, Duration::from_secs(1)))
+                .unwrap();
+        });
+
+        started_rx.recv_timeout(Duration::from_millis(100)).unwrap();
+        assert!(authority.transition(7, LifecycleSignal::BootComplete));
+        assert!(authority.transition(7, LifecycleSignal::DisplayReady));
+        assert!(authority.transition(7, LifecycleSignal::FirstFrameReady));
+        assert!(authority.transition(7, LifecycleSignal::InteractionReady));
+
+        let snapshot = result_rx
+            .recv_timeout(Duration::from_millis(250))
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.stage, IosSimulatorStartupStage::Ready);
+        assert!(snapshot.interaction_ready);
+        waiter.join().unwrap();
+    }
+
+    #[test]
+    fn readiness_wait_wakes_when_the_requested_session_is_cleared() {
+        let authority = Arc::new(LifecycleAuthority::default());
+        authority.begin(8, test_device(), IosSimulatorOwnership::External, true);
+        let waiting = authority.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            result_tx
+                .send(waiting.wait_until_ready(8, Duration::from_secs(1)))
+                .unwrap();
+        });
+
+        started_rx.recv_timeout(Duration::from_millis(100)).unwrap();
+        assert!(authority.clear(8));
+
+        let error = result_rx
+            .recv_timeout(Duration::from_millis(250))
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("encerrada"), "unexpected error: {error}");
+        waiter.join().unwrap();
+    }
+
+    #[test]
+    fn readiness_wait_rejects_a_stale_generation_without_waiting() {
+        let authority = LifecycleAuthority::default();
+        authority.begin(9, test_device(), IosSimulatorOwnership::External, true);
+
+        let error = authority
+            .wait_until_ready(8, Duration::from_secs(1))
+            .unwrap_err();
+
+        assert!(error.contains("outra sessão"), "unexpected error: {error}");
+    }
 
     #[test]
     fn stopping_hidden_preview_wakes_waiter_after_stop_is_set() {

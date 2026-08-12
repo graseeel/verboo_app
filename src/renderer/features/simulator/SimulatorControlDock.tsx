@@ -11,6 +11,7 @@ import {
   Video,
 } from 'lucide-react'
 import { useI18n } from '../../i18n'
+import { SimulatorTooltipButton } from './SimulatorTooltip'
 import type {
   IosSimulatorMediaFile,
   IosSimulatorOwnership,
@@ -108,39 +109,39 @@ export function SimulatorControlDock({
       <div className="ios-simulator-control-dock" aria-label={t('simulator.controlDock')}>
         <div className="ios-simulator-control-group">
           {systemControls.map(({ action, label, icon: Icon }) => (
-            <button
+            <SimulatorTooltipButton
               key={action}
+              label={label}
               type="button"
-              className="ios-simulator-dock-button ui-tooltip"
+              className="ios-simulator-dock-button"
               aria-label={label}
-              data-tooltip={label}
               disabled={!interactionReady || busy}
               onClick={() => onSystemAction(action)}
             >
               <Icon size={16} aria-hidden />
-            </button>
+            </SimulatorTooltipButton>
           ))}
         </div>
         <div className="ios-simulator-control-group">
-          <button
+          <SimulatorTooltipButton
+            label={t('simulator.control.screenshot')}
             type="button"
-            className="ios-simulator-dock-button ui-tooltip"
+            className="ios-simulator-dock-button"
             aria-label={t('simulator.control.screenshot')}
-            data-tooltip={t('simulator.control.screenshot')}
             onClick={onCaptureScreen}
           >
             <Camera size={16} aria-hidden />
-          </button>
-          <button
+          </SimulatorTooltipButton>
+          <SimulatorTooltipButton
+            label={recordingLabel}
             type="button"
-            className="ios-simulator-dock-button ui-tooltip"
+            className="ios-simulator-dock-button"
             aria-label={recordingLabel}
-            data-tooltip={recordingLabel}
             disabled={recordingBusy}
             onClick={onToggleRecording}
           >
             <Video size={16} aria-hidden />
-          </button>
+          </SimulatorTooltipButton>
           {recording.state === 'recording' && (
             <span className="ios-simulator-recording-time" aria-live="off">
               {formatElapsed(recording.startedAtMs, now)}
@@ -149,26 +150,26 @@ export function SimulatorControlDock({
         </div>
         <div className="ios-simulator-control-group">
           {ownership === 'external' && (
-            <button
+            <SimulatorTooltipButton
+              label={t('simulator.control.detach')}
               type="button"
-              className="ios-simulator-dock-button ui-tooltip"
+              className="ios-simulator-dock-button"
               aria-label={t('simulator.control.detach')}
-              data-tooltip={t('simulator.control.detach')}
               onClick={onDetach}
             >
               <Unplug size={16} aria-hidden />
-            </button>
+            </SimulatorTooltipButton>
           )}
-          <button
+          <SimulatorTooltipButton
             ref={endButtonRef}
+            label={endLabel}
             type="button"
-            className="ios-simulator-dock-button ui-tooltip"
+            className="ios-simulator-dock-button"
             aria-label={endLabel}
-            data-tooltip={endLabel}
             onClick={() => setConfirmingEnd(ownership === 'verboo' ? 'owned' : 'external')}
           >
             <Power size={16} aria-hidden />
-          </button>
+          </SimulatorTooltipButton>
         </div>
       </div>
 

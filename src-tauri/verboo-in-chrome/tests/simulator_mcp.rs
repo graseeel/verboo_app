@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use rmcp::model::RawContent;
+use rmcp::ServerHandler;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -141,6 +142,22 @@ fn simulator_screenshot_uses_content_blocks_so_the_cli_cannot_hide_the_image() {
                 && text.text.contains("frameGeneration")
                 && !text.text.contains("aGVsbG8=")
     ));
+}
+
+#[test]
+fn simulator_mcp_instructions_require_native_waits_fresh_frames_and_confirmed_completion() {
+    let temp = TempDir::new().unwrap();
+    let server = SimulatorMcpServer::new(Arc::new(SimulatorSessionClient::with_store(
+        SimulatorDiscoveryStore::at(temp.path().join("missing")),
+    )))
+    .unwrap();
+    let instructions = server.get_info().instructions.unwrap();
+
+    assert!(instructions.contains("ios_simulator_wait_until_ready"));
+    assert!(instructions.contains("afterFrameGeneration"));
+    assert!(instructions.contains("ios_simulator_focused_element"));
+    assert!(instructions.contains("Do not report an item as saved, created, submitted, or sent"));
+    assert!(!instructions.contains("Reminders"));
 }
 
 #[cfg(unix)]

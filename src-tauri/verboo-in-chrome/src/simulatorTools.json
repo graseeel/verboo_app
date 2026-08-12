@@ -15,20 +15,54 @@
         "type": "object",
         "properties": {
           "udid": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "model": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "iosVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
           "streamFps": { "type": "integer", "enum": [30, 60] },
           "fallbackFps": { "type": "number", "enum": [0.5, 1, 2] }
         },
-        "required": ["udid"],
+        "oneOf": [
+          { "required": ["udid"] },
+          { "required": ["model", "iosVersion"] }
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ios_simulator_wait_until_ready",
+      "description": "Wait for the attached iOS Simulator preview and interaction transport to become ready without shell sleeps or polling.",
+      "risk": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "udid": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "timeoutMs": { "type": "integer", "minimum": 100, "maximum": 90000 }
+        },
         "additionalProperties": false
       }
     },
     {
       "name": "ios_simulator_screenshot",
-      "description": "Capture the latest frame from the attached iOS Simulator.",
+      "description": "Capture a frame from the attached iOS Simulator, optionally waiting for a generation newer than the last observed frame.",
       "risk": "read",
       "inputSchema": {
         "type": "object",
-        "properties": { "udid": { "type": "string", "minLength": 1, "maxLength": 256 } },
+        "properties": {
+          "udid": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "afterFrameGeneration": { "type": "integer", "minimum": 0 },
+          "timeoutMs": { "type": "integer", "minimum": 50, "maximum": 10000 }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ios_simulator_focused_element",
+      "description": "Read only the currently keyboard-focused control and its bounded label/value fields. This never requests the full accessibility hierarchy.",
+      "risk": "read",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "udid": { "type": "string", "minLength": 1, "maxLength": 256 }
+        },
         "additionalProperties": false
       }
     },
@@ -67,7 +101,7 @@
     },
     {
       "name": "ios_simulator_type_text",
-      "description": "Type text into the focused control in the attached iOS Simulator.",
+      "description": "Type text into the focused control in the attached iOS Simulator. Verify the resulting value with ios_simulator_focused_element before reporting success.",
       "risk": "mutate",
       "inputSchema": {
         "type": "object",

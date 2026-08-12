@@ -5,7 +5,9 @@ use reqwest::blocking::{Client, RequestBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::{system_controls::SystemGesture, IosSimulatorAccessibilityNode};
+use super::{
+    system_controls::SystemGesture, IosSimulatorAccessibilityNode, IosSimulatorFocusedElement,
+};
 
 const WDA_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 const WDA_READY_RETRY: Duration = Duration::from_millis(100);
@@ -150,6 +152,12 @@ pub(crate) trait WdaClient: Send + Sync {
         _point: WdaPoint,
     ) -> Result<Option<IosSimulatorAccessibilityNode>, String> {
         Err("a inspeção pontual não está disponível neste cliente WDA".to_string())
+    }
+    fn focused_element(
+        &self,
+        _control: &WdaControlHandle,
+    ) -> Result<Option<IosSimulatorFocusedElement>, String> {
+        Err("a inspeção do elemento em foco não está disponível neste cliente WDA".to_string())
     }
 }
 
@@ -359,6 +367,26 @@ impl WdaClient for SystemWdaClient {
         serde_json::from_value(value)
             .map(Some)
             .map_err(|error| format!("o WDA retornou um elemento inválido: {error}"))
+    }
+
+    fn focused_element(
+        &self,
+        control: &WdaControlHandle,
+    ) -> Result<Option<IosSimulatorFocusedElement>, String> {
+        let value = self.request_value(
+            self.client
+                .post(Self::endpoint(
+                    &control.base_url,
+                    "/wda/verboo/focusedElement",
+                ))
+                .json(&json!({})),
+        )?;
+        if !value.get("found").and_then(Value::as_bool).unwrap_or(false) {
+            return Ok(None);
+        }
+        serde_json::from_value(value)
+            .map(Some)
+            .map_err(|error| format!("o WDA retornou um elemento em foco inválido: {error}"))
     }
 }
 
@@ -672,6 +700,46 @@ mod tests {
                 "POST".into(),
                 "/wda/verboo/inspectPoint".into(),
                 serde_json::json!({ "x": 60.0, "y": 122.0 }),
+            )]
+        );
+    }
+
+    #[test]
+    fn wda_focused_element_is_sessionless_and_returns_only_bounded_fields() {
+        let http = FakeWdaHttpServer::start_with_values(vec![serde_json::json!({
+            "found": true,
+            "role": "TextField",
+            "identifier": "title-field",
+            "label": "Title",
+            "value": "Release 0.7.0",
+            "enabled": true,
+            "focused": true
+        })]);
+        let client = SystemWdaClient::default();
+        let control = WdaControlHandle {
+            base_url: http.base_url.clone(),
+            window_size: WdaWindowSize {
+                width: 402.0,
+                height: 874.0,
+            },
+            orientation: WdaInterfaceOrientation::Portrait,
+        };
+
+        let element = client
+            .focused_element(&control)
+            .unwrap()
+            .expect("focused text field");
+
+        assert_eq!(element.role, "TextField");
+        assert_eq!(element.identifier.as_deref(), Some("title-field"));
+        assert_eq!(element.value.as_deref(), Some("Release 0.7.0"));
+        assert!(element.focused);
+        assert_eq!(
+            http.finish(),
+            vec![(
+                "POST".into(),
+                "/wda/verboo/focusedElement".into(),
+                serde_json::json!({}),
             )]
         );
     }

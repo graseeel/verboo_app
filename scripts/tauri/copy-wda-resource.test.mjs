@@ -44,13 +44,16 @@ test('copies the WDA resource on macOS', async () => {
     path.join(target, 'WebDriverAgentLib', 'Commands', 'FBCustomCommands.m'),
     'utf8',
   )
-  for (const route of ['settings', 'tap', 'drag', 'type', 'key', 'home', 'systemGesture', 'rotate', 'inspectPoint']) {
+  for (const route of ['settings', 'tap', 'drag', 'type', 'key', 'home', 'systemGesture', 'rotate', 'inspectPoint', 'focusedElement']) {
     assert.match(commands, new RegExp(`/wda/verboo/${route}`))
   }
   const handlers = commands
     .split('// VERBOO_SESSIONLESS_HANDLERS_BEGIN')[1]
     .split('// VERBOO_SESSIONLESS_HANDLERS_END')[0]
-  assert.doesNotMatch(handlers, /request\.session|XCUIApplication|fb_activeApplication/)
+  assert.doesNotMatch(handlers, /request\.session/)
+  assert.match(handlers, /XCUIApplication\.fb_activeApplication\.fb_activeElement/)
+  assert.equal(handlers.match(/fb_activeElement/g)?.length, 1)
+  assert.match(handlers, /FBVerbooInspectableText\(element\.value\)/)
   assert.match(handlers, /_XCT_requestElementAtPoint/)
   assert.match(handlers, /_XCT_fetchAttributes:/)
   assert.match(handlers, /XC_kAXXCAttributeFrame/)

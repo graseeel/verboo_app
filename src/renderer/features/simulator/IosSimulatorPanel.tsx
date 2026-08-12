@@ -5,6 +5,7 @@ import { simulatorIssueMessageKey, simulatorStageMessageKey } from './iosSimulat
 import { SimulatorSurface } from './SimulatorSurface'
 import { SimulatorDevicePicker } from './SimulatorDevicePicker'
 import { SimulatorControlDock } from './SimulatorControlDock'
+import { SimulatorTooltipButton } from './SimulatorTooltip'
 import type { SimulatorInteractionMode } from './useSimulatorInteraction'
 import type {
   IosSimulatorAnnotationCapture,
@@ -185,25 +186,25 @@ export function IosSimulatorPanel({
           </div>
         </div>
         <div className="ios-simulator-header-actions">
-          <button
+          <SimulatorTooltipButton
+            label={t('simulator.refresh')}
             type="button"
-            className="icon-button tiny ui-tooltip"
+            className="icon-button tiny"
             onClick={onRefresh}
             disabled={requirementsLoading}
-            data-tooltip={t('simulator.refresh')}
             aria-label={t('simulator.refresh')}
           >
             <RefreshCw size={14} className={requirementsLoading ? 'is-spinning' : ''} />
-          </button>
-          <button
+          </SimulatorTooltipButton>
+          <SimulatorTooltipButton
+            label={t('topbar.hideSimulator')}
             type="button"
-            className="icon-button tiny ui-tooltip"
+            className="icon-button tiny"
             onClick={onClose}
-            data-tooltip={t('topbar.hideSimulator')}
             aria-label={t('topbar.hideSimulator')}
           >
             <PanelRightClose size={15} />
-          </button>
+          </SimulatorTooltipButton>
         </div>
       </header>
 
