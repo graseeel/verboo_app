@@ -18,6 +18,7 @@ const localBuildPath = new URL(
   "../build-release-app.sh",
   import.meta.url,
 );
+const packagePath = new URL("../../package.json", import.meta.url);
 
 // Normalize CRLF -> LF on read: git checkout on Windows brings CRLF into
 // the workflow files, and comparing/slicing workflow text with "\n" (or
@@ -116,6 +117,7 @@ test("macOS release and local builds sign only the app-owned bundle", async () =
   const tauriConfig = JSON.parse(await readFile(tauriConfigPath, "utf8"));
   const entitlements = await readFile(entitlementsPath, "utf8");
   const localBuild = await readWorkflowText(localBuildPath);
+  const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
   const prepareStart = workflow.indexOf(
     "- name: Prepare Apple notarization credentials",
   );
@@ -151,7 +153,20 @@ test("macOS release and local builds sign only the app-owned bundle", async () =
   );
   assert.doesNotMatch(workflow, /sign-macos-node-runtime|resources\/node-runtime/);
   assert.doesNotMatch(localBuild, /sign-macos-node-runtime|Contents\/MacOS\/verboo-node|resources\/node-runtime/);
-  assert.match(localBuild, /codesign[\s\S]*?--entitlements[\s\S]*?"\$APP_PATH"/);
+  const localIdentityIndex = localBuild.indexOf("APPLE_SIGNING_IDENTITY");
+  const localBuildIndex = localBuild.indexOf("npm run tauri:build");
+  assert.ok(
+    localIdentityIndex !== -1 && localIdentityIndex < localBuildIndex,
+    "the local Developer ID identity must be exported before Tauri signs the bundle",
+  );
+  assert.match(
+    packageJson.scripts["tauri:build"],
+    /macos-bundle-signing\.mjs prepare-sidecars/,
+  );
+  assert.match(localBuild, /macos-bundle-signing\.mjs verify-app "\$APP_PATH"/);
+  assert.match(localBuild, /codesign --verify --strict --verbose=2 "\$DMG_PATH"/);
+  assert.match(localBuild, /hdiutil verify "\$DMG_PATH"/);
+  assert.match(workflow, /macos-bundle-signing\.mjs verify-app "\$APP_PATH"/);
   assert.match(workflow, /test ! -e "\$APP_PATH\/Contents\/MacOS\/verboo-node"/);
   assert.equal([...workflow.matchAll(/Contents\/MacOS\/verboo-node/g)].length, 1);
   assert.match(workflow, /codesign --verify --deep --strict --verbose=2 "\$APP_PATH"/);

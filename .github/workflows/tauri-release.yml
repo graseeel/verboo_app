@@ -105,6 +105,7 @@ jobs:
           scripts/verify/verify-release-version.test.mjs
           scripts/verify/tauri-release-signing.test.mjs
           scripts/verify/cli-update-ownership.test.mjs
+          scripts/tauri/macos-bundle-signing.test.mjs
 
   # ─────────────────────────────────────────────────────────────────────
   # Per-platform builds. Each job:
@@ -609,6 +610,7 @@ jobs:
           test -n "${APPLE_CODESIGN_KEYCHAIN:-}"
           test -f "$APPLE_CODESIGN_KEYCHAIN"
           test -n "${APPLE_SIGNING_IDENTITY:-}"
+          node scripts/tauri/macos-bundle-signing.mjs verify-app "$APP_PATH"
 
           case "${{ matrix.target }}" in
             aarch64-apple-darwin) DMG_ARCH="aarch64" ;;

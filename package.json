@@ -28,7 +28,7 @@
     "test:media-sidecars": "node --test scripts/tauri/build-media-sidecars.test.mjs",
     "build:tauri-deps": "node scripts/tauri/copy-wda-resource.mjs && npm run fetch:tessdata && npm run build:renderer",
     "tauri:dev": "tauri dev",
-    "tauri:build": "npm run build:tauri-deps && npm run build:chrome-helper && cargo +1.89.0 tauri build",
+    "tauri:build": "npm run build:tauri-deps && npm run build:chrome-helper && node scripts/tauri/macos-bundle-signing.mjs prepare-sidecars && cargo +1.89.0 tauri build",
     "tauri:icon": "tauri icon",
     "release:prepare": "node scripts/release/prepare-release.mjs",
     "release:verify": "node scripts/verify/verify-release-version.mjs",
