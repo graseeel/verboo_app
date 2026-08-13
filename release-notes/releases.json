@@ -1,6 +1,52 @@
 {
   "schemaVersion": 1,
   "releases": {
+    "0.7.2-beta": {
+      "pt-BR": {
+        "title": "Verboo Code 0.7.2-beta — hotfix dos provedores",
+        "summary": "Um hotfix que atualiza as integrações gerenciadas e impede que Claude e Codex recebam configurações antigas do simulador.",
+        "items": [
+          {
+            "title": "MCPs atualizados com o app",
+            "body": "Os registros gerenciados do Chrome e do simulador agora recebem a versão 0.7.2-beta, permitindo reconhecer e substituir configurações antigas."
+          },
+          {
+            "title": "Claude e Codex voltam a responder",
+            "body": "O MCP do simulador expõe schemas compatíveis com as APIs dos provedores, eliminando os erros 400 causados por combinações oneOf no topo."
+          },
+          {
+            "title": "Migração sem novo login",
+            "body": "Registros antigos do simulador são regravados localmente mesmo quando comandos do CLI exigem autenticação, sem pedir que o usuário reconecte o provedor."
+          },
+          {
+            "title": "Atualização visível para todos",
+            "body": "A 0.7.2-beta chega pelo atualizador do app e exibe esta tela de novidades também para quem instala diretamente pelo repositório."
+          }
+        ]
+      },
+      "en-US": {
+        "title": "Verboo Code 0.7.2-beta — provider hotfix",
+        "summary": "A hotfix that updates managed integrations and prevents Claude and Codex from receiving stale simulator configurations.",
+        "items": [
+          {
+            "title": "MCPs updated with the app",
+            "body": "Managed Chrome and simulator registrations now receive version 0.7.2-beta so stale configurations can be recognized and replaced."
+          },
+          {
+            "title": "Claude and Codex respond again",
+            "body": "The simulator MCP exposes provider-compatible schemas, removing the 400 errors caused by top-level oneOf combinations."
+          },
+          {
+            "title": "Migration without another sign-in",
+            "body": "Stale simulator registrations are rewritten locally even when CLI commands require authentication, without asking users to reconnect the provider."
+          },
+          {
+            "title": "A visible update for everyone",
+            "body": "0.7.2-beta is delivered by the app updater and shows this What's New screen to users who install directly from the repository too."
+          }
+        ]
+      }
+    },
     "0.7.1-beta": {
       "pt-BR": {
         "title": "Verboo Code 0.7.1-beta — hotfix de conexão",
