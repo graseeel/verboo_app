@@ -1036,6 +1036,15 @@ fn inspect_files(
     services::file_service::inspect_files_result(&paths)
 }
 
+#[tauri::command]
+fn allow_media_preview_file(path: String, app: tauri::AppHandle) -> Result<String, String> {
+    let canonical = services::file_service::canonical_media_preview_path(&path)?;
+    app.asset_protocol_scope()
+        .allow_file(&canonical)
+        .map_err(|error| format!("allow media preview file: {error}"))?;
+    Ok(canonical.to_string_lossy().to_string())
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BeginPastedFileUploadResult {
@@ -2798,6 +2807,7 @@ pub fn run() {
             // Files
             pick_files,
             inspect_files,
+            allow_media_preview_file,
             inspect_pasted_image,
             begin_pasted_file_upload,
             append_pasted_file_chunk,

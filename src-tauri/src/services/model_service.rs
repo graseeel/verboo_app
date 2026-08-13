@@ -202,22 +202,22 @@ fn attach_provider_models(mut result: ModelDiscoveryResult) -> ModelDiscoveryRes
     result
 }
 
-/// Merge de duas entradas do mesmo id. Regra de campo casada com o renderer
-/// (`providerCatalog.ts:150-180` `dedupModels`): a entrada CLI (provider set)
-/// vence `provider`, `supports_vision`, `reasoning`, `vision_support_source`
-/// e `raw`; a entrada router (provider ausente) preenche `max_output_tokens`
-/// se o CLI não tiver. `display_name` e `context_window` coincidem (CLI vence
-/// pelo spread). NÃO joga fora a entrada "errada" — funde por campo.
+/// Merge de duas entradas do mesmo id. A entrada Router (provider ausente) é
+/// a autoridade para identidade, contexto, capacidades e payload bruto. A
+/// entrada CLI anexa somente o provider e preenche reasoning quando o Router
+/// o omite. Assim nenhum metadado de capacidade do CLI — inclusive o antigo
+/// default genérico de visão — substitui o `vision` verdadeiro do Router.
 fn merge_duplicate_models(existing: VerbooModel, incoming: VerbooModel) -> VerbooModel {
-    let (mut cli, router) = if existing.provider.is_some() {
+    let (cli, mut router) = if existing.provider.is_some() {
         (existing, incoming)
     } else {
         (incoming, existing)
     };
-    if cli.max_output_tokens.is_none() {
-        cli.max_output_tokens = router.max_output_tokens;
+    router.provider = cli.provider;
+    if router.reasoning.is_none() {
+        router.reasoning = cli.reasoning;
     }
-    cli
+    router
 }
 
 /// Deduplica modelos por id, fundindo campos quando o mesmo id aparece em
@@ -1012,11 +1012,14 @@ mod tests {
         let cli_model = VerbooModel {
             id: "glm-5.2".into(),
             display_name: "GLM 5.2".into(),
-            context_window: Some(131072),
+            context_window: Some(999999),
             max_output_tokens: None,
             supports_vision: Some(true),
             vision_support_source: Some("cli".into()),
-            reasoning: None,
+            reasoning: Some(ModelReasoning {
+                effort_levels: vec!["high".into(), "max".into()],
+                default_effort: Some("high".into()),
+            }),
             provider: Some("verboo".into()),
             raw: json!({"id": "glm-5.2", "source": "cli"}),
         };
@@ -1030,15 +1033,21 @@ mod tests {
             Some(8192),
             "router preenche max_output_tokens (CLI nao tem)"
         );
-        assert_eq!(m.supports_vision, Some(true), "CLI vence supports_vision");
+        assert_eq!(m.context_window, Some(131072), "router vence context_window");
+        assert_eq!(m.supports_vision, Some(false), "router vence supports_vision");
         assert_eq!(
             m.vision_support_source.as_deref(),
-            Some("cli"),
-            "CLI vence vision_support_source"
+            Some("router"),
+            "router vence vision_support_source"
         );
         assert_eq!(
-            m.raw, json!({"id": "glm-5.2", "source": "cli"}),
-            "CLI vence raw"
+            m.raw, json!({"id": "glm-5.2", "source": "router"}),
+            "router vence raw"
+        );
+        assert_eq!(
+            m.reasoning.as_ref().map(|value| value.effort_levels.as_slice()),
+            Some(["high".to_string(), "max".to_string()].as_slice()),
+            "CLI backfills reasoning quando o router omite"
         );
         // Ordem CLI-then-router (simétrica — merge nao depende de ordem).
         let merged_rev = dedup_and_merge_models(vec![cli_model, router_model]);
@@ -1053,6 +1062,9 @@ mod tests {
             Some(8192),
             "router preenche independente da ordem"
         );
+        assert_eq!(merged_rev[0].context_window, Some(131072));
+        assert_eq!(merged_rev[0].supports_vision, Some(false));
+        assert_eq!(merged_rev[0].vision_support_source.as_deref(), Some("router"));
     }
 
     /// (b) modelo que existe em apenas uma fonte sobrevive intacto.

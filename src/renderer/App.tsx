@@ -119,7 +119,8 @@ import { useReviewPanel } from './features/review/useReviewPanel'
 import { EmptyChat } from './components/EmptyChat'
 import { LoginScreen } from './components/LoginScreen'
 import { TopBar } from './components/TopBar'
-import { Transcript } from './components/Transcript'
+import { Transcript, type TranscriptMediaAttachment } from './components/Transcript'
+import { MEDIA_PREVIEW_TRANSITION_MS, MediaPreviewPanel } from './features/media-preview/MediaPreviewPanel'
 import { AccessSelector } from './features/access/AccessSelector'
 import { PermissionApprovalPanel, type PendingPermissionPrompt } from './features/permission/PermissionApprovalPanel'
 import { VisionFallbackModal } from './features/vision/VisionFallbackModal'
@@ -671,6 +672,10 @@ export function App() {
   const review = useReviewPanel()
   const browser = useBrowserPanel()
   const simulator = useIosSimulatorPanel()
+  const [previewMedia, setPreviewMedia] = useState<TranscriptMediaAttachment | undefined>()
+  const [mediaPreviewOpen, setMediaPreviewOpen] = useState(false)
+  const mediaPreviewOpenFrameRef = useRef<number | undefined>(undefined)
+  const mediaPreviewCloseTimerRef = useRef<number | undefined>(undefined)
   const consumedSimulatorOpenRequestRef = useRef(0)
   const browserAvailable = configLoaded && supportsEmbeddedBrowser(config.platform)
   const simulatorAvailable = configLoaded && config.platform === 'darwin'
@@ -887,12 +892,42 @@ export function App() {
   // The settings view does not render the sidebar —
   // collapse the column to 0 so the workspace takes the full grid width.
   const isFullscreenView = activeView === 'settings'
+  const cancelMediaPreviewTransitions = useCallback(() => {
+    if (mediaPreviewOpenFrameRef.current !== undefined) {
+      window.cancelAnimationFrame(mediaPreviewOpenFrameRef.current)
+      mediaPreviewOpenFrameRef.current = undefined
+    }
+    if (mediaPreviewCloseTimerRef.current !== undefined) {
+      window.clearTimeout(mediaPreviewCloseTimerRef.current)
+      mediaPreviewCloseTimerRef.current = undefined
+    }
+  }, [])
+  const clearMediaPreview = useCallback(() => {
+    cancelMediaPreviewTransitions()
+    setMediaPreviewOpen(false)
+    setPreviewMedia(undefined)
+  }, [cancelMediaPreviewTransitions])
+  const closeMediaPreview = useCallback(() => {
+    cancelMediaPreviewTransitions()
+    setMediaPreviewOpen(false)
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+    if (reducedMotion) {
+      setPreviewMedia(undefined)
+      return
+    }
+    mediaPreviewCloseTimerRef.current = window.setTimeout(() => {
+      mediaPreviewCloseTimerRef.current = undefined
+      setPreviewMedia(undefined)
+    }, MEDIA_PREVIEW_TRANSITION_MS)
+  }, [cancelMediaPreviewTransitions])
+  useEffect(() => cancelMediaPreviewTransitions, [cancelMediaPreviewTransitions])
   const closeWorkspacePanels = useCallback(() => {
     terminal.close()
     review.close()
     browser.close()
     simulator.close()
-  }, [browser.close, review.close, simulator.close, terminal.close])
+    clearMediaPreview()
+  }, [browser.close, clearMediaPreview, review.close, simulator.close, terminal.close])
   const restoreWorkspacePanel = useCallback((panel: WorkspacePanelKind) => {
     if (panel === 'terminal') {
       void loadLocalTerminalPanel()
@@ -932,10 +967,12 @@ export function App() {
     terminal.close()
     review.close()
     browser.close()
+    clearMediaPreview()
     setSelectedSubagentId(undefined)
     simulator.open()
   }, [
     browser.close,
+    clearMediaPreview,
     review.close,
     simulator.agentOpenRequest,
     simulator.open,
@@ -946,7 +983,8 @@ export function App() {
   const visibleReviewOpen = workspacePanelsEnabled && review.reviewOpen
   const visibleBrowserOpen = browserAvailable && workspacePanelsEnabled && browser.browserOpen
   const visibleSimulatorOpen = simulatorAvailable && workspacePanelsEnabled && simulator.simulatorOpen
-  const visibleVisualPanelOpen = visibleBrowserOpen || visibleSimulatorOpen
+  const visibleMediaPreviewOpen = workspacePanelsEnabled && mediaPreviewOpen && Boolean(previewMedia)
+  const visibleVisualPanelOpen = visibleBrowserOpen || visibleSimulatorOpen || visibleMediaPreviewOpen
   const effectiveSidebarWidth = isFullscreenView
     ? 0
     : sidebarVisualMode === 'hidden'
@@ -966,9 +1004,9 @@ export function App() {
   }, [browser.close, browserAvailable, simulator.close, simulatorAvailable])
 
   useEffect(() => {
-    if ((!browser.browserOpen && !simulator.simulatorOpen) || browser.browserWidth <= browserWidthLimit) return
+    if (!visibleVisualPanelOpen || browser.browserWidth <= browserWidthLimit) return
     browser.setWidth(browserWidthLimit, effectiveSidebarWidth)
-  }, [browser.browserOpen, browser.browserWidth, browser.setWidth, browserWidthLimit, effectiveSidebarWidth, simulator.simulatorOpen])
+  }, [browser.browserWidth, browser.setWidth, browserWidthLimit, effectiveSidebarWidth, visibleVisualPanelOpen])
   const subagentThreads = activeConversation?.subagents ?? []
   const subagentIndicatorKey = `${activeConversationId ?? 'none'}:${subagentThreads.length}`
   const workingSubagentCount = subagentThreads.filter(isSubagentThreadWorking).length
@@ -1036,15 +1074,8 @@ export function App() {
     '--subagents-panel-width': showSubagentThreadPanel ? '320px' : '0px',
     '--terminal-width': visibleTerminalOpen ? `${terminal.terminalWidth}px` : '0px',
     '--review-width': visibleReviewOpen ? `${review.reviewWidth}px` : '0px',
-    '--browser-width': visibleBrowserOpen ? `${effectiveBrowserWidth}px` : '0px',
+    '--browser-width': visibleVisualPanelOpen ? `${effectiveBrowserWidth}px` : '0px',
   } as CSSProperties
-  // Browser and simulator share the same right lane. Keep the browser branch
-  // explicit because the existing layout contract keys that lane by this
-  // variable, then hand the same measured width to the simulator when it owns
-  // the lane.
-  if (visibleSimulatorOpen) {
-    Object.assign(appLayoutStyle, { '--browser-width': `${effectiveBrowserWidth}px` })
-  }
 
   useEffect(() => {
     if (!selectedSubagentId) return
@@ -6011,10 +6042,11 @@ export function App() {
     review.close()
     browser.close()
     simulator.close()
+    clearMediaPreview()
     setSelectedSubagentId(undefined)
     if (!terminal.terminalOpen) void loadLocalTerminalPanel()
     void terminal.toggle(cwd)
-  }, [review, terminal, browser, simulator, workspacePanelsEnabled])
+  }, [review, terminal, browser, simulator, clearMediaPreview, workspacePanelsEnabled])
 
   const handleToggleSubagents = useCallback(() => {
     if (selectedSubagentId) {
@@ -6027,8 +6059,9 @@ export function App() {
     review.close()
     browser.close()
     simulator.close()
+    clearMediaPreview()
     setSelectedSubagentId(latest.id)
-  }, [review, browser, simulator, selectedSubagentId, subagentThreads, terminal])
+  }, [review, browser, simulator, clearMediaPreview, selectedSubagentId, subagentThreads, terminal])
 
   const handleToggleReview = useCallback(async () => {
     if (!workspacePanelsEnabled) return
@@ -6042,6 +6075,7 @@ export function App() {
     terminal.close()
     browser.close()
     simulator.close()
+    clearMediaPreview()
     setSelectedSubagentId(undefined)
 
     const workingDirectory = currentWorkspaceDirectory
@@ -6069,7 +6103,7 @@ export function App() {
     terminal.close()
     setSelectedSubagentId(undefined)
     review.open(workingDirectory, summary.files, 0)
-  }, [currentWorkspaceDirectory, review, terminal, browser, simulator, t, workspacePanelsEnabled])
+  }, [currentWorkspaceDirectory, review, terminal, browser, simulator, clearMediaPreview, t, workspacePanelsEnabled])
 
   const handleOpenReview = useCallback((files: WorkspaceChangeEntry[], index: number) => {
     const workingDirectory = currentWorkspaceDirectory
@@ -6077,10 +6111,11 @@ export function App() {
     terminal.close()
     browser.close()
     simulator.close()
+    clearMediaPreview()
     setSelectedSubagentId(undefined)
     void loadReviewPanel()
     review.open(workingDirectory, files, index)
-  }, [currentWorkspaceDirectory, review, terminal, browser, simulator])
+  }, [currentWorkspaceDirectory, review, terminal, browser, simulator, clearMediaPreview])
 
   const handleToggleBrowser = useCallback(() => {
     if (!browserAvailable || !workspacePanelsEnabled) return
@@ -6091,9 +6126,10 @@ export function App() {
     terminal.close()
     review.close()
     simulator.close()
+    clearMediaPreview()
     setSelectedSubagentId(undefined)
     browser.toggle()
-  }, [browser, browserAvailable, simulator, terminal, review, workspacePanelsEnabled])
+  }, [browser, browserAvailable, simulator, terminal, review, clearMediaPreview, workspacePanelsEnabled])
 
   const handleToggleSimulator = useCallback(() => {
     if (!simulatorAvailable || !workspacePanelsEnabled) return
@@ -6104,9 +6140,27 @@ export function App() {
     terminal.close()
     review.close()
     browser.close()
+    clearMediaPreview()
     setSelectedSubagentId(undefined)
     simulator.open()
-  }, [browser, review, simulator, simulatorAvailable, terminal, workspacePanelsEnabled])
+  }, [browser, review, simulator, simulatorAvailable, terminal, clearMediaPreview, workspacePanelsEnabled])
+
+  const handleOpenMediaPreview = useCallback((media: TranscriptMediaAttachment) => {
+    if (!workspacePanelsEnabled) return
+    cancelMediaPreviewTransitions()
+    terminal.close()
+    review.close()
+    browser.close()
+    simulator.close()
+    setSelectedSubagentId(undefined)
+    setPreviewMedia(media)
+    if (mediaPreviewOpen) return
+    setMediaPreviewOpen(false)
+    mediaPreviewOpenFrameRef.current = window.requestAnimationFrame(() => {
+      mediaPreviewOpenFrameRef.current = undefined
+      setMediaPreviewOpen(true)
+    })
+  }, [browser, cancelMediaPreviewTransitions, mediaPreviewOpen, review, simulator, terminal, workspacePanelsEnabled])
 
   async function refreshWorkspaceReview() {
     if (!review.target) return
@@ -6322,7 +6376,7 @@ export function App() {
       />
 
       <div
-        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${sideChat ? 'sidechat-open' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' ? 'view-fullscreen' : ''} ${visibleTerminalOpen ? 'terminal-open' : ''} ${visibleReviewOpen ? 'review-open' : ''} ${visibleBrowserOpen ? 'browser-open' : ''} ${visibleSimulatorOpen ? 'simulator-open' : ''}`}
+        className={`app-layout sidebar-${sidebarMode} ${sidebarPeek ? 'sidebar-peek' : ''} ${sideChat ? 'sidechat-open' : ''} ${activeView === 'settings' ? 'settings-open' : ''} ${activeView === 'settings' ? 'view-fullscreen' : ''} ${visibleTerminalOpen ? 'terminal-open' : ''} ${visibleReviewOpen ? 'review-open' : ''} ${visibleBrowserOpen ? 'browser-open' : ''} ${visibleSimulatorOpen ? 'simulator-open' : ''} ${visibleMediaPreviewOpen ? 'media-preview-open' : ''}`}
       >
         {activeView !== 'settings' && sidebarMode === 'hidden' && !sidebarPeek && !sidebarPeekLeaving && (
           // Rail: thin hit-area on the left edge. Hover/focus expands the
@@ -6539,6 +6593,7 @@ export function App() {
                 items={items.filter(i => i.activityKind !== 'queued')}
                 conversationId={activeConversationId}
                 onOpenReview={handleOpenReview}
+                onOpenMedia={handleOpenMediaPreview}
                 reviewMetadata={reviewMetadata}
                 thinkingTurnId={thinkingTurnId}
                 thinkingSnippets={thinkingSnippets}
@@ -6776,6 +6831,17 @@ export function App() {
           onDeleteCapture={simulator.deleteCapture}
           onAddAnnotation={addBrowserAnnotation}
           onRefresh={() => { void simulator.refresh() }}
+          minWidth={browser.MIN_WIDTH}
+          maxWidth={browserWidthLimit}
+        />
+      )}
+      {workspacePanelsEnabled && previewMedia && (
+        <MediaPreviewPanel
+          media={previewMedia}
+          open={mediaPreviewOpen}
+          width={effectiveBrowserWidth}
+          onSetWidth={setBrowserWidth}
+          onClose={closeMediaPreview}
           minWidth={browser.MIN_WIDTH}
           maxWidth={browserWidthLimit}
         />

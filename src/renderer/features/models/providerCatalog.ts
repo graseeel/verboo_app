@@ -131,17 +131,11 @@ export function groupModelsByProvider(models: VerbooModel[], t: Translator, verb
  * T14: deduplicate models by id. The Rust merge (model_service.rs:190
  * `models.extend(provider_models)`) can produce duplicates when the router
  * cache and the CLI listing both contain the same model. The two entries
- * differ by field:
- *   - Router entry (provider absent): has `maxOutputTokens`, `supportsVision`
- *     from the router's `vision` field (often false).
- *   - CLI entry (provider set): has `provider`, `supportsVision: true`
- *     (F2-PROVIDERS: provider models count as vision by default), `reasoning`,
- *     but `maxOutputTokens` is absent.
- * Dropping either loses information, so we merge per field:
- *   - maxOutputTokens: router wins (CLI lacks it)
- *   - supportsVision: CLI wins (F2-PROVIDERS — richer provider metadata)
- *   - provider, reasoning, visionSupportSource, raw: CLI wins (router lacks)
- *   - displayName, contextWindow: first wins (they agree)
+ * differ by field. The Router entry (provider absent) is authoritative for
+ * model identity, context and capabilities; the CLI entry attaches the
+ * provider and can backfill reasoning when the Router omits it. This also
+ * protects against older CLI catalogs that marked every provider model as
+ * visual by default.
  * Defense-in-depth: the primary fix is in the Rust merge (PERISCOPIO's fence,
  * model_service.rs `attach_provider_models`) — dispatched as T15. This
  * renderer-side dedup is a safety net that protects the user immediately and
@@ -157,13 +151,14 @@ export function dedupModels(models: VerbooModel[]): VerbooModel[] {
       counts.set(m.id, 1)
       continue
     }
-    // Two entries for the same id. The CLI entry (provider set) has richer
-    // metadata; the router entry (provider absent) has maxOutputTokens.
+    // Two entries for the same id. Preserve Router truth and attach only the
+    // CLI-owned provider plus a reasoning fallback.
     const cli = existing.provider ? existing : m
     const router = existing.provider ? m : existing
     byId.set(m.id, {
-      ...cli,
-      maxOutputTokens: cli.maxOutputTokens ?? router.maxOutputTokens,
+      ...router,
+      provider: cli.provider,
+      reasoning: router.reasoning ?? cli.reasoning,
     })
     counts.set(m.id, (counts.get(m.id) ?? 1) + 1)
   }

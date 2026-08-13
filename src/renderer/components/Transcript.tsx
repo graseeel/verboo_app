@@ -15,6 +15,7 @@ type TranscriptProps = {
   items: TranscriptItem[]
   conversationId?: string
   onOpenReview?: (files: WorkspaceChangeEntry[], index: number) => void
+  onOpenMedia?: (attachment: TranscriptMediaAttachment) => void
   reviewMetadata?: WorkspaceReviewMetadata
   thinkingTurnId?: string
   thinkingSnippets?: string[]
@@ -55,7 +56,9 @@ type TranscriptProps = {
 const MAX_ACTIVITY_DETAIL_LINES = 8
 const MAX_SUMMARY_DETAIL_LINES = 3
 
-export const Transcript = memo(function Transcript({ items, onOpenReview, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, compactedTurnIds, imageReadingTurnId, conversationId, onEditSent, onUserExpand, videoProgressByTurn, onCancelVideo, models, apiRetryByTurn, onStartNewConversation, onRestartProviderSession }: TranscriptProps) {
+export type TranscriptMediaAttachment = NonNullable<TranscriptItem['attachments']>[number]
+
+export const Transcript = memo(function Transcript({ items, onOpenReview, onOpenMedia, reviewMetadata, thinkingTurnId, thinkingSnippets, compactingTurnId, compactedTurnIds, imageReadingTurnId, conversationId, onEditSent, onUserExpand, videoProgressByTurn, onCancelVideo, models, apiRetryByTurn, onStartNewConversation, onRestartProviderSession }: TranscriptProps) {
   // `items` is a new array reference only when the conversation actually changes,
   // so this recomputes on real content changes but is skipped when the parent
   // re-renders for unrelated reasons (context-usage ticks, subagent updates…).
@@ -87,7 +90,7 @@ export const Transcript = memo(function Transcript({ items, onOpenReview, review
               onStartNewConversation={onStartNewConversation}
               onRestartSession={onRestartProviderSession ? () => onRestartProviderSession(conversationId ?? '', entry.turnId) : undefined}
             />
-          : <MessageArticle key={entry.item.id} item={entry.item} conversationId={conversationId} onCopy={() => {}} onEditSent={onEditSent} />
+          : <MessageArticle key={entry.item.id} item={entry.item} conversationId={conversationId} onCopy={() => {}} onEditSent={onEditSent} onOpenMedia={onOpenMedia} />
       ))}
     </div>
   )
@@ -342,9 +345,10 @@ export type MessageArticleProps = {
   children?: ReactNode
   onCopy?: (text: string) => void
   onEditSent?: (conversationId: string, itemId: string, newText: string) => void
+  onOpenMedia?: (attachment: TranscriptMediaAttachment) => void
 }
 
-const MessageArticle = memo(function MessageArticle({ item, conversationId, onCopy, onEditSent, children }: MessageArticleProps) {
+const MessageArticle = memo(function MessageArticle({ item, conversationId, onCopy, onEditSent, onOpenMedia, children }: MessageArticleProps) {
   const { t } = useI18n()
   const visibleText = visibleTextForItem(item)
   const [editMode, setEditMode] = useState(false)
@@ -447,9 +451,15 @@ const MessageArticle = memo(function MessageArticle({ item, conversationId, onCo
               const isImage = att.kind === 'image'
                 || att.kind === 'browser-annotation'
                 || att.kind === 'simulator-annotation'
+              const isPreviewable = isImage || att.kind === 'video'
               return (
                 <button key={att.path} type="button" className={`message-attachment-chip ${isImage ? 'message-attachment-image' : 'message-attachment-file'}`}
-                  onClick={() => window.verboo?.openExternalFile?.('', att.path)} title={att.path}>
+                  onClick={() => {
+                    if (isPreviewable && onOpenMedia) onOpenMedia(att)
+                    else window.verboo?.openExternalFile?.('', att.path)
+                  }}
+                  aria-label={isPreviewable ? t('transcript.previewMedia', { name: att.name }) : undefined}
+                  title={att.path}>
                   {isImage ? <img src={window.verboo?.fileUrl?.(att.path) ?? ''} alt="" className="message-attachment-thumb" loading="lazy" />
                     : <span className="message-attachment-icon" aria-hidden="true"><FileText size={14} /></span>}
                   <span className="message-attachment-name">{att.name}</span>

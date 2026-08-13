@@ -299,6 +299,7 @@ describe('verboo-bridge — API shape', () => {
       'getFileDiff',
       'revertFile',
       'openExternalFile',
+      'allowMediaPreviewFile',
     ] as const
     for (const name of required) {
       expect(typeof (api as Record<string, unknown> | undefined)?.[name]).toBe('function')
@@ -317,6 +318,16 @@ describe('verboo-bridge — API shape', () => {
     await download()
     expect(vi.mocked(invoke)).toHaveBeenLastCalledWith('download_update', {
       userInitiated: true,
+    })
+  })
+
+  it('authorizes one local media path before converting it for the webview', async () => {
+    expect(api).toBeDefined()
+
+    await (api as Record<string, (path: string) => Promise<unknown>>).allowMediaPreviewFile('/photos/reference.png')
+
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith('allow_media_preview_file', {
+      path: '/photos/reference.png',
     })
   })
 

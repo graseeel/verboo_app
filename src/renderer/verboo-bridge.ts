@@ -362,6 +362,11 @@ const api = {
   abortPastedFileUpload: (input: { uploadId: string }) =>
     invoke<void>('abort_pasted_file_upload', input),
   pickFolder: () => invoke<string | undefined>('pick_folder'),
+  // Authorize one validated image/video in Tauri's asset protocol. This keeps
+  // arbitrary attachment paths displayable without granting the webview a
+  // blanket $HOME/** file scope.
+  allowMediaPreviewFile: (path: string) =>
+    invoke<string>('allow_media_preview_file', { path }),
   // Convert a local file path to a webview-accessible URL for <img> src.
   fileUrl: (path: string) => convertFileSrc(path),
   createProjectFolder: () => invoke<string | undefined>('create_project_folder'),

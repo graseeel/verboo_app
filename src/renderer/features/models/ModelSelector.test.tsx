@@ -473,12 +473,16 @@ describe('ModelSelector — compact list with reasoning footer', () => {
     expect(document.querySelector('.model-menu')).toBeNull()
   })
 
-  it('renders compact model rows without slug, context, or vision metadata', () => {
+  it('keeps compact rows while showing context and vision metadata', () => {
+    const visionModel: VerbooModel = {
+      ...modelWithReasoning,
+      supportsVision: true,
+    }
     render(
       <ModelSelector
-        models={discoveryOk.models}
+        models={[visionModel]}
         selectedModel="glm-5.2"
-        modelResult={discoveryOk}
+        modelResult={{ ...discoveryOk, models: [visionModel] }}
         onSelect={() => {}}
         onRefresh={() => {}}
         effortByModel={{}}
@@ -490,11 +494,60 @@ describe('ModelSelector — compact list with reasoning footer', () => {
 
     const option = screen.getByRole('button', { name: 'Ultra' })
     expect(option.querySelector('small')).toBeNull()
-    expect(option.querySelector('.model-badge')).toBeNull()
-    expect(option.querySelector('.model-badge-vision')).toBeNull()
+    expect(option.querySelector('.model-badge')).toHaveTextContent('200K')
+    expect(option.querySelector('.model-badge')).toHaveAttribute('title', 'Context window: 200,000')
+    expect(option.querySelector('.model-badge-vision')).toHaveAttribute('title', 'Supports images')
     expect(document.querySelector('.model-option-effort-arrow')).toBeNull()
     expect(document.querySelector('.model-effort-submenu')).toBeNull()
     expect(document.querySelector('.model-option-wrap')).toBeNull()
+  })
+
+  it('does not infer vision from unpromoted raw metadata in the renderer', () => {
+    const rawVisionModel: VerbooModel = {
+      ...modelWithoutReasoning,
+      supportsVision: undefined,
+      raw: { vision: true },
+    }
+    render(
+      <ModelSelector
+        models={[rawVisionModel]}
+        selectedModel="kimi-k2"
+        modelResult={{ ...discoveryOk, models: [rawVisionModel] }}
+        onSelect={() => {}}
+        onRefresh={() => {}}
+      />,
+    )
+    openMenu()
+
+    const option = document.querySelector<HTMLButtonElement>('.model-option[aria-label="Kimi K2"]')!
+    expect(option.querySelector('.model-badge')).toHaveTextContent('128K')
+    expect(option.querySelector('.model-badge-vision')).toBeNull()
+  })
+
+  it('does not invent vision support for an external CLI-only model', () => {
+    const cliOnlyModel: VerbooModel = {
+      ...modelWithoutReasoning,
+      id: 'gpt-5.6-sol',
+      displayName: 'GPT-5.6-Sol',
+      provider: 'codex',
+      supportsVision: undefined,
+      raw: { provider: 'codex' },
+    }
+    render(
+      <ModelSelector
+        models={[cliOnlyModel]}
+        selectedModel={cliOnlyModel.id}
+        modelResult={{ ...discoveryOk, models: [cliOnlyModel] }}
+        providerStatuses={[{ provider: 'codex', connected: true }]}
+        onSelect={() => {}}
+        onRefresh={() => {}}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'GPT-5.6-Sol' }))
+
+    const option = document.querySelector<HTMLButtonElement>('.model-option[aria-label="GPT-5.6-Sol"]')!
+    expect(option.querySelector('.model-badge')).toHaveTextContent('128K')
+    expect(option.querySelector('.model-badge-vision')).toBeNull()
   })
 
   it('reasoning footer buttons are keyboard-reachable native buttons', () => {
@@ -757,8 +810,8 @@ describe('T14: dedupModels — uma entrada por id no seletor', () => {
   // T14 field defect: the Rust merge (model_service.rs:190
   // `models.extend(provider_models)`) produces duplicates when the router
   // cache and the CLI listing both contain the same model. The two entries
-  // differ by field — router has maxOutputTokens, CLI has provider/vision.
-  // Dropping either loses information, so dedupModels merges per field.
+  // differ by field — router owns capabilities/context; CLI owns provider
+  // attachment and can backfill reasoning when the router omits it.
 
   it('uma entrada por id quando router e CLI both tem o mesmo id', () => {
     const routerEntry: VerbooModel = {
@@ -768,24 +821,27 @@ describe('T14: dedupModels — uma entrada por id no seletor', () => {
       maxOutputTokens: 16384,
       supportsVision: false,
       visionSupportSource: 'router',
-      raw: { id: 'ultra/glm-5.2' },
+      raw: { id: 'ultra/glm-5.2', source: 'router' },
     }
     const cliEntry: VerbooModel = {
       id: 'ultra/glm-5.2',
       displayName: 'Ultra (glm-5.2)',
-      contextWindow: 200000,
+      contextWindow: 999999,
       supportsVision: true,
       visionSupportSource: 'raw-capabilities',
       provider: 'verboo',
       reasoning: { effortLevels: ['low', 'medium', 'high'], defaultEffort: 'medium' },
-      raw: { provider: 'verboo', id: 'ultra/glm-5.2' },
+      raw: { provider: 'verboo', id: 'ultra/glm-5.2', source: 'cli' },
     }
     const deduped = dedupModels([routerEntry, cliEntry])
     expect(deduped).toHaveLength(1)
     const merged = deduped[0]
-    // CLI wins: provider, vision, reasoning
+    // CLI supplies provider/reasoning; Router remains capability authority.
     expect(merged.provider).toBe('verboo')
-    expect(merged.supportsVision).toBe(true)
+    expect(merged.supportsVision).toBe(false)
+    expect(merged.visionSupportSource).toBe('router')
+    expect(merged.contextWindow).toBe(200000)
+    expect(merged.raw).toEqual({ id: 'ultra/glm-5.2', source: 'router' })
     expect(merged.reasoning).toEqual({ effortLevels: ['low', 'medium', 'high'], defaultEffort: 'medium' })
     // Router wins: maxOutputTokens (CLI lacks it)
     expect(merged.maxOutputTokens).toBe(16384)
@@ -809,7 +865,7 @@ describe('T14: dedupModels — uma entrada por id no seletor', () => {
     const deduped = dedupModels([routerEntry, cliEntry])
     expect(deduped).toHaveLength(1)
     expect(deduped[0].maxOutputTokens).toBe(8192)
-    expect(deduped[0].supportsVision).toBe(true)
+    expect(deduped[0].supportsVision).toBe(false)
     expect(deduped[0].provider).toBe('verboo')
   })
 
@@ -859,7 +915,7 @@ describe('T14: dedupModels — uma entrada por id no seletor', () => {
     const cliEntry: VerbooModel = {
       id: 'ultra/glm-5.2',
       displayName: 'Ultra (glm-5.2)',
-      contextWindow: 200000,
+      contextWindow: 999999,
       supportsVision: true,
       provider: 'verboo',
       raw: {},
@@ -884,5 +940,7 @@ describe('T14: dedupModels — uma entrada por id no seletor', () => {
     const modelRows = [...document.querySelectorAll('.model-option')]
       .filter(button => button.getAttribute('aria-label') === 'Ultra (glm-5.2)')
     expect(modelRows).toHaveLength(1)
+    expect(modelRows[0].querySelector('.model-badge')).toHaveTextContent('200K')
+    expect(modelRows[0].querySelector('.model-badge-vision')).toBeNull()
   })
 })

@@ -19,7 +19,11 @@ vi.mock('../features/transcript/StepFlow', () => ({
   ),
 }))
 vi.mock('../features/transcript/TranscriptIcons', () => ({ ThinkingIcon: () => null }))
-vi.mock('../i18n', () => ({ useI18n: () => ({ t: (k: string) => k }) }))
+vi.mock('../i18n', () => ({
+  useI18n: () => ({
+    t: (key: string, values?: Record<string, string>) => values?.name ? `${key}: ${values.name}` : key,
+  }),
+}))
 vi.mock('../../assets/branding/verboo-mascot.png', () => ({ default: 'mascot.png' }))
 
 beforeEach(() => cleanup())
@@ -124,6 +128,94 @@ describe('TurnView — .turn-recap stays mounted after expand', () => {
 
     expect(container.querySelector('.message-attachment-image img')).toBeTruthy()
     expect(container.querySelector('.message-attachment-file')).toBeNull()
+  })
+
+  it('opens a persisted image in the workspace media preview', () => {
+    const onOpenMedia = vi.fn()
+    const attachment = {
+      path: '/photos/reference.png',
+      name: 'reference.png',
+      size: 2048,
+      kind: 'image' as const,
+      mediaType: 'image/png',
+    }
+
+    render(
+      <Transcript
+        items={[{
+          id: 'user:image',
+          role: 'user',
+          text: 'Veja esta imagem',
+          timestamp: 0,
+          attachments: [attachment],
+        }]}
+        onOpenMedia={onOpenMedia}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /reference\.png/i }))
+    expect(onOpenMedia).toHaveBeenCalledOnce()
+    expect(onOpenMedia).toHaveBeenCalledWith(attachment)
+  })
+
+  it('opens a persisted video in the workspace media preview', () => {
+    const onOpenMedia = vi.fn()
+    const attachment = {
+      path: '/videos/demo.mp4',
+      name: 'demo.mp4',
+      size: 4096,
+      kind: 'video' as const,
+      mediaType: 'video/mp4',
+    }
+
+    render(
+      <Transcript
+        items={[{
+          id: 'user:video',
+          role: 'user',
+          text: 'Veja este vídeo',
+          timestamp: 0,
+          attachments: [attachment],
+        }]}
+        onOpenMedia={onOpenMedia}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /demo\.mp4/i }))
+    expect(onOpenMedia).toHaveBeenCalledOnce()
+    expect(onOpenMedia).toHaveBeenCalledWith(attachment)
+  })
+
+  it('keeps non-visual attachments on the external-file path', () => {
+    const onOpenMedia = vi.fn()
+    const openExternalFile = vi.fn()
+    Object.defineProperty(window, 'verboo', {
+      configurable: true,
+      value: { openExternalFile },
+    })
+
+    render(
+      <Transcript
+        items={[{
+          id: 'user:file',
+          role: 'user',
+          text: 'Veja este arquivo',
+          timestamp: 0,
+          attachments: [{
+            path: '/docs/report.pdf',
+            name: 'report.pdf',
+            size: 1024,
+            kind: 'file',
+            mediaType: 'application/pdf',
+          }],
+        }]}
+        onOpenMedia={onOpenMedia}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /report\.pdf/i }))
+    expect(onOpenMedia).not.toHaveBeenCalled()
+    expect(openExternalFile).toHaveBeenCalledWith('', '/docs/report.pdf')
   })
 
   it('renders a turn error in the main transcript with a friendly summary and expandable detail', () => {

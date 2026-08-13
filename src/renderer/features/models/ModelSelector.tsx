@@ -1,9 +1,9 @@
-import { Check, ChevronDown, RefreshCw, Search } from 'lucide-react'
+import { Check, ChevronDown, Eye, RefreshCw, Search } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import type { ModelDiscoveryResult, ProviderAuthStatus, VerbooModel } from '../../../shared/types'
-import { useI18n } from '../../i18n'
+import { formatCompactNumber, useI18n } from '../../i18n'
 import { ModelIcon } from './ModelIcon'
 import { ProviderIcon } from './ProviderIcon'
 import { VERBOO_PROVIDER, groupModelsByProvider, hasExternalProvider, hashString, modelProvider } from './providerCatalog'
@@ -46,7 +46,7 @@ function effortLabel(level: string, t: (key: string) => string): string {
 }
 
 export function ModelSelector({ models, selectedModel, hasConversationHistory = false, modelResult, onSelect, onRefresh, verbooPlan, providerStatuses, effortByModel, selectedEffortLevels = [], selectedEffort, onSelectEffort, onClearEffortOverride }: ModelSelectorProps) {
-  const { t } = useI18n()
+  const { language, t } = useI18n()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [highlighted, setHighlighted] = useState(0)
@@ -282,8 +282,23 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
                         <span className="model-option-icon" aria-hidden="true">
                           <ModelIcon modelId={model.id} displayName={model.displayName} size={18} />
                         </span>
-                        <strong className="model-option-name">{modelName}</strong>
+                        <strong className="model-option-name">
+                          <span className="model-option-name-text">{modelName}</span>
+                          {model.supportsVision === true && (
+                            <span className="model-badge-vision" title={t('model.visionBadge')}>
+                              <Eye size={13} aria-hidden="true" />
+                            </span>
+                          )}
+                        </strong>
                         <span className="model-option-meta" aria-hidden="true">
+                          {typeof model.contextWindow === 'number' && model.contextWindow > 0 && (
+                            <span
+                              className="model-badge"
+                              title={`${t('settings.contextWindow')}: ${model.contextWindow.toLocaleString(language)}`}
+                            >
+                              {formatCompactNumber(model.contextWindow, language)}
+                            </span>
+                          )}
                           {isSelected && <Check size={15} className="model-option-check" />}
                         </span>
                       </button>

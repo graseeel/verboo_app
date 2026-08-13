@@ -1234,6 +1234,9 @@
 }
 
 .group-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   padding: 6px 6px 3px;
   color: var(--text-dim);
   font-size: 10px;
@@ -1247,14 +1250,13 @@
   display: inline-block;
   width: 6px;
   height: 6px;
-  margin-right: 5px;
   border-radius: 50%;
   background: var(--provider-color, currentColor);
 }
 
 .model-option {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) 18px;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   padding: 7px 8px;
@@ -1273,12 +1275,21 @@
 }
 
 .model-option-name {
-  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
   color: var(--text);
   font-size: 12.5px;
   font-weight: 660;
   line-height: 1.3;
   text-align: left;
+}
+
+.model-option .model-option-name-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1287,6 +1298,27 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.model-option .model-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-weight: 720;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.model-option .model-badge-vision {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: color-mix(in srgb, var(--accent) 58%, var(--text-dim));
+  line-height: 0;
 }
 
 .model-option-check {

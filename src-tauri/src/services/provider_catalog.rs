@@ -236,10 +236,10 @@ fn parse_cli_line(line: &str) -> Option<CliModelLine> {
     serde_json::from_str(trimmed).ok()
 }
 
-/// Normaliza uma linha do CLI para o modelo serializado do app.
-/// F2-PROVIDERS (decisão do usuário): modelos de provedor (claude/codex)
-/// contam como VISÃO POR PADRÃO — sem tabela por modelo. A fonte de visão
-/// dos modelos Verboo NÃO muda (router/heuristic no model_service).
+/// Normaliza uma linha do CLI para o modelo serializado do app. O contrato
+/// atual de `--list-models` não informa visão, portanto essa capacidade fica
+/// desconhecida. Apenas metadado explícito do Router pode promover o badge;
+/// assumir `true` aqui faria todos os modelos Claude/Codex parecerem visuais.
 fn to_verboo_model(line: CliModelLine) -> VerbooModel {
     let reasoning = line
         .supported_reasoning_levels
@@ -254,8 +254,8 @@ fn to_verboo_model(line: CliModelLine) -> VerbooModel {
         display_name: line.display_name.clone(),
         context_window: line.context_window,
         max_output_tokens: None,
-        supports_vision: Some(true),
-        vision_support_source: Some("provider-default".into()),
+        supports_vision: None,
+        vision_support_source: None,
         reasoning,
         provider: Some(line.provider.clone()),
         raw: serde_json::json!({
@@ -462,12 +462,15 @@ mod tests {
     }
 
     #[test]
-    fn to_verboo_model_marks_provider_models_vision_by_default() {
+    fn to_verboo_model_keeps_provider_vision_unknown_without_authoritative_metadata() {
         let parsed = parse_cli_line(PRUMO_LIST_MODEL_LINE).unwrap();
         let model = to_verboo_model(parsed);
         assert_eq!(model.provider.as_deref(), Some("codex"));
-        assert_eq!(model.supports_vision, Some(true), "claude/codex contam como visão por padrão (decisão do usuário)");
-        assert_eq!(model.vision_support_source.as_deref(), Some("provider-default"));
+        assert_eq!(
+            model.supports_vision, None,
+            "o CLI nao informa visão; o app nao pode inventar suporte"
+        );
+        assert_eq!(model.vision_support_source, None);
         assert_eq!(model.id, "codex-opus-4-6");
         assert_eq!(model.display_name, "Codex Opus 4.6");
     }
@@ -489,8 +492,8 @@ mod tests {
         assert_eq!(json["provider"], "codex", "provider serializado em camelCase");
         assert_eq!(json["id"], "codex-opus-4-6");
         assert_eq!(json["displayName"], "Codex Opus 4.6");
-        assert_eq!(json["supportsVision"], true);
-        assert_eq!(json["visionSupportSource"], "provider-default");
+        assert!(json["supportsVision"].is_null());
+        assert!(json["visionSupportSource"].is_null());
         assert_eq!(json["reasoning"]["defaultEffort"], "medium");
 
         // Modelo Verboo (provider None) → campo AUSENTE no serializado:

@@ -720,6 +720,7 @@ const enUS: Record<string, string> = {
   'transcript.duration.hourMany': 'hours',
   'transcript.duration.dayOne': 'day',
   'transcript.duration.dayMany': 'days',
+  'transcript.previewMedia': 'Preview {name}',
 
   'command.shell': 'Shell',
   'command.noOutput': 'No output',
@@ -736,6 +737,11 @@ const enUS: Record<string, string> = {
   'terminal.hide': 'Hide panel',
   'terminal.hideAria': 'Hide terminal',
   'terminal.ended': 'Terminal session ended',
+
+  'mediaPreview.title': 'Media preview',
+  'mediaPreview.close': 'Close preview',
+  'mediaPreview.resize': 'Resize media preview',
+  'mediaPreview.loadError': 'Could not display this media.',
 
   'browser.newTab': 'New tab',
   'browser.closeTab': 'Close tab',
@@ -2156,6 +2162,7 @@ const ptBR: Record<string, string> = {
   'transcript.duration.hourMany': 'horas',
   'transcript.duration.dayOne': 'dia',
   'transcript.duration.dayMany': 'dias',
+  'transcript.previewMedia': 'Visualizar {name}',
 
   'command.shell': 'Shell',
   'command.noOutput': 'Nenhum resultado',
@@ -2172,6 +2179,11 @@ const ptBR: Record<string, string> = {
   'terminal.hide': 'Ocultar painel',
   'terminal.hideAria': 'Ocultar terminal',
   'terminal.ended': 'Sessão do terminal encerrada',
+
+  'mediaPreview.title': 'Visualizador de mídia',
+  'mediaPreview.close': 'Fechar visualização',
+  'mediaPreview.resize': 'Redimensionar visualização de mídia',
+  'mediaPreview.loadError': 'Não foi possível exibir esta mídia.',
 
   'browser.newTab': 'Nova aba',
   'browser.closeTab': 'Fechar aba',
