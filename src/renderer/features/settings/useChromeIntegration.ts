@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   ChromeIntegrationRequest,
   ChromeIntegrationStatus,
+  ChromeConnectionTestResult,
 } from '../../../shared/types'
 
 const CHROME_EXTENSION_ID = /^[a-p]{32}$/
@@ -21,6 +22,7 @@ export function useChromeIntegration() {
   const [error, setError] = useState<string>()
   const [developmentExtensionId, setDevelopmentExtensionId] = useState('')
   const [lastTestPassed, setLastTestPassed] = useState<boolean>()
+  const [lastTestResult, setLastTestResult] = useState<ChromeConnectionTestResult>()
 
   const developmentIdValid = useMemo(() => {
     const value = developmentExtensionId.trim()
@@ -91,10 +93,12 @@ export function useChromeIntegration() {
     setActiveAction('test')
     setError(undefined)
     try {
-      const passed = await window.verboo.chromeIntegrationTest()
-      setLastTestPassed(passed)
+      const result = await window.verboo.chromeIntegrationTest()
+      setLastTestResult(result)
+      setLastTestPassed(result.connected)
       await refresh()
-      return passed
+      if (result.errorCode) setError(result.errorCode)
+      return result.connected
     } catch (caught) {
       setLastTestPassed(false)
       setError(errorCode(caught))
@@ -130,6 +134,7 @@ export function useChromeIntegration() {
     developmentExtensionId,
     developmentIdValid,
     lastTestPassed,
+    lastTestResult,
     setDevelopmentExtensionId,
     refresh,
     configure,

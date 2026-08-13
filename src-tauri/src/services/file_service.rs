@@ -640,6 +640,31 @@ pub fn inspect_files_result(paths: &[String]) -> Result<Vec<AttachmentMeta>, Fil
         .collect()
 }
 
+/// Resolves a user-selected image or video to the exact canonical file that
+/// may be exposed through Tauri's asset protocol. Keeping this validation in
+/// the backend lets the renderer authorize one visual file at a time instead
+/// of widening the static asset scope to the user's whole home directory.
+pub fn canonical_media_preview_path(path: &str) -> Result<PathBuf, String> {
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|error| format!("media preview file unavailable: {error}"))?;
+    let metadata = std::fs::metadata(&canonical)
+        .map_err(|error| format!("media preview metadata unavailable: {error}"))?;
+    if !metadata.is_file() {
+        return Err("media preview path is not a file".to_string());
+    }
+
+    let header = read_header(&canonical)
+        .map_err(|error| format!("media preview header unavailable: {error}"))?;
+    let is_image = detect_image_media_type(&canonical, &header).is_some();
+    let is_video = video_media_type_by_ext(&canonical).is_some()
+        || looks_like_video_container(&header);
+    if !is_image && !is_video {
+        return Err("unsupported media preview format".to_string());
+    }
+
+    Ok(canonical)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1231,6 +1256,28 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, // IEND
             0xAE, 0x42, 0x60, 0x82,
         ]
+    }
+
+    #[test]
+    fn canonical_media_preview_path_accepts_real_images() {
+        let path = temp_path("png");
+        std::fs::write(&path, minimal_png_bytes()).unwrap();
+
+        let resolved = canonical_media_preview_path(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(resolved, std::fs::canonicalize(&path).unwrap());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn canonical_media_preview_path_rejects_non_media_files() {
+        let path = temp_path("txt");
+        std::fs::write(&path, b"not visual media").unwrap();
+
+        let error = canonical_media_preview_path(path.to_str().unwrap()).unwrap_err();
+
+        assert!(error.contains("unsupported media"));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

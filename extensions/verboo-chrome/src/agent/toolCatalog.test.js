@@ -33,6 +33,12 @@ test('OPENAI_TOOLS: navigate has required url param', () => {
   assert.equal(nav.function.parameters.properties.url.type, 'string')
 })
 
+test('OPENAI_TOOLS: read_page advertises interactive selectors for follow-up actions', () => {
+  const readPage = OPENAI_TOOLS.find(t => t.function.name === 'read_page')
+  assert.ok(readPage)
+  assert.match(readPage.function.description, /interactive.*selector/i)
+})
+
 test('OPENAI_TOOLS: click has required selector param', () => {
   const click = OPENAI_TOOLS.find(t => t.function.name === 'click')
   assert.ok(click)

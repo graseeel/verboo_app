@@ -2,10 +2,9 @@
 # Verificação de compilação e testes do adaptador Linux WebKitGTK dentro de
 # container Ubuntu, sem instalar toolchain nativo no runner macOS.
 #
-# DEFEITO 1 ORIGINAL — mount em /workspace quebra symlinks absolutos:
-#   src-tauri/resources/cli-package/node_modules/@types/node tem symlink
-#   absoluto para o path real do repo, que dentro do container não existe.
-#   FIX: monta no PRÓPRIO path ($REPO:$REPO), preservando a resolução.
+# DEFEITO 1 ORIGINAL — mount em /workspace quebrava symlinks absolutos de
+# dependências locais. FIX: monta no PRÓPRIO path ($REPO:$REPO), preservando
+# a resolução sem acoplar o gate ao layout interno de um pacote.
 #
 # DEFEITO 2 ORIGINAL — cargo check não compila testes:
 #   Escrevemos testes de contrato em browser_platform/ e o gate nunca os
@@ -67,10 +66,7 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   docker build $PLATFORM_FLAGS -t "$IMAGE" - <<'DOCKERFILE'
 FROM ubuntu:24.04
 
-# Node 22 pinado em 22.11.0 (LTS "Jod"). Node flutuante faria o container
-# divergir da máquina do usuário sem avisar — pinar é obrigatório.
-# NodeSource setup oficial (nodesource/distributions) é a fonte canônica.
-# O verboo-cli-update.yml já usa Node 22; este container casa com ele.
+# Node 22 pinado em 22.11.0 (LTS "Jod") executa somente os scripts do gate.
 ENV NODE_VERSION=22.11.0
 
 RUN export DEBIAN_FRONTEND=noninteractive && \
@@ -147,21 +143,12 @@ fi
 # string completa. Isto é IMUNE a word splitting porque cada caminho
 # vira um argv próprio (não um token do shell).
 #
-# ABORT quando a contagem for ZERO: significa que rodamos do diretório
-# errado (não há binários macOS para proteger) e qualquer write abaixo
-# seria em vazio. Não declaramos "intactos" sem ter olhado nada.
+# Um checkout limpo de CI normalmente não tem sidecars macOS, porque eles são
+# ignorados pelo Git. Quando existem (por exemplo no workspace local), o
+# snapshot abaixo continua protegendo todos eles sem depender de uma contagem
+# fixa que muda sempre que um sidecar é adicionado ou removido.
 DARWIN_HASHES_BEFORE=$(sha256sum -- "$BINDIR"/*-apple-darwin* 2>/dev/null || true)
 DARWIN_COUNT_BEFORE=$(printf '%s\n' "$DARWIN_HASHES_BEFORE" | grep -c . || true)
-if [ "${DARWIN_COUNT_BEFORE:-0}" -eq 0 ]; then
-  echo "ABORT: nenhum binário apple-darwin em $BINDIR — rodando do diretório errado?"
-  echo "       Para esta verificação fazer sentido, o repo deve ter os 5 sidecars macOS."
-  exit 1
-fi
-if [ "${DARWIN_COUNT_BEFORE:-0}" -ne 5 ]; then
-  echo "ABORT: contagem de binários apple-darwin é $DARWIN_COUNT_BEFORE, esperado 5."
-  echo "       Investigar antes de prosseguir — proteção fica sem referência."
-  exit 1
-fi
 echo "    snapshot sha256: $DARWIN_COUNT_BEFORE binários macOS capturados antes da operação."
 
 # Para cada sidecar, decide: copiar da distro (ffmpeg/ffprobe) ou stub vazio.
@@ -174,7 +161,7 @@ case "$TRIPLE" in
     ;;
 esac
 
-for SIDECAR in verboo-in-chrome verboo-ffmpeg verboo-ffprobe verboo-whisper computer-use-helper; do
+for SIDECAR in verboo-in-chrome verboo-ios-simulator verboo-ffmpeg verboo-ffprobe verboo-whisper computer-use-helper; do
   TARGET="$BINDIR/${SIDECAR}-${TRIPLE}"
 
   # Barreira dura: nunca escrever em caminho com sufixo apple-darwin.
@@ -204,9 +191,8 @@ for SIDECAR in verboo-in-chrome verboo-ffmpeg verboo-ffprobe verboo-whisper comp
       chmod +x "$TARGET"
       echo "    binário distro: $TARGET ($(stat -c %s "$TARGET") bytes)"
       ;;
-    verboo-in-chrome|verboo-whisper|computer-use-helper)
-      # Nenhum dos 8 testes de video precisa destes três. Computer Use
-      # não está implementado oficialmente no app ainda. Stub vazio.
+    verboo-in-chrome|verboo-ios-simulator|verboo-whisper|computer-use-helper)
+      # Os testes usam fixtures isoladas para estes helpers. Stub vazio.
       # Só cria se não existir (não sobrescreve binário real se já houver).
       if [ ! -s "$TARGET" ]; then
         touch "$TARGET"
@@ -253,7 +239,26 @@ docker run --rm \
   -e CARGO_TARGET_DIR=/target \
   -w "$REPO" \
   "$IMAGE" \
-  cargo test --locked --manifest-path src-tauri/Cargo.toml --lib 2>&1 | tee "$TEST_OUTPUT"
+  bash -c '
+set -euo pipefail
+
+# generate_context! validates frontendDist even though this gate exercises only
+# the native crate. Keep the native check self-contained without rebuilding the
+# renderer (covered by its own three-OS matrix) or leaving a generated artifact.
+FRONTEND_DIST_CREATED=0
+if [ ! -d dist-renderer ]; then
+  mkdir -p dist-renderer
+  FRONTEND_DIST_CREATED=1
+fi
+cleanup_frontend_dist() {
+  if [ "$FRONTEND_DIST_CREATED" -eq 1 ]; then
+    rmdir dist-renderer || true
+  fi
+}
+trap cleanup_frontend_dist EXIT
+
+cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+' 2>&1 | tee "$TEST_OUTPUT"
 TEST_EXIT="${PIPESTATUS[0]}"
 set -e
 # Propagate cargo test exit first — a non-zero exit means compilation

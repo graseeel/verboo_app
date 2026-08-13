@@ -5,7 +5,7 @@
  * and the effortByModel precedent: a settings-class preference kept in
  * localStorage while the backend does not carry it). updateUserSettings
  * goes through the Rust bridge — adding a field to UserSettings would
- * be a contract change owned by TORNO, so this toggle lives HERE. The
+ * be a contract change owned by PERISCOPIO, so this toggle lives HERE. The
  * UI surfaces it INSIDE Settings → Notifications (integrated with the
  * existing notification preferences, not a loose separate switch).
  *

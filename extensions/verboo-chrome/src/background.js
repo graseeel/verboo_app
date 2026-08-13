@@ -61,6 +61,7 @@ import { createTemporaryDraftStore } from './routines/temporaryDraftStore.js'
 import { createRecordingController } from './routines/recording/controller.js'
 import { createScheduler } from './routines/scheduler.js'
 import { applyRecoverySuggestion } from './routines/recoverySuggestion.js'
+import { createBackgroundWorkspaceManager } from './controller/backgroundWorkspace.js'
 
 const ROUTINE_MESSAGE_TYPES = new Set([
   MSG.ROUTINE_LIST,
@@ -115,6 +116,7 @@ const routineMessageHandler = createRoutineMessageHandler({
   },
 })
 const browserControlQueue = createRunQueue()
+const backgroundWorkspace = createBackgroundWorkspaceManager()
 const routineRunStore = createRunStore(chrome.storage.local)
 const routineRunner = createRoutineRunner({
   routinesStore,
@@ -138,14 +140,14 @@ const routineRunner = createRoutineRunner({
       ...input,
       ...overrides,
       broadcast,
-      executeTool: (toolCall) => executeWithApproval(
+      executeTool: (toolCall, executionSignal) => executeWithApproval(
         toolCall,
         () => makeExecutionContext(
           input.senderTabId,
           input.turnId,
           input.routineAllowedOrigins,
         ),
-        makeApprovalUi(input.turnId, input.signal),
+        makeApprovalUi(input.turnId, executionSignal ?? input.signal),
       ),
       getActiveTabMeta: queryActiveTabMeta,
       refreshAccessToken: async () => {
@@ -190,11 +192,19 @@ chrome.runtime.onConnect.addListener((port) => {
 
 const nativeBridge = createNativeBridge({
   executeWithApproval,
-  contextFactory: () => makeExecutionContext(undefined, undefined),
-  approvalUiFactory: () => makeApprovalUi(undefined, new AbortController().signal, 'native'),
+  contextFactory: async (turnId) => {
+    const turnTabLease = await backgroundWorkspace.acquire({ resume: true })
+    return makeExecutionContext(undefined, turnId, undefined, turnTabLease)
+  },
+  approvalUiFactory: (turnId) => makeApprovalUi(
+    turnId,
+    new AbortController().signal,
+    'native',
+  ),
   isApprovalUiAvailable: () => approvalSurfaces.size > 0,
   cancelPendingApprovals: () => cancelPendingApprovals('native'),
   clearPresenceOnAllTabs,
+  onTurnEnded: (turnId) => turnSiteGrants.delete(turnId),
 })
 nativeBridge.registerStartup()
 nativeBridge.connect()
@@ -257,8 +267,10 @@ chrome.notifications?.onClicked?.addListener((notificationId) => {
 void restoreRoutineExecutionState()
 
 // ── Pending approvals (toolCallId → resolver) ────────────────────
-/** @type {Map<string, { resolve: (grant: 'once'|'always'|'deny'|'cancelled') => void }>} */
+/** @type {Map<string, { resolve: (grant: 'once'|'turn'|'always'|'deny'|'cancelled') => void }>} */
 const pendingApprovals = new Map()
+/** @type {Map<string, Set<string>>} */
+const turnSiteGrants = new Map()
 
 // ── Message router ────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -288,7 +300,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             message.conversationHistory,
             selectionContext,
           )
-          const turnPromise = shouldOfferBrowserTools(message.userMessage)
+          const turnPromise = shouldOfferBrowserTools(
+            message.userMessage,
+            message.conversationHistory,
+          )
             ? browserControlQueue.enqueue({
                 id: message.turnId,
                 execute: executeTurn,
@@ -600,7 +615,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case MSG.TOOL_APPROVE: {
       const pending = pendingApprovals.get(message.toolCallId)
       if (pending) {
-        pending.resolve(message.decision === 'always' ? 'always' : 'once')
+        const decision = ['once', 'turn', 'always'].includes(message.decision)
+          ? message.decision
+          : null
+        if (!decision) {
+          sendResponse({ ok: false, error: 'invalid_approval_decision' })
+          return false
+        }
+        pending.resolve(decision)
         pendingApprovals.delete(message.toolCallId)
       }
       sendResponse({ ok: true })
@@ -827,7 +849,7 @@ async function runAgentTurn(
 ) {
   const controller = new AbortController()
   turnControllers.set(turnId, controller)
-  const browserToolsRequested = shouldOfferBrowserTools(userMessage)
+  const browserToolsRequested = shouldOfferBrowserTools(userMessage, conversationHistory)
 
   // MV3 service workers can suspend mid-fetch; frozen timers then never fire the
   // router 60s abort, and the panel never gets COMPLETE/ERROR → permanent Working…
@@ -859,6 +881,16 @@ async function runAgentTurn(
     // a navigate (e.g. "abra o youtube" on chrome://extensions) and a
     // read_page on the current tab.
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    let turnTabLease = null
+    const ensureTurnWorkspace = async (resume = false) => {
+      if (!turnTabLease) {
+        turnTabLease = await backgroundWorkspace.acquire({
+          sourceTabId: Number.isInteger(senderTabId) ? senderTabId : activeTab?.id,
+          resume,
+        })
+      }
+      return turnTabLease
+    }
     // Run the real multi-step agent only when a current session and model exist.
     const session = await ensureFreshSession()
     const accessToken = session?.accessToken
@@ -897,10 +929,16 @@ async function runAgentTurn(
       return
     }
 
+    // Do not create a browser workspace for a turn that cannot run. Once auth
+    // and model capabilities are known-good, isolate all browser work there.
+    if (browserToolsRequested && accessToken && selectedModelId) {
+      await ensureTurnWorkspace(Array.isArray(conversationHistory) && conversationHistory.length > 0)
+    }
+
     // Agent presence: purple Verboo tab group + viewport frame while we control.
     // Presence is UX chrome — not a BrowserTool — so it does not go through
     // execute()/evaluateToolPolicy. Failures (chrome:// etc.) are ignored.
-    const presenceTabId = activeTab?.id ?? senderTabId
+    const presenceTabId = turnTabLease?.snapshot().tabId
     if (browserToolsRequested && typeof presenceTabId === 'number') {
       try {
         await ensureVerbooTabGroup(presenceTabId)
@@ -922,15 +960,14 @@ async function runAgentTurn(
           conversationHistory,
           selectionContext,
           broadcast: (msg) => broadcast(msg),
-          executeTool: (tc) => executeWithApproval(
+          executeTool: (tc, executionSignal) => executeWithApproval(
             tc,
-            () => makeExecutionContext(senderTabId, turnId),
-            makeApprovalUi(turnId, controller.signal),
+            () => makeExecutionContext(senderTabId, turnId, undefined, turnTabLease),
+            makeApprovalUi(turnId, executionSignal ?? controller.signal),
           ),
-          getActiveTabMeta: async () => {
-            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-            return { url: tab?.url, title: tab?.title, id: tab?.id }
-          },
+          getActiveTabMeta: () => queryActiveTabMeta(
+            turnTabLease?.snapshot().tabId,
+          ),
           refreshAccessToken: async () => {
             const refreshed = await refreshSession()
             return refreshed?.accessToken ?? null
@@ -953,6 +990,7 @@ async function runAgentTurn(
         // (it would wait for itself) — in that case re-run inline instead.
         let finalResult = llmResult
         if (llmResult?.reclassify === true) {
+          await ensureTurnWorkspace(false)
           const reclassifyTurn = () => runLlmAgentTurn({ ...llmOptions(), forceBrowserTools: true })
           const ownsQueue = browserControlQueue.activeId() === turnId
           finalResult = ownsQueue
@@ -1034,6 +1072,7 @@ async function runAgentTurn(
       /* presence cleanup is best-effort */
     }
     turnControllers.delete(turnId)
+    turnSiteGrants.delete(turnId)
     // Never leave the panel stuck if a path forgot to send a terminal event.
     if (!terminalSent) {
       broadcast({
@@ -1049,7 +1088,7 @@ async function runAgentTurn(
  * @param {string} approvalId
  * @param {AbortSignal} signal
  * @param {number} [timeoutMs]
- * @returns {Promise<'once'|'always'|'deny'|'cancelled'|'timeout'>}
+ * @returns {Promise<'once'|'turn'|'always'|'deny'|'cancelled'|'timeout'>}
  */
 function waitForApproval(
   approvalId,
@@ -1084,10 +1123,22 @@ function waitForApproval(
   })
 }
 
-async function makeExecutionContext(fallbackTabId, turnId, routineAllowedOrigins) {
-  const tab = Number.isInteger(fallbackTabId)
-    ? await chrome.tabs.get(fallbackTabId).catch(() => null)
-    : (await chrome.tabs.query({ active: true, currentWindow: true }))[0]
+async function makeExecutionContext(
+  fallbackTabId,
+  turnId,
+  routineAllowedOrigins,
+  turnTabLease,
+) {
+  const leasedTarget = turnTabLease?.snapshot()
+  const turnGrants = turnId
+    ? (turnSiteGrants.get(turnId) ?? new Set())
+    : null
+  if (turnId && !turnSiteGrants.has(turnId)) turnSiteGrants.set(turnId, turnGrants)
+  const tab = leasedTarget
+    ? await chrome.tabs.get(leasedTarget.tabId).catch(() => null)
+    : Number.isInteger(fallbackTabId)
+      ? await chrome.tabs.get(fallbackTabId).catch(() => null)
+      : (await chrome.tabs.query({ active: true, currentWindow: true }))[0]
   return {
     mode: await loadMode(),
     getSiteGrant: async (host) => {
@@ -1101,10 +1152,16 @@ async function makeExecutionContext(fallbackTabId, turnId, routineAllowedOrigins
         }),
       )
       if (allowedHosts.size > 0 && !allowedHosts.has(host)) return 'deny'
+      if (turnGrants?.has(host)) return 'always'
       return getGrant(host)
     },
+    setTurnGrant: async (host) => { turnGrants?.add(host) },
     setSiteGrant: (host, decision) => upsertGrant(host, decision),
     activeTabId: tab?.id ?? fallbackTabId,
+    ...(leasedTarget ? {
+      workspaceWindowId: leasedTarget.windowId,
+      setActiveTabId: (tabId, windowId) => turnTabLease.selectTab(tabId, windowId),
+    } : {}),
     onExecuting: (toolCall) => broadcast({
       type: MSG.AGENT_TOOL_EXECUTING,
       ...(turnId ? { turnId } : {}),
@@ -1359,6 +1416,7 @@ function cancelTurn(turnId) {
     pendingApprovals.delete(id)
   }
   turnControllers.delete(turnId)
+  turnSiteGrants.delete(turnId)
   try {
     void clearPresenceOnAllTabs()
   } catch {

@@ -64,9 +64,9 @@ describe('panel exclusivity (source analysis)', () => {
     expect(appSource).toMatch(/key: 'browser'/)
   })
 
-  it('uses the synchronously clamped browser width in layout and panel bounds', () => {
+  it('uses the synchronously clamped browser width for the shared visual lane', () => {
     expect(appSource).toMatch(/const effectiveBrowserWidth = browserLayoutWidth\(browser\.browserWidth, effectiveSidebarWidth\)/)
-    expect(appSource).toMatch(/'--browser-width': visibleBrowserOpen \? `\$\{effectiveBrowserWidth\}px` : '0px'/)
+    expect(appSource).toMatch(/'--browser-width': visibleVisualPanelOpen \? `\$\{effectiveBrowserWidth\}px` : '0px'/)
     expect(appSource).toMatch(/browserWidth=\{effectiveBrowserWidth\}/)
   })
 

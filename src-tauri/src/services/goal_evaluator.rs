@@ -2482,7 +2482,7 @@ mod tests {
         );
     }
 
-    // ────── WIRING TEST: Goal uses CliSpawn (bundled), not global ──────
+    // ────── WIRING TEST: Goal uses CliSpawn (managed), not global ──────
     //
     // Catches the failure mode the G-C1 QA flagged: `goal_evaluator`
     // resolving the CLI via `cli_path::resolve().unwrap_or("verboo")`,
@@ -2491,9 +2491,8 @@ mod tests {
     // globally — so the Goal was broken for them.
     //
     // The fix migrates `goal_evaluator` to `CliSpawn::new(...)`, the
-    // SAME route as chat/turn_service, which resolves the bundled
-    // cli.mjs (with co-bundled node_modules) and spawns it with the
-    // system Node.
+    // SAME route as chat/turn_service, which acquires the active signed
+    // cli.mjs version and spawns it with the app-managed Node runtime.
     //
     // This test asserts that the source-level wiring is present:
     //   - `CliSpawn::new(...)` is INVOKED (not just imported)
@@ -2526,14 +2525,14 @@ mod tests {
             None => &full_src[..],
         };
 
-        // Invoking CliSpawn::new(...) is required — this is the bundled
-        // route that works in the packaged .app.
+        // Invoking CliSpawn::new(...) is required — this is the managed
+        // runtime route that works in the packaged app.
         assert!(
             production_src.contains("CliSpawn::new("),
             "src/services/goal_evaluator.rs production code does not CALL \
              `CliSpawn::new(`. The Goal evaluator would fall back to spawning \
              `verboo` by name, which is NOT installed on end-user machines. \
-             The G-C1 QA flagged exactly this: the bundled-cli route must be \
+             The G-C1 QA flagged exactly this: the managed CLI route must be \
              invoked. See run_evaluation_cli in goal_evaluator.rs — it must \
              call `CliSpawn::new(args)` instead of resolving via cli_path."
         );
@@ -2549,8 +2548,8 @@ mod tests {
         );
 
         // Must NOT call Command::new directly — the legacy manual-spawn
-        // path bypassed CliSpawn entirely. The bundled .app needs CliSpawn
-        // so the system Node and bundled cli.mjs get wired correctly.
+        // path bypassed CliSpawn entirely. The packaged app needs CliSpawn
+        // so managed Node and the leased signed cli.mjs get wired correctly.
         assert!(
             !production_src.contains("Command::new("),
             "src/services/goal_evaluator.rs production code still uses \

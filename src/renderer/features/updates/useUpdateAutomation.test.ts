@@ -48,8 +48,29 @@ describe('useUpdateAutomation', () => {
     }))
 
     await waitFor(() => expect(download).toHaveBeenCalledTimes(1))
+    expect(download).toHaveBeenCalledWith(false)
     view.rerender()
     expect(download).toHaveBeenCalledTimes(1)
+  })
+
+  it('never silently downloads a CLI-only update', () => {
+    const download = vi.fn()
+    renderHook(() => useUpdateAutomation({
+      autoCheck: false,
+      autoDownload: true,
+      channel: 'beta',
+      snapshot: {
+        ...snapshot('available'),
+        channel: 'beta',
+        target: 'cli',
+        availableVersion: undefined,
+        cliAvailableVersion: '0.15.6',
+      },
+      check: vi.fn(),
+      download,
+    }))
+
+    expect(download).not.toHaveBeenCalled()
   })
 
   it('does not check while disabled and checks again after a channel change', () => {

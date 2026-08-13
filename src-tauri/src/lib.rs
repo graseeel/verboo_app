@@ -2,12 +2,14 @@ pub mod models;
 pub mod services;
 
 use std::sync::Mutex;
+use std::time::Duration;
 
 use models::types::*;
-use services::cli_service::CliService;
 use services::chrome_integration::{
-    ChromeIntegrationRequest, ChromeIntegrationService, ChromeIntegrationStatus,
+    ChromeConnectionTestResult, ChromeIntegrationRequest, ChromeIntegrationService,
+    ChromeIntegrationStatus,
 };
+use services::cli_service::CliService;
 use services::credentials_store::CredentialsStore;
 use services::model_service::ModelService;
 use services::profile_service::ProfileService;
@@ -15,6 +17,31 @@ use services::settings_store::SettingsStore;
 use services::terminal_service::TerminalService;
 use services::turn_service::{TurnService, UpdateInstallAdmission};
 use tauri::{Emitter, Manager};
+
+// Derivation from current timing bounds: finalizing one recording is bounded by
+// RECORDING_STOP_TIMEOUT (8 s); WDA graceful escalation is bounded by
+// WDA_SIGINT_GRACE_PERIOD (5 s) plus WDA_SIGTERM_GRACE_PERIOD (2 s), leaving
+// 1 s of margin when no recording consumes it.
+// Recording and the cumulative shutdown pass over N ledger-owned UDIDs share
+// this same absolute deadline, so their worst-case maxima are not additive. N
+// is runtime ledger data, never a hardcoded owner/device count; remeasure the
+// end-to-end envelope before changing this value.
+#[cfg(target_os = "macos")]
+const IOS_SIMULATOR_CLEANUP_BUDGET: Duration = Duration::from_secs(8);
+
+#[cfg(target_os = "macos")]
+fn stop_ios_simulator_for_app_exit(app_handle: &tauri::AppHandle) {
+    let deadline = std::time::Instant::now() + IOS_SIMULATOR_CLEANUP_BUDGET;
+    let service = app_handle.state::<services::ios_simulator::IosSimulatorService>();
+    service.begin_exit();
+    app_handle
+        .state::<services::ios_simulator::IosSimulatorBridge>()
+        .stop();
+    let _ = service.stop_for_app_exit(deadline);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn stop_ios_simulator_for_app_exit(_app_handle: &tauri::AppHandle) {}
 
 // ════════════════════════════════════════════════════════════════════
 // AppState — will be fleshed out in later phases
@@ -194,7 +221,7 @@ async fn chrome_integration_repair(
 #[tauri::command]
 async fn chrome_integration_test(
     service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
-) -> Result<bool, String> {
+) -> Result<ChromeConnectionTestResult, String> {
     with_chrome_service(service, |service| service.test_connection()).await
 }
 
@@ -210,9 +237,7 @@ fn open_chrome_extension_store(
     app: tauri::AppHandle,
     service: tauri::State<'_, std::sync::Arc<ChromeIntegrationService>>,
 ) -> Result<bool, String> {
-    let url = service
-        .store_url()
-        .ok_or("chrome_store_url_missing")?;
+    let url = service.store_url().ok_or("chrome_store_url_missing")?;
     open_external_url(&app, url)
 }
 
@@ -247,17 +272,24 @@ fn clear_api_key(
 // ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
-fn list_models(
+async fn list_models(
     force_refresh: bool,
     model_service: tauri::State<'_, ModelService>,
     _credentials: tauri::State<'_, CredentialsStore>,
 ) -> Result<ModelDiscoveryResult, String> {
-    // Resolve CLI OAuth token first (with refresh), fall back to API key.
-    // The CLI token gives models with `display_name` (rich names); the API
-    // key gives models without `display_name` (raw ids like "glm-5.2").
-    let credentials_fresh = CredentialsStore::new();
-    let token = crate::services::auth_token::resolve_token(&credentials_fresh);
-    model_service.list_models(token.as_deref(), force_refresh)
+    // E-3: resolve token (keychain + refresh POST) e o fetch do router
+    // rodam no spawn_blocking — o main thread nunca bloqueia. O ModelService
+    // é clonado (só cache_dir) para cruzar o await. `_credentials` declarado
+    // para o resolver de dependências do Tauri (padrão get_profile).
+    let model_service = model_service.inner().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let credentials = CredentialsStore::new();
+        let token = crate::services::auth_token::resolve_token(&credentials);
+        model_service.list_models(token.as_deref(), force_refresh)
+    })
+    .await
+    .map_err(|e| format!("Falha ao listar modelos: {e}"))?;
+    result
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -309,15 +341,17 @@ fn send_feedback(
         "linux"
     };
     let app_for_url = app.clone();
-    Ok(crate::services::feedback_service::FeedbackService::send_feedback(
-        request,
-        &app_version,
-        platform,
-        |url| match app_for_url.opener().open_url(url, None::<&str>) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(format!("Falha ao abrir URL: {e}")),
-        },
-    ))
+    Ok(
+        crate::services::feedback_service::FeedbackService::send_feedback(
+            request,
+            &app_version,
+            platform,
+            |url| match app_for_url.opener().open_url(url, None::<&str>) {
+                Ok(_) => Ok(()),
+                Err(e) => Err(format!("Falha ao abrir URL: {e}")),
+            },
+        ),
+    )
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -372,18 +406,14 @@ async fn get_vision_fallback_state(
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
     let settings = store.get()?;
-    let consent = serde_json::to_value(&settings.vision_fallback_consent)
-        .map_err(|e| e.to_string())?;
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let consent =
+        serde_json::to_value(&settings.vision_fallback_consent).map_err(|e| e.to_string())?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
 
     // Run the blocking model list fetch on a background thread.
     let app_data_dir_clone = app_data_dir.clone();
     let helper_preview = tauri::async_runtime::spawn_blocking(move || {
-        let model_service =
-            crate::services::model_service::ModelService::new(app_data_dir_clone);
+        let model_service = crate::services::model_service::ModelService::new(app_data_dir_clone);
         let credentials_fresh = CredentialsStore::new();
         let token = crate::services::auth_token::resolve_token(&credentials_fresh);
         // force_refresh=false: try cache first (fast), fall back to API.
@@ -393,13 +423,14 @@ async fn get_vision_fallback_state(
             .list_models(token.as_deref(), false)
             .ok()
             .and_then(|discovery| {
-                crate::services::vision_fallback_service::resolve_vision_helper(&discovery)
-                    .map(|m| {
+                crate::services::vision_fallback_service::resolve_vision_helper(&discovery).map(
+                    |m| {
                         serde_json::json!({
                             "id": m.id,
                             "displayName": m.display_name,
                         })
-                    })
+                    },
+                )
             })
     })
     .await
@@ -485,7 +516,8 @@ fn heartbeat_menu_bar(
         crate::services::tray_service::TrayExecution::Permission => "permission",
         crate::services::tray_service::TrayExecution::Done => "done",
         crate::services::tray_service::TrayExecution::Error => "error",
-    }.to_string())
+    }
+    .to_string())
 }
 
 /// Pre-renders the Verboo mascot into the tray "breathing" frames, mirroring
@@ -558,10 +590,12 @@ fn check_skill_approval(
     store: tauri::State<'_, SettingsStore>,
 ) -> Result<Vec<SkillSummary>, String> {
     let settings = store.get()?;
-    Ok(crate::services::skills_service::SkillsService::pending_approval_skills(
-        &skills,
-        &settings.trusted_skills,
-    ))
+    Ok(
+        crate::services::skills_service::SkillsService::pending_approval_skills(
+            &skills,
+            &settings.trusted_skills,
+        ),
+    )
 }
 
 /// Persists a "Always Allow" decision for an untrusted skill. After this,
@@ -663,7 +697,10 @@ fn fire_completion_notification(
             })?;
         Ok(true)
     } else {
-        eprintln!("[verboo:notification] suppressed by settings (mode={:?})", settings.completion_notifications);
+        eprintln!(
+            "[verboo:notification] suppressed by settings (mode={:?})",
+            settings.completion_notifications
+        );
         Ok(false)
     }
 }
@@ -677,7 +714,6 @@ fn get_default_working_directory() -> String {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "/".to_string())
 }
-
 
 // ════════════════════════════════════════════════════════════════════
 // @-mention file listing (quick-win #1)
@@ -751,9 +787,8 @@ async fn write_project_instruction_file(
     .map_err(|e| format!("Falha ao salvar instrução do projeto: {e}"))?
 }
 
-/// Returns the version of the bundled `@verboo/code` package (cli-package).
-/// Returns `"unknown"` if the package.json can't be read (e.g., in dev
-/// without a full bundle, or after a broken install).
+/// Returns the active signed CLI version managed under the app-data directory.
+/// The command name is retained for renderer API compatibility.
 #[tauri::command]
 fn get_bundled_cli_version() -> String {
     crate::services::cli_spawn::bundled_cli_version().unwrap_or_else(|| "unknown".to_string())
@@ -765,12 +800,16 @@ fn get_bundled_cli_version() -> String {
 
 #[tauri::command]
 fn get_workspace_changes(working_directory: String) -> Result<WorkspaceChangeSummary, String> {
-    Ok(services::git_service::read_workspace_change_summary(&working_directory))
+    Ok(services::git_service::read_workspace_change_summary(
+        &working_directory,
+    ))
 }
 
 #[tauri::command]
 fn get_workspace_branches(working_directory: String) -> Result<WorkspaceBranchInfo, String> {
-    Ok(services::git_service::read_workspace_branch_info(&working_directory))
+    Ok(services::git_service::read_workspace_branch_info(
+        &working_directory,
+    ))
 }
 
 #[tauri::command]
@@ -823,9 +862,7 @@ async fn create_workspace_pull_request(
 }
 
 #[tauri::command]
-async fn push_workspace_changes(
-    working_directory: String,
-) -> Result<WorkspacePushResult, String> {
+async fn push_workspace_changes(working_directory: String) -> Result<WorkspacePushResult, String> {
     tokio::task::spawn_blocking(move || {
         services::git_service::push_workspace_changes(&working_directory)
     })
@@ -885,10 +922,7 @@ fn get_file_diff(
 }
 
 #[tauri::command]
-fn revert_file(
-    working_directory: String,
-    file_path: String,
-) -> Result<FileDiffResponse, String> {
+fn revert_file(working_directory: String, file_path: String) -> Result<FileDiffResponse, String> {
     match services::git_service::revert_file(&working_directory, &file_path) {
         Ok(_) => Ok(FileDiffResponse {
             ok: true,
@@ -979,7 +1013,10 @@ async fn pick_files(
     let paths = app
         .dialog()
         .file()
-        .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp", "heic", "heif"])
+        .add_filter(
+            "Images",
+            &["png", "jpg", "jpeg", "gif", "webp", "heic", "heif"],
+        )
         .add_filter("Videos", &["mp4", "mov", "webm", "mkv", "avi", "m4v"])
         .add_filter("All files", &["*"])
         .blocking_pick_files();
@@ -997,6 +1034,15 @@ fn inspect_files(
     paths: Vec<String>,
 ) -> Result<Vec<AttachmentMeta>, services::file_service::FileInspectionError> {
     services::file_service::inspect_files_result(&paths)
+}
+
+#[tauri::command]
+fn allow_media_preview_file(path: String, app: tauri::AppHandle) -> Result<String, String> {
+    let canonical = services::file_service::canonical_media_preview_path(&path)?;
+    app.asset_protocol_scope()
+        .allow_file(&canonical)
+        .map_err(|error| format!("allow media preview file: {error}"))?;
+    Ok(canonical.to_string_lossy().to_string())
 }
 
 #[derive(serde::Serialize)]
@@ -1076,11 +1122,8 @@ fn inspect_pasted_image(
     let pasted_dir = app_data_dir.join("pasted_images");
 
     // Delegate to the testable core function.
-    let meta = services::file_service::write_pasted_image_and_inspect(
-        &bytes,
-        &filename,
-        &pasted_dir,
-    )?;
+    let meta =
+        services::file_service::write_pasted_image_and_inspect(&bytes, &filename, &pasted_dir)?;
     Ok(vec![meta])
 }
 
@@ -1095,11 +1138,7 @@ fn inspect_pasted_image(
 /// Returns the absolute path of the saved file. The renderer stores this
 /// path in `UserSettings.avatar.uploadPath`.
 #[tauri::command]
-fn save_avatar_blob(
-    base64: String,
-    mime: String,
-    app: tauri::AppHandle,
-) -> Result<String, String> {
+fn save_avatar_blob(base64: String, mime: String, app: tauri::AppHandle) -> Result<String, String> {
     use base64::Engine;
 
     // Decode base64. Reject if invalid.
@@ -1126,7 +1165,9 @@ async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
         .file()
         .set_title("Selecionar pasta")
         .blocking_pick_folder();
-    Ok(folder.and_then(|p| p.into_path().ok()).map(|p| p.to_string_lossy().to_string()))
+    Ok(folder
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.to_string_lossy().to_string()))
 }
 
 #[tauri::command]
@@ -1196,30 +1237,162 @@ fn interrupt(
 // ════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
-fn get_update_status(
-    service: tauri::State<'_, crate::services::update_service::UpdateService>,
+fn get_whats_new_status(
+    service: tauri::State<'_, crate::services::whats_new_service::WhatsNewService>,
+) -> Result<Option<WhatsNewStatus>, String> {
+    service.status()
+}
+
+#[tauri::command]
+fn acknowledge_whats_new(
+    version: String,
+    service: tauri::State<'_, crate::services::whats_new_service::WhatsNewService>,
+) -> Result<WhatsNewAcknowledgeResult, String> {
+    service.acknowledge(&version)
+}
+
+#[tauri::command]
+async fn get_update_status(
+    coordinator: tauri::State<'_, crate::services::update_coordinator::UpdateCoordinator>,
 ) -> Result<UpdateSnapshot, String> {
-    Ok(service.snapshot())
+    let coordinator = coordinator.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        coordinator.snapshot_after_startup_initialization()
+    })
+    .await
+    .map_err(|error| format!("Falha interna ao verificar o CLI: {error}"))
+}
+
+#[tauri::command]
+async fn bootstrap_cli(
+    app: tauri::AppHandle,
+    coordinator: tauri::State<'_, crate::services::update_coordinator::UpdateCoordinator>,
+) -> Result<UpdateSnapshot, String> {
+    let coordinator = coordinator.inner().clone();
+    let _operation = coordinator.begin_operation().await;
+    let coordinator_for_runtime = coordinator.clone();
+    let mut runtime_task =
+        tauri::async_runtime::spawn_blocking(move || coordinator_for_runtime.ensure_cli_service());
+    let service = loop {
+        tokio::select! {
+            result = &mut runtime_task => {
+                match result {
+                    Ok(Ok(service)) => break service,
+                    Ok(Err(error)) => {
+                        eprintln!("[verboo:node-runtime] bootstrap failed: {error}");
+                        return Ok(emit_update_snapshot(&app, &coordinator));
+                    }
+                    Err(error) => {
+                        return Err(format!("Falha interna ao preparar o runtime: {error}"));
+                    }
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                emit_update_snapshot(&app, &coordinator);
+            }
+        }
+    };
+
+    if !service.snapshot().bootstrap_required {
+        return Ok(emit_update_snapshot(&app, &coordinator));
+    }
+
+    let mut task = tauri::async_runtime::spawn_blocking(move || service.bootstrap_if_required());
+    loop {
+        tokio::select! {
+            result = &mut task => {
+                match result {
+                    Ok(Ok(_)) => {
+                        if let Err(error) = coordinator.node().garbage_collect_obsolete(true) {
+                            eprintln!("[verboo:node-runtime] deferred cleanup failed: {error}");
+                        }
+                        return Ok(emit_update_snapshot(&app, &coordinator));
+                    }
+                    Ok(Err(error)) => {
+                        eprintln!("[verboo:cli-update] bootstrap failed: {error}");
+                        return Ok(emit_update_snapshot(&app, &coordinator));
+                    }
+                    Err(error) => {
+                        return Err(format!("Falha interna ao instalar o CLI: {error}"));
+                    }
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                emit_update_snapshot(&app, &coordinator);
+            }
+        }
+    }
+}
+
+fn emit_update_snapshot(
+    app: &tauri::AppHandle,
+    coordinator: &crate::services::update_coordinator::UpdateCoordinator,
+) -> UpdateSnapshot {
+    let snapshot = coordinator.snapshot();
+    let _ = app.emit("update:snapshot", snapshot.clone());
+    snapshot
 }
 
 #[tauri::command]
 async fn check_for_updates(
     user_initiated: bool,
     app: tauri::AppHandle,
-    service: tauri::State<'_, crate::services::update_service::UpdateService>,
+    coordinator: tauri::State<'_, crate::services::update_coordinator::UpdateCoordinator>,
 ) -> Result<UpdateSnapshot, String> {
-    use tauri_plugin_updater::UpdaterExt;
-    if !user_initiated && !service.should_auto_check() {
-        return Ok(service.snapshot());
+    let coordinator = coordinator.inner().clone();
+    let _operation = coordinator.begin_operation().await;
+    let app_updates = coordinator.app();
+    if !user_initiated && !app_updates.should_auto_check() {
+        return Ok(coordinator.snapshot());
     }
-    service.mark_checking();
-    let _ = app.emit("update:snapshot", service.snapshot());
+
+    let check_app = !app_updates.can_install();
+    let cli_updates = coordinator.cli().filter(|service| {
+        !matches!(
+            service.snapshot().status,
+            services::cli_update::service::CliUpdateStatus::Ready
+        )
+    });
+
+    if check_app {
+        app_updates.mark_checking();
+    }
+    emit_update_snapshot(&app, &coordinator);
+
+    let app_check = check_app_update(&app, &coordinator, &app_updates, check_app);
+    let cli_check = async move {
+        let Some(service) = cli_updates else {
+            return Ok::<(), String>(());
+        };
+        tauri::async_runtime::spawn_blocking(move || service.check())
+            .await
+            .map_err(|error| format!("Falha interna ao verificar o CLI: {error}"))?
+            .map(|_| ())
+    };
+    let (_, cli_result) = tokio::join!(app_check, cli_check);
+    if let Err(error) = cli_result {
+        eprintln!("[verboo:cli-update] {error}");
+    }
+    let snapshot = emit_update_snapshot(&app, &coordinator);
+    Ok(snapshot)
+}
+
+async fn check_app_update(
+    app: &tauri::AppHandle,
+    coordinator: &crate::services::update_coordinator::UpdateCoordinator,
+    service: &crate::services::update_service::UpdateService,
+    should_check: bool,
+) {
+    use tauri_plugin_updater::UpdaterExt;
+    if !should_check {
+        return;
+    }
     let endpoint: tauri::Url = match service.endpoint().parse() {
         Ok(endpoint) => endpoint,
         Err(e) => {
-            let snap = service.mark_error(format!("Endpoint de atualização inválido: {e}"));
-            let _ = app.emit("update:snapshot", snap.clone());
-            return Ok(snap);
+            service.mark_error(format!("Endpoint de atualização inválido: {e}"));
+            emit_update_snapshot(app, coordinator);
+            return;
         }
     };
     let updater = match app
@@ -1229,9 +1402,9 @@ async fn check_for_updates(
     {
         Ok(u) => u,
         Err(e) => {
-            let snap = service.mark_error(format!("Falha ao configurar updater: {e}"));
-            let _ = app.emit("update:snapshot", snap.clone());
-            return Ok(snap);
+            service.mark_error(format!("Falha ao configurar updater: {e}"));
+            emit_update_snapshot(app, coordinator);
+            return;
         }
     };
     let active_result = updater.check().await;
@@ -1240,17 +1413,14 @@ async fn check_for_updates(
     // Used by `run_stable_probe` to short-circuit a second probe when
     // the user is already on the Stable channel.
     let active_check_ok = matches!(&active_result, Ok(_));
-    let snap = match active_result {
-        Ok(Some(update)) => service.mark_available(
-            update.version.clone(),
-            None,
-            None,
-            update.body.clone(),
-        ),
+    match active_result {
+        Ok(Some(update)) => {
+            service.mark_available(update.version.clone(), None, None, update.body.clone())
+        }
         Ok(None) => service.mark_not_available(),
         Err(e) => service.mark_error(format!("Falha ao verificar atualizações: {e}")),
     };
-    let _ = app.emit("update:snapshot", snap.clone());
+    emit_update_snapshot(app, coordinator);
 
     // Probe the Stable channel availability (silent — does NOT call
     // mark_error). When the user is on Beta, this is an independent
@@ -1263,9 +1433,8 @@ async fn check_for_updates(
             probe_endpoint_serves_manifest(&app_for_probe, endpoint).await
         })
         .await;
-    let _ = app.emit("update:snapshot", stable_snap);
-
-    Ok(snap)
+    let _ = stable_snap;
+    emit_update_snapshot(app, coordinator);
 }
 
 /// Probes a single updater endpoint and returns `true` when it serves a
@@ -1298,30 +1467,66 @@ async fn probe_endpoint_serves_manifest(app: &tauri::AppHandle, endpoint: &'stat
 
 #[tauri::command]
 async fn download_update(
+    user_initiated: bool,
     app: tauri::AppHandle,
-    service: tauri::State<'_, crate::services::update_service::UpdateService>,
+    coordinator: tauri::State<'_, crate::services::update_coordinator::UpdateCoordinator>,
 ) -> Result<UpdateSnapshot, String> {
+    let coordinator = coordinator.inner().clone();
+    let _operation = coordinator.begin_operation().await;
+    let app_updates = coordinator.app();
+    let download_app = matches!(app_updates.snapshot().status, UpdateStatus::Available);
+    let cli_updates = coordinator.cli().filter(|service| {
+        user_initiated
+            && matches!(
+                service.snapshot().status,
+                services::cli_update::service::CliUpdateStatus::Available
+            )
+    });
+
+    if !download_app && cli_updates.is_none() {
+        return Ok(coordinator.snapshot());
+    }
+
+    let app_download = download_app_update(
+        &app,
+        &coordinator,
+        &app_updates,
+        download_app,
+    );
+    let cli_download = prepare_cli_update(app.clone(), coordinator.clone(), cli_updates);
+    let (app_result, cli_result) = tokio::join!(app_download, cli_download);
+    app_result?;
+    cli_result?;
+    Ok(emit_update_snapshot(&app, &coordinator))
+}
+
+async fn download_app_update(
+    app: &tauri::AppHandle,
+    coordinator: &crate::services::update_coordinator::UpdateCoordinator,
+    service: &crate::services::update_service::UpdateService,
+    should_download: bool,
+) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
+    if !should_download {
+        return Ok(());
+    }
     let ticket = match service.begin_download()? {
         Some(ticket) => ticket,
-        None => return Ok(service.snapshot()),
+        None => return Ok(()),
     };
-    let _ = app.emit("update:snapshot", service.snapshot());
-    let endpoint: tauri::Url = match crate::services::update_service::UpdateService::endpoint_for(
-        &ticket,
-    )
-    .parse()
-    {
-        Ok(endpoint) => endpoint,
-        Err(e) => {
-            let snap = service.finish_download_error(
-                &ticket,
-                format!("Endpoint de atualização inválido: {e}"),
-            );
-            let _ = app.emit("update:snapshot", snap.clone());
-            return Ok(snap);
-        }
-    };
+    emit_update_snapshot(app, coordinator);
+    let endpoint: tauri::Url =
+        match crate::services::update_service::UpdateService::endpoint_for(&ticket).parse() {
+            Ok(endpoint) => endpoint,
+            Err(e) => {
+                service.finish_download_error(
+                    &ticket,
+                    format!("Endpoint de atualização inválido: {e}"),
+                );
+                emit_update_snapshot(app, coordinator);
+                return Ok(());
+            }
+        };
     let updater = match app
         .updater_builder()
         .endpoints(vec![endpoint])
@@ -1329,31 +1534,29 @@ async fn download_update(
     {
         Ok(updater) => updater,
         Err(e) => {
-            let snap = service
-                .finish_download_error(&ticket, format!("Falha ao configurar updater: {e}"));
-            let _ = app.emit("update:snapshot", snap.clone());
-            return Ok(snap);
+            service.finish_download_error(&ticket, format!("Falha ao configurar updater: {e}"));
+            emit_update_snapshot(app, coordinator);
+            return Ok(());
         }
     };
     let update = match updater.check().await {
         Ok(Some(update)) => update,
         Ok(None) => {
-            let snap = service
-                .finish_download_error(&ticket, "Nenhuma atualização disponível".into());
-            let _ = app.emit("update:snapshot", snap.clone());
-            return Ok(snap);
+            service.finish_download_error(&ticket, "Nenhuma atualização disponível".into());
+            emit_update_snapshot(app, coordinator);
+            return Ok(());
         }
         Err(e) => {
-            let snap =
-                service.finish_download_error(&ticket, format!("Falha ao verificar: {e}"));
-            let _ = app.emit("update:snapshot", snap.clone());
-            return Ok(snap);
+            service.finish_download_error(&ticket, format!("Falha ao verificar: {e}"));
+            emit_update_snapshot(app, coordinator);
+            return Ok(());
         }
     };
     if !service.bind_download_version(&ticket, &update.version)? {
-        return Ok(service.snapshot());
+        return Ok(());
     }
     let app_for_chunk = app.clone();
+    let coordinator_for_chunk = coordinator.clone();
     let service_handle = service.clone_handle();
     let ticket_for_chunk = ticket.clone();
     let mut transferred = 0_u64;
@@ -1364,14 +1567,14 @@ async fn download_update(
                 transferred = transferred.saturating_add(chunk_len as u64);
                 if let Some(total) = total {
                     let seconds = started.elapsed().as_secs_f64().max(0.001);
-                    let snap = service_handle.mark_download_progress_for(
+                    let changed = service_handle.mark_download_progress_for(
                         &ticket_for_chunk,
                         transferred,
                         total,
                         transferred as f64 / seconds,
                     );
-                    if let Some(snap) = snap {
-                        let _ = app_for_chunk.emit("update:snapshot", snap);
+                    if changed.is_some() {
+                        emit_update_snapshot(&app_for_chunk, &coordinator_for_chunk);
                     }
                 }
             },
@@ -1381,30 +1584,72 @@ async fn download_update(
     let bytes = match result {
         Ok(bytes) => bytes,
         Err(e) => {
-            let snap = service.finish_download_error(&ticket, format!("Falha ao baixar: {e}"));
-            let _ = app.emit("update:snapshot", snap.clone());
-            return Ok(snap);
+            service.finish_download_error(&ticket, format!("Falha ao baixar: {e}"));
+            emit_update_snapshot(app, coordinator);
+            return Ok(());
         }
     };
-    let snap = match service.stage_downloaded(&ticket, update, bytes) {
-        Ok(Some(snapshot)) => snapshot,
-        Ok(None) => service.snapshot(),
-        Err(error) => service.finish_download_error(
-            &ticket,
-            format!("Falha ao preparar atualização: {error}"),
-        ),
+    if let Err(error) = service.stage_downloaded(&ticket, update, bytes) {
+        service.finish_download_error(&ticket, format!("Falha ao preparar atualização: {error}"));
+    }
+    emit_update_snapshot(app, coordinator);
+    Ok(())
+}
+
+async fn prepare_cli_update(
+    app: tauri::AppHandle,
+    coordinator: crate::services::update_coordinator::UpdateCoordinator,
+    service: Option<services::cli_update::CliUpdateService>,
+) -> Result<(), String> {
+    let Some(service) = service else {
+        return Ok(());
     };
-    let _ = app.emit("update:snapshot", snap.clone());
-    Ok(snap)
+    let mut task = tauri::async_runtime::spawn_blocking(move || service.prepare());
+    loop {
+        tokio::select! {
+            result = &mut task => {
+                match result {
+                    Ok(Ok(_)) | Ok(Err(_)) => {
+                        emit_update_snapshot(&app, &coordinator);
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        return Err(format!("Falha interna ao preparar o CLI: {error}"));
+                    }
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                emit_update_snapshot(&app, &coordinator);
+            }
+        }
+    }
 }
 
 #[tauri::command]
-fn install_update(
+async fn install_update(
     app: tauri::AppHandle,
-    service: tauri::State<'_, crate::services::update_service::UpdateService>,
+    coordinator: tauri::State<'_, crate::services::update_coordinator::UpdateCoordinator>,
     turns: tauri::State<'_, TurnService>,
 ) -> Result<InstallUpdateResult, String> {
-    if !service.can_install() {
+    let coordinator = coordinator.inner().clone();
+    let _operation = coordinator.begin_operation().await;
+    let app_updates = coordinator.app();
+    let cli_updates = coordinator.cli();
+    let app_ready = app_updates.can_install();
+    let cli_ready = cli_updates.as_ref().is_some_and(|service| {
+        matches!(
+            service.snapshot().status,
+            services::cli_update::service::CliUpdateStatus::Ready
+        )
+    });
+    let app_still_available = matches!(app_updates.snapshot().status, UpdateStatus::Available);
+    let cli_still_available = cli_updates.as_ref().is_some_and(|service| {
+        matches!(
+            service.snapshot().status,
+            services::cli_update::service::CliUpdateStatus::Available
+        )
+    });
+    if (!app_ready && !cli_ready) || app_still_available || cli_still_available {
         return Err("Atualização ainda não foi baixada".into());
     }
     let _install_lease = match turns.begin_update_install()? {
@@ -1416,66 +1661,150 @@ fn install_update(
             });
         }
     };
-    let staged = service
-        .take_staged_update()?
-        .ok_or_else(|| "Atualização baixada não está mais disponível".to_string())?;
-    let bytes = match staged.read_verified() {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            let snapshot = service.mark_error(error.clone());
-            let _ = app.emit("update:snapshot", snapshot);
-            return Err(error);
-        }
+    let staged_app = if app_ready {
+        Some(
+            app_updates
+                .take_staged_update()?
+                .ok_or_else(|| "Atualização do app baixada não está mais disponível".to_string())?,
+        )
+    } else {
+        None
+    };
+    let app_bytes = match staged_app.as_ref() {
+        Some(staged) => match staged.read_verified() {
+            Ok(bytes) => Some(bytes),
+            Err(error) => {
+                app_updates.mark_error(error.clone());
+                emit_update_snapshot(&app, &coordinator);
+                return Err(error);
+            }
+        },
+        None => None,
     };
     #[cfg(target_os = "macos")]
     let macos_bundle = match tauri::process::current_binary(&app.env())
         .map_err(|e| format!("Falha ao localizar o app instalado: {e}"))
         .and_then(|executable| {
-            crate::services::update_service::macos_bundle_path(&executable)
-                .ok_or_else(|| "O executável não está dentro de um bundle macOS válido".to_string())
+            crate::services::update_service::macos_bundle_path(&executable).ok_or_else(|| {
+                "O executável não está dentro de um bundle macOS válido".to_string()
+            })
         }) {
-        Ok(bundle) => bundle,
-        Err(error) => {
-            service.restore_staged_update(staged)?;
+        Ok(bundle) => Some(bundle),
+        Err(error) if app_ready => {
+            if let Some(staged) = staged_app {
+                app_updates.restore_staged_update(staged)?;
+            }
             return Err(error);
         }
+        Err(error) => {
+            eprintln!(
+                "[verboo:update] macOS bundle unavailable for CLI-only update, using native restart: {error}"
+            );
+            None
+        }
     };
-    if let Err(error) = std::fs::remove_file(&staged.artifact) {
-        service.restore_staged_update(staged)?;
-        return Err(format!("Falha ao preparar instalação: {error}"));
+
+    let mut app_payload = match (staged_app, app_bytes) {
+        (Some(staged), Some(bytes)) => {
+            if let Err(error) = std::fs::remove_file(&staged.artifact) {
+                app_updates.restore_staged_update(staged)?;
+                return Err(format!("Falha ao preparar instalação: {error}"));
+            }
+            Some((staged.update, bytes))
+        }
+        (None, None) => None,
+        _ => return Err("Estado interno inconsistente da atualização do app".to_string()),
+    };
+
+    let cli_activation = if cli_ready {
+        let service = cli_updates.as_ref().expect("CLI service must exist");
+        match service.activate_prepared_for_restart() {
+            Ok(activation) => Some(activation),
+            Err(error) => {
+                if let Some((update, bytes)) = app_payload.take() {
+                    app_updates.restore_failed_install(update, bytes)?;
+                }
+                return Err(format!("Falha ao ativar atualização do CLI: {error}"));
+            }
+        }
+    } else {
+        None
+    };
+
+    let installed_app = app_payload.is_some();
+    if let Some((update, bytes)) = app_payload.take() {
+        if let Err(error) = update.install(&bytes) {
+            let mut failures = vec![format!("Falha ao instalar atualização do app: {error}")];
+            if let Err(restore_error) = app_updates.restore_failed_install(update, bytes) {
+                failures.push(format!("falha ao restaurar download do app: {restore_error}"));
+            }
+            if let (Some(service), Some(activation)) =
+                (cli_updates.as_ref(), cli_activation.as_ref())
+            {
+                if let Err(rollback_error) = service.rollback_prepared_activation(activation) {
+                    failures.push(format!("falha ao restaurar o CLI anterior: {rollback_error}"));
+                }
+            }
+            emit_update_snapshot(&app, &coordinator);
+            return Err(failures.join("; "));
+        }
     }
-    let update = staged.update;
-    if let Err(error) = update.install(&bytes) {
-        service.restore_failed_install(update, bytes)?;
-        return Err(format!("Falha ao instalar atualização: {error}"));
+
+    if let (Some(service), Some(activation)) = (cli_updates.as_ref(), cli_activation.as_ref()) {
+        if let Err(error) = service.commit_prepared_activation(activation) {
+            if installed_app {
+                eprintln!(
+                    "[verboo:cli-update] app installed but CLI activation bookkeeping failed: {error}"
+                );
+            } else {
+                let rollback = service.rollback_prepared_activation(activation);
+                emit_update_snapshot(&app, &coordinator);
+                return match rollback {
+                    Ok(_) => Err(format!("Falha ao concluir atualização do CLI: {error}")),
+                    Err(rollback_error) => Err(format!(
+                        "Falha ao concluir atualização do CLI: {error}; falha no rollback: {rollback_error}"
+                    )),
+                };
+            }
+        }
     }
+
     #[cfg(target_os = "macos")]
     {
-        let relaunch = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg(crate::services::update_service::macos_relaunch_script())
-            .arg("verboo-update-relaunch")
-            .arg(std::process::id().to_string())
-            .arg(macos_bundle)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        if let Err(error) = relaunch {
-            eprintln!("[verboo:update] relaunch helper failed, using native restart: {error}");
+        _install_lease.keep_until_process_exit();
+        // LaunchServices is required for every macOS update target, including
+        // CLI-only updates. Tauri's native restart can respawn the executable
+        // as a headless process with no main window, which makes a successful
+        // CLI update look as if the app vanished.
+        if let Some(macos_bundle) = macos_bundle {
+            let relaunch = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(crate::services::update_service::macos_relaunch_script())
+                .arg("verboo-update-relaunch")
+                .arg(std::process::id().to_string())
+                .arg(macos_bundle)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            if let Err(error) = relaunch {
+                eprintln!("[verboo:update] relaunch helper failed, using native restart: {error}");
+                app.restart();
+            }
+            app.exit(0);
+        } else {
             app.restart();
         }
-        _install_lease.keep_until_process_exit();
-        app.exit(0);
-        Ok(InstallUpdateResult {
+        return Ok(InstallUpdateResult {
             status: InstallUpdateStatus::Restarting,
             active_turns: 0,
-        })
+        });
     }
 
     #[cfg(not(target_os = "macos"))]
     {
         // Tauri's native restart remains the correct relaunch path on Windows/Linux.
+        _install_lease.keep_until_process_exit();
         app.restart();
     }
 }
@@ -1525,6 +1854,135 @@ fn terminal_get_state(
     terminal_service: tauri::State<'_, TerminalService>,
 ) -> Result<Option<LocalTerminalSession>, String> {
     terminal_service.get_state()
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Provider login (F4) — ponte por pseudo-terminal.
+
+/// Inicia o login interativo do provedor (ex.: codex/claude) num PTY.
+/// Gate: exige sessão Verboo ativa — o próprio CLI exige; propagamos o erro
+/// claro quando não há.
+#[tauri::command]
+fn provider_login_start(
+    provider: String,
+    reconnect_account_id: Option<String>,
+    provider_login_service: tauri::State<'_, services::provider_login_pty::ProviderLoginService>,
+) -> Result<String, String> {
+    let has_session = match services::provider_catalog::read_provider_auth_state() {
+        Ok(state) if state.logged_in => true,
+        Ok(_) => {
+            return Err(
+                "Não há sessão Verboo ativa. Entre no Verboo pelo app ou pelo CLI antes de conectar um provedor."
+                    .to_string(),
+            );
+        }
+        Err(e) => {
+            return Err(format!(
+                "Não foi possível verificar a sessão Verboo: {e}"
+            ));
+        }
+    };
+    provider_login_service.start(&provider, has_session, reconnect_account_id, Default::default())
+}
+
+/// Cancela o login de provedor em andamento (mata o PTY inteiro).
+#[tauri::command]
+fn provider_login_cancel(
+    provider_login_service: tauri::State<'_, services::provider_login_pty::ProviderLoginService>,
+) -> Result<(), String> {
+    provider_login_service.cancel()
+}
+
+/// Confirma o aceite de risco da tela (o usuário leu e decidiu): a ponte
+/// navega para a opção 1 (o padrão do menu é a 2) e Enter — o CLI segue ao
+/// navegador. A ponte NUNCA aceita risco sozinha.
+#[tauri::command]
+fn provider_login_confirm_risk(
+    provider: String,
+    provider_login_service: tauri::State<'_, services::provider_login_pty::ProviderLoginService>,
+) -> Result<(), String> {
+    provider_login_service.confirm_risk(&provider)
+}
+
+/// Estado de autenticação por provedor — uma entrada por provedor que a
+/// ponte suporta, shape `{ provider, connected, account? }`. O universo e a
+/// leitura moram na ponte (módulo descartável); quando o CLI entregar o
+/// auth status por provedor, a troca é só no backend — o renderer não muda
+/// (ver CONTRATO DE REMOÇÃO em provider_login_pty.rs).
+#[tauri::command]
+async fn provider_auth_status(
+) -> Result<Vec<services::provider_login_pty::ProviderAuthStatus>, String> {
+    // E: spawn do CLI/keychain fora do main thread — o primeiro paint não
+    // espera provider.
+    let result = tauri::async_runtime::spawn_blocking(
+        services::provider_login_pty::provider_auth_status,
+    )
+    .await
+    .map_err(|e| format!("Falha ao obter status de autenticação: {e}"))?;
+    result
+}
+
+#[tauri::command]
+async fn provider_capabilities() -> Result<services::provider_accounts::ProviderCapabilities, String> {
+    let result = tauri::async_runtime::spawn_blocking(services::provider_accounts::provider_capabilities)
+        .await
+        .map_err(|e| format!("Falha ao obter capacidades: {e}"))?;
+    result
+}
+
+#[tauri::command]
+async fn provider_accounts_list() -> Result<Vec<services::provider_accounts::ProviderAccountSummary>, String> {
+    let result = tauri::async_runtime::spawn_blocking(services::provider_accounts::provider_accounts_list)
+        .await
+        .map_err(|e| format!("Falha ao listar contas: {e}"))?;
+    result
+}
+
+#[tauri::command]
+async fn provider_accounts_usage(
+    provider: Option<String>,
+    account_id: Option<String>,
+) -> Result<Vec<services::provider_accounts::ProviderUsageResult>, String> {
+    // E-2/E-4: async + spawn_blocking — o renderer paraleliza as chamadas
+    // por conta (Promise.all) e o tokio as executa em paralelo; o main
+    // thread nunca bloqueia durante o spawn do CLI.
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        services::provider_accounts::provider_accounts_usage(provider, account_id)
+    })
+    .await
+    .map_err(|e| format!("Falha ao obter uso do provedor: {e}"))?;
+    result
+}
+
+#[tauri::command]
+async fn provider_account_models(
+    provider: String,
+    account_id: String,
+) -> Result<Vec<VerbooModel>, String> {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        services::provider_accounts::provider_account_models(provider, account_id)
+    })
+    .await
+    .map_err(|e| format!("Falha ao obter modelos da conta: {e}"))?;
+    result
+}
+
+#[tauri::command]
+async fn provider_account_set_default(provider: String, account_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        services::provider_accounts::provider_account_set_default(provider, account_id)
+    })
+    .await
+    .map_err(|e| format!("Falha ao definir conta padrão: {e}"))?
+}
+
+#[tauri::command]
+async fn provider_account_remove(provider: String, account_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        services::provider_accounts::provider_account_remove(provider, account_id)
+    })
+    .await
+    .map_err(|e| format!("Falha ao remover conta: {e}"))?
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1718,10 +2176,17 @@ async fn plugin_skills(
 /// homepage, description, version, keywords, tags. The FE merges this
 /// with the CLI's `--available` JSON to reach Codex parity.
 #[tauri::command]
-async fn marketplace_manifests(
-) -> Result<std::collections::HashMap<String, services::marketplace_manifest_service::MarketplacePluginEntry>, models::plugins::PluginError> {
+async fn marketplace_manifests() -> Result<
+    std::collections::HashMap<
+        String,
+        services::marketplace_manifest_service::MarketplacePluginEntry,
+    >,
+    models::plugins::PluginError,
+> {
     let marketplaces = services::plugins_service::marketplace_list().await?;
-    Ok(services::marketplace_manifest_service::read_all_manifests(&marketplaces))
+    Ok(services::marketplace_manifest_service::read_all_manifests(
+        &marketplaces,
+    ))
 }
 
 /// 15. `plugin_icon(pluginId)` — fetches the plugin's icon from its homepage
@@ -1745,13 +2210,13 @@ async fn plugin_icon(
         .unwrap_or(true);
 
     // Resolve cache dir: <app_data_dir>/cache/plugin-icons/
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| models::plugins::PluginError::Unknown {
-            message: format!("failed to resolve app_data_dir: {e}"),
-            exit_code: None,
-        })?;
+    let app_data_dir =
+        app.path()
+            .app_data_dir()
+            .map_err(|e| models::plugins::PluginError::Unknown {
+                message: format!("failed to resolve app_data_dir: {e}"),
+                exit_code: None,
+            })?;
     let cache_dir = app_data_dir.join("cache").join("plugin-icons");
 
     // Fetch marketplace manifests via the in-memory cache (TTL 60s +
@@ -1842,10 +2307,7 @@ async fn remove_video_transcriber(
 /// raw bytes over IPC instead. Only files inside the app-private
 /// `video_jobs` tree are readable — never arbitrary paths.
 #[tauri::command]
-fn read_video_frame(
-    app: tauri::AppHandle,
-    path: String,
-) -> Result<tauri::ipc::Response, String> {
+fn read_video_frame(app: tauri::AppHandle, path: String) -> Result<tauri::ipc::Response, String> {
     use tauri::Manager;
     let app_data_dir = app
         .path()
@@ -1861,8 +2323,7 @@ fn read_video_frame(
     if !requested.starts_with(&allowed_root) {
         return Err("frame path outside the video jobs directory".to_string());
     }
-    let bytes =
-        std::fs::read(&requested).map_err(|error| format!("read frame: {error}"))?;
+    let bytes = std::fs::read(&requested).map_err(|error| format!("read frame: {error}"))?;
     Ok(tauri::ipc::Response::new(bytes))
 }
 
@@ -1903,10 +2364,57 @@ pub fn run() {
                 .app_data_dir()
                 .expect("app data dir must be available");
             let _ = std::fs::create_dir_all(&app_data_dir);
+
+            let whats_new_preview = std::env::var("VERBOO_WHATS_NEW_PREVIEW")
+                .map(|value| value == "1")
+                .unwrap_or(false);
+            app.manage(crate::services::whats_new_service::WhatsNewService::new(
+                app_data_dir.clone(),
+                app.package_info().version.to_string(),
+                option_env!("VERBOO_RELEASE_TAG").map(str::to_owned),
+                whats_new_preview,
+            ));
+
             app.manage(
                 services::browser_panel::BrowserCaptureStore::new(app_data_dir.clone())
                     .map_err(std::io::Error::other)?,
             );
+            #[cfg(target_os = "macos")]
+            {
+                app.manage(
+                    services::ios_simulator::IosSimulatorCaptureStore::new(app_data_dir.clone())
+                        .map_err(std::io::Error::other)?,
+                );
+                let simulator_service =
+                    services::ios_simulator::IosSimulatorService::new(app_data_dir.clone())
+                        .map_err(std::io::Error::other)?;
+                app.manage(simulator_service.clone());
+                simulator_service
+                    .reconcile_owned_devices()
+                    .map_err(std::io::Error::other)?;
+                let simulator_cache_dir =
+                    app.path().app_cache_dir().map_err(std::io::Error::other)?;
+                let simulator_bridge = services::ios_simulator::IosSimulatorBridge::start(
+                    simulator_cache_dir,
+                    app.package_info().version.to_string(),
+                    app.handle().clone(),
+                    simulator_service,
+                )
+                .map_err(std::io::Error::other)?;
+                app.manage(simulator_bridge);
+                let simulator_mcp_app_data = app_data_dir.clone();
+                let simulator_mcp_version = app.package_info().version.to_string();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let result = services::ios_simulator_mcp::IosSimulatorMcpService::new(
+                        simulator_mcp_app_data,
+                        simulator_mcp_version,
+                    )
+                    .and_then(|service| service.reconcile_for_platform(true));
+                    if let Err(error) = result {
+                        eprintln!("[verboo:ios-simulator-mcp] setup skipped: {error}");
+                    }
+                });
+            }
             let settings_store = SettingsStore::new(app_data_dir.clone());
             app.manage(
                 services::pasted_file_upload::PastedFileUploadService::new(app_data_dir.clone())
@@ -1921,13 +2429,8 @@ pub fn run() {
             if std::env::var_os("VERBOO_BROWSER_SMOKE_REPORT").is_none() {
                 use tauri_plugin_notification::NotificationExt;
                 match app.notification().request_permission() {
-                    Ok(state) => eprintln!(
-                        "[verboo:notification] permission state: {:?}",
-                        state
-                    ),
-                    Err(e) => eprintln!(
-                        "[verboo:notification] request_permission failed: {e}"
-                    ),
+                    Ok(state) => eprintln!("[verboo:notification] permission state: {:?}", state),
+                    Err(e) => eprintln!("[verboo:notification] request_permission failed: {e}"),
                 }
             }
 
@@ -1956,23 +2459,71 @@ pub fn run() {
             ));
             app.manage(services::video::job::VideoOcrWaiters::default());
             // TurnService — spawns `verboo` CLI for agent turns with streaming
-            app.manage(TurnService::new(std::sync::Arc::new(CredentialsStore::new())).with_settings(std::sync::Arc::new(settings_store_for_turn)).with_app_data_dir(app_data_dir.clone()));
+            app.manage(
+                TurnService::new(std::sync::Arc::new(CredentialsStore::new()))
+                    .with_settings(std::sync::Arc::new(settings_store_for_turn))
+                    .with_app_data_dir(app_data_dir.clone()),
+            );
             // ResearchSubagentRunner — spawns read-only CLI turns for research
             // subagents. Shares a CredentialsStore (Arc) so it can resolve the
             // bearer token (CLI OAuth first, API key fallback) the same way
             // TurnService does.
-            app.manage(crate::services::research_subagent_runner::ResearchSubagentRunner::new(
-                std::sync::Arc::new(CredentialsStore::new()),
-            ));
+            app.manage(
+                crate::services::research_subagent_runner::ResearchSubagentRunner::new(
+                    std::sync::Arc::new(CredentialsStore::new()),
+                ),
+            );
             // TerminalService — PTY for the local terminal panel
             app.manage(TerminalService::new());
+            // ProviderLoginService — F4: ponte de login de provedor por PTY.
+            // Canal CONFIRMADO com o Mosaico: "provider-login:event", payload
+            // { provider, state, message? } (state: awaiting_browser |
+            // connected | error).
+            {
+                let app_for_login = app.handle().clone();
+                // cwd NEUTRO e fora de file provider para o CLI interativo:
+                // o CLI ao subir VARRE o cwd procurando projeto — herdado do
+                // app (Documents/iCloud) a leitura coordenada PENDURA e o
+                // prompt nunca aparece (defeito de campo). O workdir é um
+                // diretório próprio vazio sob o app-data, criado na hora.
+                let login_workdir = app
+                    .path()
+                    .app_data_dir()
+                    .map(|dir| dir.join("provider-login-workdir"))
+                    .unwrap_or_else(|_| std::env::temp_dir().join("verboo-provider-login"));
+                let _ = std::fs::create_dir_all(&login_workdir);
+                app.manage(services::provider_login_pty::ProviderLoginService::new(
+                    move |event| {
+                        let _ = app_for_login.emit("provider-login:event", event);
+                    },
+                    login_workdir,
+                ));
+            }
             // TrayService — owns the menubar state machine (icon/title animation)
             app.manage(crate::services::tray_service::TrayService::new());
-            // UpdateService — owns the updater snapshot + auto-check timer logic
-            app.manage(crate::services::update_service::UpdateService::new(
+            // Node, CLI, and app updates keep independent storage owners. The
+            // coordinator stages the app-owned runtime before the signed CLI
+            // and combines both update streams into one card/restart flow.
+            let app_update_service = crate::services::update_service::UpdateService::new(
                 app.package_info().version.to_string(),
                 cfg!(debug_assertions) == false,
-            ));
+            );
+            app.manage(app_update_service.clone());
+            let node_runtime =
+                services::node_runtime::NodeRuntimeService::production(&app_data_dir)
+                    .map_err(std::io::Error::other)?;
+            let update_coordinator = crate::services::update_coordinator::UpdateCoordinator::new(
+                app_update_service,
+                node_runtime,
+                app_data_dir.clone(),
+            );
+            let startup_coordinator = update_coordinator.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(error) = startup_coordinator.initialize_existing_cli() {
+                    eprintln!("[verboo:cli-update] startup preparation failed: {error}");
+                }
+            });
+            app.manage(update_coordinator);
             // LifecycleService — owns the first-launch requirements flag
             app.manage(crate::services::lifecycle_service::LifecycleService::new(
                 app_data_dir.clone(),
@@ -2067,23 +2618,13 @@ pub fn run() {
                 });
             }
 
-            // ── Close-to-tray (macOS hides, Win/Linux quits) ───────
-            // Mirrors Electron's `shouldCloseToTray` (src/main/index.ts:580).
+            // ── Close always requests an app exit ───────────────────
             if let Some(window) = app.get_webview_window("main") {
                 let app_handle = app.handle().clone();
-                let window_clone = window.clone();
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        if crate::services::lifecycle_service::should_close_to_tray() {
-                            // macOS: prevent the close, just hide. The tray icon
-                            // stays alive so the user can click it to re-show.
-                            api.prevent_close();
-                            let _ = window_clone.hide();
-                        } else {
-                            // Win/Linux: actually quit (the default behavior).
-                            // Allow the close so the app exits cleanly.
-                            let _ = app_handle.exit(0);
-                        }
+                        api.prevent_close();
+                        let _ = app_handle.exit(0);
                     }
                 });
             }
@@ -2143,6 +2684,57 @@ pub fn run() {
             services::browser_panel::browser_tab_set_media_suspended,
             services::browser_panel::browser_tab_evict,
             services::browser_panel::browser_tab_reactivate,
+            // iOS Simulator visual panel
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_requirements,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_attach,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_detach,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_set_visible,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_end,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_shutdown_external,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_retry_interaction,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_system_action,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_capture_screen,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_recording_start,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_recording_stop,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_reveal_output,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_set_stream_rate,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_set_fallback_rate,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_tap,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_drag,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_type_text,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_press_key,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_accessibility_snapshot,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_inspect_point,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_capture_annotation,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_delete_temp_files,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_promote_temp_files,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_delete_capture_owner,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_cleanup_capture_owners,
             // Auth
             start_cli_login,
             get_cli_auth_status,
@@ -2215,6 +2807,7 @@ pub fn run() {
             // Files
             pick_files,
             inspect_files,
+            allow_media_preview_file,
             inspect_pasted_image,
             begin_pasted_file_upload,
             append_pasted_file_chunk,
@@ -2235,7 +2828,10 @@ pub fn run() {
             cancel_research_subagents,
             interrupt,
             // Updates
+            get_whats_new_status,
+            acknowledge_whats_new,
             get_update_status,
+            bootstrap_cli,
             check_for_updates,
             download_update,
             install_update,
@@ -2245,6 +2841,16 @@ pub fn run() {
             terminal_resize,
             terminal_stop,
             terminal_get_state,
+            provider_login_start,
+            provider_login_cancel,
+            provider_login_confirm_risk,
+            provider_auth_status,
+            provider_capabilities,
+            provider_accounts_list,
+            provider_accounts_usage,
+            provider_account_models,
+            provider_account_set_default,
+            provider_account_remove,
             // Clipboard
             clipboard_read_text,
             clipboard_write_text,
@@ -2272,11 +2878,48 @@ pub fn run() {
     let mut runtime_smoke_report =
         std::env::var_os("VERBOO_BROWSER_SMOKE_REPORT").map(std::path::PathBuf::from);
 
-    app.run(move |app_handle, event| {
-        if matches!(event, tauri::RunEvent::MainEventsCleared) {
+    app.run(move |app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+            stop_ios_simulator_for_app_exit(app_handle);
+        }
+        tauri::RunEvent::MainEventsCleared => {
             if let Some(report_path) = runtime_smoke_report.take() {
                 services::browser_panel::start_runtime_smoke(app_handle.clone(), report_path);
             }
         }
+        _ => {}
     });
+}
+
+#[cfg(test)]
+mod platform_contract_tests {
+    #[test]
+    fn ios_simulator_runtime_is_registered_only_on_macos() {
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
+        let setup_start = source.find(".setup(|app|").expect("setup callback");
+        let invoke_start = source
+            .find(".invoke_handler(tauri::generate_handler!")
+            .expect("invoke handler");
+        let setup = &source[setup_start..invoke_start];
+        assert!(
+            setup.contains(
+                "#[cfg(target_os = \"macos\")]\n            {\n                app.manage(\n                    services::ios_simulator::IosSimulatorCaptureStore",
+            ),
+            "the simulator state must be created inside a macOS-only setup block"
+        );
+
+        let handler = &source[invoke_start..];
+        for line in handler.lines().filter(|line| {
+            line.trim_start()
+                .starts_with("services::ios_simulator::ios_simulator_")
+        }) {
+            let offset = handler.find(line).expect("handler command offset");
+            let prefix = &handler[..offset];
+            assert_eq!(
+                prefix.lines().last().map(str::trim),
+                Some("#[cfg(target_os = \"macos\")]"),
+                "iOS simulator command is exposed without a macOS gate: {line}"
+            );
+        }
+    }
 }

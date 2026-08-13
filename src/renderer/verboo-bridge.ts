@@ -23,6 +23,7 @@ import type {
   CliAuthStatus,
   ChromeIntegrationRequest,
   ChromeIntegrationStatus,
+  ChromeConnectionTestResult,
   CredentialStatus,
   FeedbackRequest,
   FeedbackResult,
@@ -40,18 +41,27 @@ import type {
   ProfileResult,
   ProjectInstructionFile,
   ProjectInstructionReadResult,
+  ProviderAuthStatus,
+  ProviderAccountSummary,
+  ProviderCapabilities,
+  ProviderUsageResult,
+  ExternalProviderId,
+  ProviderLoginEvent,
   ResearchSubagentResult,
   ResearchSubagentsRunRequest,
   SkillSummary,
   TerminalDataEvent,
   UpdateSnapshot,
   UserSettings,
+  VerbooModel,
   VideoComponentState,
   VideoOcrRequest,
   VideoOcrText,
   VideoTranscriberProgress,
   VisionFallbackConsent,
   VisionFallbackState,
+  WhatsNewAcknowledgeResult,
+  WhatsNewStatus,
   WorkspaceBranchInfo,
   WorkspaceBranchSwitchResult,
   WorkspaceChangeSummary,
@@ -134,6 +144,25 @@ const api = {
   openSubscriptions: () => invoke<boolean>('open_subscriptions'),
   openSignup: () => invoke<boolean>('open_signup'),
 
+  // ── Providers (F4; comandos registrados em lib.rs:2382-2385) ──
+  providerAuthStatus: () => invoke<ProviderAuthStatus[]>('provider_auth_status'),
+  providerLoginStart: (provider: string, reconnectAccountId?: string) =>
+    invoke<string>('provider_login_start', { provider, reconnectAccountId }),
+  providerLoginConfirmRisk: (provider: string) => invoke<void>('provider_login_confirm_risk', { provider }),
+  providerLoginCancel: () => invoke<void>('provider_login_cancel'),
+  providerCapabilities: () => invoke<ProviderCapabilities>('provider_capabilities'),
+  providerAccountsList: () => invoke<ProviderAccountSummary[]>('provider_accounts_list'),
+  providerAccountsUsage: (provider: ExternalProviderId, accountId: string) =>
+    invoke<ProviderUsageResult[]>('provider_accounts_usage', { provider, accountId }),
+  providerAccountModels: (provider: ExternalProviderId, accountId: string) =>
+    invoke<VerbooModel[]>('provider_account_models', { provider, accountId }),
+  providerAccountSetDefault: (provider: ExternalProviderId, accountId: string) =>
+    invoke<void>('provider_account_set_default', { provider, accountId }),
+  providerAccountRemove: (provider: ExternalProviderId, accountId: string) =>
+    invoke<void>('provider_account_remove', { provider, accountId }),
+  onProviderLoginEvent: (handler: (event: ProviderLoginEvent) => void) =>
+    onEvent<ProviderLoginEvent>('provider-login:event', handler),
+
   // ── Credentials ─────────────────────────────────────────────
   getCredentialStatus: () => invoke<CredentialStatus>('get_credential_status'),
   setApiKey: (apiKey: string) => invoke<CredentialStatus>('set_api_key', { apiKey }),
@@ -163,7 +192,7 @@ const api = {
     invoke<ChromeIntegrationStatus>('chrome_integration_configure', { request }),
   chromeIntegrationRepair: (request: ChromeIntegrationRequest) =>
     invoke<ChromeIntegrationStatus>('chrome_integration_repair', { request }),
-  chromeIntegrationTest: () => invoke<boolean>('chrome_integration_test'),
+  chromeIntegrationTest: () => invoke<ChromeConnectionTestResult>('chrome_integration_test'),
   chromeIntegrationRemove: () =>
     invoke<ChromeIntegrationStatus>('chrome_integration_remove'),
   openChromeExtensionStore: () => invoke<boolean>('open_chrome_extension_store'),
@@ -333,6 +362,11 @@ const api = {
   abortPastedFileUpload: (input: { uploadId: string }) =>
     invoke<void>('abort_pasted_file_upload', input),
   pickFolder: () => invoke<string | undefined>('pick_folder'),
+  // Authorize one validated image/video in Tauri's asset protocol. This keeps
+  // arbitrary attachment paths displayable without granting the webview a
+  // blanket $HOME/** file scope.
+  allowMediaPreviewFile: (path: string) =>
+    invoke<string>('allow_media_preview_file', { path }),
   // Convert a local file path to a webview-accessible URL for <img> src.
   fileUrl: (path: string) => convertFileSrc(path),
   createProjectFolder: () => invoke<string | undefined>('create_project_folder'),
@@ -359,10 +393,16 @@ const api = {
     onEvent<void>('app:refresh-data', callback),
 
   // ── Updates ─────────────────────────────────────────────────
+  getWhatsNewStatus: () =>
+    invoke<WhatsNewStatus | undefined>('get_whats_new_status'),
+  acknowledgeWhatsNew: (version: string) =>
+    invoke<WhatsNewAcknowledgeResult>('acknowledge_whats_new', { version }),
   getUpdateStatus: () => invoke<UpdateSnapshot>('get_update_status'),
+  bootstrapCli: () => invoke<UpdateSnapshot>('bootstrap_cli'),
   checkForUpdates: (userInitiated = false) =>
     invoke<UpdateSnapshot>('check_for_updates', { userInitiated }),
-  downloadUpdate: () => invoke<UpdateSnapshot>('download_update'),
+  downloadUpdate: (userInitiated = true) =>
+    invoke<UpdateSnapshot>('download_update', { userInitiated }),
   installUpdate: () => invoke<InstallUpdateResult>('install_update'),
   onUpdateStatus: (callback: (snapshot: UpdateSnapshot) => void) =>
     onEvent<UpdateSnapshot>('update:snapshot', callback),

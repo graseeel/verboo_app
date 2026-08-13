@@ -195,6 +195,7 @@
   .terminal-panel,
   .review-panel,
   .browser-panel,
+  .ios-simulator-panel,
   .subagent-thread-panel,
   .subagent-indicator {
     display: none !important;

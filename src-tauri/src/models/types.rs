@@ -116,19 +116,6 @@ pub enum LanguageCode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub enum SettingsTab {
-    Permissions,
-    TrustedCommands,
-    App,
-    Notifications,
-    Personalization,
-    Memory,
-    Updates,
-    Archived,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum PersonalityMode {
     Pragmatic,
@@ -173,6 +160,7 @@ pub enum AttachmentKind {
     Video,
     File,
     BrowserAnnotation,
+    SimulatorAnnotation,
 }
 
 /// Outcome of attempting text extraction on an attachment.
@@ -364,6 +352,21 @@ pub enum UpdateStatus {
     Unsupported,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateTarget {
+    App,
+    Cli,
+    Both,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BootstrapStage {
+    Runtime,
+    Cli,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum InstallUpdateStatus {
@@ -376,6 +379,22 @@ pub enum InstallUpdateStatus {
 pub struct InstallUpdateResult {
     pub status: InstallUpdateStatus,
     pub active_turns: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WhatsNewStatus {
+    pub version: String,
+    pub tag: String,
+    pub preview: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WhatsNewAcknowledgeResult {
+    pub persisted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -638,6 +657,11 @@ pub struct VerbooModel {
     pub vision_support_source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ModelReasoning>,
+    /// Provider do modelo (ex.: "verboo", "claude", "codex"). Quando ausente,
+    /// o renderer trata como "verboo" (catálogo atual) — o serializado omite
+    /// o campo para modelos Verboo (sem quebra do contrato existente).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     pub raw: serde_json::Value,
 }
 
@@ -660,6 +684,11 @@ pub struct ModelDiscoveryResult {
     pub source: String,
     pub stale: bool,
     pub error: Option<String>,
+    /// A falha do catálogo de Claude/Codex não invalida os modelos Verboo.
+    /// Mantemos os canais separados para a UI explicar a degradação sem
+    /// transformar uma descoberta base saudável em erro global.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -931,7 +960,7 @@ pub struct VideoProgress {
 /// F0-Annotate (2026-07-31) — the user-selected passage of the prior
 /// model response that the user wants to attach to the next turn, with
 /// optional commentary. Field shapes are fixed by the project's
-/// F0-Annotate contract (TORNO fence + MOSAICO fence) — neither side
+/// F0-Annotate contract (PERISCÓPIO fence + MOSAICO fence) — neither side
 /// invents or renames. The wire shape is camelCase via serde.
 ///
 /// SAFETY NOTE (load-bearing): the `quote` field is **safe — it is a
@@ -964,10 +993,22 @@ pub struct Annotation {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProviderTurnAccount {
+    pub provider: String,
+    pub account_id: String,
+    /// Absent from a fresh-conversation payload; deserializes to `false`.
+    #[serde(default)]
+    pub fork_session: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentTurnRequest {
     pub turn_id: Option<String>,
     pub conversation_id: String,
     pub message: String,
+    #[serde(default)]
+    pub provider_account: Option<ProviderTurnAccount>,
     pub model: Option<String>,
     pub model_supports_vision: Option<bool>,
     #[serde(default)]
@@ -1267,6 +1308,12 @@ pub struct FeedbackResult {
     pub channel: FeedbackChannel,
     pub message: String,
     pub error: Option<String>,
+    /// Stable contract code for the fallback path. The renderer localizes
+    /// its text from this value instead of parsing `message`. One of
+    /// `supabase_unconfigured` or `supabase_failed`, or `None` when the
+    /// feedback reached Supabase successfully.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1473,9 +1520,19 @@ pub struct FileDiffResponse {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateSnapshot {
     pub status: UpdateStatus,
+    #[serde(default)]
+    pub target: Option<UpdateTarget>,
     pub channel: UpdateChannel,
     pub current_version: String,
     pub available_version: Option<String>,
+    #[serde(default)]
+    pub cli_current_version: Option<String>,
+    #[serde(default)]
+    pub cli_available_version: Option<String>,
+    #[serde(default)]
+    pub cli_bootstrap_required: bool,
+    #[serde(default)]
+    pub bootstrap_stage: Option<BootstrapStage>,
     pub release_name: Option<String>,
     pub release_date: Option<String>,
     pub release_notes: Option<String>,
@@ -1740,10 +1797,6 @@ mod tests {
     fn enums_serialize_as_expected() {
         // kebab-case
         assert_eq!(serde_json::to_string(&ThemeMode::Dark).unwrap(), "\"dark\"");
-        assert_eq!(
-            serde_json::to_string(&SettingsTab::TrustedCommands).unwrap(),
-            "\"trusted-commands\""
-        );
         // lowercase
         assert_eq!(
             serde_json::to_string(&AccessMode::Full).unwrap(),
@@ -2074,5 +2127,17 @@ mod tests {
             msg.contains("not a valid u32") || msg.contains("overflows u32"),
             "got: {msg}"
         );
+    }
+
+    #[test]
+    fn provider_turn_account_defaults_fork_session_when_absent() {
+        // A renderer payload may omit `forkSession` for a fresh conversation;
+        // the invoke must not fail on the missing boolean field.
+        let account: ProviderTurnAccount =
+            serde_json::from_str(r#"{"provider":"codex","accountId":"local-a"}"#)
+                .expect("partial ProviderTurnAccount must deserialize");
+        assert_eq!(account.provider, "codex");
+        assert_eq!(account.account_id, "local-a");
+        assert!(!account.fork_session);
     }
 }

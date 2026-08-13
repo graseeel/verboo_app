@@ -1456,6 +1456,7 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -2709,6 +2710,17 @@ name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
+
+[[package]]
+name = "lzma-sys"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fda04ab3764e6cde78b9974eec4f779acaba7c4e84b36eca3cf77c581b85d27"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+]
 
 [[package]]
 name = "mac-notification-sys"
@@ -5997,7 +6009,7 @@ dependencies = [
 
 [[package]]
 name = "verboo-desktop"
-version = "0.6.2-beta"
+version = "0.7.0-beta"
 dependencies = [
  "base64 0.22.1",
  "block2",
@@ -6005,13 +6017,16 @@ dependencies = [
  "chrono",
  "ctor 1.0.8",
  "dirs",
+ "flate2",
  "gio",
  "glib",
+ "hex",
  "image",
  "javascriptcore-rs",
  "keepawake",
  "keyring",
  "libc",
+ "minisign-verify",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -6020,9 +6035,11 @@ dependencies = [
  "portable-pty",
  "reqwest 0.12.28",
  "security-framework 3.7.0",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",
@@ -6034,12 +6051,15 @@ dependencies = [
  "tauri-plugin-updater",
  "tempfile",
  "tokio",
+ "url",
  "uuid",
  "webkit2gtk",
  "webview2-com",
  "windows 0.61.3",
  "windows-sys 0.59.0",
  "winreg 0.55.0",
+ "xz2",
+ "zip",
 ]
 
 [[package]]
@@ -7031,6 +7051,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "xz2"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "388c44dc09d76f1536602ead6d325eb532f5c122f17782bd57fb47baeeb767e2"
+dependencies = [
+ "lzma-sys",
+]
+
+[[package]]
 name = "y4m"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7222,9 +7251,16 @@ checksum = "caa8cd6af31c3b31c6631b8f483848b91589021b28fffe50adada48d4f4d2ed1"
 dependencies = [
  "arbitrary",
  "crc32fast",
+ "flate2",
  "indexmap 2.14.0",
  "memchr",
 ]
+
+[[package]]
+name = "zlib-rs"
+version = "0.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"
 
 [[package]]
 name = "zmij"

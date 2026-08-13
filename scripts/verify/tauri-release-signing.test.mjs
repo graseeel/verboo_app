@@ -6,6 +6,19 @@ const workflowPath = new URL(
   "../../.github/workflows/tauri-release.yml",
   import.meta.url,
 );
+const tauriConfigPath = new URL(
+  "../../src-tauri/tauri.conf.json",
+  import.meta.url,
+);
+const entitlementsPath = new URL(
+  "../../src-tauri/Entitlements.plist",
+  import.meta.url,
+);
+const localBuildPath = new URL(
+  "../build-release-app.sh",
+  import.meta.url,
+);
+const packagePath = new URL("../../package.json", import.meta.url);
 
 // Normalize CRLF -> LF on read: git checkout on Windows brings CRLF into
 // the workflow files, and comparing/slicing workflow text with "\n" (or
@@ -99,8 +112,12 @@ test("notarization key exists only for macOS build steps and is always removed",
   assert.match(workflow, /rm -f "\$\{APPLE_API_KEY_PATH:-\}"/);
 });
 
-test("embedded CLI Mach-O binaries receive Developer ID hardened signatures", async () => {
+test("macOS release and local builds sign only the app-owned bundle", async () => {
   const workflow = await readWorkflowText(workflowPath);
+  const tauriConfig = JSON.parse(await readFile(tauriConfigPath, "utf8"));
+  const entitlements = await readFile(entitlementsPath, "utf8");
+  const localBuild = await readWorkflowText(localBuildPath);
+  const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
   const prepareStart = workflow.indexOf(
     "- name: Prepare Apple notarization credentials",
   );
@@ -129,26 +146,41 @@ test("embedded CLI Mach-O binaries receive Developer ID hardened signatures", as
     'security list-keychains -d user -s "$KEYCHAIN_PATH"',
   );
   const identityIndex = prepareStep.indexOf("security find-identity");
-  const codesignIndex = prepareStep.indexOf("codesign --force");
   assert.ok(
     partitionIndex < searchListIndex &&
-      searchListIndex < identityIndex &&
-      identityIndex < codesignIndex,
-    "the prepared identity must enter the user search list before codesign",
+      searchListIndex < identityIndex,
+    "the prepared identity must enter the user search list before the build",
   );
-  assert.match(workflow, /find "\$RESOURCE_ROOT" -type f -print0/);
-  assert.match(workflow, /FILE_DESCRIPTION=.*file -b "\$candidate"/);
-  assert.match(workflow, /FILE_DESCRIPTION.*Mach-O/);
-  assert.match(workflow, /EXPECTED_MACHO_ARCH/);
+  assert.doesNotMatch(workflow, /sign-macos-node-runtime|resources\/node-runtime/);
+  assert.doesNotMatch(localBuild, /sign-macos-node-runtime|Contents\/MacOS\/verboo-node|resources\/node-runtime/);
+  const localIdentityIndex = localBuild.indexOf("APPLE_SIGNING_IDENTITY");
+  const localBuildIndex = localBuild.indexOf("npm run tauri:build");
+  assert.ok(
+    localIdentityIndex !== -1 && localIdentityIndex < localBuildIndex,
+    "the local Developer ID identity must be exported before Tauri signs the bundle",
+  );
   assert.match(
-    workflow,
-    /FILE_DESCRIPTION.*EXPECTED_MACHO_ARCH[\s\S]*?exit 1/,
+    packageJson.scripts["tauri:build"],
+    /macos-bundle-signing\.mjs prepare-sidecars/,
+  );
+  assert.match(localBuild, /macos-bundle-signing\.mjs verify-app "\$APP_PATH"/);
+  assert.match(localBuild, /codesign --verify --strict --verbose=2 "\$DMG_PATH"/);
+  assert.match(localBuild, /hdiutil verify "\$DMG_PATH"/);
+  assert.match(workflow, /macos-bundle-signing\.mjs verify-app "\$APP_PATH"/);
+  assert.match(workflow, /test ! -e "\$APP_PATH\/Contents\/MacOS\/verboo-node"/);
+  assert.equal([...workflow.matchAll(/Contents\/MacOS\/verboo-node/g)].length, 1);
+  assert.match(workflow, /codesign --verify --deep --strict --verbose=2 "\$APP_PATH"/);
+  assert.equal(tauriConfig.bundle.macOS.entitlements, "Entitlements.plist");
+  assert.match(entitlements, /com\.apple\.security\.cs\.allow-jit/);
+  assert.match(
+    entitlements,
+    /com\.apple\.security\.cs\.allow-unsigned-executable-memory/,
   );
   assert.match(
-    workflow,
-    /codesign --force --options runtime --timestamp[\s\S]*?"\$candidate"/,
+    entitlements,
+    /com\.apple\.security\.cs\.disable-library-validation/,
   );
-  assert.doesNotMatch(workflow, /ripgrep|libvips|sharp-darwin/);
+  assert.doesNotMatch(workflow, /resources\/cli-package|copy-cli-resource/);
 });
 
 test("macOS target architectures use matching native runners", async () => {
@@ -202,4 +234,19 @@ test("notarization finalizer polls the saved IDs and republishes only after stap
   assert.match(workflow, /tauri signer sign "\$UPDATER_PATH"/);
   assert.match(workflow, /generate-tauri-update-manifest\.mjs/);
   assert.match(workflow, /gh release upload updater-beta "\$MANIFEST"/);
+});
+
+test("release artifacts are stamped and published from the reviewed catalog", async () => {
+  const workflow = await readWorkflowText(workflowPath);
+
+  assert.match(
+    workflow,
+    /VERBOO_RELEASE_TAG:\s*\$\{\{ needs\.resolve-tag\.outputs\.tag \}\}/,
+  );
+  assert.match(workflow, /render-release-notes\.mjs/);
+  assert.doesNotMatch(workflow, /This beta brings a macOS embedded browser/);
+  assert.doesNotMatch(
+    workflow,
+    /printf '%s\\n' "- On macOS, work beside a live local site/,
+  );
 });

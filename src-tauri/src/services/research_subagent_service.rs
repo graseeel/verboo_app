@@ -664,6 +664,7 @@ mod tests {
             turn_id: None,
             conversation_id: "c1".into(),
             message: "build a feature".into(),
+            provider_account: None,
             model: None,
             model_supports_vision: None,
             run_vision_fallback: None,

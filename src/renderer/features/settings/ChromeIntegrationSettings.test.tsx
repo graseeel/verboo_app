@@ -60,6 +60,7 @@ function mockHook(status: ChromeIntegrationStatus = baseStatus) {
     developmentExtensionId: '',
     developmentIdValid: true,
     lastTestPassed: undefined,
+    lastTestResult: undefined,
     ...actions,
   })
 }

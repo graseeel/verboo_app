@@ -33,10 +33,12 @@ test("builds one deterministic manifest for all supported targets", async () => 
     releaseBaseUrl:
       "https://github.com/graseeel/verboo_app/releases/download/v1.2.3",
     publishedAt: "2026-07-22T18:00:00.000Z",
+    notes: "Reviewed release summary",
   });
 
   assert.deepEqual(Object.keys(manifest.platforms), Object.keys(artifacts));
   assert.equal(manifest.version, "1.2.3");
+  assert.equal(manifest.notes, "Reviewed release summary");
   assert.equal(
     manifest.platforms["darwin-aarch64-app"].signature,
     `signature:${artifacts["darwin-aarch64-app"]}`,
@@ -62,6 +64,7 @@ test("rejects a missing signature", async () => {
       bundlesDir,
       releaseBaseUrl:
         "https://github.com/graseeel/verboo_app/releases/download/v1.2.3",
+      notes: "Reviewed release summary",
     }),
     /missing signature.*windows-x86_64-nsis/i,
   );
@@ -81,6 +84,7 @@ test("rejects an empty signature", async () => {
       bundlesDir,
       releaseBaseUrl:
         "https://github.com/graseeel/verboo_app/releases/download/v1.2.3",
+      notes: "Reviewed release summary",
     }),
     /empty signature.*windows-x86_64-nsis/i,
   );
@@ -97,6 +101,7 @@ test("rejects a missing supported target", async () => {
       bundlesDir,
       releaseBaseUrl:
         "https://github.com/graseeel/verboo_app/releases/download/v1.2.3",
+      notes: "Reviewed release summary",
     }),
     /missing updater artifact.*linux-x86_64-rpm/i,
   );
@@ -112,6 +117,7 @@ test("rejects mismatched tags and non-HTTPS URLs", async () => {
       bundlesDir,
       releaseBaseUrl:
         "https://github.com/graseeel/verboo_app/releases/download/v1.2.4",
+      notes: "Reviewed release summary",
     }),
     /tag.*version/i,
   );
@@ -121,6 +127,7 @@ test("rejects mismatched tags and non-HTTPS URLs", async () => {
       version: "1.2.3",
       bundlesDir,
       releaseBaseUrl: "http://example.test/v1.2.3",
+      notes: "Reviewed release summary",
     }),
     /https/i,
   );
@@ -138,7 +145,10 @@ test("release workflow publishes native v2 artifacts for every installer", async
   assert.match(workflow, /linux-x86_64\.deb/);
   assert.match(workflow, /linux-x86_64\.rpm/);
   assert.match(workflow, /tauri signer sign/);
-  assert.match(workflow, /node --test scripts\/verify\/update-manifest\.test\.mjs/);
+  assert.match(
+    workflow,
+    /node --test[\s\S]*scripts\/verify\/update-manifest\.test\.mjs/,
+  );
   assert.match(workflow, /PIPESTATUS\[0\]/);
   assert.match(
     workflow,

@@ -283,13 +283,16 @@ export function Composer({
     event.preventDefault()
     const trimmed = value.trim()
     const hasBrowserAnnotations = attachments.some(attachment => attachment.kind === 'browser-annotation')
+    const hasSimulatorAnnotations = attachments.some(attachment => attachment.kind === 'simulator-annotation')
     // F3: anotação de transcript (chip) TAMBÉM habilita envio sem texto —
     // "posso apenas enviar a anotação". Nesse caso a mensagem viaja vazia:
     // a anotação É o conteúdo; o campo estruturado entra no App, e o bloco
     // legível é montado no Rust. O prompt default só existe para o caso
     // browser-annotation, que precisa de texto para o turno fazer sentido.
-    if (!trimmed && !hasBrowserAnnotations && annotations.length === 0) return
-    const submission = trimmed || (hasBrowserAnnotations ? t('browser.annotationDefaultPrompt') : '')
+    if (!trimmed && !hasBrowserAnnotations && !hasSimulatorAnnotations && annotations.length === 0) return
+    const submission = trimmed
+      || (hasBrowserAnnotations ? t('browser.annotationDefaultPrompt') : '')
+      || (hasSimulatorAnnotations ? t('simulator.annotationDefaultPrompt') : '')
 
     const reserved = parseReservedSlashCommand(submission)
     if (reserved?.kind === 'goal') {
@@ -801,8 +804,11 @@ export function Composer({
           {attachments.map(attachment => {
             const isImage = attachment.kind === 'image'
             const isVideo = attachment.kind === 'video'
-            const isAnnotation = attachment.kind === 'browser-annotation'
-            const annotation = isAnnotation ? attachment.browserAnnotation : undefined
+            const isBrowserAnnotation = attachment.kind === 'browser-annotation'
+            const isSimulatorAnnotation = attachment.kind === 'simulator-annotation'
+            const isAnnotation = isBrowserAnnotation || isSimulatorAnnotation
+            const annotation = isBrowserAnnotation ? attachment.browserAnnotation : undefined
+            const simulatorAnnotation = isSimulatorAnnotation ? attachment.simulatorAnnotation : undefined
             const status = attachment.extractionStatus
             const isOcrProcessing = ocrProcessingPaths.includes(attachment.path)
             // No extractionStatus + no extractedText + not image → definitively
@@ -813,19 +819,22 @@ export function Composer({
             // extractionStatus 'warning' → Ezio found the file but couldn't
             // read it (scanned/corrupt/too-large); extractedText holds a warning.
             const isWarning = status === 'warning' && !isOcrProcessing
-            const chipLabel = isAnnotation
+            const chipLabel = isBrowserAnnotation
               ? annotation?.kind === 'element'
                 ? `${t('browser.annotationElement')} · ${annotation?.component || annotation?.selector || annotation?.url}`
                 : `${t('browser.annotationPen')} · ${browserAnnotationLocationLabel(annotation?.url || '')}`
+              : isSimulatorAnnotation
+                ? `${simulatorAnnotation?.kind === 'element' ? t('simulator.annotationElement') : t('simulator.annotationArea')} · ${simulatorAnnotation?.element?.label || simulatorAnnotation?.element?.role || simulatorAnnotation?.device.name || attachment.name}`
               : attachment.name
             return (
               <button
-                key={isAnnotation ? `${attachment.path}-${annotation?.selector || annotation?.url}` : attachment.path}
+                key={attachment.path}
                 className={`skill-chip attachment-chip${isUnreadable ? ' attachment-unreadable' : ''}${isWarning ? ' attachment-warning' : ''}${isOcrProcessing ? ' attachment-ocr' : ''}${isImage ? ' attachment-image' : ''}${isAnnotation ? ' attachment-annotation' : ''}`}
                 type="button"
                 onClick={() => onRemoveAttachment(attachment.path)}
                 title={
-                  isAnnotation ? `${annotation?.url}${annotation?.selector ? `\n${annotation.selector}` : ''}${annotation?.note ? `\n${annotation.note}` : ''}` :
+                  isBrowserAnnotation ? `${annotation?.url}${annotation?.selector ? `\n${annotation.selector}` : ''}${annotation?.note ? `\n${annotation.note}` : ''}` :
+                  isSimulatorAnnotation ? `${simulatorAnnotation?.device.name || attachment.name}${simulatorAnnotation?.element?.role ? `\n${simulatorAnnotation.element.role}` : ''}${simulatorAnnotation?.element?.label ? ` · ${simulatorAnnotation.element.label}` : ''}${simulatorAnnotation?.note ? `\n${simulatorAnnotation.note}` : ''}` :
                   isUnreadable ? `${attachment.path}\n${t('composer.attachmentUnreadable')}` :
                   isWarning ? `${attachment.path}\n${t('composer.attachmentWarningStatus')}` :
                   isOcrProcessing ? `${attachment.path}\n${t('ocr.processing')}` :
@@ -928,7 +937,7 @@ export function Composer({
             // F3: chip de anotação também habilita o envio (mesma regra do
             // submit acima) — sem isto o botão ficaria morto com anotação e
             // texto vazio, contradizendo o comportamento exigido.
-            disabled={disabled || (!value.trim() && !attachments.some(attachment => attachment.kind === 'browser-annotation') && annotations.length === 0)}
+            disabled={disabled || (!value.trim() && !attachments.some(attachment => attachment.kind === 'browser-annotation' || attachment.kind === 'simulator-annotation') && annotations.length === 0)}
             title={busy ? t('composer.queue') : t('composer.send')}
           >
             <ArrowUp size={17} />

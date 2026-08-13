@@ -956,3 +956,60 @@ describe('BrowserPanel', () => {
     expect(invoke).not.toHaveBeenCalledWith('browser_tab_navigate', expect.anything())
   })
 })
+
+// T4 (field report: "I have no idea what that little cursor does") — the
+// toolbar must be self-explaining: EVERY control carries a tooltip (title)
+// and a non-empty aria-label. This is a SWEEP, not a per-item pin: a new
+// button added without its labels fails here automatically.
+describe('BrowserPanel toolbar — tooltip coverage sweep (T4)', () => {
+  it('every tab-bar and toolbar control exposes a tooltip AND a non-empty aria-label', () => {
+    renderPanel()
+    const regions = [document.querySelector('.browser-tabs'), document.querySelector('.browser-toolbar')]
+    const buttons = regions.flatMap(region => [...(region?.querySelectorAll('button') ?? [])])
+    // tab, tab-close, new-tab, minimize + back, forward, reload, pencil, arrow.
+    expect(buttons.length).toBeGreaterThanOrEqual(9)
+    for (const button of buttons) {
+      const label = button.getAttribute('aria-label')?.trim()
+      expect(label, `a toolbar button (${button.className}) must expose an aria-label`).toBeTruthy()
+      expect(button.getAttribute('title')?.trim(), `button "${label}" (${button.className}) must carry a tooltip`).toBeTruthy()
+    }
+    // The URL editor is a labelled field too — not a mystery box.
+    const urlInput = document.querySelector('.browser-url-input')
+    expect(urlInput?.getAttribute('aria-label')?.trim()).toBeTruthy()
+    expect(urlInput?.getAttribute('title')?.trim()).toBeTruthy()
+  })
+
+  it('labels come from the dictionary in pt-BR as well (parity)', () => {
+    render(
+      <I18nProvider language="pt-BR">
+        <div className="app-layout">
+          <BrowserPanel
+            browserOpen
+            browserWidth={680}
+            annotationMode="idle"
+            onSetWidth={() => {}}
+            onClose={() => {}}
+            onTogglePencil={() => {}}
+            onToggleArrow={() => {}}
+            onAddAnnotation={() => {}}
+            onNavigationHandled={() => {}}
+            onReloadSnapshot={() => {}}
+            onReloadHandled={() => {}}
+            minWidth={520}
+            maxWidth={864}
+            session={sessionWithTabs('tab-a', 'tab-a')}
+            activeTab={sessionWithTabs('tab-a', 'tab-a').tabs[0]}
+            onCreateTab={() => Promise.resolve(sessionWithTabs('tab-a', 'tab-a'))}
+            onActivateTab={() => {}}
+            onNavigateTab={() => Promise.resolve(sessionWithTabs('tab-a', 'tab-a'))}
+            onCloseTab={() => {}}
+          />
+        </div>
+      </I18nProvider>,
+    )
+    const toolbar = document.querySelector('.browser-toolbar')!
+    const arrow = [...toolbar.querySelectorAll('button')].find(button => button.getAttribute('aria-label') === 'Selecionar elemento')
+    expect(arrow, 'element-picker button must carry the pt-BR label').toBeTruthy()
+    expect(arrow?.getAttribute('title')).toBe('Selecionar elemento')
+  })
+})

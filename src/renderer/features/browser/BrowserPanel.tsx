@@ -688,6 +688,7 @@ export function BrowserPanel({
             <button type="button" role="tab"
               aria-selected={tab.id === session.activeTabId}
               aria-label={evictedHint ? `${tabLabel}. ${evictedHint}` : tabLabel}
+              title={tab.url !== 'about:blank' ? tab.url : tabLabel}
               className={`browser-tab ${isEvicted ? 'ui-tooltip' : ''}`}
               data-tooltip={evictedHint}
               onClick={() => {
@@ -701,6 +702,7 @@ export function BrowserPanel({
             </button>
             <button type="button" className="browser-tab-close ui-tooltip"
               aria-label={`${t('browser.closeTab')} ${tabLabel}`}
+              title={t('browser.closeTab')}
               data-tooltip={t('browser.closeTab')}
               data-tooltip-align="end"
               onClick={() => onCloseTab(tab.id)}>
@@ -709,7 +711,10 @@ export function BrowserPanel({
           </div>
           )
         })}
-        <button type="button" className="browser-tab-add" aria-label={t('browser.newTab')}
+        <button type="button" className="browser-tab-add ui-tooltip" aria-label={t('browser.newTab')}
+          title={t('browser.newTab')}
+          data-tooltip={t('browser.newTab')}
+          data-tooltip-align="end"
           onClick={() => {
             setError(null)
             void onCreateTab().catch(showBrowserFailure)
@@ -720,6 +725,7 @@ export function BrowserPanel({
           className="browser-nav-button ui-tooltip"
           onClick={onClose}
           aria-label={t('topbar.minimizeBrowser')}
+          title={t('topbar.minimizeBrowser')}
           data-tooltip={t('topbar.minimizeBrowser')}
           data-tooltip-align="end"
         >
@@ -735,6 +741,7 @@ export function BrowserPanel({
           onClick={handleBack}
           disabled={!alive || !canGoBack}
           aria-label={t('browser.back')}
+          title={t('browser.back')}
           data-tooltip={t('browser.back')}
           data-tooltip-align="end"
         >
@@ -746,6 +753,7 @@ export function BrowserPanel({
           onClick={handleForward}
           disabled={!alive || !canGoForward}
           aria-label={t('browser.forward')}
+          title={t('browser.forward')}
           data-tooltip={t('browser.forward')}
           data-tooltip-align="end"
         >
@@ -757,6 +765,7 @@ export function BrowserPanel({
           onClick={handleReload}
           disabled={!alive || !url}
           aria-label={t('browser.reload')}
+          title={t('browser.reload')}
           data-tooltip={t('browser.reload')}
           data-tooltip-align="end"
         >
@@ -768,6 +777,7 @@ export function BrowserPanel({
           onClick={onTogglePencil}
           disabled={!alive || !url}
           aria-label={annotationMode === 'pencil' ? t('browser.pencilMode') : t('browser.pencil')}
+          title={annotationMode === 'pencil' ? t('browser.pencilMode') : t('browser.pencil')}
           data-tooltip={annotationMode === 'pencil' ? t('browser.pencilMode') : t('browser.pencil')}
           data-tooltip-align="end"
         >
@@ -779,6 +789,7 @@ export function BrowserPanel({
           onClick={onToggleArrow}
           disabled={!alive || !url}
           aria-label={annotationMode === 'arrow' ? t('browser.arrowMode') : t('browser.arrow')}
+          title={annotationMode === 'arrow' ? t('browser.arrowMode') : t('browser.arrow')}
           data-tooltip={annotationMode === 'arrow' ? t('browser.arrowMode') : t('browser.arrow')}
           data-tooltip-align="end"
         >
@@ -791,6 +802,8 @@ export function BrowserPanel({
           onChange={event => setUrlDraft(event.target.value)}
           onKeyDown={handleUrlKeyDown}
           placeholder={t('browser.urlPlaceholder')}
+          aria-label={t('browser.editUrl')}
+          title={t('browser.editUrl')}
           spellCheck={false}
           autoComplete="off"
         />

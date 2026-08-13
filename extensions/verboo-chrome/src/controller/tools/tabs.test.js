@@ -65,7 +65,7 @@ test('tabs.new creates and groups an HTTP tab', async () => {
   const result = await tabs({ name: 'tabs', action: 'new', url: 'https://example.com/new' })
 
   assert.deepEqual(creates, [{ url: 'https://example.com/new' }])
-  assert.deepEqual(grouped, [{ tabIds: [31] }])
+  assert.deepEqual(grouped, [{ tabIds: [31], createProperties: { windowId: 4 } }])
   assert.deepEqual(result, { tabId: 31, url: 'https://example.com/new' })
 })
 
@@ -84,4 +84,88 @@ test('tabs.new rejects privileged schemes before opening a tab', async () => {
     /unsupported scheme: chrome/,
   )
   assert.equal(created, false)
+})
+
+test('tabs actions stay inside the leased background workspace', async () => {
+  const queries = []
+  const updates = []
+  const creates = []
+  const selections = []
+  const available = new Map([
+    [42, { id: 42, windowId: 7, url: 'https://agent.example', active: true }],
+    [43, { id: 43, windowId: 7, url: 'https://agent.example/next', active: false }],
+    [99, { id: 99, windowId: 9, url: 'https://user.example', active: true }],
+  ])
+  globalThis.chrome = {
+    tabs: {
+      get: async (tabId) => available.get(tabId),
+      query: async (query) => {
+        queries.push(query)
+        return [...available.values()].filter((tab) => tab.windowId === query.windowId)
+      },
+      update: async (tabId, properties) => {
+        updates.push({ tabId, properties })
+        return { ...available.get(tabId), ...properties }
+      },
+      create: async (properties) => {
+        creates.push(properties)
+        return { id: 44, windowId: properties.windowId, url: properties.url, active: properties.active }
+      },
+      group: async () => 2,
+    },
+    tabGroups: {
+      TAB_GROUP_ID_NONE: -1,
+      query: async () => [],
+      update: async () => {},
+    },
+  }
+  const context = {
+    activeTabId: 42,
+    workspaceWindowId: 7,
+    setActiveTabId: (tabId, windowId) => selections.push({ tabId, windowId }),
+  }
+
+  const listed = await tabs({ name: 'tabs', action: 'list' }, context)
+  const switched = await tabs({ name: 'tabs', action: 'switch', tabId: 43 }, context)
+  const created = await tabs({ name: 'tabs', action: 'new', url: 'https://new.example' }, context)
+
+  assert.deepEqual(listed.tabs.map((tab) => tab.id), [42, 43])
+  assert.deepEqual(queries, [{ windowId: 7 }])
+  assert.deepEqual(switched, { tabId: 43, switched: true })
+  assert.deepEqual(updates, [{ tabId: 43, properties: { active: true } }])
+  assert.deepEqual(creates, [{ url: 'https://new.example', windowId: 7, active: true }])
+  assert.deepEqual(created, { tabId: 44, url: 'https://new.example' })
+  assert.deepEqual(selections, [
+    { tabId: 43, windowId: 7 },
+    { tabId: 44, windowId: 7 },
+  ])
+
+  await assert.rejects(
+    () => tabs({ name: 'tabs', action: 'switch', tabId: 99 }, context),
+    /outside_workspace/,
+  )
+})
+
+test('closing the leased tab selects another tab in the same workspace', async () => {
+  const selections = []
+  const removals = []
+  globalThis.chrome = {
+    tabs: {
+      get: async (tabId) => ({ id: tabId, windowId: 7 }),
+      remove: async (tabId) => removals.push(tabId),
+      query: async () => [{ id: 43, windowId: 7, active: true }],
+    },
+  }
+
+  await tabs(
+    { name: 'tabs', action: 'close', tabId: 42 },
+    {
+      activeTabId: 42,
+      workspaceWindowId: 7,
+      setActiveTabId: async (tabId, windowId) => selections.push({ tabId, windowId }),
+    },
+  )
+
+  assert.deepEqual(removals, [42])
+  assert.deepEqual(selections, [{ tabId: 43, windowId: 7 }])
 })

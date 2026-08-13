@@ -9,7 +9,7 @@
  *   5. For each tool_call → broadcast thought → executeTool callback → broadcast result
  *   6. For vision-capable models, screenshot pixels are attached once as a
  *      multimodal user message; tool messages stay OpenAI-compatible strings
- *   7. Repeat up to MAX_STEPS (20)
+ *   7. Repeat up to MAX_AGENT_STEPS (200)
  *   8. Router errors after partial tool success → explicit partial-result summary
  *   9. On hard failure with zero tools → throw without executing a fallback plan
  *
@@ -30,8 +30,8 @@ import {
   inspectUntrustedBrowserContent,
   wrapUntrustedBrowserContent,
 } from './untrustedContent.js'
+import { MAX_AGENT_STEPS, MAX_AGENT_TURN_MS } from './turnBudget.js'
 
-const MAX_STEPS = 20
 const MAX_RESULT_CHARS = 4000
 const MAX_HISTORY_MESSAGES = 12
 const MAX_HISTORY_MESSAGE_CHARS = 4000
@@ -88,10 +88,43 @@ IMPORTANT RULES:
 /**
  * Run a multi-step LLM agent turn.
  *
- * @param {{ turnId: string, userMessage: string, selectionContext?: {text:string,verification?:string}, accessToken: string, modelId: string, modelSupportsVision?: boolean, conversationHistory?: Array<object>, routineContext?: {name:string,instructions:string,assets?:Array<object>}, toolAllowlist?: string[], broadcast: Function, executeTool: Function, getActiveTabMeta: Function, refreshAccessToken?: () => Promise<string|null>, signal?: AbortSignal }} params
+ * @param {{ turnId: string, userMessage: string, selectionContext?: {text:string,verification?:string}, accessToken: string, modelId: string, modelSupportsVision?: boolean, conversationHistory?: Array<object>, routineContext?: {name:string,instructions:string,assets?:Array<object>}, toolAllowlist?: string[], broadcast: Function, executeTool: Function, getActiveTabMeta: Function, refreshAccessToken?: () => Promise<string|null>, signal?: AbortSignal, maxTurnMs?: number }} params
  * @returns {Promise<{ assistantMessage: string, toolResults: Array<object> }>}
  */
-export async function runLlmAgentTurn({
+export async function runLlmAgentTurn(params) {
+  const maxTurnMs = Number.isFinite(params?.maxTurnMs) && params.maxTurnMs > 0
+    ? params.maxTurnMs
+    : MAX_AGENT_TURN_MS
+  const controller = new AbortController()
+  let timeBudgetExpired = false
+  const externalSignal = params?.signal
+  const onExternalAbort = () => controller.abort()
+  if (externalSignal?.aborted) controller.abort()
+  else externalSignal?.addEventListener?.('abort', onExternalAbort, { once: true })
+  const timer = setTimeout(() => {
+    timeBudgetExpired = true
+    controller.abort()
+  }, maxTurnMs)
+
+  try {
+    return await runLlmAgentTurnWithinBudget({
+      ...params,
+      signal: controller.signal,
+    })
+  } catch (error) {
+    if (timeBudgetExpired) {
+      const timeout = new Error(`Agent turn timed out after ${maxTurnMs}ms`)
+      timeout.code = 'agent_turn_timeout'
+      throw timeout
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+    externalSignal?.removeEventListener?.('abort', onExternalAbort)
+  }
+}
+
+async function runLlmAgentTurnWithinBudget({
   turnId,
   userMessage,
   selectionContext,
@@ -119,7 +152,9 @@ export async function runLlmAgentTurn({
   // reclassified by the B1-CHROME fallback: the model already tried to call
   // a browser tool, so the re-run opens the tools unconditionally.
   const browserToolsEnabled =
-    forceBrowserTools === true || Boolean(routineContext) || shouldOfferBrowserTools(userMessage)
+    forceBrowserTools === true
+    || Boolean(routineContext)
+    || shouldOfferBrowserTools(userMessage, conversationHistory)
   const availableTools = browserToolsEnabled
     ? modelSupportsVision === true
       ? OPENAI_TOOLS
@@ -216,7 +251,7 @@ export async function runLlmAgentTurn({
       }
     : undefined
 
-  for (let step = 0; step < MAX_STEPS; step++) {
+  for (let step = 0; step < MAX_AGENT_STEPS; step++) {
     if (signal?.aborted) break
 
     broadcast({
@@ -224,7 +259,7 @@ export async function runLlmAgentTurn({
       turnId,
       text: step === 0
         ? `Analyzing request with ${modelId}…`
-        : `Step ${step + 1}/${MAX_STEPS} — continuing…`,
+        : `Step ${step + 1}/${MAX_AGENT_STEPS} — continuing…`,
       modelId,
     })
 
@@ -460,7 +495,7 @@ export async function runLlmAgentTurn({
       })
       // Execute through the background's shared approval-aware controller.
       // That boundary emits AGENT_TOOL_EXECUTING only after policy approval.
-      const execResult = await executeTool(tc)
+      const execResult = await executeTool(tc, signal)
       const durationMs = Date.now() - startedAt
 
       // Build text result for the conversation.
@@ -490,9 +525,17 @@ export async function runLlmAgentTurn({
             resultText = `Screenshot captured${meta.length ? ' (' + meta.join(', ') + ')' : ''}. Use read_page or click next; do not re-search unless needed.`
           } else if (raw.text) {
             // G3-CHROME: same full-text rule for object-shaped results.
-            resultText = tc.name === 'extract_page_content'
-              ? String(raw.text)
-              : truncate(String(raw.text), MAX_RESULT_CHARS)
+            if (tc.name === 'read_page' && Array.isArray(raw.interactiveElements)) {
+              resultText = truncate(JSON.stringify({
+                interactiveElements: raw.interactiveElements,
+                interactiveElementsTruncated: raw.interactiveElementsTruncated === true,
+                text: String(raw.text),
+              }), MAX_RESULT_CHARS)
+            } else {
+              resultText = tc.name === 'extract_page_content'
+                ? String(raw.text)
+                : truncate(String(raw.text), MAX_RESULT_CHARS)
+            }
           } else if (Array.isArray(raw)) {
             resultText = truncate(JSON.stringify(raw), MAX_RESULT_CHARS)
           } else {
@@ -657,8 +700,8 @@ export async function runLlmAgentTurn({
   // Reached max steps without text-only response.
   return {
     assistantMessage: looksPortuguese(userMessage)
-      ? `Execução incompleta: alcancei o limite de ${MAX_STEPS} etapas antes de concluir e verificar o pedido.`
-      : `Incomplete execution: I reached the ${MAX_STEPS}-step limit before completing and verifying the request.`,
+      ? `Execução incompleta: alcancei o limite de ${MAX_AGENT_STEPS} etapas antes de concluir e verificar o pedido.`
+      : `Incomplete execution: I reached the ${MAX_AGENT_STEPS}-step limit before completing and verifying the request.`,
     toolResults: allToolResults,
   }
 }
@@ -707,12 +750,14 @@ function sanitizeConversationHistory(history) {
  * classifier misses regardless of phrasing.
  *
  * @param {string} userMessage
+ * @param {unknown} [conversationHistory]
  * @returns {boolean}
  */
-export function shouldOfferBrowserTools(userMessage) {
+export function shouldOfferBrowserTools(userMessage, conversationHistory = []) {
   const text = normalizeIntentText(userMessage)
 
   if (!text) return false
+  if (isInterruptedBrowserResume(text, conversationHistory)) return true
   if (requiresScreenshot(text)) return true
 
   const action =
@@ -751,6 +796,18 @@ export function shouldOfferBrowserTools(userMessage) {
   if (communicationAction.test(text) && externalDestination.test(text)) return true
 
   return hasPageInspectionIntent(text)
+}
+
+function isInterruptedBrowserResume(text, conversationHistory) {
+  if (!Array.isArray(conversationHistory)) return false
+  const resumeIntent = /\b(?:continue|continua|continuar|retome|retoma|retomar|prossiga|seguir de onde|siga de onde|reinicie|reinicia|reiniciar|resume|pick up|restart)\b/i
+  if (!resumeIntent.test(text)) return false
+  return conversationHistory.slice(-4).some((message) => (
+    message?.role === 'assistant'
+    && typeof message.content === 'string'
+    && message.content.includes('Execução interrompida pelo usuário')
+    && message.content.includes('O pedido ainda não foi concluído')
+  ))
 }
 
 /**

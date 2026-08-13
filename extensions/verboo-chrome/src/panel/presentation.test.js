@@ -112,3 +112,20 @@ test('shouldSubmitComposerKey: an already handled slash command never submits', 
     false,
   )
 })
+
+test('approvalDecisionMessageKey never presents an expired approval as approved', () => {
+  assert.equal(typeof presentation.approvalDecisionMessageKey, 'function')
+  assert.equal(presentation.approvalDecisionMessageKey('once'), 'tool_approved')
+  assert.equal(presentation.approvalDecisionMessageKey('always'), 'tool_approved')
+  assert.equal(presentation.approvalDecisionMessageKey('turn'), 'tool_approved')
+  assert.equal(presentation.approvalDecisionMessageKey('deny'), 'tool_denied')
+  assert.equal(presentation.approvalDecisionMessageKey('cancelled'), 'tool_cancelled')
+  assert.equal(presentation.approvalDecisionMessageKey('timeout'), 'tool_approvalExpired')
+})
+
+test('cancelled routine errors never leak the raw run_cancelled code', () => {
+  assert.equal(presentation.toolErrorMessageKey?.('run_cancelled'), 'tool_cancelled')
+  assert.equal(presentation.toolErrorMessageKey?.('cancelled'), 'tool_cancelled')
+  assert.equal(presentation.toolErrorMessageKey?.('denied_by_user'), 'tool_denied')
+  assert.equal(presentation.toolErrorMessageKey?.('something_else'), null)
+})

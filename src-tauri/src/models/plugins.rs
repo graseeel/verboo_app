@@ -473,7 +473,7 @@ mod tests {
                 "scope": "user",
                 "enabled": true,
                 "installed": true,
-                "installPath": "/Users/grasel/.verboo/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0",
+                "installPath": "/Users/example/.verboo/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0",
                 "installedAt": "2026-07-06T00:46:08.857Z",
                 "lastUpdated": "2026-07-06T00:46:08.857Z"
             }
@@ -527,7 +527,7 @@ mod tests {
                 "version": "1.0.0",
                 "scope": "user",
                 "enabled": true,
-                "installPath": "/Users/grasel/.verboo/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0",
+                "installPath": "/Users/example/.verboo/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0",
                 "installedAt": "2026-07-06T00:46:08.857Z",
                 "lastUpdated": "2026-07-06T00:46:08.857Z"
             }
@@ -823,13 +823,13 @@ mod tests {
                 "name": "claude-plugins-official",
                 "source": "github",
                 "repo": "anthropics/claude-plugins-official",
-                "installLocation": "/Users/grasel/.claude/plugins/marketplaces/claude-plugins-official"
+                "installLocation": "/Users/example/.claude/plugins/marketplaces/claude-plugins-official"
             },
             {
                 "name": "verboo-plugins",
                 "source": "url",
                 "url": "https://code.verboo.ai/api/plugins/marketplace.json",
-                "installLocation": "/Users/grasel/.verboo/plugins/marketplaces/verboo-plugins"
+                "installLocation": "/Users/example/.verboo/plugins/marketplaces/verboo-plugins"
             }
         ]"#;
         let m: Vec<Marketplace> = serde_json::from_str(raw).expect("parse");

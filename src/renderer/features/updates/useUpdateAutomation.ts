@@ -10,7 +10,7 @@ type UseUpdateAutomationOptions = {
   channel: UpdateChannel
   snapshot?: UpdateSnapshot
   check: (userInitiated: boolean) => Promise<UpdateSnapshot>
-  download: () => Promise<UpdateSnapshot>
+  download: (userInitiated: boolean) => Promise<UpdateSnapshot>
 }
 
 export function useUpdateAutomation({
@@ -36,11 +36,14 @@ export function useUpdateAutomation({
 
   useEffect(() => {
     const version = snapshot?.availableVersion
-    if (!autoDownload || snapshot?.status !== 'available' || !version) return
+    const includesApp = snapshot?.target == null
+      || snapshot.target === 'app'
+      || snapshot.target === 'both'
+    if (!autoDownload || snapshot?.status !== 'available' || !includesApp || !version) return
 
     const releaseKey = `${channel}:${version}`
     if (stagedRelease.current === releaseKey) return
     stagedRelease.current = releaseKey
-    void download().catch(() => undefined)
-  }, [autoDownload, channel, download, snapshot?.availableVersion, snapshot?.status])
+    void download(false).catch(() => undefined)
+  }, [autoDownload, channel, download, snapshot?.availableVersion, snapshot?.status, snapshot?.target])
 }
