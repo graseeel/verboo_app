@@ -350,14 +350,14 @@ fn upgrade_moves_the_managed_helper_and_removes_the_old_version() {
     let temp = TempDir::new().unwrap();
     let config_path = temp.path().join("home/.verboo/.config.json");
     let runner = Arc::new(FakeCliRunner::new(config_path));
-    let (old_paths, old_service) = service_for(&temp, "0.5.2-beta.1", runner.clone(), b"v1");
+    let (old_paths, old_service) = service_for(&temp, "0.7.1-beta", runner.clone(), b"v1");
     old_service.configure(development_request()).unwrap();
     let old_helper = old_paths.helper_path();
 
-    let (new_paths, new_service) = service_for(&temp, "0.5.3", runner.clone(), b"v2");
+    let (new_paths, new_service) = service_for(&temp, "0.7.2-beta", runner.clone(), b"v2");
     let status = new_service.configure(development_request()).unwrap();
 
-    assert_eq!(status.installed_version.as_deref(), Some("0.5.3"));
+    assert_eq!(status.installed_version.as_deref(), Some("0.7.2-beta"));
     assert_eq!(fs::read(new_paths.helper_path()).unwrap(), b"v2");
     assert!(!old_helper.exists());
     assert_eq!(runner.mutation_count("remove"), 1);
@@ -369,10 +369,10 @@ fn upgrade_never_overwrites_an_unowned_new_version_path() {
     let temp = TempDir::new().unwrap();
     let config_path = temp.path().join("home/.verboo/.config.json");
     let runner = Arc::new(FakeCliRunner::new(config_path));
-    let (_old_paths, old_service) = service_for(&temp, "0.5.2-beta.1", runner.clone(), b"v1");
+    let (_old_paths, old_service) = service_for(&temp, "0.7.1-beta", runner.clone(), b"v1");
     old_service.configure(development_request()).unwrap();
 
-    let (new_paths, new_service) = service_for(&temp, "0.5.3", runner, b"v2");
+    let (new_paths, new_service) = service_for(&temp, "0.7.2-beta", runner, b"v2");
     fs::create_dir_all(new_paths.helper_path().parent().unwrap()).unwrap();
     fs::write(new_paths.helper_path(), b"foreign").unwrap();
 

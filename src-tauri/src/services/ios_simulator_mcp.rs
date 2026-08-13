@@ -483,7 +483,7 @@ mod tests {
     fn ios_simulator_mcp_managed_old_version_is_replaced_idempotently() {
         let temp = TempDir::new().unwrap();
         let root = temp.path().join("data/ios-simulator-integration");
-        let old_helper = root.join("1.0.0").join(helper_filename());
+        let old_helper = root.join("0.7.1-beta").join(helper_filename());
         let config = json!({
             "mcpServers": {
                 MCP_NAME: {
@@ -491,7 +491,7 @@ mod tests {
                     "args": ["mcp"],
                     "env": {
                         MANAGED_MARKER: "1",
-                        VERSION_MARKER: "1.0.0"
+                        VERSION_MARKER: "0.7.1-beta"
                     }
                 }
             }
@@ -507,7 +507,7 @@ mod tests {
             failure: Some("verboo_auth_required".into()),
         });
         let service = IosSimulatorMcpService::with_dependencies(
-            "1.2.3",
+            "0.7.2-beta",
             root,
             bundled,
             config_path.clone(),
@@ -523,7 +523,7 @@ mod tests {
         );
         assert_eq!(
             updated["mcpServers"][MCP_NAME]["env"][VERSION_MARKER],
-            "1.2.3"
+            "0.7.2-beta"
         );
         assert_eq!(fs::read(service.managed_helper_path()).unwrap(), b"new");
         assert!(runner.calls.lock().unwrap().is_empty());
