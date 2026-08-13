@@ -150,7 +150,7 @@ function Harness({ hookRef }: { hookRef: { current: HookApi | undefined } }) {
       onDeleteCapture={simulator.deleteCapture}
       onAddAnnotation={() => {}}
       agentPresence={simulator.agentPresence}
-      onRefresh={() => { void simulator.refresh() }}
+      onRefresh={simulator.refresh}
       minWidth={520}
       maxWidth={900}
     />
@@ -257,6 +257,50 @@ describe('IosSimulatorPanel integration', () => {
 
     expect(screen.getByRole('alert'))
       .toHaveTextContent('o WDA recusou a operação (unknown error): home indisponível')
+  })
+
+  it('confirms a manual simulator refresh with the updated device count', async () => {
+    let resolveRefresh: ((value: IosSimulatorRequirements) => void) | undefined
+    const unavailableRequirements: IosSimulatorRequirements = {
+      ...requirements,
+      ready: false,
+      issue: 'xcodeMissing',
+      devices: [],
+    }
+    const refreshedRequirements: IosSimulatorRequirements = {
+      ...requirements,
+      devices: [
+        device,
+        {
+          name: 'iPad Pro 13-inch',
+          udid: 'ipad-pro-13',
+          state: 'Shutdown',
+          iosVersion: '27.0',
+          family: 'ipad',
+        },
+      ],
+    }
+    api.requirements
+      .mockResolvedValueOnce(unavailableRequirements)
+      .mockImplementationOnce(() => new Promise<IosSimulatorRequirements>((resolve) => {
+        resolveRefresh = resolve
+      }))
+
+    render(
+      <I18nProvider language="pt-BR">
+        <Harness hookRef={hookRef} />
+      </I18nProvider>,
+    )
+    await act(async () => { await hookRef.current?.open() })
+
+    const refreshButtons = screen.getAllByRole('button', { name: 'Atualizar simuladores' })
+    fireEvent.click(refreshButtons[refreshButtons.length - 1])
+    expect(await screen.findByText('Atualizando simuladores…')).toBeInTheDocument()
+
+    await act(async () => { resolveRefresh?.(refreshedRequirements) })
+
+    expect(await screen.findByText('Simuladores atualizados · 2 encontrados')).toBeInTheDocument()
+    expect(api.requirements).toHaveBeenCalledTimes(2)
   })
 
   it('keeps a failed screenshot capture visible while MJPEG frames flow', async () => {
