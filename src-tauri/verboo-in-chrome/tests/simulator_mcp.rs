@@ -85,10 +85,7 @@ async fn simulator_mcp_relays_a_valid_tap_to_the_authenticated_desktop_bridge() 
     let request = request_task.await.unwrap();
     assert_eq!(request.kind, "toolRequest");
     assert_eq!(request.tool.as_deref(), Some("ios_simulator_tap"));
-    assert_eq!(
-        request.arguments,
-        json!({"target": "Not Now"})
-    );
+    assert_eq!(request.arguments, json!({"target": "Not Now"}));
 }
 
 #[tokio::test]
@@ -177,6 +174,38 @@ mod shutdown_harness {
         Signal(i32),
     }
 
+    fn assert_provider_compatible_tool_schemas(response: &str) {
+        let payload: Value = serde_json::from_str(response).unwrap();
+        let tools = payload
+            .pointer("/result/tools")
+            .and_then(Value::as_array)
+            .expect("tools/list must return a tool array");
+        let unsupported = [
+            "oneOf",
+            "allOf",
+            "anyOf",
+            "dependentRequired",
+            "if",
+            "then",
+            "else",
+            "not",
+        ];
+
+        for tool in tools {
+            let name = tool.get("name").and_then(Value::as_str).unwrap();
+            let schema = tool
+                .get("inputSchema")
+                .and_then(Value::as_object)
+                .expect("every MCP tool must expose an inputSchema object");
+            for keyword in unsupported {
+                assert!(
+                    !schema.contains_key(keyword),
+                    "{name} serialized unsupported top-level schema keyword {keyword}",
+                );
+            }
+        }
+    }
+
     fn spawn_initialized_helper(
         discovery_root: &std::path::Path,
     ) -> (
@@ -235,6 +264,7 @@ mod shutdown_harness {
             response.contains("\"id\":2"),
             "tool-list readiness failed: {response}"
         );
+        assert_provider_compatible_tool_schemas(&response);
         (child, stdin, stdout)
     }
 

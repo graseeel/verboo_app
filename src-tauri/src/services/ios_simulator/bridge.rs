@@ -1064,6 +1064,15 @@ mod tests {
             resolve_attach_udid(&devices, None, Some("iphone 17 pro"), Some("27.0")).unwrap(),
             "phone-27",
         );
+        for (udid, model, ios_version) in [
+            (None, None, None),
+            (None, Some("iPhone 17 Pro"), None),
+            (None, None, Some("27.0")),
+            (Some("phone-27"), Some("iPhone 17 Pro"), Some("27.0")),
+        ] {
+            let error = resolve_attach_udid(&devices, udid, model, ios_version).unwrap_err();
+            assert_eq!(error.code, "invalid_arguments");
+        }
         let missing =
             resolve_attach_udid(&devices, None, Some("iPad Pro"), Some("27.0")).unwrap_err();
         assert_eq!(missing.code, "device_not_found");

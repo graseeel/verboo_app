@@ -37,6 +37,32 @@ fn simulator_catalog_exposes_only_the_safe_generic_tools() {
 }
 
 #[test]
+fn simulator_catalog_uses_provider_compatible_top_level_schemas() {
+    let catalog = simulator_catalog().unwrap();
+    let unsupported = [
+        "oneOf",
+        "allOf",
+        "anyOf",
+        "dependentRequired",
+        "if",
+        "then",
+        "else",
+        "not",
+    ];
+
+    for tool in &catalog.tools {
+        let schema = tool.input_schema.as_object().unwrap();
+        for keyword in unsupported {
+            assert!(
+                !schema.contains_key(keyword),
+                "{} exposes unsupported top-level schema keyword {keyword}",
+                tool.name,
+            );
+        }
+    }
+}
+
+#[test]
 fn simulator_tap_contract_accepts_a_semantic_target_without_coordinates() {
     let catalog = simulator_catalog().unwrap();
     let tap = catalog
@@ -103,9 +129,6 @@ fn simulator_catalog_bounds_points_and_text_and_marks_only_observations_read_onl
     assert!(tap_validator
         .validate(&json!({"x": 0.5, "y": 0.5, "target": "a".repeat(257)}))
         .is_err());
-    assert!(tap_validator.validate(&json!({})).is_err());
-    assert!(tap_validator.validate(&json!({"x": 0.5})).is_err());
-    assert!(tap_validator.validate(&json!({"y": 0.5})).is_err());
     assert!(tap_validator
         .validate(&json!({"x": -0.01, "y": 0.5}))
         .is_err());
@@ -160,6 +183,10 @@ fn simulator_catalog_supports_bounded_native_waits_and_exact_attach_selectors() 
         .iter()
         .find(|tool| tool.name == "ios_simulator_attach")
         .unwrap();
+    let attach_description = attach.description.to_ascii_lowercase();
+    assert!(attach_description.contains("either udid"));
+    assert!(attach_description.contains("both model and iosversion"));
+    assert!(attach_description.contains("do not combine"));
     let attach_validator = jsonschema::validator_for(&attach.input_schema).unwrap();
     assert!(attach_validator
         .validate(&json!({"udid": "phone-a"}))
@@ -167,12 +194,6 @@ fn simulator_catalog_supports_bounded_native_waits_and_exact_attach_selectors() 
     assert!(attach_validator
         .validate(&json!({"model": "iPhone 17 Pro", "iosVersion": "27.0"}))
         .is_ok());
-    assert!(attach_validator
-        .validate(&json!({"udid": "phone-a", "model": "iPhone 17 Pro", "iosVersion": "27.0"}))
-        .is_err());
-    assert!(attach_validator
-        .validate(&json!({"model": "iPhone 17 Pro"}))
-        .is_err());
 
     let wait = catalog
         .tools
