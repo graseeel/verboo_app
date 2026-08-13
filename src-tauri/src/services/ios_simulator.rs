@@ -4161,6 +4161,14 @@ fn spawn_capture_loop_internal(
                 if stop.load(Ordering::Acquire) {
                     break;
                 }
+                if mjpeg_active.load(Ordering::Acquire) {
+                    switch_meter_source(
+                        &mut meter,
+                        &mut measured_source,
+                        IosSimulatorStreamSource::Mjpeg,
+                    );
+                    continue;
+                }
                 match result {
                     Ok(bytes) => {
                         first_frame_ready = true;
@@ -5200,6 +5208,57 @@ mod tests {
                 });
             }
             Ok(output(true, b"", b""))
+        }
+    }
+
+    struct BlockingCaptureRunner {
+        inner: RecordingRunner,
+        capture_started: (Mutex<bool>, Condvar),
+        release_capture: (Mutex<bool>, Condvar),
+    }
+
+    impl BlockingCaptureRunner {
+        fn new() -> Self {
+            Self {
+                inner: RecordingRunner::new(),
+                capture_started: (Mutex::new(false), Condvar::new()),
+                release_capture: (Mutex::new(false), Condvar::new()),
+            }
+        }
+
+        fn wait_until_capture_started(&self) {
+            let (started, changed) = &self.capture_started;
+            let started = started.lock().unwrap();
+            let (started, _) = changed
+                .wait_timeout_while(started, Duration::from_secs(1), |started| !*started)
+                .unwrap();
+            assert!(*started, "simctl capture did not start");
+        }
+
+        fn release_capture(&self) {
+            let (released, changed) = &self.release_capture;
+            *released.lock().unwrap() = true;
+            changed.notify_all();
+        }
+    }
+
+    impl CommandRunner for BlockingCaptureRunner {
+        fn run(&self, program: &str, args: &[String]) -> Result<CommandOutput, String> {
+            if program == "xcrun"
+                && args.starts_with(&["simctl".into(), "io".into()])
+                && args.get(3).map(String::as_str) == Some("screenshot")
+            {
+                let (started, changed) = &self.capture_started;
+                *started.lock().unwrap() = true;
+                changed.notify_all();
+
+                let (released, changed) = &self.release_capture;
+                let mut released = released.lock().unwrap();
+                while !*released {
+                    released = changed.wait(released).unwrap();
+                }
+            }
+            self.inner.run(program, args)
         }
     }
 
@@ -7054,6 +7113,67 @@ mod tests {
                     .is_some_and(|url| url.starts_with("http://127.0.0.1:"))
         }));
         assert_eq!(launcher.launched.load(Ordering::SeqCst), 1);
+        assert_eq!(stopped.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn in_flight_simctl_capture_is_discarded_after_mjpeg_activates() {
+        let runner = Arc::new(BlockingCaptureRunner::new());
+        let stopped = Arc::new(AtomicUsize::new(0));
+        let launcher = Arc::new(FakeWdaLauncher {
+            delay: Duration::ZERO,
+            fail: false,
+            launched: AtomicUsize::new(0),
+            stopped: stopped.clone(),
+            force_stopped: Arc::new(AtomicUsize::new(0)),
+            ports: Arc::new(Mutex::new(Vec::new())),
+        });
+        let service = IosSimulatorService::with_dependencies(runner.clone(), launcher);
+        let sink = Arc::new(CountingSink::default());
+        service.start_session(
+            test_device(),
+            StreamProfile::DEFAULT,
+            MAX_FPS,
+            test_display_metrics(),
+            Some(staged_wda_paths()),
+            sink.clone(),
+        );
+
+        runner.wait_until_capture_started();
+        wait_until(
+            || {
+                sink.records
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|frame| frame.source == IosSimulatorStreamSource::Mjpeg)
+            },
+            Duration::from_secs(2),
+        );
+        let (gate, expected_workers) = {
+            let state = service.state.lock().unwrap();
+            let session = state.session.as_ref().unwrap();
+            let gate = session.gate.clone();
+            let expected_workers = session.workers.lock().unwrap().len();
+            (gate, expected_workers)
+        };
+        service.set_visible_sync(false).unwrap();
+        runner.release_capture();
+        wait_until(
+            || gate.parked_workers() == expected_workers,
+            Duration::from_secs(1),
+        );
+        assert_eq!(gate.parked_workers(), expected_workers);
+
+        let records = sink.records.lock().unwrap().clone();
+        service.detach_sync().unwrap();
+        let first_mjpeg = records
+            .iter()
+            .position(|frame| frame.source == IosSimulatorStreamSource::Mjpeg)
+            .expect("WDA should emit a MJPEG frame while simctl is in flight");
+        assert!(records[first_mjpeg..]
+            .iter()
+            .all(|frame| frame.source == IosSimulatorStreamSource::Mjpeg));
         assert_eq!(stopped.load(Ordering::SeqCst), 1);
     }
 
