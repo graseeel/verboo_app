@@ -168,8 +168,10 @@ export function useIosSimulatorPanel() {
         setStreamSource(undefined)
         setEffectiveFps(undefined)
       }
+      return next.devices.length
     } catch (reason) {
       setActionError(reason instanceof Error ? reason.message : String(reason))
+      return undefined
     } finally {
       setRequirementsLoading(false)
     }
