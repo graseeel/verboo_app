@@ -953,6 +953,8 @@ struct LatestFrame {
 struct LatestFrameStore {
     frame: Mutex<Option<LatestFrame>>,
     changed: Condvar,
+    #[cfg(test)]
+    before_wait: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl LatestFrameStore {
@@ -999,6 +1001,15 @@ impl LatestFrameStore {
             if remaining.is_zero() {
                 return Err("Nenhum quadro novo chegou dentro do prazo.".into());
             }
+            #[cfg(test)]
+            if let Some(before_wait) = self
+                .before_wait
+                .lock()
+                .expect("iOS simulator latest frame test hook poisoned")
+                .take()
+            {
+                before_wait();
+            }
             let (next, result) = self
                 .changed
                 .wait_timeout(frame, remaining)
@@ -1011,7 +1022,21 @@ impl LatestFrameStore {
     }
 
     fn wake_all(&self) {
+        // Serialize with `wait_timeout` so a stop notification cannot land
+        // between the predicate check and the atomic unlock-and-wait.
+        let _frame = self
+            .frame
+            .lock()
+            .expect("iOS simulator latest frame poisoned");
         self.changed.notify_all();
+    }
+
+    #[cfg(test)]
+    fn before_next_wait(&self, before_wait: impl FnOnce() + Send + 'static) {
+        *self
+            .before_wait
+            .lock()
+            .expect("iOS simulator latest frame test hook poisoned") = Some(Box::new(before_wait));
     }
 }
 
@@ -6332,31 +6357,42 @@ mod tests {
             captured_at_ms: 100,
             source: IosSimulatorStreamSource::Simctl,
         });
+        let (parked_tx, parked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        store.before_next_wait(move || {
+            parked_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
         let waiting_store = store.clone();
         let waiting_stop = stop.clone();
-        let (started_tx, started_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel();
         let waiter = thread::spawn(move || {
-            started_tx.send(()).unwrap();
-            result_tx
-                .send(waiting_store.wait_after(
-                    4,
-                    Some(10),
-                    Duration::from_secs(1),
-                    waiting_stop.as_ref(),
-                ))
-                .unwrap();
+            let _ = result_tx.send(waiting_store.wait_after(
+                4,
+                Some(10),
+                Duration::from_secs(1),
+                waiting_stop.as_ref(),
+            ));
         });
 
-        started_rx.recv_timeout(Duration::from_millis(100)).unwrap();
-        stop.store(true, Ordering::Release);
-        store.wake_all();
+        parked_rx.recv_timeout(Duration::from_millis(100)).unwrap();
+        let waking_store = store.clone();
+        let waking_stop = stop.clone();
+        let (stopped_tx, stopped_rx) = mpsc::channel();
+        let waker = thread::spawn(move || {
+            waking_stop.store(true, Ordering::Release);
+            stopped_tx.send(()).unwrap();
+            waking_store.wake_all();
+        });
+        stopped_rx.recv_timeout(Duration::from_millis(100)).unwrap();
+        release_tx.send(()).unwrap();
 
         let error = result_rx
             .recv_timeout(Duration::from_millis(250))
             .unwrap()
             .unwrap_err();
         assert!(error.contains("encerrada"), "unexpected error: {error}");
+        waker.join().unwrap();
         waiter.join().unwrap();
     }
 
