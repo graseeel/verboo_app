@@ -112,15 +112,7 @@ impl IosSimulatorMcpService {
             RegistrationState::Current => self.install_helper(&helper),
             RegistrationState::Outdated => {
                 self.install_helper(&helper)?;
-                self.remove()
-                    .and_then(|_| self.add(&helper))
-                    .or_else(|error| {
-                        if is_offline_cli_failure(&error) {
-                            self.write_managed_entry(&helper)
-                        } else {
-                            Err(error)
-                        }
-                    })
+                self.write_managed_entry(&helper)
             }
         }
     }
@@ -267,16 +259,6 @@ impl IosSimulatorMcpService {
             "--".into(),
             helper.to_string_lossy().into_owned(),
             "mcp".into(),
-        ])?)
-    }
-
-    fn remove(&self) -> Result<(), String> {
-        self.require_success(self.runner.run(&[
-            "mcp".into(),
-            "remove".into(),
-            "--scope".into(),
-            "user".into(),
-            MCP_NAME.into(),
         ])?)
     }
 
@@ -520,20 +502,34 @@ mod tests {
         let config_path = temp.path().join("config/.config.json");
         fs::create_dir_all(config_path.parent().unwrap()).unwrap();
         fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
-        let runner = Arc::new(FakeRunner::default());
+        let runner = Arc::new(FakeRunner {
+            calls: Mutex::new(Vec::new()),
+            failure: Some("verboo_auth_required".into()),
+        });
         let service = IosSimulatorMcpService::with_dependencies(
             "1.2.3",
             root,
             bundled,
-            config_path,
+            config_path.clone(),
             runner.clone(),
         );
 
         service.ensure_registered().unwrap();
-        let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0][..3], ["mcp", "remove", "--scope"]);
-        assert_eq!(calls[1][..3], ["mcp", "add", MCP_NAME]);
+
+        let updated: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            updated["mcpServers"][MCP_NAME]["command"],
+            service.managed_helper_path().to_string_lossy().as_ref(),
+        );
+        assert_eq!(
+            updated["mcpServers"][MCP_NAME]["env"][VERSION_MARKER],
+            "1.2.3"
+        );
+        assert_eq!(fs::read(service.managed_helper_path()).unwrap(), b"new");
+        assert!(runner.calls.lock().unwrap().is_empty());
+
+        service.ensure_registered().unwrap();
+        assert!(runner.calls.lock().unwrap().is_empty());
     }
 
     #[test]
