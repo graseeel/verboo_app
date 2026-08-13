@@ -1,9 +1,9 @@
-import { Check, ChevronDown, ChevronRight, Eye, RefreshCw, Search } from 'lucide-react'
+import { Check, ChevronDown, RefreshCw, Search } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import type { ModelDiscoveryResult, ProviderAuthStatus, VerbooModel } from '../../../shared/types'
-import { formatCompactNumber, useI18n } from '../../i18n'
+import { useI18n } from '../../i18n'
 import { ModelIcon } from './ModelIcon'
 import { ProviderIcon } from './ProviderIcon'
 import { VERBOO_PROVIDER, groupModelsByProvider, hasExternalProvider, hashString, modelProvider } from './providerCatalog'
@@ -33,17 +33,6 @@ type ModelSelectorProps = {
   onClearEffortOverride?: (modelId: string) => void
 }
 
-/** Belt: when the router sends `"vision": true` in the raw payload but
- *  `supportsVision` is not yet set, treat the model as vision-capable.
- *  Without this, models whose metadata was cached before the vision field
- *  was added to the shape miss their Eye badge until the next refresh. */
-function isModelVisionFromRaw(model: VerbooModel): boolean {
-  if (model.supportsVision !== undefined && model.supportsVision !== null) return false
-  if (typeof model.raw !== 'object' || model.raw === null) return false
-  if ('vision' in model.raw && (model.raw as Record<string, unknown>).vision === true) return true
-  return false
-}
-
 /** Map known effort level keys to display labels. Unknown → Title Case. */
 function effortLabel(level: string, t: (key: string) => string): string {
   const known: Record<string, string> = {
@@ -57,12 +46,8 @@ function effortLabel(level: string, t: (key: string) => string): string {
 }
 
 export function ModelSelector({ models, selectedModel, hasConversationHistory = false, modelResult, onSelect, onRefresh, verbooPlan, providerStatuses, effortByModel, selectedEffortLevels = [], selectedEffort, onSelectEffort, onClearEffortOverride }: ModelSelectorProps) {
-  const { language, t } = useI18n()
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
-  // Drill-in panel: 'root' (settings rows) | 'models' | 'effort'. The chip
-  // opens DIRECTLY on 'models' (single popover — no intermediate dialog);
-  // 'root' is reachable via the list's back button for the effort row.
-  const [panel, setPanel] = useState<'root' | 'models' | 'effort'>('models')
   const [query, setQuery] = useState('')
   const [highlighted, setHighlighted] = useState(0)
   const [menuPos, setMenuPos] = useState<{ bottom: number; right: number } | null>(null)
@@ -96,10 +81,10 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
     }),
     [models, connectedProviders],
   )
-  const showSearch = panel === 'models' && visibleModels.length > SEARCH_THRESHOLD
+  const showSearch = visibleModels.length > SEARCH_THRESHOLD
   // Override is only "valid" when it's still in the model's current
   // effortLevels. A stale value (model changed its levels) falls back to
-  // defaultEffort, surfaced as "Usar padrão" selected in the effort panel.
+  // defaultEffort, surfaced as "Use default" selected in the reasoning footer.
   const hasEffortOverride = Boolean(
     selected
     && effortByModel?.[selected.id]
@@ -139,19 +124,7 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
       setOpen(false)
     }
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        // 'models' is the entry panel: Escape closes from it directly
-        // (single-popover rule). Drill-ins step back one level instead.
-        if (panel === 'effort') {
-          setPanel('root')
-          return
-        }
-        if (panel === 'root') {
-          setPanel('models')
-          return
-        }
-        setOpen(false)
-      }
+      if (event.key === 'Escape') setOpen(false)
     }
     document.addEventListener('pointerdown', handlePointerDown, true)
     document.addEventListener('keydown', handleKeyDown, true)
@@ -159,11 +132,10 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
       document.removeEventListener('pointerdown', handlePointerDown, true)
       document.removeEventListener('keydown', handleKeyDown, true)
     }
-  }, [open, panel])
+  }, [open])
 
   useEffect(() => {
     if (!open) return
-    setPanel('models')
     setQuery('')
     setHighlighted(Math.max(0, flat.findIndex(model => model.id === selectedModel)))
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -240,186 +212,102 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
             left: 'auto',
           }}
         >
-          {panel === 'root' && (
-            <>
-              <div className="popover-title">
-                <span>{t('model.label')}</span>
-                <button className="icon-button tiny" type="button" onClick={onRefresh} title={t('model.refresh')}>
-                  <RefreshCw size={13} />
-                </button>
+          <div className="popover-title">
+            <span>{t('model.label')}</span>
+            <button
+              className="icon-button tiny"
+              type="button"
+              onClick={onRefresh}
+              title={t('model.refresh')}
+              aria-label={t('model.refresh')}
+            >
+              <RefreshCw size={13} />
+            </button>
+          </div>
+
+          <div className="model-menu-body">
+            {statusMessage && (
+              <div className={`model-menu-status ${modelResult.stale && models.length > 0 ? 'subtle' : ''}`}>
+                <span>{statusMessage}</span>
+                {modelResult.stale && models.length > 0 && <small>{t('model.usingSaved')}</small>}
               </div>
+            )}
 
-              <div className="model-rows">
-                <button
-                  type="button"
-                  className="model-row"
-                  onClick={() => setPanel('models')}
-                >
-                  <span className="model-row-label">{t('model.row.model')}</span>
-                  <span className="model-row-value">
-                    {displayed ? readableModelName(displayed) : (selectedModel ?? t('model.empty'))}
-                  </span>
-                  <ChevronRight size={15} className="model-row-chevron" />
-                </button>
-
-                {showEffortRow && (
-                  <button
-                    type="button"
-                    className="model-row"
-                    onClick={() => setPanel('effort')}
-                  >
-                    <span className="model-row-label">{t('model.row.effort')}</span>
-                    <span className="model-row-value">
-                      {hasEffortOverride && selectedEffort
-                        ? effortLabel(selectedEffort, t)
-                        : t('model.row.effortDefault')}
-                    </span>
-                    <ChevronRight size={15} className="model-row-chevron" />
-                  </button>
-                )}
+            {providerStatusMessage && (
+              <div className="model-menu-status subtle" role="status">
+                <span>{providerStatusMessage}</span>
               </div>
-            </>
-          )}
+            )}
 
-          {panel === 'models' && (
-            <>
-              <div className="popover-title">
-                <button
-                  className="icon-button tiny model-back-button"
-                  type="button"
-                  onClick={() => setPanel('root')}
-                  title={t('model.row.model')}
-                >
-                  <ChevronDown size={13} style={{ transform: 'rotate(90deg)' }} />
-                </button>
-                <span>{t('model.row.model')}</span>
-                <button className="icon-button tiny" type="button" onClick={onRefresh} title={t('model.refresh')}>
-                  <RefreshCw size={13} />
-                </button>
+            {showSearch && (
+              <div className="model-search">
+                <Search size={13} aria-hidden="true" />
+                <input
+                  ref={searchRef}
+                  value={query}
+                  placeholder={t('model.searchPlaceholder')}
+                  onChange={event => { setQuery(event.target.value); setHighlighted(0) }}
+                  onKeyDown={handleSearchKeyDown}
+                />
               </div>
+            )}
 
-              {/* The continuity warning is a discreet TOP LINE of the
-                  selector itself — never a separate step before it. */}
-              {hasConversationHistory && (
-                <div className="model-menu-hint">
-                  {t('model.switchWarning')}
-                </div>
-              )}
-
-              {/* Listing statuses ride the models panel — it is the
-                  surface the chip opens on (single popover), so a stale
-                  cache or a provider failure is visible without any
-                  drill-in. */}
-              {statusMessage && (
-                <div className={`model-menu-status ${modelResult.stale && models.length > 0 ? 'subtle' : ''}`}>
-                  <span>{statusMessage}</span>
-                  {modelResult.stale && models.length > 0 && <small>{t('model.usingSaved')}</small>}
-                </div>
-              )}
-
-              {providerStatusMessage && (
-                <div className="model-menu-status subtle" role="status">
-                  <span>{providerStatusMessage}</span>
-                </div>
-              )}
-
-              {showSearch && (
-                <div className="model-search">
-                  <Search size={13} aria-hidden="true" />
-                  <input
-                    ref={searchRef}
-                    value={query}
-                    placeholder={t('model.searchPlaceholder')}
-                    onChange={event => { setQuery(event.target.value); setHighlighted(0) }}
-                    onKeyDown={handleSearchKeyDown}
-                  />
-                </div>
-              )}
-
-              {flat.length === 0 ? (
-                <div className="empty-menu">{t('model.empty')}</div>
-              ) : (
-                grouped.map(group => (
-                  <div key={group.label} className="model-group">
-                    <div className="group-label" style={group.dotStyle}>
-                      {/* External providers get the official brand icon (unknown
-                          ids fall back to an initial tile); the verboo group
-                          keeps today's colored dot. */}
-                      {group.dotStyle && (group.providerId && group.providerId !== VERBOO_PROVIDER ? (
-                        <ProviderIcon providerId={group.providerId} size={13} />
-                      ) : (
-                        <span className="group-dot" aria-hidden="true" />
-                      ))}
-                      {group.label}
-                    </div>
-                    {group.models.map(model => {
-                      const index = flat.indexOf(model)
-                      return (
-                        <button
-                          key={model.id}
-                          className={`model-option ${model.id === selectedModel ? 'selected' : ''} ${index === activeIndex ? 'highlighted' : ''}`}
-                          type="button"
-                          onMouseEnter={() => setHighlighted(index)}
-                          onClick={() => choose(model)}
-                        >
-                          <span className="model-option-icon" aria-hidden="true">
-                            <ModelIcon modelId={model.id} displayName={model.displayName} size={18} />
-                          </span>
-                          <span className="model-option-text">
-                            <strong>
-                              {readableModelName(model)}
-                              {(model.supportsVision || isModelVisionFromRaw(model)) && (
-                                <span className="model-badge-vision" title={t('model.visionBadge')}>
-                                  <Eye size={13} />
-                                </span>
-                              )}
-                            </strong>
-                            <small>{model.id}</small>
-                          </span>
-                          <span className="model-option-meta">
-                            {model.contextWindow && (
-                              <span className="model-badge">
-                                {formatCompactNumber(model.contextWindow, language)}
-                              </span>
-                            )}
-                            {model.id === selectedModel && <Check size={15} className="model-option-check" />}
-                          </span>
-                        </button>
-                      )
-                    })}
+            {flat.length === 0 ? (
+              <div className="empty-menu">{t('model.empty')}</div>
+            ) : (
+              grouped.map(group => (
+                <div key={group.label} className="model-group">
+                  <div className="group-label" style={group.dotStyle}>
+                    {group.dotStyle && (group.providerId && group.providerId !== VERBOO_PROVIDER ? (
+                      <ProviderIcon providerId={group.providerId} size={13} />
+                    ) : (
+                      <span className="group-dot" aria-hidden="true" />
+                    ))}
+                    {group.label}
                   </div>
-                ))
-              )}
+                  {group.models.map(model => {
+                    const index = flat.indexOf(model)
+                    const modelName = readableModelName(model)
+                    const isSelected = model.id === selectedModel
+                    return (
+                      <button
+                        key={model.id}
+                        className={`model-option ${isSelected ? 'selected' : ''} ${index === activeIndex ? 'highlighted' : ''}`}
+                        type="button"
+                        aria-label={modelName}
+                        aria-pressed={isSelected}
+                        onMouseEnter={() => setHighlighted(index)}
+                        onClick={() => choose(model)}
+                      >
+                        <span className="model-option-icon" aria-hidden="true">
+                          <ModelIcon modelId={model.id} displayName={model.displayName} size={18} />
+                        </span>
+                        <strong className="model-option-name">{modelName}</strong>
+                        <span className="model-option-meta" aria-hidden="true">
+                          {isSelected && <Check size={15} className="model-option-check" />}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              ))
+            )}
+          </div>
 
-            </>
-          )}
-
-          {panel === 'effort' && selected && (
-            <>
-              <div className="popover-title">
+          {showEffortRow && selected && (
+            <div className="model-reasoning-footer">
+              <span className="model-reasoning-label">{t('composer.effortTitle')}</span>
+              <div className="model-reasoning-levels" role="group" aria-label={t('composer.effortTitle')}>
                 <button
-                  className="icon-button tiny model-back-button"
                   type="button"
-                  onClick={() => setPanel('root')}
-                  title={t('model.row.effort')}
-                >
-                  <ChevronDown size={13} style={{ transform: 'rotate(90deg)' }} />
-                </button>
-                <span>{t('model.row.effort')}</span>
-              </div>
-
-              <div className="model-effort-list">
-                <button
-                  type="button"
-                  className={`model-effort-option model-effort-default${hasEffortOverride ? '' : ' selected'}`}
+                  className={`model-reasoning-option${hasEffortOverride ? '' : ' selected'}`}
                   aria-pressed={!hasEffortOverride}
                   onClick={() => {
                     onClearEffortOverride?.(selected.id)
                     setOpen(false)
                   }}
                 >
-                  <span>{t('composer.effortUseDefault')}</span>
-                  {!hasEffortOverride && <Check size={13} />}
+                  {t('composer.effortUseDefault')}
                 </button>
                 {selectedEffortLevels.map(level => {
                   const isSelected = hasEffortOverride && effortByModel?.[selected.id] === level
@@ -427,20 +315,25 @@ export function ModelSelector({ models, selectedModel, hasConversationHistory = 
                     <button
                       key={level}
                       type="button"
-                      className={`model-effort-option${isSelected ? ' selected' : ''}`}
+                      className={`model-reasoning-option${isSelected ? ' selected' : ''}`}
                       aria-pressed={isSelected}
                       onClick={() => {
                         onSelectEffort?.(selected.id, level)
                         setOpen(false)
                       }}
                     >
-                      <span>{effortLabel(level, t)}</span>
-                      {isSelected && <Check size={13} />}
+                      {effortLabel(level, t)}
                     </button>
                   )
                 })}
               </div>
-            </>
+            </div>
+          )}
+
+          {hasConversationHistory && (
+            <div className="model-menu-hint">
+              {t('model.switchWarning')}
+            </div>
           )}
         </div>,
         document.body,

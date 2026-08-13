@@ -9,23 +9,8 @@ import type { ModelDiscoveryResult, VerbooModel } from '../../../shared/types'
 import { ModelSelector } from './ModelSelector'
 import { dedupModels } from './providerCatalog'
 
-/**
- * Regression tests for the Codex-style ModelSelector refactor.
- *
- * Root menu shows rows (Model / Effort). Effort levels live behind a
- * drill-in panel (`.model-effort-list`), not an inline footer.
- *
- * Coverage preserved from the footer-era tests:
- * - Pill label "Model · effort" uses effective effort.
- * - Effort row only renders when selected model exposes effortLevels.
- * - Dynamic levels (no hardcoded list).
- * - "Usar padrão" selected when no override; level selected when override exists.
- * - Stale override falls back to "Usar padrão".
- * - "none" tier handled.
- * - onSelectEffort / onClearEffortOverride wired.
- * - No legacy per-row arrow/submenu classes.
- * - Effort buttons are focusable.
- */
+/** Regression coverage for the single-surface model selector. Model choices
+ * render immediately; reasoning stays in a conditional dynamic footer. */
 
 const baseModel: VerbooModel = {
   id: 'glm-5.2',
@@ -75,16 +60,6 @@ function openMenu() {
   fireEvent.click(Pill())
 }
 
-/** Open the effort drill-in panel: the chip lands on the model list
- *  (single popover), the back button reveals the settings rows, and the
- *  "Esforço" row drills in. */
-function openEffortPanel() {
-  openMenu()
-  fireEvent.click(document.querySelector<HTMLButtonElement>('.model-back-button')!)
-  const effortRow = screen.getByText(/Esforço|Effort/i).closest('button')!
-  fireEvent.click(effortRow)
-}
-
 beforeEach(() => {
   cleanup()
 })
@@ -118,19 +93,19 @@ describe('ModelSelector — single popover: the chip opens the model list DIRECT
     expect(document.querySelector('.model-rows .model-row')).toBeNull()
   })
 
-  it('the continuity warning is a discreet line AT THE TOP of the selector, not a separate step', () => {
+  it('the continuity warning is a quiet footer note in the same selector', () => {
     renderSelector({ hasConversationHistory: true })
     openMenu()
     const hint = document.querySelector('.model-menu-hint')
     expect(hint).toBeTruthy()
     expect(hint!.textContent).toMatch(/continuity|continuidade/i)
-    // It rides the SAME panel as the options (top), never instead of them.
+    // It rides the same panel as the options, never instead of them.
     const menu = document.querySelector('.model-menu')!
     expect(menu.contains(hint)).toBe(true)
     expect(menu.querySelector('.model-option')).toBeTruthy()
-    // And it comes BEFORE the first option (top line, not a footer).
+    // It comes after the list so it does not interrupt model selection.
     const first = menu.querySelector('.model-option')!
-    expect(hint!.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(first.compareDocumentPosition(hint!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('without conversation history there is no warning line (nothing to warn about)', () => {
@@ -143,7 +118,8 @@ describe('ModelSelector — single popover: the chip opens the model list DIRECT
     renderSelector({ selectedModel: 'kimi-k2' })
     openMenu()
     const selected = document.querySelector('.model-option.selected')!
-    expect(selected.textContent).toContain('kimi-k2')
+    expect(selected).toHaveAttribute('aria-pressed', 'true')
+    expect(selected.textContent).toContain('Kimi K2')
     expect(selected.querySelector('.model-option-check')).toBeTruthy()
   })
 
@@ -156,22 +132,102 @@ describe('ModelSelector — single popover: the chip opens the model list DIRECT
     expect(document.querySelector('.model-menu')).toBeNull()
   })
 
-  it('the effort drill-in stays reachable: back row → effort row → effort panel', () => {
+  it('keeps the search threshold at more than 12 visible models', () => {
+    const twelveModels = Array.from({ length: 12 }, (_, index): VerbooModel => ({
+      id: `model-${index}`,
+      displayName: `Model ${index}`,
+      raw: {},
+    }))
+    renderSelector({
+      models: twelveModels,
+      selectedModel: 'model-0',
+      modelResult: { models: twelveModels, source: 'cli', stale: false },
+    })
+    openMenu()
+    expect(document.querySelector('.model-search')).toBeNull()
+
+    cleanup()
+
+    const thirteenModels = [...twelveModels, {
+      id: 'model-12',
+      displayName: 'Model 12',
+      raw: {},
+    }]
+    renderSelector({
+      models: thirteenModels,
+      selectedModel: 'model-0',
+      modelResult: { models: thirteenModels, source: 'cli', stale: false },
+    })
+    openMenu()
+    expect(document.querySelector('.model-search')).toBeTruthy()
+  })
+
+  it('uses ArrowDown and Enter in search to select the highlighted model', () => {
+    const models = Array.from({ length: 13 }, (_, index): VerbooModel => ({
+      id: `model-${index}`,
+      displayName: `Model ${index}`,
+      raw: {},
+    }))
+    const onSelect = vi.fn()
+    renderSelector({
+      models,
+      selectedModel: 'model-0',
+      modelResult: { models, source: 'cli', stale: false },
+      onSelect,
+    })
+    openMenu()
+
+    const search = screen.getByPlaceholderText(/Search models|Buscar modelos/i)
+    fireEvent.keyDown(search, { key: 'ArrowDown' })
+    fireEvent.keyDown(search, { key: 'Enter' })
+
+    expect(onSelect).toHaveBeenCalledWith('model-1')
+    expect(document.querySelector('.model-menu')).toBeNull()
+  })
+
+  it('refreshes through the existing accessible header action', () => {
+    const onRefresh = vi.fn()
+    renderSelector({ onRefresh })
+    openMenu()
+
+    fireEvent.click(screen.getByRole('button', { name: /Refresh|Atualizar/i }))
+
+    expect(onRefresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the last known selected label through a transient empty catalog snapshot', () => {
+    const { rerender } = renderSelector()
+    expect(Pill()).toHaveTextContent('Ultra')
+
+    rerender(
+      <ModelSelector
+        models={[]}
+        selectedModel="glm-5.2"
+        modelResult={{ models: [], source: 'none', stale: false }}
+        onSelect={() => {}}
+        onRefresh={() => {}}
+      />,
+    )
+
+    expect(Pill()).toHaveTextContent('Ultra')
+  })
+
+  it('renders model choices and reasoning in one surface with no drill-in navigation', () => {
     renderSelector({
       effortByModel: {},
       selectedEffortLevels: ['low', 'high', 'max'],
       selectedEffort: 'high',
     })
     openMenu()
-    // From the list, the back affordance leads to the settings rows…
-    fireEvent.click(document.querySelector<HTMLButtonElement>('.model-back-button')!)
-    const effortRow = screen.getByText(/Esforço|Effort/i).closest('button')!
-    fireEvent.click(effortRow)
+
+    expect(document.querySelector('.model-rows')).toBeNull()
+    expect(document.querySelector('.model-back-button')).toBeNull()
+    expect(document.querySelector('.model-effort-list')).toBeNull()
     expect(screen.getByText(/Usar padrão|Use default/i)).toBeTruthy()
   })
 })
 
-describe('ModelSelector — Codex rows + effort drill-in', () => {
+describe('ModelSelector — compact list with reasoning footer', () => {
   it('warns when provider refresh fails while keeping Verboo models selectable', () => {
     const onSelect = vi.fn()
     const providerFailure = {
@@ -219,7 +275,7 @@ describe('ModelSelector — Codex rows + effort drill-in', () => {
     expect(Pill()).toHaveTextContent(/Ultra.*·.*Alto|Máximo|High|Max/)
   })
 
-  it('does NOT render the effort row when selected model has no reasoning capability', () => {
+  it('does NOT render a reasoning footer when selected model has no reasoning capability', () => {
     render(
       <ModelSelector
         models={discoveryOk.models}
@@ -233,8 +289,7 @@ describe('ModelSelector — Codex rows + effort drill-in', () => {
       />,
     )
     openMenu()
-    // Root menu shows the Model row but no Effort row.
-    expect(screen.queryByText(/Esforço|Effort/i)).toBeNull()
+    expect(document.querySelector('.model-reasoning-footer')).toBeNull()
     expect(screen.queryByText(/Usar padrão|Use default/i)).toBeNull()
   })
 
@@ -251,11 +306,14 @@ describe('ModelSelector — Codex rows + effort drill-in', () => {
         selectedEffort="medium"
       />,
     )
-    openEffortPanel()
-    // Every dynamic level rendered in the effort list (scoped to effort
+    openMenu()
+    expect(document.querySelector('.model-reasoning-label')).toHaveTextContent(
+      /Reasoning effort|Nível de raciocínio/i,
+    )
+    // Every dynamic level rendered in the reasoning footer (scoped to effort
     // buttons to avoid collision with the pill text "Qwen3 · Médio").
     const effortButtons = screen.getAllByRole('button').filter(btn =>
-      btn.classList.contains('model-effort-option'),
+      btn.classList.contains('model-reasoning-option'),
     )
     const labels = effortButtons.map(btn => btn.textContent ?? '')
     expect(labels.some(l => /Nenhum|None/i.test(l))).toBe(true)
@@ -264,6 +322,28 @@ describe('ModelSelector — Codex rows + effort drill-in', () => {
     expect(labels.some(l => /Alto|High/i.test(l))).toBe(true)
     // No phantom Máximo/Max — qwen3 does not offer it.
     expect(labels.some(l => /Máximo|Max/i.test(l))).toBe(false)
+  })
+
+  it('keeps future reasoning levels through the label fallback', () => {
+    render(
+      <ModelSelector
+        models={discoveryOk.models}
+        selectedModel="glm-5.2"
+        modelResult={discoveryOk}
+        onSelect={() => {}}
+        onRefresh={() => {}}
+        effortByModel={{}}
+        selectedEffortLevels={['low', 'ultra']}
+        selectedEffort="low"
+      />,
+    )
+    openMenu()
+
+    const footer = document.querySelector('.model-reasoning-footer')!
+    const ultra = Array.from(footer.querySelectorAll('button'))
+      .find(button => button.textContent === 'Ultra')
+    expect(ultra).toHaveClass('model-reasoning-option')
+    expect(screen.queryByRole('button', { name: /Medium|Médio/i })).toBeNull()
   })
 
   it('highlights "Usar padrão" when no override is saved (default in effect)', () => {
@@ -279,7 +359,7 @@ describe('ModelSelector — Codex rows + effort drill-in', () => {
         selectedEffort="high"
       />,
     )
-    openEffortPanel()
+    openMenu()
     const useDefault = screen.getByText(/Usar padrão|Use default/i).closest('button')!
     expect(useDefault).toHaveClass('selected')
     // High is NOT marked selected — it coincides with default but isn't an override.
@@ -300,12 +380,12 @@ describe('ModelSelector — Codex rows + effort drill-in', () => {
         selectedEffort="max"
       />,
     )
-    openEffortPanel()
+    openMenu()
     const useDefault = screen.getByText(/Usar padrão|Use default/i).closest('button')!
     expect(useDefault).not.toHaveClass('selected')
     // Scope to effort buttons — the pill also shows "Ultra · Máximo".
     const effortButtons = screen.getAllByRole('button').filter(btn =>
-      btn.classList.contains('model-effort-option'),
+      btn.classList.contains('model-reasoning-option'),
     )
     const maxBtn = effortButtons.find(btn => /Máximo|Max/i.test(btn.textContent ?? ''))!
     expect(maxBtn).toHaveClass('selected')
@@ -326,7 +406,7 @@ describe('ModelSelector — Codex rows + effort drill-in', () => {
         selectedEffort="high"
       />,
     )
-    openEffortPanel()
+    openMenu()
     const useDefault = screen.getByText(/Usar padrão|Use default/i).closest('button')!
     expect(useDefault).toHaveClass('selected')
     // No "Máximo" rendered at all because it's not in the dynamic levels.
@@ -346,7 +426,7 @@ describe('ModelSelector — Codex rows + effort drill-in', () => {
         selectedEffort="medium"
       />,
     )
-    openEffortPanel()
+    openMenu()
     expect(screen.getByText(/Nenhum|None/i)).toBeTruthy()
   })
 
@@ -365,7 +445,7 @@ describe('ModelSelector — Codex rows + effort drill-in', () => {
         onSelectEffort={onSelectEffort}
       />,
     )
-    openEffortPanel()
+    openMenu()
     fireEvent.click(screen.getByText(/Máximo|Max/i))
     expect(onSelectEffort).toHaveBeenCalledWith('glm-5.2', 'max')
     // Menu closed (effort list unmounted)
@@ -387,13 +467,14 @@ describe('ModelSelector — Codex rows + effort drill-in', () => {
         onClearEffortOverride={onClearEffortOverride}
       />,
     )
-    openEffortPanel()
+    openMenu()
     fireEvent.click(screen.getByText(/Usar padrão|Use default/i))
     expect(onClearEffortOverride).toHaveBeenCalledWith('glm-5.2')
+    expect(document.querySelector('.model-menu')).toBeNull()
   })
 
-  it('does not render any legacy per-row effort arrow or submenu classes', () => {
-    const { container } = render(
+  it('renders compact model rows without slug, context, or vision metadata', () => {
+    render(
       <ModelSelector
         models={discoveryOk.models}
         selectedModel="glm-5.2"
@@ -406,15 +487,17 @@ describe('ModelSelector — Codex rows + effort drill-in', () => {
       />,
     )
     openMenu()
-    // The legacy arrow/submenu classes must not be present anywhere.
-    expect(container.querySelector('.model-option-effort-arrow')).toBeNull()
-    expect(container.querySelector('.model-effort-submenu')).toBeNull()
-    expect(container.querySelector('.model-option-wrap')).toBeNull()
-    // The old inline footer must not be present either.
-    expect(container.querySelector('.model-menu-effort-footer')).toBeNull()
+
+    const option = screen.getByRole('button', { name: 'Ultra' })
+    expect(option.querySelector('small')).toBeNull()
+    expect(option.querySelector('.model-badge')).toBeNull()
+    expect(option.querySelector('.model-badge-vision')).toBeNull()
+    expect(document.querySelector('.model-option-effort-arrow')).toBeNull()
+    expect(document.querySelector('.model-effort-submenu')).toBeNull()
+    expect(document.querySelector('.model-option-wrap')).toBeNull()
   })
 
-  it('effort panel buttons are keyboard-reachable: each level is a focusable button', () => {
+  it('reasoning footer buttons are keyboard-reachable native buttons', () => {
     render(
       <ModelSelector
         models={discoveryOk.models}
@@ -427,10 +510,10 @@ describe('ModelSelector — Codex rows + effort drill-in', () => {
         selectedEffort="high"
       />,
     )
-    openEffortPanel()
+    openMenu()
     // "Usar padrão" + 3 levels = 4 effort buttons total.
     const effortButtons = screen.getAllByRole('button').filter(btn =>
-      btn.classList.contains('model-effort-option'),
+      btn.classList.contains('model-reasoning-option'),
     )
     expect(effortButtons.length).toBe(4)
     for (const btn of effortButtons) {
@@ -440,7 +523,7 @@ describe('ModelSelector — Codex rows + effort drill-in', () => {
     }
   })
 
-  it('Escape from effort panel returns to root (does not close menu)', () => {
+  it('Escape closes the single selector from the reasoning footer', () => {
     render(
       <ModelSelector
         models={discoveryOk.models}
@@ -453,14 +536,10 @@ describe('ModelSelector — Codex rows + effort drill-in', () => {
         selectedEffort="high"
       />,
     )
-    openEffortPanel()
-    // Effort list visible.
+    openMenu()
     expect(screen.getByText(/Usar padrão|Use default/i)).toBeTruthy()
     fireEvent.keyDown(document, { key: 'Escape' })
-    // Back to root — effort list gone, Model row visible again (the row
-    // label "Modelo" coexists with the popover title, so getAllByText).
-    expect(screen.queryByText(/Usar padrão|Use default/i)).toBeNull()
-    expect(screen.getAllByText(/Modelo|Model/i).length).toBeGreaterThan(0)
+    expect(document.querySelector('.model-menu')).toBeNull()
   })
 })
 
@@ -552,10 +631,9 @@ describe('ModelSelector — provider grouping (F3)', () => {
     // The provider IS the grouping axis — today's Available/Long-context
     // labels must not appear in provider mode.
     expect(labels.some(label => /Available|Disponíveis|Long context|Contexto longo/i.test(label))).toBe(false)
-    // Models still render with name + slug inside their provider group.
-    expect(screen.getByText('Claude Sonnet 4.6')).toBeTruthy()
-    expect(screen.getByText('claude-sonnet-4.6')).toBeTruthy()
-    expect(screen.getByText('gpt-5')).toBeTruthy()
+    // Models remain directly selectable inside their provider group.
+    expect(screen.getByRole('button', { name: 'Claude Sonnet 4.6' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'GPT-5' })).toBeTruthy()
   })
 
   it('shows the Verboo plan in the verboo group label when provided', () => {
@@ -589,7 +667,7 @@ describe('ModelSelector — provider grouping (F3)', () => {
     )
     openModelsPanel()
     expect(groupLabels().some(label => /Acme — (your account|sua conta)/.test(label))).toBe(true)
-    expect(screen.getByText('acme-1')).toBeTruthy()
+    expect(document.querySelector('.model-option[aria-label="Acme One"]')).toBeTruthy()
     // Unknown provider: generic initial tile, no invented glyph.
     const icon = document.querySelector('.group-label [data-testid="provider-icon-acme"]')!
     expect(icon.querySelector('svg')).toBeNull()
@@ -804,7 +882,7 @@ describe('T14: dedupModels — uma entrada por id no seletor', () => {
     fireEvent.click(document.querySelector('.model-pill')!)
     // Pin ONE entry per id — the selector must not show duplicates.
     const modelRows = [...document.querySelectorAll('.model-option')]
-      .filter(btn => btn.querySelector('small')?.textContent === 'ultra/glm-5.2')
+      .filter(button => button.getAttribute('aria-label') === 'Ultra (glm-5.2)')
     expect(modelRows).toHaveLength(1)
   })
 })

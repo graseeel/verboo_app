@@ -716,98 +716,6 @@
   background: var(--model-bg, transparent);
 }
 
-/* Codex-style root menu: clean rows instead of a flat list + footer.
-   Each row is a drill-in affordance (Model / Effort). */
-.model-rows {
-  display: grid;
-  gap: 1px;
-  padding: 2px 2px;
-}
-
-.model-row {
-  display: grid;
-  grid-template-columns: minmax(64px, auto) minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 8px;
-  border: 0;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: background 90ms ease;
-}
-
-.model-row:hover {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-}
-
-.model-row-label {
-  color: var(--text-dim);
-  font-size: 11.5px;
-  font-weight: 720;
-}
-
-.model-row-value {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 640;
-}
-
-.model-row-chevron {
-  color: var(--text-dim);
-  flex-shrink: 0;
-}
-
-.model-back-button svg {
-  transform: rotate(90deg);
-}
-
-/* Effort drill-in panel: vertical list (not inline footer pills). */
-.model-effort-list {
-  display: grid;
-  gap: 2px;
-  padding: 2px 4px;
-}
-
-.model-effort-list .model-effort-option {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 8px;
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-  transition: background 90ms ease;
-}
-
-.model-effort-list .model-effort-option:hover {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-}
-
-.model-effort-list .model-effort-option.selected {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  color: var(--accent-strong);
-  font-weight: 660;
-}
-
-.model-effort-list .model-effort-default.selected {
-  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
-}
-
 .subagent-indicator-wrap {
   position: relative;
   min-width: 0;
@@ -1205,12 +1113,20 @@
 /* Portaled above the composer so overflow:hidden cannot shrink the menu. */
 .model-menu.model-menu-portal {
   z-index: 10000;
+  display: flex;
+  flex-direction: column;
   width: min(320px, calc(100vw - 24px));
   min-width: min(280px, calc(100vw - 24px));
-  max-height: min(380px, calc(100vh - 120px));
+  max-height: min(420px, calc(100vh - 120px));
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.model-menu-body {
+  min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  box-sizing: border-box;
+  padding-bottom: 2px;
 }
 
 .access-menu {
@@ -1257,10 +1173,59 @@
 }
 
 .model-menu-hint {
-  margin: 0 4px 5px;
+  margin: 6px 4px 2px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
   color: var(--text-dim);
   font-size: 11px;
   line-height: 1.35;
+}
+
+.model-reasoning-footer {
+  display: grid;
+  gap: 6px;
+  margin: 4px 4px 0;
+  padding: 8px 0 2px;
+  border-top: 1px solid var(--border);
+}
+
+.model-reasoning-label {
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.model-reasoning-levels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.model-reasoning-option {
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 90ms ease, border-color 90ms ease, color 90ms ease;
+}
+
+.model-reasoning-option:hover,
+.model-reasoning-option.selected {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-strong);
+}
+
+.model-reasoning-option:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .model-group {
@@ -1287,31 +1252,12 @@
   background: var(--provider-color, currentColor);
 }
 
-/* F4: dimmed group for a disconnected bridge provider (selector). */
-.group-label.is-dimmed {
-  opacity: 0.62;
-}
-
-.group-connect {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--accent-strong);
-  font: inherit;
-  text-transform: none;
-  cursor: pointer;
-}
-
-.group-connect:hover {
-  text-decoration: underline;
-}
-
 .model-option {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-columns: 22px minmax(0, 1fr) 18px;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 7px 8px;
   border: 1px solid transparent;
   border-radius: var(--radius);
 }
@@ -1326,24 +1272,13 @@
   background: color-mix(in srgb, var(--bg-soft) 62%, transparent);
 }
 
-.model-option-text {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-/* Model name + Eye badge — keep on one line. The `<strong>` wraps the text
-   and the badge, both `inline-flex` so they sit side-by-side without break. */
-.model-option-text strong {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: nowrap;
-  min-width: 0;
-}
-
-.model-option-text small {
+.model-option-name {
   overflow: hidden;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 660;
+  line-height: 1.3;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1352,31 +1287,6 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-
-.model-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 6px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--text-dim);
-  font-size: 10.5px;
-  font-weight: 720;
-  letter-spacing: 0.02em;
-}
-
-/* Vision Eye badge next to the model name — no pill border/outline, just the
-   icon in a muted accent so it doesn't compete with the name. Inline-flex
-   with `line-height: 0` prevents it from creating extra vertical space inside
-   the parent `<strong>`. */
-.model-badge-vision {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  line-height: 0;
-  color: color-mix(in srgb, var(--accent) 55%, var(--text-dim));
 }
 
 .model-option-check {
@@ -1417,17 +1327,6 @@
 .model-option.selected {
   border: 1px solid var(--model-border, var(--border));
   background: var(--model-bg, var(--accent-soft));
-}
-
-.model-option strong::before {
-  content: "";
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin-right: 7px;
-  border-radius: 999px;
-  background: var(--model-color, var(--accent-strong));
-  vertical-align: middle;
 }
 
 .access-option {
