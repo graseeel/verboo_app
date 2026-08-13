@@ -1,10 +1,10 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/config.schema.json",
   "productName": "Verboo Code",
-  "version": "0.6.2-beta",
+  "version": "0.7.0-beta",
   "identifier": "ai.verboo.code.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev:renderer",
+    "beforeDevCommand": "node scripts/tauri/copy-wda-resource.mjs && npm run dev:renderer",
     "devUrl": "http://localhost:5183",
     "beforeBuildCommand": "",
     "frontendDist": "../dist-renderer"
@@ -54,16 +54,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [
-      "resources/cli-package/"
-    ],
+    "resources": [],
     "externalBin": [
       "binaries/verboo-in-chrome",
+      "binaries/verboo-ios-simulator",
       "binaries/verboo-ffmpeg",
       "binaries/verboo-ffprobe",
       "binaries/verboo-whisper"
     ],
     "macOS": {
+      "entitlements": "Entitlements.plist",
       "minimumSystemVersion": "12.0",
       "infoPlist": "Info.plist"
     },

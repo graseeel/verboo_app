@@ -7,8 +7,7 @@
 //! extension's reality. Discovery only happens when the user notices the
 //! step lost its name. Falha silenciosa é o pior tipo.
 //!
-//! Same damage class as T3-TodoWrite-CANARY (cli_todo_canary.rs): a rename
-//! on the producer side silently degrades the consumer. The golden-anchor
+//! A producer-side rename can silently degrade the consumer. The golden-anchor
 //! discipline ("test EXISTENCE vs test HOLDING", 2026-07-31) applies: the
 //! contrafactual mutations are documented in the FRENTE-A order.
 //!
@@ -24,9 +23,8 @@
 //!   2. every specific chrome arm in `CHROME_BROWSER_TOOLS` matches a tool
 //!      that exists in the manifest.
 //!
-//! Unlike `cli_todo_canary.rs`, which SKIPS when the bundled CLI resource
-//! is absent (that resource is gitignored), browserTools.json is CHECKED
-//! IN — a missing manifest here IS the defect, so we fail loudly.
+//! browserTools.json is CHECKED IN — a missing manifest here IS the defect,
+//! so we fail loudly.
 //! See .gitignore: only `extensions/verboo-chrome/dist/` and
 //! `store-assets/*.zip` are ignored; `src/` is tracked.
 

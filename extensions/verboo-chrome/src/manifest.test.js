@@ -5,6 +5,9 @@ import { readFile } from 'node:fs/promises'
 const manifest = JSON.parse(
   await readFile(new URL('../manifest.json', import.meta.url), 'utf8'),
 )
+const packageMetadata = JSON.parse(
+  await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+)
 const background = await readFile(new URL('./background.js', import.meta.url), 'utf8')
 const enMessages = JSON.parse(
   await readFile(new URL('../_locales/en/messages.json', import.meta.url), 'utf8'),
@@ -15,6 +18,11 @@ const ptBrMessages = JSON.parse(
 
 test('manifest advertises Native Messaging for the packaged MCP host', () => {
   assert.equal(manifest.permissions.includes('nativeMessaging'), true)
+})
+
+test('package and user-facing extension versions stay synchronized', () => {
+  assert.equal(manifest.version, packageMetadata.version)
+  assert.equal(manifest.version_name, packageMetadata.version)
 })
 
 test('manifest declares identity for user-initiated OAuth PKCE', () => {

@@ -58,6 +58,26 @@ BUNDLE_ROOT="${CARGO_TARGET_DIR}/release/bundle/macos"
 DMG_ROOT="${CARGO_TARGET_DIR}/release/bundle/dmg"
 EXECUTABLE_PATH="${CARGO_TARGET_DIR}/release/verboo-desktop"
 
+# Resolve the Developer ID identity before Tauri starts. Tauri signs external
+# binaries first, then the main executable and finally the .app; supplying the
+# identity only after the build leaves every sidecar with a version-bound ad
+# hoc designated requirement and makes macOS ask for permissions again after a
+# sidecar rebuild.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
+  if [[ -z "$SIGNING_IDENTITY" ]]; then
+    SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+      | awk -F'"' '/Developer ID Application:/ { print $2; exit }')
+  fi
+  if [[ -z "$SIGNING_IDENTITY" ]]; then
+    echo "FAIL: nenhuma identidade 'Developer ID Application:' encontrada na keychain."
+    echo "      O build foi interrompido antes de gerar sidecars ad hoc."
+    exit 1
+  fi
+  export APPLE_SIGNING_IDENTITY="$SIGNING_IDENTITY"
+  echo "→ Assinatura Developer ID preparada antes do bundle: $APPLE_SIGNING_IDENTITY"
+fi
+
 # Snapshot the pre-build .app mtime. The benign failure mode (updater
 # tarball signing without TAURI_SIGNING_PRIVATE_KEY) happens AFTER cargo
 # produces the .app, so the .app mtime WILL advance on a benign failure.
@@ -147,98 +167,25 @@ fi
 echo "✓ Renderer entregue: $RENDERER_BUILT_BASENAME (binário e dist-renderer batem)."
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Local Developer ID signing (optional, macOS only).
+# Developer ID verification (macOS only).
 #
-# Why: Tauri's `tauri build` does NOT sign the .app with a Developer ID
-# certificate by default — it only signs if you pass CSC_* env vars or use
-# tauri-action with secrets. Without a Developer ID signature, macOS
-# Gatekeeper blocks the app on first launch with a "cannot be opened because
-# the developer cannot be verified" warning, and the user has to
-# right-click → Open every time. This step signs the .app (and the DMG if
-# present) with the user's Developer ID Application certificate so the
-# local build behaves like a CI build for testing.
-#
-# Skip mechanism: set VERBOO_SKIP_LOCAL_SIGN=1 to bypass entirely (useful
-# in CI or when you don't have a Developer ID cert and just want the raw
-# unsigned build).
-#
-# Identity detection: we look for "Developer ID Application:" in the
-# default keychain (login keychain). If multiple identities match, we use
-# the first one returned by `security find-identity`. If none, we warn
-# and continue without signing — the build is still usable, just with
-# Gatekeeper warnings.
+# Tauri received APPLE_SIGNING_IDENTITY before the build, so it has already
+# signed sidecars, the main executable and the outer bundle in the required
+# inside-out order. This gate rejects any ad hoc Mach-O before the artifact is
+# used for local testing.
 # ─────────────────────────────────────────────────────────────────────────────
-if [[ "$(uname -s)" == "Darwin" && "${VERBOO_SKIP_LOCAL_SIGN:-0}" != "1" ]]; then
-  # CARGO_TARGET_DIR and BUNDLE_ROOT already resolved above (pre-build snapshot).
-  # `find ... | head -1` under pipefail would abort the script if $BUNDLE_ROOT
-  # is missing (find exits 1, pipefail propagates, set -e kills the assignment).
-  # The `|| true` guards the pipeline so a missing bundle dir is reported as
-  # "no .app found" instead of silently killing the script.
+if [[ "$(uname -s)" == "Darwin" ]]; then
   APP_PATH=$(find "$BUNDLE_ROOT" -maxdepth 1 -type d -name '*.app' 2>/dev/null | head -1 || true)
-
   if [[ -z "$APP_PATH" ]]; then
-    echo "⚠️  Nenhum .app encontrado em $BUNDLE_ROOT — pulando assinatura local."
-  else
-    SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
-      | awk -F'"' '/Developer ID Application:/ { print $2; exit }')
+    echo "FAIL: nenhum .app encontrado em $BUNDLE_ROOT."
+    exit 1
+  fi
+  node scripts/tauri/macos-bundle-signing.mjs verify-app "$APP_PATH"
 
-    if [[ -z "$SIGNING_IDENTITY" ]]; then
-      echo "⚠️  Nenhuma identidade 'Developer ID Application:' encontrada na keychain."
-      echo "    Pulando assinatura local — o .app ficará sem assinatura Developer ID."
-      echo "    (Gatekeeper vai alertar na primeira execução. Para silenciar:"
-      echo "     export VERBOO_SKIP_LOCAL_SIGN=1 ou instale um cert Developer ID.)"
-    else
-      echo
-      echo "→ Assinando .app localmente com Developer ID…"
-      echo "    Identidade: $SIGNING_IDENTITY"
-      echo "    Alvo: $APP_PATH"
-
-      # Sign embedded Mach-O binaries first (matching CI order — innermost out).
-      # Tauri already signs the main executable, but embedded CLI Mach-Os in
-      # resources/ need explicit signing for --deep --strict to pass.
-      RESOURCE_ROOT="$APP_PATH/Contents/Resources/resources/cli-package"
-      if [[ -d "$RESOURCE_ROOT" ]]; then
-        SIGNED_MACHO_COUNT=0
-        while IFS= read -r -d '' candidate; do
-          FILE_DESCRIPTION="$(file -b "$candidate")"
-          if [[ "$FILE_DESCRIPTION" == *"Mach-O"* ]]; then
-            codesign --force --options runtime --timestamp \
-              --sign "$SIGNING_IDENTITY" \
-              "$candidate" 2>&1 | sed 's/^/    /'
-            SIGNED_MACHO_COUNT=$((SIGNED_MACHO_COUNT + 1))
-          fi
-        done < <(find "$RESOURCE_ROOT" -type f -print0)
-        echo "    Assinados $SIGNED_MACHO_COUNT binários Mach-O embutidos."
-      fi
-
-      # Sign the .app bundle itself (Tauri may have already signed the main
-      # executable; --force overwrites with our Developer ID signature).
-      codesign --force --options runtime --timestamp \
-        --sign "$SIGNING_IDENTITY" \
-        "$APP_PATH" 2>&1 | sed 's/^/    /'
-
-      # Verify.
-      codesign --verify --deep --strict --verbose=2 "$APP_PATH" 2>&1 | sed 's/^/    /'
-      CODESIGN_INFO=$(codesign --display --verbose=4 "$APP_PATH" 2>&1)
-      AUTHORITY=$(printf '%s\n' "$CODESIGN_INFO" | grep -F 'Authority=Developer ID Application:' | head -1)
-      if [[ -z "$AUTHORITY" ]]; then
-        echo "⚠️  Assinatura não mostra Authority=Developer ID Application — verifique codesign --display."
-      else
-        echo "    ✓ $AUTHORITY"
-      fi
-
-      # Sign the DMG too if it exists. Same pipefail guard as above:
-      # `find ... | head -1` would abort under set -e if $DMG_ROOT is missing.
-      DMG_PATH=$(find "$DMG_ROOT" -maxdepth 1 -type f -name '*.dmg' 2>/dev/null | head -1 || true)
-      if [[ -n "$DMG_PATH" ]]; then
-        echo "→ Assinando DMG localmente…"
-        echo "    Alvo: $DMG_PATH"
-        codesign --force --timestamp \
-          --sign "$SIGNING_IDENTITY" \
-          "$DMG_PATH" 2>&1 | sed 's/^/    /'
-        codesign --verify --strict --verbose=2 "$DMG_PATH" 2>&1 | sed 's/^/    /'
-      fi
-    fi
+  DMG_PATH=$(find "$DMG_ROOT" -maxdepth 1 -type f -name '*.dmg' 2>/dev/null | head -1 || true)
+  if [[ -n "$DMG_PATH" ]]; then
+    codesign --verify --strict --verbose=2 "$DMG_PATH"
+    hdiutil verify "$DMG_PATH"
   fi
 fi
 

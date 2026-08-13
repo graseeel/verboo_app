@@ -30,10 +30,9 @@ name: CI Verify
 #   - Linux: apt (pacote Ubuntu 22.04, GPG-assinado)
 # Version pinada ffmpeg 8.1.2. actions/cache evita re-download.
 # Non-media sidecars (verboo-whisper, verboo-in-chrome,
-# computer-use-helper) stay as empty stubs because no cargo test --lib
-# actually executes them (transcribe.rs only resolves the path;
-# chrome_integration tests.rs mocks via TempDir; computer-use-helper
-# has no source references at all).
+# verboo-ios-simulator, computer-use-helper) stay as empty stubs because no
+# cargo test --lib actually executes them (transcribe.rs only resolves the
+# path; browser/simulator integration tests use isolated fixtures).
 # Triple mapping source of truth: src-tauri/src/services/video/target.rs
 # (publishes 6 platforms: macOS aarch64+x86_64, Windows x86_64+aarch64,
 # Linux x86_64+aarch64). CI must NOT use --skip — if a test fails on a
@@ -52,6 +51,17 @@ on:
       - "package-lock.json"
       - ".github/workflows/ci-verify.yml"
   workflow_dispatch:
+    inputs:
+      run_cli_release_e2e:
+        description: "Download and execute the signed CLI release on all shipped targets"
+        required: true
+        default: false
+        type: boolean
+      expected_cli_version:
+        description: "Exact latest stable CLI version expected from upstream"
+        required: false
+        default: "0.15.10"
+        type: string
 
 permissions:
   contents: read
@@ -61,6 +71,115 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Manually controlled release-contract proof. It uses the same production
+  # updater, managed Node runtime, public trust root, and upstream assets as
+  # the packaged app, but writes only to temporary app-data directories.
+  cli-release-e2e:
+    name: signed CLI E2E (${{ matrix.target }})
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_cli_release_e2e }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: "1.89.0"
+      RUSTFLAGS: ""
+      VERBOO_EXPECTED_CLI_VERSION: ${{ inputs.expected_cli_version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify release test inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$VERBOO_EXPECTED_CLI_VERSION" || {
+            echo "::error::expected_cli_version is missing"
+            exit 1
+          }
+
+      - name: Isolate cargo target dir
+        shell: bash
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TEMP/verboo-cli-release-e2e-target" >> "$GITHUB_ENV"
+
+      - name: Install Rust 1.89.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.89.0"
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            build-essential \
+            pkg-config
+
+      - name: Prepare build-only Tauri placeholders
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="${{ matrix.target }}"
+          EXT=""
+          if [ "$TARGET" = "x86_64-pc-windows-msvc" ]; then EXT=".exe"; fi
+          mkdir -p dist-renderer
+          : > dist-renderer/index.html
+          mkdir -p src-tauri/binaries
+          for binary in verboo-in-chrome verboo-ios-simulator verboo-ffmpeg verboo-ffprobe verboo-whisper; do
+            : > "src-tauri/binaries/$binary-$TARGET$EXT"
+          done
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            mkdir -p src-tauri/resources/WebDriverAgent
+            : > src-tauri/resources/WebDriverAgent/.build-placeholder
+          fi
+
+      - name: Run signed release E2E (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          set -euxo pipefail
+          cargo +1.89.0 test \
+            --manifest-path src-tauri/Cargo.toml \
+            --test cli_release_e2e \
+            --locked \
+            published_cli_release_bootstrap_and_update_e2e \
+            -- --ignored --exact --nocapture
+
+      - name: Run signed release E2E (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Windows\System32;$env:PATH"
+          # Unlike the --lib job, this also builds the Tauri binary, whose
+          # resource.lib already contains the application manifest.
+          cargo +1.89.0 test `
+            --manifest-path src-tauri/Cargo.toml `
+            --test cli_release_e2e `
+            --locked `
+            published_cli_release_bootstrap_and_update_e2e `
+            -- --ignored --exact --nocapture
+
   # ─────────────────────────────────────────────────────────────────────
   # Rust library tests (cargo test --lib) on the three shipped OSes.
   # This is the load-bearing job for the TORNO login fix: the test that
@@ -152,18 +271,12 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Prepare bundled CLI resource (cli-package)
-        # tauri.conf.json declares resources/cli-package/ as the ONLY
-        # resource. src-tauri/resources/ is gitignored (.gitignore:33) —
-        # a fresh checkout has no such dir, and tauri_build's build.rs
-        # aborts on the FIRST missing resource ("resource path
-        # 'resources/cli-package' doesn't exist"). copy-cli-resource.mjs
-        # (the existing step from build:tauri-deps) creates it from the
-        # installed @verboo/code. fetch:tessdata is NOT included: it
-        # writes to src/renderer/public/tessdata/, a renderer public
-        # asset, not a tauri.conf.json resource — dragging it into CI
-        # would download ~30MB nobody needs.
-        run: node scripts/verify/copy-cli-resource.mjs
+      - name: Prepare macOS WebDriverAgent resource
+        if: runner.os == 'macOS'
+        run: node scripts/tauri/copy-wda-resource.mjs
+
+      - name: Verify CLI update ownership boundary
+        run: npm run test:cli-update-ownership
 
       - name: Build renderer (tsc + vite)
         # tsc --noEmit gates type errors; vite produces dist-renderer/.
@@ -228,7 +341,7 @@ jobs:
           mv -f "$BINDIR/ffprobe" "$BINDIR/verboo-ffprobe-${TRIPLE}"
           chmod +x "$BINDIR/verboo-ffmpeg-${TRIPLE}"
           chmod +x "$BINDIR/verboo-ffprobe-${TRIPLE}"
-          for s in verboo-in-chrome verboo-whisper computer-use-helper; do
+          for s in verboo-in-chrome verboo-ios-simulator verboo-whisper computer-use-helper; do
             touch "$BINDIR/${s}-${TRIPLE}"
           done
           ls -la "$BINDIR/"
@@ -262,7 +375,7 @@ jobs:
           $FF_DIR = Get-ChildItem -Path $EXTRACTED -Directory | Select-Object -First 1
           Copy-Item -Force "$($FF_DIR.FullName)\bin\ffmpeg.exe" "$BINDIR\verboo-ffmpeg-$TRIPLE.exe"
           Copy-Item -Force "$($FF_DIR.FullName)\bin\ffprobe.exe" "$BINDIR\verboo-ffprobe-$TRIPLE.exe"
-          foreach ($s in @('verboo-in-chrome', 'verboo-whisper', 'computer-use-helper')) {
+          foreach ($s in @('verboo-in-chrome', 'verboo-ios-simulator', 'verboo-whisper', 'computer-use-helper')) {
             New-Item -ItemType File -Force -Path "$BINDIR\$s-$TRIPLE.exe" | Out-Null
           }
           Get-ChildItem $BINDIR
@@ -307,7 +420,7 @@ jobs:
           chmod +x "$BINDIR/verboo-ffprobe-${TRIPLE}"
           # :? guard — if either var were empty this would expand to / (SC2115)
           rm -rf "${BINDIR:?}/${FFVER:?}"
-          for s in verboo-in-chrome verboo-whisper computer-use-helper; do
+          for s in verboo-in-chrome verboo-ios-simulator verboo-whisper computer-use-helper; do
             touch "$BINDIR/${s}-${TRIPLE}"
           done
           ls -la "$BINDIR/"
@@ -404,3 +517,9 @@ jobs:
               node --test "$t"
             done
           fi
+
+      - name: Run WDA sessionless guard
+        # Proves the generated WDA routes stay sessionless: no WebDriver
+        # session, no XCUIApplication/fb_activeApplication. This is the
+        # only automated defense of that security boundary (B3).
+        run: node --test scripts/tauri/copy-wda-resource.test.mjs

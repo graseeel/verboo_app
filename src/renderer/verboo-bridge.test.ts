@@ -15,14 +15,13 @@
  *     exported api object. A missing method would surface as a runtime
  *     TypeError in the renderer, not a build error.
  *
- * What's NOT tested:
- *   - invoke() call payloads — those are integration tests (Tauri
- *     command layer) and belong in src-tauri/.
- *   - listen() event wiring — same reason.
+ * Critical intent-bearing invoke payloads and event channel wiring are also
+ * pinned here because changing either silently changes updater behavior.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import type { VerbooDesktopApi } from './verboo-bridge'
 
 // Mock @tauri-apps/api before importing the shim — otherwise the shim
 // calls getCurrentWebview() at module load, which throws in jsdom.
@@ -101,6 +100,7 @@ describe('verboo-bridge — API shape', () => {
       configurable: true,
     })
     vi.resetModules()
+    vi.mocked(invoke).mockClear()
     await import('./verboo-bridge')
     api = (window as unknown as { verboo?: Record<string, unknown> }).verboo
   })
@@ -140,6 +140,45 @@ describe('verboo-bridge — API shape', () => {
     for (const name of required) {
       expect(typeof (api as Record<string, unknown> | undefined)?.[name]).toBe('function')
     }
+  })
+
+  it('forwards the versioned provider account commands with sanitized camelCase payloads', async () => {
+    expect(api).toBeDefined()
+    vi.mocked(invoke).mockClear()
+    const providers = api as Record<string, (...args: unknown[]) => Promise<unknown>>
+    await providers.providerCapabilities()
+    await providers.providerAccountsList()
+    await providers.providerAccountsUsage('codex', 'local-a')
+    await providers.providerAccountModels('codex', 'local-a')
+    await providers.providerAccountSetDefault('codex', 'local-a')
+    await providers.providerAccountRemove('codex', 'local-a')
+    await providers.providerLoginStart('codex', 'local-a')
+
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ['provider_capabilities'],
+      ['provider_accounts_list'],
+      ['provider_accounts_usage', { provider: 'codex', accountId: 'local-a' }],
+      ['provider_account_models', { provider: 'codex', accountId: 'local-a' }],
+      ['provider_account_set_default', { provider: 'codex', accountId: 'local-a' }],
+      ['provider_account_remove', { provider: 'codex', accountId: 'local-a' }],
+      ['provider_login_start', { provider: 'codex', reconnectAccountId: 'local-a' }],
+    ])
+  })
+
+  // B1 — provider_accounts_usage requires both provider and accountId at the
+  // type level. The Rust command (provider_accounts.rs:286-321) returns
+  // `provider_argument_required` if either is missing, so the renderer type
+  // must not advertise an optional signature that the backend rejects.
+  it('B1: providerAccountsUsage requires both provider and accountId', async () => {
+    expect(api).toBeDefined()
+    if (!api) return
+    const providers = api as VerbooDesktopApi
+    // @ts-expect-error — calling without arguments must be a type error.
+    await providers.providerAccountsUsage()
+    // @ts-expect-error — calling with only the provider must be a type error.
+    await providers.providerAccountsUsage('codex')
+    // OK: both arguments present.
+    await providers.providerAccountsUsage('codex', 'local-a')
   })
 
   it('exposes every settings/menu/window/skills method', () => {
@@ -245,6 +284,7 @@ describe('verboo-bridge — API shape', () => {
     expect(api).toBeDefined()
     const required = [
       'getUpdateStatus',
+      'bootstrapCli',
       'checkForUpdates',
       'downloadUpdate',
       'installUpdate',
@@ -259,10 +299,44 @@ describe('verboo-bridge — API shape', () => {
       'getFileDiff',
       'revertFile',
       'openExternalFile',
+      'allowMediaPreviewFile',
     ] as const
     for (const name of required) {
       expect(typeof (api as Record<string, unknown> | undefined)?.[name]).toBe('function')
     }
+  })
+
+  it('distinguishes confirmed CLI downloads from app auto-downloads', async () => {
+    expect(api).toBeDefined()
+    const download = api?.downloadUpdate as (userInitiated?: boolean) => Promise<unknown>
+
+    await download(false)
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith('download_update', {
+      userInitiated: false,
+    })
+
+    await download()
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith('download_update', {
+      userInitiated: true,
+    })
+  })
+
+  it('authorizes one local media path before converting it for the webview', async () => {
+    expect(api).toBeDefined()
+
+    await (api as Record<string, (path: string) => Promise<unknown>>).allowMediaPreviewFile('/photos/reference.png')
+
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith('allow_media_preview_file', {
+      path: '/photos/reference.png',
+    })
+  })
+
+  it('routes first-install retry through the dedicated CLI bootstrap command', async () => {
+    expect(api).toBeDefined()
+
+    await (api as Record<string, () => Promise<unknown>>).bootstrapCli()
+
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith('bootstrap_cli')
   })
 
   it('returns a cleanup function from event subscriptions', async () => {

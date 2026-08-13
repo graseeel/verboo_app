@@ -1,4 +1,4 @@
-import type { ChatProject, ChatStore, StoredConversation, TranscriptItem } from '../../shared/types'
+import type { ChatProject, ChatStore, ExternalProviderId, ProviderAccountBindings, StoredConversation, TranscriptItem } from '../../shared/types'
 import { sanitizeSubagentThreads } from '../features/subagents/subagentThreads'
 
 export const CHAT_STORE_KEY = 'verboo:chat-store:v1'
@@ -7,11 +7,17 @@ export const DEFAULT_PROJECT_NAME = 'Projeto'
 
 type LegacyStoredConversation = Omit<StoredConversation, 'subagents'> & { subagents?: unknown }
 type LegacyChatStore = {
-  version: 1 | 2
+  version: Exclude<PersistedChatStoreVersion, ChatStore['version']>
   projects: ChatProject[]
   conversations: LegacyStoredConversation[]
 }
 type PersistedChatStore = ChatStore | LegacyChatStore
+/** Every schema version that can exist on disk. v4 is the current ChatStore;
+ *  v1-v3 are legacy schemas the migration path understands. The read guard
+ *  derives from this single constant so the accepted set can never drift from
+ *  the persisted type. */
+export const PERSISTED_CHAT_STORE_VERSIONS = [1, 2, 3, 4] as const
+type PersistedChatStoreVersion = (typeof PERSISTED_CHAT_STORE_VERSIONS)[number]
 
 export function readChatStore(): ChatStore {
   try {
@@ -35,7 +41,7 @@ export function persistChatStore(store: ChatStore): void {
 
 export function emptyChatStore(): ChatStore {
   return {
-    version: 3,
+  version: 4,
     projects: [],
     conversations: [],
   }
@@ -127,23 +133,35 @@ function isPersistedChatStore(value: unknown): value is PersistedChatStore {
   if (!value || typeof value !== 'object') return false
   const candidate = value as Partial<PersistedChatStore>
   return (
-    (candidate.version === 1 || candidate.version === 2 || candidate.version === 3) &&
+    (PERSISTED_CHAT_STORE_VERSIONS as readonly number[]).includes(candidate.version as number) &&
     Array.isArray(candidate.projects) &&
     Array.isArray(candidate.conversations)
   )
 }
 
 function migrateChatStore(store: PersistedChatStore): ChatStore {
-  if (store.version === 3) return store
   return {
     ...store,
-    version: 3,
+    version: 4,
     conversations: store.conversations.map(conversation => ({
       ...conversation,
       goal: store.version === 1 ? undefined : conversation.goal,
-      subagents: [],
+      subagents: Array.isArray(conversation.subagents) ? conversation.subagents : [],
+      providerAccountBindings: sanitizeProviderBindings(conversation.providerAccountBindings),
+      cliSessionProviderAccounts: sanitizeProviderBindings(conversation.cliSessionProviderAccounts),
     })),
   }
+}
+
+function sanitizeProviderBindings(value: unknown): ProviderAccountBindings {
+  if (!value || typeof value !== 'object') return {}
+  const candidate = value as Record<string, unknown>
+  const bindings: ProviderAccountBindings = {}
+  for (const provider of ['codex', 'claude'] as ExternalProviderId[]) {
+    const accountId = candidate[provider]
+    if (typeof accountId === 'string' && accountId.trim()) bindings[provider] = accountId.trim()
+  }
+  return bindings
 }
 
 /** Ensure a conversation has `lastTurnEndedAt` set (legacy migration).
@@ -155,6 +173,8 @@ export function sanitizeConversation(conversation: StoredConversation): StoredCo
     ...conversation,
     lastTurnEndedAt: conversation.lastTurnEndedAt ?? conversation.updatedAt,
     subagents: sanitizeSubagentThreads(conversation.subagents),
+    providerAccountBindings: sanitizeProviderBindings(conversation.providerAccountBindings),
+    cliSessionProviderAccounts: sanitizeProviderBindings(conversation.cliSessionProviderAccounts),
   }
 }
 

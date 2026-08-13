@@ -5,7 +5,7 @@ import { I18nProvider } from '../../i18n'
 import { ToastProvider } from '../../components/Toast'
 import { SettingsView } from './SettingsView'
 import type { SettingsViewProps } from './SettingsView'
-import type { UserSettings } from '../../../shared/types'
+import type { ProviderAuthStatus, UserSettings } from '../../../shared/types'
 
 /**
  * SettingsView render test — the sound master switch. The user ordered
@@ -76,7 +76,7 @@ function buildProps(overrides: Partial<SettingsViewProps> = {}): SettingsViewPro
   } as unknown as UserSettings
   return {
     credentials: { hasApiKey: true, apiKeyHint: '…1234' },
-    modelResult: {} as SettingsViewProps['modelResult'],
+    modelResult: { models: [], source: 'none', stale: false } as SettingsViewProps['modelResult'],
     theme: 'system',
     activeTab: 'general' as SettingsViewProps['activeTab'],
     userSettings,
@@ -113,6 +113,9 @@ function buildProps(overrides: Partial<SettingsViewProps> = {}): SettingsViewPro
     onCheckForUpdates: async () => ({} as Awaited<ReturnType<SettingsViewProps['onCheckForUpdates']>>),
     onDownloadUpdate: async () => ({} as Awaited<ReturnType<SettingsViewProps['onDownloadUpdate']>>),
     onInstallUpdate: async () => {},
+    providerStatuses: [],
+    onProviderConnect: () => {},
+    onProviderLoginCancel: () => {},
     onClose: () => {},
     ...overrides,
   }
@@ -326,7 +329,7 @@ describe('SettingsView redesign → the five grouped tabs keep their real contro
     expect(screen.queryByRole('button', { name: 'Archived chats' })).not.toBeInTheDocument()
   })
 
-  it('uses the accented Portuguese labels for the five grouped tabs', () => {
+  it('uses the accented Portuguese labels for the six grouped tabs', () => {
     render(
       <I18nProvider language="pt-BR">
         <ToastProvider>
@@ -339,6 +342,70 @@ describe('SettingsView redesign → the five grouped tabs keep their real contro
     expect(screen.getByRole('button', { name: 'Conta' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Contexto' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Segurança' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Provedores' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Integrações' })).toBeInTheDocument()
+  })
+})
+
+describe('SettingsView → T11: aba Provedores (ordem do dono — provedores saem de Integrações)', () => {
+  const codexDisconnected: ProviderAuthStatus = { provider: 'codex', connected: false }
+  const claudeDisconnected: ProviderAuthStatus = { provider: 'claude', connected: false }
+
+  it('a aba aparece na navegação, é selecionável e mostra os cartões de provedor', () => {
+    const onActiveTabChange = vi.fn()
+    renderSettings(buildProps({
+      activeTab: 'providers' as SettingsViewProps['activeTab'],
+      providerStatuses: [codexDisconnected, claudeDisconnected],
+      onActiveTabChange,
+    }))
+
+    // Navigation entry exists (own tab, NOT the browser-icon one)…
+    const navTab = screen.getByRole('button', { name: 'Providers' })
+    // …is selectable (routes through onActiveTabChange like every tab)…
+    fireEvent.click(navTab)
+    expect(onActiveTabChange).toHaveBeenCalledWith('providers')
+    // …and shows the provider cards with the billing note that rode along.
+    expect(screen.getByRole('heading', { name: 'Providers', level: 1 })).toBeInTheDocument()
+    expect(screen.getByText('Codex')).toBeInTheDocument()
+    expect(screen.getByText('Claude')).toBeInTheDocument()
+    expect(screen.getAllByText(/billed on the provider account/i).length).toBe(2)
+    // T11 boundary: NO quota counter yet — Prumo designs it later. The tab
+    // must not invent a number or a placeholder that fakes one.
+    expect(screen.queryByText(/quota|weekly|semanal|cota/i)).toBeNull()
+  })
+
+  it('ASSERÇÃO NEGATIVA: os cartões de provedor NÃO aparecem mais em Integrações', () => {
+    const { container } = renderSettings(buildProps({
+      activeTab: 'integrations' as SettingsViewProps['activeTab'],
+      providerStatuses: [codexDisconnected, claudeDisconnected],
+    }))
+
+    // Integrations keeps its own subject (Chrome)…
+    expect(screen.getByRole('heading', { name: 'Integrations', level: 1 })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Verboo in Chrome', level: 2 })).toBeInTheDocument()
+    // …and NOTHING from the provider section survived there.
+    expect(container.querySelector('.provider-card')).toBeNull()
+    expect(screen.queryByText('Codex')).toBeNull()
+    expect(screen.queryByText('Claude')).toBeNull()
+    expect(screen.queryByText(/billed on the provider account/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Connect$|^Conectar$/i })).toBeNull()
+  })
+
+  it('o vazio é um estado: nenhum provedor conectado → convite à ação, e o convite funciona do zero', () => {
+    const onProviderConnect = vi.fn()
+    renderSettings(buildProps({
+      activeTab: 'providers' as SettingsViewProps['activeTab'],
+      providerStatuses: [codexDisconnected, claudeDisconnected],
+      onProviderConnect,
+    }))
+
+    // The invite: every disconnected card offers an ENABLED Connect.
+    expect(screen.getAllByText(/^Not connected$/i)).toHaveLength(2)
+    const connectButtons = screen.getAllByRole('button', { name: /^Connect$/i })
+    expect(connectButtons).toHaveLength(2)
+    for (const button of connectButtons) expect(button).toHaveProperty('disabled', false)
+    // …and the invite WORKS from zero: the click starts the provider's flow.
+    fireEvent.click(connectButtons[0])
+    expect(onProviderConnect).toHaveBeenCalledWith('codex')
   })
 })

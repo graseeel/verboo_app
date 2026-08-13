@@ -4,6 +4,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { buildUpdateManifest } from "./update-manifest.mjs";
+import {
+  readReleaseCatalog,
+  validateReleaseCatalog,
+} from "../release/release-catalog.mjs";
 
 function parseArgs(values) {
   const parsed = {};
@@ -20,11 +24,15 @@ for (const key of ["tag", "version", "bundles-dir", "output"]) {
   if (!args[key]) throw new Error(`Missing --${key}`);
 }
 
+const catalog = await readReleaseCatalog();
+const release = validateReleaseCatalog(catalog, args.version);
+
 const manifest = await buildUpdateManifest({
   tag: args.tag,
   version: args.version,
   bundlesDir: args["bundles-dir"],
   releaseBaseUrl: `https://github.com/graseeel/verboo_app/releases/download/${args.tag}`,
+  notes: release["en-US"].summary,
 });
 
 await mkdir(args.output, { recursive: true });

@@ -28,6 +28,7 @@ src-tauri/binaries/verboo-in-chrome-*
 src-tauri/binaries/verboo-ffmpeg-*
 src-tauri/binaries/verboo-ffprobe-*
 src-tauri/binaries/verboo-whisper-*
+src-tauri/binaries/verboo-node-*
 
 # Tauri bundled CLI resource (copied by copy-cli-resource.mjs from node_modules)
 src-tauri/resources/
@@ -43,3 +44,6 @@ src-tauri/.cargo/
 .verboo/
 extensions/verboo-chrome/dist/
 extensions/verboo-chrome/store-assets/*.zip
+
+# Editor config pessoal (Obsidian) — nao pertence ao repo
+.obsidian/

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::models::types::{ModelDiscoveryResult, ModelReasoning, VerbooModel};
+use crate::services::provider_catalog;
 
 const VERBOO_ROUTER_MODELS_URL: &str = "https://code.verboo.ai/router/v1/models";
 const CACHE_TTL_SECS: u64 = 24 * 60 * 60;
@@ -15,6 +16,7 @@ static VISION_METADATA_CACHE_REFRESHED: AtomicBool = AtomicBool::new(false);
 ///   2. CLI token → fetch from router (live) — requires reading keychain
 ///   3. Disk cache (stale, with TTL check)
 ///   4. Empty result with error
+#[derive(Clone)]
 pub struct ModelService {
     cache_dir: PathBuf,
 }
@@ -56,12 +58,13 @@ impl ModelService {
                         && cache_lacks_vision_metadata(&cached.models)
                         && !VISION_METADATA_CACHE_REFRESHED.swap(true, Ordering::Relaxed);
                     if !should_soft_refresh {
-                        return Ok(ModelDiscoveryResult {
+                        return Ok(attach_provider_models(ModelDiscoveryResult {
                             models: cached.models,
                             source: "cache".into(),
                             stale: false,
                             error: None,
-                        });
+                            provider_error: None,
+                        }));
                     }
                 }
             }
@@ -74,12 +77,13 @@ impl ModelService {
             match self.fetch_from_router(key) {
                 Ok(models) => {
                     self.write_cache(&models, now)?;
-                    return Ok(ModelDiscoveryResult {
+                    return Ok(attach_provider_models(ModelDiscoveryResult {
                         models,
                         source: "api-key".into(),
                         stale: false,
                         error: None,
-                    });
+                        provider_error: None,
+                    }));
                 }
                 Err(e) => {
                     live_error = Some(e);
@@ -89,7 +93,7 @@ impl ModelService {
 
         // Fall back to cache (even if stale)
         if let Some(cached) = self.read_cache(now) {
-            return Ok(ModelDiscoveryResult {
+            return Ok(attach_provider_models(ModelDiscoveryResult {
                 models: cached.models,
                 source: "cache".into(),
                 stale: true,
@@ -99,10 +103,11 @@ impl ModelService {
                             .into()
                     }),
                 ),
-            });
+                provider_error: None,
+            }));
         }
 
-        Ok(ModelDiscoveryResult {
+        Ok(attach_provider_models(ModelDiscoveryResult {
             models: Vec::new(),
             source: "none".into(),
             stale: false,
@@ -111,7 +116,8 @@ impl ModelService {
                     "Entre com Verboo pelo CLI/app ou configure uma chave API.".into()
                 }),
             ),
-        })
+            provider_error: None,
+        }))
     }
 
     /// Fetches the model list from the Verboo Router API.
@@ -178,6 +184,61 @@ struct CachedModels {
     models: Vec<VerbooModel>,
 }
 
+/// F2-PROVIDERS: estende o catálogo com os modelos de provedor (claude/
+/// codex) descobertos pelo CLI empacotado. Best-effort: se a listagem
+/// falhar (CLI ausente, não autenticado, timeout), o catálogo atual
+/// continua funcionando como hoje (provider = "verboo" implícito) — a
+/// feature degrada, o app não quebra.
+fn attach_provider_models(mut result: ModelDiscoveryResult) -> ModelDiscoveryResult {
+    match provider_catalog::list_provider_models() {
+        Ok(provider_models) => {
+            if !provider_models.is_empty() {
+                result.models.extend(provider_models);
+                result.models = dedup_and_merge_models(result.models);
+            }
+        }
+        Err(error) => result.provider_error = Some(error),
+    }
+    result
+}
+
+/// Merge de duas entradas do mesmo id. A entrada Router (provider ausente) é
+/// a autoridade para identidade, contexto, capacidades e payload bruto. A
+/// entrada CLI anexa somente o provider e preenche reasoning quando o Router
+/// o omite. Assim nenhum metadado de capacidade do CLI — inclusive o antigo
+/// default genérico de visão — substitui o `vision` verdadeiro do Router.
+fn merge_duplicate_models(existing: VerbooModel, incoming: VerbooModel) -> VerbooModel {
+    let (cli, mut router) = if existing.provider.is_some() {
+        (existing, incoming)
+    } else {
+        (incoming, existing)
+    };
+    router.provider = cli.provider;
+    if router.reasoning.is_none() {
+        router.reasoning = cli.reasoning;
+    }
+    router
+}
+
+/// Deduplica modelos por id, fundindo campos quando o mesmo id aparece em
+/// duas fontes (router + CLI). Preserva a ordem de primeira aparição.
+fn dedup_and_merge_models(models: Vec<VerbooModel>) -> Vec<VerbooModel> {
+    let mut by_id: std::collections::HashMap<String, VerbooModel> = std::collections::HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for m in models {
+        if let Some(existing) = by_id.remove(&m.id) {
+            by_id.insert(m.id.clone(), merge_duplicate_models(existing, m));
+        } else {
+            order.push(m.id.clone());
+            by_id.insert(m.id.clone(), m);
+        }
+    }
+    order
+        .into_iter()
+        .map(|id| by_id.remove(&id).unwrap())
+        .collect()
+}
+
 /// Mirrors Electron's `normalizeModels`/`normalizeModel`/`detectVisionSupport`.
 fn normalize_models(payload: &serde_json::Value) -> Vec<VerbooModel> {
     let items = if let Some(obj) = payload.as_object() {
@@ -236,6 +297,7 @@ fn normalize_model(item: &serde_json::Value) -> Option<VerbooModel> {
         supports_vision,
         vision_support_source,
         reasoning,
+        provider: None,
         raw: item.clone(),
     })
 }
@@ -704,6 +766,7 @@ mod tests {
             supports_vision: None,
             vision_support_source: None,
             reasoning: None,
+            provider: None,
             raw: json!({"id": "x", "vision": true}),
         }];
         refresh_cached_vision_metadata(&mut models);
@@ -723,6 +786,7 @@ mod tests {
             supports_vision: Some(false),
             vision_support_source: Some("router".into()),
             reasoning: None,
+            provider: None,
             raw: json!({"id": "y"}),
         }];
         refresh_cached_vision_metadata(&mut models);
@@ -740,6 +804,7 @@ mod tests {
                 supports_vision: None,
                 vision_support_source: None,
                 reasoning: None,
+                provider: None,
                 raw: json!({"id": "a"}),
             },
             VerbooModel {
@@ -750,6 +815,7 @@ mod tests {
                 supports_vision: None,
                 vision_support_source: None,
                 reasoning: None,
+                provider: None,
                 raw: json!({"id": "b"}),
             },
         ];
@@ -822,8 +888,230 @@ mod tests {
             supports_vision: Some(false),
             vision_support_source: Some("router".into()),
             reasoning: None,
+            provider: None,
             raw: json!({"id": "a", "vision": false}),
         }];
         assert!(!cache_lacks_vision_metadata(&models));
+    }
+
+    // ── F2-PROVIDERS: merge best-effort com o catálogo do CLI ──────────
+
+    fn write_fake_cli(stdout_body: &str, suffix: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "verboo-model-service-fake-cli-{}-{suffix}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cli.mjs");
+        let script = format!("console.log({stdout_body:?});\n");
+        std::fs::write(&path, script).unwrap();
+        // SAFETY: env var global intencional, serializado pelo guard.
+        unsafe {
+            std::env::set_var("VERBOO_CLI_PATH", &path);
+        }
+        path
+    }
+
+    fn clear_fake_cli() {
+        unsafe {
+            std::env::remove_var("VERBOO_CLI_PATH");
+        }
+    }
+
+    fn base_discovery_result() -> ModelDiscoveryResult {
+        ModelDiscoveryResult {
+            models: vec![VerbooModel {
+                id: "verboo-pro-1".into(),
+                display_name: "Verboo Pro 1".into(),
+                context_window: Some(131072),
+                max_output_tokens: None,
+                supports_vision: Some(true),
+                vision_support_source: Some("router".into()),
+                reasoning: None,
+                provider: None,
+                raw: json!({"id": "verboo-pro-1"}),
+            }],
+            source: "api-key".into(),
+            stale: false,
+            error: None,
+            provider_error: None,
+        }
+    }
+
+    #[test]
+    fn attach_provider_models_extends_catalog_with_cli_models() {
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        write_fake_cli(
+            r#"{"provider":"codex","id":"codex-opus-4-6","displayName":"Codex Opus 4.6","contextWindow":200000}
+{"provider":"claude","id":"claude-sonnet-4-6","displayName":"Claude Sonnet 4.6","contextWindow":200000}"#,
+            "ok",
+        );
+        let merged = attach_provider_models(base_discovery_result());
+        clear_fake_cli();
+        let providers: Vec<Option<String>> = merged.models.iter().map(|m| m.provider.clone()).collect();
+        assert!(
+            providers.contains(&Some("codex".to_string())),
+            "o catálogo deve ganhar os modelos de provedor do CLI: {providers:?}"
+        );
+        assert!(
+            providers.contains(&Some("claude".to_string())),
+            "o catálogo deve ganhar os modelos de provedor do CLI: {providers:?}"
+        );
+        assert_eq!(
+            merged.models.len(),
+            3,
+            "1 modelo verboo do router + 2 modelos de provedor do CLI"
+        );
+        assert!(
+            merged.provider_error.is_none(),
+            "uma listagem saudável não deve inventar aviso de provedor"
+        );
+    }
+
+    #[test]
+    fn attach_provider_models_degrades_gracefully_on_cli_failure() {
+        let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // A saída REAL do CLI não-autenticado (medição do Prumo).
+        write_fake_cli(
+            "Não autenticado no Verboo. Execute `verboo /login` em um terminal interativo antes de usar o modo headless.",
+            "fail",
+        );
+        let merged = attach_provider_models(base_discovery_result());
+        clear_fake_cli();
+        assert_eq!(
+            merged.models.len(),
+            1,
+            "falha da listagem do CLI → o catálogo atual continua como hoje (sem provedores)"
+        );
+        assert_eq!(merged.models[0].provider, None, "provider implícito verboo");
+        assert!(
+            merged
+                .provider_error
+                .as_deref()
+                .is_some_and(|error| error.contains("não retornou modelos")),
+            "a degradação precisa ser explícita para o renderer: {:?}",
+            merged.provider_error
+        );
+    }
+
+    /// (a) duas entradas do mesmo id → UMA com os campos das duas fontes.
+    /// Regra de campo casada com renderer `dedupModels` (providerCatalog.ts).
+    #[test]
+    fn dedup_and_merge_models_fuses_same_id_preserving_fields_from_both() {
+        let router_model = VerbooModel {
+            id: "glm-5.2".into(),
+            display_name: "GLM 5.2".into(),
+            context_window: Some(131072),
+            max_output_tokens: Some(8192),
+            supports_vision: Some(false),
+            vision_support_source: Some("router".into()),
+            reasoning: None,
+            provider: None,
+            raw: json!({"id": "glm-5.2", "source": "router"}),
+        };
+        let cli_model = VerbooModel {
+            id: "glm-5.2".into(),
+            display_name: "GLM 5.2".into(),
+            context_window: Some(999999),
+            max_output_tokens: None,
+            supports_vision: Some(true),
+            vision_support_source: Some("cli".into()),
+            reasoning: Some(ModelReasoning {
+                effort_levels: vec!["high".into(), "max".into()],
+                default_effort: Some("high".into()),
+            }),
+            provider: Some("verboo".into()),
+            raw: json!({"id": "glm-5.2", "source": "cli"}),
+        };
+        // Ordem router-then-CLI (caso de campo: roteador devolve primeiro).
+        let merged = dedup_and_merge_models(vec![router_model.clone(), cli_model.clone()]);
+        assert_eq!(merged.len(), 1, "duas entradas do mesmo id → uma");
+        let m = &merged[0];
+        assert_eq!(m.provider, Some("verboo".to_string()), "CLI vence provider");
+        assert_eq!(
+            m.max_output_tokens,
+            Some(8192),
+            "router preenche max_output_tokens (CLI nao tem)"
+        );
+        assert_eq!(m.context_window, Some(131072), "router vence context_window");
+        assert_eq!(m.supports_vision, Some(false), "router vence supports_vision");
+        assert_eq!(
+            m.vision_support_source.as_deref(),
+            Some("router"),
+            "router vence vision_support_source"
+        );
+        assert_eq!(
+            m.raw, json!({"id": "glm-5.2", "source": "router"}),
+            "router vence raw"
+        );
+        assert_eq!(
+            m.reasoning.as_ref().map(|value| value.effort_levels.as_slice()),
+            Some(["high".to_string(), "max".to_string()].as_slice()),
+            "CLI backfills reasoning quando o router omite"
+        );
+        // Ordem CLI-then-router (simétrica — merge nao depende de ordem).
+        let merged_rev = dedup_and_merge_models(vec![cli_model, router_model]);
+        assert_eq!(merged_rev.len(), 1, "ordem inversa tambem dedup");
+        assert_eq!(
+            merged_rev[0].provider,
+            Some("verboo".to_string()),
+            "CLI vence independente da ordem"
+        );
+        assert_eq!(
+            merged_rev[0].max_output_tokens,
+            Some(8192),
+            "router preenche independente da ordem"
+        );
+        assert_eq!(merged_rev[0].context_window, Some(131072));
+        assert_eq!(merged_rev[0].supports_vision, Some(false));
+        assert_eq!(merged_rev[0].vision_support_source.as_deref(), Some("router"));
+    }
+
+    /// (b) modelo que existe em apenas uma fonte sobrevive intacto.
+    /// Direção só-roteador.
+    #[test]
+    fn dedup_and_merge_models_preserves_router_only_model_intact() {
+        let router_only = VerbooModel {
+            id: "verboo-pro-1".into(),
+            display_name: "Verboo Pro 1".into(),
+            context_window: Some(131072),
+            max_output_tokens: Some(8192),
+            supports_vision: Some(true),
+            vision_support_source: Some("router".into()),
+            reasoning: None,
+            provider: None,
+            raw: json!({"id": "verboo-pro-1"}),
+        };
+        let merged = dedup_and_merge_models(vec![router_only.clone()]);
+        assert_eq!(merged.len(), 1, "modelo unico sobrevive");
+        assert_eq!(merged[0].id, "verboo-pro-1");
+        assert_eq!(merged[0].provider, None, "router-only: provider ausente preservado");
+        assert_eq!(merged[0].max_output_tokens, Some(8192));
+        assert_eq!(merged[0].supports_vision, Some(true));
+    }
+
+    /// (b) Direção só-CLI.
+    #[test]
+    fn dedup_and_merge_models_preserves_cli_only_model_intact() {
+        let cli_only = VerbooModel {
+            id: "codex-opus-4-6".into(),
+            display_name: "Codex Opus 4.6".into(),
+            context_window: Some(200000),
+            max_output_tokens: None,
+            supports_vision: Some(true),
+            vision_support_source: Some("cli".into()),
+            reasoning: None,
+            provider: Some("codex".into()),
+            raw: json!({"id": "codex-opus-4-6"}),
+        };
+        let merged = dedup_and_merge_models(vec![cli_only.clone()]);
+        assert_eq!(merged.len(), 1, "modelo unico sobrevive");
+        assert_eq!(merged[0].id, "codex-opus-4-6");
+        assert_eq!(
+            merged[0].provider,
+            Some("codex".to_string()),
+            "cli-only: provider preservado"
+        );
+        assert_eq!(merged[0].max_output_tokens, None, "cli-only: max_output_tokens ausente preservado");
     }
 }

@@ -23,16 +23,20 @@ import { getAuthCapabilities, loadSession } from '../auth/auth.js'
 import { MSG } from '../controller/protocol.js'
 import {
   escapeHtml,
+  approvalDecisionMessageKey,
   modelDisplayName,
   safeMarkdownToHtml,
   shouldAppendError,
   shouldSubmitComposerKey,
   structuredResultPreview,
   translatedErrorMessage,
+  toolErrorMessageKey,
 } from './presentation.js'
 import { approvalMessage } from './approvalActions.js'
+import { recordInterruptedTurn } from './conversationState.js'
 import { stripUntrustedBrowserBoundaryForDisplay } from '../agent/untrustedContent.js'
 import { matchSlashQuery, parseSlashInvocation } from '../routines/slashCommands.js'
+import { MAX_AGENT_TURN_MS } from '../agent/turnBudget.js'
 
 // ── i18n ────────────────────────────────────────────────────────
 import EN_US from '../i18n/en-US.js'
@@ -1211,7 +1215,15 @@ function renderToolCard(toolCall, policyDecision) {
       void chrome.runtime.sendMessage(approvalMessage(toolCall.id, 'always'))
     })
 
-    actions.append(denyBtn, onceBtn, alwaysBtn)
+    const turnBtn = document.createElement('button')
+    turnBtn.type = 'button'
+    turnBtn.className = 'btn btn-secondary tool-turn'
+    turnBtn.textContent = t('tool_allowTurn')
+    turnBtn.addEventListener('click', () => {
+      void chrome.runtime.sendMessage(approvalMessage(toolCall.id, 'turn'))
+    })
+
+    actions.append(denyBtn, onceBtn, turnBtn, alwaysBtn)
     card.appendChild(actions)
   }
 
@@ -1274,11 +1286,7 @@ function closeApprovalCard(toolCallId, decision) {
   if (actions) {
     const note = document.createElement('div')
     note.className = 'tool-card-closed'
-    note.textContent = decision === 'deny'
-      ? t('tool_denied')
-      : decision === 'cancelled'
-        ? t('tool_cancelled')
-        : t('tool_approved')
+    note.textContent = t(approvalDecisionMessageKey(decision))
     actions.replaceWith(note)
   }
 }
@@ -1378,6 +1386,8 @@ function formatResultData(data) {
 function formatErrorLine(error) {
   if (error == null) return ''
   const s = String(error)
+  const translatedKey = toolErrorMessageKey(s)
+  if (translatedKey) return t(translatedKey)
   if (
     /permission|screenshot|capture/i.test(s) &&
     /error|denied|fail|could not|blocked/i.test(s)
@@ -1386,8 +1396,6 @@ function formatErrorLine(error) {
   }
   if (s.startsWith('hard_block:')) return t('policy_hard_block')
   if (s === 'site_denied') return t('policy_site_denied')
-  if (s === 'denied_by_user') return t('tool_denied')
-  if (s === 'cancelled') return t('tool_cancelled')
   // Strip noisy CSS selectors from errors
   return s
     .replace(/\s*→\s*(?![hH][tT][tT][pP][sS]?:)[^\s…]+(?:…)?/g, '')
@@ -1444,10 +1452,49 @@ let turnInFlight = false
 
 /** Bounded context sent with the next model turn while this panel stays open. */
 const MAX_PANEL_HISTORY_MESSAGES = 12
+const PANEL_CONVERSATION_STATE_KEY = 'verbooPanelConversationState'
 /** @type {Array<{role:'user'|'assistant', content:string}>} */
 let conversationHistory = []
-/** @type {{turnId:string, userMessage:string} | null} */
+/** @type {{turnId:string, userMessage:string, completedSteps:number} | null} */
 let pendingConversation = null
+let conversationHydrationPromise = null
+
+function persistConversationState() {
+  return chrome.storage.session.set({
+    [PANEL_CONVERSATION_STATE_KEY]: {
+      history: conversationHistory.slice(-MAX_PANEL_HISTORY_MESSAGES),
+      pending: pendingConversation,
+    },
+  })
+}
+
+async function hydrateConversationState() {
+  const stored = (await chrome.storage.session.get(PANEL_CONVERSATION_STATE_KEY))
+    ?.[PANEL_CONVERSATION_STATE_KEY]
+  if (Array.isArray(stored?.history)) {
+    conversationHistory = stored.history
+      .filter((item) => (
+        (item?.role === 'user' || item?.role === 'assistant')
+        && typeof item?.content === 'string'
+      ))
+      .slice(-MAX_PANEL_HISTORY_MESSAGES)
+  }
+  if (
+    typeof stored?.pending?.turnId === 'string'
+    && typeof stored?.pending?.userMessage === 'string'
+  ) {
+    pendingConversation = {
+      turnId: stored.pending.turnId,
+      userMessage: stored.pending.userMessage,
+      completedSteps: Math.max(0, Number(stored.pending.completedSteps) || 0),
+    }
+  }
+}
+
+function ensureConversationHydrated() {
+  conversationHydrationPromise ??= hydrateConversationState().catch(() => {})
+  return conversationHydrationPromise
+}
 
 /** @type {{id:string, tabId:number, frameId:number, text:string, verification:'pending'|'complete'|'incomplete'} | null} */
 let pendingSelectionContext = null
@@ -1458,7 +1505,7 @@ let activeTurnId = null
 /** Idle ms without agent events → declare background dead (router is 60s). */
 const TURN_IDLE_MS = 90_000
 /** Hard cap even if events keep arriving. */
-const TURN_MAX_MS = 15 * 60_000
+const TURN_MAX_MS = MAX_AGENT_TURN_MS
 const CHAT_INPUT_MAX_HEIGHT = 120
 
 /** @type {ReturnType<typeof setTimeout> | null} */
@@ -1602,6 +1649,7 @@ function clearConversation() {
 
   conversationHistory = []
   pendingConversation = null
+  void chrome.storage.session.remove(PANEL_CONVERSATION_STATE_KEY)
   toolCards.clear()
   removeActivitySummary()
   document.getElementById('chat-messages')?.replaceChildren()
@@ -1672,6 +1720,7 @@ function initChat() {
   const form = document.getElementById('chat-form')
   const input = document.getElementById('chat-input')
   const stop = document.getElementById('chat-stop')
+  void ensureConversationHydrated()
 
   input.addEventListener('input', () => {
     resizeChatInput(input)
@@ -1700,6 +1749,7 @@ function initChat() {
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault()
+    await ensureConversationHydrated()
     const text = input.value.trim()
     if (!text) return
     // Ignore double-submit while a turn is already running.
@@ -1729,9 +1779,19 @@ function initChat() {
     appendUserMessage(text)
 
     const turnId = crypto.randomUUID()
+    if (pendingConversation && !turnInFlight) {
+      conversationHistory = recordInterruptedTurn(
+        conversationHistory,
+        pendingConversation,
+        { reason: 'panel_reopened', completedSteps: pendingConversation.completedSteps },
+        MAX_PANEL_HISTORY_MESSAGES,
+      )
+      pendingConversation = null
+    }
     const priorConversation = conversationHistory.slice(-MAX_PANEL_HISTORY_MESSAGES)
     const selectionContextForTurn = pendingSelectionContext
-    pendingConversation = { turnId, userMessage: text }
+    pendingConversation = { turnId, userMessage: text, completedSteps: 0 }
+    void persistConversationState()
     setTurnInFlight(true)
     ensureWorkingHeader()
     armTurnWatchdogs(turnId)
@@ -1755,6 +1815,7 @@ function initChat() {
       }
     } catch (err) {
       if (pendingConversation?.turnId === turnId) pendingConversation = null
+      void persistConversationState()
       endTurnUi()
       appendTurnError(err?.message ?? t('chat_turnStartFailed'))
     }
@@ -1840,6 +1901,10 @@ function initAgentEventListener() {
       }
       case MSG.AGENT_TOOL_RESULT: {
         bumpTurnIdleWatchdog()
+        if (pendingConversation && (!message.turnId || pendingConversation.turnId === message.turnId)) {
+          pendingConversation.completedSteps += 1
+          void persistConversationState()
+        }
         renderToolResult(message.toolResult)
         break
       }
@@ -1865,12 +1930,31 @@ function initAgentEventListener() {
           )
           conversationHistory = conversationHistory.slice(-MAX_PANEL_HISTORY_MESSAGES)
           pendingConversation = null
+          void persistConversationState()
         }
         break
       }
       case MSG.AGENT_TURN_ERROR: {
         if (message.turnId && activeTurnId && message.turnId !== activeTurnId) break
-        if (pendingConversation?.turnId === message.turnId) pendingConversation = null
+        const interrupted = pendingConversation?.turnId === message.turnId
+          ? pendingConversation
+          : null
+        if (interrupted) {
+          if (
+            message.error === 'cancelled'
+            || message.error === 'Turn cancelled.'
+            || interrupted.completedSteps > 0
+          ) {
+            conversationHistory = recordInterruptedTurn(
+              conversationHistory,
+              interrupted,
+              { reason: message.error, completedSteps: interrupted.completedSteps },
+              MAX_PANEL_HISTORY_MESSAGES,
+            )
+          }
+          pendingConversation = null
+          void persistConversationState()
+        }
         endTurnUi()
         if (message.error === 'cancelled' || message.error === 'Turn cancelled.') {
           finishActivitySummary('stopped')

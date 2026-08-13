@@ -1,4 +1,4 @@
-import { AlertTriangle, Bug, CheckCircle2, Mail, Send, X } from 'lucide-react'
+import { AlertTriangle, Bug, CheckCircle2, ExternalLink, Send, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { FeedbackCategory, FeedbackDiagnostics, FeedbackRequest, FeedbackResult } from '../../../shared/types'
@@ -168,7 +168,7 @@ export function FeedbackDialog({ open, defaultContact, diagnostics, onClose, onS
 
           {result && (
             <div className={`feedback-result ${result.channel}`}>
-              {result.channel === 'supabase' ? <CheckCircle2 size={17} /> : <Mail size={17} />}
+              {result.channel === 'supabase' ? <CheckCircle2 size={17} /> : <ExternalLink size={17} />}
               <span>{feedbackResultMessage(result, t)}</span>
             </div>
           )}
@@ -208,5 +208,11 @@ function validateFeedback(title: string, description: string, t: (key: string) =
 }
 
 function feedbackResultMessage(result: FeedbackResult, t: (key: string) => string): string {
-  return result.channel === 'supabase' ? t('feedback.sentSupabase') : t('feedback.mailFallback')
+  if (result.channel === 'supabase') return t('feedback.sentSupabase')
+  // The Rust fallback now opens a pre-filled GitHub issue (feedback_service.rs
+  // build_issue_url). Precedence: the structured `code` selects localized
+  // copy, then the concrete Rust message, then the generic key.
+  if (result.code === 'supabase_unconfigured') return t('feedback.issueUnconfigured')
+  if (result.code === 'supabase_failed') return t('feedback.issueFailed')
+  return result.message?.trim() ? result.message : t('feedback.mailFallback')
 }

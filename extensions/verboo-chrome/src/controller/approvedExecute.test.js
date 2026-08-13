@@ -49,6 +49,35 @@ test('approval executor persists an always grant before dispatching the approved
   assert.equal(calls.length, 2)
 })
 
+test('approval executor grants one origin only for the current turn', async () => {
+  const turnGrants = []
+  let calls = 0
+  const executeWithApproval = createApprovalExecutor(async (toolCall) => {
+    calls += 1
+    return calls === 1
+      ? approvalRequired()
+      : {
+          ok: true,
+          result: 'clicked',
+          policy: { allowed: true, needsApproval: false, reason: 'approved_once' },
+          toolCall,
+        }
+  })
+
+  const result = await executeWithApproval(
+    TOOL,
+    async () => ({
+      mode: 'manual',
+      setTurnGrant: async (host) => turnGrants.push(host),
+    }),
+    { request: async () => 'turn' },
+  )
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(turnGrants, ['example.com'])
+  assert.equal(calls, 2)
+})
+
 test('approval executor waits for approval and dispatches the exact canonical call once', async () => {
   const calls = []
   const events = []

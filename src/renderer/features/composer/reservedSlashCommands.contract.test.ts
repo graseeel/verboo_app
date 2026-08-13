@@ -27,7 +27,7 @@
  * ──────────────────────────────────────────────────────────────────────
  * WHO WROTE THIS TEST
  * ──────────────────────────────────────────────────────────────────────
- * The src-tauri fence (TORNO) is normally forbidden from touching
+ * The src-tauri fence (PERISCOPIO) is normally forbidden from touching
  * src/renderer/** (MOSAICO's fence). This test is a PONTUAL EXCEPTION
  * — written by the src-tauri fence as a one-off, with the
  * authorization noted by the Maestro in the D-D cycle. It is NOT a

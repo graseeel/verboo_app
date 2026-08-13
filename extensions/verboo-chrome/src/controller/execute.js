@@ -129,7 +129,7 @@ async function dispatch(toolCall, ctx) {
   const args = mergeToolArgs(toolCall)
   switch (args.name) {
     case 'navigate':
-      return navigate(args)
+      return navigate(args, ctx)
     case 'read_page':
       return readPage(args, ctx)
     case 'find':
@@ -139,21 +139,21 @@ async function dispatch(toolCall, ctx) {
     case 'structured_extract':
       return structuredExtract(args, ctx)
     case 'click':
-      return click(args)
+      return click(args, ctx)
     case 'type':
-      return typeText(args)
+      return typeText(args, ctx)
     case 'screenshot':
       // Pass activeTabId so capture targets the tab the agent is driving
       // (service workers have no reliable "current window").
       return screenshot(args, ctx)
     case 'tabs':
-      return tabs(args)
+      return tabs(args, ctx)
     case 'tab_group':
-      return tabGroup(args)
+      return tabGroup(args, ctx)
     case 'console_reader':
-      return consoleReader(args)
+      return consoleReader(args, ctx)
     case 'console_clear':
-      return consoleReader({ ...args, name: 'console_reader', action: 'clear' })
+      return consoleReader({ ...args, name: 'console_reader', action: 'clear' }, ctx)
     case 'network_reader':
       return networkReader(args)
     case 'file_upload':
@@ -161,7 +161,7 @@ async function dispatch(toolCall, ctx) {
     case 'gif_recording':
       return gifRecording(args)
     case 'console':
-      return consoleReader(args)
+      return consoleReader(args, ctx)
     case 'network':
       return networkReader(args)
     case 'upload':

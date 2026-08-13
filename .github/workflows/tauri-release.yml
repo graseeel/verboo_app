@@ -83,7 +83,7 @@ jobs:
           VERSION="${TAG#v}"
           # Prerelease if the version matches x.y.z-<channel> or x.y.z-<channel>.<n>.
           # Both forms must be detected so legacy tags (v0.6.0-beta.2) and the new
-          # channel-only form (v0.6.2-beta) are marked prerelease on GitHub.
+          # channel-only form (v0.7.0-beta) are marked prerelease on GitHub.
           if [[ "$VERSION" =~ -(beta|alpha|rc)(\.[0-9]+)?$ ]]; then
             IS_PRE="true"
           else
@@ -97,7 +97,15 @@ jobs:
         run: node scripts/verify/verify-release-version.mjs --tag "${{ steps.release.outputs.tag }}"
 
       - name: Test release contracts
-        run: node --test scripts/verify/update-manifest.test.mjs scripts/verify/verify-release-version.test.mjs scripts/verify/tauri-release-signing.test.mjs
+        run: >-
+          node --test
+          scripts/release/release-catalog.test.mjs
+          scripts/release/prepare-release.test.mjs
+          scripts/verify/update-manifest.test.mjs
+          scripts/verify/verify-release-version.test.mjs
+          scripts/verify/tauri-release-signing.test.mjs
+          scripts/verify/cli-update-ownership.test.mjs
+          scripts/tauri/macos-bundle-signing.test.mjs
 
   # ─────────────────────────────────────────────────────────────────────
   # Per-platform builds. Each job:
@@ -147,6 +155,7 @@ jobs:
     timeout-minutes: 120
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERBOO_RELEASE_TAG: ${{ needs.resolve-tag.outputs.tag }}
       # Prevent Rust 1.95 (system default) from breaking tauri-cli proc-macros.
       RUSTUP_TOOLCHAIN: "1.89.0"
       # Clear RUSTFLAGS so cargo-tauri's default flags don't break proc-macro
@@ -228,11 +237,13 @@ jobs:
           path: ${{ runner.temp }}/verboo-media-sidecars-cache
           key: media-sidecars-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('scripts/tauri/media-sidecars.json', 'scripts/tauri/build-media-sidecars.mjs') }}
 
-      - name: Build renderer + bundle CLI (build:tauri-deps)
+      - name: Build renderer and app-owned resources
         # Mirrors local `npm run tauri:build` deps prep:
-        #   1. dedup-cli-package.mjs  — strip iCloud conflict copies
-        #   2. copy-cli-resource.mjs — copy cli.mjs + cli-package/ to src-tauri/resources/
-        #   3. build:renderer        — tsc --noEmit + vite build → dist-renderer/
+        #   1. copy-wda-resource.mjs — macOS simulator bridge resource
+        #   2. fetch:tessdata        — renderer OCR assets
+        #   3. build:renderer        — tsc --noEmit + Vite
+        # The CLI is deliberately absent; it is installed from the separately
+        # signed upstream release into app-data on first launch.
         # beforeBuildCommand is intentionally empty in tauri.conf.json (commit 30fd235)
         # to avoid a double vite build locally, so CI must build the renderer here.
         run: npm run build:tauri-deps
@@ -528,38 +539,6 @@ jobs:
             exit 1
           fi
 
-          RESOURCE_ROOT="src-tauri/resources/cli-package"
-          test -d "$RESOURCE_ROOT"
-          case "${{ matrix.target }}" in
-            aarch64-apple-darwin) EXPECTED_MACHO_ARCH="arm64" ;;
-            x86_64-apple-darwin) EXPECTED_MACHO_ARCH="x86_64" ;;
-            *)
-              echo "::error::Unsupported macOS target ${{ matrix.target }}"
-              exit 1
-              ;;
-          esac
-          SIGNED_MACHO_COUNT=0
-          while IFS= read -r -d '' candidate; do
-            FILE_DESCRIPTION="$(file -b "$candidate")"
-            if [[ "$FILE_DESCRIPTION" == *"Mach-O"* ]]; then
-              if [[ "$FILE_DESCRIPTION" != *"$EXPECTED_MACHO_ARCH"* ]]; then
-                echo "::error file=$candidate::Expected $EXPECTED_MACHO_ARCH Mach-O, found: $FILE_DESCRIPTION"
-                exit 1
-              fi
-              echo "Signing embedded Mach-O: $candidate ($FILE_DESCRIPTION)"
-              codesign --force --options runtime --timestamp \
-                --keychain "$KEYCHAIN_PATH" \
-                --sign "$SIGNING_IDENTITY" \
-                "$candidate"
-              codesign --verify --strict --verbose=2 "$candidate"
-              SIGNED_MACHO_COUNT=$((SIGNED_MACHO_COUNT + 1))
-            fi
-          done < <(find "$RESOURCE_ROOT" -type f -print0)
-          if [ "$SIGNED_MACHO_COUNT" -eq 0 ]; then
-            echo "::error::No Mach-O binaries found in the embedded CLI resources"
-            exit 1
-          fi
-          echo "Signed $SIGNED_MACHO_COUNT embedded CLI Mach-O binaries"
           rm -f "$CERTIFICATE_PATH"
           {
             echo "APPLE_CODESIGN_KEYCHAIN=$KEYCHAIN_PATH"
@@ -631,6 +610,7 @@ jobs:
           test -n "${APPLE_CODESIGN_KEYCHAIN:-}"
           test -f "$APPLE_CODESIGN_KEYCHAIN"
           test -n "${APPLE_SIGNING_IDENTITY:-}"
+          node scripts/tauri/macos-bundle-signing.mjs verify-app "$APP_PATH"
 
           case "${{ matrix.target }}" in
             aarch64-apple-darwin) DMG_ARCH="aarch64" ;;
@@ -723,6 +703,7 @@ jobs:
           test -n "$APP_PATH"
           test -n "$DMG_PATH"
 
+          test ! -e "$APP_PATH/Contents/MacOS/verboo-node"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           CODESIGN_INFO=$(codesign --display --verbose=4 "$APP_PATH" 2>&1)
           printf '%s\n' "$CODESIGN_INFO"
@@ -1142,37 +1123,10 @@ jobs:
               exit 1
             fi
           fi
-          # Write notes via printf (no heredoc — macOS bash 3.2 + YAML indent is fragile).
           NOTES_FILE="${RUNNER_TEMP:-/tmp}/release-notes-${VERSION}.md"
-          {
-            printf '%s\n' "## Verboo Code ${VERSION}"
-            printf '%s\n' ""
-            printf '%s\n' "This beta brings a macOS embedded browser, secure cross-platform in-app updates, and a more expressive Verboo pet."
-            printf '%s\n' ""
-            printf '%s\n' "### What's new"
-            printf '%s\n' ""
-            printf '%s\n' "- On macOS, work beside a live local site in the docked browser, with responsive resizing and automatic refresh after code changes."
-            printf '%s\n' "- On macOS, send precise visual feedback to the composer with pen and categorized arrow annotations."
-            printf '%s\n' "- Download signed app updates from the sidebar and restart safely after active turns finish, while preserving drafts."
-            printf '%s\n' "- Receive installer-specific updates on macOS, Windows, AppImage, Debian/Ubuntu, and Fedora/RHEL."
-            printf '%s\n' "- Enjoy richer, state-aware Verboo pet motion with a reduced-motion alternative."
-            printf '%s\n' "- Keep terminal and review panels — plus the macOS browser panel — scoped to the chat workspace when opening Settings or Profile."
-            printf '%s\n' ""
-            printf '%s\n' "### Download the right file"
-            printf '%s\n' ""
-            printf '%s\n' "| Your computer | Download |"
-            printf '%s\n' "|---|---|"
-            printf '%s\n' "| **macOS Apple Silicon** (M1 / M2 / M3 / M4) | \`Verboo-Code-${VERSION}-macOS-Apple-Silicon.dmg\` |"
-            printf '%s\n' "| **macOS Intel** | \`Verboo-Code-${VERSION}-macOS-Intel.dmg\` |"
-            printf '%s\n' "| **Windows 10/11 (64-bit)** | \`Verboo-Code-${VERSION}-Windows-x64-Setup.exe\` |"
-            printf '%s\n' "| **Linux (AppImage, any distro)** | \`Verboo-Code-${VERSION}-Linux-x64.AppImage\` |"
-            printf '%s\n' "| **Linux Debian/Ubuntu** | \`Verboo-Code-${VERSION}-Linux-x64.deb\` |"
-            printf '%s\n' "| **Linux Fedora/RHEL** | \`Verboo-Code-${VERSION}-Linux-x64.rpm\` |"
-            printf '%s\n' ""
-            printf '%s\n' "> Tip: on a Mac, **Apple menu → About This Mac**. If the chip says Apple M…, pick **Apple Silicon**."
-            printf '%s\n' ""
-            printf '%s\n' "Assets appear as each platform build finishes."
-          } > "$NOTES_FILE"
+          node scripts/release/render-release-notes.mjs \
+            --version "$VERSION" \
+            --output "$NOTES_FILE"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             if [ "${{ needs.resolve-tag.outputs.is_prerelease }}" = "true" ]; then
               gh release create "$TAG" --title "Verboo Code ${VERSION}" --prerelease --notes-file "$NOTES_FILE"

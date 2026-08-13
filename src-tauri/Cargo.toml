@@ -1,6 +1,6 @@
 [package]
 name = "verboo-desktop"
-version = "0.6.2-beta"
+version = "0.7.0-beta"
 description = "Verboo Code Desktop (Tauri v2)"
 authors = ["Gabriel Grasel de Moura <graseeel@users.noreply.github.com>"]
 license = "MIT"
@@ -77,6 +77,12 @@ pdf-extract = "0.12"
 # and SHA-256 hashing for vision fallback cache (FASE 1).
 base64 = "0.22"
 sha2 = "0.10"
+hex = "0.4"
+minisign-verify = "0.2.5"
+semver = { version = "1", features = ["serde"] }
+flate2 = "1"
+tar = "0.4"
+url = "2"
 # Force ctor to 1.0.x. ctor 0.8 (pulled transitively by tauri-utils) depends
 # on ctor-proc-macro as a separate crate, which fails to link in release
 # builds with "can't find crate for ctor_proc_macro" on Rust 1.89 + tauri
@@ -96,6 +102,7 @@ portable-pty = "0.8"
 # ── Unix-specific ────────────────────────────────────────────────
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+xz2 = { version = "0.1", features = ["static"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
@@ -112,6 +119,7 @@ block2 = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+zip = { version = "4.6.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 windows-sys = { version = "0.59", features = [
   "Win32_Storage_FileSystem",
   "Win32_System_Threading",

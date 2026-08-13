@@ -16,7 +16,7 @@
     },
     {
       "name": "read_page",
-      "description": "Read text content from the current page or a CSS selector.",
+      "description": "Read text content from the current page or a CSS selector. Full-page reads also return visible interactive elements with safe CSS selectors for follow-up click and type actions.",
       "risk": "read",
       "inputSchema": {
         "type": "object",

@@ -165,6 +165,24 @@ export function shouldSubmitComposerKey(event) {
     && !event.defaultPrevented
 }
 
+/** @param {unknown} decision */
+export function approvalDecisionMessageKey(decision) {
+  if (decision === 'deny') return 'tool_denied'
+  if (decision === 'cancelled') return 'tool_cancelled'
+  if (decision === 'timeout') return 'tool_approvalExpired'
+  return 'tool_approved'
+}
+
+/** @param {unknown} error */
+export function toolErrorMessageKey(error) {
+  const code = String(error ?? '')
+  if (code === 'cancelled' || code === 'run_cancelled' || code === 'Turn cancelled.') {
+    return 'tool_cancelled'
+  }
+  if (code === 'denied_by_user') return 'tool_denied'
+  return null
+}
+
 /** @param {unknown} value */
 export function escapeHtml(value) {
   return String(value ?? '')

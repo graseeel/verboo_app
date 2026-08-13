@@ -10,6 +10,7 @@ export function SideChatPanel({
   conversation,
   context,
   busy,
+  disabled = false,
   onSubmit,
   onClose,
   onFocusConversation,
@@ -18,6 +19,7 @@ export function SideChatPanel({
   conversation: StoredConversation
   context: Annotation
   busy: boolean
+  disabled?: boolean
   onSubmit: (message: string) => void
   onClose: () => void
   onFocusConversation?: () => void
@@ -32,7 +34,7 @@ export function SideChatPanel({
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const trimmed = value.trim()
-    if (!trimmed || busy) return
+    if (!trimmed || busy || disabled) return
     setValue('')
     onSubmit(trimmed)
   }
@@ -76,7 +78,7 @@ export function SideChatPanel({
           aria-label={t('sideChat.questionAria')}
           placeholder={t('sideChat.questionPlaceholder')}
           value={value}
-          disabled={busy}
+          disabled={busy || disabled}
           rows={2}
           onChange={event => setValue(event.target.value)}
           onKeyDown={event => {
@@ -89,7 +91,7 @@ export function SideChatPanel({
           type="submit"
           className="sidechat-send"
           aria-label={t('sideChat.sendAria')}
-          disabled={busy || !value.trim()}
+          disabled={busy || disabled || !value.trim()}
         >
           <Send size={15} aria-hidden="true" />
         </button>

@@ -76,6 +76,7 @@ function SideChatCloseDialog({
 export function SideChatSurface({
   sideChat,
   busy,
+  disabled = false,
   onSubmit,
   onClose,
   onFocusConversation,
@@ -83,6 +84,7 @@ export function SideChatSurface({
 }: {
   sideChat: SideChatState | undefined
   busy: boolean
+  disabled?: boolean
   onSubmit: (message: string) => void
   onClose: () => void
   onFocusConversation?: () => void
@@ -117,6 +119,7 @@ export function SideChatSurface({
         conversation={sideChat.conversation}
         context={sideChat.context}
         busy={busy}
+        disabled={disabled}
         onSubmit={onSubmit}
         onClose={requestClose}
         onFocusConversation={onFocusConversation}

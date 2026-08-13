@@ -156,9 +156,14 @@ impl UpdateService {
             } else {
                 UpdateStatus::Unsupported
             },
+            target: None,
             channel: UpdateChannel::Beta,
             current_version: current_version.clone(),
             available_version: None,
+            cli_current_version: None,
+            cli_available_version: None,
+            cli_bootstrap_required: false,
+            bootstrap_stage: None,
             release_name: None,
             release_date: None,
             release_notes: None,

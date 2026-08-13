@@ -1,10 +1,16 @@
 import { readFile } from "node:fs/promises";
 
+import {
+  readReleaseCatalog,
+  validateReleaseCatalog,
+} from "../release/release-catalog.mjs";
+
 export function verifyReleaseVersions({
   tag,
   packageVersion,
   cargoVersion,
   tauriVersion,
+  catalog,
 }) {
   if (!tag?.startsWith("v") || tag.length === 1) {
     throw new Error(`release tag must be v-prefixed: ${tag ?? "missing"}`);
@@ -22,6 +28,7 @@ export function verifyReleaseVersions({
       );
     }
   }
+  validateReleaseCatalog(catalog, expected);
   return expected;
 }
 
@@ -37,12 +44,14 @@ async function main() {
   const cargo = await readFile("src-tauri/Cargo.toml", "utf8");
   const cargoVersion = cargo.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
   if (!cargoVersion) throw new Error("Cargo package version not found");
+  const catalog = await readReleaseCatalog();
 
   verifyReleaseVersions({
     tag,
     packageVersion: packageJson.version,
     cargoVersion,
     tauriVersion: tauriConfig.version,
+    catalog,
   });
 }
 

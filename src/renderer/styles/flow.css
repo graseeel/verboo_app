@@ -60,6 +60,17 @@
    its own whitespace. */
 .step-text:has(.markdown-body) { white-space: normal; }
 .turn-recap { margin-top: 2px; }
+/* L4-A — the thinking-400 banner's "Restart session" block: the honest
+   memory hint sits under the action, muted, same family as the headline. */
+.api-error-restart { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; margin: 6px 0; }
+.api-error-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.api-error-action { margin-top: 4px; }
 /* G-C15-TS: goal-completion usage line, rendered inline after the
    agent's final text. Same typographic family as .turn-recap (no box,
    no badge, no colored background) so it reads as a continuation of

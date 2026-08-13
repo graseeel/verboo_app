@@ -11,6 +11,7 @@
 
 import { isControllableUrl, nonControllablePageMessage } from '../../planMessage.js'
 import { preparePresenceForAction } from '../../presence/inject.js'
+import { resolveTargetTab } from '../targetTab.js'
 
 const MAX_MATCHES = 20
 
@@ -45,27 +46,6 @@ export async function findTool(tool, ctx = {}) {
     matches: Array.isArray(result.result) ? result.result : [],
     url: tab.url ?? '',
   }
-}
-
-/** @param {number | undefined} preferredTabId */
-async function resolveTargetTab(preferredTabId) {
-  if (typeof preferredTabId === 'number') {
-    try {
-      const tab = await chrome.tabs.get(preferredTabId)
-      if (tab?.id) return tab
-    } catch {
-      /* tab closed — fall through */
-    }
-  }
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
-    if (tab?.id) return tab
-  } catch {
-    /* ignore */
-  }
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-  if (tab?.id) return tab
-  return null
 }
 
 /**

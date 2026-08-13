@@ -1,0 +1,1197 @@
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tauri::AppHandle;
+use uuid::Uuid;
+
+#[cfg(test)]
+use super::PreviewGate;
+use super::{
+    IosSimulatorKey, IosSimulatorPresenceAction, IosSimulatorService, IosSimulatorSystemAction,
+    NormalizedPoint, StreamProfile, DEFAULT_FALLBACK_FPS,
+};
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
+
+const PROTOCOL_VERSION: u32 = 1;
+const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimulatorDiscoveryRecord {
+    pub protocol_version: u32,
+    pub pid: u32,
+    pub endpoint: String,
+    pub secret: String,
+    pub app_version: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthEnvelope {
+    secret: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgeRequest {
+    protocol_version: u32,
+    #[serde(rename = "type")]
+    kind: String,
+    id: Option<String>,
+    secret: Option<String>,
+    tool: Option<String>,
+    #[serde(default)]
+    arguments: Value,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgeResponse {
+    protocol_version: u32,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+#[derive(Debug)]
+struct DispatchError {
+    code: &'static str,
+    message: String,
+}
+
+impl DispatchError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+pub struct IosSimulatorBridge {
+    stop: Arc<AtomicBool>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+    endpoint: String,
+    record_path: PathBuf,
+    service: IosSimulatorService,
+}
+
+fn run_accept_loop(
+    listener: TcpListener,
+    stop: Arc<AtomicBool>,
+    mut on_connection: impl FnMut(TcpStream),
+) {
+    while !stop.load(Ordering::Acquire) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                if stop.load(Ordering::Acquire) {
+                    break;
+                }
+                on_connection(stream);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+}
+
+impl IosSimulatorBridge {
+    pub fn start(
+        cache_dir: PathBuf,
+        app_version: String,
+        app: AppHandle,
+        service: IosSimulatorService,
+    ) -> Result<Self, String> {
+        service.bind_app(app.clone());
+        let root = cache_dir.join("verboo-ios-simulator");
+        secure_directory(&root)?;
+        cleanup_stale_records(&root);
+
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|error| format!("não foi possível iniciar o relay do simulador: {error}"))?;
+        let endpoint = listener
+            .local_addr()
+            .map_err(|error| format!("não foi possível ler o relay do simulador: {error}"))?
+            .to_string();
+        let record = SimulatorDiscoveryRecord {
+            protocol_version: PROTOCOL_VERSION,
+            pid: std::process::id(),
+            endpoint: endpoint.clone(),
+            secret: Uuid::new_v4().simple().to_string(),
+            app_version,
+        };
+        let record_path = root.join(format!("{}.json", record.pid));
+        publish_record(&record_path, &record)?;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let worker_service = service.clone();
+        let secret = Arc::new(record.secret.clone());
+        let worker = thread::Builder::new()
+            .name("verboo-ios-simulator-bridge".into())
+            .spawn(move || {
+                run_accept_loop(listener, worker_stop, move |stream| {
+                    let connection_secret = secret.clone();
+                    let connection_service = worker_service.clone();
+                    let connection_app = app.clone();
+                    let _ = thread::Builder::new()
+                        .name("verboo-ios-simulator-request".into())
+                        .spawn(move || {
+                            handle_connection(
+                                stream,
+                                connection_secret.as_str(),
+                                &connection_service,
+                                &connection_app,
+                            )
+                        });
+                });
+            })
+            .map_err(|error| format!("não foi possível iniciar o relay do simulador: {error}"))?;
+
+        Ok(Self {
+            stop,
+            worker: Mutex::new(Some(worker)),
+            endpoint,
+            record_path,
+            service,
+        })
+    }
+
+    pub fn stop(&self) {
+        if self.stop.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.service.clear_agent_presence();
+        let _ = TcpStream::connect_timeout(
+            &self
+                .endpoint
+                .parse()
+                .unwrap_or_else(|_| SocketAddr::from(([127, 0, 0, 1], 9))),
+            Duration::from_millis(50),
+        );
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .expect("simulator bridge poisoned")
+            .take()
+        {
+            let _ = worker.join();
+        }
+        let _ = std::fs::remove_file(&self.record_path);
+    }
+}
+
+impl Drop for IosSimulatorBridge {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn handle_connection(
+    mut stream: TcpStream,
+    secret: &str,
+    service: &IosSimulatorService,
+    app: &AppHandle,
+) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
+    let mut line = Vec::new();
+    let read = BufReader::new(&mut stream)
+        .take((MAX_REQUEST_BYTES + 2) as u64)
+        .read_until(b'\n', &mut line);
+    let response = match read {
+        Ok(_) if line.len() > MAX_REQUEST_BYTES => {
+            error_response(None, "request_too_large", "request exceeds 1 MiB")
+        }
+        Ok(0) => error_response(None, "invalid_request", "empty request"),
+        Ok(_) => handle_request_line(&line, secret, service, Some(app)),
+        Err(error) => error_response(None, "invalid_request", error.to_string()),
+    };
+    if let Ok(mut encoded) = serde_json::to_vec(&response) {
+        encoded.push(b'\n');
+        let _ = stream.write_all(&encoded);
+    }
+}
+
+fn handle_request_line(
+    line: &[u8],
+    expected_secret: &str,
+    service: &IosSimulatorService,
+    app: Option<&AppHandle>,
+) -> BridgeResponse {
+    let auth = match serde_json::from_slice::<AuthEnvelope>(line) {
+        Ok(auth) => auth,
+        Err(error) => return error_response(None, "invalid_request", error.to_string()),
+    };
+    if auth.secret.as_deref() != Some(expected_secret) {
+        return error_response(None, "unauthorized", "missing or invalid bridge secret");
+    }
+    let request = match serde_json::from_slice::<BridgeRequest>(line) {
+        Ok(request) => request,
+        Err(error) => return error_response(None, "invalid_request", error.to_string()),
+    };
+    if request.protocol_version != PROTOCOL_VERSION {
+        return error_response(
+            request.id,
+            "protocol_version_mismatch",
+            "unsupported protocol version",
+        );
+    }
+    if request.secret.as_deref() != Some(expected_secret) {
+        return error_response(
+            request.id,
+            "unauthorized",
+            "missing or invalid bridge secret",
+        );
+    }
+    if request.kind == "turnComplete" {
+        service.clear_agent_presence();
+        return success_response(request.id, json!({ "cleared": true }));
+    }
+    if request.kind != "toolRequest" {
+        return error_response(
+            request.id,
+            "invalid_request",
+            "expected toolRequest or turnComplete",
+        );
+    }
+    let Some(tool) = request.tool.as_deref() else {
+        return error_response(request.id, "unknown_tool", "tool name is required");
+    };
+    match dispatch_tool(tool, request.arguments, service, app) {
+        Ok(result) => success_response(request.id, result),
+        Err(error) => error_response(request.id, error.code, error.message),
+    }
+}
+
+fn dispatch_tool(
+    tool: &str,
+    arguments: Value,
+    service: &IosSimulatorService,
+    app: Option<&AppHandle>,
+) -> Result<Value, DispatchError> {
+    match tool {
+        "ios_simulator_list" => {
+            let requirements = service.current_requirements_sync();
+            serde_json::to_value(requirements).map_err(internal_error)
+        }
+        "ios_simulator_attach" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                udid: Option<String>,
+                model: Option<String>,
+                ios_version: Option<String>,
+                stream_fps: Option<u16>,
+                fallback_fps: Option<f64>,
+            }
+            let args: Args = parse_args(arguments)?;
+            let devices = if args.udid.is_none() {
+                service.current_requirements_sync().devices
+            } else {
+                Vec::new()
+            };
+            let udid = resolve_attach_udid(
+                &devices,
+                args.udid.as_deref(),
+                args.model.as_deref(),
+                args.ios_version.as_deref(),
+            )?;
+            ensure_attach_compatible(service, &udid)?;
+            if let Some(session) = service
+                .current_session_summary()
+                .filter(|session| session.device.udid == udid)
+            {
+                service.begin_agent_action(IosSimulatorPresenceAction::Attach, None, None, None);
+                return serde_json::to_value(session).map_err(internal_error);
+            }
+            service.begin_agent_action(IosSimulatorPresenceAction::Attach, None, None, None);
+            let result = service.attach_sync(
+                app.cloned().ok_or_else(|| {
+                    DispatchError::new("internal_error", "app handle unavailable")
+                })?,
+                udid,
+                args.stream_fps.unwrap_or(StreamProfile::DEFAULT.fps()),
+                args.fallback_fps.unwrap_or(DEFAULT_FALLBACK_FPS),
+            );
+            if result.is_ok() {
+                // The first open request is intentionally pre-action so the
+                // panel appears before control. A second request refreshes the
+                // renderer after a slow device boot has published its session.
+                service.request_agent_panel_open();
+            }
+            serde_json::to_value(result.map_err(tool_error)?).map_err(internal_error)
+        }
+        "ios_simulator_wait_until_ready" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                udid: Option<String>,
+                timeout_ms: Option<u64>,
+            }
+            let args: Args = parse_args(arguments)?;
+            ensure_device(service, args.udid.as_deref())?;
+            let timeout =
+                Duration::from_millis(args.timeout_ms.unwrap_or(90_000).clamp(100, 90_000));
+            let observation = service.wait_until_ready_sync(timeout).map_err(tool_error)?;
+            serde_json::to_value(observation).map_err(internal_error)
+        }
+        "ios_simulator_inspect" => {
+            ensure_requested_device(service, &arguments)?;
+            let result = with_presence(
+                service,
+                IosSimulatorPresenceAction::Inspect,
+                None,
+                None,
+                None,
+                || service.accessibility_snapshot_sync(),
+            )
+            .map_err(tool_error)?;
+            serde_json::to_value(result).map_err(internal_error)
+        }
+        "ios_simulator_screenshot" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                udid: Option<String>,
+                after_frame_generation: Option<u64>,
+                timeout_ms: Option<u64>,
+            }
+            let args: Args = parse_args(arguments)?;
+            ensure_device(service, args.udid.as_deref())?;
+            with_presence(
+                service,
+                IosSimulatorPresenceAction::Screenshot,
+                None,
+                None,
+                None,
+                || {
+                    let timeout =
+                        Duration::from_millis(args.timeout_ms.unwrap_or(5_000).clamp(50, 10_000));
+                    service
+                        .screenshot_sync(args.after_frame_generation, timeout)
+                        .and_then(|observation| {
+                            serde_json::to_value(observation).map_err(|error| error.to_string())
+                        })
+                },
+            )
+            .map_err(tool_error)
+        }
+        "ios_simulator_focused_element" => {
+            ensure_requested_device(service, &arguments)?;
+            let element = with_presence(
+                service,
+                IosSimulatorPresenceAction::Inspect,
+                None,
+                None,
+                None,
+                || service.focused_element_sync(),
+            )
+            .map_err(tool_error)?;
+            Ok(json!({
+                "found": element.is_some(),
+                "element": element,
+            }))
+        }
+        "ios_simulator_tap" => {
+            #[derive(Deserialize)]
+            struct Args {
+                udid: Option<String>,
+                x: Option<f64>,
+                y: Option<f64>,
+                target: Option<String>,
+            }
+            let args: Args = parse_args(arguments)?;
+            ensure_device(service, args.udid.as_deref())?;
+            let point = match (args.x, args.y) {
+                (Some(x), Some(y)) => Some(NormalizedPoint { x, y }),
+                (None, None) if args.target.is_some() => None,
+                _ => {
+                    return Err(DispatchError::new(
+                        "invalid_arguments",
+                        "provide target, or provide both x and y",
+                    ));
+                }
+            };
+            let result = with_presence(
+                service,
+                IosSimulatorPresenceAction::Tap,
+                point,
+                None,
+                None,
+                || service.agent_tap_sync(point, args.target.as_deref()),
+            )
+            .map_err(tool_error)?;
+            let mut result = serde_json::to_value(result).map_err(internal_error)?;
+            result
+                .as_object_mut()
+                .expect("agent tap result must serialize as an object")
+                .insert("ok".into(), json!(true));
+            Ok(result)
+        }
+        "ios_simulator_drag" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                udid: Option<String>,
+                from_x: f64,
+                from_y: f64,
+                to_x: f64,
+                to_y: f64,
+                duration_ms: Option<u64>,
+            }
+            let args: Args = parse_args(arguments)?;
+            ensure_device(service, args.udid.as_deref())?;
+            let start = NormalizedPoint {
+                x: args.from_x,
+                y: args.from_y,
+            };
+            let end = NormalizedPoint {
+                x: args.to_x,
+                y: args.to_y,
+            };
+            with_presence(
+                service,
+                IosSimulatorPresenceAction::Drag,
+                None,
+                Some(start),
+                Some(end),
+                || service.drag_sync(start, end, args.duration_ms.unwrap_or(180)),
+            )
+            .map(|_| json!({ "ok": true }))
+            .map_err(tool_error)
+        }
+        "ios_simulator_type_text" => {
+            #[derive(Deserialize)]
+            struct Args {
+                udid: Option<String>,
+                text: String,
+            }
+            let args: Args = parse_args(arguments)?;
+            ensure_device(service, args.udid.as_deref())?;
+            with_presence(
+                service,
+                IosSimulatorPresenceAction::TypeText,
+                None,
+                None,
+                None,
+                || service.type_text_sync(&args.text),
+            )
+            .map(|_| json!({ "ok": true }))
+            .map_err(tool_error)
+        }
+        "ios_simulator_press_key" => {
+            #[derive(Deserialize)]
+            struct Args {
+                udid: Option<String>,
+                key: IosSimulatorKey,
+            }
+            let args: Args = parse_args(arguments)?;
+            ensure_device(service, args.udid.as_deref())?;
+            with_presence(
+                service,
+                IosSimulatorPresenceAction::PressKey,
+                None,
+                None,
+                None,
+                || service.press_key_sync(args.key),
+            )
+            .map(|_| json!({ "ok": true }))
+            .map_err(tool_error)
+        }
+        "ios_simulator_system_action" => {
+            #[derive(Deserialize)]
+            struct Args {
+                udid: Option<String>,
+                action: IosSimulatorSystemAction,
+            }
+            let args: Args = parse_args(arguments)?;
+            ensure_device(service, args.udid.as_deref())?;
+            with_presence(
+                service,
+                IosSimulatorPresenceAction::SystemAction,
+                None,
+                None,
+                None,
+                || service.system_action_sync(args.action),
+            )
+            .map(|_| json!({ "ok": true }))
+            .map_err(tool_error)
+        }
+        "ios_simulator_list_apps" => {
+            ensure_requested_device(service, &arguments)?;
+            let apps = with_presence(
+                service,
+                IosSimulatorPresenceAction::ListApps,
+                None,
+                None,
+                None,
+                || service.list_installed_apps_sync(),
+            )
+            .map_err(tool_error)?;
+            Ok(json!({ "apps": apps }))
+        }
+        "ios_simulator_launch_app" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Args {
+                udid: Option<String>,
+                bundle_id: String,
+            }
+            let args: Args = parse_args(arguments)?;
+            ensure_device(service, args.udid.as_deref())?;
+            let pid = with_presence(
+                service,
+                IosSimulatorPresenceAction::LaunchApp,
+                None,
+                None,
+                None,
+                || service.launch_app_sync(&args.bundle_id),
+            )
+            .map_err(tool_error)?;
+            Ok(json!({ "ok": true, "bundleId": args.bundle_id, "pid": pid }))
+        }
+        "ios_simulator_detach" => {
+            ensure_requested_device(service, &arguments)?;
+            service.begin_agent_action(IosSimulatorPresenceAction::Detach, None, None, None);
+            service.detach_sync().map_err(tool_error)?;
+            Ok(json!({ "ok": true }))
+        }
+        _ => Err(DispatchError::new(
+            "unknown_tool",
+            format!("unknown simulator tool: {tool}"),
+        )),
+    }
+}
+
+fn with_presence<T>(
+    service: &IosSimulatorService,
+    action: IosSimulatorPresenceAction,
+    target: Option<NormalizedPoint>,
+    start: Option<NormalizedPoint>,
+    end: Option<NormalizedPoint>,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    service.begin_agent_action(action, target, start, end);
+    operation()
+}
+
+fn ensure_attach_compatible(
+    service: &IosSimulatorService,
+    requested: &str,
+) -> Result<(), DispatchError> {
+    let state = service.state.lock().expect("iOS simulator state poisoned");
+    if let Some(session) = state.session.as_ref() {
+        if session.device.udid != requested {
+            return Err(DispatchError::new(
+                "device_mismatch",
+                format!(
+                    "{} is attached; refusing to replace it with {requested}",
+                    session.device.udid
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn resolve_attach_udid(
+    devices: &[super::IosSimulatorDevice],
+    udid: Option<&str>,
+    model: Option<&str>,
+    ios_version: Option<&str>,
+) -> Result<String, DispatchError> {
+    match (udid, model, ios_version) {
+        (Some(udid), None, None) if !udid.trim().is_empty() => Ok(udid.trim().to_string()),
+        (None, Some(model), Some(ios_version))
+            if !model.trim().is_empty() && !ios_version.trim().is_empty() =>
+        {
+            let matches = devices
+                .iter()
+                .filter(|device| {
+                    device.name.eq_ignore_ascii_case(model.trim())
+                        && device.ios_version.eq_ignore_ascii_case(ios_version.trim())
+                })
+                .collect::<Vec<_>>();
+            match matches.as_slice() {
+                [device] => Ok(device.udid.clone()),
+                [] => Err(DispatchError::new(
+                    "device_not_found",
+                    format!(
+                        "no simulator exactly matches model {model:?} with iOS {ios_version:?}"
+                    ),
+                )),
+                _ => Err(DispatchError::new(
+                    "ambiguous_device",
+                    format!(
+                        "multiple simulators match model {model:?} with iOS {ios_version:?}; use an exact UDID"
+                    ),
+                )),
+            }
+        }
+        _ => Err(DispatchError::new(
+            "invalid_arguments",
+            "provide either udid or both model and iosVersion",
+        )),
+    }
+}
+
+fn ensure_requested_device(
+    service: &IosSimulatorService,
+    arguments: &Value,
+) -> Result<(), DispatchError> {
+    ensure_device(service, arguments.get("udid").and_then(Value::as_str))
+}
+
+fn ensure_device(
+    service: &IosSimulatorService,
+    requested: Option<&str>,
+) -> Result<(), DispatchError> {
+    let state = service.state.lock().expect("iOS simulator state poisoned");
+    let session = state
+        .session
+        .as_ref()
+        .ok_or_else(|| DispatchError::new("not_attached", "no simulator is attached"))?;
+    if requested.is_some_and(|udid| udid != session.device.udid) {
+        return Err(DispatchError::new(
+            "device_mismatch",
+            "requested simulator is not the attached device",
+        ));
+    }
+    Ok(())
+}
+
+fn parse_args<T: for<'de> Deserialize<'de>>(arguments: Value) -> Result<T, DispatchError> {
+    serde_json::from_value(arguments)
+        .map_err(|error| DispatchError::new("invalid_arguments", error.to_string()))
+}
+
+fn tool_error(error: String) -> DispatchError {
+    DispatchError::new("tool_error", error)
+}
+
+fn internal_error(error: serde_json::Error) -> DispatchError {
+    DispatchError::new("internal_error", error.to_string())
+}
+
+fn success_response(id: Option<String>, result: Value) -> BridgeResponse {
+    BridgeResponse {
+        protocol_version: PROTOCOL_VERSION,
+        kind: "toolResponse",
+        id,
+        result: Some(result),
+        code: None,
+        message: None,
+    }
+}
+
+fn error_response(
+    id: Option<String>,
+    code: &'static str,
+    message: impl Into<String>,
+) -> BridgeResponse {
+    BridgeResponse {
+        protocol_version: PROTOCOL_VERSION,
+        kind: "error",
+        id,
+        result: None,
+        code: Some(code),
+        message: Some(message.into()),
+    }
+}
+
+fn secure_directory(root: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(root)
+        .map_err(|error| format!("não foi possível criar discovery do simulador: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)).map_err(
+            |error| format!("não foi possível proteger discovery do simulador: {error}"),
+        )?;
+    }
+    Ok(())
+}
+
+fn publish_record(path: &Path, record: &SimulatorDiscoveryRecord) -> Result<(), String> {
+    let temporary = path.with_extension(format!("{}.tmp", Uuid::new_v4().simple()));
+    let bytes = serde_json::to_vec(record)
+        .map_err(|error| format!("não foi possível serializar discovery do simulador: {error}"))?;
+    std::fs::write(&temporary, bytes)
+        .map_err(|error| format!("não foi possível escrever discovery do simulador: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600)).map_err(
+            |error| format!("não foi possível proteger discovery do simulador: {error}"),
+        )?;
+    }
+    std::fs::rename(&temporary, path)
+        .map_err(|error| format!("não foi possível publicar discovery do simulador: {error}"))
+}
+
+fn cleanup_stale_records(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let stale = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<SimulatorDiscoveryRecord>(&bytes).ok())
+            .map(|record| !process_is_alive(record.pid) || !endpoint_is_reachable(&record.endpoint))
+            .unwrap_or(true);
+        if stale {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn endpoint_is_reachable(endpoint: &str) -> bool {
+    endpoint
+        .parse::<SocketAddr>()
+        .ok()
+        .and_then(|address| TcpStream::connect_timeout(&address, Duration::from_millis(50)).ok())
+        .is_some()
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn process_is_alive(_pid: u32) -> bool {
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::ios_simulator::{
+        unix_time_ms, IosSimulatorDevice, IosSimulatorOwnership, IosSimulatorStreamSource,
+        LatestFrame, LatestFrameStore, LifecycleSignal, PresenceAuthority, Session, StreamStats,
+    };
+    use std::sync::mpsc;
+
+    fn response_value(response: BridgeResponse) -> Value {
+        serde_json::to_value(response).unwrap()
+    }
+
+    #[test]
+    fn blocking_accept_handles_a_connection_and_wakes_for_shutdown() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let (handled_tx, handled_rx) = mpsc::channel();
+        let (stopped_tx, stopped_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            run_accept_loop(listener, worker_stop, move |_stream| {
+                handled_tx.send(()).unwrap();
+            });
+            stopped_tx.send(()).unwrap();
+        });
+
+        let first = TcpStream::connect(endpoint).unwrap();
+        handled_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the blocking listener must dispatch real connections");
+        drop(first);
+
+        stop.store(true, Ordering::Release);
+        // The worker may observe `stop` between dispatching the first stream
+        // and entering accept again. In that valid faster path the listener is
+        // already closed and the wake connection is refused.
+        let wake = TcpStream::connect(endpoint).ok();
+        stopped_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the wake connection must release blocking accept during shutdown");
+        drop(wake);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn missing_or_wrong_secret_is_rejected_before_tool_arguments() {
+        let service = IosSimulatorService::default();
+        for secret in [None, Some("wrong")] {
+            let request = json!({
+                "protocolVersion": 1,
+                "type": "toolRequest",
+                "secret": secret,
+                "tool": "ios_simulator_tap",
+                "arguments": "not-an-object",
+            });
+            let response =
+                handle_request_line(request.to_string().as_bytes(), "right", &service, None);
+            assert_eq!(response_value(response)["code"], "unauthorized");
+        }
+    }
+
+    #[test]
+    fn unknown_tools_return_a_stable_error_code() {
+        let service = IosSimulatorService::default();
+        let request = json!({
+            "protocolVersion": 1,
+            "type": "toolRequest",
+            "secret": "right",
+            "tool": "ios_simulator_destroy_everything",
+            "arguments": {},
+        });
+        let response = handle_request_line(request.to_string().as_bytes(), "right", &service, None);
+        assert_eq!(response_value(response)["code"], "unknown_tool");
+    }
+
+    #[test]
+    fn agent_open_request_resumes_preview_before_opening_the_panel() {
+        let service = attached_service("phone-17-pro");
+        service.set_visible_sync(false).unwrap();
+        service.request_agent_panel_open();
+        let state = service.state.lock().unwrap();
+        assert!(state
+            .session
+            .as_ref()
+            .expect("attached session")
+            .gate
+            .is_visible());
+        assert!(service.desired_visibility.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn agent_action_resumes_hidden_preview_before_the_operation_runs() {
+        let service = attached_service("phone-17-pro");
+        service.set_visible_sync(false).unwrap();
+
+        let observed = with_presence(
+            &service,
+            IosSimulatorPresenceAction::Screenshot,
+            None,
+            None,
+            None,
+            || {
+                let state = service.state.lock().unwrap();
+                Ok(state.session.as_ref().unwrap().gate.is_visible())
+            },
+        )
+        .unwrap();
+
+        assert!(observed, "agent operation must observe resumed preview");
+        assert!(service.desired_visibility.load(Ordering::Acquire));
+    }
+
+    fn attached_service(udid: &str) -> IosSimulatorService {
+        let service = IosSimulatorService::default();
+        service.state.lock().unwrap().session = Some(Session {
+            device: IosSimulatorDevice {
+                name: "iPhone 17 Pro".into(),
+                udid: udid.into(),
+                state: "Booted".into(),
+                ios_version: "26.5".into(),
+                family: crate::services::ios_simulator::IosSimulatorDeviceFamily::Iphone,
+                ownership: Some(crate::services::ios_simulator::IosSimulatorOwnership::External),
+            },
+            device_generation: 1,
+            ownership: crate::services::ios_simulator::IosSimulatorOwnership::External,
+            fallback_fps: Arc::new(Mutex::new(DEFAULT_FALLBACK_FPS)),
+            stream_profile: Arc::new(Mutex::new(StreamProfile::DEFAULT)),
+            stats: Arc::new(Mutex::new(StreamStats {
+                source: IosSimulatorStreamSource::Mjpeg,
+                effective_fps: Some(30.0),
+            })),
+            stop: Arc::new(AtomicBool::new(false)),
+            input_lock: Arc::new(Mutex::new(())),
+            latest_frame: Arc::new(LatestFrameStore::default()),
+            gate: Arc::new(PreviewGate::new(true)),
+            mjpeg_active: Arc::new(AtomicBool::new(false)),
+            next_frame_generation: Arc::new(AtomicU64::new(0)),
+            wda_control: Arc::new(Mutex::new(None)),
+            wda_force_stop: Arc::new(Mutex::new(None)),
+            staged_wda: None,
+            sink: None,
+            recording: Arc::new(Mutex::new(None)),
+            workers: Mutex::new(Vec::new()),
+        });
+        service
+    }
+
+    fn mark_service_ready(service: &IosSimulatorService, frame_generation: u64) {
+        let (device, generation, latest_frame) = {
+            let state = service.state.lock().unwrap();
+            let session = state.session.as_ref().unwrap();
+            (
+                session.device.clone(),
+                session.device_generation,
+                session.latest_frame.clone(),
+            )
+        };
+        service
+            .lifecycle
+            .begin(generation, device, IosSimulatorOwnership::External, true);
+        for signal in [
+            LifecycleSignal::BootComplete,
+            LifecycleSignal::DisplayReady,
+            LifecycleSignal::FirstFrameReady,
+            LifecycleSignal::InteractionReady,
+        ] {
+            assert!(service.lifecycle.transition(generation, signal));
+        }
+        latest_frame.publish(LatestFrame {
+            device_generation: generation,
+            frame_generation,
+            bytes: vec![1, 2, 3],
+            media_type: "image/png",
+            captured_at_ms: unix_time_ms(),
+            source: IosSimulatorStreamSource::Simctl,
+        });
+    }
+
+    #[test]
+    fn attach_refuses_to_replace_a_different_active_device() {
+        let service = attached_service("phone-a");
+        let error = dispatch_tool(
+            "ios_simulator_attach",
+            json!({ "udid": "phone-b" }),
+            &service,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "device_mismatch");
+    }
+
+    #[test]
+    fn readiness_tool_returns_the_authoritative_ready_generation() {
+        let service = attached_service("phone-17-pro");
+        mark_service_ready(&service, 12);
+
+        let result = dispatch_tool(
+            "ios_simulator_wait_until_ready",
+            json!({"timeoutMs": 100}),
+            &service,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(result["udid"], "phone-17-pro");
+        assert_eq!(result["deviceGeneration"], 1);
+        assert_eq!(result["frameGeneration"], 12);
+        assert_eq!(result["lifecycle"]["stage"], "ready");
+    }
+
+    #[test]
+    fn screenshot_waits_for_a_frame_newer_than_the_observed_generation() {
+        let service = attached_service("phone-17-pro");
+        mark_service_ready(&service, 20);
+        let waiting_service = service.clone();
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            result_tx
+                .send(dispatch_tool(
+                    "ios_simulator_screenshot",
+                    json!({"afterFrameGeneration": 20, "timeoutMs": 1_000}),
+                    &waiting_service,
+                    None,
+                ))
+                .unwrap();
+        });
+
+        let latest_frame = {
+            let state = service.state.lock().unwrap();
+            state.session.as_ref().unwrap().latest_frame.clone()
+        };
+        latest_frame.publish(LatestFrame {
+            device_generation: 1,
+            frame_generation: 21,
+            bytes: vec![4, 5, 6],
+            media_type: "image/jpeg",
+            captured_at_ms: unix_time_ms(),
+            source: IosSimulatorStreamSource::Mjpeg,
+        });
+
+        let result = result_rx
+            .recv_timeout(Duration::from_millis(250))
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["frameGeneration"], 21);
+        assert_eq!(result["source"], "mjpeg");
+        assert!(result["capturedAtMs"].as_u64().is_some());
+        assert!(result["frameAgeMs"].as_u64().is_some());
+        waiter.join().unwrap();
+    }
+
+    #[test]
+    fn model_and_version_selector_requires_one_exact_unambiguous_device() {
+        let devices = vec![
+            IosSimulatorDevice {
+                name: "iPhone 17 Pro".into(),
+                udid: "phone-27".into(),
+                state: "Shutdown".into(),
+                ios_version: "27.0".into(),
+                family: crate::services::ios_simulator::IosSimulatorDeviceFamily::Iphone,
+                ownership: None,
+            },
+            IosSimulatorDevice {
+                name: "iPhone 17 Pro".into(),
+                udid: "phone-26".into(),
+                state: "Shutdown".into(),
+                ios_version: "26.5".into(),
+                family: crate::services::ios_simulator::IosSimulatorDeviceFamily::Iphone,
+                ownership: None,
+            },
+        ];
+
+        assert_eq!(
+            resolve_attach_udid(&devices, None, Some("iphone 17 pro"), Some("27.0")).unwrap(),
+            "phone-27",
+        );
+        let missing =
+            resolve_attach_udid(&devices, None, Some("iPad Pro"), Some("27.0")).unwrap_err();
+        assert_eq!(missing.code, "device_not_found");
+        let ambiguous = resolve_attach_udid(
+            &[devices[0].clone(), devices[0].clone()],
+            None,
+            Some("iPhone 17 Pro"),
+            Some("27.0"),
+        )
+        .unwrap_err();
+        assert_eq!(ambiguous.code, "ambiguous_device");
+    }
+
+    #[test]
+    fn presence_stays_active_after_an_agent_operation_until_turn_complete() {
+        let mut service = IosSimulatorService::default();
+        service.presence = Arc::new(PresenceAuthority::default());
+        let observed = with_presence(
+            &service,
+            IosSimulatorPresenceAction::Tap,
+            Some(NormalizedPoint { x: 0.2, y: 0.3 }),
+            None,
+            None,
+            || {
+                assert!(service.presence.current_generation().is_some());
+                Ok(())
+            },
+        );
+        assert!(observed.is_ok());
+        assert!(service.presence.current_generation().is_some());
+
+        let completion = json!({
+            "protocolVersion": 1,
+            "type": "turnComplete",
+            "id": "turn-done",
+            "secret": "right",
+            "arguments": {},
+        });
+        let response =
+            handle_request_line(completion.to_string().as_bytes(), "right", &service, None);
+        assert_eq!(response_value(response)["result"]["cleared"], true);
+        assert_eq!(service.presence.current_generation(), None);
+    }
+
+    #[test]
+    fn list_reports_the_live_attached_session_instead_of_only_static_requirements() {
+        let service = attached_service("phone-17-pro");
+        let result = dispatch_tool("ios_simulator_list", json!({}), &service, None).unwrap();
+
+        assert_eq!(result["attachedUdid"], "phone-17-pro");
+        assert_eq!(result["streamFps"], StreamProfile::DEFAULT.fps());
+        assert_eq!(result["source"], "mjpeg");
+    }
+
+    #[test]
+    fn drag_accepts_flat_coordinates_from_all_provider_transports() {
+        let service = attached_service("phone-17-pro");
+        let error = dispatch_tool(
+            "ios_simulator_drag",
+            json!({
+                "fromX": 0.5,
+                "fromY": 0.9,
+                "toX": 0.5,
+                "toY": 0.2,
+                "durationMs": 180,
+            }),
+            &service,
+            None,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "tool_error", "flat arguments must reach WDA");
+    }
+
+    #[test]
+    fn generic_system_action_reaches_the_existing_system_control_path() {
+        let service = attached_service("phone-17-pro");
+        let error = dispatch_tool(
+            "ios_simulator_system_action",
+            json!({"action": "home"}),
+            &service,
+            None,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code, "tool_error",
+            "home must reach WDA, not be unknown"
+        );
+    }
+
+    #[test]
+    fn focused_element_tool_reaches_the_existing_serialized_wda_path() {
+        let service = attached_service("phone-17-pro");
+        let error =
+            dispatch_tool("ios_simulator_focused_element", json!({}), &service, None).unwrap_err();
+
+        assert_eq!(
+            error.code, "tool_error",
+            "focused inspection must reach WDA, not be unknown"
+        );
+    }
+
+    #[test]
+    fn semantic_tap_accepts_target_without_coordinates_before_reaching_wda() {
+        let service = attached_service("phone-17-pro");
+
+        let error = dispatch_tool(
+            "ios_simulator_tap",
+            json!({"target": "Not Now"}),
+            &service,
+            None,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code, "tool_error",
+            "target-only arguments must reach the native WDA path",
+        );
+    }
+
+    #[test]
+    fn tap_rejects_an_incomplete_or_missing_locator_at_the_bridge_boundary() {
+        let service = attached_service("phone-17-pro");
+
+        for arguments in [json!({}), json!({"x": 0.5}), json!({"y": 0.5})] {
+            let error = dispatch_tool("ios_simulator_tap", arguments, &service, None).unwrap_err();
+            assert_eq!(error.code, "invalid_arguments");
+        }
+    }
+}

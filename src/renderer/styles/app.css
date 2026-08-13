@@ -11,8 +11,11 @@
 @import './terminal.css';
 @import './review.css';
 @import './browser.css';
+@import './ios-simulator.css';
+@import './media-preview.css';
 @import './flow.css';
 @import './markdown.css';
 @import './ui-overlays.css';
+@import './whats-new.css';
 @import './responsive.css';
 @import './plugins.css';

@@ -1,12 +1,12 @@
 # Install — Verboo Code (macOS Apple Silicon)
 
-Verboo Code is an **independent** app for Macs with **Apple Silicon (M1 or newer)**, built with Tauri v2 (Rust backend + native system WebView).
-You do **not** need npm or the Verboo CLI installed — the app ships the embedded `cli-package` sidecar. The bundled CLI is JavaScript and requires Node.js (≥22.0.0) on the host; the installer does not ship a Node runtime.
+Verboo Code is an app for Macs with **Apple Silicon (M1 or newer)**, built with Tauri v2 (Rust backend + native system WebView).
+You do **not** need Node.js, npm, Homebrew, or the Verboo CLI installed. The app embeds Node.js and installs a signed compatible CLI under app-data on first use.
 
 ## Requirements
 
 - macOS 12 (Monterey) or newer
-- Apple Silicon Mac (M1, M2, M3, M4…) — Intel builds are not supported
+- Apple Silicon Mac (M1, M2, M3, M4…). Intel x64 builds are available as Beta — see [README.md](README.md) for the Intel installer.
 
 ## First launch (important step)
 
@@ -38,12 +38,9 @@ If it still says "damaged", use the `xattr` method above — it is the most reli
 
 - ❌ npm
 - ❌ Homebrew
+- ❌ System Node.js
 - ❌ Global Verboo CLI (`verboo`)
-- ✅ The Tauri bundle already ships the Rust backend, the `cli-package` (Verboo CLI + Node dependency closure), and the embedded native modules.
-
-## What IS required
-
-- ✅ **Node.js ≥22.0.0** on the host. The bundled CLI is JavaScript and runs through the system Node; the installer does not ship a Node runtime. Node is resolved from Homebrew, nvm, fnm, Volta, or PATH.
+- ✅ The Tauri bundle ships the Rust backend, Node.js 24.19.0, and the embedded native modules. The signed CLI bootstrap needs internet access on first use.
 
 ## First use
 
@@ -51,13 +48,13 @@ When the app opens, sign in with your Verboo account through the app interface. 
 
 ## Português (Brasil)
 
-O Verboo Code é um app **independente** para Macs com chip **Apple Silicon (M1 ou superior)**, construído com Tauri v2 (backend Rust + WebView nativo do sistema).
-Você **não** precisa de npm nem do CLI global do Verboo — o app embarca o `cli-package`. Mas o CLI embutido é JavaScript e requer Node.js (≥22.0.0) instalado no sistema; o instalador não embarca runtime Node.
+O Verboo Code é um app para Macs com chip **Apple Silicon (M1 ou superior)**, construído com Tauri v2 (backend Rust + WebView nativo do sistema).
+Você **não** precisa de Node.js, npm, Homebrew nem do CLI global do Verboo. O app embarca o Node.js e instala um CLI assinado compatível nos dados do app no primeiro uso.
 
 ### Requisitos
 
 - macOS 12 (Monterey) ou superior
-- Mac com Apple Silicon (M1, M2, M3, M4…) — builds Intel não são suportados
+- Mac com Apple Silicon (M1, M2, M3, M4…). Builds Intel x64 estão disponíveis como Beta — veja [README.md](README.md) para o instalador Intel.
 
 ### Primeira abertura (passo importante)
 
@@ -90,12 +87,9 @@ Se ainda aparecer "danificado", use o método do `xattr` acima — é o mais con
 
 - ❌ npm
 - ❌ Homebrew
+- ❌ Node.js do sistema
 - ❌ CLI global do Verboo (`verboo`)
-- ✅ O bundle Tauri já vem com o backend Rust, o `cli-package` (CLI Verboo + closure de dependências Node) e os módulos nativos embutidos.
-
-### O que É necessário
-
-- ✅ **Node.js ≥22.0.0** no sistema. O CLI embutido é JavaScript e roda pelo Node de sistema; o instalador não embarca runtime Node. O Node é resolvido via Homebrew, nvm, fnm, Volta ou PATH.
+- ✅ O bundle Tauri já vem com backend Rust, Node.js 24.19.0 e módulos nativos. O bootstrap assinado do CLI precisa de internet no primeiro uso.
 
 ### Primeiro uso
 

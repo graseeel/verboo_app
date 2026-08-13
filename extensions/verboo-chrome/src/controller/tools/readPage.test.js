@@ -74,3 +74,66 @@ test('readPage keeps visible layout separators instead of concatenating elements
     globalThis.document = originalDocument
   }
 })
+
+test('readPage exposes safe selectors for visible interactive controls', async () => {
+  const originalChrome = globalThis.chrome
+  const originalDocument = globalThis.document
+  const originalCss = globalThis.CSS
+  const originalGetComputedStyle = globalThis.getComputedStyle
+
+  const makeElement = ({ tagName, id, innerText = '', labels = [], type = undefined }) => ({
+    tagName,
+    id,
+    innerText,
+    labels,
+    type,
+    disabled: false,
+    hidden: false,
+    getAttribute: () => null,
+  })
+  const input = makeElement({
+    tagName: 'INPUT',
+    id: 'name',
+    labels: [{ innerText: 'Name' }],
+    type: 'text',
+  })
+  const button = makeElement({ tagName: 'BUTTON', id: 'apply', innerText: 'Apply' })
+  const body = {
+    innerText: 'Verboo Background Test\nName\nApply\nIdle',
+    querySelectorAll: () => [input, button],
+  }
+
+  globalThis.chrome = {
+    tabs: {
+      get: async (tabId) => ({ id: tabId, url: 'https://example.com', windowId: 7 }),
+      query: async () => [],
+    },
+    scripting: {
+      executeScript: async (options) => {
+        if (String(options.func).includes('readInPage')) return [{ result: options.func(...options.args) }]
+        if (String(options.func).includes('matchMedia')) return [{ result: true }]
+        return [{ result: null }]
+      },
+    },
+  }
+  globalThis.document = {
+    body,
+    querySelector: () => body,
+  }
+  globalThis.CSS = { escape: (value) => value }
+  globalThis.getComputedStyle = () => ({ display: 'block', visibility: 'visible' })
+
+  try {
+    const result = await readPage({ name: 'read_page' }, { activeTabId: 42 })
+    assert.deepEqual(result.interactiveElements, [
+      { selector: '#name', tag: 'input', label: 'Name', type: 'text', disabled: false },
+      { selector: '#apply', tag: 'button', label: 'Apply', disabled: false },
+    ])
+    assert.equal(result.text, 'Verboo Background Test\nName\nApply\nIdle')
+  } finally {
+    globalThis.chrome = originalChrome
+    globalThis.document = originalDocument
+    globalThis.CSS = originalCss
+    globalThis.getComputedStyle = originalGetComputedStyle
+  }
+})

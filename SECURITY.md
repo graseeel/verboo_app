@@ -2,7 +2,7 @@
 
 ## Supported Status
 
-This app is an independent development build and should be treated as experimental.
+Security fixes are accepted for the current beta releases.
 
 ## Reporting a Vulnerability
 
@@ -34,7 +34,7 @@ The app can run the underlying Verboo CLI with broad local-machine permissions d
 
 ### Status de suporte
 
-Este app é um build independente em desenvolvimento e deve ser tratado como experimental.
+Correções de segurança são aceitas para as versões beta atuais.
 
 ### Reportando uma vulnerabilidade
 

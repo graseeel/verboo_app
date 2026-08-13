@@ -141,6 +141,59 @@ describe('ChecklistPanel: floating card (mini-modal)', () => {
   })
 })
 
+describe('ChecklistPanel: MINIMIZE — the floating card compresses to a compact bar', () => {
+  /* User requirement (2026-08-12): the floating card can be minimized to
+   * a compact bar carrying only the fraction ("2/5") and re-expanded.
+   * The state is lifted to the parent (persisted during the conversation)
+   * so the remounts a form switch causes never lose it. */
+
+  it('the header offers a minimize button that FIRES onToggleMinimized', () => {
+    const onToggleMinimized = vi.fn()
+    renderPanel({ form: 'floating', minimized: false, onToggleMinimized })
+    fireEvent.click(screen.getByRole('button', { name: 'Minimize' }))
+    expect(onToggleMinimized).toHaveBeenCalledTimes(1)
+  })
+
+  it('minimized: the full list collapses to a compact bar with the fraction', () => {
+    const { container } = renderPanel({ form: 'floating', minimized: true, onToggleMinimized: () => {} })
+    const bar = container.querySelector('.checklist-minibar')
+    expect(bar).toBeTruthy()
+    expect(bar!.textContent).toContain('2/5')
+    // The rows and the header are GONE — compact means compact.
+    expect(container.querySelector('.checklist-card-rows')).toBeNull()
+    expect(container.querySelector('.checklist-card-head')).toBeNull()
+  })
+
+  it('minimized: the bar offers an expand button that FIRES onToggleMinimized', () => {
+    const onToggleMinimized = vi.fn()
+    renderPanel({ form: 'floating', minimized: true, onToggleMinimized })
+    fireEvent.click(screen.getByRole('button', { name: 'Expand' }))
+    expect(onToggleMinimized).toHaveBeenCalledTimes(1)
+  })
+
+  it('minimized: the dock toggle is still reachable from the compact bar', () => {
+    const onToggleForm = vi.fn()
+    renderPanel({ form: 'floating', minimized: true, onToggleForm, onToggleMinimized: () => {} })
+    fireEvent.click(screen.getByRole('button', { name: 'Dock above the composer' }))
+    expect(onToggleForm).toHaveBeenCalledTimes(1)
+  })
+
+  it('not minimized: the full card renders and no compact bar exists', () => {
+    const { container } = renderPanel({ form: 'floating', minimized: false, onToggleMinimized: () => {} })
+    expect(container.querySelector('.checklist-minibar')).toBeNull()
+    expect(container.querySelectorAll('.checklist-card-rows .checklist-row')).toHaveLength(5)
+  })
+
+  it('clicking the minimize button does NOT start a drag', () => {
+    const onCardPosChange = vi.fn()
+    renderPanel({ form: 'floating', minimized: false, onToggleMinimized: () => {}, onCardPosChange })
+    const button = screen.getByRole('button', { name: 'Minimize' })
+    fireEvent.pointerDown(button, { pointerId: 1, clientX: 100, clientY: 20 })
+    fireEvent.pointerUp(button, { pointerId: 1, clientX: 100, clientY: 20 })
+    expect(onCardPosChange).not.toHaveBeenCalled()
+  })
+})
+
 describe('ChecklistPanel: drag — USER RULE: never rests over the transcript', () => {
   const stripX = checklistCardHome(VIEWPORT, CHECKLIST_CARD_WIDTH).x
 

@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "releases": {
+    "0.7.0-beta": {
+      "pt-BR": {
+        "title": "O Verboo Code 0.7.0-beta chegou",
+        "summary": "Uma grande atualização para trabalhar com apps iOS, provedores externos e uma instalação mais leve.",
+        "items": [
+          {
+            "title": "Simulador de iOS integrado — macOS",
+            "body": "Abra iPhones e iPads ao lado da conversa, interaja com o app, use controles do sistema e envie seleções ao chat."
+          },
+          {
+            "title": "Várias contas Claude e Codex",
+            "body": "Conecte contas adicionais, escolha qual conta cada conversa utiliza e preserve o histórico visível ao trocar."
+          },
+          {
+            "title": "Planos e limites no lugar certo",
+            "body": "Consulte o plano, as janelas de uso e os horários de renovação diretamente em Provedores."
+          },
+          {
+            "title": "Atualizações independentes do CLI",
+            "body": "O app e o CLI agora podem receber atualizações assinadas separadamente, mantendo um único fluxo seguro de reinicialização."
+          },
+          {
+            "title": "Instalação muito mais leve",
+            "body": "O Node é baixado e verificado pelo próprio app no primeiro uso, sem depender do Node do sistema e sem criar um aplicativo auxiliar no Dock."
+          },
+          {
+            "title": "Uma experiência mais fluida",
+            "body": "Carregamento paralelo de provedores, login mais robusto e transições discretas deixam a inicialização mais agradável."
+          }
+        ]
+      },
+      "en-US": {
+        "title": "Verboo Code 0.7.0-beta is here",
+        "summary": "A major update for working with iOS apps, external providers, and a lighter installation.",
+        "items": [
+          {
+            "title": "Built-in iOS Simulator — macOS",
+            "body": "Open iPhones and iPads beside the conversation, interact with your app, use system controls, and send selections to chat."
+          },
+          {
+            "title": "Multiple Claude and Codex accounts",
+            "body": "Connect additional accounts, choose which account each conversation uses, and keep the visible history when switching."
+          },
+          {
+            "title": "Plans and limits where you need them",
+            "body": "See your plan, usage windows, and reset times directly in Providers."
+          },
+          {
+            "title": "Independent CLI updates",
+            "body": "The app and CLI can now receive signed updates separately while sharing one safe restart flow."
+          },
+          {
+            "title": "A much lighter installation",
+            "body": "Node is downloaded and verified by the app on first use, without relying on system Node or creating a helper app in the Dock."
+          },
+          {
+            "title": "A smoother experience",
+            "body": "Parallel provider loading, more reliable sign-in, and subtle transitions make startup feel better."
+          }
+        ]
+      }
+    }
+  }
+}

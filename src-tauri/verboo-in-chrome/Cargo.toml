@@ -12,6 +12,10 @@ path = "src/lib.rs"
 name = "verboo-in-chrome"
 path = "src/main.rs"
 
+[[bin]]
+name = "verboo-ios-simulator"
+path = "src/bin/verboo-ios-simulator.rs"
+
 [dependencies]
 directories = "6"
 jsonschema = { version = "0.42", default-features = false }

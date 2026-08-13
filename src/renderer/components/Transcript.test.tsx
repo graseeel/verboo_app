@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, within } from '@testing-library/react'
+import { readFileSync } from 'node:fs'
+import { resolve, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Transcript, buildTranscriptEntries, cleanLeakedThinkTagItem } from './Transcript'
-import type { TranscriptItem } from '../../shared/types'
+import type { TranscriptItem, VerbooModel } from '../../shared/types'
 import { annotationTurnItemId, insertAnnotationTurnBeforeResponse } from '../features/annotations/annotationTurnItem'
 
 // Transcript → TurnView imports MarkdownMessage, StepFlow, ThinkingIcon,
@@ -16,7 +19,12 @@ vi.mock('../features/transcript/StepFlow', () => ({
   ),
 }))
 vi.mock('../features/transcript/TranscriptIcons', () => ({ ThinkingIcon: () => null }))
-vi.mock('../i18n', () => ({ useI18n: () => ({ t: (k: string) => k }) }))
+vi.mock('../i18n', () => ({
+  useI18n: () => ({
+    t: (key: string, values?: Record<string, string>) => values?.name ? `${key}: ${values.name}` : key,
+  }),
+}))
+vi.mock('../../assets/branding/verboo-mascot.png', () => ({ default: 'mascot.png' }))
 
 beforeEach(() => cleanup())
 
@@ -92,6 +100,122 @@ describe('TurnView — .turn-recap stays mounted after expand', () => {
 
     expect(container.querySelector('.message-attachment-image img')).toBeTruthy()
     expect(container.querySelector('.message-attachment-file')).toBeNull()
+  })
+
+  it('renders persisted simulator annotations as image thumbnails', () => {
+    const items: TranscriptItem[] = [{
+      id: 'user:simulator-annotation',
+      role: 'user',
+      text: 'Use the selected component',
+      timestamp: 0,
+      attachments: [{
+        path: '/app/simulator_captures/owner/crop.png',
+        name: 'simulator-element.png',
+        size: 100,
+        kind: 'simulator-annotation',
+        simulatorAnnotation: {
+          kind: 'element', crop: '/app/simulator_captures/owner/crop.png',
+          device: { name: 'iPhone 17 Pro', udid: 'phone', iosVersion: '26.5', orientation: 'portrait' },
+          deviceGeneration: 1, frameGeneration: 2,
+          rect: { x: 0, y: 0, width: 1, height: 1 },
+          deviceRect: { x: 0, y: 0, width: 393, height: 852 },
+          viewportSnapshot: { path: '/app/simulator_captures/owner/full.png', width: 393, height: 852, size: 200 },
+        },
+      }],
+    }]
+
+    const { container } = render(<Transcript items={items} />)
+
+    expect(container.querySelector('.message-attachment-image img')).toBeTruthy()
+    expect(container.querySelector('.message-attachment-file')).toBeNull()
+  })
+
+  it('opens a persisted image in the workspace media preview', () => {
+    const onOpenMedia = vi.fn()
+    const attachment = {
+      path: '/photos/reference.png',
+      name: 'reference.png',
+      size: 2048,
+      kind: 'image' as const,
+      mediaType: 'image/png',
+    }
+
+    render(
+      <Transcript
+        items={[{
+          id: 'user:image',
+          role: 'user',
+          text: 'Veja esta imagem',
+          timestamp: 0,
+          attachments: [attachment],
+        }]}
+        onOpenMedia={onOpenMedia}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /reference\.png/i }))
+    expect(onOpenMedia).toHaveBeenCalledOnce()
+    expect(onOpenMedia).toHaveBeenCalledWith(attachment)
+  })
+
+  it('opens a persisted video in the workspace media preview', () => {
+    const onOpenMedia = vi.fn()
+    const attachment = {
+      path: '/videos/demo.mp4',
+      name: 'demo.mp4',
+      size: 4096,
+      kind: 'video' as const,
+      mediaType: 'video/mp4',
+    }
+
+    render(
+      <Transcript
+        items={[{
+          id: 'user:video',
+          role: 'user',
+          text: 'Veja este vídeo',
+          timestamp: 0,
+          attachments: [attachment],
+        }]}
+        onOpenMedia={onOpenMedia}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /demo\.mp4/i }))
+    expect(onOpenMedia).toHaveBeenCalledOnce()
+    expect(onOpenMedia).toHaveBeenCalledWith(attachment)
+  })
+
+  it('keeps non-visual attachments on the external-file path', () => {
+    const onOpenMedia = vi.fn()
+    const openExternalFile = vi.fn()
+    Object.defineProperty(window, 'verboo', {
+      configurable: true,
+      value: { openExternalFile },
+    })
+
+    render(
+      <Transcript
+        items={[{
+          id: 'user:file',
+          role: 'user',
+          text: 'Veja este arquivo',
+          timestamp: 0,
+          attachments: [{
+            path: '/docs/report.pdf',
+            name: 'report.pdf',
+            size: 1024,
+            kind: 'file',
+            mediaType: 'application/pdf',
+          }],
+        }]}
+        onOpenMedia={onOpenMedia}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /report\.pdf/i }))
+    expect(onOpenMedia).not.toHaveBeenCalled()
+    expect(openExternalFile).toHaveBeenCalledWith('', '/docs/report.pdf')
   })
 
   it('renders a turn error in the main transcript with a friendly summary and expandable detail', () => {
@@ -277,6 +401,29 @@ describe('</think> vazado — agrupamento de turnos (riscos 1 e 2)', () => {
       expect(entry.summary?.text).toBe('Worked for 8s')
     }
   })
+
+  it('T12: nenhum item assistant chega em MessageArticle — buildTranscriptEntries agrupa TODO assistant em turno (inalcançabilidade pinada)', () => {
+    // O caminho labelForItem assistant (Transcript.tsx:768-781) só renderiza
+    // via MessageArticle (kind:'message'). Mas turnIdOf (Transcript.tsx:714-718)
+    // sempre retorna um turnId para role:'assistant' — turnIdFromText(item) ?? item.id
+    // — então TODO assistant item é agrupado em assistant-turn e NUNCA chega em
+    // kind:'message'. Este teste pina a invariante: se alguém remover o fallback
+    // `?? item.id` de turnIdOf, um assistant bare-id fica vivo em MessageArticle
+    // e este teste morre — forçando cobertura do labelForItem assistant branch.
+    const assistantShapes: TranscriptItem[] = [
+      { id: 'bare-assistant', role: 'assistant', text: 'texto solto', timestamp: 0 },
+      { id: 'turn1:text:0', role: 'assistant', text: 'segmento', timestamp: 0 },
+      { id: 'turn1:summary', role: 'assistant', kind: 'summary', text: 'Worked for 8s', timestamp: 0 },
+      { id: 'turn2:activity:0', role: 'assistant', kind: 'activity', activityKind: 'edit', text: 'Editou', activityDetail: 'foo.ts', timestamp: 0 },
+    ]
+    const entries = buildTranscriptEntries(assistantShapes)
+    const messageEntriesWithAssistant = entries.filter(
+      e => e.kind === 'message' && e.item.role === 'assistant',
+    )
+    expect(messageEntriesWithAssistant).toEqual([])
+    const turnEntries = entries.filter(e => e.kind === 'assistant-turn')
+    expect(turnEntries.length).toBeGreaterThan(0)
+  })
 })
 
 describe('</think> vazado — DOM real: a tag nunca chega à tela', () => {
@@ -296,13 +443,17 @@ describe('</think> vazado — DOM real: a tag nunca chega à tela', () => {
     expect(container.textContent).not.toContain('</think>')
   })
 
-  it('turno só-ruído com summary: cabeçalho Verboo permanece, NENHUMA bolha de texto vazia', () => {
+  it('turno só-ruído com summary: cabeçalho SEM marca de provedor (T10), NENHUMA bolha de texto vazia', () => {
     const items: TranscriptItem[] = [
       { id: 't2:text:0', role: 'assistant', text: '\n\n</think>', timestamp: 0 },
       { id: 't2:summary', role: 'assistant', kind: 'summary', text: 'Worked for 3s', timestamp: 0 },
     ]
     const { container } = render(<Transcript items={items} />)
-    expect(container.querySelector('.message-meta')?.textContent).toContain('Verboo')
+    // T10: sem metadado de modelo o cabeçalho não nomeia provedor — o antigo
+    // 'Verboo' literal era a mentira medida no campo.
+    const meta = container.querySelector('.message-meta')?.textContent
+    expect(meta).not.toContain('Verboo')
+    expect(meta).toContain('transcript.assistantFallback')
     expect(container.querySelector('.turn-recap')).toBeNull()
     expect(container.textContent).not.toContain('</think>')
   })
@@ -435,5 +586,205 @@ describe('F3 (N3) — annotation turn card reaches the DOM', () => {
     } as unknown as TranscriptItem
     const { container } = render(<Transcript items={[future]} />)
     expect(container.querySelector('.mock-markdown')?.textContent).toContain('content from the future')
+  })
+})
+
+describe('TurnView — provider prefix (F3)', () => {
+  // Real F2 contract shapes: `provider` absent = verboo; 'claude'/'codex'
+  // seen. The i18n mock here passes keys through, so providerDisplayName
+  // falls back to Title Case of the id — 'claude' → 'Claude', 'codex' → 'Codex'.
+  const catalog: VerbooModel[] = [
+    { id: 'glm-5.2', displayName: 'Ultra', raw: {} },
+    { id: 'claude-sonnet-4.6', displayName: 'Claude Sonnet 4.6', raw: {}, provider: 'claude' },
+    { id: 'gpt-5', displayName: 'GPT-5', raw: {}, provider: 'codex' },
+  ]
+
+  function turnItems(modelId: string, modelDisplayName: string): TranscriptItem[] {
+    return [{
+      id: `turn-${modelId}:text:0`,
+      role: 'assistant',
+      text: 'Done.',
+      timestamp: 0,
+      modelId,
+      modelDisplayName,
+    }]
+  }
+
+  it('external provider turn gets the provider prefix and the official brand icon in the header', () => {
+    const { container } = render(
+      <Transcript items={turnItems('claude-sonnet-4.6', 'Claude Sonnet 4.6')} models={catalog} />,
+    )
+    const meta = container.querySelector('.message-meta')!
+    expect(meta.textContent).toBe('Claude - Claude Sonnet 4.6')
+    expect(meta.textContent).not.toContain('Verboo')
+    const icon = container.querySelector('.message-meta [data-testid="provider-icon-claude"]')
+    expect(icon).toBeTruthy()
+    expect(icon!.querySelector('svg')).toBeTruthy()
+    // Deterministic per-provider color rides on a CSS var (fallback tile hue).
+    expect(icon?.getAttribute('style')).toContain('--provider-color')
+  })
+
+  it('T16: verboo turn shows the house mascot icon in the header (same size/alignment as external providers)', () => {
+    const { container } = render(
+      <Transcript items={turnItems('glm-5.2', 'Ultra')} models={catalog} />,
+    )
+    const meta = container.querySelector('.message-meta')!
+    expect(meta.textContent).toBe('Verboo - Ultra')
+    const icon = container.querySelector('.message-meta [data-testid="provider-icon-verboo"]')!
+    expect(icon).toBeTruthy()
+    expect(icon.querySelector('img.provider-icon-mascot')).toBeTruthy()
+  })
+
+  it('no catalog prop → every turn renders as verboo with the house mascot icon', () => {
+    const { container } = render(
+      <Transcript items={turnItems('claude-sonnet-4.6', 'Claude Sonnet 4.6')} />,
+    )
+    const meta = container.querySelector('.message-meta')!
+    expect(meta.textContent).toBe('Verboo - Claude Sonnet 4.6')
+    expect(container.querySelector('[data-testid="provider-icon-verboo"]')).toBeTruthy()
+  })
+
+  it('falls back to the displayName lookup when the modelId is unknown', () => {
+    const { container } = render(
+      <Transcript items={turnItems('stale-id-from-old-session', 'GPT-5')} models={catalog} />,
+    )
+    const meta = container.querySelector('.message-meta')!
+    expect(meta.textContent).toBe('Codex - GPT-5')
+    expect(container.querySelector('[data-testid="provider-icon-codex"]')).toBeTruthy()
+  })
+
+  it('T16: icone presente nos TRES provedores — verboo (mascot), claude (svg), codex (svg)', () => {
+    const { container } = render(
+      <>
+        <Transcript items={turnItems('glm-5.2', 'Ultra')} models={catalog} />
+        <Transcript items={turnItems('claude-sonnet-4.6', 'Claude Sonnet 4.6')} models={catalog} />
+        <Transcript items={turnItems('gpt-5', 'GPT-5')} models={catalog} />
+      </>,
+    )
+    const verbooIcon = container.querySelector('[data-testid="provider-icon-verboo"]')!
+    expect(verbooIcon).toBeTruthy()
+    expect(verbooIcon.querySelector('img.provider-icon-mascot')).toBeTruthy()
+    const claudeIcon = container.querySelector('[data-testid="provider-icon-claude"]')!
+    expect(claudeIcon).toBeTruthy()
+    expect(claudeIcon.querySelector('svg')).toBeTruthy()
+    const codexIcon = container.querySelector('[data-testid="provider-icon-codex"]')!
+    expect(codexIcon).toBeTruthy()
+    expect(codexIcon.querySelector('svg')).toBeTruthy()
+  })
+
+  it('model absent from the catalog → verboo header with house mascot icon', () => {
+    const { container } = render(
+      <Transcript items={turnItems('ghost-model', 'Ghost Model')} models={catalog} />,
+    )
+    const meta = container.querySelector('.message-meta')!
+    expect(meta.textContent).toBe('Verboo - Ghost Model')
+    expect(container.querySelector('[data-testid="provider-icon-verboo"]')).toBeTruthy()
+  })
+})
+
+describe('TurnView — T10: o cabeçalho nunca afirma provedor sem evidência (foto do dono)', () => {
+  const catalog: VerbooModel[] = [
+    { id: 'glm-5.2', displayName: 'Ultra', raw: {} },
+    { id: 'claude-fable-5', displayName: 'Claude Fable 5', raw: {}, provider: 'claude' },
+  ]
+  // Field measurement (Maestro, owner's real verboo:chat-store:v1): the
+  // assistant items of the claude-fable-5 turn carry ONLY id, role, text,
+  // timestamp, streaming, kind, activityDetail, skills — NO model fields.
+  // The header read that state and still printed the literal 'Verboo'.
+  it('turno SEM metadado de modelo → cabeçalho neutro, sem nome de provedor', () => {
+    const items: TranscriptItem[] = [{
+      id: 'turn-owner:text:1',
+      role: 'assistant',
+      text: 'ok',
+      timestamp: 0,
+      streaming: false,
+    }]
+    const { container } = render(<Transcript items={items} models={catalog} />)
+    const meta = container.querySelector('.message-meta')!
+    for (const brand of ['Verboo', 'Claude', 'Codex']) {
+      expect(meta.textContent).not.toContain(brand)
+    }
+    // Neutral role label (the i18n mock passes keys through).
+    expect(meta.textContent).toContain('transcript.assistantFallback')
+    // T16: the house mascot icon is present (decorative — no external provider
+    // claimed, just the Verboo brand mark for the fallback provider).
+    expect(container.querySelector('[data-testid="provider-icon-verboo"]')).toBeTruthy()
+  })
+
+  it('turno claude COM carimbo → "Claude - Claude Fable 5", mesma forma do caminho de sucesso', () => {
+    // The send-time stamp wins with NO catalog at all (the catalog may have
+    // degraded by render time — the stamp is the evidence).
+    const items: TranscriptItem[] = [{
+      id: 'turn-claude:text:1',
+      role: 'assistant',
+      text: 'ok',
+      timestamp: 0,
+      streaming: false,
+      modelId: 'claude-fable-5',
+      modelDisplayName: 'Claude Fable 5',
+      provider: 'claude',
+    }]
+    const { container } = render(<Transcript items={items} />)
+    const meta = container.querySelector('.message-meta')!
+    expect(meta.textContent).toBe('Claude - Claude Fable 5')
+    expect(meta.textContent).not.toContain('Verboo')
+    expect(container.querySelector('[data-testid="provider-icon-claude"]')).toBeTruthy()
+  })
+})
+
+describe('T7: a linha de Sistema nunca é verde — erro usa a linguagem de erro do app (field photo do dono)', () => {
+  it('item system com id :error ganha is-turn-error (dispara a variante de erro, não verde)', () => {
+    const { container } = render(
+      <Transcript
+        items={[{
+          id: 'turn-t7:error',
+          role: 'system',
+          text: 'API Error: 400 {"error":{"type":"invalid_request"}}',
+          timestamp: 0,
+        }]}
+      />,
+    )
+    const article = container.querySelector('article.message-row.system')!
+    expect(article, 'system row must render').toBeTruthy()
+    // A variante de erro (não verde) é disparada por is-turn-error.
+    expect(article).toHaveClass('is-turn-error')
+    expect(article).toHaveClass('system')
+  })
+
+  it('item system com presentation interruption (visualRole assistant) NÃO ganha is-turn-error', () => {
+    const { container } = render(
+      <Transcript
+        items={[{
+          id: 'turn-t7-int:error',
+          role: 'system',
+          text: 'Turn interrupted by the user.',
+          presentation: 'interruption',
+          timestamp: 0,
+        }]}
+      />,
+    )
+    // O interruption é visualmente assistant — não herda o cartão system.
+    const article = container.querySelector('article.message-row.assistant')!
+    expect(article).toBeTruthy()
+    expect(article).not.toHaveClass('is-turn-error')
+  })
+
+  // T7/T23 CSS: a regra .message-row.system (base) não pode referenciar --green.
+  // T23 removed the .is-turn-error variant entirely — the error message is
+  // now the model's natural response (appendAssistantText), not a "Sistema"
+  // badge. Pin that the colored band is gone: if someone reintroduces
+  // .message-row.system.is-turn-error, the test fails.
+  it('CSS: .message-row.system base é neutra (sem --green) e .is-turn-error foi removida (T23)', () => {
+    const here = dirname(fileURLToPath(import.meta.url))
+    const css = readFileSync(resolve(here, '../styles/surfaces.css'), 'utf8')
+
+    // Base rule: .message-row.system { ... } (NOT .is-turn-error)
+    const baseMatch = css.match(/\.message-row\.system\s*\{([^}]*)\}/)
+    expect(baseMatch, '.message-row.system base rule must exist').toBeTruthy()
+    expect(baseMatch![1], 'base .message-row.system must not paint green (field photo)').not.toMatch(/--green/)
+
+    // T23: the .is-turn-error variant must NOT exist — the colored band is gone.
+    const errorMatch = css.match(/\.message-row\.system\.is-turn-error\s*\{([^}]*)\}/)
+    expect(errorMatch, '.message-row.system.is-turn-error must be removed (T23: no colored badge)').toBeNull()
   })
 })

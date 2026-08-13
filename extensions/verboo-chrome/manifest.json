@@ -4,8 +4,8 @@
   "short_name": "Verboo",
   "description": "__MSG_appDesc__",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2RFg28rPRcECIAgbWDDlm7aMbJnkF3jxiZetmRd4sgu6muRLEtLqK+XK4t3r1U485UhCzeBLMnFs9XYmRw+zjt2SATtUvRk/eUJRk4EaTimK/GCnoygTTYBA4H+GfvJU+BX8lKSoKZ2F5udsPZ46P3lp4lqjnwuarz/oF98tm5AlDULDI7ubNSh+fLV9zJw9sn//E/O4mnsoZ4sMpZVgCEmBR6TPHrh9muAo90aZDT/rn2CnGksQFch81THOIWwN9hRyWqz5sRsMM40VP8UxSSWjXp1H4VzN1V7vYhlpgprG8S7jSiB/psi55madv/xKJlH674sRuV9YGqymsEjbPQIDAQAB",
-  "version": "0.3.1",
-  "version_name": "0.3.1",
+  "version": "0.3.2",
+  "version_name": "0.3.2",
   "default_locale": "en",
   "minimum_chrome_version": "123",
   "icons": {

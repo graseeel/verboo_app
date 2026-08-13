@@ -7,6 +7,7 @@ import {
   NATIVE_MESSAGING_HOST_NAME,
   createNativeBridge,
 } from './bridge.js'
+import { createApprovalExecutor } from '../controller/approvedExecute.js'
 
 function eventHook() {
   const listeners = []
@@ -53,6 +54,8 @@ function fixture(overrides = {}) {
   const calls = []
   const presenceClears = []
   const pendingApprovalCancels = []
+  const contextCalls = []
+  const endedTurns = []
   const executeWithApproval = async (toolCall, _contextFactory, approvalUi) => {
     calls.push(toolCall)
     if (overrides.requireApproval) {
@@ -63,7 +66,10 @@ function fixture(overrides = {}) {
   const bridge = createNativeBridge({
     chromeApi,
     executeWithApproval: overrides.executeWithApproval ?? executeWithApproval,
-    contextFactory: async () => ({ mode: 'manual' }),
+    contextFactory: overrides.contextFactory ?? (async (turnId) => {
+      contextCalls.push(turnId)
+      return { mode: 'manual' }
+    }),
     approvalUiFactory: overrides.approvalUiFactory ?? (() => ({ request: async () => 'once' })),
     isApprovalUiAvailable: () => overrides.approvalUiAvailable ?? true,
     cancelPendingApprovals: overrides.cancelPendingApprovals ?? (() => {
@@ -71,6 +77,10 @@ function fixture(overrides = {}) {
     }),
     clearPresenceOnAllTabs: overrides.clearPresenceOnAllTabs ?? (async () => {
       presenceClears.push(true)
+    }),
+    createTurnId: overrides.createTurnId,
+    onTurnEnded: overrides.onTurnEnded ?? ((turnId) => {
+      endedTurns.push(turnId)
     }),
     reconnectDelayMs: 0,
   })
@@ -81,6 +91,8 @@ function fixture(overrides = {}) {
     ports,
     presenceClears,
     pendingApprovalCancels,
+    contextCalls,
+    endedTurns,
   }
 }
 
@@ -113,6 +125,119 @@ test('native tool requests use the shared approval executor', async () => {
   })
   assert.equal(ports[0].posted[0].kind, 'toolResponse')
   assert.equal(ports[0].posted[0].id, 'request-1')
+})
+
+test('native tool requests share one task context until turn completion', async () => {
+  let sequence = 0
+  const observedTurnIds = []
+  const { bridge, ports } = fixture({
+    createTurnId: () => `native-turn-${++sequence}`,
+    executeWithApproval: async (_toolCall, contextFactory) => {
+      observedTurnIds.push((await contextFactory()).turnId)
+      observedTurnIds.push((await contextFactory()).turnId)
+      return { ok: true, result: {} }
+    },
+    contextFactory: async (turnId) => ({ turnId }),
+  })
+  bridge.connect()
+
+  ports[0].onMessage.emit(validRequest('first-action'))
+  await tick()
+  ports[0].onMessage.emit(validRequest('second-action'))
+  await tick()
+
+  assert.deepEqual(observedTurnIds, [
+    'native-turn-1',
+    'native-turn-1',
+    'native-turn-1',
+    'native-turn-1',
+  ])
+
+  ports[0].onMessage.emit({
+    version: BROWSER_BRIDGE_PROTOCOL_VERSION,
+    id: 'finish-first-task',
+    kind: 'turnComplete',
+    payload: {},
+  })
+  await tick()
+  ports[0].onMessage.emit(validRequest('next-task-action'))
+  await tick()
+
+  assert.deepEqual(observedTurnIds.slice(-2), ['native-turn-2', 'native-turn-2'])
+})
+
+test('allow for this task covers later native actions and is cleared at the boundary', async () => {
+  const grantsByTurn = new Map()
+  let approvalRequests = 0
+  const executeWithApproval = createApprovalExecutor(async (toolCall, context) => {
+    const host = 'example.com'
+    const granted = await context.getSiteGrant(host)
+    if (granted !== 'always' && !context.approvedTool) {
+      return {
+        ok: false,
+        policy: { needsApproval: true },
+        policyHost: host,
+        toolCall: { id: toolCall.id, name: toolCall.name, input: toolCall.params },
+      }
+    }
+    return { ok: true, result: { granted: true } }
+  })
+  const { bridge, ports } = fixture({
+    createTurnId: () => 'native-task',
+    executeWithApproval,
+    contextFactory: async (turnId) => ({
+      getSiteGrant: async (host) => grantsByTurn.get(turnId)?.has(host) ? 'always' : undefined,
+      setTurnGrant: async (host) => {
+        if (!turnId) return
+        const grants = grantsByTurn.get(turnId) ?? new Set()
+        grants.add(host)
+        grantsByTurn.set(turnId, grants)
+      },
+    }),
+    approvalUiFactory: () => ({
+      request: async () => {
+        approvalRequests += 1
+        return 'turn'
+      },
+    }),
+    onTurnEnded: (turnId) => grantsByTurn.delete(turnId),
+  })
+  bridge.connect()
+
+  ports[0].onMessage.emit(validRequest('approval-required'))
+  await tick()
+  ports[0].onMessage.emit(validRequest('covered-by-task-grant'))
+  await tick()
+  assert.equal(approvalRequests, 1)
+
+  ports[0].onMessage.emit({
+    version: BROWSER_BRIDGE_PROTOCOL_VERSION,
+    id: 'finish-task',
+    kind: 'turnComplete',
+    payload: {},
+  })
+  await tick()
+  ports[0].onMessage.emit(validRequest('approval-required-again'))
+  await tick()
+  assert.equal(approvalRequests, 2)
+})
+
+test('native task state is released when the host disconnects', async () => {
+  const { bridge, ports, endedTurns } = fixture({
+    createTurnId: () => 'native-disconnected-task',
+    executeWithApproval: async (_toolCall, contextFactory) => {
+      await contextFactory()
+      return { ok: true, result: {} }
+    },
+  })
+  bridge.connect()
+  ports[0].onMessage.emit(validRequest())
+  await tick()
+
+  ports[0].onDisconnect.emit()
+  await tick()
+
+  assert.deepEqual(endedTurns, ['native-disconnected-task'])
 })
 
 test('turn completion clears presence without executing a browser tool', async () => {
