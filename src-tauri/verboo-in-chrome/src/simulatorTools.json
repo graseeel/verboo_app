@@ -9,21 +9,17 @@
     },
     {
       "name": "ios_simulator_attach",
-      "description": "Attach one iOS Simulator device to the Verboo desktop session.",
+      "description": "Attach one iOS Simulator device to the Verboo desktop session. Provide either udid, or both model and iosVersion. Do not combine the two selector forms.",
       "risk": "mutate",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "udid": { "type": "string", "minLength": 1, "maxLength": 256 },
-          "model": { "type": "string", "minLength": 1, "maxLength": 256 },
-          "iosVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "udid": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Exact device identifier. Use this by itself instead of model and iosVersion." },
+          "model": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Exact device model name. Must be provided together with iosVersion and without udid." },
+          "iosVersion": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Exact iOS runtime version. Must be provided together with model and without udid." },
           "streamFps": { "type": "integer", "enum": [30, 60] },
           "fallbackFps": { "type": "number", "enum": [0.5, 1, 2] }
         },
-        "oneOf": [
-          { "required": ["udid"] },
-          { "required": ["model", "iosVersion"] }
-        ],
         "additionalProperties": false
       }
     },
@@ -68,7 +64,7 @@
     },
     {
       "name": "ios_simulator_tap",
-      "description": "Tap a control in the attached iOS Simulator. Semantic-first rule: when the intended control has visible text or a known accessibility identifier, you must provide target. Verboo uses target as the primary locator and does not fall back to an unrelated coordinate tap when it cannot resolve that target. Coordinates are an optional disambiguation hint when supplied as a complete pair. Omit target only when no usable text or identifier exists.",
+      "description": "Tap a control in the attached iOS Simulator. Semantic-first rule: when the intended control has visible text or a known accessibility identifier, you must provide target. Verboo uses target as the primary locator and does not fall back to an unrelated coordinate tap when it cannot resolve that target. Coordinates are an optional disambiguation hint when supplied as a complete x and y pair. Omit target only when no usable text or identifier exists. You must provide target, both coordinates, or target with both coordinates.",
       "risk": "mutate",
       "inputSchema": {
         "type": "object",
@@ -77,14 +73,6 @@
           "x": { "type": "number", "minimum": 0, "maximum": 1, "description": "Normalized horizontal coordinate. With target it is only a disambiguation hint; without target it is the coordinate locator." },
           "y": { "type": "number", "minimum": 0, "maximum": 1, "description": "Normalized vertical coordinate. With target it is only a disambiguation hint; without target it is the coordinate locator." },
           "target": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Primary semantic locator. You must provide it when the intended control has visible text or a known accessibility identifier; omit it only when neither exists." }
-        },
-        "anyOf": [
-          { "required": ["target"] },
-          { "required": ["x", "y"] }
-        ],
-        "dependentRequired": {
-          "x": ["y"],
-          "y": ["x"]
         },
         "additionalProperties": false
       }
