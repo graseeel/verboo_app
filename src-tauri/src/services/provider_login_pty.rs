@@ -23,7 +23,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use portable_pty::Child as _;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use uuid::Uuid;
 
@@ -42,9 +41,6 @@ const BROWSER_TIMEOUT: Duration = Duration::from_secs(600);
 /// O CLI interativo pode mostrar telas de primeira execução antes do prompt.
 const PROMPT_READY_TIMEOUT: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
-/// Prazo pós-slash para o navegador ou a tela de risco aparecerem — depois
-/// dele, uma tela não reconhecida vira erro honesto (nunca awaiting).
-const POST_SLASH_DEADLINE: Duration = Duration::from_secs(10);
 /// Intervalo entre a seta de navegação e o Enter em menus do TUI. O Ink NÃO
 /// processa a navegação quando os dois chegam colados no mesmo write — o
 /// Enter cai na opção PADRÃO (2 = Cancelar). Prova A/B do dono no CLI real:
@@ -168,19 +164,6 @@ fn deadline_expired(
         login_started + login_timeout
     };
     now > deadline
-}
-
-/// Reconhece a tela de LOGIN do provedor (não risco, não navegador): o
-/// /codex login mostra "Login Codex" + "Entre com sua conta ChatGPT" +
-/// "Preparando o login no navegador…" antes do URL do OAuth (medido no PTY
-/// real, 2ª conta). A tela de 2ª conta/choose-account é FLUXO EM ANDAMENTO:
-/// reconhecer estende o post_slash_deadline em vez de virar "tela não
-/// reconhecida" e matar o CLI antes do browser abrir (evidência D).
-fn login_screen_ready(output: &str) -> bool {
-    let normalized = normalize_risk_text(output);
-    normalized.contains("LoginCodex")
-        || normalized.contains("contaChatGPT")
-        || normalized.contains("Preparandoologinnonavegador")
 }
 
 /// Loga e emite o evento de login no stderr — o erro do usuário (D) era
@@ -324,7 +307,7 @@ impl ProviderLoginService {
             .master
             .try_clone_reader()
             .map_err(|e| format!("Falha ao clonar o leitor do PTY: {e}"))?;
-        let mut child = pair
+        let child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("Falha ao iniciar o CLI no PTY: {e}"))?;
@@ -395,7 +378,6 @@ impl ProviderLoginService {
             let mut at_risk = false;
             let mut awaiting_emitted = false;
             let mut awaiting_emitted_at: Option<Instant> = None;
-            let mut post_slash_deadline: Option<Instant> = None;
             let mut last_poll = Instant::now();
             let login_started = Instant::now();
             let prompt_deadline = login_started + options.prompt_timeout;
@@ -448,7 +430,6 @@ impl ProviderLoginService {
                             // risco não pode re-disparar o risk_notice após o
                             // confirm (o output acumulado ainda o contém).
                             output.clear();
-                            post_slash_deadline = Some(now + POST_SLASH_DEADLINE);
                             // O awaiting_browser vem do drain (a evidência do
                             // URL do navegador), nunca por eliminação.
                         }
@@ -571,7 +552,6 @@ impl ProviderLoginService {
                                             &snapshot_blob,
                                         );
                                 }
-                                post_slash_deadline = Some(now + POST_SLASH_DEADLINE);
                                 if let Ok(mut w) = writer_for_slash.lock() {
                                     if let Some(writer) = w.as_mut() {
                                         // CAUSA RAIZ DO CONECTAR: o TUI em modo raw SÓ SUBMETE com \r
@@ -606,8 +586,10 @@ impl ProviderLoginService {
                             // NUNCA aceita sozinha — emite e PARA), (b) o
                             // NAVEGADOR (a evidência: o URL do OAuth ou a
                             // linha "Opening browser" — o awaiting_browser
-                            // NUNCA por eliminação), (c) senão, uma tela
-                            // não reconhecida vira erro honesto.
+                            // NUNCA por eliminação). Qualquer outra saída é
+                            // apenas observada: a TUI pode mudar entre versões
+                            // e não é prova de falha. A credencial, o EOF, o
+                            // cancelamento e os timeouts reais são a autoridade.
                             output.push_str(&strip_terminal_controls(&raw));
                             if risk_notice_ready(&output) {
                                 at_risk = true;
@@ -626,17 +608,6 @@ impl ProviderLoginService {
                                     state: ProviderLoginState::AwaitingBrowser,
                                     message: None,
                                 });
-                            } else if login_screen_ready(&output) {
-                                // Tela de login/choose-account (2ª conta):
-                                // fluxo em andamento, o URL do navegador vem
-                                // em seguida. Estende o post_slash_deadline:
-                                // a tela da 2ª conta não pode virar "tela
-                                // não reconhecida" e matar o CLI antes do
-                                // browser abrir (evidência D). Ordem: o
-                                // browser_evidence tem prioridade (o URL é a
-                                // evidência mais forte; o "Preparando o
-                                // login" vem no MESMO chunk que o URL).
-                                post_slash_deadline = Some(now + POST_SLASH_DEADLINE);
                             }
                         }
                     }
@@ -655,25 +626,6 @@ impl ProviderLoginService {
                     });
                     break;
                 }
-                // Pós-slash sem risco nem navegador: tela não reconhecida vira
-                // erro honesto (o awaiting NUNCA por eliminação).
-                if prompt_sent
-                    && !at_risk
-                    && !awaiting_emitted
-                    && !oauth_evidence(&output)
-                    && post_slash_deadline.is_some_and(|d| now > d)
-                {
-                    emit_logged(&emit, ProviderLoginEvent {
-                        provider: provider_for_thread.clone(),
-                        state: ProviderLoginState::Error,
-                        message: Some(
-                            "O CLI mostrou uma tela não reconhecida após o login — a ponte não interage com telas desconhecidas."
-                                .to_string(),
-                        ),
-                    });
-                    break;
-                }
-
                 std::thread::sleep(Duration::from_millis(50));
             }
 
@@ -807,14 +759,6 @@ fn browser_evidence(output: &str) -> bool {
         || output.contains("Opening browser")
 }
 
-/// Evidência de que o fluxo OAuth começou, mesmo com o URL corrompido pelo
-/// TUI: o domínio auth.openai.com (íntegro no buffer real) ou o redirect_uri
-/// (também íntegro). Com essa evidência o post-slash NÃO mata o CLI — o
-/// usuário pode estar no browser; o prazo vira o browser_timeout.
-fn oauth_evidence(output: &str) -> bool {
-    output.contains("auth.openai.com") || output.contains("redirect_uri")
-}
-
 /// Remove os chars de frame do TUI (╭╮╰╯│─) que a renderização deixa no
 /// buffer do PTY, preservando quebras e URLs — a tela de risco tem os links
 /// de política/termos e o texto reportado precisa continuar fiel (contrato
@@ -871,7 +815,6 @@ impl Default for ProviderLoginService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc as std_mpsc;
 
     /// Escreve o CLI falso (node): `auth status` lê um arquivo de estado;
     /// o modo interativo emite o prompt (ou tela inesperada), grava o slash
@@ -1398,26 +1341,6 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
     }
 
     #[test]
-    fn login_screen_ready_recognizes_second_account_flow() {
-        // Chunk REAL do PTY (CLI 0.15.12, /codex login com a 1ª conta já
-        // conectada, capturado 2026-08-10): "Login Codex" + "Entre com sua
-        // conta ChatGPT" + "Preparando o login no navegador…" + URL OAuth.
-        // A tela da 2ª conta não é risco nem browser_evidence — sem o
-        // reconhecimento, o post_slash_deadline (10s) vira "tela não
-        // reconhecida" e o cleanup mata o CLI antes do URL aparecer.
-        let raw = "[1C1.0m\r\r\n╭──────────────────────────────────────────────────────────────────────────────╮\r\r\n│\u{1b}[1C❯\u{a0}Describe\u{1b}[1Ca\u{1b}[1Ctask,\u{1b}[1Cbug,\u{1b}[1Cor\u{1b}[1Cidea…\u{1b}[45C│\r\r\n╰──────────────────────────────────────────────────────────────────────────────╯\r\r\n\u{1b}[2C?\u{1b}[1Cfor\u{1b}[1Cshortcuts\u{1b}[46C◉\u{1b}[1Cmax\u{1b}[1C·\u{1b}[1C/effort\r\r\n\u{1b}[4C\u{1b}[3A\u{1b}[?2026l\u{1b}[>0q\u{1b}[c\u{1b}[?2026h\u{1b}[4D\u{1b}[3B\r\u{1b}[32C\u{1b}[5AVerboo ultra/glm-5.2 ·\u{1b}[1Ccontext 0% ·\u{1b}[1C838\r\r\n\r\n\r\n\r\n\r\n\u{1b}[4C\u{1b}[3A\u{1b}[?2026l\u{1b}[?2026h\u{1b}[4D\u{1b}[3B\r\u{1b}[4C\u{1b}[3A/codex login    \u{1b}[1C    \u{1b}[1C  \u{1b}[1C     \r\r\n\r\n\r\n\u{1b}[16C\u{1b}[3A\u{1b}[?2026l\u{1b}]0;⠂ Verboo Code\u{7}\u{1b}]0;✳ Verboo Code\u{7}\u{1b}[?2026h\u{1b}[16D\u{1b}[3B\r\u{1b}[5A❯\u{1b}[1C/codex\u{1b}[1Clogin\u{1b}[18C      \u{1b}[1C             \u{1b}[1C \u{1b}[1C       \u{1b}[1C  \u{1b}[1C \u{1b}[1C   \u{1b}[1C \u{1b}[1C    \r\u{1b}[1BLogin Codex                                                                     \r\u{1b}[1B \u{1b}[1C        \u{1b}[1C     \u{1b}[63C \r\u{1b}[1BEntre com sua conta ChatGPT. As credenciais serão guardadas somente no          \r\u{1b}[1Barmazenamento seguro\u{1b}[1Cdo\u{1b}[1CVerboo\u{1b}[1CCode.\u{1b}[27C \u{1b}[1C   \u{1b}[1C \u{1b}[1C       \r\r\n\r\r\nPreparando\u{1b}[1Co\u{1b}[1Clogin\u{1b}[1Cno\u{1b}[1Cnavegador…\r\r\n\r\r\nPressione\u{1b}[1CEsc\u{1b}[1Cou\u{1b}[1CCtrl+C\u{1b}[1Cpara\u{1b}[1Ccancelar.\r\r\n\u{1b}[?2026l\u{1b}[?2026h\r\u{1b}[3AConclu\u{1b}[1C o l\u{1b}[1Cgin no\u{1b}[2Cavegador.   \r\u{1b}[2Bhttp\u{1b}[1C://auth.openai.com/o\u{1b}[1Cuth/\u{1b}[1Cauthorize?response_type=code&client_id=app_EMoamEE\r\r\nZ73f0CkXa";
-        assert!(
-            login_screen_ready(raw),
-            "a tela de login da 2ª conta deve ser reconhecida como fluxo em andamento"
-        );
-        // A tela de risco do Claude (o aviso da Anthropic) NÃO é tela de login.
-        assert!(!login_screen_ready(
-            "AvisoimportantesobreologinClaude\nPolitica:https://code.claude.com/docs/en/legal-and-compliance"
-        ));
-        assert!(!login_screen_ready("Tela de primeira execucao sem prompt..."));
-    }
-
-    #[test]
     fn risk_screen_emits_risk_notice_and_bridge_waits() {
         let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
             .lock()
@@ -1746,11 +1669,13 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
     }
 
     #[test]
-    fn unknown_screen_after_slash_is_honest_error_never_awaiting() {
+    fn unknown_post_login_screen_waits_for_delayed_credentials() {
         let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cleanup = FakeCliCleanup;
         let (_cli, _state, _received, _child) = write_fake_cli("unknown", false);
+        set_fake_blob("codex", None);
         // SAFETY: env global intencional, serializado pelo guard.
         unsafe {
             std::env::set_var("FAKE_UNKNOWN", "1");
@@ -1777,15 +1702,19 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
             )
             .expect("start deve abrir o PTY");
 
+        // A CLI 0.15.14 pode redesenhar a TUI sem preservar as âncoras que a
+        // ponte conhece. Isso não prova falha: o navegador/callback OAuth
+        // pode continuar ativo. Aguarda além do antigo prazo pós-slash de
+        // 10s e só então publica a credencial, simulando um login válido e
+        // lento numa tela nova.
+        std::thread::sleep(Duration::from_secs(12));
         assert!(
-            wait_until(Duration::from_secs(15), || {
-                events
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|e| matches!(e.state, ProviderLoginState::Error))
-            }),
-            "uma tela não reconhecida após o slash deve virar erro honesto (o post-slash deadline)"
+            !events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| matches!(e.state, ProviderLoginState::Error)),
+            "uma tela nova/lenta não pode encerrar um OAuth ainda válido"
         );
         assert!(
             !events
@@ -1795,17 +1724,18 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
                 .any(|e| matches!(e.state, ProviderLoginState::AwaitingBrowser)),
             "o awaiting_browser NUNCA é emitido por eliminação — só com evidência de navegador"
         );
-        let last = events.lock().unwrap().last().unwrap().clone();
+
+        set_fake_blob("codex", Some("tok-after-unknown-screen"));
         assert!(
-            last.message
-                .as_deref()
-                .unwrap_or("")
-                .contains("não reconhecida"),
-            "a mensagem deve dizer que a tela não foi reconhecida: {:?}",
-            last.message
+            wait_until(Duration::from_secs(5), || {
+                events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|e| matches!(e.state, ProviderLoginState::Connected))
+            }),
+            "a ponte deve concluir quando a credencial do provedor aparecer"
         );
-        service.cancel().ok();
-        clear_fake_cli();
     }
 
     #[test]
@@ -1814,8 +1744,9 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
         // 2026-08-10): o TUI corrompe "oauth/authorize" -> "outh/uthorize"
         // no buffer (letras comidas na re-renderização) e quebra o URL em
         // linhas — mas o redirect_uri permanece íntegro. Sem o fix, o
-        // browser_evidence (âncora oauth/authorize) NÃO casa e o poll mata
-        // o CLI 10s depois (ERR_CONNECTION_REFUSED no callback).
+        // browser_evidence (âncora oauth/authorize) não casava. O
+        // redirect_uri precisa continuar sendo a evidência positiva usada
+        // para informar ao renderer que o navegador abriu.
         let raw = "Conclu o lgin noavegador.\nhttp://auth.openai.com/outh/uthorize?response_type=code&client_id=app_EMoamEE\nZ73f0CkXaXp7hrann&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid+profile+email+offline_acc";
         assert!(
             browser_evidence(raw),
@@ -1825,11 +1756,10 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
 
     #[cfg(unix)]
     #[test]
-    fn oauth_evidence_prevents_post_slash_kill() {
+    fn corrupted_oauth_url_emits_awaiting_browser_without_error() {
         // Caso REAL (vídeo 11:52): o URL do OAuth sai corrompido no buffer
         // ("outh/uthorize") mas com redirect_uri íntegro. O awaiting deve ser
-        // emitido (evidência de OAuth) e o post-slash NÃO pode matar o CLI:
-        // nenhum erro de "tela não reconhecida" em 12s (> post_slash 10s).
+        // emitido apenas por essa evidência positiva, sem erro espúrio.
         let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1876,7 +1806,7 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
                 .unwrap()
                 .iter()
                 .any(|e| matches!(e.state, ProviderLoginState::Error)),
-            "o post-slash NÃO pode matar o CLI com evidência de OAuth no buffer"
+            "a evidência de OAuth não pode produzir erro no fluxo"
         );
         service.cancel().ok();
         clear_fake_cli();
@@ -2060,10 +1990,10 @@ if (process.env.FAKE_UNEXPECTED === '1') {{
     /// FIX: snapshot do token do provedor no momento do slash; o poll só
     /// emite Connected quando o token MUDA do snapshot. O token PRÉVIO
     /// (conta existente) NÃO dispara — só o token NOVO do OAuth completado.
-    /// O gate em oauth_evidence sozinho é insuficiente: o URL é observado
-    /// ~100ms depois do prompt, mas o token PRÉVIO continua no blob até o
-    /// OAuth completar — o gate apenas adiantaria o Connected em ~1s, e o
-    /// usuário ainda receberia ERR_CONNECTION_REFUSED no callback.
+    /// Usar apenas a presença do URL como gate é insuficiente: ele é
+    /// observado ~100ms depois do prompt, mas o token PRÉVIO continua no
+    /// blob até o OAuth completar — o gate apenas adiantaria o Connected em
+    /// ~1s e o teardown ainda mataria o callback.
     #[test]
     fn second_account_with_existing_token_does_not_emit_connected_prematurely() {
         let _guard = crate::services::cli_spawn::fake_cli_env::FAKE_CLI_ENV_GUARD

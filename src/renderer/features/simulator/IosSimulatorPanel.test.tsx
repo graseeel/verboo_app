@@ -69,7 +69,7 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof IosSimulator
     onCaptureAnnotation: vi.fn().mockResolvedValue(undefined),
     onDeleteCapture: vi.fn().mockResolvedValue(undefined),
     onAddAnnotation: vi.fn(),
-    onRefresh: vi.fn(),
+    onRefresh: vi.fn().mockResolvedValue(1),
     minWidth: 520,
     maxWidth: 900,
     ...overrides,
@@ -240,6 +240,8 @@ describe('IosSimulatorPanel', () => {
       },
     })
 
-    expect(screen.getByRole('alert')).toHaveTextContent('Instale o Xcode 26 ou 27')
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Instale o Xcode 26 ou 27, abra-o uma vez para concluir a configuração e selecione-o com xcode-select.',
+    )
   })
 })

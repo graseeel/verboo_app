@@ -6830,7 +6830,7 @@ export function App() {
           onCaptureAnnotation={(_kind, rect, element) => simulator.captureAnnotation(rect, element)}
           onDeleteCapture={simulator.deleteCapture}
           onAddAnnotation={addBrowserAnnotation}
-          onRefresh={() => { void simulator.refresh() }}
+          onRefresh={simulator.refresh}
           minWidth={browser.MIN_WIDTH}
           maxWidth={browserWidthLimit}
         />

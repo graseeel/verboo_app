@@ -20,6 +20,17 @@ test("0.7.0-beta has complete reviewed pt-BR and en-US copy", async () => {
   assert.deepEqual(releaseEntry(catalog, "0.7.0-beta"), entry);
 });
 
+test("0.7.1-beta has complete reviewed hotfix copy", async () => {
+  const catalog = await readReleaseCatalog();
+  const entry = validateReleaseCatalog(catalog, "0.7.1-beta");
+
+  assert.equal(entry["pt-BR"].items.length, 4);
+  assert.equal(entry["en-US"].items.length, 4);
+  assert.match(entry["pt-BR"].items[0].title, /Claude e Codex/);
+  assert.match(entry["en-US"].items[2].title, /compatible with Claude and Codex/);
+  assert.deepEqual(releaseEntry(catalog, "0.7.1-beta"), entry);
+});
+
 test("rejects missing locale, editorial sentinel, and invalid item count", async () => {
   const original = await readReleaseCatalog();
 
@@ -53,12 +64,12 @@ test("rejects non-canonical release versions", async () => {
 
 test("renders GitHub notes from the reviewed English catalog entry", async () => {
   const catalog = await readReleaseCatalog();
-  const entry = validateReleaseCatalog(catalog, "0.7.0-beta");
-  const markdown = renderReleaseNotes(entry, "0.7.0-beta");
+  const entry = validateReleaseCatalog(catalog, "0.7.1-beta");
+  const markdown = renderReleaseNotes(entry, "0.7.1-beta");
 
-  assert.match(markdown, /^## Verboo Code 0\.7\.0-beta/m);
-  assert.match(markdown, /Built-in iOS Simulator — macOS/);
-  assert.match(markdown, /A much lighter installation/);
-  assert.match(markdown, /Verboo-Code-0\.7\.0-beta-Windows-x64-Setup\.exe/);
+  assert.match(markdown, /^## Verboo Code 0\.7\.1-beta/m);
+  assert.match(markdown, /More resilient Claude and Codex sign-in/);
+  assert.match(markdown, /Simulator selection remains safe/);
+  assert.match(markdown, /Verboo-Code-0\.7\.1-beta-Windows-x64-Setup\.exe/);
   assert.doesNotMatch(markdown, /EDITORIAL_COPY_REQUIRED/);
 });

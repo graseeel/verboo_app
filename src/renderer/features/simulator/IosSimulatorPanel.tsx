@@ -75,7 +75,7 @@ type IosSimulatorPanelProps = {
   onDeleteCapture: (paths: string[]) => Promise<void>
   onAddAnnotation: (attachment: AttachmentMeta) => void
   agentPresence?: IosSimulatorPresenceEvent
-  onRefresh: () => void
+  onRefresh: () => Promise<number | undefined>
   minWidth: number
   maxWidth: number
 }
@@ -131,6 +131,7 @@ export function IosSimulatorPanel({
   const [interactionMode, setInteractionMode] = useState<SimulatorInteractionMode>('interact')
   const [selectedUdid, setSelectedUdid] = useState<string | undefined>(attachedUdid)
   const [performanceOpen, setPerformanceOpen] = useState(false)
+  const [refreshFeedback, setRefreshFeedback] = useState<string>()
 
   useEffect(() => {
     if (attachedUdid) setSelectedUdid(attachedUdid)
@@ -160,6 +161,18 @@ export function IosSimulatorPanel({
     setSelectedUdid(udid)
     if (udid !== attachedUdid) onAttach(udid)
   }
+  const handleRefresh = async () => {
+    setRefreshFeedback(t('simulator.refreshing'))
+    const deviceCount = await onRefresh()
+    if (deviceCount === undefined) {
+      setRefreshFeedback(undefined)
+      return
+    }
+    setRefreshFeedback(t(
+      deviceCount === 1 ? 'simulator.refreshed.one' : 'simulator.refreshed.other',
+      { count: deviceCount },
+    ))
+  }
   const interactionFailure = lifecycle.stage === 'preparingInteraction'
     && !lifecycle.interactionReady
     && Boolean(frameDataUrl || streamUrl)
@@ -185,7 +198,9 @@ export function IosSimulatorPanel({
           <Smartphone size={16} aria-hidden="true" />
           <div>
             <strong>{t('simulator.title')}</strong>
-            <span>{t('simulator.subtitle')}</span>
+            <span role="status" aria-live="polite">
+              {refreshFeedback ?? t('simulator.subtitle')}
+            </span>
           </div>
         </div>
         <div className="ios-simulator-header-actions">
@@ -193,7 +208,7 @@ export function IosSimulatorPanel({
             label={t('simulator.refresh')}
             type="button"
             className="icon-button tiny"
-            onClick={onRefresh}
+            onClick={() => { void handleRefresh() }}
             disabled={requirementsLoading}
             aria-label={t('simulator.refresh')}
           >
@@ -246,7 +261,12 @@ export function IosSimulatorPanel({
             <Smartphone size={24} aria-hidden="true" />
             <strong>{t('simulator.requirements.title')}</strong>
             <p>{t(simulatorIssueMessageKey(unavailable), { version: requirements?.xcodeVersion ?? '' })}</p>
-            <button type="button" className="ghost-button" onClick={onRefresh}>
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => { void handleRefresh() }}
+              disabled={requirementsLoading}
+            >
               {t('simulator.refresh')}
             </button>
           </div>
@@ -262,7 +282,12 @@ export function IosSimulatorPanel({
         {error && (
           <div className="ios-simulator-error" role="alert">
             <span>{error}</span>
-            <button type="button" className="ghost-button" onClick={onRefresh}>
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => { void handleRefresh() }}
+              disabled={requirementsLoading}
+            >
               {t('simulator.refresh')}
             </button>
           </div>

@@ -1,6 +1,52 @@
 {
   "schemaVersion": 1,
   "releases": {
+    "0.7.1-beta": {
+      "pt-BR": {
+        "title": "Verboo Code 0.7.1-beta — hotfix de conexão",
+        "summary": "Uma atualização corretiva para tornar o login de provedores e as ferramentas do simulador mais compatíveis e resilientes.",
+        "items": [
+          {
+            "title": "Login Claude e Codex mais resiliente",
+            "body": "A ponte não encerra mais um login válido quando o CLI redesenha ou altera uma tela durante o OAuth."
+          },
+          {
+            "title": "Erros continuam explícitos",
+            "body": "Cancelamento, confirmação de risco, encerramento do CLI e timeouts reais continuam sendo tratados sem avançar às cegas."
+          },
+          {
+            "title": "Ferramentas compatíveis com Claude e Codex",
+            "body": "Os schemas do simulador não usam mais combinações de topo rejeitadas pelas APIs dos provedores."
+          },
+          {
+            "title": "Seleção de simulador continua segura",
+            "body": "Combinações ambíguas ou incompletas de dispositivo continuam sendo recusadas pelo backend antes de anexar."
+          }
+        ]
+      },
+      "en-US": {
+        "title": "Verboo Code 0.7.1-beta — connection hotfix",
+        "summary": "A corrective update that makes provider sign-in and simulator tools more compatible and resilient.",
+        "items": [
+          {
+            "title": "More resilient Claude and Codex sign-in",
+            "body": "The bridge no longer ends a valid sign-in when the CLI redraws or changes a screen during OAuth."
+          },
+          {
+            "title": "Errors remain explicit",
+            "body": "Cancellation, risk confirmation, CLI exit, and real timeouts are still handled without blindly advancing."
+          },
+          {
+            "title": "Tools compatible with Claude and Codex",
+            "body": "Simulator schemas no longer use top-level combinations rejected by provider APIs."
+          },
+          {
+            "title": "Simulator selection remains safe",
+            "body": "Ambiguous or incomplete device combinations are still rejected by the backend before attaching."
+          }
+        ]
+      }
+    },
     "0.7.0-beta": {
       "pt-BR": {
         "title": "O Verboo Code 0.7.0-beta chegou",
