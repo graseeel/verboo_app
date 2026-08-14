@@ -64,8 +64,11 @@ pub fn inject_api_key(token: Option<&str>, command: &mut Command) -> Option<Toke
         return None;
     }
     if trimmed.starts_with("vbk_") {
-        // App-stored API key — never as OAuth env.
+        // App-stored API key — inject as both ANTHROPIC_API_KEY and
+        // CLAUDE_CODE_OAUTH_TOKEN so the CLI can fetch models from the router.
+        // The router accepts API keys as Bearer tokens.
         command.env("ANTHROPIC_API_KEY", trimmed);
+        command.env("CLAUDE_CODE_OAUTH_TOKEN", trimmed);
         return Some(TokenGuard);
     }
     // Fresh OAuth access token from CLI store (parent-refreshed).
