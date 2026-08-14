@@ -93,8 +93,10 @@ pub fn get_access_token() -> Option<String> {
         let cached = CACHE.lock().ok()?;
         if let Some(c) = cached.as_ref() {
             if !should_refresh(c) {
+                eprintln!("[verboo:cli-creds] cache hit — returning cached token");
                 return Some(c.access_token.clone());
             }
+            eprintln!("[verboo:cli-creds] cache hit but token needs refresh");
         }
     }
 
@@ -106,14 +108,22 @@ pub fn get_access_token() -> Option<String> {
         let cached = CACHE.lock().ok()?;
         if let Some(c) = cached.as_ref() {
             if !should_refresh(c) {
+                eprintln!("[verboo:cli-creds] cache hit (after lock) — returning cached token");
                 return Some(c.access_token.clone());
             }
         }
     }
 
+    eprintln!("[verboo:cli-creds] reading credentials from store...");
     let credentials = match read_credentials_from_store() {
-        Some(c) => c,
-        None => return None,
+        Some(c) => {
+            eprintln!("[verboo:cli-creds] credentials found — expires_at={:?}", c.expires_at);
+            c
+        }
+        None => {
+            eprintln!("[verboo:cli-creds] NO CREDENTIALS IN STORE — returning None");
+            return None;
+        }
     };
 
     // Update cache with what we just read.
@@ -213,9 +223,26 @@ fn cli_credentials_file_path() -> Option<std::path::PathBuf> {
 /// Returns the parsed `verbooOauth` credentials, or None if missing /
 /// unparseable.
 fn read_credentials_from_store() -> Option<CliOAuthCredentials> {
-    let blob: Value = read_credentials_blob()?;
-    let oauth = blob.get("verbooOauth")?;
-    parse_oauth(oauth)
+    let blob: Value = match read_credentials_blob() {
+        Some(b) => {
+            eprintln!("[verboo:cli-creds] credentials blob found ({} bytes)", serde_json::to_string(&b).unwrap_or_default().len());
+            b
+        }
+        None => {
+            eprintln!("[verboo:cli-creds] NO CREDENTIALS BLOB FOUND");
+            return None;
+        }
+    };
+    match blob.get("verbooOauth") {
+        Some(oauth) => {
+            eprintln!("[verboo:cli-creds] verbooOauth field found — parsing...");
+            parse_oauth(oauth)
+        }
+        None => {
+            eprintln!("[verboo:cli-creds] NO verbooOauth field in blob — keys: {:?}", blob.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+            None
+        }
+    }
 }
 
 /// Cross-platform credentials blob reader. Dispatches to the correct
@@ -235,12 +262,23 @@ pub(crate) fn read_credentials_blob() -> Option<Value> {
     }
 
     if cfg!(target_os = "macos") {
+        eprintln!("[verboo:cli-creds] platform: macOS — reading Keychain");
         read_keychain_blob()
     } else if cfg!(target_os = "windows") {
+        eprintln!("[verboo:cli-creds] platform: Windows — trying DPAPI then plaintext fallback");
         // (a) Windows: DPAPI primary, plaintext fallback.
         #[cfg(windows)]
         {
-            read_windows_dpapi_blob().or_else(read_file_blob)
+            match read_windows_dpapi_blob() {
+                Some(blob) => {
+                    eprintln!("[verboo:cli-creds] DPAPI read SUCCESS");
+                    return Some(blob);
+                }
+                None => {
+                    eprintln!("[verboo:cli-creds] DPAPI read FAILED — falling back to plaintext");
+                }
+            }
+            read_file_blob()
         }
         #[cfg(not(windows))]
         {
@@ -252,6 +290,7 @@ pub(crate) fn read_credentials_blob() -> Option<Value> {
     } else {
         #[cfg(target_os = "linux")]
         {
+            eprintln!("[verboo:cli-creds] platform: Linux — reading Secret Service");
             read_linux_secret_blob().or_else(read_file_blob)
         }
         #[cfg(not(target_os = "linux"))]
@@ -362,8 +401,26 @@ fn write_keychain_blob(blob: &Value) -> bool {
 
 /// Reads the blob from `~/.verboo/.credentials.json` (plaintext JSON).
 fn read_file_blob() -> Option<Value> {
-    let path = cli_credentials_file_path()?;
-    let contents = std::fs::read_to_string(&path).ok()?;
+    let path = match cli_credentials_file_path() {
+        Some(p) => {
+            eprintln!("[verboo:cli-creds] plaintext fallback path: {}", p.display());
+            p
+        }
+        None => {
+            eprintln!("[verboo:cli-creds] no credentials file path (HOME/USERPROFILE unset)");
+            return None;
+        }
+    };
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => {
+            eprintln!("[verboo:cli-creds] plaintext file read OK ({} bytes)", c.len());
+            c
+        }
+        Err(e) => {
+            eprintln!("[verboo:cli-creds] plaintext file read FAILED: {e}");
+            return None;
+        }
+    };
     parse_json_blob(&contents)
 }
 
@@ -536,6 +593,14 @@ fn verboo_config_home() -> Option<std::path::PathBuf> {
     Some(home.join(".verboo"))
 }
 
+/// Logs diagnostic info for Windows credential resolution.
+/// Helps debug "chat not loading" issues by surfacing exactly where
+/// the credential chain breaks.
+#[cfg(windows)]
+fn log_windows_credential_diagnostics(stage: &str, detail: &str) {
+    eprintln!("[verboo:credentials:win] {stage}: {detail}");
+}
+
 /// Returns the current username for DPAPI entropy. On Windows:
 /// `%USERNAME%`. On Unix (for testing): `$USER` / `$LOGNAME`.
 fn current_username() -> Option<String> {
@@ -561,14 +626,27 @@ fn current_username() -> Option<String> {
 /// file. (Cadinho limit declaration.)
 #[cfg(windows)]
 fn read_windows_dpapi_blob() -> Option<Value> {
-    let config_home = verboo_config_home()?;
+    let config_home = verboo_config_home().or_else(|| {
+        log_windows_credential_diagnostics("dpapi", "config_home not found (HOME/USERPROFILE unset)");
+        None
+    })?;
     let resource_name = dpapi_resource_name();
     let file_path = dpapi_file_path_for(&config_home, resource_name);
-    let username = current_username()?;
+    let username = current_username().or_else(|| {
+        log_windows_credential_diagnostics("dpapi", "USERNAME env var not set");
+        None
+    })?;
     let entropy = dpapi_entropy_for(resource_name, &username);
 
     // The CLI writes Base64 text, not the raw DPAPI bytes.
-    let protected = decode_windows_dpapi_payload(&std::fs::read(file_path).ok()?)?;
+    let file_bytes = std::fs::read(&file_path).ok().or_else(|| {
+        log_windows_credential_diagnostics("dpapi", &format!("DPAPI file not found: {}", file_path.display()));
+        None
+    })?;
+    let protected = decode_windows_dpapi_payload(&file_bytes).or_else(|| {
+        log_windows_credential_diagnostics("dpapi", "Base64 decode failed — file may be corrupt or empty");
+        None
+    })?;
     let protected_b64 = base64::engine::general_purpose::STANDARD.encode(protected);
     let entropy_escaped = entropy.replace('\'', "''");
 
@@ -590,10 +668,15 @@ fn read_windows_dpapi_blob() -> Option<Value> {
         .arg(&script)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .output()
-        .ok()?;
+        .ok().or_else(|| {
+            log_windows_credential_diagnostics("dpapi", "PowerShell execution failed — is PowerShell available?");
+            None
+        })?;
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log_windows_credential_diagnostics("dpapi", &format!("PowerShell DPAPI decrypt failed: {}", stderr.trim()));
         return None;
     }
     let json = String::from_utf8_lossy(&output.stdout);
