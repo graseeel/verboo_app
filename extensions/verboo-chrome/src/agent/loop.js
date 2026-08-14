@@ -276,6 +276,11 @@ async function runLlmAgentTurnWithinBudget({
   // text before accepting a final summary.
   let verificationEvidenceRead = false
   let verificationAskSent = false
+  // PÓS-CAMPO-3 (item 2): consecutive failures of the EXACT same mutate
+  // call (name + canonical input). After N=2, the identical call is
+  // blocked and feedback directs to find/read_page. Different arguments
+  // always pass — legitimate retries are never killed.
+  const failedMutateCounts = new Map()
   let promptInjectionDetected = false
   let currentAccessToken = accessToken
   const refreshAccessTokenForTurn = typeof refreshAccessToken === 'function'
@@ -631,6 +636,37 @@ async function runLlmAgentTurnWithinBudget({
         }
       }
 
+      // PÓS-CAMPO-3 (item 2): block the EXACT repetition of a failing
+      // mutate. Two consecutive failures of the same name+canonical input
+      // → the third identical call is NOT executed; the tool-role feedback
+      // directs to find/read_page. Bounded: the block is deterministic per
+      // key (never executes), different arguments always execute, and the
+      // step counter still advances — no loop possible.
+      const isMutate = tc.name === 'click' || tc.name === 'type'
+        || tc.name === 'navigate' || tc.name === 'tabs' || tc.name === 'tab_group'
+      // NOTE: tc (toToolCall) carries params, NOT the raw arguments string —
+      // the canonical key must be built from params or every call collapses
+      // into one key (String(undefined) === 'undefined').
+      const attemptKey = isMutate
+        ? `${tc.name}:${canonicalJson(JSON.stringify(tc.params ?? {}))}`
+        : null
+      if (attemptKey && (failedMutateCounts.get(attemptKey) ?? 0) >= 2) {
+        allToolResults.push({
+          toolCallId: tc.id,
+          name: tc.name,
+          success: false,
+          data: null,
+          error: 'blocked_repeated_failed_call',
+          durationMs: 0,
+        })
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: 'BLOCKED: this exact call failed repeatedly. Do NOT repeat it — call find with the user\'s wording (or read_page) to obtain a VALID selector, then retry with the selector it returns.',
+        })
+        continue
+      }
+
       // Broadcast what the LLM decided to do (panel shape).
       broadcast({
         type: MSG.AGENT_THOUGHT,
@@ -641,6 +677,13 @@ async function runLlmAgentTurnWithinBudget({
       // That boundary emits AGENT_TOOL_EXECUTING only after policy approval.
       const execResult = await executeTool(tc, signal)
       const durationMs = Date.now() - startedAt
+      if (attemptKey) {
+        if (execResult.ok) {
+          failedMutateCounts.delete(attemptKey)
+        } else {
+          failedMutateCounts.set(attemptKey, (failedMutateCounts.get(attemptKey) ?? 0) + 1)
+        }
+      }
 
       // Build text result for the conversation.
       // Tool role content remains a string. Vision pixels travel in a separate

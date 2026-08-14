@@ -53,9 +53,11 @@ export async function click(tool, ctx = {}) {
 
   if (!result) throw new Error('click: no result from page')
   if (!result.result) {
+    // PÓS-CAMPO-3 (item 1): the recovery hint points at the find/read_page
+    // TOOLS — never at repeating the same selector/coordinates.
     throw new Error(selector
-      ? `click: element not found: ${selector}`
-      : `click: no element at coordinates ${x},${y}`)
+      ? `click: selector not found: ${selector} — call the find tool to get a valid selector for this element, then retry`
+      : `click: no element at coordinates ${x},${y} — use find or read_page to locate the target, then retry`)
   }
   return {
     ...(selector ? { selector } : {}),

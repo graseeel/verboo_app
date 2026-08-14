@@ -43,12 +43,13 @@ export async function typeText(tool, ctx = {}) {
 
   if (!result) throw new Error('type: no result from page')
   if (!result.result || result.result === false) {
-    // R-T4/GENERALIZAÇÃO-2: when the call carried pressEnter, the error
-    // reminds the model of the parameter — a retry after "element not
-    // found" tends to drop it, silently losing the commit.
+    // PÓS-CAMPO-3 (item 1): the recovery hint points at the find TOOL,
+    // never at "repeat the same arguments" — a weak model took "retry
+    // with the same arguments" literally and repeated the invalid
+    // selector. When pressEnter was set, the hint also preserves it.
     throw new Error(pressEnter
-      ? `type: element not found: ${selector} (the call had pressEnter: true — retry with the same arguments)`
-      : `type: element not found: ${selector}`)
+      ? `type: selector not found: ${selector} — call the find tool to get a valid selector for this element, then retry type keeping pressEnter: true`
+      : `type: selector not found: ${selector} — call the find tool to get a valid selector for this element, then retry`)
   }
   // R-T5/GENERALIZAÇÃO-2: with pressEnter the page returns { found,
   // handled } — pressedEnter reflects whether the APP handled the Enter;

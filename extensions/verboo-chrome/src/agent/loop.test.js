@@ -1253,15 +1253,21 @@ test('runLlmAgentTurn: aborts the real executor when the task time budget expire
 })
 
 test('runLlmAgentTurn: early-stop after 5 consecutive failures of same tool', async () => {
-  // Mock fetch: always returns a click tool_call (never text-only).
+  // Mock fetch: always returns a click tool_call (never text-only) with
+  // a DIFFERENT selector each time — the failed-mutate block (which only
+  // stops IDENTICAL repeats) must not interfere with the streak.
   // After 3 fails → STRATEGY_HINT injected. After 2 more → early stop.
-  globalThis.fetch = async () => ({
-    ok: true, status: 200, json: async () => ({
-      choices: [{ message: { role: 'assistant', content: null, tool_calls: [
-        { id: 'tc_fail', function: { name: 'click', arguments: '{"selector":".btn"}' } },
-      ] } }],
-    }),
-  })
+  let fetchCount = 0
+  globalThis.fetch = async () => {
+    fetchCount += 1
+    return {
+      ok: true, status: 200, json: async () => ({
+        choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+          { id: `tc_fail_${fetchCount}`, function: { name: 'click', arguments: `{"selector":".btn-${fetchCount}"}` } },
+        ] } }],
+      }),
+    }
+  }
 
   try {
     const result = await runLlmAgentTurn({
@@ -2681,6 +2687,160 @@ test('runLlmAgentTurn: TodoMVC literal — absent effect is reported as failure,
     assert.match(evidence.content, /INSIDE the target field is NOT evidence/)
     assert.match(result.assistantMessage, /Tarefa adicionada\./)
     assert.equal(result.toolResults.length, 2)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+// ── PÓS-CAMPO-3: repeated-failed-mutate block + hint mentions find ──
+
+test('runLlmAgentTurn: the EXACT same failing mutate is blocked on the 3rd repeat with find feedback', async () => {
+  const requestBodies = []
+  const executed = []
+  const sameCall = {
+    id: 'type-1',
+    function: { name: 'type', arguments: '{"selector":"body > section > header > input","text":"comprar café"}' },
+  }
+  const differentCall = {
+    id: 'type-2',
+    function: { name: 'type', arguments: '{"selector":".new-todo","text":"comprar café"}' },
+  }
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    const index = requestBodies.length
+    if (index === 1 || index === 2) {
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [sameCall] } }] }) }
+    }
+    if (index === 3) {
+      // The weak model repeats the SAME invalid call a third time.
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [sameCall] } }] }) }
+    }
+    if (index === 4) {
+      // After the block feedback, the model retries with a DIFFERENT selector.
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { role: 'assistant', content: null, tool_calls: [differentCall] } }] }) }
+    }
+    // …then closes the turn.
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { role: 'assistant', content: 'ok.' } }] }) }
+  }
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_repeat_block',
+      forceBrowserTools: true,
+      userMessage: 'adicione comprar café na lista',
+      accessToken: 'test-key',
+      modelId: 'tool-model',
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        executed.push(tc.params?.selector ?? tc.name)
+        return tc.name === 'type' && tc.params?.selector === '.new-todo'
+          ? { ok: true, result: { textLength: 12 }, policy: { allowed: true } }
+          : { ok: false, error: 'selector not found' }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://todomvc.com/examples/react/dist' }),
+    })
+    // Two executions (1st + 2nd identical fails) — the 3rd identical call
+    // was BLOCKED, and the different-selector retry executed. The trailing
+    // 'read_page' is the R-V4 harness evidence read on the turn close.
+    assert.deepEqual(executed, [
+      'body > section > header > input',
+      'body > section > header > input',
+      '.new-todo',
+      'read_page',
+    ])
+    // The request AFTER the blocked repeat carries the tool-role feedback
+    // pointing at find.
+    const blockFeedback = requestBodies[3].messages.find(
+      (m) => m.role === 'tool' && String(m.content).includes('BLOCKED'),
+    )
+    assert.ok(blockFeedback, 'identical repeat must be blocked with tool-role feedback')
+    assert.match(blockFeedback.content, /call find with the user's wording/)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('runLlmAgentTurn: different arguments are never blocked (legitimate retries pass)', async () => {
+  const executed = []
+  let fetchCount = 0
+  globalThis.fetch = async () => {
+    fetchCount += 1
+    if (fetchCount <= 3) {
+      // A, B, A — the A-repeat is NOT consecutive, so it must execute.
+      const selectors = ['#a', '#b', '#a']
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+            { id: `t-${fetchCount}`, function: { name: 'type', arguments: JSON.stringify({ selector: selectors[fetchCount - 1], text: 'x' }) } },
+          ] } }],
+        }),
+      }
+    }
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { role: 'assistant', content: 'ok.' } }] }) }
+  }
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_diff_args',
+      forceBrowserTools: true,
+      userMessage: 'digite x',
+      accessToken: 'test-key',
+      modelId: 'tool-model',
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        executed.push(tc.params?.selector)
+        return { ok: false, error: 'selector not found' }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://example.com' }),
+    })
+    assert.deepEqual(executed, ['#a', '#b', '#a'], 'all three calls execute — no key is consecutive')
+    assert.equal(result.toolResults.length, 3)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('runLlmAgentTurn: the fail-streak hint explicitly mentions find', async () => {
+  const requestBodies = []
+  let fetchCount = 0
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    fetchCount += 1
+    if (fetchCount <= 3) {
+      // Three fails with DIFFERENT selectors (same tool name) → fail-streak.
+      const selectors = ['#a', '#b', '#c']
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+            { id: `t-${fetchCount}`, function: { name: 'type', arguments: JSON.stringify({ selector: selectors[fetchCount - 1], text: 'x' }) } },
+          ] } }],
+        }),
+      }
+    }
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { role: 'assistant', content: 'ok.' } }] }) }
+  }
+  try {
+    await runLlmAgentTurn({
+      turnId: 'turn_streak_find',
+      forceBrowserTools: true,
+      userMessage: 'digite x',
+      accessToken: 'test-key',
+      modelId: 'tool-model',
+      broadcast: () => {},
+      executeTool: async () => ({ ok: false, error: 'selector not found' }),
+      getActiveTabMeta: async () => ({ url: 'https://example.com' }),
+    })
+    // The STRATEGY_HINT is injected on the 4th request and must cite find.
+    const hint = requestBodies[3].messages.find(
+      (m) => m.role === 'system' && String(m.content).includes('STOP guessing'),
+    )
+    assert.ok(hint, 'STRATEGY_HINT must be injected after 3 fails')
+    assert.match(hint.content, /\bfind\b/)
+    assert.match(hint.content, /\bread_page\b/)
   } finally {
     globalThis.fetch = origFetch
   }
