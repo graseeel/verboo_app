@@ -16,6 +16,7 @@ import { executeWithApproval } from './controller/approvedExecute.js'
 import { loadMode } from './policy/modesStore.js'
 import { getGrant, upsertGrant } from './policy/siteGrantsStore.js'
 import { MSG } from './controller/protocol.js'
+import { isControllableUrl } from './planMessage.js'
 import { checkMessageSender } from './controller/senderGate.js'
 import {
   ensureFreshSession,
@@ -907,9 +908,14 @@ async function runAgentTurn(
     let turnTabLease = null
     const ensureTurnWorkspace = async (resume = false) => {
       if (!turnTabLease) {
-        turnTabLease = await backgroundWorkspace.acquire({
+        // PÓS-CAMPO-6 (B): acquireControllable revalidates the lease target
+        // — a restored/stale workspace tab (blank or a previous turn's URL)
+        // would make EVERY selector fail not-found while the user watches a
+        // perfectly good page. Falls back to the user's active tab.
+        turnTabLease = await backgroundWorkspace.acquireControllable({
           sourceTabId: Number.isInteger(senderTabId) ? senderTabId : activeTab?.id,
           resume,
+          isControllableUrl,
         })
         await broadcastWorkspaceTabMeta(turnId, turnTabLease)
       }
