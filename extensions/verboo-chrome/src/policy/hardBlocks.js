@@ -36,12 +36,48 @@ export const HARD_BLOCKS = [
   {
     label: 'financial_trade',
     match(input) {
+      // FRENTE-B (B-3): money movement is a hard block regardless of the
+      // channel — PIX (PT-BR instant transfer), bank transfers (en + pt),
+      // wire transfers, and Brazilian boletos.
+      //
+      // PÓS-GATE (Farol): a bare "transfer"/"transferir"/"wire" is NOT
+      // enough — legitimate non-financial uses exist ("transfer to another
+      // tab", "transferir o arquivo", "wire the data"). Unambiguous terms
+      // and explicit money-movement compounds block standalone; bare
+      // transfer verbs only block when a money-context word appears in the
+      // same input (amount, bank/account, payment…).
       const keywords = [
         /trade/i, /invest/i, /buy\s*stock/i, /sell\s*stock/i,
         /place\s*trade/i, /execute\s*trade/i, /crypto/i,
         /swap\b/i, /stake/i,
+        // Unambiguous instruments / compounds — intrinsically financial.
+        /pix\b/i, /boleto/i,
+        /bank\s*transfer/i, /wire\s*transfer/i,
+        /transfer\s*(money|funds|payment|balance|cash)/i,
+        /(money|funds|payment)\s*transfer/i,
+        /transfer\s*(to|between)\s*(my\s+)?(account|bank)/i,
+        /transferencia\s*bancaria/i,
+        /transferir\s*dinheiro/i, /mandar\s*dinheiro/i, /enviar\s*dinheiro/i,
+        /pagar\s*(um\s+)?(pix|boleto)/i,
       ]
-      return keywords.some((re) => re.test(input))
+      if (keywords.some((re) => re.test(input))) return true
+
+      // Bare transfer verbs: blocked ONLY in a financial context.
+      const moneyContext = [
+        /money\b/i, /payment/i, /pay\b/i, /paid\b/i,
+        /amount\b/i, /value\b/i, /valor\b/i, /quantia/i,
+        /dinheiro/i, /funds/i, /cash\b/i, /saldo/i,
+        /bank\b/i, /account\b/i, /conta\b/i, /banco\b/i,
+        /deposit/i, /withdraw/i, /remessa/i,
+        /fee\b/i, /taxa/i, /juros/i, /interest/i, /percent/i,
+        /reais\b/i, /real\b/i, /dolares?/i, /dollars?/i, /euros?/i, /usd\b/i,
+        /(\$|€|£)\s*\d|\d+\s*(usd|dol|reais|euro|eur|brl)/i,
+      ]
+      if (moneyContext.some((re) => re.test(input))
+        && /transfer\b|transferir|transferencia|wire\b/i.test(input)) {
+        return true
+      }
+      return false
     },
   },
   {

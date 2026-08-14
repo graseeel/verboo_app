@@ -26,7 +26,10 @@
         text: visibleText(target),
         field: fieldMetadata(target),
         ...(kind === 'input' || kind === 'change'
-          ? { value: 'value' in target ? String(target.value ?? '') : '' }
+          // FRENTE-B (B-1): a password value must never leave the page —
+          // not even to the background. The field stays recorded (the step
+          // is kept), but the value is suppressed at the source.
+          ? { value: isPasswordField(target) ? '' : ('value' in target ? String(target.value ?? '') : '') }
           : {}),
         timestamp: Date.now(),
       }
@@ -77,6 +80,16 @@
       ariaLabel: element.getAttribute('aria-label') || '',
       label: String(label).trim().slice(0, 180),
     }
+  }
+
+  // FRENTE-B (B-1): the value of a password field is never collected.
+  // Both the explicit type=password and the autocomplete hint count.
+  function isPasswordField(element) {
+    const type = String(element.getAttribute('type') || '').toLowerCase()
+    const autocomplete = String(element.getAttribute('autocomplete') || '').toLowerCase()
+    return type === 'password'
+      || autocomplete === 'current-password'
+      || autocomplete === 'new-password'
   }
 
   function accessibleName(element) {

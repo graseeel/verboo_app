@@ -45,6 +45,65 @@ test('financial_trade: "execute trade" matches', () => {
   assert.equal(r.matchedLabel, 'financial_trade')
 })
 
+// FRENTE-B (B-3): money-movement channels (PIX / transfer / wire / boleto).
+test('financial_trade: "enviar pix" matches (PT-BR)', () => {
+  const r = checkHardBlock('tool:click text=Enviar Pix para Maria')
+  assert.equal(r.blocked, true)
+  assert.equal(r.matchedLabel, 'financial_trade')
+})
+
+test('financial_trade: "pagar boleto" matches (PT-BR)', () => {
+  const r = checkHardBlock('tool:click text=Pagar boleto')
+  assert.equal(r.blocked, true)
+  assert.equal(r.matchedLabel, 'financial_trade')
+})
+
+test('financial_trade: "transfer money" matches', () => {
+  const r = checkHardBlock('tool:click text=Transfer money now')
+  assert.equal(r.blocked, true)
+  assert.equal(r.matchedLabel, 'financial_trade')
+})
+
+test('financial_trade: "wire transfer" matches', () => {
+  const r = checkHardBlock('tool:click text=Confirm wire transfer')
+  assert.equal(r.blocked, true)
+  assert.equal(r.matchedLabel, 'financial_trade')
+})
+
+test('financial_trade: "mandar pix" matches (PT-BR)', () => {
+  const r = checkHardBlock('tool:click text=Mandar pix de 100 reais')
+  assert.equal(r.blocked, true)
+  assert.equal(r.matchedLabel, 'financial_trade')
+})
+
+// PÓS-GATE (Farol): bare transfer/wire must not block legitimate uses.
+test('financial_trade: "transfer to another tab" does NOT match (PÓS-GATE)', () => {
+  const r = checkHardBlock('tool:click text=Move tab / transfer to another window')
+  assert.equal(r.blocked, false)
+})
+
+test('financial_trade: "transferir o arquivo" does NOT match (PÓS-GATE)', () => {
+  const r = checkHardBlock('tool:type selector=#input text=transferir o arquivo para o campo')
+  assert.equal(r.blocked, false)
+})
+
+test('financial_trade: "wire the data" does NOT match (PÓS-GATE)', () => {
+  const r = checkHardBlock('tool:type selector=#a text=wire the data into the form')
+  assert.equal(r.blocked, false)
+})
+
+test('financial_trade: "transfer 100 reais" DOES match via money context (PÓS-GATE)', () => {
+  const r = checkHardBlock('tool:click text=Transferir 100 reais para Maria')
+  assert.equal(r.blocked, true)
+  assert.equal(r.matchedLabel, 'financial_trade')
+})
+
+test('financial_trade: "bank transfer" compound matches standalone (PÓS-GATE)', () => {
+  const r = checkHardBlock('tool:click text=Confirm bank transfer')
+  assert.equal(r.blocked, true)
+  assert.equal(r.matchedLabel, 'financial_trade')
+})
+
 test('mass_permanent_deletion: "delete all emails" matches', () => {
   const r = checkHardBlock('tool:click text=Delete all emails')
   assert.equal(r.blocked, true)

@@ -16,6 +16,7 @@ import { executeWithApproval } from './controller/approvedExecute.js'
 import { loadMode } from './policy/modesStore.js'
 import { getGrant, upsertGrant } from './policy/siteGrantsStore.js'
 import { MSG } from './controller/protocol.js'
+import { checkMessageSender } from './controller/senderGate.js'
 import {
   ensureFreshSession,
   loadSession,
@@ -275,6 +276,23 @@ const turnSiteGrants = new Map()
 // ── Message router ────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== 'object') return false
+
+  // FRENTE-B (B-2): sender gate — central ALLOWLIST. A content script
+  // (page context) may only send the message types explicitly listed in
+  // CONTENT_SCRIPT_ALLOWED_TYPES (today: routine:record_event). Every
+  // other type requires an extension-page sender (side panel / options).
+  // A page-injected script cannot spoof sender fields (Chrome sets them),
+  // so the whole controller surface — agent turns, approvals, auth,
+  // routines, selection context, model selection — is closed to content
+  // scripts, and new message types are born protected by default.
+  const gate = checkMessageSender(chrome.runtime.id, message.type, sender)
+  if (gate !== 'allowed') {
+    console.warn(
+      `[Verboo] Rejected ${message.type} (${gate.reason}) from sender: ${sender?.url ?? 'unknown'}`,
+    )
+    sendResponse({ ok: false, error: 'invalid_sender' })
+    return false
+  }
 
   if (ROUTINE_MESSAGE_TYPES.has(message.type)) {
     routineMessageHandler(message)
