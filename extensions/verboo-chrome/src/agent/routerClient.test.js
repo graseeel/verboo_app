@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chatCompletion, parseCompletionResponse } from './routerClient.js'
+import { chatCompletion, parseCompletionResponse, stripToolMarkup } from './routerClient.js'
 
 test('parseCompletionResponse: standard OpenAI shape with text only', () => {
   const res = parseCompletionResponse({
@@ -531,4 +531,132 @@ test('parseCompletionResponse: JSON computer action unwraps action and drops unk
   assert.equal(result.toolCalls[0].name, 'read_page')
   assert.deepEqual(JSON.parse(result.toolCalls[0].arguments), { selector: 'body' })
   assert.ok(!(result.content ?? '').includes('<tool_call'))
+})
+
+// ── FRENTE-C: <function_calls> family (Ivo's literal fixtures) ──────
+
+test('parseCompletionResponse: Ivo fixture — computer/screenshot normalizes to screenshot', () => {
+  const result = parseCompletionResponse({
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: '<function_calls>\n<invoke name="computer">\n<parameter name="action">screenshot</parameter>\n</invoke>\n</function_calls>',
+      },
+    }],
+  })
+
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].name, 'screenshot')
+  assert.deepEqual(JSON.parse(result.toolCalls[0].arguments), {})
+  assert.equal(result.content, null)
+  assert.equal(result.markupDetected, true)
+  assert.deepEqual(result.droppedToolNames, [])
+})
+
+test('parseCompletionResponse: Ivo fixture — computer/left_click + coordinate maps to click {x,y} (R5-A)', () => {
+  const result = parseCompletionResponse({
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: '<function_calls>\n<invoke name="computer">\n<parameter name="action">left_click</parameter>\n<parameter name="coordinate">[528,244]</parameter>\n</invoke>\n</function_calls>',
+      },
+    }],
+  })
+
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].name, 'click')
+  assert.deepEqual(JSON.parse(result.toolCalls[0].arguments), { x: 528, y: 244 })
+  assert.equal(result.content, null)
+  assert.deepEqual(result.droppedToolNames, [])
+})
+
+test('parseCompletionResponse: prose around a function_calls block is preserved', () => {
+  const result = parseCompletionResponse({
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: 'Let me look at that.\n<function_calls>\n<invoke name="computer">\n<parameter name="action">screenshot</parameter>\n</invoke>\n</function_calls>\nHere is what I see.',
+      },
+    }],
+  })
+
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].name, 'screenshot')
+  assert.equal(result.content, 'Let me look at that.\nHere is what I see.')
+})
+
+test('parseCompletionResponse: orphan <function_calls> opener keeps trailing prose', () => {
+  const result = parseCompletionResponse({
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: '<function_calls>\nStill working on it.',
+      },
+    }],
+  })
+
+  assert.equal(result.toolCalls.length, 0)
+  assert.equal(result.content, 'Still working on it.')
+  assert.equal(result.markupDetected, true)
+})
+
+test('parseCompletionResponse: structured tool_calls win over a mirror text function_calls block', () => {
+  const result = parseCompletionResponse({
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: '<function_calls><invoke name="computer"><parameter name="action">screenshot</parameter></invoke></function_calls>',
+        tool_calls: [
+          { id: 'tc_s', type: 'function', function: { name: 'navigate', arguments: '{"url":"https://example.com"}' } },
+        ],
+      },
+    }],
+  })
+
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].name, 'navigate')
+  assert.equal(result.content, null)
+})
+
+test('parseCompletionResponse: unknown action inside function_calls is dropped VISIBLY (R4)', () => {
+  const result = parseCompletionResponse({
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: '<function_calls>\n<invoke name="computer">\n<parameter name="action">wait</parameter>\n</invoke>\n</function_calls>',
+      },
+    }],
+  })
+
+  assert.equal(result.toolCalls.length, 0)
+  assert.equal(result.content, null)
+  assert.equal(result.markupDetected, true)
+  assert.deepEqual(result.droppedToolNames, ['wait'])
+})
+
+test('parseCompletionResponse: alias mapping — left_click/type_text/get_page_content resolve (R3)', () => {
+  const result = parseCompletionResponse({
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: '<function_calls>'
+          + '<invoke name="computer"><parameter name="action">type_text</parameter>'
+          + '<parameter name="selector">#q</parameter><parameter name="value">hello</parameter></invoke>'
+          + '</function_calls>',
+      },
+    }],
+  })
+
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].name, 'type')
+  assert.deepEqual(JSON.parse(result.toolCalls[0].arguments), { selector: '#q', text: 'hello' })
+})
+
+test('stripToolMarkup: removes function_calls/tool_call envelopes, preserves prose (R8 fence)', () => {
+  assert.equal(
+    stripToolMarkup('a <function_calls>x</function_calls> b <tool_call>y</tool_call> c'),
+    'a b c',
+  )
+  assert.equal(stripToolMarkup('prose <function_calls>\n<invoke name="computer">\n</invoke>\n</function_calls> tail'), 'prose tail')
+  assert.equal(stripToolMarkup('<function_calls><invoke name="computer"></invoke></function_calls>'), '')
 })

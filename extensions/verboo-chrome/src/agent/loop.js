@@ -23,7 +23,7 @@
  * Multi-user: zero hardcoded accounts.
  */
 
-import { chatCompletion } from './routerClient.js'
+import { chatCompletion, stripToolMarkup } from './routerClient.js'
 import { getToolRisk, OPENAI_TOOLS, toToolCall } from './toolCatalog.js'
 import { MSG } from '../controller/protocol.js'
 import {
@@ -47,6 +47,17 @@ const STRATEGY_HINT = `You seem stuck failing the same tool repeatedly. STOP gue
 2. If find finds nothing, read the page with read_page and look for the target's text.
 3. Click only a selector returned by find or read_page. Never invent CSS selectors from memory — site structure is not something you know.
 4. If the target genuinely does not exist on the page, tell the user honestly instead of trying more selectors.`
+
+/**
+ * Injected ONCE per turn (R6/FRENTE-C) after the model emitted tool markup
+ * that produced no executable call — gives the model the exact output
+ * contract instead of failing silently or echoing the raw block to the
+ * user. Model-agnostic by design: any model that text-emits tool markup
+ * (e.g. Anthropic-style <function_calls>) gets the same directed retry.
+ */
+const TOOL_FORMAT_RETRY_HINT = `You tried to call a browser tool, but your reply was not accepted as a tool call. Retry the SAME action using the API's native tool_calls mechanism — never write XML tags like <function_calls>, <tool_call>, <invoke>, or <function=...> in your reply text.
+Available tools: navigate, read_page, find, extract_page_content, structured_extract, click, type, screenshot, tabs, tab_group.
+click accepts either a CSS selector or viewport pixel coordinates {x, y}. Use find to locate elements before clicking; never invent selectors from memory.`
 
 /**
  * System prompt for the browser agent. Bilingual EN+PT to handle mixed requests.
@@ -83,7 +94,13 @@ IMPORTANT RULES:
 - For reading a page: use read_page with a targeted selector, not the whole body when possible
 - For an explicit current-page inspection request (for example "o que é isso", "o que diz esta página", or "extract this page"), ALWAYS call read_page before answering. Do not answer that browser tools are unavailable when the current page is an HTTP(S) page.
 - Return a brief text summary when you finish the task
-- Never invent or fabricate selectors — only use ones you can see from page content`
+- Never invent or fabricate selectors — only use ones you can see from page content
+
+TOOL PROTOCOL (mandatory):
+- You have real function-calling. Call browser tools ONLY through the API's native tool_calls mechanism.
+- NEVER write tool markup as chat text — no <function_calls>, <tool_call>, <invoke>, or <function=...> tags in your reply. Written tool markup is rejected and never executed.
+- Available tools: navigate, read_page, find, extract_page_content, structured_extract, click, type, screenshot, tabs, tab_group.
+- click accepts a CSS selector or viewport pixel coordinates {x, y}. Use find to locate elements before clicking; never invent selectors from memory.`
 
 /**
  * Run a multi-step LLM agent turn.
@@ -236,6 +253,10 @@ async function runLlmAgentTurnWithinBudget({
   let failStreak = { name: null, count: 0, afterHint: false }
   // G2-CHROME: the model is asked to close an executed turn at most once.
   let emptyCloseRetried = false
+  // R6/FRENTE-C: the directed tool-format retry is issued at most once per
+  // turn — a model that keeps emitting markup after the hint gets an honest
+  // error, never an unbounded retry loop.
+  let formatRetryUsed = false
 
   // Some tasks have an observable terminal state. Once reached, the next
   // request asks only for the final reply and cannot trigger another action.
@@ -317,6 +338,33 @@ async function runLlmAgentTurnWithinBudget({
     // deliberately narrower than browserToolsEnabled: navigation, mutation,
     // and screenshot requests never get an invented action.
     if (completion.toolCalls.length === 0) {
+      // R6/FRENTE-C: the model emitted tool markup (any family —
+      // <function_calls>, <tool_call>, <invoke>…) that produced NO
+      // executable call. Model-agnostic handling:
+      //   · conversation turn → reclassify (B1-CHROME analog for the text
+      //     form: the model's own markup is the strongest signal the turn
+      //     needs browser tools; page content is not in the messages here,
+      //     so it cannot be injection-seeded — the same safety reasoning
+      //     as the structured B1 path below);
+      //   · browser turn → ONE directed format retry, then honest failure.
+      const formatFailed = completion.markupDetected === true
+        || (completion.droppedToolNames?.length ?? 0) > 0
+      if (formatFailed) {
+        if (!browserToolsEnabled) {
+          return { reclassify: true, toolResults: allToolResults }
+        }
+        if (!formatRetryUsed) {
+          formatRetryUsed = true
+          broadcast({
+            type: MSG.AGENT_THOUGHT,
+            turnId,
+            text: `Model used unsupported tool markup — retrying with the exact tool protocol…`,
+            modelId,
+          })
+          messages.push({ role: 'system', content: TOOL_FORMAT_RETRY_HINT })
+          continue
+        }
+      }
       if (browserToolsEnabled && allToolResults.length === 0) {
         if (
           activeTabMeta?.url &&
@@ -374,7 +422,20 @@ async function runLlmAgentTurnWithinBudget({
           }
           throw new Error('model_returned_empty_response')
         }
-        return { assistantMessage: text, toolResults: allToolResults }
+        // R8/FRENTE-C render fence (defense-in-depth): the parser already
+        // strips recognized markup, but no raw tool-call block may ever
+        // reach the panel. If stripping leaves nothing (e.g. a markup
+        // family the parser does not know yet), fall back to the closing
+        // summary when actions ran, or to an honest error otherwise.
+        const fenced = stripToolMarkup(text)
+        if (fenced) return { assistantMessage: fenced, toolResults: allToolResults }
+        if (allToolResults.some((r) => r && r.success)) {
+          return {
+            assistantMessage: synthesizeClosingSummary(userMessage, allToolResults),
+            toolResults: allToolResults,
+          }
+        }
+        throw new Error('model_tool_protocol_unsupported')
       }
     }
 
@@ -671,6 +732,18 @@ async function runLlmAgentTurnWithinBudget({
       }
 
       if (browserActionsComplete) break
+    }
+
+    // R7/FRENTE-C: some emitted names were dropped at parse time while
+    // others executed. Tell the model which names were invalid so it can
+    // self-correct on the next step instead of repeating the mistake.
+    if ((completion.droppedToolNames?.length ?? 0) > 0) {
+      messages.push({
+        role: 'system',
+        content: `The following tool names you emitted are not available: ${
+          [...new Set(completion.droppedToolNames)].join(', ')
+        }. Re-issue the action using one of: navigate, read_page, find, extract_page_content, structured_extract, click, type, screenshot, tabs, tab_group.`,
+      })
     }
 
     if (signal?.aborted) throw new Error('Agent turn cancelled')

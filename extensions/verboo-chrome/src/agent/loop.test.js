@@ -2054,3 +2054,157 @@ test('G2 CASO A: 4 falhas (element not found) + empty reply stays an honest fail
     globalThis.fetch = origFetch
   }
 })
+
+// ── FRENTE-C: directed format retry, honest failure, reclassify ──────
+
+test('runLlmAgentTurn: directed format retry when the model emits unsupported markup (R6)', async () => {
+  const responses = [
+    // Step 1: model emits the Ivo-style <function_calls> markup with an
+    // action we do not have (wait) — 0 calls, markupDetected + dropped.
+    { ok: true, status: 200, json: async () => ({
+      choices: [{ message: { role: 'assistant', content: '<function_calls>\n<invoke name="computer">\n<parameter name="action">wait</parameter>\n</invoke>\n</function_calls>' } }],
+    }) },
+    // Step 2: after the injected format hint, the model emits a VALID
+    // structured call.
+    { ok: true, status: 200, json: async () => ({
+      choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+        { id: 'tc_ok', function: { name: 'navigate', arguments: '{"url":"https://example.com"}' } },
+      ] } }],
+    }) },
+    // Step 3: final reply.
+    { ok: true, status: 200, json: async () => ({
+      choices: [{ message: { role: 'assistant', content: 'Done.' } }],
+    }) },
+  ]
+  let fetchCount = 0
+  const requestBodies = []
+  globalThis.fetch = async (_url, init) => {
+    requestBodies.push(JSON.parse(init.body))
+    return responses[Math.min(fetchCount++, responses.length - 1)]
+  }
+
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_format_retry',
+      userMessage: 'screenshot the page',
+      accessToken: 'test-key',
+      modelId: 'test-model',
+      broadcast: () => {},
+      executeTool: async (tc) => ({ ok: true, result: { text: 'page loaded' }, policy: { allowed: true, needsApproval: false } }),
+      getActiveTabMeta: async () => ({ url: 'https://example.com' }),
+    })
+
+    assert.equal(result.assistantMessage, 'Done.')
+    assert.equal(result.toolResults.length, 1)
+    assert.equal(result.toolResults[0].success, true)
+    assert.equal(fetchCount, 3)
+    // The second request carries the exact tool-protocol hint as a system message.
+    const hintMessage = requestBodies[1].messages.find(
+      (m) => m.role === 'system' && String(m.content).includes('native tool_calls'),
+    )
+    assert.ok(hintMessage, 'format retry hint must be injected before the second request')
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('runLlmAgentTurn: second markup failure in a fresh browser turn is an honest error (R6 bounded)', async () => {
+  const markupOnly = () => ({ ok: true, status: 200, json: async () => ({
+    choices: [{ message: { role: 'assistant', content: '<function_calls>\n<invoke name="computer">\n<parameter name="action">wait</parameter>\n</invoke>\n</function_calls>' } }],
+  }) })
+  let fetchCount = 0
+  globalThis.fetch = async () => {
+    fetchCount += 1
+    return markupOnly()
+  }
+
+  try {
+    await assert.rejects(
+      () => runLlmAgentTurn({
+        turnId: 'turn_format_exhausted',
+        userMessage: 'screenshot this page',
+        accessToken: 'test-key',
+        modelId: 'test-model',
+        broadcast: () => {},
+        executeTool: async () => ({ ok: true, result: { text: 'x' }, policy: { allowed: true, needsApproval: false } }),
+        getActiveTabMeta: async () => ({ url: 'https://example.com' }),
+      }),
+      /model_tool_protocol_unsupported/,
+      'raw markup must never be returned to the panel after the retry is exhausted',
+    )
+    assert.equal(fetchCount, 2, 'the directed retry happens exactly once per turn')
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('runLlmAgentTurn: markup in a conversation turn reclassifies to browser mode (R6 B1-analog)', async () => {
+  let fetchCount = 0
+  globalThis.fetch = async () => {
+    fetchCount += 1
+    return { ok: true, status: 200, json: async () => ({
+      choices: [{ message: { role: 'assistant', content: '<function_calls>\n<invoke name="computer">\n<parameter name="action">wait</parameter>\n</invoke>\n</function_calls>' } }],
+    }) }
+  }
+
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_format_reclassify',
+      userMessage: 'how does photosynthesis work?',
+      accessToken: 'test-key',
+      modelId: 'test-model',
+      broadcast: () => {},
+      executeTool: async () => ({ ok: true, result: { text: 'x' }, policy: { allowed: true, needsApproval: false } }),
+      getActiveTabMeta: async () => ({ url: 'https://example.com' }),
+    })
+
+    assert.equal(result.reclassify, true)
+    assert.equal(fetchCount, 1, 'conversation markup reclassifies immediately — no retry')
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('runLlmAgentTurn: dropped tool names are fed back to the model next step (R7)', async () => {
+  const responses = [
+    // Step 1: one VALID call (navigate) + one invalid call (wait) in the
+    // same function_calls block — partial drop.
+    { ok: true, status: 200, json: async () => ({
+      choices: [{ message: { role: 'assistant', content: '<function_calls>\n<invoke name="computer"><parameter name="action">navigate</parameter><parameter name="url">https://example.com</parameter></invoke>\n<invoke name="computer"><parameter name="action">wait</parameter></invoke>\n</function_calls>' } }],
+    }) },
+    // Step 2: final reply.
+    { ok: true, status: 200, json: async () => ({
+      choices: [{ message: { role: 'assistant', content: 'Done.' } }],
+    }) },
+  ]
+  let fetchCount = 0
+  const requestBodies = []
+  globalThis.fetch = async (_url, init) => {
+    requestBodies.push(JSON.parse(init.body))
+    return responses[Math.min(fetchCount++, responses.length - 1)]
+  }
+
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_dropped_feedback',
+      userMessage: 'open example.com',
+      accessToken: 'test-key',
+      modelId: 'test-model',
+      broadcast: () => {},
+      executeTool: async (tc) => ({ ok: true, result: { text: 'page loaded' }, policy: { allowed: true, needsApproval: false } }),
+      getActiveTabMeta: async () => ({ url: 'https://other.com' }),
+    })
+
+    assert.equal(result.assistantMessage, 'Done.')
+    assert.equal(result.toolResults.length, 1)
+    assert.equal(result.toolResults[0].success, true)
+    // The next request must tell the model that `wait` is not available.
+    const feedback = requestBodies[1].messages.find(
+      (m) => m.role === 'system' && String(m.content).includes('wait'),
+    )
+    assert.ok(feedback, 'dropped tool names must be fed back to the model')
+    assert.match(String(feedback.content), /navigate, read_page, find/)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
