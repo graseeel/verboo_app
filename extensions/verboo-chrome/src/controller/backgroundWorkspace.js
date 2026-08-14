@@ -98,20 +98,50 @@ export function createBackgroundWorkspaceManager({ chromeApi = chrome } = {}) {
     },
 
     /**
-     * PÓS-CAMPO-6 (B): like acquire, but REVALIDATES the lease target —
-     * a restored lease can point at a stale/blank workspace tab (only
-     * existence is validated by restore); tool calls would then run in
-     * the wrong place and EVERY selector fails. When the lease URL is
-     * not controllable, the lease is discarded and re-acquired from the
-     * same source (the user's active tab when the panel started the turn).
-     * Bounded: the validation runs once (a second blank lease is accepted).
+     * PÓS-CAMPO-6 (B) + PÓS-CAMPO-7: like acquire, but REVALIDATES the
+     * lease target:
+     *   - controlability: a restored lease can sit on a blank/stale
+     *     NON-controllable tab → discarded and re-acquired;
+     *   - PÓS-CAMPO-7 EQUALITY: a restored lease can be controllable yet
+     *     sit on a STALE URL (e.g. a dead localhost from the morning
+     *     tests) — every selector then fails not-found while the user
+     *     watches a perfectly good page. The SAME invisible workspace tab
+     *     is navigated to the user's current URL (the user's own tab is
+     *     never touched) and the load is awaited BEFORE the first tool
+     *     call. Granularity: exact URL minus hash — SPA-safe: the hash
+     *     carries client-side route state on the same document, so a
+     *     hash-only difference must NOT reload the page (reloading would
+     *     lose SPA state). When the source tab is not controllable
+     *     (chrome://), resolveSourceUrl returns null and the current
+     *     behavior is kept (no navigation).
+     *
+     * Re-navigation happens ONLY here, at turn start — mid-turn
+     * navigation by the model (tabs/navigate) is never re-validated.
+     * Bounded: the validation runs once (a second blank lease is
+     * accepted), no loops.
      *
      * @param {{ sourceTabId?: number, resume?: boolean, isControllableUrl: (url: string | undefined) => boolean }} opts
      */
     async acquireControllable({ sourceTabId, resume = false, isControllableUrl } = {}) {
+      const sourceUrl = await resolveSourceUrl(chromeApi, sourceTabId)
       const lease = await this.acquire({ sourceTabId, resume })
       try {
         const tab = await chromeApi.tabs.get(lease.snapshot().tabId)
+        const sourceNorm = stripUrlHash(sourceUrl)
+        const leaseNorm = stripUrlHash(tab?.url)
+        if (sourceUrl && leaseNorm && sourceNorm && leaseNorm !== sourceNorm) {
+          // PÓS-CAMPO-7: stale-but-controllable lease → same invisible tab,
+          // navigated to the user's current page, load awaited.
+          const { tabId } = lease.snapshot()
+          await chromeApi.tabs.update(tabId, { url: sourceUrl })
+          await waitForTabComplete(chromeApi, tabId)
+          const refreshed = await chromeApi.tabs.get(tabId)
+          if (isControllableUrl && !isControllableUrl(refreshed?.url)) {
+            await this.reset()
+            return this.acquire({ sourceTabId, resume: false })
+          }
+          return lease
+        }
         if (isControllableUrl && !isControllableUrl(tab?.url)) {
           await this.reset()
           return this.acquire({ sourceTabId, resume: false })
@@ -130,6 +160,21 @@ export function createBackgroundWorkspaceManager({ chromeApi = chrome } = {}) {
       ])
     },
   }
+}
+
+/**
+ * PÓS-CAMPO-7: URL equality granularity — exact URL minus the hash. The
+ * hash carries client-side SPA route state on the SAME document; a
+ * hash-only difference must not trigger a reload (which would lose SPA
+ * state). Anything else (origin, path, query) is a real page change.
+ *
+ * @param {string | null | undefined} url
+ * @returns {string | null}
+ */
+function stripUrlHash(url) {
+  if (typeof url !== 'string' || url.length === 0) return null
+  const hashIndex = url.indexOf('#')
+  return hashIndex === -1 ? url : url.slice(0, hashIndex)
 }
 
 /**

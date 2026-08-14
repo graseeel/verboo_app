@@ -107,8 +107,8 @@ function makeChromeApi({ leaseTab, sourceTab, statusSequence = [] } = {}) {
   if (leaseTab) tabs.set(leaseTab.id, { ...leaseTab, status: 'complete' })
   if (sourceTab) tabs.set(sourceTab.id, { ...sourceTab, status: 'complete' })
   const storage = { local: {}, session: {} }
-  let statusIndex = 0
   const getCalls = []
+  const updates = []
   return {
     chromeApi: {
       tabs: {
@@ -125,6 +125,7 @@ function makeChromeApi({ leaseTab, sourceTab, statusSequence = [] } = {}) {
           return tab
         },
         update: async (tabId, properties) => {
+          updates.push({ tabId, properties })
           const next = { ...tabs.get(tabId), ...properties }
           tabs.set(tabId, next)
           return next
@@ -153,6 +154,7 @@ function makeChromeApi({ leaseTab, sourceTab, statusSequence = [] } = {}) {
     },
     storage,
     getCalls,
+    updates,
   }
 }
 
@@ -206,4 +208,94 @@ test('PÓS-CAMPO-6: reset clears the lease storage', async () => {
   await manager.reset()
   assert.equal(storage.local.verbooBackgroundWorkspace, undefined)
   assert.equal(storage.session.verbooBackgroundWorkspace, undefined)
+})
+
+// ── PÓS-CAMPO-7: lease URL EQUALITY (stale-but-controllable lease) ──
+
+test('PÓS-CAMPO-7: a stale-but-controllable lease is re-navigated to the user URL and the load is awaited', async () => {
+  const { chromeApi, updates } = makeChromeApi({
+    // Stale lease from the morning tests: controllable (http) but the
+    // WRONG page — the round-7 evidence (dead localhost).
+    leaseTab: { id: 99, windowId: 9, url: 'http://localhost:3000/' },
+    sourceTab: { id: 5, windowId: 9, url: 'https://todomvc.com/examples/react/dist' },
+    statusSequence: ['loading', 'complete'],
+  })
+  const manager = createBackgroundWorkspaceManager({ chromeApi })
+  await chromeApi.storage.local.set({ verbooBackgroundWorkspace: { tabId: 99, windowId: 9 } })
+
+  const lease = await manager.acquireControllable({
+    sourceTabId: 5,
+    resume: true,
+    isControllableUrl: (url) => /^https?:\/\//i.test(String(url ?? '')),
+  })
+
+  // SAME invisible workspace tab (no user-tab theft), navigated to the
+  // user's current page, with the load awaited before use.
+  assert.equal(lease.snapshot().tabId, 99)
+  assert.deepEqual(updates.map((u) => u.properties.url), [
+    'https://todomvc.com/examples/react/dist',
+  ])
+  const tab = await chromeApi.tabs.get(99)
+  assert.equal(tab.url, 'https://todomvc.com/examples/react/dist')
+  assert.equal(tab.status, 'complete')
+})
+
+test('PÓS-CAMPO-7: a matching lease URL causes ZERO extra navigation (no SPA reload)', async () => {
+  const { chromeApi, updates } = makeChromeApi({
+    leaseTab: { id: 99, windowId: 9, url: 'https://todomvc.com/examples/react/dist#/active' },
+    sourceTab: { id: 5, windowId: 9, url: 'https://todomvc.com/examples/react/dist' },
+  })
+  const manager = createBackgroundWorkspaceManager({ chromeApi })
+  await chromeApi.storage.local.set({ verbooBackgroundWorkspace: { tabId: 99, windowId: 9 } })
+
+  await manager.acquireControllable({
+    sourceTabId: 5,
+    resume: true,
+    isControllableUrl: (url) => /^https?:\/\//i.test(String(url ?? '')),
+  })
+
+  // Hash-only difference (SPA route state on the same document) → NO
+  // reload; the user's SPA state is preserved.
+  assert.equal(updates.length, 0, 'a hash-only difference must not reload the page')
+})
+
+test('PÓS-CAMPO-7: a non-controllable source tab keeps the current behavior (no navigation)', async () => {
+  const { chromeApi, updates } = makeChromeApi({
+    leaseTab: { id: 99, windowId: 9, url: 'https://old.example/keep' },
+    sourceTab: { id: 5, windowId: 9, url: 'chrome://settings' },
+  })
+  const manager = createBackgroundWorkspaceManager({ chromeApi })
+  await chromeApi.storage.local.set({ verbooBackgroundWorkspace: { tabId: 99, windowId: 9 } })
+
+  const lease = await manager.acquireControllable({
+    sourceTabId: 5,
+    resume: true,
+    isControllableUrl: (url) => /^https?:\/\//i.test(String(url ?? '')),
+  })
+
+  assert.equal(updates.length, 0, 'chrome:// source must not trigger a lease navigation')
+  assert.equal(lease.snapshot().tabId, 99)
+})
+
+test('PÓS-CAMPO-7: mid-turn model navigation is never re-validated (turn-start only)', async () => {
+  const { chromeApi, updates } = makeChromeApi({
+    leaseTab: { id: 99, windowId: 9, url: 'https://todomvc.com/examples/react/dist' },
+    sourceTab: { id: 5, windowId: 9, url: 'https://todomvc.com/examples/react/dist' },
+  })
+  const manager = createBackgroundWorkspaceManager({ chromeApi })
+  await chromeApi.storage.local.set({ verbooBackgroundWorkspace: { tabId: 99, windowId: 9 } })
+
+  const lease = await manager.acquireControllable({
+    sourceTabId: 5,
+    resume: true,
+    isControllableUrl: (url) => /^https?:\/\//i.test(String(url ?? '')),
+  })
+  const updatesAtStart = updates.length
+
+  // The model's mid-turn tabs action moves the lease target — the manager
+  // must NOT re-validate or re-navigate it afterwards (same workspace
+  // window, as selectTab enforces).
+  await lease.selectTab(43, 9)
+  assert.equal(lease.snapshot().tabId, 43)
+  assert.equal(updates.length, updatesAtStart, 'mid-turn lease changes are never re-validated')
 })
