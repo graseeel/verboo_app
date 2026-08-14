@@ -5,64 +5,90 @@
  * injected function dispatches a real PointerEvent so SPA click
  * handlers fire correctly.
  *
- * Presence: shows the purple frame + purple agent cursor at the
- * target before clicking so the user can see where Verboo will act.
+ * Target resolution (R5-A): either a CSS selector OR viewport pixel
+ * coordinates { x, y } (elementFromPoint). Coordinates support models
+ * that emit computer-use style clicks; presence (frame + cursor) is
+ * only shown when a selector is available, since coordinates have no
+ * element to frame before resolution.
  *
- * @param {{ name: 'click'; selector: string; button?: number; risk?: string; input?: string }} tool
+ * @param {{ name: 'click'; selector?: string; x?: number; y?: number; button?: number; risk?: string; input?: string }} tool
  * @param {{ activeTabId?: number }} [ctx]
- * @returns {Promise<{ selector: string; clicked: boolean; url: string }>}
+ * @returns {Promise<{ selector?: string; x?: number; y?: number; clicked: boolean; url: string }>}
  */
 
 import { preparePresenceForAction, pulseAgentCursor } from '../../presence/inject.js'
 import { resolveTargetTab } from '../targetTab.js'
 
 export async function click(tool, ctx = {}) {
-  const selector = tool?.selector
-  if (!selector || typeof selector !== 'string') {
-    throw new Error('click: missing selector')
+  const selector = typeof tool?.selector === 'string' && tool.selector.length > 0
+    ? tool.selector
+    : null
+  const hasCoordinates = Number.isInteger(tool?.x) && Number.isInteger(tool?.y)
+  if (!selector && !hasCoordinates) {
+    throw new Error('click: missing selector or x/y coordinates')
   }
   const button = typeof tool.button === 'number' ? tool.button : 0
+  const x = hasCoordinates ? tool.x : null
+  const y = hasCoordinates ? tool.y : null
 
   const tab = await resolveTargetTab(ctx.activeTabId)
   if (!tab?.id) throw new Error('click: no active tab')
 
   // Agent presence: frame + cursor glide to target, dwell, click pulse, then DOM click.
-  await preparePresenceForAction(tab.id, selector)
-  try {
-    await pulseAgentCursor(tab.id)
-  } catch {
-    /* presence is best-effort */
+  // Coordinate clicks have nothing to frame before the point is resolved.
+  if (selector) {
+    await preparePresenceForAction(tab.id, selector)
+    try {
+      await pulseAgentCursor(tab.id)
+    } catch {
+      /* presence is best-effort */
+    }
   }
 
   const [result] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: clickInPage,
-    args: [selector, button],
+    args: [selector, x, y, button],
   })
 
   if (!result) throw new Error('click: no result from page')
-  if (!result.result) throw new Error(`click: element not found: ${selector}`)
-  return { selector, clicked: true, url: tab.url ?? '' }
+  if (!result.result) {
+    throw new Error(selector
+      ? `click: element not found: ${selector}`
+      : `click: no element at coordinates ${x},${y}`)
+  }
+  return {
+    ...(selector ? { selector } : {}),
+    ...(hasCoordinates ? { x, y } : {}),
+    clicked: true,
+    url: tab.url ?? '',
+  }
 }
 
 /**
  * In-page function. Returns true if the element was found and clicked.
- * @param {string} selector
+ * @param {string|null} selector
+ * @param {number|null} x
+ * @param {number|null} y
  * @param {number} button
  * @returns {boolean}
  */
-function clickInPage(selector, button) {
-  const el = document.querySelector(selector)
+function clickInPage(selector, x, y, button) {
+  const el = (selector !== null)
+    ? document.querySelector(selector)
+    : document.elementFromPoint(x, y)
   if (!el) return false
-  el.scrollIntoView({ block: 'center', behavior: 'instant' })
+  if (selector !== null) {
+    el.scrollIntoView({ block: 'center', behavior: 'instant' })
+  }
   const rect = el.getBoundingClientRect()
   const opts = {
     bubbles: true,
     cancelable: true,
     view: window,
     button,
-    clientX: rect.left + rect.width / 2,
-    clientY: rect.top + rect.height / 2,
+    clientX: (selector !== null) ? rect.left + rect.width / 2 : x,
+    clientY: (selector !== null) ? rect.top + rect.height / 2 : y,
   }
   el.dispatchEvent(new PointerEvent('pointerdown', opts))
   el.dispatchEvent(new MouseEvent('mousedown', opts))

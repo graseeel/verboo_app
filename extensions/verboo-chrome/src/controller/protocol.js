@@ -164,6 +164,13 @@ export const BROWSER_TOOL_CATALOG = Object.freeze(browserCatalog.tools)
 
 const TOOL_BY_NAME = new Map(BROWSER_TOOL_CATALOG.map((tool) => [tool.name, tool]))
 
+// C-3: the text-parsing whitelist (routerClient.js) derives from the same
+// catalog so a rename/add in browserTools.js can never drift from the
+// parser's accepted names.
+export const BROWSER_TOOL_NAMES = Object.freeze(new Set(
+  BROWSER_TOOL_CATALOG.map((tool) => tool.name),
+))
+
 // Risk classification is derived from the catalog. Callers may display it,
 // but execute() reconstructs it and never trusts caller-provided metadata.
 export const TOOL_RISK_MAP = Object.freeze(Object.fromEntries(
@@ -308,6 +315,14 @@ function validateToolParams(definition, params) {
 
   if (definition.name === 'navigate') {
     if (!httpHost(params.url)) return 'invalid_params:url_must_be_http'
+  }
+  if (definition.name === 'click') {
+    // Either a selector OR a coordinate pair is required (never both empty).
+    const hasSelector = typeof params.selector === 'string' && params.selector.length > 0
+    const hasCoordinates = Number.isInteger(params.x) && Number.isInteger(params.y)
+    if (!hasSelector && !hasCoordinates) {
+      return 'invalid_params:selector_or_xy_required'
+    }
   }
   if (definition.name === 'tabs') {
     if ((params.action === 'switch' || params.action === 'close') && !Number.isInteger(params.tabId)) {
