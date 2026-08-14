@@ -281,6 +281,10 @@ async function runLlmAgentTurnWithinBudget({
   // blocked and feedback directs to find/read_page. Different arguments
   // always pass — legitimate retries are never killed.
   const failedMutateCounts = new Map()
+  // PÓS-CAMPO-6 (A): system messages produced inside the execution loop are
+  // collected and flushed AFTER all tool responses of the completion (see
+  // the flush point below) to preserve the assistant→tools adjacency.
+  const pendingSystemMessages = []
   // PÓS-CAMPO-4: AUTOMATIC recovery — the harness stops asking and starts
   // DOING. Counts selector-not-found failures PER TOOL NAME (the exact-key
   // dedup above cannot see selector-variant repeats); on the 2nd failure
@@ -756,12 +760,13 @@ async function runLlmAgentTurnWithinBudget({
             // the failed call's tool_call_id — the OpenAI contract is 1:1
             // (one tool message per tool_call_id); duplicate ids are
             // rejected by strict routers. Same pattern as R-V4/reclassify.
-            messages.push({
-              role: 'system',
-              content: selectors.length > 0
-                ? `Recovery: find located these selectors on the page: ${selectors.map((s) => `"${s}"`).join(', ')}. Use one of them for the retry.`
-                : `Recovery: find found nothing for "${query}" — read the page with read_page to locate the target, then retry.`,
-            })
+            // PÓS-CAMPO-6 (A): the system is QUEUED and flushed after ALL
+            // tool responses of this completion (adjacency contract) —
+            // a system wedged between assistant(tool_calls) and its tools
+            // is rejected by strict routers with HTTP 400.
+            pendingSystemMessages.push(selectors.length > 0
+              ? `Recovery: find located these selectors on the page: ${selectors.map((s) => `"${s}"`).join(', ')}. Use one of them for the retry.`
+              : `Recovery: find found nothing for "${query}" — read the page with read_page to locate the target, then retry.`)
           } catch {
             /* auto-find is best-effort */
           }
@@ -900,7 +905,9 @@ async function runLlmAgentTurnWithinBudget({
 
       if (!execResult.ok) {
         if (failStreak.count >= 3 && !failStreak.afterHint) {
-          messages.push({ role: 'system', content: STRATEGY_HINT })
+          // PÓS-CAMPO-6 (A): queued — flushed after all tool responses of
+          // this completion (adjacency contract).
+          pendingSystemMessages.push(STRATEGY_HINT)
           failStreak.afterHint = true
           failStreak.count = 0
           broadcast({
@@ -932,13 +939,12 @@ async function runLlmAgentTurnWithinBudget({
           if (meta?.url && /youtube\.com\/watch/i.test(meta.url)) {
             browserActionsComplete = true
             requiresVerification = false
-            messages.push({
-              role: 'system',
-              content:
-                'You are now on a YouTube /watch page — the video is open. ' +
-                'Do NOT search again, do NOT navigate to results, do NOT screenshot. ' +
-                'Reply to the user with a brief confirmation in their language and stop calling tools.',
-            })
+            // PÓS-CAMPO-6 (A): queued — flushed after all tool responses.
+            pendingSystemMessages.push(
+              'You are now on a YouTube /watch page — the video is open. ' +
+              'Do NOT search again, do NOT navigate to results, do NOT screenshot. ' +
+              'Reply to the user with a brief confirmation in their language and stop calling tools.',
+            )
           }
         } catch {
           /* meta is best-effort */
@@ -946,6 +952,18 @@ async function runLlmAgentTurnWithinBudget({
       }
 
       if (browserActionsComplete) break
+    }
+
+    // PÓS-CAMPO-6 (A): ADJACENCY contract — an assistant message with
+    // tool_calls must be followed IMMEDIATELY by its tool responses.
+    // System messages produced inside the execution loop (auto-find
+    // recovery, STRATEGY_HINT, the YouTube pin) are flushed HERE, after
+    // every tool response of this completion, so the payload is
+    // [assistant(tool_calls)] [tool xN] [system ...] — never a system
+    // wedged between the assistant and its tools (strict routers reject
+    // that with HTTP 400, surfaced as "model connection interrupted").
+    for (const pendingContent of pendingSystemMessages) {
+      messages.push({ role: 'system', content: pendingContent })
     }
 
     // R7/FRENTE-C: some emitted names were dropped at parse time while

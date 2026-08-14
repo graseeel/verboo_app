@@ -2851,6 +2851,31 @@ test('runLlmAgentTurn: the fail-streak hint explicitly mentions find', async () 
 
 // ── PÓS-CAMPO-4: automatic find recovery (round 4 literal case) ────
 
+/**
+ * PÓS-CAMPO-6 (A): the OpenAI ADJACENCY contract — every assistant message
+ * carrying tool_calls must be followed IMMEDIATELY by its tool responses,
+ * in order, with nothing (no system/user/assistant) in between. This
+ * invariant would have caught BOTH the duplicated-id bug (PÓS-GATE 4) and
+ * the wedged system message (PÓS-CAMPO-6, round 6).
+ */
+function assertMessageAdjacency(requestBodies) {
+  for (const body of requestBodies) {
+    const messages = body.messages
+    for (let i = 0; i < messages.length; i += 1) {
+      const m = messages[i]
+      if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+        const ids = m.tool_calls.map((tc) => tc.id)
+        for (let j = 0; j < ids.length; j += 1) {
+          const next = messages[i + 1 + j]
+          assert.ok(next, `tool response missing for ${ids[j]}`)
+          assert.equal(next.role, 'tool', `non-tool message between assistant and its tools: ${next?.role}`)
+          assert.equal(next.tool_call_id, ids[j], `tool response out of order for ${ids[j]}`)
+        }
+      }
+    }
+  }
+}
+
 test('runLlmAgentTurn: round-4 literal — 2 different not-found types trigger the AUTO-find and the model uses the real selector', async () => {
   const requestBodies = []
   const executed = []
@@ -2910,6 +2935,10 @@ test('runLlmAgentTurn: round-4 literal — 2 different not-found types trigger t
     assert.ok(feedback, 'auto-find feedback must reach the model as a SYSTEM message')
     assert.match(feedback.content, /"\.new-todo"/)
     assert.equal(result.toolResults.some((r) => r.success === true), true)
+    // PÓS-CAMPO-6 (A): adjacency — assistant(tool_calls) is immediately
+    // followed by its tool responses in EVERY request (the auto-find system
+    // is flushed after them, never wedged in between).
+    assertMessageAdjacency(requestBodies)
 
     // PÓS-GATE 4 (Farol): the OpenAI contract is 1:1 — every tool_call_id
     // appears EXACTLY once as a tool message in any request body. The
