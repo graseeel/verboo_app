@@ -2720,7 +2720,11 @@ fn safe_runtime_working_directory(
             cwd_path == d
         })
         .unwrap_or(false);
-    if is_neutral_placeholder || is_app_data_dir {
+    // Redirect when the path does not exist on disk (stale project
+    // references from a previous session). Without this the CLI would
+    // fail with a confusing "cwd does not exist" error.
+    let path_exists = !is_neutral_placeholder && std::path::Path::new(trimmed).is_dir();
+    if is_neutral_placeholder || is_app_data_dir || !path_exists {
         // Neutral empty workdir under app_data_dir (created on demand).
         // Fallback to temp_dir when app_data_dir is None (tests/CI).
         let neutral = app_data_dir
@@ -4420,10 +4424,14 @@ mod tests {
         assert_eq!(safe_runtime_working_directory("", None), neutral_str);
         assert_eq!(safe_runtime_working_directory("/", None), neutral_str);
         assert_eq!(safe_runtime_working_directory(".", None), neutral_str);
-        // Real paths are kept as-is
+        // Existing directories are kept as-is
+        let temp_dir = std::env::temp_dir().to_string_lossy().to_string();
+        assert_eq!(safe_runtime_working_directory(&temp_dir, None), temp_dir);
+        // Non-existent paths fall back to neutral (stale project refs)
         assert_eq!(
-            safe_runtime_working_directory("/Users/test/code", None),
-            "/Users/test/code"
+            safe_runtime_working_directory("/Users/test/nonexistent-project-xyz", None),
+            neutral_str,
+            "non-existent directory must fall back to neutral workdir"
         );
     }
 
@@ -4479,10 +4487,17 @@ mod tests {
             "cwd == app_data_dir must redirect to neutral workdir, not be used as-is"
         );
 
-        // A real project path is kept as-is.
+        // A real existing directory is kept as-is.
+        let temp_dir = std::env::temp_dir().to_string_lossy().to_string();
         assert_eq!(
-            safe_runtime_working_directory("/Users/test/my-project", Some(&app_data)),
-            "/Users/test/my-project"
+            safe_runtime_working_directory(&temp_dir, Some(&app_data)),
+            temp_dir
+        );
+        // A non-existent path falls back to neutral (stale project).
+        assert_eq!(
+            safe_runtime_working_directory("/Users/test/nonexistent-project-xyz", Some(&app_data)),
+            expected_str,
+            "non-existent directory must fall back to neutral workdir"
         );
 
         let _ = std::fs::remove_dir_all(&app_data);
