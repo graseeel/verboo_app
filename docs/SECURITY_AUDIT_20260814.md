@@ -6,14 +6,14 @@
 
 ## Resumo Executivo
 
-| Severidade | Rust | Frontend | Total |
-|------------|------|----------|-------|
-| **CRITICAL** | 2 | 0 | **2** |
-| **HIGH** | 2 | 1 | **3** |
-| **MEDIUM** | 4 | 3 | **7** |
-| **LOW** | 4 | 4 | **8** |
-| **INFORM** | 5 | — | **5** |
-| **TOTAL** | **17** | **8** | **25** |
+| Severidade | Rust | Frontend | Logic | Total |
+|------------|------|----------|-------|-------|
+| **CRITICAL** | 2 | 0 | 1 | **3** |
+| **HIGH** | 2 | 1 | 1 | **4** |
+| **MEDIUM** | 4 | 3 | 3 | **10** |
+| **LOW** | 4 | 4 | 3 | **11** |
+| **INFORM** | 5 | — | — | **5** |
+| **TOTAL** | **17** | **8** | **8** | **33** |
 
 ### Achados Positivos (sem correção necessária)
 
@@ -200,6 +200,51 @@ Pode causar loops de polling infinitos se o processo estiver morto mas inqueryá
 
 ---
 
+## Logic Errors (Adicional)
+
+### L9: CRITICAL — Wrong boolean `||` vs `&&` em `promote()`
+
+| | |
+|---|---|
+| **Arquivo** | `src-tauri/src/services/browser_panel.rs:196` |
+| **Risco** | Captures válidos não-PNG são silenciosamente rejeitados |
+
+```rust
+if let Some(path) = sources.iter().find(|path| !is_browser_temp_png(path) || !path.is_file()) {
+```
+
+`!A || !B` (De Morgan: `!(A && B)`) rejeita qualquer arquivo onde UMA condição falha. A intenção é `!A && !B` — rejeitar apenas se NENHUMA condição for verdadeira. Com `||`, qualquer `.jpg` ou `.webp` é rejeitado silenciosamente.
+
+**Correção:** Mudar `||` para `&&`.
+
+---
+
+### L10: HIGH — `.lock().unwrap()` em WebView2 COM callbacks
+
+| | |
+|---|---|
+| **Arquivo** | `src-tauri/src/services/browser_platform/windows.rs:231,263,266,273,277` |
+| **Risco** | UB via unwind através de FFI boundary |
+
+Se mutex foi envenenado por panic anterior, `.unwrap()` causa panic dentro de callback COM. Unwind através de FFI é UB no Windows — processo aborta.
+
+**Correção:** Substituir `.lock().unwrap()` por `.lock().unwrap_or_else(|e| e.into_inner())`.
+
+---
+
+### L11: MEDIUM — Race condition em `sendSideChatMessage`
+
+| | |
+|---|---|
+| **Arquivo** | `src/renderer/App.tsx:5266-5282` |
+| **Risco** | Mensagens duplicadas em input rápido |
+
+`sendMessage` usa `sendMessageLock` ref para prevenir envios concorrentes. `sendSideChatMessage` não tem lock equivalente — `isConversationRunning` check + `runTurn` cria race window.
+
+**Correção:** Adicionar `sideChatSendLock` ref espelhando o padrão de `sendMessage`.
+
+---
+
 ## Plano de Correção (Priorizado)
 
 ### P0 — Corrigir AGORA (CRITICAL)
@@ -208,6 +253,7 @@ Pode causar loops de polling infinitos se o processo estiver morto mas inqueryá
 |---|------|---------|
 | C1 | Substituir `SendBrowserStatePtr` por `Arc<BrowserPanelState>` | Médio |
 | C2 | Substituir `from_utf8_unchecked` por `from_utf8().unwrap_or_default()` | Baixo |
+| **C3** | **Fix `||` → `&&` em `browser_panel.rs:196`** — `promote()` rejeita captures válidos não-PNG | **Baixo** |
 
 ### P1 — Corrigir esta semana (HIGH)
 
@@ -216,6 +262,7 @@ Pode causar loops de polling infinitos se o processo estiver morto mas inqueryá
 | H1 | PowerShell: usar `-EncodedCommand` ou stdin em vez de `format!()` | Médio |
 | H2 | Adicionar logging quando recuperar mutex poisoned | Baixo |
 | H3 | Validar `source` no renderer antes de `marketplace_add` | Baixo |
+| **H4** | **Fix `.lock().unwrap()` em `windows.rs` WebView2 callbacks** — UB via COM unwind | **Baixo** |
 
 ### P2 — Corrigir no próximo ciclo (MEDIUM)
 
@@ -228,6 +275,9 @@ Pode causar loops de polling infinitos se o processo estiver morto mas inqueryá
 | M5 | Adicionar tipo para `listenForNotificationClick` | Baixo |
 | M6 | Adicionar max capacity em Vec/HashSet do iOS Simulator | Baixo |
 | M7 | Adicionar timeout/retry limit em `process_may_be_alive` | Baixo |
+| **L9** | **Fix `||` → `&&` em `browser_panel.rs:196` (promote rejects valid captures)** | **Baixo** |
+| **L10** | **Fix `.lock().unwrap()` em `windows.rs` WebView2 callbacks → `unwrap_or_else`** | **Baixo** |
+| **L11** | **Adicionar `sideChatSendLock` em `sendSideChatMessage`** | **Baixo** |
 
 ### P3 — Corrigir quando conveniente (LOW)
 
