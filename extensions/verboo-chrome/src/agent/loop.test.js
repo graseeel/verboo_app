@@ -2735,7 +2735,9 @@ test('runLlmAgentTurn: the EXACT same failing mutate is blocked on the 3rd repea
         executed.push(tc.params?.selector ?? tc.name)
         return tc.name === 'type' && tc.params?.selector === '.new-todo'
           ? { ok: true, result: { textLength: 12 }, policy: { allowed: true } }
-          : { ok: false, error: 'selector not found' }
+          // 'element not found' (legacy wording) keeps the auto-find out
+          // of this exact-key-dedup scenario.
+          : { ok: false, error: 'element not found' }
       },
       getActiveTabMeta: async () => ({ url: 'https://todomvc.com/examples/react/dist' }),
     })
@@ -2790,7 +2792,8 @@ test('runLlmAgentTurn: different arguments are never blocked (legitimate retries
       broadcast: () => {},
       executeTool: async (tc) => {
         executed.push(tc.params?.selector)
-        return { ok: false, error: 'selector not found' }
+        // 'element not found' (legacy wording) — auto-find stays out.
+        return { ok: false, error: 'element not found' }
       },
       getActiveTabMeta: async () => ({ url: 'https://example.com' }),
     })
@@ -2841,6 +2844,222 @@ test('runLlmAgentTurn: the fail-streak hint explicitly mentions find', async () 
     assert.ok(hint, 'STRATEGY_HINT must be injected after 3 fails')
     assert.match(hint.content, /\bfind\b/)
     assert.match(hint.content, /\bread_page\b/)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+// ── PÓS-CAMPO-4: automatic find recovery (round 4 literal case) ────
+
+test('runLlmAgentTurn: round-4 literal — 2 different not-found types trigger the AUTO-find and the model uses the real selector', async () => {
+  const requestBodies = []
+  const executed = []
+  let findCalls = 0
+  const broken = ['body > section > header > input', 'body > section > header > div > input']
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    const index = requestBodies.length
+    if (index === 1 || index === 2) {
+      return { ok: true, status: 200, json: async () => ({
+        choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+          { id: `t-${index}`, function: { name: 'type', arguments: JSON.stringify({ selector: broken[index - 1], text: 'comprar café' }) } },
+        ] } }],
+      }) }
+    }
+    if (index === 3) {
+      // The weak model ignores textual hints, but the harness FEED the
+      // real selector back — the model uses it on the 3rd try.
+      return { ok: true, status: 200, json: async () => ({
+        choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+          { id: 't-3', function: { name: 'type', arguments: '{"selector":".new-todo","text":"comprar café"}' } },
+        ] } }],
+      }) }
+    }
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { role: 'assistant', content: 'ok.' } }] }) }
+  }
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_round4',
+      userMessage: 'adicione comprar café na lista',
+      accessToken: 'test-key',
+      modelId: 'tool-model',
+      forceBrowserTools: true,
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        executed.push(tc.name === 'find' ? 'find' : (tc.params?.selector ?? tc.name))
+        if (tc.name === 'find') {
+          findCalls += 1
+          return { ok: true, result: { text: '[1] text="What needs to be done?" tag=input selector=".new-todo"' }, policy: { allowed: true } }
+        }
+        if (tc.name === 'read_page') return { ok: true, result: { text: 'list' }, policy: { allowed: true } }
+        return tc.name === 'type' && tc.params?.selector === '.new-todo'
+          ? { ok: true, result: { textLength: 12 }, policy: { allowed: true } }
+          : { ok: false, error: 'selector not found' }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://todomvc.com/examples/react/dist' }),
+    })
+    // The harness ran find ONCE (auto), and the 3rd type used the real selector.
+    assert.equal(findCalls, 1)
+    assert.ok(executed.includes('.new-todo'))
+    assert.equal(executed.filter((x) => x === 'find').length, 1)
+    // The request after the 2nd failure carries the REAL selectors.
+    const feedback = requestBodies[2].messages.find(
+      (m) => m.role === 'system' && String(m.content).includes('Recovery: find located these selectors'),
+    )
+    assert.ok(feedback, 'auto-find feedback must reach the model as a SYSTEM message')
+    assert.match(feedback.content, /"\.new-todo"/)
+    assert.equal(result.toolResults.some((r) => r.success === true), true)
+
+    // PÓS-GATE 4 (Farol): the OpenAI contract is 1:1 — every tool_call_id
+    // appears EXACTLY once as a tool message in any request body. The
+    // auto-find must never duplicate the failed call's id (this check
+    // would have caught the previous tool-role duplication).
+    for (const body of requestBodies) {
+      const toolIds = body.messages
+        .filter((m) => m.role === 'tool')
+        .map((m) => m.tool_call_id)
+      const seen = new Set()
+      for (const id of toolIds) {
+        assert.ok(!seen.has(id), `tool_call_id duplicated in a request: ${id}`)
+        seen.add(id)
+      }
+    }
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('runLlmAgentTurn: auto-find is bounded — 1 per tool name per turn', async () => {
+  let findCalls = 0
+  let fetchCount = 0
+  globalThis.fetch = async () => {
+    fetchCount += 1
+    if (fetchCount <= 5) {
+      return { ok: true, status: 200, json: async () => ({
+        choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+          { id: `t-${fetchCount}`, function: { name: 'type', arguments: JSON.stringify({ selector: `#broken-${fetchCount}`, text: 'x' }) } },
+        ] } }],
+      }) }
+    }
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { role: 'assistant', content: 'ok.' } }] }) }
+  }
+  try {
+    await runLlmAgentTurn({
+      turnId: 'turn_bounded',
+      userMessage: 'digite x',
+      accessToken: 'test-key',
+      modelId: 'tool-model',
+      forceBrowserTools: true,
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        if (tc.name === 'find') {
+          findCalls += 1
+          return { ok: true, result: { text: '[1] selector="#real"' }, policy: { allowed: true } }
+        }
+        if (tc.name === 'read_page') return { ok: true, result: { text: 'p' }, policy: { allowed: true } }
+        return { ok: false, error: 'selector not found' }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://example.com' }),
+    })
+    assert.equal(findCalls, 1, 'the auto-find runs exactly once per tool name')
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('runLlmAgentTurn: empty auto-find produces honest feedback (no selectors)', async () => {
+  const requestBodies = []
+  let fetchCount = 0
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    fetchCount += 1
+    if (fetchCount <= 2) {
+      return { ok: true, status: 200, json: async () => ({
+        choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+          { id: `t-${fetchCount}`, function: { name: 'click', arguments: JSON.stringify({ selector: `#miss-${fetchCount}` }) } },
+        ] } }],
+      }) }
+    }
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { role: 'assistant', content: 'ok.' } }] }) }
+  }
+  try {
+    await runLlmAgentTurn({
+      turnId: 'turn_empty_find',
+      userMessage: 'clique no botão salvar',
+      accessToken: 'test-key',
+      modelId: 'tool-model',
+      forceBrowserTools: true,
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        if (tc.name === 'find') return { ok: true, result: { text: 'No elements found' }, policy: { allowed: true } }
+        if (tc.name === 'read_page') return { ok: true, result: { text: 'p' }, policy: { allowed: true } }
+        return { ok: false, error: 'selector not found' }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://example.com' }),
+    })
+    const honest = requestBodies[2].messages.find(
+      (m) => m.role === 'system' && String(m.content).includes('Recovery: find found nothing for'),
+    )
+    assert.ok(honest, 'empty auto-find must report honestly as a SYSTEM message')
+    assert.match(honest.content, /read the page with read_page/)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('runLlmAgentTurn: click failures also trigger the auto-find (user wording as query)', async () => {
+  const requestBodies = []
+  const executed = []
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    const index = requestBodies.length
+    if (index <= 2) {
+      return { ok: true, status: 200, json: async () => ({
+        choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+          { id: `c-${index}`, function: { name: 'click', arguments: JSON.stringify({ selector: `#nope-${index}` }) } },
+        ] } }],
+      }) }
+    }
+    if (index === 3) {
+      return { ok: true, status: 200, json: async () => ({
+        choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+          { id: 'c-3', function: { name: 'click', arguments: '{"selector":".save-btn"}' } },
+        ] } }],
+      }) }
+    }
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { role: 'assistant', content: 'ok.' } }] }) }
+  }
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_click_autofind',
+      userMessage: 'clique no botão salvar',
+      accessToken: 'test-key',
+      modelId: 'tool-model',
+      forceBrowserTools: true,
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        executed.push(tc.name === 'find' ? 'find' : (tc.params?.selector ?? tc.name))
+        if (tc.name === 'find') {
+          // The user wording ("salvar") must be the query.
+          assert.equal(tc.params.text, 'clique no botão salvar')
+          return { ok: true, result: { text: '[1] text="Salvar" tag=button selector=".save-btn"' }, policy: { allowed: true } }
+        }
+        if (tc.name === 'read_page') return { ok: true, result: { text: 'p' }, policy: { allowed: true } }
+        return tc.name === 'click' && tc.params?.selector === '.save-btn'
+          ? { ok: true, result: { clicked: true }, policy: { allowed: true } }
+          : { ok: false, error: 'selector not found' }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://example.com' }),
+    })
+    const feedback = requestBodies[2].messages.find(
+      (m) => m.role === 'system' && String(m.content).includes('Recovery: find located these selectors'),
+    )
+    assert.ok(feedback, 'click auto-find feedback must reach the model as a SYSTEM message')
+    assert.match(feedback.content, /"\.save-btn"/)
+    assert.equal(result.toolResults.some((r) => r.success === true), true)
   } finally {
     globalThis.fetch = origFetch
   }

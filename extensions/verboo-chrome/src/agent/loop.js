@@ -281,6 +281,13 @@ async function runLlmAgentTurnWithinBudget({
   // blocked and feedback directs to find/read_page. Different arguments
   // always pass — legitimate retries are never killed.
   const failedMutateCounts = new Map()
+  // PÓS-CAMPO-4: AUTOMATIC recovery — the harness stops asking and starts
+  // DOING. Counts selector-not-found failures PER TOOL NAME (the exact-key
+  // dedup above cannot see selector-variant repeats); on the 2nd failure
+  // the loop runs find itself and feeds the REAL selectors back. Bounded:
+  // 1 auto-find per tool name per turn; empty find → honest feedback.
+  const failedSelectorCounts = { type: 0, click: 0 }
+  const autoFindUsed = { type: false, click: false }
   let promptInjectionDetected = false
   let currentAccessToken = accessToken
   const refreshAccessTokenForTurn = typeof refreshAccessToken === 'function'
@@ -682,6 +689,41 @@ async function runLlmAgentTurnWithinBudget({
           failedMutateCounts.delete(attemptKey)
         } else {
           failedMutateCounts.set(attemptKey, (failedMutateCounts.get(attemptKey) ?? 0) + 1)
+        }
+      }
+      // PÓS-CAMPO-4: automatic recovery — on the 2nd selector-not-found
+      // failure of the same tool name (weak models ignore textual hints
+      // and vary only the broken selector tail, so the exact-key dedup
+      // above never fires), the LOOP runs find itself and feeds the REAL
+      // selectors back as tool-role feedback before the next model step.
+      // Bounded: 1 auto-find per tool name per turn; find is read-only
+      // (no approval). Model-agnostic: no site/selector knowledge.
+      if (!execResult.ok && (tc.name === 'type' || tc.name === 'click')
+          && /selector not found|no element at coordinates/i.test(String(execResult.error ?? ''))
+          && !autoFindUsed[tc.name]) {
+        failedSelectorCounts[tc.name] = (failedSelectorCounts[tc.name] ?? 0) + 1
+        if (failedSelectorCounts[tc.name] >= 2) {
+          autoFindUsed[tc.name] = true
+          const query = deriveAutoFindQuery(tc, userMessage)
+          try {
+            const findResult = await executeTool(
+              { id: `autofind-${turnId}-${tc.name}`, name: 'find', params: { text: query } },
+              signal,
+            )
+            const selectors = extractFindSelectors(findResult)
+            // PÓS-GATE 4: SYSTEM message, NEVER a second tool message with
+            // the failed call's tool_call_id — the OpenAI contract is 1:1
+            // (one tool message per tool_call_id); duplicate ids are
+            // rejected by strict routers. Same pattern as R-V4/reclassify.
+            messages.push({
+              role: 'system',
+              content: selectors.length > 0
+                ? `Recovery: find located these selectors on the page: ${selectors.map((s) => `"${s}"`).join(', ')}. Use one of them for the retry.`
+                : `Recovery: find found nothing for "${query}" — read the page with read_page to locate the target, then retry.`,
+            })
+          } catch {
+            /* auto-find is best-effort */
+          }
         }
       }
 
@@ -1244,6 +1286,45 @@ function dedupeToolCalls(toolCalls) {
     unique.push(toolCall)
   }
   return unique
+}
+
+/**
+ * PÓS-CAMPO-4: derive the auto-find query for a failed type/click.
+ * For type, the typed text is the best needle (the value the user wants
+ * committed). For click, the model does not carry a name in params, so
+ * the user's own wording is the needle (it usually names the target —
+ * "clique no botão Novo produto"); when the model did mention an
+ * accessible name in its reasoning, that lives in the messages and the
+ * user wording remains the deterministic fallback. Model-agnostic.
+ *
+ * @param {{ name: string; params?: Record<string, unknown> }} tc
+ * @param {string} userMessage
+ * @returns {string}
+ */
+function deriveAutoFindQuery(tc, userMessage) {
+  if (tc.name === 'type' && typeof tc.params?.text === 'string' && tc.params.text.trim()) {
+    return tc.params.text.trim().slice(0, 120)
+  }
+  return String(userMessage ?? '').trim().slice(0, 120)
+}
+
+/**
+ * Extract the selector list from a find tool result. The find result is
+ * either an array of { selector } objects or a text summary of the form
+ * '[1] text="…" tag=… selector="a[href=…]"'.
+ *
+ * @param {unknown} findResult
+ * @returns {string[]}
+ */
+function extractFindSelectors(findResult) {
+  const raw = findResult?.result
+  if (Array.isArray(raw)) {
+    return raw
+      .map((match) => match?.selector)
+      .filter((s) => typeof s === 'string' && s.length > 0)
+  }
+  const text = typeof raw?.text === 'string' ? raw.text : ''
+  return [...text.matchAll(/selector="([^"]+)"/g)].map((match) => match[1])
 }
 
 /** @param {string} json */
