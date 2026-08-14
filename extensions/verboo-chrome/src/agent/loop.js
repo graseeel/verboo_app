@@ -24,6 +24,7 @@
  */
 
 import { chatCompletion, stripToolMarkup } from './routerClient.js'
+import { hasBrowserUnavailableAdmission, hasDeicticImperativeIntent } from './intentSignals.js'
 import { getToolRisk, OPENAI_TOOLS, toToolCall } from './toolCatalog.js'
 import { MSG } from '../controller/protocol.js'
 import {
@@ -365,6 +366,26 @@ async function runLlmAgentTurnWithinBudget({
           continue
         }
       }
+
+      // L3/Intenção+UX: the model's OWN reply admits it has no browser
+      // access ("o navegador não está disponível", "I don't have access
+      // to the browser"). In a conversation turn — where the classifier
+      // already missed an implicit action request — that admission is the
+      // strongest signal available. Reclassify exactly like B1 (the caller
+      // re-runs with forceBrowserTools).
+      //
+      // Bounded by construction: this gate requires !browserToolsEnabled,
+      // so the re-run can never fire it again (max 1 reclassify per user
+      // turn). Interaction with formatRetry (documented): reclassify
+      // RESTARTS the turn with a fresh budget — a re-run may still use the
+      // single per-turn formatRetry if the model emits markup after tools
+      // are offered. The two never share a flag because they live in
+      // different turn instances.
+      if (!browserToolsEnabled && completion.content
+          && hasBrowserUnavailableAdmission(completion.content)) {
+        return { reclassify: true, toolResults: allToolResults }
+      }
+
       if (browserToolsEnabled && allToolResults.length === 0) {
         if (
           activeTabMeta?.url &&
@@ -859,6 +880,13 @@ export function shouldOfferBrowserTools(userMessage, conversationHistory = []) {
   if (directAction.test(text) || requestedAction.test(text) || desiredAction.test(text)) {
     return true
   }
+
+  // L1/Intenção+UX: STRUCTURAL deictic imperative — any language, no verb
+  // list. "crie o produto desta página", "add the item to this list" open
+  // the browser tools because the object is anchored to the current page.
+  // The anchor + page noun are load-bearing: "explique a teoria" and
+  // "me conte sobre esta página" (knowledge questions) stay conversation.
+  if (hasDeicticImperativeIntent(text)) return true
 
   // Communication verbs need an explicit external destination. Phrases such
   // as "me mande uma explicação" are normal conversation, not browser control.

@@ -2208,3 +2208,174 @@ test('runLlmAgentTurn: dropped tool names are fed back to the model next step (R
     globalThis.fetch = origFetch
   }
 })
+
+// ── Intenção+UX: L1 deictic imperative + L3 admission reclassify ──
+
+test('shouldOfferBrowserTools: L1 deictic imperative opens tools; genuine conversation stays conversation', () => {
+  // L1 positive — structural, any language, no verb list.
+  assert.equal(shouldOfferBrowserTools('crie o produto desta página'), true)
+  assert.equal(shouldOfferBrowserTools('salve a alteração nesta aba'), true)
+  assert.equal(shouldOfferBrowserTools('create the product on this page'), true)
+  // Genuine conversation stays conversation (L1 negative).
+  assert.equal(shouldOfferBrowserTools('crie o produto ethos'), false)
+  assert.equal(shouldOfferBrowserTools('explique a teoria'), false)
+  assert.equal(shouldOfferBrowserTools('o que é ethos?'), false)
+  assert.equal(shouldOfferBrowserTools('me conte sobre esta página'), false)
+})
+
+test('runLlmAgentTurn: field case full path — "crie o produto ethos" reclassifies via L3 and tools are offered on the re-run', async () => {
+  const requestBodies = []
+  // First call: the conversation turn — the model admits it has no
+  // browser access (the exact field behavior). Second call: the L3
+  // re-run with forceBrowserTools — the model executes a click.
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    if (requestBodies.length === 1) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: 'Não tenho acesso ao navegador neste momento. Poderia me dizer o que você gostaria de criar?',
+            },
+          }],
+        }),
+      }
+    }
+    if (requestBodies.length === 2) {
+      // Re-run: the model executes the click…
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [{
+                id: 'tc_create',
+                function: { name: 'click', arguments: '{"selector":".new-product"}' },
+              }],
+            },
+          }],
+        }),
+      }
+    }
+    // …then closes the turn.
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { role: 'assistant', content: 'Produto ethos criado.' } }],
+      }),
+    }
+  }
+
+  try {
+    // (1) L1 does NOT catch the literal field case → conversation turn.
+    assert.equal(shouldOfferBrowserTools('crie o produto ethos'), false)
+
+    const first = await runLlmAgentTurn({
+      turnId: 'turn_ethos_1',
+      userMessage: 'crie o produto ethos',
+      accessToken: 'test-key',
+      modelId: 'test-model',
+      broadcast: () => {},
+      executeTool: async (tc) => ({ ok: true, result: { text: 'clicked' }, policy: { allowed: true, needsApproval: false } }),
+      getActiveTabMeta: async () => ({ url: 'https://shop.example.com/products' }),
+    })
+    // (2) The admission reply triggers L3 reclassify after ONE call.
+    assert.equal(first.reclassify, true)
+    assert.equal(requestBodies.length, 1)
+    assert.equal(requestBodies[0].tools ?? null, null, 'conversation turn offers no tools')
+
+    // (3) The caller re-runs with forceBrowserTools (as background.js does).
+    const second = await runLlmAgentTurn({
+      turnId: 'turn_ethos_2',
+      userMessage: 'crie o produto ethos',
+      accessToken: 'test-key',
+      modelId: 'test-model',
+      broadcast: () => {},
+      executeTool: async (tc) => ({ ok: true, result: { text: 'clicked' }, policy: { allowed: true, needsApproval: false } }),
+      getActiveTabMeta: async () => ({ url: 'https://shop.example.com/products' }),
+      forceBrowserTools: true,
+    })
+    // Tools are now offered and the action executes.
+    assert.ok(requestBodies[1].tools.length > 0, 're-run offers the browser tools')
+    const toolNames = requestBodies[1].tools.map((t) => t.function.name)
+    assert.ok(toolNames.includes('click'))
+    assert.equal(second.toolResults.length, 1)
+    assert.equal(second.toolResults[0].success, true)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('runLlmAgentTurn: a normal conversation reply does NOT reclassify (L3 negative)', async () => {
+  let fetchCount = 0
+  globalThis.fetch = async () => {
+    fetchCount += 1
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { role: 'assistant', content: 'Ethos é um produto fictício da minha coleção. Quer saber mais?' } }],
+      }),
+    }
+  }
+
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_conversation_normal',
+      userMessage: 'crie o produto ethos',
+      accessToken: 'test-key',
+      modelId: 'test-model',
+      broadcast: () => {},
+      executeTool: async () => ({ ok: true, result: { text: 'x' }, policy: { allowed: true, needsApproval: false } }),
+      getActiveTabMeta: async () => ({ url: 'https://example.com' }),
+    })
+    assert.equal(result.reclassify, undefined)
+    assert.match(result.assistantMessage, /Ethos é um produto/)
+    assert.equal(fetchCount, 1)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('runLlmAgentTurn: admission in a BROWSER turn does not reclassify (L3 bounded by mode)', async () => {
+  const responses = [
+    // Step 1: browser turn — the model executes a navigate.
+    { ok: true, status: 200, json: async () => ({
+      choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+        { id: 'tc_nav', function: { name: 'navigate', arguments: '{"url":"https://example.com"}' } },
+      ] } }],
+    }) },
+    // Step 2: even a browser-unavailable admission stays a text answer in
+    // browser mode — the gate requires !browserToolsEnabled.
+    { ok: true, status: 200, json: async () => ({
+      choices: [{ message: { role: 'assistant', content: 'O navegador não está disponível, mas aqui está o resumo.' } }],
+    }) },
+  ]
+  let fetchCount = 0
+  globalThis.fetch = async () => responses[Math.min(fetchCount++, responses.length - 1)]
+
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_browser_admission',
+      userMessage: 'abra example.com',
+      accessToken: 'test-key',
+      modelId: 'test-model',
+      broadcast: () => {},
+      executeTool: async (tc) => ({ ok: true, result: { url: tc.params.url }, policy: { allowed: true, needsApproval: false } }),
+      getActiveTabMeta: async () => ({ url: 'https://example.com' }),
+    })
+    assert.equal(result.reclassify, undefined, 'browser mode never reclassifies via L3')
+    assert.equal(fetchCount, 2)
+    assert.equal(result.toolResults.length, 1)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
