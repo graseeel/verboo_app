@@ -88,6 +88,7 @@ export const MSG = Object.freeze({
 
   // Controller → Panel
   AGENT_TURN_STARTED: 'agent:turn_started',
+  AGENT_WORKSPACE_TAB: 'agent:workspace_tab', // dedicated-workspace tab the turn acts on (display only)
   AGENT_THOUGHT: 'agent:thought',             // streaming assistant thought
   AGENT_TOOL_REQUEST: 'agent:tool_request',  // tool call awaiting approval
   AGENT_TOOL_EXECUTING: 'agent:tool_executing',
@@ -213,6 +214,8 @@ export const TOOL_RISK_MAP = Object.freeze(Object.fromEntries(
  * @property {string} turnId
  * @property {string} assistantMessage     - Final assistant text
  * @property {ToolResult[]} toolResults    - All tool results from this turn
+ * @property {Object} [activeTab]          - {tabId, windowId, title, url} of the
+ *   dedicated-workspace tab at turn end; present only when the turn used one
  */
 
 // ── Message payload shapes (for type-checking in handlers) ──
@@ -232,7 +235,8 @@ export const MSG_SHAPES = Object.freeze({
   [MSG.TOOL_DENY]:         { toolCallId: 'string', reason: 'string?' },
   [MSG.AGENT_TOOL_REQUEST]:{ toolCall: 'object', policyDecision: 'object' },
   [MSG.AGENT_TOOL_RESULT]: { toolResult: 'object' },
-  [MSG.AGENT_TURN_COMPLETE]:{ turnId: 'string', assistantMessage: 'string', toolResults: 'array' },
+  [MSG.AGENT_TURN_COMPLETE]:{ turnId: 'string', assistantMessage: 'string', toolResults: 'array', activeTab: 'object?' },
+  [MSG.AGENT_WORKSPACE_TAB]: { turnId: 'string?', tab: 'object' },
   [MSG.AGENT_TURN_ERROR]:  { turnId: 'string', error: 'string' },
   [MSG.SELECTION_CONTEXT_CHANGED]: { tabId: 'number', context: 'object' },
   [MSG.AUTH_STATE_CHANGED]:{ session: 'object?' },

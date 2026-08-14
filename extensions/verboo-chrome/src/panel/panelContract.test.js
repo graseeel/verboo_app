@@ -105,3 +105,35 @@ test('panel exposes a removable selected-text context above the composer', () =>
     assert.match(bundle, /"selection_context_remove"/)
   }
 })
+
+test('panel surfaces the workspace tab it acts on, focused only via explicit click', () => {
+  assert.match(html, /id="workspace-tab"[^>]*\bhidden\b/s)
+  assert.match(html, /id="workspace-tab-label"/)
+  assert.match(html, /id="workspace-tab-show"[^>]*data-i18n="workspaceTab_show"/s)
+  assert.match(styles, /\.workspace-tab\[hidden\]/)
+  assert.match(styles, /\.workspace-tab-show:disabled/)
+  // Live updates from the background + receipt on turn completion.
+  assert.match(script, /MSG\.AGENT_WORKSPACE_TAB/)
+  assert.match(script, /setWorkspaceTab\(message\.tab, 'acting'\)/)
+  assert.match(script, /setWorkspaceTab\(message\.activeTab, 'result'\)/)
+  // Focus is always an explicit gesture; closed tabs degrade gracefully.
+  assert.match(script, /chrome\.tabs\.update\(tab\.tabId, \{ active: true \}\)/)
+  assert.match(script, /chrome\.windows\.update\(tab\.windowId, \{ focused: true \}\)/)
+  assert.match(script, /chrome\.tabs\.onRemoved\.addListener/)
+  // Approval cards for tab-mutating tools resolve their target tab titles.
+  assert.match(script, /annotateToolCardTab\(toolCall, card\)/)
+  assert.match(script, /toolCallTabIds/)
+
+  for (const bundle of [enUs, ptBr]) {
+    for (const key of [
+      'workspaceTab_acting',
+      'workspaceTab_result',
+      'workspaceTab_show',
+      'workspaceTab_closed',
+      'workspaceTab_untitled',
+      'workspaceTab_onTab',
+    ]) {
+      assert.match(bundle, new RegExp(`"${key}"`))
+    }
+  }
+})

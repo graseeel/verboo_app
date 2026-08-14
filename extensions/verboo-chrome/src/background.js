@@ -906,6 +906,7 @@ async function runAgentTurn(
           sourceTabId: Number.isInteger(senderTabId) ? senderTabId : activeTab?.id,
           resume,
         })
+        await broadcastWorkspaceTabMeta(turnId, turnTabLease)
       }
       return turnTabLease
     }
@@ -1019,11 +1020,13 @@ async function runAgentTurn(
                 cancel: () => abortTurnController(turnId),
               })
         }
+        const activeTab = await resolveWorkspaceTabMeta(turnTabLease)
         sendTerminal({
           type: MSG.AGENT_TURN_COMPLETE,
           turnId,
           assistantMessage: finalResult.assistantMessage ?? 'Done.',
           toolResults: slimToolResultsForBroadcast(finalResult.toolResults),
+          ...(activeTab ? { activeTab } : {}),
         })
         return
       } catch (llmErr) {
@@ -1038,11 +1041,13 @@ async function runAgentTurn(
         // Partial progress attached on some errors (defensive).
         const partial = llmErr?.partialToolResults
         if (Array.isArray(partial) && partial.length > 0) {
+          const activeTab = await resolveWorkspaceTabMeta(turnTabLease)
           sendTerminal({
             type: MSG.AGENT_TURN_COMPLETE,
             turnId,
             assistantMessage: summarizePartialAgentTurn(userMessage, partial),
             toolResults: slimToolResultsForBroadcast(partial),
+            ...(activeTab ? { activeTab } : {}),
           })
           return
         }
@@ -1178,7 +1183,10 @@ async function makeExecutionContext(
     activeTabId: tab?.id ?? fallbackTabId,
     ...(leasedTarget ? {
       workspaceWindowId: leasedTarget.windowId,
-      setActiveTabId: (tabId, windowId) => turnTabLease.selectTab(tabId, windowId),
+      setActiveTabId: (tabId, windowId) => {
+        turnTabLease.selectTab(tabId, windowId)
+        void broadcastWorkspaceTabMeta(turnId, turnTabLease)
+      },
     } : {}),
     onExecuting: (toolCall) => broadcast({
       type: MSG.AGENT_TOOL_EXECUTING,
@@ -1198,6 +1206,36 @@ async function queryActiveTabMeta(preferredTabId) {
     url: tab?.url,
     title: tab?.title,
   }
+}
+
+/**
+ * Resolve the turn's dedicated-workspace tab for panel display (UX chrome only
+ * — never affects execution). Returns null when the turn has no lease or the
+ * tab is gone (closed mid-turn).
+ * @param {{ snapshot?: () => { tabId?: number, windowId?: number } } | null | undefined} turnTabLease
+ */
+async function resolveWorkspaceTabMeta(turnTabLease) {
+  try {
+    const snapshot = turnTabLease?.snapshot?.()
+    if (!Number.isInteger(snapshot?.tabId)) return null
+    const meta = await queryActiveTabMeta(snapshot.tabId)
+    if (!Number.isInteger(meta.id)) return null
+    return {
+      tabId: meta.id,
+      windowId: snapshot.windowId,
+      title: typeof meta.title === 'string' ? meta.title : '',
+      url: typeof meta.url === 'string' ? meta.url : '',
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Tell the panel which workspace tab the turn is acting on (best effort). */
+async function broadcastWorkspaceTabMeta(turnId, turnTabLease) {
+  if (!turnId) return
+  const tab = await resolveWorkspaceTabMeta(turnTabLease)
+  if (tab) broadcast({ type: MSG.AGENT_WORKSPACE_TAB, turnId, tab })
 }
 
 async function queryNormalWindow() {

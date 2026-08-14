@@ -34,6 +34,13 @@ import {
 } from './presentation.js'
 import { approvalMessage } from './approvalActions.js'
 import { recordInterruptedTurn } from './conversationState.js'
+import {
+  canFocusWorkspaceTab,
+  isWorkspaceTab,
+  toolCallTabIds,
+  workspaceTabChipState,
+  workspaceTabLabel,
+} from './workspaceTab.js'
 import { stripUntrustedBrowserBoundaryForDisplay } from '../agent/untrustedContent.js'
 import { matchSlashQuery, parseSlashInvocation } from '../routines/slashCommands.js'
 import { MAX_AGENT_TURN_MS } from '../agent/turnBudget.js'
@@ -1230,7 +1237,33 @@ function renderToolCard(toolCall, policyDecision) {
   messages.appendChild(card)
   messages.scrollTop = messages.scrollHeight
   toolCards.set(toolCall.id, card)
+  void annotateToolCardTab(toolCall, card)
   return card
+}
+
+/**
+ * Show the human target ("On tab: <title>") for tab-mutating approvals
+ * (tabs switch/close, tab_group). Raw ids stay in the params line; resolved
+ * titles are display-only and rendered via textContent (untrusted page data).
+ * @param {{ id: string, name: string, params?: unknown }} toolCall
+ * @param {HTMLElement} card
+ */
+async function annotateToolCardTab(toolCall, card) {
+  const ids = toolCallTabIds(toolCall)
+  if (ids.length === 0) return
+  const titles = []
+  for (const id of ids) {
+    const tab = await chrome.tabs.get(id).catch(() => null)
+    if (!tab) continue
+    titles.push(workspaceTabLabel({ title: tab.title, url: tab.url }) || t('workspaceTab_untitled'))
+  }
+  if (titles.length === 0 || !document.contains(card)) return
+  const line = document.createElement('div')
+  line.className = 'tool-card-tab'
+  line.textContent = t('workspaceTab_onTab').replace('{title}', titles.join(', '))
+  const params = card.querySelector('.tool-card-params')
+  if (params) params.after(line)
+  else card.appendChild(line)
 }
 
 function markToolExecuting(toolCallId, toolName) {
@@ -1628,6 +1661,91 @@ function resizeChatInput(input) {
   input.dataset.overflow = scrollHeight > CHAT_INPUT_MAX_HEIGHT ? 'true' : 'false'
 }
 
+// ── Workspace tab indicator ──────────────────────────────────────
+// The agent acts on a dedicated, unfocused workspace tab. This chip tells the
+// user which tab that is; focusing it only ever happens on an explicit click.
+
+/** @type {{tabId:number, windowId?:number, title?:string, url?:string} | null} */
+let workspaceTab = null
+let workspaceTabClosed = false
+/** @type {'acting' | 'result'} */
+let workspaceTabPhase = 'acting'
+
+function renderWorkspaceTab() {
+  const bar = document.getElementById('workspace-tab')
+  const label = document.getElementById('workspace-tab-label')
+  const show = document.getElementById('workspace-tab-show')
+  if (!bar || !label || !show) return
+  const state = workspaceTabChipState({ tab: workspaceTab, closed: workspaceTabClosed })
+  bar.hidden = state === 'hidden'
+  bar.dataset.state = state === 'visible' ? workspaceTabPhase : state
+  if (state !== 'visible') {
+    if (state === 'closed') label.textContent = t('workspaceTab_closed')
+    show.disabled = true
+    return
+  }
+  // Title/url are page-derived and untrusted — textContent only.
+  const title = workspaceTabLabel(workspaceTab) || t('workspaceTab_untitled')
+  label.textContent = t(
+    workspaceTabPhase === 'result' ? 'workspaceTab_result' : 'workspaceTab_acting',
+  ).replace('{title}', title)
+  show.disabled = !canFocusWorkspaceTab(workspaceTab)
+}
+
+/**
+ * @param {unknown} tab
+ * @param {'acting' | 'result'} phase
+ */
+function setWorkspaceTab(tab, phase) {
+  if (!isWorkspaceTab(tab)) return
+  workspaceTab = {
+    tabId: tab.tabId,
+    windowId: tab.windowId,
+    title: tab.title ?? '',
+    url: tab.url ?? '',
+  }
+  workspaceTabClosed = false
+  workspaceTabPhase = phase
+  renderWorkspaceTab()
+}
+
+function clearWorkspaceTab() {
+  workspaceTab = null
+  workspaceTabClosed = false
+  workspaceTabPhase = 'acting'
+  renderWorkspaceTab()
+}
+
+/** Focus the workspace tab + window — explicit user gesture, never automatic. */
+async function focusWorkspaceTab() {
+  const tab = workspaceTab
+  if (!canFocusWorkspaceTab(tab)) return
+  try {
+    await chrome.tabs.update(tab.tabId, { active: true })
+    await chrome.windows.update(tab.windowId, { focused: true })
+  } catch {
+    // Tab or window went away between render and click.
+    workspaceTabClosed = true
+    renderWorkspaceTab()
+  }
+}
+
+function initWorkspaceTab() {
+  document.getElementById('workspace-tab-show')?.addEventListener('click', () => {
+    void focusWorkspaceTab()
+  })
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    if (tabId !== workspaceTab?.tabId) return
+    if (turnInFlight) {
+      workspaceTabClosed = true
+      renderWorkspaceTab()
+    } else {
+      // A dead result link helps nobody — hide the chip.
+      clearWorkspaceTab()
+    }
+  })
+}
+
 function setTurnInFlight(inFlight) {
   turnInFlight = Boolean(inFlight)
   if (turnInFlight) closeModelMenu()
@@ -1652,6 +1770,7 @@ function clearConversation() {
   void chrome.storage.session.remove(PANEL_CONVERSATION_STATE_KEY)
   toolCards.clear()
   removeActivitySummary()
+  clearWorkspaceTab()
   document.getElementById('chat-messages')?.replaceChildren()
   document.getElementById('chat-input')?.focus()
 }
@@ -1675,6 +1794,7 @@ function endTurnUi() {
   clearTurnWatchdogs()
   activeTurnId = null
   setTurnInFlight(false)
+  clearWorkspaceTab()
 }
 
 /**
@@ -1883,6 +2003,12 @@ function initAgentEventListener() {
         bumpTurnIdleWatchdog()
         break
       }
+      case MSG.AGENT_WORKSPACE_TAB: {
+        if (message.turnId && activeTurnId && message.turnId !== activeTurnId) break
+        bumpTurnIdleWatchdog()
+        setWorkspaceTab(message.tab, 'acting')
+        break
+      }
       case MSG.AGENT_THOUGHT: {
         ensureWorkingHeader()
         bumpTurnIdleWatchdog()
@@ -1919,6 +2045,10 @@ function initAgentEventListener() {
           ? pendingConversation
           : null
         endTurnUi()
+        if (isWorkspaceTab(message.activeTab)) {
+          // Receipt: the turn acted on this workspace tab — let the user jump to it.
+          setWorkspaceTab(message.activeTab, 'result')
+        }
         appendAssistantMessage(
           message.assistantMessage,
           Array.isArray(message.toolResults) && message.toolResults.length > 0,
@@ -2022,6 +2152,7 @@ async function init() {
   initAgentEventListener()
   initModelSelect()
   initSelectionContext()
+  initWorkspaceTab()
 
   await hydrateAuthFromBackground()
   await hydratePendingApprovals()
