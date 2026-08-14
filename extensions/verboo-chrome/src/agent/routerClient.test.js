@@ -660,3 +660,22 @@ test('stripToolMarkup: removes function_calls/tool_call envelopes, preserves pro
   assert.equal(stripToolMarkup('prose <function_calls>\n<invoke name="computer">\n</invoke>\n</function_calls> tail'), 'prose tail')
   assert.equal(stripToolMarkup('<function_calls><invoke name="computer"></invoke></function_calls>'), '')
 })
+
+test('parseCompletionResponse: type with pressEnter as string normalizes to boolean (R-T3)', () => {
+  const result = parseCompletionResponse({
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: '<function_calls>\n<invoke name="computer">\n<parameter name="action">type</parameter>\n<parameter name="selector">.new-todo</parameter>\n<parameter name="text">comprar café</parameter>\n<parameter name="pressEnter">true</parameter>\n</invoke>\n</function_calls>',
+      },
+    }],
+  })
+
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].name, 'type')
+  assert.deepEqual(JSON.parse(result.toolCalls[0].arguments), {
+    selector: '.new-todo',
+    text: 'comprar café',
+    pressEnter: true,
+  })
+})

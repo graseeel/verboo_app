@@ -106,7 +106,8 @@ TOOL PROTOCOL (mandatory):
 - You have real function-calling. Call browser tools ONLY through the API's native tool_calls mechanism.
 - NEVER write tool markup as chat text — no <function_calls>, <tool_call>, <invoke>, or <function=...> tags in your reply. Written tool markup is rejected and never executed.
 - Available tools: navigate, read_page, find, extract_page_content, structured_extract, click, type, screenshot, tabs, tab_group.
-- click accepts a CSS selector or viewport pixel coordinates {x, y}. Use find to locate elements before clicking; never invent selectors from memory.`
+- click accepts a CSS selector or viewport pixel coordinates {x, y}. Use find to locate elements before clicking; never invent selectors from memory.
+- After a mutation (click/type), verify the effect with read_page before summarizing — never claim completion without observing the result. Use type with pressEnter: true when the task needs the typed value to COMMIT (adding to a list, sending a message, running a search).`
 
 /**
  * Run a multi-step LLM agent turn.
@@ -269,6 +270,12 @@ async function runLlmAgentTurnWithinBudget({
   // request asks only for the final reply and cannot trigger another action.
   let browserActionsComplete = false
   let requiresVerification = false
+  // R-V4/GENERALIZAÇÃO: the programmatic evidence read happens AT MOST ONCE
+  // per turn (no loop) — when the model tries to close with the verification
+  // flag still armed, the LOOP reads the page itself and appends the real
+  // text before accepting a final summary.
+  let verificationEvidenceRead = false
+  let verificationAskSent = false
   let promptInjectionDetected = false
   let currentAccessToken = accessToken
   const refreshAccessTokenForTurn = typeof refreshAccessToken === 'function'
@@ -412,13 +419,54 @@ async function runLlmAgentTurnWithinBudget({
       }
       if (completion.toolCalls.length === 0) {
         if (requiresVerification) {
-          messages.push({
-            role: 'system',
-            content:
-              'The last browser mutation has not been verified. Inspect the current page with read_page ' +
-              'or screenshot before claiming completion, then answer with the observed result.',
-          })
-          continue
+          // R-V4/GENERALIZAÇÃO (approved conditional): with the verification
+          // flag still armed at the final summary — a mutation happened and
+          // the model did not inspect afterwards — the LOOP reads the page
+          // itself (real text, outside the model's tools) and appends it as
+          // evidence BEFORE accepting any summary. Exactly once per turn;
+          // no loop: the next close is accepted (fenced) as-is. No
+          // duplicated read when the model already verified (flag off).
+          if (!verificationEvidenceRead) {
+            verificationEvidenceRead = true
+            try {
+              const evidence = await executeTool(
+                { id: `verify-${turnId}`, name: 'read_page', params: {} },
+                signal,
+              )
+              const evidenceText = typeof evidence?.result?.text === 'string'
+                ? evidence.result.text
+                : (typeof evidence?.result?.content === 'string' ? evidence.result.content : '')
+              if (evidenceText.trim()) {
+                messages.push({
+                  role: 'system',
+                  content:
+                    'The last browser mutation has not been verified by your own inspection. ' +
+                    'Real current page state (read by the harness, outside your tools):\n' +
+                    evidenceText.slice(0, 32_000) +
+                    '\nConclude based on THIS evidence: confirm the expected effect is present, ' +
+                    'or report the failure honestly and retry. Never claim success without observing it.',
+                })
+                continue
+              }
+            } catch {
+              /* evidence read is best-effort */
+            }
+          }
+          // R-V2/GENERALIZAÇÃO: ask for inspection WITH evidence citation —
+          // at most once per turn; the summary is accepted afterwards (the
+          // flow falls through below) — no unbounded loop.
+          if (!verificationAskSent) {
+            verificationAskSent = true
+            messages.push({
+              role: 'system',
+              content:
+                'The last browser mutation has not been verified. Inspect the current page with read_page ' +
+                'and CONFIRM THE EFFECT of the action (the new state/item is present). Answer with the ' +
+                'observed evidence — if the effect is not visible, report the failure and retry; never ' +
+                'claim success without observing it.',
+            })
+            continue
+          }
         }
         const text = completion.content?.trim()
         if (!text) {
@@ -704,7 +752,12 @@ async function runLlmAgentTurnWithinBudget({
       if (execResult.ok) {
         failStreak = { name: null, count: 0, afterHint: false }
         if (tc.name === 'click' || tc.name === 'type') requiresVerification = true
-        if (tc.name === 'read_page' || tc.name === 'screenshot') requiresVerification = false
+        // R-V1/GENERALIZAÇÃO: only read_page (structured real text) clears
+        // the verification flag. A screenshot does NOT — the model can aim
+        // it at the wrong place (e.g. the input with the typed text instead
+        // of the list with the new item), so a visual peek after a mutation
+        // is not evidence of the effect.
+        if (tc.name === 'read_page') requiresVerification = false
       } else if (failStreak.name === tc.name) {
         failStreak.count++
       } else {

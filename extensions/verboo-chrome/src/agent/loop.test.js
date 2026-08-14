@@ -450,23 +450,28 @@ test('runLlmAgentTurn: explicitly requested page inspection falls back to read_p
   }
 })
 
-test('runLlmAgentTurn: verifies a successful click before accepting a final answer', async () => {
+test('runLlmAgentTurn: verifies a successful click before accepting a final answer (R-V4 evidence)', async () => {
   const responses = [
+    // Step 1: the model clicks (mutation → verification flag armed).
     { choices: [{ message: { content: null, tool_calls: [
       { id: 'click-1', function: { name: 'click', arguments: '{"selector":"#add"}' } },
     ] } }] },
+    // Step 2: the model closes with text while the flag is STILL armed —
+    // the harness must not accept it; it reads the page itself (R-V4).
     { choices: [{ message: { content: 'Done.' } }] },
-    { choices: [{ message: { content: null, tool_calls: [
-      { id: 'read-1', function: { name: 'read_page', arguments: '{"selector":"body"}' } },
-    ] } }] },
+    // Step 3: with the REAL evidence appended, the model concludes.
     { choices: [{ message: { content: 'There are now two Delete buttons.' } }] },
   ]
   let responseIndex = 0
-  globalThis.fetch = async () => ({
-    ok: true,
-    status: 200,
-    json: async () => responses[responseIndex++] ?? responses.at(-1),
-  })
+  const requestBodies = []
+  globalThis.fetch = async (_url, init) => {
+    requestBodies.push(JSON.parse(init.body))
+    return {
+      ok: true,
+      status: 200,
+      json: async () => responses[responseIndex++] ?? responses.at(-1),
+    }
+  }
   const tools = []
   try {
     const result = await runLlmAgentTurn({
@@ -483,7 +488,13 @@ test('runLlmAgentTurn: verifies a successful click before accepting a final answ
       },
       getActiveTabMeta: async () => ({ url: 'https://example.com' }),
     })
+    // The read_page is the HARNESS evidence read (R-V4) — not the model's.
     assert.deepEqual(tools, ['click', 'read_page'])
+    // The real page text was appended to the context before the summary.
+    const evidenceMessage = requestBodies[2].messages.find(
+      (m) => m.role === 'system' && String(m.content).includes('Delete Delete'),
+    )
+    assert.ok(evidenceMessage, 'harness evidence must reach the model context')
     assert.equal(result.assistantMessage, 'There are now two Delete buttons.')
   } finally {
     globalThis.fetch = origFetch
@@ -2550,4 +2561,124 @@ test('shouldOfferBrowserTools: PÓS-RE-GATE — knowledge desires stay conversat
   // the model empathizes instead of opening the browser). L1 unchanged
   // per the Maestro's "não mexer"; flagging for the record.
   assert.equal(shouldOfferBrowserTools('odeio esta página'), false)
+})
+
+// ── GENERALIZAÇÃO: R-V1 screenshot does not clear verification ─────
+
+test('runLlmAgentTurn: a screenshot after a mutation does NOT clear verification (R-V1)', async () => {
+  const responses = [
+    // Step 1: type (mutation → flag armed).
+    { choices: [{ message: { content: null, tool_calls: [
+      { id: 'type-1', function: { name: 'type', arguments: '{"selector":".new-todo","text":"comprar café"}' } },
+    ] } }] },
+    // Step 2: screenshot — visually peeks the input, NOT the effect.
+    { choices: [{ message: { content: null, tool_calls: [
+      { id: 'shot-1', function: { name: 'screenshot', arguments: '{}' } },
+    ] } }] },
+    // Step 3: the model tries to close — the flag is STILL armed (R-V1),
+    // so the harness reads the page (R-V4) instead of accepting.
+    { choices: [{ message: { content: 'Tarefa adicionada com sucesso à lista!' } }] },
+    // Step 4: with the real evidence, the model concludes honestly.
+    { choices: [{ message: { content: 'A lista continua vazia — a tarefa não foi adicionada.' } }] },
+  ]
+  let responseIndex = 0
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => responses[responseIndex++] ?? responses.at(-1),
+  })
+  const tools = []
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn-screenshot-not-evidence',
+      userMessage: 'adicione comprar café na lista',
+      accessToken: 'test-key',
+      modelId: 'tool-model',
+      // This test exercises the VERIFICATION mechanism, not the
+      // classifier — force the browser turn. (Classified note: "adicione
+      // X na lista" is a residual classifier miss without a deictic
+      // anchor; out of scope here, flagged in the note.)
+      forceBrowserTools: true,
+      broadcast: () => {},
+      executeTool: async (toolCall) => {
+        tools.push(toolCall.name)
+        if (toolCall.name === 'read_page') {
+          return { ok: true, result: { text: 'What needs to be done?' }, policy: { allowed: true } }
+        }
+        if (toolCall.name === 'screenshot') {
+          return { ok: true, result: { url: 'https://todomvc.com' }, policy: { allowed: true } }
+        }
+        return { ok: true, result: { textLength: 12 }, policy: { allowed: true } }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://todomvc.com/examples/react/dist' }),
+    })
+    // screenshot did NOT clear the flag: the harness still performed the
+    // evidence read after the model's screenshot.
+    assert.deepEqual(tools, ['type', 'screenshot', 'read_page'])
+    // The model was forced to conclude against the real (empty) list.
+    assert.match(result.assistantMessage, /lista continua vazia/)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+// ── GENERALIZAÇÃO: literal TodoMVC case — effect absent → honest failure ─
+
+test('runLlmAgentTurn: TodoMVC literal — absent effect is reported as failure, not success', async () => {
+  const responses = [
+    // Step 1: type + pressEnter (the model does the right thing).
+    { choices: [{ message: { content: null, tool_calls: [
+      { id: 'type-1', function: { name: 'type', arguments: '{"selector":".new-todo","text":"comprar café","pressEnter":true}' } },
+    ] } }] },
+    // Step 2: the model tries to claim success without inspecting.
+    { choices: [{ message: { content: 'Tarefa adicionada com sucesso à lista!' } }] },
+    // Step 3: after the harness appends the REAL page state (item absent),
+    // the model reports the failure honestly.
+    { choices: [{ message: { content: 'A lista está vazia — a tarefa não foi adicionada. Vou tentar novamente.' } }] },
+    // Step 4: retry with pressEnter.
+    { choices: [{ message: { content: null, tool_calls: [
+      { id: 'type-2', function: { name: 'type', arguments: '{"selector":".new-todo","text":"comprar café","pressEnter":true}' } },
+    ] } }] },
+    // Step 5: closes after the retry.
+    { choices: [{ message: { content: 'Tarefa adicionada.' } }] },
+  ]
+  let responseIndex = 0
+  const requestBodies = []
+  globalThis.fetch = async (_url, init) => {
+    requestBodies.push(JSON.parse(init.body))
+    return {
+      ok: true,
+      status: 200,
+      json: async () => responses[responseIndex++] ?? responses.at(-1),
+    }
+  }
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn-todomvc',
+      userMessage: 'adicione comprar café na lista',
+      accessToken: 'test-key',
+      modelId: 'tool-model',
+      forceBrowserTools: true,
+      broadcast: () => {},
+      executeTool: async (toolCall) => {
+        if (toolCall.name === 'read_page') {
+          // Real page: input empty, list WITHOUT the item.
+          return { ok: true, result: { text: 'What needs to be done?' }, policy: { allowed: true } }
+        }
+        return { ok: true, result: { textLength: 12 }, policy: { allowed: true } }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://todomvc.com/examples/react/dist' }),
+    })
+    // The harness evidence (empty list) reached the context before the
+    // model's second reply — the model reported the failure instead of
+    // the hallucinated success.
+    const evidence = requestBodies[2].messages.find(
+      (m) => m.role === 'system' && String(m.content).includes('What needs to be done?'),
+    )
+    assert.ok(evidence, 'harness evidence must be appended before the summary is accepted')
+    assert.match(result.assistantMessage, /Tarefa adicionada\./)
+    assert.equal(result.toolResults.length, 2)
+  } finally {
+    globalThis.fetch = origFetch
+  }
 })

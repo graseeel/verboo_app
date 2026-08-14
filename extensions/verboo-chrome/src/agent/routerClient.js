@@ -408,6 +408,12 @@ function resolveTextToolName(functionName, params, dropped = []) {
     params.text = params.value
     delete params.value
   }
+  // R-T3/GENERALIZAÇÃO: text-emitted booleans arrive as strings
+  // ('true'/'false'); the schema expects a boolean, so normalize before
+  // validation (mirrors normalizeClickCoordinates for click).
+  if (aliased === 'type' && typeof params.pressEnter === 'string') {
+    params.pressEnter = params.pressEnter === 'true'
+  }
   if (!isValidToolName(aliased)) dropped.push(name)
   return aliased
 }
