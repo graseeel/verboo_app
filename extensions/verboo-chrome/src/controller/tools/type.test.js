@@ -45,7 +45,7 @@ async function typeInto(html, tool, before = () => {}) {
       executeScript: async ({ func, args }) => {
         const isTypeFn = Array.isArray(args) && args.length === 4 && typeof args[0] === 'string'
         try {
-          return [{ result: isTypeFn ? func(...args) : true }]
+          return [{ result: isTypeFn ? await func(...args) : true }]
         } catch {
           return [{ result: undefined }]
         }
@@ -112,9 +112,10 @@ test('type: requestSubmit fires ONLY when the keydown was NOT handled, and only 
   )
 
   // No keydown handler → default not prevented → keypress + requestSubmit.
-  // pressedEnter only reports that the Enter sequence was dispatched (the
-  // app signals "handled" through the submit/state, not through the tool).
-  assert.equal(result.pressedEnter, true)
+  // R-T5: pressedEnter now reflects whether the APP handled the Enter —
+  // here it did not, so the result says so and carries a neutral note.
+  assert.equal(result.pressedEnter, false)
+  assert.match(result.note, /did not intercept/)
   assert.equal(submitted, 1, 'requestSubmit must mirror the native Enter submit')
 })
 
@@ -154,4 +155,39 @@ test('type: clear + text + pressEnter combine (value set through the native sett
   const { window } = await typeInto('<input id="t" value="old">', { clear: true, pressEnter: true })
   const input = window.document.querySelector('#t')
   assert.equal(input.value, 'comprar café')
+})
+
+// ── GENERALIZAÇÃO-2: R-C1 readiness/polling, R-T4 hint, R-T5 note ──
+
+test('type: R-C1 — an element that appears late is found by the poll', async () => {
+  // The page starts WITHOUT the input (framework still mounting); it is
+  // inserted 150ms into the tool call — the in-page poll must find it.
+  const { result } = await typeInto('<div id="root"></div>', { pressEnter: true }, (window) => {
+    setTimeout(() => {
+      const input = window.document.createElement('input')
+      input.id = 't'
+      window.document.getElementById('root').appendChild(input)
+    }, 150)
+  })
+  assert.equal(result.textLength, 12)
+  assert.equal(result.pressedEnter, false) // no keydown handler on the page
+})
+
+test('type: R-C1 — a never-appearing element fails honestly after the poll timeout', async () => {
+  await assert.rejects(
+    typeInto('<div id="root"></div>', { pressEnter: true }),
+    /type: element not found: #t/,
+  )
+})
+
+test('type: R-T4 — the not-found error reminds pressEnter when it was set', async () => {
+  await assert.rejects(
+    typeInto('<div id="root"></div>', { selector: '#missing', pressEnter: true }),
+    /the call had pressEnter: true — retry with the same arguments/,
+  )
+  // Without pressEnter the error stays plain (retro-compatible).
+  await assert.rejects(
+    typeInto('<div id="root"></div>', { selector: '#missing' }),
+    /^Error: type: element not found: #missing$/,
+  )
 })

@@ -52,14 +52,31 @@ export async function findTool(tool, ctx = {}) {
  * In-page function. Runs in the page's main world via executeScript.
  * Returns up to MAX_MATCHES clickable elements whose visible text contains
  * the needle (case-insensitive). Selectors are derived from the element.
+ * R-C1/GENERALIZAÇÃO-2: waits for readiness (and for the scope selector
+ * when given) so the first tool call of a turn cannot race the
+ * framework's mount. Zero cost on a ready page.
  * @param {string} text
  * @param {string | null} scopeSelector
- * @returns {Array<{ text: string; tag: string; selector: string; href?: string }>}
+ * @returns {Promise<Array<{ text: string; tag: string; selector: string; href?: string }>}>
  */
-function findInPage(text, scopeSelector) {
-  const scope = scopeSelector
-    ? document.querySelector(scopeSelector)
-    : document
+async function findInPage(text, scopeSelector) {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const readyDeadline = Date.now() + 5000
+  while (document.readyState !== 'complete' && Date.now() < readyDeadline) {
+    await sleep(100)
+  }
+  let scope = null
+  if (scopeSelector) {
+    const elementDeadline = Date.now() + 3000
+    for (;;) {
+      scope = document.querySelector(scopeSelector)
+      if (scope) break
+      if (Date.now() >= elementDeadline) return []
+      await sleep(100)
+    }
+  } else {
+    scope = document
+  }
   if (!scope) return []
 
   const candidates = scope.querySelectorAll(

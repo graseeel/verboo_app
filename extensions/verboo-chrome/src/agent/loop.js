@@ -443,7 +443,12 @@ async function runLlmAgentTurnWithinBudget({
                     'The last browser mutation has not been verified by your own inspection. ' +
                     'Real current page state (read by the harness, outside your tools):\n' +
                     evidenceText.slice(0, 32_000) +
-                    '\nConclude based on THIS evidence: confirm the expected effect is present, ' +
+                    // R-V5/GENERALIZAÇÃO-2: typed text INSIDE the target
+                    // field is not evidence — the effect must be observed
+                    // outside it (the field keeps the typed value even
+                    // when nothing committed).
+                    '\nText typed INSIDE the target field is NOT evidence of the effect — the effect must be observable OUTSIDE the target field (e.g. the new item in the list, the page state, the navigation). ' +
+                    'Conclude based on THIS evidence: confirm the expected effect is present, ' +
                     'or report the failure honestly and retry. Never claim success without observing it.',
                 })
                 continue
@@ -461,9 +466,12 @@ async function runLlmAgentTurnWithinBudget({
               role: 'system',
               content:
                 'The last browser mutation has not been verified. Inspect the current page with read_page ' +
-                'and CONFIRM THE EFFECT of the action (the new state/item is present). Answer with the ' +
-                'observed evidence — if the effect is not visible, report the failure and retry; never ' +
-                'claim success without observing it.',
+                'and CONFIRM THE EFFECT of the action (the new state/item is present). ' +
+                // R-V5/GENERALIZAÇÃO-2: anti-input — the typed value stays
+                // in the field even when nothing committed.
+                'Text typed INSIDE the target field is NOT evidence — the effect must be observable outside it. ' +
+                'Answer with the observed evidence — if the effect is not visible, report the failure and ' +
+                'retry; never claim success without observing it.',
             })
             continue
           }

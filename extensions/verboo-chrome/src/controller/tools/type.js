@@ -42,7 +42,25 @@ export async function typeText(tool, ctx = {}) {
   })
 
   if (!result) throw new Error('type: no result from page')
-  if (!result.result) throw new Error(`type: element not found: ${selector}`)
+  if (!result.result || result.result === false) {
+    // R-T4/GENERALIZAÇÃO-2: when the call carried pressEnter, the error
+    // reminds the model of the parameter — a retry after "element not
+    // found" tends to drop it, silently losing the commit.
+    throw new Error(pressEnter
+      ? `type: element not found: ${selector} (the call had pressEnter: true — retry with the same arguments)`
+      : `type: element not found: ${selector}`)
+  }
+  // R-T5/GENERALIZAÇÃO-2: with pressEnter the page returns { found,
+  // handled } — pressedEnter reflects whether the APP handled the Enter;
+  // when it did not (no preventDefault, no form submit), the value may
+  // not have committed, and a neutral note reaches the model through the
+  // tool result JSON (no loop changes).
+  const handled = pressEnter && typeof result.result === 'object'
+    ? result.result.handled === true
+    : undefined
+  const note = pressEnter && handled === false
+    ? 'Enter dispatched but the app did not intercept it — confirm the effect with read_page; the value may not have committed.'
+    : undefined
   // SECURITY: never return the typed text in the result. The agent
   // transcript broadcasts AGENT_TOOL_RESULT to the panel; if we include
   // `text` here, secrets (passwords, API keys, 2FA codes) typed via
@@ -51,22 +69,40 @@ export async function typeText(tool, ctx = {}) {
   return {
     selector,
     textLength: text.length,
-    ...(pressEnter ? { pressedEnter: result.result === true } : {}),
+    ...(pressEnter ? { pressedEnter: handled === true } : {}),
+    ...(note ? { note } : {}),
     url: tab.url ?? '',
   }
 }
 
 /**
- * In-page function. Returns true if the element was found and typed into.
+ * In-page function. Returns true (found+typed), false (not found after
+ * the readiness wait), or — with pressEnter — { found: true, handled }
+ * where handled tells whether the app intercepted the Enter.
  * @param {string} selector
  * @param {string} text
  * @param {boolean} clear
  * @param {boolean} pressEnter
- * @returns {boolean}
+ * @returns {Promise<boolean | { found: true, handled: boolean }>}
  */
-function typeInPage(selector, text, clear, pressEnter) {
-  const el = /** @type {HTMLInputElement | HTMLTextAreaElement | null} */ (document.querySelector(selector))
-  if (!el) return false
+async function typeInPage(selector, text, clear, pressEnter) {
+  // R-C1/GENERALIZAÇÃO-2: the first tool call of a turn can race the
+  // framework's mount (the lease tab may still be loading, React may not
+  // have rendered the input yet). Zero cost on a ready page (the
+  // readyState check is instant and the selector is usually present).
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const readyDeadline = Date.now() + 5000
+  while (document.readyState !== 'complete' && Date.now() < readyDeadline) {
+    await sleep(100)
+  }
+  const elementDeadline = Date.now() + 3000
+  let el = /** @type {HTMLInputElement | HTMLTextAreaElement | null} */ (null)
+  for (;;) {
+    el = /** @type {HTMLInputElement | HTMLTextAreaElement | null} */ (document.querySelector(selector))
+    if (el) break
+    if (Date.now() >= elementDeadline) return false
+    await sleep(100)
+  }
   el.focus()
   if (clear) {
     el.value = ''
@@ -82,7 +118,7 @@ function typeInPage(selector, text, clear, pressEnter) {
   el.dispatchEvent(new Event('input', { bubbles: true }))
   el.dispatchEvent(new Event('change', { bubbles: true }))
   if (pressEnter) {
-    dispatchEnter(el)
+    return { found: true, handled: dispatchEnter(el) }
   }
   return true
 }

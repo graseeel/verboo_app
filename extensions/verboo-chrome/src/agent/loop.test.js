@@ -495,6 +495,8 @@ test('runLlmAgentTurn: verifies a successful click before accepting a final answ
       (m) => m.role === 'system' && String(m.content).includes('Delete Delete'),
     )
     assert.ok(evidenceMessage, 'harness evidence must reach the model context')
+    // R-V5: the evidence message carries the anti-input rule.
+    assert.match(evidenceMessage.content, /INSIDE the target field is NOT evidence/)
     assert.equal(result.assistantMessage, 'There are now two Delete buttons.')
   } finally {
     globalThis.fetch = origFetch
@@ -2676,6 +2678,7 @@ test('runLlmAgentTurn: TodoMVC literal — absent effect is reported as failure,
       (m) => m.role === 'system' && String(m.content).includes('What needs to be done?'),
     )
     assert.ok(evidence, 'harness evidence must be appended before the summary is accepted')
+    assert.match(evidence.content, /INSIDE the target field is NOT evidence/)
     assert.match(result.assistantMessage, /Tarefa adicionada\./)
     assert.equal(result.toolResults.length, 2)
   } finally {

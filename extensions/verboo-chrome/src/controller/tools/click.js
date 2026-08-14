@@ -67,16 +67,34 @@ export async function click(tool, ctx = {}) {
 
 /**
  * In-page function. Returns true if the element was found and clicked.
+ * R-C1/GENERALIZAÇÃO-2: waits for readiness + the selector (the first
+ * tool call of a turn can race the framework's mount). Zero cost on a
+ * ready page; coordinate clicks skip the selector poll.
  * @param {string|null} selector
  * @param {number|null} x
  * @param {number|null} y
  * @param {number} button
- * @returns {boolean}
+ * @returns {Promise<boolean>}
  */
-function clickInPage(selector, x, y, button) {
-  const el = (selector !== null)
-    ? document.querySelector(selector)
-    : document.elementFromPoint(x, y)
+async function clickInPage(selector, x, y, button) {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const readyDeadline = Date.now() + 5000
+  while (document.readyState !== 'complete' && Date.now() < readyDeadline) {
+    await sleep(100)
+  }
+  let el = null
+  if (selector !== null) {
+    const elementDeadline = Date.now() + 3000
+    for (;;) {
+      el = document.querySelector(selector)
+      if (el) break
+      if (Date.now() >= elementDeadline) return false
+      await sleep(100)
+    }
+  } else {
+    el = document.elementFromPoint(x, y)
+    if (!el) return false
+  }
   if (!el) return false
   if (selector !== null) {
     el.scrollIntoView({ block: 'center', behavior: 'instant' })
