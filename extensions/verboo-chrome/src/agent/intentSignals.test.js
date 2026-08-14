@@ -12,6 +12,7 @@ import assert from 'node:assert/strict'
 import {
   hasBrowserUnavailableAdmission,
   hasDeicticImperativeIntent,
+  hasImperativeWithObject,
 } from './intentSignals.js'
 
 // ── L1: deictic imperative → browser tools ─────────────────────────
@@ -78,4 +79,107 @@ test('L3: only the reply opening is scanned (300 chars)', () => {
   assert.equal(hasBrowserUnavailableAdmission(longReply), false)
   const leadingAdmission = 'o navegador não está disponível. ' + 'contexto. '.repeat(40)
   assert.equal(hasBrowserUnavailableAdmission(leadingAdmission), true)
+})
+// ── L2: imperative with concrete object (fall-open with a page) ────
+
+test('L2: imperative with concrete object matches (no verb list)', () => {
+  assert.equal(hasImperativeWithObject('crie o produto ethos'), true)
+  assert.equal(hasImperativeWithObject('salve o produto com o nome ethos'), true)
+  assert.equal(hasImperativeWithObject('preencha o formulário de contato'), true)
+  assert.equal(hasImperativeWithObject('envie um e-mail para maria'), true)
+  assert.equal(hasImperativeWithObject('create a new product'), true)
+  assert.equal(hasImperativeWithObject('fill the form'), true)
+})
+
+test('L2: pure questions are excluded by the interrogative gate', () => {
+  assert.equal(hasImperativeWithObject('o que é um produto?'), false)
+  assert.equal(hasImperativeWithObject('como crio um produto?'), false)
+  assert.equal(hasImperativeWithObject('qual é a capital do brasil?'), false)
+  assert.equal(hasImperativeWithObject('when does the sale start?'), false)
+  assert.equal(hasImperativeWithObject('o que é ethos?'), false)
+})
+
+test('L2: "me conte sobre esta página" stays out (sobre is not an article)', () => {
+  assert.equal(hasImperativeWithObject('me conte sobre esta página'), false)
+  assert.equal(hasImperativeWithObject('me explique sobre o assunto'), false)
+})
+
+// ── L2 PÓS-GATE: explanation + desire gates (Farol contra-examples) ─
+
+test('L2 PÓS-GATE: direct explanation forms stay conversation (PT/EN)', () => {
+  assert.equal(hasImperativeWithObject('explique a teoria'), false)
+  assert.equal(hasImperativeWithObject('explique a teoria da relatividade'), false)
+  assert.equal(hasImperativeWithObject('descreva o produto'), false)
+  assert.equal(hasImperativeWithObject('defina o conceito'), false)
+  assert.equal(hasImperativeWithObject('explain the theory'), false)
+  assert.equal(hasImperativeWithObject('describe the product'), false)
+  assert.equal(hasImperativeWithObject('define the concept'), false)
+})
+
+test('L2 PÓS-GATE: indirect explanation forms stay conversation', () => {
+  assert.equal(hasImperativeWithObject('me conte uma história'), false)
+  assert.equal(hasImperativeWithObject('me conte sobre esta página'), false)
+  assert.equal(hasImperativeWithObject('me explique sobre o assunto'), false)
+  assert.equal(hasImperativeWithObject('me diga o que é um produto'), false)
+  assert.equal(hasImperativeWithObject('tell me a story'), false)
+  assert.equal(hasImperativeWithObject('tell me about this page'), false)
+})
+
+test('L2 PÓS-GATE: declarative desires stay conversation (PT/EN)', () => {
+  assert.equal(hasImperativeWithObject('preciso de um café'), false)
+  assert.equal(hasImperativeWithObject('eu quero um produto'), false)
+  assert.equal(hasImperativeWithObject('quero um produto'), false)
+  assert.equal(hasImperativeWithObject('queria uma xícara de chá'), false)
+  assert.equal(hasImperativeWithObject('gostaria de um livro'), false)
+  assert.equal(hasImperativeWithObject('gostaria de saber o que é um produto'), false)
+  assert.equal(hasImperativeWithObject('i need a coffee'), false)
+  assert.equal(hasImperativeWithObject('i want a product'), false)
+  assert.equal(hasImperativeWithObject("i'd like a coffee"), false)
+  // …but a desire followed by an ACTION VERB is a declared action → browser.
+  assert.equal(hasImperativeWithObject('quero criar um produto'), true)
+  assert.equal(hasImperativeWithObject('preciso criar um produto'), true)
+  assert.equal(hasImperativeWithObject('i want to create a product'), true)
+})
+
+test('L2 PÓS-GATE: page-anchored explanation is NOT an L2 imperative (inspection decides)', () => {
+  // "explicar ESTA página" uses a demonstrative, not an article — L2 does
+  // not fire on it (and the explanation gate does not swallow it). The
+  // page-anchored explanation is turned BROWSER by hasPageInspectionIntent
+  // in loop.js — both sides are proven in loop.test.js.
+  assert.equal(hasImperativeWithObject('explique esta página'), false)
+  assert.equal(hasImperativeWithObject('explain this page'), false)
+})
+
+test('L2 PÓS-GATE: COMMUNICATION imperatives stay browser (product decision)', () => {
+  // PRODUCT DECISION (Maestro): "mande/envie e-mail/mensagem" imply an
+  // external action the tools can fulfill — intentionally NOT gated.
+  assert.equal(hasImperativeWithObject('mande um e-mail para maria'), true)
+  assert.equal(hasImperativeWithObject('envie uma mensagem para joão'), true)
+  assert.equal(hasImperativeWithObject('send a message to joão'), true)
+})
+
+// ── L2 PÓS-RE-GATE: knowledge family — 'de' optional + EN to know ──
+
+test('L2 PÓS-RE-GATE: literal Farol forms — saber/conhecer stay conversation', () => {
+  assert.equal(hasImperativeWithObject('quero saber o que é ethos'), false)
+  assert.equal(hasImperativeWithObject('preciso saber o preço'), false)
+  assert.equal(hasImperativeWithObject('preciso conhecer o produto'), false)
+  assert.equal(hasImperativeWithObject('quero conhecer o produto'), false)
+  // 'de' remains optional in the same family.
+  assert.equal(hasImperativeWithObject('gostaria de saber o que é um produto'), false)
+  assert.equal(hasImperativeWithObject('queria saber o preço'), false)
+})
+
+test('L2 PÓS-RE-GATE: EN to know / to find out stay conversation', () => {
+  assert.equal(hasImperativeWithObject('i want to know the price'), false)
+  assert.equal(hasImperativeWithObject('need to know the price'), false)
+  assert.equal(hasImperativeWithObject('i need to know the price'), false)
+  assert.equal(hasImperativeWithObject('i want to find out the price'), false)
+})
+
+test('L2 PÓS-RE-GATE: declared ACTION stays browser (not gated)', () => {
+  assert.equal(hasImperativeWithObject('quero criar um produto'), true)
+  assert.equal(hasImperativeWithObject('quero salvar o documento'), true)
+  assert.equal(hasImperativeWithObject('preciso criar um produto'), true)
+  assert.equal(hasImperativeWithObject('i want to create a product'), true)
 })

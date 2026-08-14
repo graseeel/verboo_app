@@ -24,7 +24,12 @@
  */
 
 import { chatCompletion, stripToolMarkup } from './routerClient.js'
-import { hasBrowserUnavailableAdmission, hasDeicticImperativeIntent } from './intentSignals.js'
+import {
+  hasBrowserUnavailableAdmission,
+  hasDeicticImperativeIntent,
+  hasImperativeWithObject,
+} from './intentSignals.js'
+import { isControllableUrl } from '../planMessage.js'
 import { getToolRisk, OPENAI_TOOLS, toToolCall } from './toolCatalog.js'
 import { MSG } from '../controller/protocol.js'
 import {
@@ -158,6 +163,7 @@ async function runLlmAgentTurnWithinBudget({
   refreshAccessToken,
   signal,
   forceBrowserTools = false,
+  activeTabUrl,
 }) {
   if (!accessToken) throw new Error('LLM agent: accessToken is required')
   if (!modelId) throw new Error('LLM agent: modelId is required')
@@ -172,7 +178,7 @@ async function runLlmAgentTurnWithinBudget({
   const browserToolsEnabled =
     forceBrowserTools === true
     || Boolean(routineContext)
-    || shouldOfferBrowserTools(userMessage, conversationHistory)
+    || shouldOfferBrowserTools(userMessage, conversationHistory, activeTabUrl)
   const availableTools = browserToolsEnabled
     ? modelSupportsVision === true
       ? OPENAI_TOOLS
@@ -845,9 +851,11 @@ function sanitizeConversationHistory(history) {
  *
  * @param {string} userMessage
  * @param {unknown} [conversationHistory]
+ * @param {string | null | undefined} [activeTabUrl] — URL of the page under
+ *   the panel (optional, fail-safe: L2 only fires with a controllable URL).
  * @returns {boolean}
  */
-export function shouldOfferBrowserTools(userMessage, conversationHistory = []) {
+export function shouldOfferBrowserTools(userMessage, conversationHistory = [], activeTabUrl) {
   const text = normalizeIntentText(userMessage)
 
   if (!text) return false
@@ -887,6 +895,20 @@ export function shouldOfferBrowserTools(userMessage, conversationHistory = []) {
   // The anchor + page noun are load-bearing: "explique a teoria" and
   // "me conte sobre esta página" (knowledge questions) stay conversation.
   if (hasDeicticImperativeIntent(text)) return true
+
+  // L2/Intenção+UX: imperative with a concrete object + a CONTROLLABLE
+  // page under the panel — fall-open for implicit action requests
+  // ("crie o produto ethos" on a page with a "Novo produto" button).
+  // The URL check is synchronous and cheap (no content read); the
+  // parameter is optional/fail-safe — without a URL, L2 never fires.
+  // chrome://, edge://, about: etc. do NOT trigger it (guard 4).
+  // Evaluation order (nit PÓS-GATE): action verbs → L1 (deictic anchor)
+  // → L2 (imperative + controllable URL) → communication + destination
+  // → page inspection. L3 (reclassify) is reached only in turns none of
+  // the openers activated.
+  if (activeTabUrl && isControllableUrl(activeTabUrl) && hasImperativeWithObject(text)) {
+    return true
+  }
 
   // Communication verbs need an explicit external destination. Phrases such
   // as "me mande uma explicação" are normal conversation, not browser control.
@@ -948,8 +970,12 @@ function hasPageInspectionIntent(text) {
     /\b(?:esta|essa|desta|dessa|nesta|nessa|neste|nesse|nestes|nesses|this|current)\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\b|\b(?:a|o|da|do|na|no)\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\s+(?:atual|aberta|aberto|aqui|current|inicial|home)\b/i
   // Page inspection: the user asks to look at / read / describe what's
   // on the page.
+  // PÓS-GATE Farol: explain/define joined the inspection family so the
+  // PAGE-anchored explanation path stays browser ("explique esta página",
+  // "explain this page") while the topic explanation stays conversation
+  // (gated by EXPLANATION_GATE_RE in intentSignals.js). Both sides tested.
   const pageInspection =
-    /\b(?:resuma|resume|leia|ler|analise|verifique|veja|descreva|diga o que|o que tem|o que esta|o que diz|o que aparece|o que ha|o que e|qual conteudo|extraia|extrair|copie|copiar|olhe|olha|olhar|mostre|mostra|mostrar|summarize|read|analyze|check|inspect|describe|look|show|see|extract|what is on|what's on|what is visible)\b/i
+    /\b(?:resuma|resume|leia|ler|analise|verifique|veja|explique|defina|descreva|diga o que|o que tem|o que esta|o que diz|o que aparece|o que ha|o que e|qual conteudo|extraia|extrair|copie|copiar|olhe|olha|olhar|mostre|mostra|mostrar|summarize|read|analyze|check|inspect|explain|define|describe|look|show|see|extract|what is on|what's on|what is visible)\b/i
   const bareVe = /(?<!['’])\bve\b/i
 
   // Some users omit the space in `o que` (`oque`) or point at a

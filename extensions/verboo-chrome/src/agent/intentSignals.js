@@ -43,6 +43,66 @@ export function hasDeicticImperativeIntent(value) {
   return DEICTIC_IMPERATIVE_RE.test(text)
 }
 
+// ── L2: imperative with concrete object (fall-open with a page) ────
+//
+// The L1 skeleton WITHOUT the deictic anchor: verb-first clause +
+// article + concrete object ("crie o produto ethos", "save the file").
+// L2 only fires when the turn has a CONTROLLABLE page under the panel
+// (shouldOfferBrowserTools receives activeTabUrl) — the page makes the
+// imperative actionable. Still no verb list.
+//
+// The interrogative gate is structural (NOT a verb list): questions
+// starting with o que/qual/como/what/how/… never match, so "o que é um
+// produto?" and "como crio um produto?" stay conversation. "me conte
+// sobre esta página" is excluded structurally by the article gate
+// ("sobre" is a preposition, not an article).
+const INTERROGATIVE_GATE_RE =
+  /^(?:o\s+que|qual|quais|como|quando|onde|por\s+que|quem|quanto|quanta|que\s+tipo|what|which|how|why|when|where|who|whose)\b/i
+
+// Explanation forms (PÓS-GATE Farol decision): explain/describe/define
+// + article + object, and indirect "me conte/fale/diga …" — "explique a
+// teoria", "descreva o produto", "tell me a story" stay CONVERSATION
+// even with a controllable URL. The article/preposition is load-bearing:
+// "explique ESTA página" (demonstrative, not article) is NOT gated —
+// the page-anchored explanation path stays browser via the existing
+// page-inspection detector in loop.js (both sides tested in loop.test.js).
+//
+// PRODUCT DECISION (Maestro, PÓS-GATE): COMMUNICATION imperatives
+// ("mande um e-mail", "envie uma mensagem") are INTENTIONALLY browser —
+// they imply an external action the tools can fulfill (compose/send in
+// the mail app); do NOT gate them.
+const EXPLANATION_GATE_RE =
+  /^(?:(?:explique|descreva|defina|explain|describe|define)\s+(?:o|a|os|as|um|uma|uns|umas|the|an|sobre|about)\b|me\s+(?:conte|fale|diga|explique)\s+(?:o|a|os|as|um|uma|uns|umas|the|an|sobre|about|o\s+que|como|qual|quais|quando|onde|por\s+que|what|how|why)\b|tell\s+me\s+(?:a|an|the|about|what|how|why)\b)/i
+
+// Declarative DESIRE (PÓS-GATE Farol decision): "preciso de um café",
+// "eu quero um produto", "i need a coffee" stay CONVERSATION even with
+// a URL. Only ENTITY desires are gated (desire + article/preposition +
+// noun) plus the KNOWLEDGE family — saber/conhecer/to know/to find out,
+// with the PT preposition 'de' OPTIONAL (PÓS-RE-GATE): "quero saber o
+// que é ethos", "preciso saber o preço", "preciso conhecer o produto",
+// "i want to know the price", "need to know…" stay conversation.
+// A desire followed by an ACTION VERB is NOT gated: "quero criar um
+// produto", "quero salvar o documento", "i want to create a product"
+// stay browser — the user declared an action.
+const DESIRE_GATE_RE =
+  /^(?:(?:eu\s+)?(?:preciso|quero|queria|gostaria)\s+(?:de\s+)?(?:o|a|os|as|um|uma|uns|umas)\b|(?:eu\s+)?(?:preciso|quero|queria|gostaria)\s+(?:de\s+)?(?:saber|conhecer)\b|(?:i\s+)?(?:need|want)\s+(?:a|an|the|to\s+have|to\s+know|to\s+find\s+out)\b|i\s+would\s+like\s+(?:a|an|the|to\s+have|to\s+know|to\s+find\s+out)\b|i['’]?d\s+like\s+(?:a|an|the|to\s+have|to\s+know|to\s+find\s+out)\b)/i
+
+const IMPERATIVE_WITH_OBJECT_RE =
+  /^[a-z]+\s+(?:[a-z]+\s+){0,4}(?:o|a|os|as|um|uma|uns|umas|the|an)\s+[a-z]+\b/i
+
+/**
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function hasImperativeWithObject(value) {
+  const text = normalizeIntentText(value)
+  if (!text) return false
+  if (INTERROGATIVE_GATE_RE.test(text)) return false
+  if (EXPLANATION_GATE_RE.test(text)) return false
+  if (DESIRE_GATE_RE.test(text)) return false
+  return IMPERATIVE_WITH_OBJECT_RE.test(text)
+}
+
 // ── L3: browser-unavailability admission (assistant reply) ─────────
 //
 // CENTRALIZED, extensible: patterns for a NEW language are appended to

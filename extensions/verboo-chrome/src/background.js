@@ -137,25 +137,30 @@ const routineRunner = createRoutineRunner({
     makeApprovalUi(request?.runId, signal),
   ),
   runAgent: (input) => {
-    const runMcpAgentTurn = (overrides) => runLlmAgentTurn({
-      ...input,
-      ...overrides,
-      broadcast,
-      executeTool: (toolCall, executionSignal) => executeWithApproval(
-        toolCall,
-        () => makeExecutionContext(
-          input.senderTabId,
-          input.turnId,
-          input.routineAllowedOrigins,
+    const runMcpAgentTurn = async (overrides) => {
+      // L2/Intenção+UX: same fall-open signal for the MCP path.
+      const l2ActiveTabUrl = (await queryActiveTabMeta(undefined))?.url ?? null
+      return runLlmAgentTurn({
+        ...input,
+        ...overrides,
+        activeTabUrl: l2ActiveTabUrl,
+        broadcast,
+        executeTool: (toolCall, executionSignal) => executeWithApproval(
+          toolCall,
+          () => makeExecutionContext(
+            input.senderTabId,
+            input.turnId,
+            input.routineAllowedOrigins,
+          ),
+          makeApprovalUi(input.turnId, executionSignal ?? input.signal),
         ),
-        makeApprovalUi(input.turnId, executionSignal ?? input.signal),
-      ),
-      getActiveTabMeta: queryActiveTabMeta,
-      refreshAccessToken: async () => {
-        const refreshed = await refreshSession()
-        return refreshed?.accessToken ?? null
-      },
-    })
+        getActiveTabMeta: queryActiveTabMeta,
+        refreshAccessToken: async () => {
+          const refreshed = await refreshSession()
+          return refreshed?.accessToken ?? null
+        },
+      })
+    }
     return runMcpAgentTurn({}).then((result) => {
       // Defensive: routines always run with browser tools, so a reclassify
       // signal should never surface here — but if it does, re-run with the
@@ -970,9 +975,14 @@ async function runAgentTurn(
 
     if (accessToken && selectedModelId) {
       try {
+        // L2/Intenção+UX: URL of the page under the panel (active tab of
+        // the normal window) — the classifier's fall-open signal. One
+        // cheap tabs query; NO content read. Resolved once per user turn.
+        const l2ActiveTabUrl = (await queryActiveTabMeta(undefined))?.url ?? null
         const llmOptions = () => ({
           turnId,
           userMessage,
+          activeTabUrl: l2ActiveTabUrl,
           accessToken,
           modelId: selectedModelId,
           modelSupportsVision,

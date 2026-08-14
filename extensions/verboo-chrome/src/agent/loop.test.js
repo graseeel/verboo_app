@@ -2379,3 +2379,175 @@ test('runLlmAgentTurn: admission in a BROWSER turn does not reclassify (L3 bound
     globalThis.fetch = origFetch
   }
 })
+
+// ── L2: imperative + controllable URL (fall-open) — guards 1-4 ─────
+//
+// Evaluation order (documented): L1 (deictic anchor) runs first — it is
+// the strongest signal; L2 (imperative + controllable URL) second; the
+// verb list third; L3 (admission reclassify) is only reachable in turns
+// where NONE of the openers fired (conversation mode) — so L2 can never
+// shadow L3: L3's gate is `!browserToolsEnabled`, which L2 turns off
+// only for imperatives WITH a controllable page; the complementary set
+// (no URL, non-imperative, non-controllable URL) still reaches L3.
+
+test('shouldOfferBrowserTools: L2 fall-open — literal field case + controllable URL', () => {
+  // Guard 1: the literal case opens tools on a controllable page…
+  assert.equal(
+    shouldOfferBrowserTools('crie o produto ethos', [], 'https://shop.example.com/products'),
+    true,
+  )
+  // …but stays conversation without a URL or on non-controllable URLs (guard 4).
+  assert.equal(shouldOfferBrowserTools('crie o produto ethos'), false)
+  assert.equal(shouldOfferBrowserTools('crie o produto ethos', [], 'chrome://newtab'), false)
+  assert.equal(shouldOfferBrowserTools('crie o produto ethos', [], 'edge://settings'), false)
+})
+
+test('shouldOfferBrowserTools: L2 keeps pure questions and explanations in conversation', () => {
+  // Guard 1: "o que é um produto?" stays conversation even with a URL.
+  assert.equal(shouldOfferBrowserTools('o que é um produto?', [], 'https://shop.example.com'), false)
+  assert.equal(shouldOfferBrowserTools('o que é ethos?', [], 'https://shop.example.com'), false)
+  assert.equal(shouldOfferBrowserTools('como crio um produto?', [], 'https://shop.example.com'), false)
+  // "me conte sobre esta página" stays conversation (explanatory gate).
+  assert.equal(shouldOfferBrowserTools('me conte sobre esta página', [], 'https://shop.example.com'), false)
+  // "explique a teoria" stays conversation with AND without a URL (PÓS-GATE).
+  assert.equal(shouldOfferBrowserTools('explique a teoria'), false)
+  assert.equal(shouldOfferBrowserTools('explique a teoria', [], 'https://example.com'), false)
+})
+
+test('shouldOfferBrowserTools: PÓS-GATE — the six Farol contra-examples stay conversation with a URL', () => {
+  const url = 'https://shop.example.com/products'
+  assert.equal(shouldOfferBrowserTools('explique a teoria', [], url), false)
+  assert.equal(shouldOfferBrowserTools('descreva o produto', [], url), false)
+  assert.equal(shouldOfferBrowserTools('defina o conceito', [], url), false)
+  assert.equal(shouldOfferBrowserTools('me conte uma história', [], url), false)
+  assert.equal(shouldOfferBrowserTools('preciso de um café', [], url), false)
+  assert.equal(shouldOfferBrowserTools('eu quero um produto', [], url), false)
+})
+
+test('shouldOfferBrowserTools: page-anchored explanation stays BROWSER via inspection (both sides, PÓS-GATE)', () => {
+  // The explanation of THE PAGE is inspection — browser even without L2.
+  assert.equal(shouldOfferBrowserTools('explique esta página'), true)
+  assert.equal(shouldOfferBrowserTools('explain this page'), true)
+  // While the explanation of a TOPIC is conversation (even with a URL).
+  assert.equal(shouldOfferBrowserTools('explique a teoria', [], 'https://example.com'), false)
+  assert.equal(shouldOfferBrowserTools('explain the theory', [], 'https://example.com'), false)
+})
+
+test('shouldOfferBrowserTools: COMMUNICATION imperatives are intentionally browser (PÓS-GATE decision)', () => {
+  // PRODUCT DECISION (Maestro): sending an e-mail/message implies an
+  // external action the tools can fulfill — intentionally browser.
+  assert.equal(shouldOfferBrowserTools('mande um e-mail para maria', [], 'https://mail.example.com'), true)
+  assert.equal(shouldOfferBrowserTools('envie uma mensagem para joão', [], 'https://example.com'), true)
+  assert.equal(shouldOfferBrowserTools('send a message to joão', [], 'https://example.com'), true)
+})
+
+test('runLlmAgentTurn: L2 opens tools on the FIRST fetch for the literal field case', async () => {
+  const requestBodies = []
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    if (requestBodies.length === 1) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [{
+                id: 'tc_l2',
+                function: { name: 'click', arguments: '{"selector":".new-product"}' },
+              }],
+            },
+          }],
+        }),
+      }
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { role: 'assistant', content: 'Produto ethos criado.' } }],
+      }),
+    }
+  }
+
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_l2_ethos',
+      userMessage: 'crie o produto ethos',
+      accessToken: 'test-key',
+      modelId: 'test-model',
+      broadcast: () => {},
+      executeTool: async (tc) => ({ ok: true, result: { text: 'clicked' }, policy: { allowed: true, needsApproval: false } }),
+      getActiveTabMeta: async () => ({ url: 'https://shop.example.com/products' }),
+      activeTabUrl: 'https://shop.example.com/products',
+    })
+
+    // Guard 1: browser turn on the FIRST fetch — no L3 admission round.
+    assert.ok(requestBodies[0].tools.length > 0, 'first request must carry the browser tools')
+    const toolNames = requestBodies[0].tools.map((t) => t.function.name)
+    assert.ok(toolNames.includes('click'))
+    assert.equal(result.toolResults.length, 1)
+    assert.equal(result.toolResults[0].success, true)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('runLlmAgentTurn: L3 stays alive in the complementary set — non-imperative + no URL (guard 2)', async () => {
+  let fetchCount = 0
+  globalThis.fetch = async () => {
+    fetchCount += 1
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{
+          message: {
+            role: 'assistant',
+            content: 'Não tenho acesso ao navegador para responder isso.',
+          },
+        }],
+      }),
+    }
+  }
+
+  try {
+    // Non-imperative question, NO activeTabUrl → conversation turn that
+    // admits browser unavailability → L3 reclassify (never shadowed by L2).
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_l3_complementary',
+      userMessage: 'o que é um produto?',
+      accessToken: 'test-key',
+      modelId: 'test-model',
+      broadcast: () => {},
+      executeTool: async () => ({ ok: true, result: { text: 'x' }, policy: { allowed: true, needsApproval: false } }),
+      getActiveTabMeta: async () => ({ url: 'https://shop.example.com' }),
+    })
+    assert.equal(result.reclassify, true)
+    assert.equal(fetchCount, 1)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('shouldOfferBrowserTools: PÓS-RE-GATE — knowledge desires stay conversation with URL; declared actions stay browser', () => {
+  const url = 'https://shop.example.com/products'
+  // The four literal Farol forms (with a controllable URL) → conversation.
+  assert.equal(shouldOfferBrowserTools('quero saber o que é ethos', [], url), false)
+  assert.equal(shouldOfferBrowserTools('preciso saber o preço', [], url), false)
+  assert.equal(shouldOfferBrowserTools('preciso conhecer o produto', [], url), false)
+  assert.equal(shouldOfferBrowserTools('i want to know the price', [], url), false)
+  // Declared actions remain browser (desire + action verb is not gated).
+  assert.equal(shouldOfferBrowserTools('quero criar um produto', [], url), true)
+  assert.equal(shouldOfferBrowserTools('quero salvar o documento', [], url), true)
+  // Anchored opinion: the Farol ressalva assumed "odeio/amo esta página"
+  // stays browser via L1 — DIVERGENCE REPORTED: L1 requires an article
+  // between verb and anchor, and a demonstrative is not one, so anchored
+  // opinion is conversation in practice (which is the desirable outcome —
+  // the model empathizes instead of opening the browser). L1 unchanged
+  // per the Maestro's "não mexer"; flagging for the record.
+  assert.equal(shouldOfferBrowserTools('odeio esta página'), false)
+})
