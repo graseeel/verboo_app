@@ -288,6 +288,13 @@ async function runLlmAgentTurnWithinBudget({
   // 1 auto-find per tool name per turn; empty find → honest feedback.
   const failedSelectorCounts = { type: 0, click: 0 }
   const autoFindUsed = { type: false, click: false }
+  // PÓS-CAMPO-5: structural honesty — track mutation outcomes so the final
+  // assistant text can NEVER claim success when nothing committed. The
+  // condition is 100% structural (no model-text interpretation).
+  let mutationAttempts = 0
+  let mutationSuccesses = 0
+  let lastMutateFailed = false
+  let inspectionSinceLastMutate = false
   let promptInjectionDetected = false
   let currentAccessToken = accessToken
   const refreshAccessTokenForTurn = typeof refreshAccessToken === 'function'
@@ -523,10 +530,30 @@ async function runLlmAgentTurnWithinBudget({
         // family the parser does not know yet), fall back to the closing
         // summary when actions ran, or to an honest error otherwise.
         const fenced = stripToolMarkup(text)
-        if (fenced) return { assistantMessage: fenced, toolResults: allToolResults }
+        if (fenced) {
+          // PÓS-CAMPO-5: structural honesty — the model's final text NEVER
+          // passes when every mutation of the turn failed; the harness
+          // replaces it with the honest mechanical summary (same i18n
+          // pattern as summarizePartialAgentTurn). Zero model-text
+          // interpretation.
+          return {
+            assistantMessage: honestTurnMessage(
+              fenced,
+              userMessage,
+              allToolResults,
+              { mutationAttempts, mutationSuccesses, lastMutateFailed, inspectionSinceLastMutate },
+            ),
+            toolResults: allToolResults,
+          }
+        }
         if (allToolResults.some((r) => r && r.success)) {
           return {
-            assistantMessage: synthesizeClosingSummary(userMessage, allToolResults),
+            assistantMessage: honestTurnMessage(
+              synthesizeClosingSummary(userMessage, allToolResults),
+              userMessage,
+              allToolResults,
+              { mutationAttempts, mutationSuccesses, lastMutateFailed, inspectionSinceLastMutate },
+            ),
             toolResults: allToolResults,
           }
         }
@@ -690,6 +717,20 @@ async function runLlmAgentTurnWithinBudget({
         } else {
           failedMutateCounts.set(attemptKey, (failedMutateCounts.get(attemptKey) ?? 0) + 1)
         }
+      }
+      // PÓS-CAMPO-5: mutation outcome tracking (structural honesty).
+      if (isMutate) {
+        mutationAttempts += 1
+        if (execResult.ok) {
+          mutationSuccesses += 1
+          lastMutateFailed = false
+        } else {
+          lastMutateFailed = true
+        }
+        inspectionSinceLastMutate = false
+      }
+      if (tc.name === 'read_page') {
+        inspectionSinceLastMutate = true
       }
       // PÓS-CAMPO-4: automatic recovery — on the 2nd selector-not-found
       // failure of the same tool name (weak models ignore textual hints
@@ -1384,6 +1425,53 @@ async function getPostActionTabMeta(getActiveTabMeta, toolCall, execResult) {
  * @param {Array<object>} toolResults
  * @returns {string}
  */
+/**
+ * PÓS-CAMPO-5: structural honesty for the final assistant message.
+ *
+ * 1. If EVERY mutation of the turn failed (mutationAttempts > 0 and
+ *    mutationSuccesses === 0), the model's text is REPLACED by the honest
+ *    mechanical summary — no claim of success can reach the panel when
+ *    nothing committed. Same i18n pattern as summarizePartialAgentTurn.
+ * 2. If mutations succeeded but the LAST mutate failed and no read_page
+ *    inspection happened after it, the honest note is APPENDED (not a
+ *    replacement).
+ *
+ * The conditions are 100% structural — the model's text is never
+ * interpreted.
+ *
+ * @param {string} assistantText
+ * @param {string} userMessage
+ * @param {unknown[]} toolResults
+ * @param {{ mutationAttempts: number, mutationSuccesses: number, lastMutateFailed: boolean, inspectionSinceLastMutate: boolean }} stats
+ * @returns {string}
+ */
+function honestTurnMessage(assistantText, userMessage, toolResults, stats) {
+  const { mutationAttempts, mutationSuccesses, lastMutateFailed, inspectionSinceLastMutate } = stats
+  const pt = looksPortuguese(userMessage)
+
+  if (mutationAttempts > 0 && mutationSuccesses === 0) {
+    const errors = [...new Set(
+      (Array.isArray(toolResults) ? toolResults : [])
+        .filter((r) => r && r.success === false && typeof r.error === 'string' && r.error.length > 0)
+        .map((r) => r.error),
+    )].slice(0, 3).join('; ')
+    const attempts = pt
+      ? (mutationAttempts === 1 ? '1 tentativa falhou' : `${mutationAttempts} tentativas falharam`)
+      : (mutationAttempts === 1 ? '1 attempt failed' : `${mutationAttempts} attempts failed`)
+    return pt
+      ? `Nenhuma ação foi concluída na página — ${attempts}${errors ? `: ${errors}` : ''}.`
+      : `No action completed on the page — ${attempts}${errors ? `: ${errors}` : ''}.`
+  }
+
+  if (mutationSuccesses > 0 && lastMutateFailed && !inspectionSinceLastMutate) {
+    return `${assistantText}\n\n${pt
+      ? 'Nota: a última ação falhou e o resultado não foi verificado.'
+      : 'Note: the last action failed and the result was not verified.'}`
+  }
+
+  return assistantText
+}
+
 export function summarizePartialAgentTurn(userMessage, toolResults) {
   const results = Array.isArray(toolResults) ? toolResults : []
   const ok = results.filter((r) => r && r.success).length

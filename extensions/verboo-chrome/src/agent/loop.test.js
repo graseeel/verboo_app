@@ -3064,3 +3064,152 @@ test('runLlmAgentTurn: click failures also trigger the auto-find (user wording a
     globalThis.fetch = origFetch
   }
 })
+
+// ── PÓS-CAMPO-5: structural honesty (round 5 literal case) ─────────
+
+test('runLlmAgentTurn: round-5 literal — all-failed mutations REPLACE the fabricated success text', async () => {
+  let fetchCount = 0
+  globalThis.fetch = async () => {
+    fetchCount += 1
+    if (fetchCount === 1) {
+      // The weak model tries one type that fails.
+      return { ok: true, status: 200, json: async () => ({
+        choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+          { id: 't-1', function: { name: 'type', arguments: '{"selector":".new-todo","text":"comprar café"}' } },
+        ] } }],
+      }) }
+    }
+    // …then FABRICATES success.
+    return { ok: true, status: 200, json: async () => ({
+      choices: [{ message: { role: 'assistant', content: 'Tarefa adicionada com sucesso! A nova tarefa apareceu na lista de All' } }],
+    }) }
+  }
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_round5',
+      userMessage: 'adicione comprar café na lista',
+      accessToken: 'test-key',
+      modelId: 'tool-model',
+      forceBrowserTools: true,
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        if (tc.name === 'read_page') return { ok: true, result: { text: 'What needs to be done?' }, policy: { allowed: true } }
+        return { ok: false, error: 'selector not found' }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://todomvc.com/examples/react/dist' }),
+    })
+    // The fabricated text NEVER reaches the panel — the honest mechanical
+    // summary replaces it (structural, no text interpretation).
+    assert.match(result.assistantMessage, /Nenhuma ação foi concluída na página — 1 tentativa falhou/)
+    assert.ok(!result.assistantMessage.includes('sucesso'), 'the model claim must not pass')
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('runLlmAgentTurn: a successful mutation lets the model text pass', async () => {
+  let fetchCount = 0
+  globalThis.fetch = async () => {
+    fetchCount += 1
+    if (fetchCount === 1) {
+      return { ok: true, status: 200, json: async () => ({
+        choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+          { id: 't-1', function: { name: 'type', arguments: '{"selector":".new-todo","text":"comprar café","pressEnter":true}' } },
+        ] } }],
+      }) }
+    }
+    return { ok: true, status: 200, json: async () => ({
+      choices: [{ message: { role: 'assistant', content: 'Tarefa adicionada!' } }],
+    }) }
+  }
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_ok_mutate',
+      userMessage: 'adicione comprar café na lista',
+      accessToken: 'test-key',
+      modelId: 'tool-model',
+      forceBrowserTools: true,
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        if (tc.name === 'read_page') return { ok: true, result: { text: 'comprar café' }, policy: { allowed: true } }
+        return { ok: true, result: { textLength: 12 }, policy: { allowed: true } }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://todomvc.com/examples/react/dist' }),
+    })
+    assert.ok(!result.assistantMessage.includes('Nenhuma ação foi concluída'))
+    assert.match(result.assistantMessage, /Tarefa adicionada!/)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('runLlmAgentTurn: last-mutate-failed with no inspection appends the honest note', async () => {
+  let fetchCount = 0
+  globalThis.fetch = async () => {
+    fetchCount += 1
+    if (fetchCount === 1) {
+      // First mutate succeeds…
+      return { ok: true, status: 200, json: async () => ({
+        choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+          { id: 't-1', function: { name: 'click', arguments: '{"selector":".tab-all"}' } },
+        ] } }],
+      }) }
+    }
+    if (fetchCount === 2) {
+      // …last mutate fails.
+      return { ok: true, status: 200, json: async () => ({
+        choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+          { id: 't-2', function: { name: 'type', arguments: '{"selector":"#wrong","text":"x"}' } },
+        ] } }],
+      }) }
+    }
+    return { ok: true, status: 200, json: async () => ({
+      choices: [{ message: { role: 'assistant', content: 'Quase lá.' } }],
+    }) }
+  }
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_last_fail',
+      userMessage: 'adicione comprar café na lista',
+      accessToken: 'test-key',
+      modelId: 'tool-model',
+      forceBrowserTools: true,
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        if (tc.name === 'read_page') return { ok: true, result: { text: 'p' }, policy: { allowed: true } }
+        return tc.name === 'click' && tc.params?.selector === '.tab-all'
+          ? { ok: true, result: { clicked: true }, policy: { allowed: true } }
+          : { ok: false, error: 'selector not found' }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://todomvc.com/examples/react/dist' }),
+    })
+    assert.match(result.assistantMessage, /Nota: a última ação falhou e o resultado não foi verificado\./)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
+test('runLlmAgentTurn: a pure conversation turn (no mutations) stays untouched', async () => {
+  let fetchCount = 0
+  globalThis.fetch = async () => {
+    fetchCount += 1
+    return { ok: true, status: 200, json: async () => ({
+      choices: [{ message: { role: 'assistant', content: 'A teoria da relatividade trata do espaço-tempo.' } }],
+    }) }
+  }
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_conversation_pure',
+      userMessage: 'explique a teoria da relatividade',
+      accessToken: 'test-key',
+      modelId: 'test-model',
+      broadcast: () => {},
+      executeTool: async () => ({ ok: true, result: { text: 'x' }, policy: { allowed: true } }),
+      getActiveTabMeta: async () => ({ url: 'https://example.com' }),
+    })
+    assert.equal(result.assistantMessage, 'A teoria da relatividade trata do espaço-tempo.')
+    assert.equal(fetchCount, 1)
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
