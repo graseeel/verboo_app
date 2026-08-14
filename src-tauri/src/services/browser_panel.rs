@@ -158,7 +158,10 @@ impl BrowserPanelState {
         // mantendo o lock. Para o painel isso é recuperável (a webview
         // provavelmente já morreu junto com o thread); preferimos
         // retornar estado potencialmente inconsistente a abortar o app.
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+        self.inner.lock().unwrap_or_else(|e| {
+            eprintln!("[browser-panel] WARN: mutex poisoned — recovering inner state (previous holder panicked)");
+            e.into_inner()
+        })
     }
 
     fn lock_tab_creation(&self) -> std::sync::MutexGuard<'_, ()> {
@@ -193,7 +196,7 @@ impl BrowserCaptureStore {
     fn promote(&self, owner_id: &str, paths: Vec<String>) -> Result<Vec<PromotedBrowserFile>, String> {
         let owner_dir = self.owner_dir(owner_id)?;
         let sources = paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
-        if let Some(path) = sources.iter().find(|path| !is_browser_temp_png(path) || !path.is_file()) {
+        if let Some(path) = sources.iter().find(|path| !is_browser_temp_png(path) && !path.is_file()) {
             return Err(format!("captura temporária inválida: {}", path.display()));
         }
         std::fs::create_dir_all(&owner_dir)

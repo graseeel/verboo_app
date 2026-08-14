@@ -2963,9 +2963,11 @@ fn strip_ansi(value: &str) -> String {
         if bytes[i] == 0x1b {
             // Flush any pending clean bytes before this escape.
             if i > run_start {
-                // SAFETY: we walked these bytes inside a valid &str; they are
-                // valid UTF-8.
-                out.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[run_start..i]) });
+                // These bytes are valid UTF-8 — we walked them inside a valid
+                // &str and ESC (0x1B) / CSI terminators are ASCII (< 0x80),
+                // so they never split a multi-byte sequence. Use safe
+                // from_utf8 to avoid UB risk from future refactoring.
+                out.push_str(std::str::from_utf8(&bytes[run_start..i]).unwrap_or_default());
             }
             // ESC at end of string: drop it.
             if i + 1 >= bytes.len() {
@@ -3001,8 +3003,8 @@ fn strip_ansi(value: &str) -> String {
     }
     // Flush any trailing clean bytes.
     if i > run_start {
-        // SAFETY: same as above.
-        out.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[run_start..i]) });
+        // Same safety argument as above — safe bytes from valid &str.
+        out.push_str(std::str::from_utf8(&bytes[run_start..i]).unwrap_or_default());
     }
     out
 }

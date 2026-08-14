@@ -140,7 +140,7 @@ pub fn attach_bridge(
             let nh = NavigationStartingEventHandler::create(Box::new(move |_, _| {
                 let u = Uuid::new_v4().to_string();
                 ods(u.clone());
-                *p1.lock().unwrap() = Some(u);
+                *p1.lock().unwrap_or_else(|e| e.into_inner()) = Some(u);
                 Ok(())
             }));
             if let Err(e) = cwv.add_NavigationStarting(&nh, &mut nav_tok as *mut i64) {
@@ -151,7 +151,7 @@ pub fn attach_bridge(
             // 2. ContentLoading — injeta uuid no doc novo
             let p2 = pending.clone();
             let ch = ContentLoadingEventHandler::create(Box::new(move |sender, _| {
-                if let (Some(u), Some(cwv2)) = (p2.lock().unwrap().clone(), sender) {
+                if let (Some(u), Some(cwv2)) = (p2.lock().unwrap_or_else(|e| e.into_inner()).clone(), sender) {
                     let js = format!(
                         "globalThis.__verboo_pending_doc_token__={};",
                         serde_json::to_string(&u).unwrap_or_else(|_| "null".into()),
@@ -196,7 +196,7 @@ pub fn attach_bridge(
 
             // Persist before dispatch: WebView2 may invoke the completion
             // callback synchronously.
-            *tokens_slot.lock().unwrap() = (nav_tok, content_tok, msg_tok);
+            *tokens_slot.lock().unwrap_or_else(|e| e.into_inner()) = (nav_tok, content_tok, msg_tok);
             let registration =
                 AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation(
                     Box::new(move |handler| unsafe {
@@ -228,7 +228,7 @@ pub fn attach_bridge(
     // O arg `&str` (handler_name) é parte do contrato BridgeHandle; não
     // usado aqui porque a remoção é por token, não por nome.
     let unregister: Box<dyn FnOnce(&str) + Send> = Box::new(move |_name| {
-        let (nav, content, msg) = *tokens.lock().unwrap();
+        let (nav, content, msg) = *tokens.lock().unwrap_or_else(|e| e.into_inner());
         let _ = wv_for_unregister.with_webview(move |pw| unsafe {
             if let Ok(cwv) = pw.controller().CoreWebView2() {
                 let _ = cwv.remove_NavigationStarting(nav);
@@ -260,21 +260,21 @@ pub fn evaluate(webview: Webview<Wry>, _tab_id: String, script: String) -> Platf
                     let handler = ExecuteScriptCompletedHandler::create(Box::new(
                         move |ec, result: String| {
                             if ec.is_err() {
-                                if let Some(s) = tx_exec.lock().unwrap().take() {
+                                if let Some(s) = tx_exec.lock().unwrap_or_else(|e| e.into_inner()).take() {
                                     let _ = s.send(Err(format!("ExecuteScript: {:?}", ec)));
                                 }
-                            } else if let Some(s) = tx_exec.lock().unwrap().take() {
+                            } else if let Some(s) = tx_exec.lock().unwrap_or_else(|e| e.into_inner()).take() {
                                 let _ = s.send(Ok(result));
                             }
                             Ok(())
                         },
                     ));
                     if let Err(e) = cwv.ExecuteScript(js.ptr, &handler) {
-                        if let Some(s) = tx.lock().unwrap().take() {
+                        if let Some(s) = tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
                             let _ = s.send(Err(format!("ExecuteScript dispatch: {e}")));
                         }
                     }
-                } else if let Some(s) = tx.lock().unwrap().take() {
+                } else if let Some(s) = tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
                     let _ = s.send(Err("CoreWebView2 indisponível".into()));
                 }
             })
@@ -309,7 +309,7 @@ pub fn snapshot_png(webview: Webview<Wry>) -> PlatformFuture<Vec<u8>> {
                     ) {
                         Ok(s) => s,
                         Err(e) => {
-                            if let Some(s) = tx.lock().unwrap().take() {
+                            if let Some(s) = tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
                                 let _ = s.send(Err(format!(
                                     "CreateStreamOnHGlobal: {e}"
                                 )));
@@ -327,7 +327,7 @@ pub fn snapshot_png(webview: Webview<Wry>) -> PlatformFuture<Vec<u8>> {
                         Box::new(move |ec| {
                             if ec.is_err() {
                                 if let Some(s) =
-                                    tx_snap.lock().unwrap().take()
+                                    tx_snap.lock().unwrap_or_else(|e| e.into_inner()).take()
                                 {
                                     let _ = s.send(Err(format!(
                                         "CapturePreview: {:?}",
@@ -343,7 +343,7 @@ pub fn snapshot_png(webview: Webview<Wry>) -> PlatformFuture<Vec<u8>> {
                                 None,
                             ) {
                                 if let Some(s) =
-                                    tx_snap.lock().unwrap().take()
+                                    tx_snap.lock().unwrap_or_else(|e| e.into_inner()).take()
                                 {
                                     let _ = s.send(Err(format!(
                                         "Stream Seek: {e}"
@@ -358,7 +358,7 @@ pub fn snapshot_png(webview: Webview<Wry>) -> PlatformFuture<Vec<u8>> {
                                 STATFLAG_DEFAULT,
                             ) {
                                 if let Some(s) =
-                                    tx_snap.lock().unwrap().take()
+                                    tx_snap.lock().unwrap_or_else(|e| e.into_inner()).take()
                                 {
                                     let _ = s.send(Err(format!(
                                         "Stream Stat: {e}"
@@ -383,7 +383,7 @@ pub fn snapshot_png(webview: Webview<Wry>) -> PlatformFuture<Vec<u8>> {
                             }
                             if read != total {
                                 if let Some(s) =
-                                    tx_snap.lock().unwrap().take()
+                                    tx_snap.lock().unwrap_or_else(|e| e.into_inner()).take()
                                 {
                                     let _ = s.send(Err(format!(
                                         "Stream Read incompleto: {read}/{total}"
@@ -398,14 +398,14 @@ pub fn snapshot_png(webview: Webview<Wry>) -> PlatformFuture<Vec<u8>> {
                             ) {
                                 Ok(_) => {
                                     if let Some(s) =
-                                        tx_snap.lock().unwrap().take()
+                                        tx_snap.lock().unwrap_or_else(|e| e.into_inner()).take()
                                     {
                                         let _ = s.send(Ok(buf));
                                     }
                                 }
                                 Err(e) => {
                                     if let Some(s) =
-                                        tx_snap.lock().unwrap().take()
+                                        tx_snap.lock().unwrap_or_else(|e| e.into_inner()).take()
                                     {
                                         let _ = s.send(Err(format!(
                                             "PNG inválido: {e}"
@@ -421,13 +421,13 @@ pub fn snapshot_png(webview: Webview<Wry>) -> PlatformFuture<Vec<u8>> {
                         &stream,
                         &handler,
                     ) {
-                        if let Some(s) = tx.lock().unwrap().take() {
+                        if let Some(s) = tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
                             let _ = s.send(Err(format!(
                                 "CapturePreview dispatch: {e}"
                             )));
                         }
                     }
-                } else if let Some(s) = tx.lock().unwrap().take() {
+                } else if let Some(s) = tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
                     let _ = s.send(Err("CoreWebView2 indisponível".into()));
                 }
             })
