@@ -113,7 +113,7 @@ export function ChromeIntegrationSettings() {
         </div>
       </section>
 
-      {(status.developmentBuild || status.extensionIdSource === 'none') && (
+      {(status.developmentBuild || status.extensionIdSource !== 'release') && (
         <section className="settings-panel chrome-development-panel">
           <div className="settings-row">
             <ShieldCheck size={16} />
