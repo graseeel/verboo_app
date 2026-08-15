@@ -690,7 +690,7 @@ impl WdaLauncher for SystemWdaLauncher {
         // was spawned concurrently with its cleanup deadline.
         let mut published_force_stop = force_stop_slot
             .lock()
-            .expect("iOS simulator WDA control poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         if stop.load(Ordering::Acquire) {
             return Err("inicialização do WDA cancelada".to_string());
         }
@@ -923,7 +923,7 @@ impl FrameSink for TauriFrameSink {
         frame.agent_presence = self
             .presence_snapshot
             .lock()
-            .expect("iOS simulator presence snapshot poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .clone();
         let _ = self.app.emit(FRAME_EVENT, frame);
     }
@@ -962,14 +962,14 @@ impl LatestFrameStore {
         *self
             .frame
             .lock()
-            .expect("iOS simulator latest frame poisoned") = Some(frame);
+            .unwrap_or_else(|e| e.into_inner()) = Some(frame);
         self.changed.notify_all();
     }
 
     fn latest(&self) -> Option<LatestFrame> {
         self.frame
             .lock()
-            .expect("iOS simulator latest frame poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
 

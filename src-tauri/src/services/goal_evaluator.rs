@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::models::types::{
     GoalDecision, GoalEvaluationInput, GoalEvaluationResult, GoalReasonId,
-    GoalState, GoalStatus, TranscriptItem,
+    GoalState, TranscriptItem,
 };
 use crate::services::auth_token::inject_api_key;
 use crate::services::cli_spawn::CliSpawn;
@@ -174,6 +174,7 @@ impl GoalEvaluator {
     }
 
     /// Unit-test helper: build the prompt and run the LLM in one call.
+    #[cfg(test)]
     fn evaluate_internal(
         input: GoalEvaluationInput,
         api_key: Option<&str>,
@@ -1056,7 +1057,6 @@ fn default_continue(reason: &str) -> GoalEvaluationResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::types::{AccessMode, CommandRun, CommandStatus, GoalStatus, SkillSummary};
     use serde_json::json;
 
     fn sample_goal() -> GoalState {
@@ -1177,7 +1177,7 @@ mod tests {
         eprintln!("synthetic transcript: 35 items, every other assistant item has ~tool output of ~7 chars (Read of /tmp/goal-total.txt), occasional ~150 char command output");
         eprintln!("{:<8} {:<10} {:<10} {:<10}", "window", "bytes", "~tokens", "% of 30");
         eprintln!("{:-<40}", "");
-        let mut baseline_chars = 0usize;
+        let mut baseline_chars;
         let windows = [30usize, 20, 15, 10];
         let prompt_at_30 = {
             let recent: Vec<TranscriptItem> = items
@@ -2891,7 +2891,7 @@ mod tests {
         }
         eprintln!("{:-<60}", "");
         // Tool output weight within items section
-        if let Some(mut is) = prompt.find("## Recent transcript items") {
+        if let Some(is) = prompt.find("## Recent transcript items") {
             let items_end = prompt[is..].find("## Evaluation").map(|e| is + e).unwrap_or(prompt.len());
             let body = &prompt[is..items_end];
             let tool_bytes: usize = body.match_indices("**Tool output:**")
@@ -2920,7 +2920,7 @@ mod tests {
             pct_of_field, total_bytes / 4);
         eprintln!("  CLI/API overhead (not controlled here) = ~{:.1}%", 100.0 - pct_of_field);
         // What would change by reducing window
-        let fixed_bytes = total_bytes - items_bytes;
+        let _fixed_bytes = total_bytes - items_bytes;
         for (w2, label) in &[(20u8, "window=20"), (15, "window=15"), (10, "window=10")] {
             let w2 = *w2 as usize;
             if w2 >= window { continue; }

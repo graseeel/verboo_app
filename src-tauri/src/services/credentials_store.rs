@@ -94,10 +94,19 @@ impl CredentialsStore {
         }
 
         // Migrate once from the old shared Keychain service.
+        // Only delete the legacy entry after confirming the write succeeded,
+        // to avoid permanent credential loss on write failure.
         if let Some(legacy) = Self::read_legacy_api_key() {
-            let _ = entry.set_password(&legacy);
-            Self::delete_legacy_entry();
-            return Ok(Some(legacy));
+            match entry.set_password(&legacy) {
+                Ok(()) => {
+                    Self::delete_legacy_entry();
+                    return Ok(Some(legacy));
+                }
+                Err(e) => {
+                    eprintln!("[credentials_store] failed to migrate API key to new keychain: {e}. Legacy key preserved.");
+                    return Ok(Some(legacy));
+                }
+            }
         }
         Ok(None)
     }

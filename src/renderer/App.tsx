@@ -5265,7 +5265,6 @@ export function App() {
   }
 
   async function sendSideChatMessage(message: string) {
-<<<<<<< HEAD
     if (sideChatSendLock.current) return
     sideChatSendLock.current = true
     try {
@@ -5273,12 +5272,6 @@ export function App() {
       const state = sideChatRef.current
       const trimmed = message.trim()
       if (!state || !trimmed || isConversationRunning(state.conversation.id)) return
-=======
-    if (cliAgentActionsBlocked) return
-    const state = sideChatRef.current
-    const trimmed = message.trim()
-    if (!state || !trimmed || isConversationRunning(state.conversation.id)) return
->>>>>>> origin/dev
 
       const conversationId = state.conversation.id
       appendConversationItem(conversationId, {

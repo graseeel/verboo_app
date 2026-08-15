@@ -473,7 +473,7 @@ impl TurnService {
         video_jobs: &Option<crate::services::video::job::VideoJobRegistry>,
     ) -> bool {
         use crate::models::types::{
-            CliMediaCapabilities, ExtractionStatus, ModelMediaCapabilities, VideoFallbackConsent,
+            ExtractionStatus, ModelMediaCapabilities, VideoFallbackConsent,
             VideoProgress, VideoProgressStage,
         };
         use crate::services::video::analyze::{
@@ -535,11 +535,19 @@ impl TurnService {
         };
 
         let (original_path, file_name, metadata) = {
-            let att = &request.attachments.as_ref().unwrap()[attachment_index];
+            let Some(att) = request.attachments.as_ref().and_then(|a| a.get(attachment_index))
+            else {
+                fail_attachment(request, "attachment index out of range".to_string());
+                return true;
+            };
+            let Some(video_meta) = att.video.clone() else {
+                fail_attachment(request, "attachment has no video metadata".to_string());
+                return true;
+            };
             (
                 std::path::PathBuf::from(&att.path),
                 att.name.clone(),
-                att.video.clone().unwrap(),
+                video_meta,
             )
         };
 
@@ -1300,7 +1308,6 @@ impl TurnService {
         }
 
         let prompt = build_prompt(&request, resume_session_id.is_some());
-        let is_resume = resume_session_id.is_some();
 
         // FASE 0: when the model supports vision AND there are image
         // attachments, switch to stream-json input so images reach the model
@@ -1309,12 +1316,8 @@ impl TurnService {
         let stream_json_payload = build_stream_json_input(&request, &prompt);
         let use_stream_json = stream_json_payload.is_some();
 
-        let resume_id = if is_resume {
-            Some(resume_session_id.unwrap())
-        } else {
-            None
-        };
-        let mut args = build_cli_args(&request, &prompt, resume_id.as_deref(), use_stream_json);
+        let resume_id = resume_session_id.clone();
+        let args = build_cli_args(&request, &prompt, resume_id.as_deref(), use_stream_json);
 
         let working_directory = safe_runtime_working_directory(
             &request.working_directory,
@@ -1414,8 +1417,32 @@ impl TurnService {
             if let Some(stdin) = child.stdin.take() {
                 use std::io::Write;
                 let mut stdin = stdin;
-                let _ = stdin.write_all(payload.as_bytes());
-                let _ = stdin.flush();
+                if let Err(e) = stdin.write_all(payload.as_bytes()) {
+                    emit_event(
+                        &app,
+                        AgentEvent {
+                            event_type: EventType::Error,
+                            turn_id: Some(turn_id.clone()),
+                            conversation_id: Some(conversation_id.clone()),
+                            message: Some(format!("Falha ao enviar prompt via stdin: {e}")),
+                            ..Default::default()
+                        },
+                    );
+                    return;
+                }
+                if let Err(e) = stdin.flush() {
+                    emit_event(
+                        &app,
+                        AgentEvent {
+                            event_type: EventType::Error,
+                            turn_id: Some(turn_id.clone()),
+                            conversation_id: Some(conversation_id.clone()),
+                            message: Some(format!("Falha ao finalizar envio via stdin: {e}")),
+                            ..Default::default()
+                        },
+                    );
+                    return;
+                }
             }
         }
 
@@ -1865,7 +1892,9 @@ impl Default for TurnService {
 }
 
 fn emit_event(app: &AppHandle, event: AgentEvent) {
-    let _ = app.emit(AGENT_EVENT_CHANNEL, event);
+    if let Err(e) = app.emit(AGENT_EVENT_CHANNEL, event) {
+        eprintln!("[turn_service] failed to emit agent event: {e}");
+    }
 }
 
 fn timestamp_ms() -> u64 {
@@ -2686,6 +2715,7 @@ pub(crate) fn resolve_effort_arg(
 /// without spawning a process. Same validation as `resolve_effort_arg` —
 /// a valid override is one present, non-empty, and ∈ the model's
 /// `reasoning.effort_levels`.
+#[cfg(test)]
 pub(crate) fn resolve_effort_env(
     effort_override: Option<&str>,
     reasoning: Option<&ModelReasoning>,

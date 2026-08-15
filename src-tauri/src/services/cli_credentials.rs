@@ -419,6 +419,7 @@ fn write_file_blob(blob: &Value) -> bool {
     true
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn read_linux_secret_blob_with<F>(account: &str, mut lookup: F) -> Option<Value>
 where
     F: FnMut(&[&str]) -> Option<String>,

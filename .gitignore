@@ -47,3 +47,9 @@ extensions/verboo-chrome/store-assets/*.zip
 
 # Editor config pessoal (Obsidian) — nao pertence ao repo
 .obsidian/
+test-results/
+docs/installed-app.png
+docs/flow-02.png
+docs/vision-01.png
+docs/vision-02.png
+.playwright-mcp/

@@ -443,11 +443,11 @@ pub async fn browser_snapshot(
     std::fs::create_dir_all(&directory)
         .map_err(|e| format!("create snapshot dir falhou: {e}"))?;
     let path = directory.join(format!("{}-snapshot.png", uuid::Uuid::new_v4()));
-    let _ = std::fs::write(&path, &bytes);
+    let wrote_file = std::fs::write(&path, &bytes).is_ok();
     Ok(SnapshotReport {
         ms,
         bytes: bytes.len(),
-        path: path.to_string_lossy().into_owned(),
+        path: if wrote_file { path.to_string_lossy().into_owned() } else { String::new() },
         data_url: format!(
             "data:image/png;base64,{}",
             base64::engine::general_purpose::STANDARD.encode(&bytes)
@@ -623,10 +623,17 @@ pub fn start_runtime_smoke(app: AppHandle, report_path: PathBuf) {
             }
         };
         if let Some(parent) = report_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("[smoke] failed to create report directory {}: {e}", parent.display());
+            }
         }
-        if let Ok(json) = serde_json::to_vec_pretty(&report) {
-            let _ = std::fs::write(&report_path, json);
+        match serde_json::to_vec_pretty(&report) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&report_path, json) {
+                    eprintln!("[smoke] failed to write report to {}: {e}", report_path.display());
+                }
+            }
+            Err(e) => eprintln!("[smoke] failed to serialize report: {e}"),
         }
         app.exit(exit_code);
     });
@@ -1755,6 +1762,7 @@ const SAFARI_BUNDLE_PATH: &str = "/Applications/Safari.app";
 /// o Google volta a servir o layout antigo — a derivação em runtime é o
 /// caminho principal; o fallback é a exceção com degradação conhecida, não
 /// "nada quebra".
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 const BROWSER_TAB_SAFARI_MARKETING_VERSION_FALLBACK: &str = "27.0";
 
 /// Monta o User-Agent das abas a partir do UA que o engine forneceria +
@@ -1767,6 +1775,7 @@ const BROWSER_TAB_SAFARI_MARKETING_VERSION_FALLBACK: &str = "27.0";
 ///     extraindo o build do token AppleWebKit do próprio input ("605.1.15",
 ///     congelado pela Apple desde 2017), para o par Version/Safari casar
 ///     com o engine.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn assemble_browser_tab_user_agent(engine_ua: &str, safari_version: &str) -> String {
     if let Some(version_pos) = engine_ua.find(" Version/") {
         let value_start = version_pos + " Version/".len();
@@ -1802,6 +1811,7 @@ fn assemble_browser_tab_user_agent(engine_ua: &str, safari_version: &str) -> Str
 /// Quando cai no fallback, registra UMA VEZ — a degradação não pode ser
 /// invisível, senão o sintoma ("Google está feio") aparece anos depois sem
 /// ligação com a causa.
+#[cfg(any(target_os = "macos", test))]
 fn resolve_safari_version(runtime: Option<String>) -> String {
     match runtime {
         Some(version) => version,
@@ -2314,6 +2324,7 @@ pub async fn browser_tab_set_media_suspended(
         // novo (garante "nada tocando" ao reabrir, mesmo que a página
         // tenha tentado retomar). Como o script não bloqueia retomada,
         // o ABERTO refaz a pausa para fechar o contrato.
+        let _ = (&suspended, &webview);
         evaluate_script(&state, tab_id, pause_script.into()).await?;
         Ok(())
     }

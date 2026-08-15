@@ -16,7 +16,9 @@ pub mod feedback_service;
 pub mod file_service;
 pub mod git_service;
 pub mod goal_evaluator;
+#[cfg(target_os = "macos")]
 pub mod ios_simulator;
+#[cfg(target_os = "macos")]
 pub mod ios_simulator_mcp;
 pub mod lifecycle_service;
 pub mod manifest_cache;

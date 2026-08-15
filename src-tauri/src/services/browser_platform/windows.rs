@@ -199,7 +199,7 @@ pub fn attach_bridge(
             *tokens_slot.lock().unwrap_or_else(|e| e.into_inner()) = (nav_tok, content_tok, msg_tok);
             let registration =
                 AddScriptToExecuteOnDocumentCreatedCompletedHandler::wait_for_async_operation(
-                    Box::new(move |handler| unsafe {
+                    Box::new(move |handler| {
                         let script = windows::core::HSTRING::from(full);
                         cwv.AddScriptToExecuteOnDocumentCreated(&script, &handler)
                             .map_err(webview2_com::Error::WindowsError)

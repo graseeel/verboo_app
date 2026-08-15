@@ -55,6 +55,7 @@ impl ChromeIntegrationService {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn with_dependencies(
         paths: ChromeIntegrationPaths,
         bundled_helper: PathBuf,
