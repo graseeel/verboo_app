@@ -639,15 +639,16 @@ fn read_windows_dpapi_blob() -> Option<Value> {
          [System.Text.Encoding]::UTF8.GetString($result)"
     );
 
-    let output = Command::new("powershell")
-        .arg("-NoProfile")
+    let mut cmd = Command::new("powershell");
+    cmd.arg("-NoProfile")
         .arg("-NonInteractive")
         .arg("-Command")
         .arg(&script)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
+        .stderr(std::process::Stdio::piped());
+    crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+    let output = cmd.output()
         .ok().or_else(|| {
             log_windows_credential_diagnostics("dpapi", "PowerShell execution failed — is PowerShell available?");
             None
@@ -683,16 +684,16 @@ fn write_windows_dpapi_blob(blob: &Value) -> bool {
          $result = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $entropy, 'CurrentUser')\n\
          [Convert]::ToBase64String($result)"
     );
-    let Ok(mut child) = Command::new("powershell")
-        .arg("-NoProfile")
+    let mut cmd = Command::new("powershell");
+    cmd.arg("-NoProfile")
         .arg("-NonInteractive")
         .arg("-Command")
         .arg(script)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    else {
+        .stderr(std::process::Stdio::null());
+    crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+    let Ok(mut child) = cmd.spawn() else {
         return false;
     };
     let wrote = child
