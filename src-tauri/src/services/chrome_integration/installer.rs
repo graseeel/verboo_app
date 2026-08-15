@@ -229,7 +229,10 @@ impl ChromeIntegrationService {
         request: &ChromeIntegrationRequest,
     ) -> Result<(String, ChromeExtensionIdSource), String> {
         if let Some(development_id) = request.development_extension_id.as_deref() {
-            if !cfg!(debug_assertions) {
+            // Allow development extension IDs when no release metadata is
+            // available (e.g. fork builds without VERBOO_CHROME_EXTENSION_ID).
+            // In official release builds with valid metadata, reject dev IDs.
+            if self.release.extension_id.is_some() && !cfg!(debug_assertions) {
                 return Err("chrome_development_id_not_allowed".into());
             }
             if !valid_extension_id(development_id) {
