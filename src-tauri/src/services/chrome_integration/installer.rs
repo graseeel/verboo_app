@@ -425,8 +425,13 @@ impl ChromeIntegrationService {
 
     fn bridge_state(&self, record: Option<&InstallationRecord>) -> ChromeComponentState {
         let Some(record) = record else {
+            // Orphaned files (no installation record) — treat as stale and
+            // allow the installer to overwrite them on next configure(), rather
+            // than blocking with Conflict.  This handles the common case where
+            // a previous version left files behind but the record was lost
+            // (e.g. partial uninstall, manual copy, or build artifacts).
             return if self.paths.helper_path().exists() || self.paths.manifest_path().exists() {
-                ChromeComponentState::Conflict
+                ChromeComponentState::Invalid
             } else {
                 ChromeComponentState::Missing
             };
