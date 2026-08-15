@@ -263,6 +263,17 @@ impl CliStore {
             .unwrap_or(false))
     }
 
+    /// Clears the rejected manifest record. Called after a successful startup
+    /// validation so future CLI versions with the same digest are not blocked.
+    pub fn clear_rejected(&self) -> Result<(), String> {
+        let path = self.root.join(REJECTED_POINTER);
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|error| format!("failed to clear rejected CLI record: {error}"))?;
+        }
+        Ok(())
+    }
+
     pub fn cleanup_abandoned_staging(&self) -> Result<(), String> {
         for entry in fs::read_dir(self.staging_dir())
             .map_err(|error| format!("failed to inspect CLI staging: {error}"))?

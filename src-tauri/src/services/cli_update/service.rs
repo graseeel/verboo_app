@@ -425,6 +425,12 @@ impl CliUpdateService {
             return Ok(StartupValidation::Missing);
         };
         let current_root = self.inner.store.version_dir(&current.version)?;
+        // If the CLI payload is incomplete (e.g. dist/cli.mjs missing),
+        // treat it as missing so bootstrap_if_missing will re-download.
+        let cli_mjs = current_root.join("dist").join("cli.mjs");
+        if !cli_mjs.exists() {
+            return Ok(StartupValidation::Missing);
+        }
         let current_smoke_error = match smoke_payload(
             &self.inner.node_path,
             &current_root,
@@ -433,6 +439,7 @@ impl CliUpdateService {
         ) {
             Ok(()) => {
                 self.inner.store.mark_current_good()?;
+                self.inner.store.clear_rejected()?;
                 self.inner.store.garbage_collect()?;
                 return Ok(StartupValidation::Valid {
                     version: current.version,

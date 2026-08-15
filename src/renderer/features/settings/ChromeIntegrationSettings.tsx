@@ -122,7 +122,7 @@ export function ChromeIntegrationSettings() {
           </div>
         </div>
 
-        <div className="settings-row">
+        <div className="settings-row chrome-development-panel">
           <ShieldCheck size={16} />
           <div style={{ flex: 1 }}>
             <strong>{t('chrome.developmentId')}</strong>
@@ -134,7 +134,6 @@ export function ChromeIntegrationSettings() {
               placeholder={t('chrome.developmentIdPlaceholder')}
               spellCheck={false}
               onChange={event => integration.setDevelopmentExtensionId(event.target.value)}
-              style={{ width: '100%', marginTop: '8px' }}
             />
             {!integration.developmentIdValid && (
               <p className="chrome-integration-error">{t('chrome.error.chrome_extension_id_invalid')}</p>
