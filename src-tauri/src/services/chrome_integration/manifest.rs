@@ -5,7 +5,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::paths::{windows_registry_key, IntegrationPlatform};
+use super::paths::{windows_registry_key, edge_registry_key, IntegrationPlatform};
 
 const HOST_NAME: &str = "com.verboo.code.browser_extension";
 
@@ -99,18 +99,22 @@ pub fn register_manifest(
         use winreg::RegKey;
 
         let current_user = RegKey::predef(HKEY_CURRENT_USER);
-        if let Ok(existing) = current_user.open_subkey(windows_registry_key()) {
-            let registered: String = existing.get_value("").map_err(to_string)?;
-            if Path::new(&registered) != manifest_path {
-                return Err("chrome_registry_conflict".into());
+
+        // Register for both Chrome and Edge
+        for registry_key in [windows_registry_key(), edge_registry_key()] {
+            if let Ok(existing) = current_user.open_subkey(registry_key) {
+                let registered: String = existing.get_value("").map_err(to_string)?;
+                if Path::new(&registered) != manifest_path {
+                    return Err("chrome_registry_conflict".into());
+                }
+                continue;
             }
-            return Ok(());
+            let (key, _) = current_user
+                .create_subkey(registry_key)
+                .map_err(to_string)?;
+            key.set_value("", &manifest_path.to_string_lossy().as_ref())
+                .map_err(to_string)?;
         }
-        let (key, _) = current_user
-            .create_subkey(windows_registry_key())
-            .map_err(to_string)?;
-        key.set_value("", &manifest_path.to_string_lossy().as_ref())
-            .map_err(to_string)?;
     }
     #[cfg(not(windows))]
     let _ = (platform, manifest_path, windows_registry_key());
@@ -127,13 +131,16 @@ pub fn manifest_registration_is_managed(
         use winreg::RegKey;
 
         let current_user = RegKey::predef(HKEY_CURRENT_USER);
-        let key = match current_user.open_subkey(windows_registry_key()) {
-            Ok(key) => key,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(error.to_string()),
-        };
-        let registered: String = key.get_value("").map_err(to_string)?;
-        return Ok(Path::new(&registered) == manifest_path);
+        // Check both Chrome and Edge registries
+        for registry_key in [windows_registry_key(), edge_registry_key()] {
+            if let Ok(key) = current_user.open_subkey(registry_key) {
+                let registered: String = key.get_value("").map_err(to_string)?;
+                if Path::new(&registered) == manifest_path {
+                    return Ok(true);
+                }
+            }
+        }
+        return Ok(false);
     }
     #[cfg(not(windows))]
     let _ = (platform, manifest_path, windows_registry_key());
@@ -150,20 +157,23 @@ pub fn unregister_manifest(
         use winreg::RegKey;
 
         let current_user = RegKey::predef(HKEY_CURRENT_USER);
-        let key = match current_user.open_subkey(windows_registry_key()) {
-            Ok(key) => key,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error.to_string()),
-        };
-        let registered: String = key.get_value("").map_err(to_string)?;
-        if Path::new(&registered) != manifest_path {
-            return Err("chrome_registry_conflict".into());
-        }
-        drop(key);
-        match current_user.delete_subkey(windows_registry_key()) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.to_string()),
+        // Unregister from both Chrome and Edge
+        for registry_key in [windows_registry_key(), edge_registry_key()] {
+            let key = match current_user.open_subkey(registry_key) {
+                Ok(key) => key,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.to_string()),
+            };
+            let registered: String = key.get_value("").map_err(to_string)?;
+            if Path::new(&registered) != manifest_path {
+                return Err("chrome_registry_conflict".into());
+            }
+            drop(key);
+            match current_user.delete_subkey(registry_key) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
         }
     }
     #[cfg(not(windows))]

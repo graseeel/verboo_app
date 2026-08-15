@@ -125,3 +125,7 @@ pub const fn linux_manifest_suffix() -> &'static str {
 pub const fn windows_registry_key() -> &'static str {
     r"Software\Google\Chrome\NativeMessagingHosts\com.verboo.code.browser_extension"
 }
+
+pub const fn edge_registry_key() -> &'static str {
+    r"Software\Microsoft\Edge\NativeMessagingHosts\com.verboo.code.browser_extension"
+}
