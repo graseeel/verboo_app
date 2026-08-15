@@ -542,7 +542,13 @@ fn dpapi_entropy_for(resource_name: &str, username: &str) -> String {
 }
 
 fn decode_windows_dpapi_payload(bytes: &[u8]) -> Option<Vec<u8>> {
-    let encoded = std::str::from_utf8(bytes).ok()?.trim();
+    // Strip UTF-8 BOM (EF BB BF) that some editors/write tools insert.
+    // Without this, base64 decode fails because the BOM codepoint (U+FEFF)
+    // is not valid base64 and `trim()` does not remove it.
+    let stripped = bytes
+        .strip_prefix(b"\xef\xbb\xbf")
+        .unwrap_or(bytes);
+    let encoded = std::str::from_utf8(stripped).ok()?.trim();
     if encoded.is_empty() {
         return None;
     }
