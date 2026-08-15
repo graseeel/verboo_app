@@ -80,9 +80,9 @@ impl ChromeIntegrationPaths {
         } else {
             "verboo-in-chrome"
         };
-        self.integration_root()
-            .join(&self.app_version)
-            .join(executable)
+        // The helper binary is installed alongside the main app executable,
+        // not inside the chrome-integration directory.
+        self.data_root.join(executable)
     }
 
     pub fn installation_record_path(&self) -> PathBuf {
