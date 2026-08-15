@@ -52,12 +52,20 @@ export async function click(tool, ctx = {}) {
   })
 
   if (!result) throw new Error('click: no result from page')
-  if (!result.result) {
+  const pageResult = result.result
+  const pageNotFound = pageResult === false
+    || (pageResult && typeof pageResult === 'object' && pageResult.found === false)
+  if (pageNotFound) {
+    // INSTRUMENTAÇÃO (pós-round 8): document identity — tab id + the
+    // document's own location/title (see type.js).
+    const docInfo = pageResult && typeof pageResult === 'object' && pageResult.docUrl
+      ? ` (ran in tab ${tab.id}: ${pageResult.docUrl}${pageResult.docTitle ? ` "${pageResult.docTitle}"` : ''})`
+      : ` (ran in tab ${tab.id}: ${tab.url ?? 'unknown'})`
     // PÓS-CAMPO-3 (item 1): the recovery hint points at the find/read_page
     // TOOLS — never at repeating the same selector/coordinates.
     throw new Error(selector
-      ? `click: selector not found: ${selector} — call the find tool to get a valid selector for this element, then retry`
-      : `click: no element at coordinates ${x},${y} — use find or read_page to locate the target, then retry`)
+      ? `click: selector not found: ${selector}${docInfo} — call the find tool to get a valid selector for this element, then retry`
+      : `click: no element at coordinates ${x},${y}${docInfo} — use find or read_page to locate the target, then retry`)
   }
   return {
     ...(selector ? { selector } : {}),
@@ -90,14 +98,19 @@ async function clickInPage(selector, x, y, button) {
     for (;;) {
       el = document.querySelector(selector)
       if (el) break
-      if (Date.now() >= elementDeadline) return false
+      if (Date.now() >= elementDeadline) {
+        // INSTRUMENTAÇÃO: document identity for the not-found error.
+        return { found: false, docUrl: document.location.href, docTitle: document.title }
+      }
       await sleep(100)
     }
   } else {
     el = document.elementFromPoint(x, y)
-    if (!el) return false
+    if (!el) {
+      return { found: false, docUrl: document.location.href, docTitle: document.title }
+    }
   }
-  if (!el) return false
+  if (!el) return { found: false, docUrl: document.location.href, docTitle: document.title }
   if (selector !== null) {
     el.scrollIntoView({ block: 'center', behavior: 'instant' })
   }

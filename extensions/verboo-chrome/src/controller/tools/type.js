@@ -42,14 +42,25 @@ export async function typeText(tool, ctx = {}) {
   })
 
   if (!result) throw new Error('type: no result from page')
-  if (!result.result || result.result === false) {
+  const pageResult = result.result
+  const pageNotFound = pageResult === false
+    || (pageResult && typeof pageResult === 'object' && pageResult.found === false)
+  if (pageNotFound) {
+    // INSTRUMENTAÇÃO (pós-round 8): the error carries the identity of the
+    // DOCUMENT the in-page function ran in — tab id + the document's own
+    // location.href/title (truth of the document, not of the tab object) —
+    // so the panel card shows exactly which surface executed (a stale
+    // workspace tab, a hidden window, the user's own tab).
+    const docInfo = pageResult && typeof pageResult === 'object' && pageResult.docUrl
+      ? ` (ran in tab ${tab.id}: ${pageResult.docUrl}${pageResult.docTitle ? ` "${pageResult.docTitle}"` : ''})`
+      : ` (ran in tab ${tab.id}: ${tab.url ?? 'unknown'})`
     // PÓS-CAMPO-3 (item 1): the recovery hint points at the find TOOL,
     // never at "repeat the same arguments" — a weak model took "retry
     // with the same arguments" literally and repeated the invalid
     // selector. When pressEnter was set, the hint also preserves it.
     throw new Error(pressEnter
-      ? `type: selector not found: ${selector} — call the find tool to get a valid selector for this element, then retry type keeping pressEnter: true`
-      : `type: selector not found: ${selector} — call the find tool to get a valid selector for this element, then retry`)
+      ? `type: selector not found: ${selector}${docInfo} — call the find tool to get a valid selector for this element, then retry type keeping pressEnter: true`
+      : `type: selector not found: ${selector}${docInfo} — call the find tool to get a valid selector for this element, then retry`)
   }
   // R-T5/GENERALIZAÇÃO-2: with pressEnter the page returns { found,
   // handled } — pressedEnter reflects whether the APP handled the Enter;
@@ -101,7 +112,10 @@ async function typeInPage(selector, text, clear, pressEnter) {
   for (;;) {
     el = /** @type {HTMLInputElement | HTMLTextAreaElement | null} */ (document.querySelector(selector))
     if (el) break
-    if (Date.now() >= elementDeadline) return false
+    if (Date.now() >= elementDeadline) {
+      // INSTRUMENTAÇÃO: document identity for the not-found error.
+      return { found: false, docUrl: document.location.href, docTitle: document.title }
+    }
     await sleep(100)
   }
   el.focus()

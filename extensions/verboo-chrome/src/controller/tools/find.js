@@ -42,9 +42,17 @@ export async function findTool(tool, ctx = {}) {
   })
 
   if (!result) throw new Error('find: no result from page')
+  const matches = Array.isArray(result.result) ? result.result : []
   return {
-    matches: Array.isArray(result.result) ? result.result : [],
+    matches,
     url: tab.url ?? '',
+    // INSTRUMENTAÇÃO (pós-round 8): the empty result carries the identity
+    // of the tab the find ran in — so the panel/model can see exactly
+    // which surface returned nothing (a stale workspace tab vs the user's
+    // page).
+    ...(matches.length === 0
+      ? { note: `No elements found (ran in tab ${tab.id}: ${tab.url ?? 'unknown'}${tab.title ? ` "${tab.title}"` : ''})` }
+      : {}),
   }
 }
 

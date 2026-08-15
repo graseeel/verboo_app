@@ -176,18 +176,18 @@ test('type: R-C1 — an element that appears late is found by the poll', async (
 test('type: R-C1 — a never-appearing element fails honestly after the poll timeout', async () => {
   await assert.rejects(
     typeInto('<div id="root"></div>', { pressEnter: true }),
-    /type: selector not found: #t — call the find tool/,
+    /type: selector not found: #t \(ran in tab 42: /,
   )
 })
 
 test('type: PÓS-CAMPO-3 — the not-found error points at the find TOOL and keeps pressEnter', async () => {
   await assert.rejects(
     typeInto('<div id="root"></div>', { selector: '#missing', pressEnter: true }),
-    /type: selector not found: #missing — call the find tool to get a valid selector for this element, then retry type keeping pressEnter: true/,
+    /type: selector not found: #missing \(ran in tab 42: .*\) — call the find tool to get a valid selector for this element, then retry type keeping pressEnter: true/,
   )
   // Without pressEnter the hint still points at find (no "same arguments").
   await assert.rejects(
     typeInto('<div id="root"></div>', { selector: '#missing' }),
-    /^Error: type: selector not found: #missing — call the find tool to get a valid selector for this element, then retry$/,
+    /^Error: type: selector not found: #missing \(ran in tab 42: .*\) — call the find tool to get a valid selector for this element, then retry$/,
   )
 })

@@ -64,6 +64,18 @@ export function createBackgroundWorkspaceManager({ chromeApi = chrome } = {}) {
     onSelect: persist,
   })
 
+  const logLease = async (lease) => {
+    try {
+      const tab = await chromeApi.tabs.get(lease.snapshot().tabId)
+      console.log(
+        '[verboo-workspace] lease tab', tab.id, 'window', tab.windowId,
+        'url', tab.url, 'status', tab.status,
+      )
+    } catch (err) {
+      console.log('[verboo-workspace] lease tab', lease.snapshot().tabId, 'unreadable:', err?.message ?? err)
+    }
+  }
+
   return {
     async acquire({ sourceTabId, resume = false } = {}) {
       const existing = await restore()
@@ -79,6 +91,9 @@ export function createBackgroundWorkspaceManager({ chromeApi = chrome } = {}) {
             await waitForTabComplete(chromeApi, tabId)
           }
         }
+        // INSTRUMENTAÇÃO (pós-round 8): which surface the turn is about to
+        // act on — readable in the service-worker console.
+        await logLease(existing)
         return existing
       }
 
@@ -94,6 +109,8 @@ export function createBackgroundWorkspaceManager({ chromeApi = chrome } = {}) {
       currentLease = createLease(tab.id, workspaceWindow.id)
       await persist(currentLease.snapshot())
       await waitForTabComplete(chromeApi, tab.id)
+      // INSTRUMENTAÇÃO: see above.
+      await logLease(currentLease)
       return currentLease
     },
 
@@ -140,6 +157,8 @@ export function createBackgroundWorkspaceManager({ chromeApi = chrome } = {}) {
             await this.reset()
             return this.acquire({ sourceTabId, resume: false })
           }
+          // INSTRUMENTAÇÃO: log the re-navigated target (final decision).
+          await logLease(lease)
           return lease
         }
         if (isControllableUrl && !isControllableUrl(tab?.url)) {
