@@ -223,26 +223,9 @@ fn cli_credentials_file_path() -> Option<std::path::PathBuf> {
 /// Returns the parsed `verbooOauth` credentials, or None if missing /
 /// unparseable.
 fn read_credentials_from_store() -> Option<CliOAuthCredentials> {
-    let blob: Value = match read_credentials_blob() {
-        Some(b) => {
-            eprintln!("[verboo:cli-creds] credentials blob found ({} bytes)", serde_json::to_string(&b).unwrap_or_default().len());
-            b
-        }
-        None => {
-            eprintln!("[verboo:cli-creds] NO CREDENTIALS BLOB FOUND");
-            return None;
-        }
-    };
-    match blob.get("verbooOauth") {
-        Some(oauth) => {
-            eprintln!("[verboo:cli-creds] verbooOauth field found — parsing...");
-            parse_oauth(oauth)
-        }
-        None => {
-            eprintln!("[verboo:cli-creds] NO verbooOauth field in blob — keys: {:?}", blob.as_object().map(|o| o.keys().collect::<Vec<_>>()));
-            None
-        }
-    }
+    let blob: Value = read_credentials_blob()?;
+    let oauth = blob.get("verbooOauth")?;
+    parse_oauth(oauth)
 }
 
 /// Cross-platform credentials blob reader. Dispatches to the correct
@@ -262,23 +245,12 @@ pub(crate) fn read_credentials_blob() -> Option<Value> {
     }
 
     if cfg!(target_os = "macos") {
-        eprintln!("[verboo:cli-creds] platform: macOS — reading Keychain");
         read_keychain_blob()
     } else if cfg!(target_os = "windows") {
-        eprintln!("[verboo:cli-creds] platform: Windows — trying DPAPI then plaintext fallback");
         // (a) Windows: DPAPI primary, plaintext fallback.
         #[cfg(windows)]
         {
-            match read_windows_dpapi_blob() {
-                Some(blob) => {
-                    eprintln!("[verboo:cli-creds] DPAPI read SUCCESS");
-                    return Some(blob);
-                }
-                None => {
-                    eprintln!("[verboo:cli-creds] DPAPI read FAILED — falling back to plaintext");
-                }
-            }
-            read_file_blob()
+            read_windows_dpapi_blob().or_else(read_file_blob)
         }
         #[cfg(not(windows))]
         {
@@ -290,7 +262,6 @@ pub(crate) fn read_credentials_blob() -> Option<Value> {
     } else {
         #[cfg(target_os = "linux")]
         {
-            eprintln!("[verboo:cli-creds] platform: Linux — reading Secret Service");
             read_linux_secret_blob().or_else(read_file_blob)
         }
         #[cfg(not(target_os = "linux"))]
