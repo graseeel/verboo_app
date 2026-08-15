@@ -267,9 +267,9 @@ impl ChromeIntegrationService {
                 return Err("chrome_helper_conflict".into());
             }
         } else {
-            if self.paths.helper_path().exists() {
-                return Err("chrome_helper_conflict".into());
-            }
+            // When there's no installation record, allow the helper to exist
+            // if it's in the expected location (installed by the app as a sidecar).
+            // Only block if there's a manifest conflict.
             if self.paths.manifest_path().exists() {
                 return Err("chrome_manifest_conflict".into());
             }
