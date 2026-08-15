@@ -267,10 +267,11 @@ impl ChromeIntegrationService {
                 return Err("chrome_helper_conflict".into());
             }
         } else {
-            // When there's no installation record, allow the helper to exist
-            // if it's in the expected location (installed by the app as a sidecar).
-            // Only block if there's a manifest conflict.
-            if self.paths.manifest_path().exists() {
+            // When there's no installation record, allow the helper and
+            // manifest to exist if they were left over from a previous
+            // configuration. They will be overwritten during configure().
+            // Only block if a different extension ID owns the manifest.
+            if self.paths.manifest_path().exists() && !self.paths.helper_path().exists() {
                 return Err("chrome_manifest_conflict".into());
             }
         }
