@@ -113,28 +113,26 @@ export function ChromeIntegrationSettings() {
         </div>
       </section>
 
-      {(status.developmentBuild || status.extensionIdSource !== 'release') && (
-        <section className="settings-panel chrome-development-panel">
-          <div className="settings-row">
-            <ShieldCheck size={16} />
-            <div>
-              <strong>{t('chrome.developmentId')}</strong>
-              <p>{t('chrome.developmentIdBody')}</p>
-            </div>
+      <section className="settings-panel chrome-development-panel">
+        <div className="settings-row">
+          <ShieldCheck size={16} />
+          <div>
+            <strong>{t('chrome.developmentId')}</strong>
+            <p>{t('chrome.developmentIdBody')}</p>
           </div>
-          <input
-            aria-label={t('chrome.developmentId')}
-            className={!integration.developmentIdValid ? 'is-invalid' : ''}
-            value={integration.developmentExtensionId}
-            placeholder={t('chrome.developmentIdPlaceholder')}
-            spellCheck={false}
-            onChange={event => integration.setDevelopmentExtensionId(event.target.value)}
-          />
-          {!integration.developmentIdValid && (
-            <p className="chrome-integration-error">{t('chrome.error.chrome_extension_id_invalid')}</p>
-          )}
-        </section>
-      )}
+        </div>
+        <input
+          aria-label={t('chrome.developmentId')}
+          className={!integration.developmentIdValid ? 'is-invalid' : ''}
+          value={integration.developmentExtensionId}
+          placeholder={t('chrome.developmentIdPlaceholder')}
+          spellCheck={false}
+          onChange={event => integration.setDevelopmentExtensionId(event.target.value)}
+        />
+        {!integration.developmentIdValid && (
+          <p className="chrome-integration-error">{t('chrome.error.chrome_extension_id_invalid')}</p>
+        )}
+      </section>
 
       <section className="settings-panel chrome-integration-actions-panel">
         <div className="settings-row">
