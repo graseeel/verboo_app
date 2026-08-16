@@ -395,7 +395,34 @@ fn installed_manifest_candidates() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
         let _ = base;
-        Vec::new()
+        let mut candidates = Vec::new();
+        // On Windows, the manifest path is registered in the Windows Registry.
+        // Check both Chrome and Edge registry keys.
+        let registry_keys = [
+            r"Software\Google\Chrome\NativeMessagingHosts\com.verboo.code.browser_extension",
+            r"Software\Microsoft\Edge\NativeMessagingHosts\com.verboo.code.browser_extension",
+        ];
+        if let Ok(current_user) = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+            .open_subkey_with_flags(
+                &registry_keys[0],
+                winreg::enums::KEY_READ,
+            )
+        {
+            if let Ok(manifest_path) = current_user.get_value::<String, _>("") {
+                candidates.push(PathBuf::from(manifest_path));
+            }
+        }
+        if let Ok(current_user) = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+            .open_subkey_with_flags(
+                &registry_keys[1],
+                winreg::enums::KEY_READ,
+            )
+        {
+            if let Ok(manifest_path) = current_user.get_value::<String, _>("") {
+                candidates.push(PathBuf::from(manifest_path));
+            }
+        }
+        candidates
     }
 }
 
