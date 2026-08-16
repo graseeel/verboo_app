@@ -384,7 +384,7 @@ fn upgrade_moves_the_managed_helper_and_removes_the_old_version() {
 }
 
 #[test]
-fn upgrade_never_overwrites_an_unowned_new_version_path() {
+fn upgrade_overwrites_helper_at_new_path_when_installation_record_exists() {
     // When an installation record exists, the helper at the expected path
     // is considered ours (installed by the previous version). The upgrade
     // overwrites it with the new version's helper. Foreign helper detection
