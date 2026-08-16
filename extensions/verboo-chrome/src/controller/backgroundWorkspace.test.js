@@ -342,3 +342,56 @@ test('DECISÃO DO DONO: leaseSourceTab fails honestly when the source tab is gon
   const manager = createBackgroundWorkspaceManager({ chromeApi })
   await assert.rejects(() => manager.leaseSourceTab(99), /target_tab_unavailable|tab missing/)
 })
+
+// ── REGRESSÃO c358abf (2026-08-16): o side panel não tem sender.tab — o
+//    sourceTabId é a aba ativa capturada no INÍCIO do turno. Se ela for uma
+//    página interna (chrome://), o lease NÃO nasce: erro honesto e claro
+//    (target_not_controllable) em vez de o 1º tool falhar com
+//    target_tab_unavailable.
+
+test('REGRESSÃO c358abf: leaseSourceTab rejeita aba ativa não controlável (chrome://) com erro claro', async () => {
+  const tabs = new Map([
+    [99, { id: 99, windowId: 9, url: 'chrome://extensions', active: true, status: 'complete' }],
+  ])
+  const chromeApi = {
+    tabs: { get: async (id) => { const t = tabs.get(id); if (!t) throw new Error('tab missing'); return t } },
+    windows: { create: async () => { throw new Error('must not be called') }, get: async () => null },
+    storage: { session: { get: async () => ({}), set: async () => {} }, local: { get: async () => ({}), set: async () => {} } },
+  }
+  const { createBackgroundWorkspaceManager } = await import('./backgroundWorkspace.js')
+  const manager = createBackgroundWorkspaceManager({ chromeApi })
+  await assert.rejects(
+    () => manager.leaseSourceTab(99, { isControllableUrl: (url) => /^https?:\/\//i.test(String(url ?? '')) }),
+    /target_not_controllable/,
+  )
+})
+
+test('REGRESSÃO c358abf: leaseSourceTab aceita aba ativa controlável (http) no início do turno', async () => {
+  const tabs = new Map([
+    [99, { id: 99, windowId: 9, url: 'https://todomvc.com/', active: true, status: 'complete' }],
+  ])
+  const chromeApi = {
+    tabs: { get: async (id) => { const t = tabs.get(id); if (!t) throw new Error('tab missing'); return t } },
+    windows: { create: async () => { throw new Error('must not be called') }, get: async () => null },
+    storage: { session: { get: async () => ({}), set: async () => {} }, local: { get: async () => ({}), set: async () => {} } },
+  }
+  const { createBackgroundWorkspaceManager } = await import('./backgroundWorkspace.js')
+  const manager = createBackgroundWorkspaceManager({ chromeApi })
+  const lease = await manager.leaseSourceTab(99, { isControllableUrl: (url) => /^https?:\/\//i.test(String(url ?? '')) })
+  assert.equal(lease.snapshot().tabId, 99, 'lease criado com a aba ativa controlável')
+})
+
+test('REGRESSÃO c358abf: sem isControllableUrl o leaseSourceTab mantém o comportamento anterior (sem checagem)', async () => {
+  const tabs = new Map([
+    [99, { id: 99, windowId: 9, url: 'chrome://extensions', active: true, status: 'complete' }],
+  ])
+  const chromeApi = {
+    tabs: { get: async (id) => { const t = tabs.get(id); if (!t) throw new Error('tab missing'); return t } },
+    windows: { create: async () => { throw new Error('must not be called') }, get: async () => null },
+    storage: { session: { get: async () => ({}), set: async () => {} }, local: { get: async () => ({}), set: async () => {} } },
+  }
+  const { createBackgroundWorkspaceManager } = await import('./backgroundWorkspace.js')
+  const manager = createBackgroundWorkspaceManager({ chromeApi })
+  const lease = await manager.leaseSourceTab(99)
+  assert.equal(lease.snapshot().tabId, 99, 'callers legados sem isControllableUrl não são afetados')
+})

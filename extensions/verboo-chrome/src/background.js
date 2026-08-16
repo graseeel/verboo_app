@@ -909,7 +909,12 @@ async function runAgentTurn(
     // Resolve the active tab up front so the model can decide between
     // a navigate (e.g. "abra o youtube" on chrome://extensions) and a
     // read_page on the current tab.
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    // REGRESSÃO c358abf: o side panel NÃO tem sender.tab, e
+    // currentWindow:true é ambíguo no service worker (pode vir vazio) —
+    // o lease ficava nulo e o fail-closed falhava no 1º tool. lastFocusedWindow
+    // é a forma confiável (mesma do panel.js e do targetTab.js): a aba ativa
+    // da janela onde o painel está ao enviar o prompt.
+    const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
     let turnTabLease = null
     const ensureTurnWorkspace = async (resume = false) => {
       if (!turnTabLease) {
@@ -922,7 +927,10 @@ async function runAgentTurn(
         // O caminho MCP/CLI preserva acquire() (janela invisível) — ver
         // nativeBridge.contextFactory abaixo.
         const sourceTabId = Number.isInteger(senderTabId) ? senderTabId : activeTab?.id
-        turnTabLease = await backgroundWorkspace.leaseSourceTab(sourceTabId)
+        // REGRESSÃO c358abf: aba ativa não controlável (chrome://) no início
+        // do turno → erro honesto e claro no painel (target_not_controllable),
+        // em vez de falhar no 1º tool com target_tab_unavailable.
+        turnTabLease = await backgroundWorkspace.leaseSourceTab(sourceTabId, { isControllableUrl })
         await broadcastWorkspaceTabMeta(turnId, turnTabLease)
       }
       return turnTabLease
@@ -1531,6 +1539,11 @@ function browserAgentErrorMessage(userMessage, code) {
     return pt
       ? 'O modelo selecionado não aceita imagens. Escolha um modelo marcado como Visual para capturar e analisar a tela.'
       : 'The selected model does not accept images. Choose a model marked Visual to capture and analyze the screen.'
+  }
+  if (detail === 'target_not_controllable') {
+    return pt
+      ? 'Abra uma página web (http:// ou https://) para o Verboo controlar e tente novamente.'
+      : 'Open a web page (http:// or https://) for Verboo to control, then try again.'
   }
   return pt
     ? `O agente do navegador parou antes de concluir: ${detail}`

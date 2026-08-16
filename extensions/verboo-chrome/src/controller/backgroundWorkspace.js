@@ -193,10 +193,24 @@ export function createBackgroundWorkspaceManager({ chromeApi = chrome } = {}) {
      * @param {number} sourceTabId — the tab where the side panel lived
      * @returns {Promise<{ snapshot(): { tabId: number, windowId: number }, selectTab(id: number, wid: number): Promise<void> }>}
      */
-    async leaseSourceTab(sourceTabId) {
+    /**
+     * REGRESSÃO c358abf (2026-08-16): quando a origem é o side panel (sem
+     * sender.tab), o sourceTabId é a aba ativa capturada no INÍCIO do turno.
+     * Se essa aba for uma página interna (chrome://, edge://…), o lease nem
+     * nasce — o usuário recebe um erro honesto e claro ('abra uma página
+     * web para o Verboo controlar') em vez de o 1º tool falhar com
+     * target_tab_unavailable.
+     *
+     * @param {number} sourceTabId
+     * @param {{ isControllableUrl?: (url: string | undefined) => boolean }} [opts]
+     */
+    async leaseSourceTab(sourceTabId, { isControllableUrl } = {}) {
       if (!Number.isInteger(sourceTabId)) throw new Error('target_tab_unavailable')
       const tab = await chromeApi.tabs.get(sourceTabId)
       if (!tab?.id || !Number.isInteger(tab.windowId)) throw new Error('target_tab_unavailable')
+      if (isControllableUrl && !isControllableUrl(tab.url)) {
+        throw new Error('target_not_controllable')
+      }
       currentLease = createLease(tab.id, tab.windowId)
       await persist(currentLease.snapshot())
       return currentLease
