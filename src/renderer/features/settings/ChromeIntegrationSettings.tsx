@@ -113,29 +113,6 @@ export function ChromeIntegrationSettings() {
         </div>
       </section>
 
-      {status.developmentBuild && (
-        <section className="settings-panel chrome-development-panel">
-          <div className="settings-row">
-            <ShieldCheck size={16} />
-            <div>
-              <strong>{t('chrome.developmentId')}</strong>
-              <p>{t('chrome.developmentIdBody')}</p>
-            </div>
-          </div>
-          <input
-            aria-label={t('chrome.developmentId')}
-            className={!integration.developmentIdValid ? 'is-invalid' : ''}
-            value={integration.developmentExtensionId}
-            placeholder={t('chrome.developmentIdPlaceholder')}
-            spellCheck={false}
-            onChange={event => integration.setDevelopmentExtensionId(event.target.value)}
-          />
-          {!integration.developmentIdValid && (
-            <p className="chrome-integration-error">{t('chrome.error.chrome_extension_id_invalid')}</p>
-          )}
-        </section>
-      )}
-
       <section className="settings-panel chrome-integration-actions-panel">
         <div className="settings-row">
           <PlugZap size={16} />
@@ -144,6 +121,26 @@ export function ChromeIntegrationSettings() {
             <p>{t('chrome.actionsBody')}</p>
           </div>
         </div>
+
+        <div className="settings-row chrome-development-panel">
+          <ShieldCheck size={16} />
+          <div style={{ flex: 1 }}>
+            <strong>{t('chrome.developmentId')}</strong>
+            <p>{t('chrome.developmentIdBody')}</p>
+            <input
+              aria-label={t('chrome.developmentId')}
+              className={!integration.developmentIdValid ? 'is-invalid' : ''}
+              value={integration.developmentExtensionId}
+              placeholder={t('chrome.developmentIdPlaceholder')}
+              spellCheck={false}
+              onChange={event => integration.setDevelopmentExtensionId(event.target.value)}
+            />
+            {!integration.developmentIdValid && (
+              <p className="chrome-integration-error">{t('chrome.error.chrome_extension_id_invalid')}</p>
+            )}
+          </div>
+        </div>
+
         <div className="chrome-integration-actions">
           {status.storeUrlAvailable && (
             <button type="button" disabled={busy} onClick={() => void integration.openStore()}>

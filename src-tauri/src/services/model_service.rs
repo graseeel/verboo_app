@@ -44,6 +44,13 @@ impl ModelService {
             .unwrap_or_default()
             .as_secs();
 
+        // Diagnostic: log token resolution state (helps debug "chat not loading")
+        if api_key.is_none() {
+            eprintln!("[verboo:model-service] no API key provided — checking cache and CLI token");
+        } else {
+            eprintln!("[verboo:model-service] API key provided — fetching from router");
+        }
+
         // Try reading cache first for non-forced requests.
         // Router's vision metadata was added after older 24h caches were written.
         // If the whole cached catalog has no explicit vision metadata, treat that
@@ -93,6 +100,7 @@ impl ModelService {
 
         // Fall back to cache (even if stale)
         if let Some(cached) = self.read_cache(now) {
+            eprintln!("[verboo:model-service] using stale cache ({} models)", cached.models.len());
             return Ok(attach_provider_models(ModelDiscoveryResult {
                 models: cached.models,
                 source: "cache".into(),
@@ -107,6 +115,8 @@ impl ModelService {
             }));
         }
 
+        // No token, no cache — this is the "chat not loading" path on Windows
+        eprintln!("[verboo:model-service] NO MODELS FOUND — this causes the login screen to block. live_error={:?}", live_error);
         Ok(attach_provider_models(ModelDiscoveryResult {
             models: Vec::new(),
             source: "none".into(),

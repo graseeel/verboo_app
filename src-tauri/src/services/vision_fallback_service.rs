@@ -637,7 +637,7 @@ pub fn resolve_fallback_helper<'a>(
 mod tests {
     use super::*;
     use crate::models::types::{
-        AccessMode, ModelDiscoveryResult, VerbooModel, VisionFallbackConsent,
+        ModelDiscoveryResult, VerbooModel, VisionFallbackConsent,
     };
 
     fn make_model(id: &str, vision: Option<bool>, source: Option<&str>) -> VerbooModel {

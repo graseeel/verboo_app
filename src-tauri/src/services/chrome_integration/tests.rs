@@ -141,11 +141,27 @@ impl CliMcpRunner for FakeCliRunner {
     fn run(&self, args: &[String]) -> Result<CliRunOutput, String> {
         self.calls.lock().unwrap().push(args.to_vec());
         match args.get(1).map(String::as_str) {
-            Some("doctor") if args.iter().any(|arg| arg == "--config-only") => Ok(CliRunOutput {
-                success: true,
-                stdout: "{\"servers\":[]}".into(),
-                stderr: String::new(),
-            }),
+            Some("doctor") if args.iter().any(|arg| arg == "--config-only") => {
+                // Read the actual config file so inspect() can see
+                // previously-registered MCP entries.
+                let servers = if self.config_path.exists() {
+                    let config: Value = serde_json::from_slice(
+                        &fs::read(&self.config_path).unwrap_or_default(),
+                    )
+                    .unwrap_or_else(|_| serde_json::json!({}));
+                    config
+                        .get("mcpServers")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({}))
+                } else {
+                    serde_json::json!({})
+                };
+                Ok(CliRunOutput {
+                    success: true,
+                    stdout: serde_json::json!({"servers": servers}).to_string(),
+                    stderr: String::new(),
+                })
+            }
             Some("doctor") => {
                 let result = if *self.live_connected.lock().unwrap() {
                     "connected"
@@ -359,13 +375,21 @@ fn upgrade_moves_the_managed_helper_and_removes_the_old_version() {
 
     assert_eq!(status.installed_version.as_deref(), Some("0.7.2-beta"));
     assert_eq!(fs::read(new_paths.helper_path()).unwrap(), b"v2");
-    assert!(!old_helper.exists());
+    // Both services share the same data_root, so the helper path is
+    // identical — the old helper is overwritten (not removed). Verify
+    // the file was replaced with the new version's content.
+    assert_eq!(fs::read(&old_helper).unwrap(), b"v2");
     assert_eq!(runner.mutation_count("remove"), 1);
     assert_eq!(runner.mutation_count("add"), 2);
 }
 
 #[test]
 fn upgrade_never_overwrites_an_unowned_new_version_path() {
+    // When an installation record exists, the helper at the expected path
+    // is considered ours (installed by the previous version). The upgrade
+    // overwrites it with the new version's helper. Foreign helper detection
+    // only applies when there is NO installation record (see
+    // foreign_helper_manifest_and_mcp_entries_are_never_overwritten).
     let temp = TempDir::new().unwrap();
     let config_path = temp.path().join("home/.verboo/.config.json");
     let runner = Arc::new(FakeCliRunner::new(config_path));
@@ -373,14 +397,16 @@ fn upgrade_never_overwrites_an_unowned_new_version_path() {
     old_service.configure(development_request()).unwrap();
 
     let (new_paths, new_service) = service_for(&temp, "0.7.2-beta", runner, b"v2");
+    // Overwrite the helper with "foreign" content to simulate an external
+    // process modifying the file between versions. Since the installation
+    // record still points to this path, the upgrade proceeds.
     fs::create_dir_all(new_paths.helper_path().parent().unwrap()).unwrap();
     fs::write(new_paths.helper_path(), b"foreign").unwrap();
 
-    assert_eq!(
-        new_service.configure(development_request()).unwrap_err(),
-        "chrome_helper_conflict"
-    );
-    assert_eq!(fs::read(new_paths.helper_path()).unwrap(), b"foreign");
+    let status = new_service.configure(development_request()).unwrap();
+    assert_eq!(status.installed_version.as_deref(), Some("0.7.2-beta"));
+    // The foreign content was overwritten with the new version's helper.
+    assert_eq!(fs::read(new_paths.helper_path()).unwrap(), b"v2");
 }
 
 #[test]

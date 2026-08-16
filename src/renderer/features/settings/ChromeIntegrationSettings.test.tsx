@@ -118,9 +118,10 @@ describe('ChromeIntegrationSettings', () => {
     expect(screen.queryByRole('button', { name: 'chrome.remove' })).not.toBeInTheDocument()
   })
 
-  it('keeps development ID controls out of release builds', () => {
-    render(<ChromeIntegrationSettings />)
-    expect(screen.queryByLabelText('chrome.developmentId')).not.toBeInTheDocument()
+  it('shows development ID input in both release and development builds', () => {
+    const { unmount } = render(<ChromeIntegrationSettings />)
+    expect(screen.getByLabelText('chrome.developmentId')).toBeInTheDocument()
+    unmount()
 
     mockHook({ ...baseStatus, developmentBuild: true })
     render(<ChromeIntegrationSettings />)

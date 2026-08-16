@@ -93,8 +93,10 @@ pub fn get_access_token() -> Option<String> {
         let cached = CACHE.lock().ok()?;
         if let Some(c) = cached.as_ref() {
             if !should_refresh(c) {
+                eprintln!("[verboo:cli-creds] cache hit — returning cached token");
                 return Some(c.access_token.clone());
             }
+            eprintln!("[verboo:cli-creds] cache hit but token needs refresh");
         }
     }
 
@@ -106,14 +108,22 @@ pub fn get_access_token() -> Option<String> {
         let cached = CACHE.lock().ok()?;
         if let Some(c) = cached.as_ref() {
             if !should_refresh(c) {
+                eprintln!("[verboo:cli-creds] cache hit (after lock) — returning cached token");
                 return Some(c.access_token.clone());
             }
         }
     }
 
+    eprintln!("[verboo:cli-creds] reading credentials from store...");
     let credentials = match read_credentials_from_store() {
-        Some(c) => c,
-        None => return None,
+        Some(c) => {
+            eprintln!("[verboo:cli-creds] credentials found — expires_at={:?}", c.expires_at);
+            c
+        }
+        None => {
+            eprintln!("[verboo:cli-creds] NO CREDENTIALS IN STORE — returning None");
+            return None;
+        }
     };
 
     // Update cache with what we just read.
@@ -362,8 +372,26 @@ fn write_keychain_blob(blob: &Value) -> bool {
 
 /// Reads the blob from `~/.verboo/.credentials.json` (plaintext JSON).
 fn read_file_blob() -> Option<Value> {
-    let path = cli_credentials_file_path()?;
-    let contents = std::fs::read_to_string(&path).ok()?;
+    let path = match cli_credentials_file_path() {
+        Some(p) => {
+            eprintln!("[verboo:cli-creds] plaintext fallback path: {}", p.display());
+            p
+        }
+        None => {
+            eprintln!("[verboo:cli-creds] no credentials file path (HOME/USERPROFILE unset)");
+            return None;
+        }
+    };
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => {
+            eprintln!("[verboo:cli-creds] plaintext file read OK ({} bytes)", c.len());
+            c
+        }
+        Err(e) => {
+            eprintln!("[verboo:cli-creds] plaintext file read FAILED: {e}");
+            return None;
+        }
+    };
     parse_json_blob(&contents)
 }
 
@@ -391,6 +419,7 @@ fn write_file_blob(blob: &Value) -> bool {
     true
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn read_linux_secret_blob_with<F>(account: &str, mut lookup: F) -> Option<Value>
 where
     F: FnMut(&[&str]) -> Option<String>,
@@ -513,7 +542,13 @@ fn dpapi_entropy_for(resource_name: &str, username: &str) -> String {
 }
 
 fn decode_windows_dpapi_payload(bytes: &[u8]) -> Option<Vec<u8>> {
-    let encoded = std::str::from_utf8(bytes).ok()?.trim();
+    // Strip UTF-8 BOM (EF BB BF) that some editors/write tools insert.
+    // Without this, base64 decode fails because the BOM codepoint (U+FEFF)
+    // is not valid base64 and `trim()` does not remove it.
+    let stripped = bytes
+        .strip_prefix(b"\xef\xbb\xbf")
+        .unwrap_or(bytes);
+    let encoded = std::str::from_utf8(stripped).ok()?.trim();
     if encoded.is_empty() {
         return None;
     }
@@ -534,6 +569,14 @@ fn verboo_config_home() -> Option<std::path::PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(std::path::PathBuf::from)?;
     Some(home.join(".verboo"))
+}
+
+/// Logs diagnostic info for Windows credential resolution.
+/// Helps debug "chat not loading" issues by surfacing exactly where
+/// the credential chain breaks.
+#[cfg(windows)]
+fn log_windows_credential_diagnostics(stage: &str, detail: &str) {
+    eprintln!("[verboo:credentials:win] {stage}: {detail}");
 }
 
 /// Returns the current username for DPAPI entropy. On Windows:
@@ -561,39 +604,66 @@ fn current_username() -> Option<String> {
 /// file. (Cadinho limit declaration.)
 #[cfg(windows)]
 fn read_windows_dpapi_blob() -> Option<Value> {
-    let config_home = verboo_config_home()?;
+    let config_home = verboo_config_home().or_else(|| {
+        log_windows_credential_diagnostics("dpapi", "config_home not found (HOME/USERPROFILE unset)");
+        None
+    })?;
     let resource_name = dpapi_resource_name();
     let file_path = dpapi_file_path_for(&config_home, resource_name);
-    let username = current_username()?;
+    let username = current_username().or_else(|| {
+        log_windows_credential_diagnostics("dpapi", "USERNAME env var not set");
+        None
+    })?;
     let entropy = dpapi_entropy_for(resource_name, &username);
 
     // The CLI writes Base64 text, not the raw DPAPI bytes.
-    let protected = decode_windows_dpapi_payload(&std::fs::read(file_path).ok()?)?;
+    let file_bytes = std::fs::read(&file_path).ok().or_else(|| {
+        log_windows_credential_diagnostics("dpapi", &format!("DPAPI file not found: {}", file_path.display()));
+        None
+    })?;
+    let protected = decode_windows_dpapi_payload(&file_bytes).or_else(|| {
+        log_windows_credential_diagnostics("dpapi", "Base64 decode failed — file may be corrupt or empty");
+        None
+    })?;
     let protected_b64 = base64::engine::general_purpose::STANDARD.encode(protected);
-    let entropy_escaped = entropy.replace('\'', "''");
 
     // PowerShell script: read the DPAPI file, unprotect with entropy,
     // output UTF-8 JSON. Mirrors the clone's
     // `windowsCredentialStorage.ts:98-146` read path.
+    //
+    // SECURITY: Use -EncodedCommand with UTF-16LE to avoid shell injection
+    // via USERNAME or entropy values containing special characters.
     let script = format!(
         "Add-Type -AssemblyName System.Security\n\
          $bytes = [Convert]::FromBase64String('{protected_b64}')\n\
-         $entropy = [System.Text.Encoding]::UTF8.GetBytes('{entropy_escaped}')\n\
+         $entropy = [System.Text.Encoding]::UTF8.GetBytes('{entropy}')\n\
          $result = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $entropy, 'CurrentUser')\n\
          [System.Text.Encoding]::UTF8.GetString($result)"
     );
 
-    let output = Command::new("powershell")
-        .arg("-NoProfile")
+    // Encode script as UTF-16LE for -EncodedCommand to prevent injection
+    let script_utf16: Vec<u8> = script.encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let script_b64 = base64::engine::general_purpose::STANDARD.encode(&script_utf16);
+
+    let mut cmd = Command::new("powershell");
+    cmd.arg("-NoProfile")
         .arg("-NonInteractive")
-        .arg("-Command")
-        .arg(&script)
+        .arg("-EncodedCommand")
+        .arg(&script_b64)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+        .stderr(std::process::Stdio::piped());
+    crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+    let output = cmd.output()
+        .ok().or_else(|| {
+            log_windows_credential_diagnostics("dpapi", "PowerShell execution failed — is PowerShell available?");
+            None
+        })?;
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log_windows_credential_diagnostics("dpapi", &format!("PowerShell DPAPI decrypt failed: {}", stderr.trim()));
         return None;
     }
     let json = String::from_utf8_lossy(&output.stdout);
@@ -610,10 +680,12 @@ fn write_windows_dpapi_blob(blob: &Value) -> bool {
     let Some(username) = current_username() else {
         return false;
     };
-    let entropy = dpapi_entropy_for(resource_name, &username).replace('\'', "''");
+    let entropy = dpapi_entropy_for(resource_name, &username);
     let Ok(json) = serde_json::to_string(blob) else {
         return false;
     };
+    // SECURITY: Use -EncodedCommand with UTF-16LE to avoid shell injection
+    // via USERNAME or entropy values containing special characters.
     let script = format!(
         "Add-Type -AssemblyName System.Security\n\
          $plain = [Console]::In.ReadToEnd()\n\
@@ -622,16 +694,20 @@ fn write_windows_dpapi_blob(blob: &Value) -> bool {
          $result = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $entropy, 'CurrentUser')\n\
          [Convert]::ToBase64String($result)"
     );
-    let Ok(mut child) = Command::new("powershell")
-        .arg("-NoProfile")
+    let script_utf16: Vec<u8> = script.encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let script_b64 = base64::engine::general_purpose::STANDARD.encode(&script_utf16);
+    let mut cmd = Command::new("powershell");
+    cmd.arg("-NoProfile")
         .arg("-NonInteractive")
-        .arg("-Command")
-        .arg(script)
+        .arg("-EncodedCommand")
+        .arg(&script_b64)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    else {
+        .stderr(std::process::Stdio::null());
+    crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+    let Ok(mut child) = cmd.spawn() else {
         return false;
     };
     let wrote = child

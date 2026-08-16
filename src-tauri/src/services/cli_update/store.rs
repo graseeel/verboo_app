@@ -1,5 +1,7 @@
 use std::collections::HashSet;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
+#[cfg(unix)]
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -259,6 +261,17 @@ impl CliStore {
         Ok(record
             .map(|record| record.manifest_digest == manifest_digest)
             .unwrap_or(false))
+    }
+
+    /// Clears the rejected manifest record. Called after a successful startup
+    /// validation so future CLI versions with the same digest are not blocked.
+    pub fn clear_rejected(&self) -> Result<(), String> {
+        let path = self.root.join(REJECTED_POINTER);
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|error| format!("failed to clear rejected CLI record: {error}"))?;
+        }
+        Ok(())
     }
 
     pub fn cleanup_abandoned_staging(&self) -> Result<(), String> {
