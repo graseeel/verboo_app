@@ -42,6 +42,16 @@ export async function typeText(tool, ctx = {}) {
   })
 
   if (!result) throw new Error('type: no result from page')
+  // ROUND 9: when the in-page func THROWS, Chrome delivers a null
+  // result — the old post-processing dereferenced result.result.handled
+  // and crashed with "Cannot read properties of null (reading
+  // 'handled')" instead of reporting. Fail honestly, carrying the tab
+  // identity so the panel shows which surface executed.
+  if (result.result == null) {
+    throw new Error(
+      `type: page function failed in the document (ran in tab ${tab.id}: ${tab.url ?? 'unknown'}) — the page may have navigated or the injection was blocked; retry, or use read_page to inspect the document`,
+    )
+  }
   const pageResult = result.result
   const pageNotFound = pageResult === false
     || (pageResult && typeof pageResult === 'object' && pageResult.found === false)
@@ -133,57 +143,45 @@ async function typeInPage(selector, text, clear, pressEnter) {
   el.dispatchEvent(new Event('input', { bubbles: true }))
   el.dispatchEvent(new Event('change', { bubbles: true }))
   if (pressEnter) {
-    return { found: true, handled: dispatchEnter(el) }
+    // ROUND 9: dispatchEnter is INLINED — chrome.scripting serializes
+    // ONLY this function's body, so any module-scope helper becomes a
+    // ReferenceError in the real page (the text typed but Enter never
+    // fired — rounds 1-8).
+    //
+    // R-T2/GENERALIZAÇÃO rationale: frameworks listen to STANDARD DOM
+    // keyboard events — React 16-18 delegates on the root container, so
+    // the events must bubble AND be composed; Vue/Svelte/vanilla attach
+    // directly, bubbling suffices; a classic <form> submits on native
+    // Enter → requestSubmit() mirrors it. keyCode/which are legacy init
+    // extensions accepted by Chromium. requestSubmit runs ONLY when
+    // nothing handled the keydown (defaultPrevented === false) — an app
+    // that listens for Enter prevents the default, so there is no
+    // double submit.
+    const init = {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    }
+    const keydown = new KeyboardEvent('keydown', init)
+    el.dispatchEvent(keydown)
+    const handled = keydown.defaultPrevented
+    if (!handled) {
+      el.dispatchEvent(new KeyboardEvent('keypress', init))
+    }
+    el.dispatchEvent(new KeyboardEvent('keyup', init))
+    if (!handled && el.form && typeof el.form.requestSubmit === 'function') {
+      try {
+        el.form.requestSubmit()
+      } catch {
+        // Native constraint validation may reject the submit — the app
+        // decides how to surface it.
+      }
+    }
+    return { found: true, handled }
   }
   return true
-}
-
-/**
- * R-T2/GENERALIZAÇÃO: submit the field with a full Enter key sequence.
- *
- * Frameworks listen to STANDARD DOM keyboard events, so no framework-
- * specific code lives here:
- *   - React 16-18 delegates listeners on the root container → the events
- *     must bubble AND be composed (the listener is outside the target);
- *   - Vue / Svelte / vanilla attach directly → bubbling suffices;
- *   - a classic <form> submits on native Enter → requestSubmit() mirrors
- *     it (with native constraint validation).
- *
- * keyCode/which are accepted in the KeyboardEvent init by Chromium as a
- * legacy extension; React reads nativeEvent.key/code, which are set.
- *
- * requestSubmit runs ONLY when nothing handled the keydown
- * (defaultPrevented === false) — an app that listens for Enter (e.g.
- * TodoMVC's onKeyDown) prevents the default, so there is no double
- * submit.
- *
- * @param {HTMLInputElement | HTMLTextAreaElement} el
- * @returns {boolean} true when the app handled the keydown (preventDefault)
- */
-function dispatchEnter(el) {
-  const init = {
-    key: 'Enter',
-    code: 'Enter',
-    keyCode: 13,
-    which: 13,
-    bubbles: true,
-    cancelable: true,
-    composed: true,
-  }
-  const keydown = new KeyboardEvent('keydown', init)
-  el.dispatchEvent(keydown)
-  const handled = keydown.defaultPrevented
-  if (!handled) {
-    el.dispatchEvent(new KeyboardEvent('keypress', init))
-  }
-  el.dispatchEvent(new KeyboardEvent('keyup', init))
-  if (!handled && el.form && typeof el.form.requestSubmit === 'function') {
-    try {
-      el.form.requestSubmit()
-    } catch {
-      // Native constraint validation may reject the submit — the app
-      // decides how to surface it.
-    }
-  }
-  return handled
 }

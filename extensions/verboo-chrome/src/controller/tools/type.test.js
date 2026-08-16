@@ -191,3 +191,50 @@ test('type: PÓS-CAMPO-3 — the not-found error points at the find TOOL and kee
     /^Error: type: selector not found: #missing \(ran in tab 42: .*\) — call the find tool to get a valid selector for this element, then retry$/,
   )
 })
+
+// ── ROUND 9: null result from the page (the func crashed in-page) ──
+
+test('type: ROUND 9 — a null page result (func crashed in-page) fails honestly, never TypeError .handled', async () => {
+  // Round-9 field crash: "Cannot read properties of null (reading
+  // 'handled')" — executeScript delivered [{ result: null }] when the
+  // in-page func threw (the pre-fix dispatchEnter ReferenceError). The
+  // module must throw an HONEST error carrying the tab identity, not a
+  // TypeError from the post-processing.
+  const dom = new JSDOM('<input id="t">')
+  globalThis.document = dom.window.document
+  globalThis.Event = dom.window.Event
+  globalThis.KeyboardEvent = dom.window.KeyboardEvent
+  globalThis.chrome = {
+    tabs: {
+      get: async () => ({ id: 42, url: 'https://example.com' }),
+      query: async () => [{ id: 42, url: 'https://example.com' }],
+    },
+    scripting: { executeScript: async () => [{ result: null }] },
+    storage: { session: { get: async () => ({}), set: async () => {} } },
+    runtime: { lastError: undefined },
+  }
+  await assert.rejects(
+    typeText({ name: 'type', selector: '#t', text: 'x', pressEnter: true }, { activeTabId: 42 }),
+    /type: page function failed.*ran in tab 42/,
+  )
+})
+
+test('type: ROUND 9 — an undefined page result fails honestly too', async () => {
+  const dom = new JSDOM('<input id="t">')
+  globalThis.document = dom.window.document
+  globalThis.Event = dom.window.Event
+  globalThis.KeyboardEvent = dom.window.KeyboardEvent
+  globalThis.chrome = {
+    tabs: {
+      get: async () => ({ id: 42, url: 'https://example.com' }),
+      query: async () => [{ id: 42, url: 'https://example.com' }],
+    },
+    scripting: { executeScript: async () => [{ result: undefined }] },
+    storage: { session: { get: async () => ({}), set: async () => {} } },
+    runtime: { lastError: undefined },
+  }
+  await assert.rejects(
+    typeText({ name: 'type', selector: '#t', text: 'x' }, { activeTabId: 42 }),
+    /type: page function failed.*ran in tab 42/,
+  )
+})

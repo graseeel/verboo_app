@@ -52,6 +52,13 @@ export async function click(tool, ctx = {}) {
   })
 
   if (!result) throw new Error('click: no result from page')
+  // ROUND 9 (see type.js): a null result means the in-page func threw —
+  // fail honestly with the tab identity instead of mis-processing.
+  if (result.result == null) {
+    throw new Error(
+      `click: page function failed in the document (ran in tab ${tab.id}: ${tab.url ?? 'unknown'}) — the page may have navigated or the injection was blocked; retry, or use read_page to inspect the document`,
+    )
+  }
   const pageResult = result.result
   const pageNotFound = pageResult === false
     || (pageResult && typeof pageResult === 'object' && pageResult.found === false)

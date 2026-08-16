@@ -13,7 +13,7 @@ import { isControllableUrl, nonControllablePageMessage } from '../../planMessage
 import { preparePresenceForAction } from '../../presence/inject.js'
 import { resolveTargetTab } from '../targetTab.js'
 
-const MAX_MATCHES = 20
+const MAX_MATCHES = 20 // mirrored inside findInPage (serialized copy) — ROUND 9
 
 /**
  * @param {{ name: 'find'; text?: string; selector?: string; risk?: string; input?: string }} tool
@@ -42,6 +42,14 @@ export async function findTool(tool, ctx = {}) {
   })
 
   if (!result) throw new Error('find: no result from page')
+  // ROUND 9 (see type.js): a null result means the in-page func threw —
+  // fail honestly with the tab identity; returning [] here would look
+  // like "no elements found", a silent lie about a crashed injection.
+  if (result.result == null) {
+    throw new Error(
+      `find: page function failed in the document (ran in tab ${tab.id}: ${tab.url ?? 'unknown'}) — the page may have navigated or the injection was blocked; retry, or use read_page to inspect the document`,
+    )
+  }
   const matches = Array.isArray(result.result) ? result.result : []
   return {
     matches,
@@ -92,9 +100,40 @@ async function findInPage(text, scopeSelector) {
   )
   const needle = text.toLowerCase()
   const matches = []
+  // ROUND 9: maxMatches/buildSelector/escapeAttr are INLINED —
+  // chrome.scripting serializes ONLY this function's body, so module-
+  // scope helpers (and even the module's MAX_MATCHES const) become
+  // ReferenceErrors in the real page.
+  const maxMatches = 20
+  const escapeAttr = (value) => value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')
+  // Derive a stable CSS selector from the REAL element. Preference
+  // order: title attribute → aria-label → exact href → DOM path. No
+  // site-specific knowledge is embedded.
+  const buildSelector = (el) => {
+    const title = el.getAttribute?.('title')
+    if (title) return `[title="${escapeAttr(title)}"]`
+    const aria = el.getAttribute?.('aria-label')
+    if (aria) return `[aria-label="${escapeAttr(aria)}"]`
+    if (el.tagName === 'A' && el.getAttribute?.('href')) {
+      return `a[href="${escapeAttr(el.getAttribute('href'))}"]`
+    }
+    const parts = []
+    let node = el
+    while (node && node !== document.documentElement) {
+      const tag = node.tagName.toLowerCase()
+      const parent = node.parentElement
+      const siblings = parent
+        ? [...parent.children].filter((sibling) => sibling.tagName === node.tagName)
+        : []
+      const index = siblings.length > 1 ? siblings.indexOf(node) + 1 : 1
+      parts.unshift(index > 1 ? `${tag}:nth-of-type(${index})` : tag)
+      node = parent
+    }
+    return parts.join(' > ')
+  }
 
   for (const el of candidates) {
-    if (matches.length >= MAX_MATCHES) break
+    if (matches.length >= maxMatches) break
     const visible = (el.innerText ?? el.textContent ?? '').trim()
     if (!visible) continue
     if (!visible.toLowerCase().includes(needle)) continue
@@ -109,38 +148,4 @@ async function findInPage(text, scopeSelector) {
   }
 
   return matches
-}
-
-/**
- * Derive a stable CSS selector from the REAL element. Preference order:
- * title attribute → aria-label → exact href → DOM path. No site-specific
- * knowledge is embedded.
- * @param {Element} el
- */
-function buildSelector(el) {
-  const title = el.getAttribute?.('title')
-  if (title) return `[title="${escapeAttr(title)}"]`
-  const aria = el.getAttribute?.('aria-label')
-  if (aria) return `[aria-label="${escapeAttr(aria)}"]`
-  if (el.tagName === 'A' && el.getAttribute?.('href')) {
-    return `a[href="${escapeAttr(el.getAttribute('href'))}"]`
-  }
-  const parts = []
-  let node = el
-  while (node && node !== document.documentElement) {
-    const tag = node.tagName.toLowerCase()
-    const parent = node.parentElement
-    const siblings = parent
-      ? [...parent.children].filter((sibling) => sibling.tagName === node.tagName)
-      : []
-    const index = siblings.length > 1 ? siblings.indexOf(node) + 1 : 1
-    parts.unshift(index > 1 ? `${tag}:nth-of-type(${index})` : tag)
-    node = parent
-  }
-  return parts.join(' > ')
-}
-
-/** @param {string} value */
-function escapeAttr(value) {
-  return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')
 }
