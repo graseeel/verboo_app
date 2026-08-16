@@ -1,5 +1,11 @@
 /**
- * Integration tests for MCP Status and Chrome Integration flow.
+ * Unit tests for MCP Status and Chrome Integration hook LOGIC.
+ *
+ * NOTE: These tests use simplified hook implementations that exercise the
+ * same state management patterns as the real useChromeIntegration hook
+ * (src/renderer/features/settings/useChromeIntegration.ts), but with
+ * mockable dependencies. They are NOT integration tests against the real
+ * App.tsx — they validate the contract and state transitions in isolation.
  *
  * Covers:
  * - Chrome integration status fetch (extension, bridge, mcp, connection)

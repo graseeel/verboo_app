@@ -1511,6 +1511,13 @@ mod bridge_plumbing {
 
     /// Newtype send/sync para carregar `*const BrowserPanelState` dentro de
     /// `Arc<dyn Fn(String) + Send + Sync>`.
+    ///
+    /// SAFETY: BrowserPanelState is a Tauri managed state that lives for the
+    /// entire application session. The pointer is valid for the lifetime of
+    /// the closure, which is scoped to the webview's message handler. The
+    /// webview is dropped before the Tauri state, so the pointer never dangles.
+    /// Using Arc<BrowserPanelState> is not possible here because Tauri's
+    /// `State<'_, T>` provides a borrowed reference, not an owned Arc.
     pub(crate) struct SendBrowserStatePtr(*const BrowserPanelState);
     unsafe impl Send for SendBrowserStatePtr {}
     unsafe impl Sync for SendBrowserStatePtr {}

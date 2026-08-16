@@ -626,24 +626,32 @@ fn read_windows_dpapi_blob() -> Option<Value> {
         None
     })?;
     let protected_b64 = base64::engine::general_purpose::STANDARD.encode(protected);
-    let entropy_escaped = entropy.replace('\'', "''");
 
     // PowerShell script: read the DPAPI file, unprotect with entropy,
     // output UTF-8 JSON. Mirrors the clone's
     // `windowsCredentialStorage.ts:98-146` read path.
+    //
+    // SECURITY: Use -EncodedCommand with UTF-16LE to avoid shell injection
+    // via USERNAME or entropy values containing special characters.
     let script = format!(
         "Add-Type -AssemblyName System.Security\n\
          $bytes = [Convert]::FromBase64String('{protected_b64}')\n\
-         $entropy = [System.Text.Encoding]::UTF8.GetBytes('{entropy_escaped}')\n\
+         $entropy = [System.Text.Encoding]::UTF8.GetBytes('{entropy}')\n\
          $result = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $entropy, 'CurrentUser')\n\
          [System.Text.Encoding]::UTF8.GetString($result)"
     );
 
+    // Encode script as UTF-16LE for -EncodedCommand to prevent injection
+    let script_utf16: Vec<u8> = script.encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let script_b64 = base64::engine::general_purpose::STANDARD.encode(&script_utf16);
+
     let mut cmd = Command::new("powershell");
     cmd.arg("-NoProfile")
         .arg("-NonInteractive")
-        .arg("-Command")
-        .arg(&script)
+        .arg("-EncodedCommand")
+        .arg(&script_b64)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -672,10 +680,12 @@ fn write_windows_dpapi_blob(blob: &Value) -> bool {
     let Some(username) = current_username() else {
         return false;
     };
-    let entropy = dpapi_entropy_for(resource_name, &username).replace('\'', "''");
+    let entropy = dpapi_entropy_for(resource_name, &username);
     let Ok(json) = serde_json::to_string(blob) else {
         return false;
     };
+    // SECURITY: Use -EncodedCommand with UTF-16LE to avoid shell injection
+    // via USERNAME or entropy values containing special characters.
     let script = format!(
         "Add-Type -AssemblyName System.Security\n\
          $plain = [Console]::In.ReadToEnd()\n\
@@ -684,11 +694,15 @@ fn write_windows_dpapi_blob(blob: &Value) -> bool {
          $result = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $entropy, 'CurrentUser')\n\
          [Convert]::ToBase64String($result)"
     );
+    let script_utf16: Vec<u8> = script.encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let script_b64 = base64::engine::general_purpose::STANDARD.encode(&script_utf16);
     let mut cmd = Command::new("powershell");
     cmd.arg("-NoProfile")
         .arg("-NonInteractive")
-        .arg("-Command")
-        .arg(script)
+        .arg("-EncodedCommand")
+        .arg(&script_b64)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());

@@ -1,5 +1,11 @@
 /**
- * Integration tests for Skills Discovery and Activation flow.
+ * Unit tests for Skills Discovery and Activation hook LOGIC.
+ *
+ * NOTE: These tests use a simplified hook implementation that exercises
+ * the same state management patterns as the real skill selection flow
+ * in App.tsx, but with mockable dependencies. They are NOT integration
+ * tests against the real App.tsx — they validate the contract and state
+ * transitions in isolation.
  *
  * Covers:
  * - Skill list fetch from backend (Tauri invoke → state)
