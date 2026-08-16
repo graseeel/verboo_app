@@ -23,6 +23,7 @@ import {
   defaultChromeStatus,
   createVerbooBridgeMock,
 } from '../../test/test-utils'
+import type { VerbooBridgeMock } from '../../test/test-utils'
 import type {
   ChromeIntegrationStatus,
   ChromeComponentState,
@@ -46,7 +47,7 @@ function computeAggregate(status: ChromeIntegrationStatus): ChromeIntegrationAgg
 }
 
 // ─── Test hook: useChromeIntegration ────────────────────────────────────────
-function useChromeIntegration(mockBridge: Pick<createVerbooBridgeMock, 'getChromeIntegrationStatus' | 'chromeIntegrationConfigure' | 'chromeIntegrationTest'>) {
+function useChromeIntegration(mockBridge: Pick<VerbooBridgeMock, 'getChromeIntegrationStatus' | 'chromeIntegrationConfigure' | 'chromeIntegrationTest'>) {
   const [status, setStatus] = useState<ChromeIntegrationStatus | undefined>()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | undefined>()

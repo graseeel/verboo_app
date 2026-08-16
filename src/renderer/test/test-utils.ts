@@ -4,7 +4,7 @@
  * Provides common mock factories, typed invoke stubs, and render helpers
  * so individual test files stay focused on assertions rather than setup.
  */
-import { vi, type Mock } from 'vitest'
+import { vi, expect, type Mock } from 'vitest'
 import type { VerbooModel, ModelDiscoveryResult, SkillSummary, ChromeIntegrationStatus } from '../../shared/types'
 
 // ─── Tauri invoke mock ──────────────────────────────────────────────────────
@@ -147,7 +147,7 @@ export function defaultChromeStatus(overrides?: Partial<ChromeIntegrationStatus>
 
 /** Assert that invoke was called with a specific command. */
 export function expectInvokeCalled(invoke: Mock, command: string, times?: number) {
-  const calls = invoke.mock.calls.filter(([cmd]: [string]) => cmd === command)
+  const calls = invoke.mock.calls.filter((call: unknown[]) => call[0] === command)
   if (times !== undefined) {
     expect(calls).toHaveLength(times)
   } else {
@@ -158,12 +158,12 @@ export function expectInvokeCalled(invoke: Mock, command: string, times?: number
 
 /** Assert that invoke was NOT called with a specific command. */
 export function expectInvokeNotCalled(invoke: Mock, command: string) {
-  const calls = invoke.mock.calls.filter(([cmd]: [string]) => cmd === command)
+  const calls = invoke.mock.calls.filter((call: unknown[]) => call[0] === command)
   expect(calls).toHaveLength(0)
 }
 
 /** Get the args of the first invoke call with a specific command. */
 export function getInvokeArgs(invoke: Mock, command: string): Record<string, unknown> | undefined {
-  const call = invoke.mock.calls.find(([cmd]: [string]) => cmd === command)
+  const call = invoke.mock.calls.find((c: unknown[]) => c[0] === command)
   return call?.[1] as Record<string, unknown> | undefined
 }

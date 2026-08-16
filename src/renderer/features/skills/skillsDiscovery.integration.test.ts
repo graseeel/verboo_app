@@ -23,6 +23,7 @@ import {
   makeSkill,
   createVerbooBridgeMock,
 } from '../../test/test-utils'
+import type { VerbooBridgeMock } from '../../test/test-utils'
 import type { SkillSummary } from '../../../shared/types'
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
@@ -30,7 +31,7 @@ vi.mock('../../i18n', () => ({ useI18n: () => ({ t: (k: string) => k }) }))
 
 // ─── Test hook: useSkillSelection ───────────────────────────────────────────
 // Simplified version of the skill selection flow in App.tsx
-function useSkillSelection(mockBridge: Pick<createVerbooBridgeMock, 'listSkills' | 'checkSkillApproval' | 'approveSkill'>) {
+function useSkillSelection(mockBridge: Pick<VerbooBridgeMock, 'listSkills' | 'checkSkillApproval' | 'approveSkill'>) {
   const [allSkills, setAllSkills] = useState<SkillSummary[]>([])
   const [tokenSkills, setTokenSkills] = useState<SkillSummary[]>([])
   const [pendingApproval, setPendingApproval] = useState<SkillSummary[] | undefined>()

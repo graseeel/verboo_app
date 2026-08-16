@@ -26,6 +26,7 @@ import {
   installVerbooBridge,
   expectInvokeCalled,
 } from '../../test/test-utils'
+import type { VerbooBridgeMock } from '../../test/test-utils'
 import type { VerbooModel, ModelDiscoveryResult } from '../../../shared/types'
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
@@ -33,14 +34,14 @@ vi.mock('../../i18n', () => ({ useI18n: () => ({ t: (k: string) => k }) }))
 
 // ─── Test hook: useModelDiscovery ───────────────────────────────────────────
 // Simplified version of the model discovery flow in App.tsx (lines 1786-1794)
-function useModelDiscovery(mockBridge: { listModels: ReturnType<typeof vi.fn> }) {
+function useModelDiscovery(mockBridge: Pick<VerbooBridgeMock, 'listModels'>) {
   const [modelResult, setModelResult] = useState<ModelDiscoveryResult>({
     models: [],
     source: 'none',
     stale: false,
   })
   const [selectedModel, setSelectedModel] = useState<string | undefined>()
-  const lastSelectedRef = useRef<string | undefined>()
+  const lastSelectedRef = useRef<string | undefined>(undefined)
 
   const refreshModels = useCallback(async (forceRefresh: boolean) => {
     const result = await mockBridge.listModels(forceRefresh)
