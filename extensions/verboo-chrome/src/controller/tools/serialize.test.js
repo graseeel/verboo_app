@@ -89,9 +89,10 @@ export function serializedScripting(window) {
 /**
  * Monta globals do jsdom + chrome serializado.
  * @param {string} html
+ * @param {string} [url] — page URL the document claims (like a real tab)
  */
-export function serializedPage(html) {
-  const dom = new JSDOM(html)
+export function serializedPage(html, url = 'https://example.com') {
+  const dom = new JSDOM(html, { url })
   const chrome = serializedScripting(dom.window)
   return { dom, chrome }
 }
@@ -198,6 +199,114 @@ test('ROUND 9 guard: type/click/find report an honest error (with tab identity) 
       findTool({ name: 'find', text: 'ok' }, { activeTabId: 42 }),
       /find: page function failed in the document \(ran in tab 42: https:\/\/example\.com\)/,
     )
+  } finally {
+    globalThis.document = originalDocument
+    globalThis.chrome = originalChrome
+  }
+})
+
+// ── SELECT: type on a <select> resolves the option (text OR value) ──
+// Field evidence: clicking a synthetic <option> does not commit in Chrome.
+// The fix lives INSIDE typeInPage (self-contained — serialization lesson).
+
+const SELECT_HTML = '<select id="s">'
+  + '<option value="">Pick…</option>'
+  + '<option value="1">One</option>'
+  + '<option value="2">Two</option>'
+  + '<option value="3">Three</option>'
+  + '</select>'
+
+test('SELECT: type "Two" (by visible text, case-insensitive) selects option value 2 via serialization', async () => {
+  const { dom, chrome } = serializedPage(SELECT_HTML)
+  const originalDocument = globalThis.document
+  const originalChrome = globalThis.chrome
+  globalThis.document = dom.window.document
+  globalThis.chrome = chrome
+  try {
+    const { typeText } = await import('./type.js')
+    const result = await typeText({ name: 'type', selector: '#s', text: 'Two' }, { activeTabId: 42 })
+    assert.equal(dom.window.document.querySelector('#s').value, '2', 'select.value deve ser 2')
+    assert.equal(result.selected, true, 'result.selected deve ser true')
+    assert.equal(result.selectedValue, '2')
+  } finally {
+    globalThis.document = originalDocument
+    globalThis.chrome = originalChrome
+  }
+})
+
+test('SELECT: type "2" (by value) selects option Two via serialization', async () => {
+  const { dom, chrome } = serializedPage(SELECT_HTML)
+  const originalDocument = globalThis.document
+  const originalChrome = globalThis.chrome
+  globalThis.document = dom.window.document
+  globalThis.chrome = chrome
+  try {
+    const { typeText } = await import('./type.js')
+    const result = await typeText({ name: 'type', selector: '#s', text: '2' }, { activeTabId: 42 })
+    assert.equal(dom.window.document.querySelector('#s').value, '2')
+    assert.equal(result.selected, true)
+    assert.equal(result.selectedValue, '2')
+  } finally {
+    globalThis.document = originalDocument
+    globalThis.chrome = originalChrome
+  }
+})
+
+test('SELECT: type "two" (case-insensitive text) selects option Two', async () => {
+  const { dom, chrome } = serializedPage(SELECT_HTML)
+  const originalDocument = globalThis.document
+  const originalChrome = globalThis.chrome
+  globalThis.document = dom.window.document
+  globalThis.chrome = chrome
+  try {
+    const { typeText } = await import('./type.js')
+    const result = await typeText({ name: 'type', selector: '#s', text: 'two' }, { activeTabId: 42 })
+    assert.equal(dom.window.document.querySelector('#s').value, '2')
+    assert.equal(result.selected, true)
+  } finally {
+    globalThis.document = originalDocument
+    globalThis.chrome = originalChrome
+  }
+})
+
+test('SELECT: pressEnter:true does NOT leak the did-not-intercept note (note only applies to input/textarea)', async () => {
+  // FAROL ressalva (pré-commit): handled = result.result.handled === true
+  // vira false quando o select não retorna handled → a note de Enter
+  // vazava no resultado de um select com pressEnter. A note só se aplica
+  // a input/textarea com pressEnter real — o select ignora pressEnter.
+  const { dom, chrome } = serializedPage(SELECT_HTML)
+  const originalDocument = globalThis.document
+  const originalChrome = globalThis.chrome
+  globalThis.document = dom.window.document
+  globalThis.chrome = chrome
+  try {
+    const { typeText } = await import('./type.js')
+    const result = await typeText({ name: 'type', selector: '#s', text: 'Two', pressEnter: true }, { activeTabId: 42 })
+    assert.equal(result.selected, true)
+    assert.equal(result.selectedValue, '2')
+    assert.equal(dom.window.document.querySelector('#s').value, '2')
+    assert.equal('note' in result, false, 'resultado de select nunca carrega a note de Enter')
+    assert.equal('pressedEnter' in result, false, 'pressEnter é ignorado no select')
+  } finally {
+    globalThis.document = originalDocument
+    globalThis.chrome = originalChrome
+  }
+})
+
+test('SELECT: nonexistent option fails honestly with the document identity', async () => {
+  const { dom, chrome } = serializedPage(SELECT_HTML)
+  const originalDocument = globalThis.document
+  const originalChrome = globalThis.chrome
+  globalThis.document = dom.window.document
+  globalThis.chrome = chrome
+  try {
+    const { typeText } = await import('./type.js')
+    await assert.rejects(
+      typeText({ name: 'type', selector: '#s', text: 'Four' }, { activeTabId: 42 }),
+      /type: option not found: "Four".*ran in tab 42: https:\/\/example\.com/,
+    )
+    // The select must be UNCHANGED (no silent default commit).
+    assert.equal(dom.window.document.querySelector('#s').value, '')
   } finally {
     globalThis.document = originalDocument
     globalThis.chrome = originalChrome

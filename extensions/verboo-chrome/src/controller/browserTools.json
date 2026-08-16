@@ -121,7 +121,7 @@
     },
     {
       "name": "type",
-      "description": "Type text into an input or textarea selected by CSS. Pass a selector from find or read_page. Set pressEnter: true to submit the field after typing (Enter) — use it when the task needs the typed value to COMMIT: adding an item to a list, sending a message, or running a search that fires on Enter.",
+      "description": "Type text into an input or textarea selected by CSS, OR choose an option in a <select>. Pass a selector from find or read_page. For a <select>, pass the option's visible text OR its value (case-insensitive) — the option is resolved and a change event is dispatched (no need for pressEnter). For an input/textarea, set pressEnter: true to submit the field after typing (Enter) — use it when the task needs the typed value to COMMIT: adding an item to a list, sending a message, or running a search that fires on Enter.",
       "risk": "mutate",
       "inputSchema": {
         "type": "object",

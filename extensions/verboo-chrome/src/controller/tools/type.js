@@ -72,15 +72,38 @@ export async function typeText(tool, ctx = {}) {
       ? `type: selector not found: ${selector}${docInfo} — call the find tool to get a valid selector for this element, then retry type keeping pressEnter: true`
       : `type: selector not found: ${selector}${docInfo} — call the find tool to get a valid selector for this element, then retry`)
   }
+  // SELECT: the option was not found — honest error with the requested
+  // text, the available options (value/text pairs) and the DOCUMENT
+  // identity (the select may live in a different surface than expected).
+  if (pageResult && typeof pageResult === 'object' && pageResult.selectOptionNotFound === true) {
+    const available = Array.isArray(pageResult.available)
+      ? pageResult.available.map((o) => `"${String(o?.text ?? o?.value ?? '').trim()}"`).join(', ')
+      : ''
+    const docInfo = pageResult.docUrl
+      ? ` (ran in tab ${tab.id}: ${pageResult.docUrl}${pageResult.docTitle ? ` "${pageResult.docTitle}"` : ''})`
+      : ` (ran in tab ${tab.id}: ${tab.url ?? 'unknown'})`
+    throw new Error(
+      `type: option not found: "${pageResult.requested ?? text}" in select ${selector} — available options: ${available || 'none'}${docInfo}; call find or read_page to inspect the current options, then retry type with a valid option text or value`,
+    )
+  }
+  // SELECT: report what was chosen — value only, never the typed text
+  // (the requested option text is fine, it is not a secret the user
+  // typed into the page; the VALUE is what the page now holds).
+  const selected = result.result && typeof result.result === 'object'
+    ? result.result.selected === true
+    : undefined
   // R-T5/GENERALIZAÇÃO-2: with pressEnter the page returns { found,
   // handled } — pressedEnter reflects whether the APP handled the Enter;
   // when it did not (no preventDefault, no form submit), the value may
   // not have committed, and a neutral note reaches the model through the
-  // tool result JSON (no loop changes).
-  const handled = pressEnter && typeof result.result === 'object'
+  // tool result JSON (no loop changes). FAROL ressalva: a SELECT never
+  // returns `handled`, so `handled === false` would be true for it — the
+  // note must never appear on a select result (pressEnter is ignored
+  // there; choosing IS the commit).
+  const handled = pressEnter && !selected && typeof result.result === 'object'
     ? result.result.handled === true
     : undefined
-  const note = pressEnter && handled === false
+  const note = pressEnter && !selected && handled === false
     ? 'Enter dispatched but the app did not intercept it — confirm the effect with read_page; the value may not have committed.'
     : undefined
   // SECURITY: never return the typed text in the result. The agent
@@ -90,8 +113,9 @@ export async function typeText(tool, ctx = {}) {
   // so the UI can show "typed 12 chars" without exposing the content.
   return {
     selector,
-    textLength: text.length,
-    ...(pressEnter ? { pressedEnter: handled === true } : {}),
+    textLength: selected ? 0 : text.length,
+    ...(selected ? { selected: true, selectedValue: result.result.selectedValue } : {}),
+    ...(pressEnter && !selected ? { pressedEnter: handled === true } : {}),
     ...(note ? { note } : {}),
     url: tab.url ?? '',
   }
@@ -129,6 +153,42 @@ async function typeInPage(selector, text, clear, pressEnter) {
     await sleep(100)
   }
   el.focus()
+  // SELECT: typing into a <select> means CHOOSING an option. Clicking a
+  // synthetic <option> does not commit in Chrome (field evidence —
+  // 'escolha Two' submitted with the default). Resolve the option by
+  // value OR visible text (case-insensitive), set via the native setter
+  // so React controlled components see the change, and dispatch change
+  // (bubbles) so framework onChange handlers fire. pressEnter is ignored
+  // for selects — choosing IS the commit. All inline (serialization).
+  if (el.tagName === 'SELECT') {
+    const norm = (s) => String(s ?? '').trim().toLowerCase()
+    const needle = norm(text)
+    const options = Array.from(el.options)
+    const byValueExact = options.find((o) => o.value === text)
+    const byValueNorm = options.find((o) => norm(o.value) === needle)
+    const byTextNorm = options.find((o) => norm(o.textContent) === needle)
+    const byTextIncludes = options.find((o) => norm(o.textContent).includes(needle))
+    const matched = byValueExact ?? byValueNorm ?? byTextNorm ?? byTextIncludes
+    if (!matched) {
+      return {
+        found: true,
+        selectOptionNotFound: true,
+        requested: text,
+        available: options.map((o) => ({ value: o.value, text: String(o.textContent).trim() })),
+        docUrl: document.location.href,
+        docTitle: document.title,
+      }
+    }
+    const proto = Object.getPrototypeOf(el)
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+    if (setter) {
+      setter.call(el, matched.value)
+    } else {
+      el.value = matched.value
+    }
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+    return { found: true, selected: true, selectedValue: matched.value }
+  }
   if (clear) {
     el.value = ''
   }
