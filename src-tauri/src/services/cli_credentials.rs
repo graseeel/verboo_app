@@ -592,16 +592,57 @@ fn current_username() -> Option<String> {
     }
 }
 
+/// Builds the PowerShell script for DPAPI `ProtectedData.Unprotect` (read
+/// path). Pure (no `#[cfg(windows)]`) so the entropy escaping is testable
+/// on mac. The caller (`read_windows_dpapi_blob`) feeds the result to
+/// `-EncodedCommand` as UTF-16LE Base64.
+///
+/// SECURITY (layer 2 of 2): single-quote escaping. The script interpolates
+/// `entropy` into a PowerShell single-quoted literal `'{entropy_escaped}'`.
+/// PowerShell represents a literal `'` as `''` (doubled). Without this, a
+/// USERNAME like `O'Brien` closes the literal mid-entropy and breaks the
+/// `GetBytes` call. `-EncodedCommand` (layer 1, applied by the caller)
+/// protects the SHELL; this escaping protects the PowerShell string literal
+/// AFTER decode — EncodedCommand does NOT help here.
+fn build_dpapi_read_script(protected_b64: &str, entropy: &str) -> String {
+    let entropy_escaped = entropy.replace('\'', "''");
+    format!(
+        "Add-Type -AssemblyName System.Security\n\
+         $bytes = [Convert]::FromBase64String('{protected_b64}')\n\
+         $entropy = [System.Text.Encoding]::UTF8.GetBytes('{entropy_escaped}')\n\
+         $result = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $entropy, 'CurrentUser')\n\
+         [System.Text.Encoding]::UTF8.GetString($result)"
+    )
+}
+
+/// Builds the PowerShell script for DPAPI `ProtectedData.Protect` (write
+/// path). Pure (no `#[cfg(windows)]`) so the entropy escaping is testable
+/// on mac. The caller (`write_windows_dpapi_blob`) feeds the result to
+/// `-EncodedCommand` as UTF-16LE Base64. See `build_dpapi_read_script` for
+/// the SECURITY rationale (same two-layer defense).
+fn build_dpapi_write_script(entropy: &str) -> String {
+    let entropy_escaped = entropy.replace('\'', "''");
+    format!(
+        "Add-Type -AssemblyName System.Security\n\
+         $plain = [Console]::In.ReadToEnd()\n\
+         $bytes = [System.Text.Encoding]::UTF8.GetBytes($plain)\n\
+         $entropy = [System.Text.Encoding]::UTF8.GetBytes('{entropy_escaped}')\n\
+         $result = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $entropy, 'CurrentUser')\n\
+         [Convert]::ToBase64String($result)"
+    )
+}
+
 /// Reads the DPAPI-encrypted credentials blob on Windows. Calls
 /// PowerShell `ProtectedData.Unprotect` with the file path and entropy.
 /// Returns the decrypted JSON blob, or None if the file is missing /
 /// decryption fails.
 ///
 /// **Limit**: only callable on Windows (`#[cfg(windows)]`). The pure
-/// logic (`dpapi_file_path_for`, `dpapi_entropy_for`) is tested on mac;
-/// the PowerShell call itself is NOT tested in `cargo test --lib` on
-/// mac — it requires a Windows runtime with a real DPAPI-encrypted
-/// file. (Cadinho limit declaration.)
+/// logic (`dpapi_file_path_for`, `dpapi_entropy_for`,
+/// `build_dpapi_read_script`) is tested on mac; the PowerShell call
+/// itself is NOT tested in `cargo test --lib` on mac — it requires a
+/// Windows runtime with a real DPAPI-encrypted file. (Cadinho limit
+/// declaration.)
 #[cfg(windows)]
 fn read_windows_dpapi_blob() -> Option<Value> {
     let config_home = verboo_config_home().or_else(|| {
@@ -615,10 +656,6 @@ fn read_windows_dpapi_blob() -> Option<Value> {
         None
     })?;
     let entropy = dpapi_entropy_for(resource_name, &username);
-    // Escape single quotes for the PowerShell single-quoted string literal.
-    // PowerShell represents a literal ' inside '...' as '' (doubled). Without
-    // this, a USERNAME like O'Brien would terminate the literal early.
-    let entropy_escaped = entropy.replace('\'', "''");
 
     // The CLI writes Base64 text, not the raw DPAPI bytes.
     let file_bytes = std::fs::read(&file_path).ok().or_else(|| {
@@ -634,24 +671,11 @@ fn read_windows_dpapi_blob() -> Option<Value> {
     // PowerShell script: read the DPAPI file, unprotect with entropy,
     // output UTF-8 JSON. Mirrors the clone's
     // `windowsCredentialStorage.ts:98-146` read path.
-    //
-    // SECURITY: Two complementary layers protect this script:
-    //  (1) -EncodedCommand (UTF-16LE Base64) — the shell never parses the
-    //      script as text, so shell metacharacters cannot inject.
-    //  (2) Single-quote escaping of `entropy` — the script still executes as
-    //      PowerShell, where '{entropy_escaped}' is a single-quoted literal.
-    //      PowerShell escapes a literal ' as '' (doubled). Without this, a
-    //      USERNAME like O'Brien would close the literal mid-entropy and
-    //      break the GetBytes call. EncodedCommand does NOT help here because
-    //      the breakage happens inside PowerShell after decoding, not in the
-    //      shell.
-    let script = format!(
-        "Add-Type -AssemblyName System.Security\n\
-         $bytes = [Convert]::FromBase64String('{protected_b64}')\n\
-         $entropy = [System.Text.Encoding]::UTF8.GetBytes('{entropy_escaped}')\n\
-         $result = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $entropy, 'CurrentUser')\n\
-         [System.Text.Encoding]::UTF8.GetString($result)"
-    );
+    // SECURITY: -EncodedCommand (UTF-16LE Base64) — the shell never parses
+    // the script as text, so shell metacharacters cannot inject. The
+    // single-quote escaping of entropy (layer 2) is applied inside
+    // `build_dpapi_read_script` — see its SECURITY comment.
+    let script = build_dpapi_read_script(&protected_b64, &entropy);
 
     // Encode script as UTF-16LE for -EncodedCommand to prevent injection
     let script_utf16: Vec<u8> = script.encode_utf16()
@@ -693,23 +717,13 @@ fn write_windows_dpapi_blob(blob: &Value) -> bool {
         return false;
     };
     let entropy = dpapi_entropy_for(resource_name, &username);
-    // Escape single quotes for the PowerShell single-quoted string literal
-    // (see read_windows_dpapi_blob SECURITY comment for the full rationale).
-    let entropy_escaped = entropy.replace('\'', "''");
     let Ok(json) = serde_json::to_string(blob) else {
         return false;
     };
-    // SECURITY: Two complementary layers — -EncodedCommand (shell never
-    // parses the script) + single-quote escaping (PowerShell string literal
-    // stays intact when USERNAME contains ', e.g. O'Brien). See read fn.
-    let script = format!(
-        "Add-Type -AssemblyName System.Security\n\
-         $plain = [Console]::In.ReadToEnd()\n\
-         $bytes = [System.Text.Encoding]::UTF8.GetBytes($plain)\n\
-         $entropy = [System.Text.Encoding]::UTF8.GetBytes('{entropy_escaped}')\n\
-         $result = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $entropy, 'CurrentUser')\n\
-         [Convert]::ToBase64String($result)"
-    );
+    // SECURITY: -EncodedCommand (shell never parses the script) +
+    // single-quote escaping inside `build_dpapi_write_script` (PowerShell
+    // string literal stays intact when USERNAME contains ', e.g. O'Brien).
+    let script = build_dpapi_write_script(&entropy);
     let script_utf16: Vec<u8> = script.encode_utf16()
         .flat_map(|u| u.to_le_bytes())
         .collect();
@@ -1420,33 +1434,39 @@ mod tests {
         );
     }
 
-    /// (a) DPAPI entropy single-quote escaping: when USERNAME contains a
-    /// single quote (e.g. `O'Brien`), the entropy `resource:O'Brien`
-    /// carries a raw `'`. The PowerShell script interpolates entropy into
-    /// a single-quoted literal `'{entropy_escaped}'`, where a literal `'`
-    /// must appear as `''` (doubled) to avoid closing the string mid-value.
-    /// This test pins the `replace('\'', "''")` transform applied in
-    /// `read_windows_dpapi_blob` / `write_windows_dpapi_blob` before the
-    /// `format!`. The full script assembly is `#[cfg(windows)]` (not
-    /// compiled on mac); this test pins the pure-logic transform that
-    /// produces `entropy_escaped` — if the escaping is dropped, the
-    /// assertion on `O''Brien` FAILS.
+    /// (a) DPAPI entropy single-quote escaping — LOAD-BEARING via the real
+    /// production builders. When USERNAME contains a single quote (e.g.
+    /// `O'Brien`), the entropy carries a raw `'`. The PowerShell script
+    /// interpolates entropy into a single-quoted literal, where `'` must
+    /// appear as `''` (doubled). This test calls the REAL `build_dpapi_*`
+    /// functions (not a copy of the transform) and asserts the generated
+    /// script contains the doubled quote in the GetBytes literal. If the
+    /// `replace('\'', "''")` is removed from either builder, the assertion
+    /// on `O''Brien` FAILS — proven by mutation (see PA-8 report).
     #[test]
     fn dpapi_entropy_escaping_doubles_single_quote_for_powershell_literal() {
         let entropy = dpapi_entropy_for("Verboo Code-credentials", "O'Brien");
+        // Read script: the GetBytes literal must contain the doubled '.
+        let read_script = build_dpapi_read_script("cG90YXRv", &entropy);
         assert!(
-            entropy.contains('\''),
-            "entropy must carry the raw ' from O'Brien; got: {entropy}"
+            read_script.contains("GetBytes('Verboo Code-credentials:O''Brien')"),
+            "read script must contain the escaped literal with doubled '; got: {read_script}"
         );
-        let entropy_escaped = entropy.replace('\'', "''");
+        // The raw unescaped form must NOT appear (it would close the literal
+        // early and break the GetBytes call).
         assert!(
-            entropy_escaped.contains("O''Brien"),
-            "escaped entropy must double the ' to '' for PowerShell; got: {entropy_escaped}"
+            !read_script.contains("GetBytes('Verboo Code-credentials:O'Brien')"),
+            "read script must NOT contain the raw unescaped literal; got: {read_script}"
         );
-        assert_eq!(
-            entropy_escaped.matches('\'').count() % 2,
-            0,
-            "all single quotes must be paired after escaping; got: {entropy_escaped}"
+        // Write script: same two assertions.
+        let write_script = build_dpapi_write_script(&entropy);
+        assert!(
+            write_script.contains("GetBytes('Verboo Code-credentials:O''Brien')"),
+            "write script must contain the escaped literal with doubled '; got: {write_script}"
+        );
+        assert!(
+            !write_script.contains("GetBytes('Verboo Code-credentials:O'Brien')"),
+            "write script must NOT contain the raw unescaped literal; got: {write_script}"
         );
     }
 
