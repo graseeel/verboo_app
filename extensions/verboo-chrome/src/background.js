@@ -908,15 +908,16 @@ async function runAgentTurn(
     let turnTabLease = null
     const ensureTurnWorkspace = async (resume = false) => {
       if (!turnTabLease) {
-        // PÓS-CAMPO-6 (B): acquireControllable revalidates the lease target
-        // — a restored/stale workspace tab (blank or a previous turn's URL)
-        // would make EVERY selector fail not-found while the user watches a
-        // perfectly good page. Falls back to the user's active tab.
-        turnTabLease = await backgroundWorkspace.acquireControllable({
-          sourceTabId: Number.isInteger(senderTabId) ? senderTabId : activeTab?.id,
-          resume,
-          isControllableUrl,
-        })
+        // DECISÃO DO DONO (workspace, 2026-08-15): a aba onde o painel
+        // estava ao enviar o prompt É a aba de trabalho. Lease direto na
+        // aba de origem — sem janela invisível, sem criação de aba. O
+        // usuário pode trocar de aba/janela livremente; executeScript
+        // não exige foco. Se a aba fechar mid-turn, resolveTargetTab
+        // lança target_tab_unavailable (erro honesto, chip closed).
+        // O caminho MCP/CLI preserva acquire() (janela invisível) — ver
+        // nativeBridge.contextFactory abaixo.
+        const sourceTabId = Number.isInteger(senderTabId) ? senderTabId : activeTab?.id
+        turnTabLease = await backgroundWorkspace.leaseSourceTab(sourceTabId)
         await broadcastWorkspaceTabMeta(turnId, turnTabLease)
       }
       return turnTabLease

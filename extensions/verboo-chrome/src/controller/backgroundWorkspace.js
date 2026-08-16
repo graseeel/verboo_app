@@ -178,6 +178,29 @@ export function createBackgroundWorkspaceManager({ chromeApi = chrome } = {}) {
         chromeApi.storage.session.remove(BACKGROUND_WORKSPACE_KEY),
       ])
     },
+
+    /**
+     * DECISÃO DO DONO (workspace, 2026-08-15): the tab where the panel
+     * was when the prompt was sent IS the working tab. Lease the user's
+     * OWN tab directly — NO invisible mirror window, NO tab/window
+     * creation. Background work happens without focus (executeScript
+     * does not require focus); the user may switch tabs/windows freely
+     * mid-turn. If the tab is closed mid-turn, tools fail honestly via
+     * resolveTargetTab (target_tab_unavailable) — no silent migration
+     * to another tab. The MCP/CLI path still uses acquire() below for
+     * its invisible workspace; this method is the PANEL path only.
+     *
+     * @param {number} sourceTabId — the tab where the side panel lived
+     * @returns {Promise<{ snapshot(): { tabId: number, windowId: number }, selectTab(id: number, wid: number): Promise<void> }>}
+     */
+    async leaseSourceTab(sourceTabId) {
+      if (!Number.isInteger(sourceTabId)) throw new Error('target_tab_unavailable')
+      const tab = await chromeApi.tabs.get(sourceTabId)
+      if (!tab?.id || !Number.isInteger(tab.windowId)) throw new Error('target_tab_unavailable')
+      currentLease = createLease(tab.id, tab.windowId)
+      await persist(currentLease.snapshot())
+      return currentLease
+    },
   }
 }
 

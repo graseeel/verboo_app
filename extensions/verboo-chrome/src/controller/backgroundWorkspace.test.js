@@ -299,3 +299,46 @@ test('PÓS-CAMPO-7: mid-turn model navigation is never re-validated (turn-start 
   assert.equal(lease.snapshot().tabId, 43)
   assert.equal(updates.length, updatesAtStart, 'mid-turn lease changes are never re-validated')
 })
+
+// ── DECISÃO DO DONO (workspace, 2026-08-15): the tab where the panel was
+//    when the prompt was sent IS the working tab. leaseSourceTab leases
+//    the user's own tab — NO invisible mirror window, NO tab/window
+//    creation. Background work happens without focus; the user may switch
+//    tabs freely. If the tab is closed mid-turn, tools fail honestly.
+
+test('DECISÃO DO DONO: leaseSourceTab leases the user\'s own tab and NEVER creates a window', async () => {
+  const creates = []
+  const tabs = new Map([
+    [99, { id: 99, windowId: 9, url: 'https://source.example/form', active: true, status: 'complete' }],
+  ])
+  const windows = new Map([[9, { id: 9, focused: true }]])
+  const chromeApi = {
+    tabs: { get: async (id) => { const t = tabs.get(id); if (!t) throw new Error('tab missing'); return t } },
+    windows: {
+      create: async (options) => { creates.push(options); throw new Error('must not be called') },
+      get: async (id) => { const w = windows.get(id); if (!w) throw new Error('window missing'); return w },
+    },
+    storage: {
+      session: { get: async () => ({}), set: async () => {} },
+      local: { get: async () => ({}), set: async () => {} },
+    },
+  }
+  const { createBackgroundWorkspaceManager } = await import('./backgroundWorkspace.js')
+  const manager = createBackgroundWorkspaceManager({ chromeApi })
+  const lease = await manager.leaseSourceTab(99)
+  assert.equal(lease.snapshot().tabId, 99, 'lease aponta para a aba de origem')
+  assert.equal(lease.snapshot().windowId, 9, 'windowId é o da aba de origem')
+  assert.equal(creates.length, 0, 'NENHUMA janela criada — a aba do usuário é a aba de trabalho')
+})
+
+test('DECISÃO DO DONO: leaseSourceTab fails honestly when the source tab is gone (no silent fallback)', async () => {
+  const tabs = new Map() // 99 não existe
+  const chromeApi = {
+    tabs: { get: async (id) => { const t = tabs.get(id); if (!t) throw new Error('tab missing'); return t } },
+    windows: { create: async () => { throw new Error('must not be called') }, get: async () => null },
+    storage: { session: { get: async () => ({}), set: async () => {} }, local: { get: async () => ({}), set: async () => {} } },
+  }
+  const { createBackgroundWorkspaceManager } = await import('./backgroundWorkspace.js')
+  const manager = createBackgroundWorkspaceManager({ chromeApi })
+  await assert.rejects(() => manager.leaseSourceTab(99), /target_tab_unavailable|tab missing/)
+})
