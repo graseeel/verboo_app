@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
-const APP_URL = 'http://localhost:5174'
+const APP_URL = 'http://localhost:5183'
 const MOCK_BRIDGE = readFileSync(
   resolve(__dirname, 'mock-bridge.js'),
   'utf8',
