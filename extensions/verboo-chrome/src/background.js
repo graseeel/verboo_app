@@ -18,6 +18,7 @@ import { getGrant, upsertGrant } from './policy/siteGrantsStore.js'
 import { MSG } from './controller/protocol.js'
 import { isControllableUrl } from './planMessage.js'
 import { checkMessageSender } from './controller/senderGate.js'
+import { resolveExecutionTabId } from './controller/targetTab.js'
 import {
   ensureFreshSession,
   loadSession,
@@ -789,6 +790,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
  */
 async function handleBrowserTool(toolCall) {
   const controller = new AbortController()
+  // DECISÃO DO DONO (workspace, 2026-08-16): legacy direct-tool envelope
+  // with no lease and no sender tab. makeExecutionContext now FAILS CLOSED
+  // (target_tab_unavailable) instead of falling back to the user's active
+  // tab — a live lease must never be bypassed by any surface.
   return executeWithApproval(
     toolCall,
     () => makeExecutionContext(undefined, undefined),
@@ -1174,11 +1179,14 @@ async function makeExecutionContext(
     ? (turnSiteGrants.get(turnId) ?? new Set())
     : null
   if (turnId && !turnSiteGrants.has(turnId)) turnSiteGrants.set(turnId, turnGrants)
-  const tab = leasedTarget
-    ? await chrome.tabs.get(leasedTarget.tabId).catch(() => null)
-    : Number.isInteger(fallbackTabId)
-      ? await chrome.tabs.get(fallbackTabId).catch(() => null)
-      : (await chrome.tabs.query({ active: true, currentWindow: true }))[0]
+  // DECISÃO DO DONO (workspace, 2026-08-16): the execution target is the
+  // lease tab when one is alive, else the explicit fallback — NEVER the
+  // user's active tab. The user may switch tabs/windows freely mid-turn;
+  // a context with no lease and no fallback (legacy handleBrowserTool)
+  // fails closed (target_tab_unavailable) instead of silently acting on
+  // whatever the user is looking at (T3: type ran on the active X.com tab
+  // while the lease was TodoMVC).
+  const activeTabId = resolveExecutionTabId(leasedTarget, fallbackTabId)
   return {
     mode: await loadMode(),
     getSiteGrant: async (host) => {
@@ -1197,7 +1205,7 @@ async function makeExecutionContext(
     },
     setTurnGrant: async (host) => { turnGrants?.add(host) },
     setSiteGrant: (host, decision) => upsertGrant(host, decision),
-    activeTabId: tab?.id ?? fallbackTabId,
+    activeTabId,
     ...(leasedTarget ? {
       workspaceWindowId: leasedTarget.windowId,
       setActiveTabId: (tabId, windowId) => {

@@ -31,7 +31,8 @@ test('tabs lists, switches, and closes the requested tab', async () => {
     tabId: 12,
     switched: true,
   })
-  assert.deepEqual(updates, [[12, { active: true }]])
+  // DECISÃO DO DONO: tabs.switch NÃO foca — só muda o lease via setActiveTabId.
+  assert.deepEqual(updates, [], 'tabs.switch não chama tabs.update (sem foco automático)')
 
   assert.deepEqual(await tabs({ name: 'tabs', action: 'close', tabId: 11 }), {
     tabId: 11,
@@ -64,7 +65,7 @@ test('tabs.new creates and groups an HTTP tab', async () => {
 
   const result = await tabs({ name: 'tabs', action: 'new', url: 'https://example.com/new' })
 
-  assert.deepEqual(creates, [{ url: 'https://example.com/new' }])
+  assert.deepEqual(creates, [{ url: 'https://example.com/new', active: false }])
   assert.deepEqual(grouped, [{ tabIds: [31], createProperties: { windowId: 4 } }])
   assert.deepEqual(result, { tabId: 31, url: 'https://example.com/new' })
 })
@@ -132,8 +133,10 @@ test('tabs actions stay inside the leased background workspace', async () => {
   assert.deepEqual(listed.tabs.map((tab) => tab.id), [42, 43])
   assert.deepEqual(queries, [{ windowId: 7 }])
   assert.deepEqual(switched, { tabId: 43, switched: true })
-  assert.deepEqual(updates, [{ tabId: 43, properties: { active: true } }])
-  assert.deepEqual(creates, [{ url: 'https://new.example', windowId: 7, active: true }])
+  // DECISÃO DO DONO: switch e new NÃO focam — sem tabs.update active:true,
+  // sem create active:true. O lease muda via setActiveTabId (selections).
+  assert.deepEqual(updates, [], 'switch não chama tabs.update (sem foco)')
+  assert.deepEqual(creates, [{ url: 'https://new.example', windowId: 7, active: false }])
   assert.deepEqual(created, { tabId: 44, url: 'https://new.example' })
   assert.deepEqual(selections, [
     { tabId: 43, windowId: 7 },

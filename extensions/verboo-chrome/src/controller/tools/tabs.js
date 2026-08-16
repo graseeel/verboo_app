@@ -22,7 +22,9 @@ export async function tabs(tool, ctx = {}) {
     case 'switch':
       if (typeof tool.tabId !== 'number') throw new Error('tabs.switch: missing tabId')
       await assertWorkspaceTab(tool.tabId, ctx.workspaceWindowId)
-      await chrome.tabs.update(tool.tabId, { active: true })
+      // DECISÃO DO DONO (workspace, 2026-08-16): foco automático NUNCA —
+      // só o gesto no chip foca. tabs.switch muda o lease (setActiveTabId)
+      // sem roubar a tela do usuário; o trabalho continua em background.
       await ctx.setActiveTabId?.(tool.tabId, ctx.workspaceWindowId)
       return { tabId: tool.tabId, switched: true }
     case 'close':
@@ -36,7 +38,7 @@ export async function tabs(tool, ctx = {}) {
           next = await chrome.tabs.create({
             windowId: ctx.workspaceWindowId,
             url: 'about:newtab',
-            active: true,
+            active: false,
           })
         }
         if (next?.id != null) {
@@ -75,8 +77,8 @@ async function newTab(url, ctx) {
     throw new Error(`tabs.new: unsupported scheme: ${safeUrl.split(':')[0]}`)
   }
   const createProperties = Number.isInteger(ctx.workspaceWindowId)
-    ? { url: safeUrl, windowId: ctx.workspaceWindowId, active: true }
-    : { url: safeUrl }
+    ? { url: safeUrl, windowId: ctx.workspaceWindowId, active: false }
+    : { url: safeUrl, active: false }
   const tab = await chrome.tabs.create(createProperties)
   if (tab?.id != null && Number.isInteger(tab.windowId)) {
     await ctx.setActiveTabId?.(tab.id, tab.windowId)

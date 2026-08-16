@@ -83,3 +83,30 @@ test('DECISÃO DO DONO: closed working tab mid-turn fails honestly (no silent mi
   await assert.rejects(() => resolveTargetTab(42), /target_tab_unavailable/)
   assert.equal(queried, false, 'NUNCA cai em active tab — o caso chrome:// do teste 1 não se repete')
 })
+
+// ── DECISÃO DO DONO (workspace, 2026-08-16): the execution context's
+//    target decision (makeExecutionContext) NEVER falls back to the user's
+//    active tab. With a live lease the lease tab wins; with no lease and
+//    no explicit fallback the context FAILS CLOSED (target_tab_unavailable)
+//    — the legacy handleBrowserTool surface (no lease, no sender) must not
+//    silently act on whatever the user is looking at (T3: type ran on the
+//    active X.com tab while the lease was TodoMVC).
+
+test('resolveExecutionTabId: lease wins over any fallback', async () => {
+  const { resolveExecutionTabId } = await import('./targetTab.js')
+  assert.equal(resolveExecutionTabId({ tabId: 1 }, 2), 1)
+  assert.equal(resolveExecutionTabId({ tabId: 1 }, undefined), 1)
+})
+
+test('resolveExecutionTabId: explicit fallback tab id wins when no lease', async () => {
+  const { resolveExecutionTabId } = await import('./targetTab.js')
+  assert.equal(resolveExecutionTabId(null, 42), 42)
+  assert.equal(resolveExecutionTabId(undefined, 42), 42)
+})
+
+test('resolveExecutionTabId: no lease + no fallback FAILS CLOSED (never active tab)', async () => {
+  const { resolveExecutionTabId } = await import('./targetTab.js')
+  assert.throws(() => resolveExecutionTabId(null, undefined), /target_tab_unavailable/)
+  assert.throws(() => resolveExecutionTabId(undefined, undefined), /target_tab_unavailable/)
+  assert.throws(() => resolveExecutionTabId(null, null), /target_tab_unavailable/)
+})
