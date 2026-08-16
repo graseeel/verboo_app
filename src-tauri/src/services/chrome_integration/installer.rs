@@ -271,7 +271,10 @@ impl ChromeIntegrationService {
             // manifest to exist if they were left over from a previous
             // configuration. They will be overwritten during configure().
             // Only block if a different extension ID owns the manifest.
-            if self.paths.manifest_path().exists() && !self.paths.helper_path().exists() {
+            if self.paths.helper_path().exists() {
+                return Err("chrome_helper_conflict".into());
+            }
+            if self.paths.manifest_path().exists() {
                 return Err("chrome_manifest_conflict".into());
             }
         }

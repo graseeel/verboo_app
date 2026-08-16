@@ -6345,6 +6345,9 @@ mod tests {
     // agent walks in it is the user's call to verify on first use.
 
     fn sample_request_with_language(message: &str, language: LanguageCode) -> AgentTurnRequest {
+        // Ensure /tmp/probe exists so safe_runtime_working_directory doesn't
+        // redirect to the neutral temp dir (which breaks golden-string tests).
+        let _ = std::fs::create_dir_all("/tmp/probe");
         AgentTurnRequest {
             turn_id: None,
             conversation_id: "c1".into(),

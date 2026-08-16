@@ -2514,14 +2514,24 @@ mod tests {
     // delimit the region it measures and exclude itself.
     #[test]
     fn goal_evaluator_uses_cli_spawn_not_global() {
-        let full_src = std::fs::read_to_string("src/services/goal_evaluator.rs")
-            .expect("could not read goal_evaluator.rs (run from src-tauri/)");
+        // Use the RUNTIME CARGO_MANIFEST_DIR env var (not the compile-time
+        // macro) so the path resolves correctly in Docker containers where
+        // the build machine's path differs from the runtime path.
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .unwrap_or_else(|_| "src-tauri".into());
+        let src_path = std::path::Path::new(&manifest_dir)
+            .join("src/services/goal_evaluator.rs");
+        let full_src = std::fs::read_to_string(&src_path)
+            .unwrap_or_else(|e| panic!("could not read {}: {e}", src_path.display()));
 
-        // Measure ONLY production code: everything before `#[cfg(test)]`.
-        // That line opens this `mod tests` block; everything from there
-        // onward is test code and must be excluded from the scan.
-        let cfg_test_marker = "#[cfg(test)]";
-        let production_src: &str = match full_src.find(cfg_test_marker) {
+        // Measure ONLY production code: everything before `mod tests`.
+        // Note: there are TWO `#[cfg(test)]` markers in this file — one
+        // gates a helper function (line ~177) and one opens `mod tests`
+        // (line ~1057). Using `#[cfg(test)]` as the delimiter would
+        // truncate at the first marker, excluding the actual production
+        // code we need to verify (CliSpawn::new at line ~460).
+        let mod_tests_marker = "mod tests {";
+        let production_src: &str = match full_src.find(mod_tests_marker) {
             Some(idx) => &full_src[..idx],
             None => &full_src[..],
         };
