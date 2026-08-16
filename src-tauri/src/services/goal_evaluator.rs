@@ -1057,6 +1057,7 @@ fn default_continue(reason: &str) -> GoalEvaluationResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::types::{AccessMode, CommandRun, CommandStatus, GoalStatus, SkillSummary};
     use serde_json::json;
 
     fn sample_goal() -> GoalState {
