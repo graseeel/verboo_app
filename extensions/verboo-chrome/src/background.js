@@ -326,6 +326,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             selectionContext,
             message.sourceWindowId,
           )
+          // ITEM ABERTO (decisão do Maestro): esta chamada usa 2 args (sem
+          // activeTabUrl) — turnos detectados só pelo L2 rodam FORA da
+          // browserControlQueue e podem intercalar ações (efeito medido no
+          // RE-GATE SAFETY-NET). Correção planejada: opção A — resolver a
+          // aba antes da decisão de fila (próximo ciclo). NÃO alinhar a
+          // aridade aqui sem levar a fila junto.
           const turnPromise = shouldOfferBrowserTools(
             message.userMessage,
             message.conversationHistory,
@@ -890,7 +896,6 @@ async function runAgentTurn(
 ) {
   const controller = new AbortController()
   turnControllers.set(turnId, controller)
-  const browserToolsRequested = shouldOfferBrowserTools(userMessage, conversationHistory)
 
   // MV3 service workers can suspend mid-fetch; frozen timers then never fire the
   // router 60s abort, and the panel never gets COMPLETE/ERROR → permanent Working…
@@ -942,6 +947,14 @@ async function runAgentTurn(
         console.log('[verboo-workspace] resolveActiveTab: fail-closed —', cands.length, 'candidatos ativos sem sourceWindowId (ambiguidade)')
       }
     }
+    // CORREÇÃO PÓS-GATE SAFETY-NET (Farol): realinhar background↔loop —
+    // shouldOfferBrowserTools deve receber activeTabUrl (3 args) para o L2
+    // (imperativo + URL controlável) disparar. Antes era chamado com 2 args
+    // em :893 (antes da aba existir) → L2 nunca disparava no background
+    // enquanto disparava no loop → browserToolsRequested divergia. Agora
+    // calculado DEPOIS de resolver a aba, com activeTab?.url. Usos em
+    // :998/:1018/:1026/:1145 são todos depois daqui.
+    const browserToolsRequested = shouldOfferBrowserTools(userMessage, conversationHistory, activeTab?.url)
     let turnTabLease = null
     const ensureTurnWorkspace = async (resume = false) => {
       if (!turnTabLease) {
@@ -1036,11 +1049,23 @@ async function runAgentTurn(
           conversationHistory,
           selectionContext,
           broadcast: (msg) => broadcast(msg),
-          executeTool: (tc, executionSignal) => executeWithApproval(
-            tc,
-            () => makeExecutionContext(senderTabId, turnId, undefined, turnTabLease),
-            makeApprovalUi(turnId, executionSignal ?? controller.signal),
-          ),
+          executeTool: async (tc, executionSignal) => {
+            // SAFETY-NET (defesa em profundidade): garante que o lease do
+            // turno chega ao executeTool/executeWithApproval mesmo se um
+            // futuro call site esquecer de passar turnTabLease ou se uma
+            // reclassify rodar antes do ensureTurnWorkspace do arranque.
+            // O guard !turnTabLease faz retornar imediato se o lease já
+            // existe (barato); cria se faltar. NÃO substitui o cálculo
+            // correto de browserToolsRequested (realinhado em :957) —
+            // complementa. Cobertura: call site órfão, reclassify sem
+            // lease, race de inicialização.
+            await ensureTurnWorkspace(false)
+            return executeWithApproval(
+              tc,
+              () => makeExecutionContext(senderTabId, turnId, undefined, turnTabLease),
+              makeApprovalUi(turnId, executionSignal ?? controller.signal),
+            )
+          },
           getActiveTabMeta: () => queryActiveTabMeta(
             turnTabLease?.snapshot().tabId,
           ),

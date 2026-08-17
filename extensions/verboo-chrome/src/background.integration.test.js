@@ -216,6 +216,9 @@ function setupTwoWindows(sh, tabA, tabB) {
 async function runTurn({ sourceWindowId, userMessage, chatResponses }) {
   const sh = await ensureImported()
   sh.broadcasts.length = 0
+  const consoleLogs = []
+  const origLog = console.log
+  console.log = (...args) => { consoleLogs.push(args.map(String).join(' ')); origLog(...args) }
   const { fetch } = makeFetchMock({ chatResponses })
   globalThis.fetch = fetch
 
@@ -241,7 +244,8 @@ async function runTurn({ sourceWindowId, userMessage, chatResponses }) {
     )
     if (terminal) break
   }
-  return { terminal, broadcasts: sh.broadcasts }
+  console.log = origLog
+  return { terminal, broadcasts: sh.broadcasts, consoleLogs }
 }
 
 test('(1) painel na janela B (sourceWindowId=20) → lease = aba ativa de B SEMPRE (2 janelas)', async () => {
@@ -300,4 +304,69 @@ test('(3) REPRODUZ A GENÉRICA DE CAMPO: conversa + tool call → reclassify →
     generic,
     'reproduz a genérica de campo: conversa + tool call + lease nulo → "Não consegui concluir o pedido"',
   )
+})
+
+test('(4) CAMPO: conversa + sourceWindowId + reclassify → executeTool RECEBE o lease → 1º tool executa (não morre com target_tab_unavailable)', async () => {
+  const sh = await ensureImported()
+  const tabA = { id: 1, windowId: 10, url: 'https://a.com/', active: true, status: 'complete' }
+  const tabB = { id: 2, windowId: 20, url: 'https://todomvc.com/', active: true, status: 'complete' }
+  setupTwoWindows(sh, tabA, tabB)
+  // Cenário de CAMPO (build 1239d7a): painel envia sourceWindowId (janela B),
+  // prompt de CONVERSA (browserToolsRequested=false) + modelo emite tool call
+  // → reclassify → ensureTurnWorkspace(false) cria o lease → re-run com tools
+  // → executeTool DEVE receber o lease (turnTabLease) e o 1º tool DEVE executar.
+  // O defeito de campo: executeTool constrói o contexto SEM o leasedTarget →
+  // resolveExecutionTabId lança target_tab_unavailable → 1º tool morre.
+  const { terminal, broadcasts } = await runTurn({
+    sourceWindowId: 20,
+    userMessage: 'qual é a capital do Brasil?',
+    chatResponses: [toolCallResponse, toolCallResponse, textResponse],
+  })
+  assert.ok(terminal, 'turno terminou')
+  // O 1º tool (read_page) DEVE ter executado — AGENT_TOOL_EXECUTING broadcast.
+  const executing = broadcasts.find(
+    (m) => m.type === 'agent:tool_executing' && m.toolName === 'read_page',
+  )
+  assert.ok(executing, '1º tool (read_page) EXECUTOU — executeTool recebeu o lease e passou por executeWithApproval')
+  assert.equal(terminal.type, 'agent:turn_complete', `turno completou (não errou): ${terminal.error ?? ''}`)
+  const generic = 'Não consegui concluir o pedido. Tente novamente.'
+  assert.notEqual(terminal.assistantMessage, generic, 'não é a genérica — o lease chegou ao executeTool')
+})
+
+test('(5) RED-DE-VERDADE: L2 (crie uma tarefa) + sourceWindowId + 1 janela → browserToolsRequested=true → lease no arranque + 1º tool SEM reclassify', async () => {
+  const sh = await ensureImported()
+  // Insumo exato do Farol: 'crie uma tarefa chamada comprar pão' (L2 imperativo
+  // + URL controlável), sourceWindowId presente, UMA janela, aba https.
+  // Mock devolve a aba também para {active:true,currentWindow:true}.
+  const tab = { id: 2, windowId: 20, url: 'https://todomvc.com/', active: true, status: 'complete' }
+  sh.state.windows = { 20: { activeTab: tab } }
+  sh.state.tabsById = new Map([[tab.id, tab]])
+  // Override tabs.query para devolver a aba também para currentWindow:true.
+  const origQuery = sh.chrome.tabs.query
+  sh.chrome.tabs.query = async (q) => {
+    if (q.active === true && q.currentWindow === true) return [tab]
+    return origQuery(q)
+  }
+
+  const { terminal, broadcasts, consoleLogs } = await runTurn({
+    sourceWindowId: 20,
+    userMessage: 'crie uma tarefa chamada comprar pão',
+    chatResponses: [toolCallResponse, textResponse],
+  })
+  assert.ok(terminal, 'turno terminou')
+  // (a) 1º tool executou.
+  const executing = broadcasts.find(
+    (m) => m.type === 'agent:tool_executing' && m.toolName === 'read_page',
+  )
+  assert.ok(executing, '1º tool (read_page) EXECUTOU')
+  // (b) leaseSourceTab log apareceu (lease criado).
+  const leaseLog = consoleLogs.find((l) => l.includes('leaseSourceTab'))
+  assert.ok(leaseLog, 'log leaseSourceTab apareceu (lease criado)')
+  // (c) SEM reclassify — o turno foi de navegador de verdade (browserToolsRequested=true),
+  // não conversa que reclassificou. Contra 1239d7a puro (2 args, L2 não dispara),
+  // o reclassify aconteceria → este assert falha (RED).
+  const reclassifyThought = broadcasts.find(
+    (m) => m.type === 'agent:thought' && /reclassificando|reclassifying/i.test(String(m.text ?? '')),
+  )
+  assert.ok(!reclassifyThought, 'SEM reclassify — browserToolsRequested=true (L2 disparou com activeTabUrl)')
 })
