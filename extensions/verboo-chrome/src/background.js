@@ -324,6 +324,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             message.modelId,
             message.conversationHistory,
             selectionContext,
+            message.sourceWindowId,
           )
           const turnPromise = shouldOfferBrowserTools(
             message.userMessage,
@@ -337,6 +338,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             : executeTurn()
           void turnPromise
             .catch((err) => {
+              // OBSERVABILIDADE (b6b96d7): catch do turno que escapa do
+              // try/catch interno do runAgentTurn — loga o erro real + stack.
+              // Cancelamento do usuário (cancelTurn → runQueue reject
+              // 'run_cancelled'/'cancelled') NÃO é erro vermelho.
+              const msg = err?.message ?? String(err)
+              if (msg !== 'run_cancelled' && msg !== 'cancelled') {
+                console.error('[verboo] AGENT_TURN_START turn rejected:', msg, err)
+              }
               try {
                 void clearPresenceOnAllTabs()
               } catch {
@@ -867,6 +876,8 @@ async function resolveSelectionContextForTurn(message) {
  * @param {string} [requestedModelId]
  * @param {Array<object>} [conversationHistory]
  * @param {import('./selectionContext.js').PendingSelectionContext | null} [selectionContext]
+ * @param {number} [sourceWindowId] — janela do painel (enviada pelo panel.js);
+ *   sem ela (payload antigo/CLI) vale a regra do candidato único.
  */
 async function runAgentTurn(
   turnId,
@@ -875,6 +886,7 @@ async function runAgentTurn(
   requestedModelId,
   conversationHistory,
   selectionContext,
+  sourceWindowId,
 ) {
   const controller = new AbortController()
   turnControllers.set(turnId, controller)
@@ -909,12 +921,27 @@ async function runAgentTurn(
     // Resolve the active tab up front so the model can decide between
     // a navigate (e.g. "abra o youtube" on chrome://extensions) and a
     // read_page on the current tab.
-    // REGRESSÃO c358abf: o side panel NÃO tem sender.tab, e
-    // currentWindow:true é ambíguo no service worker (pode vir vazio) —
-    // o lease ficava nulo e o fail-closed falhava no 1º tool. lastFocusedWindow
-    // é a forma confiável (mesma do panel.js e do targetTab.js): a aba ativa
-    // da janela onde o painel está ao enviar o prompt.
-    const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+    // CORREÇÃO PÓS-REPROVAÇÃO (gate REGRESSAO-B6B96D7, opção 1 do Farol):
+    // determinístico, sem cadeia de fallback e sem corrida de captura.
+    // (1) sourceWindowId (enviado pelo painel via chrome.windows.getCurrent):
+    //     tabs.query({active,windowId}) — a aba ativa DAQUELA janela.
+    // (2) Sem sourceWindowId (payload antigo/CLI): regra do candidato único
+    //     — tabs.query({active}); 1 candidato usa, >1 → fail-closed
+    //     (target_tab_unavailable) sob ambiguidade; NUNCA chutar janela.
+    // Captura UMA VEZ no início do turno (regra do dono); depois sticky.
+    let activeTab = null
+    if (Number.isInteger(sourceWindowId)) {
+      activeTab = (await chrome.tabs.query({ active: true, windowId: sourceWindowId }))[0] ?? null
+      console.log('[verboo-workspace] resolveActiveTab: determinístico via sourceWindowId', sourceWindowId, '→ tab', activeTab?.id, 'url', activeTab?.url)
+    } else {
+      const cands = await chrome.tabs.query({ active: true })
+      if (cands.length === 1) {
+        activeTab = cands[0]
+        console.log('[verboo-workspace] resolveActiveTab: candidato-único (sem sourceWindowId) → tab', activeTab?.id, 'url', activeTab?.url)
+      } else {
+        console.log('[verboo-workspace] resolveActiveTab: fail-closed —', cands.length, 'candidatos ativos sem sourceWindowId (ambiguidade)')
+      }
+    }
     let turnTabLease = null
     const ensureTurnWorkspace = async (resume = false) => {
       if (!turnTabLease) {
@@ -1061,6 +1088,7 @@ async function runAgentTurn(
         return
       } catch (llmErr) {
         if (controller.signal.aborted) {
+          // Cancelamento do usuário NÃO é erro vermelho — sem console.error.
           sendTerminal({
             type: MSG.AGENT_TURN_ERROR,
             turnId,
@@ -1068,6 +1096,12 @@ async function runAgentTurn(
           })
           return
         }
+        // OBSERVABILIDADE (b6b96d7): este catch converte exceção em mensagem
+        // genérica de turno — sem console.error, o console do SW fica VAZIO
+        // e a causa real (throw no ensureTurnWorkspace/leaseSourceTab) some.
+        // Nunca mais um vazio: loga o erro real + stack aqui (depois do check
+        // de aborted — cancelamento não é erro).
+        console.error('[verboo] runAgentTurn LLM catch:', llmErr?.message ?? String(llmErr), llmErr)
         // Partial progress attached on some errors (defensive).
         const partial = llmErr?.partialToolResults
         if (Array.isArray(partial) && partial.length > 0) {
@@ -1101,6 +1135,14 @@ async function runAgentTurn(
       }
     }
 
+    // OBSERVABILIDADE (b6b96d7): turno de navegador sem modelo/sessão —
+    // loga o motivo real antes do erro amigável.
+    console.error(
+      '[verboo] runAgentTurn: browser turn sem',
+      accessToken ? 'modelo' : 'sessão',
+      '— accessToken:', Boolean(accessToken),
+      'selectedModelId:', selectedModelId,
+    )
     sendTerminal({
       type: MSG.AGENT_TURN_ERROR,
       turnId,
@@ -1112,6 +1154,9 @@ async function runAgentTurn(
     return
 
   } catch (err) {
+    // OBSERVABILIDADE (b6b96d7): catch de topo — sem console.error, o console
+    // do SW fica VAZIO e a causa real some. Loga o erro real + stack.
+    console.error('[verboo] runAgentTurn top-level catch:', err?.message ?? String(err), err)
     sendTerminal({
       type: MSG.AGENT_TURN_ERROR,
       turnId,
@@ -1128,6 +1173,9 @@ async function runAgentTurn(
     turnSiteGrants.delete(turnId)
     // Never leave the panel stuck if a path forgot to send a terminal event.
     if (!terminalSent) {
+      // OBSERVABILIDADE (b6b96d7): turno terminou sem terminal — bug de
+      // encanamento; loga para nunca mais console vazio.
+      console.error('[verboo] runAgentTurn terminou sem terminal event (bug de encanamento) — turnId', turnId)
       broadcast({
         type: MSG.AGENT_TURN_ERROR,
         turnId,

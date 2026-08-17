@@ -1916,12 +1916,24 @@ function initChat() {
     ensureWorkingHeader()
     armTurnWatchdogs(turnId)
     try {
+      // CORREÇÃO PÓS-REPROVAÇÃO (gate REGRESSAO-B6B96D7): o painel envia a
+      // janela de onde está (chrome.windows.getCurrent() é sem ambiguidade
+      // no contexto do painel). O background usa tabs.query({active,windowId})
+      // — determinístico, sem cadeia de fallback e sem corrida de captura.
+      let sourceWindowId
+      try {
+        const currentWin = await chrome.windows.getCurrent()
+        sourceWindowId = Number.isInteger(currentWin?.id) ? currentWin.id : undefined
+      } catch {
+        /* painel sem acesso a windows.getCurrent — background usa regra do candidato único */
+      }
       const response = await chrome.runtime.sendMessage({
         type: MSG.AGENT_TURN_START,
         turnId,
         userMessage: text,
         modelId: selectedModelId,
         conversationHistory: priorConversation,
+        ...(Number.isInteger(sourceWindowId) ? { sourceWindowId } : {}),
         ...(selectionContextForTurn
           ? {
               selectionContextId: selectionContextForTurn.id,

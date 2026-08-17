@@ -213,6 +213,14 @@ export function createBackgroundWorkspaceManager({ chromeApi = chrome } = {}) {
       }
       currentLease = createLease(tab.id, tab.windowId)
       await persist(currentLease.snapshot())
+      // OBSERVABILIDADE (b6b96d7): o caminho do painel (leaseSourceTab) não
+      // tinha log [verboo-workspace] — um throw silencioso aqui deixava o
+      // console do SW vazio durante a falha. Loga a decisão final (tabId,
+      // windowId, URL) para que a próxima regressão tenha um rastro.
+      console.log(
+        '[verboo-workspace] leaseSourceTab tab', tab.id, 'window', tab.windowId,
+        'url', tab.url,
+      )
       return currentLease
     },
   }
