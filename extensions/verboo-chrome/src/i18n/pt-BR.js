@@ -742,5 +742,8 @@ export default {
   },
   "workspaceTab_onTab": {
     "message": "Na aba: {title}"
+  },
+  "workspaceTab_tabId": {
+    "message": "Aba #{id}"
   }
 }

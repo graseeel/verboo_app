@@ -106,3 +106,28 @@ export function toolCallTabIds(toolCall) {
   }
   return [...new Set(ids)].slice(0, 3)
 }
+
+/**
+ * Human labels for the tabs a tool call targets, one per id. Each id is
+ * resolved through `resolveTab`; a resolved tab uses workspaceTabLabel
+ * (title → host), falling back to `labels.untitled` when empty; a tab that
+ * does not resolve (already closed) falls back to `labels.tabId(id)` so a
+ * destructive approval still names its target. Callers render the result via
+ * textContent (page-derived data is untrusted).
+ * @param {number[]} ids
+ * @param {(id: number) => Promise<{ title?: unknown, url?: unknown } | null | undefined>} resolveTab
+ * @param {{ untitled: string, tabId: (id: number) => string }} labels
+ * @returns {Promise<string[]>}
+ */
+export async function toolCallTabLabels(ids, resolveTab, labels) {
+  const out = []
+  for (const id of ids) {
+    const tab = await resolveTab(id)
+    if (!tab) {
+      out.push(labels.tabId(id))
+      continue
+    }
+    out.push(workspaceTabLabel({ title: tab.title, url: tab.url }) || labels.untitled)
+  }
+  return out
+}

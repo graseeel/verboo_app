@@ -132,8 +132,21 @@ test('panel surfaces the workspace tab it acts on, focused only via explicit cli
       'workspaceTab_closed',
       'workspaceTab_untitled',
       'workspaceTab_onTab',
+      'workspaceTab_tabId',
     ]) {
       assert.match(bundle, new RegExp(`"${key}"`))
     }
+  }
+})
+
+test('close approvals name the target tab and fall back to its id when dead', () => {
+  // The annotation resolves each target through the shared label builder.
+  assert.match(script, /toolCallTabLabels\(/)
+  assert.match(script, /chrome\.tabs\.get\(id\)\.catch\(\(\) => null\)/)
+  // A dead tab still names its target via the localized id fallback.
+  assert.match(script, /workspaceTab_tabId/)
+  assert.match(script, /textContent = t\('workspaceTab_onTab'\)/)
+  for (const bundle of [enUs, ptBr]) {
+    assert.match(bundle, /"workspaceTab_tabId"/)
   }
 })

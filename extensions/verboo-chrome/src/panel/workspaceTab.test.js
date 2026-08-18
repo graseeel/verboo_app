@@ -6,6 +6,7 @@ import {
   isWorkspaceTab,
   tabUrlHost,
   toolCallTabIds,
+  toolCallTabLabels,
   truncateTabTitle,
   workspaceTabChipState,
   workspaceTabLabel,
@@ -83,6 +84,38 @@ test('toolCallTabIds: collects targets of tab-mutating tools, deduped and capped
   assert.deepEqual(toolCallTabIds({ params: 'junk' }), [])
 })
 
+test('toolCallTabLabels: resolved tabs use title/host, dead tabs fall back to the id', async () => {
+  const resolveTab = async (id) =>
+    id === 7 ? { title: 'YouTube', url: 'https://www.youtube.com/watch' } : null
+  const labels = { untitled: 'Untitled tab', tabId: (id) => `Tab #${id}` }
+  // Aba viva: título resolvido.
+  assert.deepEqual(await toolCallTabLabels([7], resolveTab, labels), ['YouTube'])
+  // Aba morta: fallback para o id — o card ainda nomeia o alvo.
+  assert.deepEqual(await toolCallTabLabels([99], resolveTab, labels), ['Tab #99'])
+  // Misto: cada id vira um label, na ordem.
+  assert.deepEqual(await toolCallTabLabels([7, 99, 5], resolveTab, labels), [
+    'YouTube',
+    'Tab #99',
+    'Tab #5',
+  ])
+  assert.deepEqual(await toolCallTabLabels([], resolveTab, labels), [])
+})
+
+test('toolCallTabLabels: empty title falls back to the host, then to untitled', async () => {
+  const resolveTab = async (id) => {
+    const tabs = {
+      1: { title: '', url: 'https://mail.google.com/inbox' },
+      2: { title: '   ', url: 'chrome://extensions' },
+    }
+    return tabs[id] ?? null
+  }
+  const labels = { untitled: 'Untitled tab', tabId: (id) => `Tab #${id}` }
+  // Título vazio com URL: o host identifica a página.
+  assert.deepEqual(await toolCallTabLabels([1], resolveTab, labels), ['mail.google.com'])
+  // Título e URL sem host utilizável: label "untitled" localizado.
+  assert.deepEqual(await toolCallTabLabels([2], resolveTab, labels), ['Untitled tab'])
+})
+
 test('workspace-tab copy exists in both locale bundles with key parity', () => {
   for (const key of [
     'workspaceTab_acting',
@@ -91,6 +124,7 @@ test('workspace-tab copy exists in both locale bundles with key parity', () => {
     'workspaceTab_closed',
     'workspaceTab_untitled',
     'workspaceTab_onTab',
+    'workspaceTab_tabId',
   ]) {
     assert.equal(typeof EN_US[key]?.message, 'string', `en-US missing ${key}`)
     assert.equal(typeof PT_BR[key]?.message, 'string', `pt-BR missing ${key}`)

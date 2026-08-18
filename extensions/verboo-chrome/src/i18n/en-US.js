@@ -742,5 +742,8 @@ export default {
   },
   "workspaceTab_onTab": {
     "message": "On tab: {title}"
+  },
+  "workspaceTab_tabId": {
+    "message": "Tab #{id}"
   }
 }

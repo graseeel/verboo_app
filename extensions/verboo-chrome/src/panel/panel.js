@@ -38,6 +38,7 @@ import {
   canFocusWorkspaceTab,
   isWorkspaceTab,
   toolCallTabIds,
+  toolCallTabLabels,
   workspaceTabChipState,
   workspaceTabLabel,
 } from './workspaceTab.js'
@@ -1245,22 +1246,26 @@ function renderToolCard(toolCall, policyDecision) {
  * Show the human target ("On tab: <title>") for tab-mutating approvals
  * (tabs switch/close, tab_group). Raw ids stay in the params line; resolved
  * titles are display-only and rendered via textContent (untrusted page data).
+ * A tab that no longer resolves (already closed) falls back to its id so a
+ * destructive close approval still names its target.
  * @param {{ id: string, name: string, params?: unknown }} toolCall
  * @param {HTMLElement} card
  */
 async function annotateToolCardTab(toolCall, card) {
   const ids = toolCallTabIds(toolCall)
   if (ids.length === 0) return
-  const titles = []
-  for (const id of ids) {
-    const tab = await chrome.tabs.get(id).catch(() => null)
-    if (!tab) continue
-    titles.push(workspaceTabLabel({ title: tab.title, url: tab.url }) || t('workspaceTab_untitled'))
-  }
-  if (titles.length === 0 || !document.contains(card)) return
+  const labels = await toolCallTabLabels(
+    ids,
+    (id) => chrome.tabs.get(id).catch(() => null),
+    {
+      untitled: t('workspaceTab_untitled'),
+      tabId: (id) => t('workspaceTab_tabId').replace('{id}', String(id)),
+    },
+  )
+  if (!document.contains(card)) return
   const line = document.createElement('div')
   line.className = 'tool-card-tab'
-  line.textContent = t('workspaceTab_onTab').replace('{title}', titles.join(', '))
+  line.textContent = t('workspaceTab_onTab').replace('{title}', labels.join(', '))
   const params = card.querySelector('.tool-card-params')
   if (params) params.after(line)
   else card.appendChild(line)
