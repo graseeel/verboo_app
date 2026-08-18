@@ -170,6 +170,29 @@ test('L2 PÓS-RE-GATE: literal Farol forms — saber/conhecer stay conversation'
   assert.equal(hasImperativeWithObject('queria saber o preço'), false)
 })
 
+// ── T6-B (Ciclo dos Achados de Campo): dêitico vence o gate de conhecimento ──
+
+test('T6-B: âncora dêitica de página (deste/desta/this + substantivo) vence o DESIRE_GATE — a pergunta é sobre a página', () => {
+  assert.equal(hasImperativeWithObject('quero saber o preço deste produto'), true)
+  assert.equal(hasImperativeWithObject('preciso saber o valor desta página'), true)
+  assert.equal(hasImperativeWithObject('i want to know the price of this product'), true)
+})
+
+test('T6-B anti-FP: sem dêitico, o desejo de conhecimento segue conversa', () => {
+  assert.equal(hasImperativeWithObject('quero saber o preço do iPhone 15'), false)
+  assert.equal(hasImperativeWithObject('preciso saber o preço do produto'), false)
+  assert.equal(hasImperativeWithObject('i want to know the price of the product'), false)
+  // "está" (verbo) vira "esta" após NFD strip — NÃO é dêitico.
+  assert.equal(hasImperativeWithObject('quero saber se o preço está caro'), false)
+})
+
+test('T6-B anti-FP R2: "deste" como verbo dar (pronome pessoal antes) NÃO é âncora dêitica', () => {
+  assert.equal(hasImperativeWithObject('quero saber se tu deste o livro'), false)
+  assert.equal(hasImperativeWithObject('quero saber se você deste o livro'), false)
+  // O dêitico legítimo continua funcionando (substantivo imediatamente após).
+  assert.equal(hasImperativeWithObject('quero saber o preço deste produto'), true)
+})
+
 test('L2 PÓS-RE-GATE: EN to know / to find out stay conversation', () => {
   assert.equal(hasImperativeWithObject('i want to know the price'), false)
   assert.equal(hasImperativeWithObject('need to know the price'), false)

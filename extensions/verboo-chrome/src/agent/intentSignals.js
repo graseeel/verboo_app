@@ -87,6 +87,20 @@ const EXPLANATION_GATE_RE =
 const DESIRE_GATE_RE =
   /^(?:(?:eu\s+)?(?:preciso|quero|queria|gostaria)\s+(?:de\s+)?(?:o|a|os|as|um|uma|uns|umas)\b|(?:eu\s+)?(?:preciso|quero|queria|gostaria)\s+(?:de\s+)?(?:saber|conhecer)\b|(?:i\s+)?(?:need|want)\s+(?:a|an|the|to\s+have|to\s+know|to\s+find\s+out)\b|i\s+would\s+like\s+(?:a|an|the|to\s+have|to\s+know|to\s+find\s+out)\b|i['’]?d\s+like\s+(?:a|an|the|to\s+have|to\s+know|to\s+find\s+out)\b)/i
 
+// T6-B (Ciclo dos Achados de Campo): âncora dêitica de página — dêitico
+// inequívoco + substantivo (o vocabulário de âncoras do L1). Quando o
+// desejo de conhecimento aponta para a PÁGINA ("quero saber o preço deste
+// produto"), o DESIRE_GATE NÃO se aplica — a pergunta é sobre o que está
+// na tela, não uma pergunta geral. "quero saber o preço do iPhone 15"
+// (sem dêitico) segue conversa. "este/esta/esse/essa" ficam de fora:
+// após NFD strip, "está" vira "esta" (verbo) — falso positivo.
+// R2 (gate ACHADOS-CAMPO): o dêitico deve ser DETERMINANTE de substantivo
+// de página — (a) substantivo IMEDIATAMENTE após (não artigo/preposição/
+// pronome/conjunção: "deste o livro" é verbo dar + artigo, não dêitico) e
+// (b) sem pronome pessoal antes ("tu deste o livro" = verbo dar conjugado).
+const DEICTIC_PAGE_ANCHOR_RE =
+  /(?<!(?:eu|tu|voce|ele|ela|eles|elas|nos|vos|voces)\s+)(?:deste|desta|desse|dessa|neste|nesta|nesse|nessa|this)\s+(?!(?:o|a|os|as|um|uma|uns|umas|de|do|da|dos|das|no|na|nos|nas|em|para|com|por|que|se|e|ou|mas|me|te|lhe)\b)[a-z]+\b/i
+
 const IMPERATIVE_WITH_OBJECT_RE =
   /^[a-z]+\s+(?:[a-z]+\s+){0,4}(?:o|a|os|as|um|uma|uns|umas|the|an)\s+[a-z]+\b/i
 
@@ -99,7 +113,9 @@ export function hasImperativeWithObject(value) {
   if (!text) return false
   if (INTERROGATIVE_GATE_RE.test(text)) return false
   if (EXPLANATION_GATE_RE.test(text)) return false
-  if (DESIRE_GATE_RE.test(text)) return false
+  // T6-B: o gate de desejo-de-conhecimento NÃO se aplica quando há âncora
+  // dêitica de página — a pergunta é sobre a tela, não uma pergunta geral.
+  if (DESIRE_GATE_RE.test(text) && !DEICTIC_PAGE_ANCHOR_RE.test(text)) return false
   return IMPERATIVE_WITH_OBJECT_RE.test(text)
 }
 
