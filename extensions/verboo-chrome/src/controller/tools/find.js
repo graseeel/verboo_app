@@ -38,7 +38,8 @@ export async function findTool(tool, ctx = {}) {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: findInPage,
-    args: [text.trim(), tool?.selector ?? null],
+    // B-2 (Farol): deadlines injetáveis — tool.deadlines só para testes.
+    args: [text.trim(), tool?.selector ?? null, tool.deadlines],
   })
 
   if (!result) throw new Error('find: no result from page')
@@ -75,15 +76,18 @@ export async function findTool(tool, ctx = {}) {
  * @param {string | null} scopeSelector
  * @returns {Promise<Array<{ text: string; tag: string; selector: string; href?: string }>}>
  */
-async function findInPage(text, scopeSelector) {
+async function findInPage(text, scopeSelector, deadlines) {
+  // B-2 (Farol): deadlines injetáveis para teste — defaults de produção.
+  const readyMs = deadlines?.readyMs ?? 5000
+  const elementMs = deadlines?.elementMs ?? 3000
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-  const readyDeadline = Date.now() + 5000
+  const readyDeadline = Date.now() + readyMs
   while (document.readyState !== 'complete' && Date.now() < readyDeadline) {
     await sleep(100)
   }
   let scope = null
   if (scopeSelector) {
-    const elementDeadline = Date.now() + 3000
+    const elementDeadline = Date.now() + elementMs
     for (;;) {
       scope = document.querySelector(scopeSelector)
       if (scope) break

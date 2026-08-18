@@ -48,7 +48,8 @@ export async function click(tool, ctx = {}) {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: clickInPage,
-    args: [selector, x, y, button],
+    // B-2 (Farol): deadlines injetáveis — tool.deadlines só para testes.
+    args: [selector, x, y, button, tool.deadlines],
   })
 
   if (!result) throw new Error('click: no result from page')
@@ -93,15 +94,18 @@ export async function click(tool, ctx = {}) {
  * @param {number} button
  * @returns {Promise<boolean>}
  */
-async function clickInPage(selector, x, y, button) {
+async function clickInPage(selector, x, y, button, deadlines) {
+  // B-2 (Farol): deadlines injetáveis para teste — defaults de produção.
+  const readyMs = deadlines?.readyMs ?? 5000
+  const elementMs = deadlines?.elementMs ?? 3000
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-  const readyDeadline = Date.now() + 5000
+  const readyDeadline = Date.now() + readyMs
   while (document.readyState !== 'complete' && Date.now() < readyDeadline) {
     await sleep(100)
   }
   let el = null
   if (selector !== null) {
-    const elementDeadline = Date.now() + 3000
+    const elementDeadline = Date.now() + elementMs
     for (;;) {
       el = document.querySelector(selector)
       if (el) break

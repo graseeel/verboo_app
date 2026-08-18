@@ -38,7 +38,9 @@ export async function typeText(tool, ctx = {}) {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: typeInPage,
-    args: [selector, text, clear, pressEnter],
+    // B-2 (Farol): deadlines injetáveis — tool.deadlines é só para testes
+    // (default de produção em typeInPage); o modelo nunca envia.
+    args: [selector, text, clear, pressEnter, tool.deadlines],
   })
 
   if (!result) throw new Error('type: no result from page')
@@ -131,17 +133,21 @@ export async function typeText(tool, ctx = {}) {
  * @param {boolean} pressEnter
  * @returns {Promise<boolean | { found: true, handled: boolean }>}
  */
-async function typeInPage(selector, text, clear, pressEnter) {
+async function typeInPage(selector, text, clear, pressEnter, deadlines) {
   // R-C1/GENERALIZAÇÃO-2: the first tool call of a turn can race the
   // framework's mount (the lease tab may still be loading, React may not
   // have rendered the input yet). Zero cost on a ready page (the
   // readyState check is instant and the selector is usually present).
+  // B-2 (Farol): deadlines injetáveis para teste — defaults de produção
+  // (5000ms ready / 3000ms element).
+  const readyMs = deadlines?.readyMs ?? 5000
+  const elementMs = deadlines?.elementMs ?? 3000
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-  const readyDeadline = Date.now() + 5000
+  const readyDeadline = Date.now() + readyMs
   while (document.readyState !== 'complete' && Date.now() < readyDeadline) {
     await sleep(100)
   }
-  const elementDeadline = Date.now() + 3000
+  const elementDeadline = Date.now() + elementMs
   let el = /** @type {HTMLInputElement | HTMLTextAreaElement | null} */ (null)
   for (;;) {
     el = /** @type {HTMLInputElement | HTMLTextAreaElement | null} */ (document.querySelector(selector))

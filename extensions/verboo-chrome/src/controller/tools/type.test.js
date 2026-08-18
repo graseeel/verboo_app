@@ -43,7 +43,8 @@ async function typeInto(html, tool, before = () => {}) {
     },
     scripting: {
       executeScript: async ({ func, args }) => {
-        const isTypeFn = Array.isArray(args) && args.length === 4 && typeof args[0] === 'string'
+        // B-2: o 5º arg (deadlines) é opcional — aceita 4 ou 5 args.
+        const isTypeFn = Array.isArray(args) && args.length >= 4 && typeof args[0] === 'string'
         try {
           return [{ result: isTypeFn ? await func(...args) : true }]
         } catch {
@@ -174,20 +175,22 @@ test('type: R-C1 — an element that appears late is found by the poll', async (
 })
 
 test('type: R-C1 — a never-appearing element fails honestly after the poll timeout', async () => {
+  // B-2: deadline curto injetado — o teste não espera os 8s de produção.
   await assert.rejects(
-    typeInto('<div id="root"></div>', { pressEnter: true }),
+    typeInto('<div id="root"></div>', { pressEnter: true, deadlines: { readyMs: 10, elementMs: 10 } }),
     /type: selector not found: #t \(ran in tab 42: /,
   )
 })
 
 test('type: PÓS-CAMPO-3 — the not-found error points at the find TOOL and keeps pressEnter', async () => {
+  // B-2: deadline curto injetado.
   await assert.rejects(
-    typeInto('<div id="root"></div>', { selector: '#missing', pressEnter: true }),
+    typeInto('<div id="root"></div>', { selector: '#missing', pressEnter: true, deadlines: { readyMs: 10, elementMs: 10 } }),
     /type: selector not found: #missing \(ran in tab 42: .*\) — call the find tool to get a valid selector for this element, then retry type keeping pressEnter: true/,
   )
   // Without pressEnter the hint still points at find (no "same arguments").
   await assert.rejects(
-    typeInto('<div id="root"></div>', { selector: '#missing' }),
+    typeInto('<div id="root"></div>', { selector: '#missing', deadlines: { readyMs: 10, elementMs: 10 } }),
     /^Error: type: selector not found: #missing \(ran in tab 42: .*\) — call the find tool to get a valid selector for this element, then retry$/,
   )
 })
