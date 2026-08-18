@@ -1629,7 +1629,7 @@ export function modelIdentityDirectiveFor(modelId, supportsVision) {
  * Lightweight PT detector — enough for agent turns without a full i18n stack.
  * @param {string} text
  */
-function looksPortuguese(text) {
+export function looksPortuguese(text) {
   if (!text) return false
   if (/[áàâãéêíóôõúçÁÀÂÃÉÊÍÓÔÕÚÇ]/.test(text)) return true
   // Common PT browser-agent phrases (with and without accents).

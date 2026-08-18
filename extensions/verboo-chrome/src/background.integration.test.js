@@ -233,7 +233,7 @@ async function runTurn({ sourceWindowId, sourceTabId, userMessage, chatResponses
   const consoleLogs = []
   const origLog = console.log
   console.log = (...args) => { consoleLogs.push(args.map(String).join(' ')); origLog(...args) }
-  const { fetch } = makeFetchMock({ chatResponses })
+  const { fetch, requests } = makeFetchMock({ chatResponses })
   globalThis.fetch = fetch
 
   const turnId = 'test-turn-' + Math.random().toString(36).slice(2)
@@ -260,7 +260,7 @@ async function runTurn({ sourceWindowId, sourceTabId, userMessage, chatResponses
     if (terminal) break
   }
   console.log = origLog
-  return { terminal, broadcasts: sh.broadcasts, consoleLogs }
+  return { terminal, broadcasts: sh.broadcasts, consoleLogs, requests }
 }
 
 test('(1) painel na janela B (sourceWindowId=20) → lease = aba ativa de B SEMPRE (2 janelas)', async () => {
@@ -524,4 +524,60 @@ test('(URL-ÚNICA) FONTE ÚNICA: loop usa activeTab?.url (lease https), NÃO o c
   assert.ok(executing, '1º tool (read_page) EXECUTOU — L2 disparou com a URL do lease (https), não a do currentWindow (chrome://)')
   const generic = 'Não consegui concluir o pedido. Tente novamente.'
   assert.notEqual(terminal.assistantMessage, generic, 'não é a genérica — o turno foi de navegador de verdade')
+})
+
+test('(T5-B) HARD BLOCK PRECOCE: "faz um pix de 50 reais para o João" em skip → recusa imediata com mensagem de segurança, zero fetch', async () => {
+  const sh = await ensureImported()
+  const tabA = { id: 1, windowId: 10, url: 'https://a.com/', active: true, status: 'complete' }
+  sh.state.windows = { 10: { activeTab: tabA } }
+  sh.state.tabsById = new Map([[tabA.id, tabA]])
+  const { terminal, requests } = await runTurn({
+    sourceWindowId: 10,
+    sourceTabId: 1,
+    userMessage: 'faz um pix de 50 reais para o João',
+    chatResponses: [toolCallResponse, textResponse],
+  })
+  assert.ok(terminal, 'turno terminou')
+  assert.equal(terminal.type, 'agent:turn_complete', `turno completou: ${terminal.error ?? ''}`)
+  // Mensagem de segurança do hard block (PT), NÃO a genérica/fence.
+  assert.match(terminal.assistantMessage, /Não posso executar transferências de dinheiro/, 'mensagem de segurança do hard block (financial_trade)')
+  const chatCalls = requests.filter((r) => String(r.url).includes('/chat/completions'))
+  assert.equal(chatCalls.length, 0, 'zero fetch — o modelo NÃO foi chamado (recusa imediata)')
+})
+
+test('(R1) RECLASSIFY reavalia hard block: conversa que reclassifica com texto de pix → recusa, não re-run', async () => {
+  const sh = await ensureImported()
+  const tabA = { id: 1, windowId: 10, url: 'https://a.com/', active: true, status: 'complete' }
+  sh.state.windows = { 10: { activeTab: tabA } }
+  sh.state.tabsById = new Map([[tabA.id, tabA]])
+  // "o que é pix?" é CONVERSA (browserToolsRequested false) → o portão
+  // precoce do runAgentTurn não dispara. O modelo emite tool call →
+  // reclassify. R1: o reclassify DEVE reavaliar o hard block antes do
+  // re-run (turno reclassificado passa pelo mesmo portão).
+  const { terminal, requests } = await runTurn({
+    sourceWindowId: 10,
+    sourceTabId: 1,
+    userMessage: 'o que é pix?',
+    chatResponses: [toolCallResponse, textResponse],
+  })
+  assert.ok(terminal, 'turno terminou')
+  assert.equal(terminal.type, 'agent:turn_complete', `turno completou: ${terminal.error ?? ''}`)
+  assert.match(terminal.assistantMessage, /Não posso executar transferências de dinheiro/, 'recusa de hard block no reclassify (não re-run)')
+  const chatCalls = requests.filter((r) => String(r.url).includes('/chat/completions'))
+  assert.equal(chatCalls.length, 1, 'só a 1ª chamada ao modelo — o re-run do reclassify NÃO aconteceu (recusa antes)')
+})
+
+test('(T5-B) anti-FP: "transferir para outra aba" NÃO recusa o turno (não é financeiro)', async () => {
+  const sh = await ensureImported()
+  const tabA = { id: 1, windowId: 10, url: 'https://a.com/', active: true, status: 'complete' }
+  sh.state.windows = { 10: { activeTab: tabA } }
+  sh.state.tabsById = new Map([[tabA.id, tabA]])
+  const { terminal } = await runTurn({
+    sourceWindowId: 10,
+    sourceTabId: 1,
+    userMessage: 'transferir para outra aba',
+    chatResponses: [textResponse],
+  })
+  assert.ok(terminal, 'turno terminou')
+  assert.ok(!/Não posso executar/.test(terminal.assistantMessage), 'não é a mensagem de hard block — o turno prosseguiu')
 })
