@@ -1909,6 +1909,65 @@ test('G3: long page extraction delivers the END of the page to the model', async
   }
 })
 
+// ── T4 (Ciclo dos Achados de Campo): read_page truncado sinaliza NO RESULTADO ──
+test('T4: read_page truncado sinaliza NO RESULTADO (conteúdo truncado em N chars — use structured_extract)', async () => {
+  const requestBodies = []
+  const longText = `LIVRO-1 ${'corpo intermediario. '.repeat(1200)} LIVRO-20-FINAL`
+  const origFetch = globalThis.fetch
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    const index = requestBodies.length
+    if (index === 1) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { role: 'assistant', content: '<tool_call>\n<function=read_page>\n<parameter=selector>body</parameter>\n</function>\n</tool_call>' } }],
+        }),
+      }
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { role: 'assistant', content: 'Resumo da lista.' } }],
+      }),
+    }
+  }
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_t4_truncated',
+      userMessage: 'quais são os livros desta página?',
+      accessToken: 'test-key',
+      modelId: 'normal-text-model',
+      modelSupportsVision: true,
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        if (tc.name === 'read_page') {
+          return { ok: true, result: { text: longText, interactiveElements: [] } }
+        }
+        return { ok: true, result: 'ok' }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://books.example/list', title: 'Lista de livros' }),
+    })
+    const secondRequest = requestBodies[1]
+    assert.ok(secondRequest, 'deve haver um segundo request com a resposta do modelo')
+    const toolResultContent = secondRequest.messages
+      .filter((m) => m.role === 'tool')
+      .map((m) => String(m.content))
+      .join('\n')
+    assert.match(
+      toolResultContent,
+      /conteúdo truncado em \d+ chars — use structured_extract com selector/,
+      'a nota de truncamento está NO RESULTADO — o modelo sabe que não viu tudo',
+    )
+    assert.ok(result.assistantMessage.length > 0, 'turno completou')
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
 // ── BLOQUEIO CADINHO 1 (G1 reativo): o caminho do vídeo ────
 // O defeito real é REATIVO: modelo chuta seletor → element-not-found
 // repetido → o loop injeta o STRATEGY_HINT → o modelo chama find →

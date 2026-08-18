@@ -96,6 +96,7 @@ IMPORTANT RULES:
 - DISCOVER BEFORE YOU CLICK: when the user names a target (a playlist, a button, an item) that is not visible to you yet, locate the REAL element first — call find with the user's wording, or read the page with read_page. Click only selectors returned by find/read_page.
 - Never invent or fabricate CSS selectors from memory — site structure is not something you know. If find/read_page return nothing for the named target, tell the user honestly that it was not found instead of trying more guessed selectors.
 - For a full-page extraction request (for example "extrai o conteudo e resume", "extract this page"), call extract_page_content to obtain the ENTIRE page text without truncation, then summarize from the full content.
+- T4 (list/comparison): for LIST or COMPARISON questions (for example "quais são os livros?", "compare os preços", "liste os produtos"), call structured_extract with a selector to get the data as a table/CSV — read_page truncates long pages at 4000 chars and signals the truncation in the result. If the question involves numeric ordering (price, date, rating, quantity), ask structured_extract to sort numerically.
 - For search: navigate to the search engine, type the query, submit
 - For reading a page: use read_page with a targeted selector, not the whole body when possible
 - For an explicit current-page inspection request (for example "o que é isso", "o que diz esta página", or "extract this page"), ALWAYS call read_page before answering. Do not answer that browser tools are unavailable when the current page is an HTTP(S) page.
@@ -853,15 +854,17 @@ async function runLlmAgentTurnWithinBudget({
           } else if (raw.text) {
             // G3-CHROME: same full-text rule for object-shaped results.
             if (tc.name === 'read_page' && Array.isArray(raw.interactiveElements)) {
-              resultText = truncate(JSON.stringify({
+              // T4: truncamento do read_page sinaliza NO RESULTADO — o modelo
+              // sabe que não viu tudo e usa structured_extract para o restante.
+              resultText = truncateWithNotice(JSON.stringify({
                 interactiveElements: raw.interactiveElements,
                 interactiveElementsTruncated: raw.interactiveElementsTruncated === true,
                 text: String(raw.text),
-              }), MAX_RESULT_CHARS)
+              }), MAX_RESULT_CHARS, userMessage)
             } else {
               resultText = tc.name === 'extract_page_content'
                 ? String(raw.text)
-                : truncate(String(raw.text), MAX_RESULT_CHARS)
+                : truncateWithNotice(String(raw.text), MAX_RESULT_CHARS, userMessage)
             }
           } else if (Array.isArray(raw)) {
             resultText = truncate(JSON.stringify(raw), MAX_RESULT_CHARS)
@@ -1670,6 +1673,25 @@ function normalizeScreenshotDataUrl(value) {
 function truncate(text, max) {
   if (text.length <= max) return text
   return text.slice(0, max - 20) + '\n…(truncated)'
+}
+
+/**
+ * T4 (Ciclo dos Achados de Campo): trunca E sinaliza NO RESULTADO — o
+ * modelo precisa saber que não viu tudo (honestidade estrutural na leitura).
+ * A nota aponta o caminho para ler o restante (structured_extract com
+ * selector). Só aplicada no caminho de LEITURA (read_page); extract_page_content
+ * é chunked (nunca trunca).
+ * @param {string} text
+ * @param {number} max
+ * @param {string} userMessage
+ */
+function truncateWithNotice(text, max, userMessage) {
+  if (text.length <= max) return text
+  const n = text.length
+  const notice = looksPortuguese(userMessage)
+    ? `\n[conteúdo truncado em ${n} chars — use structured_extract com selector para ler o restante]`
+    : `\n[content truncated at ${n} chars — use structured_extract with a selector to read the rest]`
+  return text.slice(0, max - 20) + notice
 }
 
 /**
