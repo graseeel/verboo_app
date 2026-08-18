@@ -325,6 +325,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             message.conversationHistory,
             selectionContext,
             message.sourceWindowId,
+            message.sourceTabId,
           )
           // ITEM ABERTO (decisão do Maestro): esta chamada usa 2 args (sem
           // activeTabUrl) — turnos detectados só pelo L2 rodam FORA da
@@ -884,6 +885,10 @@ async function resolveSelectionContextForTurn(message) {
  * @param {import('./selectionContext.js').PendingSelectionContext | null} [selectionContext]
  * @param {number} [sourceWindowId] — janela do painel (enviada pelo panel.js);
  *   sem ela (payload antigo/CLI) vale a regra do candidato único.
+ * @param {number} [sourceTabId] — aba ativa capturada pelo painel NO ENVIO
+ *   (tabs.query active na janela do painel). Fecha a corrida de captura:
+ *   o usuário pode trocar de aba entre o envio e o processamento. O
+ *   background valida (existe, pertence à janela, controlável) e usa direto.
  */
 async function runAgentTurn(
   turnId,
@@ -893,6 +898,7 @@ async function runAgentTurn(
   conversationHistory,
   selectionContext,
   sourceWindowId,
+  sourceTabId,
 ) {
   const controller = new AbortController()
   turnControllers.set(turnId, controller)
@@ -926,19 +932,30 @@ async function runAgentTurn(
     // Resolve the active tab up front so the model can decide between
     // a navigate (e.g. "abra o youtube" on chrome://extensions) and a
     // read_page on the current tab.
-    // CORREÇÃO PÓS-REPROVAÇÃO (gate REGRESSAO-B6B96D7, opção 1 do Farol):
-    // determinístico, sem cadeia de fallback e sem corrida de captura.
-    // (1) sourceWindowId (enviado pelo painel via chrome.windows.getCurrent):
-    //     tabs.query({active,windowId}) — a aba ativa DAQUELA janela.
-    // (2) Sem sourceWindowId (payload antigo/CLI): regra do candidato único
-    //     — tabs.query({active}); 1 candidato usa, >1 → fail-closed
-    //     (target_tab_unavailable) sob ambiguidade; NUNCA chutar janela.
-    // Captura UMA VEZ no início do turno (regra do dono); depois sticky.
+    // CICLO DEPURAÇÃO SISTEMÁTICA (A) — corrida de captura no nível da aba:
+    // sourceWindowId prende a janela, mas a aba ativa é lida DEPOIS — o
+    // usuário pode trocar de aba no mesmo ms (evidência 8d61dcb: lease nasceu
+    // no X). O painel captura sourceTabId NO ENVIO e envia no payload. O
+    // background valida (existe, pertence à janela, controlável) e usa direto.
+    // Query só como fallback de payload antigo/CLI.
     let activeTab = null
-    if (Number.isInteger(sourceWindowId)) {
+    if (Number.isInteger(sourceTabId)) {
+      try {
+        const tab = await chrome.tabs.get(sourceTabId)
+        if (tab?.id && (!Number.isInteger(sourceWindowId) || tab.windowId === sourceWindowId) && isControllableUrl(tab.url)) {
+          activeTab = tab
+          console.log('[verboo-workspace] resolveActiveTab: sourceTabId do painel (validado) → tab', activeTab.id, 'url', activeTab.url)
+        } else {
+          console.log('[verboo-workspace] resolveActiveTab: sourceTabId', sourceTabId, 'inválido (não existe/fora da janela/não controlável) — fallback para query')
+        }
+      } catch {
+        console.log('[verboo-workspace] resolveActiveTab: sourceTabId', sourceTabId, 'não encontrado — fallback para query')
+      }
+    }
+    if (!activeTab && Number.isInteger(sourceWindowId)) {
       activeTab = (await chrome.tabs.query({ active: true, windowId: sourceWindowId }))[0] ?? null
-      console.log('[verboo-workspace] resolveActiveTab: determinístico via sourceWindowId', sourceWindowId, '→ tab', activeTab?.id, 'url', activeTab?.url)
-    } else {
+      console.log('[verboo-workspace] resolveActiveTab: fallback query via sourceWindowId', sourceWindowId, '→ tab', activeTab?.id, 'url', activeTab?.url)
+    } else if (!activeTab) {
       const cands = await chrome.tabs.query({ active: true })
       if (cands.length === 1) {
         activeTab = cands[0]

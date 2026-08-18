@@ -213,7 +213,7 @@ function setupTwoWindows(sh, tabA, tabB) {
   sh.state.tabsById = new Map([[tabA.id, tabA], [tabB.id, tabB]])
 }
 
-async function runTurn({ sourceWindowId, userMessage, chatResponses }) {
+async function runTurn({ sourceWindowId, sourceTabId, userMessage, chatResponses }) {
   const sh = await ensureImported()
   sh.broadcasts.length = 0
   const consoleLogs = []
@@ -231,6 +231,7 @@ async function runTurn({ sourceWindowId, userMessage, chatResponses }) {
       modelId: 'kimi-k2.7',
       conversationHistory: [],
       ...(Number.isInteger(sourceWindowId) ? { sourceWindowId } : {}),
+      ...(Number.isInteger(sourceTabId) ? { sourceTabId } : {}),
     },
     { id: 'testextensionid', tab: undefined, url: 'chrome-extension://testextensionid/src/panel/panel.html' },
     () => {},
@@ -369,4 +370,32 @@ test('(5) RED-DE-VERDADE: L2 (crie uma tarefa) + sourceWindowId + 1 janela → b
     (m) => m.type === 'agent:thought' && /reclassificando|reclassifying/i.test(String(m.text ?? '')),
   )
   assert.ok(!reclassifyThought, 'SEM reclassify — browserToolsRequested=true (L2 disparou com activeTabUrl)')
+})
+
+test('(A) RED — corrida de captura no nível da aba: painel envia sourceTabId=2 (TodoMVC), mas a aba ativa virou tab 3 (X.com) → lease DEVE ser tab 2 (do envio), não tab 3', async () => {
+  const sh = await ensureImported()
+  // Cenário de campo (build 8d61dcb): usuário envia o prompt na aba TodoMVC
+  // (tab 2, janela 20) e troca para X.com (tab 3, mesma janela) em ms. O
+  // painel captura sourceTabId=2 no envio. O background recebe sourceTabId=2
+  // E sourceWindowId=20. A query tabs.query({active,windowId:20}) agora
+  // devolve tab 3 (X.com — o usuário trocou). O código ATUAL usa a query →
+  // leaseia tab 3 (errada). Com o fix, o background valida e usa sourceTabId
+  // diretamente → leaseia tab 2 (correta).
+  const todoTab = { id: 2, windowId: 20, url: 'https://todomvc.com/', active: false, status: 'complete' }
+  const xTab = { id: 3, windowId: 20, url: 'https://x.com/home', active: true, status: 'complete' }
+  sh.state.windows = { 20: { activeTab: xTab } }  // a aba ATIVA agora é X.com
+  sh.state.tabsById = new Map([[todoTab.id, todoTab], [xTab.id, xTab]])
+
+  const { terminal, consoleLogs } = await runTurn({
+    sourceWindowId: 20,
+    sourceTabId: 2,  // painel capturou TodoMVC no envio
+    userMessage: 'crie uma tarefa chamada comprar pão',
+    chatResponses: [toolCallResponse, textResponse],
+  })
+  assert.ok(terminal, 'turno terminou')
+  // O lease DEVE ser tab 2 (TodoMVC — a aba do envio), não tab 3 (X.com).
+  const leaseLog = consoleLogs.find((l) => l.includes('leaseSourceTab'))
+  assert.ok(leaseLog, 'log leaseSourceTab apareceu')
+  assert.ok(leaseLog.includes('tab 2'), `lease é tab 2 (TodoMVC do envio), não tab 3 (X.com). Log: ${leaseLog}`)
+  assert.ok(!leaseLog.includes('tab 3'), `lease NÃO é tab 3 (X.com — a aba ativa pós-troca). Log: ${leaseLog}`)
 })

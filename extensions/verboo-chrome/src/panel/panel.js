@@ -1869,6 +1869,24 @@ function initChat() {
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault()
+    // A-1 (gate DEPURACAO-SISTEMATICA): captura sourceWindowId+sourceTabId na
+    // PRIMEIRA linha do submit — antes de ensureConversationHydrated/
+    // chooseRoutine/AUTH_STATE_REQUEST/loadSession. A janela de corrida vira
+    // zero-awaits: o usuário pode trocar de aba no mesmo ms do envio, e o
+    // painel precisa registrar a aba de onde o prompt saiu ANTES de qualquer
+    // await. O background valida e usa direto (query só como fallback).
+    let sourceWindowId
+    let sourceTabId
+    try {
+      const currentWin = await chrome.windows.getCurrent()
+      sourceWindowId = Number.isInteger(currentWin?.id) ? currentWin.id : undefined
+      if (Number.isInteger(sourceWindowId)) {
+        const [activeTab] = await chrome.tabs.query({ active: true, windowId: sourceWindowId })
+        sourceTabId = Number.isInteger(activeTab?.id) ? activeTab.id : undefined
+      }
+    } catch {
+      /* painel sem acesso a windows.getCurrent — background usa regra do candidato único */
+    }
     await ensureConversationHydrated()
     const text = input.value.trim()
     if (!text) return
@@ -1916,17 +1934,8 @@ function initChat() {
     ensureWorkingHeader()
     armTurnWatchdogs(turnId)
     try {
-      // CORREÇÃO PÓS-REPROVAÇÃO (gate REGRESSAO-B6B96D7): o painel envia a
-      // janela de onde está (chrome.windows.getCurrent() é sem ambiguidade
-      // no contexto do painel). O background usa tabs.query({active,windowId})
-      // — determinístico, sem cadeia de fallback e sem corrida de captura.
-      let sourceWindowId
-      try {
-        const currentWin = await chrome.windows.getCurrent()
-        sourceWindowId = Number.isInteger(currentWin?.id) ? currentWin.id : undefined
-      } catch {
-        /* painel sem acesso a windows.getCurrent — background usa regra do candidato único */
-      }
+      // sourceWindowId/sourceTabId capturados na PRIMEIRA linha do submit
+      // (A-1) — aqui só o envio.
       const response = await chrome.runtime.sendMessage({
         type: MSG.AGENT_TURN_START,
         turnId,
@@ -1934,6 +1943,7 @@ function initChat() {
         modelId: selectedModelId,
         conversationHistory: priorConversation,
         ...(Number.isInteger(sourceWindowId) ? { sourceWindowId } : {}),
+        ...(Number.isInteger(sourceTabId) ? { sourceTabId } : {}),
         ...(selectionContextForTurn
           ? {
               selectionContextId: selectionContextForTurn.id,
