@@ -293,6 +293,10 @@ async function runLlmAgentTurnWithinBudget({
   // 1 auto-find per tool name per turn; empty find → honest feedback.
   const failedSelectorCounts = { type: 0, click: 0 }
   const autoFindUsed = { type: false, click: false }
+  // CICLO DEPURAÇÃO SISTEMÁTICA (B): screenshot em background — após 2 falhas
+  // de captura no turno (aba de trabalho em segundo plano), o loop para de
+  // reoferecer screenshot (3ª chamada BLOQUEADA) e orienta read_page.
+  let screenshotFailures = 0
   // PÓS-CAMPO-5: structural honesty — track mutation outcomes so the final
   // assistant text can NEVER claim success when nothing committed. The
   // condition is 100% structural (no model-text interpretation).
@@ -706,6 +710,39 @@ async function runLlmAgentTurnWithinBudget({
         continue
       }
 
+      // CICLO DEPURAÇÃO SISTEMÁTICA (B): screenshot em background — após 2
+      // falhas de captura (aba de trabalho em segundo plano), a 3ª chamada
+      // NÃO executa: result honesto + feedback dirigido (mesma família do
+      // auto-find e do blocked_repeated_failed_call). Evita o turno queimando
+      // steps tentando screenshot impossível (evidência 8d61dcb: 99 steps).
+      if (tc.name === 'screenshot' && screenshotFailures >= 2) {
+        allToolResults.push({
+          toolCallId: tc.id,
+          name: tc.name,
+          success: false,
+          data: null,
+          error: 'screenshot_blocked_background_tab',
+          durationMs: 0,
+        })
+        broadcast({
+          type: MSG.AGENT_TOOL_RESULT,
+          turnId,
+          toolResult: {
+            toolCallId: tc.id,
+            success: false,
+            data: null,
+            error: 'screenshot_blocked_background_tab',
+            durationMs: 0,
+          },
+        })
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: 'BLOCKED: screenshots failed twice because the working tab is in the background (captureVisibleTab only captures the visible tab). Screenshots are unavailable for this turn — use read_page to inspect the working tab.',
+        })
+        continue
+      }
+
       // Broadcast what the LLM decided to do (panel shape).
       broadcast({
         type: MSG.AGENT_THOUGHT,
@@ -736,6 +773,19 @@ async function runLlmAgentTurnWithinBudget({
       }
       if (tc.name === 'read_page') {
         inspectionSinceLastMutate = true
+      }
+      // CICLO DEPURAÇÃO SISTEMÁTICA (B): screenshot em background — conta
+      // falhas de captura (aba em segundo plano). Após a 2ª, feedback
+      // system dirigido (use read_page); a 3ª chamada é bloqueada acima.
+      if (!execResult.ok && tc.name === 'screenshot'
+          && /segundo plano|background|captureVisibleTab/i.test(String(execResult.error ?? ''))) {
+        screenshotFailures += 1
+        if (screenshotFailures >= 2) {
+          pendingSystemMessages.push(
+            'Screenshots failed twice because the working tab is in the background (captureVisibleTab only captures the visible tab). ' +
+            'Screenshots are unavailable for this turn — use read_page to inspect the working tab.',
+          )
+        }
       }
       // PÓS-CAMPO-4: automatic recovery — on the 2nd selector-not-found
       // failure of the same tool name (weak models ignore textual hints
@@ -966,6 +1016,11 @@ async function runLlmAgentTurnWithinBudget({
     for (const pendingContent of pendingSystemMessages) {
       messages.push({ role: 'system', content: pendingContent })
     }
+    // B-1 (gate DEPURACAO-SISTEMATICA): esvazia a fila após o drain — sem
+    // isso a dica (ex.: screenshot use read_page) repetia linearmente
+    // ([0,0,1,2] medido) porque os itens antigos eram re-flushados a cada
+    // completion.
+    pendingSystemMessages.length = 0
 
     // R7/FRENTE-C: some emitted names were dropped at parse time while
     // others executed. Tell the model which names were invalid so it can

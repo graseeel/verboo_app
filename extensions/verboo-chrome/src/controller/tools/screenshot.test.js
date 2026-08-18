@@ -110,7 +110,7 @@ test('screenshot of a background tab never steals focus (negative assertion)', a
     // focus/active calls never fire, even when capture is impossible.
     await assert.rejects(
       screenshot({ name: 'screenshot' }, { activeTabId: 42 }),
-      /target_tab_not_active_in_workspace/,
+      /target_tab_not_active_in_workspace|screenshot indisponível|use read_page/i,
     )
 
     assert.equal(
@@ -127,6 +127,35 @@ test('screenshot of a background tab never steals focus (negative assertion)', a
       tabsUpdateCalls.length,
       0,
       'FORBIDDEN: tabs.update must never be called in the background path',
+    )
+  } finally {
+    globalThis.chrome = originalChrome
+  }
+})
+
+test('(B) RED — aba de trabalho em segundo plano → erro honesto com dica dirigida (use read_page)', async () => {
+  const originalChrome = globalThis.chrome
+  installChromeMock({ targetIsActive: false, windowFocused: false })
+  try {
+    // CICLO DEPURAÇÃO SISTEMÁTICA (B): captureVisibleTab só captura a aba
+    // visível — com o lease em background, TODO screenshot falha. O erro
+    // deve ser honesto e dirigido: dizer que a aba está em segundo plano
+    // e sugerir read_page. O código atual lança 'target_tab_not_active_in_workspace'
+    // (sem dica) → o modelo re-tenta 99x até desistir.
+    await assert.rejects(
+      screenshot({ name: 'screenshot' }, { activeTabId: 42 }),
+      (err) => {
+        const msg = String(err?.message ?? '')
+        assert.ok(
+          /segundo plano|background/i.test(msg),
+          `erro deve dizer que a aba está em segundo plano. Msg: ${msg}`,
+        )
+        assert.ok(
+          /read_page/i.test(msg),
+          `erro deve sugerir read_page como alternativa. Msg: ${msg}`,
+        )
+        return true
+      },
     )
   } finally {
     globalThis.chrome = originalChrome

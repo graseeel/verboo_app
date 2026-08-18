@@ -3038,6 +3038,57 @@ test('runLlmAgentTurn: empty auto-find produces honest feedback (no selectors)',
   }
 })
 
+test('(B) RED — screenshot em background: após 2 falhas, feedback system (use read_page) e 3ª chamada BLOQUEADA', async () => {
+  const requestBodies = []
+  const executedScreenshots = []
+  const origFetch = globalThis.fetch
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    requestBodies.push(body)
+    const index = requestBodies.length
+    if (index <= 3) {
+      return { ok: true, status: 200, json: async () => ({
+        choices: [{ message: { role: 'assistant', content: null, tool_calls: [
+          { id: `s-${index}`, type: 'function', function: { name: 'screenshot', arguments: '{}' } },
+        ] } }],
+      }) }
+    }
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { role: 'assistant', content: 'ok.' } }] }) }
+  }
+  try {
+    const result = await runLlmAgentTurn({
+      turnId: 'turn_screenshot_bg',
+      userMessage: 'tira um print da página',
+      accessToken: 'test-key',
+      modelId: 'tool-model',
+      modelSupportsVision: true,
+      forceBrowserTools: true,
+      broadcast: () => {},
+      executeTool: async (tc) => {
+        if (tc.name === 'screenshot') {
+          executedScreenshots.push(tc.id)
+          return { ok: false, error: 'screenshot indisponível: a aba de trabalho está em segundo plano (captureVisibleTab só captura a aba visível). Use read_page para inspecionar o conteúdo da aba de trabalho.' }
+        }
+        return { ok: true, result: { text: 'x' }, policy: { allowed: true } }
+      },
+      getActiveTabMeta: async () => ({ url: 'https://todomvc.com/examples/react/dist' }),
+    })
+    // CICLO DEPURAÇÃO SISTEMÁTICA (B): após 2 falhas de captura no turno,
+    // o loop NÃO pode executar a 3ª screenshot (evidência 8d61dcb: turno
+    // queimou 99 steps tentando screenshot em background). Com o código
+    // atual (sem contador), as 3 executam → RED.
+    assert.equal(executedScreenshots.length, 2, '3ª screenshot BLOQUEADA — apenas 2 executaram')
+    // Feedback system dizendo para usar read_page (após a 2ª falha).
+    const feedback = requestBodies.flatMap((b) => b.messages).find(
+      (m) => m.role === 'system' && /read_page/i.test(String(m.content ?? '')) && /screenshot/i.test(String(m.content ?? '')),
+    )
+    assert.ok(feedback, 'feedback system dizendo para usar read_page (após 2 falhas de screenshot)')
+    assert.equal(result.toolResults.filter((r) => r.success === false).length >= 2, true, '2 falhas registradas nos toolResults')
+  } finally {
+    globalThis.fetch = origFetch
+  }
+})
+
 test('runLlmAgentTurn: click failures also trigger the auto-find (user wording as query)', async () => {
   const requestBodies = []
   const executed = []
