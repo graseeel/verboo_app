@@ -12,8 +12,9 @@
  *  (3) o caminho que REPRODUZ A GENÉRICA DE CAMPO de verdade: turno
  *      classificado como conversa (browserToolsRequested=false) + modelo
  *      emite tool call → reclassify → ensureTurnWorkspace falha (sem
- *      sourceWindowId + 2 janelas) → catch converte em "Não consegui
- *      concluir o pedido. Tente novamente." (background.js:1060/1113).
+ *      sourceWindowId + 2 janelas) → o catch (llmErr) do runAgentTurn
+ *      converte em "Não consegui concluir o pedido. Tente novamente."
+ *      (via summarizePartialAgentTurn no ramo !browserToolsRequested).
  *
  * NOTA TÉCNICA: createBackgroundWorkspaceManager() captura `chrome` no
  * momento da construção (import). Usamos um ÚNICO objeto chrome cujos
@@ -33,7 +34,7 @@ function makeReconfigurableChrome() {
   const storageLocal = new Map()
   const storageSession = new Map()
   const listeners = { onMessage: [] }
-  const state = { windows: {}, tabsById: new Map() }
+  const state = { windows: {}, tabsById: new Map(), ungroupCalls: [], currentWindowResult: [] }
 
   const chrome = {
     runtime: {
@@ -72,8 +73,14 @@ function makeReconfigurableChrome() {
         throw new Error(`tab ${id} missing`)
       },
       update: async (id, props) => ({ ...(state.tabsById.get(id) ?? { id }), ...props }),
-      create: async (props) => ({ id: 999, windowId: 10, ...props }),
-      remove: async () => {},
+      create: async (props) => {
+        const tab = { id: 999, windowId: props.windowId ?? 10, ...props }
+        state.tabsById.set(tab.id, tab)
+        return tab
+      },
+      remove: async (tabId) => { state.tabsById.delete(tabId) },
+      ungroup: async (ids) => { state.ungroupCalls.push(ids) },
+      group: async () => 7,
       captureVisibleTab: async () => 'data:image/jpeg;base64,mock',
       sendMessage: async () => {},
       onUpdated: { addListener: () => {}, removeListener: () => {} },
@@ -87,7 +94,7 @@ function makeReconfigurableChrome() {
       create: async (opts) => ({ id: 10, tabs: [{ id: 999, windowId: 10, ...opts }], ...opts }),
       update: async () => {},
     },
-    tabGroups: { query: async () => [], update: async () => {} },
+    tabGroups: { TAB_GROUP_ID_NONE: -1, query: async () => [], update: async () => {} },
     scripting: { executeScript: async () => [{ result: { text: 'page content' } }] },
     storage: {
       local: {
@@ -216,6 +223,7 @@ function setupTwoWindows(sh, tabA, tabB) {
 async function runTurn({ sourceWindowId, sourceTabId, userMessage, chatResponses }) {
   const sh = await ensureImported()
   sh.broadcasts.length = 0
+  sh.state.ungroupCalls.length = 0
   const consoleLogs = []
   const origLog = console.log
   console.log = (...args) => { consoleLogs.push(args.map(String).join(' ')); origLog(...args) }
@@ -286,8 +294,9 @@ test('(3) REPRODUZ A GENÉRICA DE CAMPO: conversa + tool call → reclassify →
   setupTwoWindows(sh, tabA, tabB)
   // Prompt de CONVERSA puro (browserToolsRequested=false — "qual é a capital"
   // não casa nenhum verbo de navegador) + modelo emite tool call → reclassify
-  // → ensureTurnWorkspace falha (sem sourceWindowId + 2 janelas) → catch
-  // converte em genérica (background.js:1060/1113).
+  // → ensureTurnWorkspace falha (sem sourceWindowId + 2 janelas) → o catch
+  // (llmErr) do runAgentTurn converte em genérica (summarizePartialAgentTurn,
+  // ramo !browserToolsRequested).
   const { terminal } = await runTurn({
     sourceWindowId: undefined,
     userMessage: 'qual é a capital do Brasil?',
@@ -295,9 +304,9 @@ test('(3) REPRODUZ A GENÉRICA DE CAMPO: conversa + tool call → reclassify →
   })
   assert.ok(terminal, 'turno terminou')
   // O caminho da genérica: agent:turn_complete (NÃO error) com assistantMessage
-  // = summarizePartialAgentTurn(userMessage, []) — background.js:1113,
-  // ramo !browserToolsRequested do catch(llmErr), alcançado via reclassify
-  // (ensureTurnWorkspace falha DENTRO do try interno, linha 1064).
+  // = summarizePartialAgentTurn(userMessage, []) — ramo !browserToolsRequested
+  // do catch(llmErr) do runAgentTurn, alcançado via reclassify (o
+  // ensureTurnWorkspace falha DENTRO do try interno).
   assert.equal(terminal.type, 'agent:turn_complete', 'turno COMPLETA com a genérica (não é turn_error com erro cru)')
   const generic = 'Não consegui concluir o pedido. Tente novamente.'
   assert.equal(
@@ -399,3 +408,88 @@ test('(A) RED — corrida de captura no nível da aba: painel envia sourceTabId=
   assert.ok(leaseLog.includes('tab 2'), `lease é tab 2 (TodoMVC do envio), não tab 3 (X.com). Log: ${leaseLog}`)
   assert.ok(!leaseLog.includes('tab 3'), `lease NÃO é tab 3 (X.com — a aba ativa pós-troca). Log: ${leaseLog}`)
 })
+
+// ── CICLO A (1) — 3 TESTES DE LIGAÇÃO (MUT-C/D/E), sonda estilo integração ──
+// Cada teste prova que UMA mutação é load-bearing: RED quando a linha é
+// removida, GREEN quando presente. Encanamento de turno real (handler
+// AGENT_TURN_START → runAgentTurn → executeTool → tool real).
+
+function toolCallArgs(name, args) {
+  return {
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'call-' + Math.random().toString(36).slice(2), type: 'function', function: { name, arguments: JSON.stringify(args) } }],
+      },
+      finish_reason: 'tool_calls',
+    }],
+  }
+}
+
+test('(MUT-C) LIGAÇÃO: tabs.switch muda o lease → aba ANTERIOR é desagrupada (ungroupVerbooTab em setActiveTabId)', async () => {
+  const sh = await ensureImported()
+  const tab2 = { id: 2, windowId: 20, url: 'https://todomvc.com/', active: false, status: 'complete' }
+  const tab3 = { id: 3, windowId: 20, url: 'https://x.com/home', active: true, status: 'complete' }
+  sh.state.windows = { 20: { activeTab: tab3 } }
+  sh.state.tabsById = new Map([[tab2.id, tab2], [tab3.id, tab3]])
+  const { terminal } = await runTurn({
+    sourceWindowId: 20,
+    sourceTabId: 2,
+    userMessage: 'crie uma tarefa chamada comprar pão',
+    chatResponses: [toolCallArgs('tabs', { action: 'switch', tabId: 3 }), textResponse],
+  })
+  assert.ok(terminal, 'turno terminou')
+  // MUT-C: setActiveTabId chama ungroupVerbooTab(previousTabId=2).
+  const ungrouped = sh.state.ungroupCalls.some((ids) => ids.includes(2))
+  assert.ok(ungrouped, 'aba anterior (2) foi desagrupada quando o lease mudou para 3')
+})
+
+test('(MUT-D) LIGAÇÃO: tabs.new adiciona a aba ao Set (agentCreatedTabIds.add) → close dela em skip passa', async () => {
+  const sh = await ensureImported()
+  const tab2 = { id: 2, windowId: 20, url: 'https://todomvc.com/', active: true, status: 'complete' }
+  sh.state.windows = { 20: { activeTab: tab2 } }
+  sh.state.tabsById = new Map([[tab2.id, tab2]])
+  const { terminal } = await runTurn({
+    sourceWindowId: 20,
+    sourceTabId: 2,
+    userMessage: 'crie uma tarefa chamada comprar pão',
+    chatResponses: [
+      toolCallArgs('tabs', { action: 'new', url: 'https://new.example' }),
+      toolCallArgs('tabs', { action: 'close', tabId: 999 }),
+      textResponse,
+    ],
+  })
+  assert.ok(terminal, 'turno terminou')
+  // MUT-D: sem o add, o close de 999 em skip seria BLOQUEADO (close_non_agent_tab).
+  // O loop captura o erro da tool e o turno completa — verifica o toolResult.
+  const closeFailed = (terminal.toolResults ?? []).some(
+    (r) => r.success === false && /close_non_agent_tab/.test(String(r.error ?? '')),
+  )
+  assert.ok(!closeFailed, 'close da aba criada pelo agente (999) NÃO foi bloqueado em skip — o add do newTab funcionou')
+})
+
+test('(MUT-E) LIGAÇÃO: makeExecutionContext expõe agentCreatedTabIds (Set por turno) → o add do newTab persiste entre tool calls', async () => {
+  const sh = await ensureImported()
+  const tab2 = { id: 2, windowId: 20, url: 'https://todomvc.com/', active: true, status: 'complete' }
+  sh.state.windows = { 20: { activeTab: tab2 } }
+  sh.state.tabsById = new Map([[tab2.id, tab2]])
+  const { terminal } = await runTurn({
+    sourceWindowId: 20,
+    sourceTabId: 2,
+    userMessage: 'crie uma tarefa chamada comprar pão',
+    chatResponses: [
+      toolCallArgs('tabs', { action: 'new', url: 'https://new.example' }),
+      toolCallArgs('tabs', { action: 'close', tabId: 999 }),
+      textResponse,
+    ],
+  })
+  assert.ok(terminal, 'turno terminou')
+  // MUT-E: sem a exposição no contexto, ctx.agentCreatedTabIds é undefined →
+  // o add do newTab é no-op → close de 999 em skip seria BLOQUEADO.
+  const closeFailed = (terminal.toolResults ?? []).some(
+    (r) => r.success === false && /close_non_agent_tab/.test(String(r.error ?? '')),
+  )
+  assert.ok(!closeFailed, 'close da aba criada (999) NÃO foi bloqueado — o contexto expôs o Set e o add persistiu')
+})
+

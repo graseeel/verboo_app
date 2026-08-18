@@ -13,7 +13,7 @@
  *
  * Tool handlers (chrome.tabs, chrome.scripting, chrome.debugger, etc.) MUST
  * NEVER be called directly from agent.js, background.js, or panel.js. The
- * single chokepoint is `controller.execute(toolCall)` in controller.js.
+ * single chokepoint is `execute(toolCall)` in src/controller/execute.js.
  *
  * `execute()` enforces the policy gate (evaluateToolPolicy) before any
  * dispatch. Bypassing it means bypassing Hard Blocks, site grants, and the
