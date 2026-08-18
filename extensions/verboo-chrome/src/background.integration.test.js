@@ -55,6 +55,12 @@ function makeReconfigurableChrome() {
     },
     tabs: {
       query: async (q) => {
+        if (q.active === true && q.currentWindow === true) {
+          // FONTE ÚNICA (Farol): o loop NÃO deve consultar currentWindow —
+          // usa activeTab?.url (a aba do lease). Este resultado existe para
+          // o teste provar que a URL do currentWindow NÃO é usada.
+          return state.currentWindowResult ?? []
+        }
         if (q.active === true && Number.isInteger(q.windowId)) {
           const win = state.windows[q.windowId]
           return win?.activeTab ? [win.activeTab] : []
@@ -493,3 +499,29 @@ test('(MUT-E) LIGAÇÃO: makeExecutionContext expõe agentCreatedTabIds (Set por
   assert.ok(!closeFailed, 'close da aba criada (999) NÃO foi bloqueado — o contexto expôs o Set e o add persistiu')
 })
 
+test('(URL-ÚNICA) FONTE ÚNICA: loop usa activeTab?.url (lease https), NÃO o currentWindow (chrome://) → L2 dispara → turno de navegador (não genérica)', async () => {
+  const sh = await ensureImported()
+  // Lease = aba https controlável (TodoMVC). currentWindow devolve chrome://
+  // (não controlável) — o cenário do Farol: sem fonte única, o classificador
+  // usava a URL do currentWindow → L2 não disparava → turno de navegador vira
+  // 'Não consegui concluir o pedido' (genérica) em vez da mensagem clara.
+  const leaseTab = { id: 2, windowId: 20, url: 'https://todomvc.com/', active: true, status: 'complete' }
+  const chromeTab = { id: 5, windowId: 20, url: 'chrome://extensions', active: true, status: 'complete' }
+  sh.state.windows = { 20: { activeTab: leaseTab } }
+  sh.state.tabsById = new Map([[leaseTab.id, leaseTab], [chromeTab.id, chromeTab]])
+  sh.state.currentWindowResult = [chromeTab]  // currentWindow devolve chrome://
+
+  const { terminal, broadcasts } = await runTurn({
+    sourceWindowId: 20,
+    sourceTabId: 2,
+    userMessage: 'crie uma tarefa chamada comprar pão',
+    chatResponses: [toolCallArgs('read_page', { selector: 'body' }), textResponse],
+  })
+  assert.ok(terminal, 'turno terminou')
+  // Com a fonte única (activeTab?.url = https), L2 dispara → browserToolsRequested=true
+  // → o 1º tool (read_page) EXECUTA (sem reclassify, sem genérica).
+  const executing = broadcasts.find((m) => m.type === 'agent:tool_executing' && m.toolName === 'read_page')
+  assert.ok(executing, '1º tool (read_page) EXECUTOU — L2 disparou com a URL do lease (https), não a do currentWindow (chrome://)')
+  const generic = 'Não consegui concluir o pedido. Tente novamente.'
+  assert.notEqual(terminal.assistantMessage, generic, 'não é a genérica — o turno foi de navegador de verdade')
+})

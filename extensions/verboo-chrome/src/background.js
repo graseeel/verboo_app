@@ -1058,14 +1058,16 @@ async function runAgentTurn(
 
     if (accessToken && selectedModelId) {
       try {
-        // L2/Intenção+UX: URL of the page under the panel (active tab of
-        // the normal window) — the classifier's fall-open signal. One
-        // cheap tabs query; NO content read. Resolved once per user turn.
-        const l2ActiveTabUrl = (await queryActiveTabMeta(undefined))?.url ?? null
+        // FONTE ÚNICA DA URL (Farol): o loop recebe activeTab?.url (a aba do
+        // lease — onde o turno REALMENTE age), NÃO o currentWindow do
+        // l2ActiveTabUrl. Sem fonte única, o classificador usava a URL da
+        // janela (que pode ser de outra aba) → L2 erra → turno de navegador
+        // vira 'Não consegui concluir o pedido' (genérica) em vez da mensagem
+        // clara. A aba do lease já foi resolvida de forma determinística acima.
         const llmOptions = () => ({
           turnId,
           userMessage,
-          activeTabUrl: l2ActiveTabUrl,
+          activeTabUrl: activeTab?.url ?? null,
           accessToken,
           modelId: selectedModelId,
           modelSupportsVision,
@@ -1108,10 +1110,11 @@ async function runAgentTurn(
         // user's browser).
         //
         // Queue ownership: the reclassified turn was classified as
-        // conversation at background.js:281, so it does NOT currently hold
-        // the queue. Still, defensively check activeId(): if this turn ever
-        // runs while holding the queue, enqueuing the re-run would deadlock
-        // (it would wait for itself) — in that case re-run inline instead.
+        // conversation by shouldOfferBrowserTools at the AGENT_TURN_START
+        // handler, so it does NOT currently hold the queue. Still,
+        // defensively check activeId(): if this turn ever runs while holding
+        // the queue, enqueuing the re-run would deadlock (it would wait for
+        // itself) — in that case re-run inline instead.
         let finalResult = llmResult
         if (llmResult?.reclassify === true) {
           await ensureTurnWorkspace(false)
@@ -1125,13 +1128,18 @@ async function runAgentTurn(
                 cancel: () => abortTurnController(turnId),
               })
         }
-        const activeTab = await resolveWorkspaceTabMeta(turnTabLease)
+        // Renomeado para workspaceTabMeta: `const activeTab` aqui faria
+        // shadowing do activeTab do turno (linha 947) — como const é
+        // hoisted (TDZ), a closure llmOptions capturaria o INNER activeTab
+        // (não inicializado) → ReferenceError. Fonte única da URL exigiu
+        // que a closure lesse o activeTab do turno.
+        const workspaceTabMeta = await resolveWorkspaceTabMeta(turnTabLease)
         sendTerminal({
           type: MSG.AGENT_TURN_COMPLETE,
           turnId,
           assistantMessage: finalResult.assistantMessage ?? 'Done.',
           toolResults: slimToolResultsForBroadcast(finalResult.toolResults),
-          ...(activeTab ? { activeTab } : {}),
+          ...(workspaceTabMeta ? { activeTab: workspaceTabMeta } : {}),
         })
         return
       } catch (llmErr) {
@@ -1153,13 +1161,13 @@ async function runAgentTurn(
         // Partial progress attached on some errors (defensive).
         const partial = llmErr?.partialToolResults
         if (Array.isArray(partial) && partial.length > 0) {
-          const activeTab = await resolveWorkspaceTabMeta(turnTabLease)
+          const workspaceTabMeta = await resolveWorkspaceTabMeta(turnTabLease)
           sendTerminal({
             type: MSG.AGENT_TURN_COMPLETE,
             turnId,
             assistantMessage: summarizePartialAgentTurn(userMessage, partial),
             toolResults: slimToolResultsForBroadcast(partial),
-            ...(activeTab ? { activeTab } : {}),
+            ...(workspaceTabMeta ? { activeTab: workspaceTabMeta } : {}),
           })
           return
         }

@@ -685,8 +685,9 @@ async function runLlmAgentTurnWithinBudget({
       // directs to find/read_page. Bounded: the block is deterministic per
       // key (never executes), different arguments always execute, and the
       // step counter still advances — no loop possible.
-      const isMutate = tc.name === 'click' || tc.name === 'type'
-        || tc.name === 'navigate' || tc.name === 'tabs' || tc.name === 'tab_group'
+      // B-3 (Farol): isMutate derivado do TOOL_RISK (catálogo) — a lista
+      // manual de nomes morre; ferramentas novas de mutate nascem rastreadas.
+      const isMutate = getToolRisk(tc.name) === 'mutate'
       // NOTE: tc (toToolCall) carries params, NOT the raw arguments string —
       // the canonical key must be built from params or every call collapses
       // into one key (String(undefined) === 'undefined').
@@ -941,6 +942,9 @@ async function runLlmAgentTurnWithinBudget({
       // Consecutive failure tracking — strategy hint, then early stop if still stuck.
       if (execResult.ok) {
         failStreak = { name: null, count: 0, afterHint: false }
+        // requiresVerification é sobre EFEITO de mutação observável (R-V4):
+        // click/type precisam de read_page depois; navigate mostra o efeito
+        // no próprio tool result (a URL nova) — mantém a lista específica.
         if (tc.name === 'click' || tc.name === 'type') requiresVerification = true
         // R-V1/GENERALIZAÇÃO: only read_page (structured real text) clears
         // the verification flag. A screenshot does NOT — the model can aim
