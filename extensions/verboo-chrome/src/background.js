@@ -38,6 +38,7 @@ import {
   disableGlobalVerbooPanel,
   openVerbooPanel,
   openVerbooWorkspace,
+  ungroupVerbooTab,
 } from './presence/inject.js'
 import {
   SELECTION_CONTEXT_MENU_ID,
@@ -212,7 +213,10 @@ const nativeBridge = createNativeBridge({
   isApprovalUiAvailable: () => approvalSurfaces.size > 0,
   cancelPendingApprovals: () => cancelPendingApprovals('native'),
   clearPresenceOnAllTabs,
-  onTurnEnded: (turnId) => turnSiteGrants.delete(turnId),
+  onTurnEnded: (turnId) => {
+    turnSiteGrants.delete(turnId)
+    turnCreatedTabIds.delete(turnId)
+  },
 })
 nativeBridge.registerStartup()
 nativeBridge.connect()
@@ -279,6 +283,8 @@ void restoreRoutineExecutionState()
 const pendingApprovals = new Map()
 /** @type {Map<string, Set<string>>} */
 const turnSiteGrants = new Map()
+/** @type {Map<string, Set<number>>} — abas criadas pelo agente no turno (close policy) */
+const turnCreatedTabIds = new Map()
 
 // ── Message router ────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1213,6 +1219,7 @@ async function runAgentTurn(
     }
     turnControllers.delete(turnId)
     turnSiteGrants.delete(turnId)
+    turnCreatedTabIds.delete(turnId)
     // Never leave the panel stuck if a path forgot to send a terminal event.
     if (!terminalSent) {
       // OBSERVABILIDADE (b6b96d7): turno terminou sem terminal — bug de
@@ -1277,6 +1284,13 @@ async function makeExecutionContext(
     ? (turnSiteGrants.get(turnId) ?? new Set())
     : null
   if (turnId && !turnSiteGrants.has(turnId)) turnSiteGrants.set(turnId, turnGrants)
+  // CICLO DEPURAÇÃO SISTEMÁTICA (close): rastreia abas CRIADAS pelo agente
+  // no turno (tabs.new) — close delas é permitido em skip; close de aba do
+  // usuário é bloqueado. Set por turno, persistido entre tool calls.
+  const turnCreated = turnId
+    ? (turnCreatedTabIds.get(turnId) ?? new Set())
+    : null
+  if (turnId && !turnCreatedTabIds.has(turnId)) turnCreatedTabIds.set(turnId, turnCreated)
   // DECISÃO DO DONO (workspace, 2026-08-16): the execution target is the
   // lease tab when one is alive, else the explicit fallback — NEVER the
   // user's active tab. The user may switch tabs/windows freely mid-turn;
@@ -1304,10 +1318,18 @@ async function makeExecutionContext(
     setTurnGrant: async (host) => { turnGrants?.add(host) },
     setSiteGrant: (host, decision) => upsertGrant(host, decision),
     activeTabId,
+    agentCreatedTabIds: turnCreated,
     ...(leasedTarget ? {
       workspaceWindowId: leasedTarget.windowId,
       setActiveTabId: (tabId, windowId) => {
+        // CICLO DEPURAÇÃO SISTEMÁTICA (C): quando o lease muda de aba, a aba
+        // ANTERIOR sai do grupo Verboo — senão o grupo fica órfão na aba
+        // antiga (evidência 8d61dcb). Best-effort.
+        const previousTabId = turnTabLease.snapshot().tabId
         turnTabLease.selectTab(tabId, windowId)
+        if (Number.isInteger(previousTabId) && previousTabId !== tabId) {
+          void ungroupVerbooTab(previousTabId)
+        }
         void broadcastWorkspaceTabMeta(turnId, turnTabLease)
       },
     } : {}),
@@ -1596,6 +1618,7 @@ function cancelTurn(turnId) {
   }
   turnControllers.delete(turnId)
   turnSiteGrants.delete(turnId)
+  turnCreatedTabIds.delete(turnId)
   try {
     void clearPresenceOnAllTabs()
   } catch {
@@ -1634,6 +1657,11 @@ function browserAgentErrorMessage(userMessage, code) {
     return pt
       ? 'Abra uma página web (http:// ou https://) para o Verboo controlar e tente novamente.'
       : 'Open a web page (http:// or https://) for Verboo to control, then try again.'
+  }
+  if (detail === 'close_non_agent_tab') {
+    return pt
+      ? 'Abas abertas em turnos anteriores não são fechadas automaticamente — troque para o modo manual para aprovar, ou feche você mesmo.'
+      : 'Tabs opened in previous turns are not closed automatically — switch to manual mode to approve, or close it yourself.'
   }
   return pt
     ? `O agente do navegador parou antes de concluir: ${detail}`

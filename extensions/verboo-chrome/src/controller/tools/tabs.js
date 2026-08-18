@@ -30,6 +30,17 @@ export async function tabs(tool, ctx = {}) {
     case 'close':
       if (typeof tool.tabId !== 'number') throw new Error('tabs.close: missing tabId')
       await assertWorkspaceTab(tool.tabId, ctx.workspaceWindowId)
+      // CICLO DEPURAÇÃO SISTEMÁTICA (close, decisão do Maestro — opção 1):
+      // em skip mode, close de aba NÃO-criada pelo agente neste turno é
+      // BLOQUEADO com erro honesto (a aba pode ser do usuário). Modos reais:
+      // manual (pede aprovação via gate de política) e skip (auto é alias de
+      // skip — aprovação automática). Abas criadas pelo agente (tabs.new)
+      // fecham normalmente.
+      if (ctx.mode === 'skip' && !(ctx.agentCreatedTabIds?.has(tool.tabId) === true)) {
+        throw new Error(
+          'close_non_agent_tab: abas abertas em turnos anteriores não são fechadas automaticamente — troque para o modo manual para aprovar, ou feche você mesmo',
+        )
+      }
       await chrome.tabs.remove(tool.tabId)
       if (tool.tabId === ctx.activeTabId && Number.isInteger(ctx.workspaceWindowId)) {
         const remaining = await chrome.tabs.query({ windowId: ctx.workspaceWindowId })
@@ -40,6 +51,9 @@ export async function tabs(tool, ctx = {}) {
             url: 'about:newtab',
             active: false,
           })
+          // CLOSE-1: a aba de reposição é criada pelo agente — entra no Set
+          // para poder ser fechada em skip (e para o ungroup do fim do turno).
+          ctx.agentCreatedTabIds?.add(next.id)
         }
         if (next?.id != null) {
           await ctx.setActiveTabId?.(next.id, ctx.workspaceWindowId)
@@ -81,6 +95,10 @@ async function newTab(url, ctx) {
     : { url: safeUrl, active: false }
   const tab = await chrome.tabs.create(createProperties)
   if (tab?.id != null && Number.isInteger(tab.windowId)) {
+    // CICLO DEPURAÇÃO SISTEMÁTICA (close): a aba criada pelo agente é
+    // rastreada no turno (agentCreatedTabIds) — close dela é permitido
+    // em skip; close de aba do usuário é bloqueado.
+    ctx.agentCreatedTabIds?.add(tab.id)
     await ctx.setActiveTabId?.(tab.id, tab.windowId)
   }
   // Group tabs created during an agent turn under the purple Verboo group.

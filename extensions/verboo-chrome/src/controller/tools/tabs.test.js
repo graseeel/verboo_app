@@ -172,3 +172,33 @@ test('closing the leased tab selects another tab in the same workspace', async (
   assert.deepEqual(removals, [42])
   assert.deepEqual(selections, [{ tabId: 43, windowId: 7 }])
 })
+
+test('(CLOSE) RED — close de aba NÃO-criada pelo agente BLOQUEADO em skip (erro honesto); close de criada passa', async () => {
+  const removals = []
+  globalThis.chrome = {
+    tabs: {
+      get: async (tabId) => ({ id: tabId, windowId: 7, url: 'https://example.com' }),
+      remove: async (tabId) => removals.push(tabId),
+      query: async () => [{ id: 43, windowId: 7, active: true }],
+      create: async (props) => ({ id: 100, windowId: 7, ...props }),
+    },
+    tabGroups: { TAB_GROUP_ID_NONE: -1, query: async () => [], update: async () => {} },
+  }
+  // CICLO DEPURAÇÃO SISTEMÁTICA (close): em skip, close da aba do usuário
+  // (não-criada pelo agente) deve BLOQUEAR com erro honesto. Código atual
+  // executa o close → RED.
+  await assert.rejects(
+    () => tabs(
+      { name: 'tabs', action: 'close', tabId: 99 },
+      { mode: 'skip', activeTabId: 42, workspaceWindowId: 7, agentCreatedTabIds: new Set(), setActiveTabId: () => {} },
+    ),
+    /não foi aberta pelo agente|close_non_agent_tab/,
+  )
+  assert.equal(removals.length, 0, 'aba do usuário NÃO foi fechada (bloqueada)')
+  // close de aba criada pelo agente passa.
+  await tabs(
+    { name: 'tabs', action: 'close', tabId: 100 },
+    { mode: 'skip', activeTabId: 42, workspaceWindowId: 7, agentCreatedTabIds: new Set([100]), setActiveTabId: () => {} },
+  )
+  assert.deepEqual(removals, [100], 'aba criada pelo agente foi fechada (normal)')
+})
