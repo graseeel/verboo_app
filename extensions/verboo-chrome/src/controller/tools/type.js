@@ -40,7 +40,10 @@ export async function typeText(tool, ctx = {}) {
     func: typeInPage,
     // B-2 (Farol): deadlines injetáveis — tool.deadlines é só para testes
     // (default de produção em typeInPage); o modelo nunca envia.
-    args: [selector, text, clear, pressEnter, tool.deadlines],
+    // B-3 (Farol, REGRESSÃO DE CAMPO): `?? null` — undefined no array args
+    // NÃO é JSON-serializável e o Chrome rejeita a chamada INTEIRA. O func
+    // trata null como default (deadlines?.readyMs ?? 5000).
+    args: [selector, text, clear, pressEnter, tool.deadlines ?? null],
   })
 
   if (!result) throw new Error('type: no result from page')

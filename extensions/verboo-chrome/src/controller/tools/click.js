@@ -49,7 +49,9 @@ export async function click(tool, ctx = {}) {
     target: { tabId: tab.id },
     func: clickInPage,
     // B-2 (Farol): deadlines injetáveis — tool.deadlines só para testes.
-    args: [selector, x, y, button, tool.deadlines],
+    // B-3 (Farol, REGRESSÃO DE CAMPO): `?? null` — undefined no array args
+    // NÃO é JSON-serializável e o Chrome rejeita a chamada INTEIRA.
+    args: [selector, x, y, button, tool.deadlines ?? null],
   })
 
   if (!result) throw new Error('click: no result from page')

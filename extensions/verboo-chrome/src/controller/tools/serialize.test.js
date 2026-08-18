@@ -72,9 +72,25 @@ export function serializedScripting(window) {
     },
     scripting: {
       executeScript: async ({ func, args }) => {
+        // B-3 (Farol, REGRESSÃO DE CAMPO): o Chrome rejeita a chamada
+        // INTEIRA quando o array args contém undefined (não é
+        // JSON-serializável) — o b0cb393 passou tool.deadlines (undefined
+        // em produção) e quebrou type/click/find em campo. O harness valida
+        // os ARGS de TODA chamada a executeScript (type/click/find/presença):
+        // nenhum undefined no array + round-trip JSON sem perda/erro.
+        const argList = args ?? []
+        if (argList.some((a) => a === undefined)) {
+          throw new Error(
+            `executeScript: args contêm undefined (não JSON-serializável) — o Chrome rejeitaria a chamada inteira. args: ${JSON.stringify(argList)}`,
+          )
+        }
+        const roundTripped = JSON.parse(JSON.stringify(argList))
+        if (JSON.stringify(roundTripped) !== JSON.stringify(argList)) {
+          throw new Error('executeScript: args não sobrevivem round-trip JSON (perda/erro de serialização)')
+        }
         const pageFunc = rehydrate(func, window)
         try {
-          const value = await pageFunc(...(args ?? []))
+          const value = await pageFunc(...argList)
           return [{ result: value }]
         } catch (error) {
           return [{ result: undefined, __error: error }]

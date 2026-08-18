@@ -43,10 +43,19 @@ async function typeInto(html, tool, before = () => {}) {
     },
     scripting: {
       executeScript: async ({ func, args }) => {
+        // B-3 (Farol, REGRESSÃO DE CAMPO): o Chrome rejeita a chamada
+        // INTEIRA quando o array args contém undefined (não é
+        // JSON-serializável). O mock valida os ARGS como o Chrome faria.
+        const argList = args ?? []
+        if (argList.some((a) => a === undefined)) {
+          throw new Error(
+            `executeScript: args contêm undefined (não JSON-serializável) — o Chrome rejeitaria a chamada inteira. args: ${JSON.stringify(argList)}`,
+          )
+        }
         // B-2: o 5º arg (deadlines) é opcional — aceita 4 ou 5 args.
-        const isTypeFn = Array.isArray(args) && args.length >= 4 && typeof args[0] === 'string'
+        const isTypeFn = Array.isArray(argList) && argList.length >= 4 && typeof argList[0] === 'string'
         try {
-          return [{ result: isTypeFn ? await func(...args) : true }]
+          return [{ result: isTypeFn ? await func(...argList) : true }]
         } catch {
           return [{ result: undefined }]
         }
