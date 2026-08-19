@@ -198,14 +198,23 @@ fn run_winget_install() -> GitWindowsInstallResult {
 mod tests {
     use super::*;
 
+    /// Off-Windows (mac/linux): the command must compile and answer
+    /// neutrally — git is always available (the CLI does not need git-bash
+    /// there). The Windows branch is exercised by the CI runner only
+    /// (see `check_windows_login_prereqs_never_installs`).
+    #[cfg(not(windows))]
     #[test]
-    fn prereqs_off_windows_are_neutral_and_never_install() {
-        // On mac/linux the command must compile and answer neutrally.
+    fn prereqs_off_windows_are_neutral() {
         let prereqs = check_windows_login_prereqs();
         assert!(prereqs.git_available, "off-Windows git is always available");
         assert!(!prereqs.platform.is_empty());
     }
 
+    /// Off-Windows (mac/linux): the install command must return a neutral
+    /// failure and MUST NOT spawn anything. The `#[cfg(not(windows))]`
+    /// gate is REQUIRED — on a Windows CI runner this test would execute
+    /// the REAL winget install (the CI failure PA-18 fixed).
+    #[cfg(not(windows))]
     #[test]
     fn install_off_windows_is_neutral_failure() {
         let result = install_git_windows();
@@ -214,19 +223,58 @@ mod tests {
         assert!(!result.log.is_empty());
     }
 
+    /// Windows-only (exercised by the CI runner): the DETECTION path must
+    /// never install anything. It only probes `where git` + file existence,
+    /// so it must return quickly — a real winget install (minutes) would
+    /// blow the time bound.
+    ///
+    /// FORM-ONLY LIMIT (regra da casa): este teste só roda em runner
+    /// Windows (`#[cfg(windows)]` — mac/linux compilam o braço neutro e
+    /// nunca o exercitam localmente). Ele prova o shape/contrato do retorno
+    /// e a velocidade do probe; a garantia estrutural "check não contém
+    /// winget" vive no código-fonte (o spawn de winget existe apenas em
+    /// `run_winget_install`, chamado exclusivamente por
+    /// `install_git_windows`) e é pinada pelo gate de spawn flags do
+    /// child_signal.
+    #[cfg(windows)]
+    #[test]
+    fn check_windows_login_prereqs_never_installs() {
+        let start = std::time::Instant::now();
+        let prereqs = check_windows_login_prereqs();
+        // Contract says <1s; 5s margin so slow CI runners do not flake.
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "check_windows_login_prereqs must be a fast local probe (never installs)"
+        );
+        assert_eq!(prereqs.platform, "windows");
+    }
+
     #[test]
     fn git_available_when_where_git_found() {
         assert!(is_git_available(true, &[]));
+        assert!(!is_git_available(false, &[]));
     }
 
     #[test]
     fn git_available_when_bash_candidate_exists() {
-        let candidates = vec![PathBuf::from("/opt/git/bin/bash.exe")];
-        // The candidate path does not exist on this machine, so this only
-        // proves the OR logic: a real file would flip it to true.
-        assert!(!is_git_available(false, &candidates));
-        // where-git alone is enough.
-        assert!(is_git_available(true, &candidates));
+        // Platform-agnostic: a real temp file stands in for bash.exe, so
+        // the "candidate exists" branch is actually exercised (the previous
+        // version used a path that never exists and only proved the
+        // false/false OR case).
+        let dir = std::env::temp_dir().join(format!("windows_git_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let fake_bash = dir.join("bash.exe");
+        std::fs::write(&fake_bash, b"probe").expect("write temp bash");
+        let candidates = vec![fake_bash];
+        assert!(
+            is_git_available(false, &candidates),
+            "an existing bash candidate must flip detection on"
+        );
+        assert!(
+            !is_git_available(false, &[]),
+            "no candidates + no where-git must be false"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
