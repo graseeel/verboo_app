@@ -1322,9 +1322,10 @@ test('runLlmAgentTurn: reaching the step limit reports incomplete work', async (
       getActiveTabMeta: async () => ({ url: 'https://example.com', title: 'Example' }),
     })
 
-    assert.equal(result.toolResults.length, 200)
+    // DECISÃO DO DONO (2026-08-18): MAX_AGENT_STEPS 200 → 500.
+    assert.equal(result.toolResults.length, 500)
     assert.match(result.assistantMessage, /partial|incomplete|not completed|not verified|model connection/i)
-    assert.doesNotMatch(result.assistantMessage, /^Completed 200 action/i)
+    assert.doesNotMatch(result.assistantMessage, /^Completed 500 action/i)
   } finally {
     globalThis.fetch = origFetch
   }

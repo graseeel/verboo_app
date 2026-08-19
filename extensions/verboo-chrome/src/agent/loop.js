@@ -9,7 +9,7 @@
  *   5. For each tool_call → broadcast thought → executeTool callback → broadcast result
  *   6. For vision-capable models, screenshot pixels are attached once as a
  *      multimodal user message; tool messages stay OpenAI-compatible strings
- *   7. Repeat up to MAX_AGENT_STEPS (200)
+ *   7. Repeat up to MAX_AGENT_STEPS (500 — decisão do dono 2026-08-18)
  *   8. Router errors after partial tool success → explicit partial-result summary
  *   9. On hard failure with zero tools → throw without executing a fallback plan
  *
