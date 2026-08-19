@@ -46,6 +46,14 @@ const api = vi.hoisted(() => ({
   onPresence: vi.fn(),
   onOpenRequested: vi.fn(),
   onLifecycle: vi.fn(),
+  // Setup onboarding surface (PA-14): the panel mounts
+  // SimulatorOnboarding whenever requirements carry an issue, and its
+  // mount effect subscribes these two channels.
+  setupOpenAppStore: vi.fn(),
+  setupStart: vi.fn(),
+  setupCancel: vi.fn(),
+  onSetupProgress: vi.fn(() => Promise.resolve(() => {})),
+  onSetupDone: vi.fn(() => Promise.resolve(() => {})),
 }))
 
 vi.mock('./iosSimulatorApi', () => ({ iosSimulatorApi: api }))

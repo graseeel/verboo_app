@@ -530,6 +530,7 @@ mod tests {
             "src/services/goal_evaluator.rs",
             "src/services/ios_simulator.rs",
             "src/services/ios_simulator/media.rs",
+            "src/services/ios_simulator/setup.rs",
             "src/services/ios_simulator_mcp.rs",
             "src/services/node_runtime/archive.rs",
             "src/services/plugins_service.rs",

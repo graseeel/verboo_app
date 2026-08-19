@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Gauge, LoaderCircle, PanelRightClose, RefreshCw, Smartphone } from 'lucide-react'
 import { useI18n } from '../../i18n'
-import { simulatorIssueMessageKey, simulatorStageMessageKey } from './iosSimulatorModel'
+import { simulatorStageMessageKey } from './iosSimulatorModel'
+import { SimulatorOnboarding } from './SimulatorOnboarding'
 import { SimulatorSurface } from './SimulatorSurface'
 import { SimulatorDevicePicker } from './SimulatorDevicePicker'
 import { SimulatorControlDock } from './SimulatorControlDock'
@@ -257,19 +258,13 @@ export function IosSimulatorPanel({
         )}
 
         {unavailable && (
-          <div className="ios-simulator-requirement" role="alert">
-            <Smartphone size={24} aria-hidden="true" />
-            <strong>{t('simulator.requirements.title')}</strong>
-            <p>{t(simulatorIssueMessageKey(unavailable), { version: requirements?.xcodeVersion ?? '' })}</p>
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() => { void handleRefresh() }}
-              disabled={requirementsLoading}
-            >
-              {t('simulator.refresh')}
-            </button>
-          </div>
+          <SimulatorOnboarding
+            issue={unavailable}
+            xcodeVersion={requirements?.xcodeVersion ?? undefined}
+            requirementsLoading={requirementsLoading}
+            onRefresh={onRefresh}
+            onCheckAgain={() => { void handleRefresh() }}
+          />
         )}
 
         {!unavailable && requirements && !showDeviceList && (

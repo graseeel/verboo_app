@@ -2701,6 +2701,12 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_requirements,
             #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_setup_open_app_store,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_setup_start,
+            #[cfg(target_os = "macos")]
+            services::ios_simulator::ios_simulator_setup_cancel,
+            #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_attach,
             #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_detach,
