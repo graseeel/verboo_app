@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises'
 
 const html = await readFile(new URL('./options.html', import.meta.url), 'utf8')
 const script = await readFile(new URL('./options.js', import.meta.url), 'utf8')
+const styles = await readFile(new URL('./options.css', import.meta.url), 'utf8')
 
 test('settings exposes an accessible routines manager and editor', () => {
   for (const id of [
@@ -36,4 +37,14 @@ test('settings exposes an accessible routines manager and editor', () => {
 test('settings markup does not duplicate element IDs', () => {
   const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1])
   assert.equal(new Set(ids).size, ids.length)
+})
+
+test('settings footer stamps the runtime manifest version discreetly', () => {
+  // Footer badge after the account section; value filled at runtime by JS.
+  assert.match(html, /<footer class="options-foot">/)
+  assert.match(html, /<span class="version-badge" data-version-badge><\/span>/)
+  assert.match(styles, /\.options-foot\s*\{/)
+  // Runtime source of truth: the manifest, never a hardcoded literal.
+  assert.match(script, /import \{ applyVersionBadge \} from '\.\/versionBadge\.js'/)
+  assert.match(script, /applyVersionBadge\(document, t\('version_label'\)\)/)
 })

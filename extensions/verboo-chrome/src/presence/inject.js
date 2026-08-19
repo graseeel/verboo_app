@@ -235,6 +235,16 @@ export async function ensureVerbooTabGroup(tabId) {
     throw new Error('ensureVerbooTabGroup: missing tabId')
   }
 
+  // C-2 FIX (Farol, sonda C): agrupou = tocou. Registra a aba no inventário
+  // de presença com a geração corrente — senão uma aba agrupada sem overlay
+  // (ex.: tabs.new sem ação nela) fica FORA do inventário e o ungroup do
+  // fim do turno a ignora (grupo órfão de volta). Com o registro: aba nova
+  // do turno A sai no fim do A; aba do turno B (geração mais nova) segue
+  // protegida pelo filtro de geração; clearPresence em aba sem overlay é
+  // no-op.
+  await ensurePresenceGenerationReady()
+  await rememberPresenceTab(tabId)
+
   const tab = await chrome.tabs.get(tabId)
   const windowId = tab.windowId
 
@@ -280,6 +290,24 @@ export async function ensureVerbooTabGroup(tabId) {
     color: VERBOO_TAB_GROUP_COLOR,
   })
   return { groupId }
+}
+
+/**
+ * CICLO DEPURAÇÃO SISTEMÁTICA (C): remove uma aba do grupo Verboo quando o
+ * lease muda de aba (tabs.switch/new/close) ou a aba é fechada mid-turn.
+ * Sem isso, o grupo fica ÓRFÃO na aba antiga (evidência 8d61dcb: grupo
+ * roxo órfão no X reaberto). Best-effort — nunca lança.
+ *
+ * @param {number} tabId
+ * @returns {Promise<void>}
+ */
+export async function ungroupVerbooTab(tabId) {
+  if (typeof tabId !== 'number') return
+  try {
+    await chrome.tabs.ungroup([tabId])
+  } catch {
+    // aba fechada, já sem grupo, sem permissão — best-effort.
+  }
 }
 
 // ── Viewport frame ─────────────────────────────────────────────
@@ -501,13 +529,18 @@ export async function clearPresenceOnAllTabs() {
       touchedPresenceTabGenerations.get(tabId) ?? Math.max(0, presenceGeneration - 1),
     ]),
   )
+  /** @type {number[]} — abas do grupo Verboo vistas nesta limpeza */
+  const verbooGroupTabIds = []
   try {
     try {
       const groups = await chrome.tabGroups.query({ title: VERBOO_TAB_GROUP_TITLE })
       for (const g of groups) {
         const tabs = await chrome.tabs.query({ groupId: g.id })
         for (const t of tabs) {
-          if (typeof t.id === 'number') tabIds.add(t.id)
+          if (typeof t.id === 'number') {
+            tabIds.add(t.id)
+            verbooGroupTabIds.push(t.id)
+          }
         }
       }
     } catch {
@@ -533,6 +566,20 @@ export async function clearPresenceOnAllTabs() {
       cleanupTouchedTabGenerations,
       cleanupGeneration - 1,
     )
+    // C-2 FIX (Farol): o ungroup do fim de turno NÃO pode desagrupar abas de
+    // um turno MAIS NOVO em voo (medido: cancelTurn do A + prompt B →
+    // turnoBPerdeuOGrupo=true). Desagrupa SÓ abas com geração registrada
+    // <= cleanupGeneration-1 — reusa cleanupTouchedTabGenerations (o
+    // snapshot do início da limpeza), NÃO o resultado cru da query. Lição
+    // do projeto: limpeza exige inventário + geração.
+    const safeUngroupIds = verbooGroupTabIds.filter((id) => cleanupTouchedTabGenerations.has(id))
+    if (safeUngroupIds.length > 0) {
+      try {
+        await chrome.tabs.ungroup(safeUngroupIds)
+      } catch {
+        /* aba fechada / sem grupo / sem permissão — best-effort */
+      }
+    }
   } catch {
     // Whole-operation failure — ignore.
   }

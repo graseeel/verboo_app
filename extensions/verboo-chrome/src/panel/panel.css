@@ -268,6 +268,15 @@ textarea {
   padding: 4px 2px;
 }
 
+/* Discreet runtime version stamp — login gate line and options footer.
+   Value is filled from chrome.runtime.getManifest() by versionBadge.js. */
+.version-badge {
+  margin: 0;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+}
+
 /* Loading state on the Sign-in button. */
 .btn .btn-label {
   display: inline-flex;
@@ -717,6 +726,86 @@ textarea {
     transform: scale(0.82);
     opacity: 0.68;
   }
+}
+
+/* ── Workspace tab indicator (which tab the agent is acting on) ── */
+.workspace-tab {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.workspace-tab[hidden] {
+  display: none;
+}
+
+.workspace-tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-strong) 14%, transparent);
+  animation: recording-pulse 1.5s var(--ease-in-out) infinite;
+  flex-shrink: 0;
+}
+
+.workspace-tab[data-state="result"] .workspace-tab-dot {
+  background: var(--green);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 14%, transparent);
+  animation: none;
+}
+
+.workspace-tab[data-state="closed"] .workspace-tab-dot {
+  background: var(--text-dim);
+  box-shadow: none;
+  animation: none;
+}
+
+.workspace-tab-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-tab-show {
+  font: inherit;
+  padding: 3px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+@media (hover: hover) {
+  .workspace-tab-show:hover {
+    border-color: var(--accent);
+  }
+}
+
+.workspace-tab-show:active {
+  transform: scale(var(--press-scale));
+}
+
+.workspace-tab-show:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.workspace-tab-show:disabled {
+  background: transparent;
+  color: var(--text-dim);
+  cursor: default;
 }
 
 /* ── Buttons (kept for login form) ────────────────────────────── */
@@ -1635,7 +1724,8 @@ textarea {
 
 .tool-card-params,
 .tool-card-reasoning,
-.tool-card-policy {
+.tool-card-policy,
+.tool-card-tab {
   color: var(--text-muted);
   line-height: 1.4;
   word-break: break-word;

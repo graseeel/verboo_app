@@ -11,6 +11,7 @@ import { loadGrants, upsertGrant, removeGrant } from '../policy/siteGrantsStore.
 import { loadSession } from '../auth/auth.js'
 import { MSG } from '../controller/protocol.js'
 import { loadOptionsSession } from './optionsSession.js'
+import { applyVersionBadge } from './versionBadge.js'
 
 import EN_US from '../i18n/en-US.js'
 import PT_BR from '../i18n/pt-BR.js'
@@ -851,6 +852,7 @@ function resolveBrandAssets() {
 
 async function init() {
   applyI18n(document)
+  applyVersionBadge(document, t('version_label'))
   resolveBrandAssets()
 
   const session = await loadOptionsSession({

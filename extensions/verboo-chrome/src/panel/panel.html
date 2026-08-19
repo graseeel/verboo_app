@@ -85,6 +85,9 @@
           </a>
         </div>
       </div>
+
+      <!-- Runtime version from chrome.runtime.getManifest(); filled by panel.js -->
+      <p class="version-badge login-version" data-version-badge></p>
     </section>
 
     <!-- ═══════════════════════════════════════════════════════════
@@ -250,6 +253,26 @@
         <span data-i18n="routine_recording">Recording workflow</span>
         <time id="recording-time">00:00</time>
         <button type="button" id="recording-cancel" data-i18n="routine_cancel">Cancel</button>
+      </div>
+      <!-- Which dedicated-workspace tab the agent is acting on; focus only via explicit click -->
+      <div
+        class="workspace-tab"
+        id="workspace-tab"
+        role="status"
+        data-state="hidden"
+        hidden
+      >
+        <span class="workspace-tab-dot" aria-hidden="true"></span>
+        <span class="workspace-tab-label" id="workspace-tab-label"></span>
+        <button
+          type="button"
+          class="workspace-tab-show"
+          id="workspace-tab-show"
+          data-i18n="workspaceTab_show"
+          data-i18n-title="workspaceTab_show"
+        >
+          Show tab
+        </button>
       </div>
 
       <!-- Primary: chat transcript takes the entire body -->

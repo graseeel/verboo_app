@@ -129,14 +129,11 @@ test('manual + no grant + read → needsApproval (predictable UX)', () => {
   assert.equal(d.reason, 'manual_needs_approval')
 })
 
-// ── No grant + Auto/Skip → allowed ─────────────────────────
-
-test('auto + no grant → allowed', () => {
-  const d = evaluateToolPolicy('auto', undefined, mutateTool)
-  assert.equal(d.allowed, true)
-  assert.equal(d.needsApproval, false)
-  assert.equal(d.reason, 'auto_no_grant')
-})
+// ── No grant + Skip → allowed ──────────────────────────────
+// CICLO B: o ramo 'auto' foi removido do evaluateToolPolicy (o modesStore
+// migra auto→skip no load/save — 'auto' nunca chega em produção). O teste
+// 'auto + no grant → allowed' foi removido junto (teste deletado não falha,
+// some — contagem declarada na entrega).
 
 test('skip + no grant → allowed', () => {
   const d = evaluateToolPolicy('skip', undefined, mutateTool)

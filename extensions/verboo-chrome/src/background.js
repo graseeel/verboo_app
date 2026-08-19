@@ -16,6 +16,9 @@ import { executeWithApproval } from './controller/approvedExecute.js'
 import { loadMode } from './policy/modesStore.js'
 import { getGrant, upsertGrant } from './policy/siteGrantsStore.js'
 import { MSG } from './controller/protocol.js'
+import { isControllableUrl } from './planMessage.js'
+import { checkMessageSender } from './controller/senderGate.js'
+import { resolveExecutionTabId } from './controller/targetTab.js'
 import {
   ensureFreshSession,
   loadSession,
@@ -35,6 +38,7 @@ import {
   disableGlobalVerbooPanel,
   openVerbooPanel,
   openVerbooWorkspace,
+  ungroupVerbooTab,
 } from './presence/inject.js'
 import {
   SELECTION_CONTEXT_MENU_ID,
@@ -136,25 +140,30 @@ const routineRunner = createRoutineRunner({
     makeApprovalUi(request?.runId, signal),
   ),
   runAgent: (input) => {
-    const runMcpAgentTurn = (overrides) => runLlmAgentTurn({
-      ...input,
-      ...overrides,
-      broadcast,
-      executeTool: (toolCall, executionSignal) => executeWithApproval(
-        toolCall,
-        () => makeExecutionContext(
-          input.senderTabId,
-          input.turnId,
-          input.routineAllowedOrigins,
+    const runMcpAgentTurn = async (overrides) => {
+      // L2/Intenção+UX: same fall-open signal for the MCP path.
+      const l2ActiveTabUrl = (await queryActiveTabMeta(undefined))?.url ?? null
+      return runLlmAgentTurn({
+        ...input,
+        ...overrides,
+        activeTabUrl: l2ActiveTabUrl,
+        broadcast,
+        executeTool: (toolCall, executionSignal) => executeWithApproval(
+          toolCall,
+          () => makeExecutionContext(
+            input.senderTabId,
+            input.turnId,
+            input.routineAllowedOrigins,
+          ),
+          makeApprovalUi(input.turnId, executionSignal ?? input.signal),
         ),
-        makeApprovalUi(input.turnId, executionSignal ?? input.signal),
-      ),
-      getActiveTabMeta: queryActiveTabMeta,
-      refreshAccessToken: async () => {
-        const refreshed = await refreshSession()
-        return refreshed?.accessToken ?? null
-      },
-    })
+        getActiveTabMeta: queryActiveTabMeta,
+        refreshAccessToken: async () => {
+          const refreshed = await refreshSession()
+          return refreshed?.accessToken ?? null
+        },
+      })
+    }
     return runMcpAgentTurn({}).then((result) => {
       // Defensive: routines always run with browser tools, so a reclassify
       // signal should never surface here — but if it does, re-run with the
@@ -204,7 +213,10 @@ const nativeBridge = createNativeBridge({
   isApprovalUiAvailable: () => approvalSurfaces.size > 0,
   cancelPendingApprovals: () => cancelPendingApprovals('native'),
   clearPresenceOnAllTabs,
-  onTurnEnded: (turnId) => turnSiteGrants.delete(turnId),
+  onTurnEnded: (turnId) => {
+    turnSiteGrants.delete(turnId)
+    turnCreatedTabIds.delete(turnId)
+  },
 })
 nativeBridge.registerStartup()
 nativeBridge.connect()
@@ -271,10 +283,29 @@ void restoreRoutineExecutionState()
 const pendingApprovals = new Map()
 /** @type {Map<string, Set<string>>} */
 const turnSiteGrants = new Map()
+/** @type {Map<string, Set<number>>} — abas criadas pelo agente no turno (close policy) */
+const turnCreatedTabIds = new Map()
 
 // ── Message router ────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== 'object') return false
+
+  // FRENTE-B (B-2): sender gate — central ALLOWLIST. A content script
+  // (page context) may only send the message types explicitly listed in
+  // CONTENT_SCRIPT_ALLOWED_TYPES (today: routine:record_event). Every
+  // other type requires an extension-page sender (side panel / options).
+  // A page-injected script cannot spoof sender fields (Chrome sets them),
+  // so the whole controller surface — agent turns, approvals, auth,
+  // routines, selection context, model selection — is closed to content
+  // scripts, and new message types are born protected by default.
+  const gate = checkMessageSender(chrome.runtime.id, message.type, sender)
+  if (gate !== 'allowed') {
+    console.warn(
+      `[Verboo] Rejected ${message.type} (${gate.reason}) from sender: ${sender?.url ?? 'unknown'}`,
+    )
+    sendResponse({ ok: false, error: 'invalid_sender' })
+    return false
+  }
 
   if (ROUTINE_MESSAGE_TYPES.has(message.type)) {
     routineMessageHandler(message)
@@ -299,7 +330,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             message.modelId,
             message.conversationHistory,
             selectionContext,
+            message.sourceWindowId,
+            message.sourceTabId,
           )
+          // ITEM ABERTO (decisão do Maestro): esta chamada usa 2 args (sem
+          // activeTabUrl) — turnos detectados só pelo L2 rodam FORA da
+          // browserControlQueue e podem intercalar ações (efeito medido no
+          // RE-GATE SAFETY-NET). Correção planejada: opção A — resolver a
+          // aba antes da decisão de fila (próximo ciclo). NÃO alinhar a
+          // aridade aqui sem levar a fila junto.
           const turnPromise = shouldOfferBrowserTools(
             message.userMessage,
             message.conversationHistory,
@@ -312,6 +351,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             : executeTurn()
           void turnPromise
             .catch((err) => {
+              // OBSERVABILIDADE (b6b96d7): catch do turno que escapa do
+              // try/catch interno do runAgentTurn — loga o erro real + stack.
+              // Cancelamento do usuário (cancelTurn → runQueue reject
+              // 'run_cancelled'/'cancelled') NÃO é erro vermelho.
+              const msg = err?.message ?? String(err)
+              if (msg !== 'run_cancelled' && msg !== 'cancelled') {
+                console.error('[verboo] AGENT_TURN_START turn rejected:', msg, err)
+              }
               try {
                 void clearPresenceOnAllTabs()
               } catch {
@@ -765,6 +812,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
  */
 async function handleBrowserTool(toolCall) {
   const controller = new AbortController()
+  // DECISÃO DO DONO (workspace, 2026-08-16): legacy direct-tool envelope
+  // with no lease and no sender tab. makeExecutionContext now FAILS CLOSED
+  // (target_tab_unavailable) instead of falling back to the user's active
+  // tab — a live lease must never be bypassed by any surface.
   return executeWithApproval(
     toolCall,
     () => makeExecutionContext(undefined, undefined),
@@ -838,7 +889,14 @@ async function resolveSelectionContextForTurn(message) {
  * @param {string} [requestedModelId]
  * @param {Array<object>} [conversationHistory]
  * @param {import('./selectionContext.js').PendingSelectionContext | null} [selectionContext]
+ * @param {number} [sourceWindowId] — janela do painel (enviada pelo panel.js);
+ *   sem ela (payload antigo/CLI) vale a regra do candidato único.
+ * @param {number} [sourceTabId] — aba ativa capturada pelo painel NO ENVIO
+ *   (tabs.query active na janela do painel). Fecha a corrida de captura:
+ *   o usuário pode trocar de aba entre o envio e o processamento. O
+ *   background valida (existe, pertence à janela, controlável) e usa direto.
  */
+
 async function runAgentTurn(
   turnId,
   userMessage,
@@ -846,10 +904,11 @@ async function runAgentTurn(
   requestedModelId,
   conversationHistory,
   selectionContext,
+  sourceWindowId,
+  sourceTabId,
 ) {
   const controller = new AbortController()
   turnControllers.set(turnId, controller)
-  const browserToolsRequested = shouldOfferBrowserTools(userMessage, conversationHistory)
 
   // MV3 service workers can suspend mid-fetch; frozen timers then never fire the
   // router 60s abort, and the panel never gets COMPLETE/ERROR → permanent Working…
@@ -880,14 +939,66 @@ async function runAgentTurn(
     // Resolve the active tab up front so the model can decide between
     // a navigate (e.g. "abra o youtube" on chrome://extensions) and a
     // read_page on the current tab.
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    // CICLO DEPURAÇÃO SISTEMÁTICA (A) — corrida de captura no nível da aba:
+    // sourceWindowId prende a janela, mas a aba ativa é lida DEPOIS — o
+    // usuário pode trocar de aba no mesmo ms (evidência 8d61dcb: lease nasceu
+    // no X). O painel captura sourceTabId NO ENVIO e envia no payload. O
+    // background valida (existe, pertence à janela, controlável) e usa direto.
+    // Query só como fallback de payload antigo/CLI.
+    let activeTab = null
+    if (Number.isInteger(sourceTabId)) {
+      try {
+        const tab = await chrome.tabs.get(sourceTabId)
+        if (tab?.id && (!Number.isInteger(sourceWindowId) || tab.windowId === sourceWindowId) && isControllableUrl(tab.url)) {
+          activeTab = tab
+          console.log('[verboo-workspace] resolveActiveTab: sourceTabId do painel (validado) → tab', activeTab.id, 'url', activeTab.url)
+        } else {
+          console.log('[verboo-workspace] resolveActiveTab: sourceTabId', sourceTabId, 'inválido (não existe/fora da janela/não controlável) — fallback para query')
+        }
+      } catch {
+        console.log('[verboo-workspace] resolveActiveTab: sourceTabId', sourceTabId, 'não encontrado — fallback para query')
+      }
+    }
+    if (!activeTab && Number.isInteger(sourceWindowId)) {
+      activeTab = (await chrome.tabs.query({ active: true, windowId: sourceWindowId }))[0] ?? null
+      console.log('[verboo-workspace] resolveActiveTab: fallback query via sourceWindowId', sourceWindowId, '→ tab', activeTab?.id, 'url', activeTab?.url)
+    } else if (!activeTab) {
+      const cands = await chrome.tabs.query({ active: true })
+      if (cands.length === 1) {
+        activeTab = cands[0]
+        console.log('[verboo-workspace] resolveActiveTab: candidato-único (sem sourceWindowId) → tab', activeTab?.id, 'url', activeTab?.url)
+      } else {
+        console.log('[verboo-workspace] resolveActiveTab: fail-closed —', cands.length, 'candidatos ativos sem sourceWindowId (ambiguidade)')
+      }
+    }
+    // CORREÇÃO PÓS-GATE SAFETY-NET (Farol): realinhar background↔loop —
+    // shouldOfferBrowserTools deve receber activeTabUrl (3 args) para o L2
+    // (imperativo + URL controlável) disparar. Antes era chamado com 2 args
+    // em :893 (antes da aba existir) → L2 nunca disparava no background
+    // enquanto disparava no loop → browserToolsRequested divergia. Agora
+    // calculado DEPOIS de resolver a aba, com activeTab?.url. Usos em
+    // :998/:1018/:1026/:1145 são todos depois daqui.
+    const browserToolsRequested = shouldOfferBrowserTools(userMessage, conversationHistory, activeTab?.url)
+    // N1 (THERMO-3, judo): o portão de hard block agora vive NO LOOP
+    // (browserToolsEnabled) — cobre o turno inicial, o reclassify e o
+    // caminho MCP. Este bloco precoce foi removido (ponto único no loop).
     let turnTabLease = null
     const ensureTurnWorkspace = async (resume = false) => {
       if (!turnTabLease) {
-        turnTabLease = await backgroundWorkspace.acquire({
-          sourceTabId: Number.isInteger(senderTabId) ? senderTabId : activeTab?.id,
-          resume,
-        })
+        // DECISÃO DO DONO (workspace, 2026-08-15): a aba onde o painel
+        // estava ao enviar o prompt É a aba de trabalho. Lease direto na
+        // aba de origem — sem janela invisível, sem criação de aba. O
+        // usuário pode trocar de aba/janela livremente; executeScript
+        // não exige foco. Se a aba fechar mid-turn, resolveTargetTab
+        // lança target_tab_unavailable (erro honesto, chip closed).
+        // O caminho MCP/CLI preserva acquire() (janela invisível) — ver
+        // nativeBridge.contextFactory abaixo.
+        const sourceTabId = Number.isInteger(senderTabId) ? senderTabId : activeTab?.id
+        // REGRESSÃO c358abf: aba ativa não controlável (chrome://) no início
+        // do turno → erro honesto e claro no painel (target_not_controllable),
+        // em vez de falhar no 1º tool com target_tab_unavailable.
+        turnTabLease = await backgroundWorkspace.leaseSourceTab(sourceTabId, { isControllableUrl })
+        await broadcastWorkspaceTabMeta(turnId, turnTabLease)
       }
       return turnTabLease
     }
@@ -951,20 +1062,39 @@ async function runAgentTurn(
 
     if (accessToken && selectedModelId) {
       try {
+        // FONTE ÚNICA DA URL (Farol): o loop recebe activeTab?.url (a aba do
+        // lease — onde o turno REALMENTE age), NÃO o currentWindow do
+        // l2ActiveTabUrl. Sem fonte única, o classificador usava a URL da
+        // janela (que pode ser de outra aba) → L2 erra → turno de navegador
+        // vira 'Não consegui concluir o pedido' (genérica) em vez da mensagem
+        // clara. A aba do lease já foi resolvida de forma determinística acima.
         const llmOptions = () => ({
           turnId,
           userMessage,
+          activeTabUrl: activeTab?.url ?? null,
           accessToken,
           modelId: selectedModelId,
           modelSupportsVision,
           conversationHistory,
           selectionContext,
           broadcast: (msg) => broadcast(msg),
-          executeTool: (tc, executionSignal) => executeWithApproval(
-            tc,
-            () => makeExecutionContext(senderTabId, turnId, undefined, turnTabLease),
-            makeApprovalUi(turnId, executionSignal ?? controller.signal),
-          ),
+          executeTool: async (tc, executionSignal) => {
+            // SAFETY-NET (defesa em profundidade): garante que o lease do
+            // turno chega ao executeTool/executeWithApproval mesmo se um
+            // futuro call site esquecer de passar turnTabLease ou se uma
+            // reclassify rodar antes do ensureTurnWorkspace do arranque.
+            // O guard !turnTabLease faz retornar imediato se o lease já
+            // existe (barato); cria se faltar. NÃO substitui o cálculo
+            // correto de browserToolsRequested (realinhado em :957) —
+            // complementa. Cobertura: call site órfão, reclassify sem
+            // lease, race de inicialização.
+            await ensureTurnWorkspace(false)
+            return executeWithApproval(
+              tc,
+              () => makeExecutionContext(senderTabId, turnId, undefined, turnTabLease),
+              makeApprovalUi(turnId, executionSignal ?? controller.signal),
+            )
+          },
           getActiveTabMeta: () => queryActiveTabMeta(
             turnTabLease?.snapshot().tabId,
           ),
@@ -984,13 +1114,18 @@ async function runAgentTurn(
         // user's browser).
         //
         // Queue ownership: the reclassified turn was classified as
-        // conversation at background.js:281, so it does NOT currently hold
-        // the queue. Still, defensively check activeId(): if this turn ever
-        // runs while holding the queue, enqueuing the re-run would deadlock
-        // (it would wait for itself) — in that case re-run inline instead.
+        // conversation by shouldOfferBrowserTools at the AGENT_TURN_START
+        // handler, so it does NOT currently hold the queue. Still,
+        // defensively check activeId(): if this turn ever runs while holding
+        // the queue, enqueuing the re-run would deadlock (it would wait for
+        // itself) — in that case re-run inline instead.
         let finalResult = llmResult
         if (llmResult?.reclassify === true) {
           await ensureTurnWorkspace(false)
+          // N1 (THERMO-3, judo): o reclassify chama o loop com
+          // forceBrowserTools=true → o portão ÚNICO de hard block (no loop,
+          // browserToolsEnabled) recusa texto de pix antes do re-run. Este
+          // bloco de reavaliação foi removido (ponto único no loop).
           const reclassifyTurn = () => runLlmAgentTurn({ ...llmOptions(), forceBrowserTools: true })
           const ownsQueue = browserControlQueue.activeId() === turnId
           finalResult = ownsQueue
@@ -1001,15 +1136,23 @@ async function runAgentTurn(
                 cancel: () => abortTurnController(turnId),
               })
         }
+        // Renomeado para workspaceTabMeta: `const activeTab` aqui faria
+        // shadowing do activeTab do turno (linha 947) — como const é
+        // hoisted (TDZ), a closure llmOptions capturaria o INNER activeTab
+        // (não inicializado) → ReferenceError. Fonte única da URL exigiu
+        // que a closure lesse o activeTab do turno.
+        const workspaceTabMeta = await resolveWorkspaceTabMeta(turnTabLease)
         sendTerminal({
           type: MSG.AGENT_TURN_COMPLETE,
           turnId,
           assistantMessage: finalResult.assistantMessage ?? 'Done.',
           toolResults: slimToolResultsForBroadcast(finalResult.toolResults),
+          ...(workspaceTabMeta ? { activeTab: workspaceTabMeta } : {}),
         })
         return
       } catch (llmErr) {
         if (controller.signal.aborted) {
+          // Cancelamento do usuário NÃO é erro vermelho — sem console.error.
           sendTerminal({
             type: MSG.AGENT_TURN_ERROR,
             turnId,
@@ -1017,14 +1160,22 @@ async function runAgentTurn(
           })
           return
         }
+        // OBSERVABILIDADE (b6b96d7): este catch converte exceção em mensagem
+        // genérica de turno — sem console.error, o console do SW fica VAZIO
+        // e a causa real (throw no ensureTurnWorkspace/leaseSourceTab) some.
+        // Nunca mais um vazio: loga o erro real + stack aqui (depois do check
+        // de aborted — cancelamento não é erro).
+        console.error('[verboo] runAgentTurn LLM catch:', llmErr?.message ?? String(llmErr), llmErr)
         // Partial progress attached on some errors (defensive).
         const partial = llmErr?.partialToolResults
         if (Array.isArray(partial) && partial.length > 0) {
+          const workspaceTabMeta = await resolveWorkspaceTabMeta(turnTabLease)
           sendTerminal({
             type: MSG.AGENT_TURN_COMPLETE,
             turnId,
             assistantMessage: summarizePartialAgentTurn(userMessage, partial),
             toolResults: slimToolResultsForBroadcast(partial),
+            ...(workspaceTabMeta ? { activeTab: workspaceTabMeta } : {}),
           })
           return
         }
@@ -1048,6 +1199,14 @@ async function runAgentTurn(
       }
     }
 
+    // OBSERVABILIDADE (b6b96d7): turno de navegador sem modelo/sessão —
+    // loga o motivo real antes do erro amigável.
+    console.error(
+      '[verboo] runAgentTurn: browser turn sem',
+      accessToken ? 'modelo' : 'sessão',
+      '— accessToken:', Boolean(accessToken),
+      'selectedModelId:', selectedModelId,
+    )
     sendTerminal({
       type: MSG.AGENT_TURN_ERROR,
       turnId,
@@ -1059,6 +1218,9 @@ async function runAgentTurn(
     return
 
   } catch (err) {
+    // OBSERVABILIDADE (b6b96d7): catch de topo — sem console.error, o console
+    // do SW fica VAZIO e a causa real some. Loga o erro real + stack.
+    console.error('[verboo] runAgentTurn top-level catch:', err?.message ?? String(err), err)
     sendTerminal({
       type: MSG.AGENT_TURN_ERROR,
       turnId,
@@ -1073,8 +1235,12 @@ async function runAgentTurn(
     }
     turnControllers.delete(turnId)
     turnSiteGrants.delete(turnId)
+    turnCreatedTabIds.delete(turnId)
     // Never leave the panel stuck if a path forgot to send a terminal event.
     if (!terminalSent) {
+      // OBSERVABILIDADE (b6b96d7): turno terminou sem terminal — bug de
+      // encanamento; loga para nunca mais console vazio.
+      console.error('[verboo] runAgentTurn terminou sem terminal event (bug de encanamento) — turnId', turnId)
       broadcast({
         type: MSG.AGENT_TURN_ERROR,
         turnId,
@@ -1134,11 +1300,21 @@ async function makeExecutionContext(
     ? (turnSiteGrants.get(turnId) ?? new Set())
     : null
   if (turnId && !turnSiteGrants.has(turnId)) turnSiteGrants.set(turnId, turnGrants)
-  const tab = leasedTarget
-    ? await chrome.tabs.get(leasedTarget.tabId).catch(() => null)
-    : Number.isInteger(fallbackTabId)
-      ? await chrome.tabs.get(fallbackTabId).catch(() => null)
-      : (await chrome.tabs.query({ active: true, currentWindow: true }))[0]
+  // CICLO DEPURAÇÃO SISTEMÁTICA (close): rastreia abas CRIADAS pelo agente
+  // no turno (tabs.new) — close delas é permitido em skip; close de aba do
+  // usuário é bloqueado. Set por turno, persistido entre tool calls.
+  const turnCreated = turnId
+    ? (turnCreatedTabIds.get(turnId) ?? new Set())
+    : null
+  if (turnId && !turnCreatedTabIds.has(turnId)) turnCreatedTabIds.set(turnId, turnCreated)
+  // DECISÃO DO DONO (workspace, 2026-08-16): the execution target is the
+  // lease tab when one is alive, else the explicit fallback — NEVER the
+  // user's active tab. The user may switch tabs/windows freely mid-turn;
+  // a context with no lease and no fallback (legacy handleBrowserTool)
+  // fails closed (target_tab_unavailable) instead of silently acting on
+  // whatever the user is looking at (T3: type ran on the active X.com tab
+  // while the lease was TodoMVC).
+  const activeTabId = resolveExecutionTabId(leasedTarget, fallbackTabId)
   return {
     mode: await loadMode(),
     getSiteGrant: async (host) => {
@@ -1157,10 +1333,21 @@ async function makeExecutionContext(
     },
     setTurnGrant: async (host) => { turnGrants?.add(host) },
     setSiteGrant: (host, decision) => upsertGrant(host, decision),
-    activeTabId: tab?.id ?? fallbackTabId,
+    activeTabId,
+    agentCreatedTabIds: turnCreated,
     ...(leasedTarget ? {
       workspaceWindowId: leasedTarget.windowId,
-      setActiveTabId: (tabId, windowId) => turnTabLease.selectTab(tabId, windowId),
+      setActiveTabId: (tabId, windowId) => {
+        // CICLO DEPURAÇÃO SISTEMÁTICA (C): quando o lease muda de aba, a aba
+        // ANTERIOR sai do grupo Verboo — senão o grupo fica órfão na aba
+        // antiga (evidência 8d61dcb). Best-effort.
+        const previousTabId = turnTabLease.snapshot().tabId
+        turnTabLease.selectTab(tabId, windowId)
+        if (Number.isInteger(previousTabId) && previousTabId !== tabId) {
+          void ungroupVerbooTab(previousTabId)
+        }
+        void broadcastWorkspaceTabMeta(turnId, turnTabLease)
+      },
     } : {}),
     onExecuting: (toolCall) => broadcast({
       type: MSG.AGENT_TOOL_EXECUTING,
@@ -1180,6 +1367,36 @@ async function queryActiveTabMeta(preferredTabId) {
     url: tab?.url,
     title: tab?.title,
   }
+}
+
+/**
+ * Resolve the turn's dedicated-workspace tab for panel display (UX chrome only
+ * — never affects execution). Returns null when the turn has no lease or the
+ * tab is gone (closed mid-turn).
+ * @param {{ snapshot?: () => { tabId?: number, windowId?: number } } | null | undefined} turnTabLease
+ */
+async function resolveWorkspaceTabMeta(turnTabLease) {
+  try {
+    const snapshot = turnTabLease?.snapshot?.()
+    if (!Number.isInteger(snapshot?.tabId)) return null
+    const meta = await queryActiveTabMeta(snapshot.tabId)
+    if (!Number.isInteger(meta.id)) return null
+    return {
+      tabId: meta.id,
+      windowId: snapshot.windowId,
+      title: typeof meta.title === 'string' ? meta.title : '',
+      url: typeof meta.url === 'string' ? meta.url : '',
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Tell the panel which workspace tab the turn is acting on (best effort). */
+async function broadcastWorkspaceTabMeta(turnId, turnTabLease) {
+  if (!turnId) return
+  const tab = await resolveWorkspaceTabMeta(turnTabLease)
+  if (tab) broadcast({ type: MSG.AGENT_WORKSPACE_TAB, turnId, tab })
 }
 
 async function queryNormalWindow() {
@@ -1417,6 +1634,7 @@ function cancelTurn(turnId) {
   }
   turnControllers.delete(turnId)
   turnSiteGrants.delete(turnId)
+  turnCreatedTabIds.delete(turnId)
   try {
     void clearPresenceOnAllTabs()
   } catch {
@@ -1450,6 +1668,16 @@ function browserAgentErrorMessage(userMessage, code) {
     return pt
       ? 'O modelo selecionado não aceita imagens. Escolha um modelo marcado como Visual para capturar e analisar a tela.'
       : 'The selected model does not accept images. Choose a model marked Visual to capture and analyze the screen.'
+  }
+  if (detail === 'target_not_controllable') {
+    return pt
+      ? 'Abra uma página web (http:// ou https://) para o Verboo controlar e tente novamente.'
+      : 'Open a web page (http:// or https://) for Verboo to control, then try again.'
+  }
+  if (detail === 'close_non_agent_tab') {
+    return pt
+      ? 'Abas abertas em turnos anteriores não são fechadas automaticamente — troque para o modo manual para aprovar, ou feche você mesmo.'
+      : 'Tabs opened in previous turns are not closed automatically — switch to manual mode to approve, or close it yourself.'
   }
   return pt
     ? `O agente do navegador parou antes de concluir: ${detail}`

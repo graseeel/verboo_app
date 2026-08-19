@@ -5,6 +5,10 @@
  * Each grant: { host: string, decision: 'once' | 'always' | 'deny', updatedAt: number }
  *
  * Multi-user: grants are per-extension-instance; no user identity stored.
+ *
+ * DECISÃO DE PRODUTO (2026-08-18): grants/modo por instância da extensão,
+ * não por conta — dívida assumida pelo dono; reavaliar se houver relato de
+ * perfil compartilhado.
  */
 
 const STORAGE_KEY = 'siteGrants'

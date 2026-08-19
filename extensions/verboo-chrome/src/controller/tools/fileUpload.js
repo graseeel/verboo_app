@@ -11,8 +11,8 @@
  * secrets, or bypass same-origin checks depending on the target.
  * evaluateToolPolicy forces `needsApproval` in every mode — Manual,
  * Auto, AND Skip. The `always` site grant does NOT bypass this
- * (elevated check runs before site grant check; see
- * evaluateToolPolicy.js:61-63).
+ * (the elevated check in evaluateToolPolicy runs before the site
+ * grant check).
  *
  * Why `risk: 'elevated'` not `'mutate'`:
  *   - The action is technically a mutate, but the blast radius is

@@ -8,7 +8,7 @@
  * Multi-user: zero hardcoded paths, users, tokens.
  */
 
-/** @typedef {{ label: string; match: (input: string) => boolean }} HardBlockRule */
+/** @typedef {{ label: string; match: (input: string) => boolean; pt: string; en: string }} HardBlockRule */
 
 /** @type {HardBlockRule[]} */
 export const HARD_BLOCKS = [
@@ -22,6 +22,11 @@ export const HARD_BLOCKS = [
       ]
       return keywords.some((re) => re.test(input))
     },
+    // N1 (THERMO-3): mensagem colapsada NA REGRA — o par label↔mensagem
+    // vive junto (teste mata o drift). O caller escolhe pt/en pela língua
+    // do usuário.
+    pt: 'Não posso executar compras ou pagamentos — isso é um bloqueio de segurança que não pode ser contornado.',
+    en: "I can't execute purchases or payments — this is a security hard block that cannot be bypassed.",
   },
   {
     label: 'create_account',
@@ -32,17 +37,57 @@ export const HARD_BLOCKS = [
       ]
       return keywords.some((re) => re.test(input))
     },
+    pt: 'Não posso criar contas ou cadastros — isso é um bloqueio de segurança que não pode ser contornado.',
+    en: "I can't create accounts or sign-ups — this is a security hard block that cannot be bypassed.",
   },
   {
     label: 'financial_trade',
     match(input) {
+      // FRENTE-B (B-3): money movement is a hard block regardless of the
+      // channel — PIX (PT-BR instant transfer), bank transfers (en + pt),
+      // wire transfers, and Brazilian boletos.
+      //
+      // PÓS-GATE (Farol): a bare "transfer"/"transferir"/"wire" is NOT
+      // enough — legitimate non-financial uses exist ("transfer to another
+      // tab", "transferir o arquivo", "wire the data"). Unambiguous terms
+      // and explicit money-movement compounds block standalone; bare
+      // transfer verbs only block when a money-context word appears in the
+      // same input (amount, bank/account, payment…).
       const keywords = [
         /trade/i, /invest/i, /buy\s*stock/i, /sell\s*stock/i,
         /place\s*trade/i, /execute\s*trade/i, /crypto/i,
         /swap\b/i, /stake/i,
+        // Unambiguous instruments / compounds — intrinsically financial.
+        /pix\b/i, /boleto/i,
+        /bank\s*transfer/i, /wire\s*transfer/i,
+        /transfer\s*(money|funds|payment|balance|cash)/i,
+        /(money|funds|payment)\s*transfer/i,
+        /transfer\s*(to|between)\s*(my\s+)?(account|bank)/i,
+        /transferencia\s*bancaria/i,
+        /transferir\s*dinheiro/i, /mandar\s*dinheiro/i, /enviar\s*dinheiro/i,
+        /pagar\s*(um\s+)?(pix|boleto)/i,
       ]
-      return keywords.some((re) => re.test(input))
+      if (keywords.some((re) => re.test(input))) return true
+
+      // Bare transfer verbs: blocked ONLY in a financial context.
+      const moneyContext = [
+        /money\b/i, /payment/i, /pay\b/i, /paid\b/i,
+        /amount\b/i, /value\b/i, /valor\b/i, /quantia/i,
+        /dinheiro/i, /funds/i, /cash\b/i, /saldo/i,
+        /bank\b/i, /account\b/i, /conta\b/i, /banco\b/i,
+        /deposit/i, /withdraw/i, /remessa/i,
+        /fee\b/i, /taxa/i, /juros/i, /interest/i, /percent/i,
+        /reais\b/i, /real\b/i, /dolares?/i, /dollars?/i, /euros?/i, /usd\b/i,
+        /(\$|€|£)\s*\d|\d+\s*(usd|dol|reais|euro|eur|brl)/i,
+      ]
+      if (moneyContext.some((re) => re.test(input))
+        && /transfer\b|transferir|transferencia|wire\b/i.test(input)) {
+        return true
+      }
+      return false
     },
+    pt: 'Não posso executar transferências de dinheiro ou pagamentos (PIX, boleto, transferência bancária) — isso é um bloqueio de segurança que não pode ser contornado.',
+    en: "I can't execute money transfers or payments (PIX, boleto, bank transfer) — this is a security hard block that cannot be bypassed.",
   },
   {
     label: 'mass_permanent_deletion',
@@ -54,6 +99,8 @@ export const HARD_BLOCKS = [
       ]
       return keywords.some((re) => re.test(input))
     },
+    pt: 'Não posso apagar dados em massa — isso é um bloqueio de segurança que não pode ser contornado.',
+    en: "I can't perform mass permanent deletion — this is a security hard block that cannot be bypassed.",
   },
   {
     label: 'secret_exposure',
@@ -65,6 +112,8 @@ export const HARD_BLOCKS = [
       ]
       return keywords.some((re) => re.test(input))
     },
+    pt: 'Não posso expor segredos ou credenciais — isso é um bloqueio de segurança que não pode ser contornado.',
+    en: "I can't expose secrets or credentials — this is a security hard block that cannot be bypassed.",
   },
   {
     label: 'prompt_injection_obedience',
@@ -77,8 +126,29 @@ export const HARD_BLOCKS = [
       ]
       return keywords.some((re) => re.test(input))
     },
+    pt: 'Não posso obedecer a instruções de injeção de prompt — isso é um bloqueio de segurança que não pode ser contornado.',
+    en: "I can't obey prompt injection instructions — this is a security hard block that cannot be bypassed.",
   },
 ]
+
+// N1 (THERMO-3): mensagem de recusa do hard block, na língua do usuário.
+// A mensagem vive NA REGRA (pt/en) — o par label↔mensagem não diverge.
+// O caller (loop) escolhe a língua pela heurística do userMessage.
+const HARD_BLOCK_FALLBACK_MESSAGE = {
+  pt: 'Não posso executar essa ação — é um bloqueio de segurança que não pode ser contornado.',
+  en: "I can't execute that action — it's a security hard block that cannot be bypassed.",
+}
+
+/**
+ * @param {string | undefined} label
+ * @param {'pt' | 'en'} lang
+ * @returns {string}
+ */
+export function hardBlockMessage(label, lang) {
+  const rule = HARD_BLOCKS.find((r) => r.label === label)
+  const chosen = rule ?? HARD_BLOCK_FALLBACK_MESSAGE
+  return lang === 'pt' ? chosen.pt : chosen.en
+}
 
 /**
  * Check if a tool/action description matches any Hard Block.

@@ -53,7 +53,15 @@ export async function screenshot(tool, ctx = {}) {
     }
     dataUrl = await captureWithRetries(tab.windowId)
   } else {
-    throw new Error('screenshot failed: target_tab_not_active_in_workspace')
+    // CICLO DEPURAÇÃO SISTEMÁTICA (B): captureVisibleTab só captura a aba
+    // visível — com o lease em background (usuário trocou de aba), TODO
+    // screenshot falha. Erro honesto com dica dirigida: a aba está em
+    // segundo plano, screenshots indisponíveis, use read_page. Sem a dica,
+    // o modelo re-tenta 99x (evidência 8d61dcb).
+    throw new Error(
+      'screenshot indisponível: a aba de trabalho está em segundo plano (captureVisibleTab só captura a aba visível). ' +
+      'Use read_page para inspecionar o conteúdo da aba de trabalho.',
+    )
   }
 
   let width = 0

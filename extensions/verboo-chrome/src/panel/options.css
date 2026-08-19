@@ -701,6 +701,11 @@
   font-size: 12px;
 }
 
+.options-foot {
+  display: flex;
+  justify-content: center;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

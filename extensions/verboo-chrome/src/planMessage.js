@@ -118,7 +118,7 @@ const MUSIC_QUERY_STRIP_RE =
   /\b(abra|abrir|abre|abram|vamos|vai|ir|acesse|acessar|acesso|coloque|coloca|toque|tocar|toca|play(?:\s+me)?|put\s+on|please|por\s+favor|pra\s+mim|para\s+mim|para|por|com|ela|ele|eles|elas|isso|aqui|lá|la|e|and|uma|um|uns|umas|a|o|os|as|da|de|do|das|dos|the|me|my|on|no|na|em|youtube|you\s+tube|m[uú]sica|music|song|songs|v[ií]deo\s+clipe|video\s+clipe|clipe|video|vídeo)\b/gi
 
 /** First organic result title link on YouTube search results. */
-export const YOUTUBE_FIRST_RESULT_SELECTOR = 'ytd-video-renderer a#video-title'
+const YOUTUBE_FIRST_RESULT_SELECTOR = 'ytd-video-renderer a#video-title'
 
 /** Weak leftover tokens that must never become a search query alone. */
 const WEAK_QUERY_TOKENS = new Set([
@@ -477,7 +477,7 @@ function normalizeSearchQuery(s) {
  * @param {string|undefined} activeTabUrl
  * @param {string} youtubeQuery
  */
-export function isAlreadyOnYoutubeResultsFor(activeTabUrl, youtubeQuery) {
+function isAlreadyOnYoutubeResultsFor(activeTabUrl, youtubeQuery) {
   if (!activeTabUrl || !youtubeQuery) return false
   let u
   try {

@@ -13,7 +13,7 @@ import { isControllableUrl, nonControllablePageMessage } from '../../planMessage
 import { preparePresenceForAction } from '../../presence/inject.js'
 import { resolveTargetTab } from '../targetTab.js'
 
-const MAX_MATCHES = 20
+const MAX_MATCHES = 20 // mirrored inside findInPage (serialized copy) — ROUND 9
 
 /**
  * @param {{ name: 'find'; text?: string; selector?: string; risk?: string; input?: string }} tool
@@ -38,13 +38,32 @@ export async function findTool(tool, ctx = {}) {
   const [result] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: findInPage,
-    args: [text.trim(), tool?.selector ?? null],
+    // B-2 (Farol): deadlines injetáveis — tool.deadlines só para testes.
+    // B-3 (Farol, REGRESSÃO DE CAMPO): `?? null` — undefined no array args
+    // NÃO é JSON-serializável e o Chrome rejeita a chamada INTEIRA.
+    args: [text.trim(), tool?.selector ?? null, tool.deadlines ?? null],
   })
 
   if (!result) throw new Error('find: no result from page')
+  // ROUND 9 (see type.js): a null result means the in-page func threw —
+  // fail honestly with the tab identity; returning [] here would look
+  // like "no elements found", a silent lie about a crashed injection.
+  if (result.result == null) {
+    throw new Error(
+      `find: page function failed in the document (ran in tab ${tab.id}: ${tab.url ?? 'unknown'}) — the page may have navigated or the injection was blocked; retry, or use read_page to inspect the document`,
+    )
+  }
+  const matches = Array.isArray(result.result) ? result.result : []
   return {
-    matches: Array.isArray(result.result) ? result.result : [],
+    matches,
     url: tab.url ?? '',
+    // INSTRUMENTAÇÃO (pós-round 8): the empty result carries the identity
+    // of the tab the find ran in — so the panel/model can see exactly
+    // which surface returned nothing (a stale workspace tab vs the user's
+    // page).
+    ...(matches.length === 0
+      ? { note: `No elements found (ran in tab ${tab.id}: ${tab.url ?? 'unknown'}${tab.title ? ` "${tab.title}"` : ''})` }
+      : {}),
   }
 }
 
@@ -52,14 +71,34 @@ export async function findTool(tool, ctx = {}) {
  * In-page function. Runs in the page's main world via executeScript.
  * Returns up to MAX_MATCHES clickable elements whose visible text contains
  * the needle (case-insensitive). Selectors are derived from the element.
+ * R-C1/GENERALIZAÇÃO-2: waits for readiness (and for the scope selector
+ * when given) so the first tool call of a turn cannot race the
+ * framework's mount. Zero cost on a ready page.
  * @param {string} text
  * @param {string | null} scopeSelector
- * @returns {Array<{ text: string; tag: string; selector: string; href?: string }>}
+ * @returns {Promise<Array<{ text: string; tag: string; selector: string; href?: string }>}>
  */
-function findInPage(text, scopeSelector) {
-  const scope = scopeSelector
-    ? document.querySelector(scopeSelector)
-    : document
+async function findInPage(text, scopeSelector, deadlines) {
+  // B-2 (Farol): deadlines injetáveis para teste — defaults de produção.
+  const readyMs = deadlines?.readyMs ?? 5000
+  const elementMs = deadlines?.elementMs ?? 3000
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const readyDeadline = Date.now() + readyMs
+  while (document.readyState !== 'complete' && Date.now() < readyDeadline) {
+    await sleep(100)
+  }
+  let scope = null
+  if (scopeSelector) {
+    const elementDeadline = Date.now() + elementMs
+    for (;;) {
+      scope = document.querySelector(scopeSelector)
+      if (scope) break
+      if (Date.now() >= elementDeadline) return []
+      await sleep(100)
+    }
+  } else {
+    scope = document
+  }
   if (!scope) return []
 
   const candidates = scope.querySelectorAll(
@@ -67,9 +106,40 @@ function findInPage(text, scopeSelector) {
   )
   const needle = text.toLowerCase()
   const matches = []
+  // ROUND 9: maxMatches/buildSelector/escapeAttr are INLINED —
+  // chrome.scripting serializes ONLY this function's body, so module-
+  // scope helpers (and even the module's MAX_MATCHES const) become
+  // ReferenceErrors in the real page.
+  const maxMatches = 20
+  const escapeAttr = (value) => value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')
+  // Derive a stable CSS selector from the REAL element. Preference
+  // order: title attribute → aria-label → exact href → DOM path. No
+  // site-specific knowledge is embedded.
+  const buildSelector = (el) => {
+    const title = el.getAttribute?.('title')
+    if (title) return `[title="${escapeAttr(title)}"]`
+    const aria = el.getAttribute?.('aria-label')
+    if (aria) return `[aria-label="${escapeAttr(aria)}"]`
+    if (el.tagName === 'A' && el.getAttribute?.('href')) {
+      return `a[href="${escapeAttr(el.getAttribute('href'))}"]`
+    }
+    const parts = []
+    let node = el
+    while (node && node !== document.documentElement) {
+      const tag = node.tagName.toLowerCase()
+      const parent = node.parentElement
+      const siblings = parent
+        ? [...parent.children].filter((sibling) => sibling.tagName === node.tagName)
+        : []
+      const index = siblings.length > 1 ? siblings.indexOf(node) + 1 : 1
+      parts.unshift(index > 1 ? `${tag}:nth-of-type(${index})` : tag)
+      node = parent
+    }
+    return parts.join(' > ')
+  }
 
   for (const el of candidates) {
-    if (matches.length >= MAX_MATCHES) break
+    if (matches.length >= maxMatches) break
     const visible = (el.innerText ?? el.textContent ?? '').trim()
     if (!visible) continue
     if (!visible.toLowerCase().includes(needle)) continue
@@ -84,38 +154,4 @@ function findInPage(text, scopeSelector) {
   }
 
   return matches
-}
-
-/**
- * Derive a stable CSS selector from the REAL element. Preference order:
- * title attribute → aria-label → exact href → DOM path. No site-specific
- * knowledge is embedded.
- * @param {Element} el
- */
-function buildSelector(el) {
-  const title = el.getAttribute?.('title')
-  if (title) return `[title="${escapeAttr(title)}"]`
-  const aria = el.getAttribute?.('aria-label')
-  if (aria) return `[aria-label="${escapeAttr(aria)}"]`
-  if (el.tagName === 'A' && el.getAttribute?.('href')) {
-    return `a[href="${escapeAttr(el.getAttribute('href'))}"]`
-  }
-  const parts = []
-  let node = el
-  while (node && node !== document.documentElement) {
-    const tag = node.tagName.toLowerCase()
-    const parent = node.parentElement
-    const siblings = parent
-      ? [...parent.children].filter((sibling) => sibling.tagName === node.tagName)
-      : []
-    const index = siblings.length > 1 ? siblings.indexOf(node) + 1 : 1
-    parts.unshift(index > 1 ? `${tag}:nth-of-type(${index})` : tag)
-    node = parent
-  }
-  return parts.join(' > ')
-}
-
-/** @param {string} value */
-function escapeAttr(value) {
-  return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')
 }

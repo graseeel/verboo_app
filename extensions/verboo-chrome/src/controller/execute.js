@@ -37,10 +37,6 @@ import { typeText } from './tools/type.js'
 import { screenshot } from './tools/screenshot.js'
 import { tabs } from './tools/tabs.js'
 import { tabGroup } from './tools/tabGroup.js'
-import { consoleReader } from './tools/consoleReader.js'
-import { networkReader } from './tools/networkReader.js'
-import { fileUpload } from './tools/fileUpload.js'
-import { gifRecording } from './tools/gifRecording.js'
 
 /**
  * Execute a Browser Tool call after policy gate.
@@ -150,24 +146,6 @@ async function dispatch(toolCall, ctx) {
       return tabs(args, ctx)
     case 'tab_group':
       return tabGroup(args, ctx)
-    case 'console_reader':
-      return consoleReader(args, ctx)
-    case 'console_clear':
-      return consoleReader({ ...args, name: 'console_reader', action: 'clear' }, ctx)
-    case 'network_reader':
-      return networkReader(args)
-    case 'file_upload':
-      return fileUpload(args)
-    case 'gif_recording':
-      return gifRecording(args)
-    case 'console':
-      return consoleReader(args, ctx)
-    case 'network':
-      return networkReader(args)
-    case 'upload':
-      return fileUpload(args)
-    case 'gif_record':
-      return gifRecording(args)
     default:
       throw new Error(`unknown_tool:${args.name}`)
   }
@@ -177,12 +155,13 @@ async function dispatch(toolCall, ctx) {
  * Flatten a toolCall's `params` onto the top level. Top-level fields
  * win when both are present, so planner-sourced values (e.g.
  * `toolCall.url` set explicitly) override any value that happens to
- * also live in `toolCall.params`.
+ * also live in `toolCall.params`. Usada pelo dispatch — o export era
+ * morto (ninguém importava), a função é viva.
  *
  * @param {ToolCall} toolCall
  * @returns {Record<string, unknown>}
  */
-export function mergeToolArgs(toolCall) {
+function mergeToolArgs(toolCall) {
   if (!toolCall || typeof toolCall !== 'object') return toolCall
   const { params, ...rest } = toolCall
   if (!params || typeof params !== 'object') return toolCall
