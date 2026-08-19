@@ -153,9 +153,6 @@ export const TOOL_RISK = Object.freeze({
   ELEVATED: 'elevated',
 })
 
-/** Bump in browserTools.js (and the JSON reference copy) on every catalog change. */
-export const CATALOG_VERSION = browserCatalog.version
-
 /**
  * Executable browser tools. Planned handlers that lack required Chrome
  * permissions are deliberately absent so neither the LLM nor MCP can call
@@ -217,46 +214,6 @@ export const TOOL_RISK_MAP = Object.freeze(Object.fromEntries(
  * @property {Object} [activeTab]          - {tabId, windowId, title, url} of the
  *   dedicated-workspace tab at turn end; present only when the turn used one
  */
-
-// ── Message payload shapes (for type-checking in handlers) ──
-
-export const MSG_SHAPES = Object.freeze({
-  [MSG.AGENT_TURN_START]: {
-    turnId: 'string',
-    userMessage: 'string',
-    selectionContextId: 'string?',
-    selectionContextTabId: 'number?',
-  },
-  [MSG.AGENT_TURN_CANCEL]: { turnId: 'string' },
-  [MSG.SELECTION_CONTEXT_GET]: { tabId: 'number' },
-  [MSG.SELECTION_CONTEXT_DISCARD]: { tabId: 'number', selectionContextId: 'string' },
-  [MSG.TOOL_PENDING_LIST]: {},
-  [MSG.TOOL_APPROVE]:      { toolCallId: 'string', decision: 'once|always' },
-  [MSG.TOOL_DENY]:         { toolCallId: 'string', reason: 'string?' },
-  [MSG.AGENT_TOOL_REQUEST]:{ toolCall: 'object', policyDecision: 'object' },
-  [MSG.AGENT_TOOL_RESULT]: { toolResult: 'object' },
-  [MSG.AGENT_TURN_COMPLETE]:{ turnId: 'string', assistantMessage: 'string', toolResults: 'array', activeTab: 'object?' },
-  [MSG.AGENT_WORKSPACE_TAB]: { turnId: 'string?', tab: 'object' },
-  [MSG.AGENT_TURN_ERROR]:  { turnId: 'string', error: 'string' },
-  [MSG.SELECTION_CONTEXT_CHANGED]: { tabId: 'number', context: 'object' },
-  [MSG.AUTH_STATE_CHANGED]:{ session: 'object?' },
-  [MSG.MODELS_STATE_CHANGED]:{ models: 'array', selectedId: 'string?' },
-  [MSG.POLICY_MODE_CHANGED]:{ mode: 'string' },
-  [MSG.POLICY_GRANT_CHANGED]:{ grants: 'array' },
-})
-
-// ── Helper: build a ToolCall ──────────────────────────────
-
-/**
- * @param {string} name - Tool kind
- * @param {Record<string, unknown>} params - Tool-specific params
- * @param {string} [reasoning]
- * @returns {ToolCall}
- */
-export function makeToolCall(name, params, reasoning) {
-  const id = crypto.randomUUID()
-  return { id, name, params, reasoning }
-}
 
 /**
  * Rebuild a raw caller request into the only ToolCall shape accepted by the
@@ -363,7 +320,7 @@ function matchesJsonType(value, type, itemType) {
 }
 
 /** @param {string} name @param {Record<string, unknown>} params */
-export function serializeCanonicalInput(name, params) {
+function serializeCanonicalInput(name, params) {
   const entries = Object.entries(params)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`)
@@ -371,7 +328,7 @@ export function serializeCanonicalInput(name, params) {
 }
 
 /** @param {{name: string; params: Record<string, unknown>}} toolCall */
-export function resolvePolicyHost(toolCall) {
+function resolvePolicyHost(toolCall) {
   if (toolCall.name === 'navigate') return httpHost(toolCall.params.url)
   if (toolCall.name === 'tabs' && toolCall.params.action === 'new') {
     return httpHost(toolCall.params.url)

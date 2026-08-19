@@ -602,15 +602,3 @@ function decodeXml(value) {
     .replace(/&amp;/g, '&')
     .trim()
 }
-
-export const __test__ = {
-  parseCompletionResponse,
-  parseXmlToolCalls,
-  parseJsonToolCalls,
-  normalizeTextToolName,
-  resolveTextToolName,
-  isValidToolName,
-  mergeToolCalls,
-  parseSseCompletion,
-  stripToolMarkup,
-}
