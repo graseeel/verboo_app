@@ -30,6 +30,7 @@ import {
   hasImperativeWithObject,
 } from './intentSignals.js'
 import { isControllableUrl } from '../planMessage.js'
+import { checkHardBlock, hardBlockMessage } from '../policy/hardBlocks.js'
 import { getToolRisk, OPENAI_TOOLS, toToolCall } from './toolCatalog.js'
 import { MSG } from '../controller/protocol.js'
 import {
@@ -182,6 +183,21 @@ async function runLlmAgentTurnWithinBudget({
     forceBrowserTools === true
     || Boolean(routineContext)
     || shouldOfferBrowserTools(userMessage, conversationHistory, activeTabUrl)
+  // N1 (THERMO-3, judo): portão ÚNICO de hard block no LOOP. Quando o turno
+  // é de navegador (browserToolsEnabled), o TEXTO do usuário é avaliado
+  // contra os hard blocks e recusado AQUI — cobre o turno inicial, o
+  // reclassify E o caminho MCP (R1-MCP fecha de graça: o loop é o ponto
+  // único). Conversa pura (browserToolsEnabled false) não passa por aqui —
+  // "o que é pix?" segue conversa normal. A mensagem vive na regra (pt/en).
+  if (browserToolsEnabled) {
+    const hb = checkHardBlock(userMessage)
+    if (hb.blocked) {
+      return {
+        assistantMessage: hardBlockMessage(hb.matchedLabel, looksPortuguese(userMessage) ? 'pt' : 'en'),
+        toolResults: [],
+      }
+    }
+  }
   const availableTools = browserToolsEnabled
     ? modelSupportsVision === true
       ? OPENAI_TOOLS

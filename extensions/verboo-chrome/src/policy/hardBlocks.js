@@ -8,7 +8,7 @@
  * Multi-user: zero hardcoded paths, users, tokens.
  */
 
-/** @typedef {{ label: string; match: (input: string) => boolean }} HardBlockRule */
+/** @typedef {{ label: string; match: (input: string) => boolean; pt: string; en: string }} HardBlockRule */
 
 /** @type {HardBlockRule[]} */
 export const HARD_BLOCKS = [
@@ -22,6 +22,11 @@ export const HARD_BLOCKS = [
       ]
       return keywords.some((re) => re.test(input))
     },
+    // N1 (THERMO-3): mensagem colapsada NA REGRA — o par label↔mensagem
+    // vive junto (teste mata o drift). O caller escolhe pt/en pela língua
+    // do usuário.
+    pt: 'Não posso executar compras ou pagamentos — isso é um bloqueio de segurança que não pode ser contornado.',
+    en: "I can't execute purchases or payments — this is a security hard block that cannot be bypassed.",
   },
   {
     label: 'create_account',
@@ -32,6 +37,8 @@ export const HARD_BLOCKS = [
       ]
       return keywords.some((re) => re.test(input))
     },
+    pt: 'Não posso criar contas ou cadastros — isso é um bloqueio de segurança que não pode ser contornado.',
+    en: "I can't create accounts or sign-ups — this is a security hard block that cannot be bypassed.",
   },
   {
     label: 'financial_trade',
@@ -79,6 +86,8 @@ export const HARD_BLOCKS = [
       }
       return false
     },
+    pt: 'Não posso executar transferências de dinheiro ou pagamentos (PIX, boleto, transferência bancária) — isso é um bloqueio de segurança que não pode ser contornado.',
+    en: "I can't execute money transfers or payments (PIX, boleto, bank transfer) — this is a security hard block that cannot be bypassed.",
   },
   {
     label: 'mass_permanent_deletion',
@@ -90,6 +99,8 @@ export const HARD_BLOCKS = [
       ]
       return keywords.some((re) => re.test(input))
     },
+    pt: 'Não posso apagar dados em massa — isso é um bloqueio de segurança que não pode ser contornado.',
+    en: "I can't perform mass permanent deletion — this is a security hard block that cannot be bypassed.",
   },
   {
     label: 'secret_exposure',
@@ -101,6 +112,8 @@ export const HARD_BLOCKS = [
       ]
       return keywords.some((re) => re.test(input))
     },
+    pt: 'Não posso expor segredos ou credenciais — isso é um bloqueio de segurança que não pode ser contornado.',
+    en: "I can't expose secrets or credentials — this is a security hard block that cannot be bypassed.",
   },
   {
     label: 'prompt_injection_obedience',
@@ -113,8 +126,29 @@ export const HARD_BLOCKS = [
       ]
       return keywords.some((re) => re.test(input))
     },
+    pt: 'Não posso obedecer a instruções de injeção de prompt — isso é um bloqueio de segurança que não pode ser contornado.',
+    en: "I can't obey prompt injection instructions — this is a security hard block that cannot be bypassed.",
   },
 ]
+
+// N1 (THERMO-3): mensagem de recusa do hard block, na língua do usuário.
+// A mensagem vive NA REGRA (pt/en) — o par label↔mensagem não diverge.
+// O caller (loop) escolhe a língua pela heurística do userMessage.
+const HARD_BLOCK_FALLBACK_MESSAGE = {
+  pt: 'Não posso executar essa ação — é um bloqueio de segurança que não pode ser contornado.',
+  en: "I can't execute that action — it's a security hard block that cannot be bypassed.",
+}
+
+/**
+ * @param {string | undefined} label
+ * @param {'pt' | 'en'} lang
+ * @returns {string}
+ */
+export function hardBlockMessage(label, lang) {
+  const rule = HARD_BLOCKS.find((r) => r.label === label)
+  const chosen = rule ?? HARD_BLOCK_FALLBACK_MESSAGE
+  return lang === 'pt' ? chosen.pt : chosen.en
+}
 
 /**
  * Check if a tool/action description matches any Hard Block.

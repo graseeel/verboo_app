@@ -572,7 +572,7 @@ test('(T5-B) anti-FP: "transferir para outra aba" NÃO recusa o turno (não é f
   const tabA = { id: 1, windowId: 10, url: 'https://a.com/', active: true, status: 'complete' }
   sh.state.windows = { 10: { activeTab: tabA } }
   sh.state.tabsById = new Map([[tabA.id, tabA]])
-  const { terminal } = await runTurn({
+  const { terminal, requests } = await runTurn({
     sourceWindowId: 10,
     sourceTabId: 1,
     userMessage: 'transferir para outra aba',
@@ -580,4 +580,7 @@ test('(T5-B) anti-FP: "transferir para outra aba" NÃO recusa o turno (não é f
   })
   assert.ok(terminal, 'turno terminou')
   assert.ok(!/Não posso executar/.test(terminal.assistantMessage), 'não é a mensagem de hard block — o turno prosseguiu')
+  // R3: o turno NÃO foi recusado — o modelo foi chamado (chat >= 1).
+  const chatCalls = requests.filter((r) => String(r.url).includes('/chat/completions'))
+  assert.ok(chatCalls.length >= 1, 'o modelo foi chamado — o turno não foi recusado pelo hard block')
 })

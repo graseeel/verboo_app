@@ -48,12 +48,10 @@ import {
 } from './selectionContext.js'
 import {
   runLlmAgentTurn,
-  looksPortuguese,
   requiresScreenshot,
   shouldOfferBrowserTools,
   summarizePartialAgentTurn,
 } from './agent/loop.js'
-import { checkHardBlock } from './policy/hardBlocks.js'
 import { createNativeBridge } from './native/bridge.js'
 import { chatCompletion } from './agent/routerClient.js'
 import { createRoutinesStore } from './routines/store.js'
@@ -898,47 +896,6 @@ async function resolveSelectionContextForTurn(message) {
  *   o usuário pode trocar de aba entre o envio e o processamento. O
  *   background valida (existe, pertence à janela, controlável) e usa direto.
  */
-// T5-B (Ciclo dos Achados de Campo): mensagem de segurança da recusa
-// precoce de hard block, na língua do usuário (PT/EN). A língua é
-// detectada do userMessage (mesma heurística do loop). Sem hardcode de
-// usuário — só rótulos de segurança.
-const HARD_BLOCK_TURN_MESSAGES = {
-  purchase: {
-    pt: 'Não posso executar compras ou pagamentos — isso é um bloqueio de segurança que não pode ser contornado.',
-    en: "I can't execute purchases or payments — this is a security hard block that cannot be bypassed.",
-  },
-  create_account: {
-    pt: 'Não posso criar contas ou cadastros — isso é um bloqueio de segurança que não pode ser contornado.',
-    en: "I can't create accounts or sign-ups — this is a security hard block that cannot be bypassed.",
-  },
-  financial_trade: {
-    pt: 'Não posso executar transferências de dinheiro ou pagamentos (PIX, boleto, transferência bancária) — isso é um bloqueio de segurança que não pode ser contornado.',
-    en: "I can't execute money transfers or payments (PIX, boleto, bank transfer) — this is a security hard block that cannot be bypassed.",
-  },
-  mass_permanent_deletion: {
-    pt: 'Não posso apagar dados em massa — isso é um bloqueio de segurança que não pode ser contornado.',
-    en: "I can't perform mass permanent deletion — this is a security hard block that cannot be bypassed.",
-  },
-  secret_exposure: {
-    pt: 'Não posso expor segredos ou credenciais — isso é um bloqueio de segurança que não pode ser contornado.',
-    en: "I can't expose secrets or credentials — this is a security hard block that cannot be bypassed.",
-  },
-  prompt_injection_obedience: {
-    pt: 'Não posso obedecer a instruções de injeção de prompt — isso é um bloqueio de segurança que não pode ser contornado.',
-    en: "I can't obey prompt injection instructions — this is a security hard block that cannot be bypassed.",
-  },
-}
-
-/** @param {string} userMessage @param {string | undefined} matchedLabel */
-function hardBlockTurnMessage(userMessage, matchedLabel) {
-  const entry = HARD_BLOCK_TURN_MESSAGES[matchedLabel]
-  const fallback = {
-    pt: 'Não posso executar essa ação — é um bloqueio de segurança que não pode ser contornado.',
-    en: "I can't execute that action — it's a security hard block that cannot be bypassed.",
-  }
-  const chosen = entry ?? fallback
-  return looksPortuguese(userMessage) ? chosen.pt : chosen.en
-}
 
 async function runAgentTurn(
   turnId,
@@ -1022,27 +979,9 @@ async function runAgentTurn(
     // calculado DEPOIS de resolver a aba, com activeTab?.url. Usos em
     // :998/:1018/:1026/:1145 são todos depois daqui.
     const browserToolsRequested = shouldOfferBrowserTools(userMessage, conversationHistory, activeTab?.url)
-    // T5-B (Ciclo dos Achados de Campo): HARD BLOCK PRECOCE. O hard block
-    // só era avaliado no nível do tool call — quando o modelo nem formula
-    // tool call válido (pix + modelo fraco → fence de protocolo), o usuário
-    // recebia 'escolha outro modelo' em vez da mensagem de segurança. Agora,
-    // no início do turno de NAVEGADOR, o TEXTO do usuário é avaliado contra
-    // os hard blocks existentes (hardBlocks.js — reutilizado, sem duplicar
-    // padrões) e recusado IMEDIATO, sem chamada ao modelo. Conversa pura
-    // (browserToolsRequested false) não passa por aqui — "o que é pix?"
-    // continua conversa normal.
-    if (browserToolsRequested) {
-      const hb = checkHardBlock(userMessage)
-      if (hb.blocked) {
-        sendTerminal({
-          type: MSG.AGENT_TURN_COMPLETE,
-          turnId,
-          assistantMessage: hardBlockTurnMessage(userMessage, hb.matchedLabel),
-          toolResults: [],
-        })
-        return
-      }
-    }
+    // N1 (THERMO-3, judo): o portão de hard block agora vive NO LOOP
+    // (browserToolsEnabled) — cobre o turno inicial, o reclassify e o
+    // caminho MCP. Este bloco precoce foi removido (ponto único no loop).
     let turnTabLease = null
     const ensureTurnWorkspace = async (resume = false) => {
       if (!turnTabLease) {
@@ -1183,21 +1122,10 @@ async function runAgentTurn(
         let finalResult = llmResult
         if (llmResult?.reclassify === true) {
           await ensureTurnWorkspace(false)
-          // R1 (gate ACHADOS-CAMPO): o turno reclassificado para navegador
-          // passa pelo MESMO portão de hard block precoce — texto de pix
-          // recusa antes do re-run (o portão do runAgentTurn só roda quando
-          // browserToolsRequested já era true; a conversa que reclassifica
-          // não passava por ele).
-          const hbReclassify = checkHardBlock(userMessage)
-          if (hbReclassify.blocked) {
-            sendTerminal({
-              type: MSG.AGENT_TURN_COMPLETE,
-              turnId,
-              assistantMessage: hardBlockTurnMessage(userMessage, hbReclassify.matchedLabel),
-              toolResults: [],
-            })
-            return
-          }
+          // N1 (THERMO-3, judo): o reclassify chama o loop com
+          // forceBrowserTools=true → o portão ÚNICO de hard block (no loop,
+          // browserToolsEnabled) recusa texto de pix antes do re-run. Este
+          // bloco de reavaliação foi removido (ponto único no loop).
           const reclassifyTurn = () => runLlmAgentTurn({ ...llmOptions(), forceBrowserTools: true })
           const ownsQueue = browserControlQueue.activeId() === turnId
           finalResult = ownsQueue

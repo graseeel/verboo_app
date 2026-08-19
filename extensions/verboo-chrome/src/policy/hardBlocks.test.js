@@ -7,7 +7,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { checkHardBlock, HARD_BLOCKS } from './hardBlocks.js'
+import { checkHardBlock, hardBlockMessage, HARD_BLOCKS } from './hardBlocks.js'
 
 test('HARD_BLOCKS covers all six design categories', () => {
   const labels = HARD_BLOCKS.map((r) => r.label)
@@ -158,4 +158,27 @@ test('returns first match only (no double-block)', () => {
   const r = checkHardBlock('tool:click text=buy stock')
   assert.equal(r.blocked, true)
   assert.ok(typeof r.matchedLabel === 'string')
+})
+
+// N1 (THERMO-3): teste do par label↔mensagem — cada regra tem pt/en
+// (não vazio) e hardBlockMessage retorna a mensagem correta por label.
+// Mata o drift: se alguém mudar o label sem atualizar a mensagem, ou
+// vice-versa, este teste falha.
+test('N1: cada hard block tem mensagem pt/en (par label↔mensagem sem drift)', () => {
+  for (const rule of HARD_BLOCKS) {
+    assert.ok(rule.label, `${rule.label}: tem label`)
+    assert.equal(typeof rule.match, 'function', `${rule.label}: match é função`)
+    assert.ok(typeof rule.pt === 'string' && rule.pt.length > 0, `${rule.label}: pt não vazio`)
+    assert.ok(typeof rule.en === 'string' && rule.en.length > 0, `${rule.label}: en não vazio`)
+  }
+  // hardBlockMessage retorna a mensagem da regra para cada label.
+  for (const rule of HARD_BLOCKS) {
+    const pt = hardBlockMessage(rule.label, 'pt')
+    const en = hardBlockMessage(rule.label, 'en')
+    assert.equal(pt, rule.pt, `${rule.label}: pt da regra`)
+    assert.equal(en, rule.en, `${rule.label}: en da regra`)
+  }
+  // Fallback para label desconhecido.
+  assert.ok(hardBlockMessage('unknown_label', 'pt').length > 0, 'fallback pt não vazio')
+  assert.ok(hardBlockMessage('unknown_label', 'en').length > 0, 'fallback en não vazio')
 })
