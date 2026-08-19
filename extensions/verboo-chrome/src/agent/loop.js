@@ -9,7 +9,7 @@
  *   5. For each tool_call → broadcast thought → executeTool callback → broadcast result
  *   6. For vision-capable models, screenshot pixels are attached once as a
  *      multimodal user message; tool messages stay OpenAI-compatible strings
- *   7. Repeat up to MAX_AGENT_STEPS (200)
+ *   7. Repeat up to MAX_AGENT_STEPS (500 — decisão do dono 2026-08-18)
  *   8. Router errors after partial tool success → explicit partial-result summary
  *   9. On hard failure with zero tools → throw without executing a fallback plan
  *
@@ -23,7 +23,14 @@
  * Multi-user: zero hardcoded accounts.
  */
 
-import { chatCompletion } from './routerClient.js'
+import { chatCompletion, stripToolMarkup } from './routerClient.js'
+import {
+  hasBrowserUnavailableAdmission,
+  hasDeicticImperativeIntent,
+  hasImperativeWithObject,
+} from './intentSignals.js'
+import { isControllableUrl } from '../planMessage.js'
+import { checkHardBlock, hardBlockMessage } from '../policy/hardBlocks.js'
 import { getToolRisk, OPENAI_TOOLS, toToolCall } from './toolCatalog.js'
 import { MSG } from '../controller/protocol.js'
 import {
@@ -47,6 +54,17 @@ const STRATEGY_HINT = `You seem stuck failing the same tool repeatedly. STOP gue
 2. If find finds nothing, read the page with read_page and look for the target's text.
 3. Click only a selector returned by find or read_page. Never invent CSS selectors from memory — site structure is not something you know.
 4. If the target genuinely does not exist on the page, tell the user honestly instead of trying more selectors.`
+
+/**
+ * Injected ONCE per turn (R6/FRENTE-C) after the model emitted tool markup
+ * that produced no executable call — gives the model the exact output
+ * contract instead of failing silently or echoing the raw block to the
+ * user. Model-agnostic by design: any model that text-emits tool markup
+ * (e.g. Anthropic-style <function_calls>) gets the same directed retry.
+ */
+const TOOL_FORMAT_RETRY_HINT = `You tried to call a browser tool, but your reply was not accepted as a tool call. Retry the SAME action using the API's native tool_calls mechanism — never write XML tags like <function_calls>, <tool_call>, <invoke>, or <function=...> in your reply text.
+Available tools: navigate, read_page, find, extract_page_content, structured_extract, click, type, screenshot, tabs, tab_group.
+click accepts either a CSS selector or viewport pixel coordinates {x, y}. Use find to locate elements before clicking; never invent selectors from memory.`
 
 /**
  * System prompt for the browser agent. Bilingual EN+PT to handle mixed requests.
@@ -79,11 +97,20 @@ IMPORTANT RULES:
 - DISCOVER BEFORE YOU CLICK: when the user names a target (a playlist, a button, an item) that is not visible to you yet, locate the REAL element first — call find with the user's wording, or read the page with read_page. Click only selectors returned by find/read_page.
 - Never invent or fabricate CSS selectors from memory — site structure is not something you know. If find/read_page return nothing for the named target, tell the user honestly that it was not found instead of trying more guessed selectors.
 - For a full-page extraction request (for example "extrai o conteudo e resume", "extract this page"), call extract_page_content to obtain the ENTIRE page text without truncation, then summarize from the full content.
+- T4 (list/comparison): for LIST or COMPARISON questions (for example "quais são os livros?", "compare os preços", "liste os produtos"), call structured_extract with a selector to get the data as a table/CSV — read_page truncates long pages at 4000 chars and signals the truncation in the result. If the question involves numeric ordering (price, date, rating, quantity), ask structured_extract to sort numerically.
 - For search: navigate to the search engine, type the query, submit
 - For reading a page: use read_page with a targeted selector, not the whole body when possible
 - For an explicit current-page inspection request (for example "o que é isso", "o que diz esta página", or "extract this page"), ALWAYS call read_page before answering. Do not answer that browser tools are unavailable when the current page is an HTTP(S) page.
 - Return a brief text summary when you finish the task
-- Never invent or fabricate selectors — only use ones you can see from page content`
+- Never invent or fabricate selectors — only use ones you can see from page content
+
+TOOL PROTOCOL (mandatory):
+- You have real function-calling. Call browser tools ONLY through the API's native tool_calls mechanism.
+- NEVER write tool markup as chat text — no <function_calls>, <tool_call>, <invoke>, or <function=...> tags in your reply. Written tool markup is rejected and never executed.
+- Available tools: navigate, read_page, find, extract_page_content, structured_extract, click, type, screenshot, tabs, tab_group.
+- WORK ON THE CURRENT TAB: the tab where the user sent the prompt is the working tab. All read/click/type actions target it. The user may switch tabs freely while you work — keep acting on the working tab. NEVER open a new tab or window on your own initiative; create a new tab (tabs new / navigate to a new tab) ONLY when the user explicitly asks for it in the prompt.
+- click accepts a CSS selector or viewport pixel coordinates {x, y}. Use find to locate elements before clicking; never invent selectors from memory.
+- After a mutation (click/type), verify the effect with read_page before summarizing — never claim completion without observing the result. Use type with pressEnter: true when the task needs the typed value to COMMIT (adding to a list, sending a message, running a search).`
 
 /**
  * Run a multi-step LLM agent turn.
@@ -140,6 +167,7 @@ async function runLlmAgentTurnWithinBudget({
   refreshAccessToken,
   signal,
   forceBrowserTools = false,
+  activeTabUrl,
 }) {
   if (!accessToken) throw new Error('LLM agent: accessToken is required')
   if (!modelId) throw new Error('LLM agent: modelId is required')
@@ -154,7 +182,22 @@ async function runLlmAgentTurnWithinBudget({
   const browserToolsEnabled =
     forceBrowserTools === true
     || Boolean(routineContext)
-    || shouldOfferBrowserTools(userMessage, conversationHistory)
+    || shouldOfferBrowserTools(userMessage, conversationHistory, activeTabUrl)
+  // N1 (THERMO-3, judo): portão ÚNICO de hard block no LOOP. Quando o turno
+  // é de navegador (browserToolsEnabled), o TEXTO do usuário é avaliado
+  // contra os hard blocks e recusado AQUI — cobre o turno inicial, o
+  // reclassify E o caminho MCP (R1-MCP fecha de graça: o loop é o ponto
+  // único). Conversa pura (browserToolsEnabled false) não passa por aqui —
+  // "o que é pix?" segue conversa normal. A mensagem vive na regra (pt/en).
+  if (browserToolsEnabled) {
+    const hb = checkHardBlock(userMessage)
+    if (hb.blocked) {
+      return {
+        assistantMessage: hardBlockMessage(hb.matchedLabel, looksPortuguese(userMessage) ? 'pt' : 'en'),
+        toolResults: [],
+      }
+    }
+  }
   const availableTools = browserToolsEnabled
     ? modelSupportsVision === true
       ? OPENAI_TOOLS
@@ -236,11 +279,48 @@ async function runLlmAgentTurnWithinBudget({
   let failStreak = { name: null, count: 0, afterHint: false }
   // G2-CHROME: the model is asked to close an executed turn at most once.
   let emptyCloseRetried = false
+  // R6/FRENTE-C: the directed tool-format retry is issued at most once per
+  // turn — a model that keeps emitting markup after the hint gets an honest
+  // error, never an unbounded retry loop.
+  let formatRetryUsed = false
 
   // Some tasks have an observable terminal state. Once reached, the next
   // request asks only for the final reply and cannot trigger another action.
   let browserActionsComplete = false
   let requiresVerification = false
+  // R-V4/GENERALIZAÇÃO: the programmatic evidence read happens AT MOST ONCE
+  // per turn (no loop) — when the model tries to close with the verification
+  // flag still armed, the LOOP reads the page itself and appends the real
+  // text before accepting a final summary.
+  let verificationEvidenceRead = false
+  let verificationAskSent = false
+  // PÓS-CAMPO-3 (item 2): consecutive failures of the EXACT same mutate
+  // call (name + canonical input). After N=2, the identical call is
+  // blocked and feedback directs to find/read_page. Different arguments
+  // always pass — legitimate retries are never killed.
+  const failedMutateCounts = new Map()
+  // PÓS-CAMPO-6 (A): system messages produced inside the execution loop are
+  // collected and flushed AFTER all tool responses of the completion (see
+  // the flush point below) to preserve the assistant→tools adjacency.
+  const pendingSystemMessages = []
+  // PÓS-CAMPO-4: AUTOMATIC recovery — the harness stops asking and starts
+  // DOING. Counts selector-not-found failures PER TOOL NAME (the exact-key
+  // dedup above cannot see selector-variant repeats); on the 2nd failure
+  // the loop runs find itself and feeds the REAL selectors back. Bounded:
+  // 1 auto-find per tool name per turn; empty find → honest feedback.
+  const failedSelectorCounts = { type: 0, click: 0 }
+  const autoFindUsed = { type: false, click: false }
+  // CICLO DEPURAÇÃO SISTEMÁTICA (B): screenshot em background — após 2 falhas
+  // de captura no turno (aba de trabalho em segundo plano), o loop para de
+  // reoferecer screenshot (3ª chamada BLOQUEADA) e orienta read_page.
+  let screenshotFailures = 0
+  // PÓS-CAMPO-5: structural honesty — track mutation outcomes so the final
+  // assistant text can NEVER claim success when nothing committed. The
+  // condition is 100% structural (no model-text interpretation).
+  let mutationAttempts = 0
+  let mutationSuccesses = 0
+  let lastMutateFailed = false
+  let inspectionSinceLastMutate = false
   let promptInjectionDetected = false
   let currentAccessToken = accessToken
   const refreshAccessTokenForTurn = typeof refreshAccessToken === 'function'
@@ -317,6 +397,53 @@ async function runLlmAgentTurnWithinBudget({
     // deliberately narrower than browserToolsEnabled: navigation, mutation,
     // and screenshot requests never get an invented action.
     if (completion.toolCalls.length === 0) {
+      // R6/FRENTE-C: the model emitted tool markup (any family —
+      // <function_calls>, <tool_call>, <invoke>…) that produced NO
+      // executable call. Model-agnostic handling:
+      //   · conversation turn → reclassify (B1-CHROME analog for the text
+      //     form: the model's own markup is the strongest signal the turn
+      //     needs browser tools; page content is not in the messages here,
+      //     so it cannot be injection-seeded — the same safety reasoning
+      //     as the structured B1 path below);
+      //   · browser turn → ONE directed format retry, then honest failure.
+      const formatFailed = completion.markupDetected === true
+        || (completion.droppedToolNames?.length ?? 0) > 0
+      if (formatFailed) {
+        if (!browserToolsEnabled) {
+          return { reclassify: true, toolResults: allToolResults }
+        }
+        if (!formatRetryUsed) {
+          formatRetryUsed = true
+          broadcast({
+            type: MSG.AGENT_THOUGHT,
+            turnId,
+            text: `Model used unsupported tool markup — retrying with the exact tool protocol…`,
+            modelId,
+          })
+          messages.push({ role: 'system', content: TOOL_FORMAT_RETRY_HINT })
+          continue
+        }
+      }
+
+      // L3/Intenção+UX: the model's OWN reply admits it has no browser
+      // access ("o navegador não está disponível", "I don't have access
+      // to the browser"). In a conversation turn — where the classifier
+      // already missed an implicit action request — that admission is the
+      // strongest signal available. Reclassify exactly like B1 (the caller
+      // re-runs with forceBrowserTools).
+      //
+      // Bounded by construction: this gate requires !browserToolsEnabled,
+      // so the re-run can never fire it again (max 1 reclassify per user
+      // turn). Interaction with formatRetry (documented): reclassify
+      // RESTARTS the turn with a fresh budget — a re-run may still use the
+      // single per-turn formatRetry if the model emits markup after tools
+      // are offered. The two never share a flag because they live in
+      // different turn instances.
+      if (!browserToolsEnabled && completion.content
+          && hasBrowserUnavailableAdmission(completion.content)) {
+        return { reclassify: true, toolResults: allToolResults }
+      }
+
       if (browserToolsEnabled && allToolResults.length === 0) {
         if (
           activeTabMeta?.url &&
@@ -337,13 +464,62 @@ async function runLlmAgentTurnWithinBudget({
       }
       if (completion.toolCalls.length === 0) {
         if (requiresVerification) {
-          messages.push({
-            role: 'system',
-            content:
-              'The last browser mutation has not been verified. Inspect the current page with read_page ' +
-              'or screenshot before claiming completion, then answer with the observed result.',
-          })
-          continue
+          // R-V4/GENERALIZAÇÃO (approved conditional): with the verification
+          // flag still armed at the final summary — a mutation happened and
+          // the model did not inspect afterwards — the LOOP reads the page
+          // itself (real text, outside the model's tools) and appends it as
+          // evidence BEFORE accepting any summary. Exactly once per turn;
+          // no loop: the next close is accepted (fenced) as-is. No
+          // duplicated read when the model already verified (flag off).
+          if (!verificationEvidenceRead) {
+            verificationEvidenceRead = true
+            try {
+              const evidence = await executeTool(
+                { id: `verify-${turnId}`, name: 'read_page', params: {} },
+                signal,
+              )
+              const evidenceText = typeof evidence?.result?.text === 'string'
+                ? evidence.result.text
+                : (typeof evidence?.result?.content === 'string' ? evidence.result.content : '')
+              if (evidenceText.trim()) {
+                messages.push({
+                  role: 'system',
+                  content:
+                    'The last browser mutation has not been verified by your own inspection. ' +
+                    'Real current page state (read by the harness, outside your tools):\n' +
+                    evidenceText.slice(0, 32_000) +
+                    // R-V5/GENERALIZAÇÃO-2: typed text INSIDE the target
+                    // field is not evidence — the effect must be observed
+                    // outside it (the field keeps the typed value even
+                    // when nothing committed).
+                    '\nText typed INSIDE the target field is NOT evidence of the effect — the effect must be observable OUTSIDE the target field (e.g. the new item in the list, the page state, the navigation). ' +
+                    'Conclude based on THIS evidence: confirm the expected effect is present, ' +
+                    'or report the failure honestly and retry. Never claim success without observing it.',
+                })
+                continue
+              }
+            } catch {
+              /* evidence read is best-effort */
+            }
+          }
+          // R-V2/GENERALIZAÇÃO: ask for inspection WITH evidence citation —
+          // at most once per turn; the summary is accepted afterwards (the
+          // flow falls through below) — no unbounded loop.
+          if (!verificationAskSent) {
+            verificationAskSent = true
+            messages.push({
+              role: 'system',
+              content:
+                'The last browser mutation has not been verified. Inspect the current page with read_page ' +
+                'and CONFIRM THE EFFECT of the action (the new state/item is present). ' +
+                // R-V5/GENERALIZAÇÃO-2: anti-input — the typed value stays
+                // in the field even when nothing committed.
+                'Text typed INSIDE the target field is NOT evidence — the effect must be observable outside it. ' +
+                'Answer with the observed evidence — if the effect is not visible, report the failure and ' +
+                'retry; never claim success without observing it.',
+            })
+            continue
+          }
         }
         const text = completion.content?.trim()
         if (!text) {
@@ -374,7 +550,40 @@ async function runLlmAgentTurnWithinBudget({
           }
           throw new Error('model_returned_empty_response')
         }
-        return { assistantMessage: text, toolResults: allToolResults }
+        // R8/FRENTE-C render fence (defense-in-depth): the parser already
+        // strips recognized markup, but no raw tool-call block may ever
+        // reach the panel. If stripping leaves nothing (e.g. a markup
+        // family the parser does not know yet), fall back to the closing
+        // summary when actions ran, or to an honest error otherwise.
+        const fenced = stripToolMarkup(text)
+        if (fenced) {
+          // PÓS-CAMPO-5: structural honesty — the model's final text NEVER
+          // passes when every mutation of the turn failed; the harness
+          // replaces it with the honest mechanical summary (same i18n
+          // pattern as summarizePartialAgentTurn). Zero model-text
+          // interpretation.
+          return {
+            assistantMessage: honestTurnMessage(
+              fenced,
+              userMessage,
+              allToolResults,
+              { mutationAttempts, mutationSuccesses, lastMutateFailed, inspectionSinceLastMutate },
+            ),
+            toolResults: allToolResults,
+          }
+        }
+        if (allToolResults.some((r) => r && r.success)) {
+          return {
+            assistantMessage: honestTurnMessage(
+              synthesizeClosingSummary(userMessage, allToolResults),
+              userMessage,
+              allToolResults,
+              { mutationAttempts, mutationSuccesses, lastMutateFailed, inspectionSinceLastMutate },
+            ),
+            toolResults: allToolResults,
+          }
+        }
+        throw new Error('model_tool_protocol_unsupported')
       }
     }
 
@@ -487,6 +696,71 @@ async function runLlmAgentTurnWithinBudget({
         }
       }
 
+      // PÓS-CAMPO-3 (item 2): block the EXACT repetition of a failing
+      // mutate. Two consecutive failures of the same name+canonical input
+      // → the third identical call is NOT executed; the tool-role feedback
+      // directs to find/read_page. Bounded: the block is deterministic per
+      // key (never executes), different arguments always execute, and the
+      // step counter still advances — no loop possible.
+      // B-3 (Farol): isMutate derivado do TOOL_RISK (catálogo) — a lista
+      // manual de nomes morre; ferramentas novas de mutate nascem rastreadas.
+      const isMutate = getToolRisk(tc.name) === 'mutate'
+      // NOTE: tc (toToolCall) carries params, NOT the raw arguments string —
+      // the canonical key must be built from params or every call collapses
+      // into one key (String(undefined) === 'undefined').
+      const attemptKey = isMutate
+        ? `${tc.name}:${canonicalJson(JSON.stringify(tc.params ?? {}))}`
+        : null
+      if (attemptKey && (failedMutateCounts.get(attemptKey) ?? 0) >= 2) {
+        allToolResults.push({
+          toolCallId: tc.id,
+          name: tc.name,
+          success: false,
+          data: null,
+          error: 'blocked_repeated_failed_call',
+          durationMs: 0,
+        })
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: 'BLOCKED: this exact call failed repeatedly. Do NOT repeat it — call find with the user\'s wording (or read_page) to obtain a VALID selector, then retry with the selector it returns.',
+        })
+        continue
+      }
+
+      // CICLO DEPURAÇÃO SISTEMÁTICA (B): screenshot em background — após 2
+      // falhas de captura (aba de trabalho em segundo plano), a 3ª chamada
+      // NÃO executa: result honesto + feedback dirigido (mesma família do
+      // auto-find e do blocked_repeated_failed_call). Evita o turno queimando
+      // steps tentando screenshot impossível (evidência 8d61dcb: 99 steps).
+      if (tc.name === 'screenshot' && screenshotFailures >= 2) {
+        allToolResults.push({
+          toolCallId: tc.id,
+          name: tc.name,
+          success: false,
+          data: null,
+          error: 'screenshot_blocked_background_tab',
+          durationMs: 0,
+        })
+        broadcast({
+          type: MSG.AGENT_TOOL_RESULT,
+          turnId,
+          toolResult: {
+            toolCallId: tc.id,
+            success: false,
+            data: null,
+            error: 'screenshot_blocked_background_tab',
+            durationMs: 0,
+          },
+        })
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: 'BLOCKED: screenshots failed twice because the working tab is in the background (captureVisibleTab only captures the visible tab). Screenshots are unavailable for this turn — use read_page to inspect the working tab.',
+        })
+        continue
+      }
+
       // Broadcast what the LLM decided to do (panel shape).
       broadcast({
         type: MSG.AGENT_THOUGHT,
@@ -497,6 +771,76 @@ async function runLlmAgentTurnWithinBudget({
       // That boundary emits AGENT_TOOL_EXECUTING only after policy approval.
       const execResult = await executeTool(tc, signal)
       const durationMs = Date.now() - startedAt
+      if (attemptKey) {
+        if (execResult.ok) {
+          failedMutateCounts.delete(attemptKey)
+        } else {
+          failedMutateCounts.set(attemptKey, (failedMutateCounts.get(attemptKey) ?? 0) + 1)
+        }
+      }
+      // PÓS-CAMPO-5: mutation outcome tracking (structural honesty).
+      if (isMutate) {
+        mutationAttempts += 1
+        if (execResult.ok) {
+          mutationSuccesses += 1
+          lastMutateFailed = false
+        } else {
+          lastMutateFailed = true
+        }
+        inspectionSinceLastMutate = false
+      }
+      if (tc.name === 'read_page') {
+        inspectionSinceLastMutate = true
+      }
+      // CICLO DEPURAÇÃO SISTEMÁTICA (B): screenshot em background — conta
+      // falhas de captura (aba em segundo plano). Após a 2ª, feedback
+      // system dirigido (use read_page); a 3ª chamada é bloqueada acima.
+      if (!execResult.ok && tc.name === 'screenshot'
+          && /segundo plano|background|captureVisibleTab/i.test(String(execResult.error ?? ''))) {
+        screenshotFailures += 1
+        if (screenshotFailures >= 2) {
+          pendingSystemMessages.push(
+            'Screenshots failed twice because the working tab is in the background (captureVisibleTab only captures the visible tab). ' +
+            'Screenshots are unavailable for this turn — use read_page to inspect the working tab.',
+          )
+        }
+      }
+      // PÓS-CAMPO-4: automatic recovery — on the 2nd selector-not-found
+      // failure of the same tool name (weak models ignore textual hints
+      // and vary only the broken selector tail, so the exact-key dedup
+      // above never fires), the LOOP runs find itself and feeds the REAL
+      // selectors back as tool-role feedback before the next model step.
+      // Bounded: 1 auto-find per tool name per turn; find is read-only
+      // (no approval). Model-agnostic: no site/selector knowledge.
+      if (!execResult.ok && (tc.name === 'type' || tc.name === 'click')
+          && /selector not found|no element at coordinates/i.test(String(execResult.error ?? ''))
+          && !autoFindUsed[tc.name]) {
+        failedSelectorCounts[tc.name] = (failedSelectorCounts[tc.name] ?? 0) + 1
+        if (failedSelectorCounts[tc.name] >= 2) {
+          autoFindUsed[tc.name] = true
+          const query = deriveAutoFindQuery(tc, userMessage)
+          try {
+            const findResult = await executeTool(
+              { id: `autofind-${turnId}-${tc.name}`, name: 'find', params: { text: query } },
+              signal,
+            )
+            const selectors = extractFindSelectors(findResult)
+            // PÓS-GATE 4: SYSTEM message, NEVER a second tool message with
+            // the failed call's tool_call_id — the OpenAI contract is 1:1
+            // (one tool message per tool_call_id); duplicate ids are
+            // rejected by strict routers. Same pattern as R-V4/reclassify.
+            // PÓS-CAMPO-6 (A): the system is QUEUED and flushed after ALL
+            // tool responses of this completion (adjacency contract) —
+            // a system wedged between assistant(tool_calls) and its tools
+            // is rejected by strict routers with HTTP 400.
+            pendingSystemMessages.push(selectors.length > 0
+              ? `Recovery: find located these selectors on the page: ${selectors.map((s) => `"${s}"`).join(', ')}. Use one of them for the retry.`
+              : `Recovery: find found nothing for "${query}" — read the page with read_page to locate the target, then retry.`)
+          } catch {
+            /* auto-find is best-effort */
+          }
+        }
+      }
 
       // Build text result for the conversation.
       // Tool role content remains a string. Vision pixels travel in a separate
@@ -526,15 +870,17 @@ async function runLlmAgentTurnWithinBudget({
           } else if (raw.text) {
             // G3-CHROME: same full-text rule for object-shaped results.
             if (tc.name === 'read_page' && Array.isArray(raw.interactiveElements)) {
-              resultText = truncate(JSON.stringify({
+              // T4: truncamento do read_page sinaliza NO RESULTADO — o modelo
+              // sabe que não viu tudo e usa structured_extract para o restante.
+              resultText = truncateWithNotice(JSON.stringify({
                 interactiveElements: raw.interactiveElements,
                 interactiveElementsTruncated: raw.interactiveElementsTruncated === true,
                 text: String(raw.text),
-              }), MAX_RESULT_CHARS)
+              }), MAX_RESULT_CHARS, userMessage)
             } else {
               resultText = tc.name === 'extract_page_content'
                 ? String(raw.text)
-                : truncate(String(raw.text), MAX_RESULT_CHARS)
+                : truncateWithNotice(String(raw.text), MAX_RESULT_CHARS, userMessage)
             }
           } else if (Array.isArray(raw)) {
             resultText = truncate(JSON.stringify(raw), MAX_RESULT_CHARS)
@@ -615,8 +961,16 @@ async function runLlmAgentTurnWithinBudget({
       // Consecutive failure tracking — strategy hint, then early stop if still stuck.
       if (execResult.ok) {
         failStreak = { name: null, count: 0, afterHint: false }
+        // requiresVerification é sobre EFEITO de mutação observável (R-V4):
+        // click/type precisam de read_page depois; navigate mostra o efeito
+        // no próprio tool result (a URL nova) — mantém a lista específica.
         if (tc.name === 'click' || tc.name === 'type') requiresVerification = true
-        if (tc.name === 'read_page' || tc.name === 'screenshot') requiresVerification = false
+        // R-V1/GENERALIZAÇÃO: only read_page (structured real text) clears
+        // the verification flag. A screenshot does NOT — the model can aim
+        // it at the wrong place (e.g. the input with the typed text instead
+        // of the list with the new item), so a visual peek after a mutation
+        // is not evidence of the effect.
+        if (tc.name === 'read_page') requiresVerification = false
       } else if (failStreak.name === tc.name) {
         failStreak.count++
       } else {
@@ -625,7 +979,9 @@ async function runLlmAgentTurnWithinBudget({
 
       if (!execResult.ok) {
         if (failStreak.count >= 3 && !failStreak.afterHint) {
-          messages.push({ role: 'system', content: STRATEGY_HINT })
+          // PÓS-CAMPO-6 (A): queued — flushed after all tool responses of
+          // this completion (adjacency contract).
+          pendingSystemMessages.push(STRATEGY_HINT)
           failStreak.afterHint = true
           failStreak.count = 0
           broadcast({
@@ -657,13 +1013,12 @@ async function runLlmAgentTurnWithinBudget({
           if (meta?.url && /youtube\.com\/watch/i.test(meta.url)) {
             browserActionsComplete = true
             requiresVerification = false
-            messages.push({
-              role: 'system',
-              content:
-                'You are now on a YouTube /watch page — the video is open. ' +
-                'Do NOT search again, do NOT navigate to results, do NOT screenshot. ' +
-                'Reply to the user with a brief confirmation in their language and stop calling tools.',
-            })
+            // PÓS-CAMPO-6 (A): queued — flushed after all tool responses.
+            pendingSystemMessages.push(
+              'You are now on a YouTube /watch page — the video is open. ' +
+              'Do NOT search again, do NOT navigate to results, do NOT screenshot. ' +
+              'Reply to the user with a brief confirmation in their language and stop calling tools.',
+            )
           }
         } catch {
           /* meta is best-effort */
@@ -671,6 +1026,35 @@ async function runLlmAgentTurnWithinBudget({
       }
 
       if (browserActionsComplete) break
+    }
+
+    // PÓS-CAMPO-6 (A): ADJACENCY contract — an assistant message with
+    // tool_calls must be followed IMMEDIATELY by its tool responses.
+    // System messages produced inside the execution loop (auto-find
+    // recovery, STRATEGY_HINT, the YouTube pin) are flushed HERE, after
+    // every tool response of this completion, so the payload is
+    // [assistant(tool_calls)] [tool xN] [system ...] — never a system
+    // wedged between the assistant and its tools (strict routers reject
+    // that with HTTP 400, surfaced as "model connection interrupted").
+    for (const pendingContent of pendingSystemMessages) {
+      messages.push({ role: 'system', content: pendingContent })
+    }
+    // B-1 (gate DEPURACAO-SISTEMATICA): esvazia a fila após o drain — sem
+    // isso a dica (ex.: screenshot use read_page) repetia linearmente
+    // ([0,0,1,2] medido) porque os itens antigos eram re-flushados a cada
+    // completion.
+    pendingSystemMessages.length = 0
+
+    // R7/FRENTE-C: some emitted names were dropped at parse time while
+    // others executed. Tell the model which names were invalid so it can
+    // self-correct on the next step instead of repeating the mistake.
+    if ((completion.droppedToolNames?.length ?? 0) > 0) {
+      messages.push({
+        role: 'system',
+        content: `The following tool names you emitted are not available: ${
+          [...new Set(completion.droppedToolNames)].join(', ')
+        }. Re-issue the action using one of: navigate, read_page, find, extract_page_content, structured_extract, click, type, screenshot, tabs, tab_group.`,
+      })
     }
 
     if (signal?.aborted) throw new Error('Agent turn cancelled')
@@ -751,9 +1135,11 @@ function sanitizeConversationHistory(history) {
  *
  * @param {string} userMessage
  * @param {unknown} [conversationHistory]
+ * @param {string | null | undefined} [activeTabUrl] — URL of the page under
+ *   the panel (optional, fail-safe: L2 only fires with a controllable URL).
  * @returns {boolean}
  */
-export function shouldOfferBrowserTools(userMessage, conversationHistory = []) {
+export function shouldOfferBrowserTools(userMessage, conversationHistory = [], activeTabUrl) {
   const text = normalizeIntentText(userMessage)
 
   if (!text) return false
@@ -784,6 +1170,27 @@ export function shouldOfferBrowserTools(userMessage, conversationHistory = []) {
   )
 
   if (directAction.test(text) || requestedAction.test(text) || desiredAction.test(text)) {
+    return true
+  }
+
+  // L1/Intenção+UX: STRUCTURAL deictic imperative — any language, no verb
+  // list. "crie o produto desta página", "add the item to this list" open
+  // the browser tools because the object is anchored to the current page.
+  // The anchor + page noun are load-bearing: "explique a teoria" and
+  // "me conte sobre esta página" (knowledge questions) stay conversation.
+  if (hasDeicticImperativeIntent(text)) return true
+
+  // L2/Intenção+UX: imperative with a concrete object + a CONTROLLABLE
+  // page under the panel — fall-open for implicit action requests
+  // ("crie o produto ethos" on a page with a "Novo produto" button).
+  // The URL check is synchronous and cheap (no content read); the
+  // parameter is optional/fail-safe — without a URL, L2 never fires.
+  // chrome://, edge://, about: etc. do NOT trigger it (guard 4).
+  // Evaluation order (nit PÓS-GATE): action verbs → L1 (deictic anchor)
+  // → L2 (imperative + controllable URL) → communication + destination
+  // → page inspection. L3 (reclassify) is reached only in turns none of
+  // the openers activated.
+  if (activeTabUrl && isControllableUrl(activeTabUrl) && hasImperativeWithObject(text)) {
     return true
   }
 
@@ -847,8 +1254,12 @@ function hasPageInspectionIntent(text) {
     /\b(?:esta|essa|desta|dessa|nesta|nessa|neste|nesse|nestes|nesses|this|current)\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\b|\b(?:a|o|da|do|na|no)\s+(?:pagina|page|aba|tab|site|tela|screen|documento|document|html|dom)\s+(?:atual|aberta|aberto|aqui|current|inicial|home)\b/i
   // Page inspection: the user asks to look at / read / describe what's
   // on the page.
+  // PÓS-GATE Farol: explain/define joined the inspection family so the
+  // PAGE-anchored explanation path stays browser ("explique esta página",
+  // "explain this page") while the topic explanation stays conversation
+  // (gated by EXPLANATION_GATE_RE in intentSignals.js). Both sides tested.
   const pageInspection =
-    /\b(?:resuma|resume|leia|ler|analise|verifique|veja|descreva|diga o que|o que tem|o que esta|o que diz|o que aparece|o que ha|o que e|qual conteudo|extraia|extrair|copie|copiar|olhe|olha|olhar|mostre|mostra|mostrar|summarize|read|analyze|check|inspect|describe|look|show|see|extract|what is on|what's on|what is visible)\b/i
+    /\b(?:resuma|resume|leia|ler|analise|verifique|veja|explique|defina|descreva|diga o que|o que tem|o que esta|o que diz|o que aparece|o que ha|o que e|qual conteudo|extraia|extrair|copie|copiar|olhe|olha|olhar|mostre|mostra|mostrar|summarize|read|analyze|check|inspect|explain|define|describe|look|show|see|extract|what is on|what's on|what is visible)\b/i
   const bareVe = /(?<!['’])\bve\b/i
 
   // Some users omit the space in `o que` (`oque`) or point at a
@@ -1015,6 +1426,45 @@ function dedupeToolCalls(toolCalls) {
   return unique
 }
 
+/**
+ * PÓS-CAMPO-4: derive the auto-find query for a failed type/click.
+ * For type, the typed text is the best needle (the value the user wants
+ * committed). For click, the model does not carry a name in params, so
+ * the user's own wording is the needle (it usually names the target —
+ * "clique no botão Novo produto"); when the model did mention an
+ * accessible name in its reasoning, that lives in the messages and the
+ * user wording remains the deterministic fallback. Model-agnostic.
+ *
+ * @param {{ name: string; params?: Record<string, unknown> }} tc
+ * @param {string} userMessage
+ * @returns {string}
+ */
+function deriveAutoFindQuery(tc, userMessage) {
+  if (tc.name === 'type' && typeof tc.params?.text === 'string' && tc.params.text.trim()) {
+    return tc.params.text.trim().slice(0, 120)
+  }
+  return String(userMessage ?? '').trim().slice(0, 120)
+}
+
+/**
+ * Extract the selector list from a find tool result. The find result is
+ * either an array of { selector } objects or a text summary of the form
+ * '[1] text="…" tag=… selector="a[href=…]"'.
+ *
+ * @param {unknown} findResult
+ * @returns {string[]}
+ */
+function extractFindSelectors(findResult) {
+  const raw = findResult?.result
+  if (Array.isArray(raw)) {
+    return raw
+      .map((match) => match?.selector)
+      .filter((s) => typeof s === 'string' && s.length > 0)
+  }
+  const text = typeof raw?.text === 'string' ? raw.text : ''
+  return [...text.matchAll(/selector="([^"]+)"/g)].map((match) => match[1])
+}
+
 /** @param {string} json */
 function canonicalJson(json) {
   try {
@@ -1072,6 +1522,53 @@ async function getPostActionTabMeta(getActiveTabMeta, toolCall, execResult) {
  * @param {Array<object>} toolResults
  * @returns {string}
  */
+/**
+ * PÓS-CAMPO-5: structural honesty for the final assistant message.
+ *
+ * 1. If EVERY mutation of the turn failed (mutationAttempts > 0 and
+ *    mutationSuccesses === 0), the model's text is REPLACED by the honest
+ *    mechanical summary — no claim of success can reach the panel when
+ *    nothing committed. Same i18n pattern as summarizePartialAgentTurn.
+ * 2. If mutations succeeded but the LAST mutate failed and no read_page
+ *    inspection happened after it, the honest note is APPENDED (not a
+ *    replacement).
+ *
+ * The conditions are 100% structural — the model's text is never
+ * interpreted.
+ *
+ * @param {string} assistantText
+ * @param {string} userMessage
+ * @param {unknown[]} toolResults
+ * @param {{ mutationAttempts: number, mutationSuccesses: number, lastMutateFailed: boolean, inspectionSinceLastMutate: boolean }} stats
+ * @returns {string}
+ */
+function honestTurnMessage(assistantText, userMessage, toolResults, stats) {
+  const { mutationAttempts, mutationSuccesses, lastMutateFailed, inspectionSinceLastMutate } = stats
+  const pt = looksPortuguese(userMessage)
+
+  if (mutationAttempts > 0 && mutationSuccesses === 0) {
+    const errors = [...new Set(
+      (Array.isArray(toolResults) ? toolResults : [])
+        .filter((r) => r && r.success === false && typeof r.error === 'string' && r.error.length > 0)
+        .map((r) => r.error),
+    )].slice(0, 3).join('; ')
+    const attempts = pt
+      ? (mutationAttempts === 1 ? '1 tentativa falhou' : `${mutationAttempts} tentativas falharam`)
+      : (mutationAttempts === 1 ? '1 attempt failed' : `${mutationAttempts} attempts failed`)
+    return pt
+      ? `Nenhuma ação foi concluída na página — ${attempts}${errors ? `: ${errors}` : ''}.`
+      : `No action completed on the page — ${attempts}${errors ? `: ${errors}` : ''}.`
+  }
+
+  if (mutationSuccesses > 0 && lastMutateFailed && !inspectionSinceLastMutate) {
+    return `${assistantText}\n\n${pt
+      ? 'Nota: a última ação falhou e o resultado não foi verificado.'
+      : 'Note: the last action failed and the result was not verified.'}`
+  }
+
+  return assistantText
+}
+
 export function summarizePartialAgentTurn(userMessage, toolResults) {
   const results = Array.isArray(toolResults) ? toolResults : []
   const ok = results.filter((r) => r && r.success).length
@@ -1151,7 +1648,7 @@ export function modelIdentityDirectiveFor(modelId, supportsVision) {
  * Lightweight PT detector — enough for agent turns without a full i18n stack.
  * @param {string} text
  */
-function looksPortuguese(text) {
+export function looksPortuguese(text) {
   if (!text) return false
   if (/[áàâãéêíóôõúçÁÀÂÃÉÊÍÓÔÕÚÇ]/.test(text)) return true
   // Common PT browser-agent phrases (with and without accents).
@@ -1192,6 +1689,30 @@ function normalizeScreenshotDataUrl(value) {
 function truncate(text, max) {
   if (text.length <= max) return text
   return text.slice(0, max - 20) + '\n…(truncated)'
+}
+
+/**
+ * T4 (Ciclo dos Achados de Campo): trunca E sinaliza NO RESULTADO — o
+ * modelo precisa saber que não viu tudo (honestidade estrutural na leitura).
+ * A nota aponta o caminho para ler o restante (structured_extract com
+ * selector). Só aplicada no caminho de LEITURA (read_page); extract_page_content
+ * é chunked (nunca trunca).
+ * @param {string} text
+ * @param {number} max
+ * @param {string} userMessage
+ */
+function truncateWithNotice(text, max, userMessage) {
+  if (text.length <= max) return text
+  const n = text.length
+  const notice = looksPortuguese(userMessage)
+    ? `\n[conteúdo truncado em ${n} chars — use structured_extract com selector para ler o restante]`
+    : `\n[content truncated at ${n} chars — use structured_extract with a selector to read the rest]`
+  // N3: o slice desconta notice + wrap overhead (wrapUntrustedBrowserContent
+  // é aplicado DEPOIS do truncate e adiciona marcadores BEGIN/END). O pior
+  // caso é o conteúdo SUSPICIOUS (327 medido: BEGIN + Treat + 2 linhas de
+  // SUSPECTED_PROMPT_INJECTION + END) — 350 cobre com margem.
+  const WRAP_OVERHEAD = 350
+  return text.slice(0, max - notice.length - WRAP_OVERHEAD) + notice
 }
 
 /**

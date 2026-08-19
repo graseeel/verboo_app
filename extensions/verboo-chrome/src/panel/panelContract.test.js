@@ -105,3 +105,60 @@ test('panel exposes a removable selected-text context above the composer', () =>
     assert.match(bundle, /"selection_context_remove"/)
   }
 })
+
+test('panel surfaces the workspace tab it acts on, focused only via explicit click', () => {
+  assert.match(html, /id="workspace-tab"[^>]*\bhidden\b/s)
+  assert.match(html, /id="workspace-tab-label"/)
+  assert.match(html, /id="workspace-tab-show"[^>]*data-i18n="workspaceTab_show"/s)
+  assert.match(styles, /\.workspace-tab\[hidden\]/)
+  assert.match(styles, /\.workspace-tab-show:disabled/)
+  // Live updates from the background + receipt on turn completion.
+  assert.match(script, /MSG\.AGENT_WORKSPACE_TAB/)
+  assert.match(script, /setWorkspaceTab\(message\.tab, 'acting'\)/)
+  assert.match(script, /setWorkspaceTab\(message\.activeTab, 'result'\)/)
+  // Focus is always an explicit gesture; closed tabs degrade gracefully.
+  assert.match(script, /chrome\.tabs\.update\(tab\.tabId, \{ active: true \}\)/)
+  assert.match(script, /chrome\.windows\.update\(tab\.windowId, \{ focused: true \}\)/)
+  assert.match(script, /chrome\.tabs\.onRemoved\.addListener/)
+  // Approval cards for tab-mutating tools resolve their target tab titles.
+  assert.match(script, /annotateToolCardTab\(toolCall, card\)/)
+  assert.match(script, /toolCallTabIds/)
+
+  for (const bundle of [enUs, ptBr]) {
+    for (const key of [
+      'workspaceTab_acting',
+      'workspaceTab_result',
+      'workspaceTab_show',
+      'workspaceTab_closed',
+      'workspaceTab_untitled',
+      'workspaceTab_onTab',
+      'workspaceTab_tabId',
+    ]) {
+      assert.match(bundle, new RegExp(`"${key}"`))
+    }
+  }
+})
+
+test('close approvals name the target tab and fall back to its id when dead', () => {
+  // The annotation resolves each target through the shared label builder.
+  assert.match(script, /toolCallTabLabels\(/)
+  assert.match(script, /chrome\.tabs\.get\(id\)\.catch\(\(\) => null\)/)
+  // A dead tab still names its target via the localized id fallback.
+  assert.match(script, /workspaceTab_tabId/)
+  assert.match(script, /textContent = t\('workspaceTab_onTab'\)/)
+  for (const bundle of [enUs, ptBr]) {
+    assert.match(bundle, /"workspaceTab_tabId"/)
+  }
+})
+
+test('login gate stamps the runtime manifest version discreetly', () => {
+  // Badge element below the login card; value filled at runtime by JS.
+  assert.match(html, /class="version-badge login-version" data-version-badge/)
+  assert.match(styles, /\.version-badge\s*\{[^}]*color:\s*var\(--text-dim\)/s)
+  // Runtime source of truth: the manifest, never a hardcoded literal.
+  assert.match(script, /import \{ applyVersionBadge \} from '\.\/versionBadge\.js'/)
+  assert.match(script, /applyVersionBadge\(document, t\('version_label'\)\)/)
+  for (const bundle of [enUs, ptBr]) {
+    assert.match(bundle, /"version_label"/)
+  }
+})

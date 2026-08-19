@@ -23,6 +23,9 @@ function element(tag, attrs = {}, text = '') {
 
 function fakePage(elements) {
   return {
+    readyState: 'complete',
+    setTimeout: (cb) => cb(), // R-C1 poll would otherwise be zero-cost anyway
+    querySelector: () => null,
     querySelectorAll: (selector) => {
       if (selector.includes('[role="button"]') || selector.includes('a, button')) {
         return elements
@@ -52,7 +55,7 @@ test('G1 find: locates a playlist by its visible name and returns the REAL click
         const source = String(options.func)
         if (source.includes('findInPage')) {
           globalThis.document = fakePage([playlistLink, otherLink])
-          const result = options.func(...options.args)
+          const result = await options.func(...options.args)
           return [{ result }]
         }
         if (source.includes('matchMedia')) return [{ result: true }]

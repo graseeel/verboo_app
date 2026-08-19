@@ -33,14 +33,15 @@ export function humanizeModelId(id) {
 
 /**
  * Render the deliberately small Markdown subset used in assistant summaries.
- * Input is escaped first, so assigning the result to innerHTML cannot execute
- * model-provided markup. Supported: headings, bold, inline/fenced code, lists, and
- * line breaks.
+ * Input passes through a render fence that neutralizes residual tool-call
+ * markup (see stripToolCallMarkup) and is escaped first, so assigning the
+ * result to innerHTML cannot execute model-provided markup. Supported:
+ * headings, bold, inline/fenced code, lists, and line breaks.
  * @param {unknown} value
  * @returns {string}
  */
 export function safeMarkdownToHtml(value) {
-  const lines = escapeHtml(String(value ?? '')).split(/\r?\n/)
+  const lines = escapeHtml(stripToolCallMarkup(String(value ?? ''))).split(/\r?\n/)
   const rendered = []
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -92,6 +93,30 @@ export function safeMarkdownToHtml(value) {
   }
 
   return rendered.join('<br>')
+}
+
+/**
+ * Render fence for residual tool-call markup that some models leak as plain
+ * assistant text (`<function_calls>…`, `<tool_call>…`, namespaced variants such
+ * as `<minimax:tool_call>…`, a bare `<invoke>…`, or an orphan opener with no
+ * closing tag). Display-only: the stored message is never mutated. Families are
+ * matched by tag shape (optional namespace prefix, optional attributes), never
+ * by model or provider.
+ */
+const TOOL_CALL_TAG = String.raw`(?:[A-Za-z][\w-]*:)?(?:function_calls?|tool_calls?|invoke)`
+const TOOL_CALL_SELF_CLOSING_RE = new RegExp(String.raw`<${TOOL_CALL_TAG}\b[^>]*/>`, 'gi')
+const TOOL_CALL_BLOCK_RE = new RegExp(String.raw`<(${TOOL_CALL_TAG})\b[^>]*>[\s\S]*?</\1\s*>`, 'gi')
+const TOOL_CALL_OPEN_TO_END_RE = new RegExp(String.raw`\n?<${TOOL_CALL_TAG}\b[^>]*>[\s\S]*$`, 'gi')
+const TOOL_CALL_STRAY_CLOSER_RE = new RegExp(String.raw`</${TOOL_CALL_TAG}\s*>`, 'gi')
+
+/** @param {string} text */
+function stripToolCallMarkup(text) {
+  const stripped = text
+    .replace(TOOL_CALL_SELF_CLOSING_RE, '')
+    .replace(TOOL_CALL_BLOCK_RE, '')
+    .replace(TOOL_CALL_OPEN_TO_END_RE, '')
+    .replace(TOOL_CALL_STRAY_CLOSER_RE, '')
+  return stripped === text ? text : stripped.replace(/\n{3,}/g, '\n\n').trim()
 }
 
 /**

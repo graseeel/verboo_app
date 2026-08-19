@@ -39,10 +39,15 @@ test('OPENAI_TOOLS: read_page advertises interactive selectors for follow-up act
   assert.match(readPage.function.description, /interactive.*selector/i)
 })
 
-test('OPENAI_TOOLS: click has required selector param', () => {
+test('OPENAI_TOOLS: click accepts selector OR viewport x/y (R5-A)', () => {
   const click = OPENAI_TOOLS.find(t => t.function.name === 'click')
   assert.ok(click)
-  assert.deepEqual(click.function.parameters.required, ['selector'])
+  // Neither selector nor coordinates is hard-required at schema level:
+  // the controller's validateToolParams enforces "selector OR x/y".
+  assert.ok(!click.function.parameters.required || click.function.parameters.required.length === 0)
+  assert.equal(click.function.parameters.properties.selector.type, 'string')
+  assert.equal(click.function.parameters.properties.x.type, 'integer')
+  assert.equal(click.function.parameters.properties.y.type, 'integer')
 })
 
 test('OPENAI_TOOLS: type has required selector + text', () => {
