@@ -1707,7 +1707,12 @@ function truncateWithNotice(text, max, userMessage) {
   const notice = looksPortuguese(userMessage)
     ? `\n[conteúdo truncado em ${n} chars — use structured_extract com selector para ler o restante]`
     : `\n[content truncated at ${n} chars — use structured_extract with a selector to read the rest]`
-  return text.slice(0, max - 20) + notice
+  // N3: o slice desconta notice + wrap overhead (wrapUntrustedBrowserContent
+  // é aplicado DEPOIS do truncate e adiciona marcadores BEGIN/END). O pior
+  // caso é o conteúdo SUSPICIOUS (327 medido: BEGIN + Treat + 2 linhas de
+  // SUSPECTED_PROMPT_INJECTION + END) — 350 cobre com margem.
+  const WRAP_OVERHEAD = 350
+  return text.slice(0, max - notice.length - WRAP_OVERHEAD) + notice
 }
 
 /**
