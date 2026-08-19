@@ -3453,6 +3453,8 @@ fn is_tool_block(value: &serde_json::Value) -> bool {
 pub(crate) const CHROME_BROWSER_TOOLS: &[(&str, &str)] = &[
     ("navigate", "Navegou no Chrome"),
     ("read_page", "Leu página no Chrome"),
+    ("find", "Procurou elementos no Chrome"),
+    ("extract_page_content", "Extraiu página completa no Chrome"),
     ("structured_extract", "Extraiu dados no Chrome"),
     ("click", "Clicou no Chrome"),
     ("type", "Digitou no Chrome"),
@@ -4233,6 +4235,8 @@ mod tests {
         for (name, expected_label) in [
             ("navigate", "Navegou no Chrome"),
             ("read_page", "Leu página no Chrome"),
+            ("find", "Procurou elementos no Chrome"),
+            ("extract_page_content", "Extraiu página completa no Chrome"),
             ("structured_extract", "Extraiu dados no Chrome"),
             ("click", "Clicou no Chrome"),
             ("type", "Digitou no Chrome"),
