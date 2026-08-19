@@ -124,10 +124,27 @@ describe('verboo-bridge — API shape', () => {
       'getCredentialStatus',
       'setApiKey',
       'clearApiKey',
+      'checkWindowsLoginPrereqs',
+      'installGitWindows',
     ] as const
     for (const name of required) {
       expect(typeof (api as Record<string, unknown> | undefined)?.[name]).toBe('function')
     }
+  })
+
+  // Issue #71 (contrato-71-gitbash): the command names are the
+  // cross-fence contract with Rust — a rename on either side is a
+  // runtime-only failure, so the exact strings are pinned here.
+  it('maps the Windows Git onboarding commands verbatim (issue #71 contract)', async () => {
+    expect(api).toBeDefined()
+    vi.mocked(invoke).mockClear()
+    const auth = api as Record<string, () => Promise<unknown>>
+    await auth.checkWindowsLoginPrereqs()
+    await auth.installGitWindows()
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ['check_windows_login_prereqs'],
+      ['install_git_windows'],
+    ])
   })
 
   it('exposes every models/profile/feedback method', () => {

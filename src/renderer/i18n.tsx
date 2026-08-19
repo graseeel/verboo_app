@@ -60,6 +60,18 @@ const enUS: Record<string, string> = {
   'login.waitingForAuth': 'Waiting for authentication in the browser…',
   'login.cancelLogin': 'Cancel',
   'login.cliStartFailed': 'Failed to start CLI login.',
+  // Issue #71: Windows Git onboarding gate (check_windows_login_prereqs
+  // / install_git_windows contract). Shown when the CLI sign-in needs
+  // Git for Windows and none was found.
+  'login.gitRequiredTitle': 'Git is required to sign in on Windows',
+  'login.gitRequiredBody': 'The Verboo CLI runs the sign-in flow through Git for Windows (git-bash), and Git was not found on this computer. Install Git to continue.',
+  'login.gitInstallAuto': 'Install automatically',
+  'login.gitInstallManual': 'Manual instructions',
+  'login.gitInstalling': 'Installing Git for Windows… this can take a few minutes.',
+  'login.gitInstallFailed': 'Automatic installation did not finish. You can install Git manually instead.',
+  'login.gitManualStepDownload': 'Download Git for Windows from',
+  'login.gitManualStepDefaults': 'Run the installer keeping the default options.',
+  'login.gitManualStepReopen': 'Reopen the app and sign in again.',
   'login.logoutFailed': 'Could not sign out of Verboo.',
   'login.apiKeyValidated': 'API key validated.',
   'login.apiKeyInvalid': 'Could not validate the API key.',
@@ -1505,6 +1517,18 @@ const ptBR: Record<string, string> = {
   'login.waitingForAuth': 'Aguardando a autenticação no navegador…',
   'login.cancelLogin': 'Cancelar',
   'login.cliStartFailed': 'Falha ao iniciar o login pelo CLI.',
+  // Issue #71: gate de onboarding de Git no Windows (contrato
+  // check_windows_login_prereqs / install_git_windows). Aparece quando o
+  // login pelo CLI precisa do Git for Windows e nenhum foi encontrado.
+  'login.gitRequiredTitle': 'O Git é necessário para entrar no Windows',
+  'login.gitRequiredBody': 'O CLI do Verboo executa o login pelo Git for Windows (git-bash), e o Git não foi encontrado neste computador. Instale o Git para continuar.',
+  'login.gitInstallAuto': 'Instalar automaticamente',
+  'login.gitInstallManual': 'Instruções manuais',
+  'login.gitInstalling': 'Instalando o Git for Windows… pode levar alguns minutos.',
+  'login.gitInstallFailed': 'A instalação automática não foi concluída. Você pode instalar o Git manualmente.',
+  'login.gitManualStepDownload': 'Baixe o Git for Windows em',
+  'login.gitManualStepDefaults': 'Execute o instalador mantendo as opções padrão.',
+  'login.gitManualStepReopen': 'Reabra o app e entre novamente.',
   'login.logoutFailed': 'Não foi possível sair do Verboo.',
   'login.apiKeyValidated': 'Chave de API validada.',
   'login.apiKeyInvalid': 'Não foi possível validar a chave de API.',

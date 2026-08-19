@@ -42,6 +42,7 @@ pub mod research_subagent_runner;
 pub mod research_subagent_service;
 pub mod settings_store;
 pub mod skills_service;
+pub mod windows_git;
 pub mod stale_file_detector;
 pub mod subagent_events;
 pub mod terminal_service;

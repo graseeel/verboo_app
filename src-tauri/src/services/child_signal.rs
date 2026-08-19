@@ -541,6 +541,7 @@ mod tests {
             "src/services/video/probe.rs",
             "src/services/video/router.rs",
             "src/services/vision_fallback_service.rs",
+            "src/services/windows_git.rs",
             "src/services/workspace_files_service.rs",
         ];
 

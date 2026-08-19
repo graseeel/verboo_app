@@ -56,6 +56,43 @@ type CliLoginFlow =
   | { phase: 'urlReady'; url: string }
   | { phase: 'failed'; message: string }
 
+/**
+ * Issue #71: Windows Git onboarding gate. The CLI login needs Git for
+ * Windows (git-bash); when check_windows_login_prereqs reports
+ * gitAvailable=false the login is HELD and this dialog flow opens:
+ *   hidden        → no gate open.
+ *   prompt        → why + the two contract options (install
+ *                   automatically / manual instructions).
+ *   installing    → install_git_windows in flight (winget, up to 10min
+ *                   by contract — the dialog cannot be dismissed).
+ *   installFailed → install or the post-install re-check failed;
+ *                   summarized log + the manual path.
+ *   manual        → manual install instructions.
+ */
+type GitGateFlow =
+  | { phase: 'hidden' }
+  | { phase: 'prompt' }
+  | { phase: 'installing' }
+  | { phase: 'installFailed'; log: string }
+  | { phase: 'manual' }
+
+/** Issue #71 fallback: the CLI's raw cause names git-bash when Git for
+ *  Windows is missing. Those causes map to the onboarding dialog
+ *  instead of the bare error banner. */
+function isGitBashCause(message: string | undefined): boolean {
+  return typeof message === 'string' && message.toLowerCase().includes('git-bash')
+}
+
+/** The winget log can hold minutes of output — the dialog shows the
+ *  TAIL (last non-empty lines), where the actual failure reason lives. */
+function summarizeGitInstallLog(log: string): string {
+  const lines = log
+    .split('\n')
+    .map(line => line.trimEnd())
+    .filter(line => line.length > 0)
+  return lines.slice(-6).join('\n')
+}
+
 export function LoginScreen({
   language,
   checking,
@@ -81,6 +118,8 @@ export function LoginScreen({
   const [statusMessage, setStatusMessage] = useState<string | undefined>()
   // A1: CLI login flow, event-driven (see CliLoginFlow above).
   const [cliLogin, setCliLogin] = useState<CliLoginFlow>({ phase: 'idle' })
+  // Issue #71: Windows Git onboarding gate (see GitGateFlow above).
+  const [gitGate, setGitGate] = useState<GitGateFlow>({ phase: 'hidden' })
   const [copied, setCopied] = useState(false)
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   // Latest-value refs so the login:event listener subscribes ONCE and
@@ -155,9 +194,90 @@ export function LoginScreen({
     }
   }, [])
 
+  // Issue #71 fallback: a git-bash cause arriving over login:event (the
+  // pre-flight detection missed) maps to the SAME onboarding dialog
+  // instead of the raw banner — the banner render below also suppresses
+  // git-bash causes, so the raw message never paints.
+  useEffect(() => {
+    if (cliLogin.phase === 'failed' && isGitBashCause(cliLogin.message)) {
+      setCliLogin({ phase: 'idle' })
+      setGitGate({ phase: 'prompt' })
+    }
+  }, [cliLogin])
+
+  // Escape dismisses the gate dialog except while winget is running —
+  // a half-watched install is worse than a wait (same dismissal rule as
+  // the plugin install modal).
+  useEffect(() => {
+    if (gitGate.phase === 'hidden' || gitGate.phase === 'installing') return
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setGitGate({ phase: 'hidden' })
+    }
+    document.addEventListener('keydown', handleKeyDown, true)
+    return () => document.removeEventListener('keydown', handleKeyDown, true)
+  }, [gitGate.phase])
+
+  // Issue #71: ask the native side whether Git is usable BEFORE spawning
+  // the CLI login. Fail-OPEN on any detection hiccup (older backend,
+  // bridge absent, invoke rejection): a broken detector must never block
+  // sign-in — the git-bash fallback above still catches a real failure.
+  async function gitAvailableForLogin(): Promise<boolean> {
+    try {
+      const prereqs = await window.verboo?.checkWindowsLoginPrereqs?.()
+      return prereqs?.gitAvailable ?? true
+    } catch {
+      return true
+    }
+  }
+
+  /** Routes a login failure: git-bash causes open the Git onboarding
+   *  dialog (issue #71); everything else keeps the specific-cause banner. */
+  function failCliLogin(message: string) {
+    if (isGitBashCause(message)) {
+      setCliLogin({ phase: 'idle' })
+      setGitGate({ phase: 'prompt' })
+    } else {
+      setCliLogin({ phase: 'failed', message })
+    }
+  }
+
+  async function installGitAutomatically() {
+    setGitGate({ phase: 'installing' })
+    try {
+      const result = await window.verboo.installGitWindows()
+      // Contract: after the installer exits, RE-CHECK — only git truly
+      // resolvable moves on and the login proceeds automatically. A green
+      // exit with git still missing (e.g. PATH not refreshed) falls
+      // through to the failure state with the log tail.
+      const prereqs = await window.verboo.checkWindowsLoginPrereqs()
+      if (result.success && prereqs.gitAvailable) {
+        setGitGate({ phase: 'hidden' })
+        void startLogin()
+      } else {
+        setGitGate({ phase: 'installFailed', log: result.log })
+      }
+    } catch (err) {
+      const log =
+        typeof err === 'string' ? err : err instanceof Error ? err.message : ''
+      setGitGate({ phase: 'installFailed', log })
+    }
+  }
+
+  function closeGitGate() {
+    setGitGate({ phase: 'hidden' })
+  }
+
   async function startLogin() {
     setCopied(false)
     setCliLogin({ phase: 'starting' })
+    // Issue #71: on Windows the CLI needs Git — gate BEFORE spawning.
+    // Off-Windows the check reports gitAvailable=true, so the flow below
+    // is byte-identical to before.
+    if (!(await gitAvailableForLogin())) {
+      setCliLogin({ phase: 'idle' })
+      setGitGate({ phase: 'prompt' })
+      return
+    }
     try {
       const result = await onStartLogin()
       // A1: result.ok means "spawned in background" (the invoke returns
@@ -168,7 +288,7 @@ export function LoginScreen({
       if (result.ok) {
         setCliLogin(current => (current.phase === 'starting' ? { phase: 'awaitingBrowser' } : current))
       } else {
-        setCliLogin({ phase: 'failed', message: result.message || t('login.cliStartFailed') })
+        failCliLogin(result.message || t('login.cliStartFailed'))
       }
     } catch (err) {
       // Tauri invoke rejections carry the Rust Err string — the SPECIFIC
@@ -182,7 +302,7 @@ export function LoginScreen({
           : err instanceof Error
             ? err.message
             : t('login.cliStartFailed')
-      setCliLogin({ phase: 'failed', message })
+      failCliLogin(message)
     }
   }
 
@@ -360,8 +480,9 @@ export function LoginScreen({
             key={message} remounts the block per new failure so the
             animation replays without JS reflow. The snippet's
             auto-revert is deliberately NOT installed — the cause must
-            persist until the user retries. */}
-        {cliLogin.phase === 'failed' && (
+            persist until the user retries. Issue #71: git-bash causes
+            NEVER paint here — they open the Git onboarding dialog. */}
+        {cliLogin.phase === 'failed' && !isGitBashCause(cliLogin.message) && (
           <div className="login-warning t-input is-shaking" key={cliLogin.message} role="alert">
             {cliLogin.message}
           </div>
@@ -418,6 +539,94 @@ export function LoginScreen({
           <p>{t('login.apiKeyHelp')}</p>
         </form>
       </section>
+
+      {/* Issue #71: Windows Git onboarding dialog. Reuses the
+          confirm-modal family (modal-backdrop + t-modal) so it matches
+          the app's other overlays. While winget runs ('installing') the
+          dialog can NOT be dismissed — backdrop, Escape and buttons all
+          hold until the installer settles. */}
+      {gitGate.phase !== 'hidden' && (
+        <div
+          className="modal-backdrop"
+          onPointerDown={event => {
+            if (event.target === event.currentTarget && gitGate.phase !== 'installing') closeGitGate()
+          }}
+        >
+          <div
+            className="confirm-modal t-modal is-open git-gate-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('login.gitRequiredTitle')}
+          >
+            <h2>{t('login.gitRequiredTitle')}</h2>
+            <p>{t('login.gitRequiredBody')}</p>
+
+            {gitGate.phase === 'prompt' && (
+              <div className="modal-actions">
+                <button type="button" className="confirm-primary" onClick={() => void installGitAutomatically()}>
+                  {t('login.gitInstallAuto')}
+                </button>
+                <button type="button" onClick={() => setGitGate({ phase: 'manual' })}>
+                  {t('login.gitInstallManual')}
+                </button>
+                <button type="button" onClick={closeGitGate}>
+                  {t('common.cancel')}
+                </button>
+              </div>
+            )}
+
+            {gitGate.phase === 'installing' && (
+              <div className="login-progress" role="status">
+                <span className="t-shimmer" data-text={t('login.gitInstalling')}>
+                  {t('login.gitInstalling')}
+                </span>
+              </div>
+            )}
+
+            {gitGate.phase === 'installFailed' && (
+              <>
+                <div className="login-warning" role="alert">
+                  {t('login.gitInstallFailed')}
+                  {gitGate.log.trim().length > 0 && (
+                    <details className="login-warning-details">
+                      <summary>{t('transcript.showTechnicalDetails')}</summary>
+                      <pre>{summarizeGitInstallLog(gitGate.log)}</pre>
+                    </details>
+                  )}
+                </div>
+                <div className="modal-actions">
+                  <button type="button" className="confirm-primary" onClick={() => setGitGate({ phase: 'manual' })}>
+                    {t('login.gitInstallManual')}
+                  </button>
+                  <button type="button" onClick={closeGitGate}>
+                    {t('common.close')}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {gitGate.phase === 'manual' && (
+              <>
+                <ol className="git-gate-steps">
+                  <li>
+                    {t('login.gitManualStepDownload')}{' '}
+                    <a href="https://git-scm.com/downloads/win" target="_blank" rel="noreferrer">
+                      git-scm.com/downloads/win
+                    </a>
+                  </li>
+                  <li>{t('login.gitManualStepDefaults')}</li>
+                  <li>{t('login.gitManualStepReopen')}</li>
+                </ol>
+                <div className="modal-actions">
+                  <button type="button" className="confirm-primary" onClick={closeGitGate}>
+                    {t('common.close')}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   )
 }

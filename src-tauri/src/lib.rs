@@ -164,6 +164,19 @@ fn open_signup(app: tauri::AppHandle) -> Result<bool, String> {
     )
 }
 
+// Issue #71 (contract contrato-71-gitbash): Windows Git onboarding gate.
+// Detection never installs anything; installation only via the explicit
+// command. Off-Windows both return a neutral answer (see windows_git.rs).
+#[tauri::command]
+fn check_windows_login_prereqs() -> services::windows_git::WindowsLoginPrereqs {
+    services::windows_git::check_windows_login_prereqs()
+}
+
+#[tauri::command]
+fn install_git_windows() -> services::windows_git::GitWindowsInstallResult {
+    services::windows_git::install_git_windows()
+}
+
 /// Opens `url` in the user's default browser. Mirrors Electron's
 /// `shell.openExternal` (src/main/index.ts:181-194). Returns true on success.
 fn open_external_url(app: &tauri::AppHandle, url: &str) -> Result<bool, String> {
@@ -2742,6 +2755,9 @@ pub fn run() {
             open_dashboard,
             open_subscriptions,
             open_signup,
+            // Windows Git onboarding (issue #71, contrato-71-gitbash)
+            check_windows_login_prereqs,
+            install_git_windows,
             // Verboo in Chrome
             chrome_integration_status,
             chrome_integration_configure,

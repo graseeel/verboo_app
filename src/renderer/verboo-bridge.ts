@@ -131,6 +131,20 @@ if (IS_TAURI) {
 }
 
 
+// ── Windows Git onboarding wire types (issue #71) ─────────────
+// Field names are the cross-fence contract (contrato-71-gitbash) with the
+// Rust commands — kept local to the renderer fence on purpose.
+export type WindowsLoginPrereqs = {
+  gitAvailable: boolean
+  platform: string
+}
+
+export type GitWindowsInstallResult = {
+  success: boolean
+  exitCode: number
+  log: string
+}
+
 // ── The API object (matches preload/index.ts VerbooDesktopApi) ──
 const api = {
   // ── Config ──────────────────────────────────────────────────
@@ -138,6 +152,14 @@ const api = {
 
   // ── Auth ────────────────────────────────────────────────────
   startCliLogin: () => invoke<LoginResult>('start_cli_login'),
+  // Windows Git onboarding (issue #71, contract contrato-71-gitbash):
+  // detection never installs anything and returns in <1s; off-Windows
+  // gitAvailable is always true. installGitWindows runs winget with a
+  // generous timeout and returns the captured stdout+stderr log.
+  checkWindowsLoginPrereqs: () =>
+    invoke<WindowsLoginPrereqs>('check_windows_login_prereqs'),
+  installGitWindows: () =>
+    invoke<GitWindowsInstallResult>('install_git_windows'),
   getCliAuthStatus: () => invoke<CliAuthStatus>('get_cli_auth_status'),
   logout: () => invoke<LoginResult>('logout'),
   openDashboard: () => invoke<boolean>('open_dashboard'),
