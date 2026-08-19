@@ -42,6 +42,7 @@ import {
   workspaceTabChipState,
   workspaceTabLabel,
 } from './workspaceTab.js'
+import { applyVersionBadge } from './versionBadge.js'
 import { stripUntrustedBrowserBoundaryForDisplay } from '../agent/untrustedContent.js'
 import { matchSlashQuery, parseSlashInvocation } from '../routines/slashCommands.js'
 import { MAX_AGENT_TURN_MS } from '../agent/turnBudget.js'
@@ -2174,6 +2175,7 @@ function resolveBrandAssets() {
 
 async function init() {
   applyI18n(document)
+  applyVersionBadge(document, t('version_label'))
   resolveBrandAssets()
 
   initAgentEventListener()

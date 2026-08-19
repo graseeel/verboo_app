@@ -150,3 +150,15 @@ test('close approvals name the target tab and fall back to its id when dead', ()
     assert.match(bundle, /"workspaceTab_tabId"/)
   }
 })
+
+test('login gate stamps the runtime manifest version discreetly', () => {
+  // Badge element below the login card; value filled at runtime by JS.
+  assert.match(html, /class="version-badge login-version" data-version-badge/)
+  assert.match(styles, /\.version-badge\s*\{[^}]*color:\s*var\(--text-dim\)/s)
+  // Runtime source of truth: the manifest, never a hardcoded literal.
+  assert.match(script, /import \{ applyVersionBadge \} from '\.\/versionBadge\.js'/)
+  assert.match(script, /applyVersionBadge\(document, t\('version_label'\)\)/)
+  for (const bundle of [enUs, ptBr]) {
+    assert.match(bundle, /"version_label"/)
+  }
+})

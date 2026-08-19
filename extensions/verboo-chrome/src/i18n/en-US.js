@@ -14,6 +14,9 @@ export default {
   "branding_tagline": {
     "message": "Control Chrome with Verboo"
   },
+  "version_label": {
+    "message": "Version"
+  },
   "auth_login": {
     "message": "Sign in"
   },
