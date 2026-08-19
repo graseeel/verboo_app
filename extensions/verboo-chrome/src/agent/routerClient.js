@@ -8,24 +8,24 @@
  * Pure — no chrome.*. Only fetch() + AbortSignal. 60s timeout default.
  */
 
+import { BROWSER_TOOL_NAMES } from '../controller/protocol.js'
+
 const CHAT_URL = 'https://code.verboo.ai/router/v1/chat/completions'
 const DEFAULT_TIMEOUT_MS = 60_000
 
-// The eight real browser tools the controller knows how to execute.
-// Anything else the model emits (e.g. `computer.wait`, `garbage_tool`)
-// is a hallucination and must be dropped at parse time — passing it
-// through would surface a fake tool name to the user or the controller.
-const BROWSER_TOOL_NAMES = new Set([
-  'click',
-  'navigate',
-  'read_page',
-  'find',
-  'extract_page_content',
-  'structured_extract',
-  'screenshot',
-  'tab_group',
-  'tabs',
-  'type',
+// Tool-call markup FAMILIES recognized in assistant text (C-3/FRENTE-C).
+// Family detection is by STRUCTURE, never by model name/vendor:
+//   1. `<tool_call>…</tool_call>` (and minimax-prefixed variants) — the
+//      dialect already normalized since A2-CHROME;
+//   2. `<function_calls>…</function_calls>` (Anthropic agent/computer-use
+//      style, e.g. `<invoke name="computer"><parameter name="action">…`).
+// Anything the model emits (e.g. `computer.wait`, `garbage_tool`) that is
+// not in the whitelist is a hallucination and is dropped at parse time —
+// but the drop is REPORTED via droppedToolNames so the loop can give
+// directed feedback instead of failing silently.
+const TOOL_MARKUP_FAMILIES = Object.freeze([
+  /<(?::?minimax:)?tool_call>/i,
+  /<function_calls>/i,
 ])
 
 /**
@@ -120,7 +120,7 @@ export async function chatCompletion({
  * (browserToolsEnabled gate), not the parser's.
  *
  * @param {unknown} json
- * @returns {{ content: string|null, toolCalls: Array<{id:string,name:string,arguments:string}> }}
+ * @returns {{ content: string|null, toolCalls: Array<{id:string,name:string,arguments:string}>, droppedToolNames: string[], markupDetected: boolean }}
  */
 export function parseCompletionResponse(json) {
   if (!json || typeof json !== 'object') throw new Error('Router returned an unreadable response')
@@ -166,8 +166,8 @@ export function parseCompletionResponse(json) {
   // ──────────────────────────────────────────────────────────────────
   // PRESENTATION (non-negotiable) + EXECUTION (separate decision).
   //
-  // PRESENTATION: strip ALL <tool_call>...</tool_call> markup from
-  // `content` regardless of what else is in the response. The user
+  // PRESENTATION: strip ALL tool-call markup (every recognized family —
+  // <tool_call> and <function_calls>) from `content` regardless of what else is in the response. The user
   // must NEVER see raw tool-call markup leaking to the conversation
   // (the original A2-CHROME user report). Prose outside the tags is
   // preserved. Two passes cover the malformed inputs the tests lock
@@ -192,35 +192,64 @@ export function parseCompletionResponse(json) {
   // NO THROW on malformed markup: the OLD parser threw "Router
   // returned a malformed text tool call" when parsing failed, which
   // left the panel stuck on "Working…" because nothing got returned.
-  // The NEW behavior: silently drop unrecognized markup, return the
-  // remaining prose, let the loop decide how to communicate.
-  if (content && /<(?::?minimax:)?tool_call>/i.test(content)) {
-    const parsed = parseXmlToolCalls(content)
+  // The behavior: drop unrecognized markup, return the remaining prose,
+  // and REPORT detection + dropped names so the loop can run a directed
+  // format retry instead of failing silently (R4/FRENTE-C).
+  const markupDetected = content !== null && TOOL_MARKUP_FAMILIES.some((re) => re.test(content))
+  /** @type {string[]} */
+  const dropped = []
+  if (markupDetected) {
+    const parsed = parseXmlToolCalls(content, dropped)
     if (toolCalls.length === 0) toolCalls.push(...parsed)
-    content = content
-      .replace(/<(?::?minimax:)?tool_call>[\s\S]*?<\/(?:minimax:)?tool_call>/gi, '')
-      .replace(/<(?::?minimax:)?tool_call>/gi, '')
-      .trim() || null
+    content = stripToolMarkup(content) || null
   }
-  return { content, toolCalls }
+  return { content, toolCalls, droppedToolNames: dropped, markupDetected }
 }
 
-// Extract structured tool calls from text markup. Recognizes TWO
-// shapes the model emits inside a <tool_call>...</tool_call>
-// envelope:
-//   1. <invoke name="...">...</invoke> (Anthropic-style)
-//   2. <function=NAME>...</function> (the user's report shape,
-//      including function=computer with parameter=action=...)
+/**
+ * Remove ALL recognized tool-call markup families from arbitrary text.
+ * Used by the parser (non-negotiable presentation fence) and by the agent
+ * loop as a last-resort render fence before an assistant message reaches
+ * the panel (R8) — a raw tool-call block must never render as chat text.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function stripToolMarkup(value) {
+  return String(value ?? '')
+    .replace(/<(?::?minimax:)?tool_call>[\s\S]*?<\/(?:minimax:)?tool_call>/gi, '')
+    .replace(/<(?::?minimax:)?tool_call>/gi, '')
+    .replace(/<function_calls>[\s\S]*?<\/function_calls>/gi, '')
+    .replace(/<function_calls>/gi, '')
+    .replace(/<\/function_calls>/gi, '')
+    // Collapse the whitespace the envelope removal leaves behind (blank
+    // lines / double spaces at the boundaries), then trim.
+    .replace(/\n{2,}/g, '\n')
+    .replace(/ {2,}/g, ' ')
+    .trim()
+}
+
+// Extract structured tool calls from text markup. Recognizes BOTH
+// envelope FAMILIES (FRENTE-C — by structure, never by model name):
+//   <tool_call>…</tool_call>  (and minimax-prefixed variants) and
+//   <function_calls>…</function_calls>  (Anthropic agent/computer-use).
+// Inside each envelope, THREE body shapes are recognized:
+//   1. <invoke name="...">...</invoke> (Anthropic-style, incl. the
+//      user's report shape <invoke name="computer"><parameter name="action">…)
+//   2. <function=NAME>...</function> (incl. function=computer with
+//      parameter=action=...)
+//   3. a JSON envelope { "name": …, "arguments": … }.
 // Names are normalized (browser_ prefix stripped, family.dotted
-// resolved to inner tool) and validated against the 7-name whitelist.
-// Invalid names are dropped, not passed through.
-function parseXmlToolCalls(content) {
+// resolved, computer/browser+action unwrapped, aliases applied) and
+// validated against the whitelist derived from the catalog. Invalid
+// names are dropped — but collected into `dropped` so the caller can
+// give directed feedback instead of failing silently (R4).
+function parseXmlToolCalls(content, dropped = []) {
   const calls = []
-  for (const match of content.matchAll(
-    /<(?::?minimax:)?tool_call>([\s\S]*?)<\/(?:minimax:)?tool_call>/gi,
-  )) {
-    const body = match[1]
-    const jsonCalls = parseJsonToolCalls(body)
+  const envelope = /<(?::?minimax:)?tool_call>([\s\S]*?)<\/(?:minimax:)?tool_call>|<function_calls>([\s\S]*?)<\/function_calls>/gi
+  for (const match of content.matchAll(envelope)) {
+    const body = match[1] ?? match[2]
+    const jsonCalls = parseJsonToolCalls(body, dropped)
     if (jsonCalls.length > 0) {
       calls.push(...jsonCalls)
       continue
@@ -231,7 +260,7 @@ function parseXmlToolCalls(content) {
     if (invokes.length > 0) {
       for (const invoke of invokes) {
         const params = parseNamedParameters(invoke[2])
-        const name = normalizeTextToolName(decodeXml(invoke[1].trim()))
+        const name = resolveTextToolName(decodeXml(invoke[1].trim()), params, dropped)
         if (name && isValidToolName(name)) {
           calls.push({
             id: fallbackToolCallId(),
@@ -252,16 +281,7 @@ function parseXmlToolCalls(content) {
       params[decodeXml(parameter[1].trim())] = decodeXml(parameter[2].trim())
     }
     Object.assign(params, parseNamedParameters(body))
-    const functionName = decodeXml(rawFunction.trim())
-    // Family wrappers (browser, computer) with an action param unwrap
-    // to the inner tool name. Bare family names with no action fall
-    // through to normalizeTextToolName so dotted forms like
-    // `computer.navigate` also resolve.
-    const name = (functionName === 'browser' || functionName === 'computer')
-      && typeof params.action === 'string'
-      ? params.action
-      : normalizeTextToolName(functionName)
-    if (functionName === 'browser' || functionName === 'computer') delete params.action
+    const name = resolveTextToolName(decodeXml(rawFunction.trim()), params, dropped)
     if (name && isValidToolName(name)) {
       calls.push({ id: fallbackToolCallId(), name, arguments: JSON.stringify(params) })
     }
@@ -276,7 +296,7 @@ function parseXmlToolCalls(content) {
  * dialects above. Arguments may be either an object or a JSON string.
  * Unknown tools are dropped by the same whitelist as XML calls.
  */
-function parseJsonToolCalls(body) {
+function parseJsonToolCalls(body, dropped = []) {
   const trimmed = String(body ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '')
   if (!trimmed) return []
 
@@ -318,12 +338,7 @@ function parseJsonToolCalls(body) {
     const params = rawArguments && typeof rawArguments === 'object' && !Array.isArray(rawArguments)
       ? { .../** @type {Record<string, unknown>} */ (rawArguments) }
       : {}
-    const functionName = rawName.trim()
-    const name = (functionName === 'browser' || functionName === 'computer')
-      && typeof params.action === 'string'
-      ? params.action
-      : normalizeTextToolName(functionName)
-    if (functionName === 'browser' || functionName === 'computer') delete params.action
+    const name = resolveTextToolName(rawName.trim(), params, dropped)
     if (name && isValidToolName(name)) {
       calls.push({
         id: fallbackToolCallId(),
@@ -333,6 +348,103 @@ function parseJsonToolCalls(body) {
     }
   }
   return calls
+}
+
+// ── Family normalization (FRENTE-C) ────────────────────────────────
+
+// Conservative alias map for tool names other tools/models may emit for
+// the SAME operation. Only unambiguous names are mapped — anything
+// speculative stays out and surfaces via droppedToolNames instead.
+const TOOL_ALIASES = Object.freeze({
+  left_click: 'click',
+  mouse_click: 'click',
+  click_left: 'click',
+  capture_screenshot: 'screenshot',
+  take_screenshot: 'screenshot',
+  screen_capture: 'screenshot',
+  navigate_to: 'navigate',
+  go_to: 'navigate',
+  goto: 'navigate',
+  type_text: 'type',
+  input_text: 'type',
+  send_keys: 'type',
+  fill: 'type',
+  get_page_content: 'read_page',
+  read_page_content: 'read_page',
+  extract_content: 'extract_page_content',
+  get_content: 'extract_page_content',
+  find_element: 'find',
+  query_selector: 'find',
+  new_tab: 'tabs',
+  open_tab: 'tabs',
+})
+
+/**
+ * Resolve a raw text-emitted tool name to a catalog tool name, shared by
+ * the `<invoke>`, `<function=…>` and JSON branches so they can never
+ * disagree (A2-CHROME/FRENTE-C unification).
+ *
+ * Unwraps family wrappers (`browser`/`computer` + `action`), falls back
+ * to normalizeTextToolName (prefix + dotted forms), then applies the
+ * conservative alias map and normalizes coordinate params for click.
+ * Unrecognized names are reported via `dropped` and return as-is
+ * (invalid) so the whitelist rejects them visibly.
+ *
+ * @param {string} functionName
+ * @param {Record<string, unknown>} params
+ * @param {string[]} [dropped]
+ * @returns {string}
+ */
+function resolveTextToolName(functionName, params, dropped = []) {
+  const name = (functionName === 'browser' || functionName === 'computer')
+    && typeof params.action === 'string'
+    ? params.action
+    : normalizeTextToolName(functionName)
+  if (functionName === 'browser' || functionName === 'computer') delete params.action
+
+  const aliased = TOOL_ALIASES[name] ?? name
+  if (aliased === 'click') normalizeClickCoordinates(params)
+  if (aliased === 'type' && typeof params.value === 'string' && typeof params.text !== 'string') {
+    params.text = params.value
+    delete params.value
+  }
+  // R-T3/GENERALIZAÇÃO: text-emitted booleans arrive as strings
+  // ('true'/'false'); the schema expects a boolean, so normalize before
+  // validation (mirrors normalizeClickCoordinates for click).
+  if (aliased === 'type' && typeof params.pressEnter === 'string') {
+    params.pressEnter = params.pressEnter === 'true'
+  }
+  if (!isValidToolName(aliased)) dropped.push(name)
+  return aliased
+}
+
+/**
+ * Normalize coordinate params emitted for clicks (computer-use style):
+ * `coordinate: "[528,244]"`, `coordinates`, `position`, or bare x/y
+ * (string or number). Always resolves to integer viewport pixels x/y.
+ *
+ * @param {Record<string, unknown>} params
+ */
+function normalizeClickCoordinates(params) {
+  const raw = params.coordinate ?? params.coordinates ?? params.position
+  if (typeof raw === 'string') {
+    const match = raw.match(/\[\s*(-?\d+)\s*,\s*(-?\d+)\s*\]/)
+    if (match) {
+      params.x = Number(match[1])
+      params.y = Number(match[2])
+    }
+  }
+  for (const key of ['x', 'y']) {
+    if (typeof params[key] === 'string') {
+      const numeric = Number(params[key])
+      params[key] = Number.isFinite(numeric) ? Math.round(numeric) : params[key]
+    } else if (typeof params[key] === 'number') {
+      params[key] = Math.round(params[key])
+    }
+  }
+  delete params.coordinate
+  delete params.coordinates
+  delete params.position
 }
 
 function parseNamedParameters(body) {
@@ -489,14 +601,4 @@ function decodeXml(value) {
     .replace(/&apos;/g, "'")
     .replace(/&amp;/g, '&')
     .trim()
-}
-
-export const __test__ = {
-  parseCompletionResponse,
-  parseXmlToolCalls,
-  parseJsonToolCalls,
-  normalizeTextToolName,
-  isValidToolName,
-  mergeToolCalls,
-  parseSseCompletion,
 }

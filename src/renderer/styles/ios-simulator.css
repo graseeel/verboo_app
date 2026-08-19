@@ -131,7 +131,8 @@
 
 .ios-simulator-state,
 .ios-simulator-empty,
-.ios-simulator-requirement {
+.ios-simulator-requirement,
+.ios-simulator-onboarding {
   display: grid;
   justify-items: center;
   gap: 8px;
@@ -149,6 +150,191 @@
 
 .ios-simulator-requirement {
   color: var(--accent-strong);
+}
+
+/* ─── Simulator setup onboarding (design-ios-onboarding, PA-14) ─────
+   Same card frame as the old requirement card (shared selector above);
+   the choice cards, step list, and guide read left-aligned inside it.
+   The download progress bar reuses .cli-bootstrap-progress so the gate
+   pattern stays the single visual source. */
+.ios-simulator-onboarding {
+  color: var(--accent-strong);
+}
+
+.ios-simulator-onboarding > strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.ios-simulator-onboarding-issue {
+  max-width: 300px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ios-onboarding-choices {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  max-width: 320px;
+  margin-top: 4px;
+}
+
+.ios-onboarding-choice {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-elevated) 80%, transparent);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.ios-onboarding-choice:hover {
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--bg-soft) 78%, var(--accent-soft));
+}
+
+.ios-onboarding-choice:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.ios-onboarding-choice.is-primary {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.ios-onboarding-choice strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.ios-onboarding-choice small {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.ios-onboarding-badge {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent-strong);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.ios-onboarding-auto,
+.ios-onboarding-waiting,
+.ios-onboarding-failed {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.ios-onboarding-auto-title,
+.ios-onboarding-waiting-copy strong,
+.ios-onboarding-failed strong {
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.ios-onboarding-steps {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  max-width: 320px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+
+.ios-onboarding-steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.ios-onboarding-steps li[data-state='done'],
+.ios-onboarding-steps li[data-state='active'] {
+  color: var(--text);
+}
+
+.ios-onboarding-steps li[data-state='active'] {
+  font-weight: 600;
+}
+
+.ios-onboarding-step-icon {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  color: var(--accent-strong);
+}
+
+.ios-onboarding-waiting-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.ios-onboarding-waiting-copy small,
+.ios-onboarding-step-message,
+.ios-onboarding-failed-detail {
+  max-width: 300px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ios-onboarding-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.ios-onboarding-guide {
+  display: grid;
+  gap: 10px;
+  max-width: 320px;
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+}
+
+.ios-onboarding-command {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.ios-onboarding-command code {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  user-select: all;
+}
+
+.ios-onboarding-check-again {
+  margin-top: 4px;
 }
 
 .ios-simulator-requirement strong,
@@ -866,6 +1052,7 @@
 
 .ios-simulator-view-toolbar .ghost-button,
 .ios-simulator-requirement .ghost-button,
+.ios-simulator-onboarding .ghost-button,
 .ios-simulator-error .ghost-button {
   flex: 0 0 auto;
   min-height: 28px;

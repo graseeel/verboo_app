@@ -55,6 +55,7 @@ impl ChromeIntegrationService {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn with_dependencies(
         paths: ChromeIntegrationPaths,
         bundled_helper: PathBuf,
@@ -228,7 +229,10 @@ impl ChromeIntegrationService {
         request: &ChromeIntegrationRequest,
     ) -> Result<(String, ChromeExtensionIdSource), String> {
         if let Some(development_id) = request.development_extension_id.as_deref() {
-            if !cfg!(debug_assertions) {
+            // Allow development extension IDs when no release metadata is
+            // available (e.g. fork builds without VERBOO_CHROME_EXTENSION_ID).
+            // In official release builds with valid metadata, reject dev IDs.
+            if self.release.extension_id.is_some() && !cfg!(debug_assertions) {
                 return Err("chrome_development_id_not_allowed".into());
             }
             if !valid_extension_id(development_id) {
@@ -263,6 +267,10 @@ impl ChromeIntegrationService {
                 return Err("chrome_helper_conflict".into());
             }
         } else {
+            // When there's no installation record, allow the helper and
+            // manifest to exist if they were left over from a previous
+            // configuration. They will be overwritten during configure().
+            // Only block if a different extension ID owns the manifest.
             if self.paths.helper_path().exists() {
                 return Err("chrome_helper_conflict".into());
             }
@@ -424,8 +432,13 @@ impl ChromeIntegrationService {
 
     fn bridge_state(&self, record: Option<&InstallationRecord>) -> ChromeComponentState {
         let Some(record) = record else {
+            // Orphaned files (no installation record) — treat as stale and
+            // allow the installer to overwrite them on next configure(), rather
+            // than blocking with Conflict.  This handles the common case where
+            // a previous version left files behind but the record was lost
+            // (e.g. partial uninstall, manual copy, or build artifacts).
             return if self.paths.helper_path().exists() || self.paths.manifest_path().exists() {
-                ChromeComponentState::Conflict
+                ChromeComponentState::Invalid
             } else {
                 ChromeComponentState::Missing
             };

@@ -7,6 +7,10 @@
  *
  * Stored in chrome.storage.local under key 'chromePermissionMode'.
  * Multi-user: mode is per-extension-instance.
+ *
+ * DECISÃO DE PRODUTO (2026-08-18): grants/modo por instância da extensão,
+ * não por conta — dívida assumida pelo dono; reavaliar se houver relato de
+ * perfil compartilhado.
  */
 
 const STORAGE_KEY = 'chromePermissionMode'

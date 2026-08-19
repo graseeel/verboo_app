@@ -473,7 +473,7 @@ impl TurnService {
         video_jobs: &Option<crate::services::video::job::VideoJobRegistry>,
     ) -> bool {
         use crate::models::types::{
-            CliMediaCapabilities, ExtractionStatus, ModelMediaCapabilities, VideoFallbackConsent,
+            ExtractionStatus, ModelMediaCapabilities, VideoFallbackConsent,
             VideoProgress, VideoProgressStage,
         };
         use crate::services::video::analyze::{
@@ -535,11 +535,19 @@ impl TurnService {
         };
 
         let (original_path, file_name, metadata) = {
-            let att = &request.attachments.as_ref().unwrap()[attachment_index];
+            let Some(att) = request.attachments.as_ref().and_then(|a| a.get(attachment_index))
+            else {
+                fail_attachment(request, "attachment index out of range".to_string());
+                return true;
+            };
+            let Some(video_meta) = att.video.clone() else {
+                fail_attachment(request, "attachment has no video metadata".to_string());
+                return true;
+            };
             (
                 std::path::PathBuf::from(&att.path),
                 att.name.clone(),
-                att.video.clone().unwrap(),
+                video_meta,
             )
         };
 
@@ -1300,7 +1308,6 @@ impl TurnService {
         }
 
         let prompt = build_prompt(&request, resume_session_id.is_some());
-        let is_resume = resume_session_id.is_some();
 
         // FASE 0: when the model supports vision AND there are image
         // attachments, switch to stream-json input so images reach the model
@@ -1309,12 +1316,8 @@ impl TurnService {
         let stream_json_payload = build_stream_json_input(&request, &prompt);
         let use_stream_json = stream_json_payload.is_some();
 
-        let resume_id = if is_resume {
-            Some(resume_session_id.unwrap())
-        } else {
-            None
-        };
-        let mut args = build_cli_args(&request, &prompt, resume_id.as_deref(), use_stream_json);
+        let resume_id = resume_session_id.clone();
+        let args = build_cli_args(&request, &prompt, resume_id.as_deref(), use_stream_json);
 
         let working_directory = safe_runtime_working_directory(
             &request.working_directory,
@@ -1414,8 +1417,32 @@ impl TurnService {
             if let Some(stdin) = child.stdin.take() {
                 use std::io::Write;
                 let mut stdin = stdin;
-                let _ = stdin.write_all(payload.as_bytes());
-                let _ = stdin.flush();
+                if let Err(e) = stdin.write_all(payload.as_bytes()) {
+                    emit_event(
+                        &app,
+                        AgentEvent {
+                            event_type: EventType::Error,
+                            turn_id: Some(turn_id.clone()),
+                            conversation_id: Some(conversation_id.clone()),
+                            message: Some(format!("Falha ao enviar prompt via stdin: {e}")),
+                            ..Default::default()
+                        },
+                    );
+                    return;
+                }
+                if let Err(e) = stdin.flush() {
+                    emit_event(
+                        &app,
+                        AgentEvent {
+                            event_type: EventType::Error,
+                            turn_id: Some(turn_id.clone()),
+                            conversation_id: Some(conversation_id.clone()),
+                            message: Some(format!("Falha ao finalizar envio via stdin: {e}")),
+                            ..Default::default()
+                        },
+                    );
+                    return;
+                }
             }
         }
 
@@ -1865,7 +1892,9 @@ impl Default for TurnService {
 }
 
 fn emit_event(app: &AppHandle, event: AgentEvent) {
-    let _ = app.emit(AGENT_EVENT_CHANNEL, event);
+    if let Err(e) = app.emit(AGENT_EVENT_CHANNEL, event) {
+        eprintln!("[turn_service] failed to emit agent event: {e}");
+    }
 }
 
 fn timestamp_ms() -> u64 {
@@ -2686,6 +2715,7 @@ pub(crate) fn resolve_effort_arg(
 /// without spawning a process. Same validation as `resolve_effort_arg` —
 /// a valid override is one present, non-empty, and ∈ the model's
 /// `reasoning.effort_levels`.
+#[cfg(test)]
 pub(crate) fn resolve_effort_env(
     effort_override: Option<&str>,
     reasoning: Option<&ModelReasoning>,
@@ -2720,7 +2750,11 @@ fn safe_runtime_working_directory(
             cwd_path == d
         })
         .unwrap_or(false);
-    if is_neutral_placeholder || is_app_data_dir {
+    // Redirect when the path does not exist on disk (stale project
+    // references from a previous session). Without this the CLI would
+    // fail with a confusing "cwd does not exist" error.
+    let path_exists = !is_neutral_placeholder && std::path::Path::new(trimmed).is_dir();
+    if is_neutral_placeholder || is_app_data_dir || !path_exists {
         // Neutral empty workdir under app_data_dir (created on demand).
         // Fallback to temp_dir when app_data_dir is None (tests/CI).
         let neutral = app_data_dir
@@ -2959,9 +2993,11 @@ fn strip_ansi(value: &str) -> String {
         if bytes[i] == 0x1b {
             // Flush any pending clean bytes before this escape.
             if i > run_start {
-                // SAFETY: we walked these bytes inside a valid &str; they are
-                // valid UTF-8.
-                out.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[run_start..i]) });
+                // These bytes are valid UTF-8 — we walked them inside a valid
+                // &str and ESC (0x1B) / CSI terminators are ASCII (< 0x80),
+                // so they never split a multi-byte sequence. Use safe
+                // from_utf8 to avoid UB risk from future refactoring.
+                out.push_str(std::str::from_utf8(&bytes[run_start..i]).unwrap_or_default());
             }
             // ESC at end of string: drop it.
             if i + 1 >= bytes.len() {
@@ -2997,8 +3033,8 @@ fn strip_ansi(value: &str) -> String {
     }
     // Flush any trailing clean bytes.
     if i > run_start {
-        // SAFETY: same as above.
-        out.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[run_start..i]) });
+        // Same safety argument as above — safe bytes from valid &str.
+        out.push_str(std::str::from_utf8(&bytes[run_start..i]).unwrap_or_default());
     }
     out
 }
@@ -3417,6 +3453,8 @@ fn is_tool_block(value: &serde_json::Value) -> bool {
 pub(crate) const CHROME_BROWSER_TOOLS: &[(&str, &str)] = &[
     ("navigate", "Navegou no Chrome"),
     ("read_page", "Leu página no Chrome"),
+    ("find", "Procurou elementos no Chrome"),
+    ("extract_page_content", "Extraiu página completa no Chrome"),
     ("structured_extract", "Extraiu dados no Chrome"),
     ("click", "Clicou no Chrome"),
     ("type", "Digitou no Chrome"),
@@ -4197,6 +4235,8 @@ mod tests {
         for (name, expected_label) in [
             ("navigate", "Navegou no Chrome"),
             ("read_page", "Leu página no Chrome"),
+            ("find", "Procurou elementos no Chrome"),
+            ("extract_page_content", "Extraiu página completa no Chrome"),
             ("structured_extract", "Extraiu dados no Chrome"),
             ("click", "Clicou no Chrome"),
             ("type", "Digitou no Chrome"),
@@ -4420,10 +4460,14 @@ mod tests {
         assert_eq!(safe_runtime_working_directory("", None), neutral_str);
         assert_eq!(safe_runtime_working_directory("/", None), neutral_str);
         assert_eq!(safe_runtime_working_directory(".", None), neutral_str);
-        // Real paths are kept as-is
+        // Existing directories are kept as-is
+        let temp_dir = std::env::temp_dir().to_string_lossy().to_string();
+        assert_eq!(safe_runtime_working_directory(&temp_dir, None), temp_dir);
+        // Non-existent paths fall back to neutral (stale project refs)
         assert_eq!(
-            safe_runtime_working_directory("/Users/test/code", None),
-            "/Users/test/code"
+            safe_runtime_working_directory("/Users/test/nonexistent-project-xyz", None),
+            neutral_str,
+            "non-existent directory must fall back to neutral workdir"
         );
     }
 
@@ -4479,10 +4523,17 @@ mod tests {
             "cwd == app_data_dir must redirect to neutral workdir, not be used as-is"
         );
 
-        // A real project path is kept as-is.
+        // A real existing directory is kept as-is.
+        let temp_dir = std::env::temp_dir().to_string_lossy().to_string();
         assert_eq!(
-            safe_runtime_working_directory("/Users/test/my-project", Some(&app_data)),
-            "/Users/test/my-project"
+            safe_runtime_working_directory(&temp_dir, Some(&app_data)),
+            temp_dir
+        );
+        // A non-existent path falls back to neutral (stale project).
+        assert_eq!(
+            safe_runtime_working_directory("/Users/test/nonexistent-project-xyz", Some(&app_data)),
+            expected_str,
+            "non-existent directory must fall back to neutral workdir"
         );
 
         let _ = std::fs::remove_dir_all(&app_data);
@@ -6298,6 +6349,9 @@ mod tests {
     // agent walks in it is the user's call to verify on first use.
 
     fn sample_request_with_language(message: &str, language: LanguageCode) -> AgentTurnRequest {
+        // Ensure /tmp/probe exists so safe_runtime_working_directory doesn't
+        // redirect to the neutral temp dir (which breaks golden-string tests).
+        let _ = std::fs::create_dir_all("/tmp/probe");
         AgentTurnRequest {
             turn_id: None,
             conversation_id: "c1".into(),

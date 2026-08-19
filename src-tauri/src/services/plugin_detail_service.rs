@@ -13,7 +13,7 @@
 //! followed by markdown body. We parse only the frontmatter — the body is
 //! not exposed (the FE can read the file directly if needed).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::models::plugins::{Plugin, PluginError};
 
@@ -371,7 +371,6 @@ fn read_plugin_json(install_path: &Path) -> PluginJsonMeta {
 mod tests {
     use super::*;
     use crate::models::plugins::PluginScope;
-    use std::io::Write;
 
     fn make_test_plugin(install_path: &Path) -> Plugin {
         Plugin {

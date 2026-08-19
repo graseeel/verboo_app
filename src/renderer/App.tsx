@@ -537,6 +537,7 @@ export function App() {
   const annotationDraftsRef = useRef<AnnotationDrafts>({})
   const [sideChat, setSideChat] = useState<SideChatState | undefined>()
   const sideChatRef = useRef<SideChatState | undefined>(undefined)
+  const sideChatSendLock = useRef(false)
   const focusedConversationIdRef = useRef<string | undefined>(undefined)
   const focusedConversationLaneRef = useRef<'main' | 'side' | undefined>(undefined)
   const [pendingPermissionPrompts, setPendingPermissionPrompts] = useState<Record<string, PendingPermissionPrompt>>({})
@@ -5264,21 +5265,27 @@ export function App() {
   }
 
   async function sendSideChatMessage(message: string) {
-    if (cliAgentActionsBlocked) return
-    const state = sideChatRef.current
-    const trimmed = message.trim()
-    if (!state || !trimmed || isConversationRunning(state.conversation.id)) return
+    if (sideChatSendLock.current) return
+    sideChatSendLock.current = true
+    try {
+      if (cliAgentActionsBlocked) return
+      const state = sideChatRef.current
+      const trimmed = message.trim()
+      if (!state || !trimmed || isConversationRunning(state.conversation.id)) return
 
-    const conversationId = state.conversation.id
-    appendConversationItem(conversationId, {
-      id: `${conversationId}:user:${Date.now()}`,
-      role: 'user',
-      text: trimmed,
-      timestamp: Date.now(),
-    })
-    const queued = createQueuedFollowUp(conversationId, trimmed, [], [], true)
-    queued.request = buildSideChatRequest(queued.request, state.context)
-    await runTurn(queued)
+      const conversationId = state.conversation.id
+      appendConversationItem(conversationId, {
+        id: `${conversationId}:user:${Date.now()}`,
+        role: 'user',
+        text: trimmed,
+        timestamp: Date.now(),
+      })
+      const queued = createQueuedFollowUp(conversationId, trimmed, [], [], true)
+      queued.request = buildSideChatRequest(queued.request, state.context)
+      await runTurn(queued)
+    } finally {
+      sideChatSendLock.current = false
+    }
   }
 
   function selectProject(projectId: string) {

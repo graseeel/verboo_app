@@ -8,13 +8,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc, Condvar, Mutex,
+    mpsc, Arc, Condvar, Mutex,
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -29,6 +29,8 @@ mod capture_store;
 mod lifecycle;
 mod media;
 mod ownership;
+#[cfg(target_os = "macos")]
+mod setup;
 mod system_controls;
 mod wda_client;
 
@@ -87,7 +89,7 @@ const WDA_LOOPBACK_SOURCE_FILE: &str = "WebDriverAgentLib/Routing/FBTCPSocket.m"
 const WDA_UNSAFE_BIND_CALL: &str = "acceptOnPort:self.port error:error";
 const WDA_LOOPBACK_BIND_CALL: &str = "acceptOnInterface:@\"127.0.0.1\" port:self.port error:error";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum IosSimulatorIssue {
     UnsupportedPlatform,
@@ -359,6 +361,21 @@ trait CommandRunner: Send + Sync {
             return Err("operação do simulador cancelada".to_string());
         }
         self.run(program, args)
+    }
+
+    /// Runs a command while streaming stdout/stderr lines to `on_line` and
+    /// honoring `cancel`/`deadline` (kills the child group on cancel).
+    /// The default implementation degrades to `run_interruptible` (no
+    /// streaming) so existing runners/mocks keep compiling.
+    fn run_streaming(
+        &self,
+        program: &str,
+        args: &[String],
+        cancel: &AtomicBool,
+        deadline: Instant,
+        _on_line: &mut dyn FnMut(&str),
+    ) -> Result<CommandOutput, String> {
+        self.run_interruptible(program, args, cancel, deadline)
     }
 }
 
@@ -653,6 +670,81 @@ impl CommandRunner for SystemCommandRunner {
             stderr: output.stderr,
         })
     }
+
+    fn run_streaming(
+        &self,
+        program: &str,
+        args: &[String],
+        cancel: &AtomicBool,
+        deadline: Instant,
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<CommandOutput, String> {
+        let mut command = Command::new(program);
+        command.args(args);
+        crate::services::cli_spawn::apply_creation_flags(&mut command);
+        command
+            .env_remove("DEVELOPER_DIR")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure_process_group(&mut command);
+        let mut child = command.spawn().map_err(|error| error.to_string())?;
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let (tx, rx) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            // stdout and stderr are different pipe types — read each on
+            // its own loop.
+            if let Some(stream) = stdout {
+                let reader = BufReader::new(stream);
+                for line in reader.lines() {
+                    let Ok(line) = line else { break };
+                    if tx.send(line).is_err() {
+                        return;
+                    }
+                }
+            }
+            if let Some(stream) = stderr {
+                let reader = BufReader::new(stream);
+                for line in reader.lines() {
+                    let Ok(line) = line else { break };
+                    if tx.send(line).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        loop {
+            if cancel.load(Ordering::Acquire) || Instant::now() >= deadline {
+                terminate_process_group(&mut child);
+                let _ = child.wait();
+                return Err("operação do simulador cancelada".to_string());
+            }
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {
+                    while let Ok(line) = rx.try_recv() {
+                        on_line(&line);
+                    }
+                    thread::sleep(Duration::from_millis(25));
+                }
+                Err(error) => {
+                    terminate_process_group(&mut child);
+                    let _ = child.wait();
+                    return Err(error.to_string());
+                }
+            }
+        }
+        while let Ok(line) = rx.try_recv() {
+            on_line(&line);
+        }
+        let _ = reader.join();
+        let status = child.wait().map_err(|error| error.to_string())?;
+        Ok(CommandOutput {
+            success: status.success(),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        })
+    }
 }
 
 struct SystemWdaLauncher {
@@ -690,7 +782,7 @@ impl WdaLauncher for SystemWdaLauncher {
         // was spawned concurrently with its cleanup deadline.
         let mut published_force_stop = force_stop_slot
             .lock()
-            .expect("iOS simulator WDA control poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         if stop.load(Ordering::Acquire) {
             return Err("inicialização do WDA cancelada".to_string());
         }
@@ -923,7 +1015,7 @@ impl FrameSink for TauriFrameSink {
         frame.agent_presence = self
             .presence_snapshot
             .lock()
-            .expect("iOS simulator presence snapshot poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .clone();
         let _ = self.app.emit(FRAME_EVENT, frame);
     }
@@ -962,14 +1054,14 @@ impl LatestFrameStore {
         *self
             .frame
             .lock()
-            .expect("iOS simulator latest frame poisoned") = Some(frame);
+            .unwrap_or_else(|e| e.into_inner()) = Some(frame);
         self.changed.notify_all();
     }
 
     fn latest(&self) -> Option<LatestFrame> {
         self.frame
             .lock()
-            .expect("iOS simulator latest frame poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
 
@@ -1182,6 +1274,10 @@ pub struct IosSimulatorService {
     app: Arc<Mutex<Option<AppHandle>>>,
     media_backend: Arc<dyn SimulatorMediaBackend>,
     emitted_outputs: Arc<Mutex<HashSet<PathBuf>>>,
+    /// Cancellation flag for the onboarding setup sequence (PA-13).
+    setup_cancel: Arc<AtomicBool>,
+    /// Guard so only one setup sequence runs at a time (PA-13).
+    setup_running: Arc<AtomicBool>,
     #[cfg(test)]
     lifecycle_emissions: Arc<Mutex<Vec<IosSimulatorLifecycleSnapshot>>>,
 }
@@ -1211,6 +1307,8 @@ impl Default for IosSimulatorService {
             app: Arc::new(Mutex::new(None)),
             media_backend: Arc::new(SystemSimulatorMediaBackend),
             emitted_outputs: Arc::new(Mutex::new(HashSet::new())),
+            setup_cancel: Arc::new(AtomicBool::new(false)),
+            setup_running: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             lifecycle_emissions: Arc::new(Mutex::new(Vec::new())),
             runner,
@@ -1238,6 +1336,8 @@ impl IosSimulatorService {
             app: Arc::new(Mutex::new(None)),
             media_backend: Arc::new(SystemSimulatorMediaBackend),
             emitted_outputs: Arc::new(Mutex::new(HashSet::new())),
+            setup_cancel: Arc::new(AtomicBool::new(false)),
+            setup_running: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             lifecycle_emissions: Arc::new(Mutex::new(Vec::new())),
         })
@@ -1245,6 +1345,39 @@ impl IosSimulatorService {
 
     pub(crate) fn bind_app(&self, app: AppHandle) {
         *self.app.lock().expect("iOS simulator app handle poisoned") = Some(app);
+    }
+
+    /// Starts the onboarding setup sequence (PA-13, design-ios-onboarding).
+    /// `mode` is the frozen scope ceiling ('full' | 'toolchain').
+    pub(crate) fn setup_start(&self, app: AppHandle, mode: setup::SetupMode) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            setup::start_setup_thread(
+                app,
+                self.runner.clone(),
+                self.setup_cancel.clone(),
+                self.setup_running.clone(),
+                mode,
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (app, mode);
+            Err("iOS Simulator setup is only supported on macOS".to_string())
+        }
+    }
+
+    /// Cancels an in-progress setup sequence (PA-13).
+    pub(crate) fn setup_cancel(&self) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            self.setup_cancel.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Err("iOS Simulator setup is only supported on macOS".to_string())
+        }
     }
 
     pub(crate) fn reconcile_owned_devices(&self) -> Result<Vec<String>, String> {
@@ -1773,6 +1906,8 @@ impl IosSimulatorService {
             app: Arc::new(Mutex::new(None)),
             media_backend: Arc::new(SystemSimulatorMediaBackend),
             emitted_outputs: Arc::new(Mutex::new(HashSet::new())),
+            setup_cancel: Arc::new(AtomicBool::new(false)),
+            setup_running: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             lifecycle_emissions: Arc::new(Mutex::new(Vec::new())),
         }
@@ -1807,6 +1942,8 @@ impl IosSimulatorService {
             app: Arc::new(Mutex::new(None)),
             media_backend: Arc::new(SystemSimulatorMediaBackend),
             emitted_outputs: Arc::new(Mutex::new(HashSet::new())),
+            setup_cancel: Arc::new(AtomicBool::new(false)),
+            setup_running: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             lifecycle_emissions: Arc::new(Mutex::new(Vec::new())),
         }
@@ -2986,6 +3123,35 @@ pub async fn ios_simulator_requirements(
     tauri::async_runtime::spawn_blocking(move || Ok(service.current_requirements_sync()))
         .await
         .map_err(|error| format!("falha ao detectar simuladores: {error}"))?
+}
+
+/// Opens the Xcode page in the App Store. No other effect (frozen
+/// contract design-ios-onboarding).
+#[tauri::command]
+#[cfg(target_os = "macos")]
+pub fn ios_simulator_setup_open_app_store() -> Result<(), String> {
+    setup::open_xcode_app_store()
+}
+
+/// Starts the automatic setup sequence in the background (frozen contract
+/// design-ios-onboarding). Emits `ios-simulator:setup-progress` and
+/// `ios-simulator:setup-done` with the frozen vocabulary.
+#[tauri::command]
+#[cfg(target_os = "macos")]
+pub fn ios_simulator_setup_start(
+    app: AppHandle,
+    service: State<'_, IosSimulatorService>,
+    mode: setup::SetupMode,
+) -> Result<(), String> {
+    service.setup_start(app, mode)
+}
+
+/// Cancels an in-progress setup (App Store wait / runtime download). The
+/// sequence ends with `setup-done { ready: false, error: 'cancelled' }`.
+#[tauri::command]
+#[cfg(target_os = "macos")]
+pub fn ios_simulator_setup_cancel(service: State<'_, IosSimulatorService>) -> Result<(), String> {
+    service.setup_cancel()
 }
 
 #[tauri::command]
@@ -4855,16 +5021,19 @@ fn unix_time_ms() -> u64 {
 }
 
 fn issue_message(issue: &IosSimulatorIssue, xcode_version: Option<&str>) -> String {
+    // English only (PA-13): the renderer owns the i18n keys
+    // (`simulator.requirements.*`, EN + pt-BR) and translates; this string
+    // is a diagnostic log, never the UI copy.
     match issue {
-        IosSimulatorIssue::UnsupportedPlatform => "O painel de simulador exige macOS.".to_string(),
-        IosSimulatorIssue::XcodeMissing => "Xcode não foi encontrado. Instale o Xcode 26 ou 27 e selecione-o com xcode-select.".to_string(),
+        IosSimulatorIssue::UnsupportedPlatform => "The simulator panel requires macOS.".to_string(),
+        IosSimulatorIssue::XcodeMissing => "Xcode was not found. Install Xcode 26 or 27 and select it with xcode-select.".to_string(),
         IosSimulatorIssue::UnsupportedXcode => format!(
-            "Xcode {} não é compatível. A F1 exige Xcode 26 ou 27.",
-            xcode_version.unwrap_or("detectado"),
+            "Xcode {} is not supported. F1 requires Xcode 26 or 27.",
+            xcode_version.unwrap_or("detected"),
         ),
-        IosSimulatorIssue::SimctlMissing => "O simctl não foi encontrado. Instale o Xcode completo e selecione-o com xcode-select.".to_string(),
-        IosSimulatorIssue::SimulatorsMissing => "Nenhum simulador iOS disponível. Crie um simulador no Xcode e atualize esta lista.".to_string(),
-        IosSimulatorIssue::DiscoveryFailed => "Não foi possível listar os simuladores. Verifique o Xcode selecionado e tente atualizar.".to_string(),
+        IosSimulatorIssue::SimctlMissing => "simctl was not found. Install the full Xcode app and select it with xcode-select.".to_string(),
+        IosSimulatorIssue::SimulatorsMissing => "No iOS simulator is available. Create one in Xcode and refresh this list.".to_string(),
+        IosSimulatorIssue::DiscoveryFailed => "Could not list the simulators. Check the selected Xcode and try refreshing.".to_string(),
     }
 }
 
@@ -6182,6 +6351,8 @@ mod tests {
             app: Arc::new(Mutex::new(None)),
             media_backend: Arc::new(SystemSimulatorMediaBackend),
             emitted_outputs: Arc::new(Mutex::new(HashSet::new())),
+            setup_cancel: Arc::new(AtomicBool::new(false)),
+            setup_running: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             lifecycle_emissions: Arc::new(Mutex::new(Vec::new())),
         };

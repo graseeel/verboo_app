@@ -47,7 +47,13 @@ export function sanitizeRecordedEvent(event) {
       label: String(event.field?.label ?? '').slice(0, 180),
     },
     valueMode: 'unresolved',
-    ephemeralValue: String(event.value ?? '').slice(0, 4_000),
+    // FRENTE-B (B-1) defense-in-depth: sensitive events are dropped above,
+    // but the value is ALSO redacted here so it can never reach the
+    // persisted ephemeralValue even if the drop condition is ever relaxed
+    // or bypassed by a future caller.
+    ephemeralValue: isSensitiveField(event.field)
+      ? ''
+      : String(event.value ?? '').slice(0, 4_000),
   }
 }
 

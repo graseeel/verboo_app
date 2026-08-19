@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::models::types::{
     GoalDecision, GoalEvaluationInput, GoalEvaluationResult, GoalReasonId,
-    GoalState, GoalStatus, TranscriptItem,
+    GoalState, TranscriptItem,
 };
 use crate::services::auth_token::inject_api_key;
 use crate::services::cli_spawn::CliSpawn;
@@ -174,6 +174,7 @@ impl GoalEvaluator {
     }
 
     /// Unit-test helper: build the prompt and run the LLM in one call.
+    #[cfg(test)]
     fn evaluate_internal(
         input: GoalEvaluationInput,
         api_key: Option<&str>,
@@ -1177,7 +1178,7 @@ mod tests {
         eprintln!("synthetic transcript: 35 items, every other assistant item has ~tool output of ~7 chars (Read of /tmp/goal-total.txt), occasional ~150 char command output");
         eprintln!("{:<8} {:<10} {:<10} {:<10}", "window", "bytes", "~tokens", "% of 30");
         eprintln!("{:-<40}", "");
-        let mut baseline_chars = 0usize;
+        let mut baseline_chars;
         let windows = [30usize, 20, 15, 10];
         let prompt_at_30 = {
             let recent: Vec<TranscriptItem> = items
@@ -2513,14 +2514,24 @@ mod tests {
     // delimit the region it measures and exclude itself.
     #[test]
     fn goal_evaluator_uses_cli_spawn_not_global() {
-        let full_src = std::fs::read_to_string("src/services/goal_evaluator.rs")
-            .expect("could not read goal_evaluator.rs (run from src-tauri/)");
+        // Use the RUNTIME CARGO_MANIFEST_DIR env var (not the compile-time
+        // macro) so the path resolves correctly in Docker containers where
+        // the build machine's path differs from the runtime path.
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .unwrap_or_else(|_| "src-tauri".into());
+        let src_path = std::path::Path::new(&manifest_dir)
+            .join("src/services/goal_evaluator.rs");
+        let full_src = std::fs::read_to_string(&src_path)
+            .unwrap_or_else(|e| panic!("could not read {}: {e}", src_path.display()));
 
-        // Measure ONLY production code: everything before `#[cfg(test)]`.
-        // That line opens this `mod tests` block; everything from there
-        // onward is test code and must be excluded from the scan.
-        let cfg_test_marker = "#[cfg(test)]";
-        let production_src: &str = match full_src.find(cfg_test_marker) {
+        // Measure ONLY production code: everything before `mod tests`.
+        // Note: there are TWO `#[cfg(test)]` markers in this file — one
+        // gates a helper function (line ~177) and one opens `mod tests`
+        // (line ~1057). Using `#[cfg(test)]` as the delimiter would
+        // truncate at the first marker, excluding the actual production
+        // code we need to verify (CliSpawn::new at line ~460).
+        let mod_tests_marker = "mod tests {";
+        let production_src: &str = match full_src.find(mod_tests_marker) {
             Some(idx) => &full_src[..idx],
             None => &full_src[..],
         };
@@ -2891,7 +2902,7 @@ mod tests {
         }
         eprintln!("{:-<60}", "");
         // Tool output weight within items section
-        if let Some(mut is) = prompt.find("## Recent transcript items") {
+        if let Some(is) = prompt.find("## Recent transcript items") {
             let items_end = prompt[is..].find("## Evaluation").map(|e| is + e).unwrap_or(prompt.len());
             let body = &prompt[is..items_end];
             let tool_bytes: usize = body.match_indices("**Tool output:**")
@@ -2920,7 +2931,7 @@ mod tests {
             pct_of_field, total_bytes / 4);
         eprintln!("  CLI/API overhead (not controlled here) = ~{:.1}%", 100.0 - pct_of_field);
         // What would change by reducing window
-        let fixed_bytes = total_bytes - items_bytes;
+        let _fixed_bytes = total_bytes - items_bytes;
         for (w2, label) in &[(20u8, "window=20"), (15, "window=15"), (10, "window=10")] {
             let w2 = *w2 as usize;
             if w2 >= window { continue; }

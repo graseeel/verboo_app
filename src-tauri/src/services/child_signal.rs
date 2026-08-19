@@ -530,6 +530,7 @@ mod tests {
             "src/services/goal_evaluator.rs",
             "src/services/ios_simulator.rs",
             "src/services/ios_simulator/media.rs",
+            "src/services/ios_simulator/setup.rs",
             "src/services/ios_simulator_mcp.rs",
             "src/services/node_runtime/archive.rs",
             "src/services/plugins_service.rs",
@@ -541,6 +542,7 @@ mod tests {
             "src/services/video/probe.rs",
             "src/services/video/router.rs",
             "src/services/vision_fallback_service.rs",
+            "src/services/windows_git.rs",
             "src/services/workspace_files_service.rs",
         ];
 

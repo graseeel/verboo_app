@@ -49,6 +49,45 @@ test('safeMarkdownToHtml: escapes model-provided markup before formatting', () =
   assert.match(html, /<strong>ok<\/strong>/)
 })
 
+test('safeMarkdownToHtml: neutralizes a pure residual tool-call block', () => {
+  assert.equal(
+    safeMarkdownToHtml('<function_calls><invoke name="click">{"selector": "#ok"}</invoke></function_calls>'),
+    '',
+  )
+})
+
+test('safeMarkdownToHtml: preserves the prose around a residual tool-call block', () => {
+  assert.equal(
+    safeMarkdownToHtml(
+      'Feito, cliquei.\n<function_calls><invoke name="click">{"selector": "#ok"}</invoke></function_calls>\nQuer que eu continue?',
+    ),
+    'Feito, cliquei.<br><br>Quer que eu continue?',
+  )
+})
+
+test('safeMarkdownToHtml: drops an orphan tool-call opener without eating earlier prose', () => {
+  assert.equal(
+    safeMarkdownToHtml('Vou clicar no botão:\n<function_calls><invoke name="click">{"selector": "#ok"}'),
+    'Vou clicar no botão:',
+  )
+})
+
+test('safeMarkdownToHtml: neutralizes other tool-call markup families generically', () => {
+  assert.equal(safeMarkdownToHtml('<tool_call>{"name": "click"}</tool_call>'), '')
+  assert.equal(
+    safeMarkdownToHtml('antes\n<minimax:tool_call><invoke name="click">x</invoke></minimax:tool_call>\ndepois'),
+    'antes<br><br>depois',
+  )
+  assert.equal(safeMarkdownToHtml('resultado parcial </function_calls>'), 'resultado parcial')
+})
+
+test('safeMarkdownToHtml: keeps prose that only mentions tool-call tags in words', () => {
+  assert.equal(
+    safeMarkdownToHtml('O modelo descreveu function_calls e tool_call sem marcar nada.'),
+    'O modelo descreveu function_calls e tool_call sem marcar nada.',
+  )
+})
+
 test('structuredResultPreview: shows a useful bounded preview for structured data', () => {
   assert.equal(
     structuredResultPreview({

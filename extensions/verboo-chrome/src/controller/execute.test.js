@@ -179,15 +179,27 @@ test('execute: returns the resolved policy host to the approval state machine', 
   assert.equal(r.policyHost, 'example.com')
 })
 
-test('execute: rejects missing required parameters before approval', async () => {
+test('execute: rejects click without selector AND without x/y before approval (R5-A)', async () => {
   const r = await execute(
-    { id: 'missing-selector', name: 'click', params: {} },
+    { id: 'missing-target', name: 'click', params: {} },
     makeCtx({ mode: 'manual' }),
   )
 
   assert.equal(r.ok, false)
-  assert.equal(r.error, 'invalid_params:selector_required')
+  assert.equal(r.error, 'invalid_params:selector_or_xy_required')
   assert.equal(r.policy.reason, 'invalid_tool_call')
+})
+
+test('execute: click with viewport x/y coordinates is a valid canonical call (R5-A)', async () => {
+  const r = await execute(
+    { id: 'coord-click', name: 'click', params: { x: 528, y: 244 } },
+    makeCtx({ mode: 'skip' }),
+  )
+
+  assert.equal(r.ok, true)
+  assert.equal(r.policy.reason, 'skip_no_grant')
+  assert.equal(r.toolCall.name, 'click')
+  assert.deepEqual(r.toolCall.params, { x: 528, y: 244 })
 })
 
 test('execute: rejects tools outside the canonical catalog', async () => {

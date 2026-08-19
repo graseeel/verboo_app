@@ -167,6 +167,35 @@ export type IosSimulatorAnnotationCapture = {
 
 export type PromotedSimulatorFile = { from: string; to: string }
 
+// ── Simulator setup onboarding (design-ios-onboarding §VOCABULARIO
+// CONGELADO 2026-08-19 — verbatim, do not rename) ────────────────────
+// The backend derives the real step list from detect_requirements; the
+// mode is only a scope ceiling. UI v1 always sends 'full'.
+export type IosSimulatorSetupMode = 'toolchain' | 'full'
+export type IosSimulatorSetupStep =
+  | 'waitingForXcode'
+  | 'selectXcode'
+  | 'acceptLicense'
+  | 'firstLaunch'
+  | 'downloadPlatform'
+  | 'createDevice'
+  | 'verify'
+export type IosSimulatorSetupProgress = {
+  step: IosSimulatorSetupStep
+  /** Integer 0-100, present ONLY on downloadPlatform events. */
+  percent?: number | null
+  /** Free-form English detail — a complement, never the step key. */
+  message?: string | null
+}
+export type IosSimulatorSetupDone = {
+  ready: boolean
+  /** SimulatorIssue (same camelCase values) when ready=false. */
+  issue?: string | null
+  /** English failure detail outside the issue enum; the literal
+   *  'cancelled' when the user cancelled. */
+  error?: string | null
+}
+
 export const iosSimulatorApi = {
   requirements: () => invoke<IosSimulatorRequirements>('ios_simulator_requirements'),
   attach: (udid: string, streamFps: IosSimulatorStreamFps, fallbackFps: IosSimulatorFallbackFps) =>
@@ -227,4 +256,13 @@ export const iosSimulatorApi = {
     listenInTauri<IosSimulatorPresenceEvent | null>('ios-simulator:open-requested', handler),
   onLifecycle: (handler: (snapshot: IosSimulatorLifecycleSnapshot) => void): Promise<UnlistenFn> =>
     listenInTauri<IosSimulatorLifecycleSnapshot>('ios-simulator:lifecycle', handler),
+  // ── Setup onboarding (design-ios-onboarding contract, PA-13/PA-14) ──
+  setupOpenAppStore: () => invoke<void>('ios_simulator_setup_open_app_store'),
+  setupStart: (mode: IosSimulatorSetupMode) =>
+    invoke<void>('ios_simulator_setup_start', { mode }),
+  setupCancel: () => invoke<void>('ios_simulator_setup_cancel'),
+  onSetupProgress: (handler: (progress: IosSimulatorSetupProgress) => void): Promise<UnlistenFn> =>
+    listenInTauri<IosSimulatorSetupProgress>('ios-simulator:setup-progress', handler),
+  onSetupDone: (handler: (done: IosSimulatorSetupDone) => void): Promise<UnlistenFn> =>
+    listenInTauri<IosSimulatorSetupDone>('ios-simulator:setup-done', handler),
 }

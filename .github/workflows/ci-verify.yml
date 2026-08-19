@@ -202,7 +202,7 @@ jobs:
             runner: ubuntu-22.04
             rust_target: ""
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
     steps:
@@ -231,6 +231,17 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
+
+      - name: Cache apt packages (Linux)
+        # The apt install of WebKitGTK deps is the slowest step on Linux
+        # (~24min of the 30min budget in the runs that timed out). Cache
+        # the downloaded .deb files keyed by the package list hash so a
+        # warm cache skips the download entirely.
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/ci-verify.yml') }}
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'

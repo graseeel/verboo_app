@@ -62,6 +62,35 @@ test('ensureAgentPresence and pulseAgentCursor are exported', async () => {
   assert.equal(typeof mod.showAgentCursor, 'function')
 })
 
+test('(C) RED — ungroupVerbooTab: remove a aba do grupo Verboo quando o lease muda de aba (grupo órfão)', async () => {
+  const originalChrome = globalThis.chrome
+  const ungroupCalls = []
+  globalThis.chrome = {
+    tabs: {
+      ungroup: async (tabIds) => { ungroupCalls.push(tabIds) },
+      group: async () => 7,
+      get: async (id) => ({ id, groupId: 7, url: 'https://example.com' }),
+    },
+    tabGroups: {
+      TAB_GROUP_ID_NONE: -1,
+      query: async () => [{ id: 7, title: 'Verboo' }],
+      get: async () => ({ id: 7, title: 'Verboo' }),
+      update: async () => {},
+    },
+  }
+  try {
+    const { ungroupVerbooTab } = await import('./inject.js')
+    assert.equal(typeof ungroupVerbooTab, 'function', 'ungroupVerbooTab exportada')
+    await ungroupVerbooTab(99)
+    // CICLO DEPURAÇÃO SISTEMÁTICA (C): quando o lease muda de aba (tabs.switch/
+    // new/close), a aba ANTERIOR deve sair do grupo Verboo — senão o grupo
+    // fica órfão na aba antiga (evidência 8d61dcb: grupo órfão no X reaberto).
+    assert.deepEqual(ungroupCalls, [[99]], 'chrome.tabs.ungroup chamado com a aba antiga')
+  } finally {
+    globalThis.chrome = originalChrome
+  }
+})
+
 test('showAgentCursor passes the slower Flow duration to the page injector', async () => {
   const mod = await import('./inject.js')
   const originalChrome = globalThis.chrome

@@ -134,4 +134,43 @@ describe('iosSimulatorApi event listeners', () => {
     forward?.({ payload: snapshot })
     expect(handler).toHaveBeenCalledWith(snapshot)
   })
+
+  // Setup onboarding (design-ios-onboarding, PA-13/PA-14): the command
+  // names, the mode payload, and the event channel names are the
+  // cross-fence contract with Rust — pinned verbatim so a rename on
+  // either side fails here instead of at runtime.
+  it('maps the setup onboarding commands verbatim (design-ios-onboarding contract)', async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined)
+
+    await iosSimulatorApi.setupOpenAppStore()
+    await iosSimulatorApi.setupStart('full')
+    await iosSimulatorApi.setupCancel()
+
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ['ios_simulator_setup_open_app_store'],
+      ['ios_simulator_setup_start', { mode: 'full' }],
+      ['ios_simulator_setup_cancel'],
+    ])
+  })
+
+  it('subscribes the setup progress/done channels verbatim and forwards payloads', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    })
+    const progress = vi.fn()
+    const done = vi.fn()
+
+    await iosSimulatorApi.onSetupProgress(progress)
+    await iosSimulatorApi.onSetupDone(done)
+
+    expect(listenMock).toHaveBeenCalledWith('ios-simulator:setup-progress', expect.any(Function))
+    expect(listenMock).toHaveBeenCalledWith('ios-simulator:setup-done', expect.any(Function))
+    const progressPayload = { step: 'downloadPlatform', percent: 45, message: 'Downloading iOS runtime' }
+    listenMock.mock.calls[0]?.[1]({ payload: progressPayload })
+    expect(progress).toHaveBeenCalledWith(progressPayload)
+    const donePayload = { ready: false, issue: 'simctlMissing' }
+    listenMock.mock.calls[1]?.[1]({ payload: donePayload })
+    expect(done).toHaveBeenCalledWith(donePayload)
+  })
 })

@@ -9,12 +9,34 @@ use crate::services::credentials_store::CredentialsStore;
 ///   1. CLI OAuth token (with refresh) from the CLI keychain/store.
 ///   2. API key (`vbk_…`) from the app credential store.
 pub fn resolve_token(credentials: &CredentialsStore) -> Option<String> {
-    if let Some(tok) = cli_credentials::get_access_token() {
-        if !tok.trim().is_empty() {
+    // Try CLI OAuth token first
+    match cli_credentials::get_access_token() {
+        Some(tok) if !tok.trim().is_empty() => {
+            eprintln!("[verboo:auth-token] resolved CLI OAuth token ({} chars)", tok.len());
             return Some(tok);
         }
+        Some(_) => {
+            eprintln!("[verboo:auth-token] CLI token is empty — falling back to API key");
+        }
+        None => {
+            eprintln!("[verboo:auth-token] no CLI token found — falling back to API key");
+        }
     }
-    credentials.get_api_key().ok().flatten()
+    // Fallback to API key from credential store
+    match credentials.get_api_key() {
+        Ok(Some(key)) if !key.trim().is_empty() => {
+            eprintln!("[verboo:auth-token] resolved API key ({} chars)", key.len());
+            return Some(key);
+        }
+        Ok(_) => {
+            eprintln!("[verboo:auth-token] no API key found in credential store");
+        }
+        Err(e) => {
+            eprintln!("[verboo:auth-token] failed to read API key from credential store: {e}");
+        }
+    }
+    eprintln!("[verboo:auth-token] NO TOKEN RESOLVED — models will not load, chat will be blocked");
+    None
 }
 
 /// Configures auth env for a headless CLI spawn.
@@ -42,7 +64,9 @@ pub fn inject_api_key(token: Option<&str>, command: &mut Command) -> Option<Toke
         return None;
     }
     if trimmed.starts_with("vbk_") {
-        // App-stored API key — never as OAuth env.
+        // App-stored API key — inject as ANTHROPIC_API_KEY only.
+        // API keys must NOT go into CLAUDE_CODE_OAUTH_TOKEN: the CLI
+        // expects an OAuth JWT there and will fail with "Não autenticado".
         command.env("ANTHROPIC_API_KEY", trimmed);
         return Some(TokenGuard);
     }

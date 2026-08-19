@@ -584,7 +584,7 @@ fn has_hex_octet(host: &str) -> bool {
 /// and has > 1 digit). Redundant with `has_leading_zero_octet` but
 /// also catches the edge case `0.0.0.0177` where only the last octet
 /// has leading zeros.
-fn has_octal_octet(host: &str) -> bool {
+fn has_octal_octet(_host: &str) -> bool {
     // Same as leading-zero check but also works for non-dotted forms.
     // For dotted forms, this is covered by has_leading_zero_octet.
     // For single-integer forms (already caught by is_all_digits),

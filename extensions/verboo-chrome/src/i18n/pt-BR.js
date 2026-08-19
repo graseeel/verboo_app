@@ -14,6 +14,9 @@ export default {
   "branding_tagline": {
     "message": "Control Chrome with Verboo"
   },
+  "version_label": {
+    "message": "Versão"
+  },
   "auth_login": {
     "message": "Entrar"
   },
@@ -724,5 +727,26 @@ export default {
   },
   "routine_recording_page_unavailable": {
     "message": "Abra um site antes de gravar um fluxo."
+  },
+  "workspaceTab_acting": {
+    "message": "Agindo na aba: {title}"
+  },
+  "workspaceTab_result": {
+    "message": "O resultado está na aba: {title}"
+  },
+  "workspaceTab_show": {
+    "message": "Mostrar aba"
+  },
+  "workspaceTab_closed": {
+    "message": "A aba do workspace foi fechada"
+  },
+  "workspaceTab_untitled": {
+    "message": "Aba sem título"
+  },
+  "workspaceTab_onTab": {
+    "message": "Na aba: {title}"
+  },
+  "workspaceTab_tabId": {
+    "message": "Aba #{id}"
   }
 }

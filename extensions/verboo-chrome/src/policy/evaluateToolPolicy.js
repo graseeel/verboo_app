@@ -86,11 +86,12 @@ export function evaluateToolPolicy(mode, siteGrant, toolCall) {
     return { allowed: false, needsApproval: true, reason: 'manual_needs_approval' }
   }
 
-  // 7. Auto / Skip with no grant — allow. Hard blocks + deny already
-  //    returned above. Skip mode "no routine prompts; hard blocks still
-  //    enforced" (design §7.1).
-  if (mode === 'auto' || mode === 'skip') {
-    return { allowed: true, needsApproval: false, reason: mode === 'auto' ? 'auto_no_grant' : 'skip_no_grant' }
+  // 7. Skip with no grant — allow. Hard blocks + deny already returned
+  //    above. Skip mode "no routine prompts; hard blocks still enforced"
+  //    (design §7.1). O ramo 'auto' foi removido (CICLO B): o modesStore
+  //    migra auto→skip no load/save — 'auto' nunca chega aqui em produção.
+  if (mode === 'skip') {
+    return { allowed: true, needsApproval: false, reason: 'skip_no_grant' }
   }
 
   // Unknown mode — fail safe (treat as manual).

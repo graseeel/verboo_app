@@ -297,6 +297,7 @@ impl NodeRuntimeService {
             .join(self.inner.target.as_str())
     }
 
+    #[cfg(test)]
     pub(crate) fn runtime_root(&self) -> &Path {
         &self.inner.runtime_root
     }

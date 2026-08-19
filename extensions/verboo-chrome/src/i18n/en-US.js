@@ -14,6 +14,9 @@ export default {
   "branding_tagline": {
     "message": "Control Chrome with Verboo"
   },
+  "version_label": {
+    "message": "Version"
+  },
   "auth_login": {
     "message": "Sign in"
   },
@@ -724,5 +727,26 @@ export default {
   },
   "routine_recording_page_unavailable": {
     "message": "Open a website before recording a workflow."
+  },
+  "workspaceTab_acting": {
+    "message": "Acting on tab: {title}"
+  },
+  "workspaceTab_result": {
+    "message": "Result is on tab: {title}"
+  },
+  "workspaceTab_show": {
+    "message": "Show tab"
+  },
+  "workspaceTab_closed": {
+    "message": "The workspace tab was closed"
+  },
+  "workspaceTab_untitled": {
+    "message": "Untitled tab"
+  },
+  "workspaceTab_onTab": {
+    "message": "On tab: {title}"
+  },
+  "workspaceTab_tabId": {
+    "message": "Tab #{id}"
   }
 }

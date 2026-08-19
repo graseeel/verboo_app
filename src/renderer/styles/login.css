@@ -438,6 +438,31 @@
   margin: 0;
 }
 
+/* Issue #71: Windows Git onboarding dialog — confirm-modal family with
+   a login-specific width and the manual-steps list. */
+.git-gate-dialog {
+  max-width: 460px;
+}
+
+.git-gate-steps {
+  margin: 14px 0 0;
+  padding-left: 20px;
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+.git-gate-steps li + li {
+  margin-top: 6px;
+}
+
+.git-gate-steps a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.git-gate-steps a:hover {
+  text-decoration: underline;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .t-shimmer::before { animation: none !important; }
   .t-input.is-shaking { animation: none !important; }

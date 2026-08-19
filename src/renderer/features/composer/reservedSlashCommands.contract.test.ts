@@ -80,7 +80,8 @@ const APP_TSX = 'src/renderer/App.tsx'
 function readRepoFile(relPath: string): string {
   // vitest runs from the renderer/ directory; resolve against cwd.
   const abs = path.resolve(process.cwd(), relPath)
-  return fs.readFileSync(abs, 'utf8')
+  // Strip \r so //.*$ regex comment stripping works on Windows (CRLF).
+  return fs.readFileSync(abs, 'utf8').replace(/\r/g, '')
 }
 
 // ─── Parsers ────────────────────────────────────────────────────────────

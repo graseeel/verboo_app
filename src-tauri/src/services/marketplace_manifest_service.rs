@@ -16,7 +16,7 @@
 //! using `Path::join`. If the manifest is missing, we return
 //! `InvalidMarketplace` (the source is not a valid marketplace).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::models::plugins::{Marketplace, PluginError};
 

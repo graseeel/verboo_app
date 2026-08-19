@@ -93,8 +93,10 @@ pub fn get_access_token() -> Option<String> {
         let cached = CACHE.lock().ok()?;
         if let Some(c) = cached.as_ref() {
             if !should_refresh(c) {
+                eprintln!("[verboo:cli-creds] cache hit — returning cached token");
                 return Some(c.access_token.clone());
             }
+            eprintln!("[verboo:cli-creds] cache hit but token needs refresh");
         }
     }
 
@@ -106,14 +108,22 @@ pub fn get_access_token() -> Option<String> {
         let cached = CACHE.lock().ok()?;
         if let Some(c) = cached.as_ref() {
             if !should_refresh(c) {
+                eprintln!("[verboo:cli-creds] cache hit (after lock) — returning cached token");
                 return Some(c.access_token.clone());
             }
         }
     }
 
+    eprintln!("[verboo:cli-creds] reading credentials from store...");
     let credentials = match read_credentials_from_store() {
-        Some(c) => c,
-        None => return None,
+        Some(c) => {
+            eprintln!("[verboo:cli-creds] credentials found — expires_at={:?}", c.expires_at);
+            c
+        }
+        None => {
+            eprintln!("[verboo:cli-creds] NO CREDENTIALS IN STORE — returning None");
+            return None;
+        }
     };
 
     // Update cache with what we just read.
@@ -362,8 +372,26 @@ fn write_keychain_blob(blob: &Value) -> bool {
 
 /// Reads the blob from `~/.verboo/.credentials.json` (plaintext JSON).
 fn read_file_blob() -> Option<Value> {
-    let path = cli_credentials_file_path()?;
-    let contents = std::fs::read_to_string(&path).ok()?;
+    let path = match cli_credentials_file_path() {
+        Some(p) => {
+            eprintln!("[verboo:cli-creds] plaintext fallback path: {}", p.display());
+            p
+        }
+        None => {
+            eprintln!("[verboo:cli-creds] no credentials file path (HOME/USERPROFILE unset)");
+            return None;
+        }
+    };
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => {
+            eprintln!("[verboo:cli-creds] plaintext file read OK ({} bytes)", c.len());
+            c
+        }
+        Err(e) => {
+            eprintln!("[verboo:cli-creds] plaintext file read FAILED: {e}");
+            return None;
+        }
+    };
     parse_json_blob(&contents)
 }
 
@@ -391,6 +419,7 @@ fn write_file_blob(blob: &Value) -> bool {
     true
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn read_linux_secret_blob_with<F>(account: &str, mut lookup: F) -> Option<Value>
 where
     F: FnMut(&[&str]) -> Option<String>,
@@ -504,6 +533,16 @@ fn dpapi_file_path_for(config_home: &std::path::Path, resource_name: &str) -> st
     config_home.join(dpapi_filename_for(resource_name))
 }
 
+/// Pure: derives the quarantine path for a corrupted DPAPI file. The
+/// corrupted file is RENAMED (never deleted) to
+/// `<name>.invalid-<timestamp>` so it is preserved for diagnosis while
+/// the login flow can restart clean instead of being stuck on a file
+/// that can never decode (issue #72).
+fn corrupted_path_for(original: &std::path::Path, timestamp_ms: u64) -> std::path::PathBuf {
+    let file_name = original.file_name().unwrap_or_default().to_string_lossy();
+    original.with_file_name(format!("{file_name}.invalid-{timestamp_ms}"))
+}
+
 /// Pure: derives the DPAPI entropy from a resource name and username.
 /// Clone: `windowsCredentialStorage.ts:24-26`
 /// `${resourceName}:${username}` — space KEPT (only the filename
@@ -513,7 +552,13 @@ fn dpapi_entropy_for(resource_name: &str, username: &str) -> String {
 }
 
 fn decode_windows_dpapi_payload(bytes: &[u8]) -> Option<Vec<u8>> {
-    let encoded = std::str::from_utf8(bytes).ok()?.trim();
+    // Strip UTF-8 BOM (EF BB BF) that some editors/write tools insert.
+    // Without this, base64 decode fails because the BOM codepoint (U+FEFF)
+    // is not valid base64 and `trim()` does not remove it.
+    let stripped = bytes
+        .strip_prefix(b"\xef\xbb\xbf")
+        .unwrap_or(bytes);
+    let encoded = std::str::from_utf8(stripped).ok()?.trim();
     if encoded.is_empty() {
         return None;
     }
@@ -536,6 +581,14 @@ fn verboo_config_home() -> Option<std::path::PathBuf> {
     Some(home.join(".verboo"))
 }
 
+/// Logs diagnostic info for Windows credential resolution.
+/// Helps debug "chat not loading" issues by surfacing exactly where
+/// the credential chain breaks.
+#[cfg(windows)]
+fn log_windows_credential_diagnostics(stage: &str, detail: &str) {
+    eprintln!("[verboo:credentials:win] {stage}: {detail}");
+}
+
 /// Returns the current username for DPAPI entropy. On Windows:
 /// `%USERNAME%`. On Unix (for testing): `$USER` / `$LOGNAME`.
 fn current_username() -> Option<String> {
@@ -549,51 +602,156 @@ fn current_username() -> Option<String> {
     }
 }
 
-/// Reads the DPAPI-encrypted credentials blob on Windows. Calls
-/// PowerShell `ProtectedData.Unprotect` with the file path and entropy.
-/// Returns the decrypted JSON blob, or None if the file is missing /
-/// decryption fails.
+/// Builds the PowerShell script for DPAPI `ProtectedData.Unprotect` (read
+/// path). Pure (no `#[cfg(windows)]`) so the entropy escaping is testable
+/// on mac. The caller (`read_windows_dpapi_blob`) feeds the result to
+/// `-EncodedCommand` as UTF-16LE Base64.
 ///
-/// **Limit**: only callable on Windows (`#[cfg(windows)]`). The pure
-/// logic (`dpapi_file_path_for`, `dpapi_entropy_for`) is tested on mac;
-/// the PowerShell call itself is NOT tested in `cargo test --lib` on
-/// mac — it requires a Windows runtime with a real DPAPI-encrypted
-/// file. (Cadinho limit declaration.)
-#[cfg(windows)]
-fn read_windows_dpapi_blob() -> Option<Value> {
-    let config_home = verboo_config_home()?;
-    let resource_name = dpapi_resource_name();
-    let file_path = dpapi_file_path_for(&config_home, resource_name);
-    let username = current_username()?;
-    let entropy = dpapi_entropy_for(resource_name, &username);
-
-    // The CLI writes Base64 text, not the raw DPAPI bytes.
-    let protected = decode_windows_dpapi_payload(&std::fs::read(file_path).ok()?)?;
-    let protected_b64 = base64::engine::general_purpose::STANDARD.encode(protected);
+/// SECURITY (layer 2 of 2): single-quote escaping. The script interpolates
+/// `entropy` into a PowerShell single-quoted literal `'{entropy_escaped}'`.
+/// PowerShell represents a literal `'` as `''` (doubled). Without this, a
+/// USERNAME like `O'Brien` closes the literal mid-entropy and breaks the
+/// `GetBytes` call. `-EncodedCommand` (layer 1, applied by the caller)
+/// protects the SHELL; this escaping protects the PowerShell string literal
+/// AFTER decode — EncodedCommand does NOT help here.
+fn build_dpapi_read_script(protected_b64: &str, entropy: &str) -> String {
     let entropy_escaped = entropy.replace('\'', "''");
-
-    // PowerShell script: read the DPAPI file, unprotect with entropy,
-    // output UTF-8 JSON. Mirrors the clone's
-    // `windowsCredentialStorage.ts:98-146` read path.
-    let script = format!(
+    format!(
         "Add-Type -AssemblyName System.Security\n\
          $bytes = [Convert]::FromBase64String('{protected_b64}')\n\
          $entropy = [System.Text.Encoding]::UTF8.GetBytes('{entropy_escaped}')\n\
          $result = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $entropy, 'CurrentUser')\n\
          [System.Text.Encoding]::UTF8.GetString($result)"
-    );
+    )
+}
 
-    let output = Command::new("powershell")
-        .arg("-NoProfile")
+/// Builds the PowerShell script for DPAPI `ProtectedData.Protect` (write
+/// path). Pure (no `#[cfg(windows)]`) so the entropy escaping is testable
+/// on mac. The caller (`write_windows_dpapi_blob`) feeds the result to
+/// `-EncodedCommand` as UTF-16LE Base64. See `build_dpapi_read_script` for
+/// the SECURITY rationale (same two-layer defense).
+///
+/// BOM (issue #72): the script writes the base64 to `path` itself via
+/// `[IO.File]::WriteAllText` with `UTF8Encoding($false)` — UTF-8 WITHOUT
+/// BOM — instead of `Out-File`/`Set-Content`/`Encoding.UTF8`, which in
+/// .NET/PowerShell 5.1 emit a BOM that breaks the base64 decode on read.
+/// The written content is exactly the base64: no BOM, no trailing newline.
+fn build_dpapi_write_script(path: &str, entropy: &str) -> String {
+    let entropy_escaped = entropy.replace('\'', "''");
+    // Same escaping for the path — it also lands in a single-quoted literal.
+    let path_escaped = path.replace('\'', "''");
+    format!(
+        "Add-Type -AssemblyName System.Security\n\
+         $plain = [Console]::In.ReadToEnd()\n\
+         $bytes = [System.Text.Encoding]::UTF8.GetBytes($plain)\n\
+         $entropy = [System.Text.Encoding]::UTF8.GetBytes('{entropy_escaped}')\n\
+         $result = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $entropy, 'CurrentUser')\n\
+         $b64 = [Convert]::ToBase64String($result)\n\
+         [System.IO.File]::WriteAllText('{path_escaped}', $b64, (New-Object System.Text.UTF8Encoding($false)))"
+    )
+}
+
+/// Reads the DPAPI-encrypted credentials blob on Windows. Calls
+/// PowerShell `ProtectedData.Unprotect` with the file path and entropy.
+/// Returns the decrypted JSON blob, or None if the file is missing /
+/// decryption fails.
+///
+/// Renames a corrupted DPAPI file to `<name>.invalid-<timestamp>` so the
+/// login flow can restart clean instead of being stuck (issue #72). The
+/// file is PRESERVED (not deleted) for diagnosis.
+#[cfg(windows)]
+fn quarantine_corrupted_dpapi_file(file_path: &std::path::Path) {
+    let quarantine_path = corrupted_path_for(file_path, now_ms());
+    match std::fs::rename(file_path, &quarantine_path) {
+        Ok(()) => {
+            log_windows_credential_diagnostics(
+                "dpapi",
+                &format!("corrupt DPAPI file quarantined → {}", quarantine_path.display()),
+            );
+        }
+        Err(e) => {
+            log_windows_credential_diagnostics(
+                "dpapi",
+                &format!(
+                    "failed to quarantine corrupt DPAPI file → {}: {e}",
+                    quarantine_path.display()
+                ),
+            );
+        }
+    }
+}
+
+/// **Limit**: only callable on Windows (`#[cfg(windows)]`). The pure
+/// logic (`dpapi_file_path_for`, `dpapi_entropy_for`,
+/// `build_dpapi_read_script`) is tested on mac; the PowerShell call
+/// itself is NOT tested in `cargo test --lib` on mac — it requires a
+/// Windows runtime with a real DPAPI-encrypted file. (Cadinho limit
+/// declaration.)
+#[cfg(windows)]
+fn read_windows_dpapi_blob() -> Option<Value> {
+    let config_home = verboo_config_home().or_else(|| {
+        log_windows_credential_diagnostics("dpapi", "config_home not found (HOME/USERPROFILE unset)");
+        None
+    })?;
+    let resource_name = dpapi_resource_name();
+    let file_path = dpapi_file_path_for(&config_home, resource_name);
+    let username = current_username().or_else(|| {
+        log_windows_credential_diagnostics("dpapi", "USERNAME env var not set");
+        None
+    })?;
+    let entropy = dpapi_entropy_for(resource_name, &username);
+
+    // The CLI writes Base64 text, not the raw DPAPI bytes.
+    let file_bytes = std::fs::read(&file_path).ok().or_else(|| {
+        log_windows_credential_diagnostics("dpapi", &format!("DPAPI file not found: {}", file_path.display()));
+        None
+    })?;
+    let protected = decode_windows_dpapi_payload(&file_bytes).or_else(|| {
+        log_windows_credential_diagnostics("dpapi", "Base64 decode failed — file may be corrupt or empty");
+        // Recovery (issue #72): preserve the corrupt file for diagnosis
+        // (rename, not delete) and return None so the plaintext fallback /
+        // fresh login can start clean instead of being stuck.
+        quarantine_corrupted_dpapi_file(&file_path);
+        None
+    })?;
+    let protected_b64 = base64::engine::general_purpose::STANDARD.encode(protected);
+
+    // PowerShell script: read the DPAPI file, unprotect with entropy,
+    // output UTF-8 JSON. Mirrors the clone's
+    // `windowsCredentialStorage.ts:98-146` read path.
+    // SECURITY: -EncodedCommand (UTF-16LE Base64) — the shell never parses
+    // the script as text, so shell metacharacters cannot inject. The
+    // single-quote escaping of entropy (layer 2) is applied inside
+    // `build_dpapi_read_script` — see its SECURITY comment.
+    let script = build_dpapi_read_script(&protected_b64, &entropy);
+
+    // Encode script as UTF-16LE for -EncodedCommand to prevent injection
+    let script_utf16: Vec<u8> = script.encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let script_b64 = base64::engine::general_purpose::STANDARD.encode(&script_utf16);
+
+    let mut cmd = Command::new("powershell");
+    cmd.arg("-NoProfile")
         .arg("-NonInteractive")
-        .arg("-Command")
-        .arg(&script)
+        .arg("-EncodedCommand")
+        .arg(&script_b64)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+        .stderr(std::process::Stdio::piped());
+    crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+    let output = cmd.output()
+        .ok().or_else(|| {
+            log_windows_credential_diagnostics("dpapi", "PowerShell execution failed — is PowerShell available?");
+            None
+        })?;
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log_windows_credential_diagnostics("dpapi", &format!("PowerShell DPAPI decrypt failed: {}", stderr.trim()));
+        // Recovery (issue #72): the file cannot be decrypted with this
+        // entropy — preserve it for diagnosis (rename, not delete) and
+        // return None so the plaintext fallback / fresh login can start.
+        quarantine_corrupted_dpapi_file(&file_path);
         return None;
     }
     let json = String::from_utf8_lossy(&output.stdout);
@@ -610,28 +768,36 @@ fn write_windows_dpapi_blob(blob: &Value) -> bool {
     let Some(username) = current_username() else {
         return false;
     };
-    let entropy = dpapi_entropy_for(resource_name, &username).replace('\'', "''");
+    let entropy = dpapi_entropy_for(resource_name, &username);
     let Ok(json) = serde_json::to_string(blob) else {
         return false;
     };
-    let script = format!(
-        "Add-Type -AssemblyName System.Security\n\
-         $plain = [Console]::In.ReadToEnd()\n\
-         $bytes = [System.Text.Encoding]::UTF8.GetBytes($plain)\n\
-         $entropy = [System.Text.Encoding]::UTF8.GetBytes('{entropy}')\n\
-         $result = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $entropy, 'CurrentUser')\n\
-         [Convert]::ToBase64String($result)"
-    );
-    let Ok(mut child) = Command::new("powershell")
-        .arg("-NoProfile")
+    // SECURITY: -EncodedCommand (shell never parses the script) +
+    // single-quote escaping inside `build_dpapi_write_script` (PowerShell
+    // string literal stays intact when USERNAME contains ', e.g. O'Brien).
+    // The script writes the file itself via WriteAllText with
+    // UTF8Encoding($false) — BOM-less, no trailing newline (issue #72).
+    let script = build_dpapi_write_script(&file_path.to_string_lossy(), &entropy);
+    let script_utf16: Vec<u8> = script.encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let script_b64 = base64::engine::general_purpose::STANDARD.encode(&script_utf16);
+    // Ensure the parent dir exists before the script writes the file.
+    if let Some(parent) = file_path.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return false;
+        }
+    }
+    let mut cmd = Command::new("powershell");
+    cmd.arg("-NoProfile")
         .arg("-NonInteractive")
-        .arg("-Command")
-        .arg(script)
+        .arg("-EncodedCommand")
+        .arg(&script_b64)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    else {
+        .stderr(std::process::Stdio::null());
+    crate::services::cli_spawn::apply_creation_flags(&mut cmd);
+    let Ok(mut child) = cmd.spawn() else {
         return false;
     };
     let wrote = child
@@ -644,16 +810,12 @@ fn write_windows_dpapi_blob(blob: &Value) -> bool {
     if !wrote || !output.status.success() {
         return false;
     }
-    let encoded = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if decode_windows_dpapi_payload(encoded.as_bytes()).is_none() {
+    // Validate the written file by reading it back: it must decode as
+    // base64 (the BOM-stripping decode also proves the file has no BOM).
+    let Ok(file_bytes) = std::fs::read(&file_path) else {
         return false;
-    }
-    if let Some(parent) = file_path.parent() {
-        if std::fs::create_dir_all(parent).is_err() {
-            return false;
-        }
-    }
-    std::fs::write(file_path, encoded).is_ok()
+    };
+    decode_windows_dpapi_payload(&file_bytes).is_some()
 }
 
 /// Runs `/usr/bin/security` with the given args and returns stdout if it
@@ -1326,6 +1488,97 @@ mod tests {
             "entropy must keep the space (it's load-bearing for DPAPI); \
              if it doesn't, the replace-space mutation is live"
         );
+    }
+
+    /// (a) DPAPI entropy single-quote escaping — LOAD-BEARING via the real
+    /// production builders. When USERNAME contains a single quote (e.g.
+    /// `O'Brien`), the entropy carries a raw `'`. The PowerShell script
+    /// interpolates entropy into a single-quoted literal, where `'` must
+    /// appear as `''` (doubled). This test calls the REAL `build_dpapi_*`
+    /// functions (not a copy of the transform) and asserts the generated
+    /// script contains the doubled quote in the GetBytes literal. If the
+    /// `replace('\'', "''")` is removed from either builder, the assertion
+    /// on `O''Brien` FAILS — proven by mutation (see PA-8 report).
+    #[test]
+    fn dpapi_entropy_escaping_doubles_single_quote_for_powershell_literal() {
+        let entropy = dpapi_entropy_for("Verboo Code-credentials", "O'Brien");
+        // Read script: the GetBytes literal must contain the doubled '.
+        let read_script = build_dpapi_read_script("cG90YXRv", &entropy);
+        assert!(
+            read_script.contains("GetBytes('Verboo Code-credentials:O''Brien')"),
+            "read script must contain the escaped literal with doubled '; got: {read_script}"
+        );
+        // The raw unescaped form must NOT appear (it would close the literal
+        // early and break the GetBytes call).
+        assert!(
+            !read_script.contains("GetBytes('Verboo Code-credentials:O'Brien')"),
+            "read script must NOT contain the raw unescaped literal; got: {read_script}"
+        );
+        // Write script: same two assertions.
+        let write_script = build_dpapi_write_script(
+            "C:\\Users\\dev\\.verboo\\Verboo_Code-credentials.secure.dpapi",
+            &entropy,
+        );
+        assert!(
+            write_script.contains("GetBytes('Verboo Code-credentials:O''Brien')"),
+            "write script must contain the escaped literal with doubled '; got: {write_script}"
+        );
+        assert!(
+            !write_script.contains("GetBytes('Verboo Code-credentials:O'Brien')"),
+            "write script must NOT contain the raw unescaped literal; got: {write_script}"
+        );
+    }
+
+    /// (a) BOM-less write (issue #72): the generated write script must
+    /// write the base64 via `[IO.File]::WriteAllText` with
+    /// `UTF8Encoding($false)` (UTF-8 WITHOUT BOM) — exactly the base64,
+    /// no BOM, no trailing newline. It must NOT use `Out-File` /
+    /// `Set-Content` / `Encoding.UTF8`, which emit a BOM in .NET /
+    /// PowerShell 5.1. Mutation: revert the builder to
+    /// `[System.Text.Encoding]::UTF8` or `Out-File` → assertion FAILS.
+    #[test]
+    fn dpapi_write_script_uses_bomless_write_api() {
+        let script = build_dpapi_write_script(
+            "C:\\Users\\dev\\.verboo\\Verboo_Code-credentials.secure.dpapi",
+            "Verboo Code-credentials:dev",
+        );
+        // The full WriteAllText line: path + raw $b64 + UTF8Encoding($false).
+        assert!(
+            script.contains(
+                "[System.IO.File]::WriteAllText('C:\\Users\\dev\\.verboo\\Verboo_Code-credentials.secure.dpapi', $b64, (New-Object System.Text.UTF8Encoding($false)))"
+            ),
+            "write script must write exactly $b64 via WriteAllText with UTF8Encoding($false) (no BOM); got: {script}"
+        );
+        // BOM-emitting write paths must NOT be used.
+        assert!(
+            !script.contains("Out-File") && !script.contains("Set-Content"),
+            "write script must not use Out-File/Set-Content (PS 5.1 emits BOM); got: {script}"
+        );
+        assert!(
+            !script.contains("[System.Text.Encoding]::UTF8)"),
+            "write script must not use [Text.Encoding]::UTF8 as the write encoding (it emits BOM); got: {script}"
+        );
+        // No trailing newline is appended to the written base64: the second
+        // argument of WriteAllText is $b64 alone (no +\`n concatenation).
+        assert!(
+            script.contains(", $b64, "),
+            "write script must pass $b64 unmodified to WriteAllText (no newline concat); got: {script}"
+        );
+    }
+
+    /// (a) Quarantine path derivation (issue #72 recovery): the corrupted
+    /// DPAPI file is renamed (never deleted) to
+    /// `<name>.invalid-<timestamp>` in the SAME directory, so it is
+    /// preserved for diagnosis while the login flow restarts clean.
+    #[test]
+    fn corrupted_dpapi_path_gets_timestamp_suffix() {
+        let original = std::path::Path::new("/home/dev/.verboo/Verboo_Code-credentials.secure.dpapi");
+        let quarantined = corrupted_path_for(original, 1_723_000_000_000);
+        assert_eq!(
+            quarantined.file_name().unwrap().to_string_lossy(),
+            "Verboo_Code-credentials.secure.dpapi.invalid-1723000000000",
+        );
+        assert_eq!(quarantined.parent(), original.parent());
     }
 
     /// (a) Cross-platform dispatch: `read_credentials_blob` on macOS

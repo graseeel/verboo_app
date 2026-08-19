@@ -209,6 +209,8 @@ enum LoginCommand {
     /// e Enter — segue ao navegador.
     ConfirmRisk,
     /// O usuário cancelou na tela de risco: Enter na opção 2 (cancelar limpo).
+    /// Planned but not yet wired — suppress dead-code warning.
+    #[allow(dead_code)]
     CancelRisk,
 }
 

@@ -60,7 +60,7 @@ fn is_text_file_by_ext(path: &Path) -> bool {
         | ".js" | ".jsx" | ".mjs" | ".cjs" | ".ts" | ".tsx" | ".mts" | ".cts" | ".d.ts"
         // Systems
         | ".rs" | ".go" | ".c" | ".h" | ".cpp" | ".cc" | ".cxx" | ".hpp" | ".hh" | ".hxx"
-        | ".java" | ".kt" | ".kts" | ".scala" | ".sc" | ".swift" | ".dart" | ".zig"
+        | ".java" | ".kt" | ".kts" | ".sc" | ".swift" | ".dart" | ".zig"
         | ".nim" | ".v" | ".d" | ".pas"
         // Scripting
         | ".py" | ".pyi" | ".rb" | ".php" | ".pl" | ".lua" | ".tcl" | ".sh" | ".bash"

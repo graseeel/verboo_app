@@ -80,9 +80,9 @@ impl ChromeIntegrationPaths {
         } else {
             "verboo-in-chrome"
         };
-        self.integration_root()
-            .join(&self.app_version)
-            .join(executable)
+        // The helper binary is installed alongside the main app executable,
+        // not inside the chrome-integration directory.
+        self.data_root.join(executable)
     }
 
     pub fn installation_record_path(&self) -> PathBuf {
@@ -109,8 +109,11 @@ impl ChromeIntegrationPaths {
     }
 
     pub fn is_managed_helper_path(&self, path: &Path) -> bool {
-        path.starts_with(self.integration_root())
-            && path.file_name() == self.helper_path().file_name()
+        // The helper can be in either the integration root (old layout) or
+        // the data root (new layout where it's a sidecar alongside the app).
+        let name_matches = path.file_name() == self.helper_path().file_name();
+        (path.starts_with(&self.integration_root()) || path.starts_with(&self.data_root))
+            && name_matches
     }
 }
 
@@ -124,4 +127,8 @@ pub const fn linux_manifest_suffix() -> &'static str {
 
 pub const fn windows_registry_key() -> &'static str {
     r"Software\Google\Chrome\NativeMessagingHosts\com.verboo.code.browser_extension"
+}
+
+pub const fn edge_registry_key() -> &'static str {
+    r"Software\Microsoft\Edge\NativeMessagingHosts\com.verboo.code.browser_extension"
 }
