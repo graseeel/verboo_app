@@ -2358,6 +2358,11 @@ fn complete_video_ocr_batch(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Linux WebKitGTK black-screen mitigation: must run before any webview
+    // is created (see services::linux_webview).
+    #[cfg(target_os = "linux")]
+    services::linux_webview::apply_webkit_dmabuf_workaround();
+
     let app = tauri::Builder::default()
         // ── Plugins ────────────────────────────────────────────
         .plugin(tauri_plugin_opener::init())

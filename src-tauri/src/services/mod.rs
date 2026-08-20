@@ -21,6 +21,7 @@ pub mod ios_simulator;
 #[cfg(target_os = "macos")]
 pub mod ios_simulator_mcp;
 pub mod lifecycle_service;
+pub mod linux_webview;
 pub mod manifest_cache;
 #[cfg(test)]
 pub mod markdown_wrap_contract;
