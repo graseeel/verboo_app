@@ -179,17 +179,20 @@ describe('androidEmulatorApi — frozen event channels', () => {
     const lifecycle = vi.fn()
     const error = vi.fn()
     const presence = vi.fn()
+    const openRequested = vi.fn()
 
     await androidEmulatorApi.onFrame(frame)
     await androidEmulatorApi.onLifecycle(lifecycle)
     await androidEmulatorApi.onError(error)
     await androidEmulatorApi.onPresence(presence)
+    await androidEmulatorApi.onOpenRequested(openRequested)
 
     expect(listenMock.mock.calls.map(([name]) => name)).toEqual([
       'android-emulator:frame',
       'android-emulator:lifecycle',
       'android-emulator:error',
       'android-emulator:presence',
+      'android-emulator:open-requested',
     ])
     const framePayload = { pngBase64: 'aGVsbG8=', width: 1080, height: 2400, generation: 3 }
     listenMock.mock.calls[0]?.[1]({ payload: framePayload })
@@ -203,6 +206,8 @@ describe('androidEmulatorApi — frozen event channels', () => {
     const presencePayload = { generation: 7, phase: 'start', action: 'tap', target: { x: 0.5, y: 0.5 } }
     listenMock.mock.calls[3]?.[1]({ payload: presencePayload })
     expect(presence).toHaveBeenCalledWith(presencePayload)
+    listenMock.mock.calls[4]?.[1]({ payload: presencePayload })
+    expect(openRequested).toHaveBeenCalledWith(presencePayload)
   })
 
   it('subscribes the setup channels verbatim and forwards the awaiting field untouched', async () => {

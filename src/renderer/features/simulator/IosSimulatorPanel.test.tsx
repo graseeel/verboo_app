@@ -1,5 +1,5 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import { I18nProvider } from '../../i18n'
 import type { IosSimulatorLifecycleSnapshot, IosSimulatorRequirements } from './iosSimulatorApi'
@@ -9,6 +9,18 @@ import { IosSimulatorPanel } from './IosSimulatorPanel'
 // module) — invoke is mocked so those calls are assertable. The iOS tab
 // never invokes from the panel itself (all iOS actions arrive via props).
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
+
+const { listenMock } = vi.hoisted(() => ({
+  listenMock: vi.fn<(
+    eventName: string,
+    callback: (event: { payload: unknown }) => void,
+  ) => Promise<() => void>>(() => Promise.resolve(() => {})),
+}))
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: (eventName: string, callback: (event: { payload: unknown }) => void) =>
+    listenMock(eventName, callback),
+}))
 
 const device = {
   name: 'iPhone 17 Pro',
@@ -271,6 +283,11 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset()
     vi.mocked(invoke).mockResolvedValue({ ready: true, devices: [androidDevice] })
+    listenMock.mockClear()
+  })
+
+  afterEach(() => {
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__
   })
 
   it('darwin: renders the iOS/Android tabs with iOS active and keeps the Android probe lazy', async () => {
@@ -288,7 +305,7 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
     ).toHaveLength(0)
   })
 
-  it('switching to the Android tab probes requirements and lists the detected devices', async () => {
+  it('switching to the Android tab probes requirements and mounts the grouped device picker', async () => {
     renderPanel()
 
     fireEvent.click(screen.getByRole('tab', { name: 'Android' }))
@@ -296,10 +313,10 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
 
     expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_requirements')
     expect(screen.getByText('Emulador do Android')).toBeInTheDocument()
-    expect(screen.getByText('Dispositivos Android detectados')).toBeInTheDocument()
-    expect(screen.getByText('Verboo Device API 35')).toBeInTheDocument()
-    expect(screen.getByText('API 35 · celular')).toBeInTheDocument()
-    expect(screen.getByText('ligado')).toBeInTheDocument()
+    fireEvent.focus(screen.getByRole('combobox', { name: 'Buscar dispositivo Android' }))
+    expect(screen.getByRole('group', { name: 'Em execução' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: /Verboo Device API 35/ }))
+      .toHaveTextContent('API 35 · ligado')
     // The iOS picker leaves the DOM with the tab switch.
     expect(screen.queryByRole('combobox', { name: 'Buscar simulador' })).not.toBeInTheDocument()
   })
@@ -354,9 +371,70 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
 
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
     expect(screen.getByText('Emulador do Android')).toBeInTheDocument()
-    expect(screen.getByText('Verboo Device API 35')).toBeInTheDocument()
+    fireEvent.focus(screen.getByRole('combobox', { name: 'Buscar dispositivo Android' }))
+    expect(screen.getByRole('option', { name: /Verboo Device API 35/ })).toBeInTheDocument()
     // The iOS device picker is never rendered off-darwin.
     expect(screen.queryByRole('combobox', { name: 'Buscar simulador' })).not.toBeInTheDocument()
     expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_requirements')
+  })
+
+  it('mounts the real Android picker, surface and dock through the frozen F1 commands', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === 'android_emulator_requirements') {
+        return { ready: true, devices: [{ ...androidDevice, running: false }] }
+      }
+      if (command === 'android_emulator_attach') {
+        return {
+          device: { ...androidDevice, running: true },
+          serial: 'emulator-5554',
+          generation: 9,
+          ownership: 'verboo',
+          streamFps: 2,
+          fallbackFps: 1,
+          lifecycle: { stage: 'ready' },
+        }
+      }
+      return undefined
+    })
+    renderPanel()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Android' }))
+    const picker = await screen.findByRole('combobox', { name: 'Buscar dispositivo Android' })
+    fireEvent.focus(picker)
+    fireEvent.click(screen.getByRole('option', { name: /Verboo Device API 35/ }))
+
+    await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      'android_emulator_attach',
+      { avdName: 'Verboo_Device_API_35', streamFps: 2, fallbackFps: 1 },
+    ))
+    const eventHandlers = new Map(listenMock.mock.calls.map(([name, handler]) => [name, handler]))
+    act(() => {
+      eventHandlers.get('android-emulator:lifecycle')?.({ payload: { stage: 'ready' } })
+      eventHandlers.get('android-emulator:frame')?.({
+        payload: { pngBase64: 'YW5kcm9pZA==', width: 1080, height: 2400, generation: 9 },
+      })
+    })
+
+    const surface = screen.getByRole('application', { name: 'Controlar Verboo Device API 35' })
+    const image = screen.getByAltText('Prévia visual ao vivo de Verboo Device API 35')
+    Object.defineProperty(surface, 'getBoundingClientRect', {
+      value: () => ({ left: 0, top: 0, width: 600, height: 900, right: 600, bottom: 900 }),
+    })
+    Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 1080 })
+    Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 2400 })
+    Object.defineProperty(surface, 'setPointerCapture', { configurable: true, value: vi.fn() })
+    Object.defineProperty(surface, 'releasePointerCapture', { configurable: true, value: vi.fn() })
+    fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 450 })
+    fireEvent.pointerUp(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 450 })
+    fireEvent.click(surface, { button: 0, clientX: 300, clientY: 450 })
+    fireEvent.click(screen.getByRole('button', { name: 'Voltar' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Recentes' }))
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_tap', { x: 0.5, y: 0.5 })
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_system_action', { action: 'back' })
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_system_action', { action: 'recents' })
+    expect(screen.queryByRole('button', { name: 'Capturar tela' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Selecionar componente' })).not.toBeInTheDocument()
   })
 })

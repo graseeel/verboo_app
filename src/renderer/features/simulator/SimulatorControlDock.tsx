@@ -1,12 +1,7 @@
 import { useEffect, useRef, useState, type ComponentType } from 'react'
 import {
-  Bell,
   Camera,
-  GalleryHorizontal,
-  Home,
   Power,
-  RotateCw,
-  SlidersHorizontal,
   Unplug,
   Video,
 } from 'lucide-react'
@@ -19,24 +14,32 @@ import type {
   IosSimulatorSystemAction,
 } from './iosSimulatorApi'
 
-type SimulatorControlDockProps = {
+type SimulatorControlDockProps<A extends string = IosSimulatorSystemAction> = {
   deviceName: string
   ownership: IosSimulatorOwnership
   interactionReady: boolean
   busy: boolean
-  recording: IosSimulatorRecordingState
+  /** Injectable system controls (PA-27); defaults to the iOS set below.
+   *  Android passes back/home/recents/notifications/rotate (frozen contract
+   *  §system_action). */
+  actions: readonly SystemControl<A>[]
+  onSystemAction: (action: A) => void
+  /** Media group (screenshot / recording / saved-file feedback). iOS-only
+   *  until F2 lands for Android (PA-28 native + PA-29 renderer) — the Android
+   *  dock passes mediaControls={false}. Defaults to true. */
+  mediaControls?: boolean
+  recording?: IosSimulatorRecordingState
   lastMediaFile?: IosSimulatorMediaFile
-  onSystemAction: (action: IosSimulatorSystemAction) => void
-  onCaptureScreen: () => void
-  onToggleRecording: () => void
-  onDetach: () => void
+  onCaptureScreen?: () => void
+  onToggleRecording?: () => void
+  onDetach?: () => void
   onEnd: () => void
-  onShutdownExternal: () => void
-  onRevealOutput: (path: string) => void
+  onShutdownExternal?: () => void
+  onRevealOutput?: (path: string) => void
 }
 
-type SystemControl = {
-  action: IosSimulatorSystemAction
+type SystemControl<A extends string = IosSimulatorSystemAction> = {
+  action: A
   label: string
   icon: ComponentType<{ size?: number; 'aria-hidden'?: boolean }>
 }
@@ -48,12 +51,14 @@ function formatElapsed(startedAtMs: number, now: number): string {
   return `${minutes}:${seconds}`
 }
 
-export function SimulatorControlDock({
+export function SimulatorControlDock<A extends string = IosSimulatorSystemAction>({
   deviceName,
   ownership,
   interactionReady,
   busy,
-  recording,
+  actions,
+  mediaControls = true,
+  recording = { state: 'idle' },
   lastMediaFile,
   onSystemAction,
   onCaptureScreen,
@@ -62,7 +67,7 @@ export function SimulatorControlDock({
   onEnd,
   onShutdownExternal,
   onRevealOutput,
-}: SimulatorControlDockProps) {
+}: SimulatorControlDockProps<A>) {
   const { t } = useI18n()
   const [confirmingEnd, setConfirmingEnd] = useState<'owned' | 'external' | null>(null)
   const [now, setNow] = useState(() => Date.now())
@@ -80,13 +85,7 @@ export function SimulatorControlDock({
     if (confirmingEnd) cancelButtonRef.current?.focus()
   }, [confirmingEnd])
 
-  const systemControls: SystemControl[] = [
-    { action: 'home', label: t('simulator.control.home'), icon: Home },
-    { action: 'appSwitcher', label: t('simulator.control.appSwitcher'), icon: GalleryHorizontal },
-    { action: 'notifications', label: t('simulator.control.notifications'), icon: Bell },
-    { action: 'controlCenter', label: t('simulator.control.controlCenter'), icon: SlidersHorizontal },
-    { action: 'rotateClockwise', label: t('simulator.control.rotate'), icon: RotateCw },
-  ]
+  const systemControls = actions
   const recordingLabel = recording.state === 'recording'
     ? t('simulator.control.stopRecording')
     : recording.state === 'starting'
@@ -122,6 +121,7 @@ export function SimulatorControlDock({
             </SimulatorTooltipButton>
           ))}
         </div>
+        {mediaControls && (
         <div className="ios-simulator-control-group">
           <SimulatorTooltipButton
             label={t('simulator.control.screenshot')}
@@ -148,8 +148,9 @@ export function SimulatorControlDock({
             </span>
           )}
         </div>
+        )}
         <div className="ios-simulator-control-group">
-          {ownership === 'external' && (
+          {ownership === 'external' && onDetach && (
             <SimulatorTooltipButton
               label={t('simulator.control.detach')}
               type="button"
@@ -173,19 +174,19 @@ export function SimulatorControlDock({
         </div>
       </div>
 
-      {(recording.state === 'starting' || recording.state === 'finalizing') && (
+      {mediaControls && (recording.state === 'starting' || recording.state === 'finalizing') && (
         <div className="ios-simulator-recording-status" role="status" aria-live="polite">
           {recording.state === 'starting' ? t('simulator.recording.starting') : t('simulator.recording.finalizing')}
         </div>
       )}
 
-      {lastMediaFile && (
+      {mediaControls && lastMediaFile && (
         <div className="ios-simulator-media-feedback" role="status" aria-live="polite">
           <span>{t('simulator.media.saved', { fileName: lastMediaFile.fileName })}</span>
           <button
             type="button"
             className="ghost-button"
-            onClick={() => onRevealOutput(lastMediaFile.path)}
+            onClick={() => onRevealOutput?.(lastMediaFile.path)}
           >
             {t('simulator.media.reveal')}
           </button>
@@ -216,7 +217,7 @@ export function SimulatorControlDock({
               onClick={() => {
                 const action = confirmingEnd
                 setConfirmingEnd(null)
-                if (action === 'external') onShutdownExternal()
+                if (action === 'external') onShutdownExternal?.()
                 else onEnd()
               }}
             >

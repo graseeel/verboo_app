@@ -30,8 +30,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
-use super::requirements::{AndroidEmulatorIssue, detect_requirements};
-use super::{CommandRunner, sdk};
+use super::requirements::{detect_requirements, AndroidEmulatorIssue};
+use super::{sdk, CommandRunner};
 
 /// Backend emits `android-emulator:setup-progress` (frozen vocabulary).
 pub(crate) const SETUP_PROGRESS_EVENT: &str = "android-emulator:setup-progress";
@@ -214,7 +214,13 @@ pub(crate) fn run_setup(
     };
     emit_progress(app, STEP_INSTALL_PACKAGES.to_string(), Some(0), None, None);
     match sdk::sdkmanager_install(&sdk_path, &packages, cancel, &mut on_percent) {
-        Ok(()) => emit_progress(app, STEP_INSTALL_PACKAGES.to_string(), Some(100), None, None),
+        Ok(()) => emit_progress(
+            app,
+            STEP_INSTALL_PACKAGES.to_string(),
+            Some(100),
+            None,
+            None,
+        ),
         Err(e) => {
             if cancelled(cancel) {
                 emit_done(app, false, None, Some(ERROR_CANCELLED.to_string()));
@@ -253,14 +259,20 @@ pub(crate) fn run_setup(
                 return;
             }
         }
-        emit_progress(app, STEP_DOWNLOAD_SYSTEM_IMAGE.to_string(), Some(0), None, None);
+        emit_progress(
+            app,
+            STEP_DOWNLOAD_SYSTEM_IMAGE.to_string(),
+            Some(0),
+            None,
+            None,
+        );
         let image = sdk::pick_latest_system_image(runner, &sdk_path);
-        let packages = image
-            .map(|pkg| vec![pkg])
-            .unwrap_or_else(|| vec![format!(
+        let packages = image.map(|pkg| vec![pkg]).unwrap_or_else(|| {
+            vec![format!(
                 "system-images;android-35;google_apis;{}",
                 sdk::host_abi()
-            )]);
+            )]
+        });
         let mut last_percent = 0u8;
         let mut on_percent = |p: u8| {
             if p != last_percent {
@@ -347,8 +359,20 @@ fn emit_progress(
     );
 }
 
-fn emit_done(app: &AppHandle, ready: bool, issue: Option<AndroidEmulatorIssue>, error: Option<String>) {
-    let _ = app.emit(SETUP_DONE_EVENT, SetupDone { ready, issue, error });
+fn emit_done(
+    app: &AppHandle,
+    ready: bool,
+    issue: Option<AndroidEmulatorIssue>,
+    error: Option<String>,
+) {
+    let _ = app.emit(
+        SETUP_DONE_EVENT,
+        SetupDone {
+            ready,
+            issue,
+            error,
+        },
+    );
 }
 
 #[cfg(test)]
@@ -374,7 +398,10 @@ mod tests {
     /// SetupMode serializes to the frozen camelCase values.
     #[test]
     fn setup_mode_serializes_to_frozen_values() {
-        assert_eq!(serde_json::to_string(&SetupMode::Toolchain).unwrap(), "\"toolchain\"");
+        assert_eq!(
+            serde_json::to_string(&SetupMode::Toolchain).unwrap(),
+            "\"toolchain\""
+        );
         assert_eq!(serde_json::to_string(&SetupMode::Full).unwrap(), "\"full\"");
     }
 

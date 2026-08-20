@@ -1,4 +1,5 @@
 import { useEffect, useRef, type RefObject } from 'react'
+import type { AndroidEmulatorKey } from './androidEmulatorApi'
 import type { IosSimulatorKey, IosSimulatorPoint } from './iosSimulatorApi'
 import { clientPointToNormalized, paintedContainRect } from './simulatorGeometry'
 
@@ -16,7 +17,10 @@ export type SimulatorInteractionHandlers = {
   onCompositionEnd: React.CompositionEventHandler<HTMLDivElement>
 }
 
-type Options = {
+/** Maps a DOM keyboard event to the platform's special-key vocabulary. */
+export type SimulatorKeyMapper<K> = (event: Pick<KeyboardEvent, 'key'>) => K | null
+
+type Options<K extends string> = {
   surfaceRef: RefObject<HTMLDivElement | null>
   imageRef: RefObject<HTMLImageElement | null>
   mode: SimulatorInteractionMode
@@ -24,7 +28,10 @@ type Options = {
   onTap: (point: IosSimulatorPoint) => void
   onDrag: (from: IosSimulatorPoint, to: IosSimulatorPoint, durationMs: number) => void
   onTypeText: (text: string) => void
-  onPressKey: (key: IosSimulatorKey) => void
+  onPressKey: (key: K) => void
+  /** Injectable per-platform key mapper (PA-27 adapter parametrization);
+   *  defaults to the iOS mapper. */
+  keyMapper?: SimulatorKeyMapper<K>
 }
 
 type PointerStart = {
@@ -50,7 +57,29 @@ export function simulatorKeyForKeyboardEvent(event: Pick<KeyboardEvent, 'key'>):
   }
 }
 
-export function useSimulatorInteraction(options: Options): SimulatorInteractionHandlers {
+/** Android press_key mapper (contract `contrato-android-simulator` §key map —
+ *  all nine frozen names map to adb keycodes in the native adapter). */
+export function androidEmulatorKeyForKeyboardEvent(
+  event: Pick<KeyboardEvent, 'key'>,
+): AndroidEmulatorKey | null {
+  switch (event.key) {
+    case 'Enter': return 'enter'
+    case 'Backspace': return 'backspace'
+    case 'Tab': return 'tab'
+    case 'Escape': return 'escape'
+    case 'ArrowUp': return 'arrowUp'
+    case 'ArrowDown': return 'arrowDown'
+    case 'ArrowLeft': return 'arrowLeft'
+    case 'ArrowRight': return 'arrowRight'
+    case ' ': return 'space'
+    default: return null
+  }
+}
+
+export function useSimulatorInteraction<K extends string = IosSimulatorKey>(
+  options: Options<K>,
+): SimulatorInteractionHandlers {
+  const keyMapper = (options.keyMapper ?? simulatorKeyForKeyboardEvent) as SimulatorKeyMapper<K>
   const pointerRef = useRef<PointerStart | null>(null)
   const suppressClickRef = useRef(false)
   const composingRef = useRef(false)
@@ -148,18 +177,18 @@ export function useSimulatorInteraction(options: Options): SimulatorInteractionH
     },
     onKeyDown(event) {
       if (!ownsInteraction()) return
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+      if (composingRef.current || event.nativeEvent.isComposing) return
+      const special = keyMapper(event.nativeEvent)
+      if (special) {
+        event.preventDefault()
+        options.onPressKey(special)
+        return
+      }
       if (event.key === 'Escape') {
         event.preventDefault()
         clearPointer()
         event.currentTarget.blur()
-        return
-      }
-      if (event.metaKey || event.ctrlKey || event.altKey) return
-      if (composingRef.current || event.nativeEvent.isComposing) return
-      const special = simulatorKeyForKeyboardEvent(event.nativeEvent)
-      if (special) {
-        event.preventDefault()
-        options.onPressKey(special)
         return
       }
       if (event.key.length === 1) {

@@ -100,7 +100,12 @@ export type AndroidEmulatorLifecycleEvent = { stage: AndroidEmulatorStartupStage
 
 export type AndroidEmulatorSession = {
   device: AndroidDevice
-  // F1 (PA-26) owns the final field set; F0 never attaches.
+  serial: string
+  generation: number
+  ownership: 'external' | 'verboo'
+  streamFps: number
+  fallbackFps: number
+  lifecycle: AndroidEmulatorLifecycleEvent
 }
 
 export type AndroidEmulatorFrame = {
@@ -174,8 +179,8 @@ export const androidEmulatorApi = {
   detach: () => invoke<void>('android_emulator_detach'),
   end: () => invoke<void>('android_emulator_end'),
   setVisible: (visible: boolean) => invoke<void>('android_emulator_set_visible', { visible }),
-  setStreamRate: (fps: number) => invoke<void>('android_emulator_set_stream_rate', { fps }),
-  setFallbackRate: (fps: number) => invoke<void>('android_emulator_set_fallback_rate', { fps }),
+  setStreamRate: (fps: number) => invoke<number>('android_emulator_set_stream_rate', { fps }),
+  setFallbackRate: (fps: number) => invoke<number>('android_emulator_set_fallback_rate', { fps }),
   tap: (x: number, y: number) => invoke<void>('android_emulator_tap', { x, y }),
   drag: (fromX: number, fromY: number, toX: number, toY: number, durationMs = 180) =>
     invoke<void>('android_emulator_drag', { fromX, fromY, toX, toY, durationMs }),
@@ -200,6 +205,10 @@ export const androidEmulatorApi = {
     listenInTauri<AndroidEmulatorError>('android-emulator:error', handler),
   onPresence: (handler: (presence: AndroidEmulatorPresenceEvent) => void): Promise<UnlistenFn> =>
     listenInTauri<AndroidEmulatorPresenceEvent>('android-emulator:presence', handler),
+  onOpenRequested: (
+    handler: (presence?: AndroidEmulatorPresenceEvent | null) => void,
+  ): Promise<UnlistenFn> =>
+    listenInTauri<AndroidEmulatorPresenceEvent | null>('android-emulator:open-requested', handler),
   onSetupProgress: (handler: (progress: AndroidEmulatorSetupProgress) => void): Promise<UnlistenFn> =>
     listenInTauri<AndroidEmulatorSetupProgress>('android-emulator:setup-progress', handler),
   onSetupDone: (handler: (done: AndroidEmulatorSetupDone) => void): Promise<UnlistenFn> =>

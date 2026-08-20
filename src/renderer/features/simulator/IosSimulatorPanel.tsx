@@ -1,5 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Gauge, LoaderCircle, PanelRightClose, RefreshCw, Smartphone } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import {
+  ArrowLeft,
+  Bell,
+  GalleryHorizontal,
+  Gauge,
+  Home,
+  LoaderCircle,
+  PanelRightClose,
+  RefreshCw,
+  RotateCw,
+  SlidersHorizontal,
+  Smartphone,
+} from 'lucide-react'
 import { useI18n } from '../../i18n'
 import { simulatorStageMessageKey } from './iosSimulatorModel'
 import { SimulatorOnboarding } from './SimulatorOnboarding'
@@ -8,10 +20,13 @@ import { SimulatorDevicePicker } from './SimulatorDevicePicker'
 import { SimulatorControlDock } from './SimulatorControlDock'
 import { SimulatorTooltipButton } from './SimulatorTooltip'
 import { AndroidEmulatorLegacyCard, AndroidOnboarding } from './AndroidOnboarding'
-import { androidEmulatorApi } from './androidEmulatorApi'
-import type { AndroidEmulatorRequirements } from './androidEmulatorApi'
-import { errorText, isUnknownCommandError } from './androidEmulatorModel'
-import type { SimulatorInteractionMode } from './useSimulatorInteraction'
+import { AndroidDevicePicker } from './AndroidDevicePicker'
+import type { AndroidEmulatorSystemAction } from './androidEmulatorApi'
+import { useAndroidEmulatorPanel } from './useAndroidEmulatorPanel'
+import {
+  androidEmulatorKeyForKeyboardEvent,
+  type SimulatorInteractionMode,
+} from './useSimulatorInteraction'
 import type {
   IosSimulatorAnnotationCapture,
   IosSimulatorAccessibilityNode,
@@ -142,6 +157,18 @@ export function IosSimulatorPanel({
   const [selectedUdid, setSelectedUdid] = useState<string | undefined>(attachedUdid)
   const [performanceOpen, setPerformanceOpen] = useState(false)
   const [refreshFeedback, setRefreshFeedback] = useState<string>()
+  const android = useAndroidEmulatorPanel()
+  const iosActions: Array<{
+    action: IosSimulatorSystemAction
+    label: string
+    icon: typeof Home
+  }> = [
+    { action: 'home', label: t('simulator.control.home'), icon: Home },
+    { action: 'appSwitcher', label: t('simulator.control.appSwitcher'), icon: GalleryHorizontal },
+    { action: 'notifications', label: t('simulator.control.notifications'), icon: Bell },
+    { action: 'controlCenter', label: t('simulator.control.controlCenter'), icon: SlidersHorizontal },
+    { action: 'rotateClockwise', label: t('simulator.control.rotate'), icon: RotateCw },
+  ]
 
   // ── Platform tabs (PA-25, contrato-android-simulator — frozen) ─────────
   // One panel, one tab per platform: iOS exists only on darwin; Android is
@@ -151,39 +178,28 @@ export function IosSimulatorPanel({
     iosAvailable ? 'ios' : 'android',
   )
   const androidActive = activeSimulatorPlatform === 'android'
-  // Android requirements load LAZILY — only when the Android tab is
-  // actually visible (opening the panel to the iOS tab must not probe the
-  // Android SDK). undefined = never fetched.
-  const [androidState, setAndroidState] = useState<AndroidRequirementsState | undefined>(undefined)
+  const androidVisibleRef = useRef(false)
 
   useEffect(() => {
     if (!iosAvailable && activeSimulatorPlatform === 'ios') setActiveSimulatorPlatform('android')
   }, [iosAvailable, activeSimulatorPlatform])
 
-  const refreshAndroid = useCallback(async () => {
-    setAndroidState({ status: 'loading' })
-    try {
-      const requirements = await androidEmulatorApi.requirements()
-      setAndroidState({ status: 'ready', requirements })
-      return requirements.devices.length
-    } catch (err) {
-      if (isUnknownCommandError(err)) {
-        // Older backend without the android_emulator_* commands: the tab
-        // shows the guide and NEVER offers setup (fail-open contract).
-        setAndroidState({ status: 'legacy' })
-      } else {
-        setAndroidState({ status: 'error', message: errorText(err) })
-      }
-      return undefined
-    }
-  }, [])
-
   useEffect(() => {
-    if (simulatorOpen && androidActive && androidState === undefined) {
-      void refreshAndroid()
+    const visible = simulatorOpen && androidActive
+    if (visible && !androidVisibleRef.current) {
+      androidVisibleRef.current = true
+      void android.open()
+    } else if (!visible && androidVisibleRef.current) {
+      androidVisibleRef.current = false
+      android.close()
     }
-  }, [simulatorOpen, androidActive, androidState, refreshAndroid])
-  const androidLoading = androidState === undefined || androidState.status === 'loading'
+  }, [androidActive, android.close, android.open, simulatorOpen])
+
+  useEffect(() => () => {
+    if (androidVisibleRef.current) android.close()
+  }, [android.close])
+
+  const androidLoading = android.requirementsLoading || (androidActive && !android.requirements && !android.legacyBackend && !android.error)
   const activeLoading = androidActive ? androidLoading : requirementsLoading
 
   useEffect(() => {
@@ -217,7 +233,7 @@ export function IosSimulatorPanel({
   const handleRefresh = async () => {
     setRefreshFeedback(t('simulator.refreshing'))
     if (androidActive) {
-      const androidCount = await refreshAndroid()
+      const androidCount = await android.refresh()
       if (androidCount === undefined) {
         setRefreshFeedback(undefined)
         return
@@ -455,6 +471,7 @@ export function IosSimulatorPanel({
                     ownership={lifecycle.ownership}
                     interactionReady={lifecycle.interactionReady}
                     busy={Boolean(busyUdid)}
+                    actions={iosActions}
                     recording={lifecycle.recording}
                     lastMediaFile={lastMediaFile}
                     onSystemAction={onSystemAction}
@@ -525,11 +542,10 @@ export function IosSimulatorPanel({
 
         {androidActive && (
           <AndroidEmulatorTabContent
-            state={androidState}
+            android={android}
             platform={platform}
             loading={androidLoading}
-            onRefresh={refreshAndroid}
-            onCheckAgain={() => { void refreshAndroid() }}
+            onCheckAgain={() => { void android.refresh() }}
           />
         )}
       </div>
@@ -537,41 +553,24 @@ export function IosSimulatorPanel({
   )
 }
 
-// ── Android emulator tab (PA-25) ─────────────────────────────────────────
+// ── Android emulator tab (PA-27) ─────────────────────────────────────────
 
-type AndroidRequirementsState =
-  | { status: 'loading' }
-  // Older backend without the android_emulator_* commands (fail-open: the
-  // tab shows the guide and never offers setup).
-  | { status: 'legacy' }
-  | { status: 'ready'; requirements: AndroidEmulatorRequirements }
-  | { status: 'error'; message?: string }
+type AndroidPanelState = ReturnType<typeof useAndroidEmulatorPanel>
 
-/** F0 content of the Android tab: detection states + the setup onboarding.
- *  The interactive picker/surface/dock land in F1 (PA-27). */
 function AndroidEmulatorTabContent({
-  state,
+  android,
   platform,
   loading,
-  onRefresh,
   onCheckAgain,
 }: {
-  state: AndroidRequirementsState | undefined
+  android: AndroidPanelState
   platform: NodeJS.Platform
   loading: boolean
-  onRefresh: () => Promise<number | undefined>
   onCheckAgain: () => void
 }) {
   const { t } = useI18n()
-  if (!state || state.status === 'loading') {
-    return (
-      <div className="ios-simulator-state" role="status">
-        <LoaderCircle size={20} className="is-spinning" aria-hidden="true" />
-        <span>{t('androidEmulator.loading')}</span>
-      </div>
-    )
-  }
-  if (state.status === 'legacy') {
+  const { requirements } = android
+  if (android.legacyBackend) {
     return (
       <AndroidEmulatorLegacyCard
         platform={platform}
@@ -580,10 +579,10 @@ function AndroidEmulatorTabContent({
       />
     )
   }
-  if (state.status === 'error') {
+  if (!requirements && android.error) {
     return (
       <div className="ios-simulator-error" role="alert">
-        <span>{state.message ?? t('common.unknown')}</span>
+        <span>{android.error}</span>
         <button
           type="button"
           className="ghost-button"
@@ -595,14 +594,21 @@ function AndroidEmulatorTabContent({
       </div>
     )
   }
-  const { requirements } = state
+  if (!requirements) {
+    return (
+      <div className="ios-simulator-state" role="status">
+        <LoaderCircle size={20} className="is-spinning" aria-hidden="true" />
+        <span>{t('androidEmulator.loading')}</span>
+      </div>
+    )
+  }
   if (requirements.issue) {
     return (
       <AndroidOnboarding
         issue={requirements.issue}
         platform={platform}
         requirementsLoading={loading}
-        onRefresh={onRefresh}
+        onRefresh={android.refresh}
         onCheckAgain={onCheckAgain}
       />
     )
@@ -615,23 +621,104 @@ function AndroidEmulatorTabContent({
       </div>
     )
   }
+  const device = android.session?.device
+  const actions: Array<{
+    action: AndroidEmulatorSystemAction
+    label: string
+    icon: typeof Home
+  }> = [
+    { action: 'back', label: t('androidEmulator.control.back'), icon: ArrowLeft },
+    { action: 'home', label: t('simulator.control.home'), icon: Home },
+    { action: 'recents', label: t('androidEmulator.control.recents'), icon: GalleryHorizontal },
+    { action: 'notifications', label: t('simulator.control.notifications'), icon: Bell },
+    { action: 'rotate', label: t('simulator.control.rotate'), icon: RotateCw },
+  ]
   return (
-    <div className="android-emulator-ready">
-      <strong>{t('androidEmulator.devicesTitle')}</strong>
-      <ul className="android-emulator-devices">
-        {requirements.devices.map(device => (
-          <li key={device.avdName}>
-            <span className="android-emulator-device-name">{device.displayName}</span>
-            <span className="android-emulator-device-meta">
-              {device.apiLevel > 0 ? `API ${device.apiLevel} · ` : ''}
-              {t(`androidEmulator.family.${device.family}`)}
+    <>
+      <div className="ios-simulator-device-bar">
+        <AndroidDevicePicker
+          devices={requirements.devices}
+          selectedAvd={device?.avdName}
+          busyAvd={android.busyAvd}
+          compact
+          onSelect={avdName => { void android.attach(avdName) }}
+        />
+        <div className="ios-simulator-device-status">
+          <span role="status" aria-live="polite">
+            {device
+              ? t(simulatorStageMessageKey(android.lifecycle.stage), { name: device.displayName })
+              : t('simulator.stage.idle')}
+          </span>
+          {android.session?.ownership && (
+            <span className={`ios-simulator-origin is-${android.session.ownership}`}>
+              {t(`simulator.origin.${android.session.ownership}`)}
             </span>
-            <span className={`android-emulator-device-state is-${device.running ? 'running' : 'stopped'}`}>
-              {t(device.running ? 'androidEmulator.device.running' : 'androidEmulator.device.stopped')}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </div>
+          )}
+        </div>
+      </div>
+
+      {android.error && (
+        <div className="ios-simulator-error" role="alert">
+          <span>{android.error}</span>
+        </div>
+      )}
+
+      {!device && (
+        <div className="ios-simulator-empty">
+          <Smartphone size={28} aria-hidden="true" />
+          <strong>{t('androidEmulator.empty.title')}</strong>
+          <p>{t('androidEmulator.empty.body')}</p>
+        </div>
+      )}
+
+      {device && (
+        <section className="ios-simulator-view" aria-label={t('simulator.previewLabel', { name: device.displayName })}>
+          <div className="ios-simulator-frame">
+            {android.frameDataUrl ? (
+              <SimulatorSurface
+                frameDataUrl={android.frameDataUrl}
+                deviceName={device.displayName}
+                previewAlt={t('simulator.previewAlt', { name: device.displayName })}
+                mode="interact"
+                interactive={android.interactionReady}
+                selectionEnabled={false}
+                keyMapper={androidEmulatorKeyForKeyboardEvent}
+                labels={{
+                  interact: t('simulator.mode.interact'),
+                  interaction: t('simulator.interactionLabel', { name: device.displayName }),
+                  keyboardHint: t('simulator.keyboardHint'),
+                  unavailable: t('simulator.interactionUnavailable'),
+                  agentActive: t('simulator.agentActive'),
+                  agentBadge: t('simulator.agentBadge'),
+                }}
+                onModeChange={() => {}}
+                onTap={android.tap}
+                onDrag={android.drag}
+                onTypeText={android.typeText}
+                onPressKey={android.pressKey}
+                agentPresence={android.agentPresence}
+              />
+            ) : (
+              <div className="ios-simulator-frame-placeholder" role="status">
+                <LoaderCircle size={20} className="is-spinning" aria-hidden="true" />
+                <span>{t('simulator.waitingForFrame')}</span>
+              </div>
+            )}
+          </div>
+          <SimulatorControlDock
+            deviceName={device.displayName}
+            ownership={android.session?.ownership ?? 'external'}
+            interactionReady={android.interactionReady}
+            busy={Boolean(android.busyAvd)}
+            actions={actions}
+            mediaControls={false}
+            onSystemAction={android.runSystemAction}
+            onDetach={android.detach}
+            onEnd={android.endSimulation}
+            onShutdownExternal={android.endSimulation}
+          />
+        </section>
+      )}
+    </>
   )
 }

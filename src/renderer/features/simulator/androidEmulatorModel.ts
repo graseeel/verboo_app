@@ -1,4 +1,4 @@
-import type { AndroidEmulatorSetupStep } from './androidEmulatorApi'
+import type { AndroidDevice, AndroidEmulatorSetupStep } from './androidEmulatorApi'
 
 /**
  * Android emulator domain model (PA-25, contract `contrato-android-simulator`
@@ -92,4 +92,58 @@ export function errorText(err: unknown): string | undefined {
   if (err === undefined || err === null) return undefined
   const text = typeof err === 'string' ? err : err instanceof Error ? err.message : String(err)
   return text || undefined
+}
+
+// ── F1: device picker + stream defaults (PA-27) ────────────────────────────
+
+/** Renderer-side stream defaults for android_emulator_attach. The preview is
+ *  an `adb exec-out screencap` PNG loop — far slower than the iOS MJPEG
+ *  stream, hence modest rates (the backend is free to clamp). */
+export const DEFAULT_ANDROID_EMULATOR_STREAM_FPS = 2
+export const DEFAULT_ANDROID_EMULATOR_FALLBACK_FPS = 1
+
+export type AndroidDeviceFamilyFilter = 'all' | 'phone' | 'tablet'
+
+export type AndroidEmulatorDeviceGroup = {
+  /** 'running' for the running-devices group, otherwise `${family}:${apiLevel}`. */
+  key: string
+  devices: AndroidDevice[]
+}
+
+const ANDROID_DEVICE_FAMILY_ORDER: Record<AndroidDevice['family'], number> = {
+  phone: 0,
+  tablet: 1,
+  other: 2,
+}
+
+/** Picker grouping (PA-27): running devices first, then family (phone →
+ *  tablet → other), then apiLevel descending — mirrors the iOS
+ *  groupSimulatorDevices policy on the AndroidDevice shape. */
+export function groupAndroidEmulatorDevices(
+  devices: readonly AndroidDevice[],
+  filter: AndroidDeviceFamilyFilter,
+  query: string,
+): AndroidEmulatorDeviceGroup[] {
+  const needle = query.trim().toLocaleLowerCase()
+  const visible = devices
+    .filter(device => filter === 'all' || device.family === filter)
+    .filter(device => !needle
+      || `${device.displayName} ${device.avdName} ${device.apiLevel}`.toLocaleLowerCase().includes(needle))
+    .slice()
+    .sort((left, right) => {
+      const runningOrder = Number(right.running) - Number(left.running)
+      return runningOrder
+        || ANDROID_DEVICE_FAMILY_ORDER[left.family] - ANDROID_DEVICE_FAMILY_ORDER[right.family]
+        || right.apiLevel - left.apiLevel
+        || left.displayName.localeCompare(right.displayName)
+        || left.avdName.localeCompare(right.avdName)
+    })
+  const groups = new Map<string, AndroidEmulatorDeviceGroup>()
+  for (const device of visible) {
+    const key = device.running ? 'running' : `${device.family}:${device.apiLevel}`
+    const group = groups.get(key) ?? { key, devices: [] }
+    group.devices.push(device)
+    groups.set(key, group)
+  }
+  return [...groups.values()]
 }

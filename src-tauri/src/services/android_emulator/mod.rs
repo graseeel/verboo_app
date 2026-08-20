@@ -12,22 +12,27 @@
 //! renderer re-invokes `android_emulator_setup_start` with the matching
 //! flag (frozen `awaiting` protocol).
 
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, State};
 
+pub mod input;
 pub mod requirements;
 pub mod sdk;
+pub mod session;
 pub mod setup;
 
 pub use requirements::{
     AndroidDevice, AndroidDeviceFamily, AndroidEmulatorIssue, AndroidEmulatorRequirements,
 };
+pub use session::{AndroidEmulatorLifecycleEvent, AndroidEmulatorSession};
 pub use setup::{SetupDone, SetupMode, SetupProgress};
 
 /// Frozen key map for `android_emulator_press_key` (contract §key map):
@@ -82,9 +87,7 @@ impl CommandRunner for SystemCommandRunner {
         let mut command = Command::new(program);
         command.args(args);
         crate::services::cli_spawn::apply_creation_flags(&mut command);
-        let output = command
-            .output()
-            .map_err(|error| error.to_string())?;
+        let output = command.output().map_err(|error| error.to_string())?;
         Ok(CommandOutput {
             success: output.status.success(),
             stdout: output.stdout,
@@ -105,30 +108,55 @@ impl CommandRunner for SystemCommandRunner {
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         crate::services::child_signal::configure_process_group(&mut command);
         let mut child = command.spawn().map_err(|error| error.to_string())?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "failed to capture Android emulator stdout".to_string())?;
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "failed to capture Android emulator stderr".to_string())?;
+        let stdout_reader = thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = stdout.read_to_end(&mut bytes);
+            bytes
+        });
+        let stderr_reader = thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = stderr.read_to_end(&mut bytes);
+            bytes
+        });
+        let finish_readers = || {
+            (
+                stdout_reader.join().unwrap_or_default(),
+                stderr_reader.join().unwrap_or_default(),
+            )
+        };
         loop {
             if cancel.load(Ordering::Acquire) || Instant::now() >= deadline {
                 let _ = crate::services::child_signal::terminate_process_group(&mut child);
                 let _ = child.wait();
+                let _ = finish_readers();
                 return Err("android emulator operation cancelled".to_string());
             }
             match child.try_wait() {
-                Ok(Some(_)) => break,
+                Ok(Some(status)) => {
+                    let (stdout, stderr) = finish_readers();
+                    return Ok(CommandOutput {
+                        success: status.success(),
+                        stdout,
+                        stderr,
+                    });
+                }
                 Ok(None) => thread::sleep(Duration::from_millis(25)),
                 Err(error) => {
                     let _ = crate::services::child_signal::terminate_process_group(&mut child);
                     let _ = child.wait();
+                    let _ = finish_readers();
                     return Err(error.to_string());
                 }
             }
         }
-        let output = child
-            .wait_with_output()
-            .map_err(|error| error.to_string())?;
-        Ok(CommandOutput {
-            success: output.status.success(),
-            stdout: output.stdout,
-            stderr: output.stderr,
-        })
     }
 }
 
@@ -136,8 +164,15 @@ impl CommandRunner for SystemCommandRunner {
 /// state and command runner into a blocking task.
 #[derive(Clone)]
 pub struct AndroidEmulatorService {
-    runner: Arc<dyn CommandRunner>,
-    app_data_dir: PathBuf,
+    pub(crate) runner: Arc<dyn CommandRunner>,
+    pub(crate) app_data_dir: PathBuf,
+    pub(crate) state: Arc<Mutex<session::AndroidServiceState>>,
+    pub(crate) ownership: Arc<session::OwnershipLedger>,
+    pub(crate) desired_visibility: Arc<AtomicBool>,
+    pub(crate) session_cancel: Arc<AtomicBool>,
+    pub(crate) operation_lock: Arc<Mutex<()>>,
+    pub(crate) next_generation: Arc<AtomicU64>,
+    pub(crate) app: Arc<Mutex<Option<AppHandle>>>,
     /// Cancellation flag for the onboarding setup sequence (PA-24).
     setup_cancel: Arc<AtomicBool>,
     /// Guard so only one setup sequence runs at a time (PA-24).
@@ -151,16 +186,23 @@ pub struct AndroidEmulatorService {
 }
 
 impl AndroidEmulatorService {
-    pub(crate) fn new(app_data_dir: PathBuf) -> Self {
+    pub(crate) fn new(app_data_dir: PathBuf) -> Result<Self, String> {
         let runner: Arc<dyn CommandRunner> = Arc::new(SystemCommandRunner);
-        Self {
+        Ok(Self {
             runner,
-            app_data_dir,
+            app_data_dir: app_data_dir.clone(),
+            state: Arc::new(Mutex::new(session::AndroidServiceState::default())),
+            ownership: Arc::new(session::OwnershipLedger::open(app_data_dir)?),
+            desired_visibility: Arc::new(AtomicBool::new(true)),
+            session_cancel: Arc::new(AtomicBool::new(false)),
+            operation_lock: Arc::new(Mutex::new(())),
+            next_generation: Arc::new(AtomicU64::new(0)),
+            app: Arc::new(Mutex::new(None)),
             setup_cancel: Arc::new(AtomicBool::new(false)),
             setup_running: Arc::new(AtomicBool::new(false)),
             licenses_accepted: Arc::new(AtomicBool::new(false)),
             download_confirmed: Arc::new(AtomicBool::new(false)),
-        }
+        })
     }
 
     /// Starts (or resumes) the onboarding setup sequence (PA-24).
@@ -259,6 +301,117 @@ pub fn android_emulator_setup_cancel(
     service.setup_cancel()
 }
 
+#[tauri::command]
+pub async fn android_emulator_attach(
+    app: AppHandle,
+    service: State<'_, AndroidEmulatorService>,
+    avd_name: String,
+    stream_fps: u16,
+    fallback_fps: f64,
+) -> Result<AndroidEmulatorSession, String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.attach_sync(app, avd_name, stream_fps, fallback_fps)
+    })
+    .await
+    .map_err(|error| format!("failed to attach Android emulator: {error}"))?
+}
+
+#[tauri::command]
+pub async fn android_emulator_detach(
+    service: State<'_, AndroidEmulatorService>,
+) -> Result<(), String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.detach_sync())
+        .await
+        .map_err(|error| format!("failed to detach Android emulator: {error}"))?
+}
+
+#[tauri::command]
+pub async fn android_emulator_end(
+    service: State<'_, AndroidEmulatorService>,
+) -> Result<(), String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.end_sync())
+        .await
+        .map_err(|error| format!("failed to end Android emulator: {error}"))?
+}
+
+#[tauri::command]
+pub fn android_emulator_set_visible(
+    service: State<'_, AndroidEmulatorService>,
+    visible: bool,
+) -> Result<(), String> {
+    service.set_visible_sync(visible)
+}
+
+#[tauri::command]
+pub fn android_emulator_set_stream_rate(
+    service: State<'_, AndroidEmulatorService>,
+    fps: u16,
+) -> Result<u16, String> {
+    service.set_stream_rate_sync(fps)
+}
+
+#[tauri::command]
+pub fn android_emulator_set_fallback_rate(
+    service: State<'_, AndroidEmulatorService>,
+    fps: f64,
+) -> Result<f64, String> {
+    service.set_fallback_rate_sync(fps)
+}
+
+#[tauri::command]
+pub async fn android_emulator_tap(
+    service: State<'_, AndroidEmulatorService>,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.tap_sync(x, y))
+        .await
+        .map_err(|error| format!("failed to tap Android emulator: {error}"))?
+}
+
+#[tauri::command]
+pub async fn android_emulator_drag(
+    service: State<'_, AndroidEmulatorService>,
+    from_x: f64,
+    from_y: f64,
+    to_x: f64,
+    to_y: f64,
+    duration_ms: u64,
+) -> Result<(), String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.drag_sync(from_x, from_y, to_x, to_y, duration_ms)
+    })
+    .await
+    .map_err(|error| format!("failed to drag Android emulator: {error}"))?
+}
+
+#[tauri::command]
+pub async fn android_emulator_type_text(
+    service: State<'_, AndroidEmulatorService>,
+    text: String,
+) -> Result<(), String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.type_text_sync(&text))
+        .await
+        .map_err(|error| format!("failed to type into Android emulator: {error}"))?
+}
+
+#[tauri::command]
+pub async fn android_emulator_press_key(
+    service: State<'_, AndroidEmulatorService>,
+    key: String,
+) -> Result<(), String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.press_key_sync(&key))
+        .await
+        .map_err(|error| format!("failed to press Android emulator key: {error}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,5 +430,23 @@ mod tests {
         assert_eq!(keycode_for_key("arrowRight"), Some(22));
         assert_eq!(keycode_for_key("space"), Some(62));
         assert_eq!(keycode_for_key("unknown"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interruptible_runner_drains_large_output_without_pipe_deadlock() {
+        let runner = SystemCommandRunner;
+        let cancel = AtomicBool::new(false);
+        let output = runner
+            .run_interruptible(
+                "perl",
+                &["-e".to_string(), "print 'x' x 262144".to_string()],
+                &cancel,
+                Instant::now() + Duration::from_secs(5),
+            )
+            .expect("large Android command output should complete");
+        assert!(output.success);
+        assert_eq!(output.stdout.len(), 262_144);
+        assert!(output.stderr.is_empty());
     }
 }

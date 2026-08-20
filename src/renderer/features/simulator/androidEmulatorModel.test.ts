@@ -11,13 +11,17 @@
  */
 
 import { describe, expect, it } from 'vitest'
+import type { AndroidDevice } from './androidEmulatorApi'
 import {
   ANDROID_EMULATOR_AUTO_CAPABLE_ISSUES,
   ANDROID_EMULATOR_ISSUES,
   ANDROID_EMULATOR_SETUP_STEPS,
+  DEFAULT_ANDROID_EMULATOR_FALLBACK_FPS,
+  DEFAULT_ANDROID_EMULATOR_STREAM_FPS,
   androidEmulatorIssueMessageKey,
   androidEmulatorSetupStepMessageKey,
   errorText,
+  groupAndroidEmulatorDevices,
   isAndroidEmulatorIssue,
   isAndroidEmulatorSetupStep,
   isUnknownCommandError,
@@ -122,5 +126,58 @@ describe('androidEmulatorModel — fail-open classifier', () => {
     expect(errorText('plain')).toBe('plain')
     expect(errorText('')).toBeUndefined()
     expect(errorText(undefined)).toBeUndefined()
+  })
+})
+
+
+// ── PA-27: picker grouping + stream defaults ───────────────────────────────
+
+describe('androidEmulatorModel — device picker grouping (PA-27)', () => {
+  const pixel8: AndroidDevice = {
+    avdName: 'Pixel_8_API_35', displayName: 'Pixel 8', apiLevel: 35, family: 'phone', running: false,
+  }
+  const pixelTablet: AndroidDevice = {
+    avdName: 'Pixel_Tablet_API_34', displayName: 'Pixel Tablet', apiLevel: 34, family: 'tablet', running: false,
+  }
+  const pixel9Running: AndroidDevice = {
+    avdName: 'Pixel_9_API_36', displayName: 'Pixel 9', apiLevel: 36, family: 'phone', running: true,
+  }
+  const androidTv: AndroidDevice = {
+    avdName: 'Android_TV_API_35', displayName: 'Android TV', apiLevel: 35, family: 'other', running: false,
+  }
+
+  it('keeps running devices first, then groups by family and descending apiLevel', () => {
+    const groups = groupAndroidEmulatorDevices([pixel8, pixelTablet, pixel9Running], 'all', '')
+
+    expect(groups.map(group => group.key)).toEqual(['running', 'phone:35', 'tablet:34'])
+    expect(groups[0].devices.map(device => device.avdName)).toEqual(['Pixel_9_API_36'])
+  })
+
+  it('filters by family and by a free-text query over name/avd/apiLevel', () => {
+    expect(
+      groupAndroidEmulatorDevices([pixel8, pixelTablet], 'tablet', '').map(group => group.key),
+    ).toEqual(['tablet:34'])
+    expect(
+      groupAndroidEmulatorDevices([pixel8, pixelTablet], 'all', '35').flatMap(group => group.devices),
+    ).toEqual([pixel8])
+    expect(groupAndroidEmulatorDevices([pixel8], 'all', 'galaxy')).toEqual([])
+  })
+
+  it('orders phones by descending apiLevel inside the family groups', () => {
+    const older: AndroidDevice = { ...pixel8, avdName: 'Pixel_8_API_31', apiLevel: 31 }
+    const groups = groupAndroidEmulatorDevices([older, pixel8], 'all', '')
+
+    expect(groups.map(group => group.key)).toEqual(['phone:35', 'phone:31'])
+  })
+
+  it('uses the frozen family order phone, tablet, other', () => {
+    const groups = groupAndroidEmulatorDevices([androidTv, pixelTablet, pixel8], 'all', '')
+
+    expect(groups.map(group => group.key)).toEqual(['phone:35', 'tablet:34', 'other:35'])
+  })
+
+  it('pins the renderer-side stream defaults for the screencap loop', () => {
+    expect(DEFAULT_ANDROID_EMULATOR_STREAM_FPS).toBe(2)
+    expect(DEFAULT_ANDROID_EMULATOR_FALLBACK_FPS).toBe(1)
   })
 })

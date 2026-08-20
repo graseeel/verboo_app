@@ -7,7 +7,6 @@ import type {
   IosSimulatorElementHit,
   IosSimulatorKey,
   IosSimulatorPoint,
-  IosSimulatorPresenceEvent,
   IosSimulatorRect,
 } from './iosSimulatorApi'
 import {
@@ -17,32 +16,35 @@ import {
   type Rect,
 } from './simulatorGeometry'
 import { createSimulatorAnnotationAttachment } from './simulatorAnnotations'
-import { SimulatorPresenceOverlay } from './SimulatorPresenceOverlay'
+import { SimulatorPresenceOverlay, type SimulatorPresence } from './SimulatorPresenceOverlay'
 import { SimulatorTooltipButton } from './SimulatorTooltip'
 import {
   useSimulatorInteraction,
   type SimulatorInteractionMode,
+  type SimulatorKeyMapper,
 } from './useSimulatorInteraction'
 
 type Labels = {
   interact: string
-  selectElement: string
-  selectArea: string
   interaction: string
   keyboardHint: string
   unavailable: string
-  note: string
-  notePlaceholder: string
-  addToChat: string
-  cancel: string
-  capturing: string
-  selectionTooSmall: string
-  elementUnavailable: string
   agentActive: string
   agentBadge: string
+  /** Selection-mode labels — only rendered when `selectionEnabled` (iOS).
+   *  The Android F1 surface is interact-only (PA-27; selection is F2/PA-29). */
+  selectElement?: string
+  selectArea?: string
+  note?: string
+  notePlaceholder?: string
+  addToChat?: string
+  cancel?: string
+  capturing?: string
+  selectionTooSmall?: string
+  elementUnavailable?: string
 }
 
-type SimulatorSurfaceProps = {
+type SimulatorSurfaceProps<K extends string = IosSimulatorKey> = {
   frameDataUrl?: string
   streamUrl?: string
   deviceName: string
@@ -50,23 +52,31 @@ type SimulatorSurfaceProps = {
   mode: SimulatorInteractionMode
   interactive: boolean
   labels: Labels
+  /** Per-platform key mapper injected by the caller (PA-27); defaults to the
+   *  iOS mapper inside useSimulatorInteraction. */
+  keyMapper?: SimulatorKeyMapper<K>
+  /** false renders an interact-only surface: no mode toolbar, no element/area
+   *  selection paths (Android F1). Defaults to true (iOS unchanged). */
+  selectionEnabled?: boolean
   onModeChange: (mode: SimulatorInteractionMode) => void
   onTap: (point: IosSimulatorPoint) => void
   onDrag: (from: IosSimulatorPoint, to: IosSimulatorPoint, durationMs: number) => void
   onTypeText: (text: string) => void
-  onPressKey: (key: IosSimulatorKey) => void
-  onInspectPoint: (
+  onPressKey: (key: K) => void
+  /** Selection callbacks — required by the selection modes, hence only used
+   *  when `selectionEnabled` is true (iOS passes all of them). */
+  onInspectPoint?: (
     point: IosSimulatorPoint,
     exact?: boolean,
   ) => Promise<IosSimulatorElementHit | undefined>
-  onCaptureAnnotation: (
+  onCaptureAnnotation?: (
     kind: 'element' | 'area',
     rect: IosSimulatorRect,
     element?: IosSimulatorAccessibilityNode | null,
   ) => Promise<IosSimulatorAnnotationCapture | undefined>
-  onDeleteCapture: (paths: string[]) => Promise<void>
-  onAddAnnotation: (attachment: AttachmentMeta) => void
-  agentPresence?: IosSimulatorPresenceEvent
+  onDeleteCapture?: (paths: string[]) => Promise<void>
+  onAddAnnotation?: (attachment: AttachmentMeta) => void
+  agentPresence?: SimulatorPresence
 }
 
 type AreaPointer = { pointerId: number; start: IosSimulatorPoint }
@@ -77,7 +87,7 @@ type PendingCapture = {
 
 const ELEMENT_INSPECTION_INTERVAL_MS = 100
 
-export function SimulatorSurface({
+export function SimulatorSurface<K extends string = IosSimulatorKey>({
   frameDataUrl,
   streamUrl,
   deviceName,
@@ -85,6 +95,8 @@ export function SimulatorSurface({
   mode,
   interactive,
   labels,
+  keyMapper,
+  selectionEnabled = true,
   onModeChange,
   onTap,
   onDrag,
@@ -95,7 +107,7 @@ export function SimulatorSurface({
   onDeleteCapture,
   onAddAnnotation,
   agentPresence,
-}: SimulatorSurfaceProps) {
+}: SimulatorSurfaceProps<K>) {
   const surfaceRef = useRef<HTMLDivElement | null>(null)
   const imageRef = useRef<HTMLImageElement | null>(null)
   const areaPointerRef = useRef<AreaPointer | null>(null)
@@ -118,7 +130,7 @@ export function SimulatorSurface({
   const [failedStreamUrl, setFailedStreamUrl] = useState<string | undefined>()
   const paintedRectRef = useRef<Rect>({ x: 0, y: 0, width: 0, height: 0 })
   const [stablePaintedRect, setStablePaintedRect] = useState<Rect>(paintedRectRef.current)
-  const interactionHandlers = useSimulatorInteraction({
+  const interactionHandlers = useSimulatorInteraction<K>({
     surfaceRef,
     imageRef,
     mode,
@@ -127,6 +139,7 @@ export function SimulatorSurface({
     onDrag,
     onTypeText,
     onPressKey,
+    keyMapper,
   })
   const previewSource = streamUrl && streamUrl !== failedStreamUrl ? streamUrl : frameDataUrl
 
@@ -176,11 +189,13 @@ export function SimulatorSurface({
     }
   }, [])
 
-  const modes: Array<{ value: SimulatorInteractionMode; label: string; icon: React.ReactNode }> = [
-    { value: 'interact', label: labels.interact, icon: <Hand size={13} aria-hidden="true" /> },
-    { value: 'select-element', label: labels.selectElement, icon: <MousePointer2 size={13} aria-hidden="true" /> },
-    { value: 'select-area', label: labels.selectArea, icon: <Scan size={13} aria-hidden="true" /> },
-  ]
+  const modes: Array<{ value: SimulatorInteractionMode; label: string; icon: React.ReactNode }> = selectionEnabled
+    ? [
+        { value: 'interact', label: labels.interact, icon: <Hand size={13} aria-hidden="true" /> },
+        { value: 'select-element', label: labels.selectElement ?? '', icon: <MousePointer2 size={13} aria-hidden="true" /> },
+        { value: 'select-area', label: labels.selectArea ?? '', icon: <Scan size={13} aria-hidden="true" /> },
+      ]
+    : []
   const selectionStyle = selectionRect ? normalizedRectToCss(selectionRect, stablePaintedRect) : undefined
   const frameStyle = stablePaintedRect.width > 0 && stablePaintedRect.height > 0
     ? {
@@ -211,7 +226,7 @@ export function SimulatorSurface({
     rect: IosSimulatorRect,
     element: IosSimulatorAccessibilityNode | null = null,
   ) {
-    if (capturing || pendingCapture) return
+    if (capturing || pendingCapture || !onCaptureAnnotation) return
     setCapturing(true)
     setSelectionError(undefined)
     try {
@@ -245,7 +260,7 @@ export function SimulatorSurface({
   async function runElementInspection() {
     const inspection = inspectionRef.current
     const point = inspection.queued
-    if (!point || inspection.inFlight || modeRef.current !== 'select-element') return
+    if (!point || inspection.inFlight || modeRef.current !== 'select-element' || !onInspectPoint) return
     inspection.queued = undefined
     inspection.inFlight = true
     inspection.lastStartedAt = performance.now()
@@ -265,7 +280,7 @@ export function SimulatorSurface({
   }
 
   async function selectElementAt(point: IosSimulatorPoint) {
-    if (capturing || pendingCapture) return
+    if (capturing || pendingCapture || !onInspectPoint) return
     const inspection = inspectionRef.current
     inspection.sequence += 1
     inspection.selecting = true
@@ -358,12 +373,12 @@ export function SimulatorSurface({
     setSelectionRect(undefined)
     setNote('')
     if (pending) {
-      await onDeleteCapture([pending.capture.cropPath, pending.capture.viewportPath])
+      await onDeleteCapture?.([pending.capture.cropPath, pending.capture.viewportPath])
     }
   }
 
   function confirmCapture() {
-    if (!pendingCapture) return
+    if (!pendingCapture || !onAddAnnotation) return
     onAddAnnotation(createSimulatorAnnotationAttachment(
       pendingCapture.kind,
       note.trim() || undefined,
@@ -377,6 +392,7 @@ export function SimulatorSurface({
 
   return (
     <div className="ios-simulator-surface-shell">
+      {modes.length > 0 && (
       <div className="ios-simulator-mode-toolbar" role="toolbar" aria-label={deviceName}>
         {modes.map(item => (
           <SimulatorTooltipButton
@@ -393,6 +409,7 @@ export function SimulatorSurface({
           </SimulatorTooltipButton>
         ))}
       </div>
+      )}
       <div
         ref={surfaceRef}
         className="ios-simulator-interaction-surface"
@@ -432,7 +449,7 @@ export function SimulatorSurface({
         {selectionStyle && (
           <div className="ios-simulator-selection-outline" style={selectionStyle} aria-hidden="true" />
         )}
-        {capturing && <div className="ios-simulator-capturing" role="status">{labels.capturing}</div>}
+        {capturing && <div className="ios-simulator-capturing" role="status">{labels.capturing ?? ''}</div>}
         {!interactive && mode === 'interact' && (
           <div className="ios-simulator-interaction-unavailable" aria-hidden="true">
             {labels.unavailable}

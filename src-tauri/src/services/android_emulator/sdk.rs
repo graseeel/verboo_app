@@ -164,9 +164,13 @@ pub(crate) fn list_avd_names(runner: &dyn CommandRunner, sdk_path: &Path) -> Vec
     } else {
         "emulator"
     });
-    match runner.run(emulator.to_string_lossy().as_ref(), &["-list-avds".to_string()]) {
+    match runner.run(
+        emulator.to_string_lossy().as_ref(),
+        &["-list-avds".to_string()],
+    ) {
         Ok(output) if output.success => {
-            let names = super::requirements::parse_avd_list(&String::from_utf8_lossy(&output.stdout));
+            let names =
+                super::requirements::parse_avd_list(&String::from_utf8_lossy(&output.stdout));
             names
         }
         _ => Vec::new(),
@@ -229,17 +233,21 @@ pub fn system_image_size_label() -> String {
 /// The newest `system-images;android-XX;google_apis;<abi>` package from
 /// `sdkmanager --list` (pure decision; falls back to a pinned API 35 image
 /// when the list cannot be read).
-pub(crate) fn pick_latest_system_image(runner: &dyn CommandRunner, sdk_path: &Path) -> Option<String> {
+pub(crate) fn pick_latest_system_image(
+    runner: &dyn CommandRunner,
+    sdk_path: &Path,
+) -> Option<String> {
     let sdkmanager = sdkmanager_path(sdk_path);
     let abi = host_abi();
-    match runner.run(sdkmanager.to_string_lossy().as_ref(), &["--list".to_string()]) {
+    match runner.run(
+        sdkmanager.to_string_lossy().as_ref(),
+        &["--list".to_string()],
+    ) {
         Ok(output) if output.success => {
             let list = String::from_utf8_lossy(&output.stdout);
             parse_latest_system_image(&list, abi)
         }
-        _ => Some(format!(
-            "system-images;android-35;google_apis;{abi}"
-        )),
+        _ => Some(format!("system-images;android-35;google_apis;{abi}")),
     }
 }
 
@@ -417,7 +425,10 @@ pub fn sdkmanager_install(
 
 /// Creates the default AVD: newest installed system image, pixel device
 /// (falls back to the default device definition).
-pub(crate) fn create_default_avd(runner: &dyn CommandRunner, sdk_path: &Path) -> Result<(), String> {
+pub(crate) fn create_default_avd(
+    runner: &dyn CommandRunner,
+    sdk_path: &Path,
+) -> Result<(), String> {
     let abi = host_abi();
     let image = newest_installed_system_image(sdk_path, abi)
         .ok_or_else(|| "no Android system image is installed".to_string())?;
@@ -568,11 +579,7 @@ fn unzip_archive(zip_path: &Path, dest: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
         let mut command = Command::new("tar");
-        command
-            .arg("-xf")
-            .arg(zip_path)
-            .arg("-C")
-            .arg(dest);
+        command.arg("-xf").arg(zip_path).arg("-C").arg(dest);
         crate::services::cli_spawn::apply_creation_flags(&mut command);
         let status = command.status().map_err(|e| e.to_string())?;
         if status.success() {
@@ -619,10 +626,19 @@ mod tests {
 
     #[test]
     fn sdkmanager_progress_parses_percent_lines() {
-        assert_eq!(parse_sdkmanager_progress("[==  ] 25% Unzipping..."), Some(25));
-        assert_eq!(parse_sdkmanager_progress("[====] 100% Computing updates..."), Some(100));
+        assert_eq!(
+            parse_sdkmanager_progress("[==  ] 25% Unzipping..."),
+            Some(25)
+        );
+        assert_eq!(
+            parse_sdkmanager_progress("[====] 100% Computing updates..."),
+            Some(100)
+        );
         assert_eq!(parse_sdkmanager_progress("42%"), Some(42));
-        assert_eq!(parse_sdkmanager_progress("Fetching https://dl.google.com/..."), None);
+        assert_eq!(
+            parse_sdkmanager_progress("Fetching https://dl.google.com/..."),
+            None
+        );
         assert_eq!(parse_sdkmanager_progress(""), None);
     }
 
@@ -642,13 +658,19 @@ platform-tools | 1 | Android SDK Platform-Tools
             parse_latest_system_image(list, "x86_64"),
             Some("system-images;android-35;google_apis;x86_64".to_string())
         );
-        assert_eq!(parse_latest_system_image(list, "arm64-v8a"), Some("system-images;android-35;google_apis;arm64-v8a".to_string()));
+        assert_eq!(
+            parse_latest_system_image(list, "arm64-v8a"),
+            Some("system-images;android-35;google_apis;arm64-v8a".to_string())
+        );
         assert_eq!(parse_latest_system_image("", "arm64-v8a"), None);
     }
 
     #[test]
     fn extracts_api_level_from_image() {
-        assert_eq!(api_level_from_image("system-images;android-35;google_apis;arm64-v8a"), 35);
+        assert_eq!(
+            api_level_from_image("system-images;android-35;google_apis;arm64-v8a"),
+            35
+        );
         assert_eq!(api_level_from_image("platform-tools"), 0);
     }
 

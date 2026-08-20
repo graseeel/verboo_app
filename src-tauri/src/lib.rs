@@ -2435,9 +2435,10 @@ pub fn run() {
             }
             // Android emulator service (PA-24; macOS/Windows/Linux — the
             // requirements/setup probes are per-SO inside the service).
-            app.manage(services::android_emulator::AndroidEmulatorService::new(
-                app_data_dir.clone(),
-            ));
+            app.manage(
+                services::android_emulator::AndroidEmulatorService::new(app_data_dir.clone())
+                    .map_err(std::io::Error::other)?,
+            );
             let settings_store = SettingsStore::new(app_data_dir.clone());
             app.manage(
                 services::pasted_file_upload::PastedFileUploadService::new(app_data_dir.clone())
@@ -2720,6 +2721,16 @@ pub fn run() {
             services::android_emulator::android_emulator_requirements,
             services::android_emulator::android_emulator_setup_start,
             services::android_emulator::android_emulator_setup_cancel,
+            services::android_emulator::android_emulator_attach,
+            services::android_emulator::android_emulator_detach,
+            services::android_emulator::android_emulator_end,
+            services::android_emulator::android_emulator_set_visible,
+            services::android_emulator::android_emulator_set_stream_rate,
+            services::android_emulator::android_emulator_set_fallback_rate,
+            services::android_emulator::android_emulator_tap,
+            services::android_emulator::android_emulator_drag,
+            services::android_emulator::android_emulator_type_text,
+            services::android_emulator::android_emulator_press_key,
             #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_attach,
             #[cfg(target_os = "macos")]

@@ -252,7 +252,10 @@ fn adb_probe(runner: &dyn CommandRunner, sdk_path: &Path) -> bool {
 }
 
 fn emulator_binary_exists(sdk_path: &Path) -> bool {
-    sdk_path.join("emulator").join(emulator_executable()).is_file()
+    sdk_path
+        .join("emulator")
+        .join(emulator_executable())
+        .is_file()
 }
 
 /// Licenses are accepted when the SDK root has the `licenses/android-sdk-license`
@@ -274,7 +277,10 @@ fn has_system_image(sdk_path: &Path) -> bool {
 /// `emulator -list-avds` → the installed AVD names.
 fn list_avds(runner: &dyn CommandRunner, sdk_path: &Path) -> Vec<String> {
     let emulator = sdk_path.join("emulator").join(emulator_executable());
-    match runner.run(emulator.to_string_lossy().as_ref(), &["-list-avds".to_string()]) {
+    match runner.run(
+        emulator.to_string_lossy().as_ref(),
+        &["-list-avds".to_string()],
+    ) {
         Ok(output) if output.success => parse_avd_list(&String::from_utf8_lossy(&output.stdout)),
         _ => Vec::new(),
     }
@@ -289,7 +295,13 @@ fn running_avd_names(runner: &dyn CommandRunner, sdk_path: &Path) -> Vec<String>
     let serials = parse_adb_devices(&String::from_utf8_lossy(&output.stdout));
     let mut names = Vec::new();
     for serial in serials {
-        let args = vec!["-s".to_string(), serial, "emu".to_string(), "avd".to_string(), "name".to_string()];
+        let args = vec![
+            "-s".to_string(),
+            serial,
+            "emu".to_string(),
+            "avd".to_string(),
+            "name".to_string(),
+        ];
         if let Ok(out) = runner.run(adb.to_string_lossy().as_ref(), &args) {
             if let Some(name) = parse_avd_name_from_emu(&String::from_utf8_lossy(&out.stdout)) {
                 names.push(name);
@@ -412,7 +424,10 @@ mod tests {
     fn parses_avd_list_output() {
         assert_eq!(
             parse_avd_list("Pixel_8_API_35\nPixel_Tablet_API_34\n\n"),
-            vec!["Pixel_8_API_35".to_string(), "Pixel_Tablet_API_34".to_string()]
+            vec![
+                "Pixel_8_API_35".to_string(),
+                "Pixel_Tablet_API_34".to_string()
+            ]
         );
         assert_eq!(parse_avd_list(""), Vec::<String>::new());
     }
@@ -424,7 +439,10 @@ mod tests {
             parse_adb_devices(output),
             vec!["emulator-5554".to_string(), "emulator-5556".to_string()]
         );
-        assert_eq!(parse_adb_devices("List of devices attached\n\n"), Vec::<String>::new());
+        assert_eq!(
+            parse_adb_devices("List of devices attached\n\n"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -449,24 +467,48 @@ mod tests {
 
     #[test]
     fn infers_device_family_from_avd_name() {
-        assert_eq!(android_device_family("Pixel_8_API_35"), AndroidDeviceFamily::Phone);
-        assert_eq!(android_device_family("Pixel_Tablet_API_34"), AndroidDeviceFamily::Tablet);
-        assert_eq!(android_device_family("my_custom_avd"), AndroidDeviceFamily::Other);
+        assert_eq!(
+            android_device_family("Pixel_8_API_35"),
+            AndroidDeviceFamily::Phone
+        );
+        assert_eq!(
+            android_device_family("Pixel_Tablet_API_34"),
+            AndroidDeviceFamily::Tablet
+        );
+        assert_eq!(
+            android_device_family("my_custom_avd"),
+            AndroidDeviceFamily::Other
+        );
     }
 
     /// Frozen issue names are load-bearing (contract §Deteccao): renaming a
     /// variant below FAILS this test.
     #[test]
     fn issue_names_serialize_to_frozen_values() {
-        assert_eq!(serde_json::to_string(&Issue::SdkMissing).unwrap(), "\"sdkMissing\"");
-        assert_eq!(serde_json::to_string(&Issue::AdbMissing).unwrap(), "\"adbMissing\"");
-        assert_eq!(serde_json::to_string(&Issue::EmulatorMissing).unwrap(), "\"emulatorMissing\"");
+        assert_eq!(
+            serde_json::to_string(&Issue::SdkMissing).unwrap(),
+            "\"sdkMissing\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Issue::AdbMissing).unwrap(),
+            "\"adbMissing\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Issue::EmulatorMissing).unwrap(),
+            "\"emulatorMissing\""
+        );
         assert_eq!(
             serde_json::to_string(&Issue::SystemImageMissing).unwrap(),
             "\"systemImageMissing\""
         );
-        assert_eq!(serde_json::to_string(&Issue::AvdMissing).unwrap(), "\"avdMissing\"");
-        assert_eq!(serde_json::to_string(&Issue::AccelMissing).unwrap(), "\"accelMissing\"");
+        assert_eq!(
+            serde_json::to_string(&Issue::AvdMissing).unwrap(),
+            "\"avdMissing\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Issue::AccelMissing).unwrap(),
+            "\"accelMissing\""
+        );
         assert_eq!(
             serde_json::to_string(&Issue::LicensesNotAccepted).unwrap(),
             "\"licensesNotAccepted\""
@@ -483,9 +525,17 @@ mod tests {
 
     #[test]
     fn device_family_serializes_to_frozen_values() {
-        assert_eq!(serde_json::to_string(&AndroidDeviceFamily::Phone).unwrap(), "\"phone\"");
-        assert_eq!(serde_json::to_string(&AndroidDeviceFamily::Tablet).unwrap(), "\"tablet\"");
-        assert_eq!(serde_json::to_string(&AndroidDeviceFamily::Other).unwrap(), "\"other\"");
+        assert_eq!(
+            serde_json::to_string(&AndroidDeviceFamily::Phone).unwrap(),
+            "\"phone\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AndroidDeviceFamily::Tablet).unwrap(),
+            "\"tablet\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AndroidDeviceFamily::Other).unwrap(),
+            "\"other\""
+        );
     }
-
 }

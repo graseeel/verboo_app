@@ -1,10 +1,23 @@
 import { useEffect, useRef } from 'react'
-import type { IosSimulatorPoint, IosSimulatorPresenceEvent } from './iosSimulatorApi'
+import type { IosSimulatorPoint } from './iosSimulatorApi'
 import type { Rect } from './simulatorGeometry'
+
+/** Platform-neutral presence shape (PA-27): the iOS and Android presence
+ *  events share this structure (contract §Eventos — "shape idêntico ao iOS");
+ *  `action` stays a plain string so an iOS-side union refactor cannot drift
+ *  the Android contract. */
+export type SimulatorPresence = {
+  generation: number
+  phase: 'start' | 'clear'
+  action?: string | null
+  target?: IosSimulatorPoint | null
+  start?: IosSimulatorPoint | null
+  end?: IosSimulatorPoint | null
+}
 
 type SimulatorPresenceOverlayProps = {
   paintedRect: Rect
-  presence?: IosSimulatorPresenceEvent
+  presence?: SimulatorPresence
   reducedMotion?: boolean
   label: string
   badgeLabel: string

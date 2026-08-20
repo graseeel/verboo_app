@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { SimulatorSurface } from './SimulatorSurface'
 import type { IosSimulatorPresenceEvent } from './iosSimulatorApi'
 import { paintedContainRect } from './simulatorGeometry'
+import { androidEmulatorKeyForKeyboardEvent } from './useSimulatorInteraction'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -349,5 +350,91 @@ describe('SimulatorSurface', () => {
       expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) }),
       expect.objectContaining({ id: 'save', label: 'Save' }),
     ))
+  })
+})
+
+
+// ── Android adapter (PA-27): interact-only surface, injected key mapper ────
+
+function renderAndroidSurface() {
+  const callbacks = {
+    onTap: vi.fn(),
+    onDrag: vi.fn(),
+    onTypeText: vi.fn(),
+    onPressKey: vi.fn(),
+    onModeChange: vi.fn(),
+  }
+  render(
+    <SimulatorSurface
+      frameDataUrl="data:image/png;base64,androidframe"
+      deviceName="Pixel 8"
+      previewAlt="Live Pixel 8 preview"
+      mode="interact"
+      interactive
+      selectionEnabled={false}
+      keyMapper={androidEmulatorKeyForKeyboardEvent}
+      labels={{
+        interact: 'Interact',
+        interaction: 'Control Pixel 8',
+        keyboardHint: 'Type, paste, or use special keys.',
+        unavailable: 'Interaction unavailable',
+        agentActive: 'Verboo is controlling this emulator.',
+        agentBadge: 'Verboo at work',
+      }}
+      {...callbacks}
+    />,
+  )
+  const surface = screen.getByRole('application')
+  const image = screen.getByAltText('Live Pixel 8 preview')
+  Object.defineProperty(surface, 'getBoundingClientRect', {
+    value: () => ({ left: 0, top: 0, width: 600, height: 900, right: 600, bottom: 900 }),
+  })
+  Object.defineProperty(image, 'naturalWidth', { value: 1080, configurable: true })
+  Object.defineProperty(image, 'naturalHeight', { value: 2400, configurable: true })
+  Object.defineProperty(surface, 'setPointerCapture', { value: vi.fn(), configurable: true })
+  Object.defineProperty(surface, 'releasePointerCapture', { value: vi.fn(), configurable: true })
+  return { surface, image, callbacks }
+}
+
+describe('SimulatorSurface android adapter (PA-27)', () => {
+  it('renders the android PNG frame without the selection mode toolbar', () => {
+    const { image } = renderAndroidSurface()
+
+    expect(image).toHaveAttribute('src', 'data:image/png;base64,androidframe')
+    expect(screen.queryByRole('toolbar')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Select component' })).toBeNull()
+  })
+
+  it('dispatches a normalized tap to the injected callback', () => {
+    const { surface, callbacks } = renderAndroidSurface()
+
+    fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 450 })
+    fireEvent.pointerUp(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 450 })
+    fireEvent.click(surface, { button: 0, clientX: 300, clientY: 450 })
+
+    expect(callbacks.onTap).toHaveBeenCalledTimes(1)
+    const point = callbacks.onTap.mock.calls[0][0] as { x: number; y: number }
+    // 600x900 surface painting a 1080x2400 (1:2.22) frame with object-fit
+    // contain: the painted rect is 405x900 centered horizontally (x=97.5), so
+    // the tap lands at ((300-97.5)/405, 450/900) = (0.5, 0.5).
+    expect(point.x).toBeCloseTo(0.5, 5)
+    expect(point.y).toBeCloseTo(0.5, 5)
+    expect(callbacks.onDrag).not.toHaveBeenCalled()
+  })
+
+  it('routes special keys through the injected android key mapper and text through onTypeText', () => {
+    const { surface, callbacks } = renderAndroidSurface()
+
+    fireEvent.keyDown(surface, { key: 'Enter' })
+    expect(callbacks.onPressKey).toHaveBeenCalledWith('enter')
+    fireEvent.keyDown(surface, { key: 'Backspace' })
+    expect(callbacks.onPressKey).toHaveBeenCalledWith('backspace')
+    fireEvent.keyDown(surface, { key: 'a' })
+    expect(callbacks.onTypeText).toHaveBeenCalledWith('a')
+    fireEvent.keyDown(surface, { key: 'Escape' })
+    expect(callbacks.onPressKey).toHaveBeenCalledWith('escape')
+    fireEvent.keyDown(surface, { key: ' ' })
+    expect(callbacks.onPressKey).toHaveBeenCalledWith('space')
+    expect(callbacks.onPressKey).toHaveBeenCalledTimes(4)
   })
 })
