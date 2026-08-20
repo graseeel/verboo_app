@@ -906,7 +906,9 @@ impl AndroidEmulatorService {
         };
         let avd_name = session.avd_name.clone();
         let ownership = session.ownership;
-        if let Err(error) = self.cleanup_session_until(session, should_shutdown(ownership), Some(deadline)) {
+        if let Err(error) =
+            self.cleanup_session_until(session, should_shutdown(ownership), Some(deadline))
+        {
             report.errors.push(error);
         } else if should_shutdown(ownership) {
             if let Err(error) = self.ownership.remove(&avd_name) {

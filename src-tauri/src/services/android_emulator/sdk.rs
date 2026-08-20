@@ -40,23 +40,23 @@ pub fn cmdline_tools_url(os: &str, arch: &str) -> String {
 }
 
 /// Pure: extracts the last percent token from an sdkmanager/curl progress
-/// line ("[==  ] 25% Unzipping..." → 25). None when no percent.
+/// line ("[==  ] 25% Unzipping..." → 25, "13.3%" → 13). Decimal values
+/// are floored and the result is clamped to 0..=100. None when no percent.
 pub fn parse_sdkmanager_progress(line: &str) -> Option<u8> {
-    let mut digits = String::new();
-    let mut last: Option<u8> = None;
-    for ch in line.chars() {
-        if ch.is_ascii_digit() {
-            digits.push(ch);
-        } else {
-            if ch == '%' {
-                if let Ok(n) = digits.parse::<u8>() {
-                    last = Some(n.min(100));
-                }
-            }
-            digits.clear();
-        }
+    let percent_index = line.rfind('%')?;
+    let prefix = &line[..percent_index];
+    let token = prefix
+        .rsplit(|ch: char| !(ch.is_ascii_digit() || matches!(ch, '.' | '+' | '-')))
+        .next()
+        .unwrap_or("");
+    if token.is_empty() {
+        return None;
     }
-    last
+    let value = token.parse::<f64>().ok()?;
+    if !value.is_finite() {
+        return None;
+    }
+    Some(value.floor().clamp(0.0, 100.0) as u8)
 }
 
 /// Pure: parses `sdkmanager --list` output and picks the newest
@@ -540,8 +540,17 @@ fn run_with_progress(
         }
     }
     let _ = reader.join();
+    while let Ok(line) = rx.try_recv() {
+        if let Some(percent) = parse_sdkmanager_progress(&line) {
+            on_percent(percent);
+        }
+    }
     let status = child.wait().map_err(|e| e.to_string())?;
     if status.success() {
+        // A process can finish without emitting a parsable final percentage
+        // (or with curl's last line still queued behind the reader). The
+        // successful operation itself is authoritative for completion.
+        on_percent(100);
         Ok(())
     } else {
         Err(format!("{program} exited with {status}"))
@@ -635,11 +644,69 @@ mod tests {
             Some(100)
         );
         assert_eq!(parse_sdkmanager_progress("42%"), Some(42));
+        assert_eq!(parse_sdkmanager_progress("13.3%"), Some(13));
+        assert_eq!(parse_sdkmanager_progress("32.5%"), Some(32));
+        assert_eq!(parse_sdkmanager_progress("100.0%"), Some(100));
+        assert_eq!(parse_sdkmanager_progress("101.9%"), Some(100));
+        assert_eq!(parse_sdkmanager_progress("-1.2%"), Some(0));
         assert_eq!(
             parse_sdkmanager_progress("Fetching https://dl.google.com/..."),
             None
         );
         assert_eq!(parse_sdkmanager_progress(""), None);
+    }
+
+    #[test]
+    fn captured_curl_progress_fixture_parses_through_the_production_parser() {
+        // Captured by Sonda from curl --progress-bar during the PA-32
+        // re-audit on 2026-08-20; the fixture is preserved verbatim.
+        let observed: Vec<_> = include_str!("fixtures/curl_progress_sonda_2026_08_20.txt")
+            .lines()
+            .map(parse_sdkmanager_progress)
+            .collect();
+        assert_eq!(
+            observed,
+            vec![Some(13), Some(32), Some(53), Some(70), Some(96), Some(100),]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_with_progress_drains_the_final_line_after_reader_join() {
+        let cancel = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut observed = Vec::new();
+        let args = vec![
+            "-c".to_string(),
+            "printf '42.0%%'; (sleep 0.2) & exit 0".to_string(),
+        ];
+
+        run_with_progress("sh", &args, &cancel, deadline, &mut |percent| {
+            observed.push(percent);
+        })
+        .unwrap();
+
+        assert!(
+            observed.contains(&42),
+            "the final undelimited progress line must survive reader join: {observed:?}"
+        );
+        assert_eq!(observed.last(), Some(&100));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_with_progress_emits_completion_even_without_a_percent_line() {
+        let cancel = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut observed = Vec::new();
+        let args = vec!["-c".to_string(), "printf 'sdkmanager finished'".to_string()];
+
+        run_with_progress("sh", &args, &cancel, deadline, &mut |percent| {
+            observed.push(percent);
+        })
+        .unwrap();
+
+        assert_eq!(observed, vec![100]);
     }
 
     #[test]

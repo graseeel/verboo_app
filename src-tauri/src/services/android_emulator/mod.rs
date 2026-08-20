@@ -260,6 +260,7 @@ impl AndroidEmulatorService {
         let licenses = self.licenses_accepted.clone();
         let download = self.download_confirmed.clone();
         thread::spawn(move || {
+            let operations = setup::SystemSetupOperations;
             setup::run_setup(
                 &app,
                 runner.as_ref(),
@@ -268,6 +269,7 @@ impl AndroidEmulatorService {
                 &licenses,
                 &download,
                 mode,
+                &operations,
             );
             running.store(false, Ordering::SeqCst);
         });
