@@ -1,6 +1,60 @@
 {
   "schemaVersion": 1,
   "releases": {
+    "0.8.0-beta": {
+      "pt-BR": {
+        "title": "Verboo Code 0.8.0-beta — Simulador de Android e correção da tela preta no Linux",
+        "summary": "Uma grande atualização beta que traz o Simulador de Android para macOS, Windows e Linux, com setup guiado e preview interativo, e mitiga a tela preta do Linux em WebKitGTK/AppImage/NVIDIA (#78).",
+        "items": [
+          {
+            "title": "Simulador de Android nos três sistemas",
+            "body": "O painel agora oferece um Simulador de Android integrado em macOS, Windows e Linux, com detecção das exigências do ambiente e suporte ao fluxo completo de setup."
+          },
+          {
+            "title": "Onboarding automático ou manual",
+            "body": "Escolha um caminho automático ou manual para preparar o SDK, aceitar licenças e confirmar downloads grandes antes de criar e iniciar o dispositivo virtual."
+          },
+          {
+            "title": "Preview interativo, acessibilidade e gravação",
+            "body": "Interaja com o preview Android, envie toques, arrastos e texto com segurança, capture screenshots, consulte a árvore de acessibilidade e grave sessões com limite declarado de 180 segundos."
+          },
+          {
+            "title": "Ações do sistema e painel de simuladores",
+            "body": "O simulador expõe cinco ações do sistema, e o menu de simuladores mantém as abas iOS e Android acessíveis, com controle de taxas no renderer e app-exit unificado com prazo de cancelamento."
+          },
+          {
+            "title": "Linux sem tela preta",
+            "body": "A inicialização do app fica mais resiliente em WebKitGTK, AppImage e máquinas NVIDIA, mitigando a tela preta registrada na issue #78."
+          }
+        ]
+      },
+      "en-US": {
+        "title": "Verboo Code 0.8.0-beta — Android Simulator and a Linux black-screen fix",
+        "summary": "A major beta release that brings Android Simulator to macOS, Windows, and Linux with guided setup and interactive preview, and mitigates the Linux black screen on WebKitGTK/AppImage/NVIDIA (#78).",
+        "items": [
+          {
+            "title": "Android Simulator on all three operating systems",
+            "body": "The panel now provides an integrated Android Simulator on macOS, Windows, and Linux, with environment requirement detection and the complete setup flow."
+          },
+          {
+            "title": "Automatic or manual onboarding",
+            "body": "Choose an automatic or manual path to prepare the SDK, accept licenses, and confirm large downloads before creating and starting the virtual device."
+          },
+          {
+            "title": "Interactive preview, accessibility, and recording",
+            "body": "Interact with the Android preview, send taps, drags, and text safely, capture screenshots, inspect the accessibility tree, and record sessions with a declared 180-second limit."
+          },
+          {
+            "title": "System actions and the simulator panel",
+            "body": "The simulator exposes five system actions, and the simulator menu keeps the iOS and Android tabs accessible, with renderer rate controls and unified app exit with a cancellation deadline."
+          },
+          {
+            "title": "No Linux black screen",
+            "body": "App startup is more resilient on WebKitGTK, AppImage, and NVIDIA machines, mitigating the black screen tracked in issue #78."
+          }
+        ]
+      }
+    },
     "0.7.3-beta": {
       "pt-BR": {
         "title": "Verboo Code 0.7.3-beta — login no Windows e onboarding do simulador",

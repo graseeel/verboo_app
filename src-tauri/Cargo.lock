@@ -6009,7 +6009,7 @@ dependencies = [
 
 [[package]]
 name = "verboo-desktop"
-version = "0.7.3-beta"
+version = "0.8.0-beta"
 dependencies = [
  "base64 0.22.1",
  "block2",
