@@ -109,6 +109,7 @@ import { supportsEmbeddedBrowser } from './features/browser/browserAvailability'
 import { browserLayoutWidth, browserMaxWidth, useBrowserPanel } from './features/browser/useBrowserPanel'
 import { IosSimulatorPanel } from './features/simulator/IosSimulatorPanel'
 import { useIosSimulatorPanel } from './features/simulator/useIosSimulatorPanel'
+import type { SimulatorPlatform, SimulatorPlatformRequest } from './features/simulator/simulatorPlatform'
 import { QuestionWizard, type ModelQuestion, type QuestionAnswer, type QuestionPromptState } from './features/questions/QuestionWizard'
 import { detectTextQuestionPrompt, extractModelQuestionsFromPayload, mergeModelQuestions } from './features/questions/questionDetection'
 import { MessageCircleQuestion } from 'lucide-react'
@@ -673,6 +674,12 @@ export function App() {
   const review = useReviewPanel()
   const browser = useBrowserPanel()
   const simulator = useIosSimulatorPanel()
+  const [simulatorPlatformRequest, setSimulatorPlatformRequest] = useState<SimulatorPlatformRequest>()
+  const simulatorPlatformRequestIdRef = useRef(0)
+  const requestSimulatorPlatform = useCallback((platform: SimulatorPlatform) => {
+    simulatorPlatformRequestIdRef.current += 1
+    setSimulatorPlatformRequest({ id: simulatorPlatformRequestIdRef.current, platform })
+  }, [])
   const [previewMedia, setPreviewMedia] = useState<TranscriptMediaAttachment | undefined>()
   const [mediaPreviewOpen, setMediaPreviewOpen] = useState(false)
   const mediaPreviewOpenFrameRef = useRef<number | undefined>(undefined)
@@ -962,22 +969,24 @@ export function App() {
     restorePanel: restoreWorkspacePanel,
   })
 
-  const openSimulatorForAgent = useCallback(() => {
+  const openSimulatorForAgent = useCallback((platform: SimulatorPlatform) => {
     if (!simulatorAvailable) return
+    if (platform === 'ios' && config.platform !== 'darwin') return
     setActiveView('chat')
     terminal.close()
     review.close()
     browser.close()
     clearMediaPreview()
     setSelectedSubagentId(undefined)
+    requestSimulatorPlatform(platform)
     simulator.open()
-  }, [browser.close, clearMediaPreview, review.close, simulator.open, simulatorAvailable, terminal.close])
+  }, [browser.close, clearMediaPreview, config.platform, requestSimulatorPlatform, review.close, simulator.open, simulatorAvailable, terminal.close])
 
   useEffect(() => {
     const request = simulator.agentOpenRequest
     if (!simulatorAvailable || request <= consumedSimulatorOpenRequestRef.current) return
     consumedSimulatorOpenRequestRef.current = request
-    openSimulatorForAgent()
+    openSimulatorForAgent('ios')
   }, [
     openSimulatorForAgent,
     simulator.agentOpenRequest,
@@ -1626,6 +1635,11 @@ export function App() {
 
   useEffect(() => {
     function handleEscapeInterrupt(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      // A local menu owns Escape while it is open. The TopBar registers its
+      // own window/capture listener to dismiss and restore focus; skipping
+      // here prevents the same key from arming the agent ESC×2 flow first.
+      if (document.querySelector('[data-topbar-simulator-menu-open="true"]')) return
       const targetConversationId = resolveEscapeConversation({
         activeConversationId: activeConversationIdRef.current,
         sideChatConversationId: sideChatRef.current?.conversation.id,
@@ -1633,7 +1647,7 @@ export function App() {
         focusedLane: focusedConversationLaneRef.current,
         lifecycle: { runningTurnByConversation: runningTurnByConversationRef.current },
       })
-      if (event.key !== 'Escape' || !targetConversationId) return
+      if (!targetConversationId) return
       event.preventDefault()
       event.stopPropagation()
       const now = Date.now()
@@ -6141,19 +6155,17 @@ export function App() {
     browser.toggle()
   }, [browser, browserAvailable, simulator, terminal, review, clearMediaPreview, workspacePanelsEnabled])
 
-  const handleToggleSimulator = useCallback(() => {
+  const handleOpenSimulator = useCallback((platform: SimulatorPlatform) => {
     if (!simulatorAvailable || !workspacePanelsEnabled) return
-    if (simulator.simulatorOpen) {
-      simulator.close()
-      return
-    }
+    if (platform === 'ios' && config.platform !== 'darwin') return
     terminal.close()
     review.close()
     browser.close()
     clearMediaPreview()
     setSelectedSubagentId(undefined)
+    requestSimulatorPlatform(platform)
     simulator.open()
-  }, [browser, review, simulator, simulatorAvailable, terminal, clearMediaPreview, workspacePanelsEnabled])
+  }, [browser, clearMediaPreview, config.platform, requestSimulatorPlatform, review, simulator, simulatorAvailable, terminal, workspacePanelsEnabled])
 
   const handleOpenMediaPreview = useCallback((media: TranscriptMediaAttachment) => {
     if (!workspacePanelsEnabled) return
@@ -6381,7 +6393,8 @@ export function App() {
         simulatorAvailable={simulatorAvailable}
         simulatorOpen={visibleSimulatorOpen}
         recordingActive={simulator.recordingActive}
-        onToggleSimulator={handleToggleSimulator}
+        platform={config.platform}
+        onOpenSimulator={handleOpenSimulator}
         workspacePanelsEnabled={workspacePanelsEnabled}
       />
 
@@ -6804,7 +6817,8 @@ export function App() {
           simulatorWidth={effectiveBrowserWidth}
           onSetWidth={setBrowserWidth}
           onClose={simulator.close}
-          onAndroidOpenRequested={openSimulatorForAgent}
+          onAndroidOpenRequested={() => openSimulatorForAgent('android')}
+          platformRequest={simulatorPlatformRequest}
           requirements={simulator.requirements}
           requirementsLoading={simulator.requirementsLoading}
           attachedUdid={simulator.attachedUdid}

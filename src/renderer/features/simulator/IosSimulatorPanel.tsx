@@ -45,6 +45,7 @@ import type {
   IosSimulatorSystemAction,
 } from './iosSimulatorApi'
 import type { AttachmentMeta } from '../../../shared/types'
+import type { SimulatorPlatformRequest } from './simulatorPlatform'
 
 type IosSimulatorPanelProps = {
   simulatorOpen: boolean
@@ -52,6 +53,7 @@ type IosSimulatorPanelProps = {
   onSetWidth: (width: number) => void
   onClose: () => void
   onAndroidOpenRequested?: () => void
+  platformRequest?: SimulatorPlatformRequest
   requirements?: IosSimulatorRequirements
   requirementsLoading: boolean
   attachedUdid?: string
@@ -111,6 +113,7 @@ export function IosSimulatorPanel({
   onSetWidth,
   onClose,
   onAndroidOpenRequested,
+  platformRequest,
   requirements,
   requirementsLoading,
   attachedUdid,
@@ -186,6 +189,12 @@ export function IosSimulatorPanel({
   useEffect(() => {
     if (!iosAvailable && activeSimulatorPlatform === 'ios') setActiveSimulatorPlatform('android')
   }, [iosAvailable, activeSimulatorPlatform])
+
+  useEffect(() => {
+    if (!platformRequest) return
+    if (platformRequest.platform === 'ios' && !iosAvailable) return
+    setActiveSimulatorPlatform(platformRequest.platform)
+  }, [iosAvailable, platformRequest])
 
   useEffect(() => {
     const visible = simulatorOpen && androidActive

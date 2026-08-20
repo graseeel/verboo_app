@@ -103,6 +103,7 @@ function createBridge(sendTurnImpl: (request: AgentTurnRequest) => Promise<strin
   let onAgentEvent: ((event: AgentEvent) => void) | undefined
   const unsubscribe = () => {}
   const sendTurn = vi.fn(sendTurnImpl)
+  const interrupt = vi.fn(async () => true)
   const bridge = {
     getUserSettings: vi.fn(async () => userSettings),
     getConfig: vi.fn(async () => ({ workingDirectory: '', accessMode: 'approval', platform: 'darwin' })),
@@ -145,10 +146,12 @@ function createBridge(sendTurnImpl: (request: AgentTurnRequest) => Promise<strin
     onVideoTranscriberProgress: vi.fn(() => unsubscribe),
     getWorkspaceChanges: vi.fn(async () => undefined),
     sendTurn,
+    interrupt,
   }
 
   return {
     sendTurn,
+    interrupt,
     emitAgentEvent(event: AgentEvent) {
       onAgentEvent?.(event)
     },
@@ -216,6 +219,33 @@ afterEach(() => {
 })
 
 describe('App annotation send behavior', () => {
+  it('gives an open simulator menu Escape priority over an active agent turn', async () => {
+    seedConversation()
+    const { emitAgentEvent, interrupt, sendTurn } = renderApp(async request => request.turnId ?? 'turn:test')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create main annotation' }))
+    fireEvent.click(screen.getByTitle('Send'))
+    await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(1))
+    const turnId = sendTurn.mock.calls[0][0].turnId!
+    act(() => { emitAgentEvent({ type: 'started', turnId }) })
+
+    const simulators = await screen.findByRole('button', { name: 'Simulators' })
+    fireEvent.click(simulators)
+    expect(screen.getByRole('menu', { name: 'Simulators' })).toBeInTheDocument()
+
+    fireEvent.keyDown(simulators, { key: 'Escape' })
+    expect(screen.queryByRole('menu', { name: 'Simulators' })).not.toBeInTheDocument()
+    expect(simulators).toHaveFocus()
+    expect(interrupt).not.toHaveBeenCalled()
+    expect(screen.queryByText('Press Esc again to stop the current turn.')).not.toBeInTheDocument()
+
+    await act(async () => {})
+    fireEvent.keyDown(simulators, { key: 'Escape' })
+    expect(interrupt).not.toHaveBeenCalled()
+    fireEvent.keyDown(simulators, { key: 'Escape' })
+    await waitFor(() => expect(interrupt).toHaveBeenCalledTimes(1))
+  })
+
   it('sends an annotation-only turn and consumes its draft only after the host accepts it', async () => {
     seedConversation()
     const acceptedTurn = deferred<string>()

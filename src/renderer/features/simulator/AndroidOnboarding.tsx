@@ -1,5 +1,7 @@
-import { Check, Copy, LoaderCircle, RefreshCw, Smartphone } from 'lucide-react'
+import { Check, Copy, FolderOpen, LoaderCircle, RefreshCw, Smartphone } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { appDataDir, homeDir, join } from '@tauri-apps/api/path'
+import { openPath } from '@tauri-apps/plugin-opener'
 import { useI18n } from '../../i18n'
 import {
   ANDROID_EMULATOR_AUTO_CAPABLE_ISSUES,
@@ -380,8 +382,10 @@ function AutomaticProgress({
 type GuideStep = { text: string; command?: string }
 
 /** The per-issue manual guide (contract §Onboarding: caminho DUPLO sempre).
- *  Convenience = copyable commands (the frozen vocabulary has no
- *  open-url/reveal command, so no "open folder/site" button exists here).
+ *  Convenience = copyable commands plus the contract's open-folder action.
+ *  Component/package issues open the app-managed SDK destination; avdMissing
+ *  opens the standard AVD destination, and sdkMissing opens the parent where
+ *  the managed SDK is created.
  *  accelMissing is per-OS: WHPX needs admin + reboot (Windows), the kvm
  *  group needs a re-login (Linux), macOS always has Hypervisor.framework on
  *  modern hardware. */
@@ -460,15 +464,41 @@ export function AndroidEmulatorManualGuide({
 
   if (steps.length === 0) return null
   return (
-    <ol className="ios-onboarding-guide">
-      {steps.map((step, index) => (
-        <li key={index}>
-          <span>{step.text}</span>
-          {step.command && <CopyCommandButton command={step.command} />}
-        </li>
-      ))}
-    </ol>
+    <>
+      <ol className="ios-onboarding-guide">
+        {steps.map((step, index) => (
+          <li key={index}>
+            <span>{step.text}</span>
+            {step.command && <CopyCommandButton command={step.command} />}
+          </li>
+        ))}
+      </ol>
+      <button
+        type="button"
+        className="ghost-button"
+        onClick={() => { void openAndroidEmulatorGuideFolder(issue) }}
+      >
+        <FolderOpen size={12} aria-hidden="true" />
+        {t('androidEmulator.onboarding.openFolder')}
+      </button>
+    </>
   )
+}
+
+async function openAndroidEmulatorGuideFolder(issue: AndroidEmulatorIssue) {
+  try {
+    if (issue === 'sdkMissing') {
+      await openPath(await appDataDir())
+      return
+    }
+    if (issue === 'avdMissing') {
+      await openPath(await join(await homeDir(), '.android', 'avd'))
+      return
+    }
+    await openPath(await join(await appDataDir(), 'android-sdk'))
+  } catch {
+    // The manual steps remain usable when the native opener is unavailable.
+  }
 }
 
 /** Fail-open surface for backends that predate the android_emulator_*

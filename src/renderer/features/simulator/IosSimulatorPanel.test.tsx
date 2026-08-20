@@ -321,6 +321,25 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
     expect(screen.queryByRole('combobox', { name: 'Buscar simulador' })).not.toBeInTheDocument()
   })
 
+  it('applies each external platform request while keeping the internal tabs interactive', async () => {
+    const { props, rerender } = renderPanel({
+      platformRequest: { id: 1, platform: 'android' },
+    })
+    await act(async () => {})
+    expect(screen.getByRole('tab', { name: 'Android' })).toHaveAttribute('aria-selected', 'true')
+
+    fireEvent.click(screen.getByRole('tab', { name: 'iOS' }))
+    expect(screen.getByRole('tab', { name: 'iOS' })).toHaveAttribute('aria-selected', 'true')
+
+    rerender(
+      <I18nProvider language="pt-BR">
+        <IosSimulatorPanel {...props} platformRequest={{ id: 2, platform: 'android' }} />
+      </I18nProvider>,
+    )
+    await act(async () => {})
+    expect(screen.getByRole('tab', { name: 'Android' })).toHaveAttribute('aria-selected', 'true')
+  })
+
   it('the Android tab with an issue mounts the real AndroidOnboarding choice', async () => {
     vi.mocked(invoke).mockResolvedValue({ ready: false, issue: 'sdkMissing', devices: [] })
     renderPanel()

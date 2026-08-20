@@ -223,9 +223,31 @@ describe('App settings shortcuts', () => {
     expect(topbar).toBeDefined()
     if (!topbar) throw new Error('TopBar was not rendered')
     await waitFor(() => {
-      expect(within(topbar).getByRole('button', { name: 'Hide simulator' })).toBeInTheDocument()
+      expect(within(topbar).getByRole('button', { name: 'Simulators' })).toHaveAttribute('aria-expanded', 'false')
       expect(screen.getByRole('tab', { name: 'Android' })).toHaveAttribute('aria-selected', 'true')
       expect(screen.getByRole('complementary', { name: 'Android emulator' })).toBeInTheDocument()
+    })
+  })
+
+  it('opens the panel on the platform selected from the real TopBar menu', async () => {
+    await renderApp()
+    const topbar = screen.getAllByRole('banner').find(element => element.classList.contains('topbar'))
+    expect(topbar).toBeDefined()
+    if (!topbar) throw new Error('TopBar was not rendered')
+
+    fireEvent.click(within(topbar).getByRole('button', { name: 'Simulators' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Android Emulator' }))
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'Android' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('complementary', { name: 'Android emulator' })).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide simulator' }))
+    fireEvent.click(within(topbar).getByRole('button', { name: 'Simulators' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'iOS Simulator' }))
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'iOS' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('complementary', { name: 'iOS simulator' })).toBeInTheDocument()
     })
   })
 
@@ -234,17 +256,18 @@ describe('App settings shortcuts', () => {
     const topbar = screen.getAllByRole('banner').find(element => element.classList.contains('topbar'))
     expect(topbar).toBeDefined()
     if (!topbar) throw new Error('TopBar was not rendered')
-    fireEvent.click(await within(topbar).findByRole('button', { name: 'Open simulator' }))
-    await waitFor(() => expect(within(topbar).getByRole('button', { name: 'Hide simulator' })).toBeInTheDocument())
+    fireEvent.click(await within(topbar).findByRole('button', { name: 'Simulators' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'iOS Simulator' }))
+    await waitFor(() => expect(screen.getByRole('complementary', { name: 'iOS simulator' })).toBeInTheDocument())
 
     fireEvent.click(avatar)
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(await screen.findByRole('heading', { name: 'Security', level: 1 })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Back to app' }))
-    await waitFor(() => expect(within(topbar).getByRole('button', { name: 'Hide simulator' })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('complementary', { name: 'iOS simulator' })).toBeInTheDocument())
 
-    fireEvent.click(within(topbar).getByRole('button', { name: 'Hide simulator' }))
-    await waitFor(() => expect(within(topbar).getByRole('button', { name: 'Open simulator' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Hide simulator' }))
+    await waitFor(() => expect(screen.getByRole('complementary', { name: 'iOS simulator' })).toHaveClass('is-hidden'))
     await waitFor(() => expect(lifecycleForward).toBeDefined())
 
     const lifecycle: IosSimulatorLifecycleSnapshot = {

@@ -28,6 +28,8 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
+import { appDataDir, homeDir, join } from '@tauri-apps/api/path'
+import { openPath } from '@tauri-apps/plugin-opener'
 import { I18nProvider } from '../../i18n'
 import { AndroidEmulatorLegacyCard, AndroidOnboarding } from './AndroidOnboarding'
 
@@ -45,6 +47,12 @@ const { listenMock, listeners } = vi.hoisted(() => {
 })
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
+vi.mock('@tauri-apps/api/path', () => ({
+  appDataDir: vi.fn(),
+  homeDir: vi.fn(),
+  join: vi.fn((...parts: string[]) => Promise.resolve(parts.join('/').replaceAll('//', '/'))),
+}))
+vi.mock('@tauri-apps/plugin-opener', () => ({ openPath: vi.fn() }))
 vi.mock('@tauri-apps/api/event', () => ({
   listen: (name: string, callback: EventHandler) => listenMock(name, callback),
 }))
@@ -93,6 +101,9 @@ beforeEach(() => {
   vi.clearAllMocks()
   listeners.clear()
   vi.mocked(invoke).mockResolvedValue(undefined)
+  vi.mocked(appDataDir).mockResolvedValue('/app-data')
+  vi.mocked(homeDir).mockResolvedValue('/home/person')
+  vi.mocked(openPath).mockResolvedValue(undefined)
   Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
   Object.defineProperty(navigator, 'clipboard', {
     value: { writeText: vi.fn(async () => {}) },
@@ -320,9 +331,36 @@ describe('AndroidOnboarding — manual guide and fail-open', () => {
     expect(screen.getByText(/Install the Android SDK command-line tools/)).toBeTruthy()
     expect(screen.getByText(/ANDROID_HOME/)).toBeTruthy()
 
+    fireEvent.click(screen.getByRole('button', { name: 'Open folder' }))
+    await flush()
+    expect(openPath).toHaveBeenCalledWith('/app-data')
+
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
     expect(props.onCheckAgain).toHaveBeenCalledTimes(1)
     expect(invokeCalls('android_emulator_setup_start')).toHaveLength(0)
+  })
+
+  it('opens the issue-relevant AVD destination from the real manual guide', async () => {
+    renderOnboarding({ issue: 'avdMissing' })
+    fireEvent.click(screen.getByRole('button', { name: /Manual setup/ }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open folder' }))
+    await flush()
+
+    expect(homeDir).toHaveBeenCalledTimes(1)
+    expect(join).toHaveBeenCalledWith('/home/person', '.android', 'avd')
+    expect(openPath).toHaveBeenCalledWith('/home/person/.android/avd')
+  })
+
+  it('opens the managed SDK folder for a real generic manual issue', async () => {
+    renderOnboarding({ issue: 'accelMissing', platform: 'darwin' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open folder' }))
+    await flush()
+
+    expect(appDataDir).toHaveBeenCalledTimes(1)
+    expect(join).toHaveBeenCalledWith('/app-data', 'android-sdk')
+    expect(openPath).toHaveBeenCalledWith('/app-data/android-sdk')
   })
 
   it('manual guide for licensesNotAccepted: the user answers y in their own terminal', async () => {

@@ -741,10 +741,12 @@
 }
 
 .topbar-simulator-recording {
+  position: absolute;
+  top: 3px;
+  right: 3px;
   display: inline-block;
-  flex: 0 0 8px;
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 999px;
   background: var(--danger, #e56b6f);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger, #e56b6f) 16%, transparent);
