@@ -30,6 +30,15 @@ describe('@-mention + voice i18n keys', () => {
   })
 })
 
+describe('Android emulator F2 copy', () => {
+  it.each([
+    ['en-US', 'ADB PNG'],
+    ['pt-BR', 'PNG via ADB'],
+  ] as const)('provides the %s stream label', (language, expected) => {
+    expect(createTranslator(language)('androidEmulator.stream.adb')).toBe(expected)
+  })
+})
+
 describe('Chrome settings copy', () => {
   it.each([
     {

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { androidEmulatorApi } from './androidEmulatorApi'
 import type {
   AndroidEmulatorFrame,
+  AndroidAccessibilityNode,
+  AndroidEmulatorElementHit,
   AndroidEmulatorKey,
   AndroidEmulatorLifecycleEvent,
   AndroidEmulatorPoint,
@@ -10,6 +12,7 @@ import type {
   AndroidEmulatorSession,
   AndroidEmulatorSystemAction,
 } from './androidEmulatorApi'
+import type { IosSimulatorAnnotationCapture, IosSimulatorRect } from './iosSimulatorApi'
 import {
   DEFAULT_ANDROID_EMULATOR_FALLBACK_FPS,
   DEFAULT_ANDROID_EMULATOR_STREAM_FPS,
@@ -18,10 +21,20 @@ import {
 } from './androidEmulatorModel'
 
 const INITIAL_LIFECYCLE: AndroidEmulatorLifecycleEvent = { stage: 'booting' }
+type AndroidRecordingState =
+  | { state: 'idle' }
+  | { state: 'starting' }
+  | { state: 'recording'; startedAtMs: number }
+  | { state: 'finalizing' }
+type AndroidMediaFile = { path: string; fileName: string }
 
-/** Renderer owner for the Android F1 session. Backend events author preview
+function mediaFile(path: string): AndroidMediaFile {
+  return { path, fileName: path.replaceAll('\\', '/').split('/').pop() || path }
+}
+
+/** Renderer owner for the Android session. Backend events author preview
  * progress and frames; the attach response supplies the session identity used
- * to reject stale frame generations. */
+ * to reject stale frame generations. F2 adds a11y inspection and media state. */
 export function useAndroidEmulatorPanel() {
   const [requirements, setRequirements] = useState<AndroidEmulatorRequirements>()
   const [requirementsLoading, setRequirementsLoading] = useState(false)
@@ -35,7 +48,11 @@ export function useAndroidEmulatorPanel() {
   const [error, setError] = useState<string>()
   const [agentPresence, setAgentPresence] = useState<AndroidEmulatorPresenceEvent>()
   const [agentOpenRequest, setAgentOpenRequest] = useState(0)
+  const [recording, setRecording] = useState<AndroidRecordingState>({ state: 'idle' })
+  const [lastMediaFile, setLastMediaFile] = useState<AndroidMediaFile>()
   const sessionRef = useRef<AndroidEmulatorSession | undefined>(undefined)
+  const recordingRef = useRef<AndroidRecordingState>({ state: 'idle' })
+  const latestFrameRef = useRef<AndroidEmulatorFrame | undefined>(undefined)
   const attachingRef = useRef(false)
   const pendingFrameRef = useRef<AndroidEmulatorFrame | undefined>(undefined)
   const readPendingFrame = useCallback(() => pendingFrameRef.current, [])
@@ -43,13 +60,17 @@ export function useAndroidEmulatorPanel() {
   const clearSession = useCallback(() => {
     sessionRef.current = undefined
     pendingFrameRef.current = undefined
+    latestFrameRef.current = undefined
+    recordingRef.current = { state: 'idle' }
     setSession(undefined)
     setFrameDataUrl(undefined)
     setAgentPresence(undefined)
     setLifecycle(INITIAL_LIFECYCLE)
+    setRecording({ state: 'idle' })
   }, [])
 
   const publishFrame = useCallback((frame: AndroidEmulatorFrame) => {
+    latestFrameRef.current = frame
     setFrameDataUrl(`data:image/png;base64,${frame.pngBase64}`)
   }, [])
 
@@ -169,6 +190,112 @@ export function useAndroidEmulatorPanel() {
   const runSystemAction = useCallback((action: AndroidEmulatorSystemAction) =>
     run(() => androidEmulatorApi.systemAction(action)), [run])
 
+  const inspectPoint = useCallback(async (
+    point: AndroidEmulatorPoint,
+    _exact = false,
+  ): Promise<AndroidEmulatorElementHit | undefined> => {
+    const generation = sessionRef.current?.generation
+    if (generation == null) return undefined
+    try {
+      const hit = await androidEmulatorApi.inspectPoint(point.x, point.y)
+      if (sessionRef.current?.generation !== generation) return undefined
+      return hit ?? undefined
+    } catch {
+      return undefined
+    }
+  }, [])
+
+  const captureAnnotation = useCallback(async (
+    rect: IosSimulatorRect,
+    element: AndroidAccessibilityNode | null = null,
+  ): Promise<IosSimulatorAnnotationCapture | undefined> => {
+    const current = sessionRef.current
+    const frame = latestFrameRef.current
+    if (!current || !frame || frame.generation !== current.generation) return undefined
+    setError(undefined)
+    try {
+      const file = await androidEmulatorApi.captureScreen()
+      const deviceRect = {
+        x: rect.x * frame.width,
+        y: rect.y * frame.height,
+        width: rect.width * frame.width,
+        height: rect.height * frame.height,
+      }
+      const bytes = Math.floor(frame.pngBase64.length * 0.75)
+      // The frozen Android F2 boundary exposes a full screenshot, not a
+      // server-side crop command. Keep the normalized selection in metadata
+      // and reference the same honest viewport file for both image slots.
+      return {
+        cropPath: file.path,
+        viewportPath: file.path,
+        cropWidth: frame.width,
+        cropHeight: frame.height,
+        viewportWidth: frame.width,
+        viewportHeight: frame.height,
+        cropBytes: bytes,
+        viewportBytes: bytes,
+        device: {
+          name: current.device.displayName,
+          udid: current.device.avdName,
+          state: 'Booted',
+          iosVersion: `API ${current.device.apiLevel}`,
+          family: current.device.family === 'tablet' ? 'ipad' : 'iphone',
+        },
+        orientation: frame.width > frame.height ? 'landscape' : 'portrait',
+        deviceGeneration: current.generation,
+        frameGeneration: frame.generation,
+        rect,
+        deviceRect,
+        element,
+      }
+    } catch (reason) {
+      setError(errorText(reason))
+      return undefined
+    }
+  }, [])
+
+  const captureScreen = useCallback(async () => {
+    setError(undefined)
+    try {
+      const file = await androidEmulatorApi.captureScreen()
+      setLastMediaFile(mediaFile(file.path))
+    } catch (reason) {
+      setError(errorText(reason))
+    }
+  }, [])
+
+  const toggleRecording = useCallback(async () => {
+    const current = recordingRef.current
+    if (current.state === 'starting' || current.state === 'finalizing') return
+    setError(undefined)
+    if (current.state === 'recording') {
+      recordingRef.current = { state: 'finalizing' }
+      setRecording(recordingRef.current)
+      try {
+        const file = await androidEmulatorApi.recordingStop()
+        setLastMediaFile(mediaFile(file.path))
+        recordingRef.current = { state: 'idle' }
+        setRecording(recordingRef.current)
+      } catch (reason) {
+        recordingRef.current = current
+        setRecording(current)
+        setError(errorText(reason))
+      }
+      return
+    }
+    recordingRef.current = { state: 'starting' }
+    setRecording(recordingRef.current)
+    try {
+      await androidEmulatorApi.recordingStart()
+      recordingRef.current = { state: 'recording', startedAtMs: Date.now() }
+      setRecording(recordingRef.current)
+    } catch (reason) {
+      recordingRef.current = { state: 'idle' }
+      setRecording(recordingRef.current)
+      setError(errorText(reason))
+    }
+  }, [])
+
   const setStreamRate = useCallback(async (nextFps: number) => {
     setError(undefined)
     if (!sessionRef.current) {
@@ -255,6 +382,9 @@ export function useAndroidEmulatorPanel() {
     error,
     agentPresence,
     agentOpenRequest,
+    recording,
+    recordingActive: recording.state === 'recording',
+    lastMediaFile,
     refresh,
     open,
     close,
@@ -266,6 +396,10 @@ export function useAndroidEmulatorPanel() {
     typeText,
     pressKey,
     runSystemAction,
+    inspectPoint,
+    captureAnnotation,
+    captureScreen,
+    toggleRecording,
     setStreamRate,
     setFallbackRate,
   }

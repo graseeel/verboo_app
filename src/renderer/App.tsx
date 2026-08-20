@@ -962,10 +962,8 @@ export function App() {
     restorePanel: restoreWorkspacePanel,
   })
 
-  useEffect(() => {
-    const request = simulator.agentOpenRequest
-    if (!simulatorAvailable || request <= consumedSimulatorOpenRequestRef.current) return
-    consumedSimulatorOpenRequestRef.current = request
+  const openSimulatorForAgent = useCallback(() => {
+    if (!simulatorAvailable) return
     setActiveView('chat')
     terminal.close()
     review.close()
@@ -973,14 +971,17 @@ export function App() {
     clearMediaPreview()
     setSelectedSubagentId(undefined)
     simulator.open()
+  }, [browser.close, clearMediaPreview, review.close, simulator.open, simulatorAvailable, terminal.close])
+
+  useEffect(() => {
+    const request = simulator.agentOpenRequest
+    if (!simulatorAvailable || request <= consumedSimulatorOpenRequestRef.current) return
+    consumedSimulatorOpenRequestRef.current = request
+    openSimulatorForAgent()
   }, [
-    browser.close,
-    clearMediaPreview,
-    review.close,
+    openSimulatorForAgent,
     simulator.agentOpenRequest,
-    simulator.open,
     simulatorAvailable,
-    terminal.close,
   ])
   const visibleTerminalOpen = workspacePanelsEnabled && terminal.terminalOpen
   const visibleReviewOpen = workspacePanelsEnabled && review.reviewOpen
@@ -6803,6 +6804,7 @@ export function App() {
           simulatorWidth={effectiveBrowserWidth}
           onSetWidth={setBrowserWidth}
           onClose={simulator.close}
+          onAndroidOpenRequested={openSimulatorForAgent}
           requirements={simulator.requirements}
           requirementsLoading={simulator.requirementsLoading}
           attachedUdid={simulator.attachedUdid}

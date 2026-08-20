@@ -1,6 +1,12 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { AndroidEmulatorIssue } from './androidEmulatorModel'
+import type {
+  SimulatorAccessibilityNode,
+  SimulatorElementHit,
+  SimulatorPoint,
+  SimulatorRect,
+} from './simulatorSelection'
 
 /**
  * Android emulator bridge (PA-25, contract `contrato-android-simulator` —
@@ -117,8 +123,8 @@ export type AndroidEmulatorFrame = {
 
 export type AndroidEmulatorError = { message: string }
 
-export type AndroidEmulatorPoint = { x: number; y: number }
-export type AndroidEmulatorRect = { x: number; y: number; width: number; height: number }
+export type AndroidEmulatorPoint = SimulatorPoint
+export type AndroidEmulatorRect = SimulatorRect
 
 /** Shape identical to the iOS presence event (contract §Eventos) — declared
  *  independently so an iOS-side refactor cannot silently drift the Android
@@ -149,21 +155,8 @@ export type AndroidEmulatorSystemAction = 'back' | 'home' | 'recents' | 'notific
 
 /** Mirrors the iOS accessibility node shape (parity goal); PA-28 owns the
  *  final field set when the uiautomator parser lands. */
-export type AndroidAccessibilityNode = {
-  id: string
-  role: string
-  label?: string | null
-  value?: string | null
-  frame: AndroidEmulatorRect
-  enabled: boolean
-  visible: boolean
-  actionable: boolean
-}
-
-export type AndroidEmulatorElementHit = {
-  element: AndroidAccessibilityNode
-  rect: AndroidEmulatorRect
-}
+export type AndroidAccessibilityNode = SimulatorAccessibilityNode
+export type AndroidEmulatorElementHit = SimulatorElementHit
 
 export type AndroidEmulatorMediaFile = { path: string }
 

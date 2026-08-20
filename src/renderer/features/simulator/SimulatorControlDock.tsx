@@ -24,9 +24,8 @@ type SimulatorControlDockProps<A extends string = IosSimulatorSystemAction> = {
    *  §system_action). */
   actions: readonly SystemControl<A>[]
   onSystemAction: (action: A) => void
-  /** Media group (screenshot / recording / saved-file feedback). iOS-only
-   *  until F2 lands for Android (PA-28 native + PA-29 renderer) — the Android
-   *  dock passes mediaControls={false}. Defaults to true. */
+  /** Media group (screenshot / recording / saved-file feedback). Shared by
+   *  iOS and Android; callers may hide it for capability-gated backends. */
   mediaControls?: boolean
   recording?: IosSimulatorRecordingState
   lastMediaFile?: IosSimulatorMediaFile
@@ -183,13 +182,15 @@ export function SimulatorControlDock<A extends string = IosSimulatorSystemAction
       {mediaControls && lastMediaFile && (
         <div className="ios-simulator-media-feedback" role="status" aria-live="polite">
           <span>{t('simulator.media.saved', { fileName: lastMediaFile.fileName })}</span>
-          <button
-            type="button"
-            className="ghost-button"
-            onClick={() => onRevealOutput?.(lastMediaFile.path)}
-          >
-            {t('simulator.media.reveal')}
-          </button>
+          {onRevealOutput && (
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => onRevealOutput(lastMediaFile.path)}
+            >
+              {t('simulator.media.reveal')}
+            </button>
+          )}
         </div>
       )}
 

@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { IosSimulatorAccessibilityNode } from './iosSimulatorApi'
-import { accessibilityNodeAtPoint, normalizedAccessibilityRect } from './simulatorSelection'
+import {
+  accessibilityNodeAtPoint,
+  normalizedAccessibilityRect,
+  type SimulatorAccessibilityNode,
+} from './simulatorSelection'
 
-const nodes: IosSimulatorAccessibilityNode[] = [
+const nodes: SimulatorAccessibilityNode[] = [
   {
     id: 'root', role: 'Application', frame: { x: 0, y: 0, width: 393, height: 852 },
     enabled: true, visible: true, actionable: false,
@@ -18,6 +22,11 @@ const nodes: IosSimulatorAccessibilityNode[] = [
 ]
 
 describe('simulator element selection', () => {
+  it('keeps the iOS public type as a re-export of the platform-neutral node', () => {
+    const iosNodes: IosSimulatorAccessibilityNode[] = nodes
+    expect(iosNodes).toBe(nodes)
+  })
+
   it('chooses the smallest visible actionable component under the point', () => {
     expect(accessibilityNodeAtPoint(nodes, { x: 0.4, y: 0.24 })?.id).toBe('save')
   })

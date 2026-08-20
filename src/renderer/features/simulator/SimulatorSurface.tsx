@@ -15,7 +15,10 @@ import {
   paintedContainRect,
   type Rect,
 } from './simulatorGeometry'
-import { createSimulatorAnnotationAttachment } from './simulatorAnnotations'
+import {
+  createSimulatorAnnotationAttachment,
+  type SimulatorAnnotationContext,
+} from './simulatorAnnotations'
 import { SimulatorPresenceOverlay, type SimulatorPresence } from './SimulatorPresenceOverlay'
 import { SimulatorTooltipButton } from './SimulatorTooltip'
 import {
@@ -31,8 +34,7 @@ type Labels = {
   unavailable: string
   agentActive: string
   agentBadge: string
-  /** Selection-mode labels — only rendered when `selectionEnabled` (iOS).
-   *  The Android F1 surface is interact-only (PA-27; selection is F2/PA-29). */
+  /** Selection-mode labels — rendered when `selectionEnabled`. */
   selectElement?: string
   selectArea?: string
   note?: string
@@ -55,16 +57,14 @@ type SimulatorSurfaceProps<K extends string = IosSimulatorKey> = {
   /** Per-platform key mapper injected by the caller (PA-27); defaults to the
    *  iOS mapper inside useSimulatorInteraction. */
   keyMapper?: SimulatorKeyMapper<K>
-  /** false renders an interact-only surface: no mode toolbar, no element/area
-   *  selection paths (Android F1). Defaults to true (iOS unchanged). */
+  /** false renders an interact-only surface without element/area selection. */
   selectionEnabled?: boolean
   onModeChange: (mode: SimulatorInteractionMode) => void
   onTap: (point: IosSimulatorPoint) => void
   onDrag: (from: IosSimulatorPoint, to: IosSimulatorPoint, durationMs: number) => void
   onTypeText: (text: string) => void
   onPressKey: (key: K) => void
-  /** Selection callbacks — required by the selection modes, hence only used
-   *  when `selectionEnabled` is true (iOS passes all of them). */
+  /** Selection callbacks — used only when `selectionEnabled` is true. */
   onInspectPoint?: (
     point: IosSimulatorPoint,
     exact?: boolean,
@@ -76,6 +76,7 @@ type SimulatorSurfaceProps<K extends string = IosSimulatorKey> = {
   ) => Promise<IosSimulatorAnnotationCapture | undefined>
   onDeleteCapture?: (paths: string[]) => Promise<void>
   onAddAnnotation?: (attachment: AttachmentMeta) => void
+  annotationContext?: SimulatorAnnotationContext
   agentPresence?: SimulatorPresence
 }
 
@@ -106,6 +107,7 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
   onCaptureAnnotation,
   onDeleteCapture,
   onAddAnnotation,
+  annotationContext,
   agentPresence,
 }: SimulatorSurfaceProps<K>) {
   const surfaceRef = useRef<HTMLDivElement | null>(null)
@@ -383,6 +385,7 @@ export function SimulatorSurface<K extends string = IosSimulatorKey>({
       pendingCapture.kind,
       note.trim() || undefined,
       pendingCapture.capture,
+      annotationContext,
     ))
     setPendingCapture(undefined)
     setSelectionRect(undefined)

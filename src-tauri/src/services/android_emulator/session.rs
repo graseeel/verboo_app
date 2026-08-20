@@ -6,7 +6,7 @@ use std::process::{Child, Command, Stdio};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
 use super::requirements::{self, AndroidDevice};
-use super::{sdk, AndroidEmulatorService, CommandOutput, CommandRunner};
+use super::{sdk, AndroidEmulatorService, CommandOutput, CommandRunner, ANDROID_CLEANUP_BUDGET};
 
 pub(crate) const FRAME_EVENT: &str = "android-emulator:frame";
 pub(crate) const LIFECYCLE_EVENT: &str = "android-emulator:lifecycle";
@@ -313,6 +313,7 @@ pub(crate) struct AndroidSession {
     pub(crate) input_lock: Arc<Mutex<()>>,
     pub(crate) dimensions: Arc<Mutex<Option<(u32, u32)>>>,
     pub(crate) emulator_process: Arc<Mutex<Option<Child>>>,
+    pub(crate) recording: Arc<Mutex<Option<super::media::ActiveRecording>>>,
     pub(crate) workers: Mutex<Vec<JoinHandle<()>>>,
 }
 
@@ -341,6 +342,11 @@ impl AndroidSession {
 #[derive(Default)]
 pub(crate) struct AndroidServiceState {
     pub(crate) session: Option<Arc<AndroidSession>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AndroidExitCleanupReport {
+    pub(crate) errors: Vec<String>,
 }
 
 pub(crate) fn adb_path(sdk_path: &Path) -> PathBuf {
@@ -402,6 +408,19 @@ mod tests {
     fn only_verboo_ownership_is_shutdown_eligible() {
         assert!(should_shutdown(AndroidEmulatorOwnership::Verboo));
         assert!(!should_shutdown(AndroidEmulatorOwnership::External));
+    }
+
+    #[test]
+    fn end_does_not_wait_past_the_deadline_for_the_operation_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+        let _operation = service.operation_lock.lock().unwrap();
+        let started = Instant::now();
+
+        let result = service.end_sync_until(started + Duration::from_millis(100));
+
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(result.is_err());
     }
 
     #[test]
@@ -660,6 +679,7 @@ mod tests {
             input_lock: Arc::new(Mutex::new(())),
             dimensions: Arc::new(Mutex::new(Some((1080, 1920)))),
             emulator_process: Arc::new(Mutex::new(None)),
+            recording: Arc::new(Mutex::new(None)),
             workers: Mutex::new(Vec::new()),
         })
     }
@@ -854,6 +874,49 @@ impl AndroidEmulatorService {
             .ok_or_else(|| "No Android emulator is attached.".to_string())
     }
 
+    fn reject_if_exiting(&self) -> Result<(), String> {
+        if self.exiting.load(Ordering::Acquire) {
+            return Err("O Verboo está encerrando a simulação Android.".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn begin_exit(&self) {
+        self.exiting.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn stop_for_app_exit(&self, deadline: Instant) -> AndroidExitCleanupReport {
+        self.begin_exit();
+        if self.exit_cleanup_started.swap(true, Ordering::AcqRel) {
+            return AndroidExitCleanupReport::default();
+        }
+
+        let mut report = AndroidExitCleanupReport::default();
+        self.request_session_cancel();
+        let operation = match self.operation_lock_until(deadline) {
+            Ok(operation) => operation,
+            Err(error) => {
+                report.errors.push(error);
+                return report;
+            }
+        };
+        let Some(session) = self.take_session() else {
+            drop(operation);
+            return report;
+        };
+        let avd_name = session.avd_name.clone();
+        let ownership = session.ownership;
+        if let Err(error) = self.cleanup_session_until(session, should_shutdown(ownership), Some(deadline)) {
+            report.errors.push(error);
+        } else if should_shutdown(ownership) {
+            if let Err(error) = self.ownership.remove(&avd_name) {
+                report.errors.push(error);
+            }
+        }
+        drop(operation);
+        report
+    }
+
     fn current_session_option(&self) -> Option<Arc<AndroidSession>> {
         self.state
             .lock()
@@ -869,12 +932,14 @@ impl AndroidEmulatorService {
         stream_fps: u16,
         fallback_fps: f64,
     ) -> Result<AndroidEmulatorSession, String> {
+        self.reject_if_exiting()?;
         let stream_fps = validate_stream_fps(stream_fps)?;
         let fallback_fps = validate_fallback_fps(fallback_fps)?;
         let _operation = self
             .operation_lock
             .lock()
             .expect("Android emulator operation lock poisoned");
+        self.reject_if_exiting()?;
         self.session_cancel.store(false, Ordering::Release);
         self.bind_app(app.clone());
 
@@ -984,6 +1049,7 @@ impl AndroidEmulatorService {
             input_lock: Arc::new(Mutex::new(())),
             dimensions: Arc::new(Mutex::new(None)),
             emulator_process: process,
+            recording: Arc::new(Mutex::new(None)),
             workers: Mutex::new(Vec::new()),
         });
         self.state
@@ -1088,29 +1154,31 @@ impl AndroidEmulatorService {
     }
 
     pub(crate) fn detach_sync(&self) -> Result<(), String> {
+        self.detach_sync_until(Instant::now() + ANDROID_CLEANUP_BUDGET)
+    }
+
+    pub(crate) fn detach_sync_until(&self, deadline: Instant) -> Result<(), String> {
         self.request_session_cancel();
-        let _operation = self
-            .operation_lock
-            .lock()
-            .expect("Android emulator operation lock poisoned");
+        let _operation = self.operation_lock_until(deadline)?;
         let session = self
             .take_session()
             .ok_or_else(|| "No Android emulator is attached.".to_string())?;
-        self.cleanup_session(session, false)
+        self.cleanup_session_until(session, false, Some(deadline))
     }
 
     pub(crate) fn end_sync(&self) -> Result<(), String> {
+        self.end_sync_until(Instant::now() + ANDROID_CLEANUP_BUDGET)
+    }
+
+    fn end_sync_until(&self, deadline: Instant) -> Result<(), String> {
         self.request_session_cancel();
-        let _operation = self
-            .operation_lock
-            .lock()
-            .expect("Android emulator operation lock poisoned");
+        let _operation = self.operation_lock_until(deadline)?;
         let session = self
             .take_session()
             .ok_or_else(|| "No Android emulator is attached.".to_string())?;
         let avd_name = session.avd_name.clone();
         let ownership = session.ownership;
-        self.cleanup_session(session, should_shutdown(ownership))?;
+        self.cleanup_session_until(session, should_shutdown(ownership), Some(deadline))?;
         if should_shutdown(ownership) {
             self.ownership.remove(&avd_name)?;
         }
@@ -1143,6 +1211,18 @@ impl AndroidEmulatorService {
         session: Arc<AndroidSession>,
         terminate_owned: bool,
     ) -> Result<(), String> {
+        self.cleanup_session_until(session, terminate_owned, None)
+    }
+
+    fn cleanup_session_until(
+        &self,
+        session: Arc<AndroidSession>,
+        terminate_owned: bool,
+        deadline: Option<Instant>,
+    ) -> Result<(), String> {
+        let recording_deadline =
+            deadline.unwrap_or_else(|| Instant::now() + ANDROID_CLEANUP_BUDGET);
+        let _ = self.finalize_recording_for_session(&session, recording_deadline);
         session.gate.stop_and_wake(&session.stop);
         let workers = std::mem::take(
             &mut *session
@@ -1150,13 +1230,40 @@ impl AndroidEmulatorService {
                 .lock()
                 .expect("Android emulator workers poisoned"),
         );
+        if let Some(deadline) = deadline {
+            while workers.iter().any(|worker| !worker.is_finished()) && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
         for worker in workers {
-            let _ = worker.join();
+            if deadline.is_none() || worker.is_finished() {
+                let _ = worker.join();
+            }
         }
         if terminate_owned && should_shutdown(session.ownership) {
-            shutdown_owned_emulator(self.runner.as_ref(), &session)?;
+            shutdown_owned_emulator(self.runner.as_ref(), &session, deadline)?;
         }
         Ok(())
+    }
+
+    fn operation_lock_until(&self, deadline: Instant) -> Result<MutexGuard<'_, ()>, String> {
+        loop {
+            match self.operation_lock.try_lock() {
+                Ok(operation) => return Ok(operation),
+                Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    return Err(
+                        "a operação do emulador Android não liberou o lock antes do encerramento"
+                            .to_string(),
+                    )
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err("Android emulator operation lock poisoned".to_string())
+                }
+            }
+        }
     }
 }
 
@@ -1326,6 +1433,7 @@ fn terminate_process(process: &Arc<Mutex<Option<Child>>>) -> Result<(), String> 
 fn shutdown_owned_emulator(
     runner: &dyn CommandRunner,
     session: &AndroidSession,
+    deadline: Option<Instant>,
 ) -> Result<(), String> {
     let mut process = session
         .emulator_process
@@ -1343,15 +1451,19 @@ fn shutdown_owned_emulator(
         return Ok(());
     }
     drop(process);
-    let output = runner.run(
-        session.adb_path.to_string_lossy().as_ref(),
-        &[
-            "-s".to_string(),
-            session.serial.clone(),
-            "emu".to_string(),
-            "kill".to_string(),
-        ],
-    )?;
+    let args = vec![
+        "-s".to_string(),
+        session.serial.clone(),
+        "emu".to_string(),
+        "kill".to_string(),
+    ];
+    let adb = session.adb_path.to_string_lossy().into_owned();
+    let output = if let Some(deadline) = deadline {
+        let cancel = AtomicBool::new(false);
+        runner.run_interruptible(&adb, &args, &cancel, deadline)?
+    } else {
+        runner.run(&adb, &args)?
+    };
     if output.success {
         Ok(())
     } else {

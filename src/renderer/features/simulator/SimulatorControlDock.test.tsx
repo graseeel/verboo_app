@@ -158,7 +158,7 @@ describe('SimulatorControlDock', () => {
 })
 
 
-// ── Android dock (PA-27): injected actions, no media group until F2 ────────
+// ── Android dock adapter: injected actions and capability-gated media ──────
 
 describe('SimulatorControlDock android actions (PA-27)', () => {
   function renderAndroidDock(overrides: Record<string, unknown> = {}) {
@@ -199,7 +199,7 @@ describe('SimulatorControlDock android actions (PA-27)', () => {
     expect(props.onSystemAction).toHaveBeenNthCalledWith(2, 'recents')
   })
 
-  it('hides the iOS-only media group when mediaControls is false', () => {
+  it('hides the shared media group when mediaControls is false', () => {
     renderAndroidDock()
 
     expect(screen.queryByRole('button', { name: 'Capturar tela' })).not.toBeInTheDocument()

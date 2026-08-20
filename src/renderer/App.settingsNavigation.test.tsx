@@ -85,6 +85,7 @@ class TestResizeObserver {
 }
 
 let lifecycleForward: ((event: { payload: unknown }) => void) | undefined
+let androidOpenForward: ((event: { payload: unknown }) => void) | undefined
 
 function createBridge() {
   const unsubscribe = () => {}
@@ -196,8 +197,10 @@ beforeEach(() => {
     value: {},
   })
   lifecycleForward = undefined
+  androidOpenForward = undefined
   listenMock.mockImplementation((eventName, callback) => {
     if (eventName === 'ios-simulator:lifecycle') lifecycleForward = callback
+    if (eventName === 'android-emulator:open-requested') androidOpenForward = callback
     return Promise.resolve(() => {})
   })
   ;(window as unknown as { verboo: unknown }).verboo = createBridge()
@@ -210,6 +213,22 @@ afterEach(() => {
 })
 
 describe('App settings shortcuts', () => {
+  it('opens the simulator on the Android tab when the Android agent requests it', async () => {
+    await renderApp()
+    await waitFor(() => expect(androidOpenForward).toBeDefined())
+
+    act(() => androidOpenForward?.({ payload: null }))
+
+    const topbar = screen.getAllByRole('banner').find(element => element.classList.contains('topbar'))
+    expect(topbar).toBeDefined()
+    if (!topbar) throw new Error('TopBar was not rendered')
+    await waitFor(() => {
+      expect(within(topbar).getByRole('button', { name: 'Hide simulator' })).toBeInTheDocument()
+      expect(screen.getByRole('tab', { name: 'Android' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByRole('complementary', { name: 'Android emulator' })).toBeInTheDocument()
+    })
+  })
+
   it('restores the simulator and carries a hidden-panel lifecycle event into TopBar', async () => {
     const avatar = await renderApp()
     const topbar = screen.getAllByRole('banner').find(element => element.classList.contains('topbar'))

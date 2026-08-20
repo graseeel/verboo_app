@@ -434,7 +434,108 @@ describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
     expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_tap', { x: 0.5, y: 0.5 })
     expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_system_action', { action: 'back' })
     expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_system_action', { action: 'recents' })
-    expect(screen.queryByRole('button', { name: 'Capturar tela' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Selecionar componente' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Capturar tela' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Selecionar componente' })).toBeInTheDocument()
+  })
+
+  it('wires Android a11y selection, annotations, media, rates and reused tooltips through real components', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} })
+    const addedAnnotation = vi.fn()
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === 'android_emulator_requirements') {
+        return { ready: true, devices: [{ ...androidDevice, running: false }] }
+      }
+      if (command === 'android_emulator_attach') {
+        return {
+          device: { ...androidDevice, running: true }, serial: 'emulator-5554', generation: 9,
+          ownership: 'verboo', streamFps: 2, fallbackFps: 1, lifecycle: { stage: 'ready' },
+        }
+      }
+      if (command === 'android_emulator_inspect_point') {
+        return {
+          rect: { x: 0.25, y: 0.2, width: 0.5, height: 0.1 },
+          element: {
+            id: 'save', role: 'android.widget.Button', label: 'Save',
+            frame: { x: 270, y: 480, width: 540, height: 240 },
+            enabled: true, visible: true, actionable: true,
+          },
+        }
+      }
+      if (command === 'android_emulator_capture_screen') return { path: '/captures/android-screen.png' }
+      if (command === 'android_emulator_recording_stop') return { path: '/captures/android-recording.mp4' }
+      if (command === 'android_emulator_set_stream_rate') return 5
+      if (command === 'android_emulator_set_fallback_rate') return 2
+      return undefined
+    })
+    renderPanel({ onAddAnnotation: addedAnnotation })
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Android' }))
+    const picker = await screen.findByRole('combobox', { name: 'Buscar dispositivo Android' })
+    fireEvent.focus(picker)
+    fireEvent.click(screen.getByRole('option', { name: /Verboo Device API 35/ }))
+    const eventHandlers = new Map(listenMock.mock.calls.map(([name, handler]) => [name, handler]))
+    act(() => {
+      eventHandlers.get('android-emulator:lifecycle')?.({ payload: { stage: 'ready' } })
+      eventHandlers.get('android-emulator:frame')?.({
+        payload: { pngBase64: 'YW5kcm9pZA==', width: 1080, height: 2400, generation: 9 },
+      })
+    })
+
+    const surface = await screen.findByRole('application', { name: 'Controlar Verboo Device API 35' })
+    const image = screen.getByAltText('Prévia visual ao vivo de Verboo Device API 35')
+    Object.defineProperty(surface, 'getBoundingClientRect', {
+      value: () => ({ left: 0, top: 0, width: 600, height: 900, right: 600, bottom: 900 }),
+    })
+    Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 1080 })
+    Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 2400 })
+    Object.defineProperty(surface, 'setPointerCapture', { configurable: true, value: vi.fn() })
+    Object.defineProperty(surface, 'releasePointerCapture', { configurable: true, value: vi.fn() })
+    fireEvent.load(image)
+
+    const selectComponent = screen.getByRole('button', { name: 'Selecionar componente' })
+    fireEvent.focus(selectComponent)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Selecionar componente')
+    fireEvent.blur(selectComponent)
+    fireEvent.click(selectComponent)
+    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 300, clientY: 450 })
+    await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+      'android_emulator_inspect_point', { x: 0.5, y: 0.5 },
+    ))
+    const outline = document.querySelector('.ios-simulator-selection-outline') as HTMLElement
+    expect(Number.parseFloat(outline.style.left)).toBeCloseTo(198.75)
+    expect(Number.parseFloat(outline.style.top)).toBeCloseTo(180)
+    expect(Number.parseFloat(outline.style.width)).toBeCloseTo(202.5)
+    expect(Number.parseFloat(outline.style.height)).toBeCloseTo(90)
+
+    fireEvent.pointerDown(surface, { pointerId: 1, button: 0, clientX: 300, clientY: 450 })
+    await waitFor(() => expect(
+      vi.mocked(invoke).mock.calls.filter(([command]) => command === 'android_emulator_inspect_point'),
+    ).toHaveLength(2))
+    await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_capture_screen'))
+    const note = await screen.findByLabelText('Instrução')
+    fireEvent.change(note, { target: { value: 'Aumente o botão' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Adicionar ao Chat' }))
+    expect(addedAnnotation).toHaveBeenCalledWith(expect.objectContaining({
+      extractedText: expect.stringContaining('Android API 35'),
+    }))
+
+    const screenshot = screen.getByRole('button', { name: 'Capturar tela' })
+    fireEvent.focus(screenshot)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Capturar tela')
+    fireEvent.blur(screenshot)
+    fireEvent.click(screenshot)
+    await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_capture_screen'))
+    fireEvent.click(screen.getByRole('button', { name: 'Iniciar gravação' }))
+    await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_recording_start'))
+    fireEvent.click(screen.getByRole('button', { name: 'Parar gravação' }))
+    await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_recording_stop'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Desempenho' }))
+    fireEvent.change(screen.getByLabelText('Fluidez'), { target: { value: '5' } })
+    fireEvent.change(screen.getByLabelText('Taxa do fallback econômico'), { target: { value: '2' } })
+    await waitFor(() => {
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_set_stream_rate', { fps: 5 })
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_set_fallback_rate', { fps: 2 })
+    })
   })
 })

@@ -519,6 +519,7 @@ mod tests {
         //
         // Order matters for stable diffs (alphabetical).
         const FILES_WITH_SPAWNS: &[&str] = &[
+            "src/services/android_emulator/media.rs",
             "src/services/android_emulator/mod.rs",
             "src/services/android_emulator/requirements.rs",
             "src/services/android_emulator/session.rs",

@@ -22,6 +22,11 @@ const api = vi.hoisted(() => ({
   typeText: vi.fn(),
   pressKey: vi.fn(),
   systemAction: vi.fn(),
+  accessibilitySnapshot: vi.fn(),
+  inspectPoint: vi.fn(),
+  captureScreen: vi.fn(),
+  recordingStart: vi.fn(),
+  recordingStop: vi.fn(),
   onFrame: vi.fn(),
   onLifecycle: vi.fn(),
   onError: vi.fn(),
@@ -79,6 +84,11 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
     api.typeText.mockResolvedValue(undefined)
     api.pressKey.mockResolvedValue(undefined)
     api.systemAction.mockResolvedValue(undefined)
+    api.accessibilitySnapshot.mockResolvedValue({ nodes: [] })
+    api.inspectPoint.mockResolvedValue(null)
+    api.captureScreen.mockResolvedValue({ path: '/captures/android-screen.png' })
+    api.recordingStart.mockResolvedValue(undefined)
+    api.recordingStop.mockResolvedValue({ path: '/captures/android-recording.mp4' })
     api.onFrame.mockImplementation((handler: typeof frameHandler) => {
       frameHandler = handler
       return Promise.resolve(() => {})
@@ -195,5 +205,46 @@ describe('useAndroidEmulatorPanel (PA-27)', () => {
 
     expect(view.result.current.agentOpenRequest).toBe(1)
     expect(view.result.current.agentPresence).toEqual(presence)
+  })
+
+  it('exposes Android accessibility inspection through the frozen inspect command', async () => {
+    api.inspectPoint.mockResolvedValue({
+      rect: { x: 0.25, y: 0.2, width: 0.5, height: 0.1 },
+      element: {
+        id: 'save', role: 'android.widget.Button', label: 'Save',
+        frame: { x: 270, y: 480, width: 540, height: 240 },
+        enabled: true, visible: true, actionable: true,
+      },
+    })
+    const view = renderHook(() => useAndroidEmulatorPanel())
+    await act(async () => { await view.result.current.attach(device.avdName) })
+
+    const hit = await view.result.current.inspectPoint({ x: 0.5, y: 0.25 }, true)
+
+    expect(api.inspectPoint).toHaveBeenCalledWith(0.5, 0.25)
+    expect(hit).toMatchObject({ element: { id: 'save' }, rect: { x: 0.25, width: 0.5 } })
+  })
+
+  it('drives screenshot and recording state through the frozen media commands', async () => {
+    const view = renderHook(() => useAndroidEmulatorPanel())
+    await act(async () => { await view.result.current.attach(device.avdName) })
+
+    await act(async () => { await view.result.current.captureScreen() })
+    expect(view.result.current.lastMediaFile).toEqual({
+      path: '/captures/android-screen.png',
+      fileName: 'android-screen.png',
+    })
+
+    await act(async () => { await view.result.current.toggleRecording() })
+    expect(api.recordingStart).toHaveBeenCalledOnce()
+    expect(view.result.current.recording.state).toBe('recording')
+
+    await act(async () => { await view.result.current.toggleRecording() })
+    expect(api.recordingStop).toHaveBeenCalledOnce()
+    expect(view.result.current.recording.state).toBe('idle')
+    expect(view.result.current.lastMediaFile).toEqual({
+      path: '/captures/android-recording.mp4',
+      fileName: 'android-recording.mp4',
+    })
   })
 })

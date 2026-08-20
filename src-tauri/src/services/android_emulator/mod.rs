@@ -21,14 +21,21 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
+pub mod a11y;
 pub mod input;
+pub mod media;
 pub mod requirements;
 pub mod sdk;
 pub mod session;
 pub mod setup;
 
+pub use a11y::{
+    AndroidAccessibilityNode, AndroidAccessibilitySnapshot, AndroidEmulatorElementHit,
+    AndroidEmulatorRect, AndroidEmulatorSystemAction,
+};
+pub use media::AndroidEmulatorMediaFile;
 pub use requirements::{
     AndroidDevice, AndroidDeviceFamily, AndroidEmulatorIssue, AndroidEmulatorRequirements,
 };
@@ -78,6 +85,11 @@ pub(crate) trait CommandRunner: Send + Sync {
         self.run(program, args)
     }
 }
+
+/// App-exit and detach cleanup must share one absolute budget. Individual
+/// adb operations receive the remaining deadline instead of starting a new
+/// timeout for each pull, remove, or screenshot.
+pub(crate) const ANDROID_CLEANUP_BUDGET: Duration = Duration::from_secs(8);
 
 #[derive(Debug, Default)]
 pub(crate) struct SystemCommandRunner;
@@ -173,6 +185,9 @@ pub struct AndroidEmulatorService {
     pub(crate) operation_lock: Arc<Mutex<()>>,
     pub(crate) next_generation: Arc<AtomicU64>,
     pub(crate) app: Arc<Mutex<Option<AppHandle>>>,
+    pub(crate) media_backend: Arc<dyn media::AndroidMediaBackend>,
+    pub(crate) exiting: Arc<AtomicBool>,
+    pub(crate) exit_cleanup_started: Arc<AtomicBool>,
     /// Cancellation flag for the onboarding setup sequence (PA-24).
     setup_cancel: Arc<AtomicBool>,
     /// Guard so only one setup sequence runs at a time (PA-24).
@@ -198,6 +213,9 @@ impl AndroidEmulatorService {
             operation_lock: Arc::new(Mutex::new(())),
             next_generation: Arc::new(AtomicU64::new(0)),
             app: Arc::new(Mutex::new(None)),
+            media_backend: Arc::new(media::SystemAndroidMediaBackend),
+            exiting: Arc::new(AtomicBool::new(false)),
+            exit_cleanup_started: Arc::new(AtomicBool::new(false)),
             setup_cancel: Arc::new(AtomicBool::new(false)),
             setup_running: Arc::new(AtomicBool::new(false)),
             licenses_accepted: Arc::new(AtomicBool::new(false)),
@@ -410,6 +428,70 @@ pub async fn android_emulator_press_key(
     tauri::async_runtime::spawn_blocking(move || service.press_key_sync(&key))
         .await
         .map_err(|error| format!("failed to press Android emulator key: {error}"))?
+}
+
+#[tauri::command]
+pub async fn android_emulator_system_action(
+    service: State<'_, AndroidEmulatorService>,
+    action: AndroidEmulatorSystemAction,
+) -> Result<(), String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.system_action_sync(action))
+        .await
+        .map_err(|error| format!("failed to run Android emulator system action: {error}"))?
+}
+
+#[tauri::command]
+pub async fn android_emulator_accessibility_snapshot(
+    service: State<'_, AndroidEmulatorService>,
+) -> Result<AndroidAccessibilitySnapshot, String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.accessibility_snapshot_sync())
+        .await
+        .map_err(|error| format!("failed to read Android accessibility snapshot: {error}"))?
+}
+
+#[tauri::command]
+pub async fn android_emulator_inspect_point(
+    service: State<'_, AndroidEmulatorService>,
+    x: f64,
+    y: f64,
+) -> Result<Option<AndroidEmulatorElementHit>, String> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.inspect_point_sync(x, y))
+        .await
+        .map_err(|error| format!("failed to inspect Android emulator point: {error}"))?
+}
+
+fn desktop_directory(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .desktop_dir()
+        .map_err(|error| format!("não foi possível localizar a Mesa: {error}"))
+}
+
+#[tauri::command]
+pub fn android_emulator_capture_screen(
+    app: AppHandle,
+    service: State<'_, AndroidEmulatorService>,
+) -> Result<AndroidEmulatorMediaFile, String> {
+    let desktop = desktop_directory(&app)?;
+    service.capture_screen_sync(&desktop)
+}
+
+#[tauri::command]
+pub fn android_emulator_recording_start(
+    app: AppHandle,
+    service: State<'_, AndroidEmulatorService>,
+) -> Result<(), String> {
+    let desktop = desktop_directory(&app)?;
+    service.start_recording_sync(&desktop)
+}
+
+#[tauri::command]
+pub fn android_emulator_recording_stop(
+    service: State<'_, AndroidEmulatorService>,
+) -> Result<AndroidEmulatorMediaFile, String> {
+    service.stop_recording_sync()
 }
 
 #[cfg(test)]

@@ -51,6 +51,7 @@ type IosSimulatorPanelProps = {
   simulatorWidth: number
   onSetWidth: (width: number) => void
   onClose: () => void
+  onAndroidOpenRequested?: () => void
   requirements?: IosSimulatorRequirements
   requirementsLoading: boolean
   attachedUdid?: string
@@ -109,6 +110,7 @@ export function IosSimulatorPanel({
   simulatorWidth,
   onSetWidth,
   onClose,
+  onAndroidOpenRequested,
   requirements,
   requirementsLoading,
   attachedUdid,
@@ -179,6 +181,7 @@ export function IosSimulatorPanel({
   )
   const androidActive = activeSimulatorPlatform === 'android'
   const androidVisibleRef = useRef(false)
+  const consumedAndroidOpenRequestRef = useRef(0)
 
   useEffect(() => {
     if (!iosAvailable && activeSimulatorPlatform === 'ios') setActiveSimulatorPlatform('android')
@@ -194,6 +197,14 @@ export function IosSimulatorPanel({
       android.close()
     }
   }, [androidActive, android.close, android.open, simulatorOpen])
+
+  useEffect(() => {
+    const request = android.agentOpenRequest
+    if (request <= consumedAndroidOpenRequestRef.current) return
+    consumedAndroidOpenRequestRef.current = request
+    setActiveSimulatorPlatform('android')
+    onAndroidOpenRequested?.()
+  }, [android.agentOpenRequest, onAndroidOpenRequested])
 
   useEffect(() => () => {
     if (androidVisibleRef.current) android.close()
@@ -546,6 +557,7 @@ export function IosSimulatorPanel({
             platform={platform}
             loading={androidLoading}
             onCheckAgain={() => { void android.refresh() }}
+            onAddAnnotation={onAddAnnotation}
           />
         )}
       </div>
@@ -553,7 +565,7 @@ export function IosSimulatorPanel({
   )
 }
 
-// ── Android emulator tab (PA-27) ─────────────────────────────────────────
+// ── Android emulator tab (PA-27 + PA-29) ─────────────────────────────────
 
 type AndroidPanelState = ReturnType<typeof useAndroidEmulatorPanel>
 
@@ -562,13 +574,17 @@ function AndroidEmulatorTabContent({
   platform,
   loading,
   onCheckAgain,
+  onAddAnnotation,
 }: {
   android: AndroidPanelState
   platform: NodeJS.Platform
   loading: boolean
   onCheckAgain: () => void
+  onAddAnnotation: (attachment: AttachmentMeta) => void
 }) {
   const { t } = useI18n()
+  const [interactionMode, setInteractionMode] = useState<SimulatorInteractionMode>('interact')
+  const [performanceOpen, setPerformanceOpen] = useState(false)
   const { requirements } = android
   if (android.legacyBackend) {
     return (
@@ -679,23 +695,39 @@ function AndroidEmulatorTabContent({
                 frameDataUrl={android.frameDataUrl}
                 deviceName={device.displayName}
                 previewAlt={t('simulator.previewAlt', { name: device.displayName })}
-                mode="interact"
+                mode={interactionMode}
                 interactive={android.interactionReady}
-                selectionEnabled={false}
                 keyMapper={androidEmulatorKeyForKeyboardEvent}
                 labels={{
                   interact: t('simulator.mode.interact'),
+                  selectElement: t('simulator.mode.selectElement'),
+                  selectArea: t('simulator.mode.selectArea'),
                   interaction: t('simulator.interactionLabel', { name: device.displayName }),
                   keyboardHint: t('simulator.keyboardHint'),
                   unavailable: t('simulator.interactionUnavailable'),
+                  note: t('simulator.annotation.note'),
+                  notePlaceholder: t('simulator.annotation.notePlaceholder'),
+                  addToChat: t('simulator.annotation.addToChat'),
+                  cancel: t('common.cancel'),
+                  capturing: t('simulator.annotation.capturing'),
+                  selectionTooSmall: t('simulator.annotation.selectionTooSmall'),
+                  elementUnavailable: t('simulator.annotation.elementUnavailable'),
                   agentActive: t('simulator.agentActive'),
                   agentBadge: t('simulator.agentBadge'),
                 }}
-                onModeChange={() => {}}
+                annotationContext={{
+                  platform: 'Android',
+                  version: `API ${device.apiLevel}`,
+                  selectionImage: 'viewport',
+                }}
+                onModeChange={setInteractionMode}
                 onTap={android.tap}
                 onDrag={android.drag}
                 onTypeText={android.typeText}
                 onPressKey={android.pressKey}
+                onInspectPoint={android.inspectPoint}
+                onCaptureAnnotation={(_kind, rect, element) => android.captureAnnotation(rect, element)}
+                onAddAnnotation={onAddAnnotation}
                 agentPresence={android.agentPresence}
               />
             ) : (
@@ -711,12 +743,53 @@ function AndroidEmulatorTabContent({
             interactionReady={android.interactionReady}
             busy={Boolean(android.busyAvd)}
             actions={actions}
-            mediaControls={false}
+            recording={android.recording}
+            lastMediaFile={android.lastMediaFile}
             onSystemAction={android.runSystemAction}
+            onCaptureScreen={android.captureScreen}
+            onToggleRecording={android.toggleRecording}
             onDetach={android.detach}
             onEnd={android.endSimulation}
             onShutdownExternal={android.endSimulation}
           />
+          <div className="ios-simulator-stream-bar">
+            <div className="ios-simulator-stream-status" role="status" aria-live="polite">
+              <span className="ios-simulator-stream-source">{t('androidEmulator.stream.adb')}</span>
+              <span>{android.streamFps} fps</span>
+            </div>
+            <button
+              type="button"
+              className="ios-simulator-performance-toggle"
+              aria-expanded={performanceOpen}
+              onClick={() => setPerformanceOpen(current => !current)}
+            >
+              <Gauge size={13} aria-hidden="true" />
+              {t('simulator.performance')}
+            </button>
+          </div>
+          {performanceOpen && (
+            <div className="ios-simulator-performance-settings">
+              <label className="ios-simulator-rate">
+                <span>{t('simulator.streamRate')}</span>
+                <select
+                  value={android.streamFps}
+                  onChange={event => { void android.setStreamRate(Number(event.target.value)) }}
+                >
+                  {[1, 2, 5, 10].map(rate => <option key={rate} value={rate}>{rate} fps</option>)}
+                </select>
+              </label>
+              <label className="ios-simulator-rate">
+                <span>{t('simulator.fallbackRate')}</span>
+                <select
+                  value={android.fallbackFps}
+                  onChange={event => { void android.setFallbackRate(Number(event.target.value)) }}
+                >
+                  {[0.5, 1, 2].map(rate => <option key={rate} value={rate}>{rate} fps</option>)}
+                </select>
+              </label>
+              <p className="ios-simulator-disclaimer">{t('simulator.disclaimer')}</p>
+            </div>
+          )}
         </section>
       )}
     </>

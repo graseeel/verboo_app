@@ -1,13 +1,24 @@
-import type {
-  IosSimulatorAccessibilityNode,
-  IosSimulatorPoint,
-  IosSimulatorRect,
-} from './iosSimulatorApi'
+export type SimulatorPoint = { x: number; y: number }
+export type SimulatorRect = { x: number; y: number; width: number; height: number }
+export type SimulatorAccessibilityNode = {
+  id: string
+  role: string
+  label?: string | null
+  value?: string | null
+  frame: SimulatorRect
+  enabled: boolean
+  visible: boolean
+  actionable: boolean
+}
+export type SimulatorElementHit = {
+  element: SimulatorAccessibilityNode
+  rect: SimulatorRect
+}
 
 type DeviceSize = { width: number; height: number }
 
 export function accessibilityDeviceSize(
-  nodes: readonly IosSimulatorAccessibilityNode[],
+  nodes: readonly SimulatorAccessibilityNode[],
 ): DeviceSize | null {
   const width = Math.max(0, ...nodes.filter(node => node.visible).map(node => node.frame.x + node.frame.width))
   const height = Math.max(0, ...nodes.filter(node => node.visible).map(node => node.frame.y + node.frame.height))
@@ -15,9 +26,9 @@ export function accessibilityDeviceSize(
 }
 
 export function normalizedAccessibilityRect(
-  nodes: readonly IosSimulatorAccessibilityNode[],
-  node: IosSimulatorAccessibilityNode,
-): IosSimulatorRect | null {
+  nodes: readonly SimulatorAccessibilityNode[],
+  node: SimulatorAccessibilityNode,
+): SimulatorRect | null {
   const device = accessibilityDeviceSize(nodes)
   if (!device) return null
   return {
@@ -29,9 +40,9 @@ export function normalizedAccessibilityRect(
 }
 
 export function accessibilityNodeAtPoint(
-  nodes: readonly IosSimulatorAccessibilityNode[],
-  point: IosSimulatorPoint,
-): IosSimulatorAccessibilityNode | undefined {
+  nodes: readonly SimulatorAccessibilityNode[],
+  point: SimulatorPoint,
+): SimulatorAccessibilityNode | undefined {
   const device = accessibilityDeviceSize(nodes)
   if (!device) return undefined
   const x = clampUnit(point.x) * device.width

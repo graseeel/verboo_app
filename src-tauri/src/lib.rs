@@ -22,26 +22,28 @@ use tauri::{Emitter, Manager};
 // RECORDING_STOP_TIMEOUT (8 s); WDA graceful escalation is bounded by
 // WDA_SIGINT_GRACE_PERIOD (5 s) plus WDA_SIGTERM_GRACE_PERIOD (2 s), leaving
 // 1 s of margin when no recording consumes it.
-// Recording and the cumulative shutdown pass over N ledger-owned UDIDs share
-// this same absolute deadline, so their worst-case maxima are not additive. N
-// is runtime ledger data, never a hardcoded owner/device count; remeasure the
-// end-to-end envelope before changing this value.
-#[cfg(target_os = "macos")]
-const IOS_SIMULATOR_CLEANUP_BUDGET: Duration = Duration::from_secs(8);
+// iOS and Android cleanup share one absolute deadline, so their worst-case
+// maxima are not additive. The process owner (cli.mjs) controls the outer
+// shutdown window and prefers a fast bounded exit to perfect cleanup.
+const SIMULATOR_CLEANUP_BUDGET: Duration = Duration::from_secs(8);
 
-#[cfg(target_os = "macos")]
-fn stop_ios_simulator_for_app_exit(app_handle: &tauri::AppHandle) {
-    let deadline = std::time::Instant::now() + IOS_SIMULATOR_CLEANUP_BUDGET;
-    let service = app_handle.state::<services::ios_simulator::IosSimulatorService>();
+fn stop_simulators_for_app_exit(app_handle: &tauri::AppHandle) {
+    let deadline = std::time::Instant::now() + SIMULATOR_CLEANUP_BUDGET;
+
+    #[cfg(target_os = "macos")]
+    {
+        let service = app_handle.state::<services::ios_simulator::IosSimulatorService>();
+        service.begin_exit();
+        app_handle
+            .state::<services::ios_simulator::IosSimulatorBridge>()
+            .stop();
+        let _ = service.stop_for_app_exit(deadline);
+    }
+
+    let service = app_handle.state::<services::android_emulator::AndroidEmulatorService>();
     service.begin_exit();
-    app_handle
-        .state::<services::ios_simulator::IosSimulatorBridge>()
-        .stop();
     let _ = service.stop_for_app_exit(deadline);
 }
-
-#[cfg(not(target_os = "macos"))]
-fn stop_ios_simulator_for_app_exit(_app_handle: &tauri::AppHandle) {}
 
 // ════════════════════════════════════════════════════════════════════
 // AppState — will be fleshed out in later phases
@@ -2678,7 +2680,7 @@ pub fn run() {
 
             Ok(())
         })
-        // ── Commands (47) ──────────────────────────────────────
+        // ── Commands (53) ──────────────────────────────────────
         .invoke_handler(tauri::generate_handler![
             // Config
             get_config,
@@ -2731,6 +2733,12 @@ pub fn run() {
             services::android_emulator::android_emulator_drag,
             services::android_emulator::android_emulator_type_text,
             services::android_emulator::android_emulator_press_key,
+            services::android_emulator::android_emulator_system_action,
+            services::android_emulator::android_emulator_accessibility_snapshot,
+            services::android_emulator::android_emulator_inspect_point,
+            services::android_emulator::android_emulator_capture_screen,
+            services::android_emulator::android_emulator_recording_start,
+            services::android_emulator::android_emulator_recording_stop,
             #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_attach,
             #[cfg(target_os = "macos")]
@@ -2927,7 +2935,7 @@ pub fn run() {
 
     app.run(move |app_handle, event| match event {
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
-            stop_ios_simulator_for_app_exit(app_handle);
+            stop_simulators_for_app_exit(app_handle);
         }
         tauri::RunEvent::MainEventsCleared => {
             if let Some(report_path) = runtime_smoke_report.take() {

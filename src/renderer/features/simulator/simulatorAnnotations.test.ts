@@ -51,6 +51,27 @@ describe('simulator annotations', () => {
     expect(attachment.extractedText).not.toMatch(/https?:|selector/i)
   })
 
+  it('parameterizes the platform/version label for an Android annotation', () => {
+    const attachment = createSimulatorAnnotationAttachment(
+      'area',
+      undefined,
+      {
+        ...capture,
+        viewportPath: capture.cropPath,
+        device: { ...capture.device, name: 'Pixel 8', udid: 'Pixel_8_API_35', iosVersion: 'API 35' },
+      },
+      { platform: 'Android', version: 'API 35', selectionImage: 'viewport' },
+    )
+
+    expect(attachment.extractedText).toContain(
+      'Simulator annotation (area) on Pixel 8, Android API 35, portrait.',
+    )
+    expect(attachment.extractedText).not.toContain('iOS API 35')
+    expect(attachment.extractedText).toContain('selected rect metadata and full simulator viewport')
+    expect(attachment.extractedText).not.toContain('Use the crop')
+    expect(expandSimulatorAnnotationSnapshots([attachment])).toEqual([attachment])
+  })
+
   it('expands the full viewport and promotes both simulator paths', async () => {
     const attachment = createSimulatorAnnotationAttachment('element', undefined, capture)
     expect(expandSimulatorAnnotationSnapshots([attachment])).toMatchObject([

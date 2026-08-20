@@ -271,7 +271,7 @@ fn normalized_pixels(session: &AndroidSession, x: f64, y: f64) -> Result<(u32, u
     ))
 }
 
-enum PresenceTarget {
+pub(crate) enum PresenceTarget {
     None,
     Target {
         x: f64,
@@ -283,7 +283,7 @@ enum PresenceTarget {
     },
 }
 
-fn emit_presence(
+pub(crate) fn emit_presence(
     app: &std::sync::Mutex<Option<tauri::AppHandle>>,
     generation: u64,
     action: &str,
