@@ -2433,6 +2433,11 @@ pub fn run() {
                     }
                 });
             }
+            // Android emulator service (PA-24; macOS/Windows/Linux — the
+            // requirements/setup probes are per-SO inside the service).
+            app.manage(services::android_emulator::AndroidEmulatorService::new(
+                app_data_dir.clone(),
+            ));
             let settings_store = SettingsStore::new(app_data_dir.clone());
             app.manage(
                 services::pasted_file_upload::PastedFileUploadService::new(app_data_dir.clone())
@@ -2711,6 +2716,10 @@ pub fn run() {
             services::ios_simulator::ios_simulator_setup_start,
             #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_setup_cancel,
+            // Android emulator panel (PA-24; macOS/Windows/Linux)
+            services::android_emulator::android_emulator_requirements,
+            services::android_emulator::android_emulator_setup_start,
+            services::android_emulator::android_emulator_setup_cancel,
             #[cfg(target_os = "macos")]
             services::ios_simulator::ios_simulator_attach,
             #[cfg(target_os = "macos")]

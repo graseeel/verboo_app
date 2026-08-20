@@ -519,6 +519,10 @@ mod tests {
         //
         // Order matters for stable diffs (alphabetical).
         const FILES_WITH_SPAWNS: &[&str] = &[
+            "src/services/android_emulator/mod.rs",
+            "src/services/android_emulator/requirements.rs",
+            "src/services/android_emulator/sdk.rs",
+            "src/services/android_emulator/setup.rs",
             "src/services/auth_token.rs",
             "src/services/chrome_integration/cli_mcp.rs",
             "src/services/chrome_integration/installer.rs",

@@ -138,7 +138,7 @@ describe('TopBar workspace panel controls', () => {
       </I18nProvider>,
     )
 
-    expect(screen.getByRole('button', { name: 'Abrir simulador do iOS' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Abrir simulador' })).toBeEnabled()
   })
 
   it('does not advertise the iOS simulator on unsupported platforms', () => {
@@ -162,7 +162,7 @@ describe('TopBar workspace panel controls', () => {
       </I18nProvider>,
     )
 
-    expect(screen.queryByRole('button', { name: 'Abrir simulador do iOS' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Abrir simulador' })).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Gravação de tela em andamento')).not.toBeInTheDocument()
   })
 

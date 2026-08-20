@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Gauge, LoaderCircle, PanelRightClose, RefreshCw, Smartphone } from 'lucide-react'
 import { useI18n } from '../../i18n'
 import { simulatorStageMessageKey } from './iosSimulatorModel'
@@ -7,6 +7,10 @@ import { SimulatorSurface } from './SimulatorSurface'
 import { SimulatorDevicePicker } from './SimulatorDevicePicker'
 import { SimulatorControlDock } from './SimulatorControlDock'
 import { SimulatorTooltipButton } from './SimulatorTooltip'
+import { AndroidEmulatorLegacyCard, AndroidOnboarding } from './AndroidOnboarding'
+import { androidEmulatorApi } from './androidEmulatorApi'
+import type { AndroidEmulatorRequirements } from './androidEmulatorApi'
+import { errorText, isUnknownCommandError } from './androidEmulatorModel'
 import type { SimulatorInteractionMode } from './useSimulatorInteraction'
 import type {
   IosSimulatorAnnotationCapture,
@@ -77,6 +81,10 @@ type IosSimulatorPanelProps = {
   onAddAnnotation: (attachment: AttachmentMeta) => void
   agentPresence?: IosSimulatorPresenceEvent
   onRefresh: () => Promise<number | undefined>
+  /** Host OS (App.tsx passes config.platform). The iOS tab exists only on
+   *  darwin; the Android tab is always available (PA-25 platform tabs).
+   *  Defaults to 'darwin' so pre-tabs callers keep the iOS-only shape. */
+  platform?: NodeJS.Platform
   minWidth: number
   maxWidth: number
 }
@@ -124,6 +132,7 @@ export function IosSimulatorPanel({
   onAddAnnotation,
   agentPresence,
   onRefresh,
+  platform = 'darwin',
   minWidth,
   maxWidth,
 }: IosSimulatorPanelProps) {
@@ -133,6 +142,49 @@ export function IosSimulatorPanel({
   const [selectedUdid, setSelectedUdid] = useState<string | undefined>(attachedUdid)
   const [performanceOpen, setPerformanceOpen] = useState(false)
   const [refreshFeedback, setRefreshFeedback] = useState<string>()
+
+  // ── Platform tabs (PA-25, contrato-android-simulator — frozen) ─────────
+  // One panel, one tab per platform: iOS exists only on darwin; Android is
+  // always offered (the SDK toolchain runs on macOS/Windows/Linux).
+  const iosAvailable = platform === 'darwin'
+  const [activeSimulatorPlatform, setActiveSimulatorPlatform] = useState<'ios' | 'android'>(
+    iosAvailable ? 'ios' : 'android',
+  )
+  const androidActive = activeSimulatorPlatform === 'android'
+  // Android requirements load LAZILY — only when the Android tab is
+  // actually visible (opening the panel to the iOS tab must not probe the
+  // Android SDK). undefined = never fetched.
+  const [androidState, setAndroidState] = useState<AndroidRequirementsState | undefined>(undefined)
+
+  useEffect(() => {
+    if (!iosAvailable && activeSimulatorPlatform === 'ios') setActiveSimulatorPlatform('android')
+  }, [iosAvailable, activeSimulatorPlatform])
+
+  const refreshAndroid = useCallback(async () => {
+    setAndroidState({ status: 'loading' })
+    try {
+      const requirements = await androidEmulatorApi.requirements()
+      setAndroidState({ status: 'ready', requirements })
+      return requirements.devices.length
+    } catch (err) {
+      if (isUnknownCommandError(err)) {
+        // Older backend without the android_emulator_* commands: the tab
+        // shows the guide and NEVER offers setup (fail-open contract).
+        setAndroidState({ status: 'legacy' })
+      } else {
+        setAndroidState({ status: 'error', message: errorText(err) })
+      }
+      return undefined
+    }
+  }, [])
+
+  useEffect(() => {
+    if (simulatorOpen && androidActive && androidState === undefined) {
+      void refreshAndroid()
+    }
+  }, [simulatorOpen, androidActive, androidState, refreshAndroid])
+  const androidLoading = androidState === undefined || androidState.status === 'loading'
+  const activeLoading = androidActive ? androidLoading : requirementsLoading
 
   useEffect(() => {
     if (attachedUdid) setSelectedUdid(attachedUdid)
@@ -164,6 +216,18 @@ export function IosSimulatorPanel({
   }
   const handleRefresh = async () => {
     setRefreshFeedback(t('simulator.refreshing'))
+    if (androidActive) {
+      const androidCount = await refreshAndroid()
+      if (androidCount === undefined) {
+        setRefreshFeedback(undefined)
+        return
+      }
+      setRefreshFeedback(t(
+        androidCount === 1 ? 'androidEmulator.refreshed.one' : 'androidEmulator.refreshed.other',
+        { count: androidCount },
+      ))
+      return
+    }
     const deviceCount = await onRefresh()
     if (deviceCount === undefined) {
       setRefreshFeedback(undefined)
@@ -180,11 +244,14 @@ export function IosSimulatorPanel({
     && Boolean(lifecycle.recoverableError)
   const stageDeviceName = device?.name ?? ''
 
+  const panelTitle = androidActive ? t('androidEmulator.title') : t('simulator.title')
+  const panelSubtitle = androidActive ? t('androidEmulator.subtitle') : t('simulator.subtitle')
+
   return (
     <aside
       className={`ios-simulator-panel ${simulatorOpen ? '' : 'is-hidden'}`}
       style={{ width: simulatorOpen ? simulatorWidth : 0 }}
-      aria-label={t('simulator.title')}
+      aria-label={panelTitle}
     >
       <div
         className="ios-simulator-resizer"
@@ -198,9 +265,9 @@ export function IosSimulatorPanel({
         <div className="ios-simulator-heading">
           <Smartphone size={16} aria-hidden="true" />
           <div>
-            <strong>{t('simulator.title')}</strong>
+            <strong>{panelTitle}</strong>
             <span role="status" aria-live="polite">
-              {refreshFeedback ?? t('simulator.subtitle')}
+              {refreshFeedback ?? panelSubtitle}
             </span>
           </div>
         </div>
@@ -210,10 +277,10 @@ export function IosSimulatorPanel({
             type="button"
             className="icon-button tiny"
             onClick={() => { void handleRefresh() }}
-            disabled={requirementsLoading}
+            disabled={activeLoading}
             aria-label={t('simulator.refresh')}
           >
-            <RefreshCw size={14} className={requirementsLoading ? 'is-spinning' : ''} />
+            <RefreshCw size={14} className={activeLoading ? 'is-spinning' : ''} />
           </SimulatorTooltipButton>
           <SimulatorTooltipButton
             label={t('topbar.hideSimulator')}
@@ -227,7 +294,30 @@ export function IosSimulatorPanel({
         </div>
       </header>
 
-      {showDeviceList && (
+      {iosAvailable && (
+        <div className="simulator-platform-tabs" role="tablist" aria-label={t('simulator.platformTabs')}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!androidActive}
+            className={`simulator-platform-tab ${androidActive ? '' : 'is-active'}`}
+            onClick={() => setActiveSimulatorPlatform('ios')}
+          >
+            {t('simulator.platform.ios')}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={androidActive}
+            className={`simulator-platform-tab ${androidActive ? 'is-active' : ''}`}
+            onClick={() => setActiveSimulatorPlatform('android')}
+          >
+            {t('simulator.platform.android')}
+          </button>
+        </div>
+      )}
+
+      {!androidActive && showDeviceList && (
         <div className="ios-simulator-device-bar">
           <SimulatorDevicePicker
             devices={requirements?.devices ?? []}
@@ -250,6 +340,8 @@ export function IosSimulatorPanel({
       )}
 
       <div className="ios-simulator-content">
+        {!androidActive && (
+        <>
         {requirementsLoading && !requirements && (
           <div className="ios-simulator-state" role="status">
             <LoaderCircle size={20} className="is-spinning" aria-hidden="true" />
@@ -428,7 +520,118 @@ export function IosSimulatorPanel({
 
           </>
         )}
+        </>
+        )}
+
+        {androidActive && (
+          <AndroidEmulatorTabContent
+            state={androidState}
+            platform={platform}
+            loading={androidLoading}
+            onRefresh={refreshAndroid}
+            onCheckAgain={() => { void refreshAndroid() }}
+          />
+        )}
       </div>
     </aside>
+  )
+}
+
+// ── Android emulator tab (PA-25) ─────────────────────────────────────────
+
+type AndroidRequirementsState =
+  | { status: 'loading' }
+  // Older backend without the android_emulator_* commands (fail-open: the
+  // tab shows the guide and never offers setup).
+  | { status: 'legacy' }
+  | { status: 'ready'; requirements: AndroidEmulatorRequirements }
+  | { status: 'error'; message?: string }
+
+/** F0 content of the Android tab: detection states + the setup onboarding.
+ *  The interactive picker/surface/dock land in F1 (PA-27). */
+function AndroidEmulatorTabContent({
+  state,
+  platform,
+  loading,
+  onRefresh,
+  onCheckAgain,
+}: {
+  state: AndroidRequirementsState | undefined
+  platform: NodeJS.Platform
+  loading: boolean
+  onRefresh: () => Promise<number | undefined>
+  onCheckAgain: () => void
+}) {
+  const { t } = useI18n()
+  if (!state || state.status === 'loading') {
+    return (
+      <div className="ios-simulator-state" role="status">
+        <LoaderCircle size={20} className="is-spinning" aria-hidden="true" />
+        <span>{t('androidEmulator.loading')}</span>
+      </div>
+    )
+  }
+  if (state.status === 'legacy') {
+    return (
+      <AndroidEmulatorLegacyCard
+        platform={platform}
+        requirementsLoading={loading}
+        onCheckAgain={onCheckAgain}
+      />
+    )
+  }
+  if (state.status === 'error') {
+    return (
+      <div className="ios-simulator-error" role="alert">
+        <span>{state.message ?? t('common.unknown')}</span>
+        <button
+          type="button"
+          className="ghost-button"
+          onClick={onCheckAgain}
+          disabled={loading}
+        >
+          {t('simulator.refresh')}
+        </button>
+      </div>
+    )
+  }
+  const { requirements } = state
+  if (requirements.issue) {
+    return (
+      <AndroidOnboarding
+        issue={requirements.issue}
+        platform={platform}
+        requirementsLoading={loading}
+        onRefresh={onRefresh}
+        onCheckAgain={onCheckAgain}
+      />
+    )
+  }
+  if (!requirements.ready || requirements.devices.length === 0) {
+    return (
+      <div className="ios-simulator-state" role="status">
+        <Smartphone size={22} aria-hidden="true" />
+        <span>{t('androidEmulator.noDevices')}</span>
+      </div>
+    )
+  }
+  return (
+    <div className="android-emulator-ready">
+      <strong>{t('androidEmulator.devicesTitle')}</strong>
+      <ul className="android-emulator-devices">
+        {requirements.devices.map(device => (
+          <li key={device.avdName}>
+            <span className="android-emulator-device-name">{device.displayName}</span>
+            <span className="android-emulator-device-meta">
+              {device.apiLevel > 0 ? `API ${device.apiLevel} · ` : ''}
+              {t(`androidEmulator.family.${device.family}`)}
+            </span>
+            <span className={`android-emulator-device-state is-${device.running ? 'running' : 'stopped'}`}>
+              {t(device.running ? 'androidEmulator.device.running' : 'androidEmulator.device.stopped')}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }

@@ -1,4 +1,5 @@
 pub mod auth_token;
+pub mod android_emulator;
 pub mod browser_bridge;
 pub mod browser_panel;
 pub mod browser_platform;

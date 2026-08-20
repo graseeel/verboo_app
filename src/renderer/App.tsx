@@ -679,7 +679,9 @@ export function App() {
   const mediaPreviewCloseTimerRef = useRef<number | undefined>(undefined)
   const consumedSimulatorOpenRequestRef = useRef(0)
   const browserAvailable = configLoaded && supportsEmbeddedBrowser(config.platform)
-  const simulatorAvailable = configLoaded && config.platform === 'darwin'
+  // PA-25: o painel agora hospeda abas por plataforma (iOS só no darwin, Android
+  // sempre) — o gate por SO do iOS vive dentro do IosSimulatorPanel via prop.
+  const simulatorAvailable = configLoaded
   const t = useMemo(() => createTranslator(userSettings.language), [userSettings.language])
   const [tokenRate, setTokenRate] = useState<TokenRateSnapshot | undefined>()
   const goalRef = useRef(goal)
@@ -6796,6 +6798,7 @@ export function App() {
       )}
       {simulatorAvailable && (
         <IosSimulatorPanel
+          platform={config.platform}
           simulatorOpen={visibleSimulatorOpen}
           simulatorWidth={effectiveBrowserWidth}
           onSetWidth={setBrowserWidth}

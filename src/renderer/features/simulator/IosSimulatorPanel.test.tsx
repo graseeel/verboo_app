@@ -1,8 +1,14 @@
-import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { invoke } from '@tauri-apps/api/core'
 import { I18nProvider } from '../../i18n'
 import type { IosSimulatorLifecycleSnapshot, IosSimulatorRequirements } from './iosSimulatorApi'
 import { IosSimulatorPanel } from './IosSimulatorPanel'
+
+// The Android tab probes the backend through androidEmulatorApi (real
+// module) — invoke is mocked so those calls are assertable. The iOS tab
+// never invokes from the panel itself (all iOS actions arrive via props).
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 
 const device = {
   name: 'iPhone 17 Pro',
@@ -152,7 +158,7 @@ describe('IosSimulatorPanel', () => {
 
   it('explains both icon-only header controls with visible tooltips', () => {
     renderPanel()
-    for (const name of ['Atualizar simuladores', 'Ocultar simulador do iOS']) {
+    for (const name of ['Atualizar simuladores', 'Ocultar simulador']) {
       const button = screen.getByRole('button', { name })
       fireEvent.focus(button)
       expect(screen.getByRole('tooltip')).toHaveTextContent(name)
@@ -243,5 +249,114 @@ describe('IosSimulatorPanel', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(
       'Instale o Xcode 26 ou 27, abra-o uma vez para concluir a configuração e selecione-o com xcode-select.',
     )
+  })
+})
+
+/**
+ * Platform tabs (PA-25, contrato-android-simulator — frozen vocabulary):
+ * one panel, one tab per platform. iOS exists only on darwin; Android is
+ * always offered. The Android tab fetches android_emulator_requirements
+ * LAZILY (only while visible) and fail-open shows the legacy guide card —
+ * setup is never offered — when the backend predates the commands.
+ */
+describe('IosSimulatorPanel — platform tabs (PA-25)', () => {
+  const androidDevice = {
+    avdName: 'Verboo_Device_API_35',
+    displayName: 'Verboo Device API 35',
+    apiLevel: 35,
+    family: 'phone' as const,
+    running: true,
+  }
+
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset()
+    vi.mocked(invoke).mockResolvedValue({ ready: true, devices: [androidDevice] })
+  })
+
+  it('darwin: renders the iOS/Android tabs with iOS active and keeps the Android probe lazy', async () => {
+    renderPanel()
+
+    const tabs = screen.getByRole('tablist', { name: 'Plataforma do simulador' })
+    expect(within(tabs).getByRole('tab', { name: 'iOS' })).toHaveAttribute('aria-selected', 'true')
+    expect(within(tabs).getByRole('tab', { name: 'Android' })).toHaveAttribute('aria-selected', 'false')
+    expect(screen.getByText('Simulador do iOS')).toBeInTheDocument()
+    // The iOS tab content is the existing picker; the Android SDK is NOT probed.
+    expect(screen.getByRole('combobox', { name: 'Buscar simulador' })).toBeInTheDocument()
+    await act(async () => {})
+    expect(
+      vi.mocked(invoke).mock.calls.filter(([command]) => command === 'android_emulator_requirements'),
+    ).toHaveLength(0)
+  })
+
+  it('switching to the Android tab probes requirements and lists the detected devices', async () => {
+    renderPanel()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Android' }))
+    await act(async () => {})
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_requirements')
+    expect(screen.getByText('Emulador do Android')).toBeInTheDocument()
+    expect(screen.getByText('Dispositivos Android detectados')).toBeInTheDocument()
+    expect(screen.getByText('Verboo Device API 35')).toBeInTheDocument()
+    expect(screen.getByText('API 35 · celular')).toBeInTheDocument()
+    expect(screen.getByText('ligado')).toBeInTheDocument()
+    // The iOS picker leaves the DOM with the tab switch.
+    expect(screen.queryByRole('combobox', { name: 'Buscar simulador' })).not.toBeInTheDocument()
+  })
+
+  it('the Android tab with an issue mounts the real AndroidOnboarding choice', async () => {
+    vi.mocked(invoke).mockResolvedValue({ ready: false, issue: 'sdkMissing', devices: [] })
+    renderPanel()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Android' }))
+    await act(async () => {})
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Configuração do emulador Android necessária')
+    expect(screen.getByRole('button', { name: /Configuração automática/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Configuração manual/ })).toBeInTheDocument()
+  })
+
+  it('fail-open: an old backend (unknown command) shows the legacy guide card and never offers setup', async () => {
+    vi.mocked(invoke).mockRejectedValue(new Error('Command android_emulator_requirements not found'))
+    renderPanel()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Android' }))
+    await act(async () => {})
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Esta versão do app não inclui a configuração do emulador Android',
+    )
+    expect(screen.getByText(/Instale as ferramentas de linha de comando do SDK do Android/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Configuração automática/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Verificar de novo' })).toBeInTheDocument()
+  })
+
+  it('a REAL probe error (not unknown-command) shows the retryable error card', async () => {
+    vi.mocked(invoke).mockRejectedValue(new Error('adb exploded'))
+    renderPanel()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Android' }))
+    await act(async () => {})
+
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('adb exploded')
+    expect(alert).not.toHaveTextContent('não inclui a configuração')
+    fireEvent.click(within(alert).getByRole('button', { name: 'Atualizar simuladores' }))
+    await act(async () => {})
+    expect(
+      vi.mocked(invoke).mock.calls.filter(([command]) => command === 'android_emulator_requirements'),
+    ).toHaveLength(2)
+  })
+
+  it('win32: no tab bar — the Android content renders directly under the Android title', async () => {
+    renderPanel({ platform: 'win32' })
+    await act(async () => {})
+
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+    expect(screen.getByText('Emulador do Android')).toBeInTheDocument()
+    expect(screen.getByText('Verboo Device API 35')).toBeInTheDocument()
+    // The iOS device picker is never rendered off-darwin.
+    expect(screen.queryByRole('combobox', { name: 'Buscar simulador' })).not.toBeInTheDocument()
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith('android_emulator_requirements')
   })
 })

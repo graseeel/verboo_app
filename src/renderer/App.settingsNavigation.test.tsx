@@ -215,17 +215,17 @@ describe('App settings shortcuts', () => {
     const topbar = screen.getAllByRole('banner').find(element => element.classList.contains('topbar'))
     expect(topbar).toBeDefined()
     if (!topbar) throw new Error('TopBar was not rendered')
-    fireEvent.click(await within(topbar).findByRole('button', { name: 'Open iOS simulator' }))
-    await waitFor(() => expect(within(topbar).getByRole('button', { name: 'Hide iOS simulator' })).toBeInTheDocument())
+    fireEvent.click(await within(topbar).findByRole('button', { name: 'Open simulator' }))
+    await waitFor(() => expect(within(topbar).getByRole('button', { name: 'Hide simulator' })).toBeInTheDocument())
 
     fireEvent.click(avatar)
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(await screen.findByRole('heading', { name: 'Security', level: 1 })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Back to app' }))
-    await waitFor(() => expect(within(topbar).getByRole('button', { name: 'Hide iOS simulator' })).toBeInTheDocument())
+    await waitFor(() => expect(within(topbar).getByRole('button', { name: 'Hide simulator' })).toBeInTheDocument())
 
-    fireEvent.click(within(topbar).getByRole('button', { name: 'Hide iOS simulator' }))
-    await waitFor(() => expect(within(topbar).getByRole('button', { name: 'Open iOS simulator' })).toBeInTheDocument())
+    fireEvent.click(within(topbar).getByRole('button', { name: 'Hide simulator' }))
+    await waitFor(() => expect(within(topbar).getByRole('button', { name: 'Open simulator' })).toBeInTheDocument())
     await waitFor(() => expect(lifecycleForward).toBeDefined())
 
     const lifecycle: IosSimulatorLifecycleSnapshot = {
