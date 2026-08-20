@@ -283,6 +283,7 @@ impl PreviewGate {
 trait AndroidFrameSink: Send + Sync {
     fn frame(&self, frame: AndroidEmulatorFrame);
     fn error(&self, message: String);
+    fn lifecycle(&self, _stage: AndroidEmulatorStartupStage) {}
 }
 
 struct TauriFrameSink {
@@ -296,6 +297,10 @@ impl AndroidFrameSink for TauriFrameSink {
 
     fn error(&self, message: String) {
         emit_error(&self.app, message);
+    }
+
+    fn lifecycle(&self, stage: AndroidEmulatorStartupStage) {
+        emit_lifecycle(&self.app, stage);
     }
 }
 
@@ -375,11 +380,84 @@ mod tests {
     }
 
     #[test]
-    fn emulator_launch_uses_only_the_frozen_minimal_flags() {
+    fn emulator_launches_verboo_avds_headless_without_audio_or_boot_animation() {
         assert_eq!(
             emulator_launch_args("Pixel 8;safe"),
-            vec!["-avd", "Pixel 8;safe", "-no-snapshot-save"]
+            vec![
+                "-avd",
+                "Pixel 8;safe",
+                "-no-window",
+                "-no-boot-anim",
+                "-no-audio",
+                "-no-snapshot-save",
+            ]
         );
+    }
+
+    #[test]
+    fn external_running_avd_is_reused_without_a_verboo_boot_request() {
+        let root = tempfile::tempdir().unwrap();
+        let ledger = OwnershipLedger::open(root.path().to_path_buf()).unwrap();
+
+        assert_eq!(
+            attach_ownership(&ledger, "Pixel 8;safe", Some("emulator-5554")),
+            (AndroidEmulatorOwnership::External, false),
+        );
+    }
+
+    #[test]
+    fn external_attach_reuses_existing_serial_without_spawning_or_claiming_avd() {
+        let root = tempfile::tempdir().unwrap();
+        let runner = Arc::new(ExternalAttachRunner::default());
+        let launcher = RecordingEmulatorLauncher::default();
+        let mut service = AndroidEmulatorService::new(root.path().to_path_buf()).unwrap();
+        service.runner = runner.clone();
+
+        let session = service
+            .attach_sync_with_sink(
+                None,
+                Arc::new(RecordingAttachSink),
+                &launcher,
+                "Pixel_8_API_35".to_string(),
+                2,
+                1.0,
+            )
+            .unwrap();
+        service.detach_sync().unwrap();
+
+        assert_eq!(session.serial, "emulator-5554");
+        assert_eq!(session.ownership, AndroidEmulatorOwnership::External);
+        assert_eq!(
+            service.ownership.phase("Pixel_8_API_35"),
+            None,
+            "attaching an external AVD must not mark a Verboo boot request"
+        );
+        assert!(
+            launcher.calls.lock().unwrap().is_empty(),
+            "an already-running external AVD must never be spawned by Verboo"
+        );
+
+        let commands = runner.commands.lock().unwrap();
+        assert!(!commands.iter().any(|(_, args)| {
+            args.iter().any(|arg| {
+                matches!(
+                    arg.as_str(),
+                    "-no-window" | "-no-boot-anim" | "-no-audio" | "-avd"
+                )
+            })
+        }));
+    }
+
+    #[test]
+    fn absent_running_avd_requests_a_verboo_headless_boot() {
+        let root = tempfile::tempdir().unwrap();
+        let ledger = OwnershipLedger::open(root.path().to_path_buf()).unwrap();
+
+        assert_eq!(
+            attach_ownership(&ledger, "Pixel 8;safe", None),
+            (AndroidEmulatorOwnership::Verboo, true),
+        );
+        assert!(emulator_launch_args("Pixel 8;safe").contains(&"-no-window".to_string()));
     }
 
     #[test]
@@ -517,6 +595,115 @@ mod tests {
                 stdout: Vec::new(),
                 stderr: Vec::new(),
             })
+        }
+    }
+
+    #[derive(Default)]
+    struct ExternalAttachRunner {
+        commands: std::sync::Mutex<Vec<(String, Vec<String>)>>,
+    }
+
+    impl ExternalAttachRunner {
+        fn run_recorded(&self, program: &str, args: &[String]) -> Result<CommandOutput, String> {
+            self.commands
+                .lock()
+                .unwrap()
+                .push((program.to_string(), args.to_vec()));
+
+            if args_match(args, &["-list-avds"]) {
+                return Ok(CommandOutput {
+                    success: true,
+                    stdout: b"Pixel_8_API_35\n".to_vec(),
+                    stderr: Vec::new(),
+                });
+            }
+            if args_match(args, &["devices"]) {
+                return Ok(CommandOutput {
+                    success: true,
+                    stdout: b"List of devices attached\nemulator-5554\tdevice\n".to_vec(),
+                    stderr: Vec::new(),
+                });
+            }
+            if args_match(args, &["-s", "emulator-5554", "emu", "avd", "name"]) {
+                return Ok(CommandOutput {
+                    success: true,
+                    stdout: b"Pixel_8_API_35\n".to_vec(),
+                    stderr: Vec::new(),
+                });
+            }
+            if args_match(
+                args,
+                &[
+                    "-s",
+                    "emulator-5554",
+                    "shell",
+                    "getprop",
+                    "sys.boot_completed",
+                ],
+            ) {
+                return Ok(CommandOutput {
+                    success: true,
+                    stdout: b"1\n".to_vec(),
+                    stderr: Vec::new(),
+                });
+            }
+            if args_match(
+                args,
+                &["-s", "emulator-5554", "exec-out", "screencap", "-p"],
+            ) {
+                return Ok(png_output());
+            }
+
+            Err(format!(
+                "unexpected Android attach command: {program} {args:?}"
+            ))
+        }
+    }
+
+    impl CommandRunner for ExternalAttachRunner {
+        fn run(&self, program: &str, args: &[String]) -> Result<CommandOutput, String> {
+            self.run_recorded(program, args)
+        }
+
+        fn run_interruptible(
+            &self,
+            program: &str,
+            args: &[String],
+            _cancel: &AtomicBool,
+            _deadline: Instant,
+        ) -> Result<CommandOutput, String> {
+            self.run_recorded(program, args)
+        }
+    }
+
+    fn args_match(args: &[String], expected: &[&str]) -> bool {
+        args.len() == expected.len()
+            && args
+                .iter()
+                .zip(expected.iter())
+                .all(|(actual, expected)| actual == expected)
+    }
+
+    struct RecordingAttachSink;
+
+    impl AndroidFrameSink for RecordingAttachSink {
+        fn frame(&self, _frame: AndroidEmulatorFrame) {}
+
+        fn error(&self, _message: String) {}
+    }
+
+    #[derive(Default)]
+    struct RecordingEmulatorLauncher {
+        calls: std::sync::Mutex<Vec<(PathBuf, Vec<String>)>>,
+    }
+
+    impl EmulatorLauncher for RecordingEmulatorLauncher {
+        fn spawn(&self, path: &Path, avd_name: &str) -> Result<Child, String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((path.to_path_buf(), emulator_launch_args(avd_name)));
+            Err("test emulator launcher must not be called for an external AVD".to_string())
         }
     }
 
@@ -840,6 +1027,9 @@ pub(crate) fn emulator_launch_args(avd_name: &str) -> Vec<String> {
     vec![
         "-avd".to_string(),
         avd_name.to_string(),
+        "-no-window".to_string(),
+        "-no-boot-anim".to_string(),
+        "-no-audio".to_string(),
         "-no-snapshot-save".to_string(),
     ]
 }
@@ -934,6 +1124,27 @@ impl AndroidEmulatorService {
         stream_fps: u16,
         fallback_fps: f64,
     ) -> Result<AndroidEmulatorSession, String> {
+        let sink: Arc<dyn AndroidFrameSink> = Arc::new(TauriFrameSink { app: app.clone() });
+        let launcher = SystemEmulatorLauncher;
+        self.attach_sync_with_sink(
+            Some(app),
+            sink,
+            &launcher,
+            avd_name,
+            stream_fps,
+            fallback_fps,
+        )
+    }
+
+    fn attach_sync_with_sink(
+        &self,
+        app: Option<AppHandle>,
+        sink: Arc<dyn AndroidFrameSink>,
+        launcher: &dyn EmulatorLauncher,
+        avd_name: String,
+        stream_fps: u16,
+        fallback_fps: f64,
+    ) -> Result<AndroidEmulatorSession, String> {
         self.reject_if_exiting()?;
         let stream_fps = validate_stream_fps(stream_fps)?;
         let fallback_fps = validate_fallback_fps(fallback_fps)?;
@@ -943,7 +1154,9 @@ impl AndroidEmulatorService {
             .expect("Android emulator operation lock poisoned");
         self.reject_if_exiting()?;
         self.session_cancel.store(false, Ordering::Release);
-        self.bind_app(app.clone());
+        if let Some(app) = app {
+            self.bind_app(app);
+        }
 
         if let Some(current) = self.current_session_option() {
             if current.avd_name == avd_name {
@@ -973,7 +1186,7 @@ impl AndroidEmulatorService {
             .next_generation
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
-        emit_lifecycle(&app, AndroidEmulatorStartupStage::Booting);
+        sink.lifecycle(AndroidEmulatorStartupStage::Booting);
 
         let existing_serial = find_running_serial(
             self.runner.as_ref(),
@@ -986,12 +1199,12 @@ impl AndroidEmulatorService {
             return Err("Android emulator attach was cancelled".to_string());
         }
         let process = Arc::new(Mutex::new(None));
-        let (ownership, boot_requested) = if existing_serial.is_some() {
-            (ownership_for_running_avd(&self.ownership, &avd_name), false)
-        } else {
+        let (ownership, boot_requested) =
+            attach_ownership(&self.ownership, &avd_name, existing_serial.as_deref());
+        if boot_requested {
             self.ownership.mark_boot_requested(&avd_name)?;
             let emulator = emulator_path(&sdk_path);
-            let child = match spawn_emulator(&emulator, &avd_name) {
+            let child = match launcher.spawn(&emulator, &avd_name) {
                 Ok(child) => child,
                 Err(error) => {
                     let _ = self.ownership.remove(&avd_name);
@@ -999,10 +1212,9 @@ impl AndroidEmulatorService {
                 }
             };
             *process.lock().expect("Android emulator process poisoned") = Some(child);
-            (AndroidEmulatorOwnership::Verboo, true)
-        };
+        }
 
-        emit_lifecycle(&app, AndroidEmulatorStartupStage::WaitingForDisplay);
+        sink.lifecycle(AndroidEmulatorStartupStage::WaitingForDisplay);
         let serial = match wait_for_boot(
             self.runner.as_ref(),
             &adb,
@@ -1017,7 +1229,7 @@ impl AndroidEmulatorService {
                     let _ = terminate_process(&process);
                     let _ = self.ownership.remove(&avd_name);
                 }
-                emit_error(&app, error.clone());
+                sink.error(error.clone());
                 return Err(error);
             }
         };
@@ -1059,8 +1271,7 @@ impl AndroidEmulatorService {
             .expect("Android emulator state poisoned")
             .session = Some(session.clone());
 
-        emit_lifecycle(&app, AndroidEmulatorStartupStage::GeneratingFirstPreview);
-        let sink: Arc<dyn AndroidFrameSink> = Arc::new(TauriFrameSink { app: app.clone() });
+        sink.lifecycle(AndroidEmulatorStartupStage::GeneratingFirstPreview);
         loop {
             if self.session_cancel.load(Ordering::Acquire)
                 || !session.gate.wait_until_visible(&session.stop)
@@ -1098,17 +1309,17 @@ impl AndroidEmulatorService {
                         let _ = self.ownership.remove(&avd_name);
                     }
                     if let Some(cleanup_error) = cleanup_error {
-                        emit_error(&app, format!("{error}; cleanup failed: {cleanup_error}"));
+                        sink.error(format!("{error}; cleanup failed: {cleanup_error}"));
                     } else {
-                        emit_error(&app, error.clone());
+                        sink.error(error.clone());
                     }
                     return Err(error);
                 }
             }
         }
 
-        emit_lifecycle(&app, AndroidEmulatorStartupStage::PreparingInteraction);
-        emit_lifecycle(&app, AndroidEmulatorStartupStage::Ready);
+        sink.lifecycle(AndroidEmulatorStartupStage::PreparingInteraction);
+        sink.lifecycle(AndroidEmulatorStartupStage::Ready);
         let worker = spawn_frame_loop(self.runner.clone(), sink, session.clone());
         session
             .workers
@@ -1297,12 +1508,35 @@ fn ownership_for_running_avd(ledger: &OwnershipLedger, avd_name: &str) -> Androi
     }
 }
 
+fn attach_ownership(
+    ledger: &OwnershipLedger,
+    avd_name: &str,
+    existing_serial: Option<&str>,
+) -> (AndroidEmulatorOwnership, bool) {
+    match existing_serial {
+        Some(_) => (ownership_for_running_avd(ledger, avd_name), false),
+        None => (AndroidEmulatorOwnership::Verboo, true),
+    }
+}
+
 fn emit_lifecycle(app: &AppHandle, stage: AndroidEmulatorStartupStage) {
     let _ = app.emit(LIFECYCLE_EVENT, AndroidEmulatorLifecycleEvent { stage });
 }
 
 pub(crate) fn emit_error(app: &AppHandle, message: String) {
     let _ = app.emit(ERROR_EVENT, AndroidEmulatorError { message });
+}
+
+pub(crate) trait EmulatorLauncher: Send + Sync {
+    fn spawn(&self, path: &Path, avd_name: &str) -> Result<Child, String>;
+}
+
+pub(crate) struct SystemEmulatorLauncher;
+
+impl EmulatorLauncher for SystemEmulatorLauncher {
+    fn spawn(&self, path: &Path, avd_name: &str) -> Result<Child, String> {
+        spawn_emulator(path, avd_name)
+    }
 }
 
 fn spawn_emulator(path: &Path, avd_name: &str) -> Result<Child, String> {
