@@ -118,7 +118,7 @@ import { useWorkspacePanelSuspension, type WorkspacePanelKind } from './features
 import { useTheme } from './features/theme/useTheme'
 import { useReviewPanel } from './features/review/useReviewPanel'
 import { EmptyChat } from './components/EmptyChat'
-import { LoginScreen } from './components/LoginScreen'
+import { LoginScreen, type AuthErrorState } from './components/LoginScreen'
 import { TopBar } from './components/TopBar'
 import { Transcript, type TranscriptMediaAttachment } from './components/Transcript'
 import { MEDIA_PREVIEW_TRANSITION_MS, MediaPreviewPanel } from './features/media-preview/MediaPreviewPanel'
@@ -411,7 +411,9 @@ export function App() {
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [entryUnlocked, setEntryUnlocked] = useState(false)
   const [authChecking, setAuthChecking] = useState(true)
-  const [authError, setAuthError] = useState<string | undefined>()
+  // PA-37g: structured auth error — the stable `kind` discriminates the
+  // empty state ('no-session') from real failures; `message` is display-only.
+  const [authError, setAuthError] = useState<AuthErrorState | undefined>()
   // T5: raw cause of a rejected validateAccess, shown behind a
   // "Show technical details" toggle in the login warning. The friendly
   // headline lives in authError; this is the diagnostic, never bare on
@@ -2129,7 +2131,7 @@ export function App() {
       forgetRememberedAuthSession()
       setEntryUnlocked(false)
       setActiveView('chat')
-      setAuthError(result.ok ? undefined : t('login.logoutFailed'))
+      setAuthError(result.ok ? undefined : { kind: 'error', message: t('login.logoutFailed') })
     } finally {
       setAuthChecking(false)
     }
@@ -2183,7 +2185,7 @@ export function App() {
       // Surface a friendly headline and stash the raw cause behind a
       // details toggle. Never re-throw: the caller (checkExistingAuth)
       // owns the status-message lifecycle.
-      setAuthError(t('login.sessionCheckFailed'))
+      setAuthError({ kind: 'error', message: t('login.sessionCheckFailed') })
       setAuthErrorDetail(error instanceof Error ? error.message : String(error))
       return false
     } finally {
@@ -7343,15 +7345,19 @@ function isVerifiedModelDiscovery(result: ModelDiscoveryResult): boolean {
   return !result.stale && result.models.length > 0 && (result.source === 'cli' || result.source === 'api-key')
 }
 
-function authAccessMessage(modelError: string | undefined, cliError: string | undefined, t: Translator): string {
+function authAccessMessage(modelError: string | undefined, cliError: string | undefined, t: Translator): AuthErrorState {
   const error = modelError ?? cliError
   if (/401|expired token|invalid.*token/i.test(error ?? '')) {
-    return t('model.expired')
+    return { kind: 'error', message: t('model.expired') }
   }
   if (/network|fetch|timeout|tempo limite/i.test(error ?? '')) {
-    return t('model.networkError')
+    return { kind: 'error', message: t('model.networkError') }
   }
-  return t('login.sessionInvalid')
+  // PA-37g: the empty state is classified HERE, at the producer, with a
+  // stable kind — the login UI never pattern-matches the translated text
+  // (a language switch materializes the message in the old language and
+  // any text equality breaks, resurrecting the red banner on first load).
+  return { kind: 'no-session', message: t('login.sessionInvalid') }
 }
 
 function resolveSelectedModel(

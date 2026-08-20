@@ -35,11 +35,18 @@ const enUS: Record<string, string> = {
   'login.reportIssue': 'Report issue',
   'login.mainAria': 'Sign in to Verboo Code',
   'login.title': 'Sign in to Verboo Code',
-  'login.body': 'The app stays locked until it validates a real Verboo CLI session or a valid API key. Validation must return the models available in your plan.',
+  // PA-37: ONE subtitle line replaces the three technical paragraphs
+  // (login.body). Progressive disclosure: one primary action, discrete
+  // secondaries, tertiary paths in the footer.
+  'login.subtitle': 'Validate your session to unlock the app.',
   'login.staySignedIn': 'Stay signed in',
   'login.staySignedInHelp': 'Use the last local validation when model refresh fails temporarily.',
   'login.cliLogin': 'Sign in with CLI',
   'login.alreadyAuthenticated': 'I already authenticated',
+  'login.useApiKey': 'Use an API key',
+  'login.backToSignIn': 'Back to sign-in',
+  'login.tryAgain': 'Try again',
+  'login.cliLoginFailed': 'Could not complete CLI sign-in.',
   'login.createAccount': 'Create account or subscribe',
   'login.openDashboard': 'Open dashboard',
   'login.checking': 'Validating credentials and available models...',
@@ -1602,11 +1609,18 @@ const ptBR: Record<string, string> = {
   'login.reportIssue': 'Reportar problema',
   'login.mainAria': 'Entrar no Verboo Code',
   'login.title': 'Entrar no Verboo Code',
-  'login.body': 'O app fica bloqueado até validar uma sessão real do CLI Verboo ou uma chave de API válida. A validação precisa retornar modelos disponíveis para o seu plano.',
+  // PA-37: UMA linha de subtítulo no lugar dos três parágrafos técnicos
+  // (login.body). Divulgação progressiva: uma ação primária, secundárias
+  // discretas, caminhos terciários no rodapé.
+  'login.subtitle': 'Valide sua sessão para desbloquear o app.',
   'login.staySignedIn': 'Continuar logado',
   'login.staySignedInHelp': 'Usar a última validação local quando a renovação de modelos falhar temporariamente.',
   'login.cliLogin': 'Entrar pelo CLI',
   'login.alreadyAuthenticated': 'Já autentiquei',
+  'login.useApiKey': 'Usar chave de API',
+  'login.backToSignIn': 'Voltar para o login',
+  'login.tryAgain': 'Tentar de novo',
+  'login.cliLoginFailed': 'Não foi possível concluir o login pelo CLI.',
   'login.createAccount': 'Criar conta ou assinar',
   'login.openDashboard': 'Abrir dashboard',
   'login.checking': 'Validando credenciais e modelos disponíveis...',

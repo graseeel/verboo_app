@@ -1,17 +1,34 @@
-import { Bug, Check, Copy, ExternalLink, KeyRound, LogIn, RefreshCw, UserPlus } from 'lucide-react'
+import { Check, Copy, ExternalLink, KeyRound, LogIn } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import type { CliAuthStatus, CredentialStatus, LanguageCode, LoginEvent, LoginResult, ModelDiscoveryResult } from '../../shared/types'
-import mascotUrl from '../../../assets/branding/verboo-mascot.png'
 import wordmarkUrl from '../../../assets/branding/verboo-wordmark.png'
 import { LanguageSelector } from '../features/language/LanguageSelector'
 import { useI18n } from '../i18n'
 
+/**
+ * PA-37g: stable auth-error contract. The PRODUCER (App.validateAccess /
+ * logout) classifies the failure once with a stable `kind`; the UI never
+ * pattern-matches the rendered (translated) text — a language switch
+ * materializes `message` in the old language, and any text equality check
+ * breaks (the Sonda's counterfactual). `kind` is the only discriminator.
+ *   no-session → the EMPTY STATE: nothing to validate against. Neutral
+ *                note, never a red banner.
+ *   error      → a REAL failure (expired token, network, rejected
+ *                validation, failed logout). The single inline banner.
+ */
+export type AuthErrorState = {
+  kind: 'no-session' | 'error'
+  /** Display-only text, materialized in the language active WHEN the error
+   *  was produced — may lag a language switch; never use as a discriminator. */
+  message: string
+}
+
 type LoginScreenProps = {
   language: LanguageCode
   checking: boolean
-  authError?: string
+  authError?: AuthErrorState
   /** T5: raw cause of a rejected validateAccess, shown behind a
    *  "Show technical details" toggle inside the login warning. */
   authErrorDetail?: string
@@ -116,6 +133,12 @@ export function LoginScreen({
   const [apiKey, setApiKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [statusMessage, setStatusMessage] = useState<string | undefined>()
+  // PA-37: progressive disclosure — the API key path SWAPS the central
+  // block instead of stacking under it.
+  const [apiMode, setApiMode] = useState(false)
+  const apiKeyInputRef = useRef<HTMLInputElement | null>(null)
+  const useApiKeyButtonRef = useRef<HTMLButtonElement | null>(null)
+  const wasApiModeRef = useRef(false)
   // A1: CLI login flow, event-driven (see CliLoginFlow above).
   const [cliLogin, setCliLogin] = useState<CliLoginFlow>({ phase: 'idle' })
   // Issue #71: Windows Git onboarding gate (see GitGateFlow above).
@@ -193,6 +216,18 @@ export function LoginScreen({
       if (copyResetRef.current) clearTimeout(copyResetRef.current)
     }
   }, [])
+
+  // PA-37: focus follows the central-block swap — into the key field on
+  // entry, back to the "Use an API key" button on exit (keyboard users
+  // must never lose their place when the block they used disappears).
+  useEffect(() => {
+    if (apiMode) {
+      apiKeyInputRef.current?.focus()
+    } else if (wasApiModeRef.current) {
+      useApiKeyButtonRef.current?.focus()
+    }
+    wasApiModeRef.current = apiMode
+  }, [apiMode])
 
   // Issue #71 fallback: a git-bash cause arriving over login:event (the
   // pre-flight detection missed) maps to the SAME onboarding dialog
@@ -364,6 +399,26 @@ export function LoginScreen({
     }
   }
 
+  // ── PA-37 state rules (the heart of the redesign) ──────────────────────
+  // 'No valid session' on first load is the EMPTY STATE, not an error — it
+  // renders as a neutral note, never as a red banner. A REAL failure
+  // renders ONE banner at a time, inline above the primary action, with a
+  // retry; a long technical cause collapses to a summary + details toggle.
+  // PA-37g: the discriminator is the STABLE `kind` from the producer —
+  // never the translated message text (a language switch would break it).
+  const cliFailureMessage =
+    cliLogin.phase === 'failed' && !isGitBashCause(cliLogin.message) ? cliLogin.message : undefined
+  const emptyStateNote =
+    !cliFailureMessage && authError?.kind === 'no-session' && !authErrorDetail && !modelResult.error
+      ? authError.message
+      : undefined
+  const authHeadline = !cliFailureMessage && !emptyStateNote ? authError?.message ?? modelResult.error : undefined
+  const banner = cliFailureMessage
+    ? { key: `cli:${cliFailureMessage}`, headline: t('login.cliLoginFailed'), detail: cliFailureMessage, retry: () => void startLogin() }
+    : authHeadline
+      ? { key: `auth:${authHeadline}`, headline: authHeadline, detail: authErrorDetail, retry: () => void checkExistingAuth() }
+      : undefined
+
   return (
     <main className="login-screen">
       {/* T-C: window drag lives on this dedicated top strip, NOT on the
@@ -374,170 +429,193 @@ export function LoginScreen({
         <div className="login-language-row">
           <LanguageSelector value={language} onChange={next => void onLanguageChange(next)} compact />
         </div>
+
+        {/* PA-37: ONE logo — the wordmark already carries the mascot. */}
         <div className="login-brand">
-          <img className="login-mascot" src={mascotUrl} alt="" />
           <img className="login-wordmark" src={wordmarkUrl} alt="Verboo" />
         </div>
 
         <div className="login-copy">
           <h1>{t('login.title')}</h1>
-          <p>{t('login.body')}</p>
+          <p>{t('login.subtitle')}</p>
         </div>
 
-        <label className="login-remember">
-          <input
-            type="checkbox"
-            checked={staySignedIn}
-            onChange={event => {
-              void onStaySignedInChange(event.target.checked)
-            }}
-          />
-          <span>
-            <strong>{t('login.staySignedIn')}</strong>
-            <small>{t('login.staySignedInHelp')}</small>
-          </span>
-        </label>
+        {/* PA-37: the empty state is a neutral note — NEVER a red banner. */}
+        {emptyStateNote && <p className="login-empty">{emptyStateNote}</p>}
 
-        <div className="login-actions">
-          <button
-            className="primary-action"
-            type="button"
-            onClick={startLogin}
-            // A1: disabled while a CLI login is in flight (spawning a
-            // second CLI would double the flow) — but ALWAYS re-enabled
-            // on idle/failed so the button can never get stuck.
-            disabled={
-              checking ||
-              cliLogin.phase === 'starting' ||
-              cliLogin.phase === 'awaitingBrowser' ||
-              cliLogin.phase === 'urlReady'
-            }
-          >
-            <LogIn size={18} />
-            {t('login.cliLogin')}
-          </button>
-          <button className="secondary-action" type="button" onClick={checkExistingAuth} disabled={checking}>
-            <RefreshCw size={17} />
-            {t('login.alreadyAuthenticated')}
-          </button>
-        </div>
-
-        {/* A1: in-flight progress — shimmer text (transitions-dev #15),
-            a live "still working" signal without a spinner. The URL
-            block is the Linux fix (issue #59): when the browser does
-            not open by itself, the user copies the link by hand. */}
-        {(cliLogin.phase === 'starting' || cliLogin.phase === 'awaitingBrowser') && (
-          <div className="login-progress" role="status">
-            <span className="t-shimmer" data-text={cliLogin.phase === 'starting' ? t('login.openingCli') : t('login.awaitingBrowser')}>
-              {cliLogin.phase === 'starting' ? t('login.openingCli') : t('login.awaitingBrowser')}
-            </span>
-            {cliLogin.phase === 'awaitingBrowser' && (
-              <button className="login-cancel" type="button" onClick={cancelCliLogin}>
-                {t('login.cancelLogin')}
-              </button>
-            )}
-          </div>
-        )}
-
-        {cliLogin.phase === 'urlReady' && (
-          <div className="login-url-block" role="status">
-            <p className="login-url-help">{t('login.urlReadyHelp')}</p>
-            <div className="login-url-row">
-              <input
-                className="login-url-input"
-                readOnly
-                value={cliLogin.url}
-                aria-label={t('login.urlAria')}
-                onFocus={event => event.target.select()}
-                onClick={event => event.currentTarget.select()}
-              />
-              <button
-                className="secondary-action login-copy-button"
-                type="button"
-                onClick={() => void copyLoginUrl(cliLogin.url)}
-              >
-                {copied ? <Check size={16} /> : <Copy size={16} />}
-                {copied ? t('login.copied') : t('login.copyLink')}
-              </button>
-            </div>
-            <a className="login-open-link" href={cliLogin.url} target="_blank" rel="noreferrer">
-              <ExternalLink size={14} />
-              {t('login.openLink')}
-            </a>
-            <div className="login-progress">
-              <span className="t-shimmer" data-text={t('login.waitingForAuth')}>
-                {t('login.waitingForAuth')}
-              </span>
-              <button className="login-cancel" type="button" onClick={cancelCliLogin}>
-                {t('login.cancelLogin')}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* A1: failure with the SPECIFIC cause. The shake
-            (transitions-dev #12) is the percussive "this failed" hint;
-            key={message} remounts the block per new failure so the
-            animation replays without JS reflow. The snippet's
-            auto-revert is deliberately NOT installed — the cause must
-            persist until the user retries. Issue #71: git-bash causes
-            NEVER paint here — they open the Git onboarding dialog. */}
-        {cliLogin.phase === 'failed' && !isGitBashCause(cliLogin.message) && (
-          <div className="login-warning t-input is-shaking" key={cliLogin.message} role="alert">
-            {cliLogin.message}
-          </div>
-        )}
-
-        <div className="login-actions secondary-grid">
-          <button className="secondary-action" type="button" onClick={onOpenSignup}>
-            <UserPlus size={17} />
-            {t('login.createAccount')}
-          </button>
-          <button className="secondary-action" type="button" onClick={onOpenDashboard}>
-            <ExternalLink size={17} />
-            {t('login.openDashboard')}
-          </button>
-          <button className="secondary-action login-feedback-button" type="button" onClick={onOpenFeedback}>
-            <Bug size={17} />
-            {t('login.reportIssue')}
-          </button>
-        </div>
-
-        {(statusMessage || checking) && (
-          <div className="login-note">{checking ? t('login.checking') : statusMessage}</div>
-        )}
-
-        {(authError || modelResult.error) && (
-          <div className="login-warning">
-            {authError ?? modelResult.error}
-            {authErrorDetail && (
+        {/* PA-37/A1: ONE real failure at a time, inline above the primary,
+            with a retry. The raw technical cause lives behind a details
+            toggle — never bare on the surface. The shake (transitions-dev
+            #12) replays per new failure via key remount; the auto-revert is
+            deliberately NOT installed — the cause persists until the user
+            retries. Issue #71: git-bash causes NEVER paint here — they open
+            the Git onboarding dialog instead. */}
+        {banner && (
+          <div className="login-warning t-input is-shaking" key={banner.key} role="alert">
+            <span className="login-warning-headline">{banner.headline}</span>
+            {banner.detail && (
               <details className="login-warning-details">
                 <summary>{t('transcript.showTechnicalDetails')}</summary>
-                <pre>{authErrorDetail}</pre>
+                <pre>{banner.detail}</pre>
               </details>
             )}
+            <button className="login-retry" type="button" onClick={banner.retry} disabled={checking}>
+              {t('login.tryAgain')}
+            </button>
           </div>
         )}
 
-        <form className="api-login-form" onSubmit={submitApiKey}>
-          <label htmlFor="api-key">
-            <KeyRound size={16} />
-            {t('login.apiKeyLabel')}
-          </label>
-          <div className="api-login-row">
-            <input
-              id="api-key"
-              value={apiKey}
-              onChange={event => setApiKey(event.target.value)}
-              placeholder={credentials.hasApiKey ? t('login.apiKeyConfigured', { hint: credentials.apiKeyHint }) : t('login.apiKeyPlaceholder')}
-              type="password"
-            />
-            <button type="submit" disabled={!apiKey.trim() || saving || checking}>
-              {saving ? t('common.validating') : t('common.save')}
+        {(statusMessage || checking) && (
+          <div className="login-note" role="status">{checking ? t('login.checking') : statusMessage}</div>
+        )}
+
+        {/* PA-37: progressive disclosure — the API key path SWAPS the
+            central block (it does not stack), with a way back. */}
+        {apiMode ? (
+          <form className="api-login-form" onSubmit={submitApiKey}>
+            <label htmlFor="api-key">
+              <KeyRound size={16} />
+              {t('login.apiKeyLabel')}
+            </label>
+            <div className="api-login-row">
+              <input
+                ref={apiKeyInputRef}
+                id="api-key"
+                value={apiKey}
+                onChange={event => setApiKey(event.target.value)}
+                placeholder={credentials.hasApiKey ? t('login.apiKeyConfigured', { hint: credentials.apiKeyHint }) : t('login.apiKeyPlaceholder')}
+                type="password"
+              />
+              <button type="submit" disabled={!apiKey.trim() || saving || checking}>
+                {saving ? t('common.validating') : t('common.save')}
+              </button>
+            </div>
+            <p>{t('login.apiKeyHelp')}</p>
+            <button className="login-text-button login-back" type="button" onClick={() => setApiMode(false)}>
+              {t('login.backToSignIn')}
             </button>
-          </div>
-          <p>{t('login.apiKeyHelp')}</p>
-        </form>
+          </form>
+        ) : (
+          <>
+            <div className="login-actions">
+              <button
+                className="primary-action"
+                type="button"
+                onClick={startLogin}
+                // A1: disabled while a CLI login is in flight (spawning a
+                // second CLI would double the flow) — but ALWAYS re-enabled
+                // on idle/failed so the button can never get stuck.
+                disabled={
+                  checking ||
+                  cliLogin.phase === 'starting' ||
+                  cliLogin.phase === 'awaitingBrowser' ||
+                  cliLogin.phase === 'urlReady'
+                }
+              >
+                <LogIn size={18} />
+                {t('login.cliLogin')}
+              </button>
+            </div>
+
+            {/* A1: in-flight progress — shimmer text (transitions-dev #15),
+                a live "still working" signal without a spinner. The URL
+                block is the Linux fix (issue #59): when the browser does
+                not open by itself, the user copies the link by hand. */}
+            {(cliLogin.phase === 'starting' || cliLogin.phase === 'awaitingBrowser') && (
+              <div className="login-progress" role="status">
+                <span className="t-shimmer" data-text={cliLogin.phase === 'starting' ? t('login.openingCli') : t('login.awaitingBrowser')}>
+                  {cliLogin.phase === 'starting' ? t('login.openingCli') : t('login.awaitingBrowser')}
+                </span>
+                {cliLogin.phase === 'awaitingBrowser' && (
+                  <button className="login-cancel" type="button" onClick={cancelCliLogin}>
+                    {t('login.cancelLogin')}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {cliLogin.phase === 'urlReady' && (
+              <div className="login-url-block" role="status">
+                <p className="login-url-help">{t('login.urlReadyHelp')}</p>
+                <div className="login-url-row">
+                  <input
+                    className="login-url-input"
+                    readOnly
+                    value={cliLogin.url}
+                    aria-label={t('login.urlAria')}
+                    onFocus={event => event.target.select()}
+                    onClick={event => event.currentTarget.select()}
+                  />
+                  <button
+                    className="secondary-action login-copy-button"
+                    type="button"
+                    onClick={() => void copyLoginUrl(cliLogin.url)}
+                  >
+                    {copied ? <Check size={16} /> : <Copy size={16} />}
+                    {copied ? t('login.copied') : t('login.copyLink')}
+                  </button>
+                </div>
+                <a className="login-open-link" href={cliLogin.url} target="_blank" rel="noreferrer">
+                  <ExternalLink size={14} />
+                  {t('login.openLink')}
+                </a>
+                <div className="login-progress">
+                  <span className="t-shimmer" data-text={t('login.waitingForAuth')}>
+                    {t('login.waitingForAuth')}
+                  </span>
+                  <button className="login-cancel" type="button" onClick={cancelCliLogin}>
+                    {t('login.cancelLogin')}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* PA-37: the "Stay signed in" preference is a plain checkbox —
+                no card, no description (the help text still lives in
+                Settings, where the preference also exists). */}
+            <label className="login-remember">
+              <input
+                type="checkbox"
+                checked={staySignedIn}
+                onChange={event => {
+                  void onStaySignedInChange(event.target.checked)
+                }}
+              />
+              <span>{t('login.staySignedIn')}</span>
+            </label>
+
+            <div className="login-secondary-row">
+              <button className="login-text-button" type="button" onClick={checkExistingAuth} disabled={checking}>
+                {t('login.alreadyAuthenticated')}
+              </button>
+              <span className="login-sep" aria-hidden="true">·</span>
+              <button
+                ref={useApiKeyButtonRef}
+                className="login-text-button"
+                type="button"
+                onClick={() => setApiMode(true)}
+              >
+                {t('login.useApiKey')}
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* PA-37: tertiary paths live in a quiet footer, out of the way of
+            the sign-in decision. */}
+        <footer className="login-footer">
+          <button className="login-footer-link" type="button" onClick={onOpenSignup}>
+            {t('login.createAccount')}
+          </button>
+          <span className="login-sep" aria-hidden="true">·</span>
+          <button className="login-footer-link" type="button" onClick={onOpenDashboard}>
+            {t('login.openDashboard')}
+          </button>
+          <span className="login-sep" aria-hidden="true">·</span>
+          <button className="login-footer-link" type="button" onClick={onOpenFeedback}>
+            {t('login.reportIssue')}
+          </button>
+        </footer>
       </section>
 
       {/* Issue #71: Windows Git onboarding dialog. Reuses the

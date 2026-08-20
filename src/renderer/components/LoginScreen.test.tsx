@@ -178,7 +178,10 @@ describe('A1: event-driven CLI login (login:event)', () => {
     emitLoginEvent({ kind: 'error', message: cause })
 
     const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toBe(cause)
+    // PA-37: a short summary on the surface; the raw cause stays reachable
+    // behind the details toggle, never bare.
+    expect(alert.textContent).toContain('Não foi possível concluir o login pelo CLI.')
+    expect(alert.querySelector('details')?.textContent).toContain(cause)
     expect((screen.getByRole('button', { name: /Entrar pelo CLI/ }) as HTMLButtonElement).disabled).toBe(false)
   })
 
@@ -188,7 +191,8 @@ describe('A1: event-driven CLI login (login:event)', () => {
     emitLoginEvent({ kind: 'complete', message: 'Login não concluído: token expirado', ok: false })
 
     const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toBe('Login não concluído: token expirado')
+    expect(alert.textContent).toContain('Não foi possível concluir o login pelo CLI.')
+    expect(alert.querySelector('details')?.textContent).toContain('Login não concluído: token expirado')
     expect((screen.getByRole('button', { name: /Entrar pelo CLI/ }) as HTMLButtonElement).disabled).toBe(false)
   })
 
@@ -201,7 +205,7 @@ describe('A1: event-driven CLI login (login:event)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Entrar pelo CLI/ }))
 
     const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toBe('Falha ao iniciar login do CLI Verboo: spawn ENOENT')
+    expect(alert.querySelector('details')?.textContent).toContain('Falha ao iniciar login do CLI Verboo: spawn ENOENT')
     expect((screen.getByRole('button', { name: /Entrar pelo CLI/ }) as HTMLButtonElement).disabled).toBe(false)
   })
 
@@ -238,7 +242,7 @@ describe('A1: event-driven CLI login (login:event)', () => {
 
     emitLoginEvent({ kind: 'error', message: 'segunda causa' })
     const second = await screen.findByRole('alert')
-    expect(second.textContent).toBe('segunda causa')
+    expect(second.textContent).toContain('segunda causa')
     expect(second.className).toContain('is-shaking')
     expect(second).not.toBe(first) // remounted → animation replays
   })
@@ -266,39 +270,51 @@ describe('LoginScreen — no project-status interstitial (Ivo\'s order)', () => 
   })
 })
 
-// T-C (critical field report, M4): with error banners stacked the panel grew
-// past the window and the user could NOT reach the API key field — the screen
-// had no scroll container at all (body overflow:hidden + .login-screen without
-// overflow-y). jsdom cannot prove real scrollability (layout is runtime —
-// declared in the report); what it DOES pin: the FULL state renders COMPLETE
-// (every section coexists, key field at the bottom of the stack) and the
-// window-drag affordance is a dedicated top strip, not the whole screen.
-describe('LoginScreen — T-C: the FULL state (banners + key field) stays complete', () => {
-  it('error banner + session note + login URL block + API key form ALL render in one panel, key field LAST', async () => {
+// T-C (critical field report, M4) → PA-37: the original defect was the
+// panel overflowing with STACKED banners until the API key field became
+// unreachable. Progressive disclosure resolves it structurally: the key
+// field is no longer stacked at the bottom — it SWAPS the central block
+// one click away, while notes/banners live OUTSIDE the swapped region.
+// jsdom cannot prove real scrollability (layout is runtime — declared in
+// the report); what it DOES pin: every path stays reachable in both modes
+// and the window-drag affordance is a dedicated top strip.
+describe('LoginScreen — PA-37: progressive disclosure keeps every path reachable', () => {
+  it('CLI-mode full state renders complete, then the API key form swaps in and back (notes survive)', async () => {
     const props = makeProps({
-      authError: 'Nenhuma sessão Verboo válida foi encontrada.',
+      authError: { kind: 'no-session', message: 'Nenhuma sessão Verboo válida foi encontrada.' },
       onCheckExistingAuth: vi.fn(() => Promise.resolve(true)),
     })
     renderLogin(props)
 
-    // Stack the states: session note (success), CLI login URL block.
+    // The empty state is a NEUTRAL note — not a red banner, no alert role.
+    const emptyNote = screen.getByText('Nenhuma sessão Verboo válida foi encontrada.')
+    expect(emptyNote.className).toBe('login-empty')
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    // Stack the CLI-mode states: session note (success) + login URL block.
     fireEvent.click(screen.getByRole('button', { name: /Já autentiquei/ }))
     await screen.findByText('Sessão Verboo validada.')
     fireEvent.click(screen.getByRole('button', { name: /Entrar pelo CLI/ }))
     emitLoginEvent({ kind: 'url', url: LOGIN_URL })
     await screen.findByLabelText('Link de login do Verboo')
 
-    // Everything coexists in ONE document — nothing is dropped when full…
-    const warning = screen.getByText('Nenhuma sessão Verboo válida foi encontrada.')
-    expect(screen.getByText('Sessão Verboo validada.')).toBeTruthy()
-    expect(screen.getByLabelText('Link de login do Verboo')).toBeTruthy()
-    const apiKeyInput = screen.getByLabelText(/Chave de API Verboo/) as HTMLInputElement
+    // The key field is NOT stacked underneath — it swaps in on request…
+    expect(screen.queryByLabelText(/Chave de API Verboo/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Usar chave de API/ }))
+    expect(screen.getByLabelText(/Chave de API Verboo/)).toBeTruthy()
     expect(screen.getByRole('button', { name: /^Salvar$/ })).toBeTruthy()
+    // …the primary leaves while the form owns the central block…
+    expect(screen.queryByRole('button', { name: /Entrar pelo CLI/ })).toBeNull()
+    // …the notes survive the swap (they live outside the swapped region)…
+    expect(screen.getByText('Nenhuma sessão Verboo válida foi encontrada.')).toBeTruthy()
+    expect(screen.getByText('Sessão Verboo validada.')).toBeTruthy()
+    // …and the tertiary paths stay reachable in the footer.
     expect(screen.getByRole('button', { name: /Reportar problema/ })).toBeTruthy()
 
-    // …and the key field — the element M4 could not reach — sits BELOW the
-    // banners in document order (the bottom of the overflowing stack).
-    expect(warning.compareDocumentPosition(apiKeyInput) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The way back restores the CLI block (with its in-flight URL state).
+    fireEvent.click(screen.getByRole('button', { name: /Voltar para o login/ }))
+    expect(screen.getByRole('button', { name: /Entrar pelo CLI/ })).toBeTruthy()
+    expect(screen.getByLabelText('Link de login do Verboo')).toBeTruthy()
   })
 
   it('the window-drag affordance is a dedicated top strip, NOT the content surface', () => {
@@ -310,6 +326,152 @@ describe('LoginScreen — T-C: the FULL state (banners + key field) stays comple
     // The strip must never cover the panel's interactive content.
     expect(strip!.contains(panel!)).toBe(false)
     expect(panel!.contains(strip!)).toBe(false)
+  })
+})
+
+describe('LoginScreen — PA-37 state rules (empty state, one error, swap)', () => {
+  it('empty state: "no session found" is a neutral note, NEVER a red banner', () => {
+    renderLogin(makeProps({ authError: { kind: 'no-session', message: 'Nenhuma sessão Verboo válida foi encontrada.' } }))
+
+    const note = screen.getByText('Nenhuma sessão Verboo válida foi encontrada.')
+    expect(note.className).toBe('login-empty')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(document.querySelector('.login-warning')).toBeNull()
+  })
+
+  // Gate PA-37g (the Sonda's counterfactual): the producer materialized the
+  // message in ONE language; the user then switches the selector — the stale
+  // string matches NO current dictionary, so a text-based discriminator
+  // would resurrect the red banner. The stable `kind` must win in pt-BR AND
+  // en-US, across the switch with re-render.
+  it('language switch pt-BR → en-US NEVER resurrects the red banner for the no-session state', () => {
+    const props = makeProps({
+      authError: { kind: 'no-session', message: 'Nenhuma sessão Verboo válida foi encontrada.' },
+    })
+    const { rerender } = render(
+      <I18nProvider language="pt-BR">
+        <LoginScreen {...props} />
+      </I18nProvider>,
+    )
+
+    expect(screen.getByText('Nenhuma sessão Verboo válida foi encontrada.').className).toBe('login-empty')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(document.querySelector('.login-warning')).toBeNull()
+
+    // Same stale pt-BR string in state, dictionary now English.
+    rerender(
+      <I18nProvider language="en-US">
+        <LoginScreen {...props} language="en-US" />
+      </I18nProvider>,
+    )
+    expect(screen.getByText('Nenhuma sessão Verboo válida foi encontrada.').className).toBe('login-empty')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(document.querySelector('.login-warning')).toBeNull()
+  })
+
+  it('language switch en-US → pt-BR NEVER resurrects the red banner either', () => {
+    const props = makeProps({
+      language: 'en-US' as const,
+      authError: { kind: 'no-session', message: 'No valid Verboo session was found.' },
+    })
+    const { rerender } = render(
+      <I18nProvider language="en-US">
+        <LoginScreen {...props} />
+      </I18nProvider>,
+    )
+
+    expect(screen.getByText('No valid Verboo session was found.').className).toBe('login-empty')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(document.querySelector('.login-warning')).toBeNull()
+
+    rerender(
+      <I18nProvider language="pt-BR">
+        <LoginScreen {...props} language="pt-BR" />
+      </I18nProvider>,
+    )
+    expect(screen.getByText('No valid Verboo session was found.').className).toBe('login-empty')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(document.querySelector('.login-warning')).toBeNull()
+  })
+
+  it('a REAL validation failure renders ONE banner, inline, with a retry action', async () => {
+    const props = makeProps({
+      authError: { kind: 'error', message: 'Não foi possível verificar sua sessão do Verboo.' },
+      authErrorDetail: 'No such file or directory (os error 2)',
+    })
+    renderLogin(props)
+
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain('Não foi possível verificar sua sessão do Verboo.')
+    expect(alert.querySelector('details')?.textContent).toContain('os error 2')
+
+    // The retry action re-runs the validation.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Tentar de novo' }))
+    })
+    expect(props.onCheckExistingAuth).toHaveBeenCalledTimes(1)
+  })
+
+  it('a CLI failure shows summary + details (raw cause never bare) and retries the CLI login', async () => {
+    const props = makeProps()
+    renderLogin(props)
+    fireEvent.click(screen.getByRole('button', { name: /Entrar pelo CLI/ }))
+    await screen.findByText('Login iniciado — aguardando o navegador…')
+
+    act(() => {
+      loginEventHandler()({ payload: { kind: 'error', message: 'Falha ao iniciar login do CLI Verboo: spawn ENOENT' } })
+    })
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('Não foi possível concluir o login pelo CLI.')
+    expect(alert.querySelector('details')?.textContent).toContain('spawn ENOENT')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tentar de novo' }))
+    await waitFor(() => expect(props.onStartLogin).toHaveBeenCalledTimes(2))
+  })
+
+  it('ONE banner even when a CLI failure and a validation error coexist (the freshest action wins)', async () => {
+    renderLogin(makeProps({ authError: { kind: 'error', message: 'Não foi possível verificar sua sessão do Verboo.' } }))
+    fireEvent.click(screen.getByRole('button', { name: /Entrar pelo CLI/ }))
+    await screen.findByText('Login iniciado — aguardando o navegador…')
+
+    act(() => {
+      loginEventHandler()({ payload: { kind: 'error', message: 'causa técnica crua' } })
+    })
+
+    await screen.findByRole('alert')
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    expect(screen.getByRole('alert').textContent).toContain('Não foi possível concluir o login pelo CLI.')
+  })
+
+  it('exactly ONE primary action in the default mode — none while the API form owns the block', () => {
+    const { container } = renderLogin()
+    expect(container.querySelectorAll('.primary-action')).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('button', { name: /Usar chave de API/ }))
+    expect(container.querySelectorAll('.primary-action')).toHaveLength(0)
+  })
+
+  it('API key swap: replaces the central block, focuses the field, submits, and the back link restores it', async () => {
+    const props = makeProps({ onSaveApiKey: vi.fn(() => Promise.resolve(true)) })
+    renderLogin(props)
+
+    fireEvent.click(screen.getByRole('button', { name: /Usar chave de API/ }))
+    const input = screen.getByLabelText(/Chave de API Verboo/) as HTMLInputElement
+    expect(screen.queryByRole('button', { name: /Entrar pelo CLI/ })).toBeNull()
+    expect(document.activeElement).toBe(input)
+
+    fireEvent.change(input, { target: { value: 'vk_test_123' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Salvar$/ }))
+    await screen.findByText('Chave de API validada.')
+    expect(props.onSaveApiKey).toHaveBeenCalledWith('vk_test_123')
+
+    fireEvent.click(screen.getByRole('button', { name: /Voltar para o login/ }))
+    expect(screen.getByRole('button', { name: /Entrar pelo CLI/ })).toBeTruthy()
+    expect(screen.queryByLabelText(/Chave de API Verboo/)).toBeNull()
+    // Focus returns to the button that opened the form (keyboard a11y).
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /Usar chave de API/ }))
   })
 })
 
@@ -356,7 +518,7 @@ describe('T5: a rejected onCheckExistingAuth never sticks "Verificando…" (fiel
 
   it('authErrorDetail renders behind a "Mostrar detalhes técnicos" toggle, not bare on the surface (pt-BR)', () => {
     const props = makeProps({
-      authError: 'Não foi possível verificar sua sessão do Verboo.',
+      authError: { kind: 'error', message: 'Não foi possível verificar sua sessão do Verboo.' },
       authErrorDetail: 'No such file or directory (os error 2)',
     })
     const { container } = renderLogin(props)
@@ -376,6 +538,8 @@ describe('T5: a rejected onCheckExistingAuth never sticks "Verificando…" (fiel
 describe('T6: apiKeyHelp no longer mentions unsigned beta builds (factually false — builds are signed)', () => {
   it('pt-BR: the help text omits "beta sem assinatura" vocabulary', () => {
     renderLogin()
+    // PA-37: the API key help lives in the swapped-in API mode.
+    fireEvent.click(screen.getByRole('button', { name: /Usar chave de API/ }))
     const help = screen.getByText(/A chave fica criptografada localmente/)
     // The signed-builds claim was factually false and removed from both locales.
     expect(help.textContent).not.toMatch(/beta sem assinatura|sem assinatura/i)
@@ -388,6 +552,7 @@ describe('T6: apiKeyHelp no longer mentions unsigned beta builds (factually fals
         <LoginScreen {...props} />
       </I18nProvider>,
     )
+    fireEvent.click(screen.getByRole('button', { name: /Use an API key/ }))
     const help = screen.getByText(/The key is encrypted locally/)
     expect(help.textContent).not.toMatch(/unsigned beta|unsigned/i)
   })

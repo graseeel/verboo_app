@@ -1,7 +1,8 @@
 /* T-C: the screen is the scroll container (body is overflow:hidden).
-   The panel scrolls as a whole when the FULL state (stacked banners +
-   login URL + API key form) exceeds the window — before, there was no
-   scroll container at all and the key field was unreachable (M4). */
+   The panel scrolls as a whole when a tall state (banner + login URL
+   block, or the swapped-in API key form) exceeds the window — before,
+   there was no scroll container at all and fields were unreachable
+   (M4). */
 .login-screen {
   display: grid;
   justify-items: center;
@@ -15,11 +16,13 @@
 }
 
 /* margin-block:auto centers the panel when it fits and resolves to 0
-   when it overflows, so scrolling always reaches the top. */
+   when it overflows, so scrolling always reaches the top.
+   PA-37: narrower column — the content is now a single centered flow,
+   and the tighter measure is what makes it read calm instead of busy. */
 .login-panel {
-  width: min(520px, 100%);
+  width: min(440px, 100%);
   margin-block: auto;
-  padding: 28px;
+  padding: 32px 28px 24px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--bg-elevated) 94%, transparent);
@@ -38,21 +41,16 @@
   -webkit-app-region: drag;
 }
 
+/* PA-37: ONE logo, centered — the wordmark already carries the mascot,
+   so the stacked pair collapsed into a single quiet brand mark. */
 .login-brand {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 28px;
-}
-
-.login-mascot {
-  width: 52px;
-  height: 52px;
-  object-fit: contain;
+  justify-content: center;
+  margin-bottom: 20px;
 }
 
 .login-wordmark {
-  width: 130px;
+  width: 148px;
   height: auto;
 }
 
@@ -60,10 +58,16 @@
   filter: invert(1) hue-rotate(180deg);
 }
 
+/* PA-37: centered copy — title + ONE subtitle line (the three technical
+   paragraphs are gone; the user does not need them to act). */
+.login-copy {
+  text-align: center;
+}
+
 .login-copy h1 {
-  margin: 0 0 10px;
-  font-size: 28px;
-  line-height: 1.1;
+  margin: 0 0 6px;
+  font-size: 24px;
+  line-height: 1.15;
   font-weight: 720;
 }
 
@@ -76,55 +80,106 @@
   line-height: 1.55;
 }
 
+/* PA-37: ONE primary action, full width — no competing siblings. */
 .login-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin: 22px 0 10px;
+  margin: 22px 0 4px;
 }
 
+.login-actions .primary-action {
+  width: 100%;
+  min-height: 44px;
+}
+
+/* PA-37: "Stay signed in" as a plain checkbox row — a minor preference
+   no longer occupies a card in the panel's prime area. */
 .login-remember {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 10px;
-  align-items: start;
-  margin-top: 18px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--bg-soft) 72%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
   color: var(--text);
+  font-size: 13px;
   cursor: pointer;
 }
 
 .login-remember input {
-  width: 16px;
-  height: 16px;
-  margin-top: 2px;
+  width: 15px;
+  height: 15px;
+  margin: 0;
   accent-color: var(--accent);
 }
 
-.login-remember span {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
+/* PA-37: secondary paths as discrete text buttons under the primary. */
+.login-secondary-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 12px;
 }
 
-.login-remember strong {
+.login-text-button {
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
   font-size: 13px;
+  font-weight: 600;
+  padding: 4px 6px;
 }
 
-.login-remember small {
+.login-text-button:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.login-text-button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.login-text-button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.login-sep {
   color: var(--text-muted);
-  line-height: 1.4;
+  font-size: 12px;
+  user-select: none;
 }
 
-.secondary-grid {
-  margin-top: 10px;
+/* PA-37: tertiary paths (account/dashboard/feedback) in a quiet footer,
+   small and muted, out of the sign-in decision's way. */
+.login-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 24px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
 }
 
-.login-feedback-button {
-  grid-column: 1 / -1;
+.login-footer-link {
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 4px;
+}
+
+.login-footer-link:hover {
+  color: var(--text);
+}
+
+.login-footer-link:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .primary-action,
@@ -191,8 +246,6 @@
   transform: scale(var(--press-scale));
 }
 
-.login-note,
-.login-warning,
 .settings-warning,
 .menu-warning {
   border: 1px solid color-mix(in srgb, var(--amber) 38%, transparent);
@@ -202,18 +255,119 @@
   line-height: 1.45;
 }
 
-.login-note,
+/* PA-37: the ONE real-error banner — danger-tinted, inline above the
+   primary, headline + expandable technical details + retry. The empty
+   state never uses this surface. */
 .login-warning {
-  margin: 12px 0;
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  margin: 14px 0 4px;
   padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 42%, transparent);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
+  line-height: 1.45;
+  text-align: left;
 }
 
+.login-warning-headline {
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.login-warning-details {
+  width: 100%;
+  font-size: 12px;
+}
+
+.login-warning-details summary {
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.login-warning-details summary:hover {
+  color: var(--text);
+}
+
+.login-warning-details pre {
+  max-height: 120px;
+  margin: 6px 0 0;
+  padding: 8px;
+  overflow: auto;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.login-retry {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-soft);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  padding: 5px 10px;
+}
+
+.login-retry:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--bg-soft) 78%, var(--accent-soft));
+}
+
+.login-retry:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.login-retry:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* PA-37: the empty state ("no session found") is a neutral note, never
+   a red banner — first load must not scare anyone. */
+.login-empty {
+  margin: 14px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+/* PA-37: transient status ("checking…", "session validated") as a
+   neutral text line — it used to share the amber warning box. */
+.login-note {
+  margin: 12px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+/* PA-37: the API key form is the swapped-in central block (not a section
+   stacked at the bottom) — no separator, and it enters with the same
+   short rise+fade as the URL block. */
 .api-login-form {
   display: grid;
   gap: 9px;
   margin-top: 18px;
-  padding-top: 18px;
-  border-top: 1px solid var(--border);
+  animation: login-url-enter 200ms var(--shake-ease);
+}
+
+.api-login-form .login-back {
+  justify-self: start;
+  margin-top: 4px;
+  color: var(--text-muted);
+}
+
+.api-login-form .login-back:hover:not(:disabled) {
+  color: var(--text);
 }
 
 .api-login-form label {
@@ -468,7 +622,8 @@
   .t-input.is-shaking { animation: none !important; }
   /* Reduced motion means gentler, not zero: keep the opacity fade so
      the block still enters smoothly, drop the movement. */
-  .login-url-block {
+  .login-url-block,
+  .api-login-form {
     animation-name: login-url-enter-fade;
   }
   @keyframes login-url-enter-fade {
