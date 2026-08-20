@@ -18,9 +18,11 @@ import {
   ANDROID_EMULATOR_SETUP_STEPS,
   DEFAULT_ANDROID_EMULATOR_FALLBACK_FPS,
   DEFAULT_ANDROID_EMULATOR_STREAM_FPS,
+  androidDeviceDisplayLabel,
   androidEmulatorIssueMessageKey,
   androidEmulatorSetupStepMessageKey,
   errorText,
+  formatAndroidAvdDisplayName,
   groupAndroidEmulatorDevices,
   isAndroidEmulatorIssue,
   isAndroidEmulatorSetupStep,
@@ -179,5 +181,57 @@ describe('androidEmulatorModel — device picker grouping (PA-27)', () => {
   it('pins the renderer-side stream defaults for the screencap loop', () => {
     expect(DEFAULT_ANDROID_EMULATOR_STREAM_FPS).toBe(2)
     expect(DEFAULT_ANDROID_EMULATOR_FALLBACK_FPS).toBe(1)
+  })
+})
+
+
+// ── PA-36: friendly AVD presentation ───────────────────────────────────────
+
+describe('androidEmulatorModel — friendly AVD label (PA-36)', () => {
+  it('humanizes the bundled-style AVD name with its API suffix', () => {
+    expect(formatAndroidAvdDisplayName('Verboo_Device_API_36')).toBe('Verboo Device · API 36')
+    expect(formatAndroidAvdDisplayName('Pixel_7_Pro_API_34')).toBe('Pixel 7 Pro · API 34')
+    expect(formatAndroidAvdDisplayName('Pixel-8-API-35')).toBe('Pixel 8 · API 35')
+  })
+
+  it('formats third-party AVDs by the same generic rule (nothing hardcoded)', () => {
+    expect(formatAndroidAvdDisplayName('Minha_AVD_de_Teste')).toBe('Minha AVD de Teste')
+    expect(formatAndroidAvdDisplayName('galaxy_s23_ultra')).toBe('galaxy s23 ultra')
+    expect(formatAndroidAvdDisplayName('myAvd')).toBe('myAvd')
+  })
+
+  it('normalizes the API token variants and tolerates noise', () => {
+    expect(formatAndroidAvdDisplayName('Pixel_API36')).toBe('Pixel · API 36')
+    expect(formatAndroidAvdDisplayName('Pixel_api_36')).toBe('Pixel · API 36')
+    expect(formatAndroidAvdDisplayName('API_36')).toBe('API 36')
+    expect(formatAndroidAvdDisplayName('Pixel__8___API__36')).toBe('Pixel 8 · API 36')
+    expect(formatAndroidAvdDisplayName('  spaced_out  ')).toBe('spaced out')
+    expect(formatAndroidAvdDisplayName('')).toBe('')
+  })
+
+  it('does not mistake names CONTAINING "api" for an API suffix', () => {
+    expect(formatAndroidAvdDisplayName('Capivara_2')).toBe('Capivara 2')
+    expect(formatAndroidAvdDisplayName('rapidtest')).toBe('rapidtest')
+  })
+
+  it('prefers a real backend displayName, humanizing only the echoed avdName', () => {
+    const real: AndroidDevice = {
+      avdName: 'Pixel_8_API_35', displayName: 'Pixel 8', apiLevel: 35, family: 'phone', running: false,
+    }
+    const echoed: AndroidDevice = {
+      avdName: 'Verboo_Device_API_36', displayName: 'Verboo_Device_API_36', apiLevel: 36, family: 'phone', running: false,
+    }
+    expect(androidDeviceDisplayLabel(real)).toBe('Pixel 8')
+    expect(androidDeviceDisplayLabel(echoed)).toBe('Verboo Device · API 36')
+  })
+
+  it('matches the picker search by the friendly label too', () => {
+    const echoed: AndroidDevice = {
+      avdName: 'Verboo_Device_API_36', displayName: 'Verboo_Device_API_36', apiLevel: 36, family: 'phone', running: false,
+    }
+    expect(groupAndroidEmulatorDevices([echoed], 'all', 'verboo device').flatMap(group => group.devices))
+      .toEqual([echoed])
+    expect(groupAndroidEmulatorDevices([echoed], 'all', 'verboo_device').flatMap(group => group.devices))
+      .toEqual([echoed])
   })
 })

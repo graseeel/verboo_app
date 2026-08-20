@@ -187,6 +187,11 @@ export function TopBar({
             ref={simulatorMenuRef}
             data-topbar-simulator-menu-open={simulatorMenuOpen ? 'true' : undefined}
           >
+            {/* Suppress the tooltip while the menu is open (PA-36) — the CSS
+                tooltip renders below the trigger and would paint OVER the open
+                menu items. Menus never show the trigger tooltip. The base.css
+                `:not([data-tooltip])` guard keeps the empty ::after from
+                painting while the attribute is gone. */}
             <button
               ref={simulatorTriggerRef}
               className={`topbar-terminal-button ui-tooltip ${simulatorOpen || simulatorMenuOpen ? 'active' : ''}`}
@@ -201,7 +206,7 @@ export function TopBar({
                 event.preventDefault()
                 openSimulatorMenu(event.key === 'ArrowUp' ? simulatorOptions.length - 1 : 0)
               }}
-              data-tooltip={t('topbar.simulators')}
+              data-tooltip={simulatorMenuOpen ? undefined : t('topbar.simulators')}
               data-tooltip-align="end"
               aria-label={t('topbar.simulators')}
               aria-haspopup="menu"

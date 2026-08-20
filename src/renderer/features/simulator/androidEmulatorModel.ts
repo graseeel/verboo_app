@@ -128,7 +128,8 @@ export function groupAndroidEmulatorDevices(
   const visible = devices
     .filter(device => filter === 'all' || device.family === filter)
     .filter(device => !needle
-      || `${device.displayName} ${device.avdName} ${device.apiLevel}`.toLocaleLowerCase().includes(needle))
+      || `${androidDeviceDisplayLabel(device)} ${device.displayName} ${device.avdName} ${device.apiLevel}`
+        .toLocaleLowerCase().includes(needle))
     .slice()
     .sort((left, right) => {
       const runningOrder = Number(right.running) - Number(left.running)
@@ -146,4 +147,30 @@ export function groupAndroidEmulatorDevices(
     groups.set(key, group)
   }
   return [...groups.values()]
+}
+
+// ── PA-36: friendly AVD presentation ───────────────────────────────────────
+
+/** Human-readable label for a raw AVD name (PA-36). The backend sends
+ *  `displayName = avdName` verbatim (e.g. 'Verboo_Device_API_36'), which is
+ *  unusable as UI text. Generic rule — nothing is hardcoded to the bundled
+ *  AVD, so user-created AVDs format the same way: `_`/`-` runs collapse to
+ *  single spaces (original casing preserved), and a trailing standalone API
+ *  token normalizes to ` · API NN`. The `\b` keeps names that merely CONTAIN
+ *  'api' (e.g. 'Capivara_2') from being mistaken for an API suffix. */
+export function formatAndroidAvdDisplayName(avdName: string): string {
+  const spaced = avdName.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
+  const apiMatch = /\bAPI\s*(\d+)$/i.exec(spaced)
+  if (!apiMatch) return spaced
+  const base = spaced.slice(0, apiMatch.index).trim()
+  return base ? `${base} · API ${apiMatch[1]}` : `API ${apiMatch[1]}`
+}
+
+/** What the UI shows for a device (PA-36): a real backend displayName wins;
+ *  when the backend just echoes the raw avdName, humanize it (mirrors
+ *  readableModelName in ModelSelector). The raw avdName stays the selection
+ *  value + search key and surfaces as the tooltip. */
+export function androidDeviceDisplayLabel(device: AndroidDevice): string {
+  if (device.displayName && device.displayName !== device.avdName) return device.displayName
+  return formatAndroidAvdDisplayName(device.avdName)
 }

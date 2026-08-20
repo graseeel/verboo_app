@@ -239,6 +239,74 @@ describe('TopBar workspace panel controls', () => {
     expect(screen.queryByRole('menu')).not.toBeInTheDocument()
   })
 
+  it('suppresses the trigger tooltip while the simulator menu is open (PA-36)', () => {
+    // The tooltip is CSS-driven (`content: attr(data-tooltip)` on hover); the
+    // attribute IS the renderable surface in jsdom, and the base.css
+    // `:not([data-tooltip])` guard guarantees no bubble paints without it.
+    render(
+      <I18nProvider language="pt-BR">
+        <TopBar
+          sidebarVisible
+          onToggleSidebar={vi.fn()}
+          terminalOpen={false}
+          onToggleTerminal={vi.fn()}
+          reviewOpen={false}
+          onToggleReview={vi.fn()}
+          browserAvailable={false}
+          browserOpen={false}
+          onToggleBrowser={vi.fn()}
+          simulatorAvailable
+          simulatorOpen={false}
+          platform="darwin"
+          onOpenSimulator={vi.fn()}
+          workspacePanelsEnabled
+        />
+      </I18nProvider>,
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Simuladores' })
+    // Menu closed → tooltip available on hover.
+    expect(trigger).toHaveAttribute('data-tooltip', 'Simuladores')
+
+    // Menu OPEN → tooltip is not rendered, so it cannot cover the menu items.
+    fireEvent.click(trigger)
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    expect(trigger).not.toHaveAttribute('data-tooltip')
+
+    // Closing restores the tooltip.
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(trigger).toHaveAttribute('data-tooltip', 'Simuladores')
+  })
+
+  it('suppresses the tooltip with the menu open in English too (PA-36)', () => {
+    render(
+      <I18nProvider language="en-US">
+        <TopBar
+          sidebarVisible
+          onToggleSidebar={vi.fn()}
+          terminalOpen={false}
+          onToggleTerminal={vi.fn()}
+          reviewOpen={false}
+          onToggleReview={vi.fn()}
+          browserAvailable={false}
+          browserOpen={false}
+          onToggleBrowser={vi.fn()}
+          simulatorAvailable
+          simulatorOpen={false}
+          platform="darwin"
+          onOpenSimulator={vi.fn()}
+          workspacePanelsEnabled
+        />
+      </I18nProvider>,
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Simulators' })
+    expect(trigger).toHaveAttribute('data-tooltip', 'Simulators')
+    fireEvent.click(trigger)
+    expect(trigger).not.toHaveAttribute('data-tooltip')
+  })
+
   it('keeps the simulator recording indicator in the top bar while the panel is hidden', () => {
     render(
       <I18nProvider language="pt-BR">

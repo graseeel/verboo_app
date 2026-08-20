@@ -21,6 +21,7 @@ import { SimulatorControlDock } from './SimulatorControlDock'
 import { SimulatorTooltipButton } from './SimulatorTooltip'
 import { AndroidEmulatorLegacyCard, AndroidOnboarding } from './AndroidOnboarding'
 import { AndroidDevicePicker } from './AndroidDevicePicker'
+import { androidDeviceDisplayLabel } from './androidEmulatorModel'
 import type { AndroidEmulatorSystemAction } from './androidEmulatorApi'
 import { useAndroidEmulatorPanel } from './useAndroidEmulatorPanel'
 import {
@@ -671,7 +672,7 @@ function AndroidEmulatorTabContent({
         <div className="ios-simulator-device-status">
           <span role="status" aria-live="polite">
             {device
-              ? t(simulatorStageMessageKey(android.lifecycle.stage), { name: device.displayName })
+              ? t(simulatorStageMessageKey(android.lifecycle.stage), { name: androidDeviceDisplayLabel(device) })
               : t('simulator.stage.idle')}
           </span>
           {android.session?.ownership && (
@@ -697,13 +698,13 @@ function AndroidEmulatorTabContent({
       )}
 
       {device && (
-        <section className="ios-simulator-view" aria-label={t('simulator.previewLabel', { name: device.displayName })}>
+        <section className="ios-simulator-view" aria-label={t('simulator.previewLabel', { name: androidDeviceDisplayLabel(device) })}>
           <div className="ios-simulator-frame">
             {android.frameDataUrl ? (
               <SimulatorSurface
                 frameDataUrl={android.frameDataUrl}
-                deviceName={device.displayName}
-                previewAlt={t('simulator.previewAlt', { name: device.displayName })}
+                deviceName={androidDeviceDisplayLabel(device)}
+                previewAlt={t('simulator.previewAlt', { name: androidDeviceDisplayLabel(device) })}
                 mode={interactionMode}
                 interactive={android.interactionReady}
                 keyMapper={androidEmulatorKeyForKeyboardEvent}
@@ -711,7 +712,7 @@ function AndroidEmulatorTabContent({
                   interact: t('simulator.mode.interact'),
                   selectElement: t('simulator.mode.selectElement'),
                   selectArea: t('simulator.mode.selectArea'),
-                  interaction: t('simulator.interactionLabel', { name: device.displayName }),
+                  interaction: t('simulator.interactionLabel', { name: androidDeviceDisplayLabel(device) }),
                   keyboardHint: t('simulator.keyboardHint'),
                   unavailable: t('simulator.interactionUnavailable'),
                   note: t('simulator.annotation.note'),
@@ -747,7 +748,7 @@ function AndroidEmulatorTabContent({
             )}
           </div>
           <SimulatorControlDock
-            deviceName={device.displayName}
+            deviceName={androidDeviceDisplayLabel(device)}
             ownership={android.session?.ownership ?? 'external'}
             interactionReady={android.interactionReady}
             busy={Boolean(android.busyAvd)}

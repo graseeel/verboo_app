@@ -379,6 +379,13 @@ button {
   display: none;
 }
 
+/* No tooltip text, no bubble — without the attribute, `content: attr(...)`
+   is empty but the padding would still paint a tiny empty box on hover
+   (e.g. the simulator trigger while its menu is open, PA-36). */
+.ui-tooltip:not([data-tooltip])::after {
+  display: none;
+}
+
 /* Registered so the base color itself can transition between purple tones
    inside a keyframe (shadcn "color" shimmer variant). */
 @property --shimmer-base-color {

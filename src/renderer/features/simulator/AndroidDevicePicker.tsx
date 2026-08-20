@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useI18n } from '../../i18n'
-import { groupAndroidEmulatorDevices, type AndroidDeviceFamilyFilter } from './androidEmulatorModel'
+import { groupAndroidEmulatorDevices, androidDeviceDisplayLabel, type AndroidDeviceFamilyFilter } from './androidEmulatorModel'
 import type { AndroidDevice } from './androidEmulatorApi'
 
 /**
@@ -11,7 +11,9 @@ import type { AndroidDevice } from './androidEmulatorApi'
  * Mirrors SimulatorDevicePicker (combobox + portal listbox + family filters +
  * arrow/Enter/Escape keyboard navigation) on the Android shape: groups are
  * running devices first, then family + descending apiLevel. Selection reports
- * the frozen `avdName` (the attach command's key).
+ * the frozen `avdName` (the attach command's key). PA-36: the closed input and
+ * the option rows show `androidDeviceDisplayLabel` (humanized) instead of the
+ * raw AVD name, which stays the value/search key and the tooltip.
  */
 
 type AndroidDevicePickerProps = {
@@ -154,7 +156,9 @@ export function AndroidDevicePicker({
         aria-controls={listboxId}
         aria-activedescendant={activeDevice ? `${listboxId}-${activeDevice.avdName}` : undefined}
         data-panel-placement={compact ? 'top' : undefined}
-        value={open ? query : selectedDevice?.displayName ?? ''}
+        value={open ? query : selectedDevice ? androidDeviceDisplayLabel(selectedDevice) : ''}
+        placeholder={t('androidEmulator.picker.search')}
+        title={selectedDevice?.avdName}
         onFocus={() => {
           if (suppressFocusOpenRef.current) {
             suppressFocusOpenRef.current = false
@@ -196,10 +200,11 @@ export function AndroidDevicePicker({
                     aria-posinset={optionIndex + 1}
                     aria-setsize={visibleDevices.length}
                     disabled={Boolean(busyAvd)}
+                    title={device.avdName}
                     onMouseDown={event => event.preventDefault()}
                     onClick={() => choose(device.avdName)}
                   >
-                    <strong>{device.displayName}</strong>
+                    <strong>{androidDeviceDisplayLabel(device)}</strong>
                     <span>
                       API {device.apiLevel} · {t(device.running
                         ? 'androidEmulator.device.running'
