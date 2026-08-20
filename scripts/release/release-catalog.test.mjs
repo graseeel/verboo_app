@@ -42,6 +42,17 @@ test("0.7.2-beta has complete reviewed provider hotfix copy", async () => {
   assert.deepEqual(releaseEntry(catalog, "0.7.2-beta"), entry);
 });
 
+test("0.7.3-beta has complete reviewed release copy", async () => {
+  const catalog = await readReleaseCatalog();
+  const entry = validateReleaseCatalog(catalog, "0.7.3-beta");
+
+  assert.equal(entry["pt-BR"].items.length, 4);
+  assert.equal(entry["en-US"].items.length, 4);
+  assert.match(entry["pt-BR"].items[0].title, /Login no Windows/);
+  assert.match(entry["en-US"].items[1].title, /BOM-less/);
+  assert.deepEqual(releaseEntry(catalog, "0.7.3-beta"), entry);
+});
+
 test("rejects missing locale, editorial sentinel, and invalid item count", async () => {
   const original = await readReleaseCatalog();
 

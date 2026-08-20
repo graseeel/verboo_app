@@ -1,6 +1,52 @@
 {
   "schemaVersion": 1,
   "releases": {
+    "0.7.3-beta": {
+      "pt-BR": {
+        "title": "Verboo Code 0.7.3-beta — login no Windows e onboarding do simulador",
+        "summary": "Uma versão beta que destrava o login via CLI no Windows, guia a instalação do Git quando ele falta e adiciona o setup guiado do simulador iOS.",
+        "items": [
+          {
+            "title": "Login no Windows sem Git",
+            "body": "Quando o Git para Windows não está instalado, o app agora guia a instalação automaticamente (winget) ou com instruções manuais, em vez de falhar o login."
+          },
+          {
+            "title": "Credenciais sem BOM e com recuperação",
+            "body": "O arquivo de credenciais é escrito sem BOM e, se a leitura falhar, o blob corrompido é isolado e recriado — o login volta a funcionar sem reinstalar."
+          },
+          {
+            "title": "Onboarding do simulador iOS",
+            "body": "O painel do simulador agora orienta o setup com caminho automático ou manual, mostrando exatamente o que falta no Xcode."
+          },
+          {
+            "title": "Tools do Chrome e CI mais estáveis",
+            "body": "Correções de atividade das tools do Chrome e melhorias de CI (cache de pacotes apt e timeout maior no Linux)."
+          }
+        ]
+      },
+      "en-US": {
+        "title": "Verboo Code 0.7.3-beta — Windows sign-in and simulator onboarding",
+        "summary": "A beta release that unblocks CLI sign-in on Windows, guides Git installation when it is missing, and adds guided iOS simulator setup.",
+        "items": [
+          {
+            "title": "Windows sign-in without Git",
+            "body": "When Git for Windows is not installed, the app now guides the installation automatically (winget) or with manual instructions, instead of failing the sign-in."
+          },
+          {
+            "title": "BOM-less credentials with recovery",
+            "body": "The credentials file is written without a BOM, and if reading fails, the corrupt blob is quarantined and recreated — sign-in works again without reinstalling."
+          },
+          {
+            "title": "iOS simulator onboarding",
+            "body": "The simulator panel now guides setup with an automatic or manual path, showing exactly what is missing in Xcode."
+          },
+          {
+            "title": "Chrome tools and more stable CI",
+            "body": "Activity fixes for the Chrome tools and CI improvements (apt package cache and a larger Linux timeout)."
+          }
+        ]
+      }
+    },
     "0.7.2-beta": {
       "pt-BR": {
         "title": "Verboo Code 0.7.2-beta — hotfix dos provedores",
