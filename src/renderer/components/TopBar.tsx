@@ -108,8 +108,7 @@ export function TopBar({
   return (
     <header
       className="topbar"
-      data-tauri-drag-region=""
-      onDoubleClick={() => window.verboo.toggleWindowZoom()}
+      data-tauri-drag-region="deep"
     >
       {/* When the sidebar is collapsed, show a reopen button here — but only
           on touch/narrow viewports where hover is unreliable. On desktop
@@ -131,7 +130,7 @@ export function TopBar({
       )}
       {/* Quiet drag spacer — no "ready/pronto" status near traffic lights. */}
       <div className="topbar-brand-status" data-tauri-drag-region="" aria-hidden="true" />
-      <div className="topbar-actions">
+      <div className="topbar-actions" data-tauri-drag-region="false">
         {(terminalUnavailableReason || reviewUnavailableReason) && (
           <span className="topbar-terminal-notice" role="status">
             {terminalUnavailableReason || reviewUnavailableReason}

@@ -42,10 +42,60 @@ function BrowserGlobeHarness() {
   )
 }
 
+function renderMinimalTopBar() {
+  return render(
+    <I18nProvider language="pt-BR">
+      <TopBar
+        sidebarVisible
+        onToggleSidebar={vi.fn()}
+        terminalOpen={false}
+        onToggleTerminal={vi.fn()}
+        reviewOpen={false}
+        onToggleReview={vi.fn()}
+        browserAvailable={false}
+        browserOpen={false}
+        onToggleBrowser={vi.fn()}
+        workspacePanelsEnabled
+      />
+    </I18nProvider>,
+  )
+}
+
 describe('TopBar workspace panel controls', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(invoke).mockResolvedValue(undefined)
+  })
+
+  it('marks the root title bar as a deep Tauri drag region', () => {
+    const { container } = renderMinimalTopBar()
+
+    expect(container.querySelector('header.topbar')).toHaveAttribute('data-tauri-drag-region', 'deep')
+  })
+
+  it('explicitly keeps the action cluster outside the Tauri drag region', () => {
+    const { container } = renderMinimalTopBar()
+
+    expect(container.querySelector('.topbar-actions')).toHaveAttribute('data-tauri-drag-region', 'false')
+  })
+
+  it('does not duplicate Tauri drag.js double-click handling through the legacy bridge', () => {
+    const originalBridge = Object.getOwnPropertyDescriptor(window, 'verboo')
+    const toggleWindowZoom = vi.fn()
+    Object.defineProperty(window, 'verboo', {
+      configurable: true,
+      value: { toggleWindowZoom },
+    })
+
+    try {
+      const { container } = renderMinimalTopBar()
+      fireEvent.doubleClick(container.querySelector('.topbar-brand-status')!)
+
+      expect(toggleWindowZoom).not.toHaveBeenCalled()
+    } finally {
+      if (originalBridge) Object.defineProperty(window, 'verboo', originalBridge)
+      else delete (window as unknown as { verboo?: unknown }).verboo
+    }
   })
 
   it('keeps all three controls visible but disabled in fullscreen views', () => {
