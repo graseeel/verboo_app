@@ -513,12 +513,21 @@ export function LoginScreen({
         ? t('login.apiKeyInvalid')
         : t('login.sessionCheckFailed')
     : undefined
+  // PA-47: the modelResult.error fallback (raw first-failure text) must
+  // NEVER paint while a passive verification is in flight (`checking`) —
+  // the boot retry clears the structured authError first, so during that
+  // window the fallback would flash a red banner for ~1s on every cold
+  // start (field video). The fallback only applies to CONCLUDED checks
+  // without a structured authError; no-session never reaches it (the
+  // emptyStateNote above owns that state).
   const authHeadline = !cliFailureMessage && !userAction && !emptyStateNote
     ? authError?.kind === 'error'
       ? authError.message
       : authError
         ? undefined
-        : modelResult.error
+        : !checking
+          ? modelResult.error
+          : undefined
     : undefined
   const banner = cliFailureMessage
     ? { key: `cli:${cliFailureMessage}`, headline: t('login.cliLoginFailed'), detail: cliFailureMessage, retry: () => void startLogin() }
@@ -541,8 +550,14 @@ export function LoginScreen({
     <main className="login-screen">
       {/* T-C: window drag lives on this dedicated top strip, NOT on the
           whole screen — the screen is a scroll container now, and a full-
-          surface drag region swallows the scroll gesture and clicks. */}
-      <div className="login-drag-strip" aria-hidden="true" />
+          surface drag region swallows the scroll gesture and clicks.
+          PA-47: the strip is the ONLY drag surface on this screen — App.tsx
+          returns LoginScreen early, so the TopBar (data-tauri-drag-region
+          deep) never exists here. The attribute (not the legacy
+          -webkit-app-region) is what Tauri's bundled drag.js honors; the
+          strip is 28px < the 32px screen padding, so it never covers the
+          panel, the language selector, or the native traffic lights. */}
+      <div className="login-drag-strip" data-tauri-drag-region="deep" aria-hidden="true" />
       <section className="login-panel" aria-label={t('login.mainAria')}>
         <div className="login-language-row">
           <LanguageSelector value={language} onChange={next => void onLanguageChange(next)} compact />

@@ -418,6 +418,38 @@ describe('LoginScreen — PA-37: progressive disclosure keeps every path reachab
     expect(strip!.contains(panel!)).toBe(false)
     expect(panel!.contains(strip!)).toBe(false)
   })
+
+  // PA-47 (user field test: double-click on the top edge works on the
+  // logged-in screen but NOT on the login screen — App.tsx returns the
+  // LoginScreen EARLY, so the TopBar's drag region never exists here).
+  // The strip must carry the Tauri drag region itself; the panel controls
+  // (language selector, actions) live OUTSIDE it — in Tauri's drag.js a
+  // clickable element without the attribute inside the region would block
+  // dragging, and one WITH the attribute would swallow clicks.
+  it('the login drag strip is a real Tauri drag region and never wraps the screen controls', () => {
+    const { container } = renderLogin()
+    const strip = container.querySelector('.login-drag-strip')
+    expect(strip, 'login screen must carry a dedicated drag strip').toBeTruthy()
+    // The strip is what drags the window: same attribute as the TopBar.
+    expect(strip).toHaveAttribute('data-tauri-drag-region', 'deep')
+    const panel = container.querySelector('.login-panel')
+    expect(panel).toBeTruthy()
+    // Hierarchy: the panel is a SIBLING of the strip, never its child —
+    // the strip covers the window title area, not the card.
+    expect(strip!.contains(panel!)).toBe(false)
+    // All interactive controls keep their default click behavior (they
+    // must NOT carry the drag attribute themselves).
+    const interactive = [
+      '.language-selector-trigger',
+      '.primary-action',
+      '.login-text-button',
+    ]
+    for (const selector of interactive) {
+      const control = container.querySelector<HTMLElement>(selector)
+      expect(control, `expected ${selector} inside the login panel`).toBeTruthy()
+      expect(control).not.toHaveAttribute('data-tauri-drag-region')
+    }
+  })
 })
 
 describe('LoginScreen — PA-37 state rules (empty state, one error, swap)', () => {

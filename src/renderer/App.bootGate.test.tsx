@@ -181,6 +181,63 @@ describe('App login — session-invalid boot and revalidation state', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
+  // PA-47 (field video, logged-out cold start): the boot retry clears the
+  // structured authError first, so during its in-flight window the ONLY
+  // thing that could paint red is the raw modelResult.error fallback —
+  // the user saw that flash ('Entre com Verboo pelo CLI/app...' + 'Tentar
+  // de novo') for ~1s between the two validations. While `checking` is
+  // true the surface must stay progress/neutral; the banner can only
+  // appear after the verification settles.
+  it('boot revalidation NEVER renders the modelResult.error banner while checking (cold-retry window)', async () => {
+    settingsStore = { ...baseSettings(), language: 'pt-BR' }
+    const bridge = createLockedBridge()
+    let calls = 0
+    let releaseRetry: (result: unknown) => void = () => {}
+    const retryGate = new Promise<unknown>(resolve => {
+      releaseRetry = resolve
+    })
+    const failingDiscovery = () => ({
+      models: [] as never[],
+      source: 'none' as const,
+      stale: false,
+      error: 'Entre com Verboo pelo CLI/app para atualizar os modelos da sua conta.',
+    })
+    bridge.listModels = vi.fn(async () => {
+      calls += 1
+      if (calls === 1) return failingDiscovery()
+      // The retry hangs so the transient checking state is observable.
+      return retryGate
+    })
+    ;(window as unknown as { verboo: unknown }).verboo = bridge
+    render(<App />)
+
+    // First cold validation settles → NEUTRAL no-session note, no banner.
+    const note = await screen.findByText('Nenhuma sessão Verboo válida foi encontrada.')
+    expect(note.className).toBe('login-empty')
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    // The 700ms cold-start retry fires and starts a SECOND validation
+    // against a hanging listModels — checking stays in flight.
+    await waitFor(() => expect(calls).toBe(2), { timeout: 3_000 })
+
+    // THE TRANSIENT WINDOW: authError was cleared, checking is true, and
+    // modelResult still carries the raw first-failure error. Falling back
+    // to modelResult.error MUST NOT paint a red banner here — the correct
+    // state is the progress note.
+    await screen.findByText('Validando credenciais e modelos disponíveis...')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(document.querySelector('.login-warning')).toBeNull()
+
+    // The retry settles as no-session too — final state is the neutral
+    // note again, still no banner.
+    await act(async () => {
+      releaseRetry(failingDiscovery())
+    })
+    const finalNote = await screen.findByText('Nenhuma sessão Verboo válida foi encontrada.')
+    expect(finalNote.className).toBe('login-empty')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   it('"I already authenticated" ending without a session shows action feedback instead of the passive note', async () => {
     await renderLockedApp()
     const retry = await screen.findByRole('button', { name: /I already authenticated/ }, { timeout: 1_000 })
